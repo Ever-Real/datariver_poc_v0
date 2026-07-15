@@ -5,7 +5,8 @@ from uuid import UUID
 from sqlalchemy import Text, cast, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from datariver.application.dto import ChatEvidence, KnowledgeEvidenceCandidate
+from datariver.application.dto import KnowledgeEvidenceCandidate
+from datariver.application.evidence import build_evidence_chunk
 from datariver.application.ports import KnowledgeEvidenceReader
 from datariver.domain.authz import Classification
 from datariver.infrastructure.db.models.knowledge import (
@@ -51,6 +52,7 @@ class SqlKnowledgeEvidenceReader(KnowledgeEvidenceReader):
         )
         candidates: list[KnowledgeEvidenceCandidate] = []
         for graph, release, node in rows:
+            classification = Classification(max(graph.classification, node.classification))
             name = str(
                 node.properties.get("name")
                 or node.properties.get("label")
@@ -60,8 +62,13 @@ class SqlKnowledgeEvidenceReader(KnowledgeEvidenceReader):
             description_value = node.properties.get("description") or node.properties.get("summary")
             candidates.append(
                 KnowledgeEvidenceCandidate(
-                    evidence=ChatEvidence(
+                    evidence=build_evidence_chunk(
+                        workspace_id=workspace_id,
                         resource_id=node.entity_id,
+                        classification=classification,
+                        system_id=None,
+                        domain_id=None,
+                        owner_department_id=None,
                         name=name,
                         description=str(description_value)[:1000] if description_value else None,
                         source_locator=(
@@ -69,10 +76,12 @@ class SqlKnowledgeEvidenceReader(KnowledgeEvidenceReader):
                             f"{node.entity_id}"
                         ),
                         source_version=release.content_hash,
+                        effective_from=release.published_at,
+                        extraction_method="KNOWLEDGE_RELEASE_NODE_V1",
                         source_type="KNOWLEDGE_NODE",
                     ),
                     graph_id=graph.id,
-                    classification=Classification(max(graph.classification, node.classification)),
+                    classification=classification,
                 )
             )
         return tuple(candidates)

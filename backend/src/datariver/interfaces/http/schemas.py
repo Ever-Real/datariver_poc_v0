@@ -443,11 +443,20 @@ class ChatQueryRequest(BaseModel):
 
 
 class ChatEvidenceResponse(BaseModel):
+    chunk_id: UUID
     resource_id: UUID
+    classification: str
+    system_id: UUID | None
+    domain_id: UUID | None
+    owner_department_id: UUID | None
     name: str
     source_type: str
     source_locator: str
     source_version: str
+    content_hash: str
+    effective_from: datetime
+    effective_until: datetime | None
+    extraction_method: str
 
 
 class ChatQueryResponse(BaseModel):

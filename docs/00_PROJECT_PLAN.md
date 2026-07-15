@@ -29,7 +29,7 @@ Deliver a portable, Git-shareable DataRiver platform that safely wraps external 
 
 | Phase | Status | Evidence / next gate |
 |---|---|---|
-| 0–4 | Complete for development baseline | reference manifest, controlled docs/ADRs, OIDC + ABAC/RLS, catalog/registration/governance, KG changesets/releases/sharing/Chat and 73 backend tests |
+| 0–4 | Complete for development baseline | reference manifest, controlled docs/ADRs, OIDC + ABAC/RLS, catalog/registration/governance, KG changesets/releases/sharing/Chat and 88 backend tests |
 | 5 | Complete for local integration | separate Valkey roles, SeaweedFS init, four workers, Keycloak, two paused Airflow DAGs and read-only APISIX verified live |
 | 6 | Implementation complete; browser gate open | modular React flows and deterministic 12-asset/257-node/279-edge seed pass; full Playwright user journeys remain a target-environment gate |
 | 7 | Partially complete | dependency/source/IaC scans, selected recovery drills and runtime logs pass; target DataHub/object contract, backup/restore, load/soak, chaos and signed promoted-image evidence remain |

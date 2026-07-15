@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import hashlib
 from collections.abc import Sequence
 from datetime import timedelta
 from uuid import UUID
@@ -34,6 +33,8 @@ class SqlChatStore(ChatStore):
         evidence: Sequence[ChatEvidence],
         policy_decision_id: UUID,
     ) -> ChatExchange:
+        if any(item.workspace_id != workspace_id for item in evidence):
+            raise ValueError("Evidence chunks must belong to the exchange workspace.")
         now = utc_now()
         if session_id is None:
             session = ChatSessionModel(
@@ -106,13 +107,19 @@ class SqlChatStore(ChatStore):
                     id=uuid7(),
                     workspace_id=workspace_id,
                     run_id=run_id,
+                    chunk_id=item.chunk_id,
                     resource_id=item.resource_id,
+                    classification=int(item.classification),
+                    system_id=item.system_id,
+                    domain_id=item.domain_id,
+                    owner_department_id=item.owner_department_id,
                     source_type=item.source_type,
                     source_locator=item.source_locator,
                     source_version=item.source_version,
-                    excerpt_hash=hashlib.sha256(
-                        f"{item.name}\n{item.description or ''}".encode()
-                    ).hexdigest(),
+                    content_hash=item.content_hash,
+                    effective_from=item.effective_from,
+                    effective_until=item.effective_until,
+                    extraction_method=item.extraction_method,
                     rank=rank,
                 )
                 for rank, item in enumerate(evidence, start=1)

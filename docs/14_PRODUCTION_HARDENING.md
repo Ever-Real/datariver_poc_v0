@@ -156,10 +156,14 @@ watermark and lag measurement remain prerequisites for a valid read-plane freshn
 
 ## 8. P2 Assistant/KG decision
 
-The current Chat is deliberately deterministic and evidence-only. External inference requires a
-separate assistant worker so API processes do not hold model calls, embedding work or long provider
-connections. Retrieval units become immutable evidence chunks carrying workspace, classification,
-allowed scope, source/version/locator, effective time and content hash—not bare asset/node IDs.
+The current Chat is deliberately deterministic and evidence-only. Its retrieval units are now
+immutable evidence chunks carrying workspace, classification, typed system/domain/owner scope,
+source/version/locator, effective time, extraction method and canonical content hash—not bare
+asset/node IDs. A provider-neutral composer returns cited chunk IDs; empty, duplicate, unauthorized
+or hash-invalid citations fail closed to `검증 불가` and persist no citation.
+
+External inference still requires a separate assistant worker so API processes do not hold model
+calls, embedding work or long provider connections. No model provider is configured in this baseline.
 
 The model receives no SQL, Cypher, arbitrary HTTP or apply/publish tool. Answers without authorized
 citations return `검증 불가`; KG output is only a proposed changeset routed through existing validation,
@@ -201,8 +205,8 @@ budget visibility, not multi-replica HA or a target `max_connections` value.
    reconcile as drift verification/recovery.
 5. Add partition provisioning/retention/WORM export only with approved volume/legal inputs.
 6. Apply the P1 decision gate. If it fails, extract search indexing first through the outbox port.
-7. Build evidence chunks and an isolated assistant worker, then pass ABAC and prompt-injection red-team
-   gates before enabling any external model.
+7. Add the isolated assistant worker and expand the checked-in initial attack corpus into the full
+   ABAC/prompt-injection/tool-abuse evaluation gate before enabling any external model.
 8. Complete HA/PITR/object recovery, browser E2E, enterprise OIDC/Airflow auth, signed images/SBOM and
    accountable production acceptance.
 

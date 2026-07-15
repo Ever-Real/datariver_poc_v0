@@ -2,7 +2,7 @@
 
 ## Latest executed baseline
 
-The 2026-07-15 development/integration baseline plus the current P0/P1/P3 foundation passed 84 backend tests, strict mypy over 113 source files, Ruff formatting/lint, 6 frontend tests, TypeScript/ESLint/build, deterministic migration generation and static architecture/Compose/role/readiness checks. The live hybrid-development baseline also passed PostgreSQL RLS, Keycloak service-token OIDC, schema-aware API/APISIX readiness, Vite-to-APISIX proxying, DataHub GraphQL authentication and semiconductor seed verification. The earlier container baseline additionally passed Airflow DAG imports, optional seed remove and repository/IaC Trivy scanning. Exact commands and the distinction between current source and earlier evidence are in [the acceptance report](12_ACCEPTANCE_REPORT.md).
+The 2026-07-15 development/integration baseline plus the current P0/P1/P2/P3 foundation passed 88 backend tests, strict mypy over 114 source files, Ruff formatting/lint, 6 frontend tests, TypeScript/ESLint/build, deterministic migration generation and static architecture/Compose/role/readiness checks. The live hybrid-development baseline also passed PostgreSQL RLS, Keycloak service-token OIDC, schema-aware API/APISIX readiness, Vite-to-APISIX proxying, DataHub GraphQL authentication and semiconductor seed verification. The earlier container baseline additionally passed Airflow DAG imports, optional seed remove and repository/IaC Trivy scanning. Exact commands and the distinction between current source and earlier evidence are in [the acceptance report](12_ACCEPTANCE_REPORT.md).
 
 Executed resilience checks included cache-Valkey stop/recovery, API process restart, API container replacement behind both Nginx and APISIX, and outbox-relay restart. The API replacement test deliberately kept the web container running and verified that its Docker DNS resolver did not retain a stale upstream address.
 
@@ -33,7 +33,7 @@ The strategy below remains the production release matrix. Target DataHub/object 
 - Catalog writes cannot bypass governance.
 - Every graph publish assertion has provenance and passes ontology/reference checks.
 - Release content is immutable; same release rebuild has identical hash/count and golden-query output.
-- Chat citations are a subset of currently authorized resources and name source/release version.
+- Chat citations are a non-empty, duplicate-free subset of the exact currently authorized immutable chunks; workspace/chunk/content hash is revalidated and invalid output becomes `검증 불가` with no persisted citation.
 
 ## Authorization matrix
 

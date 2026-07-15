@@ -53,7 +53,7 @@ Untrusted inputs include browser/API payloads, OIDC claims before verification, 
 - Templates enforce read-only operation, label/relation allowlist, maximum hops/rows/time/cost, statement timeout and database read-only transaction.
 - Retrieved documents are data, not instructions. System/tool policy is isolated from evidence and tool output.
 - Model requests exclude unauthorized fields and secrets; raw prompts/responses are not production logs.
-- External inference remains disabled until the classification-specific Chat matrix, evidence-chunk contract, isolated worker and prompt-injection red-team gate in `14_PRODUCTION_HARDENING.md` are accepted.
+- External inference remains disabled. The immutable authorized evidence-chunk and fail-closed citation boundary is implemented; the classification-specific Chat matrix, isolated worker and full prompt-injection red-team gate in `14_PRODUCTION_HARDENING.md` still require acceptance.
 
 ## API and browser controls
 

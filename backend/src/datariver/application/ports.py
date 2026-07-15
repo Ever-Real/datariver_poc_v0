@@ -12,6 +12,7 @@ from datariver.application.dto import (
     CapabilityStatus,
     CatalogAssetDetail,
     CatalogPage,
+    ChatDraft,
     ChatEvidence,
     ChatExchange,
     ConsumerGrantRecord,
@@ -518,6 +519,15 @@ class ChatStore(Protocol):
         evidence: Sequence[ChatEvidence],
         policy_decision_id: UUID,
     ) -> ChatExchange: ...
+
+
+class ChatAnswerComposer(Protocol):
+    async def compose(
+        self,
+        *,
+        question: str,
+        evidence: Sequence[ChatEvidence],
+    ) -> ChatDraft: ...
 
 
 class KnowledgeEvidenceReader(Protocol):

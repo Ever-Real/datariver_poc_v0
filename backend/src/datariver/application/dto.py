@@ -287,11 +287,21 @@ class InvocationAuthorizationRecord:
 
 @dataclass(frozen=True, slots=True)
 class ChatEvidence:
+    chunk_id: UUID
+    workspace_id: UUID
     resource_id: UUID
+    classification: Classification
+    system_id: UUID | None
+    domain_id: UUID | None
+    owner_department_id: UUID | None
     name: str
     description: str | None
     source_locator: str
     source_version: str
+    content_hash: str
+    effective_from: datetime
+    effective_until: datetime | None
+    extraction_method: str
     source_type: str = "CATALOG_ASSET"
 
 
@@ -300,6 +310,12 @@ class KnowledgeEvidenceCandidate:
     evidence: ChatEvidence
     graph_id: UUID
     classification: Classification
+
+
+@dataclass(frozen=True, slots=True)
+class ChatDraft:
+    answer: str
+    cited_chunk_ids: tuple[UUID, ...]
 
 
 @dataclass(frozen=True, slots=True)

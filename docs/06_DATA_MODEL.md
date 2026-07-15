@@ -95,7 +95,7 @@ The API supports both complete snapshot publication and changeset author/submit/
 | `assistant.chat_sessions` | `id`, workspace/owner/title/scope/retention, `version`, timestamps | owner-scoped session |
 | `assistant.chat_messages` | `id`, workspace/session/actor/content/created time | append-only messages |
 | `assistant.assistant_runs` | `id`, workspace/session/request message/provider/model/template/policy/state/metrics/timestamps | answer execution audit |
-| `assistant.evidence_citations` | `id`, workspace/run/resource/type/locator/version/excerpt hash/rank | source-versioned authorized evidence |
+| `assistant.evidence_citations` | `id`, workspace/run/chunk/resource, classification, typed system/domain/owner scope, type/locator/version, SHA-256 content hash, effective interval, extraction method, positive unique rank | append-only immutable authorized evidence snapshot |
 
 ## Constraints enforced outside DDL
 

@@ -104,11 +104,20 @@ export interface ChatResponse {
   response_message_id: string
   answer: string
   evidence: Array<{
+    chunk_id: string
     resource_id: string
+    classification: 'PUBLIC' | 'INTERNAL' | 'CONFIDENTIAL' | 'RESTRICTED'
+    system_id: string | null
+    domain_id: string | null
+    owner_department_id: string | null
     name: string
     source_type: string
     source_locator: string
     source_version: string
+    content_hash: string
+    effective_from: string
+    effective_until: string | null
+    extraction_method: string
   }>
 }
 

@@ -4,7 +4,16 @@ from datetime import datetime
 from typing import Any
 from uuid import UUID
 
-from sqlalchemy import ForeignKeyConstraint, Index, String, Text, UniqueConstraint, Uuid
+from sqlalchemy import (
+    CheckConstraint,
+    ForeignKeyConstraint,
+    Index,
+    Integer,
+    String,
+    Text,
+    UniqueConstraint,
+    Uuid,
+)
 from sqlalchemy.orm import Mapped, mapped_column
 
 from datariver.infrastructure.db.base import (
@@ -90,6 +99,21 @@ class EvidenceCitationModel(Base, UuidPrimaryKeyMixin):
     __tablename__ = "evidence_citations"
     __table_args__ = (
         Index("ix_evidence_citations_run_rank", "run_id", "rank"),
+        UniqueConstraint("workspace_id", "run_id", "chunk_id"),
+        UniqueConstraint("workspace_id", "run_id", "rank"),
+        CheckConstraint(
+            "classification >= 0 AND classification <= 3",
+            name="classification_range",
+        ),
+        CheckConstraint(
+            "effective_until IS NULL OR effective_until >= effective_from",
+            name="effective_window",
+        ),
+        CheckConstraint(
+            "content_hash ~ '^[0-9a-f]{64}$'",
+            name="content_hash_sha256",
+        ),
+        CheckConstraint("rank > 0", name="rank_positive"),
         ForeignKeyConstraint(
             ("workspace_id", "run_id"),
             ("assistant.assistant_runs.workspace_id", "assistant.assistant_runs.id"),
@@ -100,9 +124,17 @@ class EvidenceCitationModel(Base, UuidPrimaryKeyMixin):
 
     workspace_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), nullable=False)
     run_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), nullable=False)
+    chunk_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), nullable=False)
     resource_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), nullable=False)
+    classification: Mapped[int] = mapped_column(Integer, nullable=False)
+    system_id: Mapped[UUID | None] = mapped_column(Uuid(as_uuid=True))
+    domain_id: Mapped[UUID | None] = mapped_column(Uuid(as_uuid=True))
+    owner_department_id: Mapped[UUID | None] = mapped_column(Uuid(as_uuid=True))
     source_type: Mapped[str] = mapped_column(String(50), nullable=False)
     source_locator: Mapped[str] = mapped_column(Text, nullable=False)
     source_version: Mapped[str] = mapped_column(String(255), nullable=False)
-    excerpt_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    content_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    effective_from: Mapped[datetime] = mapped_column(nullable=False)
+    effective_until: Mapped[datetime | None]
+    extraction_method: Mapped[str] = mapped_column(String(100), nullable=False)
     rank: Mapped[int] = mapped_column(nullable=False)

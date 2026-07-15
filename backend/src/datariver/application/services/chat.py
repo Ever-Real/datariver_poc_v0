@@ -1,9 +1,16 @@
 from __future__ import annotations
 
+from collections.abc import Sequence
 from uuid import UUID
 
-from datariver.application.dto import ChatEvidence, ChatExchange
-from datariver.application.ports import CatalogIndexReader, ChatStore, KnowledgeEvidenceReader
+from datariver.application.dto import ChatDraft, ChatEvidence, ChatExchange
+from datariver.application.evidence import build_evidence_chunk, evidence_chunk_is_valid
+from datariver.application.ports import (
+    CatalogIndexReader,
+    ChatAnswerComposer,
+    ChatStore,
+    KnowledgeEvidenceReader,
+)
 from datariver.application.services.authorization import AuthorizationService
 from datariver.domain.authz import (
     Action,
@@ -12,6 +19,28 @@ from datariver.domain.authz import (
     ResourceAttributes,
     SubjectAttributes,
 )
+
+UNVERIFIABLE_ANSWER = "검증 불가"
+
+
+class DeterministicChatAnswerComposer:
+    async def compose(
+        self,
+        *,
+        question: str,
+        evidence: Sequence[ChatEvidence],
+    ) -> ChatDraft:
+        del question
+        if not evidence:
+            return ChatDraft(answer=UNVERIFIABLE_ANSWER, cited_chunk_ids=())
+        lines = ["접근 권한이 확인된 카탈로그·지식그래프 근거는 다음과 같습니다."]
+        for index, item in enumerate(evidence, start=1):
+            description = (item.description or "설명이 등록되지 않았습니다.").strip()
+            lines.append(f"[{index}] {item.name}: {description[:500]}")
+        return ChatDraft(
+            answer="\n".join(lines),
+            cited_chunk_ids=tuple(item.chunk_id for item in evidence),
+        )
 
 
 class ChatService:
@@ -22,11 +51,13 @@ class ChatService:
         knowledge_evidence: KnowledgeEvidenceReader | None = None,
         store: ChatStore,
         authorization: AuthorizationService,
+        composer: ChatAnswerComposer | None = None,
     ) -> None:
         self._catalog_index = catalog_index
         self._knowledge_evidence = knowledge_evidence
         self._store = store
         self._authorization = authorization
+        self._composer = composer or DeterministicChatAnswerComposer()
 
     async def query(
         self,
@@ -92,12 +123,19 @@ class ChatService:
             if asset.asset_id not in authorized_catalog_ids:
                 continue
             evidence.append(
-                ChatEvidence(
+                build_evidence_chunk(
+                    workspace_id=asset.workspace_id,
                     resource_id=asset.asset_id,
+                    classification=asset.classification,
+                    system_id=asset.system_id,
+                    domain_id=asset.domain_id,
+                    owner_department_id=asset.owner_department_id,
                     name=asset.name,
                     description=asset.description,
                     source_locator=asset.external_urn,
                     source_version=asset.source_version,
+                    effective_from=asset.observed_at,
+                    extraction_method="CATALOG_PROJECTION_V1",
                 )
             )
         if self._knowledge_evidence is not None and len(evidence) < maximum_evidence:
@@ -134,17 +172,30 @@ class ChatService:
             for candidate in candidates:
                 if candidate.evidence.resource_id not in authorized_knowledge_ids:
                     continue
+                if (
+                    candidate.evidence.workspace_id != workspace_id
+                    or candidate.evidence.classification != candidate.classification
+                ):
+                    continue
                 evidence.append(candidate.evidence)
                 if len(evidence) >= maximum_evidence:
                     break
-        answer = self._compose_answer(evidence)
+        try:
+            draft = await self._composer.compose(question=question, evidence=tuple(evidence))
+        except Exception:
+            draft = ChatDraft(answer=UNVERIFIABLE_ANSWER, cited_chunk_ids=())
+        answer, cited_evidence = self._validate_draft(
+            draft=draft,
+            authorized_evidence=evidence,
+            workspace_id=workspace_id,
+        )
         return await self._store.save_exchange(
             workspace_id=workspace_id,
             owner_id=subject.subject_id,
             session_id=session_id,
             question=question,
             answer=answer,
-            evidence=evidence,
+            evidence=cited_evidence,
             policy_decision_id=chat_decision.decision_id,
         )
 
@@ -155,13 +206,26 @@ class ChatService:
         return max(candidates, key=len)[:100] if candidates else question.strip()[:100]
 
     @staticmethod
-    def _compose_answer(evidence: list[ChatEvidence]) -> str:
-        if not evidence:
-            return (
-                "현재 접근 권한 범위에서 질문과 관련된 검증 가능한 카탈로그 근거를 찾지 못했습니다."
-            )
-        lines = ["접근 권한이 확인된 카탈로그·지식그래프 근거는 다음과 같습니다."]
-        for index, item in enumerate(evidence, start=1):
-            description = (item.description or "설명이 등록되지 않았습니다.").strip()
-            lines.append(f"[{index}] {item.name}: {description[:500]}")
-        return "\n".join(lines)
+    def _validate_draft(
+        *,
+        draft: ChatDraft,
+        authorized_evidence: Sequence[ChatEvidence],
+        workspace_id: UUID,
+    ) -> tuple[str, tuple[ChatEvidence, ...]]:
+        authorized_by_id = {item.chunk_id: item for item in authorized_evidence}
+        cited_ids = draft.cited_chunk_ids
+        invalid = (
+            not draft.answer.strip()
+            or not cited_ids
+            or len(cited_ids) != len(set(cited_ids))
+            or len(authorized_by_id) != len(authorized_evidence)
+            or any(chunk_id not in authorized_by_id for chunk_id in cited_ids)
+        )
+        if invalid:
+            return UNVERIFIABLE_ANSWER, ()
+        cited = tuple(authorized_by_id[chunk_id] for chunk_id in cited_ids)
+        if any(
+            item.workspace_id != workspace_id or not evidence_chunk_is_valid(item) for item in cited
+        ):
+            return UNVERIFIABLE_ANSWER, ()
+        return draft.answer.strip(), cited

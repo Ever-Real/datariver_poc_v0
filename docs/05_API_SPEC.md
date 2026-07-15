@@ -121,7 +121,7 @@ Product versions accept only the registered `SNAPSHOT`, `NEIGHBORS` or `CHAT` su
 |---|---|---|
 | `POST /chat/query` | `chat.query` plus `catalog.read` / `kg.read` per citation | persist a question and deterministic authorized-evidence answer |
 
-Request is `{session_id?,question,maximum_evidence<=10}`. Response carries session/message IDs, answer and source-versioned catalog or active-release knowledge evidence. The baseline deliberately has no external LLM; a future model sees only already-authorized evidence.
+Request is `{session_id?,question,maximum_evidence<=10}`. Response carries session/message IDs, answer and immutable evidence chunk metadata: `chunk_id`, resource/workspace-authorized classification and typed scope, source type/locator/version, SHA-256 content hash, effective interval and extraction method. Composer citations must be a non-empty, duplicate-free subset of the exact authorized chunk input and pass hash/workspace revalidation; any forged, empty or invalid citation fails closed to the exact answer `검증 불가` with no returned/persisted evidence. The baseline deliberately has no external LLM.
 
 ## DataHub adapter contract
 

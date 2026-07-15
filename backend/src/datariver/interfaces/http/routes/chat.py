@@ -49,11 +49,20 @@ async def query(
         answer=exchange.answer,
         evidence=[
             ChatEvidenceResponse(
+                chunk_id=item.chunk_id,
                 resource_id=item.resource_id,
+                classification=item.classification.name,
+                system_id=item.system_id,
+                domain_id=item.domain_id,
+                owner_department_id=item.owner_department_id,
                 name=item.name,
                 source_type=item.source_type,
                 source_locator=item.source_locator,
                 source_version=item.source_version,
+                content_hash=item.content_hash,
+                effective_from=item.effective_from,
+                effective_until=item.effective_until,
+                extraction_method=item.extraction_method,
             )
             for item in exchange.evidence
         ],

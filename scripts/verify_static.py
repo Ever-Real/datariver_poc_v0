@@ -233,6 +233,16 @@ def verify_database_roles() -> None:
         raise AssertionError(f"least-privilege database roles are missing: {missing}")
     if "GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES" in generator:
         raise AssertionError("runtime database roles cannot receive global table DML")
+    assistant_grant = (
+        "GRANT SELECT, INSERT ON assistant.chat_sessions, assistant.chat_messages,\n"
+        "            assistant.assistant_runs, assistant.evidence_citations TO datariver_app;"
+    )
+    if assistant_grant not in generator:
+        raise AssertionError(
+            "assistant evidence citations must remain append-only for the app role"
+        )
+    if re.search(r"GRANT[^;]*(?:UPDATE|DELETE)[^;]*assistant\.evidence_citations", generator):
+        raise AssertionError("the app role cannot mutate or delete assistant evidence citations")
 
 
 def verify_architecture_imports() -> None:

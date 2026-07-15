@@ -36,7 +36,7 @@ export function ChatPage({ client }: { client: ApiClient }) {
           <article className={`message message-${message.role}`} key={`${message.role}-${index}`}>
             <p>{message.text}</p>
             {message.evidence && message.evidence.length > 0 && (
-              <ol className="citations">{message.evidence.map((item) => <li key={item.resource_id}><strong>{item.name}</strong><code>{item.source_locator}</code></li>)}</ol>
+              <ol className="citations">{message.evidence.map((item) => <li key={item.chunk_id}><strong>{item.name}</strong><code>{item.source_locator}</code></li>)}</ol>
             )}
           </article>
         ))}

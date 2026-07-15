@@ -68,9 +68,9 @@ The Compose overlay intentionally uses Airflow `SimpleAuthManager` only for loop
 
 ## Database and object operations
 
-- Alembic has one head at `0004`: the generated current initial schema plus conditional compatibility bridges for local databases that had already applied an earlier `0001`. Deployment runs migration before API/workers. The API role can only read `public.alembic_version` for readiness; migration ownership remains separate.
+- Alembic has one head at `0005`: the generated current initial schema plus conditional compatibility bridges for local databases that had already applied an earlier `0001`. Deployment runs migration before API/workers. The API role can only read `public.alembic_version` for readiness; migration ownership remains separate.
 - PostgreSQL pool size/overflow/lease timeout, statement timeout, idle-transaction timeout and application names are explicit. Budget `API replicas × (API pool + overflow) + long-running workers × (worker pool + overflow) + one-shot/IdP/Airflow/admin reserve`; current one-API/four-worker defaults have a ceiling of 60 before reserve.
-- Liveness is process-only. Readiness leases the API pool and requires exactly packaged Alembic head `0004`; Compose and APISIX use readiness for upstream health.
+- Liveness is process-only. Readiness leases the API pool and requires exactly packaged Alembic head `0005`; Compose and APISIX use readiness for upstream health.
 - Back up PostgreSQL and SeaweedFS as a consistency set or record a watermark; restore into isolation and follow the drill in [operations runbook](13_OPERATIONS_RUNBOOK.md) before traffic.
 - Accepted-object retention/lifecycle is environment policy. Quarantine receives a shorter cleanup policy, but never delete an object whose manifest is actively leased.
 - Initial recovery targets (RPO <= 5 minutes, RTO <= 60 minutes) are objectives until an environment drill records measured evidence.
