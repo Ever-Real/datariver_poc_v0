@@ -1,0 +1,99 @@
+{
+  "realm": "datariver",
+  "enabled": true,
+  "displayName": "DataRiver Local Development",
+  "sslRequired": "none",
+  "registrationAllowed": false,
+  "resetPasswordAllowed": true,
+  "rememberMe": false,
+  "bruteForceProtected": true,
+  "permanentLockout": false,
+  "failureFactor": 5,
+  "waitIncrementSeconds": 60,
+  "maxFailureWaitSeconds": 900,
+  "accessTokenLifespan": 300,
+  "ssoSessionIdleTimeout": 1800,
+  "ssoSessionMaxLifespan": 28800,
+  "clients": [
+    {
+      "clientId": "datariver-web",
+      "name": "DataRiver Web",
+      "enabled": true,
+      "publicClient": true,
+      "standardFlowEnabled": true,
+      "directAccessGrantsEnabled": false,
+      "implicitFlowEnabled": false,
+      "serviceAccountsEnabled": false,
+      "redirectUris": ["http://localhost:8080/*"],
+      "webOrigins": ["http://localhost:8080"],
+      "attributes": {
+        "pkce.code.challenge.method": "S256",
+        "post.logout.redirect.uris": "http://localhost:8080/*"
+      },
+      "protocolMappers": [
+        {
+          "name": "datariver-api-audience",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-audience-mapper",
+          "consentRequired": false,
+          "config": {
+            "included.client.audience": "datariver-api",
+            "id.token.claim": "false",
+            "access.token.claim": "true"
+          }
+        }
+      ],
+      "defaultClientScopes": ["web-origins", "acr", "profile", "email", "roles"]
+    },
+    {
+      "clientId": "datariver-airflow",
+      "name": "DataRiver Airflow Service",
+      "enabled": true,
+      "publicClient": false,
+      "secret": "__AIRFLOW_CLIENT_SECRET__",
+      "standardFlowEnabled": false,
+      "directAccessGrantsEnabled": false,
+      "implicitFlowEnabled": false,
+      "serviceAccountsEnabled": true,
+      "protocolMappers": [
+        {
+          "name": "datariver-api-audience",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-audience-mapper",
+          "consentRequired": false,
+          "config": {
+            "included.client.audience": "datariver-api",
+            "id.token.claim": "false",
+            "access.token.claim": "true"
+          }
+        }
+      ],
+      "defaultClientScopes": ["acr", "roles"]
+    }
+  ],
+  "users": [
+    {
+      "id": "00000000-0000-4000-8000-000000000001",
+      "username": "datariver-admin",
+      "firstName": "DataRiver",
+      "lastName": "Administrator",
+      "email": "datariver-admin@localhost.invalid",
+      "emailVerified": true,
+      "enabled": true,
+      "requiredActions": ["UPDATE_PASSWORD", "CONFIGURE_TOTP"],
+      "credentials": [
+        {
+          "type": "password",
+          "value": "__DEMO_PASSWORD__",
+          "temporary": true
+        }
+      ]
+    },
+    {
+      "id": "00000000-0000-4000-8000-000000000002",
+      "username": "service-account-datariver-airflow",
+      "enabled": true,
+      "serviceAccountClientId": "datariver-airflow"
+    }
+  ]
+}

@@ -1,0 +1,8 @@
+{
+  "period_count": 12,
+  "facility_observation_count": 72,
+  "product_demand_observation_count": 96,
+  "single_source_material_count": 3,
+  "maximum_equipment_lead_time_days": 435,
+  "observation_edge_count": 168
+}

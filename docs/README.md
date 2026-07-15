@@ -1,0 +1,31 @@
+# Controlled artifact index
+
+| ID | Artifact | Purpose | Status |
+|---|---|---|---|
+| 00 | [Project plan](00_PROJECT_PLAN.md) | scope, work breakdown, milestones, gates | Baseline |
+| 01 | [PRD](01_PRD.md) | users, outcomes, requirements, acceptance | Baseline |
+| 02 | [Constraints](02_CONSTRAINTS.md) | legal, security, platform, operational limits | Baseline |
+| 03 | [Architecture](03_ARCHITECTURE.md) | contexts, ownership, runtime and data flows | Baseline |
+| 04 | [Feature specification](04_FEATURE_SPEC.md) | behavior by module | Target + baseline |
+| 05 | [API specification](05_API_SPEC.md) | implemented HTTP contracts and backlog | Implemented baseline |
+| 06 | [Data model](06_DATA_MODEL.md) | implemented DDL and backlog schemas | Implemented baseline |
+| 07 | [Security and ABAC](07_SECURITY_ABAC.md) | threat model, policy and enforcement | Baseline |
+| 08 | [Deployment](08_DEPLOYMENT.md) | implemented profiles and production gates | Implemented baseline |
+| 09 | [Test strategy](09_TEST_STRATEGY.md) | automated, performance, security and recovery gates | Baseline |
+| 10 | [Semiconductor seed](10_SEMICONDUCTOR_SEED.md) | optional deep value-chain data pack | Implemented baseline |
+| 11 | [Legacy migration](11_LEGACY_MIGRATION.md) | compatibility, migration, retirement | Baseline |
+| 12 | [Acceptance report](12_ACCEPTANCE_REPORT.md) | executed evidence and known limitations | Development/integration accepted; production gates open |
+| 13 | [Operations runbook](13_OPERATIONS_RUNBOOK.md) | backup, restore, recovery and incident procedures | Baseline |
+| 14 | [Production hardening](14_PRODUCTION_HARDENING.md) | scale assumptions, P0-P3 disposition and decision gates | Active |
+
+Independent review records: [Data Architect](reviews/2026-07-14_DATA_ARCHITECT_REVIEW.md) and [Data Engineer/SRE](reviews/2026-07-14_DATA_ENGINEER_REVIEW.md).
+
+Architecture decisions are immutable records under `adr/`. Superseded artifacts remain in Git and link to their replacement; they are not silently overwritten.
+
+## Change control
+
+- Requirements use stable IDs (`FR-*`, `NFR-*`, `SEC-*`).
+- APIs use `/api/v1` until an incompatible contract requires a new major path.
+- Database change requires an Alembic migration and an update to the data model.
+- Architecture changes require an ADR.
+- A release requires links from the acceptance report to machine-generated evidence.

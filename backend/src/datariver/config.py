@@ -1,0 +1,164 @@
+from __future__ import annotations
+
+from functools import lru_cache
+from typing import Literal, Self
+from urllib.parse import urlsplit
+from uuid import UUID
+
+from pydantic import Field, HttpUrl, field_validator, model_validator
+from pydantic_settings import BaseSettings, SettingsConfigDict
+
+
+class Settings(BaseSettings):
+    model_config = SettingsConfigDict(
+        env_file=".env",
+        env_file_encoding="utf-8",
+        case_sensitive=False,
+        extra="ignore",
+        enable_decoding=False,
+    )
+
+    app_env: Literal["development", "test", "production"] = "development"
+    app_name: str = "DataRiver Next"
+    app_log_level: str = "INFO"
+    app_public_origin: HttpUrl = HttpUrl("http://localhost:8080")
+    app_cors_origins: tuple[str, ...] = ("http://localhost:8080",)
+    app_trusted_hosts: tuple[str, ...] = (
+        "localhost",
+        "127.0.0.1",
+        "api",
+    )
+
+    database_url: str
+    database_secret_ref: str
+    migration_database_url: str
+    migration_database_secret_ref: str
+    relay_database_url: str
+    relay_database_secret_ref: str
+    upload_database_url: str
+    upload_database_secret_ref: str
+    governance_database_url: str
+    governance_database_secret_ref: str
+    bootstrap_database_url: str
+    bootstrap_database_secret_ref: str
+    oidc_issuer: str
+    oidc_audience: str
+    oidc_jwks_url: str
+    oidc_allowed_algorithms: tuple[str, ...] = ("RS256", "ES256")
+
+    datahub_base_url: str
+    datahub_secret_ref: str
+    datahub_timeout_seconds: float = Field(default=10.0, ge=0.1, le=60)
+    datahub_max_concurrency: int = Field(default=20, ge=1, le=200)
+    datahub_queue_timeout_seconds: float = Field(default=2.0, ge=0.1, le=30)
+    datahub_circuit_failure_threshold: int = Field(default=5, ge=1, le=100)
+    datahub_circuit_open_seconds: float = Field(default=30.0, ge=1, le=300)
+    datahub_stale_ttl_seconds: int = Field(default=900, ge=30, le=86_400)
+
+    valkey_cache_url: str
+    valkey_queue_url: str
+    valkey_cache_secret_ref: str
+    valkey_queue_secret_ref: str
+    cache_default_ttl_seconds: int = Field(default=60, ge=1, le=3600)
+    cache_max_value_bytes: int = Field(default=1_048_576, ge=1024, le=1_048_576)
+    catalog_search_cache_ttl_seconds: int = Field(default=30, ge=1, le=300)
+    catalog_search_minimum_query_length: int = Field(default=2, ge=1, le=20)
+    worker_poll_seconds: float = Field(default=0.5, ge=0.1, le=10)
+    outbox_lease_seconds: int = Field(default=30, ge=5, le=300)
+    outbox_maximum_attempts: int = Field(default=20, ge=1, le=100)
+    event_retention_days: int = Field(default=30, ge=1, le=3650)
+    upload_lease_seconds: int = Field(default=120, ge=30, le=900)
+    upload_maximum_attempts: int = Field(default=8, ge=1, le=20)
+    upload_validation_lease_seconds: int = Field(default=300, ge=30, le=3600)
+    upload_validation_maximum_attempts: int = Field(default=4, ge=1, le=20)
+    governance_apply_lease_seconds: int = Field(default=120, ge=30, le=900)
+    governance_apply_maximum_attempts: int = Field(default=8, ge=1, le=20)
+    governance_worker_subject_id: UUID = UUID("00000000-0000-7000-8000-000000000001")
+
+    s3_endpoint_url: str
+    s3_public_endpoint_url: str
+    s3_region: str = "us-east-1"
+    s3_bucket_quarantine: str
+    s3_bucket_accepted: str
+    s3_access_key_file: str
+    s3_secret_key_file: str
+    presigned_url_ttl_seconds: int = Field(default=900, ge=60, le=900)
+
+    seed_profile: Literal["none", "semiconductor"] = "none"
+
+    @field_validator(
+        "app_cors_origins", "app_trusted_hosts", "oidc_allowed_algorithms", mode="before"
+    )
+    @classmethod
+    def parse_csv(cls, value: object) -> object:
+        if isinstance(value, str):
+            return tuple(part.strip() for part in value.split(",") if part.strip())
+        return value
+
+    @model_validator(mode="after")
+    def validate_security_posture(self) -> Self:
+        if "*" in self.app_cors_origins:
+            raise ValueError("Wildcard CORS origins are not permitted.")
+        if self.valkey_cache_url == self.valkey_queue_url:
+            raise ValueError("Cache and queue must use separate Valkey endpoints/databases.")
+        if self.datahub_stale_ttl_seconds < self.cache_default_ttl_seconds:
+            raise ValueError("The DataHub stale TTL cannot be shorter than the fresh cache TTL.")
+        credential_urls = {
+            "database_url": self.database_url,
+            "migration_database_url": self.migration_database_url,
+            "relay_database_url": self.relay_database_url,
+            "upload_database_url": self.upload_database_url,
+            "governance_database_url": self.governance_database_url,
+            "bootstrap_database_url": self.bootstrap_database_url,
+            "valkey_cache_url": self.valkey_cache_url,
+            "valkey_queue_url": self.valkey_queue_url,
+        }
+        embedded_passwords = [
+            name for name, url in credential_urls.items() if urlsplit(url).password is not None
+        ]
+        if embedded_passwords:
+            raise ValueError(
+                "Passwords must not be embedded in URLs: " + ", ".join(sorted(embedded_passwords))
+            )
+        references = {
+            "database": self.database_secret_ref,
+            "migration_database": self.migration_database_secret_ref,
+            "relay_database": self.relay_database_secret_ref,
+            "upload_database": self.upload_database_secret_ref,
+            "governance_database": self.governance_database_secret_ref,
+            "bootstrap_database": self.bootstrap_database_secret_ref,
+            "datahub": self.datahub_secret_ref,
+            "valkey_cache": self.valkey_cache_secret_ref,
+            "valkey_queue": self.valkey_queue_secret_ref,
+        }
+        invalid_references = [
+            name for name, reference in references.items() if not reference.startswith("file:")
+        ]
+        if invalid_references:
+            raise ValueError(
+                "This deployment supports file-mounted secret references only: "
+                + ", ".join(sorted(invalid_references))
+            )
+        if self.app_env == "production":
+            if any(value == "*" or value.startswith("*.") for value in self.app_trusted_hosts):
+                raise ValueError("Production trusted hosts cannot contain wildcards.")
+            external_urls = {
+                "app_public_origin": str(self.app_public_origin),
+                "oidc_issuer": self.oidc_issuer,
+                "oidc_jwks_url": self.oidc_jwks_url,
+                "datahub_base_url": self.datahub_base_url,
+                "s3_public_endpoint_url": self.s3_public_endpoint_url,
+            }
+            insecure = [
+                name for name, url in external_urls.items() if not url.startswith("https://")
+            ]
+            if insecure:
+                raise ValueError(f"Production requires HTTPS for: {', '.join(sorted(insecure))}.")
+            if self.seed_profile != "none":
+                raise ValueError("Seed profiles cannot be enabled in production mode.")
+        return self
+
+
+@lru_cache(maxsize=1)
+def get_settings() -> Settings:
+    return Settings()

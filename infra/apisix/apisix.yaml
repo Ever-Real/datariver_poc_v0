@@ -1,0 +1,85 @@
+routes:
+  - id: datariver-sharing-control-plane-v1
+    name: DataRiver release-pinned API sharing control plane
+    uri: /api/v1/api-products/*
+    priority: 100
+    methods: [GET, POST, OPTIONS]
+    plugins:
+      request-id:
+        header_name: X-Request-Id
+        include_in_response: true
+        algorithm: uuid
+      limit-count:
+        count: 300
+        time_window: 60
+        rejected_code: 429
+        rejected_msg: Too many sharing control-plane requests
+        key_type: var
+        key: remote_addr
+        policy: local
+      proxy-rewrite:
+        headers:
+          set:
+            X-Forwarded-Proto: $scheme
+    upstream:
+      type: roundrobin
+      scheme: http
+      nodes:
+        "api:8000": 1
+      timeout:
+        connect: 3
+        send: 30
+        read: 30
+      checks:
+        active:
+          type: http
+          http_path: /api/v1/health/live
+          healthy:
+            interval: 5
+            successes: 2
+          unhealthy:
+            interval: 2
+            http_failures: 3
+
+  - id: datariver-api-v1
+    name: DataRiver governed API v1
+    uri: /api/v1/*
+    methods: [GET, POST, PATCH, DELETE, OPTIONS]
+    plugins:
+      request-id:
+        header_name: X-Request-Id
+        include_in_response: true
+        algorithm: uuid
+      limit-count:
+        count: 120
+        time_window: 60
+        rejected_code: 429
+        rejected_msg: Too many requests
+        key_type: var
+        key: remote_addr
+        policy: local
+      proxy-rewrite:
+        headers:
+          set:
+            X-Forwarded-Proto: $scheme
+    upstream:
+      type: roundrobin
+      scheme: http
+      nodes:
+        "api:8000": 1
+      timeout:
+        connect: 3
+        send: 30
+        read: 30
+      checks:
+        active:
+          type: http
+          http_path: /api/v1/health/live
+          healthy:
+            interval: 5
+            successes: 2
+          unhealthy:
+            interval: 2
+            http_failures: 3
+
+#END

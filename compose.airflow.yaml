@@ -1,0 +1,111 @@
+x-airflow-common: &airflow-common
+  image: datariver-airflow:3.3.0-python3.12
+  build:
+    context: .
+    dockerfile: infra/airflow/Dockerfile
+  entrypoint: ["/bin/bash", "/opt/datariver/airflow-entrypoint.sh"]
+  environment: &airflow-environment
+    AIRFLOW__CORE__EXECUTOR: LocalExecutor
+    AIRFLOW__CORE__LOAD_EXAMPLES: "false"
+    AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION: "true"
+    AIRFLOW__CORE__ENABLE_XCOM_PICKLING: "false"
+    AIRFLOW__CORE__EXPOSE_CONFIG: "false"
+    AIRFLOW__CORE__PARALLELISM: "4"
+    AIRFLOW__CORE__MAX_ACTIVE_TASKS_PER_DAG: "4"
+    AIRFLOW__DAG_PROCESSOR__PARSING_PROCESSES: "2"
+    AIRFLOW__CORE__SIMPLE_AUTH_MANAGER_USERS: datariver-operator:admin
+    AIRFLOW__CORE__SIMPLE_AUTH_MANAGER_PASSWORDS_FILE: /opt/airflow/auth/passwords.json
+    AIRFLOW__SCHEDULER__ENABLE_HEALTH_CHECK: "true"
+    DATARIVER_WORKSPACE_ID: ${AIRFLOW_WORKSPACE_ID:-00000000-0000-4000-8000-000000000100}
+    DATARIVER_OIDC_TOKEN_URL: http://keycloak:8080/realms/datariver/protocol/openid-connect/token
+    DATARIVER_OIDC_CLIENT_ID: datariver-airflow
+    DATARIVER_OIDC_CLIENT_SECRET_FILE: /run/secrets/airflow_client_secret
+  secrets:
+    - airflow_db_password
+    - airflow_client_secret
+    - airflow_api_secret
+    - airflow_admin_password
+  volumes:
+    - ./infra/airflow/entrypoint.sh:/opt/datariver/airflow-entrypoint.sh:ro
+    - ./infra/airflow/dags:/opt/airflow/dags:ro
+    - airflow-logs:/opt/airflow/logs
+    - airflow-auth:/opt/airflow/auth
+  networks:
+    - app
+    - data
+  user: "50000:0"
+  security_opt:
+    - no-new-privileges:true
+
+services:
+  airflow-init:
+    <<: *airflow-common
+    command: ["db", "migrate"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"
+
+  airflow-api-server:
+    <<: *airflow-common
+    command: ["api-server"]
+    depends_on:
+      airflow-init:
+        condition: service_completed_successfully
+    ports:
+      - "127.0.0.1:${AIRFLOW_PORT:-8082}:8080"
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "http://localhost:8080/api/v2/monitor/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+      # Cold starts on modest developer hosts can spend ~50 seconds importing
+      # providers and initializing the FastAPI application.
+      start_period: 90s
+    restart: unless-stopped
+    mem_limit: 768m
+    cpus: 0.75
+
+  airflow-scheduler:
+    <<: *airflow-common
+    command: ["scheduler"]
+    depends_on:
+      airflow-init:
+        condition: service_completed_successfully
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "/bin/bash /opt/datariver/airflow-entrypoint.sh jobs check --job-type SchedulerJob --hostname \"$${HOSTNAME}\"",
+        ]
+      interval: 30s
+      timeout: 30s
+      retries: 10
+      start_period: 30s
+    restart: unless-stopped
+    mem_limit: 768m
+    cpus: 0.75
+
+  airflow-dag-processor:
+    <<: *airflow-common
+    command: ["dag-processor"]
+    depends_on:
+      airflow-init:
+        condition: service_completed_successfully
+    restart: unless-stopped
+    mem_limit: 512m
+    cpus: 0.5
+
+  airflow-triggerer:
+    <<: *airflow-common
+    command: ["triggerer"]
+    depends_on:
+      airflow-init:
+        condition: service_completed_successfully
+    restart: unless-stopped
+    mem_limit: 384m
+    cpus: 0.5
+
+volumes:
+  airflow-logs:
+  airflow-auth:

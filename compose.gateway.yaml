@@ -1,0 +1,40 @@
+services:
+  apisix:
+    image: datariver-apisix:3.17.0-debian
+    build:
+      context: ./infra/apisix
+    volumes:
+      - ./infra/apisix/config.yaml:/opt/datariver/apisix/config.yaml:ro
+      - ./infra/apisix/apisix.yaml:/opt/datariver/apisix/apisix.yaml:ro
+    depends_on:
+      api:
+        condition: service_healthy
+    networks:
+      - app
+    ports:
+      - "127.0.0.1:${APISIX_PORT:-9080}:9080"
+    healthcheck:
+      test: ["CMD", "/usr/local/bin/datariver-apisix-healthcheck"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 15s
+    restart: unless-stopped
+    mem_limit: 512m
+    cpus: 0.75
+    read_only: true
+    tmpfs:
+      - /usr/local/apisix/conf:size=16m,noexec,nosuid,mode=0770,uid=636,gid=636
+      - /usr/local/apisix/logs:size=32m,noexec,nosuid,mode=0770,uid=636,gid=636
+      - /usr/local/apisix/client_body_temp:size=32m,noexec,nosuid,mode=0770,uid=636,gid=636
+      - /usr/local/apisix/proxy_temp:size=32m,noexec,nosuid,mode=0770,uid=636,gid=636
+      - /usr/local/apisix/fastcgi_temp:size=8m,noexec,nosuid,mode=0770,uid=636,gid=636
+      - /usr/local/apisix/uwsgi_temp:size=8m,noexec,nosuid,mode=0770,uid=636,gid=636
+      - /usr/local/apisix/scgi_temp:size=8m,noexec,nosuid,mode=0770,uid=636,gid=636
+      - /tmp:size=32m,noexec,nosuid,mode=1777
+    ulimits:
+      nofile:
+        soft: 65536
+        hard: 65536
+    security_opt:
+      - no-new-privileges:true

@@ -1,0 +1,150 @@
+name: ci
+
+on:
+  push:
+    branches: [main, "codex/**"]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  backend:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          version: "0.9.17"
+          enable-cache: true
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: uv sync --frozen --all-extras
+      - name: Audit Python runtime dependencies
+        run: |
+          uv export --quiet --frozen --no-dev --no-emit-project --format requirements-txt --output-file /tmp/datariver-runtime.txt
+          uvx --from pip-audit==2.10.0 pip-audit --requirement /tmp/datariver-runtime.txt --disable-pip --progress-spinner off
+      - run: uv run ruff format --check backend/src backend/tests infra/airflow/dags
+      - run: uv run ruff check backend/src backend/tests infra/airflow/dags scripts/generate_initial_migration.py scripts/verify_static.py
+      - run: uv run mypy backend/src backend/tests
+      - run: uv run pytest backend/tests -q
+      - run: uv run python scripts/verify_static.py
+      - run: uv run python -m compileall -q backend/src infra/airflow/dags
+      - name: Verify generated initial migration is current
+        run: |
+          uv run python scripts/generate_initial_migration.py
+          git diff --exit-code -- backend/alembic/versions/0001_initial_schema.py
+
+  frontend:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22.19.0"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - run: npm ci
+      - run: npm audit --audit-level=high
+      - run: npm run typecheck
+      - run: npm run lint
+      - run: npm run test -- --run
+      - run: npm run build
+
+  infrastructure:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: Generate ignored local-only configuration
+        run: bash scripts/bootstrap.sh local-ci-placeholder-token
+      - name: Validate shell entrypoints
+        run: |
+          sh -n scripts/bootstrap.sh infra/postgres/init/010_roles.sh infra/airflow/entrypoint.sh \
+            infra/apisix/docker-entrypoint.sh frontend/docker-entrypoint.sh
+          bash -n infra/apisix/healthcheck.sh
+      - name: Validate Compose profiles
+        run: |
+          docker compose -f compose.yaml config --quiet
+          docker compose -f compose.yaml -f compose.identity.yaml config --quiet
+          docker compose -f compose.yaml -f compose.airflow.yaml config --quiet
+          docker compose -f compose.yaml -f compose.gateway.yaml config --quiet
+
+  supply-chain:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build release-equivalent images
+        run: |
+          docker build --file backend/Dockerfile --tag datariver-backend:${{ github.sha }} .
+          docker build --file frontend/Dockerfile --tag datariver-frontend:${{ github.sha }} \
+            --build-arg VITE_OIDC_AUTHORITY=https://identity.invalid/realms/datariver \
+            --build-arg VITE_OIDC_REDIRECT_URI=http://localhost:8080/auth/callback .
+      - name: Smoke-test runtime-only backend imports
+        run: |
+          docker run --rm --entrypoint /app/.venv/bin/python datariver-backend:${{ github.sha }} \
+            -c "import datariver.infrastructure.object_store.s3; import datariver.workers.storage_init; from datariver.seed.semiconductor import build_pack, seed_root; assert len(build_pack().snapshot.nodes) == 257; assert (seed_root() / 'semiconductor' / 'ontology.json').is_file()"
+      - name: Scan repository dependencies, secrets, and IaC
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          version: v0.70.0
+          scan-type: fs
+          scan-ref: .
+          scanners: vuln,secret,misconfig
+          severity: HIGH,CRITICAL
+          ignore-unfixed: true
+          exit-code: 1
+      - name: Scan backend image
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          skip-setup-trivy: true
+          image-ref: datariver-backend:${{ github.sha }}
+          vuln-type: os,library
+          severity: HIGH,CRITICAL
+          ignore-unfixed: true
+          exit-code: 1
+      - name: Scan frontend image
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          skip-setup-trivy: true
+          image-ref: datariver-frontend:${{ github.sha }}
+          vuln-type: os,library
+          severity: HIGH,CRITICAL
+          ignore-unfixed: true
+          exit-code: 1
+      - name: Generate backend CycloneDX SBOM
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          skip-setup-trivy: true
+          image-ref: datariver-backend:${{ github.sha }}
+          format: cyclonedx
+          output: sbom-backend.cdx.json
+          exit-code: 0
+      - name: Generate frontend CycloneDX SBOM
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          skip-setup-trivy: true
+          image-ref: datariver-frontend:${{ github.sha }}
+          format: cyclonedx
+          output: sbom-frontend.cdx.json
+          exit-code: 0
+      - name: Retain SBOMs
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: cyclonedx-sboms-${{ github.sha }}
+          path: |
+            sbom-backend.cdx.json
+            sbom-frontend.cdx.json
+          if-no-files-found: error

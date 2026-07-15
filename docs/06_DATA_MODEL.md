@@ -1,0 +1,108 @@
+# Data and table specification
+
+The SQLAlchemy metadata and generated `backend/alembic/versions/0001_initial_schema.py` are authoritative for implemented DDL. This document separates implemented tables from target/backlog tables.
+
+## Standards
+
+- Application-generated UUIDs (normally UUIDv7) and UTC `TIMESTAMPTZ`.
+- Every protected row has `workspace_id`; mutable aggregates have integer `version`.
+- PostgreSQL RLS is enabled and forced on every workspace table. API sets `app.workspace_id` and `app.subject_id` per transaction. Relay, upload and governance BYPASSRLS identities are separate and receive only the tables needed by their background responsibility.
+- Every parent/child relationship between tenant tables carries `workspace_id` in a composite foreign key; application filtering is not the only tenant-integrity guard.
+- Security selectors such as classification/system/domain/owner are typed columns. JSONB stores non-security documents/extensions.
+- Passwords/tokens never have application columns; connections use mounted secret references.
+- Outbox, approvals, transitions, decisions, releases and citations are append-only to ordinary application roles.
+
+## Implemented schemas and tables
+
+### Platform, identity and authorization
+
+| Table | Key columns and constraints | Purpose |
+|---|---|---|
+| `platform.workspaces` | `id`, `slug UQ`, `name`, `status`, `settings`, `version`, timestamps | tenant boundary |
+| `iam.subjects` | `id`, `issuer + external_subject UQ`, `display_name`, `active`, timestamps | external IdP mapping; no credential |
+| `iam.workspace_memberships` | PK `workspace_id + subject_id`, `department_id`, `job_function`, `clearance`, `attributes`, `active` | ABAC subject attributes/grants |
+| `authz.resources` | `workspace_id + resource_type + resource_key UQ`, scope/classification/lifecycle columns, `attributes`, `version` | durable resource attribute registry |
+| `authz.policy_decisions` | `id`, `workspace_id`, `subject_id`, `resource_id`, `action`, `effect`, reason/policy JSON, grouped `evaluation_context`, `request_id`, `decided_at` | immutable allow/deny/system-worker or bounded resource-set evidence |
+
+The active baseline policy is code-versioned (`builtin-abac-v1`); database-authored policy/version/binding tables are backlog for the future OPA adapter.
+
+### Catalog projection
+
+| Table | Key columns and constraints | Purpose |
+|---|---|---|
+| `catalog.assets_projection` | `id`, `workspace_id + urn_hash UQ`, external identity/scope/classification/lifecycle, stored `search_vector`, source version/owner, `last_seen_sync_id`, observed/deleted times | authorized search/base-detail projection; DataHub remains canonical |
+| `catalog.sync_runs` | PK workspace/sync, state/next offset/start/heartbeat/completion | single-writer ordered full reconciliation and stale-run recovery |
+
+Projection page idempotency is recorded in `integration.idempotency_keys`. Final-page reconciliation tombstones missing `DATAHUB` rows and never seed-owned rows. Active rows have a workspace/scope/order partial index, GIN full-text index and `pg_trgm` name index. Relationship/facet projections remain backlog.
+
+### Governance
+
+| Table | Key columns and constraints | Purpose |
+|---|---|---|
+| `governance.change_requests` | `id`, `workspace_id + number UQ`, type/title/description/state/requester/classification, `version`, timestamps | change aggregate/state machine |
+| `governance.change_request_items` | `id`, `change_request_id + ordinal UQ`, `target_type`, `target_ref`, `aspect_name`, `operation`, before/after hashes, `after_document` | ordered typed DataHub aspects |
+| `governance.approvals` | `id`, `change_request_id + stage + actor_id UQ`, decision/reason/actor/policy/time | append-only actor-separated decisions |
+| `governance.state_transitions` | `id`, request, from/to, actor, reason, policy decision, occurrence | append-only state history |
+
+### Integration, jobs and objects
+
+| Table | Key columns and constraints | Purpose |
+|---|---|---|
+| `integration.jobs` | `id`, `job_type + causation_id UQ`, workspace/state/requester/progress/result, `lease_until`, `attempts`, `last_error_code`, `version`, timestamps | durable external-side-effect job |
+| `integration.job_attempts` | `id`, `job_id + attempt_no UQ`, worker/state/error/external hash/start/finish | worker attempt evidence |
+| `integration.outbox_events` | event PK, workspace/aggregate/type/schema/payload/time, publish/dead-letter/lease/attempt/error | transactional event recovery source and isolated poison-event evidence |
+| `integration.inbox_messages` | PK `consumer + event_id`, workspace/received/completed/result hash | consumer deduplication |
+| `integration.idempotency_keys` | PK `workspace + operation + key_hash`, request hash/result/expiry | HTTP/command replay control |
+| `integration.object_manifests` | `id`, `bucket + object_key UQ`, declared/actual size-MIME-SHA, multipart/parts, state/classification/owner, completion/validation attempts, lease/error/summary, expiry/retention, `version`, timestamps | quarantine-to-accepted lifecycle |
+| `integration.seed_runs` | `id`, `workspace + namespace + pack_version UQ`, content hash/state/counts/apply/remove time | optional pack ownership/audit |
+
+### Knowledge graph
+
+| Table | Key columns and constraints | Purpose |
+|---|---|---|
+| `knowledge.graphs` | `id`, `workspace + slug UQ`, name/type/status/classification/active release, `version`, timestamps | graph aggregate and active pointer |
+| `knowledge.ontology_versions` | `id`, graph/version/schema/checksum/status, timestamps | typed ontology versions |
+| `knowledge.changesets` | `id`, graph/base release/ontology/title/state/author/reviewer/published release, `version`, timestamps | incremental author/review/publish aggregate |
+| `knowledge.change_operations` | `id`, `changeset_id + sequence UQ`, operation/kind/stable ID/document/provenance/confidence | ordered typed node/edge edits |
+| `knowledge.validation_results` | `id`, changeset/validator/version/severity/code/location/message/time | persisted submission validation evidence |
+| `knowledge.releases` | `id`, `graph_id + release_no UQ`, ontology/content hash/counts/publisher/time | immutable release manifest |
+| `knowledge.release_nodes` | composite release/entity identity, type/properties/classification/provenance | immutable assertion snapshot |
+| `knowledge.release_edges` | composite release/edge identity, endpoints/type/properties/classification/provenance | immutable relationship snapshot |
+| `knowledge.projection_deployments` | `id`, release/adapter/target/state/hash/counts/timestamps | optional projection deployment evidence (DDL present) |
+
+The API supports both complete snapshot publication and changeset author/submit/independent-review/publish. Automated source extraction and projection deployment workers remain extension work.
+
+### API sharing
+
+| Table | Key columns and constraints | Purpose |
+|---|---|---|
+| `sharing.api_products` | workspace/slug UQ, graph/classification/owner/state/current version, optimistic version | stable managed product identity |
+| `sharing.api_product_versions` | workspace/product/version UQ, graph/release composite FK, surface/contract/bounds/state/publisher | immutable release-pinned contract version |
+| `sharing.consumer_grants` | product version/client UQ, scopes/classification/RPM/month quota/validity/state/revocation, version | credential-reference-only consumer entitlement |
+| `sharing.api_invocations` | grant/idempotency key UQ, scope/request/time/units | immutable usage and quota ledger |
+
+### Assistant
+
+| Table | Key columns and constraints | Purpose |
+|---|---|---|
+| `assistant.chat_sessions` | `id`, workspace/owner/title/scope/retention, `version`, timestamps | owner-scoped session |
+| `assistant.chat_messages` | `id`, workspace/session/actor/content/created time | append-only messages |
+| `assistant.assistant_runs` | `id`, workspace/session/request message/provider/model/template/policy/state/metrics/timestamps | answer execution audit |
+| `assistant.evidence_citations` | `id`, workspace/run/resource/type/locator/version/excerpt hash/rank | source-versioned authorized evidence |
+
+## Constraints enforced outside DDL
+
+- Domain code owns legal change/upload/graph transitions and optimistic-version checks.
+- Confidential/restricted apply requires two distinct final approvers; requester final approval is denied.
+- `APPLIED` requires aggregate expected/observed hash equality after DataHub re-read.
+- Graph release publication validates ontology, endpoints, classification and non-empty provenance before insert.
+- Object acceptance requires full streamed SHA-256/size equality and format policy before canonical bucket switch.
+- Search and snapshot queries prefilter classification and scope before enrichment/serialization.
+
+## Backlog schema (not implemented)
+
+Versioned authored policies/bindings, catalog relationships/facets, connection registry, governance attachments/general audit export, graph sources/extraction runs, saved-query templates beyond the built-in surfaces and embedding partitions remain target tables. They require an Alembic revision and updated API/retention/security tests; their mention in PRD/architecture is not permission to create ad-hoc columns.
+
+## Retention and deletion
+
+Environment policy distinguishes legal audit, Chat, jobs, accepted data, quarantine and telemetry. Object deletion follows manifest state through a retryable erasure workflow. Immutable audit/release evidence is pseudonymized where legally allowed rather than edited. Seed removal is fixed namespace/run scoped and cannot match non-seed resources.

@@ -1,0 +1,20 @@
+apisix:
+  node_listen:
+    - port: 9080
+  enable_admin: false
+  enable_control: false
+  show_upstream_status_in_response_header: false
+
+deployment:
+  role: data_plane
+  role_data_plane:
+    config_provider: yaml
+
+nginx_config:
+  error_log_level: warn
+  worker_processes: auto
+  event:
+    worker_connections: 1024
+  http:
+    access_log: /dev/stdout
+    keepalive_timeout: 30s

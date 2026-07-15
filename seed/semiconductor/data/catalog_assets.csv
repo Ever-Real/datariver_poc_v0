@@ -1,0 +1,13 @@
+key,name,description,platform,classification
+facility_capacity,Facility Capacity Monthly,Synthetic wafer-start capacity and utilization by facility and month,postgres,1
+process_reference,Process Reference,Synthetic process-step sequence equipment and material requirements,postgres,0
+material_supply,Material Supply Exposure,Synthetic material supplier region lead-time and qualification coverage,postgres,1
+equipment_installed_base,Equipment Installed Base,Synthetic equipment family installed base and maintenance exposure,postgres,1
+wafer_yield,Wafer Yield Observations,Synthetic die yield defect density and excursion observations by process,postgres,2
+osat_capacity,OSAT Capacity Monthly,Synthetic assembly packaging and final-test capacity by facility,postgres,1
+trade_flow,Semiconductor Trade Flow,Synthetic regional shipment lead-time and inventory movement,postgres,1
+product_dependency,Product Dependency Matrix,Synthetic product to process material and equipment dependencies,postgres,2
+risk_events,Supply Risk Events,Synthetic disruption regulatory and logistics risk events,postgres,1
+supply_exposure_monthly,Supply Exposure Monthly,Curated synthetic concentration and single-source exposure mart,duckdb,2
+bottleneck_metrics,Bottleneck Metrics,Curated synthetic HHI lead-time and capacity shock metrics,duckdb,2
+value_chain_graph,Value Chain Graph Release,Immutable synthetic semiconductor knowledge-graph release,postgres,1

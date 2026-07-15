@@ -1,0 +1,18 @@
+[
+  {
+    "id": "single-source-dependencies",
+    "description": "Products whose dependency path reaches one qualified material source within three hops."
+  },
+  {
+    "id": "capacity-shock-propagation",
+    "description": "Downstream products and stages affected by a synthetic facility capacity shock."
+  },
+  {
+    "id": "equipment-material-bottlenecks",
+    "description": "Process steps jointly dependent on constrained equipment and materials."
+  },
+  {
+    "id": "regional-risk-exposure",
+    "description": "Facilities, stages and products reachable from each regional risk factor."
+  }
+]

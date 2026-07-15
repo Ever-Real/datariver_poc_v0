@@ -1,0 +1,18 @@
+namespace: datariver.seed.semiconductor
+pack_version: 1.0.0
+schema_version: 1.0.0
+ontology_version: 1.0.0
+license: Apache-2.0
+is_synthetic: true
+default_install: false
+description: Deterministic synthetic semiconductor value-chain analysis pack.
+expected:
+  catalog_assets: 12
+  graph_nodes: 257
+  graph_edges: 279
+provenance:
+  source_ref: seed:semiconductor:v1
+  source_locator: seed/semiconductor/manifest.yaml
+  source_version: 1.0.0
+  method: SYNTHETIC_TEMPLATE
+  confidence: 1.0

@@ -1,0 +1,28 @@
+{
+  "entity_types": [
+    "ValueChainStage",
+    "Company",
+    "Facility",
+    "Material",
+    "EquipmentFamily",
+    "ProcessStep",
+    "Product",
+    "RiskFactor",
+    "Dataset",
+    "MetricObservation"
+  ],
+  "edge_types": [
+    "FLOWS_TO",
+    "PARTICIPATES_IN",
+    "OPERATES",
+    "SUPPLIES_TO",
+    "ENABLES",
+    "PRECEDES",
+    "USES",
+    "PRODUCES",
+    "AFFECTS",
+    "DESCRIBES",
+    "DEPENDS_ON",
+    "OBSERVES"
+  ]
+}

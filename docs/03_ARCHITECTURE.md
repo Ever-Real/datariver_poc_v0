@@ -1,0 +1,142 @@
+# Architecture definition
+
+## Architectural style
+
+The first production shape is a modular monolith with independent API, worker, outbox relay, and scheduler processes. Modules communicate through application ports and durable domain events, never by writing another module's tables. This is a deliberate precursor to MSA: extraction is possible without accepting distributed-system cost before boundaries and load are proven.
+
+Code dependencies point inward:
+
+```text
+interfaces/http ─┐
+workers/cli ─────┼─> application/use_cases ─> domain
+infrastructure ──┘             │
+                              └─> application/ports <─ infrastructure adapters
+```
+
+The domain imports no FastAPI, SQLAlchemy, Valkey, DataHub, object-storage, graph, or LLM SDK. An architecture test enforces this rule.
+
+## Runtime view
+
+```mermaid
+flowchart LR
+    U["Browser / API consumer"] --> G["API gateway profile"]
+    G --> A["DataRiver API"]
+    A --> P["PostgreSQL canonical state"]
+    A --> VC["Valkey cache"]
+    A --> O["S3-compatible object storage"]
+    A --> D["External DataHub read facade"]
+    A --> L["Approved LLM provider"]
+    A --> Z["ABAC policy decision"]
+    P --> R["Outbox relay"]
+    R --> VQ["Valkey job delivery"]
+    VQ --> W["Integration / KG workers"]
+    W --> D
+    W --> O
+    W --> GP["Rebuildable graph projection"]
+    AF["Airflow scheduled and bulk workflows"] --> A
+    A --> OT["OpenTelemetry"]
+    W --> OT
+```
+
+Only the gateway/UI ports are public. PostgreSQL, Valkey, object storage, OPA, DataHub credentials, graph protocols, and telemetry backends stay on private networks.
+
+## Bounded contexts
+
+| Context | Responsibility | Canonical data |
+|---|---|---|
+| Platform & Identity | workspaces and external IdP-subject mapping | workspace, subject reference, membership |
+| Authorization | ABAC resources, policies, bindings and decision evidence | policy and decision log |
+| Catalog Facade | authorized index plus DataHub search/detail/lineage projection | projection/cursor; applied metadata remains in DataHub |
+| Governance | registration and change-request aggregate/state machine | requests, approvals, transitions, audit |
+| Integration | connections, job intents, outbox/inbox, retry/DLQ/reconcile | durable job and delivery state |
+| Knowledge Studio | ontology, proposals, changesets, validation and releases | immutable graph releases/provenance |
+| Assistant | sessions, messages, runs and authorized evidence | chat audit/evidence metadata |
+| Sharing | release-pinned API products, contracts, grants and usage | sharing control plane |
+| Operations | capability health and operator actions | connection/job snapshots, not raw telemetry |
+
+The API gateway is a deployment boundary, not an authorization context. It validates identity and coarse quotas; each use case resolves resource attributes and performs ABAC again.
+
+## Canonical ownership rules
+
+- DataHub owns metadata after successful application. DataRiver stores a minimal authorized projection and sync watermark.
+- DataRiver PostgreSQL owns intent, approvals, job state, graph release manifests, policy and audit.
+- Graph projection data is disposable. Publishing first creates an immutable PostgreSQL/object snapshot, loads a shadow projection, verifies it, then switches the active pointer.
+- Valkey owns nothing durable. Cache loss changes latency, not correctness. Queue loss is recovered from the PostgreSQL outbox.
+- Airflow task status is operational evidence, never the business job status.
+- External identifiers such as DataHub URNs map to internal UUIDs and are never primary keys.
+
+## Change application sequence
+
+```mermaid
+sequenceDiagram
+    participant UI
+    participant API
+    participant DB as PostgreSQL
+    participant Relay
+    participant Worker
+    participant DH as DataHub
+    UI->>API: approve request (Idempotency-Key)
+    API->>DB: transition APPLY_QUEUED + outbox, one transaction
+    API-->>UI: 202 + job URI
+    Relay->>DB: lease unpublished outbox
+    Relay->>Worker: publish event id only
+    Worker->>DB: inbox dedupe + APPLYING
+    Worker->>DH: typed MCP/aspect update
+    Worker->>DH: re-read affected aspect
+    Worker->>DB: compare hash, record attempt
+    alt reconciled
+        Worker->>DB: APPLIED + audit + projection event
+    else mismatch or dependency failure
+        Worker->>DB: APPLY_FAILED/retryable + evidence
+    end
+```
+
+The worker may receive a message more than once. Inbox uniqueness and operation-specific idempotency make the business effect repeat-safe.
+
+## Knowledge-graph lifecycle
+
+```text
+source snapshot
+→ parsing/extraction run
+→ entity resolution
+→ proposal operations
+→ draft changeset
+→ ontology/provenance/ABAC validation
+→ independent review
+→ immutable release
+→ shadow projection
+→ count/hash/golden-query verification
+→ active pointer switch
+```
+
+Graph types are `CATALOG_MIRROR`, `CURATED_KNOWLEDGE`, and `ANALYTIC_PRODUCT`. Ontology versions and content releases are independent. Every assertion includes source locator, extraction/model/prompt version where applicable, confidence, effective time, and security attributes.
+
+## Search and Chat authorization
+
+Filtering a DataHub page after retrieval leaks counts, pagination, and asset existence. A local `catalog.assets_projection` therefore stores searchable/base-detail metadata and security attributes. The API calculates the permitted asset set before DataHub enrichment. Literal search is normalized/escaped and backed by FTS/trigram/active-scope indexes. Search cache keys bind workspace, permission scope, policy version and projection watermark. Chat uses the same permitted set before retrieval; candidate decisions are grouped into request-level audit evidence, and citations include version and source locator.
+
+## Valkey topology
+
+| Instance | Persistence | Eviction | Content |
+|---|---|---|---|
+| `valkey-cache` | none | `allkeys-lfu` | bounded TTL search/detail/policy-derived results |
+| `valkey-queue` | AOF every second | `noeviction` | job IDs and delivery metadata only |
+
+Cache keys include workspace, permission-scope hash, policy version, request parameters and DataHub watermark. Tokens, credentials, presigned URLs, full uploads, canonical job state and confidential prompts are prohibited.
+
+## Degradation model
+
+| Dependency failure | Expected behavior |
+|---|---|
+| DataHub | concurrency bulkhead/circuit breaker; authorized local base detail or explicitly bounded stale enrichment, otherwise 503; queued changes retained and never marked applied |
+| cache Valkey | direct authorized DB/DataHub path; higher latency |
+| queue Valkey | outbox accumulates and relay retries; writes remain durable |
+| graph projection | catalog remains available; graph Chat/analytics clearly degraded |
+| LLM | evidence search remains; answer generation 503; no graph mutation |
+| Airflow | scheduled/bulk jobs delayed; synchronous core unaffected |
+| object storage | upload/download unavailable; metadata/workflow state retained |
+| policy service | sensitive reads and all writes fail closed; public health remains available |
+
+## Service extraction criteria
+
+A context becomes a separate service only when it has an independent owner, demonstrably different scale/availability need, stable versioned events, no cross-context database writes, and an operational budget for deployment/on-call/data migration. Likely first candidates are Integration Worker, Assistant inference, and graph projection—not identity or governance aggregates.
