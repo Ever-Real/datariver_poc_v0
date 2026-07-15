@@ -17,6 +17,7 @@ from datariver.application.errors import ExternalDependencyError
 from datariver.application.ports import (
     Cache,
     CatalogIndexReader,
+    CatalogTelemetry,
     CatalogWatermarkReader,
     DataHubGateway,
 )
@@ -45,6 +46,7 @@ class CatalogService:
         search_cache_ttl_seconds: int,
         minimum_query_length: int,
         policy_version: str,
+        telemetry: CatalogTelemetry | None = None,
     ) -> None:
         self._index = index
         self._watermark = watermark
@@ -56,6 +58,7 @@ class CatalogService:
         self._search_cache_ttl_seconds = search_cache_ttl_seconds
         self._minimum_query_length = minimum_query_length
         self._policy_version = policy_version
+        self._telemetry = telemetry
 
     async def search(
         self,
@@ -104,10 +107,13 @@ class CatalogService:
         try:
             cached = await self._cache.get_json(cache_key)
         except Exception:
-            cached = None
-        cached_page = self._cached_page(cached)
-        if cached_page is not None:
-            return cached_page
+            self._cache_access(cache="search", outcome="error")
+        else:
+            cached_page = self._cached_page(cached)
+            if cached_page is not None:
+                self._cache_access(cache="search", outcome="hit")
+                return cached_page
+            self._cache_access(cache="search", outcome="miss")
         page = await self._index.search(
             subject=subject,
             query=normalized_query,
@@ -122,7 +128,9 @@ class CatalogService:
                 ttl_seconds=self._search_cache_ttl_seconds,
             )
         except Exception:
+            self._cache_access(cache="search_write", outcome="error")
             return page
+        self._cache_access(cache="search_write", outcome="success")
         return page
 
     async def get_asset(
@@ -166,10 +174,14 @@ class CatalogService:
         try:
             cached = await self._cache.get_json(fresh_cache_key)
         except Exception:
-            cached = None
-        cached_enrichment = self._cached_enrichment(cached)
-        if cached_enrichment is not None:
-            return self._detail(authorized, cached_enrichment)
+            self._cache_access(cache="detail_fresh", outcome="error")
+        else:
+            cached_enrichment = self._cached_enrichment(cached)
+            if cached_enrichment is not None:
+                self._cache_access(cache="detail_fresh", outcome="hit")
+                self._detail_source(source="fresh_cache")
+                return self._detail(authorized, cached_enrichment)
+            self._cache_access(cache="detail_fresh", outcome="miss")
         try:
             remote_enrichment = await self._datahub.get_asset(authorized.index.external_urn)
         except ExternalDependencyError as error:
@@ -178,19 +190,24 @@ class CatalogService:
             try:
                 stale_cached = await self._cache.get_json(stale_cache_key)
             except Exception:
-                stale_cached = None
-            stale_enrichment = self._cached_enrichment(stale_cached)
-            if stale_enrichment is not None:
-                fresh_until = self._cached_fresh_until(stale_cached)
-                stale_at = (
-                    min(fresh_until, datetime.now(UTC))
-                    if fresh_until is not None
-                    else stale_enrichment.observed_at
-                )
-                return self._detail(authorized, stale_enrichment, stale_at=stale_at)
+                self._cache_access(cache="detail_stale", outcome="error")
+            else:
+                stale_enrichment = self._cached_enrichment(stale_cached)
+                if stale_enrichment is not None:
+                    self._cache_access(cache="detail_stale", outcome="hit")
+                    self._detail_source(source="stale_cache")
+                    fresh_until = self._cached_fresh_until(stale_cached)
+                    stale_at = (
+                        min(fresh_until, datetime.now(UTC))
+                        if fresh_until is not None
+                        else stale_enrichment.observed_at
+                    )
+                    return self._detail(authorized, stale_enrichment, stale_at=stale_at)
+                self._cache_access(cache="detail_stale", outcome="miss")
             if datetime.now(UTC) - authorized.index.observed_at <= timedelta(
                 seconds=self._stale_detail_ttl_seconds
             ):
+                self._detail_source(source="local_projection")
                 return CatalogAssetDetail(
                     index=authorized.index,
                     ownership=authorized.ownership,
@@ -203,6 +220,7 @@ class CatalogService:
                     stale_at=authorized.index.observed_at,
                 )
             raise
+        self._detail_source(source="datahub")
         detail = self._detail(authorized, remote_enrichment)
         fresh_until = datetime.now(UTC) + timedelta(seconds=self._detail_cache_ttl_seconds)
         cache_document = self._enrichment_document(remote_enrichment, fresh_until=fresh_until)
@@ -218,8 +236,18 @@ class CatalogService:
                 ttl_seconds=self._stale_detail_ttl_seconds,
             )
         except Exception:
+            self._cache_access(cache="detail_write", outcome="error")
             return detail
+        self._cache_access(cache="detail_write", outcome="success")
         return detail
+
+    def _cache_access(self, *, cache: str, outcome: str) -> None:
+        if self._telemetry is not None:
+            self._telemetry.catalog_cache_access(cache=cache, outcome=outcome)
+
+    def _detail_source(self, *, source: str) -> None:
+        if self._telemetry is not None:
+            self._telemetry.catalog_detail_source(source=source)
 
     def _permission_scope_hash(self, subject: SubjectAttributes) -> str:
         permission_scope = {

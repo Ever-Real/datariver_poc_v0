@@ -43,6 +43,7 @@ def _service(request: Request, session: SessionDep) -> CatalogService:
         search_cache_ttl_seconds=container.settings.catalog_search_cache_ttl_seconds,
         minimum_query_length=container.settings.catalog_search_minimum_query_length,
         policy_version="builtin-abac-v1",
+        telemetry=container.metrics,
     )
 
 

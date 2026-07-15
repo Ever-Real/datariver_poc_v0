@@ -1,7 +1,7 @@
 # Production hardening and scale decision record
 
 Status date: 2026-07-15 (Asia/Seoul)  
-Scope: current uncommitted `datariver_v1` working tree  
+Scope: current `datariver_v1` branch and verified hybrid development runtime
 Decision: preserve the modular-monolith core; execute measurable P0 gates before introducing a
 search engine, external LLM or additional service boundaries.
 
@@ -42,10 +42,10 @@ scale/availability/team-ownership evidence.
 
 ## 3. Verified baseline and important limitations
 
-Before this hardening change the repository passed 70 backend tests, strict mypy over 109 files,
-Ruff, frontend type/lint/test/build, deterministic migration generation and the local Compose/RLS/
-OIDC/gateway checks recorded in `12_ACCEPTANCE_REPORT.md`. This session reran the 70-test baseline
-before editing. The new P0 changes have separate source-test evidence, but target DataHub, target
+The current branch passes 76 backend tests, strict mypy over 110 files, Ruff, frontend
+type/lint/test/build, deterministic migration generation and static architecture/Compose/role checks.
+The hybrid runtime has live evidence for PostgreSQL RLS, Keycloak service-token OIDC, APISIX,
+Vite proxying, DataHub authentication and semiconductor seed verification. Target DataHub, target
 object storage, production identity, large data, backup/restore and 60-minute soak gates remain open.
 
 The frontend is a functional integration baseline, not a completed enterprise UX: catalog facets,
@@ -107,9 +107,9 @@ external inference stays disabled until this matrix is approved and enforced.
 |---|---|---|
 | literal search safety | implemented: NFKC, minimum non-empty length, `%`/`_`/backslash escape | API negative tests and UX message in browser E2E |
 | PostgreSQL search | implemented: stored `tsvector`, GIN FTS, `pg_trgm` name index, active scope/order partial index | target-distribution EXPLAIN/BUFFERS and write-cost measurement |
-| search cache | implemented: short TTL key includes workspace, full permission scope, policy version, request and watermark | hit/eviction metrics and revocation timing under load |
+| search cache | implemented: short TTL key includes workspace, full permission scope, policy version, request and watermark; access/source counters expose hit/miss/error/write paths | Valkey eviction exporter and revocation timing under load |
 | ABAC audit amplification | Chat candidates evaluated as a set; one grouped row retains per-resource effect/reasons | extend to facets/autocomplete/export; partition/retention volume proof |
-| DataHub isolation | timeout, concurrency bulkhead, circuit breaker, fresh + bounded stale detail fallback | target contract/fault test; metrics; incremental watermark |
+| DataHub isolation | timeout, concurrency bulkhead, circuit breaker, fresh + bounded stale detail fallback; fixed-label request/duration/in-flight/rejection/circuit metrics | target contract/fault test; worker-process metrics; incremental watermark |
 | local read projection | search and base detail survive DataHub read failure inside stale bound | project approved detail aspects and display freshness consistently in UI |
 | worker privilege | separate API/relay/upload/governance/bootstrap DB roles and secrets; upload has no DataHub secret | egress policy in target orchestrator; correlation/scope guard for every BYPASSRLS claim |
 | audit/event retention | config has event retention; Chat defaults 90 days | monthly partitions, legal retention, deletion jobs and WORM export |
@@ -184,8 +184,8 @@ malicious output markup. RAG relevance is not a prompt-injection control.
    target DataHub/OIDC/S3 versions.
 2. Run migration on an empty copy and a production-sized synthetic copy; capture the search-plan
    matrix and index write/storage cost.
-3. Add policy/source revocation timing, DataHub fault, worker kill/reclaim and 60-minute load/soak
-   automation; expose cache/circuit/sync metrics.
+3. Add policy/source revocation timing, target DataHub fault, worker kill/reclaim and 60-minute
+   load/soak automation; cache/API DataHub metrics are exposed, while worker/sync/Valkey metrics remain.
 4. Implement and contract-test incremental DataHub change-watermark ingestion, retaining nightly full
    reconcile as drift verification/recovery.
 5. Add partition provisioning/retention/WORM export only with approved volume/legal inputs.

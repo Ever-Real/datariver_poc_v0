@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 
 import httpx
@@ -9,6 +10,7 @@ from datariver.application.errors import ExternalDependencyError
 from datariver.domain.authz import Classification
 from datariver.domain.common import canonical_json_hash
 from datariver.infrastructure.datahub.http import HttpDataHubGateway
+from datariver.infrastructure.observability.metrics import HttpMetrics
 
 
 async def test_asset_contract_uses_fixed_graphql_and_service_identity() -> None:
@@ -164,6 +166,7 @@ async def test_catalog_scan_maps_a_fixed_datahub_contract_and_paginates() -> Non
 
 async def test_circuit_breaker_opens_after_bounded_retryable_failures() -> None:
     calls = 0
+    metrics = HttpMetrics()
 
     async def handler(_: httpx.Request) -> httpx.Response:
         nonlocal calls
@@ -180,6 +183,7 @@ async def test_circuit_breaker_opens_after_bounded_retryable_failures() -> None:
         circuit_failure_threshold=2,
         circuit_open_seconds=60,
         client=client,
+        telemetry=metrics,
     )
 
     for expected_code in ("503", "503", "CIRCUIT_OPEN"):
@@ -188,4 +192,68 @@ async def test_circuit_breaker_opens_after_bounded_retryable_failures() -> None:
         assert caught.value.details["provider_code"] == expected_code
 
     assert calls == 2
+    rendered_metrics = metrics.render().decode()
+    assert (
+        'datariver_datahub_requests_total{operation="graphql",outcome="server_error"} 2.0'
+        in rendered_metrics
+    )
+    assert (
+        'datariver_datahub_requests_total{operation="graphql",outcome="circuit_open"} 1.0'
+        in rendered_metrics
+    )
+    assert "datariver_datahub_circuit_state 1.0" in rendered_metrics
+    await client.aclose()
+
+
+async def test_bulkhead_rejects_excess_work_and_records_the_rejection() -> None:
+    entered = asyncio.Event()
+    release = asyncio.Event()
+    metrics = HttpMetrics()
+
+    async def handler(_: httpx.Request) -> httpx.Response:
+        entered.set()
+        await release.wait()
+        return httpx.Response(
+            200,
+            json={
+                "data": {
+                    "entity": {
+                        "urn": "urn:li:dataset:test",
+                        "type": "DATASET",
+                        "ownership": {"owners": []},
+                        "globalTags": {"tags": []},
+                        "glossaryTerms": {"terms": []},
+                        "schemaMetadata": {"fields": []},
+                    }
+                }
+            },
+        )
+
+    client = httpx.AsyncClient(
+        base_url="https://datahub.example", transport=httpx.MockTransport(handler)
+    )
+    gateway = HttpDataHubGateway(
+        base_url="https://datahub.example",
+        token="unused",
+        timeout_seconds=1,
+        maximum_concurrency=1,
+        queue_timeout_seconds=0.01,
+        client=client,
+        telemetry=metrics,
+    )
+
+    first = asyncio.create_task(gateway.get_asset("urn:li:dataset:test"))
+    await entered.wait()
+    with pytest.raises(ExternalDependencyError) as caught:
+        await gateway.get_asset("urn:li:dataset:test")
+    assert caught.value.details["provider_code"] == "OVERLOADED"
+    release.set()
+    await first
+
+    rendered_metrics = metrics.render().decode()
+    assert 'datariver_datahub_queue_rejections_total{operation="graphql"} 1.0' in rendered_metrics
+    assert (
+        'datariver_datahub_requests_total{operation="graphql",outcome="overloaded"} 1.0'
+        in rendered_metrics
+    )
     await client.aclose()

@@ -2,7 +2,7 @@
 
 ## Latest executed baseline
 
-The 2026-07-15 development/integration baseline plus the current P0 source hardening passed 73 backend tests, strict mypy over 109 source files, Ruff formatting/lint, 6 frontend tests, TypeScript/ESLint/build, deterministic migration generation and static architecture/Compose/role checks. The earlier live baseline also passed PostgreSQL RLS, Keycloak service-token OIDC, APISIX, Airflow DAG imports, optional seed apply/verify/remove and repository/IaC Trivy scanning. Python and npm audits reported no known vulnerabilities. Exact commands and the distinction between current source and earlier live evidence are in [the acceptance report](12_ACCEPTANCE_REPORT.md).
+The 2026-07-15 development/integration baseline plus the current P0 source hardening passed 76 backend tests, strict mypy over 110 source files, Ruff formatting/lint, 6 frontend tests, TypeScript/ESLint/build, deterministic migration generation and static architecture/Compose/role checks. The live hybrid-development baseline also passed PostgreSQL RLS, Keycloak service-token OIDC, APISIX-to-host-API routing, Vite-to-APISIX proxying, DataHub GraphQL authentication and semiconductor seed verification. The earlier container baseline additionally passed Airflow DAG imports, optional seed remove and repository/IaC Trivy scanning. Exact commands and the distinction between current source and earlier evidence are in [the acceptance report](12_ACCEPTANCE_REPORT.md).
 
 Executed resilience checks included cache-Valkey stop/recovery, API process restart, API container replacement behind both Nginx and APISIX, and outbox-relay restart. The API replacement test deliberately kept the web container running and verified that its Docker DNS resolver did not retain a stale upstream address.
 
@@ -43,7 +43,8 @@ For each route, test no token, invalid issuer/audience/algorithm, inactive subje
 
 | Fault | Pass condition |
 |---|---|
-| DataHub unavailable/rate-limited/contract drift | bounded stale or classified 503; durable pending work; no false complete |
+| DataHub unavailable/rate-limited/contract drift | bounded stale or classified 503; durable pending work; no false complete; fixed-label request/circuit metrics |
+| DataHub concurrency saturated | bounded queue timeout and classified `OVERLOADED`; bulkhead rejection metric increments |
 | cache unavailable/evicted | correct uncached response, no secret leakage |
 | API container replaced | Nginx/APISIX re-resolve service DNS; no dependent restart or persistent 502 |
 | queue unavailable | outbox age grows; automatic replay after recovery |

@@ -9,6 +9,8 @@
 | dead letters | any new row | capture event/error, repair dependency, use an audited replay procedure |
 | upload rejection spike | > 5% over 15 minutes | inspect error-code distribution and object-store health |
 | DataHub reconcile | active heartbeat > 60 minutes or repeated abandon | pause DAG, validate DataHub contract and restart at offset zero with a new `sync_id` |
+| DataHub circuit | `datariver_datahub_circuit_state > 0` or new bulkhead rejections | inspect latency/error outcome, protect API capacity and verify bounded stale projection before recovery |
+| catalog cache | sustained `error` outcomes or unexpected hit-rate collapse | verify cache Valkey health; correctness must continue through PostgreSQL without extending TTL |
 | grant quota denial | sustained 429 | confirm consumer identity/plan before changing limits |
 
 ## Local stack control
@@ -37,6 +39,11 @@ Host-port overrides do not change an OIDC issuer. When browser-facing origins ch
 4. Start relay and workers, then API and web/gateway.
 5. Start Keycloak/Airflow overlays where applicable; DAGs remain paused until probes pass.
 6. Check `/health/ready`, `/capabilities`, `/operations/summary` and protected `/operations/metrics`.
+
+The protected metrics endpoint exposes bounded-label catalog cache access/detail-source counters and
+DataHub request outcome/duration/in-flight, queue-rejection and circuit-state signals. It does not
+expose query text, URNs, workspace IDs, tokens or provider payloads. Cache-server memory, eviction
+and keyspace signals still require the deployment's Valkey exporter.
 
 PostgreSQL remains canonical. Never repair a Valkey stream by inventing events; recover the relay from unpublished outbox rows.
 

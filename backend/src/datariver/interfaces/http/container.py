@@ -35,6 +35,7 @@ def build_container(settings: Settings) -> AppContainer:
     cache_password = secret_resolver.resolve(settings.valkey_cache_secret_ref)
     s3_access_key = SecretResolver().resolve(f"file:{settings.s3_access_key_file}")
     s3_secret_key = SecretResolver().resolve(f"file:{settings.s3_secret_key_file}")
+    metrics = HttpMetrics()
     return AppContainer(
         settings=settings,
         database=Database(settings.database_url, password=database_password),
@@ -51,6 +52,7 @@ def build_container(settings: Settings) -> AppContainer:
             queue_timeout_seconds=settings.datahub_queue_timeout_seconds,
             circuit_failure_threshold=settings.datahub_circuit_failure_threshold,
             circuit_open_seconds=settings.datahub_circuit_open_seconds,
+            telemetry=metrics,
         ),
         oidc=OidcTokenVerifier(
             issuer=settings.oidc_issuer,
@@ -65,5 +67,5 @@ def build_container(settings: Settings) -> AppContainer:
             access_key=s3_access_key,
             secret_key=s3_secret_key,
         ),
-        metrics=HttpMetrics(),
+        metrics=metrics,
     )

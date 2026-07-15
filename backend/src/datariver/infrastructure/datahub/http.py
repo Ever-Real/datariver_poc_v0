@@ -4,7 +4,7 @@ import asyncio
 import json
 import time
 from datetime import UTC, datetime
-from typing import Any
+from typing import Any, Protocol
 from urllib.parse import quote
 
 import httpx
@@ -35,6 +35,19 @@ query DataRiverAsset($urn: String!) {
   }
 }
 """
+
+
+class DataHubTelemetry(Protocol):
+    def datahub_request_started(self, *, operation: str) -> None: ...
+
+    def datahub_request_finished(
+        self, *, operation: str, outcome: str, duration_seconds: float
+    ) -> None: ...
+
+    def datahub_queue_rejected(self, *, operation: str) -> None: ...
+
+    def datahub_circuit_changed(self, *, state: str) -> None: ...
+
 
 LINEAGE_QUERY = """
 query DataRiverLineage($input: ScrollAcrossLineageInput!) {
@@ -124,6 +137,7 @@ class HttpDataHubGateway:
         circuit_failure_threshold: int = 5,
         circuit_open_seconds: float = 30.0,
         client: httpx.AsyncClient | None = None,
+        telemetry: DataHubTelemetry | None = None,
     ) -> None:
         self._base_url = base_url.rstrip("/")
         self._client = client or httpx.AsyncClient(
@@ -141,48 +155,74 @@ class HttpDataHubGateway:
         self._consecutive_failures = 0
         self._circuit_open_until = 0.0
         self._half_open_in_flight = False
+        self._telemetry = telemetry
 
     async def _request(self, method: str, url: str, **kwargs: Any) -> httpx.Response:
-        half_open_probe = await self._before_request()
-        try:
-            await asyncio.wait_for(self._semaphore.acquire(), timeout=self._queue_timeout_seconds)
-        except TimeoutError as error:
-            await self._cancel_half_open_probe(half_open_probe)
-            raise ExternalDependencyError(
-                "DataHub concurrency capacity is exhausted.",
-                dependency="datahub",
-                retryable=True,
-                provider_code="OVERLOADED",
-            ) from error
+        operation = self._operation(url)
+        started = time.perf_counter()
+        outcome = "cancelled"
+        if self._telemetry is not None:
+            self._telemetry.datahub_request_started(operation=operation)
         try:
             try:
-                response = await self._client.request(method, url, **kwargs)
-            except httpx.TimeoutException as error:
-                await self._record_failure(half_open_probe=half_open_probe)
-                raise ExternalDependencyError(
-                    "DataHub timed out.",
-                    dependency="datahub",
-                    retryable=True,
-                    provider_code="TIMEOUT",
-                ) from error
-            except httpx.HTTPError as error:
-                await self._record_failure(half_open_probe=half_open_probe)
-                raise ExternalDependencyError(
-                    "DataHub is unavailable.",
-                    dependency="datahub",
-                    retryable=True,
-                    provider_code="NETWORK",
-                ) from error
-            except asyncio.CancelledError:
-                await self._cancel_half_open_probe(half_open_probe)
+                half_open_probe = await self._before_request()
+            except ExternalDependencyError:
+                outcome = "circuit_open"
                 raise
-            if response.status_code == 429 or response.status_code >= 500:
-                await self._record_failure(half_open_probe=half_open_probe)
-            else:
-                await self._record_success()
-            return response
+            try:
+                await asyncio.wait_for(
+                    self._semaphore.acquire(), timeout=self._queue_timeout_seconds
+                )
+            except TimeoutError as error:
+                outcome = "overloaded"
+                await self._cancel_half_open_probe(half_open_probe)
+                if self._telemetry is not None:
+                    self._telemetry.datahub_queue_rejected(operation=operation)
+                raise ExternalDependencyError(
+                    "DataHub concurrency capacity is exhausted.",
+                    dependency="datahub",
+                    retryable=True,
+                    provider_code="OVERLOADED",
+                ) from error
+            try:
+                try:
+                    response = await self._client.request(method, url, **kwargs)
+                except httpx.TimeoutException as error:
+                    outcome = "timeout"
+                    await self._record_failure(half_open_probe=half_open_probe)
+                    raise ExternalDependencyError(
+                        "DataHub timed out.",
+                        dependency="datahub",
+                        retryable=True,
+                        provider_code="TIMEOUT",
+                    ) from error
+                except httpx.HTTPError as error:
+                    outcome = "network"
+                    await self._record_failure(half_open_probe=half_open_probe)
+                    raise ExternalDependencyError(
+                        "DataHub is unavailable.",
+                        dependency="datahub",
+                        retryable=True,
+                        provider_code="NETWORK",
+                    ) from error
+                except asyncio.CancelledError:
+                    await self._cancel_half_open_probe(half_open_probe)
+                    raise
+                outcome = self._response_outcome(response.status_code)
+                if response.status_code == 429 or response.status_code >= 500:
+                    await self._record_failure(half_open_probe=half_open_probe)
+                else:
+                    await self._record_success()
+                return response
+            finally:
+                self._semaphore.release()
         finally:
-            self._semaphore.release()
+            if self._telemetry is not None:
+                self._telemetry.datahub_request_finished(
+                    operation=operation,
+                    outcome=outcome,
+                    duration_seconds=time.perf_counter() - started,
+                )
 
     async def _before_request(self) -> bool:
         async with self._circuit_lock:
@@ -203,27 +243,58 @@ class HttpDataHubGateway:
                         provider_code="CIRCUIT_OPEN",
                     )
                 self._half_open_in_flight = True
+                if self._telemetry is not None:
+                    self._telemetry.datahub_circuit_changed(state="half_open")
                 return True
             return False
 
     async def _record_failure(self, *, half_open_probe: bool) -> None:
         async with self._circuit_lock:
             self._consecutive_failures += 1
-            if half_open_probe or self._consecutive_failures >= self._circuit_failure_threshold:
+            opened = (
+                half_open_probe or self._consecutive_failures >= self._circuit_failure_threshold
+            )
+            if opened:
                 self._circuit_open_until = time.monotonic() + self._circuit_open_seconds
             self._half_open_in_flight = False
+            if self._telemetry is not None:
+                self._telemetry.datahub_circuit_changed(state="open" if opened else "closed")
 
     async def _record_success(self) -> None:
         async with self._circuit_lock:
             self._consecutive_failures = 0
             self._circuit_open_until = 0.0
             self._half_open_in_flight = False
+            if self._telemetry is not None:
+                self._telemetry.datahub_circuit_changed(state="closed")
 
     async def _cancel_half_open_probe(self, half_open_probe: bool) -> None:
         if not half_open_probe:
             return
         async with self._circuit_lock:
             self._half_open_in_flight = False
+
+    @staticmethod
+    def _operation(url: str) -> str:
+        if url == "/api/graphql":
+            return "graphql"
+        if url == "/aspects?action=ingestProposal":
+            return "ingest_proposal"
+        if url.startswith("/aspects/"):
+            return "read_aspect"
+        if url == "/config":
+            return "capability"
+        return "other"
+
+    @staticmethod
+    def _response_outcome(status_code: int) -> str:
+        if status_code < 400:
+            return "success"
+        if status_code == 429:
+            return "rate_limited"
+        if status_code >= 500:
+            return "server_error"
+        return "client_error"
 
     async def _graphql(self, query: str, variables: dict[str, Any]) -> dict[str, Any]:
         response = await self._request(

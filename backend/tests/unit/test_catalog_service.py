@@ -28,6 +28,7 @@ from datariver.domain.authz import (
 )
 from datariver.domain.common import ValidationError
 from datariver.infrastructure.db.catalog import _literal_contains_pattern
+from datariver.infrastructure.observability.metrics import HttpMetrics
 
 
 class FakeIndex:
@@ -130,6 +131,7 @@ async def test_authorized_detail_enrichment_uses_scope_versioned_cache() -> None
         )
     )
     cache = FakeCache()
+    metrics = HttpMetrics()
     index_reader = FakeIndex(local)
     service = CatalogService(
         index=cast(CatalogIndexReader, index_reader),
@@ -142,6 +144,7 @@ async def test_authorized_detail_enrichment_uses_scope_versioned_cache() -> None
         search_cache_ttl_seconds=30,
         minimum_query_length=2,
         policy_version="builtin-abac-v1",
+        telemetry=metrics,
     )
     subject = SubjectAttributes(
         subject_id=uuid4(),
@@ -194,6 +197,16 @@ async def test_authorized_detail_enrichment_uses_scope_versioned_cache() -> None
     )
     assert first_page == second_page
     assert index_reader.search_calls == 1
+    rendered_metrics = metrics.render().decode()
+    assert 'datariver_catalog_cache_access_total{cache="search",outcome="miss"} 1.0' in (
+        rendered_metrics
+    )
+    assert 'datariver_catalog_cache_access_total{cache="search",outcome="hit"} 1.0' in (
+        rendered_metrics
+    )
+    assert 'datariver_catalog_detail_source_total{source="datahub"} 1.0' in rendered_metrics
+    assert 'datariver_catalog_detail_source_total{source="fresh_cache"} 1.0' in (rendered_metrics)
+    assert 'datariver_catalog_detail_source_total{source="stale_cache"} 1.0' in (rendered_metrics)
 
     with pytest.raises(ValidationError):
         await service.search(
