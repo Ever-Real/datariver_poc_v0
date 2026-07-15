@@ -6,6 +6,8 @@ services:
     volumes:
       - ./infra/apisix/config.yaml:/opt/datariver/apisix/config.yaml:ro
       - ./infra/apisix/apisix.yaml:/opt/datariver/apisix/apisix.yaml:ro
+    environment:
+      DATARIVER_API_UPSTREAM: ${DATARIVER_API_UPSTREAM:-api:8000}
     depends_on:
       api:
         condition: service_healthy

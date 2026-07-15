@@ -25,7 +25,7 @@ routes:
       type: roundrobin
       scheme: http
       nodes:
-        "api:8000": 1
+        "__DATARIVER_API_UPSTREAM__": 1
       timeout:
         connect: 3
         send: 30
@@ -66,7 +66,7 @@ routes:
       type: roundrobin
       scheme: http
       nodes:
-        "api:8000": 1
+        "__DATARIVER_API_UPSTREAM__": 1
       timeout:
         connect: 3
         send: 30

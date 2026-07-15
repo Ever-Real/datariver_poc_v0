@@ -1,6 +1,8 @@
 param(
-    [Parameter(Mandatory = $true)]
-    [string]$DataHubToken
+    [string]$DataHubToken,
+    [string]$DataHubBaseUrl,
+    [string]$WebPublicOrigin = "http://localhost:8080",
+    [switch]$HostDevelopment
 )
 
 $ErrorActionPreference = "Stop"
@@ -36,6 +38,9 @@ function New-RandomSecret([int]$Bytes = 32) {
 
 function Write-Secret([string]$Name, [string]$Value) {
     $path = Join-Path $secretsDirectory $Name
+    if (Test-Path -LiteralPath $path) {
+        (Get-Item -LiteralPath $path).IsReadOnly = $false
+    }
     [IO.File]::WriteAllText($path, $Value, [Text.UTF8Encoding]::new($false))
     if ($IsLinux -or $IsMacOS) {
         [IO.File]::SetUnixFileMode(
@@ -55,6 +60,23 @@ function Get-OrCreateSecret([string]$Name, [int]$Bytes = 32) {
     $value = New-RandomSecret $Bytes
     Write-Secret $Name $value
     return $value
+}
+
+function Set-EnvValue([string]$Name, [string]$Value) {
+    $lines = [Collections.Generic.List[string]]::new()
+    $lines.AddRange([string[]][IO.File]::ReadAllLines($envFile, [Text.Encoding]::UTF8))
+    $pattern = "^$([Regex]::Escape($Name))="
+    $updated = $false
+    for ($index = 0; $index -lt $lines.Count; $index++) {
+        if ($lines[$index] -match $pattern) {
+            $lines[$index] = "$Name=$Value"
+            $updated = $true
+        }
+    }
+    if (-not $updated) {
+        $lines.Add("$Name=$Value")
+    }
+    [IO.File]::WriteAllLines($envFile, $lines, [Text.UTF8Encoding]::new($false))
 }
 
 if (-not (Test-Path -LiteralPath $envFile)) {
@@ -86,7 +108,32 @@ if ((Test-Path -LiteralPath $s3AccessKeyPath) -and
 }
 $s3SecretKey = Get-OrCreateSecret "s3_secret_key" 36
 
-Write-Secret "datahub_token" $DataHubToken
+$dataHubTokenPath = Join-Path $secretsDirectory "datahub_token"
+if ($PSBoundParameters.ContainsKey("DataHubToken") -and $DataHubToken.Length -gt 0) {
+    Write-Secret "datahub_token" $DataHubToken
+} elseif (-not (Test-Path -LiteralPath $dataHubTokenPath) -or
+    (Get-Item -LiteralPath $dataHubTokenPath).Length -eq 0) {
+    throw "DataHubToken is required when secrets/datahub_token does not exist."
+}
+
+if ($HostDevelopment) {
+    if (-not $PSBoundParameters.ContainsKey("WebPublicOrigin")) {
+        $WebPublicOrigin = "http://localhost:5173"
+    }
+    Set-EnvValue "APP_PUBLIC_ORIGIN" $WebPublicOrigin
+    Set-EnvValue "APP_CORS_ORIGINS" $WebPublicOrigin
+    Set-EnvValue "POSTGRES_PORT" "5432"
+    Set-EnvValue "VALKEY_CACHE_PORT" "6379"
+    Set-EnvValue "VALKEY_QUEUE_PORT" "6380"
+    Set-EnvValue "KEYCLOAK_PORT" "18081"
+    Set-EnvValue "APISIX_PORT" "9080"
+    Set-EnvValue "OIDC_ISSUER" "http://localhost:18081/realms/datariver"
+    Set-EnvValue "OIDC_PUBLIC_AUTHORITY" "http://localhost:18081/realms/datariver"
+    Set-EnvValue "OIDC_PUBLIC_ORIGIN" "http://localhost:18081"
+}
+if ($PSBoundParameters.ContainsKey("DataHubBaseUrl") -and $DataHubBaseUrl.Length -gt 0) {
+    Set-EnvValue "DATAHUB_BASE_URL" $DataHubBaseUrl
+}
 
 $seaweedConfig = @{
     identities = @(
@@ -105,9 +152,14 @@ $realmTemplate = [IO.File]::ReadAllText(
 )
 $realmDocument = $realmTemplate.Replace(
     "__DEMO_PASSWORD__", $keycloakDemoPassword
-).Replace("__AIRFLOW_CLIENT_SECRET__", $airflowClientSecret)
+).Replace("__AIRFLOW_CLIENT_SECRET__", $airflowClientSecret
+).Replace("__WEB_PUBLIC_ORIGIN__", $WebPublicOrigin)
+$realmPath = Join-Path $keycloakRuntimeDirectory "datariver-realm.json"
+if (Test-Path -LiteralPath $realmPath) {
+    (Get-Item -LiteralPath $realmPath).IsReadOnly = $false
+}
 [IO.File]::WriteAllText(
-    (Join-Path $keycloakRuntimeDirectory "datariver-realm.json"),
+    $realmPath,
     $realmDocument,
     [Text.UTF8Encoding]::new($false)
 )

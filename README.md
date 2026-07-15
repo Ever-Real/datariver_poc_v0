@@ -75,6 +75,64 @@ Open `http://localhost:8080`, sign in as `datariver-admin`, and read the generat
 
 The `local-identity` bootstrap is rejected when `APP_ENV=production`. With an enterprise IdP, provision `(issuer, sub)` and a workspace membership through the controlled environment onboarding process; do not reuse local identities.
 
+## Host-development quick start
+
+Use this topology while API, workers and UI are changing frequently. PostgreSQL, the two Valkeys, SeaweedFS, Keycloak and APISIX stay in containers; Uvicorn, all four long-running backend relay/workers and Vite run directly from the checked-out source. The production-oriented base Compose remains private by default; `compose.host-dev.yaml` publishes only the required development ports on loopback.
+
+The v1 repository still does not own DataHub. The example below reuses a DataHub GMS already exposed on host port `8080`; replace both URLs and the scoped token when the external service is elsewhere.
+
+For a native Windows checkout, bootstrap from PowerShell. First use includes `-DataHubToken '<scoped-token>'`; later runs preserve the existing token when omitted.
+
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/bootstrap.ps1 `
+  -HostDevelopment -DataHubBaseUrl http://host.docker.internal:8080
+```
+
+For a checkout stored inside WSL, bootstrap and run Docker commands in that WSL distribution so Linux file permissions are preserved:
+
+```bash
+./scripts/bootstrap.sh --host-development \
+  --datahub-base-url http://host.docker.internal:8080
+docker compose -f compose.yaml -f compose.identity.yaml -f compose.host-dev.yaml \
+  config --quiet
+docker compose -f compose.yaml -f compose.identity.yaml -f compose.host-dev.yaml \
+  up -d --build --wait postgres valkey-cache valkey-queue seaweedfs keycloak
+./scripts/configure_keycloak_host_dev.sh
+docker compose -f compose.yaml -f compose.identity.yaml -f compose.host-dev.yaml \
+  run --rm migrate
+docker compose -f compose.yaml -f compose.identity.yaml -f compose.host-dev.yaml \
+  run --rm storage-init
+docker compose --profile tools -f compose.yaml -f compose.identity.yaml \
+  -f compose.host-dev.yaml run --rm local-bootstrap
+```
+
+Run the changing source processes from Windows PowerShell so the supported Windows uv/Node toolchains are used:
+
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 `
+  start -DataHubBaseUrl http://127.0.0.1:8080
+```
+
+Start the gateway from WSL only after the Windows host API is live. The script discovers the current WSL-to-Windows gateway address:
+
+```bash
+./scripts/start_gateway_host_dev.sh
+```
+
+Open Vite at `http://localhost:5173`, API docs at `http://localhost:8000/api/docs`, Keycloak at `http://localhost:18081`, and APISIX at `http://localhost:9080`. Vite proxies `/api` through APISIX. Inspect or stop host processes with `./scripts/dev.ps1 status` and `./scripts/dev.ps1 stop`. Runtime PIDs and logs are written only below the ignored `runtime/host-dev/` directory.
+
+The host-development port map is: PostgreSQL `5432`, cache Valkey `6379`, queue Valkey `6380`, SeaweedFS S3 `8333`, Uvicorn `8000`, APISIX `9080`, Keycloak `18081`, and Vite `5173`. Do not run a bare `docker compose up` for this topology because that would also start the containerized API, workers and web service.
+
+Apply and verify the optional synthetic semiconductor reference data after migration and local identity bootstrap:
+
+```bash
+docker compose --profile semiconductor-seed -f compose.yaml -f compose.identity.yaml \
+  -f compose.host-dev.yaml run --rm semiconductor-seed
+docker compose --profile semiconductor-seed -f compose.yaml -f compose.identity.yaml \
+  -f compose.host-dev.yaml run --rm semiconductor-seed \
+  /app/.venv/bin/python -m datariver.seed verify
+```
+
 ## Deployment profiles
 
 ```bash
