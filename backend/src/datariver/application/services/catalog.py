@@ -267,13 +267,13 @@ class CatalogService:
         filters: dict[str, Any],
         cursor: str | None,
         limit: int,
-        watermark: datetime,
+        watermark: int,
     ) -> str:
         key_document = {
             "workspace": str(subject.workspace_id),
             "scope": self._permission_scope_hash(subject),
             "policy": self._policy_version,
-            "source_watermark": watermark.isoformat(),
+            "projection_version": watermark,
             "query": query,
             "filters": filters,
             "cursor": cursor,

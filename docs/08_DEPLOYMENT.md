@@ -68,7 +68,7 @@ The Compose overlay intentionally uses Airflow `SimpleAuthManager` only for loop
 
 ## Database and object operations
 
-- Alembic has one head: the generated initial schema plus a pre-release `0002` compatibility bridge for local databases that had already applied the earlier `0001`. Deployment runs migration before API/workers.
+- Alembic has one head at `0003`: the generated current initial schema plus conditional `0002`/`0003` compatibility bridges for local databases that had already applied an earlier `0001`. Deployment runs migration before API/workers.
 - PostgreSQL pools, statement timeout, idle-transaction timeout and application names are explicit.
 - Back up PostgreSQL and SeaweedFS as a consistency set or record a watermark; restore into isolation and follow the drill in [operations runbook](13_OPERATIONS_RUNBOOK.md) before traffic.
 - Accepted-object retention/lifecycle is environment policy. Quarantine receives a shorter cleanup policy, but never delete an object whose manifest is actively leased.

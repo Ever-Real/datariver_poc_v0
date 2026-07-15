@@ -58,7 +58,7 @@ The API gateway is a deployment boundary, not an authorization context. It valid
 
 ## Canonical ownership rules
 
-- DataHub owns metadata after successful application. DataRiver stores a minimal authorized projection and sync watermark.
+- DataHub owns metadata after successful application. DataRiver stores a minimal authorized projection and a monotonic local projection version; a true DataHub source watermark remains an ingestion contract.
 - DataRiver PostgreSQL owns intent, approvals, job state, graph release manifests, policy and audit.
 - Graph projection data is disposable. Publishing first creates an immutable PostgreSQL/object snapshot, loads a shadow projection, verifies it, then switches the active pointer.
 - Valkey owns nothing durable. Cache loss changes latency, not correctness. Queue loss is recovered from the PostgreSQL outbox.
@@ -122,7 +122,7 @@ Filtering a DataHub page after retrieval leaks counts, pagination, and asset exi
 | `valkey-cache` | none | `allkeys-lfu` | bounded TTL search/detail/policy-derived results |
 | `valkey-queue` | AOF every second | `noeviction` | job IDs and delivery metadata only |
 
-Cache keys include workspace, permission-scope hash, policy version, request parameters and DataHub watermark. Tokens, credentials, presigned URLs, full uploads, canonical job state and confidential prompts are prohibited.
+Cache keys include workspace, permission-scope hash, policy version, request parameters and the local projection version. Tokens, credentials, presigned URLs, full uploads, canonical job state and confidential prompts are prohibited.
 
 ## Degradation model
 

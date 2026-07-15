@@ -32,8 +32,15 @@ The active baseline policy is code-versioned (`builtin-abac-v1`); database-autho
 |---|---|---|
 | `catalog.assets_projection` | `id`, `workspace_id + urn_hash UQ`, external identity/scope/classification/lifecycle, stored `search_vector`, source version/owner, `last_seen_sync_id`, observed/deleted times | authorized search/base-detail projection; DataHub remains canonical |
 | `catalog.sync_runs` | PK workspace/sync, state/next offset/start/heartbeat/completion | single-writer ordered full reconciliation and stale-run recovery |
+| `catalog.projection_watermarks` | `workspace_id PK/FK`, non-negative `projection_version BIGINT` | transactional local read-model generation used for cache invalidation |
 
-Projection page idempotency is recorded in `integration.idempotency_keys`. Final-page reconciliation tombstones missing `DATAHUB` rows and never seed-owned rows. Active rows have a workspace/scope/order partial index, GIN full-text index and `pg_trgm` name index. Relationship/facet projections remain backlog.
+Projection page idempotency is recorded in `integration.idempotency_keys`. Every committed page
+advances the workspace projection version exactly once in the same transaction; replay, rejection
+and rollback do not. Final-page reconciliation tombstones missing `DATAHUB` rows and never
+seed-owned rows. `sync_runs.state` records reconciliation completeness, while the version records
+only a committed local generation. Active rows have a workspace/scope/order partial index, GIN
+full-text index and `pg_trgm` name index. Relationship/facet projections and a true incremental
+DataHub source cursor remain backlog.
 
 ### Governance
 

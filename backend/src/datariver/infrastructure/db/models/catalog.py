@@ -3,7 +3,18 @@ from __future__ import annotations
 from datetime import datetime
 from uuid import UUID
 
-from sqlalchemy import Computed, Index, String, Text, UniqueConstraint, Uuid, text
+from sqlalchemy import (
+    BigInteger,
+    CheckConstraint,
+    Computed,
+    ForeignKey,
+    Index,
+    String,
+    Text,
+    UniqueConstraint,
+    Uuid,
+    text,
+)
 from sqlalchemy.dialects.postgresql import TSVECTOR
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -41,11 +52,6 @@ class AssetProjectionModel(Base, UuidPrimaryKeyMixin, TimestampMixin):
             postgresql_using="gin",
             postgresql_ops={"name": "gin_trgm_ops"},
             postgresql_where=text("deleted_at IS NULL AND lifecycle = 'ACTIVE'"),
-        ),
-        Index(
-            "ix_assets_projection_workspace_watermark",
-            "workspace_id",
-            "updated_at",
         ),
         {"schema": "catalog"},
     )
@@ -92,3 +98,26 @@ class CatalogSyncRunModel(Base):
     started_at: Mapped[datetime] = mapped_column(nullable=False)
     heartbeat_at: Mapped[datetime] = mapped_column(nullable=False)
     completed_at: Mapped[datetime | None]
+
+
+class CatalogProjectionWatermarkModel(Base):
+    __tablename__ = "projection_watermarks"
+    __table_args__ = (
+        CheckConstraint(
+            "projection_version >= 0",
+            name="projection_version_nonnegative",
+        ),
+        {"schema": "catalog"},
+    )
+
+    workspace_id: Mapped[UUID] = mapped_column(
+        Uuid(as_uuid=True),
+        ForeignKey("platform.workspaces.id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    projection_version: Mapped[int] = mapped_column(
+        BigInteger,
+        default=0,
+        server_default=text("0"),
+        nullable=False,
+    )

@@ -22,7 +22,11 @@ from datariver.application.ports import CatalogIndexReader, CatalogProjectionWri
 from datariver.domain.authz import Classification, SubjectAttributes
 from datariver.domain.common import ConflictError, ValidationError, utc_now, uuid7
 from datariver.infrastructure.db.governance import SqlIdempotencyStore
-from datariver.infrastructure.db.models.catalog import AssetProjectionModel, CatalogSyncRunModel
+from datariver.infrastructure.db.models.catalog import (
+    AssetProjectionModel,
+    CatalogProjectionWatermarkModel,
+    CatalogSyncRunModel,
+)
 from datariver.infrastructure.db.models.platform import WorkspaceModel
 
 
@@ -95,13 +99,13 @@ class SqlCatalogIndexReader(CatalogIndexReader):
         )
         return conditions
 
-    async def get_search_watermark(self, *, workspace_id: UUID) -> datetime:
-        watermark = await self._session.scalar(
-            select(func.max(AssetProjectionModel.updated_at)).where(
-                AssetProjectionModel.workspace_id == workspace_id
+    async def get_search_watermark(self, *, workspace_id: UUID) -> int:
+        projection_version = await self._session.scalar(
+            select(CatalogProjectionWatermarkModel.projection_version).where(
+                CatalogProjectionWatermarkModel.workspace_id == workspace_id
             )
         )
-        return watermark or datetime(1970, 1, 1, tzinfo=UTC)
+        return int(projection_version or 0)
 
     async def search(
         self,
@@ -334,6 +338,10 @@ class SqlCatalogProjectionWriter(CatalogProjectionWriter):
         else:
             active.next_offset = next_offset
         active.heartbeat_at = now
+        await advance_catalog_projection_version(
+            self._session,
+            workspace_id=workspace_id,
+        )
         await idempotency.save_result(
             workspace_id=workspace_id,
             key=idempotency_key,
@@ -343,6 +351,28 @@ class SqlCatalogProjectionWriter(CatalogProjectionWriter):
         )
         await self._session.commit()
         return len(items), tombstoned
+
+
+async def advance_catalog_projection_version(
+    session: AsyncSession,
+    *,
+    workspace_id: UUID,
+) -> int:
+    """Advance a workspace projection generation inside the caller's transaction."""
+    statement = insert(CatalogProjectionWatermarkModel).values(
+        workspace_id=workspace_id,
+        projection_version=1,
+    )
+    upsert_statement = statement.on_conflict_do_update(
+        index_elements=[CatalogProjectionWatermarkModel.workspace_id],
+        set_={
+            "projection_version": CatalogProjectionWatermarkModel.projection_version + 1,
+        },
+    ).returning(CatalogProjectionWatermarkModel.projection_version)
+    projection_version = await session.scalar(upsert_statement)
+    if projection_version is None:
+        raise RuntimeError("Catalog projection version did not advance.")
+    return int(projection_version)
 
 
 def _scope_id(scope_type: str, external_ref: str | None) -> UUID | None:

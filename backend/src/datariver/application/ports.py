@@ -89,7 +89,7 @@ class CatalogIndexReader(Protocol):
 
 
 class CatalogWatermarkReader(Protocol):
-    async def get_search_watermark(self, *, workspace_id: UUID) -> datetime: ...
+    async def get_search_watermark(self, *, workspace_id: UUID) -> int: ...
 
 
 class CatalogTelemetry(Protocol):

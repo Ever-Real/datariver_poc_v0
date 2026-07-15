@@ -12,6 +12,7 @@ from datariver.config import Settings, get_settings
 from datariver.domain.authz import Action, Classification
 from datariver.domain.common import DomainEvent, utc_now
 from datariver.domain.knowledge import GraphRelease, Ontology, Provenance
+from datariver.infrastructure.db.catalog import advance_catalog_projection_version
 from datariver.infrastructure.db.models.catalog import AssetProjectionModel
 from datariver.infrastructure.db.models.integration import OutboxEventModel, SeedRunModel
 from datariver.infrastructure.db.models.knowledge import (
@@ -207,6 +208,8 @@ async def apply_pack(
         existing_run.applied_at = now
         existing_run.removed_at = None
     await _append_seed_event(session, "seed.semiconductor.applied.v1", pack.logical_hash)
+    await session.flush()
+    await advance_catalog_projection_version(session, workspace_id=WORKSPACE_ID)
     await session.commit()
     return await verify_pack(session, pack=pack)
 
@@ -287,6 +290,8 @@ async def remove_pack(session: AsyncSession, *, pack: SemiconductorPack) -> dict
     seed_run.state = "REMOVED"
     seed_run.removed_at = utc_now()
     await _append_seed_event(session, "seed.semiconductor.removed.v1", pack.logical_hash)
+    await session.flush()
+    await advance_catalog_projection_version(session, workspace_id=WORKSPACE_ID)
     await session.commit()
     return {"state": "REMOVED", "seed_run_id": str(SEED_RUN_ID)}
 

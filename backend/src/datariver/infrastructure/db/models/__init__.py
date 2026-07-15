@@ -8,7 +8,11 @@ from datariver.infrastructure.db.models.authz import (
     PolicyDecisionModel,
     ResourceModel,
 )
-from datariver.infrastructure.db.models.catalog import AssetProjectionModel, CatalogSyncRunModel
+from datariver.infrastructure.db.models.catalog import (
+    AssetProjectionModel,
+    CatalogProjectionWatermarkModel,
+    CatalogSyncRunModel,
+)
 from datariver.infrastructure.db.models.governance import (
     ApprovalModel,
     ChangeItemModel,
@@ -54,6 +58,7 @@ __all__ = [
     "ApprovalModel",
     "AssetProjectionModel",
     "AssistantRunModel",
+    "CatalogProjectionWatermarkModel",
     "CatalogSyncRunModel",
     "ChangeItemModel",
     "ChangeOperationModel",

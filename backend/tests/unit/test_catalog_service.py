@@ -35,9 +35,10 @@ class FakeIndex:
     def __init__(self, detail: CatalogAssetDetail) -> None:
         self.detail = detail
         self.search_calls = 0
+        self.projection_version = 1
 
-    async def get_search_watermark(self, *, workspace_id: object) -> datetime:
-        return self.detail.observed_at
+    async def get_search_watermark(self, *, workspace_id: object) -> int:
+        return self.projection_version
 
     async def search(self, **_: object) -> CatalogPage:
         self.search_calls += 1
@@ -197,8 +198,20 @@ async def test_authorized_detail_enrichment_uses_scope_versioned_cache() -> None
     )
     assert first_page == second_page
     assert index_reader.search_calls == 1
+    index_reader.projection_version += 1
+    third_page = await service.search(
+        subject=subject,
+        query="wafer",
+        filters={},
+        cursor=None,
+        limit=25,
+        environment=environment,
+        request_id="search-after-projection-change",
+    )
+    assert third_page == first_page
+    assert index_reader.search_calls == 2
     rendered_metrics = metrics.render().decode()
-    assert 'datariver_catalog_cache_access_total{cache="search",outcome="miss"} 1.0' in (
+    assert 'datariver_catalog_cache_access_total{cache="search",outcome="miss"} 2.0' in (
         rendered_metrics
     )
     assert 'datariver_catalog_cache_access_total{cache="search",outcome="hit"} 1.0' in (

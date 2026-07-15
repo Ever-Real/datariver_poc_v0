@@ -70,8 +70,8 @@ BEGIN
         GRANT SELECT ON platform.workspaces, iam.subjects,
             iam.workspace_memberships TO datariver_app;
         GRANT INSERT ON authz.policy_decisions TO datariver_app;
-        GRANT SELECT, INSERT, UPDATE ON catalog.assets_projection TO datariver_app;
-        GRANT SELECT, INSERT, UPDATE ON catalog.sync_runs TO datariver_app;
+        GRANT SELECT, INSERT, UPDATE ON catalog.assets_projection,
+            catalog.sync_runs, catalog.projection_watermarks TO datariver_app;
         GRANT SELECT, INSERT ON governance.change_request_items,
             governance.approvals, governance.state_transitions TO datariver_app;
         GRANT SELECT, INSERT, UPDATE ON governance.change_requests TO datariver_app;

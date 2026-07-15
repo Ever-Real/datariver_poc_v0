@@ -1,33 +1,49 @@
 # Acceptance report — development/integration baseline
 
 Report date: 2026-07-15 (Asia/Seoul)  
-Artifact: uncommitted `datariver_v1` working tree  
+Artifact: current local `datariver_v1` branch
 Environment: Windows + WSL2 Ubuntu 22.04, Docker Engine 29.6.0, Compose 5.2.0  
 Toolchain: Python 3.12.12, uv 0.9.17, Node.js 22.19.0, npm 10.9.3  
 Decision: **development and local integration baseline accepted; production release not accepted**
 
 This report supersedes the source-only report and the runtime-open statements in the 2026-07-14 independent reviews. It records repeatable evidence from the current working tree, not a signed release artifact or production environment.
 
-P0 hardening addendum, 2026-07-15: current source checks below include literal/full-text search hardening, permission/policy/watermark-scoped search cache, grouped Chat evidence audit, DataHub concurrency/circuit protection and bounded stale detail. The live Compose evidence later in this report predates compatibility migration `0002`; it is not represented as a post-hardening runtime pass.
+P0/P1-foundation addendum, 2026-07-15: current source checks include literal/full-text search hardening, permission/policy/local-projection-version-scoped search cache, grouped Chat evidence audit, DataHub concurrency/circuit protection, bounded stale detail and fixed-label cache/DataHub resilience metrics. Compatibility migration `0003` and the current hybrid runtime have separate live evidence below.
 
 ## Source and build evidence
 
 | Gate | Result | Executed evidence |
 |---|---|---|
-| Python format/lint | PASS | Ruff format and check across 114 files/targets, including backend, tests, DAGs, migration and static-verification scripts |
-| Python type safety | PASS | strict mypy: 109 source files, zero issues; a local cache was placed on `C:\\tmp` to avoid the known SQLite lock behavior on a Windows UNC mount |
-| Backend behavior | PASS | 73 pytest tests in 17.13 s: ABAC/set audit, search/cache/stale fallback, DataHub circuit, state machines, governance, idempotency, reconciliation, bounded uploads, KG lifecycle, sharing, Chat, seed and OpenAPI |
+| Python format/lint | PASS | Ruff format and check across backend, tests, DAGs, migrations and static-verification scripts |
+| Python type safety | PASS | strict mypy: 110 source files, zero issues; a local cache was placed on `C:\\tmp` to avoid the known SQLite lock behavior on a Windows UNC mount |
+| Backend behavior | PASS | 76 pytest tests: ABAC/set audit, version-scoped search cache, stale fallback, DataHub circuit/bulkhead metrics, state machines, governance, idempotency, reconciliation, bounded uploads, KG lifecycle, sharing, Chat, seed and OpenAPI |
 | Frontend | PASS | TypeScript build mode, ESLint zero warnings, 3 test files/6 tests, and Vite production build |
 | Frontend artifact | PASS | current source build: JS 307.52 kB / gzip 93.04 kB; CSS 8.26 kB / gzip 2.70 kB |
 | Dependency audit | PASS | `pip-audit 2.10.0`: no known runtime vulnerabilities; `npm audit`: 0 vulnerabilities |
 | Repository/IaC scan | PASS | Trivy 0.70.0 `vuln,secret,misconfig`, HIGH/CRITICAL, ignored-unfixed: zero findings after making the Keycloak non-root user explicit |
-| Migration | PASS (source) | regenerated twice with unchanged `0001` SHA-256 `6A9998662634D13F1B4FFB4494C6F8896C177A3B066ED9F81C5E541AA9748E73`; Alembic reports the single head `0002`, which bridges pre-hardening local `0001` databases without reset |
+| Migration | PASS | regenerated twice with unchanged `0001` SHA-256 `84DDDA564F4A61FBEAD52288963828C2F706971D77642450A46ED9B3AAD71FFA`; Alembic head `0003` upgraded the populated local `0002` database without reset |
 | Static invariants | PASS | Compose dependencies/secrets, runtime hardening, architecture imports, least-privilege DB roles, tenant foreign keys, seed determinism and documentation links |
 | Scripts/config | PASS | POSIX/Bash/PowerShell parsing and base, identity, Airflow, gateway and combined Compose interpolation |
 | Reference preservation | PASS | 424 files / 4,763,143 bytes; zero missing, byte or SHA-256 mismatches; secret/cache exclusions verified |
 | Independent review | PASS WITH PRODUCTION GATES | Data Architect and Data Engineer/SRE reviews are retained under `docs/reviews/` with post-review status notes |
 
 The optional seed produced the stable logical hash `df039426579bc369f8fda8f6154005c500860ab2ab5a9e263928ef1508b0ebc9`: 12 catalog assets, 257 nodes and 279 edges. Apply, independent verify, remove and re-apply all succeeded.
+
+## Current hybrid-development runtime evidence
+
+The normalized v1 topology keeps PostgreSQL, cache/queue Valkey, SeaweedFS, Keycloak and APISIX in
+containers. Uvicorn, the outbox relay, three workers and Vite run directly from the Windows source
+tree. The separately operated DataHub core is reused and remains outside DataRiver lifecycle
+ownership.
+
+| Gate | Result | Evidence |
+|---|---|---|
+| Runtime routes | PASS | direct API live/ready, APISIX live and Vite-to-APISIX API proxy returned 200 |
+| External DataHub | PASS (local integration) | GMS health and scoped-token GraphQL authentication succeeded; DataRiver did not start or migrate DataHub |
+| Migration `0003` | PASS | populated `0002` database upgraded; watermark table has forced RLS, app `SELECT/INSERT/UPDATE` only and obsolete timestamp index is absent |
+| Concurrent watermark | PASS | two app-role sessions advancing one workspace returned generations `[1, 2]`; rollback preserved `2`; a cross-workspace advance was denied by RLS |
+| Seed generation | PASS | migration backfill `1`, remove `2`, re-apply `3`; verify was a no-op; final counts remained 12 assets/257 nodes/279 edges |
+| Authorized search | PASS | same-token semiconductor `wafer` search returned the two expected authorized assets after API source reload |
 
 ## Live Compose evidence (pre-P0-hardening runtime baseline)
 
@@ -88,7 +104,7 @@ On the reviewed Windows/UNC workspace, Vitest was executed on a temporary `pushd
 
 These items are not source defects, but they prevent a production-readiness claim:
 
-1. Execute DataHub search/detail/sync/change apply/re-read contract tests against the actual deployed DataHub version and scoped production-like credential. Local verification used an intentionally non-functional placeholder endpoint/token.
+1. Execute DataHub search/detail/sync/change apply/re-read contract tests against the target deployed DataHub version and production-like credential. Local health and GraphQL authentication passed against the separately operated development DataHub, but this is not the target contract gate.
 2. Complete real multipart/CORS/copy/checksum/lifecycle tests against the target object-storage deployment and a PostgreSQL + object consistency backup/restore drill with measured RPO/RTO.
 3. Run the full ABAC matrix with two real OIDC user identities, browser PKCE/password reset/TOTP journeys, policy revocation timing, and audited enterprise subject/workspace administration.
 4. Replace Airflow `SimpleAuthManager`, which is deliberately local-development only, with the environment's supported enterprise/FAB SSO configuration before any non-local exposure.
@@ -98,4 +114,4 @@ These items are not source defects, but they prevent a production-readiness clai
 
 ## Conclusion
 
-No known formatter, linter, type, unit, frontend-build, migration-graph or static-architecture error remains in the current source. The earlier local Compose/OIDC/RLS/gateway/seed/degradation evidence remains valid for its recorded build, but compatibility migration `0002` and the new search indexes/DataHub controls still require a fresh runtime migration/smoke result. The project is suitable for Git sharing and continued environment integration. Production release remains blocked by the target-system, scale/load, recovery, browser, post-hardening runtime and signed supply-chain gates listed above.
+No known formatter, linter, type, unit, frontend-build, migration-graph or static-architecture error remains in the current source. The hybrid runtime, compatibility migrations through `0003`, local RLS/gateway/seed and post-hardening API smoke checks passed. The project is suitable for Git sharing and continued environment integration. Production release remains blocked by the target-system, scale/load, recovery, browser, HA and signed supply-chain gates listed above.

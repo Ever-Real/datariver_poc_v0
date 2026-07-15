@@ -84,8 +84,8 @@ late-arrival behavior is contract-tested.
 
 Permission revocation must become effective p99 <= 60 seconds after the authoritative change and
 emergency edge blocking <= 15 seconds. The current API reloads membership attributes per request,
-and cache keys include actions/denies/clearance/system/domain plus policy version and source
-watermark. Still required: two-identity timing tests for membership, classification, explicit deny,
+and cache keys include actions/denies/clearance/system/domain plus policy version and a monotonic
+local projection version. Still required: two-identity timing tests for membership, classification, explicit deny,
 policy-version rollout and already-open Chat/stream connections.
 
 Proposed production default, pending security/data-owner approval:
@@ -107,7 +107,7 @@ external inference stays disabled until this matrix is approved and enforced.
 |---|---|---|
 | literal search safety | implemented: NFKC, minimum non-empty length, `%`/`_`/backslash escape | API negative tests and UX message in browser E2E |
 | PostgreSQL search | implemented: stored `tsvector`, GIN FTS, `pg_trgm` name index, active scope/order partial index | target-distribution EXPLAIN/BUFFERS and write-cost measurement |
-| search cache | implemented: short TTL key includes workspace, full permission scope, policy version, request and watermark; access/source counters expose hit/miss/error/write paths | Valkey eviction exporter and revocation timing under load |
+| search cache | implemented: short TTL key includes workspace, full permission scope, policy version, request and transactional local projection version; access/source counters expose hit/miss/error/write paths | Valkey eviction exporter and revocation timing under load |
 | ABAC audit amplification | Chat candidates evaluated as a set; one grouped row retains per-resource effect/reasons | extend to facets/autocomplete/export; partition/retention volume proof |
 | DataHub isolation | timeout, concurrency bulkhead, circuit breaker, fresh + bounded stale detail fallback; fixed-label request/duration/in-flight/rejection/circuit metrics | target contract/fault test; worker-process metrics; incremental watermark |
 | local read projection | search and base detail survive DataHub read failure inside stale bound | project approved detail aspects and display freshness consistently in UI |
@@ -148,6 +148,11 @@ search read model when any one condition persists after PostgreSQL tuning:
 The extracted read model stores authorization attributes, source version/watermark and document hash;
 tracks consumer/index lag, DLQ, reindex generation and drift hash; builds a shadow index and atomically
 switches aliases. PostgreSQL/DataHub ownership does not change, and stale state remains visible.
+
+The PostgreSQL cache generation is now a workspace-scoped monotonic projection version. It advances
+once per committed reconciliation page or seed mutation and is deliberately not presented as an
+external DataHub source cursor or proof that a full reconciliation is complete. Incremental source
+watermark and lag measurement remain prerequisites for a valid read-plane freshness comparison.
 
 ## 8. P2 Assistant/KG decision
 
