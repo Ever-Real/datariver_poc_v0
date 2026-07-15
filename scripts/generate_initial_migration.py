@@ -67,6 +67,8 @@ DO $datariver$
 BEGIN
     IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'datariver_app') THEN
         GRANT USAGE ON SCHEMA {RUNTIME_SCHEMAS} TO datariver_app;
+        GRANT USAGE ON SCHEMA public TO datariver_app;
+        GRANT SELECT ON public.alembic_version TO datariver_app;
         GRANT SELECT ON platform.workspaces, iam.subjects,
             iam.workspace_memberships TO datariver_app;
         GRANT INSERT ON authz.policy_decisions TO datariver_app;

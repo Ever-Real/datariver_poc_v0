@@ -185,6 +185,21 @@ def verify_runtime_hardening() -> None:
         raise AssertionError("web proxy contains a startup-only API resolution")
 
 
+def verify_readiness_contract() -> None:
+    base = _yaml(ROOT / "compose.yaml")
+    api_healthcheck = json.dumps(base["services"]["api"]["healthcheck"]["test"])
+    if "/health/ready" not in api_healthcheck or "/health/live" in api_healthcheck:
+        raise AssertionError("API upstream health must use schema-aware readiness")
+    apisix = (ROOT / "infra" / "apisix" / "apisix.yaml").read_text(encoding="utf-8")
+    if apisix.count("http_path: /api/v1/health/ready") != 2:
+        raise AssertionError("both APISIX upstreams must use readiness")
+    if "http_path: /api/v1/health/live" in apisix:
+        raise AssertionError("APISIX cannot route using process-only liveness")
+    gateway_health = (ROOT / "infra" / "apisix" / "healthcheck.sh").read_text(encoding="utf-8")
+    if "/health/ready" not in gateway_health or "/health/live" in gateway_health:
+        raise AssertionError("APISIX healthcheck must verify proxied readiness")
+
+
 def verify_ci_supply_chain() -> None:
     workflow = (ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
     required = {
@@ -322,6 +337,7 @@ def main() -> None:
     verify_compose()
     verify_build_context()
     verify_runtime_hardening()
+    verify_readiness_contract()
     verify_ci_supply_chain()
     verify_database_roles()
     verify_architecture_imports()
@@ -329,7 +345,8 @@ def main() -> None:
     verify_seed()
     verify_document_links()
     print(
-        "static verification passed: compose, build context, runtime hardening, CI supply chain, "
+        "static verification passed: compose, build context, runtime hardening/readiness, "
+        "CI supply chain, "
         "database roles, architecture, tenant foreign keys, seed, documentation"
     )
 

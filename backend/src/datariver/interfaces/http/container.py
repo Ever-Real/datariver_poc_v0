@@ -38,7 +38,13 @@ def build_container(settings: Settings) -> AppContainer:
     metrics = HttpMetrics()
     return AppContainer(
         settings=settings,
-        database=Database(settings.database_url, password=database_password),
+        database=Database(
+            settings.database_url,
+            password=database_password,
+            pool_size=settings.database_pool_size,
+            max_overflow=settings.database_pool_max_overflow,
+            pool_timeout_seconds=settings.database_pool_timeout_seconds,
+        ),
         cache=ValkeyCache(
             settings.valkey_cache_url,
             password=cache_password,

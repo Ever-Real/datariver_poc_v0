@@ -33,7 +33,7 @@ routes:
       checks:
         active:
           type: http
-          http_path: /api/v1/health/live
+          http_path: /api/v1/health/ready
           healthy:
             interval: 5
             successes: 2
@@ -74,7 +74,7 @@ routes:
       checks:
         active:
           type: http
-          http_path: /api/v1/health/live
+          http_path: /api/v1/health/ready
           healthy:
             interval: 5
             successes: 2

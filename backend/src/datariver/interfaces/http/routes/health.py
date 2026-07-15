@@ -4,11 +4,13 @@ import asyncio
 from datetime import UTC, datetime
 
 from fastapi import APIRouter, Request
+from fastapi.responses import JSONResponse
 from sqlalchemy import text
 
 from datariver.application.services.authorization import AuthorizationService
 from datariver.domain.authz import Action, Classification, ResourceAttributes
 from datariver.infrastructure.db.authz import SqlDecisionWriter
+from datariver.infrastructure.db.revision import REQUIRED_DATABASE_REVISION
 from datariver.interfaces.http.dependencies import ContextDep, get_container
 from datariver.interfaces.http.schemas import (
     CapabilitiesResponse,
@@ -23,11 +25,18 @@ async def live() -> dict[str, str]:
     return {"status": "alive"}
 
 
-@router.get("/health/ready")
-async def ready(request: Request) -> dict[str, str]:
+@router.get("/health/ready", response_model=None)
+async def ready(request: Request) -> dict[str, str] | JSONResponse:
     container = get_container(request)
-    async with container.database.engine.connect() as connection:
-        await connection.execute(text("SELECT 1"))
+    result = await container.database.readiness(
+        required_revision=REQUIRED_DATABASE_REVISION,
+        timeout_seconds=container.settings.database_readiness_timeout_seconds,
+    )
+    if not result.ready:
+        return JSONResponse(
+            status_code=503,
+            content={"status": "not_ready", "code": result.code},
+        )
     return {"status": "ready"}
 
 

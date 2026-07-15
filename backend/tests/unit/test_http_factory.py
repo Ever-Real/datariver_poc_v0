@@ -6,6 +6,7 @@ from typing import cast
 from fastapi.testclient import TestClient
 
 from datariver.config import Settings
+from datariver.infrastructure.db.session import DatabaseReadiness
 from datariver.infrastructure.observability.metrics import HttpMetrics
 from datariver.interfaces.http.container import AppContainer
 from datariver.interfaces.http.factory import create_app
@@ -17,6 +18,18 @@ class LiveOnlyContainer:
 
     async def close(self) -> None:
         return None
+
+
+class NotReadyDatabase:
+    async def readiness(self, **_: object) -> DatabaseReadiness:
+        return DatabaseReadiness(ready=False, code="SCHEMA_REVISION_MISMATCH")
+
+
+class NotReadyContainer(LiveOnlyContainer):
+    def __init__(self, configured: Settings) -> None:
+        super().__init__()
+        self.settings = configured
+        self.database = NotReadyDatabase()
 
 
 def settings() -> Settings:
@@ -63,6 +76,24 @@ def test_liveness_and_security_headers() -> None:
     assert response.json() == {"status": "alive"}
     assert response.headers["X-Request-Id"] == "valid-request-id"
     assert response.headers["X-Content-Type-Options"] == "nosniff"
+
+
+def test_liveness_survives_while_schema_readiness_returns_bounded_503() -> None:
+    configured = settings()
+    container = NotReadyContainer(configured)
+    factory = cast(Callable[[Settings], AppContainer], lambda _: container)
+    app = create_app(configured, container_factory=factory)
+
+    with TestClient(app) as client:
+        live_response = client.get("/api/v1/health/live")
+        ready_response = client.get("/api/v1/health/ready")
+
+    assert live_response.status_code == 200
+    assert ready_response.status_code == 503
+    assert ready_response.json() == {
+        "status": "not_ready",
+        "code": "SCHEMA_REVISION_MISMATCH",
+    }
 
 
 def test_invalid_request_id_is_replaced() -> None:

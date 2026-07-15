@@ -169,6 +169,12 @@ malicious output markup. RAG relevance is not a prompt-injection control.
 
 ## 9. P3 deployment and observability decision
 
+Implemented foundation: process liveness is separate from schema-aware readiness; readiness uses a
+bounded real pool lease and requires the packaged sole Alembic head. Compose, APISIX and host startup
+gate downstream processes/traffic on readiness. API and worker pool size, overflow and lease timeout
+are Settings-backed with the previous effective defaults preserved. This proves local startup and
+budget visibility, not multi-replica HA or a target `max_connections` value.
+
 - API: multiple replicas, independent liveness/readiness, explicit pool budget per replica; introduce
   PgBouncer only after transaction-local RLS context leakage tests.
 - PostgreSQL: HA topology, PITR/WAL archive, isolated restore drill, partition/autovacuum plans and

@@ -36,7 +36,7 @@ Host-port overrides do not change an OIDC issuer. When browser-facing origins ch
 1. PostgreSQL and SeaweedFS; verify storage and database health.
 2. Run Alembic exactly once with the migration identity.
 3. Start Valkey cache/queue; queue AOF recovery must complete before workers.
-4. Start relay and workers, then API and web/gateway.
+4. Start API and confirm schema-aware readiness, then relay/workers and web/gateway.
 5. Start Keycloak/Airflow overlays where applicable; DAGs remain paused until probes pass.
 6. Check `/health/ready`, `/capabilities`, `/operations/summary` and protected `/operations/metrics`.
 
@@ -47,7 +47,13 @@ and keyspace signals still require the deployment's Valkey exporter.
 
 PostgreSQL remains canonical. Never repair a Valkey stream by inventing events; recover the relay from unpublished outbox rows.
 
-Web Nginx and APISIX dynamically re-resolve the API service. After replacing the API container, verify both web `/api/v1/health/live` and gateway `/api/v1/health/live`; do not restart the UI merely to mask a stale upstream failure.
+`/health/live` returning 200 with `/health/ready` returning 503 is an intentional diagnostic state.
+`SCHEMA_REVISION_MISMATCH` requires the migration identity to apply the packaged sole head;
+`DATABASE_READINESS_TIMEOUT` indicates pool lease/query saturation; `DATABASE_UNAVAILABLE` indicates
+a bounded connection/query failure. Responses never expose the DSN, observed revision or provider
+exception. Do not route traffic to a live-but-not-ready replica.
+
+Web Nginx and APISIX dynamically re-resolve the API service. After replacing the API container, verify direct liveness plus web/gateway `/api/v1/health/ready`; do not restart the UI merely to mask a stale or schema-mismatched upstream.
 
 ## Airflow operating boundary
 

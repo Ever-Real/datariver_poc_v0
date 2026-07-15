@@ -174,6 +174,26 @@ try {
         "-m", "uvicorn", "datariver.main:app", "--host", "0.0.0.0",
         "--port", "$ApiPort", "--reload", "--reload-dir", "backend/src", "--no-access-log"
     ) $root
+    $apiReady = $false
+    $readyUri = "http://127.0.0.1:$ApiPort/api/v1/health/ready"
+    for ($attempt = 0; $attempt -lt 60; $attempt++) {
+        if ($null -eq (Get-MatchingProcess $records[0])) {
+            throw "The host API exited before readiness. Check runtime/host-dev logs."
+        }
+        try {
+            $response = Invoke-WebRequest -UseBasicParsing -Uri $readyUri -TimeoutSec 2
+            if ($response.StatusCode -eq 200) {
+                $apiReady = $true
+                break
+            }
+        } catch {
+            # Startup connection errors and bounded 503 responses are retried below.
+        }
+        Start-Sleep -Milliseconds 500
+    }
+    if (-not $apiReady) {
+        throw "The host API did not become schema-ready within 30 seconds. Run migration and inspect runtime/host-dev logs."
+    }
     Start-HostProcess "outbox-relay" $python @("-m", "datariver.workers.outbox_relay") $root
     Start-HostProcess "upload-worker" $python @("-m", "datariver.workers.upload_worker") $root
     Start-HostProcess "upload-validation-worker" $python @(

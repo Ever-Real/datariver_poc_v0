@@ -41,6 +41,13 @@ class Settings(BaseSettings):
     governance_database_secret_ref: str
     bootstrap_database_url: str
     bootstrap_database_secret_ref: str
+    database_pool_size: int = Field(default=10, ge=1, le=100)
+    database_pool_max_overflow: int = Field(default=10, ge=0, le=100)
+    database_pool_timeout_seconds: float = Field(default=10.0, ge=0.1, le=60)
+    database_readiness_timeout_seconds: float = Field(default=1.5, ge=0.1, le=10)
+    worker_database_pool_size: int = Field(default=5, ge=1, le=50)
+    worker_database_pool_max_overflow: int = Field(default=5, ge=0, le=50)
+    worker_database_pool_timeout_seconds: float = Field(default=10.0, ge=0.1, le=60)
     oidc_issuer: str
     oidc_audience: str
     oidc_jwks_url: str
@@ -103,6 +110,8 @@ class Settings(BaseSettings):
             raise ValueError("Cache and queue must use separate Valkey endpoints/databases.")
         if self.datahub_stale_ttl_seconds < self.cache_default_ttl_seconds:
             raise ValueError("The DataHub stale TTL cannot be shorter than the fresh cache TTL.")
+        if self.database_readiness_timeout_seconds > self.database_pool_timeout_seconds:
+            raise ValueError("The database readiness timeout cannot exceed the API pool timeout.")
         credential_urls = {
             "database_url": self.database_url,
             "migration_database_url": self.migration_database_url,

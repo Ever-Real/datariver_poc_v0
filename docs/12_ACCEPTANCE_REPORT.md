@@ -15,13 +15,13 @@ P0/P1-foundation addendum, 2026-07-15: current source checks include literal/ful
 | Gate | Result | Executed evidence |
 |---|---|---|
 | Python format/lint | PASS | Ruff format and check across backend, tests, DAGs, migrations and static-verification scripts |
-| Python type safety | PASS | strict mypy: 110 source files, zero issues; a local cache was placed on `C:\\tmp` to avoid the known SQLite lock behavior on a Windows UNC mount |
-| Backend behavior | PASS | 76 pytest tests: ABAC/set audit, version-scoped search cache, stale fallback, DataHub circuit/bulkhead metrics, state machines, governance, idempotency, reconciliation, bounded uploads, KG lifecycle, sharing, Chat, seed and OpenAPI |
+| Python type safety | PASS | strict mypy: 113 source files, zero issues; a local cache was placed on `C:\\tmp` to avoid the known SQLite lock behavior on a Windows UNC mount |
+| Backend behavior | PASS | 84 pytest tests: ABAC/set audit, version-scoped search cache, stale fallback, DataHub circuit/bulkhead metrics, schema readiness/timeouts, pool wiring/settings, state machines, governance, idempotency, reconciliation, bounded uploads, KG lifecycle, sharing, Chat, seed and OpenAPI |
 | Frontend | PASS | TypeScript build mode, ESLint zero warnings, 3 test files/6 tests, and Vite production build |
 | Frontend artifact | PASS | current source build: JS 307.52 kB / gzip 93.04 kB; CSS 8.26 kB / gzip 2.70 kB |
 | Dependency audit | PASS | `pip-audit 2.10.0`: no known runtime vulnerabilities; `npm audit`: 0 vulnerabilities |
 | Repository/IaC scan | PASS | Trivy 0.70.0 `vuln,secret,misconfig`, HIGH/CRITICAL, ignored-unfixed: zero findings after making the Keycloak non-root user explicit |
-| Migration | PASS | regenerated twice with unchanged `0001` SHA-256 `84DDDA564F4A61FBEAD52288963828C2F706971D77642450A46ED9B3AAD71FFA`; Alembic head `0003` upgraded the populated local `0002` database without reset |
+| Migration | PASS | regenerated twice with unchanged `0001` SHA-256 `848E6D3709B8C11EFD29E640A76C8C0B7F402C4C5E64EB43B76C88638D4DB654`; Alembic head `0004` upgraded the populated local database without reset |
 | Static invariants | PASS | Compose dependencies/secrets, runtime hardening, architecture imports, least-privilege DB roles, tenant foreign keys, seed determinism and documentation links |
 | Scripts/config | PASS | POSIX/Bash/PowerShell parsing and base, identity, Airflow, gateway and combined Compose interpolation |
 | Reference preservation | PASS | 424 files / 4,763,143 bytes; zero missing, byte or SHA-256 mismatches; secret/cache exclusions verified |
@@ -41,6 +41,7 @@ ownership.
 | Runtime routes | PASS | direct API live/ready, APISIX live and Vite-to-APISIX API proxy returned 200 |
 | External DataHub | PASS (local integration) | GMS health and scoped-token GraphQL authentication succeeded; DataRiver did not start or migrate DataHub |
 | Migration `0003` | PASS | populated `0002` database upgraded; watermark table has forced RLS, app `SELECT/INSERT/UPDATE` only and obsolete timestamp index is absent |
+| Migration/readiness `0004` | PASS | app role received only version-table read access; direct API readiness requires the packaged sole head while liveness remains independent |
 | Concurrent watermark | PASS | two app-role sessions advancing one workspace returned generations `[1, 2]`; rollback preserved `2`; a cross-workspace advance was denied by RLS |
 | Seed generation | PASS | migration backfill `1`, remove `2`, re-apply `3`; verify was a no-op; final counts remained 12 assets/257 nodes/279 edges |
 | Authorized search | PASS | same-token semiconductor `wafer` search returned the two expected authorized assets after API source reload |

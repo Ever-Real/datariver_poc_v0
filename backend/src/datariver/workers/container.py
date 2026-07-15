@@ -41,8 +41,9 @@ def _database(settings: Settings, *, role: str) -> Database:
     return Database(
         url,
         password=resolver.resolve(secret_ref),
-        pool_size=5,
-        max_overflow=5,
+        pool_size=settings.worker_database_pool_size,
+        max_overflow=settings.worker_database_pool_max_overflow,
+        pool_timeout_seconds=settings.worker_database_pool_timeout_seconds,
         application_name=f"datariver-next-{role}",
     )
 

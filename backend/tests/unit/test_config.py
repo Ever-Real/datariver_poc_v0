@@ -109,3 +109,35 @@ def test_parses_comma_separated_collection_environment_values(
     )
     assert configured.app_trusted_hosts == ("localhost", "api")
     assert configured.oidc_allowed_algorithms == ("RS256", "ES256")
+
+
+def test_database_pool_budgets_preserve_current_defaults_and_allow_overrides() -> None:
+    defaults = settings()
+    configured = settings(
+        database_pool_size=6,
+        database_pool_max_overflow=2,
+        database_pool_timeout_seconds=8,
+        database_readiness_timeout_seconds=1,
+        worker_database_pool_size=3,
+        worker_database_pool_max_overflow=1,
+        worker_database_pool_timeout_seconds=7,
+    )
+
+    assert (defaults.database_pool_size, defaults.database_pool_max_overflow) == (10, 10)
+    assert (
+        defaults.worker_database_pool_size,
+        defaults.worker_database_pool_max_overflow,
+    ) == (5, 5)
+    assert (configured.database_pool_size, configured.database_pool_max_overflow) == (6, 2)
+    assert (
+        configured.worker_database_pool_size,
+        configured.worker_database_pool_max_overflow,
+    ) == (3, 1)
+
+
+def test_rejects_readiness_timeout_longer_than_pool_timeout() -> None:
+    with pytest.raises(ValidationError, match="readiness timeout"):
+        settings(
+            database_pool_timeout_seconds=1,
+            database_readiness_timeout_seconds=2,
+        )
