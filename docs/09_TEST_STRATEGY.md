@@ -6,6 +6,12 @@ The 2026-07-15 development/integration baseline plus the current P0/P1/P2/P3 fou
 
 Executed resilience checks included cache-Valkey stop/recovery, API process restart, API container replacement behind both Nginx and APISIX, and outbox-relay restart. The API replacement test deliberately kept the web container running and verified that its Docker DNS resolver did not retain a stale upstream address.
 
+The local seeded same-token revocation probe ran 100 iterations per scenario against the direct API:
+membership inactive p99 100.660 ms, explicit `catalog.search` deny p99 167.743 ms and system/domain
+scope removal p99 193.388 ms. All passed the provisional 60-second SLA and the original service
+membership was restored. This is development evidence, not the required target-load/two-identity or
+already-open Chat/SSE gate.
+
 The strategy below remains the production release matrix. Target DataHub/object storage, backup/restore, browser PKCE/TOTP, load/soak, queue saturation, worker crash-at-each-boundary and promoted-image scans are still environment gates rather than silently assumed passes.
 
 ## Test pyramid and gates

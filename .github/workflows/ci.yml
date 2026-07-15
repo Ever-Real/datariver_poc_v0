@@ -32,7 +32,7 @@ jobs:
           uv export --quiet --frozen --no-dev --no-emit-project --format requirements-txt --output-file /tmp/datariver-runtime.txt
           uvx --from pip-audit==2.10.0 pip-audit --requirement /tmp/datariver-runtime.txt --disable-pip --progress-spinner off
       - run: uv run ruff format --check backend/src backend/tests infra/airflow/dags
-      - run: uv run ruff check backend/src backend/tests infra/airflow/dags scripts/generate_initial_migration.py scripts/verify_static.py
+      - run: uv run ruff check backend/src backend/tests infra/airflow/dags scripts/generate_initial_migration.py scripts/probe_policy_revocation.py scripts/verify_static.py
       - run: uv run mypy backend/src backend/tests
       - run: uv run pytest backend/tests -q
       - run: uv run python scripts/verify_static.py

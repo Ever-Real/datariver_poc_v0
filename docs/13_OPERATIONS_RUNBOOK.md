@@ -104,3 +104,17 @@ Dead-letter rows preserve the original event and error class. Recovery requires 
 - Preserve policy decisions, gateway/request IDs, outbox/job attempts and object manifest evidence.
 - If workspace isolation is suspected, stop external traffic and run the cross-workspace RLS test before restoration.
 - Never place access tokens, DataHub payloads or confidential Chat content in incident tickets or logs.
+
+## Local policy-revocation probe
+
+With the local semiconductor seed, Keycloak, PostgreSQL and host API running, execute
+`uv run python scripts/probe_policy_revocation.py`. The probe keeps one Airflow client-credentials
+token while measuring inactive membership, explicit search deny and system/domain scope removal.
+It uses the direct API so APISIX request limiting does not contaminate policy-cache timing.
+
+The original membership is restored and compared after every scenario and again on exit. A private,
+ignored recovery snapshot exists only while the probe runs. If the process or machine is forcibly
+terminated, do not run the probe again; first execute
+`uv run python scripts/probe_policy_revocation.py --recover` and verify authorized seed search. The
+retained `runtime/policy-probe/last-result.json` contains aggregate timing only; never copy its
+temporary recovery snapshot, access token or membership attributes into an incident/evidence store.

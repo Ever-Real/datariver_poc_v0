@@ -46,6 +46,7 @@ ownership.
 | Concurrent watermark | PASS | two app-role sessions advancing one workspace returned generations `[1, 2]`; rollback preserved `2`; a cross-workspace advance was denied by RLS |
 | Seed generation | PASS | migration backfill `1`, remove `2`, re-apply `3`; verify was a no-op; final counts remained 12 assets/257 nodes/279 edges |
 | Authorized search | PASS | same-token semiconductor `wafer` search returned the two expected authorized assets after API source reload |
+| Same-token policy revocation | PASS (local direct API) | 100 iterations/scenario: inactive membership p99 100.660 ms, explicit search deny p99 167.743 ms, system/domain scope removal p99 193.388 ms; original Airflow membership restored and verified. APISIX correctly rate-limited the first high-rate attempt, so cache-policy timing was rerun directly on `:8000` |
 
 ## Live Compose evidence (pre-P0-hardening runtime baseline)
 
@@ -83,7 +84,7 @@ The combined core + Keycloak + Airflow + APISIX stack was built and started as C
 ```bash
 uv sync --frozen --all-extras
 uv run ruff format --check backend/src backend/tests infra/airflow/dags \
-  scripts/generate_initial_migration.py scripts/verify_static.py
+  scripts/generate_initial_migration.py scripts/probe_policy_revocation.py scripts/verify_static.py
 uv run ruff check backend/src backend/tests infra/airflow/dags \
   scripts/generate_initial_migration.py scripts/verify_static.py
 uv run mypy backend/src backend/tests

@@ -210,7 +210,7 @@ Apply/remove require explicit confirmation. Production mode rejects any non-`non
 ```bash
 uv sync --frozen --all-extras
 uv run ruff format --check backend/src backend/tests infra/airflow/dags
-uv run ruff check backend/src backend/tests infra/airflow/dags scripts/generate_initial_migration.py scripts/verify_static.py
+uv run ruff check backend/src backend/tests infra/airflow/dags scripts/generate_initial_migration.py scripts/probe_policy_revocation.py scripts/verify_static.py
 uv run mypy backend/src backend/tests
 uv run pytest backend/tests -q
 uv run python scripts/verify_static.py
@@ -222,6 +222,20 @@ npm run lint
 npm run test -- --run
 npm run build
 ```
+
+With the local semiconductor seed, Keycloak and host API running, measure same-token policy
+revocation against the direct API (100 iterations each for inactive membership, explicit action deny
+and system/domain scope removal):
+
+```powershell
+uv run python scripts/probe_policy_revocation.py
+# Only if a prior process was forcibly interrupted and left its ignored recovery snapshot:
+uv run python scripts/probe_policy_revocation.py --recover
+```
+
+The probe restores and verifies the original Airflow service membership on every normal/error exit.
+It writes only aggregate timings to `runtime/policy-probe/last-result.json`; bearer tokens and raw
+membership attributes are never written to the result.
 
 CI repeats these checks, audits dependencies, scans source/IaC and release-equivalent backend/frontend images, emits CycloneDX SBOMs, verifies the generated Alembic migration, compiles Airflow DAGs and validates each Compose overlay. The local Compose/OIDC/RLS/gateway/recovery evidence and the remaining production gates are recorded in [the acceptance report](docs/12_ACCEPTANCE_REPORT.md).
 

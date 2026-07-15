@@ -85,8 +85,11 @@ late-arrival behavior is contract-tested.
 Permission revocation must become effective p99 <= 60 seconds after the authoritative change and
 emergency edge blocking <= 15 seconds. The current API reloads membership attributes per request,
 and cache keys include actions/denies/clearance/system/domain plus policy version and a monotonic
-local projection version. Still required: two-identity timing tests for membership, classification, explicit deny,
-policy-version rollout and already-open Chat/stream connections.
+local projection version. The seeded direct-API probe passed 100 iterations per scenario with p99
+100.660 ms for inactive membership, 167.743 ms for explicit search deny and 193.388 ms for system/
+domain scope removal, using one unchanged token and verified restoration. Still required: target-load,
+two-identity classification/policy-version rollout and already-open Chat/stream timing tests; the local
+numbers do not establish the emergency edge-blocking SLA.
 
 Proposed production default, pending security/data-owner approval:
 
@@ -107,7 +110,7 @@ external inference stays disabled until this matrix is approved and enforced.
 |---|---|---|
 | literal search safety | implemented: NFKC, minimum non-empty length, `%`/`_`/backslash escape | API negative tests and UX message in browser E2E |
 | PostgreSQL search | implemented: stored `tsvector`, GIN FTS, `pg_trgm` name index, active scope/order partial index | target-distribution EXPLAIN/BUFFERS and write-cost measurement |
-| search cache | implemented: short TTL key includes workspace, full permission scope, policy version, request and transactional local projection version; access/source counters expose hit/miss/error/write paths | Valkey eviction exporter and revocation timing under load |
+| search cache | implemented: short TTL key includes workspace, full permission scope, policy version, request and transactional local projection version; access/source counters expose hit/miss/error/write paths; local same-token membership/deny/scope revocation p99 is below 200 ms | Valkey eviction exporter and two-identity revocation timing under target load |
 | ABAC audit amplification | Chat candidates evaluated as a set; one grouped row retains per-resource effect/reasons | extend to facets/autocomplete/export; partition/retention volume proof |
 | DataHub isolation | timeout, concurrency bulkhead, circuit breaker, fresh + bounded stale detail fallback; fixed-label request/duration/in-flight/rejection/circuit metrics | target contract/fault test; worker-process metrics; incremental watermark |
 | local read projection | search and base detail survive DataHub read failure inside stale bound | project approved detail aspects and display freshness consistently in UI |
@@ -199,8 +202,10 @@ budget visibility, not multi-replica HA or a target `max_connections` value.
    target DataHub/OIDC/S3 versions.
 2. Run migration on an empty copy and a production-sized synthetic copy; capture the search-plan
    matrix and index write/storage cost.
-3. Add policy/source revocation timing, target DataHub fault, worker kill/reclaim and 60-minute
-   load/soak automation; cache/API DataHub metrics are exposed, while worker/sync/Valkey metrics remain.
+3. Extend the local membership/deny/scope revocation probe to two identities, classification,
+   policy-version and open Chat/stream sessions under load; add target DataHub fault, worker
+   kill/reclaim and 60-minute load/soak automation. Cache/API DataHub metrics are exposed, while
+   worker/sync/Valkey metrics remain.
 4. Implement and contract-test incremental DataHub change-watermark ingestion, retaining nightly full
    reconcile as drift verification/recovery.
 5. Add partition provisioning/retention/WORM export only with approved volume/legal inputs.
