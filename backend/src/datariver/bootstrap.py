@@ -24,6 +24,21 @@ LOCAL_KEYCLOAK_SUBJECT = "00000000-0000-4000-8000-000000000001"
 LOCAL_KEYCLOAK_AIRFLOW_SUBJECT = "00000000-0000-4000-8000-000000000002"
 
 
+def _resolve_local_subject(
+    fixed_subject: SubjectModel | None,
+    identity_subject: SubjectModel | None,
+    *,
+    label: str,
+) -> SubjectModel | None:
+    if (
+        fixed_subject is not None
+        and identity_subject is not None
+        and identity_subject is not fixed_subject
+    ):
+        raise RuntimeError(f"The local {label} identity belongs to another subject.")
+    return fixed_subject if fixed_subject is not None else identity_subject
+
+
 async def bootstrap_local_identity() -> dict[str, object]:
     settings = get_settings()
     if settings.app_env == "production":
@@ -49,7 +64,8 @@ async def bootstrap_local_identity() -> dict[str, object]:
                     version=1,
                 )
                 session.add(workspace)
-            subject = (
+            subject = await session.get(SubjectModel, LOCAL_SUBJECT_ID)
+            identity_subject = (
                 await session.scalars(
                     select(SubjectModel).where(
                         SubjectModel.issuer == settings.oidc_issuer,
@@ -57,6 +73,7 @@ async def bootstrap_local_identity() -> dict[str, object]:
                     )
                 )
             ).one_or_none()
+            subject = _resolve_local_subject(subject, identity_subject, label="administrator")
             if subject is None:
                 subject = SubjectModel(
                     id=LOCAL_SUBJECT_ID,
@@ -67,6 +84,11 @@ async def bootstrap_local_identity() -> dict[str, object]:
                 )
                 session.add(subject)
                 await session.flush()
+            else:
+                subject.issuer = settings.oidc_issuer
+                subject.external_subject = LOCAL_KEYCLOAK_SUBJECT
+                subject.display_name = "DataRiver Local Administrator"
+                subject.active = True
             membership = await session.get(
                 WorkspaceMembershipModel,
                 {"workspace_id": workspace.id, "subject_id": subject.id},
@@ -95,7 +117,8 @@ async def bootstrap_local_identity() -> dict[str, object]:
                 membership.clearance = int(Classification.RESTRICTED)
                 membership.attributes = attributes
                 membership.active = True
-            airflow_subject = (
+            airflow_subject = await session.get(SubjectModel, LOCAL_AIRFLOW_SUBJECT_ID)
+            identity_airflow_subject = (
                 await session.scalars(
                     select(SubjectModel).where(
                         SubjectModel.issuer == settings.oidc_issuer,
@@ -103,6 +126,11 @@ async def bootstrap_local_identity() -> dict[str, object]:
                     )
                 )
             ).one_or_none()
+            airflow_subject = _resolve_local_subject(
+                airflow_subject,
+                identity_airflow_subject,
+                label="Airflow",
+            )
             if airflow_subject is None:
                 airflow_subject = SubjectModel(
                     id=LOCAL_AIRFLOW_SUBJECT_ID,
@@ -113,6 +141,11 @@ async def bootstrap_local_identity() -> dict[str, object]:
                 )
                 session.add(airflow_subject)
                 await session.flush()
+            else:
+                airflow_subject.issuer = settings.oidc_issuer
+                airflow_subject.external_subject = LOCAL_KEYCLOAK_AIRFLOW_SUBJECT
+                airflow_subject.display_name = "DataRiver Airflow Service"
+                airflow_subject.active = True
             airflow_membership = await session.get(
                 WorkspaceMembershipModel,
                 {"workspace_id": workspace.id, "subject_id": airflow_subject.id},
