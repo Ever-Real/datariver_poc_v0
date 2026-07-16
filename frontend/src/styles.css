@@ -30,6 +30,10 @@ textarea { min-height: 110px; resize: vertical; }
 .badge { display: inline-block; margin-right: 6px; border-radius: var(--radius); padding: 3px 6px; color: white; font-size: 10px; font-weight: 800; background: var(--blue-700); }
 .badge-soft { color: #53655f; background: #e9ece5; }
 .empty-state { border: 1px dashed var(--line-300); border-radius: var(--radius); padding: 28px; color: var(--text-500); text-align: center; }
+.unavailable-capability { display: grid; grid-template-columns: 34px minmax(0, 1fr); align-items: start; gap: 12px; padding: 16px; }
+.unavailable-capability > span { width: 30px; height: 30px; display: grid; place-items: center; border: 1px solid #b5bdc6; color: var(--blue-700); font-weight: 900; background: #eef2f5; }
+.unavailable-capability h2 { margin: 0 0 5px; font-size: 14px; }
+.unavailable-capability p { margin: 0; color: var(--text-600); font-size: 11px; line-height: 1.6; }
 .notice { display: grid; gap: 5px; margin: 14px 0; border-radius: var(--radius); padding: 10px; }
 .notice-error { color: #782f2a; background: #fbe9e5; }
 .notice code { font-size: 11px; }

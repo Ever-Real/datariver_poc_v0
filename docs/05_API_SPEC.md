@@ -30,7 +30,7 @@ Generated OpenAPI at `/api/v1/openapi.json` is authoritative for implemented pay
 |---|---|---|
 | `GET /health/live` | public | process liveness only |
 | `GET /health/ready` | dependency probe | canonical readiness |
-| `GET /capabilities` | `operations.read` | sanitized capability states |
+| `GET /capabilities` | `operations.read` | sanitized capability states plus optional server-validated external UI links; no credential-bearing or client-supplied URL |
 | `GET /operations/summary` | `operations.read` | workspace counts for jobs, uploads, changes and outbox lag, plus the fail-closed retention-automation state |
 | `GET /operations/metrics` | `operations.read` | bounded-label Prometheus HTTP metrics |
 

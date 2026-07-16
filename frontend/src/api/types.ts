@@ -6,6 +6,12 @@ export interface Capability {
   detail_code?: string
 }
 
+export interface ExternalSystemLink {
+  system_id: 'datahub' | 'airflow' | 'grafana' | 'prometheus' | 'graph'
+  label: string
+  url: string
+}
+
 export interface OperationsSummary {
   observed_at: string
   jobs_by_state: Record<string, number>

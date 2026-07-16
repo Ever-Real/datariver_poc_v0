@@ -29,14 +29,14 @@ Deliver a portable, Git-shareable DataRiver platform that safely wraps external 
 
 | Phase | Status | Evidence / next gate |
 |---|---|---|
-| 0–4 | Complete for development baseline | reference manifest, controlled docs/ADRs, OIDC + ABAC/RLS, catalog/registration/governance, KG changesets/releases/sharing/Chat and the verified 309-test backend suite |
+| 0–4 | Complete for development baseline | reference manifest, controlled docs/ADRs, OIDC + ABAC/RLS, catalog/registration/governance, KG changesets/releases/sharing/Chat and the verified 311-test backend suite |
 | 5 | Complete for local integration | separate Valkey roles, SeaweedFS init, four workers, Keycloak, two paused Airflow DAGs and read-only APISIX verified live |
 | 6 | Baseline complete; legacy UX parity in progress | modular React flows and deterministic 12-asset/257-node/279-edge seed pass; dense v0.3 interaction parity and full Playwright user journeys remain open |
 | 7 | Partially complete | dependency/source/IaC scans, selected recovery drills and runtime logs pass; target DataHub/object contract, backup/restore, load/soak, chaos and signed promoted-image evidence remain |
 
 ## Active UX parity delivery — 2026-07-17
 
-The development baseline above is not the final user-experience acceptance. The active delivery objective is to reproduce the v0.3 visual and workflow model on top of the governed v1 contracts. The staged status, screen-by-screen traceability, security substitutions, and acceptance protocol are controlled in [the legacy UX parity plan](15_LEGACY_UX_PARITY_PLAN.md). Stage 0 is complete and Stage 1 is in progress; no later stage is represented as accepted until its source, tests, and runtime evidence pass together.
+The development baseline above is not the final user-experience acceptance. The active delivery objective is to reproduce the v0.3 visual and workflow model on top of the governed v1 contracts. The staged status, screen-by-screen traceability, security substitutions, and acceptance protocol are controlled in [the legacy UX parity plan](15_LEGACY_UX_PARITY_PLAN.md). Stage 1 source and unit verification is complete with its authenticated visual snapshot gate still open; Stage 2 is in progress. No stage is represented as fully accepted until its source, tests, and runtime evidence pass together.
 
 The authoritative decision and exact measurements are in [the acceptance report](12_ACCEPTANCE_REPORT.md). No phase with an open production gate is represented as production complete.
 

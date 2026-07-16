@@ -1,15 +1,20 @@
 import { useEffect, useState, type FormEvent } from 'react'
+import { ChevronLeft, ChevronRight } from 'lucide-react'
 import type { Page } from '../../app/navigation'
+import type { ExternalSystemLink } from '../../api/types'
 import { primaryNavigation } from '../../app/navigation'
 import { GlobalCatalogSearch } from './GlobalCatalogSearch'
-import { ProfileMenu } from './ProfileMenu'
+import { ExternalSystemLinks } from './ExternalSystemLinks'
+import { ProfileMenu, type AdminMenuItem } from './ProfileMenu'
 
 interface TopNavigationProps {
   page: Page
   workspace: string
   displayName: string
-  canAdminister: boolean
+  adminMenuItems: AdminMenuItem[]
+  externalSystemLinks: ExternalSystemLink[]
   onNavigate: (page: Page) => void
+  onNavigateAdmin: (section: string) => void
   onSearch: (query: string) => void
   onWorkspaceChange: (workspace: string) => void
   onEnrollSecurityKey: () => void
@@ -20,14 +25,17 @@ export function TopNavigation({
   page,
   workspace,
   displayName,
-  canAdminister,
+  adminMenuItems,
+  externalSystemLinks,
   onNavigate,
+  onNavigateAdmin,
   onSearch,
   onWorkspaceChange,
   onEnrollSecurityKey,
   onSignOut,
 }: TopNavigationProps) {
   const [workspaceDraft, setWorkspaceDraft] = useState(workspace)
+  const [navigation, setNavigation] = useState<HTMLElement | null>(null)
   useEffect(() => setWorkspaceDraft(workspace), [workspace])
 
   const applyWorkspace = (event: FormEvent) => {
@@ -42,7 +50,9 @@ export function TopNavigation({
         <span>DataRiver</span>
       </button>
       <nav className="primary-navigation" aria-label="주 메뉴">
-        {primaryNavigation.map(({ id, label }) => (
+        <button className="navigation-scroll navigation-scroll-left" type="button" aria-label="이전 메뉴" onClick={() => navigation?.scrollBy({ left: -240, behavior: 'smooth' })}><ChevronLeft size={14} /></button>
+        <div className="primary-navigation-track" ref={setNavigation}>
+        {primaryNavigation.map(({ id, label, badge }) => (
           <button
             type="button"
             key={id}
@@ -50,9 +60,12 @@ export function TopNavigation({
             aria-current={page === id ? 'page' : undefined}
             onClick={() => onNavigate(id)}
           >
-            {label}
+            <span>{label}</span>
+            {badge && <small>{badge}</small>}
           </button>
         ))}
+        </div>
+        <button className="navigation-scroll navigation-scroll-right" type="button" aria-label="다음 메뉴" onClick={() => navigation?.scrollBy({ left: 240, behavior: 'smooth' })}><ChevronRight size={14} /></button>
       </nav>
       <GlobalCatalogSearch onSearch={onSearch} />
       <form className="workspace-control" onSubmit={applyWorkspace}>
@@ -70,10 +83,11 @@ export function TopNavigation({
         <span title="현재 저장소의 단일 호스트 배포 등급">Single-node Pilot</span>
         <span title="서버가 최종 권한을 평가합니다">ABAC</span>
       </div>
+      <ExternalSystemLinks links={externalSystemLinks} />
       <ProfileMenu
         displayName={displayName}
-        canAdminister={canAdminister}
-        onAdmin={() => onNavigate('admin')}
+        adminMenuItems={adminMenuItems}
+        onAdmin={onNavigateAdmin}
         onEnrollSecurityKey={onEnrollSecurityKey}
         onSignOut={onSignOut}
       />

@@ -4,6 +4,8 @@ import { pageFromLocation, pageUrl } from './navigation'
 describe('navigation contract', () => {
   it('rejects unknown pages and preserves only typed destinations', () => {
     expect(pageFromLocation('https://catalog.example/?page=knowledge')).toBe('knowledge')
+    expect(pageFromLocation('https://catalog.example/?page=change-management')).toBe('change-management')
+    expect(pageFromLocation('https://catalog.example/?page=monitoring')).toBe('monitoring')
     expect(pageFromLocation('https://catalog.example/?page=not-a-page')).toBe('dashboard')
   })
 
@@ -17,4 +19,3 @@ describe('navigation contract', () => {
     })).toBe('/app?page=dashboard')
   })
 })
-

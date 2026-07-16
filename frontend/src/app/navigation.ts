@@ -1,18 +1,21 @@
 export const primaryNavigation = [
-  { id: 'dashboard', label: '운영' },
-  { id: 'catalog', label: '검색' },
-  { id: 'registration', label: '등록' },
-  { id: 'governance', label: '변경관리' },
-  { id: 'knowledge', label: '지식그래프' },
-  { id: 'sharing', label: 'API 공유' },
-  { id: 'chat', label: 'Chat' },
+  { id: 'catalog', label: '검색', badge: undefined },
+  { id: 'registration', label: '등록관리', badge: undefined },
+  { id: 'change-management', label: '변경관리', badge: undefined },
+  { id: 'quality', label: '품질관리', badge: 'Beta' },
+  { id: 'knowledge', label: '지식관리', badge: undefined },
+  { id: 'monitoring', label: '모니터링', badge: undefined },
+  { id: 'governance', label: '거버넌스', badge: undefined },
+  { id: 'chat', label: 'Chat', badge: 'Beta' },
 ] as const
 
 export type PrimaryPage = typeof primaryNavigation[number]['id']
-export type Page = PrimaryPage | 'admin'
+export type Page = PrimaryPage | 'dashboard' | 'sharing' | 'admin'
 
 const pageIds = new Set<Page>([
   ...primaryNavigation.map(({ id }) => id),
+  'dashboard',
+  'sharing',
   'admin',
 ])
 
@@ -28,4 +31,3 @@ export function pageUrl(page: Page, options: { query?: string; href?: string } =
   else url.searchParams.delete('q')
   return `${url.pathname}${url.search}${url.hash}`
 }
-

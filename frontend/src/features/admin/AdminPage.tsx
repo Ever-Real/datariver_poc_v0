@@ -20,7 +20,7 @@ const sections = [
   'memberships', 'fallback', 'classification', 'providers', 'restrictedGrants',
   'retention', 'holds', 'erasure',
 ] as const
-type AdminSection = typeof sections[number]
+export type AdminSection = typeof sections[number]
 
 const sectionOperations: Record<AdminSection, readonly AdminOperation[]> = {
   memberships: ['MEMBERSHIP_ACCESS_READ', 'MEMBERSHIP_ACCESS_UPDATE'],

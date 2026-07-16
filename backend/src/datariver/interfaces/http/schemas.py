@@ -4,7 +4,7 @@ from datetime import datetime
 from typing import Any, Literal
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, HttpUrl, field_validator, model_validator
 
 from datariver.domain.authz import Action
 
@@ -196,8 +196,15 @@ class CapabilityResponse(BaseModel):
     detail_code: str | None = None
 
 
+class ExternalSystemLinkResponse(BaseModel):
+    system_id: Literal["datahub", "airflow", "grafana", "prometheus", "graph"]
+    label: str
+    url: HttpUrl
+
+
 class CapabilitiesResponse(BaseModel):
     items: list[CapabilityResponse]
+    external_system_links: list[ExternalSystemLinkResponse] = Field(default_factory=list)
 
 
 class ProblemDetails(BaseModel):

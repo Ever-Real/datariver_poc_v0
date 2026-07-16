@@ -58,7 +58,7 @@ Status values are `READY` (parity accepted), `PARTIAL` (a governed v1 contract o
 
 | ID | Area | Required parity outcome | Current status | Acceptance focus |
 |---|---|---|---|---|
-| UX-PAR-001 | Common shell | v0.3-recognizable GNB, page title, compact sizing, profile administration menu | PARTIAL | visual snapshot, capability-negative menu tests, keyboard flow |
+| UX-PAR-001 | Common shell | v0.3-recognizable GNB, page title, compact sizing, profile administration menu | PARTIAL | source/unit complete; authenticated reference-viewport visual snapshot remains open |
 | UX-PAR-002 | Global search | debounced authorized suggestions with preview, minimum length, multi-keyword handoff | PARTIAL | stale-cache labelling, no cross-workspace or policy-version leakage |
 | UX-PAR-003 | Catalog layout | left Resource Tree, middle dense result table, filter/facet bar, paging and export | PARTIAL | server paging/sort/filter, permission-safe counts and export |
 | UX-PAR-004 | Catalog detail | row accordion with table/column metadata and lineage graph | PLANNED | selected state survives paging; unauthorized neighbors are absent |
@@ -146,8 +146,8 @@ GraphRAG evaluation is pinned to an immutable graph release, query-template revi
 | Stage | Scope | Status | Exit evidence |
 |---|---|---|---|
 | 0 | objective, legacy audit, parity matrix and safe substitutions | COMPLETE | all legacy screens and unsafe patterns mapped; controlled-doc review complete |
-| 1 | common shell, route/state model and shared Dialog/DataTable/Accordion primitives | IN PROGRESS | shell tests, accessibility checks and reference viewport snapshots |
-| 2 | search, Resource Tree, table result, detail and lineage | NOT STARTED | API/FE unit tests, authorization negatives, paging/cache contracts |
+| 1 | common shell, route/state model and shared Dialog/DataTable/Accordion primitives | SOURCE COMPLETE; VISUAL GATE OPEN | type/lint/build, 47 FE tests and capability-negative shell tests pass; authenticated snapshots remain |
+| 2 | search, Resource Tree, table result, detail and lineage | IN PROGRESS | API/FE unit tests, authorization negatives, paging/cache contracts |
 | 3 | manual and bulk registration | NOT STARTED | upload/validation/proposal/apply tests and object-manifest evidence |
 | 4 | change overview, list, workflow and attachments | NOT STARTED | transition, Maker-Checker, attachment and audit tests |
 | 5 | knowledge registry, ontology, graph and evaluation | NOT STARTED | release/projection/provenance, bounded graph and graph-policy tests |

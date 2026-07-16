@@ -15,6 +15,7 @@ from datariver.interfaces.http.dependencies import ContextDep, get_container
 from datariver.interfaces.http.schemas import (
     CapabilitiesResponse,
     CapabilityResponse,
+    ExternalSystemLinkResponse,
 )
 
 router = APIRouter(tags=["platform"])
@@ -114,5 +115,16 @@ async def capabilities(request: Request, context: ContextDep) -> CapabilitiesRes
                 latency_ms=datahub_status.latency_ms,
                 detail_code=datahub_status.detail_code,
             ),
-        ]
+        ],
+        external_system_links=[
+            ExternalSystemLinkResponse(system_id=system_id, label=label, url=url)
+            for system_id, label, url in (
+                ("datahub", "DataHub", container.settings.ui_datahub_url),
+                ("airflow", "Airflow", container.settings.ui_airflow_url),
+                ("grafana", "Grafana", container.settings.ui_grafana_url),
+                ("prometheus", "Prometheus", container.settings.ui_prometheus_url),
+                ("graph", "Knowledge Graph", container.settings.ui_graph_url),
+            )
+            if url is not None
+        ],
     )

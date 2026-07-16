@@ -92,6 +92,8 @@ failover/restore evidence; replica settings alone are not an HA claim (ADR-0013)
 
 The v1 repository still does not own DataHub. The example below reuses a DataHub GMS already exposed on host port `8080`; replace both URLs and the scoped token when the external service is elsewhere.
 
+Browser-visible auxiliary links are optional and independent of backend provider endpoints. Configure only the links that the deployment wants to expose with `UI_DATAHUB_URL`, `UI_AIRFLOW_URL`, `UI_GRAFANA_URL`, `UI_PROMETHEUS_URL`, and `UI_GRAPH_URL`. The API validates and publishes them through the authenticated capabilities response; it does not invent localhost defaults or return credentials. Production accepts HTTPS links only.
+
 For a native Windows checkout, bootstrap from PowerShell. First use includes `-DataHubToken '<scoped-token>'`; later runs preserve the existing token when omitted.
 
 ```powershell

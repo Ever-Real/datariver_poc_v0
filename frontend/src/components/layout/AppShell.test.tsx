@@ -51,8 +51,10 @@ describe('application shell contracts', () => {
     const common = {
       page: 'dashboard' as const,
       displayName: 'User',
-      canAdminister: false,
+      adminMenuItems: [],
+      externalSystemLinks: [],
       onNavigate: vi.fn(),
+      onNavigateAdmin: vi.fn(),
       onSearch: vi.fn(),
       onWorkspaceChange: vi.fn(),
       onEnrollSecurityKey: vi.fn(),
@@ -80,15 +82,15 @@ describe('application shell contracts', () => {
     render(
       <ProfileMenu
         displayName="Administrator"
-        canAdminister={false}
+        adminMenuItems={[]}
         onAdmin={vi.fn()}
         onEnrollSecurityKey={vi.fn()}
         onSignOut={vi.fn()}
       />,
     )
-    fireEvent.click(screen.getByText('Administrator'))
-    expect(screen.queryByRole('button', { name: '관리자' })).not.toBeInTheDocument()
-    expect(screen.getByRole('button', { name: 'USB 보안키 등록' })).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Administrator 사용자 메뉴' }))
+    expect(screen.queryByText('Administration')).not.toBeInTheDocument()
+    expect(screen.getByRole('menuitem', { name: 'USB 보안키 등록' })).toBeInTheDocument()
   })
 
   it('routes allowed administration and account actions explicitly', () => {
@@ -98,17 +100,19 @@ describe('application shell contracts', () => {
     render(
       <ProfileMenu
         displayName="Administrator"
-        canAdminister
+        adminMenuItems={[{ id: 'retention', label: '보존정책' }]}
         onAdmin={onAdmin}
         onEnrollSecurityKey={onEnrollSecurityKey}
         onSignOut={onSignOut}
       />,
     )
-    fireEvent.click(screen.getByText('Administrator'))
-    fireEvent.click(screen.getByRole('button', { name: '관리자' }))
-    fireEvent.click(screen.getByRole('button', { name: 'USB 보안키 등록' }))
-    fireEvent.click(screen.getByRole('button', { name: '로그아웃' }))
-    expect(onAdmin).toHaveBeenCalledOnce()
+    fireEvent.click(screen.getByRole('button', { name: 'Administrator 사용자 메뉴' }))
+    fireEvent.click(screen.getByRole('menuitem', { name: '보존정책' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Administrator 사용자 메뉴' }))
+    fireEvent.click(screen.getByRole('menuitem', { name: 'USB 보안키 등록' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Administrator 사용자 메뉴' }))
+    fireEvent.click(screen.getByRole('menuitem', { name: '로그아웃' }))
+    expect(onAdmin).toHaveBeenCalledWith('retention')
     expect(onEnrollSecurityKey).toHaveBeenCalledOnce()
     expect(onSignOut).toHaveBeenCalledOnce()
   })
@@ -136,8 +140,10 @@ describe('application shell contracts', () => {
         page="catalog"
         workspace="workspace-one"
         displayName="User"
-        canAdminister
+        adminMenuItems={[{ id: 'memberships', label: '계정·권한' }]}
+        externalSystemLinks={[{ system_id: 'datahub', label: 'DataHub', url: 'https://datahub.example.com' }]}
         onNavigate={onNavigate}
+        onNavigateAdmin={vi.fn()}
         onSearch={vi.fn()}
         onWorkspaceChange={onWorkspaceChange}
         onEnrollSecurityKey={vi.fn()}
@@ -147,13 +153,19 @@ describe('application shell contracts', () => {
     const navigation = screen.getByRole('navigation', { name: '주 메뉴' })
     expect(navigation).not.toHaveTextContent('관리자')
     expect(within(navigation).getByRole('button', { name: '검색' })).toHaveAttribute('aria-current', 'page')
+    expect(within(navigation).getByRole('button', { name: '등록관리' })).toBeInTheDocument()
+    expect(within(navigation).getByRole('button', { name: /품질관리.*Beta/ })).toBeInTheDocument()
+    expect(within(navigation).getByRole('button', { name: '모니터링' })).toBeInTheDocument()
+    expect(within(navigation).getByRole('button', { name: '거버넌스' })).toBeInTheDocument()
     fireEvent.click(screen.getByRole('button', { name: '변경관리' }))
-    expect(onNavigate).toHaveBeenCalledWith('governance')
+    expect(onNavigate).toHaveBeenCalledWith('change-management')
     const workspace = screen.getByRole('textbox', { name: 'Workspace ID' })
     fireEvent.change(workspace, { target: { value: ' workspace-two ' } })
     expect(onWorkspaceChange).not.toHaveBeenCalled()
     fireEvent.click(screen.getByRole('button', { name: '적용' }))
     expect(onWorkspaceChange).toHaveBeenCalledWith('workspace-two')
     expect(screen.getByText('Single-node Pilot')).toBeInTheDocument()
+    expect(screen.getByRole('link', { name: 'DataHub' })).toHaveAttribute('href', 'https://datahub.example.com')
+    expect(screen.getByRole('link', { name: 'DataHub' })).toHaveAttribute('rel', 'noopener noreferrer')
   })
 })

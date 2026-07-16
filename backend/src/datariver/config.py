@@ -72,6 +72,11 @@ class Settings(BaseSettings):
     datahub_circuit_failure_threshold: int = Field(default=5, ge=1, le=100)
     datahub_circuit_open_seconds: float = Field(default=30.0, ge=1, le=300)
     datahub_stale_ttl_seconds: int = Field(default=900, ge=30, le=86_400)
+    ui_datahub_url: HttpUrl | None = None
+    ui_airflow_url: HttpUrl | None = None
+    ui_grafana_url: HttpUrl | None = None
+    ui_prometheus_url: HttpUrl | None = None
+    ui_graph_url: HttpUrl | None = None
 
     valkey_cache_url: str
     valkey_queue_url: str
@@ -123,6 +128,22 @@ class Settings(BaseSettings):
     def parse_csv(cls, value: object) -> object:
         if isinstance(value, str):
             return tuple(part.strip() for part in value.split(",") if part.strip())
+        return value
+
+    @field_validator(
+        "ui_datahub_url",
+        "ui_airflow_url",
+        "ui_grafana_url",
+        "ui_prometheus_url",
+        "ui_graph_url",
+    )
+    @classmethod
+    def reject_ui_link_credentials(cls, value: HttpUrl | None) -> HttpUrl | None:
+        if value is None:
+            return None
+        parsed = urlsplit(str(value))
+        if parsed.username is not None or parsed.password is not None:
+            raise ValueError("External UI links cannot contain user information.")
         return value
 
     @model_validator(mode="after")
@@ -201,6 +222,17 @@ class Settings(BaseSettings):
                 "oidc_jwks_url": self.oidc_jwks_url,
                 "datahub_base_url": self.datahub_base_url,
                 "s3_public_endpoint_url": self.s3_public_endpoint_url,
+                **{
+                    name: str(url)
+                    for name, url in {
+                        "ui_datahub_url": self.ui_datahub_url,
+                        "ui_airflow_url": self.ui_airflow_url,
+                        "ui_grafana_url": self.ui_grafana_url,
+                        "ui_prometheus_url": self.ui_prometheus_url,
+                        "ui_graph_url": self.ui_graph_url,
+                    }.items()
+                    if url is not None
+                },
             }
             insecure = [
                 name for name, url in external_urls.items() if not url.startswith("https://")

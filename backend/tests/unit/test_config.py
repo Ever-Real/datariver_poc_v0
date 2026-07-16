@@ -72,6 +72,33 @@ def test_rejects_unimplemented_secret_provider() -> None:
         settings(datahub_secret_ref="vault:secret/data/datariver")
 
 
+def test_external_ui_links_are_optional_and_cannot_embed_credentials() -> None:
+    configured = settings(
+        ui_datahub_url="https://catalog.example.com/datahub",
+        ui_grafana_url="https://observe.example.com/grafana",
+    )
+
+    assert str(configured.ui_datahub_url) == "https://catalog.example.com/datahub"
+    assert configured.ui_airflow_url is None
+    with pytest.raises(ValidationError, match="cannot contain user information"):
+        settings(ui_grafana_url="https://admin:secret@observe.example.com")
+
+
+def test_production_external_ui_links_require_tls() -> None:
+    with pytest.raises(ValidationError, match="ui_grafana_url"):
+        settings(
+            app_env="production",
+            app_public_origin="https://catalog.example.com",
+            app_cors_origins=("https://catalog.example.com",),
+            oidc_issuer="https://idp.example.com/realms/data",
+            oidc_jwks_url="https://idp.example.com/realms/data/certs",
+            datahub_base_url="https://datahub.example.com",
+            datahub_version_enforcement="enforce",
+            s3_public_endpoint_url="https://objects.example.com",
+            ui_grafana_url="http://observe.example.com",
+        )
+
+
 def test_production_requires_tls_and_disables_seed() -> None:
     with pytest.raises(ValidationError):
         settings(app_env="production", seed_profile="semiconductor")

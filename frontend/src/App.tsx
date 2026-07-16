@@ -1,16 +1,20 @@
 import { useEffect, useMemo, useState } from 'react'
 import { ApiClient } from './api/client'
-import type { AdminReadContext } from './api/types'
+import type { AdminReadContext, Capability, ExternalSystemLink } from './api/types'
 import { pageFromLocation, pageUrl, type Page } from './app/navigation'
 import { useAuth } from './auth/AuthProvider'
 import { AppShell } from './components/layout/AppShell'
 import { PageTitle } from './components/layout/PageTitle'
-import { AdminPage } from './features/admin/AdminPage'
+import { AdminPage, allowedAdminSections } from './features/admin/AdminPage'
+import { getAdminMessages } from './features/admin/messages'
 import { CatalogPage } from './features/catalog/CatalogPage'
 import { ChatPage } from './features/chat/ChatPage'
 import { DashboardPage } from './features/dashboard/DashboardPage'
 import { GovernancePage } from './features/governance/GovernancePage'
 import { KnowledgePage } from './features/knowledge/KnowledgePage'
+import { MonitoringPage } from './features/monitoring/MonitoringPage'
+import { PolicyGovernancePage } from './features/policy/PolicyGovernancePage'
+import { QualityPage } from './features/quality/QualityPage'
 import { RegistrationPage } from './features/registration/RegistrationPage'
 import { SharingPage } from './features/sharing/SharingPage'
 
@@ -19,6 +23,7 @@ export function App() {
   const [page, setPage] = useState<Page>(pageFromLocation)
   const [catalogQuery, setCatalogQuery] = useState(() => new URL(window.location.href).searchParams.get('q') ?? '')
   const [workspace, setWorkspace] = useState(() => window.localStorage.getItem('datariver.workspace') ?? '')
+  const [externalSystemLinks, setExternalSystemLinks] = useState<ExternalSystemLink[]>([])
   const [adminAccess, setAdminAccess] = useState<{
     workspace: string
     status: 'checking' | 'allowed' | 'denied'
@@ -60,10 +65,32 @@ export function App() {
     return () => { active = false }
   }, [client, workspace])
 
+  useEffect(() => {
+    let active = true
+    if (!workspace) {
+      setExternalSystemLinks([])
+      return () => { active = false }
+    }
+    void client.request<{ items: Capability[]; external_system_links: ExternalSystemLink[] }>('/capabilities')
+      .then((response) => { if (active) setExternalSystemLinks(response.external_system_links) })
+      .catch(() => { if (active) setExternalSystemLinks([]) })
+    return () => { active = false }
+  }, [client, workspace])
+
   const navigate = (next: Page) => {
     window.history.pushState({}, '', pageUrl(next))
     setCatalogQuery('')
     setPage(next)
+  }
+
+  const navigateAdmin = (adminSection: string) => {
+    const url = new URL(window.location.href)
+    url.searchParams.set('page', 'admin')
+    url.searchParams.set('adminSection', adminSection)
+    url.searchParams.delete('q')
+    window.history.pushState({}, '', `${url.pathname}${url.search}${url.hash}`)
+    setCatalogQuery('')
+    setPage('admin')
   }
 
   const searchCatalog = (query: string) => {
@@ -94,15 +121,21 @@ export function App() {
     ? adminAccess.context
     : undefined
   const currentAdminStatus = adminAccess.workspace === workspace ? adminAccess.status : 'checking'
+  const adminMessages = getAdminMessages()
+  const adminMenuItems = currentAdminContext
+    ? allowedAdminSections(currentAdminContext).map((id) => ({ id, label: adminMessages[id] }))
+    : []
 
   return (
     <AppShell
       page={page}
       workspace={workspace}
       displayName={auth.user.profile.name ?? auth.user.profile.sub}
-      canAdminister={Boolean(currentAdminContext)}
+      adminMenuItems={adminMenuItems}
+      externalSystemLinks={externalSystemLinks}
       notice={auth.notice}
       onNavigate={navigate}
+      onNavigateAdmin={navigateAdmin}
       onSearch={searchCatalog}
       onWorkspaceChange={saveWorkspace}
       onEnrollSecurityKey={() => void auth.beginWebAuthnEnrollment()}
@@ -112,8 +145,11 @@ export function App() {
       {page === 'dashboard' && <DashboardPage client={client} />}
       {page === 'catalog' && <CatalogPage client={client} initialQuery={catalogQuery} />}
       {page === 'registration' && <RegistrationPage client={client} />}
-      {page === 'governance' && <GovernancePage client={client} onStepUp={auth.beginStepUp} onPasswordReauth={auth.beginPasswordReauth} onEnroll={auth.beginWebAuthnEnrollment} />}
+      {page === 'change-management' && <GovernancePage client={client} onStepUp={auth.beginStepUp} onPasswordReauth={auth.beginPasswordReauth} onEnroll={auth.beginWebAuthnEnrollment} />}
+      {page === 'quality' && <QualityPage />}
       {page === 'knowledge' && <KnowledgePage client={client} />}
+      {page === 'monitoring' && <MonitoringPage />}
+      {page === 'governance' && <PolicyGovernancePage />}
       {page === 'sharing' && <SharingPage client={client} onStepUp={auth.beginStepUp} onPasswordReauth={auth.beginPasswordReauth} onEnroll={auth.beginWebAuthnEnrollment} />}
       {page === 'chat' && <ChatPage client={client} />}
       {page === 'admin' && currentAdminContext && <AdminPage client={client} initialContext={currentAdminContext} onStepUp={auth.beginStepUp} onPasswordReauth={auth.beginPasswordReauth} onEnroll={auth.beginWebAuthnEnrollment} />}

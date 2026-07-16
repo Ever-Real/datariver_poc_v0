@@ -1,7 +1,7 @@
 :root {
   font-family: Inter, Pretendard, "Noto Sans KR", system-ui, sans-serif;
-  color: #172334;
-  background: #f5f3ec;
+  color: #26251e;
+  background: #f7f7f4;
   font-synthesis: none;
   --navy-950: #071426;
   --navy-900: #0a192f;
@@ -10,10 +10,10 @@
   --blue-600: #0865a8;
   --blue-100: #e7f1f8;
   --cream-50: #fbfaf6;
-  --cream-100: #f5f3ec;
+  --cream-100: #f7f7f4;
   --line-200: #d8dce1;
   --line-300: #c4cad2;
-  --text-900: #172334;
+  --text-900: #26251e;
   --text-600: #526274;
   --text-500: #6d7886;
   --success-700: #27633a;
@@ -23,10 +23,9 @@
 }
 
 * { box-sizing: border-box; }
-html { min-width: 960px; background: var(--cream-100); }
-body { margin: 0; min-width: 960px; min-height: 100vh; color: var(--text-900); background: var(--cream-100); }
+html { min-width: 320px; background: var(--cream-100); }
+body { margin: 0; min-width: 320px; min-height: 100vh; color: var(--text-900); background: var(--cream-100); }
 button, input, select, textarea { font: inherit; }
 button { cursor: pointer; }
 code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; overflow-wrap: anywhere; }
 .sr-only { position: absolute !important; width: 1px !important; height: 1px !important; overflow: hidden !important; clip: rect(0, 0, 0, 0) !important; white-space: nowrap !important; }
-

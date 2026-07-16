@@ -1,16 +1,20 @@
 import type { ReactNode } from 'react'
 import type { AuthNotice } from '../../auth/AuthProvider'
+import type { ExternalSystemLink } from '../../api/types'
 import type { Page } from '../../app/navigation'
 import { TopNavigation } from './TopNavigation'
+import type { AdminMenuItem } from './ProfileMenu'
 
 interface AppShellProps {
   page: Page
   workspace: string
   displayName: string
-  canAdminister: boolean
+  adminMenuItems: AdminMenuItem[]
+  externalSystemLinks: ExternalSystemLink[]
   notice?: AuthNotice
   children: ReactNode
   onNavigate: (page: Page) => void
+  onNavigateAdmin: (section: string) => void
   onSearch: (query: string) => void
   onWorkspaceChange: (workspace: string) => void
   onEnrollSecurityKey: () => void
@@ -22,10 +26,12 @@ export function AppShell({
   page,
   workspace,
   displayName,
-  canAdminister,
+  adminMenuItems,
+  externalSystemLinks,
   notice,
   children,
   onNavigate,
+  onNavigateAdmin,
   onSearch,
   onWorkspaceChange,
   onEnrollSecurityKey,
@@ -39,8 +45,10 @@ export function AppShell({
         page={page}
         workspace={workspace}
         displayName={displayName}
-        canAdminister={canAdminister}
+        adminMenuItems={adminMenuItems}
+        externalSystemLinks={externalSystemLinks}
         onNavigate={onNavigate}
+        onNavigateAdmin={onNavigateAdmin}
         onSearch={onSearch}
         onWorkspaceChange={onWorkspaceChange}
         onEnrollSecurityKey={onEnrollSecurityKey}
