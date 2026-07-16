@@ -12,6 +12,15 @@ export interface ExternalSystemLink {
   url: string
 }
 
+export interface CapabilitiesResponse {
+  items: Capability[]
+  external_system_links: ExternalSystemLink[]
+}
+
+export interface CatalogExportCapability {
+  enabled: boolean
+}
+
 export interface OperationsSummary {
   observed_at: string
   jobs_by_state: Record<string, number>
@@ -115,6 +124,41 @@ export interface CatalogLineage {
   depth: number
   truncated: boolean
   meta: CatalogPolicyMeta
+}
+
+export interface CatalogExportCreateRequest {
+  q: string
+  asset_type?: string
+  platform?: string
+  classification?: Classification
+  lifecycle?: 'ACTIVE'
+  sort: 'NAME_ASC'
+  format: 'CSV'
+}
+
+export interface CatalogExportCreateResponse {
+  export_id: string
+  job_id: string
+  state: string
+}
+
+export interface CatalogExportStatus {
+  export_id: string
+  job_id: string
+  state: string
+  last_error_code: string | null
+  row_count: number | null
+  size_bytes: number | null
+  content_sha256: string | null
+  display_name: string
+  created_at: string
+  completed_at: string | null
+  access_until: string
+}
+
+export interface CatalogExportDownload {
+  url: string
+  expires_seconds: number
 }
 
 export interface UploadRecord {

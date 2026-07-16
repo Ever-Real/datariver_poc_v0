@@ -5,8 +5,15 @@ from datetime import datetime
 from typing import Any
 from uuid import UUID
 
+from datariver.application.classification_access import ClassificationAccessSnapshot
 from datariver.domain.admin_access import AdminOperation
-from datariver.domain.authz import Action, AuthenticationAssurance, Classification, Decision
+from datariver.domain.authz import (
+    Action,
+    AuthenticationAssurance,
+    Classification,
+    Decision,
+    SubjectAttributes,
+)
 from datariver.domain.governance import ChangeRequest
 
 
@@ -207,6 +214,78 @@ class CatalogLineage:
     policy_version: str = ""
     classification_policy_version: int | None = None
     authorization_generation: int | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class CatalogExportRequest:
+    query: str
+    filters: dict[str, str]
+    sort: str = "NAME_ASC"
+    format: str = "CSV"
+
+    def document(self) -> dict[str, object]:
+        return {
+            "query": self.query,
+            "filters": dict(sorted(self.filters.items())),
+            "sort": self.sort,
+            "format": self.format,
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class CatalogExportRecord:
+    export_id: UUID
+    workspace_id: UUID
+    job_id: UUID
+    requested_by: UUID
+    request: CatalogExportRequest
+    request_hash: str
+    permission_scope_hash: str
+    classification_access_hash: str
+    builtin_policy_version: str
+    classification_policy_id: UUID | None
+    classification_policy_hash: str | None
+    classification_policy_version: int | None
+    authorization_generation: int | None
+    source_projection_version: int
+    classification_ceiling: Classification
+    csv_safety_version: str
+    display_name: str
+    mime: str
+    job_state: str
+    last_error_code: str | None
+    row_count: int | None
+    size_bytes: int | None
+    content_sha256: str | None
+    provider_checksum: str | None
+    object_bucket: str | None
+    object_key: str | None
+    created_at: datetime
+    completed_at: datetime | None
+    access_until: datetime
+
+
+@dataclass(frozen=True, slots=True)
+class CatalogExportClaim:
+    export: CatalogExportRecord
+    attempt_id: UUID
+    attempt_no: int
+    subject: SubjectAttributes
+    access: ClassificationAccessSnapshot
+    snapshot_valid: bool
+
+
+@dataclass(frozen=True, slots=True)
+class CatalogExportArtifact:
+    size_bytes: int
+    content_sha256: str
+    provider_checksum: str | None
+
+
+@dataclass(frozen=True, slots=True)
+class CatalogExportDownload:
+    url: str
+    expires_seconds: int
 
 
 @dataclass(frozen=True, slots=True)

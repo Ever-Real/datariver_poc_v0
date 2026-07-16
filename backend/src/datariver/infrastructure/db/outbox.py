@@ -9,6 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from datariver.domain.common import utc_now
 from datariver.infrastructure.db.models.integration import InboxMessageModel, OutboxEventModel
+from datariver.infrastructure.db.rls import set_security_context
 
 
 @dataclass(frozen=True, slots=True)
@@ -86,6 +87,7 @@ class SqlInboxStore:
 
     async def accept(self, *, consumer: str, event_id: UUID, workspace_id: UUID) -> bool:
         async with self._session_factory() as session, session.begin():
+            await set_security_context(session, workspace_id=workspace_id, subject_id=None)
             existing = await session.get(InboxMessageModel, (consumer, event_id))
             if existing is not None:
                 return existing.completed_at is None
@@ -99,8 +101,11 @@ class SqlInboxStore:
             )
             return True
 
-    async def complete(self, *, consumer: str, event_id: UUID, result_hash: str) -> None:
+    async def complete(
+        self, *, consumer: str, event_id: UUID, workspace_id: UUID, result_hash: str
+    ) -> None:
         async with self._session_factory() as session, session.begin():
+            await set_security_context(session, workspace_id=workspace_id, subject_id=None)
             message = await session.get(
                 InboxMessageModel, (consumer, event_id), with_for_update=True
             )

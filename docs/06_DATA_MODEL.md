@@ -43,6 +43,7 @@ Missing or inconsistent active state falls back to the portable static floor.
 | `catalog.assets_projection` | `id`, `workspace_id + urn_hash UQ`, external identity/scope/classification/lifecycle, nullable typed-container `database_name`/`schema_name`, stored `search_vector`, source version/owner, `last_seen_sync_id`, observed/deleted times | authorized search/tree/base-detail projection; DataHub remains canonical |
 | `catalog.sync_runs` | PK workspace/sync, state/next offset/start/heartbeat/completion | single-writer ordered full reconciliation and stale-run recovery |
 | `catalog.projection_watermarks` | `workspace_id PK/FK`, non-negative `projection_version BIGINT` | transactional local read-model generation used for cache invalidation |
+| `catalog.export_requests` | workspace/requester/job composite FKs, canonical request and security/source hashes, non-RESTRICTED classification ceiling, private artifact receipt, access deadline; owner-select plus forced workspace RLS | owner-scoped managed CSV intent and verified artifact metadata; object content remains private storage state |
 
 Projection page idempotency is recorded in `integration.idempotency_keys`. Every committed page
 advances the workspace projection version exactly once in the same transaction; replay, rejection
@@ -139,6 +140,10 @@ Alembic `0012` adds only the active lower-name prefix index used by the governed
 suggestion contract; no new source-of-truth or cross-workspace table is introduced.
 Alembic `0013` adds nullable database/schema hierarchy projection columns and the active hierarchy
 partial index. It changes no canonical ownership: DataHub remains the applied metadata source.
+Alembic `0014` adds `catalog.export_requests`, owner-select and workspace RLS, immutable request and
+security/source snapshot bindings, non-RESTRICTED classification ceiling, artifact-shape/hash
+constraints and only the API grants needed to insert/read owner records and create jobs. It does not
+provision an export DB role or S3 identity; runtime enablement remains a separate operator action.
 
 ## Constraints enforced outside DDL
 

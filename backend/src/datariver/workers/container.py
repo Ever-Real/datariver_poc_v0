@@ -34,10 +34,17 @@ class GovernanceWorkerContainer(RelayWorkerContainer):
         await super().close()
 
 
+@dataclass(slots=True)
+class CatalogExportWorkerContainer(RelayWorkerContainer):
+    object_store: S3ObjectStore
+
+
 def _database(settings: Settings, *, role: str) -> Database:
     resolver = SecretResolver()
     url = getattr(settings, f"{role}_database_url")
     secret_ref = getattr(settings, f"{role}_database_secret_ref")
+    if not isinstance(url, str) or not isinstance(secret_ref, str):
+        raise RuntimeError(f"Database credentials for worker role {role} are not configured.")
     return Database(
         url,
         password=resolver.resolve(secret_ref),
@@ -91,5 +98,30 @@ def build_governance_container(settings: Settings) -> GovernanceWorkerContainer:
             queue_timeout_seconds=settings.datahub_queue_timeout_seconds,
             circuit_failure_threshold=settings.datahub_circuit_failure_threshold,
             circuit_open_seconds=settings.datahub_circuit_open_seconds,
+        ),
+    )
+
+
+def build_catalog_export_container(settings: Settings) -> CatalogExportWorkerContainer:
+    if (
+        not settings.catalog_export_worker_enabled
+        or settings.export_database_url is None
+        or settings.export_database_secret_ref is None
+        or settings.s3_export_access_key_file is None
+        or settings.s3_export_secret_key_file is None
+    ):
+        raise RuntimeError(
+            "Catalog export worker requires explicit enablement and separate DB/S3 credentials."
+        )
+    resolver = SecretResolver()
+    return CatalogExportWorkerContainer(
+        database=_database(settings, role="export"),
+        event_delivery=_delivery(settings, resolver),
+        object_store=S3ObjectStore(
+            endpoint_url=settings.s3_endpoint_url,
+            public_endpoint_url=settings.s3_public_endpoint_url,
+            region=settings.s3_region,
+            access_key=resolver.resolve(f"file:{settings.s3_export_access_key_file}"),
+            secret_key=resolver.resolve(f"file:{settings.s3_export_secret_key_file}"),
         ),
     )

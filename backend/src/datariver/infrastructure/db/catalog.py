@@ -304,6 +304,59 @@ class SqlCatalogIndexReader(CatalogIndexReader):
             observed_at=observed_at,
         )
 
+    async def export_page(
+        self,
+        *,
+        subject: SubjectAttributes,
+        access: ClassificationAccessSnapshot,
+        query: str,
+        filters: dict[str, Any],
+        cursor: str | None,
+        limit: int,
+    ) -> CatalogPage:
+        """Read one stable export page while unconditionally excluding RESTRICTED rows."""
+
+        conditions = self._scope_conditions(subject, access)
+        conditions.append(AssetProjectionModel.classification < int(Classification.RESTRICTED))
+        if query:
+            conditions.append(_catalog_query_condition(query))
+        conditions.extend(self._filter_conditions(filters))
+        if cursor:
+            cursor_name, cursor_id = _decode_cursor(cursor)
+            conditions.append(
+                or_(
+                    AssetProjectionModel.name > cursor_name,
+                    and_(
+                        AssetProjectionModel.name == cursor_name,
+                        AssetProjectionModel.id > cursor_id,
+                    ),
+                )
+            )
+        rows = list(
+            (
+                await self._session.scalars(
+                    select(AssetProjectionModel)
+                    .where(and_(*conditions))
+                    .order_by(AssetProjectionModel.name, AssetProjectionModel.id)
+                    .limit(limit + 1)
+                )
+            ).all()
+        )
+        has_more = len(rows) > limit
+        visible_rows = rows[:limit]
+        return CatalogPage(
+            items=tuple(_to_index(row) for row in visible_rows),
+            next_cursor=(
+                _encode_cursor(visible_rows[-1].name, visible_rows[-1].id)
+                if has_more and visible_rows
+                else None
+            ),
+            observed_at=max(
+                (row.observed_at for row in visible_rows),
+                default=datetime.now(UTC),
+            ),
+        )
+
     async def facets(
         self,
         *,

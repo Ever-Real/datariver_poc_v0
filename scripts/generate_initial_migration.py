@@ -54,6 +54,15 @@ def build_upgrade() -> ops.UpgradeOps:
                     f"WITH CHECK ({workspace_column} = {RLS_SETTING})"
                 )
             )
+            if table.fullname == "catalog.export_requests":
+                operations.append(
+                    ops.ExecuteSQLOp(
+                        "CREATE POLICY catalog_export_owner_select ON catalog.export_requests "
+                        "AS RESTRICTIVE FOR SELECT USING ("
+                        "current_user <> 'datariver_app' OR requested_by = "
+                        "NULLIF(current_setting('app.subject_id', true), '')::uuid)"
+                    )
+                )
     operations.extend(
         ops.CreateForeignKeyOp.from_constraint(constraint)
         for constraint in _deferred_foreign_keys()
@@ -82,10 +91,12 @@ BEGIN
         GRANT INSERT ON authz.policy_decisions TO datariver_app;
         GRANT SELECT, INSERT, UPDATE ON catalog.assets_projection,
             catalog.sync_runs, catalog.projection_watermarks TO datariver_app;
+        GRANT SELECT, INSERT ON catalog.export_requests TO datariver_app;
         GRANT SELECT, INSERT ON governance.change_request_items,
             governance.approvals, governance.state_transitions TO datariver_app;
         GRANT SELECT, INSERT, UPDATE ON governance.change_requests TO datariver_app;
         GRANT SELECT ON integration.jobs, integration.job_attempts TO datariver_app;
+        GRANT INSERT ON integration.jobs TO datariver_app;
         GRANT SELECT, INSERT, UPDATE ON integration.object_manifests TO datariver_app;
         GRANT SELECT, INSERT ON integration.idempotency_keys,
             integration.outbox_events TO datariver_app;

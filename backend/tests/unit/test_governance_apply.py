@@ -11,6 +11,7 @@ from datariver.application.dto import (
     CapabilityStatus,
     DataHubApplyReceipt,
     DataHubAspectSnapshot,
+    DataHubLineagePage,
     DataHubScanPage,
     GovernanceApplyClaim,
 )
@@ -89,7 +90,7 @@ class MemoryDataHub:
 
     async def get_lineage(
         self, *, external_urn: str, direction: str, depth: int
-    ) -> Sequence[dict[str, Any]]:
+    ) -> DataHubLineagePage:
         raise NotImplementedError(external_urn, direction, depth)
 
     async def capability(self) -> CapabilityStatus:

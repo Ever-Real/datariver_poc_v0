@@ -8,6 +8,7 @@ import type {
   CatalogSearch,
   CatalogSuggestion,
   CatalogSuggestions,
+  Classification,
 } from '../../api/types'
 import { ErrorNotice } from '../../components/ErrorNotice'
 import { CursorPagination } from '../../components/common/CursorPagination'
@@ -15,6 +16,7 @@ import { DenseDataTable } from '../../components/common/DenseDataTable'
 import { TruncatedText } from '../../components/common/TruncatedText'
 import { PageTitle } from '../../components/layout/PageTitle'
 import { CatalogDetailPane } from './CatalogDetailPane'
+import { CatalogExportControl } from './CatalogExportControl'
 import { CatalogMatchPreview } from './CatalogMatchText'
 import { CatalogResourceTree } from './CatalogResourceTree'
 
@@ -44,10 +46,12 @@ export function CatalogPage({
   client,
   initialQuery = '',
   onQueryChange,
+  catalogExportWorkerEnabled = false,
 }: {
   client: ApiClient
   initialQuery?: string
   onQueryChange?: (query: string) => void
+  catalogExportWorkerEnabled?: boolean
 }) {
   const [draftQuery, setDraftQuery] = useState(initialQuery)
   const [query, setQuery] = useState(initialQuery)
@@ -160,6 +164,14 @@ export function CatalogPage({
         <label>Classification<select value={filters.classification} onChange={(event) => updateFilter('classification', event.target.value)}><option value="">전체</option>{facets?.classifications.map((item) => item.value && <option key={item.value} value={item.value}>{item.value} ({item.count})</option>)}</select></label>
         <button type="button" className="button button-secondary" onClick={() => { setFilters(emptyFilters); setCursors([undefined]); setPageIndex(0) }}>필터 초기화</button>
       </div>
+      <CatalogExportControl
+        client={client}
+        workerEnabled={catalogExportWorkerEnabled}
+        query={query}
+        assetType={filters.assetType || undefined}
+        platform={filters.platform || undefined}
+        classification={classificationValue(filters.classification)}
+      />
     </div>
     <ErrorNotice error={error} />
     <div className={`catalog-workspace ${selectedAssetId ? 'with-detail' : ''}`}>
@@ -173,4 +185,11 @@ export function CatalogPage({
       {selectedAssetId && <CatalogDetailPane key={selectedAssetId} client={client} assetId={selectedAssetId} onClose={() => setSelectedAssetId(undefined)} />}
     </div>
   </section>
+}
+
+function classificationValue(value: string): Classification | undefined {
+  if (value === 'PUBLIC' || value === 'INTERNAL' || value === 'CONFIDENTIAL' || value === 'RESTRICTED') {
+    return value
+  }
+  return undefined
 }

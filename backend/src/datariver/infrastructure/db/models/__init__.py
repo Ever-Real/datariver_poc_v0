@@ -10,6 +10,7 @@ from datariver.infrastructure.db.models.authz import (
 )
 from datariver.infrastructure.db.models.catalog import (
     AssetProjectionModel,
+    CatalogExportModel,
     CatalogProjectionWatermarkModel,
     CatalogSyncRunModel,
 )
@@ -83,6 +84,7 @@ __all__ = [
     "ArchiveCapabilityAttestationModel",
     "AssetProjectionModel",
     "AssistantRunModel",
+    "CatalogExportModel",
     "CatalogProjectionWatermarkModel",
     "CatalogSyncRunModel",
     "ChangeItemModel",

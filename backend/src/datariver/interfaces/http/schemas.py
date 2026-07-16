@@ -145,6 +145,47 @@ class CatalogSyncResponse(BaseModel):
     observed_at: datetime
 
 
+class CatalogExportCreateRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    q: str = Field(default="", max_length=500)
+    asset_type: str | None = Field(default=None, min_length=1, max_length=100)
+    platform: str | None = Field(default=None, min_length=1, max_length=100)
+    classification: Literal["PUBLIC", "INTERNAL", "CONFIDENTIAL", "RESTRICTED"] | None = None
+    lifecycle: Literal["ACTIVE"] | None = None
+    sort: Literal["NAME_ASC"] = "NAME_ASC"
+    format: Literal["CSV"] = "CSV"
+
+
+class CatalogExportCreateResponse(BaseModel):
+    export_id: UUID
+    job_id: UUID
+    state: str
+
+
+class CatalogExportStatusResponse(BaseModel):
+    export_id: UUID
+    job_id: UUID
+    state: str
+    last_error_code: str | None
+    row_count: int | None = Field(default=None, ge=0)
+    size_bytes: int | None = Field(default=None, ge=0)
+    content_sha256: str | None = Field(default=None, pattern="^[0-9a-f]{64}$")
+    display_name: str
+    created_at: datetime
+    completed_at: datetime | None
+    access_until: datetime
+
+
+class CatalogExportDownloadResponse(BaseModel):
+    url: str
+    expires_seconds: int = Field(ge=60, le=900)
+
+
+class CatalogExportCapabilityResponse(BaseModel):
+    enabled: bool
+
+
 class ChangeItemRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 

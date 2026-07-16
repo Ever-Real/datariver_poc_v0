@@ -8,6 +8,7 @@ from sqlalchemy import (
     CheckConstraint,
     Computed,
     ForeignKey,
+    ForeignKeyConstraint,
     Index,
     String,
     Text,
@@ -19,7 +20,13 @@ from sqlalchemy import (
 from sqlalchemy.dialects.postgresql import TSVECTOR
 from sqlalchemy.orm import Mapped, mapped_column
 
-from datariver.infrastructure.db.base import Base, TimestampMixin, UuidPrimaryKeyMixin
+from datariver.infrastructure.db.base import (
+    JSON_DOCUMENT,
+    Base,
+    TimestampMixin,
+    UuidPrimaryKeyMixin,
+    VersionMixin,
+)
 
 
 class AssetProjectionModel(Base, UuidPrimaryKeyMixin, TimestampMixin):
@@ -142,3 +149,91 @@ class CatalogProjectionWatermarkModel(Base):
         server_default=text("0"),
         nullable=False,
     )
+
+
+class CatalogExportModel(Base, UuidPrimaryKeyMixin, TimestampMixin, VersionMixin):
+    __tablename__ = "export_requests"
+    __table_args__ = (
+        UniqueConstraint("workspace_id", "id"),
+        UniqueConstraint("workspace_id", "job_id"),
+        UniqueConstraint("object_bucket", "object_key"),
+        ForeignKeyConstraint(
+            ("workspace_id", "requested_by"),
+            ("iam.workspace_memberships.workspace_id", "iam.workspace_memberships.subject_id"),
+            ondelete="RESTRICT",
+        ),
+        ForeignKeyConstraint(
+            ("workspace_id", "job_id"),
+            ("integration.jobs.workspace_id", "integration.jobs.id"),
+            ondelete="RESTRICT",
+            use_alter=True,
+            name="fk_catalog_export_requests_workspace_job",
+        ),
+        CheckConstraint("request_hash ~ '^[0-9a-f]{64}$'", name="request_hash_sha256"),
+        CheckConstraint(
+            "permission_scope_hash ~ '^[0-9a-f]{64}$'",
+            name="permission_scope_hash_sha256",
+        ),
+        CheckConstraint(
+            "classification_access_hash ~ '^[0-9a-f]{64}$'",
+            name="classification_access_hash_sha256",
+        ),
+        CheckConstraint(
+            "classification_ceiling BETWEEN 0 AND 2",
+            name="classification_ceiling_nonrestricted",
+        ),
+        CheckConstraint(
+            "source_projection_version >= 0",
+            name="source_projection_version_nonnegative",
+        ),
+        CheckConstraint("row_count IS NULL OR row_count >= 0", name="row_count_nonnegative"),
+        CheckConstraint("size_bytes IS NULL OR size_bytes >= 0", name="size_bytes_nonnegative"),
+        CheckConstraint(
+            "content_sha256 IS NULL OR content_sha256 ~ '^[0-9a-f]{64}$'",
+            name="content_sha256_valid",
+        ),
+        CheckConstraint(
+            "(object_bucket IS NULL AND object_key IS NULL AND row_count IS NULL "
+            "AND size_bytes IS NULL AND content_sha256 IS NULL AND completed_at IS NULL) "
+            "OR (object_bucket IS NOT NULL AND object_key IS NOT NULL AND row_count IS NOT NULL "
+            "AND size_bytes IS NOT NULL AND content_sha256 IS NOT NULL "
+            "AND completed_at IS NOT NULL)",
+            name="artifact_shape",
+        ),
+        CheckConstraint(
+            "(classification_policy_id IS NULL AND classification_policy_hash IS NULL "
+            "AND classification_policy_version IS NULL AND authorization_generation IS NULL) "
+            "OR (classification_policy_id IS NOT NULL AND classification_policy_hash IS NOT NULL "
+            "AND classification_policy_version IS NOT NULL "
+            "AND authorization_generation IS NOT NULL)",
+            name="classification_policy_binding_shape",
+        ),
+        Index("ix_catalog_exports_owner_time", "workspace_id", "requested_by", "created_at"),
+        {"schema": "catalog"},
+    )
+
+    workspace_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), nullable=False)
+    job_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), nullable=False)
+    requested_by: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), nullable=False)
+    request_document: Mapped[dict[str, object]] = mapped_column(JSON_DOCUMENT, nullable=False)
+    request_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    permission_scope_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    classification_access_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    builtin_policy_version: Mapped[str] = mapped_column(String(100), nullable=False)
+    classification_policy_id: Mapped[UUID | None] = mapped_column(Uuid(as_uuid=True))
+    classification_policy_hash: Mapped[str | None] = mapped_column(String(64))
+    classification_policy_version: Mapped[int | None]
+    authorization_generation: Mapped[int | None] = mapped_column(BigInteger)
+    source_projection_version: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    classification_ceiling: Mapped[int] = mapped_column(nullable=False)
+    csv_safety_version: Mapped[str] = mapped_column(String(32), nullable=False)
+    object_bucket: Mapped[str | None] = mapped_column(String(255))
+    object_key: Mapped[str | None] = mapped_column(Text)
+    display_name: Mapped[str] = mapped_column(String(255), nullable=False)
+    mime: Mapped[str] = mapped_column(String(100), nullable=False)
+    row_count: Mapped[int | None] = mapped_column(BigInteger)
+    size_bytes: Mapped[int | None] = mapped_column(BigInteger)
+    content_sha256: Mapped[str | None] = mapped_column(String(64))
+    provider_checksum: Mapped[str | None] = mapped_column(String(255))
+    completed_at: Mapped[datetime | None]
+    access_until: Mapped[datetime] = mapped_column(nullable=False)

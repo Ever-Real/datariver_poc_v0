@@ -43,7 +43,11 @@ Generated OpenAPI at `/api/v1/openapi.json` is authoritative for implemented pay
 | `GET /catalog/suggestions?q=&limit=` | `catalog.search` | permission-prefiltered name autocomplete, maximum 20; two-character requests use the bounded prefix path and longer requests may use trigram similarity |
 | `GET /catalog/tree/nodes?q=&parent_kind=ROOT\|PLATFORM\|DATABASE\|SCHEMA&platform=&database=&schema=&cursor=&limit=` | `catalog.search` | lazy canonical Resource Tree branch; authorization-pruned child counts, branch cursor and cache context are bound to the request security/projection snapshot |
 | `GET /catalog/assets/{asset_id}` | `catalog.read` | authorized local base detail plus typed DataHub enrichment; optional `stale_at` marks bounded fallback |
-| `GET /catalog/assets/{asset_id}/lineage?direction=UP\|DOWN\|BOTH&depth=1..3` | `catalog.read` | bounded typed DataHub lineage with set-based local authorization; a hidden intermediate truncates rather than bridges a path |
+| `GET /catalog/assets/{asset_id}/lineage?direction=UPSTREAM\|DOWNSTREAM\|BOTH&depth=1..3` | `catalog.read` | bounded typed DataHub lineage with set-based local authorization; a hidden intermediate truncates rather than bridges a path |
+| `GET /catalog/export-capability` | `catalog.export` | separately authorized feature state; missing permission, dependency error or disabled worker is fail-closed in the UI |
+| `POST /catalog/exports` | `catalog.export` | create an owner-scoped CSV job from exact typed search filters and an `Idempotency-Key`; RESTRICTED is denied |
+| `GET /catalog/exports/{export_id}` | `catalog.export` + owner | bounded job/artifact status; never returns bucket, object key or a source cursor |
+| `POST /catalog/exports/{export_id}/download` | `catalog.export` + owner | revalidate current permission/policy/projection and object metadata, then issue a 60-second URL with `Cache-Control: no-store` |
 | `POST /catalog/sync/datahub` | `catalog.sync` | idempotently upsert one fixed-contract DataHub scan page |
 
 Search, facet and suggestion metadata identifies the built-in policy version, governed classification
@@ -239,6 +243,21 @@ Production enforcement blocks enrichment, scan, apply and read-back with sanitiz
 `VERSION_MISMATCH`. This runtime check complements, rather than replaces, digest pinning and live
 contract tests in the external DataHub deployment.
 
+### Managed catalog export invariants
+
+The API never accepts an object coordinate, provider endpoint, arbitrary column list, cursor or raw
+query language for export. Creation persists a canonical request hash plus permission,
+classification-policy, built-in-policy, CSV-safety and projection snapshots in the same transaction
+as its job, outbox event and idempotency result. The worker reads only the local authorized
+projection, always excludes `RESTRICTED`, emits a fixed RFC 4180 UTF-8 schema, fails closed on stale
+snapshots and uses an attempt-unique private object key. Row, record and object-byte ceilings are
+enforced. A stale/superseded lease cannot complete or overwrite a newer attempt.
+
+Status is requester-owned. Download repeats authorization and snapshot checks, reconciles the stored
+size, request metadata and provider ETag, and returns no storage coordinate other than the bounded
+presigned URL. The runtime toggle defaults off. Enabling it without separate DB and S3 principals is
+configuration-invalid; the checked-in local stack intentionally has no such credentials yet.
+
 ## Planned compatibility endpoints
 
-The remaining backlog, not present in current OpenAPI, is governed server-side catalog export; upload cancel/download and governed erasure execution/consumption; automated graph extraction and projection rebuild; Chat session history/SSE/external-model adapters; immutable archive export/target-conformance workers; and job/audit browsing/retry. PostgreSQL can persist verified archive evidence, but no HTTP route, export worker or deletion capability is exposed. The disabled-first assistant inference source contract is not an HTTP route or deployed provider integration. Backlog features may not be emulated with generic provider or arbitrary query pass-through.
+The remaining backlog, not present in current OpenAPI, is upload cancel/download and governed erasure execution/consumption; automated graph extraction and projection rebuild; Chat session history/SSE/external-model adapters; immutable archive export/target-conformance workers; and job/audit browsing/retry. PostgreSQL can persist verified archive evidence, but no archive-export or deletion capability is exposed. The catalog-export source/API/UI contract exists but its isolated worker deployment remains disabled pending separately provisioned credentials. The disabled-first assistant inference source contract is not an HTTP route or deployed provider integration. Backlog features may not be emulated with generic provider or arbitrary query pass-through.

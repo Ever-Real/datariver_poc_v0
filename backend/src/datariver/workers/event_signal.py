@@ -50,6 +50,7 @@ class EventSignalConsumer:
                 await self._inbox.complete(
                     consumer=self._group,
                     event_id=event.event_id,
+                    workspace_id=event.workspace_id,
                     result_hash=result_hash,
                 )
             await self._delivery.acknowledge(

@@ -17,6 +17,10 @@ from datariver.application.dto import (
     CapabilityStatus,
     CatalogAssetDetail,
     CatalogAssetIndex,
+    CatalogExportArtifact,
+    CatalogExportClaim,
+    CatalogExportRecord,
+    CatalogExportRequest,
     CatalogFacets,
     CatalogPage,
     CatalogSuggestions,
@@ -168,6 +172,89 @@ class CatalogTelemetry(Protocol):
     def catalog_cache_access(self, *, cache: str, outcome: str) -> None: ...
 
     def catalog_detail_source(self, *, source: str) -> None: ...
+
+
+class CatalogExportStore(Protocol):
+    async def create(
+        self,
+        *,
+        workspace_id: UUID,
+        requested_by: UUID,
+        request: CatalogExportRequest,
+        request_hash: str,
+        permission_scope_hash: str,
+        classification_access_hash: str,
+        builtin_policy_version: str,
+        classification_policy_id: UUID | None,
+        classification_policy_hash: str | None,
+        classification_policy_version: int | None,
+        authorization_generation: int | None,
+        source_projection_version: int,
+        classification_ceiling: int,
+        csv_safety_version: str,
+        access_until: datetime,
+        idempotency_key: str,
+    ) -> CatalogExportRecord: ...
+
+    async def get_owned(
+        self, *, workspace_id: UUID, export_id: UUID, requested_by: UUID
+    ) -> CatalogExportRecord | None: ...
+
+
+class CatalogExportWorkerStore(Protocol):
+    async def claim_next(
+        self,
+        *,
+        worker_id: str,
+        system_actor_id: UUID,
+        lease_seconds: int,
+        maximum_attempts: int,
+    ) -> CatalogExportClaim | None: ...
+
+    async def read_page(
+        self,
+        *,
+        claim: CatalogExportClaim,
+        cursor: str | None,
+        limit: int,
+    ) -> CatalogPage: ...
+
+    async def snapshot_is_current(self, *, claim: CatalogExportClaim) -> bool: ...
+
+    async def mark_completed(
+        self,
+        *,
+        claim: CatalogExportClaim,
+        system_actor_id: UUID,
+        bucket: str,
+        object_key: str,
+        artifact: CatalogExportArtifact,
+        row_count: int,
+    ) -> None: ...
+
+    async def mark_failed(
+        self,
+        *,
+        claim: CatalogExportClaim,
+        system_actor_id: UUID,
+        error_code: str,
+        retryable: bool,
+        maximum_attempts: int,
+    ) -> None: ...
+
+
+class CatalogExportObjectStore(Protocol):
+    async def write_export(
+        self,
+        *,
+        bucket: str,
+        object_key: str,
+        chunks: AsyncIterator[bytes],
+        metadata: dict[str, str],
+        maximum_bytes: int,
+    ) -> CatalogExportArtifact: ...
+
+    async def delete_export(self, *, bucket: str, object_key: str) -> None: ...
 
 
 class DataHubGateway(Protocol):

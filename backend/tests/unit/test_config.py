@@ -199,6 +199,53 @@ def test_rejects_readiness_timeout_longer_than_pool_timeout() -> None:
         )
 
 
+def test_catalog_export_worker_is_disabled_by_default_and_requires_isolated_credentials() -> None:
+    assert settings().catalog_export_worker_enabled is False
+    with pytest.raises(ValidationError, match="separately provisioned"):
+        settings(catalog_export_worker_enabled=True)
+
+    isolated = settings(
+        catalog_export_worker_enabled=True,
+        export_database_url="postgresql+asyncpg://export@localhost/db",
+        export_database_secret_ref="file:/run/secrets/postgres_export_password",
+        s3_export_access_key_file="/run/secrets/s3_export_access_key",
+        s3_export_secret_key_file="/run/secrets/s3_export_secret_key",
+    )
+    assert isolated.catalog_export_worker_enabled is True
+
+
+@pytest.mark.parametrize(
+    ("override", "message"),
+    [
+        (
+            {"export_database_url": "postgresql+asyncpg://u@localhost/another"},
+            "database credentials must use a separate principal",
+        ),
+        (
+            {"export_database_secret_ref": "file:/run/secrets/postgres_password"},
+            "database credentials must use a separate principal",
+        ),
+        (
+            {"s3_export_access_key_file": "/run/secrets/s3_access_key"},
+            "S3 credentials must use separate secret files",
+        ),
+    ],
+)
+def test_catalog_export_worker_rejects_reused_credentials(
+    override: dict[str, object], message: str
+) -> None:
+    values: dict[str, object] = {
+        "catalog_export_worker_enabled": True,
+        "export_database_url": "postgresql+asyncpg://export@localhost/db",
+        "export_database_secret_ref": "file:/run/secrets/postgres_export_password",
+        "s3_export_access_key_file": "/run/secrets/s3_export_access_key",
+        "s3_export_secret_key_file": "/run/secrets/s3_export_secret_key",
+    }
+    values.update(override)
+    with pytest.raises(ValidationError, match=message):
+        settings(**values)
+
+
 def test_rejects_ambiguous_or_unsafe_oidc_assurance_mappings() -> None:
     defaults = settings()
     assert defaults.high_risk_auth_max_age_seconds == 300

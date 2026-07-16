@@ -20,6 +20,7 @@ class Action(StrEnum):
     CATALOG_READ = "catalog.read"
     CATALOG_LINEAGE_READ = "catalog.lineage.read"
     CATALOG_SYNC = "catalog.sync"
+    CATALOG_EXPORT = "catalog.export"
     REGISTRATION_CREATE = "registration.create"
     REGISTRATION_READ = "registration.read"
     REGISTRATION_VALIDATE = "registration.validate"
@@ -169,6 +170,8 @@ class BuiltinPolicyEngine:
             reasons.append("ACTION_NOT_GRANTED")
         if resource.classification > subject.clearance:
             reasons.append("CLEARANCE_INSUFFICIENT")
+        if action is Action.CATALOG_EXPORT and resource.classification is Classification.RESTRICTED:
+            reasons.append("RESTRICTED_EXPORT_DENIED")
         if resource.system_id is not None and resource.system_id not in subject.allowed_system_ids:
             reasons.append("SYSTEM_SCOPE_MISMATCH")
         if resource.domain_id is not None and resource.domain_id not in subject.allowed_domain_ids:

@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react'
 import { ApiClient } from './api/client'
-import type { AdminReadContext, Capability, ExternalSystemLink } from './api/types'
+import type { AdminReadContext, CapabilitiesResponse, ExternalSystemLink } from './api/types'
 import { pageFromLocation, pageUrl, type Page } from './app/navigation'
 import { useAuth } from './auth/AuthProvider'
 import { AppShell } from './components/layout/AppShell'
@@ -8,6 +8,7 @@ import { PageTitle } from './components/layout/PageTitle'
 import { AdminPage, allowedAdminSections } from './features/admin/AdminPage'
 import { getAdminMessages } from './features/admin/messages'
 import { CatalogPage } from './features/catalog/CatalogPage'
+import { catalogExportCapabilityEnabled } from './features/catalog/catalogExportApi'
 import { ChatPage } from './features/chat/ChatPage'
 import { DashboardPage } from './features/dashboard/DashboardPage'
 import { GovernancePage } from './features/governance/GovernancePage'
@@ -24,6 +25,7 @@ export function App() {
   const [catalogQuery, setCatalogQuery] = useState(() => new URL(window.location.href).searchParams.get('q') ?? '')
   const [workspace, setWorkspace] = useState(() => window.localStorage.getItem('datariver.workspace') ?? '')
   const [externalSystemLinks, setExternalSystemLinks] = useState<ExternalSystemLink[]>([])
+  const [catalogExportWorkerEnabled, setCatalogExportWorkerEnabled] = useState(false)
   const [adminAccess, setAdminAccess] = useState<{
     workspace: string
     status: 'checking' | 'allowed' | 'denied'
@@ -71,9 +73,18 @@ export function App() {
       setExternalSystemLinks([])
       return () => { active = false }
     }
-    void client.request<{ items: Capability[]; external_system_links: ExternalSystemLink[] }>('/capabilities')
+    void client.request<CapabilitiesResponse>('/capabilities')
       .then((response) => { if (active) setExternalSystemLinks(response.external_system_links) })
       .catch(() => { if (active) setExternalSystemLinks([]) })
+    return () => { active = false }
+  }, [client, workspace])
+
+  useEffect(() => {
+    let active = true
+    setCatalogExportWorkerEnabled(false)
+    if (!workspace) return () => { active = false }
+    void catalogExportCapabilityEnabled(client)
+      .then((enabled) => { if (active) setCatalogExportWorkerEnabled(enabled) })
     return () => { active = false }
   }, [client, workspace])
 
@@ -143,7 +154,7 @@ export function App() {
       onClearNotice={auth.clearNotice}
     >
       {page === 'dashboard' && <DashboardPage client={client} />}
-      {page === 'catalog' && <CatalogPage client={client} initialQuery={catalogQuery} onQueryChange={searchCatalog} />}
+      {page === 'catalog' && <CatalogPage client={client} initialQuery={catalogQuery} onQueryChange={searchCatalog} catalogExportWorkerEnabled={catalogExportWorkerEnabled} />}
       {page === 'registration' && <RegistrationPage client={client} />}
       {page === 'change-management' && <GovernancePage client={client} onStepUp={auth.beginStepUp} onPasswordReauth={auth.beginPasswordReauth} onEnroll={auth.beginWebAuthnEnrollment} />}
       {page === 'quality' && <QualityPage />}

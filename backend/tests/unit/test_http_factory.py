@@ -143,6 +143,10 @@ def test_openapi_contains_all_required_product_modules() -> None:
         "/api/v1/catalog/assets",
         "/api/v1/catalog/facets",
         "/api/v1/catalog/suggestions",
+        "/api/v1/catalog/exports",
+        "/api/v1/catalog/exports/{export_id}",
+        "/api/v1/catalog/exports/{export_id}/download",
+        "/api/v1/catalog/export-capability",
         "/api/v1/uploads",
         "/api/v1/uploads/{upload_id}/registration-proposals",
         "/api/v1/change-requests",
@@ -186,6 +190,29 @@ def test_openapi_contains_all_required_product_modules() -> None:
         "/api/v1/admin/inference/provider-profiles/{profile_version_id}/decisions",
         "/api/v1/admin/inference/provider-profiles/{profile_version_id}/revocations",
     }.issubset(document["paths"])
+
+
+def test_catalog_export_openapi_is_server_managed_and_does_not_expose_storage_coordinates() -> None:
+    factory = cast(Callable[[Settings], AppContainer], lambda _: LiveOnlyContainer())
+    document = create_app(settings(), container_factory=factory).openapi()
+
+    create = document["components"]["schemas"]["CatalogExportCreateRequest"]
+    assert set(create["properties"]) == {
+        "q",
+        "asset_type",
+        "platform",
+        "classification",
+        "lifecycle",
+        "sort",
+        "format",
+    }
+    status = document["components"]["schemas"]["CatalogExportStatusResponse"]
+    assert {"bucket", "object_key", "storage_key", "cursor"}.isdisjoint(status["properties"])
+    download = document["components"]["schemas"]["CatalogExportDownloadResponse"]
+    assert set(download["properties"]) == {"url", "expires_seconds"}
+
+    capability = document["components"]["schemas"]["CatalogExportCapabilityResponse"]
+    assert set(capability["properties"]) == {"enabled"}
 
 
 def test_openapi_keeps_inference_profile_proposals_out_of_the_browser_contract() -> None:

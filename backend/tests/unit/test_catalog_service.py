@@ -6,6 +6,7 @@ from typing import Any, cast
 from uuid import uuid4
 
 import pytest
+from sqlalchemy import Table
 
 from datariver.application.classification_access import static_classification_access_floor
 from datariver.application.dto import (
@@ -57,7 +58,7 @@ class FakeIndex:
         self.suggestion_calls = 0
         self.tree_calls = 0
         self.projection_version = 1
-        self.lineage_assets = (detail.index,)
+        self.lineage_assets: tuple[CatalogAssetIndex, ...] = (detail.index,)
 
     async def get_search_watermark(self, *, workspace_id: object) -> int:
         return self.projection_version
@@ -522,7 +523,7 @@ def test_catalog_match_fragments_use_all_normalized_terms_without_html() -> None
 
 
 def test_catalog_projection_declares_canonical_hierarchy_and_active_tree_index() -> None:
-    table = AssetProjectionModel.__table__
+    table = cast(Table, AssetProjectionModel.__table__)
 
     assert {"database_name", "schema_name"} <= set(table.columns.keys())
     tree_index = next(

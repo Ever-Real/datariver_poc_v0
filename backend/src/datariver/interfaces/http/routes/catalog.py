@@ -5,16 +5,20 @@ from typing import Annotated, Literal
 from uuid import UUID
 
 import orjson
-from fastapi import APIRouter, Header, Query, Request
+from fastapi import APIRouter, Header, Query, Request, Response, status
 from fastapi.responses import JSONResponse
 
+from datariver.application.catalog_export_csv import CSV_SAFETY_VERSION
 from datariver.application.classification_access import ClassificationAccessResolver
+from datariver.application.dto import CatalogExportRequest
 from datariver.application.services.authorization import AuthorizationService
 from datariver.application.services.catalog import CatalogService
+from datariver.application.services.catalog_export import CatalogExportService
 from datariver.application.services.catalog_sync import CatalogSyncService
 from datariver.domain.authz import BuiltinPolicyEngine
 from datariver.infrastructure.db.authz import SqlDecisionWriter
 from datariver.infrastructure.db.catalog import SqlCatalogIndexReader, SqlCatalogProjectionWriter
+from datariver.infrastructure.db.catalog_export import SqlCatalogExportStore
 from datariver.infrastructure.db.classification_access import (
     SqlClassificationAccessSnapshotReader,
 )
@@ -23,6 +27,11 @@ from datariver.interfaces.http.presenters import catalog_detail, catalog_summary
 from datariver.interfaces.http.schemas import (
     CatalogAssetResponse,
     CatalogDiscoveryPolicyMeta,
+    CatalogExportCapabilityResponse,
+    CatalogExportCreateRequest,
+    CatalogExportCreateResponse,
+    CatalogExportDownloadResponse,
+    CatalogExportStatusResponse,
     CatalogFacetBucketResponse,
     CatalogFacetsResponse,
     CatalogLineageEdgeResponse,
@@ -73,6 +82,160 @@ def _sync_service(request: Request, session: SessionDep) -> CatalogSyncService:
         authorization=AuthorizationService(
             decision_writer=SqlDecisionWriter(container.database.session_factory)
         ),
+    )
+
+
+def _export_service(request: Request, session: SessionDep) -> CatalogExportService:
+    container = get_container(request)
+    index = SqlCatalogIndexReader(session)
+    return CatalogExportService(
+        store=SqlCatalogExportStore(session),
+        watermark=index,
+        classification_access=ClassificationAccessResolver(
+            SqlClassificationAccessSnapshotReader(session)
+        ),
+        authorization=AuthorizationService(
+            decision_writer=SqlDecisionWriter(container.database.session_factory)
+        ),
+        object_store=container.object_store,
+        minimum_query_length=container.settings.catalog_search_minimum_query_length,
+        policy_version=BuiltinPolicyEngine.policy_version,
+        csv_safety_version=CSV_SAFETY_VERSION,
+        access_ttl_seconds=container.settings.catalog_export_access_ttl_seconds,
+        download_ttl_seconds=container.settings.catalog_export_download_ttl_seconds,
+        worker_enabled=container.settings.catalog_export_worker_enabled,
+    )
+
+
+def _export_filters(payload: CatalogExportCreateRequest) -> dict[str, str]:
+    return {
+        key: value
+        for key, value in {
+            "asset_type": payload.asset_type,
+            "platform": payload.platform,
+            "classification": payload.classification,
+            "lifecycle": payload.lifecycle,
+        }.items()
+        if value is not None
+    }
+
+
+def _export_not_found(request: Request, request_id: str) -> JSONResponse:
+    return JSONResponse(
+        status_code=404,
+        content={
+            "type": "urn:datariver:problem:not_found",
+            "title": "Not found",
+            "status": 404,
+            "detail": "The catalog export does not exist.",
+            "instance": str(request.url.path),
+            "code": "not_found",
+            "request_id": request_id,
+        },
+    )
+
+
+@router.get("/export-capability", response_model=CatalogExportCapabilityResponse)
+async def catalog_export_capability(
+    request: Request,
+    context: ContextDep,
+    session: SessionDep,
+) -> CatalogExportCapabilityResponse:
+    enabled = await _export_service(request, session).capability(
+        subject=context.subject,
+        environment=context.environment,
+        request_id=context.request_id,
+    )
+    return CatalogExportCapabilityResponse(enabled=enabled)
+
+
+@router.post(
+    "/exports",
+    response_model=CatalogExportCreateResponse,
+    status_code=status.HTTP_202_ACCEPTED,
+)
+async def create_catalog_export(
+    payload: CatalogExportCreateRequest,
+    request: Request,
+    context: ContextDep,
+    session: SessionDep,
+    idempotency_key: Annotated[str, Header(alias="Idempotency-Key", min_length=16, max_length=200)],
+) -> CatalogExportCreateResponse:
+    record = await _export_service(request, session).create(
+        subject=context.subject,
+        request=CatalogExportRequest(
+            query=payload.q,
+            filters=_export_filters(payload),
+            sort=payload.sort,
+            format=payload.format,
+        ),
+        environment=context.environment,
+        request_id=context.request_id,
+        idempotency_key=idempotency_key,
+    )
+    return CatalogExportCreateResponse(
+        export_id=record.export_id,
+        job_id=record.job_id,
+        state=record.job_state,
+    )
+
+
+@router.get(
+    "/exports/{export_id}",
+    response_model=CatalogExportStatusResponse,
+)
+async def get_catalog_export(
+    export_id: UUID,
+    request: Request,
+    context: ContextDep,
+    session: SessionDep,
+) -> CatalogExportStatusResponse | JSONResponse:
+    record = await _export_service(request, session).get(
+        subject=context.subject,
+        export_id=export_id,
+        environment=context.environment,
+        request_id=context.request_id,
+    )
+    if record is None:
+        return _export_not_found(request, context.request_id)
+    return CatalogExportStatusResponse(
+        export_id=record.export_id,
+        job_id=record.job_id,
+        state=record.job_state,
+        last_error_code=record.last_error_code,
+        row_count=record.row_count,
+        size_bytes=record.size_bytes,
+        content_sha256=record.content_sha256,
+        display_name=record.display_name,
+        created_at=record.created_at,
+        completed_at=record.completed_at,
+        access_until=record.access_until,
+    )
+
+
+@router.post(
+    "/exports/{export_id}/download",
+    response_model=CatalogExportDownloadResponse,
+)
+async def download_catalog_export(
+    export_id: UUID,
+    request: Request,
+    response: Response,
+    context: ContextDep,
+    session: SessionDep,
+) -> CatalogExportDownloadResponse | JSONResponse:
+    download = await _export_service(request, session).download(
+        subject=context.subject,
+        export_id=export_id,
+        environment=context.environment,
+        request_id=context.request_id,
+    )
+    if download is None:
+        return _export_not_found(request, context.request_id)
+    response.headers["Cache-Control"] = "no-store"
+    return CatalogExportDownloadResponse(
+        url=download.url,
+        expires_seconds=download.expires_seconds,
     )
 
 

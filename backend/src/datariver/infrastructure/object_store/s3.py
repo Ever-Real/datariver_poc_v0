@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 from collections.abc import AsyncIterator, Sequence
 from functools import partial
 from typing import TYPE_CHECKING, Any
@@ -15,10 +16,12 @@ if TYPE_CHECKING:
     from mypy_boto3_s3.type_defs import CompletedPartTypeDef
 
 from datariver.application.dto import (
+    CatalogExportArtifact,
     MultipartUpload,
     ObjectMetadata,
 )
 from datariver.application.errors import ExternalDependencyError
+from datariver.domain.common import ValidationError
 from datariver.domain.registration import CompletedUploadPart
 
 
@@ -187,6 +190,115 @@ class S3ObjectStore:
             )
         except (BotoCoreError, ClientError) as error:
             raise self._error("Object upload could not be aborted.", error) from error
+
+    async def write_export(
+        self,
+        *,
+        bucket: str,
+        object_key: str,
+        chunks: AsyncIterator[bytes],
+        metadata: dict[str, str],
+        maximum_bytes: int,
+    ) -> CatalogExportArtifact:
+        if not 1 <= maximum_bytes <= 5 * 1024 * 1024 * 1024:
+            raise ValueError("Catalog export byte limit is outside the safe range.")
+        upload = await self.create_multipart_upload(
+            bucket=bucket,
+            object_key=object_key,
+            content_type="text/csv; charset=utf-8",
+            metadata=metadata,
+        )
+        digest = hashlib.sha256()
+        buffer = bytearray()
+        total = 0
+        parts: list[CompletedUploadPart] = []
+        part_size = 8 * 1024 * 1024
+        try:
+            async for chunk in chunks:
+                total += len(chunk)
+                if total > maximum_bytes:
+                    raise ValidationError(
+                        "The catalog export exceeds the configured byte limit.",
+                        details={"code": "EXPORT_BYTE_LIMIT"},
+                    )
+                digest.update(chunk)
+                buffer.extend(chunk)
+                while len(buffer) >= part_size:
+                    part = bytes(buffer[:part_size])
+                    del buffer[:part_size]
+                    parts.append(
+                        await self._upload_export_part(
+                            upload=upload,
+                            part_number=len(parts) + 1,
+                            content=part,
+                        )
+                    )
+            if buffer or not parts:
+                parts.append(
+                    await self._upload_export_part(
+                        upload=upload,
+                        part_number=len(parts) + 1,
+                        content=bytes(buffer),
+                    )
+                )
+            object_metadata = await self.complete_multipart_upload(upload=upload, parts=parts)
+        except Exception:
+            try:
+                await self.abort_multipart_upload(upload=upload)
+            except ExternalDependencyError:
+                pass
+            try:
+                await self.delete_object(bucket=bucket, object_key=object_key)
+            except ExternalDependencyError:
+                pass
+            raise
+        if object_metadata.size_bytes != total:
+            try:
+                await self.delete_object(bucket=bucket, object_key=object_key)
+            except ExternalDependencyError:
+                pass
+            raise ExternalDependencyError(
+                "Catalog export object size did not reconcile.",
+                dependency="object_store",
+                retryable=True,
+                provider_code="EXPORT_SIZE_MISMATCH",
+            )
+        return CatalogExportArtifact(
+            size_bytes=total,
+            content_sha256=digest.hexdigest(),
+            provider_checksum=(f"etag:{object_metadata.etag}" if object_metadata.etag else None),
+        )
+
+    async def delete_export(self, *, bucket: str, object_key: str) -> None:
+        await self.delete_object(bucket=bucket, object_key=object_key)
+
+    async def _upload_export_part(
+        self,
+        *,
+        upload: MultipartUpload,
+        part_number: int,
+        content: bytes,
+    ) -> CompletedUploadPart:
+        if not 1 <= part_number <= 10_000:
+            raise ValidationError(
+                "The catalog export exceeds the multipart part limit.",
+                details={"code": "EXPORT_PART_LIMIT"},
+            )
+        try:
+            response = await asyncio.to_thread(
+                self._client.upload_part,
+                Bucket=upload.bucket,
+                Key=upload.object_key,
+                UploadId=upload.upload_id,
+                PartNumber=part_number,
+                Body=content,
+            )
+        except (BotoCoreError, ClientError) as error:
+            raise self._error("Catalog export part could not be uploaded.", error) from error
+        return CompletedUploadPart(
+            part_number=part_number,
+            etag=str(response["ETag"]).strip('"'),
+        )
 
     async def head_object(self, *, bucket: str, object_key: str) -> ObjectMetadata:
         try:

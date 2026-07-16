@@ -60,6 +60,16 @@ class FakeIndex:
         del subject, access, asset_id
         return None
 
+    async def get_authorized_assets_by_external_urns(
+        self,
+        *,
+        subject: SubjectAttributes,
+        access: ClassificationAccessSnapshot,
+        external_urns: Sequence[str],
+    ) -> Sequence[CatalogAssetIndex]:
+        del subject, access
+        return (self.item,) if self.item.external_urn in external_urns else ()
+
 
 def test_chat_retrieval_translates_governed_chat_modes_into_sql_search_modes() -> None:
     profile_id = uuid4()

@@ -40,6 +40,17 @@
 .catalog-filters label { display: grid; grid-template-columns: auto minmax(0, 1fr); align-items: center; gap: 6px; color: var(--text-600); font-size: 10px; font-weight: 800; text-transform: uppercase; }
 .catalog-filters select { height: 29px; padding: 3px 6px; font-size: 10px; }
 .catalog-filters .button { height: 29px; margin-left: auto; padding: 3px 8px; font-size: 10px; }
+.catalog-export-control { display: grid; grid-template-columns: minmax(260px, 1fr) auto auto; align-items: center; gap: 10px; margin-top: 7px; border-top: 1px solid var(--line-200); padding-top: 7px; }
+.catalog-export-control strong { display: block; color: var(--navy-900); font-size: 11px; }
+.catalog-export-control p { margin: 2px 0 0; color: var(--text-500); font-size: 9px; line-height: 1.45; }
+.catalog-export-actions, .catalog-export-status { display: flex; align-items: center; gap: 6px; }
+.catalog-export-actions .button { min-height: 29px; display: inline-flex; align-items: center; justify-content: center; gap: 5px; padding: 3px 8px; white-space: nowrap; font-size: 10px; }
+.catalog-export-actions .button:disabled { cursor: not-allowed; }
+.catalog-export-status { color: var(--text-600); white-space: nowrap; font-size: 9px; }
+.catalog-export-status code { color: var(--danger-700); font-size: 9px; }
+.export-state-completed { color: #1f6b2a; background: #e5f3e5; }
+.export-state-failed { color: var(--danger-700); background: #fbe9e5; }
+.catalog-export-control > .notice { grid-column: 1 / -1; margin: 0; }
 .catalog-workspace { min-width: 0; display: grid; grid-template-columns: 300px minmax(0, 1fr); align-items: start; gap: 8px; }
 .catalog-workspace.with-detail { grid-template-columns: 300px minmax(560px, 1fr) minmax(420px, 550px); }
 .catalog-tree, .catalog-detail { min-width: 0; padding: 0; overflow: hidden; }
@@ -182,6 +193,7 @@ textarea { min-height: 110px; resize: vertical; }
   .catalog-search-form, .catalog-workspace, .catalog-workspace.with-detail { grid-template-columns: 1fr; }
   .catalog-filters { grid-template-columns: 20px 1fr; }
   .catalog-filters .button { margin-left: 0; }
+  .catalog-export-control { grid-template-columns: 1fr; }
   .catalog-tree-rows { height: 240px; }
   .catalog-results .dense-table-frame { height: 520px; }
 }

@@ -55,7 +55,7 @@ an environment may claim HA.
 |---|---|---|
 | Platform & Identity | workspaces and external IdP-subject mapping | workspace, subject reference, membership |
 | Authorization | ABAC resources, policies, bindings and decision evidence | policy and decision log |
-| Catalog Facade | authorized index plus DataHub search/detail/lineage projection | projection/cursor; applied metadata remains in DataHub |
+| Catalog Facade | authorized index plus DataHub search/detail/lineage projection and snapshot-bound managed export | projection/cursor/export receipt; applied metadata remains in DataHub |
 | Governance | registration and change-request aggregate/state machine | requests, approvals, transitions, audit |
 | Integration | connections, job intents, outbox/inbox, retry/DLQ/reconcile | durable job and delivery state |
 | Knowledge Studio | ontology, proposals, changesets, validation and releases | immutable graph releases/provenance |
@@ -141,6 +141,13 @@ sequenceDiagram
 ```
 
 The worker may receive a message more than once. Inbox uniqueness and operation-specific idempotency make the business effect repeat-safe.
+
+Catalog export is a separate disabled-first worker boundary. The API records an exact normalized
+request plus permission, classification-policy, policy-code, CSV-safety and projection generations;
+the worker does not call DataHub and cannot export RESTRICTED rows. It streams the local projection
+into an attempt-unique private object, reconciles its receipt, and publishes completion only while
+the original security/source snapshot and lease remain current. API and export worker do not share
+DB or S3 credentials when the feature is enabled.
 
 ## Knowledge-graph lifecycle
 

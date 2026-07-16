@@ -26,6 +26,10 @@ async def run() -> None:
         bucket=settings.s3_bucket_accepted,
         allowed_origins=allowed_origins,
     )
+    await store.ensure_bucket(
+        bucket=settings.s3_bucket_exports,
+        allowed_origins=allowed_origins,
+    )
 
 
 def main() -> None:

@@ -30,7 +30,10 @@ class FakeInbox:
     async def accept(self, *, consumer: str, event_id: UUID, workspace_id: UUID) -> bool:
         return True
 
-    async def complete(self, *, consumer: str, event_id: UUID, result_hash: str) -> None:
+    async def complete(
+        self, *, consumer: str, event_id: UUID, workspace_id: UUID, result_hash: str
+    ) -> None:
+        del workspace_id
         self.completed.append((consumer, event_id, result_hash))
 
 

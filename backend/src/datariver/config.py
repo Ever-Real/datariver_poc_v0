@@ -39,6 +39,8 @@ class Settings(BaseSettings):
     upload_database_secret_ref: str
     governance_database_url: str
     governance_database_secret_ref: str
+    export_database_url: str | None = None
+    export_database_secret_ref: str | None = None
     bootstrap_database_url: str
     bootstrap_database_secret_ref: str
     database_pool_size: int = Field(default=10, ge=1, le=100)
@@ -86,6 +88,18 @@ class Settings(BaseSettings):
     cache_max_value_bytes: int = Field(default=1_048_576, ge=1024, le=1_048_576)
     catalog_search_cache_ttl_seconds: int = Field(default=30, ge=1, le=300)
     catalog_search_minimum_query_length: int = Field(default=2, ge=1, le=20)
+    catalog_export_access_ttl_seconds: int = Field(default=86_400, ge=300, le=604_800)
+    catalog_export_download_ttl_seconds: int = Field(default=60, ge=60, le=60)
+    catalog_export_lease_seconds: int = Field(default=900, ge=60, le=3600)
+    catalog_export_maximum_attempts: int = Field(default=4, ge=1, le=20)
+    catalog_export_page_size: int = Field(default=1000, ge=100, le=5000)
+    catalog_export_maximum_rows: int = Field(default=1_000_000, ge=1, le=5_000_000)
+    catalog_export_maximum_bytes: int = Field(
+        default=1_073_741_824,
+        ge=1_048_576,
+        le=5_368_709_120,
+    )
+    catalog_export_worker_enabled: bool = False
     worker_poll_seconds: float = Field(default=0.5, ge=0.1, le=10)
     outbox_lease_seconds: int = Field(default=30, ge=5, le=300)
     outbox_maximum_attempts: int = Field(default=20, ge=1, le=100)
@@ -102,14 +116,18 @@ class Settings(BaseSettings):
     governance_apply_lease_seconds: int = Field(default=120, ge=30, le=900)
     governance_apply_maximum_attempts: int = Field(default=8, ge=1, le=20)
     governance_worker_subject_id: UUID = UUID("00000000-0000-7000-8000-000000000001")
+    export_worker_subject_id: UUID = UUID("00000000-0000-7000-8000-000000000002")
 
     s3_endpoint_url: str
     s3_public_endpoint_url: str
     s3_region: str = "us-east-1"
     s3_bucket_quarantine: str
     s3_bucket_accepted: str
+    s3_bucket_exports: str = "datariver-exports"
     s3_access_key_file: str
     s3_secret_key_file: str
+    s3_export_access_key_file: str | None = None
+    s3_export_secret_key_file: str | None = None
     presigned_url_ttl_seconds: int = Field(default=900, ge=60, le=900)
 
     seed_profile: Literal["none", "semiconductor"] = "none"
@@ -187,6 +205,8 @@ class Settings(BaseSettings):
             "valkey_cache_url": self.valkey_cache_url,
             "valkey_queue_url": self.valkey_queue_url,
         }
+        if self.export_database_url is not None:
+            credential_urls["export_database_url"] = self.export_database_url
         embedded_passwords = [
             name for name, url in credential_urls.items() if urlsplit(url).password is not None
         ]
@@ -205,6 +225,8 @@ class Settings(BaseSettings):
             "valkey_cache": self.valkey_cache_secret_ref,
             "valkey_queue": self.valkey_queue_secret_ref,
         }
+        if self.export_database_secret_ref is not None:
+            references["export_database"] = self.export_database_secret_ref
         invalid_references = [
             name for name, reference in references.items() if not reference.startswith("file:")
         ]
@@ -213,6 +235,53 @@ class Settings(BaseSettings):
                 "This deployment supports file-mounted secret references only: "
                 + ", ".join(sorted(invalid_references))
             )
+        if self.catalog_export_worker_enabled:
+            if (
+                self.export_database_url is None
+                or self.export_database_secret_ref is None
+                or self.s3_export_access_key_file is None
+                or self.s3_export_secret_key_file is None
+            ):
+                raise ValueError(
+                    "Enabled catalog export worker requires separately provisioned "
+                    "DB and S3 credentials."
+                )
+            other_database_urls = {
+                self.database_url,
+                self.migration_database_url,
+                self.relay_database_url,
+                self.upload_database_url,
+                self.governance_database_url,
+                self.bootstrap_database_url,
+            }
+            other_database_principals = {urlsplit(url).username for url in other_database_urls}
+            if (
+                self.export_database_url in other_database_urls
+                or urlsplit(self.export_database_url).username in other_database_principals
+                or self.export_database_secret_ref
+                in {
+                    self.database_secret_ref,
+                    self.migration_database_secret_ref,
+                    self.relay_database_secret_ref,
+                    self.upload_database_secret_ref,
+                    self.governance_database_secret_ref,
+                    self.bootstrap_database_secret_ref,
+                }
+            ):
+                raise ValueError(
+                    "Catalog export worker database credentials must use a separate principal."
+                )
+            export_s3_files = {
+                self.s3_export_access_key_file,
+                self.s3_export_secret_key_file,
+            }
+            if len(export_s3_files) != 2 or export_s3_files & {
+                self.s3_access_key_file,
+                self.s3_secret_key_file,
+            }:
+                raise ValueError(
+                    "Catalog export worker S3 credentials must use separate secret files."
+                )
         if self.app_env == "production":
             if any(value == "*" or value.startswith("*.") for value in self.app_trusted_hosts):
                 raise ValueError("Production trusted hosts cannot contain wildcards.")

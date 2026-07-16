@@ -50,6 +50,34 @@ PostgreSQL remains canonical. Never repair a Valkey stream by inventing events; 
 
 Outbox/inbox automatic pruning is intentionally disabled. Revision `0006` revokes relay `DELETE` privileges, and `/operations/summary` reports `retention_automation_state=DISABLED_NOT_READY`. Do not manually delete retained rows or grant that privilege back. A future dedicated retention worker may delete only after governed policy activation, immutable export checksum and Object-Lock read-back, Legal Hold evaluation and Maker-Checker approval all succeed.
 
+## Managed catalog export activation
+
+Catalog export is disabled by default and must remain disabled until all of these controls pass in
+the target environment:
+
+1. Provision a dedicated `datariver_export` PostgreSQL login with `NOBYPASSRLS`, no ownership/DDL
+   rights and only the reviewed worker grants. Store its generated password in a distinct mounted
+   secret referenced by `EXPORT_DATABASE_SECRET_REF`; never reuse API, relay, upload, governance,
+   bootstrap or migration credentials.
+2. Provision a non-admin object-store identity scoped to multipart write, abort and metadata
+   verification on the private `S3_BUCKET_EXPORTS` bucket only. Mount its access and secret keys at
+   `S3_EXPORT_ACCESS_KEY_FILE` and `S3_EXPORT_SECRET_KEY_FILE`; do not reuse the API identity.
+3. Verify that the API identity can perform only the required artifact metadata read and bounded
+   presigned GET operation, while anonymous list/read and worker reads outside the export bucket are
+   denied. The bucket must have no public policy or browser credential.
+4. Run two-workspace RLS negatives, RESTRICTED exclusion, stale permission/policy/projection
+   invalidation, worker kill/lease reclaim, multipart-abort cleanup, size/row limits and object
+   metadata/SHA reconciliation. A successful unit test alone is not activation evidence.
+5. Set `CATALOG_EXPORT_WORKER_ENABLED=true` for both API feature reporting and the isolated worker,
+   start exactly the separately credentialed worker, then verify capability/create/status/download
+   with two real human identities. Record the policy generation, projection watermark, object
+   receipt and audit correlation IDs without recording URL signatures or credentials.
+
+Emergency disablement sets `CATALOG_EXPORT_WORKER_ENABLED=false` on the API and stops the export
+worker. Existing 60-second download URLs are allowed to expire; do not delete request/job/object
+evidence during containment. Failed or abandoned multipart uploads are reconciled through the
+reviewed storage procedure, never by editing a completed database receipt.
+
 Administrator password fallback is also disabled by default. Before enabling it, query the canonical
 membership/subject stores and prove that at least two active, non-service-account,
 RESTRICTED-cleared human security administrators have `admin.manage` allowed and not denied. Then

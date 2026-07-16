@@ -60,7 +60,7 @@ Status values are `READY` (parity accepted), `PARTIAL` (a governed v1 contract o
 |---|---|---|---|---|
 | UX-PAR-001 | Common shell | v0.3-recognizable GNB, page title, compact sizing, profile administration menu | PARTIAL | source/unit complete; authenticated reference-viewport visual snapshot remains open |
 | UX-PAR-002 | Global search | debounced authorized suggestions with preview, minimum length, multi-keyword handoff | PARTIAL | stale-cache labelling, no cross-workspace or policy-version leakage |
-| UX-PAR-003 | Catalog layout | left Resource Tree, middle dense result table, filter/facet bar, paging and export | PARTIAL | lazy canonical tree, permission-safe counts, ALL search and cursor paging are implemented; governed server export and full URL state remain |
+| UX-PAR-003 | Catalog layout | left Resource Tree, middle dense result table, filter/facet bar, paging and export | PARTIAL | lazy canonical tree, permission-safe counts, ALL search, cursor paging and disabled-first governed export source/UI are implemented; isolated export-worker runtime, full URL state and visual acceptance remain |
 | UX-PAR-004 | Catalog detail | row accordion with table/column metadata and lineage graph | PARTIAL | fixed-contract detail and bounded authorization-pruned lineage are implemented; selected-state URL/back-forward and authenticated visual gate remain |
 | UX-PAR-005 | DataHub lineage | selected lineage node opens an allowlisted sandboxed DataHub view | BLOCKED | deployment capability and framing policy verified |
 | UX-PAR-006 | Manual registration | tree selection, table/column edit, controlled term/tag selection, delete proposal | PARTIAL | logical name `UPLOAD_METADATA_MANUAL_YYMMDD_SERIALNO`; no direct write |
@@ -147,7 +147,7 @@ GraphRAG evaluation is pinned to an immutable graph release, query-template revi
 |---|---|---|---|
 | 0 | objective, legacy audit, parity matrix and safe substitutions | COMPLETE | all legacy screens and unsafe patterns mapped; controlled-doc review complete |
 | 1 | common shell, route/state model and shared Dialog/DataTable/Accordion primitives | SOURCE COMPLETE; VISUAL GATE OPEN | type/lint/build, 47 FE tests and capability-negative shell tests pass; authenticated snapshots remain |
-| 2 | search, Resource Tree, table result, detail and lineage | IN PROGRESS | source/API/FE unit gates implemented; governed export, full URL state, full-suite/runtime and authenticated visual gates remain |
+| 2 | search, Resource Tree, table result, detail and lineage | IN PROGRESS | source/API/FE unit gates and disabled-first managed export implemented; isolated export-worker runtime approval, full URL state and authenticated visual gates remain |
 | 3 | manual and bulk registration | NOT STARTED | upload/validation/proposal/apply tests and object-manifest evidence |
 | 4 | change overview, list, workflow and attachments | NOT STARTED | transition, Maker-Checker, attachment and audit tests |
 | 5 | knowledge registry, ontology, graph and evaluation | NOT STARTED | release/projection/provenance, bounded graph and graph-policy tests |

@@ -149,37 +149,41 @@ class SqlSubjectReader(SubjectReader):
         if row is None:
             raise ForbiddenError("No active workspace membership exists.")
         subject, membership = row
-        attributes = membership.attributes
-        try:
-            allowed_actions = frozenset(
-                Action(value) for value in attributes.get("allowed_actions", [])
-            )
-            denied_actions = frozenset(
-                Action(value) for value in attributes.get("denied_actions", [])
-            )
-            allowed_system_ids = frozenset(
-                UUID(value) for value in attributes.get("allowed_system_ids", [])
-            )
-            allowed_domain_ids = frozenset(
-                UUID(value) for value in attributes.get("allowed_domain_ids", [])
-            )
-            groups = frozenset(str(value) for value in attributes.get("groups", []))
-            clearance = Classification(membership.clearance)
-        except (TypeError, ValueError) as error:
-            raise ForbiddenError("Workspace security attributes are invalid.") from error
-        return SubjectAttributes(
-            subject_id=subject.id,
-            workspace_id=membership.workspace_id,
-            active=subject.active and membership.active,
-            department_id=membership.department_id,
-            groups=groups,
-            job_function=membership.job_function,
-            clearance=clearance,
-            allowed_system_ids=allowed_system_ids,
-            allowed_domain_ids=allowed_domain_ids,
-            allowed_actions=allowed_actions,
-            denied_actions=denied_actions,
+        return subject_attributes_from_models(subject=subject, membership=membership)
+
+
+def subject_attributes_from_models(
+    *, subject: SubjectModel, membership: WorkspaceMembershipModel
+) -> SubjectAttributes:
+    attributes = membership.attributes
+    try:
+        allowed_actions = frozenset(
+            Action(value) for value in attributes.get("allowed_actions", [])
         )
+        denied_actions = frozenset(Action(value) for value in attributes.get("denied_actions", []))
+        allowed_system_ids = frozenset(
+            UUID(value) for value in attributes.get("allowed_system_ids", [])
+        )
+        allowed_domain_ids = frozenset(
+            UUID(value) for value in attributes.get("allowed_domain_ids", [])
+        )
+        groups = frozenset(str(value) for value in attributes.get("groups", []))
+        clearance = Classification(membership.clearance)
+    except (TypeError, ValueError) as error:
+        raise ForbiddenError("Workspace security attributes are invalid.") from error
+    return SubjectAttributes(
+        subject_id=subject.id,
+        workspace_id=membership.workspace_id,
+        active=subject.active and membership.active,
+        department_id=membership.department_id,
+        groups=groups,
+        job_function=membership.job_function,
+        clearance=clearance,
+        allowed_system_ids=allowed_system_ids,
+        allowed_domain_ids=allowed_domain_ids,
+        allowed_actions=allowed_actions,
+        denied_actions=denied_actions,
+    )
 
 
 def with_authentication_context(
