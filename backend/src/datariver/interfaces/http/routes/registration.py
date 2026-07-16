@@ -7,8 +7,11 @@ from uuid import UUID
 
 import orjson
 from fastapi import APIRouter, Header, Query, Request
+from sqlalchemy.ext.asyncio import AsyncSession
 
+from datariver.application.classification_access import ClassificationAccessResolver
 from datariver.application.services.authorization import AuthorizationService
+from datariver.application.services.change_targets import CatalogChangeTargetAuthorizer
 from datariver.application.services.governance import GovernanceService
 from datariver.application.services.registration import RegistrationService
 from datariver.domain.authz import Classification
@@ -16,9 +19,13 @@ from datariver.domain.common import ConflictError, ValidationError, canonical_js
 from datariver.domain.governance import ChangeItem
 from datariver.domain.registration import CompletedUploadPart, UploadManifest, UploadState
 from datariver.infrastructure.db.authz import SqlDecisionWriter
+from datariver.infrastructure.db.catalog import SqlCatalogIndexReader
+from datariver.infrastructure.db.classification_access import (
+    SqlClassificationAccessSnapshotReader,
+)
 from datariver.infrastructure.db.governance import SqlGovernanceUnitOfWork
 from datariver.infrastructure.db.registration import SqlUploadUnitOfWork
-from datariver.interfaces.http.dependencies import ContextDep, get_container
+from datariver.interfaces.http.dependencies import ContextDep, SessionDep, get_container
 from datariver.interfaces.http.presenters import change_request_response
 from datariver.interfaces.http.schemas import (
     ChangeRequestResponse,
@@ -47,11 +54,21 @@ def _service(request: Request) -> RegistrationService:
     )
 
 
-def _governance_service(request: Request) -> GovernanceService:
+def _governance_service(request: Request, session: AsyncSession) -> GovernanceService:
     container = get_container(request)
+    authorization = AuthorizationService(
+        decision_writer=SqlDecisionWriter(container.database.session_factory)
+    )
     return GovernanceService(
         lambda: SqlGovernanceUnitOfWork(container.database.session_factory),
-        AuthorizationService(decision_writer=SqlDecisionWriter(container.database.session_factory)),
+        authorization,
+        target_authorizer=CatalogChangeTargetAuthorizer(
+            index=SqlCatalogIndexReader(session),
+            classification_access=ClassificationAccessResolver(
+                SqlClassificationAccessSnapshotReader(session)
+            ),
+            authorization=authorization,
+        ),
     )
 
 
@@ -212,6 +229,7 @@ async def create_registration_proposal(
     payload: UploadRegistrationProposal,
     request: Request,
     context: ContextDep,
+    session: SessionDep,
     idempotency_key: Annotated[str, Header(alias="Idempotency-Key", min_length=16, max_length=200)],
 ) -> ChangeRequestResponse:
     manifest = await _service(request).get_manifest(
@@ -251,7 +269,7 @@ async def create_registration_proposal(
     request_hash = hashlib.sha256(
         orjson.dumps(request_document, option=orjson.OPT_SORT_KEYS)
     ).hexdigest()
-    value = await _governance_service(request).create_change_request(
+    value = await _governance_service(request, session).create_change_request(
         workspace_id=context.workspace_id,
         number=f"CR-{datetime.now(UTC):%Y}-{uuid7().hex[:12].upper()}",
         request_type="DATA_REGISTRATION",

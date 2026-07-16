@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from datetime import UTC, datetime
 from types import TracebackType
 from typing import Self, cast
@@ -22,6 +22,24 @@ from datariver.domain.authz import (
 )
 from datariver.domain.common import DomainEvent
 from datariver.domain.governance import ChangeItem, ChangeRequest
+
+
+class MemoryTargetAuthorizer:
+    def __init__(self) -> None:
+        self.calls = 0
+
+    async def authorize_targets(
+        self,
+        *,
+        workspace_id: UUID,
+        subject: SubjectAttributes,
+        items: Sequence[ChangeItem],
+        request_classification: Classification,
+        environment: EnvironmentAttributes,
+        request_id: str,
+    ) -> None:
+        del workspace_id, subject, items, request_classification, environment, request_id
+        self.calls += 1
 
 
 class MemoryDecisionWriter:
@@ -140,7 +158,12 @@ async def test_create_is_idempotent_and_writes_one_outbox_event() -> None:
     state: dict[str, object] = {"requests": {}, "outbox": [], "idempotency": {}}
     writer = MemoryDecisionWriter()
     uow_factory = cast(Callable[[], GovernanceUnitOfWork], lambda: MemoryUnitOfWork(state))
-    service = GovernanceService(uow_factory, AuthorizationService(decision_writer=writer))
+    target_authorizer = MemoryTargetAuthorizer()
+    service = GovernanceService(
+        uow_factory,
+        AuthorizationService(decision_writer=writer),
+        target_authorizer=target_authorizer,
+    )
     arguments = {
         "workspace_id": workspace_id,
         "number": "CR-1",
@@ -156,6 +179,7 @@ async def test_create_is_idempotent_and_writes_one_outbox_event() -> None:
                 "UPSERT",
                 {"name": "x"},
                 "datasetProperties",
+                "b" * 64,
             )
         ],
         "subject": actor,
@@ -173,3 +197,4 @@ async def test_create_is_idempotent_and_writes_one_outbox_event() -> None:
     assert len(state["requests"]) == 1  # type: ignore[arg-type]
     assert len(state["outbox"]) == 1  # type: ignore[arg-type]
     assert len(writer.decisions) == 2
+    assert target_authorizer.calls == 2

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
+from typing import Protocol
 from uuid import UUID
 
 from datariver.application.ports import GovernanceUnitOfWork
@@ -21,6 +22,19 @@ from datariver.domain.governance import (
 )
 
 
+class ChangeTargetAuthorizer(Protocol):
+    async def authorize_targets(
+        self,
+        *,
+        workspace_id: UUID,
+        subject: SubjectAttributes,
+        items: Sequence[ChangeItem],
+        request_classification: Classification,
+        environment: EnvironmentAttributes,
+        request_id: str,
+    ) -> None: ...
+
+
 class ChangeRequestNotFound(NotFoundError):
     code = "change_request_not_found"
 
@@ -30,9 +44,12 @@ class GovernanceService:
         self,
         uow_factory: Callable[[], GovernanceUnitOfWork],
         authorization: AuthorizationService,
+        *,
+        target_authorizer: ChangeTargetAuthorizer | None = None,
     ) -> None:
         self._uow_factory = uow_factory
         self._authorization = authorization
+        self._target_authorizer = target_authorizer
 
     @staticmethod
     def _resource(change_request: ChangeRequest) -> ResourceAttributes:
@@ -131,6 +148,16 @@ class GovernanceService:
         idempotency_key: str,
         request_hash: str,
     ) -> ChangeRequest:
+        if self._target_authorizer is None:
+            raise RuntimeError("Change-request creation requires a target authorizer.")
+        await self._target_authorizer.authorize_targets(
+            workspace_id=workspace_id,
+            subject=subject,
+            items=items,
+            request_classification=classification,
+            environment=environment,
+            request_id=request_id,
+        )
         await self._authorization.authorize(
             subject=subject,
             resource=ResourceAttributes(

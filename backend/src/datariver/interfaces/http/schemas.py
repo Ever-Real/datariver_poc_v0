@@ -190,10 +190,17 @@ class ChangeItemRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     target_type: str = Field(pattern="^DATAHUB_ASPECT$")
-    target_ref: str = Field(min_length=8, max_length=4096, pattern="^urn:li:")
-    aspect_name: str = Field(min_length=1, max_length=255, pattern="^[A-Za-z][A-Za-z0-9]*$")
+    target_ref: str = Field(min_length=16, max_length=4096, pattern="^urn:li:dataset:")
+    aspect_name: Literal[
+        "datasetProperties",
+        "domains",
+        "globalTags",
+        "glossaryTerms",
+        "ownership",
+        "schemaMetadata",
+    ]
     operation: str = Field(pattern="^UPSERT$")
-    before_hash: str | None = Field(default=None, pattern="^[0-9a-f]{64}$")
+    before_hash: str = Field(pattern="^[0-9a-f]{64}$")
     after_document: dict[str, Any]
     after_hash: str | None = Field(default=None, pattern="^[0-9a-f]{64}$")
 
@@ -207,7 +214,7 @@ class ChangeRequestCreate(BaseModel):
     classification: str = Field(
         default="INTERNAL", pattern="^(PUBLIC|INTERNAL|CONFIDENTIAL|RESTRICTED)$"
     )
-    items: list[ChangeItemRequest] = Field(min_length=1, max_length=100)
+    items: list[ChangeItemRequest] = Field(min_length=1, max_length=1)
 
 
 class TransitionRequest(BaseModel):
@@ -534,9 +541,16 @@ class UploadCompleteRequest(BaseModel):
 class UploadRegistrationProposal(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    target_ref: str = Field(min_length=8, max_length=4096, pattern="^urn:li:")
-    aspect_name: str = Field(min_length=1, max_length=255, pattern="^[A-Za-z][A-Za-z0-9]*$")
-    before_hash: str | None = Field(default=None, pattern="^[0-9a-f]{64}$")
+    target_ref: str = Field(min_length=16, max_length=4096, pattern="^urn:li:dataset:")
+    aspect_name: Literal[
+        "datasetProperties",
+        "domains",
+        "globalTags",
+        "glossaryTerms",
+        "ownership",
+        "schemaMetadata",
+    ]
+    before_hash: str = Field(pattern="^[0-9a-f]{64}$")
     after_document: dict[str, Any]
     title: str = Field(min_length=1, max_length=500)
     description: str = Field(default="", max_length=8000)

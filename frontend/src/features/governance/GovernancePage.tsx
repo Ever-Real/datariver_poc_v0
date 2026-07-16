@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState, type FormEvent } from 'react'
+import { useCallback, useEffect, useRef, useState, type FormEvent } from 'react'
 import { newIdempotencyKey, type ApiClient } from '../../api/client'
 import type { ChangeRequestRecord } from '../../api/types'
 import { AssuranceNotice, type AssuranceActions } from '../../components/AssuranceNotice'
@@ -12,6 +12,9 @@ const nextStates: Record<string, string[]> = {
   FINAL_REVIEW: ['APPLY_QUEUED', 'REJECTED', 'CANCELLED'],
   APPLY_FAILED: ['APPLY_QUEUED', 'CANCELLED'],
 }
+const allowedAspects = [
+  'datasetProperties', 'domains', 'globalTags', 'glossaryTerms', 'ownership', 'schemaMetadata',
+] as const
 
 export function GovernancePage({
   client,
@@ -21,7 +24,8 @@ export function GovernancePage({
 }: { client: ApiClient } & AssuranceActions) {
   const [title, setTitle] = useState('')
   const [targetRef, setTargetRef] = useState('')
-  const [aspectName, setAspectName] = useState('datasetProperties')
+  const [aspectName, setAspectName] = useState<(typeof allowedAspects)[number]>('datasetProperties')
+  const [beforeHash, setBeforeHash] = useState('')
   const [description, setDescription] = useState('')
   const [classification, setClassification] = useState('INTERNAL')
   const [documentText, setDocumentText] = useState('{\n  "description": ""\n}')
@@ -30,51 +34,96 @@ export function GovernancePage({
   const [reason, setReason] = useState('검토 기준을 충족했습니다.')
   const [error, setError] = useState<unknown>()
   const [busy, setBusy] = useState(false)
+  const generation = useRef(0)
+  const controllers = useRef(new Set<AbortController>())
+
+  const beginOperation = useCallback(() => {
+    const controller = new AbortController()
+    controllers.current.add(controller)
+    return { controller, expectedGeneration: generation.current }
+  }, [])
 
   const load = useCallback(async () => {
+    const { controller, expectedGeneration } = beginOperation()
     try {
-      const value = await client.request<{ items: ChangeRequestRecord[] }>('/change-requests?limit=50')
+      const value = await client.request<{ items: ChangeRequestRecord[] }>('/change-requests?limit=50', {
+        signal: controller.signal,
+      })
+      if (expectedGeneration !== generation.current) return
       setRequests(value.items)
       setSelected((current) => current ? value.items.find((item) => item.id === current.id) ?? current : value.items[0])
-    } catch (next) { setError(next) }
-  }, [client])
+    } catch (next) {
+      if (!controller.signal.aborted && expectedGeneration === generation.current) setError(next)
+    } finally { controllers.current.delete(controller) }
+  }, [beginOperation, client])
 
-  useEffect(() => { void load() }, [load])
+  useEffect(() => {
+    const activeControllers = controllers.current
+    generation.current += 1
+    activeControllers.forEach((controller) => controller.abort())
+    activeControllers.clear()
+    setRequests([]); setSelected(undefined); setError(undefined); setBusy(false)
+    setTitle(''); setTargetRef(''); setAspectName('datasetProperties'); setBeforeHash('')
+    setDescription(''); setClassification('INTERNAL')
+    setDocumentText('{\n  "description": ""\n}')
+    void load()
+    return () => {
+      generation.current += 1
+      activeControllers.forEach((controller) => controller.abort())
+      activeControllers.clear()
+    }
+  }, [client, load])
 
   const submit = async (event: FormEvent) => {
     event.preventDefault(); setError(undefined); setBusy(true)
+    const { controller, expectedGeneration } = beginOperation()
     try {
       const parsed: unknown = JSON.parse(documentText)
       if (!parsed || Array.isArray(parsed) || typeof parsed !== 'object') throw new Error('Aspect 문서는 JSON 객체여야 합니다.')
       const next = await client.request<ChangeRequestRecord>('/change-requests', {
         method: 'POST',
         idempotencyKey: newIdempotencyKey('change-create'),
+        signal: controller.signal,
         body: JSON.stringify({
           request_type: 'CATALOG_METADATA', title, description, classification,
           items: [{
             target_type: 'DATAHUB_ASPECT', target_ref: targetRef, aspect_name: aspectName,
-            operation: 'UPSERT', after_document: parsed,
+            operation: 'UPSERT', before_hash: beforeHash, after_document: parsed,
           }],
         }),
       })
+      if (expectedGeneration !== generation.current) return
       setSelected(next); setRequests((current) => [next, ...current.filter((item) => item.id !== next.id)])
-      setTitle(''); setDescription('')
-    } catch (next) { setError(next) } finally { setBusy(false) }
+      setTitle(''); setDescription(''); setBeforeHash('')
+    } catch (next) {
+      if (!controller.signal.aborted && expectedGeneration === generation.current) setError(next)
+    } finally {
+      controllers.current.delete(controller)
+      if (expectedGeneration === generation.current) setBusy(false)
+    }
   }
 
   const mutate = async (path: string, body: object) => {
     if (!selected) return
+    const { controller, expectedGeneration } = beginOperation()
     setBusy(true); setError(undefined)
     try {
       const next = await client.request<ChangeRequestRecord>(path, {
         method: 'POST',
         idempotencyKey: newIdempotencyKey('change-action'),
         ifMatch: `"${selected.version}"`,
+        signal: controller.signal,
         body: JSON.stringify(body),
       })
+      if (expectedGeneration !== generation.current) return
       setSelected(next)
       setRequests((current) => current.map((item) => item.id === next.id ? next : item))
-    } catch (next) { setError(next) } finally { setBusy(false) }
+    } catch (next) {
+      if (!controller.signal.aborted && expectedGeneration === generation.current) setError(next)
+    } finally {
+      controllers.current.delete(controller)
+      if (expectedGeneration === generation.current) setBusy(false)
+    }
   }
 
   return (
@@ -89,9 +138,11 @@ export function GovernancePage({
       <div className="panel-grid governance-grid">
         <form className="panel form-stack" onSubmit={(event) => void submit(event)}>
           <h3>DataHub aspect 변경 제안</h3>
+          <p className="callout">이 화면은 현재 원본 hash를 알고 있는 통합·복구용 임시 제안 경로입니다. 일반 사용자의 typed 메타데이터 편집은 아직 잠겨 있습니다.</p>
           <label>제목<input value={title} onChange={(event) => setTitle(event.target.value)} maxLength={500} required /></label>
-          <label>DataHub 대상 URN<input value={targetRef} onChange={(event) => setTargetRef(event.target.value)} placeholder="urn:li:dataset:..." pattern="urn:li:.*" required /></label>
-          <label>Aspect 이름<input value={aspectName} onChange={(event) => setAspectName(event.target.value)} pattern="[A-Za-z][A-Za-z0-9]*" required /></label>
+          <label>DataHub 대상 URN<input value={targetRef} onChange={(event) => setTargetRef(event.target.value)} placeholder="urn:li:dataset:..." pattern="urn:li:dataset:.*" required /></label>
+          <label>Aspect 이름<select value={aspectName} onChange={(event) => setAspectName(event.target.value as (typeof allowedAspects)[number])}>{allowedAspects.map((aspect) => <option key={aspect}>{aspect}</option>)}</select></label>
+          <label>원본 Aspect SHA-256<input value={beforeHash} onChange={(event) => setBeforeHash(event.target.value)} pattern="[0-9a-f]{64}" minLength={64} maxLength={64} required /></label>
           <label>승인 대상 JSON<textarea className="code-editor" value={documentText} onChange={(event) => setDocumentText(event.target.value)} required /></label>
           <label>분류등급<select value={classification} onChange={(event) => setClassification(event.target.value)}><option>PUBLIC</option><option>INTERNAL</option><option>CONFIDENTIAL</option><option>RESTRICTED</option></select></label>
           <label>변경 사유<textarea value={description} onChange={(event) => setDescription(event.target.value)} maxLength={10000} /></label>

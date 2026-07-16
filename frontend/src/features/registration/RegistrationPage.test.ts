@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { supportedContentType } from './RegistrationPage'
+import { supportedContentType } from './RegistrationBulkWorkbench'
 
 describe('supportedContentType', () => {
   it('uses a stable server contract when browsers report alternate parquet MIME types', () => {

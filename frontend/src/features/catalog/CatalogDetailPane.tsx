@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { ArrowDownToLine, ArrowUpFromLine, Network, X } from 'lucide-react'
 import type { ApiClient } from '../../api/client'
 import type { CatalogAssetDetail, CatalogLineage } from '../../api/types'
@@ -30,14 +30,20 @@ export function CatalogDetailPane({
   const [lineageLoading, setLineageLoading] = useState(false)
   const [error, setError] = useState<unknown>()
   const [lineageError, setLineageError] = useState<unknown>()
+  const lineageController = useRef<AbortController | null>(null)
 
   useEffect(() => {
     const controller = new AbortController()
+    lineageController.current?.abort()
     setLoading(true); setError(undefined); setDetail(undefined); setLineage(undefined)
     void client.request<CatalogAssetDetail>(`/catalog/assets/${assetId}`, { signal: controller.signal })
-      .then(setDetail).catch((next: unknown) => { if (!controller.signal.aborted) setError(next) })
+      .then((value) => { if (!controller.signal.aborted) setDetail(value) })
+      .catch((next: unknown) => { if (!controller.signal.aborted) setError(next) })
       .finally(() => { if (!controller.signal.aborted) setLoading(false) })
-    return () => controller.abort()
+    return () => {
+      controller.abort()
+      lineageController.current?.abort()
+    }
   }, [assetId, client])
 
   const toggle = (section: string) => {
@@ -47,9 +53,17 @@ export function CatalogDetailPane({
       return next
     })
     if (section === 'lineage' && !lineage && !lineageLoading) {
+      const controller = new AbortController()
+      lineageController.current?.abort()
+      lineageController.current = controller
       setLineageLoading(true); setLineageError(undefined)
-      void client.request<CatalogLineage>(`/catalog/assets/${assetId}/lineage?direction=BOTH&depth=2`)
-        .then(setLineage).catch(setLineageError).finally(() => setLineageLoading(false))
+      void client.request<CatalogLineage>(`/catalog/assets/${assetId}/lineage?direction=BOTH&depth=2`, {
+        signal: controller.signal,
+      }).then((value) => { if (!controller.signal.aborted) setLineage(value) }).catch((next: unknown) => {
+        if (!controller.signal.aborted) setLineageError(next)
+      }).finally(() => {
+        if (!controller.signal.aborted) setLineageLoading(false)
+      })
     }
   }
 

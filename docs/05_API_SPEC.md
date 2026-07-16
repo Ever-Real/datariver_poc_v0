@@ -86,6 +86,15 @@ Completion does not mean accepted. Durable states are `INITIATED → COMPLETION_
 | `POST /change-requests/{id}/approvals` | `change.review` / `change.approve` | append immutable decision |
 | `POST /change-requests/{id}/transitions` | derived | legal user-controlled transition/retry |
 
+At creation time, the service resolves every `target_ref` through the authorization-pruned local catalog projection in
+the request workspace, evaluates `change.create` against the target's actual system, domain and
+classification, and rejects a request classification lower than any target. The executable aspect
+allowlist is `datasetProperties`, `domains`, `globalTags`, `glossaryTerms`, `ownership` and
+`schemaMetadata`. A request currently contains exactly one item until durable per-item checkpoints
+exist. The item must carry the current provider aspect SHA-256; omission or mismatch fails closed
+before provider mutation. Apply-time target/policy reauthorization and an external atomic CAS remain
+required hardening gates; create-time authorization alone is not a durable target binding.
+
 Implemented change item contract:
 
 ```json
@@ -94,7 +103,7 @@ Implemented change item contract:
   "target_ref": "urn:li:dataset:(urn:li:dataPlatform:postgres,my.table,PROD)",
   "aspect_name": "datasetProperties",
   "operation": "UPSERT",
-  "before_hash": null,
+  "before_hash": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
   "after_document": {"description":"Governed description"},
   "after_hash": null
 }

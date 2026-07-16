@@ -1,6 +1,6 @@
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { describe, expect, it, vi } from 'vitest'
-import type { ApiClient } from '../../api/client'
+import type { ApiClient, RequestOptions } from '../../api/client'
 import type { CatalogAsset } from '../../api/types'
 import { CatalogPage } from './CatalogPage'
 
@@ -28,11 +28,12 @@ const asset: CatalogAsset = {
   ],
 }
 
-function clientWith(request: (path: string) => Promise<unknown>): ApiClient {
+function clientWith(request: (path: string, options?: RequestOptions) => Promise<unknown>): ApiClient {
   return { request: vi.fn(request) } as unknown as ApiClient
 }
 
-function defaultRequest(path: string): Promise<unknown> {
+function defaultRequest(path: string, options?: RequestOptions): Promise<unknown> {
+  void options
   if (path.startsWith('/catalog/assets?')) return Promise.resolve({ items: [asset], page: { limit: 50 }, meta, match_mode: 'ALL' })
   if (path.startsWith('/catalog/facets')) return Promise.resolve({ asset_types: [{ value: 'DATASET', count: 1 }], platforms: [{ value: 'snowflake', count: 1 }], classifications: [{ value: 'INTERNAL', count: 1 }], meta })
   if (path.startsWith('/catalog/tree/')) return Promise.resolve({ items: [], page: { limit: 100 }, meta })
@@ -55,9 +56,10 @@ describe('catalog workspace', () => {
   })
 
   it('loads canonical tree branches only when a parent is expanded', async () => {
-    const request = vi.fn(async (path: string) => {
-      if (path.includes('parent_kind=ROOT')) return { items: [{ id: 'platform-node', kind: 'PLATFORM', label: 'snowflake', asset_count: 1, has_children: true, platform: 'snowflake' }], page: { limit: 100 }, meta }
-      if (path.includes('parent_kind=PLATFORM')) return { items: [{ id: 'database-node', kind: 'DATABASE', label: 'analytics', asset_count: 1, has_children: true, platform: 'snowflake', database_name: 'analytics' }], page: { limit: 100 }, meta }
+    const request = vi.fn((path: string, options?: RequestOptions): Promise<unknown> => {
+      void options
+      if (path.includes('parent_kind=ROOT')) return Promise.resolve({ items: [{ id: 'platform-node', kind: 'PLATFORM', label: 'snowflake', asset_count: 1, has_children: true, platform: 'snowflake' }], page: { limit: 100 }, meta })
+      if (path.includes('parent_kind=PLATFORM')) return Promise.resolve({ items: [{ id: 'database-node', kind: 'DATABASE', label: 'analytics', asset_count: 1, has_children: true, platform: 'snowflake', database_name: 'analytics' }], page: { limit: 100 }, meta })
       return defaultRequest(path)
     })
     render(<CatalogPage client={clientWith(request)} />)
@@ -65,7 +67,9 @@ describe('catalog workspace', () => {
     const tree = await screen.findByRole('complementary', { name: 'Resource Tree' })
     fireEvent.click(await within(tree).findByRole('button', { name: /snowflake/ }))
     await within(tree).findByText('analytics')
-    expect(request).toHaveBeenCalledWith(expect.stringContaining('parent_kind=PLATFORM'))
+    expect(request.mock.calls.some(([path, options]) => (
+      path.includes('parent_kind=PLATFORM') && options?.signal instanceof AbortSignal
+    ))).toBe(true)
     expect(request.mock.calls.filter(([path]) => String(path).includes('parent_kind=PLATFORM'))).toHaveLength(1)
   })
 
@@ -78,6 +82,8 @@ describe('catalog workspace', () => {
     expect(request.mock.calls.some(([path]) => String(path).includes('/lineage?'))).toBe(false)
     fireEvent.click(screen.getByRole('button', { name: /Lineage/ }))
     expect(await screen.findByText('1 nodes · 0 edges')).toBeInTheDocument()
-    await waitFor(() => expect(request).toHaveBeenCalledWith(expect.stringContaining('/lineage?direction=BOTH&depth=2')))
+    await waitFor(() => expect(request.mock.calls.some(([path, options]) => (
+      path.includes('/lineage?direction=BOTH&depth=2') && options?.signal instanceof AbortSignal
+    ))).toBe(true))
   })
 })

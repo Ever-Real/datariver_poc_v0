@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Box, ChevronDown, ChevronRight, Database, Layers3, Table2 } from 'lucide-react'
 import type { ApiClient } from '../../api/client'
 import type { CatalogTreeNode, CatalogTreePage } from '../../api/types'
@@ -45,16 +45,27 @@ export function CatalogResourceTree({
   const [expanded, setExpanded] = useState<Set<string>>(new Set())
   const [loading, setLoading] = useState<Set<string>>(new Set())
   const [error, setError] = useState<unknown>()
+  const generation = useRef(0)
+  const controllers = useRef(new Set<AbortController>())
 
-  const loadBranch = useCallback(async (parent?: CatalogTreeNode, append = false) => {
+  const loadBranch = useCallback(async (
+    parent?: CatalogTreeNode,
+    append = false,
+    expectedGeneration = generation.current,
+  ) => {
     const key = branchKey(parent)
+    const controller = new AbortController()
+    controllers.current.add(controller)
     setLoading((current) => new Set(current).add(key)); setError(undefined)
     try {
       const parameters = new URLSearchParams(parent ? treePath(parent) : 'parent_kind=ROOT&limit=100')
       if (query) parameters.set('q', query)
       const cursor = append ? branches[key]?.nextCursor : undefined
       if (cursor) parameters.set('cursor', cursor)
-      const page = await client.request<CatalogTreePage>(`/catalog/tree/nodes?${parameters}`)
+      const page = await client.request<CatalogTreePage>(`/catalog/tree/nodes?${parameters}`, {
+        signal: controller.signal,
+      })
+      if (expectedGeneration !== generation.current) return
       setBranches((current) => ({
         ...current,
         [key]: {
@@ -62,13 +73,29 @@ export function CatalogResourceTree({
           ...(page.page.next_cursor ? { nextCursor: page.page.next_cursor } : {}),
         },
       }))
-    } catch (next) { setError(next) } finally {
-      setLoading((current) => { const next = new Set(current); next.delete(key); return next })
+    } catch (next) {
+      if (!controller.signal.aborted && expectedGeneration === generation.current) setError(next)
+    } finally {
+      controllers.current.delete(controller)
+      if (expectedGeneration === generation.current) {
+        setLoading((current) => { const next = new Set(current); next.delete(key); return next })
+      }
     }
   }, [branches, client, query])
 
   useEffect(() => {
-    setBranches({}); setExpanded(new Set()); void loadBranch()
+    const activeControllers = controllers.current
+    generation.current += 1
+    const currentGeneration = generation.current
+    activeControllers.forEach((controller) => controller.abort())
+    activeControllers.clear()
+    setBranches({}); setExpanded(new Set()); setLoading(new Set()); setError(undefined)
+    void loadBranch(undefined, false, currentGeneration)
+    return () => {
+      generation.current += 1
+      activeControllers.forEach((controller) => controller.abort())
+      activeControllers.clear()
+    }
     // loadBranch intentionally resets when the committed server query changes.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [client, query])

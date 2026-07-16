@@ -28,6 +28,7 @@ def make_request() -> ChangeRequest:
                 operation="UPSERT",
                 after_document={"owners": ["urn:li:corpuser:steward"]},
                 aspect_name="ownership",
+                before_hash="b" * 64,
             )
         ],
     )
@@ -62,6 +63,66 @@ def test_undeclared_transition_is_rejected() -> None:
             reason="Skip review",
             policy_decision_id=uuid4(),
             expected_version=request.version,
+        )
+
+
+def test_change_creation_requires_source_hash() -> None:
+    with pytest.raises(ValidationError, match="current DataHub aspect hash"):
+        ChangeRequest.create(
+            workspace_id=uuid4(),
+            number="CR-2026-000002",
+            request_type="CATALOG_METADATA",
+            title="Unsafe update",
+            description="Missing optimistic concurrency guard.",
+            requester_id=uuid4(),
+            items=[
+                ChangeItem(
+                    item_id=uuid4(),
+                    target_type="DATAHUB_ASPECT",
+                    target_ref="urn:li:dataset:test",
+                    operation="UPSERT",
+                    after_document={"name": "unsafe"},
+                    aspect_name="datasetProperties",
+                )
+            ],
+        )
+
+
+def test_change_creation_rejects_unmanaged_aspect() -> None:
+    with pytest.raises(ValidationError, match="governed allowlist"):
+        ChangeRequest.create(
+            workspace_id=uuid4(),
+            number="CR-2026-000003",
+            request_type="CATALOG_METADATA",
+            title="Unsafe update",
+            description="Attempt to write an unmanaged provider aspect.",
+            requester_id=uuid4(),
+            items=[
+                ChangeItem(
+                    item_id=uuid4(),
+                    target_type="DATAHUB_ASPECT",
+                    target_ref="urn:li:dataset:test",
+                    operation="UPSERT",
+                    after_document={"value": "unsafe"},
+                    aspect_name="corpSecretAspect",
+                    before_hash="b" * 64,
+                )
+            ],
+        )
+
+
+def test_change_creation_rejects_multiple_items_until_checkpoints_exist() -> None:
+    first = make_request().items[0]
+
+    with pytest.raises(ValidationError, match="Exactly one change item"):
+        ChangeRequest.create(
+            workspace_id=uuid4(),
+            number="CR-2026-000004",
+            request_type="CATALOG_METADATA",
+            title="Unsafe batch",
+            description="Would permit a partial provider effect.",
+            requester_id=uuid4(),
+            items=[first, first],
         )
 
 

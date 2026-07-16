@@ -62,6 +62,18 @@ class ApprovalDecision(StrEnum):
     REJECTED = "REJECTED"
 
 
+ALLOWED_DATAHUB_ASPECTS = frozenset(
+    {
+        "datasetProperties",
+        "domains",
+        "globalTags",
+        "glossaryTerms",
+        "ownership",
+        "schemaMetadata",
+    }
+)
+
+
 @dataclass(frozen=True, slots=True)
 class ChangeItem:
     item_id: UUID
@@ -128,8 +140,10 @@ class ChangeRequest:
     ) -> ChangeRequest:
         if not title.strip():
             raise ValidationError("Change request title is required.")
-        if not items:
-            raise ValidationError("At least one change item is required.")
+        if len(items) != 1:
+            raise ValidationError(
+                "Exactly one change item is supported until durable item checkpoints exist."
+            )
         for item in items:
             if item.target_type != "DATAHUB_ASPECT":
                 raise ValidationError("Only typed DataHub aspect changes are currently executable.")
@@ -141,6 +155,12 @@ class ChangeRequest:
                 raise ValidationError("A DataHub target must be a valid urn:li: identifier.")
             if not item.aspect_name.strip():
                 raise ValidationError("A DataHub aspect name is required.")
+            if item.aspect_name not in ALLOWED_DATAHUB_ASPECTS:
+                raise ValidationError("The DataHub aspect is not in the governed allowlist.")
+            if item.before_hash is None:
+                raise ValidationError(
+                    "A current DataHub aspect hash is required for optimistic concurrency."
+                )
         request = cls(
             change_request_id=uuid7(),
             workspace_id=workspace_id,

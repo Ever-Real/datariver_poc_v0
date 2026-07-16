@@ -7,15 +7,22 @@ from uuid import UUID
 
 import orjson
 from fastapi import APIRouter, Header, Query, Request
+from sqlalchemy.ext.asyncio import AsyncSession
 
+from datariver.application.classification_access import ClassificationAccessResolver
 from datariver.application.services.authorization import AuthorizationService
+from datariver.application.services.change_targets import CatalogChangeTargetAuthorizer
 from datariver.application.services.governance import GovernanceService
 from datariver.domain.authz import Classification
 from datariver.domain.common import ValidationError, canonical_json_hash, uuid7
 from datariver.domain.governance import ApprovalDecision, ChangeItem, ChangeState
 from datariver.infrastructure.db.authz import SqlDecisionWriter
+from datariver.infrastructure.db.catalog import SqlCatalogIndexReader
+from datariver.infrastructure.db.classification_access import (
+    SqlClassificationAccessSnapshotReader,
+)
 from datariver.infrastructure.db.governance import SqlGovernanceUnitOfWork
-from datariver.interfaces.http.dependencies import ContextDep, get_container
+from datariver.interfaces.http.dependencies import ContextDep, SessionDep, get_container
 from datariver.interfaces.http.presenters import change_request_response
 from datariver.interfaces.http.schemas import (
     ApprovalRequest,
@@ -28,13 +35,25 @@ from datariver.interfaces.http.schemas import (
 router = APIRouter(prefix="/change-requests", tags=["governance"])
 
 
-def _service(request: Request) -> GovernanceService:
+def _service(request: Request, session: AsyncSession | None = None) -> GovernanceService:
     container = get_container(request)
     authorization = AuthorizationService(
         decision_writer=SqlDecisionWriter(container.database.session_factory)
     )
     return GovernanceService(
-        lambda: SqlGovernanceUnitOfWork(container.database.session_factory), authorization
+        lambda: SqlGovernanceUnitOfWork(container.database.session_factory),
+        authorization,
+        target_authorizer=(
+            CatalogChangeTargetAuthorizer(
+                index=SqlCatalogIndexReader(session),
+                classification_access=ClassificationAccessResolver(
+                    SqlClassificationAccessSnapshotReader(session)
+                ),
+                authorization=authorization,
+            )
+            if session is not None
+            else None
+        ),
     )
 
 
@@ -88,6 +107,7 @@ async def create_change_request(
     payload: ChangeRequestCreate,
     request: Request,
     context: ContextDep,
+    session: SessionDep,
     idempotency_key: Annotated[str, Header(alias="Idempotency-Key", min_length=16, max_length=200)],
 ) -> ChangeRequestResponse:
     items: list[ChangeItem] = []
@@ -111,7 +131,7 @@ async def create_change_request(
         orjson.dumps(payload.model_dump(mode="json"), option=orjson.OPT_SORT_KEYS)
     ).hexdigest()
     number = f"CR-{datetime.now(UTC):%Y}-{uuid7().hex[:12].upper()}"
-    change_request = await _service(request).create_change_request(
+    change_request = await _service(request, session).create_change_request(
         workspace_id=context.workspace_id,
         number=number,
         request_type=payload.request_type,

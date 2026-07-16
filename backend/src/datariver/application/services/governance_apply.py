@@ -6,6 +6,7 @@ from uuid import UUID
 from datariver.application.errors import ExternalDependencyError
 from datariver.application.ports import DataHubGateway, GovernanceApplyStore
 from datariver.domain.common import ConflictError, DomainError, canonical_json_hash
+from datariver.domain.governance import ALLOWED_DATAHUB_ASPECTS
 
 
 class GovernanceApplyWorker:
@@ -65,20 +66,54 @@ class GovernanceApplyWorker:
         return True
 
     async def _apply_items(self, items: list[Any]) -> tuple[str, str, list[dict[str, Any]]]:
+        if len(items) != 1:
+            raise ConflictError(
+                "Multi-item apply is disabled until durable item checkpoints exist.",
+                details={"code": "MULTI_ITEM_APPLY_DISABLED"},
+            )
         expected_items: list[dict[str, str]] = []
         observed_items: list[dict[str, str]] = []
         results: list[dict[str, Any]] = []
         for item in items:
-            expected_hash = item.after_hash or canonical_json_hash(item.after_document)
-            if item.before_hash is not None:
-                current = await self._datahub.read_aspect(
-                    external_urn=item.target_ref, aspect_name=item.aspect_name
+            if (
+                item.target_type != "DATAHUB_ASPECT"
+                or item.operation != "UPSERT"
+                or item.aspect_name not in ALLOWED_DATAHUB_ASPECTS
+                or not item.target_ref.startswith("urn:li:dataset:")
+            ):
+                raise ConflictError(
+                    "The queued provider change is outside the executable contract.",
+                    details={"item_id": str(item.item_id), "code": "UNSAFE_QUEUED_CHANGE"},
                 )
-                if current.content_hash != item.before_hash:
-                    raise ConflictError(
-                        "DataHub changed after this request was prepared.",
-                        details={"item_id": str(item.item_id), "code": "BEFORE_HASH_MISMATCH"},
-                    )
+            if item.before_hash is None:
+                raise ConflictError(
+                    "The approved change is missing its source concurrency hash.",
+                    details={"item_id": str(item.item_id), "code": "MISSING_BEFORE_HASH"},
+                )
+            expected_hash = item.after_hash or canonical_json_hash(item.after_document)
+            current = await self._datahub.read_aspect(
+                external_urn=item.target_ref, aspect_name=item.aspect_name
+            )
+            if current.content_hash == expected_hash:
+                expected_items.append({"item_id": str(item.item_id), "content_hash": expected_hash})
+                observed_items.append(
+                    {"item_id": str(item.item_id), "content_hash": current.content_hash}
+                )
+                results.append(
+                    {
+                        "item_id": str(item.item_id),
+                        "operation_id": "reconciled-existing",
+                        "provider_version": current.source_version,
+                        "source_version": current.source_version,
+                        "content_hash": current.content_hash,
+                    }
+                )
+                continue
+            if current.content_hash != item.before_hash:
+                raise ConflictError(
+                    "DataHub changed after this request was prepared.",
+                    details={"item_id": str(item.item_id), "code": "BEFORE_HASH_MISMATCH"},
+                )
             receipt = await self._datahub.apply_change(
                 external_urn=item.target_ref,
                 aspect_name=item.aspect_name,

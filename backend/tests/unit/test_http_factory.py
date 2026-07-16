@@ -215,6 +215,32 @@ def test_catalog_export_openapi_is_server_managed_and_does_not_expose_storage_co
     assert set(capability["properties"]) == {"enabled"}
 
 
+def test_change_write_contract_requires_source_hash_and_governed_aspect() -> None:
+    factory = cast(Callable[[Settings], AppContainer], lambda _: LiveOnlyContainer())
+    document = create_app(settings(), container_factory=factory).openapi()
+    expected_aspects = {
+        "datasetProperties",
+        "domains",
+        "globalTags",
+        "glossaryTerms",
+        "ownership",
+        "schemaMetadata",
+    }
+
+    change_item = document["components"]["schemas"]["ChangeItemRequest"]
+    change_request = document["components"]["schemas"]["ChangeRequestCreate"]
+    assert change_request["properties"]["items"]["minItems"] == 1
+    assert change_request["properties"]["items"]["maxItems"] == 1
+    assert "before_hash" in change_item["required"]
+    assert change_item["properties"]["target_ref"]["pattern"] == "^urn:li:dataset:"
+    assert set(change_item["properties"]["aspect_name"]["enum"]) == expected_aspects
+    assert change_item["properties"]["before_hash"]["pattern"] == "^[0-9a-f]{64}$"
+
+    registration = document["components"]["schemas"]["UploadRegistrationProposal"]
+    assert "before_hash" in registration["required"]
+    assert set(registration["properties"]["aspect_name"]["enum"]) == expected_aspects
+
+
 def test_openapi_keeps_inference_profile_proposals_out_of_the_browser_contract() -> None:
     factory = cast(Callable[[Settings], AppContainer], lambda _: LiveOnlyContainer())
     document = create_app(settings(), container_factory=factory).openapi()

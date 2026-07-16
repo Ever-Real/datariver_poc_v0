@@ -64,9 +64,11 @@ class MemoryApplyStore:
 
 
 class MemoryDataHub:
-    def __init__(self, *, observed_hash: str) -> None:
+    def __init__(self, *, observed_hash: str, before_hash: str = "b" * 64) -> None:
         self.observed_hash = observed_hash
+        self.before_hash = before_hash
         self.applied = 0
+        self.reads = 0
 
     async def apply_change(
         self,
@@ -81,8 +83,13 @@ class MemoryDataHub:
         return DataHubApplyReceipt("op-1", datetime.now(UTC), "1", "r" * 64)
 
     async def read_aspect(self, *, external_urn: str, aspect_name: str) -> DataHubAspectSnapshot:
+        self.reads += 1
         return DataHubAspectSnapshot(
-            external_urn, aspect_name, self.observed_hash, "v1", datetime.now(UTC)
+            external_urn,
+            aspect_name,
+            self.before_hash if self.reads == 1 else self.observed_hash,
+            "v1",
+            datetime.now(UTC),
         )
 
     async def get_asset(self, external_urn: str) -> Any:
@@ -118,6 +125,7 @@ def make_claim() -> tuple[GovernanceApplyClaim, str]:
                 operation="UPSERT",
                 after_document=document,
                 aspect_name="datasetProperties",
+                before_hash="b" * 64,
                 after_hash=expected_hash,
             )
         ],
@@ -158,3 +166,70 @@ async def test_worker_fails_closed_on_reconciliation_mismatch() -> None:
     assert await worker.run_once() is True
     assert store.applied is None
     assert store.failed == ("AFTER_HASH_MISMATCH", False)
+
+
+@pytest.mark.asyncio
+async def test_worker_reconciles_provider_success_after_lost_completion_record() -> None:
+    claim, expected_hash = make_claim()
+    store = MemoryApplyStore(claim)
+    gateway = MemoryDataHub(observed_hash=expected_hash, before_hash=expected_hash)
+    worker = GovernanceApplyWorker(
+        store=store,
+        datahub=gateway,
+        worker_id="worker-1",
+        system_actor_id=uuid4(),
+    )
+
+    assert await worker.run_once() is True
+    assert gateway.reads == 1
+    assert gateway.applied == 0
+    assert store.applied is not None
+    assert store.failed is None
+
+
+@pytest.mark.asyncio
+async def test_worker_rejects_legacy_multi_item_claim_before_provider_read() -> None:
+    claim, expected_hash = make_claim()
+    claim.change_request.items.append(claim.change_request.items[0])
+    store = MemoryApplyStore(claim)
+    gateway = MemoryDataHub(observed_hash=expected_hash)
+    worker = GovernanceApplyWorker(
+        store=store,
+        datahub=gateway,
+        worker_id="worker-1",
+        system_actor_id=uuid4(),
+    )
+
+    assert await worker.run_once() is True
+    assert gateway.reads == 0
+    assert gateway.applied == 0
+    assert store.failed == ("MULTI_ITEM_APPLY_DISABLED", False)
+
+
+@pytest.mark.asyncio
+async def test_worker_revalidates_legacy_queued_item_contract() -> None:
+    claim, expected_hash = make_claim()
+    original = claim.change_request.items[0]
+    claim.change_request.items[0] = ChangeItem(
+        item_id=original.item_id,
+        target_type=original.target_type,
+        target_ref=original.target_ref,
+        operation=original.operation,
+        after_document=original.after_document,
+        aspect_name="unsafeLegacyAspect",
+        before_hash=original.before_hash,
+        after_hash=original.after_hash,
+    )
+    store = MemoryApplyStore(claim)
+    gateway = MemoryDataHub(observed_hash=expected_hash)
+    worker = GovernanceApplyWorker(
+        store=store,
+        datahub=gateway,
+        worker_id="worker-1",
+        system_actor_id=uuid4(),
+    )
+
+    assert await worker.run_once() is True
+    assert gateway.reads == 0
+    assert gateway.applied == 0
+    assert store.failed == ("UNSAFE_QUEUED_CHANGE", False)
