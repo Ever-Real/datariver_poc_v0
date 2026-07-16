@@ -144,6 +144,31 @@ def verify_datahub_release_contract() -> None:
             raise AssertionError(f"DataHub component {name} has no immutable OCI index digest")
 
 
+def verify_identity_assurance_contract() -> None:
+    realm = json.loads(
+        (ROOT / "infra" / "keycloak" / "datariver-realm.template.json").read_text(encoding="utf-8")
+    )
+    clients = realm.get("clients")
+    users = realm.get("users")
+    if not isinstance(clients, list) or not isinstance(users, list):
+        raise AssertionError("Keycloak realm must contain clients and users")
+    web_client = next(
+        (client for client in clients if client.get("clientId") == "datariver-web"), None
+    )
+    if not isinstance(web_client, dict):
+        raise AssertionError("Keycloak realm has no datariver-web client")
+    mapper_ids = {
+        mapper.get("protocolMapper")
+        for mapper in web_client.get("protocolMappers", [])
+        if isinstance(mapper, dict)
+    }
+    if "oidc-amr-mapper" not in mapper_ids:
+        raise AssertionError("Keycloak web client must emit authentication method references")
+    for user in users:
+        if isinstance(user, dict) and "CONFIGURE_TOTP" in user.get("requiredActions", []):
+            raise AssertionError("Mobile TOTP cannot be a required DataRiver user action")
+
+
 def verify_runtime_hardening() -> None:
     documents = {path.name: _yaml(path) for path in COMPOSE_FILES}
     expected_read_only = {
@@ -372,6 +397,7 @@ def main() -> None:
     verify_compose()
     verify_build_context()
     verify_datahub_release_contract()
+    verify_identity_assurance_contract()
     verify_runtime_hardening()
     verify_readiness_contract()
     verify_ci_supply_chain()
@@ -382,6 +408,7 @@ def main() -> None:
     verify_document_links()
     print(
         "static verification passed: compose, build context, DataHub release contract, "
+        "identity assurance contract, "
         "runtime hardening/readiness, "
         "CI supply chain, "
         "database roles, architecture, tenant foreign keys, seed, documentation"

@@ -2,7 +2,7 @@
 
 ## Latest executed baseline
 
-The 2026-07-15 development/integration baseline plus the current P0/P1/P2/P3 foundation passed 88 backend tests, strict mypy over 114 source files, Ruff formatting/lint, 6 frontend tests, TypeScript/ESLint/build, deterministic migration generation and static architecture/Compose/role/readiness checks. The live hybrid-development baseline also passed PostgreSQL RLS, Keycloak service-token OIDC, schema-aware API/APISIX readiness, Vite-to-APISIX proxying, DataHub GraphQL authentication and semiconductor seed verification. The earlier container baseline additionally passed Airflow DAG imports, optional seed remove and repository/IaC Trivy scanning. Exact commands and the distinction between current source and earlier evidence are in [the acceptance report](12_ACCEPTANCE_REPORT.md).
+The 2026-07-15 development/integration baseline plus the current P0/P1/P2/P3 foundation passed 109 backend tests, strict mypy over 117 source files, Ruff formatting/lint, 6 frontend tests, TypeScript/ESLint/build, deterministic migration generation and static architecture/Compose/role/readiness checks. The live hybrid-development baseline also passed PostgreSQL RLS, Keycloak service-token OIDC, schema-aware API/APISIX readiness, Vite-to-APISIX proxying, DataHub GraphQL authentication and semiconductor seed verification. The earlier container baseline additionally passed Airflow DAG imports, optional seed remove and repository/IaC Trivy scanning. Exact commands and the distinction between current source and earlier evidence are in [the acceptance report](12_ACCEPTANCE_REPORT.md).
 
 Executed resilience checks included cache-Valkey stop/recovery, API process restart, API container replacement behind both Nginx and APISIX, and outbox-relay restart. The API replacement test deliberately kept the web container running and verified that its Docker DNS resolver did not retain a stale upstream address.
 
@@ -12,7 +12,7 @@ scope removal p99 193.388 ms. All passed the provisional 60-second SLA and the o
 membership was restored. This is development evidence, not the required target-load/two-identity or
 already-open Chat/SSE gate.
 
-The strategy below remains the production release matrix. Target DataHub/object storage, backup/restore, browser PKCE/TOTP, load/soak, queue saturation, worker crash-at-each-boundary and promoted-image scans are still environment gates rather than silently assumed passes.
+The strategy below remains the production release matrix. Target DataHub/object storage, backup/restore, browser PKCE/hardware-WebAuthn and governed password fallback, load/soak, queue saturation, worker crash-at-each-boundary and promoted-image scans are still environment gates rather than silently assumed passes.
 
 ## Test pyramid and gates
 

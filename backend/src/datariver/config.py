@@ -52,6 +52,11 @@ class Settings(BaseSettings):
     oidc_audience: str
     oidc_jwks_url: str
     oidc_allowed_algorithms: tuple[str, ...] = ("RS256", "ES256")
+    oidc_hardware_acr_values: tuple[str, ...] = ("2",)
+    oidc_hardware_amr_values: tuple[str, ...] = ("webauthn", "hwk")
+    oidc_password_reauth_acr_values: tuple[str, ...] = ("1",)
+    oidc_password_amr_values: tuple[str, ...] = ("pwd",)
+    high_risk_auth_max_age_seconds: int = Field(default=300, ge=60, le=900)
 
     datahub_base_url: str
     datahub_secret_ref: str
@@ -97,7 +102,14 @@ class Settings(BaseSettings):
     seed_profile: Literal["none", "semiconductor"] = "none"
 
     @field_validator(
-        "app_cors_origins", "app_trusted_hosts", "oidc_allowed_algorithms", mode="before"
+        "app_cors_origins",
+        "app_trusted_hosts",
+        "oidc_allowed_algorithms",
+        "oidc_hardware_acr_values",
+        "oidc_hardware_amr_values",
+        "oidc_password_reauth_acr_values",
+        "oidc_password_amr_values",
+        mode="before",
     )
     @classmethod
     def parse_csv(cls, value: object) -> object:
@@ -115,6 +127,21 @@ class Settings(BaseSettings):
             raise ValueError("The DataHub stale TTL cannot be shorter than the fresh cache TTL.")
         if self.database_readiness_timeout_seconds > self.database_pool_timeout_seconds:
             raise ValueError("The database readiness timeout cannot exceed the API pool timeout.")
+        assurance_sets = {
+            "hardware ACR": set(self.oidc_hardware_acr_values),
+            "hardware AMR": set(self.oidc_hardware_amr_values),
+            "password ACR": set(self.oidc_password_reauth_acr_values),
+            "password AMR": set(self.oidc_password_amr_values),
+        }
+        if any(not values for values in assurance_sets.values()):
+            raise ValueError("OIDC assurance claim allowlists cannot be empty.")
+        if assurance_sets["hardware ACR"] & assurance_sets["password ACR"]:
+            raise ValueError("Hardware and password ACR allowlists must not overlap.")
+        if assurance_sets["hardware AMR"] & assurance_sets["password AMR"]:
+            raise ValueError("Hardware and password AMR allowlists must not overlap.")
+        unsafe_hardware_references = {"mfa", "otp", "pwd", "password"}
+        if assurance_sets["hardware AMR"] & unsafe_hardware_references:
+            raise ValueError("Generic MFA, OTP and password cannot assert hardware assurance.")
         credential_urls = {
             "database_url": self.database_url,
             "migration_database_url": self.migration_database_url,

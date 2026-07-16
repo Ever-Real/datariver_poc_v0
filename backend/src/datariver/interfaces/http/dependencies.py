@@ -68,7 +68,7 @@ async def get_request_context(
     subject = with_authentication_context(
         subject,
         authentication_time=identity.authentication_time,
-        strong_authentication=identity.strong_authentication,
+        authentication_assurance=identity.authentication_assurance,
     )
     return RequestContext(
         request_id=request.state.request_id,
@@ -80,7 +80,9 @@ async def get_request_context(
             purpose=purpose,
             network_zone=_network_zone(request),
             client_type="browser" if "text/html" in request.headers.get("accept", "") else "api",
-            maximum_authentication_age=timedelta(minutes=15),
+            maximum_authentication_age=timedelta(
+                seconds=container.settings.high_risk_auth_max_age_seconds
+            ),
         ),
     )
 

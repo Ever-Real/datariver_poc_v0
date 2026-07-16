@@ -10,7 +10,13 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from datariver.application.dto import DecisionAuditItem
 from datariver.application.ports import DecisionSetWriter, DecisionWriter, SubjectReader
-from datariver.domain.authz import Action, Classification, Decision, SubjectAttributes
+from datariver.domain.authz import (
+    Action,
+    AuthenticationAssurance,
+    Classification,
+    Decision,
+    SubjectAttributes,
+)
 from datariver.domain.common import ForbiddenError
 from datariver.infrastructure.db.models.authz import PolicyDecisionModel
 from datariver.infrastructure.db.models.platform import SubjectModel, WorkspaceMembershipModel
@@ -43,7 +49,15 @@ class SqlDecisionWriter(DecisionWriter, DecisionSetWriter):
                     effect=decision.effect.value,
                     reason_codes=list(decision.reason_codes),
                     policy_versions=list(decision.policy_versions),
-                    evaluation_context={"kind": "single"},
+                    evaluation_context={
+                        "kind": "single",
+                        "authentication_assurance": decision.authentication_assurance.value,
+                        "authentication_time": (
+                            decision.authentication_time.isoformat()
+                            if decision.authentication_time is not None
+                            else None
+                        ),
+                    },
                     request_id=request_id,
                     decided_at=datetime.now().astimezone(),
                 )
@@ -68,7 +82,7 @@ class SqlDecisionWriter(DecisionWriter, DecisionSetWriter):
         )
         policy_versions = sorted(
             {version for item in items for version in item.decision.policy_versions}
-            or {"builtin-abac-v1"}
+            or {"builtin-abac-v2"}
         )
         async with self._session_factory() as session:
             await set_security_context(session, workspace_id=workspace_id, subject_id=subject_id)
@@ -86,6 +100,14 @@ class SqlDecisionWriter(DecisionWriter, DecisionSetWriter):
                         "kind": "resource_set",
                         "evaluated_count": len(items),
                         "allowed_count": allowed_count,
+                        "authentication_assurance": items[
+                            0
+                        ].decision.authentication_assurance.value,
+                        "authentication_time": (
+                            items[0].decision.authentication_time.isoformat()
+                            if items[0].decision.authentication_time is not None
+                            else None
+                        ),
                         "items": [
                             {
                                 "resource_id": str(item.resource_id),
@@ -163,11 +185,11 @@ class SqlSubjectReader(SubjectReader):
 def with_authentication_context(
     subject: SubjectAttributes,
     *,
-    authentication_time: datetime,
-    strong_authentication: bool,
+    authentication_time: datetime | None,
+    authentication_assurance: AuthenticationAssurance,
 ) -> SubjectAttributes:
     return replace(
         subject,
         authentication_time=authentication_time,
-        strong_authentication=strong_authentication,
+        authentication_assurance=authentication_assurance,
     )

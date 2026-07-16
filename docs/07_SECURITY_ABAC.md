@@ -9,7 +9,10 @@ Untrusted inputs include browser/API payloads, OIDC claims before verification, 
 - Production accepts asymmetric OIDC JWTs after signature, issuer, audience, expiry, not-before and allowed-algorithm validation.
 - Subject ID is `(issuer, sub)` mapped to a DataRiver subject and active workspace membership.
 - Workspace comes from the route/header but must match an active membership; a token-provided default does not grant access.
-- Administrative/high-classification actions may require `acr`/`amr` and maximum authentication age.
+- Administrative/high-classification actions require a recent phishing-resistant authentication
+  context. DataRiver recognizes hardware WebAuthn only when the signed token contains an exact,
+  deployment-approved ACR and AMR combination plus `auth_time`; generic MFA, OTP and `iat` are not
+  substitutes. Password reauthentication never becomes hardware assurance.
 - Service identities are separate from users, scoped to one purpose and never impersonate a human approver.
 
 ## ABAC vocabulary

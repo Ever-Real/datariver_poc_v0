@@ -8,21 +8,21 @@ Decision: **development and local integration baseline accepted; production rele
 
 This report supersedes the source-only report and the runtime-open statements in the 2026-07-14 independent reviews. It records repeatable evidence from the current working tree, not a signed release artifact or production environment.
 
-P0–P3 foundation addendum, 2026-07-15: current source checks include literal/full-text search hardening, permission/policy/local-projection-version-scoped search cache, grouped Chat evidence audit, DataHub concurrency/circuit protection, bounded stale detail, immutable authorized evidence chunks with fail-closed citation validation, schema-aware readiness and fixed-label resilience metrics. Compatibility migrations and the current hybrid runtime have separate live evidence below.
+P0–P3 foundation addendum, updated 2026-07-16: current source checks additionally include the stable DataHub v1.6.0 release contract and typed OIDC assurance. Hardware WebAuthn requires an exact approved ACR+AMR combination and `auth_time`; OTP, generic MFA and refreshed-token `iat` cannot satisfy high-risk authorization. Compatibility migrations and the current hybrid runtime have separate live evidence below.
 
 ## Source and build evidence
 
 | Gate | Result | Executed evidence |
 |---|---|---|
 | Python format/lint | PASS | Ruff format and check across backend, tests, DAGs, migrations and static-verification scripts |
-| Python type safety | PASS | strict mypy: 114 source files, zero issues; a local cache was placed on `C:\\tmp` to avoid the known SQLite lock behavior on a Windows UNC mount |
-| Backend behavior | PASS | 88 pytest tests: ABAC/set audit, version-scoped search cache, stale fallback, DataHub circuit/bulkhead metrics, schema readiness/timeouts, pool wiring/settings, state machines, governance, idempotency, reconciliation, bounded uploads, KG lifecycle, sharing, immutable evidence/citation fail-closed behavior, seed and OpenAPI |
+| Python type safety | PASS | strict mypy: 117 source files, zero issues; a local cache was placed on `C:\\tmp` to avoid the known SQLite lock behavior on a Windows UNC mount |
+| Backend behavior | PASS | 109 pytest tests: typed OIDC assurance and future/missing authentication-time denials, ABAC/set audit, version-scoped search cache, DataHub release/circuit/bulkhead checks, schema readiness/timeouts, state machines, governance, idempotency, reconciliation, bounded uploads, KG lifecycle, sharing, immutable evidence/citation fail-closed behavior, seed and OpenAPI |
 | Frontend | PASS | TypeScript build mode, ESLint zero warnings, 3 test files/6 tests, and Vite production build |
 | Frontend artifact | PASS | current source build: JS 307.51 kB / gzip 93.04 kB; CSS 8.26 kB / gzip 2.70 kB |
 | Dependency audit | PASS | `pip-audit 2.10.0`: no known runtime vulnerabilities; `npm audit`: 0 vulnerabilities |
 | Repository/IaC scan | PASS | Trivy 0.70.0 `vuln,secret,misconfig`, HIGH/CRITICAL, ignored-unfixed: zero findings after making the Keycloak non-root user explicit |
 | Migration | PASS | regenerated twice with unchanged `0001` SHA-256 `1d3855a23efdbdc78f60f7167beb919fdaa7a4defbbd787b14091a2f215bb90c`; Alembic head `0005` upgraded the populated local database without reset |
-| Static invariants | PASS | Compose dependencies/secrets, runtime hardening, architecture imports, least-privilege DB roles, tenant foreign keys, seed determinism and documentation links |
+| Static invariants | PASS | Compose dependencies/secrets, DataHub release and identity-assurance contracts, runtime hardening, architecture imports, least-privilege DB roles, tenant foreign keys, seed determinism and documentation links |
 | Scripts/config | PASS | POSIX/Bash/PowerShell parsing and base, identity, Airflow, gateway and combined Compose interpolation |
 | Reference preservation | PASS | 424 files / 4,763,143 bytes; zero missing, byte or SHA-256 mismatches; secret/cache exclusions verified |
 | Independent review | PASS WITH PRODUCTION GATES | Data Architect and Data Engineer/SRE reviews are retained under `docs/reviews/` with post-review status notes |
@@ -109,7 +109,7 @@ These items are not source defects, but they prevent a production-readiness clai
 
 1. Execute DataHub search/detail/sync/change apply/re-read contract tests against the target deployed DataHub version and production-like credential. Local health and GraphQL authentication passed against the separately operated development DataHub, but this is not the target contract gate.
 2. Complete real multipart/CORS/copy/checksum/lifecycle tests against the target object-storage deployment and a PostgreSQL + object consistency backup/restore drill with measured RPO/RTO.
-3. Run the full ABAC matrix with two real OIDC user identities, browser PKCE/password reset/TOTP journeys, policy revocation timing, and audited enterprise subject/workspace administration.
+3. Run the full ABAC matrix with two real OIDC user identities, browser PKCE/password reset/hardware-WebAuthn step-up journeys, policy revocation timing, password-fallback maker-checker consumption and audited enterprise subject/workspace administration.
 4. Replace Airflow `SimpleAuthManager`, which is deliberately local-development only, with the environment's supported enterprise/FAB SSO configuration before any non-local exposure.
 5. Run browser E2E, 60-minute target load/soak, queue saturation, worker kill/reclaim, DataHub fault injection and projection rebuild/chaos tests on the reference deployment shape.
 6. Execute backend/frontend and all promoted overlay image scans in an isolated CI/release runner, retain CycloneDX SBOM and license reports, and promote digest-pinned images. Local repository/IaC scanning passed; a Docker socket was intentionally not mounted into a third-party scanner container.

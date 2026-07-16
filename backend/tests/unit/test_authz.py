@@ -5,6 +5,7 @@ from datariver.application.dto import DecisionAuditItem
 from datariver.application.services.authorization import AuthorizationService
 from datariver.domain.authz import (
     Action,
+    AuthenticationAssurance,
     BuiltinPolicyEngine,
     Classification,
     Decision,
@@ -67,7 +68,7 @@ def make_context(
         allowed_domain_ids=frozenset({domain_id}),
         allowed_actions=frozenset({action}),
         authentication_time=now - timedelta(minutes=1),
-        strong_authentication=True,
+        authentication_assurance=AuthenticationAssurance.HARDWARE_WEBAUTHN,
     )
     resource = ResourceAttributes(
         resource_id=uuid4(),
@@ -170,7 +171,7 @@ def test_denies_requester_self_approval() -> None:
     assert "SELF_APPROVAL_FORBIDDEN" in decision.reason_codes
 
 
-def test_high_risk_action_requires_recent_strong_authentication() -> None:
+def test_high_risk_action_requires_recent_hardware_authentication() -> None:
     subject, resource, environment = make_context(action=Action.KG_PUBLISH)
     subject = SubjectAttributes(
         subject_id=subject.subject_id,
@@ -184,7 +185,7 @@ def test_high_risk_action_requires_recent_strong_authentication() -> None:
         allowed_domain_ids=subject.allowed_domain_ids,
         allowed_actions=subject.allowed_actions,
         authentication_time=environment.requested_at - timedelta(hours=1),
-        strong_authentication=True,
+        authentication_assurance=AuthenticationAssurance.HARDWARE_WEBAUTHN,
     )
 
     decision = BuiltinPolicyEngine().decide(
@@ -196,6 +197,67 @@ def test_high_risk_action_requires_recent_strong_authentication() -> None:
 
     assert not decision.allowed
     assert "AUTHENTICATION_TOO_OLD" in decision.reason_codes
+
+
+def test_password_and_otp_do_not_satisfy_hardware_authentication() -> None:
+    subject, resource, environment = make_context(action=Action.ADMIN_MANAGE)
+
+    for assurance in (
+        AuthenticationAssurance.PASSWORD_REAUTH,
+        AuthenticationAssurance.OTHER_MFA,
+    ):
+        candidate = SubjectAttributes(
+            subject_id=subject.subject_id,
+            workspace_id=subject.workspace_id,
+            active=subject.active,
+            department_id=subject.department_id,
+            groups=subject.groups,
+            job_function=subject.job_function,
+            clearance=subject.clearance,
+            allowed_system_ids=subject.allowed_system_ids,
+            allowed_domain_ids=subject.allowed_domain_ids,
+            allowed_actions=subject.allowed_actions,
+            authentication_time=environment.requested_at - timedelta(seconds=10),
+            authentication_assurance=assurance,
+        )
+
+        decision = BuiltinPolicyEngine().decide(
+            subject=candidate,
+            resource=resource,
+            action=Action.ADMIN_MANAGE,
+            environment=environment,
+        )
+
+        assert not decision.allowed
+        assert "PHISHING_RESISTANT_AUTH_REQUIRED" in decision.reason_codes
+
+
+def test_future_authentication_time_is_rejected() -> None:
+    subject, resource, environment = make_context(action=Action.KG_PUBLISH)
+    subject = SubjectAttributes(
+        subject_id=subject.subject_id,
+        workspace_id=subject.workspace_id,
+        active=subject.active,
+        department_id=subject.department_id,
+        groups=subject.groups,
+        job_function=subject.job_function,
+        clearance=subject.clearance,
+        allowed_system_ids=subject.allowed_system_ids,
+        allowed_domain_ids=subject.allowed_domain_ids,
+        allowed_actions=subject.allowed_actions,
+        authentication_time=environment.requested_at + timedelta(minutes=1),
+        authentication_assurance=AuthenticationAssurance.HARDWARE_WEBAUTHN,
+    )
+
+    decision = BuiltinPolicyEngine().decide(
+        subject=subject,
+        resource=resource,
+        action=Action.KG_PUBLISH,
+        environment=environment,
+    )
+
+    assert not decision.allowed
+    assert "AUTHENTICATION_TIME_INVALID" in decision.reason_codes
 
 
 def test_denies_another_subject_owned_resource() -> None:

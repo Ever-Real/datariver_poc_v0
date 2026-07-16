@@ -170,3 +170,11 @@ def test_rejects_readiness_timeout_longer_than_pool_timeout() -> None:
             database_pool_timeout_seconds=1,
             database_readiness_timeout_seconds=2,
         )
+
+
+def test_rejects_ambiguous_or_unsafe_oidc_assurance_mappings() -> None:
+    assert settings().high_risk_auth_max_age_seconds == 300
+    with pytest.raises(ValidationError, match="ACR allowlists must not overlap"):
+        settings(oidc_password_reauth_acr_values=("2",))
+    with pytest.raises(ValidationError, match="cannot assert hardware assurance"):
+        settings(oidc_hardware_amr_values=("webauthn", "otp"))

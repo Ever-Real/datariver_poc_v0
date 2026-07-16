@@ -24,7 +24,7 @@ The SQLAlchemy metadata and generated `backend/alembic/versions/0001_initial_sch
 | `authz.resources` | `workspace_id + resource_type + resource_key UQ`, scope/classification/lifecycle columns, `attributes`, `version` | durable resource attribute registry |
 | `authz.policy_decisions` | `id`, `workspace_id`, `subject_id`, `resource_id`, `action`, `effect`, reason/policy JSON, grouped `evaluation_context`, `request_id`, `decided_at` | immutable allow/deny/system-worker or bounded resource-set evidence |
 
-The active baseline policy is code-versioned (`builtin-abac-v1`); database-authored policy/version/binding tables are backlog for the future OPA adapter.
+The active baseline policy is code-versioned (`builtin-abac-v2`); database-authored policy/version/binding tables are backlog for the future OPA adapter. Version 2 records typed authentication assurance and rejects non-WebAuthn high-risk execution.
 
 ### Catalog projection
 

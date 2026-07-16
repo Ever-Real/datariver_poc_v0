@@ -11,6 +11,10 @@ Generated OpenAPI at `/api/v1/openapi.json` is authoritative for implemented pay
 - Aggregate updates declare `If-Match: "<version>"`; graph publish uses `"none"` or a release SHA-256.
 - Errors are sanitized `application/problem+json` with `type,title,status,detail,instance,code,request_id,violations?`.
 - `401` is invalid identity, `403` audited policy denial, `404` may conceal forbidden existence, `409` version/idempotency conflict, `422` semantic validation, `429` grant/gateway quota, and `502/503` a classified dependency failure.
+- High-risk authorization is fail-closed. `PHISHING_RESISTANT_AUTH_REQUIRED`,
+  `AUTHENTICATION_TIME_REQUIRED`, `AUTHENTICATION_TIME_INVALID` and
+  `AUTHENTICATION_TOO_OLD` are audited policy reason codes. Request fields and headers cannot assert
+  them; only the normalized context from a verified OIDC token is used.
 
 ## Implemented endpoint inventory
 

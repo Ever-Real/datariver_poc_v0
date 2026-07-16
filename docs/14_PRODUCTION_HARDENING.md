@@ -42,7 +42,7 @@ scale/availability/team-ownership evidence.
 
 ## 3. Verified baseline and important limitations
 
-The current branch passes 76 backend tests, strict mypy over 110 files, Ruff, frontend
+The current branch passes 109 backend tests, strict mypy over 117 files, Ruff, frontend
 type/lint/test/build, deterministic migration generation and static architecture/Compose/role checks.
 The hybrid runtime has live evidence for PostgreSQL RLS, Keycloak service-token OIDC, APISIX,
 Vite proxying, DataHub authentication and semiconductor seed verification. Target DataHub, target

@@ -68,6 +68,10 @@ def build_container(settings: Settings) -> AppContainer:
             audience=settings.oidc_audience,
             jwks_url=settings.oidc_jwks_url,
             allowed_algorithms=settings.oidc_allowed_algorithms,
+            hardware_acr_values=settings.oidc_hardware_acr_values,
+            hardware_amr_values=settings.oidc_hardware_amr_values,
+            password_reauth_acr_values=settings.oidc_password_reauth_acr_values,
+            password_amr_values=settings.oidc_password_amr_values,
         ),
         object_store=S3ObjectStore(
             endpoint_url=settings.s3_endpoint_url,

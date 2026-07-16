@@ -14,6 +14,7 @@ from datariver.application.services.authorization import AuthorizationService
 from datariver.application.services.governance import GovernanceService
 from datariver.domain.authz import (
     Action,
+    AuthenticationAssurance,
     Classification,
     Decision,
     EnvironmentAttributes,
@@ -128,7 +129,7 @@ def subject(workspace_id: UUID) -> SubjectAttributes:
         clearance=Classification.CONFIDENTIAL,
         allowed_actions=frozenset({Action.CHANGE_CREATE}),
         authentication_time=datetime.now(UTC),
-        strong_authentication=True,
+        authentication_assurance=AuthenticationAssurance.HARDWARE_WEBAUTHN,
     )
 
 

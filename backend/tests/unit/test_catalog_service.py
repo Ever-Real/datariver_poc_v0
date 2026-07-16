@@ -22,6 +22,7 @@ from datariver.application.ports import (
 from datariver.application.services.authorization import AuthorizationService
 from datariver.application.services.catalog import CatalogService
 from datariver.domain.authz import (
+    BuiltinPolicyEngine,
     Classification,
     EnvironmentAttributes,
     SubjectAttributes,
@@ -144,7 +145,7 @@ async def test_authorized_detail_enrichment_uses_scope_versioned_cache() -> None
         stale_detail_ttl_seconds=900,
         search_cache_ttl_seconds=30,
         minimum_query_length=2,
-        policy_version="builtin-abac-v1",
+        policy_version=BuiltinPolicyEngine.policy_version,
         telemetry=metrics,
     )
     subject = SubjectAttributes(

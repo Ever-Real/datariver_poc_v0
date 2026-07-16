@@ -58,6 +58,7 @@ def test_api_container_passes_the_configured_pool_budget(
 ) -> None:
     captured: dict[str, Any] = {}
     datahub_captured: dict[str, Any] = {}
+    oidc_captured: dict[str, Any] = {}
 
     def database(url: str, **kwargs: Any) -> object:
         captured.update(url=url, **kwargs)
@@ -71,7 +72,11 @@ def test_api_container_passes_the_configured_pool_budget(
         "HttpDataHubGateway",
         lambda **kwargs: datahub_captured.update(kwargs) or object(),
     )
-    monkeypatch.setattr(http_container, "OidcTokenVerifier", lambda **kwargs: object())
+    monkeypatch.setattr(
+        http_container,
+        "OidcTokenVerifier",
+        lambda **kwargs: oidc_captured.update(kwargs) or object(),
+    )
     monkeypatch.setattr(http_container, "S3ObjectStore", lambda **kwargs: object())
 
     http_container.build_container(settings())
@@ -82,6 +87,10 @@ def test_api_container_passes_the_configured_pool_budget(
     assert datahub_captured["expected_version"] == "v1.6.0"
     assert datahub_captured["version_enforcement"] == "report"
     assert datahub_captured["version_probe_ttl_seconds"] == 300
+    assert oidc_captured["hardware_acr_values"] == ("2",)
+    assert oidc_captured["hardware_amr_values"] == ("webauthn", "hwk")
+    assert oidc_captured["password_reauth_acr_values"] == ("1",)
+    assert oidc_captured["password_amr_values"] == ("pwd",)
 
 
 def test_worker_container_passes_the_configured_pool_budget(

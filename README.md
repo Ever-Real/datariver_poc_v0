@@ -69,7 +69,7 @@ docker compose --profile tools -f compose.yaml -f compose.identity.yaml `
   run --rm local-bootstrap
 ```
 
-Open `http://localhost:8080`, sign in as `datariver-admin`, and read the generated temporary password from `secrets/keycloak_demo_password`. The first sign-in requires a new password and TOTP enrollment so high-risk approval/publish operations satisfy strong-auth policy. Enter workspace ID:
+Open `http://localhost:8080`, sign in as `datariver-admin`, and read the generated temporary password from `secrets/keycloak_demo_password`. The first sign-in requires a new password but does not request a mobile OTP. High-risk approval/publish/admin operations remain fail-closed until the deployment's approved hardware-WebAuthn step-up flow is registered and the resulting token satisfies the configured ACR, AMR and `auth_time` contract. Enter workspace ID:
 
 ```text
 00000000-0000-4000-8000-000000000100
@@ -212,7 +212,7 @@ Apply/remove require explicit confirmation. Production mode rejects any non-`non
 ```bash
 uv sync --frozen --all-extras
 uv run ruff format --check backend/src backend/tests infra/airflow/dags
-uv run ruff check backend/src backend/tests infra/airflow/dags scripts/generate_initial_migration.py scripts/probe_policy_revocation.py scripts/verify_datahub_contract.py scripts/verify_static.py
+uv run ruff check backend/src backend/tests infra/airflow/dags scripts/configure_keycloak_assurance.py scripts/generate_initial_migration.py scripts/probe_policy_revocation.py scripts/verify_datahub_contract.py scripts/verify_static.py
 uv run mypy backend/src backend/tests
 uv run pytest backend/tests -q
 uv run python scripts/verify_static.py
@@ -230,6 +230,20 @@ startup:
 
 ```bash
 uv run python scripts/verify_datahub_contract.py --base-url https://datahub.example.internal
+```
+
+An existing Keycloak realm is not updated by startup import. Apply and re-read the assurance
+foundation with a file-mounted admin credential; this removes the mobile-TOTP required action and
+adds the AMR mapper, but intentionally does not claim that WebAuthn step-up is complete:
+
+```bash
+uv run python scripts/configure_keycloak_assurance.py \
+  --base-url https://identity.example.internal \
+  --admin-username '<bootstrap-admin>' \
+  --admin-password-file /run/secrets/keycloak_admin_password \
+  --username '<managed-security-admin>' \
+  --revoke-user-sessions \
+  --apply
 ```
 
 With the local semiconductor seed, Keycloak and host API running, measure same-token policy

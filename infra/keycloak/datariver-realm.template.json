@@ -41,6 +41,17 @@
             "id.token.claim": "false",
             "access.token.claim": "true"
           }
+        },
+        {
+          "name": "authentication-method-reference",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-amr-mapper",
+          "consentRequired": false,
+          "config": {
+            "id.token.claim": "true",
+            "access.token.claim": "true",
+            "lightweight.claim": "false"
+          }
         }
       ],
       "defaultClientScopes": ["web-origins", "acr", "profile", "email", "roles"]
@@ -80,7 +91,7 @@
       "email": "datariver-admin@localhost.invalid",
       "emailVerified": true,
       "enabled": true,
-      "requiredActions": ["UPDATE_PASSWORD", "CONFIGURE_TOTP"],
+      "requiredActions": ["UPDATE_PASSWORD"],
       "credentials": [
         {
           "type": "password",

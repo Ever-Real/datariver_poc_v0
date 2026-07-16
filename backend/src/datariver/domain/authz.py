@@ -46,6 +46,14 @@ class Action(StrEnum):
     ADMIN_MANAGE = "admin.manage"
 
 
+class AuthenticationAssurance(StrEnum):
+    UNKNOWN = "UNKNOWN"
+    PASSWORD = "PASSWORD"  # noqa: S105 - assurance label, never credential material
+    PASSWORD_REAUTH = "PASSWORD_REAUTH"  # noqa: S105 - assurance label
+    OTHER_MFA = "OTHER_MFA"
+    HARDWARE_WEBAUTHN = "HARDWARE_WEBAUTHN"
+
+
 HIGH_RISK_ACTIONS = frozenset(
     {
         Action.CHANGE_APPROVE,
@@ -70,7 +78,7 @@ class SubjectAttributes:
     allowed_actions: frozenset[Action] = field(default_factory=frozenset)
     denied_actions: frozenset[Action] = field(default_factory=frozenset)
     authentication_time: datetime | None = None
-    strong_authentication: bool = False
+    authentication_assurance: AuthenticationAssurance = AuthenticationAssurance.UNKNOWN
 
 
 @dataclass(frozen=True, slots=True)
@@ -95,6 +103,7 @@ class EnvironmentAttributes:
     network_zone: str = "unknown"
     client_type: str = "api"
     maximum_authentication_age: timedelta = timedelta(minutes=15)
+    maximum_clock_skew: timedelta = timedelta(seconds=30)
 
 
 @dataclass(frozen=True, slots=True)
@@ -103,6 +112,8 @@ class Decision:
     effect: Effect
     reason_codes: tuple[str, ...]
     policy_versions: tuple[str, ...]
+    authentication_assurance: AuthenticationAssurance = AuthenticationAssurance.UNKNOWN
+    authentication_time: datetime | None = None
 
     @property
     def allowed(self) -> bool:
@@ -112,7 +123,7 @@ class Decision:
 class BuiltinPolicyEngine:
     """Deterministic baseline ABAC. An OPA adapter may add denies, never bypass these guards."""
 
-    policy_version = "builtin-abac-v1"
+    policy_version = "builtin-abac-v2"
 
     def decide(
         self,
@@ -149,10 +160,14 @@ class BuiltinPolicyEngine:
         ):
             reasons.append("OWNER_SCOPE_MISMATCH")
         if action in HIGH_RISK_ACTIONS:
-            if not subject.strong_authentication:
-                reasons.append("STRONG_AUTH_REQUIRED")
-            elif subject.authentication_time is None:
+            if subject.authentication_assurance is not AuthenticationAssurance.HARDWARE_WEBAUTHN:
+                reasons.append("PHISHING_RESISTANT_AUTH_REQUIRED")
+            if subject.authentication_time is None:
                 reasons.append("AUTHENTICATION_TIME_REQUIRED")
+            elif subject.authentication_time > (
+                environment.requested_at + environment.maximum_clock_skew
+            ):
+                reasons.append("AUTHENTICATION_TIME_INVALID")
             elif (
                 environment.requested_at - subject.authentication_time
                 > environment.maximum_authentication_age
@@ -165,4 +180,6 @@ class BuiltinPolicyEngine:
             effect=effect,
             reason_codes=tuple(reasons or ["POLICY_ALLOW"]),
             policy_versions=(self.policy_version,),
+            authentication_assurance=subject.authentication_assurance,
+            authentication_time=subject.authentication_time,
         )

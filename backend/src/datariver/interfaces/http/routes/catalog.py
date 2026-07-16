@@ -11,6 +11,7 @@ from fastapi.responses import JSONResponse
 from datariver.application.services.authorization import AuthorizationService
 from datariver.application.services.catalog import CatalogService
 from datariver.application.services.catalog_sync import CatalogSyncService
+from datariver.domain.authz import BuiltinPolicyEngine
 from datariver.infrastructure.db.authz import SqlDecisionWriter
 from datariver.infrastructure.db.catalog import SqlCatalogIndexReader, SqlCatalogProjectionWriter
 from datariver.interfaces.http.dependencies import ContextDep, SessionDep, get_container
@@ -42,7 +43,7 @@ def _service(request: Request, session: SessionDep) -> CatalogService:
         stale_detail_ttl_seconds=container.settings.datahub_stale_ttl_seconds,
         search_cache_ttl_seconds=container.settings.catalog_search_cache_ttl_seconds,
         minimum_query_length=container.settings.catalog_search_minimum_query_length,
-        policy_version="builtin-abac-v1",
+        policy_version=BuiltinPolicyEngine.policy_version,
         telemetry=container.metrics,
     )
 
