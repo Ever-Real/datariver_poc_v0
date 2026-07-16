@@ -12,7 +12,12 @@ const surfaceScope: Record<Surface, string> = {
   CHAT: 'chat.query',
 }
 
-export function SharingPage({ client, onStepUp, onEnroll }: { client: ApiClient } & AssuranceActions) {
+export function SharingPage({
+  client,
+  onStepUp,
+  onPasswordReauth,
+  onEnroll,
+}: { client: ApiClient } & AssuranceActions) {
   const [products, setProducts] = useState<ApiProduct[]>([])
   const [graphs, setGraphs] = useState<KnowledgeGraph[]>([])
   const [selectedId, setSelectedId] = useState('')
@@ -126,7 +131,12 @@ export function SharingPage({ client, onStepUp, onEnroll }: { client: ApiClient 
           <div className="compact-list">{products.map((product) => <button className={selectedId === product.id ? 'selected' : ''} key={product.id} onClick={() => setSelectedId(product.id)}><span><strong>{product.name}</strong><small>{product.slug} · {product.classification}</small></span><span className="badge">{product.state}</span></button>)}</div>
         </div>
       </div>
-      <AssuranceNotice error={error} onStepUp={onStepUp} onEnroll={onEnroll} />
+      <AssuranceNotice
+        error={error}
+        onStepUp={onStepUp}
+        onPasswordReauth={onPasswordReauth}
+        onEnroll={onEnroll}
+      />
       <ErrorNotice error={error} />
       {selected && <article className="result-card governance-detail">
         <div><span className="badge">{selected.state}</span><span className="badge badge-soft">v{selected.version}</span></div>

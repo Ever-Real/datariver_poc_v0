@@ -85,9 +85,9 @@ export function App() {
           {page === 'dashboard' && <DashboardPage client={client} />}
           {page === 'catalog' && <CatalogPage client={client} />}
           {page === 'registration' && <RegistrationPage client={client} />}
-          {page === 'governance' && <GovernancePage client={client} onStepUp={auth.beginStepUp} onEnroll={auth.beginWebAuthnEnrollment} />}
+          {page === 'governance' && <GovernancePage client={client} onStepUp={auth.beginStepUp} onPasswordReauth={auth.beginPasswordReauth} onEnroll={auth.beginWebAuthnEnrollment} />}
           {page === 'knowledge' && <KnowledgePage client={client} />}
-          {page === 'sharing' && <SharingPage client={client} onStepUp={auth.beginStepUp} onEnroll={auth.beginWebAuthnEnrollment} />}
+          {page === 'sharing' && <SharingPage client={client} onStepUp={auth.beginStepUp} onPasswordReauth={auth.beginPasswordReauth} onEnroll={auth.beginWebAuthnEnrollment} />}
           {page === 'chat' && <ChatPage client={client} />}
         </div>
       </main>

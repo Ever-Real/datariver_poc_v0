@@ -12,7 +12,12 @@ const nextStates: Record<string, string[]> = {
   APPLY_FAILED: ['APPLY_QUEUED', 'CANCELLED'],
 }
 
-export function GovernancePage({ client, onStepUp, onEnroll }: { client: ApiClient } & AssuranceActions) {
+export function GovernancePage({
+  client,
+  onStepUp,
+  onPasswordReauth,
+  onEnroll,
+}: { client: ApiClient } & AssuranceActions) {
   const [title, setTitle] = useState('')
   const [targetRef, setTargetRef] = useState('')
   const [aspectName, setAspectName] = useState('datasetProperties')
@@ -93,7 +98,12 @@ export function GovernancePage({ client, onStepUp, onEnroll }: { client: ApiClie
           </div>
         </div>
       </div>
-      <AssuranceNotice error={error} onStepUp={onStepUp} onEnroll={onEnroll} />
+      <AssuranceNotice
+        error={error}
+        onStepUp={onStepUp}
+        onPasswordReauth={onPasswordReauth}
+        onEnroll={onEnroll}
+      />
       <ErrorNotice error={error} />
       {selected && <article className="result-card governance-detail">
         <div><span className="badge">{selected.state}</span><span className="badge badge-soft">{selected.classification}</span></div>

@@ -23,6 +23,7 @@ interface AuthValue {
   signOut: () => Promise<void>
   beginWebAuthnEnrollment: () => Promise<void>
   beginStepUp: () => Promise<void>
+  beginPasswordReauth: () => Promise<void>
   clearNotice: () => void
 }
 
@@ -65,6 +66,12 @@ export function AuthProvider({ children }: { children: ReactNode }) {
               message: '보안키 인증 응답을 받았습니다. 작업 대상과 내용을 다시 확인한 뒤 실행하세요.',
             })
           }
+          if (active && state.intent === 'PASSWORD_REAUTH') {
+            setNotice({
+              kind: 'INFO',
+              message: '비밀번호 재인증 응답을 받았습니다. 작업은 자동 실행되지 않았습니다. 대상과 내용을 다시 확인한 뒤 실행하세요.',
+            })
+          }
           if (active && state.intent === 'WEBAUTHN_ENROLLMENT') {
             setNotice({
               kind: actionStatus === 'cancelled' ? 'ERROR' : 'INFO',
@@ -99,7 +106,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const beginRedirect = useCallback(async (intent: AuthIntent) => {
     try {
       const highAssuranceAcr = String(import.meta.env.VITE_OIDC_HIGH_ASSURANCE_ACR || '')
-      await manager.signinRedirect(signinRedirectArgs(intent, { highAssuranceAcr }))
+      const passwordReauthAcr = String(import.meta.env.VITE_OIDC_PASSWORD_REAUTH_ACR || '')
+      await manager.signinRedirect(signinRedirectArgs(intent, {
+        highAssuranceAcr,
+        passwordReauthAcr,
+      }))
     } catch (error) {
       setNotice({
         kind: 'ERROR',
@@ -116,6 +127,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     signOut: () => manager.signoutRedirect(),
     beginWebAuthnEnrollment: () => beginRedirect('WEBAUTHN_ENROLLMENT'),
     beginStepUp: () => beginRedirect('STEP_UP'),
+    beginPasswordReauth: () => beginRedirect('PASSWORD_REAUTH'),
     clearNotice: () => setNotice(undefined),
   }), [beginRedirect, loading, manager, notice, user])
 

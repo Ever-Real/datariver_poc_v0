@@ -2,7 +2,7 @@ import type { SigninRedirectArgs } from 'oidc-client-ts'
 
 export const AUTH_REDIRECT_STATE_VERSION = 1 as const
 
-export type AuthIntent = 'SIGN_IN' | 'WEBAUTHN_ENROLLMENT' | 'STEP_UP'
+export type AuthIntent = 'SIGN_IN' | 'WEBAUTHN_ENROLLMENT' | 'STEP_UP' | 'PASSWORD_REAUTH'
 
 export interface AuthRedirectState {
   version: typeof AUTH_REDIRECT_STATE_VERSION
@@ -10,7 +10,12 @@ export interface AuthRedirectState {
   returnTo: string
 }
 
-const intents = new Set<AuthIntent>(['SIGN_IN', 'WEBAUTHN_ENROLLMENT', 'STEP_UP'])
+const intents = new Set<AuthIntent>([
+  'SIGN_IN',
+  'WEBAUTHN_ENROLLMENT',
+  'STEP_UP',
+  'PASSWORD_REAUTH',
+])
 
 export function safeReturnTo(value: unknown, origin = window.location.origin): string {
   if (typeof value !== 'string' || !value.startsWith('/') || value.startsWith('//')) return '/'
@@ -44,12 +49,19 @@ export function readRedirectState(value: unknown): AuthRedirectState {
 
 export function signinRedirectArgs(
   intent: AuthIntent,
-  options: { returnTo?: string; highAssuranceAcr?: string } = {},
+  options: {
+    returnTo?: string
+    highAssuranceAcr?: string
+    passwordReauthAcr?: string
+  } = {},
 ): SigninRedirectArgs {
   const state = redirectState(intent, options.returnTo)
   if (intent === 'STEP_UP') {
-    const acr = options.highAssuranceAcr?.trim()
-    if (!acr || /\s/.test(acr)) throw new Error('고위험 인증 ACR이 안전하게 설정되지 않았습니다.')
+    const acr = requiredAcr(options.highAssuranceAcr, '고위험 인증')
+    return { state, acr_values: acr, max_age: 0 }
+  }
+  if (intent === 'PASSWORD_REAUTH') {
+    const acr = requiredAcr(options.passwordReauthAcr, '비밀번호 재인증')
     return { state, acr_values: acr, max_age: 0 }
   }
   if (intent === 'WEBAUTHN_ENROLLMENT') {
@@ -60,4 +72,10 @@ export function signinRedirectArgs(
     }
   }
   return { state }
+}
+
+function requiredAcr(value: string | undefined, label: string): string {
+  const acr = value?.trim()
+  if (!acr || /\s/.test(acr)) throw new Error(`${label} ACR이 안전하게 설정되지 않았습니다.`)
+  return acr
 }
