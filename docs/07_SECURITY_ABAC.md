@@ -54,6 +54,9 @@ Untrusted inputs include browser/API payloads, OIDC claims before verification, 
 - Attachment URL issuance and every actual download perform fresh authorization.
 - Search, facets, suggestions, counts, exports and SSE apply the same ABAC scope as detail reads.
 - Chat filters evidence before model invocation and re-authorizes citations before response.
+- Before a governed workspace classification policy is active, Search/detail cannot return
+  RESTRICTED assets and Chat cannot retrieve evidence above INTERNAL. A future explicit Search grant
+  may narrow the Search deny, while RESTRICTED Chat remains a non-overridable deny.
 - Search cache keys bind workspace, complete subject permission scope, policy version, request shape and projection watermark; non-empty short queries and unescaped wildcard semantics are rejected.
 - Policy service failure is fail-closed for protected reads and writes.
 - Gateway authentication, DataHub permissions, a UI-hidden button, or graph-database users never substitute for application authorization.

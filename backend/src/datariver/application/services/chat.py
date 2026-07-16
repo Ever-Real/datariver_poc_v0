@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
+from dataclasses import replace
 from uuid import UUID
 
 from datariver.application.dto import ChatDraft, ChatEvidence, ChatExchange
@@ -18,6 +19,10 @@ from datariver.domain.authz import (
     EnvironmentAttributes,
     ResourceAttributes,
     SubjectAttributes,
+)
+from datariver.domain.classification_policy import (
+    unconfigured_chat_ceiling,
+    unconfigured_chat_evidence_allowed,
 )
 
 UNVERIFIABLE_ANSWER = "검증 불가"
@@ -88,11 +93,17 @@ class ChatService:
             request_id=request_id,
         )
         page = await self._catalog_index.search(
-            subject=subject,
+            subject=replace(
+                subject,
+                clearance=unconfigured_chat_ceiling(subject.clearance),
+            ),
             query=self._search_term(question),
             filters={},
             cursor=None,
             limit=maximum_evidence,
+        )
+        catalog_items = tuple(
+            item for item in page.items if unconfigured_chat_evidence_allowed(item.classification)
         )
         catalog_resources = tuple(
             ResourceAttributes(
@@ -105,7 +116,7 @@ class ChatService:
                 classification=asset.classification,
                 lifecycle=asset.lifecycle,
             )
-            for asset in page.items
+            for asset in catalog_items
         )
         authorized_catalog_ids = {
             resource.resource_id
@@ -119,7 +130,7 @@ class ChatService:
             )
         }
         evidence: list[ChatEvidence] = []
-        for asset in page.items:
+        for asset in catalog_items:
             if asset.asset_id not in authorized_catalog_ids:
                 continue
             evidence.append(
@@ -142,8 +153,13 @@ class ChatService:
             candidates = await self._knowledge_evidence.search_active_nodes(
                 workspace_id=workspace_id,
                 query=self._search_term(question),
-                maximum_classification=int(subject.clearance),
+                maximum_classification=int(unconfigured_chat_ceiling(subject.clearance)),
                 limit=maximum_evidence - len(evidence),
+            )
+            candidates = tuple(
+                candidate
+                for candidate in candidates
+                if unconfigured_chat_evidence_allowed(candidate.classification)
             )
             knowledge_resources = tuple(
                 ResourceAttributes(

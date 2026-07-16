@@ -105,9 +105,12 @@ Proposed production default, pending security/data-owner approval:
 | CONFIDENTIAL | clearance + system/domain | named Chat entitlement only | no prompt/evidence content cache; zero-retention private provider |
 | RESTRICTED | named direct-read entitlement | denied by default | no external LLM; metadata-only operational signals |
 
-The current deterministic Chat calls no external model and persists cited authorized evidence, but it
-does not yet implement the proposed CONFIDENTIAL/RESTRICTED Chat-specific entitlement. Production
-external inference stays disabled until this matrix is approved and enforced.
+The current deterministic Chat calls no external model and persists cited authorized evidence. Until
+a governed classification-policy snapshot and explicit RESTRICTED Search grant can be evaluated,
+catalog Search/detail fail closed above CONFIDENTIAL and every Chat surface retrieves at most
+INTERNAL evidence. This blocks RESTRICTED Search and CONFIDENTIAL/RESTRICTED Chat instead of treating
+clearance as the missing entitlement. Production external inference stays disabled until the full
+matrix, provider-profile attestation and routing controls are approved and enforced.
 
 ## 6. P0 implementation and remaining gates
 

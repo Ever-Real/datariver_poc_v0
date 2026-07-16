@@ -32,6 +32,7 @@ from datariver.domain.common import uuid7
 class FakeIndex:
     def __init__(self, item: CatalogAssetIndex) -> None:
         self.item = item
+        self.search_subject: SubjectAttributes | None = None
 
     async def search(
         self,
@@ -42,7 +43,8 @@ class FakeIndex:
         cursor: str | None,
         limit: int,
     ) -> CatalogPage:
-        del subject, query, filters, cursor, limit
+        self.search_subject = subject
+        del query, filters, cursor, limit
         return CatalogPage(items=(self.item,), next_cursor=None, observed_at=datetime.now(UTC))
 
     async def get_authorized_asset(
@@ -235,6 +237,35 @@ async def test_chat_omits_evidence_when_catalog_read_is_not_granted() -> None:
 
     assert exchange.evidence == ()
     assert exchange.answer == UNVERIFIABLE_ANSWER
+
+
+async def test_chat_excludes_protected_evidence_until_provider_policy_is_active() -> None:
+    workspace_id = uuid4()
+    protected_asset = replace(asset(workspace_id), classification=Classification.CONFIDENTIAL)
+    index = FakeIndex(protected_asset)
+    store = FakeChatStore()
+    subject = replace(chat_subject(workspace_id), clearance=Classification.RESTRICTED)
+    service = ChatService(
+        catalog_index=index,
+        store=store,
+        authorization=AuthorizationService(decision_writer=NullDecisionWriter()),
+    )
+
+    exchange = await service.query(
+        workspace_id=workspace_id,
+        subject=subject,
+        session_id=None,
+        question="보호 데이터 설명",
+        maximum_evidence=5,
+        environment=EnvironmentAttributes(requested_at=datetime.now(UTC)),
+        request_id="request-protected-floor",
+    )
+
+    assert index.search_subject is not None
+    assert index.search_subject.clearance is Classification.INTERNAL
+    assert exchange.answer == UNVERIFIABLE_ANSWER
+    assert exchange.evidence == ()
+    assert store.saved_evidence == ()
 
 
 async def test_chat_can_use_only_authorized_release_pinned_knowledge_evidence() -> None:

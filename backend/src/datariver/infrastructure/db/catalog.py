@@ -20,6 +20,7 @@ from datariver.application.dto import (
 )
 from datariver.application.ports import CatalogIndexReader, CatalogProjectionWriter
 from datariver.domain.authz import Classification, SubjectAttributes
+from datariver.domain.classification_policy import unconfigured_search_ceiling
 from datariver.domain.common import ConflictError, ValidationError, utc_now, uuid7
 from datariver.infrastructure.db.governance import SqlIdempotencyStore
 from datariver.infrastructure.db.models.catalog import (
@@ -77,7 +78,8 @@ class SqlCatalogIndexReader(CatalogIndexReader):
             AssetProjectionModel.workspace_id == subject.workspace_id,
             AssetProjectionModel.deleted_at.is_(None),
             AssetProjectionModel.lifecycle == "ACTIVE",
-            AssetProjectionModel.classification <= int(subject.clearance),
+            AssetProjectionModel.classification
+            <= int(unconfigured_search_ceiling(subject.clearance)),
         ]
         conditions.append(
             or_(

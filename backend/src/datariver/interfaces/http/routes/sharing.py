@@ -20,6 +20,7 @@ from datariver.application.services.authorization import AuthorizationService
 from datariver.application.services.knowledge import KnowledgeService
 from datariver.application.services.sharing import SharingService
 from datariver.domain.authz import Action, Classification
+from datariver.domain.classification_policy import unconfigured_chat_ceiling
 from datariver.domain.common import NotFoundError, ValidationError
 from datariver.domain.knowledge import GraphEdge, GraphNode, Provenance
 from datariver.infrastructure.db.authz import SqlDecisionWriter
@@ -599,7 +600,10 @@ async def invoke_chat(
         workspace_id=context.workspace_id,
         graph_id=authorization.graph_id,
         release_id=authorization.release_id,
-        clearance=min(int(context.subject.clearance), int(authorization.maximum_classification)),
+        clearance=min(
+            int(unconfigured_chat_ceiling(context.subject.clearance)),
+            int(authorization.maximum_classification),
+        ),
         maximum_nodes=authorization.maximum_nodes,
     )
     if stored is None:

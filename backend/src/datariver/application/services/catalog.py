@@ -29,6 +29,7 @@ from datariver.domain.authz import (
     ResourceAttributes,
     SubjectAttributes,
 )
+from datariver.domain.classification_policy import CLASSIFICATION_ACCESS_FLOOR_VERSION
 from datariver.domain.common import ValidationError
 
 
@@ -166,6 +167,7 @@ class CatalogService:
             "asset": str(asset_id),
             "scope": permission_scope_hash,
             "policy": self._policy_version,
+            "classification_policy_floor": CLASSIFICATION_ACCESS_FLOOR_VERSION,
             "source": authorized.index.source_version,
         }
         key_hash = hashlib.sha256(json.dumps(key_document, sort_keys=True).encode()).hexdigest()
@@ -273,6 +275,7 @@ class CatalogService:
             "workspace": str(subject.workspace_id),
             "scope": self._permission_scope_hash(subject),
             "policy": self._policy_version,
+            "classification_policy_floor": CLASSIFICATION_ACCESS_FLOOR_VERSION,
             "projection_version": watermark,
             "query": query,
             "filters": filters,
