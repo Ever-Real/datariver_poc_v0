@@ -1,0 +1,42 @@
+.truncated-text { display: block; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; outline-offset: 2px; }
+.accordion-item { border: 1px solid var(--line-300); border-radius: var(--radius); background: white; }
+.accordion-item + .accordion-item { margin-top: 6px; }
+.accordion-heading { margin: 0; font-size: 12px; }
+.accordion-heading > button { width: 100%; min-height: 34px; display: grid; grid-template-columns: minmax(0, 1fr) auto 20px; align-items: center; gap: 10px; border: 0; padding: 6px 9px; color: var(--text-900); text-align: left; background: #f7f8f8; }
+.accordion-heading > button:hover, .accordion-heading > button:focus-visible { color: var(--blue-700); background: var(--blue-100); }
+.accordion-title, .accordion-summary { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.accordion-summary { color: var(--text-500); font-size: 10px; font-weight: 500; }
+.accordion-indicator { color: var(--blue-700); font-size: 16px; text-align: center; }
+.accordion-panel { border-top: 1px solid var(--line-200); padding: 10px; }
+.app-dialog { width: 100vw; max-width: none; height: 100vh; max-height: none; margin: 0; border: 0; padding: 18px; color: var(--text-900); background: rgba(7, 20, 38, .68); }
+.app-dialog::backdrop { background: rgba(7, 20, 38, .68); }
+.app-dialog-surface { width: min(560px, 100%); max-height: calc(100vh - 36px); display: grid; grid-template-rows: auto minmax(0, 1fr) auto; margin: auto; border: 1px solid #8e9aa6; border-radius: var(--radius); background: var(--cream-50); box-shadow: 0 20px 70px rgba(7, 20, 38, .38); }
+.app-dialog-large .app-dialog-surface { width: min(960px, 100%); }
+.app-dialog-workspace .app-dialog-surface { width: min(1440px, 100%); height: calc(100vh - 36px); }
+.app-dialog-header { min-height: 62px; display: flex; align-items: flex-start; justify-content: space-between; gap: 18px; border-bottom: 2px solid var(--blue-700); padding: 12px 14px; }
+.app-dialog-header h2 { margin: 0; color: var(--navy-900); font-size: 17px; }
+.app-dialog-header p { margin: 4px 0 0; color: var(--text-600); font-size: 11px; }
+.app-dialog-close { flex: 0 0 30px; height: 30px; border: 1px solid var(--line-300); border-radius: var(--radius); color: var(--text-600); font-size: 20px; line-height: 1; background: white; }
+.app-dialog-body { min-height: 0; overflow: auto; padding: 14px; }
+.app-dialog-footer { display: flex; justify-content: flex-end; gap: 7px; border-top: 1px solid var(--line-300); padding: 10px 14px; background: #f4f5f3; }
+.dense-table-frame { width: 100%; min-width: 0; overflow: auto; border: 1px solid var(--line-300); border-radius: var(--radius); background: white; }
+.dense-data-table { width: 100%; min-width: 840px; border-collapse: collapse; table-layout: fixed; color: var(--text-900); font-size: 12px; }
+.dense-data-table th { position: sticky; z-index: 2; top: 0; height: 30px; border-right: 1px solid #d9dde1; border-bottom: 1px solid #aeb7c0; padding: 0 7px; color: #405268; text-align: left; font-size: 10px; font-weight: 900; letter-spacing: .025em; text-transform: uppercase; background: #edf0f2; }
+.dense-data-table th:last-child, .dense-data-table td:last-child { border-right: 0; }
+.dense-data-table th > button { width: 100%; height: 29px; border: 0; padding: 0; color: inherit; text-align: left; font: inherit; background: transparent; }
+.dense-data-table td { height: 29px; overflow: hidden; border-right: 1px solid #e4e7e9; border-bottom: 1px solid #e4e7e9; padding: 4px 7px; text-overflow: ellipsis; white-space: nowrap; }
+.dense-data-table tbody tr.interactive { cursor: pointer; }
+.dense-data-table tbody tr.interactive:hover, .dense-data-table tbody tr.interactive:focus-visible { outline: none; background: #eef6fb; }
+.dense-data-table tbody tr.selected { color: #083e6a; background: #deedf7; box-shadow: inset 3px 0 var(--blue-700); }
+.dense-data-table .dense-table-state { height: 84px; color: var(--text-500); text-align: center; white-space: normal; }
+.dense-data-table .dense-table-expanded-row > td { height: auto; padding: 12px; white-space: normal; background: #f7f9fa; box-shadow: inset 3px 0 var(--blue-700); }
+.cursor-pagination { min-height: 38px; display: flex; align-items: center; justify-content: flex-end; gap: 5px; border: 1px solid var(--line-300); border-top: 0; padding: 4px 6px; background: #f5f6f5; }
+.cursor-pagination-summary { margin-right: auto; color: var(--text-600); font-size: 10px; }
+.cursor-pagination label { display: flex; align-items: center; gap: 5px; color: var(--text-600); font-size: 10px; }
+.cursor-pagination select { width: 64px; height: 27px; padding: 2px 5px; font-size: 11px; }
+.cursor-pagination button { height: 27px; border: 1px solid var(--line-300); border-radius: var(--radius); padding: 0 9px; color: var(--blue-700); font-size: 10px; font-weight: 800; background: white; }
+.cursor-pagination button:disabled { cursor: default; color: #9aa3aa; background: #edf0f1; }
+@media (max-width: 959px) {
+  .app-dialog { padding: 8px; }
+  .app-dialog-surface, .app-dialog-large .app-dialog-surface, .app-dialog-workspace .app-dialog-surface { width: 100%; height: calc(100vh - 16px); max-height: calc(100vh - 16px); }
+}

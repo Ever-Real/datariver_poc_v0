@@ -5,6 +5,7 @@ import { AuthProvider } from './auth/AuthProvider'
 import './styles/tokens.css'
 import './styles.css'
 import './styles/shell.css'
+import './styles/primitives.css'
 
 const root = document.getElementById('root')
 if (!root) throw new Error('Root element is missing.')
