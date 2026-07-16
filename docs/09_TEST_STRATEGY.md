@@ -2,7 +2,7 @@
 
 ## Latest executed baseline
 
-The current development/integration baseline passes 308 backend tests, strict mypy over 169 source/test files, Ruff formatting/lint, 11 frontend test files/41 tests, TypeScript/ESLint/build, deterministic migration generation and static architecture/Compose/role/readiness checks. The frontend build emits JS 384.10 kB (gzip 109.78 kB) and CSS 14.37 kB (gzip 3.79 kB). The live hybrid-development baseline also passed PostgreSQL RLS, Keycloak service-token OIDC, schema-aware API/APISIX readiness, Vite-to-APISIX proxying, DataHub GraphQL authentication and semiconductor seed verification. The earlier container baseline additionally passed Airflow DAG imports, optional seed remove and repository/IaC Trivy scanning. Exact commands and the distinction between current source and earlier evidence are in [the acceptance report](12_ACCEPTANCE_REPORT.md).
+The current development/integration baseline passes 309 backend tests, strict mypy over 169 source/test files, Ruff formatting/lint, 11 frontend test files/41 tests, TypeScript/ESLint/build, deterministic migration generation and static architecture/Compose/role/readiness checks. The frontend build emits JS 384.10 kB (gzip 109.78 kB) and CSS 14.37 kB (gzip 3.79 kB). The live hybrid-development baseline also passed PostgreSQL RLS, Keycloak service-token OIDC, schema-aware API/APISIX readiness, Vite-to-APISIX proxying, DataHub GraphQL authentication and semiconductor seed verification. The earlier container baseline additionally passed Airflow DAG imports, optional seed remove and repository/IaC Trivy scanning. Exact commands and the distinction between current source and earlier evidence are in [the acceptance report](12_ACCEPTANCE_REPORT.md).
 
 Executed resilience checks included cache-Valkey stop/recovery, API process restart, API container replacement behind both Nginx and APISIX, and outbox-relay restart. The API replacement test deliberately kept the web container running and verified that its Docker DNS resolver did not retain a stale upstream address.
 
@@ -90,6 +90,7 @@ For each route, test no token, invalid issuer/audience/algorithm, inactive subje
 - Reference-host targets: cached search p95 <= 300 ms, uncached <= 800 ms, CR write <= 400 ms, error rate < 1%.
 - Queue eviction count stays zero; cache respects maxmemory and TTL.
 - Test ABAC-aware pagination/facets at realistic permitted/denied ratios.
+- Reuse a search cursor only with its exact workspace, permission scope, policy/generation, projection version, query, filters and page size; stale or cross-shape cursors must fail explicitly.
 
 ## Migration and portability
 

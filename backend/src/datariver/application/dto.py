@@ -95,6 +95,46 @@ class CatalogPage:
     next_cursor: str | None
     observed_at: datetime
     stale_at: datetime | None = None
+    projection_version: int = 0
+    policy_version: str = ""
+    classification_policy_version: int | None = None
+    authorization_generation: int | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class CatalogFacetBucket:
+    value: str | None
+    count: int
+
+
+@dataclass(frozen=True, slots=True)
+class CatalogFacets:
+    asset_types: tuple[CatalogFacetBucket, ...]
+    platforms: tuple[CatalogFacetBucket, ...]
+    classifications: tuple[CatalogFacetBucket, ...]
+    observed_at: datetime | None
+    projection_version: int = 0
+    policy_version: str = ""
+    classification_policy_version: int | None = None
+    authorization_generation: int | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class CatalogSuggestion:
+    asset_id: UUID
+    name: str
+    asset_type: str
+    platform: str | None
+
+
+@dataclass(frozen=True, slots=True)
+class CatalogSuggestions:
+    items: tuple[CatalogSuggestion, ...]
+    observed_at: datetime | None
+    projection_version: int = 0
+    policy_version: str = ""
+    classification_policy_version: int | None = None
+    authorization_generation: int | None = None
 
 
 @dataclass(frozen=True, slots=True)

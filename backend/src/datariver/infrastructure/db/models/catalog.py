@@ -13,6 +13,7 @@ from sqlalchemy import (
     Text,
     UniqueConstraint,
     Uuid,
+    func,
     text,
 )
 from sqlalchemy.dialects.postgresql import TSVECTOR
@@ -82,6 +83,14 @@ class AssetProjectionModel(Base, UuidPrimaryKeyMixin, TimestampMixin):
     deleted_at: Mapped[datetime | None]
     last_seen_sync_id: Mapped[UUID | None] = mapped_column(Uuid(as_uuid=True))
     projection_source: Mapped[str] = mapped_column(String(32), default="DATAHUB", nullable=False)
+
+
+Index(
+    "ix_assets_projection_name_lower_prefix_active",
+    func.lower(AssetProjectionModel.name).label("name_lower"),
+    postgresql_ops={"name_lower": "text_pattern_ops"},
+    postgresql_where=text("deleted_at IS NULL AND lifecycle = 'ACTIVE'"),
+)
 
 
 class CatalogSyncRunModel(Base):

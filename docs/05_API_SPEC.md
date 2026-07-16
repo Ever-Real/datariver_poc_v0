@@ -38,9 +38,16 @@ Generated OpenAPI at `/api/v1/openapi.json` is authoritative for implemented pay
 
 | Method/path | Action | Purpose |
 |---|---|---|
-| `GET /catalog/assets?q=&asset_type=&platform=&lifecycle=&cursor=&limit=` | `catalog.search` | ABAC-prefiltered literal/full-text projection search; non-empty `q` minimum defaults to 2 |
+| `GET /catalog/assets?q=&asset_type=&platform=&classification=&lifecycle=&cursor=&limit=` | `catalog.search` | ABAC-prefiltered literal/full-text projection search; non-empty `q` minimum defaults to 2; cursor is bound to the exact permission/policy/projection/request snapshot |
+| `GET /catalog/facets?q=&asset_type=&platform=&classification=&lifecycle=&limit=` | `catalog.search` | permission-prefiltered asset type, platform and classification buckets; null platform remains an explicit null bucket |
+| `GET /catalog/suggestions?q=&limit=` | `catalog.search` | permission-prefiltered name autocomplete, maximum 20; two-character requests use the bounded prefix path and longer requests may use trigram similarity |
 | `GET /catalog/assets/{asset_id}` | `catalog.read` | authorized local base detail plus typed DataHub enrichment; optional `stale_at` marks bounded fallback |
 | `POST /catalog/sync/datahub` | `catalog.sync` | idempotently upsert one fixed-contract DataHub scan page |
+
+Search, facet and suggestion metadata identifies the built-in policy version, governed classification
+policy version, authorization generation and committed local `projection_version`. The latter is not a
+DataHub source cursor or proof that a full reconciliation completed. Facet/suggestion `observed_at` is
+nullable when no authorized row contributes a source observation.
 
 DataHub sync request:
 
@@ -232,4 +239,4 @@ contract tests in the external DataHub deployment.
 
 ## Planned compatibility endpoints
 
-The remaining backlog, not present in current OpenAPI, is catalog facets/suggestions/lineage routes; upload cancel/download and governed erasure execution/consumption; automated graph extraction and projection rebuild; Chat session history/SSE/external-model adapters; immutable archive export/target-conformance workers; and job/audit browsing/retry. PostgreSQL can persist verified archive evidence, but no HTTP route, export worker or deletion capability is exposed. The disabled-first assistant inference source contract is not an HTTP route or deployed provider integration. Backlog features may not be emulated with generic provider or arbitrary query pass-through.
+The remaining backlog, not present in current OpenAPI, is normalized lazy catalog hierarchy and lineage routes; upload cancel/download and governed erasure execution/consumption; automated graph extraction and projection rebuild; Chat session history/SSE/external-model adapters; immutable archive export/target-conformance workers; and job/audit browsing/retry. PostgreSQL can persist verified archive evidence, but no HTTP route, export worker or deletion capability is exposed. The disabled-first assistant inference source contract is not an HTTP route or deployed provider integration. Backlog features may not be emulated with generic provider or arbitrary query pass-through.

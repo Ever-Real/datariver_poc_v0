@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+import base64
+import binascii
 import hashlib
 import json
 import unicodedata
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from typing import Any
 from uuid import UUID
@@ -15,12 +18,17 @@ from datariver.application.classification_access import (
 from datariver.application.dto import (
     CatalogAssetDetail,
     CatalogAssetIndex,
+    CatalogFacetBucket,
+    CatalogFacets,
     CatalogPage,
+    CatalogSuggestion,
+    CatalogSuggestions,
     DataHubAssetEnrichment,
 )
 from datariver.application.errors import ExternalDependencyError
 from datariver.application.ports import (
     Cache,
+    CatalogDiscoveryReader,
     CatalogIndexReader,
     CatalogTelemetry,
     CatalogWatermarkReader,
@@ -43,6 +51,7 @@ class CatalogService:
         self,
         *,
         index: CatalogIndexReader,
+        discovery: CatalogDiscoveryReader,
         watermark: CatalogWatermarkReader,
         datahub: DataHubGateway,
         cache: Cache,
@@ -56,6 +65,7 @@ class CatalogService:
         telemetry: CatalogTelemetry | None = None,
     ) -> None:
         self._index = index
+        self._discovery = discovery
         self._watermark = watermark
         self._datahub = datahub
         self._cache = cache
@@ -81,38 +91,26 @@ class CatalogService:
     ) -> CatalogPage:
         if not 1 <= limit <= 100:
             raise ValueError("Catalog page limit must be between 1 and 100.")
-        normalized_query = unicodedata.normalize("NFKC", query).strip()
-        if normalized_query and len(normalized_query) < self._minimum_query_length:
-            raise ValidationError(
-                "The catalog query is shorter than the configured minimum.",
-                details={"minimum_query_length": self._minimum_query_length},
-            )
-        await self._authorization.authorize(
+        normalized_query, access, watermark = await self._prepare_discovery(
             subject=subject,
-            resource=ResourceAttributes(
-                resource_id=subject.workspace_id,
-                workspace_id=subject.workspace_id,
-                resource_type="catalog",
-                owner_department_id=None,
-                system_id=None,
-                domain_id=None,
-                classification=Classification.PUBLIC,
-                lifecycle="ACTIVE",
-            ),
-            action=Action.CATALOG_SEARCH,
+            query=query,
             environment=environment,
             request_id=request_id,
         )
-        access = await self._resolve_classification_access(
+        cursor_context = self._search_cursor_context(
             subject=subject,
-            now=environment.requested_at,
+            query=normalized_query,
+            filters=filters,
+            limit=limit,
+            watermark=watermark,
+            access=access,
         )
-        watermark = await self._watermark.get_search_watermark(workspace_id=subject.workspace_id)
+        repository_cursor = self._unwrap_search_cursor(cursor, expected_context=cursor_context)
         cache_key = self._search_cache_key(
             subject=subject,
             query=normalized_query,
             filters=filters,
-            cursor=cursor,
+            cursor=repository_cursor,
             limit=limit,
             watermark=watermark,
             access=access,
@@ -138,8 +136,20 @@ class CatalogService:
             access=access,
             query=normalized_query,
             filters=filters,
-            cursor=cursor,
+            cursor=repository_cursor,
             limit=limit,
+        )
+        page = replace(
+            page,
+            next_cursor=(
+                self._wrap_search_cursor(page.next_cursor, context=cursor_context)
+                if page.next_cursor
+                else None
+            ),
+            projection_version=watermark,
+            policy_version=self._policy_version,
+            classification_policy_version=access.policy_version,
+            authorization_generation=access.authorization_generation,
         )
         if cache_ttl > 0:
             try:
@@ -153,6 +163,145 @@ class CatalogService:
                 return page
             self._cache_access(cache="search_write", outcome="success")
         return page
+
+    async def facets(
+        self,
+        *,
+        subject: SubjectAttributes,
+        query: str,
+        filters: dict[str, Any],
+        limit: int,
+        environment: EnvironmentAttributes,
+        request_id: str,
+    ) -> CatalogFacets:
+        if not 1 <= limit <= 100:
+            raise ValueError("Catalog facet limit must be between 1 and 100.")
+        normalized_query, access, watermark = await self._prepare_discovery(
+            subject=subject,
+            query=query,
+            environment=environment,
+            request_id=request_id,
+        )
+        cache_key = self._discovery_cache_key(
+            surface="facets",
+            subject=subject,
+            query=normalized_query,
+            filters=filters,
+            limit=limit,
+            watermark=watermark,
+            access=access,
+        )
+        cache_ttl = self._bounded_cache_ttl(
+            configured_ttl=self._search_cache_ttl_seconds,
+            access=access,
+            now=environment.requested_at,
+        )
+        if cache_ttl > 0:
+            try:
+                cached = await self._cache.get_json(cache_key)
+            except Exception:
+                self._cache_access(cache="facets", outcome="error")
+            else:
+                cached_facets = self._cached_facets(cached)
+                if cached_facets is not None:
+                    self._cache_access(cache="facets", outcome="hit")
+                    return cached_facets
+                self._cache_access(cache="facets", outcome="miss")
+        facets = await self._discovery.facets(
+            subject=subject,
+            access=access,
+            query=normalized_query,
+            filters=filters,
+            limit=limit,
+        )
+        facets = replace(
+            facets,
+            projection_version=watermark,
+            policy_version=self._policy_version,
+            classification_policy_version=access.policy_version,
+            authorization_generation=access.authorization_generation,
+        )
+        if cache_ttl > 0:
+            try:
+                await self._cache.set_json(
+                    cache_key,
+                    self._facets_document(facets),
+                    ttl_seconds=cache_ttl,
+                )
+            except Exception:
+                self._cache_access(cache="facets_write", outcome="error")
+            else:
+                self._cache_access(cache="facets_write", outcome="success")
+        return facets
+
+    async def suggestions(
+        self,
+        *,
+        subject: SubjectAttributes,
+        query: str,
+        limit: int,
+        environment: EnvironmentAttributes,
+        request_id: str,
+    ) -> CatalogSuggestions:
+        if not 1 <= limit <= 20:
+            raise ValueError("Catalog suggestion limit must be between 1 and 20.")
+        normalized_query, access, watermark = await self._prepare_discovery(
+            subject=subject,
+            query=query,
+            environment=environment,
+            request_id=request_id,
+            require_query=True,
+        )
+        cache_key = self._discovery_cache_key(
+            surface="suggestions",
+            subject=subject,
+            query=normalized_query,
+            filters={},
+            limit=limit,
+            watermark=watermark,
+            access=access,
+        )
+        cache_ttl = self._bounded_cache_ttl(
+            configured_ttl=self._search_cache_ttl_seconds,
+            access=access,
+            now=environment.requested_at,
+        )
+        if cache_ttl > 0:
+            try:
+                cached = await self._cache.get_json(cache_key)
+            except Exception:
+                self._cache_access(cache="suggestions", outcome="error")
+            else:
+                cached_suggestions = self._cached_suggestions(cached)
+                if cached_suggestions is not None:
+                    self._cache_access(cache="suggestions", outcome="hit")
+                    return cached_suggestions
+                self._cache_access(cache="suggestions", outcome="miss")
+        suggestions = await self._discovery.suggestions(
+            subject=subject,
+            access=access,
+            query=normalized_query,
+            limit=limit,
+        )
+        suggestions = replace(
+            suggestions,
+            projection_version=watermark,
+            policy_version=self._policy_version,
+            classification_policy_version=access.policy_version,
+            authorization_generation=access.authorization_generation,
+        )
+        if cache_ttl > 0:
+            try:
+                await self._cache.set_json(
+                    cache_key,
+                    self._suggestions_document(suggestions),
+                    ttl_seconds=cache_ttl,
+                )
+            except Exception:
+                self._cache_access(cache="suggestions_write", outcome="error")
+            else:
+                self._cache_access(cache="suggestions_write", outcome="success")
+        return suggestions
 
     async def get_asset(
         self,
@@ -320,6 +469,130 @@ class CatalogService:
             ).hexdigest()
         )
 
+    def _discovery_cache_key(
+        self,
+        *,
+        surface: str,
+        subject: SubjectAttributes,
+        query: str,
+        filters: dict[str, Any],
+        limit: int,
+        watermark: int,
+        access: ClassificationAccessSnapshot,
+    ) -> str:
+        key_document = {
+            "workspace": str(subject.workspace_id),
+            "scope": self._permission_scope_hash(subject),
+            "policy": self._policy_version,
+            "classification_policy_floor": CLASSIFICATION_ACCESS_FLOOR_VERSION,
+            "classification_access": self._classification_access_document(access),
+            "projection_version": watermark,
+            "query": query,
+            "filters": filters,
+            "limit": limit,
+        }
+        return (
+            f"catalog:{surface}:"
+            + hashlib.sha256(
+                json.dumps(key_document, sort_keys=True, default=str).encode()
+            ).hexdigest()
+        )
+
+    def _search_cursor_context(
+        self,
+        *,
+        subject: SubjectAttributes,
+        query: str,
+        filters: dict[str, Any],
+        limit: int,
+        watermark: int,
+        access: ClassificationAccessSnapshot,
+    ) -> str:
+        document = {
+            "workspace": str(subject.workspace_id),
+            "scope": self._permission_scope_hash(subject),
+            "policy": self._policy_version,
+            "classification_policy_floor": CLASSIFICATION_ACCESS_FLOOR_VERSION,
+            "classification_access": self._classification_access_document(access),
+            "projection_version": watermark,
+            "query": query,
+            "filters": filters,
+            "limit": limit,
+        }
+        return hashlib.sha256(
+            json.dumps(document, sort_keys=True, default=str).encode()
+        ).hexdigest()
+
+    @staticmethod
+    def _wrap_search_cursor(cursor: str, *, context: str) -> str:
+        payload = json.dumps(
+            {"v": 1, "context": context, "cursor": cursor},
+            separators=(",", ":"),
+            sort_keys=True,
+        ).encode()
+        return base64.urlsafe_b64encode(payload).decode().rstrip("=")
+
+    @staticmethod
+    def _unwrap_search_cursor(cursor: str | None, *, expected_context: str) -> str | None:
+        if cursor is None:
+            return None
+        try:
+            payload = base64.urlsafe_b64decode(cursor + "=" * (-len(cursor) % 4))
+            document = json.loads(payload)
+            if (
+                not isinstance(document, dict)
+                or document.get("v") != 1
+                or document.get("context") != expected_context
+                or not isinstance(document.get("cursor"), str)
+                or not document["cursor"]
+            ):
+                raise ValueError
+            return str(document["cursor"])
+        except (ValueError, TypeError, json.JSONDecodeError, binascii.Error) as error:
+            raise ValidationError(
+                "The catalog cursor is stale or does not match this request."
+            ) from error
+
+    async def _prepare_discovery(
+        self,
+        *,
+        subject: SubjectAttributes,
+        query: str,
+        environment: EnvironmentAttributes,
+        request_id: str,
+        require_query: bool = False,
+    ) -> tuple[str, ClassificationAccessSnapshot, int]:
+        normalized_query = unicodedata.normalize("NFKC", query).strip()
+        if require_query and not normalized_query:
+            raise ValidationError("The catalog query is required.")
+        if normalized_query and len(normalized_query) < self._minimum_query_length:
+            raise ValidationError(
+                "The catalog query is shorter than the configured minimum.",
+                details={"minimum_query_length": self._minimum_query_length},
+            )
+        await self._authorization.authorize(
+            subject=subject,
+            resource=ResourceAttributes(
+                resource_id=subject.workspace_id,
+                workspace_id=subject.workspace_id,
+                resource_type="catalog",
+                owner_department_id=None,
+                system_id=None,
+                domain_id=None,
+                classification=Classification.PUBLIC,
+                lifecycle="ACTIVE",
+            ),
+            action=Action.CATALOG_SEARCH,
+            environment=environment,
+            request_id=request_id,
+        )
+        access = await self._resolve_classification_access(
+            subject=subject,
+            now=environment.requested_at,
+        )
+        watermark = await self._watermark.get_search_watermark(workspace_id=subject.workspace_id)
+        return normalized_query, access, watermark
+
     async def _resolve_classification_access(
         self,
         *,
@@ -372,7 +645,7 @@ class CatalogService:
     @staticmethod
     def _page_document(page: CatalogPage) -> dict[str, Any]:
         return {
-            "schema": 1,
+            "schema": 2,
             "items": [
                 {
                     "asset_id": str(item.asset_id),
@@ -397,11 +670,15 @@ class CatalogService:
             "next_cursor": page.next_cursor,
             "observed_at": page.observed_at.isoformat(),
             "stale_at": page.stale_at.isoformat() if page.stale_at else None,
+            "projection_version": page.projection_version,
+            "policy_version": page.policy_version,
+            "classification_policy_version": page.classification_policy_version,
+            "authorization_generation": page.authorization_generation,
         }
 
     @staticmethod
     def _cached_page(value: object) -> CatalogPage | None:
-        if not isinstance(value, dict) or value.get("schema") != 1:
+        if not isinstance(value, dict) or value.get("schema") != 2:
             return None
         try:
             items = tuple(
@@ -435,6 +712,144 @@ class CatalogService:
                 next_cursor=str(value["next_cursor"]) if value.get("next_cursor") else None,
                 observed_at=datetime.fromisoformat(str(value["observed_at"])),
                 stale_at=datetime.fromisoformat(str(stale_raw)) if stale_raw else None,
+                projection_version=int(value["projection_version"]),
+                policy_version=str(value["policy_version"]),
+                classification_policy_version=(
+                    int(value["classification_policy_version"])
+                    if value.get("classification_policy_version") is not None
+                    else None
+                ),
+                authorization_generation=(
+                    int(value["authorization_generation"])
+                    if value.get("authorization_generation") is not None
+                    else None
+                ),
+            )
+        except (KeyError, TypeError, ValueError):
+            return None
+
+    @staticmethod
+    def _facets_document(facets: CatalogFacets) -> dict[str, Any]:
+        return {
+            "schema": 1,
+            "asset_types": [
+                {"value": item.value, "count": item.count} for item in facets.asset_types
+            ],
+            "platforms": [{"value": item.value, "count": item.count} for item in facets.platforms],
+            "classifications": [
+                {"value": item.value, "count": item.count} for item in facets.classifications
+            ],
+            "observed_at": facets.observed_at.isoformat() if facets.observed_at else None,
+            "projection_version": facets.projection_version,
+            "policy_version": facets.policy_version,
+            "classification_policy_version": facets.classification_policy_version,
+            "authorization_generation": facets.authorization_generation,
+        }
+
+    @staticmethod
+    def _cached_facets(value: object) -> CatalogFacets | None:
+        if not isinstance(value, dict) or value.get("schema") != 1:
+            return None
+        try:
+            return CatalogFacets(
+                asset_types=tuple(
+                    CatalogFacetBucket(
+                        value=str(item["value"]) if item.get("value") is not None else None,
+                        count=int(item["count"]),
+                    )
+                    for item in value["asset_types"]
+                ),
+                platforms=tuple(
+                    CatalogFacetBucket(
+                        value=str(item["value"]) if item.get("value") is not None else None,
+                        count=int(item["count"]),
+                    )
+                    for item in value["platforms"]
+                ),
+                classifications=tuple(
+                    CatalogFacetBucket(
+                        value=str(item["value"]) if item.get("value") is not None else None,
+                        count=int(item["count"]),
+                    )
+                    for item in value["classifications"]
+                ),
+                observed_at=(
+                    datetime.fromisoformat(str(value["observed_at"]))
+                    if value.get("observed_at") is not None
+                    else None
+                ),
+                projection_version=int(value["projection_version"]),
+                policy_version=str(value["policy_version"]),
+                classification_policy_version=(
+                    int(value["classification_policy_version"])
+                    if value.get("classification_policy_version") is not None
+                    else None
+                ),
+                authorization_generation=(
+                    int(value["authorization_generation"])
+                    if value.get("authorization_generation") is not None
+                    else None
+                ),
+            )
+        except (KeyError, TypeError, ValueError):
+            return None
+
+    @staticmethod
+    def _suggestions_document(suggestions: CatalogSuggestions) -> dict[str, Any]:
+        return {
+            "schema": 1,
+            "items": [
+                {
+                    "asset_id": str(item.asset_id),
+                    "name": item.name,
+                    "asset_type": item.asset_type,
+                    "platform": item.platform,
+                }
+                for item in suggestions.items
+            ],
+            "observed_at": (
+                suggestions.observed_at.isoformat() if suggestions.observed_at else None
+            ),
+            "projection_version": suggestions.projection_version,
+            "policy_version": suggestions.policy_version,
+            "classification_policy_version": suggestions.classification_policy_version,
+            "authorization_generation": suggestions.authorization_generation,
+        }
+
+    @staticmethod
+    def _cached_suggestions(value: object) -> CatalogSuggestions | None:
+        if not isinstance(value, dict) or value.get("schema") != 1:
+            return None
+        try:
+            return CatalogSuggestions(
+                items=tuple(
+                    CatalogSuggestion(
+                        asset_id=UUID(str(item["asset_id"])),
+                        name=str(item["name"]),
+                        asset_type=str(item["asset_type"]),
+                        platform=(
+                            str(item["platform"]) if item.get("platform") is not None else None
+                        ),
+                    )
+                    for item in value["items"]
+                ),
+                observed_at=(
+                    datetime.fromisoformat(str(value["observed_at"]))
+                    if value.get("observed_at") is not None
+                    else None
+                ),
+                projection_version=int(value["projection_version"]),
+                policy_version=str(value["policy_version"]),
+                classification_policy_version=(
+                    int(value["classification_policy_version"])
+                    if value.get("classification_policy_version") is not None
+                    else None
+                ),
+                authorization_generation=(
+                    int(value["authorization_generation"])
+                    if value.get("authorization_generation") is not None
+                    else None
+                ),
             )
         except (KeyError, TypeError, ValueError):
             return None

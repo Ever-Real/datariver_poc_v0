@@ -19,6 +19,13 @@ class ObservationMeta(BaseModel):
     stale_at: datetime | None = None
 
 
+class CatalogPolicyMeta(ObservationMeta):
+    projection_version: int = Field(ge=0)
+    policy_version: str
+    classification_policy_version: int | None = Field(default=None, ge=1)
+    authorization_generation: int | None = Field(default=None, ge=0)
+
+
 class CatalogAssetSummary(BaseModel):
     id: UUID
     external_urn: str
@@ -34,7 +41,39 @@ class CatalogAssetSummary(BaseModel):
 class CatalogSearchResponse(BaseModel):
     items: list[CatalogAssetSummary]
     page: PageMeta
-    meta: ObservationMeta
+    meta: CatalogPolicyMeta
+
+
+class CatalogFacetBucketResponse(BaseModel):
+    value: str | None
+    count: int = Field(ge=0)
+
+
+class CatalogDiscoveryPolicyMeta(BaseModel):
+    observed_at: datetime | None
+    projection_version: int = Field(ge=0)
+    policy_version: str
+    classification_policy_version: int | None = Field(default=None, ge=1)
+    authorization_generation: int | None = Field(default=None, ge=0)
+
+
+class CatalogFacetsResponse(BaseModel):
+    asset_types: list[CatalogFacetBucketResponse]
+    platforms: list[CatalogFacetBucketResponse]
+    classifications: list[CatalogFacetBucketResponse]
+    meta: CatalogDiscoveryPolicyMeta
+
+
+class CatalogSuggestionResponse(BaseModel):
+    id: UUID
+    name: str
+    asset_type: str
+    platform: str | None
+
+
+class CatalogSuggestionsResponse(BaseModel):
+    items: list[CatalogSuggestionResponse]
+    meta: CatalogDiscoveryPolicyMeta
 
 
 class CatalogAssetResponse(CatalogAssetSummary):

@@ -49,8 +49,10 @@ advances the workspace projection version exactly once in the same transaction; 
 and rollback do not. Final-page reconciliation tombstones missing `DATAHUB` rows and never
 seed-owned rows. `sync_runs.state` records reconciliation completeness, while the version records
 only a committed local generation. Active rows have a workspace/scope/order partial index, GIN
-full-text index and `pg_trgm` name index. Relationship/facet projections and a true incremental
-DataHub source cursor remain backlog.
+full-text index, `pg_trgm` name index and a lower-name prefix index for two-character autocomplete.
+Facets are derived from the same authorization-prefiltered projection and cached by security and
+projection generation; a separate facet projection, normalized database/schema hierarchy and a true
+incremental DataHub source cursor remain backlog.
 
 ### Governance
 
@@ -131,6 +133,8 @@ Alembic `0011` adds the classification policy/rule/generation, RESTRICTED grant/
 profile/generation tables with forced workspace RLS, composite workspace foreign keys, immutable
 rule/event/profile payloads and no application delete path. The assistant inference package/result
 contract is source-only: it adds no durable inference job, provider endpoint/secret or execution table.
+Alembic `0012` adds only the active lower-name prefix index used by the governed two-character
+suggestion contract; no new source-of-truth or cross-workspace table is introduced.
 
 ## Constraints enforced outside DDL
 
@@ -146,7 +150,7 @@ contract is source-only: it adds no durable inference job, provider endpoint/sec
 
 ## Backlog schema (not implemented)
 
-Versioned general ABAC policies/bindings, catalog relationships/facets, connection registry,
+Versioned general ABAC policies/bindings, catalog relationships/normalized hierarchy, connection registry,
 governance attachments/general audit export, graph sources/extraction runs, saved-query templates
 beyond the built-in surfaces and embedding partitions remain target tables. Governed retention
 policy versions, Legal Hold history, typed Maker-Checker erasure requests/decisions and immutable

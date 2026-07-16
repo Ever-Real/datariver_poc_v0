@@ -11,12 +11,17 @@ from datariver.application.classification_access import static_classification_ac
 from datariver.application.dto import (
     CatalogAssetDetail,
     CatalogAssetIndex,
+    CatalogFacetBucket,
+    CatalogFacets,
     CatalogPage,
+    CatalogSuggestion,
+    CatalogSuggestions,
     DataHubAssetEnrichment,
 )
 from datariver.application.errors import ExternalDependencyError
 from datariver.application.ports import (
     Cache,
+    CatalogDiscoveryReader,
     CatalogIndexReader,
     CatalogWatermarkReader,
     DataHubGateway,
@@ -30,7 +35,7 @@ from datariver.domain.authz import (
     SubjectAttributes,
 )
 from datariver.domain.common import ValidationError
-from datariver.infrastructure.db.catalog import _literal_contains_pattern
+from datariver.infrastructure.db.catalog import _literal_contains_pattern, _literal_prefix_pattern
 from datariver.infrastructure.observability.metrics import HttpMetrics
 
 
@@ -38,6 +43,8 @@ class FakeIndex:
     def __init__(self, detail: CatalogAssetDetail) -> None:
         self.detail = detail
         self.search_calls = 0
+        self.facet_calls = 0
+        self.suggestion_calls = 0
         self.projection_version = 1
 
     async def get_search_watermark(self, *, workspace_id: object) -> int:
@@ -56,6 +63,29 @@ class FakeIndex:
     ) -> CatalogAssetDetail | None:
         del access
         return self.detail
+
+    async def facets(self, **_: object) -> CatalogFacets:
+        self.facet_calls += 1
+        return CatalogFacets(
+            asset_types=(CatalogFacetBucket("DATASET", 1),),
+            platforms=(CatalogFacetBucket("snowflake", 1),),
+            classifications=(CatalogFacetBucket("PUBLIC", 1),),
+            observed_at=self.detail.observed_at,
+        )
+
+    async def suggestions(self, **_: object) -> CatalogSuggestions:
+        self.suggestion_calls += 1
+        return CatalogSuggestions(
+            items=(
+                CatalogSuggestion(
+                    asset_id=self.detail.index.asset_id,
+                    name=self.detail.index.name,
+                    asset_type=self.detail.index.asset_type,
+                    platform=self.detail.index.platform,
+                ),
+            ),
+            observed_at=self.detail.observed_at,
+        )
 
 
 class FakeGateway:
@@ -164,6 +194,7 @@ async def test_authorized_detail_enrichment_uses_scope_versioned_cache() -> None
     index_reader = FakeIndex(local)
     service = CatalogService(
         index=cast(CatalogIndexReader, index_reader),
+        discovery=cast(CatalogDiscoveryReader, index_reader),
         watermark=cast(CatalogWatermarkReader, index_reader),
         datahub=cast(DataHubGateway, gateway),
         cache=cast(Cache, cache),
@@ -236,8 +267,48 @@ async def test_authorized_detail_enrichment_uses_scope_versioned_cache() -> None
         environment=environment,
         request_id="search-after-projection-change",
     )
-    assert third_page == first_page
+    assert third_page.items == first_page.items
+    assert third_page.projection_version == 2
     assert index_reader.search_calls == 2
+
+    first_facets = await service.facets(
+        subject=subject,
+        query="wafer",
+        filters={},
+        limit=30,
+        environment=environment,
+        request_id="facets-one",
+    )
+    second_facets = await service.facets(
+        subject=subject,
+        query="wafer",
+        filters={},
+        limit=30,
+        environment=environment,
+        request_id="facets-two",
+    )
+    assert first_facets == second_facets
+    assert first_facets.projection_version == 2
+    assert first_facets.authorization_generation is None
+    assert index_reader.facet_calls == 1
+
+    first_suggestions = await service.suggestions(
+        subject=subject,
+        query="wafer",
+        limit=8,
+        environment=environment,
+        request_id="suggestions-one",
+    )
+    second_suggestions = await service.suggestions(
+        subject=subject,
+        query="wafer",
+        limit=8,
+        environment=environment,
+        request_id="suggestions-two",
+    )
+    assert first_suggestions == second_suggestions
+    assert first_suggestions.projection_version == 2
+    assert index_reader.suggestion_calls == 1
     rendered_metrics = metrics.render().decode()
     assert 'datariver_catalog_cache_access_total{cache="search",outcome="miss"} 2.0' in (
         rendered_metrics
@@ -248,6 +319,14 @@ async def test_authorized_detail_enrichment_uses_scope_versioned_cache() -> None
     assert 'datariver_catalog_detail_source_total{source="datahub"} 1.0' in rendered_metrics
     assert 'datariver_catalog_detail_source_total{source="fresh_cache"} 1.0' in (rendered_metrics)
     assert 'datariver_catalog_detail_source_total{source="stale_cache"} 1.0' in (rendered_metrics)
+
+    assert 'datariver_catalog_cache_access_total{cache="facets",outcome="hit"} 1.0' in (
+        rendered_metrics
+    )
+    assert (
+        'datariver_catalog_cache_access_total{cache="suggestions",outcome="hit"} 1.0'
+        in rendered_metrics
+    )
 
     with pytest.raises(ValidationError):
         await service.search(
@@ -260,6 +339,29 @@ async def test_authorized_detail_enrichment_uses_scope_versioned_cache() -> None
             request_id="too-short",
         )
 
+    with pytest.raises(ValidationError):
+        await service.suggestions(
+            subject=subject,
+            query="",
+            limit=8,
+            environment=environment,
+            request_id="empty-suggestion",
+        )
+
 
 def test_catalog_literal_pattern_escapes_wildcards() -> None:
     assert _literal_contains_pattern(r"100%_yield\path") == r"%100\%\_yield\\path%"
+    assert _literal_prefix_pattern(r"100%_yield\path") == r"100\%\_yield\\path%"
+
+
+def test_catalog_cursor_is_bound_to_the_authorized_request_snapshot() -> None:
+    wrapped = CatalogService._wrap_search_cursor("inner-cursor", context="snapshot-a")
+
+    assert (
+        CatalogService._unwrap_search_cursor(wrapped, expected_context="snapshot-a")
+        == "inner-cursor"
+    )
+    with pytest.raises(ValidationError, match="stale or does not match"):
+        CatalogService._unwrap_search_cursor(wrapped, expected_context="snapshot-b")
+    with pytest.raises(ValidationError, match="stale or does not match"):
+        CatalogService._unwrap_search_cursor("not-a-cursor", expected_context="snapshot-a")

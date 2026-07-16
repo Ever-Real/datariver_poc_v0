@@ -141,6 +141,8 @@ def test_openapi_contains_all_required_product_modules() -> None:
 
     assert {
         "/api/v1/catalog/assets",
+        "/api/v1/catalog/facets",
+        "/api/v1/catalog/suggestions",
         "/api/v1/uploads",
         "/api/v1/uploads/{upload_id}/registration-proposals",
         "/api/v1/change-requests",

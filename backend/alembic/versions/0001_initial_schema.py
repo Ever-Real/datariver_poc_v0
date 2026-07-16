@@ -117,6 +117,7 @@ def upgrade() -> None:
         schema='catalog'
         )
         op.create_index('ix_assets_projection_active_scope_order', 'assets_projection', ['workspace_id', 'classification', 'name', 'id'], unique=False, schema='catalog', postgresql_where=sa.text("deleted_at IS NULL AND lifecycle = 'ACTIVE'"))
+        op.create_index('ix_assets_projection_name_lower_prefix_active', 'assets_projection', [sa.literal_column('lower(name)').label('name_lower')], unique=False, schema='catalog', postgresql_ops={'name_lower': 'text_pattern_ops'}, postgresql_where=sa.text("deleted_at IS NULL AND lifecycle = 'ACTIVE'"))
         op.create_index('ix_assets_projection_name_trgm_active', 'assets_projection', ['name'], unique=False, schema='catalog', postgresql_using='gin', postgresql_ops={'name': 'gin_trgm_ops'}, postgresql_where=sa.text("deleted_at IS NULL AND lifecycle = 'ACTIVE'"))
         op.create_index('ix_assets_projection_scope', 'assets_projection', ['workspace_id', 'classification', 'system_id', 'domain_id'], unique=False, schema='catalog')
         op.create_index('ix_assets_projection_search_fts_active', 'assets_projection', ['search_vector'], unique=False, schema='catalog', postgresql_using='gin', postgresql_where=sa.text("deleted_at IS NULL AND lifecycle = 'ACTIVE'"))

@@ -16,7 +16,9 @@ from datariver.application.dto import (
     ApiProductVersionRecord,
     CapabilityStatus,
     CatalogAssetDetail,
+    CatalogFacets,
     CatalogPage,
+    CatalogSuggestions,
     ChatDraft,
     ChatEvidence,
     ChatExchange,
@@ -110,6 +112,27 @@ class CatalogIndexReader(Protocol):
         access: ClassificationAccessSnapshot,
         asset_id: UUID,
     ) -> CatalogAssetDetail | None: ...
+
+
+class CatalogDiscoveryReader(Protocol):
+    async def facets(
+        self,
+        *,
+        subject: SubjectAttributes,
+        access: ClassificationAccessSnapshot,
+        query: str,
+        filters: dict[str, Any],
+        limit: int,
+    ) -> CatalogFacets: ...
+
+    async def suggestions(
+        self,
+        *,
+        subject: SubjectAttributes,
+        access: ClassificationAccessSnapshot,
+        query: str,
+        limit: int,
+    ) -> CatalogSuggestions: ...
 
 
 class CatalogWatermarkReader(Protocol):

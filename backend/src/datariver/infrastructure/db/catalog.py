@@ -8,7 +8,7 @@ from datetime import UTC, datetime, timedelta
 from typing import Any
 from uuid import NAMESPACE_URL, UUID, uuid5
 
-from sqlalchemy import and_, false, func, or_, select, update
+from sqlalchemy import and_, false, func, literal, or_, select, union_all, update
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -19,7 +19,11 @@ from datariver.application.classification_access import (
 from datariver.application.dto import (
     CatalogAssetDetail,
     CatalogAssetIndex,
+    CatalogFacetBucket,
+    CatalogFacets,
     CatalogPage,
+    CatalogSuggestion,
+    CatalogSuggestions,
     DataHubScanAsset,
 )
 from datariver.application.ports import CatalogIndexReader, CatalogProjectionWriter
@@ -71,6 +75,11 @@ def _to_index(model: AssetProjectionModel) -> CatalogAssetIndex:
 def _literal_contains_pattern(query: str) -> str:
     escaped = query.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
     return f"%{escaped}%"
+
+
+def _literal_prefix_pattern(query: str) -> str:
+    escaped = query.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+    return f"{escaped}%"
 
 
 class SqlCatalogIndexReader(CatalogIndexReader):
@@ -172,19 +181,7 @@ class SqlCatalogIndexReader(CatalogIndexReader):
                     AssetProjectionModel.description.ilike(pattern, escape="\\"),
                 )
             )
-        allowed_filters = {
-            "asset_type": AssetProjectionModel.asset_type,
-            "platform": AssetProjectionModel.platform,
-            "lifecycle": AssetProjectionModel.lifecycle,
-        }
-        unknown_filters = set(filters) - set(allowed_filters)
-        if unknown_filters:
-            raise ValidationError(
-                "Unsupported catalog filters.", details={"filters": sorted(unknown_filters)}
-            )
-        for name, value in filters.items():
-            if value not in (None, ""):
-                conditions.append(allowed_filters[name] == value)
+        conditions.extend(self._filter_conditions(filters))
         if cursor:
             cursor_name, cursor_id = _decode_cursor(cursor)
             conditions.append(
@@ -216,6 +213,146 @@ class SqlCatalogIndexReader(CatalogIndexReader):
             next_cursor=next_cursor,
             observed_at=observed_at,
         )
+
+    async def facets(
+        self,
+        *,
+        subject: SubjectAttributes,
+        access: ClassificationAccessSnapshot,
+        query: str,
+        filters: dict[str, Any],
+        limit: int,
+    ) -> CatalogFacets:
+        if not 1 <= limit <= 100:
+            raise ValueError("Catalog facet limit must be between 1 and 100.")
+        conditions = self._scope_conditions(subject, access)
+        if query:
+            pattern = _literal_contains_pattern(query)
+            conditions.append(
+                or_(
+                    AssetProjectionModel.search_vector.op("@@")(
+                        func.plainto_tsquery("simple", query)
+                    ),
+                    AssetProjectionModel.name.ilike(pattern, escape="\\"),
+                    AssetProjectionModel.description.ilike(pattern, escape="\\"),
+                )
+            )
+        conditions.extend(self._filter_conditions(filters))
+        facet_columns = {
+            "asset_type": AssetProjectionModel.asset_type,
+            "platform": AssetProjectionModel.platform,
+            "classification": AssetProjectionModel.classification,
+        }
+        statements = []
+        for facet, column in facet_columns.items():
+            statements.append(
+                select(
+                    literal(facet).label("facet"),
+                    column.label("value"),
+                    func.count(AssetProjectionModel.id).label("count"),
+                    func.max(AssetProjectionModel.observed_at).label("observed_at"),
+                )
+                .where(and_(*conditions))
+                .group_by(column)
+            )
+        rows = (await self._session.execute(union_all(*statements))).mappings().all()
+        buckets: dict[str, list[CatalogFacetBucket]] = {name: [] for name in facet_columns}
+        observed_values: list[datetime] = []
+        for row in rows:
+            facet = str(row["facet"])
+            raw_value = row["value"]
+            value = (
+                Classification(int(raw_value)).name
+                if facet == "classification" and raw_value is not None
+                else str(raw_value)
+                if raw_value is not None
+                else None
+            )
+            buckets[facet].append(CatalogFacetBucket(value=value, count=int(row["count"])))
+            if isinstance(row["observed_at"], datetime):
+                observed_values.append(row["observed_at"])
+        for values in buckets.values():
+            values.sort(key=lambda item: (-item.count, item.value.casefold() if item.value else ""))
+            del values[limit:]
+        return CatalogFacets(
+            asset_types=tuple(buckets["asset_type"]),
+            platforms=tuple(buckets["platform"]),
+            classifications=tuple(buckets["classification"]),
+            observed_at=max(observed_values) if observed_values else None,
+        )
+
+    async def suggestions(
+        self,
+        *,
+        subject: SubjectAttributes,
+        access: ClassificationAccessSnapshot,
+        query: str,
+        limit: int,
+    ) -> CatalogSuggestions:
+        if not 1 <= limit <= 20:
+            raise ValueError("Catalog suggestion limit must be between 1 and 20.")
+        conditions = self._scope_conditions(subject, access)
+        if len(query) < 3:
+            conditions.append(
+                func.lower(AssetProjectionModel.name).like(
+                    _literal_prefix_pattern(query.lower()), escape="\\"
+                )
+            )
+            ordering: tuple[Any, ...] = (
+                func.lower(AssetProjectionModel.name),
+                AssetProjectionModel.id,
+            )
+        else:
+            conditions.append(
+                AssetProjectionModel.name.ilike(_literal_contains_pattern(query), escape="\\")
+            )
+            ordering = (
+                func.similarity(AssetProjectionModel.name, query).desc(),
+                AssetProjectionModel.name,
+                AssetProjectionModel.id,
+            )
+        statement = (
+            select(AssetProjectionModel).where(and_(*conditions)).order_by(*ordering).limit(limit)
+        )
+        rows = list((await self._session.scalars(statement)).all())
+        return CatalogSuggestions(
+            items=tuple(
+                CatalogSuggestion(
+                    asset_id=row.id,
+                    name=row.name,
+                    asset_type=row.asset_type,
+                    platform=row.platform,
+                )
+                for row in rows
+            ),
+            observed_at=max((row.observed_at for row in rows), default=None),
+        )
+
+    @staticmethod
+    def _filter_conditions(filters: dict[str, Any]) -> list[Any]:
+        allowed_filters = {
+            "asset_type": AssetProjectionModel.asset_type,
+            "platform": AssetProjectionModel.platform,
+            "lifecycle": AssetProjectionModel.lifecycle,
+        }
+        unknown_filters = set(filters) - {*allowed_filters, "classification"}
+        if unknown_filters:
+            raise ValidationError(
+                "Unsupported catalog filters.", details={"filters": sorted(unknown_filters)}
+            )
+        conditions = [
+            allowed_filters[name] == value
+            for name, value in filters.items()
+            if name in allowed_filters and value not in (None, "")
+        ]
+        raw_classification = filters.get("classification")
+        if raw_classification not in (None, ""):
+            try:
+                classification = Classification[str(raw_classification).upper()]
+            except KeyError as error:
+                raise ValidationError("Unsupported catalog classification filter.") from error
+            conditions.append(AssetProjectionModel.classification == int(classification))
+        return conditions
 
     async def get_authorized_asset(
         self,

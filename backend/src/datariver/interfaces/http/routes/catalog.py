@@ -22,10 +22,15 @@ from datariver.interfaces.http.dependencies import ContextDep, SessionDep, get_c
 from datariver.interfaces.http.presenters import catalog_detail, catalog_summary
 from datariver.interfaces.http.schemas import (
     CatalogAssetResponse,
+    CatalogDiscoveryPolicyMeta,
+    CatalogFacetBucketResponse,
+    CatalogFacetsResponse,
+    CatalogPolicyMeta,
     CatalogSearchResponse,
+    CatalogSuggestionResponse,
+    CatalogSuggestionsResponse,
     CatalogSyncRequest,
     CatalogSyncResponse,
-    ObservationMeta,
     PageMeta,
 )
 
@@ -37,6 +42,7 @@ def _service(request: Request, session: SessionDep) -> CatalogService:
     index = SqlCatalogIndexReader(session)
     return CatalogService(
         index=index,
+        discovery=index,
         watermark=index,
         datahub=container.datahub,
         cache=container.cache,
@@ -106,6 +112,10 @@ async def search_assets(
     asset_type: Annotated[str | None, Query(max_length=100)] = None,
     platform: Annotated[str | None, Query(max_length=100)] = None,
     lifecycle: Annotated[str | None, Query(max_length=50)] = None,
+    classification: Annotated[
+        str | None,
+        Query(pattern="^(PUBLIC|INTERNAL|CONFIDENTIAL|RESTRICTED)$"),
+    ] = None,
     cursor: Annotated[str | None, Query(max_length=2000)] = None,
     limit: Annotated[int, Query(ge=1, le=100)] = 25,
 ) -> CatalogSearchResponse:
@@ -115,6 +125,7 @@ async def search_assets(
             "asset_type": asset_type,
             "platform": platform,
             "lifecycle": lifecycle,
+            "classification": classification,
         }.items()
         if value is not None
     }
@@ -130,7 +141,105 @@ async def search_assets(
     return CatalogSearchResponse(
         items=[catalog_summary(item) for item in page.items],
         page=PageMeta(next_cursor=page.next_cursor, limit=limit),
-        meta=ObservationMeta(observed_at=page.observed_at, stale_at=page.stale_at),
+        meta=CatalogPolicyMeta(
+            observed_at=page.observed_at,
+            stale_at=page.stale_at,
+            projection_version=page.projection_version,
+            policy_version=page.policy_version,
+            classification_policy_version=page.classification_policy_version,
+            authorization_generation=page.authorization_generation,
+        ),
+    )
+
+
+@router.get("/facets", response_model=CatalogFacetsResponse)
+async def catalog_facets(
+    request: Request,
+    context: ContextDep,
+    session: SessionDep,
+    q: Annotated[str, Query(max_length=500)] = "",
+    asset_type: Annotated[str | None, Query(max_length=100)] = None,
+    platform: Annotated[str | None, Query(max_length=100)] = None,
+    lifecycle: Annotated[str | None, Query(max_length=50)] = None,
+    classification: Annotated[
+        str | None,
+        Query(pattern="^(PUBLIC|INTERNAL|CONFIDENTIAL|RESTRICTED)$"),
+    ] = None,
+    limit: Annotated[int, Query(ge=1, le=100)] = 30,
+) -> CatalogFacetsResponse:
+    filters = {
+        name: value
+        for name, value in {
+            "asset_type": asset_type,
+            "platform": platform,
+            "lifecycle": lifecycle,
+            "classification": classification,
+        }.items()
+        if value is not None
+    }
+    facets = await _service(request, session).facets(
+        subject=context.subject,
+        query=q,
+        filters=filters,
+        limit=limit,
+        environment=context.environment,
+        request_id=context.request_id,
+    )
+    return CatalogFacetsResponse(
+        asset_types=[
+            CatalogFacetBucketResponse(value=item.value, count=item.count)
+            for item in facets.asset_types
+        ],
+        platforms=[
+            CatalogFacetBucketResponse(value=item.value, count=item.count)
+            for item in facets.platforms
+        ],
+        classifications=[
+            CatalogFacetBucketResponse(value=item.value, count=item.count)
+            for item in facets.classifications
+        ],
+        meta=CatalogDiscoveryPolicyMeta(
+            observed_at=facets.observed_at,
+            projection_version=facets.projection_version,
+            policy_version=facets.policy_version,
+            classification_policy_version=facets.classification_policy_version,
+            authorization_generation=facets.authorization_generation,
+        ),
+    )
+
+
+@router.get("/suggestions", response_model=CatalogSuggestionsResponse)
+async def catalog_suggestions(
+    request: Request,
+    context: ContextDep,
+    session: SessionDep,
+    q: Annotated[str, Query(min_length=1, max_length=500)],
+    limit: Annotated[int, Query(ge=1, le=20)] = 8,
+) -> CatalogSuggestionsResponse:
+    suggestions = await _service(request, session).suggestions(
+        subject=context.subject,
+        query=q,
+        limit=limit,
+        environment=context.environment,
+        request_id=context.request_id,
+    )
+    return CatalogSuggestionsResponse(
+        items=[
+            CatalogSuggestionResponse(
+                id=item.asset_id,
+                name=item.name,
+                asset_type=item.asset_type,
+                platform=item.platform,
+            )
+            for item in suggestions.items
+        ],
+        meta=CatalogDiscoveryPolicyMeta(
+            observed_at=suggestions.observed_at,
+            projection_version=suggestions.projection_version,
+            policy_version=suggestions.policy_version,
+            classification_policy_version=suggestions.classification_policy_version,
+            authorization_generation=suggestions.authorization_generation,
+        ),
     )
 
 

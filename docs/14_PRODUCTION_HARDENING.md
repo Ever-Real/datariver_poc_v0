@@ -44,7 +44,7 @@ scale/availability/team-ownership evidence.
 
 ## 3. Verified baseline and important limitations
 
-The current branch passes 308 backend tests, strict mypy over 169 source/test files, Ruff, and 11 frontend
+The current branch passes 309 backend tests, strict mypy over 169 source/test files, Ruff, and 11 frontend
 test files/41 tests plus type/lint/build. The frontend artifact is JS 384.10 kB (gzip 109.78 kB) and
 CSS 14.37 kB (gzip 3.79 kB). Deterministic migration generation and static
 architecture/Compose/role checks also pass.
@@ -61,7 +61,7 @@ The frontend now has a governed enterprise shell with dense square-edge tokens, 
 explicit Workspace commit/remount, a no-preload two-character global-search floor and server-scoped
 Admin visibility. It is not a completed enterprise UX. Classification policy,
 inference-profile review/revocation and RESTRICTED-grant administration are implemented.
-Catalog facets, autocomplete/lineage, audit/job browsing, Chat history/SSE/external-model adapter,
+Catalog normalized hierarchy/lineage, audit/job browsing, Chat history/SSE/external-model adapter,
 automated KG extraction/projection rebuild and several upload lifecycle endpoints remain explicit API
 backlog.
 
@@ -125,9 +125,9 @@ eligibility controls.
 | Workstream | Current disposition | Remaining acceptance |
 |---|---|---|
 | literal search safety | implemented: NFKC, minimum non-empty length, `%`/`_`/backslash escape | API negative tests and UX message in browser E2E |
-| PostgreSQL search | implemented: stored `tsvector`, GIN FTS, `pg_trgm` name index, active scope/order partial index | target-distribution EXPLAIN/BUFFERS and write-cost measurement |
-| search cache | implemented: short TTL key includes workspace, full permission scope, policy version, request and transactional local projection version; access/source counters expose hit/miss/error/write paths; local same-token membership/deny/scope revocation p99 is below 200 ms | Valkey eviction exporter and two-identity revocation timing under target load |
-| ABAC audit amplification | Chat candidates evaluated as a set; one grouped row retains per-resource effect/reasons | extend to facets/autocomplete/export; partition/retention volume proof |
+| PostgreSQL search | implemented: stored `tsvector`, GIN FTS, `pg_trgm` name index, active scope/order partial index and lower-name short-prefix index | target-distribution EXPLAIN/BUFFERS and write-cost measurement |
+| search cache | implemented: search/facet/suggestion short TTL keys include workspace, full permission scope, policy version, request and transactional local projection version; access/source counters expose hit/miss/error/write paths; local same-token membership/deny/scope revocation p99 is below 200 ms | Valkey eviction exporter and two-identity revocation timing under target load |
+| ABAC audit amplification | Search/facet/suggestion and Chat candidates are SQL-prefiltered as sets; each request keeps a top-level authorization decision and Chat retains one grouped evidence decision row | export coverage and partition/retention volume proof |
 | DataHub isolation | timeout, concurrency bulkhead, circuit breaker, fresh + bounded stale detail fallback; fixed-label request/duration/in-flight/rejection/circuit metrics | target contract/fault test; worker-process metrics; incremental watermark |
 | local read projection | search and base detail survive DataHub read failure inside stale bound | project approved detail aspects and display freshness consistently in UI |
 | worker privilege | separate API/relay/upload/governance/bootstrap DB roles and secrets; upload has no DataHub secret | egress policy in target orchestrator; correlation/scope guard for every BYPASSRLS claim |
