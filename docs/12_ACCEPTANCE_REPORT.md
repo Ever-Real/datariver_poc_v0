@@ -15,10 +15,10 @@ P0–P3 foundation addendum, updated 2026-07-16: current source checks additiona
 | Gate | Result | Executed evidence |
 |---|---|---|
 | Python format/lint | PASS | Ruff format and check across backend, tests, DAGs, migrations and static-verification scripts |
-| Python type safety | PASS | strict mypy: 121 source files, zero issues |
-| Backend behavior | PASS | 307 pytest tests: prior identity, governance, retention, RLS, search/DataHub, KG, sharing and evidence gates plus governed classification access/provider/grant administration, disabled-first inference contracts, bounded DB-pool metrics and the PgBouncer probe source contract |
-| Frontend | PASS | TypeScript build mode, ESLint zero warnings, 9 test files/31 tests including classification-policy, provider-profile and RESTRICTED-grant Admin states and mutation contracts |
-| Frontend artifact | PASS | current source build: JS 377.75 kB / gzip 107.56 kB; CSS 9.99 kB / gzip 3.08 kB |
+| Python type safety | PASS | strict mypy: 169 source/test files, zero issues |
+| Backend behavior | PASS | 308 pytest tests: prior identity, governance, retention, RLS, search/DataHub, KG, sharing and evidence gates plus governed classification access/provider/grant administration, scoped governance UI capabilities, disabled-first inference contracts, bounded DB-pool metrics and the PgBouncer probe source contract |
+| Frontend | PASS | TypeScript build mode, ESLint zero warnings, 11 test files/41 tests including governed top navigation, workspace-state isolation, search floor/URL synchronization, scoped Admin visibility, classification-policy/provider/grant states and mutation contracts |
+| Frontend artifact | PASS | current source build: JS 384.10 kB / gzip 109.78 kB; CSS 14.37 kB / gzip 3.79 kB |
 | Dependency audit | PASS | `pip-audit 2.10.0`: no known runtime vulnerabilities; `npm audit`: 0 vulnerabilities |
 | Repository/IaC scan | PASS | Trivy 0.70.0 `vuln,secret,misconfig`, HIGH/CRITICAL, ignored-unfixed: zero findings after making the Keycloak non-root user explicit |
 | Migration | PASS | current generated `0001` SHA-256 `295efc02404c8c9d27d6de8eca8f1b2ddc9e4dd60570ae6bbe0b3bfedf2daf1d`; Alembic sole head `0011` upgraded the populated local database and is the packaged/runtime readiness revision |

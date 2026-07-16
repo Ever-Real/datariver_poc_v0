@@ -44,9 +44,9 @@ scale/availability/team-ownership evidence.
 
 ## 3. Verified baseline and important limitations
 
-The current branch passes 307 backend tests, strict mypy over 121 source files, Ruff, and 9 frontend
-test files/31 tests plus type/lint/build. The frontend artifact is JS 377.75 kB (gzip 107.56 kB) and
-CSS 9.99 kB (gzip 3.08 kB). Deterministic migration generation and static
+The current branch passes 308 backend tests, strict mypy over 169 source/test files, Ruff, and 11 frontend
+test files/41 tests plus type/lint/build. The frontend artifact is JS 384.10 kB (gzip 109.78 kB) and
+CSS 14.37 kB (gzip 3.79 kB). Deterministic migration generation and static
 architecture/Compose/role checks also pass.
 The hybrid runtime has live evidence for PostgreSQL RLS, Keycloak service-token OIDC, APISIX,
 Vite proxying, DataHub authentication and semiconductor seed verification. Target DataHub, target
@@ -57,8 +57,10 @@ promotion requires the external deployment to pin the reviewed OCI digests, enab
 enforcement and pass live scan/detail/lineage/apply/read-back contract tests. A matching version
 string alone is not production acceptance evidence.
 
-The frontend is a functional integration baseline, not a completed enterprise UX. Classification
-policy, inference-profile review/revocation and RESTRICTED-grant administration are implemented.
+The frontend now has a governed enterprise shell with dense square-edge tokens, typed navigation,
+explicit Workspace commit/remount, a no-preload two-character global-search floor and server-scoped
+Admin visibility. It is not a completed enterprise UX. Classification policy,
+inference-profile review/revocation and RESTRICTED-grant administration are implemented.
 Catalog facets, autocomplete/lineage, audit/job browsing, Chat history/SSE/external-model adapter,
 automated KG extraction/projection rebuild and several upload lifecycle endpoints remain explicit API
 backlog.
