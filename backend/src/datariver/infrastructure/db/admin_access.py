@@ -6,6 +6,10 @@ from uuid import UUID
 from sqlalchemy import func, or_, select, text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from datariver.application.dto import (
+    WorkspaceMembershipAccessRecord,
+    WorkspaceMembershipSummary,
+)
 from datariver.application.ports import (
     AdminAccessRequestRepository,
     AdminAccessUnitOfWork,
@@ -20,7 +24,7 @@ from datariver.domain.admin_access import (
     MembershipAccessUpdate,
 )
 from datariver.domain.authz import Action, Classification
-from datariver.domain.common import ConflictError, ForbiddenError, NotFoundError
+from datariver.domain.common import ConflictError, ForbiddenError, NotFoundError, ValidationError
 from datariver.infrastructure.db.governance import SqlIdempotencyStore, SqlOutboxWriter
 from datariver.infrastructure.db.models.platform import (
     AdminAccessApprovalModel,
@@ -211,6 +215,44 @@ class SqlAdminAccessRequestRepository(AdminAccessRequestRepository):
 class SqlMembershipAccessRepository(MembershipAccessRepository):
     def __init__(self, session: AsyncSession) -> None:
         self._session = session
+
+    async def list(
+        self, *, workspace_id: UUID, limit: int
+    ) -> tuple[WorkspaceMembershipSummary, ...]:
+        rows = (
+            await self._session.execute(
+                select(SubjectModel, WorkspaceMembershipModel)
+                .join(
+                    WorkspaceMembershipModel,
+                    WorkspaceMembershipModel.subject_id == SubjectModel.id,
+                )
+                .where(WorkspaceMembershipModel.workspace_id == workspace_id)
+                .order_by(func.lower(SubjectModel.display_name), SubjectModel.id)
+                .limit(limit)
+            )
+        ).all()
+        return tuple(_membership_summary(subject, membership) for subject, membership in rows)
+
+    async def get_access(
+        self, *, workspace_id: UUID, subject_id: UUID
+    ) -> WorkspaceMembershipAccessRecord | None:
+        row = (
+            await self._session.execute(
+                select(SubjectModel, WorkspaceMembershipModel)
+                .join(
+                    WorkspaceMembershipModel,
+                    WorkspaceMembershipModel.subject_id == SubjectModel.id,
+                )
+                .where(
+                    WorkspaceMembershipModel.workspace_id == workspace_id,
+                    WorkspaceMembershipModel.subject_id == subject_id,
+                )
+            )
+        ).one_or_none()
+        if row is None:
+            return None
+        subject, membership = row
+        return _membership_access_record(subject, membership)
 
     async def apply(self, command: MembershipAccessUpdate) -> int:
         membership = await self._membership_for_update(command)
@@ -413,3 +455,66 @@ def _string_set(document: object, key: str) -> set[str] | None:
     if not isinstance(value, list) or any(not isinstance(item, str) for item in value):
         return None
     return set(value)
+
+
+def _membership_summary(
+    subject: SubjectModel, membership: WorkspaceMembershipModel
+) -> WorkspaceMembershipSummary:
+    try:
+        clearance = Classification(membership.clearance)
+    except ValueError as error:
+        raise ConflictError("The stored workspace membership access is invalid.") from error
+    if membership.version < 1:
+        raise ConflictError("The stored workspace membership version is invalid.")
+    return WorkspaceMembershipSummary(
+        subject_id=subject.id,
+        display_name=subject.display_name,
+        subject_active=subject.active,
+        membership_active=membership.active,
+        department_id=membership.department_id,
+        job_function=membership.job_function,
+        clearance=clearance,
+        membership_version=membership.version,
+    )
+
+
+def _membership_access_record(
+    subject: SubjectModel, membership: WorkspaceMembershipModel
+) -> WorkspaceMembershipAccessRecord:
+    attributes = membership.attributes
+    groups = _string_set(attributes, "groups")
+    allowed = _string_set(attributes, "allowed_actions")
+    denied = _string_set(attributes, "denied_actions")
+    system_ids = _string_set(attributes, "allowed_system_ids")
+    domain_ids = _string_set(attributes, "allowed_domain_ids")
+    if (
+        groups is None
+        or allowed is None
+        or denied is None
+        or system_ids is None
+        or domain_ids is None
+    ):
+        raise ConflictError("The stored workspace membership access is invalid.")
+    try:
+        command = MembershipAccessUpdate(
+            workspace_id=membership.workspace_id,
+            target_subject_id=membership.subject_id,
+            expected_membership_version=membership.version,
+            active=membership.active,
+            clearance=Classification(membership.clearance),
+            groups=frozenset(groups),
+            allowed_actions=frozenset(Action(value) for value in allowed),
+            denied_actions=frozenset(Action(value) for value in denied),
+            allowed_system_ids=frozenset(UUID(value) for value in system_ids),
+            allowed_domain_ids=frozenset(UUID(value) for value in domain_ids),
+        )
+    except (TypeError, ValueError, ValidationError) as error:
+        raise ConflictError("The stored workspace membership access is invalid.") from error
+    return WorkspaceMembershipAccessRecord(
+        summary=_membership_summary(subject, membership),
+        groups=command.groups,
+        allowed_actions=command.allowed_actions,
+        denied_actions=command.denied_actions,
+        allowed_system_ids=command.allowed_system_ids,
+        allowed_domain_ids=command.allowed_domain_ids,
+    )

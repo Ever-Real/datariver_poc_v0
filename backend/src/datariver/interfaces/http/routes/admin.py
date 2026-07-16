@@ -17,7 +17,12 @@ from datariver.domain.common import ValidationError, canonical_json_hash
 from datariver.infrastructure.db.admin_access import SqlAdminAccessUnitOfWork
 from datariver.infrastructure.db.authz import SqlDecisionWriter
 from datariver.interfaces.http.dependencies import ContextDep, get_container
-from datariver.interfaces.http.presenters import admin_access_request_response
+from datariver.interfaces.http.presenters import (
+    admin_access_request_response,
+    admin_read_context_response,
+    workspace_membership_access_response,
+    workspace_membership_summary_response,
+)
 from datariver.interfaces.http.schemas import (
     AdminAccessConsumeResponse,
     AdminAccessRequestListResponse,
@@ -25,8 +30,11 @@ from datariver.interfaces.http.schemas import (
     AdminFallbackConsumeRequest,
     AdminFallbackCreateRequest,
     AdminFallbackDecisionRequest,
+    AdminReadContextResponse,
     MembershipAccessDocumentRequest,
     MembershipAccessUpdateResponse,
+    WorkspaceMembershipAccessResponse,
+    WorkspaceMembershipListResponse,
 )
 
 router = APIRouter(prefix="/admin", tags=["administration"])
@@ -74,6 +82,69 @@ def _membership_command(
         )
     except (KeyError, ValueError) as error:
         raise ValidationError("The membership access document is invalid.") from error
+
+
+@router.get("/me", response_model=AdminReadContextResponse)
+async def get_admin_context(
+    request: Request,
+    context: ContextDep,
+) -> AdminReadContextResponse:
+    value = await _service(request).get_admin_read_context(
+        workspace_id=context.workspace_id,
+        subject=context.subject,
+        environment=context.environment,
+        request_id=context.request_id,
+    )
+    return admin_read_context_response(value)
+
+
+@router.get("/workspace-memberships", response_model=WorkspaceMembershipListResponse)
+async def list_workspace_memberships(
+    request: Request,
+    context: ContextDep,
+    limit: Annotated[int, Query(ge=1, le=100)] = 50,
+) -> WorkspaceMembershipListResponse:
+    values = await _service(request).list_workspace_memberships(
+        workspace_id=context.workspace_id,
+        limit=limit,
+        subject=context.subject,
+        environment=context.environment,
+        request_id=context.request_id,
+    )
+    return WorkspaceMembershipListResponse(
+        items=[workspace_membership_summary_response(value) for value in values]
+    )
+
+
+@router.get(
+    "/workspace-memberships/{target_subject_id}/access",
+    response_model=WorkspaceMembershipAccessResponse,
+    responses={
+        200: {
+            "headers": {
+                "ETag": {
+                    "description": "Quoted current workspace membership version.",
+                    "schema": {"type": "string"},
+                }
+            }
+        }
+    },
+)
+async def get_workspace_membership_access(
+    target_subject_id: UUID,
+    request: Request,
+    response: Response,
+    context: ContextDep,
+) -> WorkspaceMembershipAccessResponse:
+    value = await _service(request).get_workspace_membership_access(
+        workspace_id=context.workspace_id,
+        target_subject_id=target_subject_id,
+        subject=context.subject,
+        environment=context.environment,
+        request_id=context.request_id,
+    )
+    response.headers["ETag"] = f'"{value.summary.membership_version}"'
+    return workspace_membership_access_response(value)
 
 
 @router.put(

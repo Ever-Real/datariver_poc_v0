@@ -6,6 +6,8 @@ from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
+from datariver.domain.authz import Action
+
 
 class PageMeta(BaseModel):
     next_cursor: str | None
@@ -176,10 +178,64 @@ class MembershipAccessDocumentRequest(BaseModel):
     active: bool
     clearance: Literal["PUBLIC", "INTERNAL", "CONFIDENTIAL", "RESTRICTED"]
     groups: list[str] = Field(max_length=100)
-    allowed_actions: list[str] = Field(max_length=100)
-    denied_actions: list[str] = Field(max_length=100)
+    allowed_actions: list[Action] = Field(max_length=100)
+    denied_actions: list[Action] = Field(max_length=100)
     allowed_system_ids: list[UUID] = Field(default_factory=list, max_length=1000)
     allowed_domain_ids: list[UUID] = Field(default_factory=list, max_length=1000)
+
+
+class MembershipAccessDocumentResponse(BaseModel):
+    active: bool
+    clearance: Literal["PUBLIC", "INTERNAL", "CONFIDENTIAL", "RESTRICTED"]
+    groups: list[str] = Field(max_length=100)
+    allowed_actions: list[Action] = Field(max_length=100)
+    denied_actions: list[Action] = Field(max_length=100)
+    allowed_system_ids: list[UUID] = Field(max_length=1000)
+    allowed_domain_ids: list[UUID] = Field(max_length=1000)
+
+
+class WorkspaceMembershipSummaryResponse(BaseModel):
+    subject_id: UUID
+    display_name: str
+    subject_active: bool
+    membership_active: bool
+    department_id: UUID | None
+    job_function: str | None
+    clearance: Literal["PUBLIC", "INTERNAL", "CONFIDENTIAL", "RESTRICTED"]
+    membership_version: int = Field(ge=1)
+
+
+class WorkspaceMembershipListResponse(BaseModel):
+    items: list[WorkspaceMembershipSummaryResponse]
+
+
+class WorkspaceMembershipAccessResponse(BaseModel):
+    subject_id: UUID
+    display_name: str
+    subject_active: bool
+    department_id: UUID | None
+    job_function: str | None
+    membership_version: int = Field(ge=1)
+    access: MembershipAccessDocumentResponse
+
+
+class AdminReadContextResponse(BaseModel):
+    subject_id: UUID
+    workspace_id: UUID
+    display_name: str
+    authentication_assurance: Literal["PASSWORD_REAUTH", "HARDWARE_WEBAUTHN"]
+    fallback_enabled: bool
+    allowed_operations: list[
+        Literal[
+            "MEMBERSHIP_ACCESS_READ",
+            "MEMBERSHIP_ACCESS_UPDATE",
+            "FALLBACK_REQUEST_READ",
+            "FALLBACK_REQUEST_CREATE",
+            "FALLBACK_REQUEST_DECIDE",
+            "FALLBACK_REQUEST_CONSUME",
+        ]
+    ]
+    action_vocabulary: list[Action]
 
 
 class AdminFallbackCreateRequest(BaseModel):

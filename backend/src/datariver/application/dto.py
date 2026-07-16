@@ -5,7 +5,8 @@ from datetime import datetime
 from typing import Any
 from uuid import UUID
 
-from datariver.domain.authz import Classification, Decision
+from datariver.domain.admin_access import AdminOperation
+from datariver.domain.authz import Action, AuthenticationAssurance, Classification, Decision
 from datariver.domain.governance import ChangeRequest
 
 
@@ -134,6 +135,38 @@ class CapabilityStatus:
 class IdempotencyRecord:
     request_hash: str
     result: dict[str, Any]
+
+
+@dataclass(frozen=True, slots=True)
+class WorkspaceMembershipSummary:
+    subject_id: UUID
+    display_name: str
+    subject_active: bool
+    membership_active: bool
+    department_id: UUID | None
+    job_function: str | None
+    clearance: Classification
+    membership_version: int
+
+
+@dataclass(frozen=True, slots=True)
+class WorkspaceMembershipAccessRecord:
+    summary: WorkspaceMembershipSummary
+    groups: frozenset[str]
+    allowed_actions: frozenset[Action]
+    denied_actions: frozenset[Action]
+    allowed_system_ids: frozenset[UUID]
+    allowed_domain_ids: frozenset[UUID]
+
+
+@dataclass(frozen=True, slots=True)
+class AdminReadContext:
+    workspace_id: UUID
+    membership: WorkspaceMembershipSummary
+    authentication_assurance: AuthenticationAssurance
+    allowed_operations: tuple[AdminOperation, ...]
+    action_vocabulary: tuple[Action, ...]
+    fallback_enabled: bool
 
 
 @dataclass(frozen=True, slots=True)

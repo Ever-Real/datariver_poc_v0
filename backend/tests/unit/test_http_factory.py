@@ -6,6 +6,7 @@ from typing import cast
 from fastapi.testclient import TestClient
 
 from datariver.config import Settings
+from datariver.domain.authz import Action
 from datariver.domain.common import ForbiddenError
 from datariver.infrastructure.db.session import DatabaseReadiness
 from datariver.infrastructure.observability.metrics import HttpMetrics
@@ -168,10 +169,60 @@ def test_openapi_contains_all_required_product_modules() -> None:
         "/api/v1/api-products/{product_id}/invoke/snapshot",
         "/api/v1/api-products/{product_id}/invoke/chat",
         "/api/v1/admin/workspace-memberships/{target_subject_id}/access",
+        "/api/v1/admin/workspace-memberships",
+        "/api/v1/admin/me",
         "/api/v1/admin/fallback/workspace-membership-access-requests",
         "/api/v1/admin/fallback/workspace-membership-access-requests/{access_request_id}/decisions",
         "/api/v1/admin/fallback/workspace-membership-access-requests/{access_request_id}/consume",
     }.issubset(document["paths"])
+
+
+def test_openapi_exposes_bounded_typed_administrator_read_contracts() -> None:
+    factory = cast(Callable[[Settings], AppContainer], lambda _: LiveOnlyContainer())
+    document = create_app(settings(), container_factory=factory).openapi()
+
+    membership_list = document["paths"]["/api/v1/admin/workspace-memberships"]["get"]
+    limit = next(
+        parameter for parameter in membership_list["parameters"] if parameter["name"] == "limit"
+    )
+    assert limit["schema"]["default"] == 50
+    assert limit["schema"]["minimum"] == 1
+    assert limit["schema"]["maximum"] == 100
+
+    membership_detail = document["paths"][
+        "/api/v1/admin/workspace-memberships/{target_subject_id}/access"
+    ]["get"]
+    assert membership_detail["responses"]["200"]["headers"]["ETag"]["schema"] == {"type": "string"}
+    access_schema = document["components"]["schemas"]["MembershipAccessDocumentResponse"]
+    assert set(access_schema["required"]) == {
+        "active",
+        "clearance",
+        "groups",
+        "allowed_actions",
+        "denied_actions",
+        "allowed_system_ids",
+        "allowed_domain_ids",
+    }
+
+    context_schema = document["components"]["schemas"]["AdminReadContextResponse"]
+    assert set(context_schema["properties"]["authentication_assurance"]["enum"]) == {
+        "PASSWORD_REAUTH",
+        "HARDWARE_WEBAUTHN",
+    }
+    assert set(context_schema["properties"]["allowed_operations"]["items"]["enum"]) == {
+        "MEMBERSHIP_ACCESS_READ",
+        "MEMBERSHIP_ACCESS_UPDATE",
+        "FALLBACK_REQUEST_READ",
+        "FALLBACK_REQUEST_CREATE",
+        "FALLBACK_REQUEST_DECIDE",
+        "FALLBACK_REQUEST_CONSUME",
+    }
+    assert context_schema["properties"]["action_vocabulary"]["items"] == {
+        "$ref": "#/components/schemas/Action"
+    }
+    assert set(document["components"]["schemas"]["Action"]["enum"]) == {
+        action.value for action in Action
+    }
 
 
 def test_forbidden_problem_exposes_only_bounded_remediation() -> None:

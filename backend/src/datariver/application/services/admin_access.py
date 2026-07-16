@@ -4,6 +4,11 @@ from collections.abc import Callable, Sequence
 from datetime import timedelta
 from uuid import UUID
 
+from datariver.application.dto import (
+    AdminReadContext,
+    WorkspaceMembershipAccessRecord,
+    WorkspaceMembershipSummary,
+)
 from datariver.application.ports import AdminAccessUnitOfWork
 from datariver.application.services.authorization import AuthorizationService
 from datariver.domain.admin_access import (
@@ -11,10 +16,12 @@ from datariver.domain.admin_access import (
     AdminAccessRequest,
     AdminAccessRequestState,
     AdminFallbackStage,
+    AdminOperation,
     MembershipAccessUpdate,
 )
 from datariver.domain.authz import (
     Action,
+    AuthenticationAssurance,
     Classification,
     EnvironmentAttributes,
     ResourceAttributes,
@@ -42,6 +49,105 @@ class AdminAccessService:
         self._authorization = authorization
         self._fallback_enabled = fallback_enabled
         self._fallback_ttl = timedelta(seconds=fallback_ttl_seconds)
+
+    async def list_workspace_memberships(
+        self,
+        *,
+        workspace_id: UUID,
+        limit: int,
+        subject: SubjectAttributes,
+        environment: EnvironmentAttributes,
+        request_id: str,
+    ) -> Sequence[WorkspaceMembershipSummary]:
+        await self._authorize_read(
+            workspace_id=workspace_id,
+            resource_id=workspace_id,
+            subject=subject,
+            environment=environment,
+            request_id=request_id,
+        )
+        async with self._uow_factory() as uow:
+            await uow.set_security_context(workspace_id=workspace_id, subject_id=subject.subject_id)
+            await uow.memberships.assert_eligible_human_administrators(
+                workspace_id=workspace_id, subject_ids=frozenset({subject.subject_id})
+            )
+            return await uow.memberships.list(workspace_id=workspace_id, limit=limit)
+
+    async def get_workspace_membership_access(
+        self,
+        *,
+        workspace_id: UUID,
+        target_subject_id: UUID,
+        subject: SubjectAttributes,
+        environment: EnvironmentAttributes,
+        request_id: str,
+    ) -> WorkspaceMembershipAccessRecord:
+        await self._authorize_read(
+            workspace_id=workspace_id,
+            resource_id=target_subject_id,
+            subject=subject,
+            environment=environment,
+            request_id=request_id,
+        )
+        async with self._uow_factory() as uow:
+            await uow.set_security_context(workspace_id=workspace_id, subject_id=subject.subject_id)
+            await uow.memberships.assert_eligible_human_administrators(
+                workspace_id=workspace_id, subject_ids=frozenset({subject.subject_id})
+            )
+            membership = await uow.memberships.get_access(
+                workspace_id=workspace_id, subject_id=target_subject_id
+            )
+            if membership is None:
+                raise NotFoundError("The target workspace membership does not exist.")
+            return membership
+
+    async def get_admin_read_context(
+        self,
+        *,
+        workspace_id: UUID,
+        subject: SubjectAttributes,
+        environment: EnvironmentAttributes,
+        request_id: str,
+    ) -> AdminReadContext:
+        await self._authorize_read(
+            workspace_id=workspace_id,
+            resource_id=workspace_id,
+            subject=subject,
+            environment=environment,
+            request_id=request_id,
+        )
+        async with self._uow_factory() as uow:
+            await uow.set_security_context(workspace_id=workspace_id, subject_id=subject.subject_id)
+            await uow.memberships.assert_eligible_human_administrators(
+                workspace_id=workspace_id, subject_ids=frozenset({subject.subject_id})
+            )
+            membership = await uow.memberships.get_access(
+                workspace_id=workspace_id, subject_id=subject.subject_id
+            )
+            if membership is None:
+                raise NotFoundError("The administrator workspace membership does not exist.")
+        operations = [AdminOperation.MEMBERSHIP_ACCESS_READ]
+        if subject.authentication_assurance is AuthenticationAssurance.HARDWARE_WEBAUTHN:
+            operations.append(AdminOperation.MEMBERSHIP_ACCESS_UPDATE)
+        if self._fallback_enabled:
+            operations.extend(
+                [AdminOperation.FALLBACK_REQUEST_READ, AdminOperation.FALLBACK_REQUEST_DECIDE]
+            )
+            if subject.authentication_assurance is AuthenticationAssurance.PASSWORD_REAUTH:
+                operations.extend(
+                    [
+                        AdminOperation.FALLBACK_REQUEST_CREATE,
+                        AdminOperation.FALLBACK_REQUEST_CONSUME,
+                    ]
+                )
+        return AdminReadContext(
+            workspace_id=workspace_id,
+            membership=membership.summary,
+            authentication_assurance=subject.authentication_assurance,
+            allowed_operations=tuple(operations),
+            action_vocabulary=tuple(sorted(Action, key=lambda action: action.value)),
+            fallback_enabled=self._fallback_enabled,
+        )
 
     async def update_membership_with_hardware_key(
         self,
@@ -390,6 +496,23 @@ class AdminAccessService:
                 "The administrator password fallback is disabled.",
                 details={"remediation": {"kind": "FALLBACK_UNAVAILABLE"}},
             )
+
+    async def _authorize_read(
+        self,
+        *,
+        workspace_id: UUID,
+        resource_id: UUID,
+        subject: SubjectAttributes,
+        environment: EnvironmentAttributes,
+        request_id: str,
+    ) -> None:
+        await self._authorization.authorize_admin_fallback(
+            subject=subject,
+            resource=self._resource(workspace_id, resource_id),
+            stage=AdminFallbackStage.READ,
+            environment=environment,
+            request_id=request_id,
+        )
 
     @staticmethod
     def _resource(workspace_id: UUID, resource_id: UUID) -> ResourceAttributes:

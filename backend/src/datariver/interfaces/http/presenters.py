@@ -1,11 +1,18 @@
 from __future__ import annotations
 
-from datariver.application.dto import CatalogAssetDetail, CatalogAssetIndex
+from datariver.application.dto import (
+    AdminReadContext,
+    CatalogAssetDetail,
+    CatalogAssetIndex,
+    WorkspaceMembershipAccessRecord,
+    WorkspaceMembershipSummary,
+)
 from datariver.domain.admin_access import AdminAccessRequest
 from datariver.domain.governance import ChangeRequest
 from datariver.interfaces.http.schemas import (
     AdminAccessApprovalResponse,
     AdminAccessRequestResponse,
+    AdminReadContextResponse,
     ApprovalResponse,
     CatalogAssetResponse,
     CatalogAssetSummary,
@@ -13,7 +20,10 @@ from datariver.interfaces.http.schemas import (
     ChangeRequestResponse,
     MembershipAccessCommandResponse,
     MembershipAccessDocumentRequest,
+    MembershipAccessDocumentResponse,
     TransitionResponse,
+    WorkspaceMembershipAccessResponse,
+    WorkspaceMembershipSummaryResponse,
 )
 
 
@@ -53,6 +63,56 @@ def admin_access_request_response(request: AdminAccessRequest) -> AdminAccessReq
             )
             for approval in request.approvals
         ],
+    )
+
+
+def workspace_membership_summary_response(
+    membership: WorkspaceMembershipSummary,
+) -> WorkspaceMembershipSummaryResponse:
+    return WorkspaceMembershipSummaryResponse(
+        subject_id=membership.subject_id,
+        display_name=membership.display_name,
+        subject_active=membership.subject_active,
+        membership_active=membership.membership_active,
+        department_id=membership.department_id,
+        job_function=membership.job_function,
+        clearance=membership.clearance.name,
+        membership_version=membership.membership_version,
+    )
+
+
+def workspace_membership_access_response(
+    membership: WorkspaceMembershipAccessRecord,
+) -> WorkspaceMembershipAccessResponse:
+    summary = membership.summary
+    return WorkspaceMembershipAccessResponse(
+        subject_id=summary.subject_id,
+        display_name=summary.display_name,
+        subject_active=summary.subject_active,
+        department_id=summary.department_id,
+        job_function=summary.job_function,
+        membership_version=summary.membership_version,
+        access=MembershipAccessDocumentResponse(
+            active=summary.membership_active,
+            clearance=summary.clearance.name,
+            groups=sorted(membership.groups),
+            allowed_actions=sorted(membership.allowed_actions, key=lambda action: action.value),
+            denied_actions=sorted(membership.denied_actions, key=lambda action: action.value),
+            allowed_system_ids=sorted(membership.allowed_system_ids, key=str),
+            allowed_domain_ids=sorted(membership.allowed_domain_ids, key=str),
+        ),
+    )
+
+
+def admin_read_context_response(context: AdminReadContext) -> AdminReadContextResponse:
+    return AdminReadContextResponse(
+        subject_id=context.membership.subject_id,
+        workspace_id=context.workspace_id,
+        display_name=context.membership.display_name,
+        authentication_assurance=context.authentication_assurance.value,
+        fallback_enabled=context.fallback_enabled,
+        allowed_operations=[operation.value for operation in context.allowed_operations],
+        action_vocabulary=list(context.action_vocabulary),
     )
 
 

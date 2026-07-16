@@ -9,7 +9,11 @@ from uuid import UUID, uuid4
 
 import pytest
 
-from datariver.application.dto import IdempotencyRecord
+from datariver.application.dto import (
+    IdempotencyRecord,
+    WorkspaceMembershipAccessRecord,
+    WorkspaceMembershipSummary,
+)
 from datariver.application.ports import AdminAccessUnitOfWork
 from datariver.application.services.admin_access import AdminAccessService
 from datariver.application.services.authorization import AuthorizationService
@@ -17,6 +21,7 @@ from datariver.domain.admin_access import (
     AdminAccessDecision,
     AdminAccessRequest,
     AdminAccessRequestState,
+    AdminOperation,
     MembershipAccessUpdate,
 )
 from datariver.domain.authz import (
@@ -27,7 +32,7 @@ from datariver.domain.authz import (
     EnvironmentAttributes,
     SubjectAttributes,
 )
-from datariver.domain.common import ConflictError, DomainEvent, ForbiddenError
+from datariver.domain.common import ConflictError, DomainEvent, ForbiddenError, NotFoundError
 
 
 class MemoryDecisionWriter:
@@ -84,6 +89,27 @@ class MemoryRequests:
 class MemoryMemberships:
     def __init__(self, state: dict[str, object]) -> None:
         self.state = state
+
+    async def list(self, *, workspace_id: UUID, limit: int) -> Sequence[WorkspaceMembershipSummary]:
+        assert workspace_id == self.state["workspace_id"]
+        self.state["membership_read_count"] = cast(int, self.state["membership_read_count"]) + 1
+        records = cast(
+            dict[UUID, WorkspaceMembershipAccessRecord], self.state["membership_records"]
+        )
+        return tuple(
+            record.summary
+            for record in sorted(records.values(), key=lambda value: value.summary.display_name)
+        )[:limit]
+
+    async def get_access(
+        self, *, workspace_id: UUID, subject_id: UUID
+    ) -> WorkspaceMembershipAccessRecord | None:
+        assert workspace_id == self.state["workspace_id"]
+        self.state["membership_read_count"] = cast(int, self.state["membership_read_count"]) + 1
+        records = cast(
+            dict[UUID, WorkspaceMembershipAccessRecord], self.state["membership_records"]
+        )
+        return records.get(subject_id)
 
     async def apply(self, command: MembershipAccessUpdate) -> int:
         await self.assert_current_version(command)
@@ -222,10 +248,33 @@ def _state(
         "outbox": [],
         "idempotency": {},
         "membership_versions": {target_id: 1},
+        "membership_records": {},
+        "membership_read_count": 0,
         "eligible_administrators": {maker_id, checker_id},
         "remaining_admin_count": 2,
         "lock_count": 0,
     }
+
+
+def _membership_record(subject_id: UUID, display_name: str) -> WorkspaceMembershipAccessRecord:
+    system_id, domain_id = uuid4(), uuid4()
+    return WorkspaceMembershipAccessRecord(
+        summary=WorkspaceMembershipSummary(
+            subject_id=subject_id,
+            display_name=display_name,
+            subject_active=True,
+            membership_active=True,
+            department_id=uuid4(),
+            job_function="SECURITY_ADMINISTRATOR",
+            clearance=Classification.RESTRICTED,
+            membership_version=1,
+        ),
+        groups=frozenset({"security-administrators"}),
+        allowed_actions=frozenset({Action.ADMIN_MANAGE, Action.CATALOG_READ}),
+        denied_actions=frozenset({Action.CHAT_QUERY}),
+        allowed_system_ids=frozenset({system_id}),
+        allowed_domain_ids=frozenset({domain_id}),
+    )
 
 
 def _service(state: dict[str, object], *, enabled: bool = True) -> AdminAccessService:
@@ -236,6 +285,158 @@ def _service(state: dict[str, object], *, enabled: bool = True) -> AdminAccessSe
         fallback_enabled=enabled,
         fallback_ttl_seconds=300,
     )
+
+
+@pytest.mark.parametrize(
+    "assurance",
+    [
+        AuthenticationAssurance.PASSWORD_REAUTH,
+        AuthenticationAssurance.HARDWARE_WEBAUTHN,
+    ],
+)
+@pytest.mark.asyncio
+async def test_membership_reads_reuse_admin_read_assurance_when_fallback_is_disabled(
+    assurance: AuthenticationAssurance,
+) -> None:
+    workspace_id, target_id, administrator_id, other_admin_id = (uuid4() for _ in range(4))
+    now = datetime.now(UTC)
+    state = _state(workspace_id, target_id, administrator_id, other_admin_id)
+    administrator_record = _membership_record(administrator_id, "Administrator")
+    target_record = _membership_record(target_id, "Target User")
+    cast(dict[UUID, WorkspaceMembershipAccessRecord], state["membership_records"]).update(
+        {administrator_id: administrator_record, target_id: target_record}
+    )
+    service = _service(state, enabled=False)
+    subject = _administrator(workspace_id, administrator_id, assurance=assurance, now=now)
+    environment = EnvironmentAttributes(requested_at=now)
+
+    items = await service.list_workspace_memberships(
+        workspace_id=workspace_id,
+        limit=1,
+        subject=subject,
+        environment=environment,
+        request_id="membership-list",
+    )
+    access = await service.get_workspace_membership_access(
+        workspace_id=workspace_id,
+        target_subject_id=target_id,
+        subject=subject,
+        environment=environment,
+        request_id="membership-detail",
+    )
+
+    assert len(items) == 1
+    assert items[0].display_name == "Administrator"
+    assert access == target_record
+    assert access.summary.membership_version == 1
+    assert access.allowed_actions == frozenset({Action.ADMIN_MANAGE, Action.CATALOG_READ})
+
+
+@pytest.mark.asyncio
+async def test_membership_detail_hides_unknown_or_other_workspace_subject() -> None:
+    workspace_id, target_id, administrator_id, other_admin_id = (uuid4() for _ in range(4))
+    now = datetime.now(UTC)
+    state = _state(workspace_id, target_id, administrator_id, other_admin_id)
+    cast(dict[UUID, WorkspaceMembershipAccessRecord], state["membership_records"])[
+        administrator_id
+    ] = _membership_record(administrator_id, "Administrator")
+
+    with pytest.raises(NotFoundError, match="target workspace membership"):
+        await _service(state, enabled=False).get_workspace_membership_access(
+            workspace_id=workspace_id,
+            target_subject_id=uuid4(),
+            subject=_administrator(
+                workspace_id,
+                administrator_id,
+                assurance=AuthenticationAssurance.HARDWARE_WEBAUTHN,
+                now=now,
+            ),
+            environment=EnvironmentAttributes(requested_at=now),
+            request_id="membership-hidden",
+        )
+
+
+@pytest.mark.asyncio
+async def test_membership_reads_reject_ordinary_password_before_repository_access() -> None:
+    workspace_id, target_id, administrator_id, other_admin_id = (uuid4() for _ in range(4))
+    now = datetime.now(UTC)
+    state = _state(workspace_id, target_id, administrator_id, other_admin_id)
+
+    with pytest.raises(ForbiddenError) as captured:
+        await _service(state).list_workspace_memberships(
+            workspace_id=workspace_id,
+            limit=50,
+            subject=_administrator(
+                workspace_id,
+                administrator_id,
+                assurance=AuthenticationAssurance.PASSWORD,
+                now=now,
+            ),
+            environment=EnvironmentAttributes(requested_at=now),
+            request_id="membership-weak-auth",
+        )
+
+    assert captured.value.details["remediation"] == {"kind": "REAUTH_REQUIRED"}
+    assert state["membership_read_count"] == 0
+
+
+@pytest.mark.parametrize(
+    ("enabled", "assurance", "expected_operations"),
+    [
+        (
+            False,
+            AuthenticationAssurance.PASSWORD_REAUTH,
+            {AdminOperation.MEMBERSHIP_ACCESS_READ},
+        ),
+        (
+            True,
+            AuthenticationAssurance.PASSWORD_REAUTH,
+            {
+                AdminOperation.MEMBERSHIP_ACCESS_READ,
+                AdminOperation.FALLBACK_REQUEST_READ,
+                AdminOperation.FALLBACK_REQUEST_CREATE,
+                AdminOperation.FALLBACK_REQUEST_DECIDE,
+                AdminOperation.FALLBACK_REQUEST_CONSUME,
+            },
+        ),
+        (
+            True,
+            AuthenticationAssurance.HARDWARE_WEBAUTHN,
+            {
+                AdminOperation.MEMBERSHIP_ACCESS_READ,
+                AdminOperation.MEMBERSHIP_ACCESS_UPDATE,
+                AdminOperation.FALLBACK_REQUEST_READ,
+                AdminOperation.FALLBACK_REQUEST_DECIDE,
+            },
+        ),
+    ],
+)
+@pytest.mark.asyncio
+async def test_admin_read_context_exposes_only_current_assurance_operations(
+    enabled: bool,
+    assurance: AuthenticationAssurance,
+    expected_operations: set[AdminOperation],
+) -> None:
+    workspace_id, target_id, administrator_id, other_admin_id = (uuid4() for _ in range(4))
+    now = datetime.now(UTC)
+    state = _state(workspace_id, target_id, administrator_id, other_admin_id)
+    cast(dict[UUID, WorkspaceMembershipAccessRecord], state["membership_records"])[
+        administrator_id
+    ] = _membership_record(administrator_id, "Administrator")
+
+    context = await _service(state, enabled=enabled).get_admin_read_context(
+        workspace_id=workspace_id,
+        subject=_administrator(workspace_id, administrator_id, assurance=assurance, now=now),
+        environment=EnvironmentAttributes(requested_at=now),
+        request_id="admin-me",
+    )
+
+    assert context.workspace_id == workspace_id
+    assert context.membership.subject_id == administrator_id
+    assert context.authentication_assurance is assurance
+    assert set(context.allowed_operations) == expected_operations
+    assert context.fallback_enabled is enabled
+    assert context.action_vocabulary == tuple(sorted(Action, key=lambda action: action.value))
 
 
 @pytest.mark.asyncio

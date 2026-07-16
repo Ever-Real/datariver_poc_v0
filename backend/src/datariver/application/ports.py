@@ -31,6 +31,8 @@ from datariver.application.dto import (
     KnowledgeReleaseRecord,
     MultipartUpload,
     ObjectMetadata,
+    WorkspaceMembershipAccessRecord,
+    WorkspaceMembershipSummary,
 )
 from datariver.domain.admin_access import AdminAccessRequest, MembershipAccessUpdate
 from datariver.domain.authz import Decision, SubjectAttributes
@@ -216,6 +218,14 @@ class AdminAccessRequestRepository(Protocol):
 
 
 class MembershipAccessRepository(Protocol):
+    async def list(
+        self, *, workspace_id: UUID, limit: int
+    ) -> Sequence[WorkspaceMembershipSummary]: ...
+
+    async def get_access(
+        self, *, workspace_id: UUID, subject_id: UUID
+    ) -> WorkspaceMembershipAccessRecord | None: ...
+
     async def apply(self, command: MembershipAccessUpdate) -> int: ...
 
     async def assert_current_version(self, command: MembershipAccessUpdate) -> None: ...
