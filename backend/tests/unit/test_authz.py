@@ -204,6 +204,34 @@ def test_high_risk_action_requires_recent_hardware_authentication() -> None:
     assert "AUTHENTICATION_TOO_OLD" in decision.reason_codes
 
 
+@pytest.mark.parametrize(
+    "action",
+    [
+        Action.RETENTION_MANAGE,
+        Action.LEGAL_HOLD_PLACE,
+        Action.LEGAL_HOLD_RELEASE,
+        Action.ERASURE_APPROVE,
+    ],
+)
+def test_retention_governance_mutations_require_hardware_authentication(action: Action) -> None:
+    subject, resource, environment = make_context(action=action)
+    subject = replace(
+        subject,
+        authentication_assurance=AuthenticationAssurance.PASSWORD_REAUTH,
+        authentication_time=environment.requested_at - timedelta(seconds=10),
+    )
+
+    decision = BuiltinPolicyEngine().decide(
+        subject=subject,
+        resource=resource,
+        action=action,
+        environment=environment,
+    )
+
+    assert not decision.allowed
+    assert "PHISHING_RESISTANT_AUTH_REQUIRED" in decision.reason_codes
+
+
 def test_password_and_otp_do_not_satisfy_hardware_authentication() -> None:
     subject, resource, environment = make_context(action=Action.ADMIN_MANAGE)
 

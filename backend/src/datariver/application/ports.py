@@ -38,6 +38,11 @@ from datariver.domain.common import DomainEvent
 from datariver.domain.governance import ChangeRequest
 from datariver.domain.knowledge import ChangeSetState, GraphChangeOperation, GraphSnapshot
 from datariver.domain.registration import CompletedUploadPart, UploadManifest
+from datariver.domain.retention import (
+    ArchiveCapability,
+    ArchiveRetentionObservation,
+    ArchiveWriteReceipt,
+)
 
 
 class DecisionWriter(Protocol):
@@ -343,6 +348,31 @@ class ObjectStore(Protocol):
     ) -> ObjectMetadata: ...
 
     async def delete_object(self, *, bucket: str, object_key: str) -> None: ...
+
+
+class ImmutableArchiveStore(Protocol):
+    """Dedicated WORM boundary. Deliberately exposes no delete or retention-bypass operation."""
+
+    async def verify_capability(self) -> ArchiveCapability: ...
+
+    async def write_archive(
+        self,
+        *,
+        object_key: str,
+        chunks: AsyncIterator[bytes],
+        size_bytes: int,
+        sha256: str,
+        retain_until: datetime,
+        metadata: dict[str, str],
+    ) -> ArchiveWriteReceipt: ...
+
+    def iter_archive_chunks(
+        self, *, object_key: str, version_id: str, chunk_size: int = 1024 * 1024
+    ) -> AsyncIterator[bytes]: ...
+
+    async def read_retention(
+        self, *, object_key: str, version_id: str
+    ) -> ArchiveRetentionObservation: ...
 
 
 class UploadRepository(Protocol):

@@ -23,7 +23,7 @@ flowchart LR
     G --> A["DataRiver API"]
     A --> P["PostgreSQL canonical state"]
     A --> VC["Valkey cache"]
-    A --> O["S3-compatible object storage"]
+    A --> O["Upload-oriented S3-compatible storage"]
     A --> D["External DataHub read facade"]
     A --> L["Approved LLM provider"]
     A --> Z["ABAC policy decision"]
@@ -33,6 +33,8 @@ flowchart LR
     W --> D
     W --> O
     W --> GP["Rebuildable graph projection"]
+    RW["Future governed retention worker"] --> P
+    RW --> IA["Separate immutable archive port"]
     AF["Airflow scheduled and bulk workflows"] --> A
     A --> OT["OpenTelemetry"]
     W --> OT
@@ -52,6 +54,7 @@ Only the gateway/UI ports are public. PostgreSQL, Valkey, object storage, OPA, D
 | Knowledge Studio | ontology, proposals, changesets, validation and releases | immutable graph releases/provenance |
 | Assistant | sessions, messages, runs and authorized evidence | chat audit/evidence metadata |
 | Sharing | release-pinned API products, contracts, grants and usage | sharing control plane |
+| Retention & Erasure (target) | approved retention versions, Legal Hold, explicit erasure and archive verification | policy/hold/erasure aggregates and immutable archive receipts in PostgreSQL |
 | Operations | capability health and operator actions | connection/job snapshots, not raw telemetry |
 
 The API gateway is a deployment boundary, not an authorization context. It validates identity and coarse quotas; each use case resolves resource attributes and performs ABAC again.
@@ -63,7 +66,44 @@ The API gateway is a deployment boundary, not an authorization context. It valid
 - Graph projection data is disposable. Publishing first creates an immutable PostgreSQL/object snapshot, loads a shadow projection, verifies it, then switches the active pointer.
 - Valkey owns nothing durable. Cache loss changes latency, not correctness. Queue loss is recovered from the PostgreSQL outbox.
 - Airflow task status is operational evidence, never the business job status.
+- PostgreSQL, not an object provider, owns retention versions, Legal Hold state, erasure authority
+  and archive verification receipts. Archive objects are evidence bytes referenced by those
+  receipts; provider metadata does not activate deletion.
 - External identifiers such as DataHub URNs map to internal UUIDs and are never primary keys.
+
+## Retention, Legal Hold and immutable archive boundary
+
+The existing S3 port is upload-oriented: it supports multipart registration, quarantine cleanup and
+accepted-object promotion. It is not a WORM boundary. A future `ImmutableArchiveStore` is a separate
+application port with a separate private endpoint, bucket and writer credential and no delete or
+retention-bypass operation. The API, relay and upload workers do not receive that credential.
+
+```text
+approved policy version + eligible immutable audit range
+→ active/release-pending Legal Hold check
+→ deterministic export manifest and SHA-256
+→ immutable archive write with object version
+→ full content and retention/Object-Lock read-back
+→ verified PostgreSQL receipt
+→ destructive eligibility re-evaluation
+→ maker-checker consume, or remain retained
+```
+
+Provider names do not establish capability. The target provider must prove versioning, Object Lock,
+compliance retention, checksum/version behavior, read-back and rejection of shortening/deletion.
+Missing, expired or mismatched proof stops the workflow. Policy durations are approved runtime data,
+not source defaults; a duration or expired timestamp never acts as a deletion switch.
+
+Legal Hold always wins over expiry. A UI toggle issues typed place/release commands and immutable
+history rather than editing a boolean. Explicit sensitive-data erasure is separate from automatic
+expiry and binds maker, independent checker, target and target version, canonical payload hash,
+policy decision and one-time consumption. Raw bucket keys, table names or provider operations are
+never client-supplied erasure commands.
+
+Automatic deletion and monthly-partition detach/drop are currently `DISABLED_NOT_READY`. They remain
+so until the dedicated least-privilege worker, approved policy aggregate, hold/erasure workflows,
+verified archive receipts and target restore/conformance evidence are implemented. A partition with
+any applicable active hold is conservatively retained in full.
 
 ## Change application sequence
 
@@ -135,6 +175,7 @@ Cache keys include workspace, permission-scope hash, policy version, request par
 | LLM | evidence search remains; answer generation 503; no graph mutation |
 | Airflow | scheduled/bulk jobs delayed; synchronous core unaffected |
 | object storage | upload/download unavailable; metadata/workflow state retained |
+| immutable archive capability | export, explicit erasure that requires archive, automatic deletion and partition drop stop; ordinary authorized reads remain available |
 | policy service | sensitive reads and all writes fail closed; public health remains available |
 
 ## Service extraction criteria

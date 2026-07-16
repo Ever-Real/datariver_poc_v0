@@ -57,6 +57,11 @@ Untrusted inputs include browser/API payloads, OIDC claims before verification, 
 - Search cache keys bind workspace, complete subject permission scope, policy version, request shape and projection watermark; non-empty short queries and unescaped wildcard semantics are rejected.
 - Policy service failure is fail-closed for protected reads and writes.
 - Gateway authentication, DataHub permissions, a UI-hidden button, or graph-database users never substitute for application authorization.
+- Legal Hold takes precedence over expiry, lifecycle rules and erasure. A missing or ambiguous hold
+  evaluation denies the destructive operation.
+- A retention duration, expired timestamp, object lifecycle result or provider capability label is
+  never deletion authority. Automatic deletion and partition detach/drop remain disabled until the
+  governed retention gates in ADR-0010 are implemented and verified.
 
 ## Query and LLM safety
 
@@ -88,10 +93,34 @@ Untrusted inputs include browser/API payloads, OIDC claims before verification, 
 
 Direct multipart upload enters a private quarantine prefix. Completion validates ownership, object key, content length, MIME, checksum and part manifest. A streaming worker performs malware/type/structure checks before an accepted-state transition. URLs expire within 15 minutes; abandoned multipart uploads and quarantine objects are garbage-collected. Overwrite is disabled unless a new immutable object version is explicitly created.
 
+The upload store is not the immutable audit archive. Archive writes use a separate private port,
+bucket and least-privilege credential unavailable to the API, relay and upload workers. That port has
+no delete or governance-retention-bypass operation. Provider names, including SeaweedFS or MinIO, do
+not assert WORM behavior; the deployment must prove versioning, Object Lock, compliance retention,
+checksum/version read-back and protected-version shortening/delete denial.
+
+## Retention, Legal Hold and erasure security
+
+- Retention durations are operating data in an independently approved and activated database policy
+  version, not portable source defaults or environment deletion switches.
+- A Legal Hold UI toggle issues a typed place or release workflow and append-only history. Hold
+  release is a high-risk command; release-pending is treated as held.
+- Explicit erasure accepts only allowlisted target kinds and canonical UUIDs resolved server-side.
+  Raw object keys, bucket names, tables, SQL and arbitrary provider requests are prohibited.
+- Destructive execution binds workspace, target version, classification, policy version and payload
+  hash; requires a distinct eligible maker and checker; is strongly authenticated, idempotent and
+  consumed atomically once; and rechecks policy, authorization and holds immediately before effect.
+- Archive-required deletion proceeds only after a deterministic manifest and SHA-256 content are
+  written, fully read back, retention/Object-Lock state is read back and a matching immutable receipt
+  is committed. Missing, stale, unsupported or contradictory capability evidence fails closed.
+- A future retention worker uses a distinct DB role, archive credential and bounded egress. Any
+  BYPASSRLS use records workspace and correlation scope and receives no unrelated table privileges.
+  Current relay roles retain no deletion privilege.
+
 ## Audit requirements
 
-Security-relevant requests record request/trace ID, subject/service identity, workspace, resource/action, decision/effect/reason, policy versions, aggregate version and outcome. Audit events are append-only to normal application roles and protected from payload tampering with chained/batched hashes or external immutable export in production.
+Security-relevant requests record request/trace ID, subject/service identity, workspace, resource/action, decision/effect/reason, policy versions, aggregate version and outcome. Audit events are append-only to normal application roles and protected from payload tampering with chained/batched hashes or external immutable export in production. An archive is accepted only with a canonical manifest, SHA-256, immutable object version and successful content and retention read-back; object-store metadata alone is not audit proof.
 
 ## Security acceptance matrix
 
-Tests cover allow and deny for every endpoint/action, cross-workspace IDs, hidden resource `404`, list/count/facet leakage, stale permission cache, revoked grant, self-approval, weak authentication, object URL replay, duplicated idempotency keys, SSRF targets, malicious archive/content, prompt injection and prohibited query clauses. Release requires secret scan, SAST, dependency/image scan, SBOM/license inventory and zero unresolved Critical/High findings.
+Tests cover allow and deny for every endpoint/action, cross-workspace IDs, hidden resource `404`, list/count/facet leakage, stale permission cache, revoked grant, self-approval, weak authentication, object URL replay, duplicated idempotency keys, SSRF targets, malicious archive/content, prompt injection and prohibited query clauses. Retention acceptance additionally covers maker/checker and hold races, stale target/policy versions, altered payload hashes, archive checksum/read-back mismatches, expired capability evidence, retention shortening/delete denial, worker crash/retry and proof that every failed gate causes zero deletes or partition drops. Release requires secret scan, SAST, dependency/image scan, SBOM/license inventory and zero unresolved Critical/High findings.

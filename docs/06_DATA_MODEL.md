@@ -113,10 +113,49 @@ The API supports both complete snapshot publication and changeset author/submit/
 
 ## Backlog schema (not implemented)
 
-Versioned authored policies/bindings, catalog relationships/facets, connection registry, governance attachments/general audit export, graph sources/extraction runs, saved-query templates beyond the built-in surfaces and embedding partitions remain target tables. They require an Alembic revision and updated API/retention/security tests; their mention in PRD/architecture is not permission to create ad-hoc columns.
+Versioned authored policies/bindings, catalog relationships/facets, connection registry, governance
+attachments/general audit export, graph sources/extraction runs, saved-query templates beyond the
+built-in surfaces and embedding partitions remain target tables. Governed retention additionally
+requires a policy aggregate with immutable approved versions, Legal Hold commands and append-only
+history, typed maker-checker erasure requests/approvals/attempts, immutable archive exports and
+verified receipts. These records remain PostgreSQL canonical state; object-store metadata is not a
+policy, hold or deletion authority. They require an Alembic revision and updated
+API/retention/security tests; their mention in PRD/architecture is not permission to create ad-hoc
+columns.
 
 `EVENT_RETENTION_DAYS` is a target online-retention input, not a deletion switch. Automatic event deletion remains disabled until immutable export has been written and read back from a verified Object-Lock store, Legal Hold precedence and Maker-Checker erasure approval are implemented, and a dedicated least-privilege retention worker is introduced.
 
 ## Retention and deletion
 
-Environment policy distinguishes legal audit, Chat, jobs, accepted data, quarantine and telemetry. Object deletion follows manifest state through a retryable erasure workflow. Immutable audit/release evidence is pseudonymized where legally allowed rather than edited. Seed removal is fixed namespace/run scoped and cannot match non-seed resources.
+An approved database policy version distinguishes legal audit, Chat content, completed delivery
+events, accepted data, quarantine and telemetry. Durations proposed for a particular installation,
+including the 30-day/90-day/13-month/7-year profile, are operating inputs to that version and not
+portable schema, migration or source defaults. Activating a policy version does not by itself enable
+deletion.
+
+Legal Hold is a versioned aggregate with typed place and governed release commands plus append-only
+history, not a mutable object-manifest boolean. It takes precedence over ordinary expiry and blocks
+explicit erasure, row pruning and partition detach/drop. A release-pending hold is treated as active.
+The first partition implementation over-retains a whole partition when any applicable hold exists.
+
+Object deletion follows canonical manifest/session state through a retryable typed erasure workflow.
+The request binds workspace, target kind and UUID, target version, classification, policy version and
+canonical payload hash. Destructive execution requires an independent checker, current policy and
+authorization, one-time atomic consumption and a final hold/version check. Requests never carry raw
+SQL, table names, object keys or provider operations. Immutable audit/release evidence is
+pseudonymized where legally allowed rather than edited; a completion receipt preserves only the
+minimum legally permitted evidence. Seed removal remains fixed namespace/run scoped and cannot match
+non-seed resources.
+
+Immutable archive storage is accessed through a port separate from the registration object store.
+The canonical receipt records deterministic manifest hash, row/byte counts, SHA-256, object version,
+retention mode and deadline, provider/configuration fingerprint and content/retention read-back time.
+A product name or S3-compatible response is insufficient: versioning, Object Lock, compliance-mode
+retention, checksum/version behavior and shortening/delete denial need target conformance evidence.
+Missing, stale or mismatched evidence prevents a VERIFIED receipt.
+
+Monthly partition schemas are not implemented. Their future primary and unique keys must include the
+partition time, with foreign keys and late events designed explicitly, at least two future partitions
+prepared and the default partition alerted. Automatic deletion and partition detach/drop remain
+`DISABLED_NOT_READY` until approved policy, Legal Hold, maker-checker erasure, verified immutable
+archive and restore evidence are all present.

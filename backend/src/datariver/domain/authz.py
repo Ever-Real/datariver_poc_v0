@@ -44,6 +44,13 @@ class Action(StrEnum):
     OPERATIONS_RETRY = "operations.retry"
     AUDIT_READ = "audit.read"
     ADMIN_MANAGE = "admin.manage"
+    RETENTION_READ = "retention.read"
+    RETENTION_MANAGE = "retention.manage"
+    LEGAL_HOLD_PLACE = "legal_hold.place"
+    LEGAL_HOLD_RELEASE = "legal_hold.release"
+    ERASURE_REQUEST = "erasure.request"
+    ERASURE_APPROVE = "erasure.approve"
+    ARCHIVE_READ = "archive.read"
 
 
 class AuthenticationAssurance(StrEnum):
@@ -60,6 +67,10 @@ HIGH_RISK_ACTIONS = frozenset(
         Action.KG_PUBLISH,
         Action.SHARING_PUBLISH,
         Action.ADMIN_MANAGE,
+        Action.RETENTION_MANAGE,
+        Action.LEGAL_HOLD_PLACE,
+        Action.LEGAL_HOLD_RELEASE,
+        Action.ERASURE_APPROVE,
     }
 )
 

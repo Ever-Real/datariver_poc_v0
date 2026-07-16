@@ -128,14 +128,30 @@ Partition `authz.policy_decisions`, `integration.outbox_events`, `integration.in
 volume Assistant audit tables by monthly decision/event time only after measured rows/day and legal
 retention are approved. The migration must account for PostgreSQL's requirement that partitioned
 unique/primary keys include partition keys. Pre-create at least two future partitions, alert on the
-default partition, detach expired partitions, checksum and export them to an Object-Lock/WORM-capable
-bucket before deletion.
+default partition and rehearse late-event and restore behavior. No detach/drop path exists yet.
 
-The configurable baseline target is outbox/inbox online for 30 days after completed/published, Chat
-content for 90 days, policy decisions and governance audit online for 13 months, and immutable archive
-for 7 years. These values do not activate deletion. Until the policy aggregate, Legal Hold precedence,
-Maker-Checker erasure workflow and WORM capability/read-back gates are implemented, all automatic
-deletion remains disabled and relay roles have no delete privilege.
+Retention durations are not portable source defaults. The previously discussed
+30-day/90-day/13-month/7-year profile is an example operating input for one deployment and must be
+authored, independently approved, versioned and activated in the future database policy aggregate.
+Neither policy activation nor expiry alone authorizes deletion.
+
+Before a future detach/drop, the exact immutable range must be exported through an archive port that
+is separate from upload storage. The worker records a deterministic manifest, row/byte counts and
+SHA-256, obtains an immutable object version, fully reads the content back, reads Object-Lock
+retention back and commits a matching PostgreSQL receipt. Provider names or S3 compatibility are not
+capability evidence. The target deployment must prove versioning, Object Lock, compliance-mode
+retention, checksum/version behavior and rejection of retention shortening and protected-version
+deletion; missing, stale or mismatched proof fails closed for every provider.
+
+Legal Hold takes precedence, and release-pending is treated as held. Explicit erasure is separate
+from automatic retention and requires a typed target, current target/policy version, canonical
+payload hash, distinct maker/checker, strong authentication and atomic one-time consumption. A
+partition containing any applicable hold is initially retained in full.
+
+Automatic deletion, expiry-driven object lifecycle deletion and monthly-partition detach/drop remain
+`DISABLED_NOT_READY`. They stay disabled until the policy aggregate, hold and erasure workflows,
+separate least-privilege retention worker, verified archive receipts and target conformance/restore
+evidence are implemented. Relay roles retain no delete privilege. See ADR-0010.
 
 ### Search-plan evidence matrix
 
@@ -215,7 +231,10 @@ budget visibility, not multi-replica HA or a target `max_connections` value.
    worker/sync/Valkey metrics remain.
 4. Implement and contract-test incremental DataHub change-watermark ingestion, retaining nightly full
    reconcile as drift verification/recovery.
-5. Add partition provisioning/retention/WORM export only with approved volume/legal inputs.
+5. Implement the governed retention policy, Legal Hold and maker-checker erasure aggregates; add the
+   separate immutable archive port and provider-neutral capability conformance. Provision monthly
+   partitions table-family by table-family only after approved volume/legal inputs, and keep all
+   automatic deletion/detach/drop disabled until verified receipts and restore evidence exist.
 6. Apply the P1 decision gate. If it fails, extract search indexing first through the outbox port.
 7. Add the isolated assistant worker and expand the checked-in initial attack corpus into the full
    ABAC/prompt-injection/tool-abuse evaluation gate before enabling any external model.
