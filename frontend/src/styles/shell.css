@@ -1,0 +1,47 @@
+.app-shell { min-height: 100vh; }
+.skip-link { position: fixed; z-index: 100; top: -48px; left: 12px; padding: 8px 12px; color: white; background: var(--blue-700); }
+.skip-link:focus { top: 8px; }
+.top-navigation { position: sticky; z-index: 40; top: 0; min-height: 56px; display: grid; grid-template-columns: auto auto minmax(210px, 1fr) 230px auto auto; align-items: center; gap: 8px; padding: 0 16px; border-bottom: 2px solid var(--blue-700); color: white; background: var(--navy-900); box-shadow: 0 2px 8px rgba(7, 20, 38, .2); }
+.top-brand { height: 56px; display: flex; align-items: center; gap: 8px; border: 0; padding: 0 8px 0 0; color: white; font-weight: 800; letter-spacing: -.02em; background: transparent; }
+.top-brand-mark { width: 32px; height: 32px; display: grid; place-items: center; border: 1px solid #5da5d4; border-radius: var(--radius); color: white; font-size: 11px; letter-spacing: .04em; background: var(--blue-700); }
+.primary-navigation { min-width: 0; height: 56px; display: flex; align-items: stretch; overflow-x: auto; scrollbar-width: thin; }
+.primary-navigation button { position: relative; border: 0; padding: 0 10px; color: #cad6e3; font-size: 12px; font-weight: 700; white-space: nowrap; background: transparent; }
+.primary-navigation button:hover, .primary-navigation button:focus-visible { color: white; background: var(--navy-800); }
+.primary-navigation button.active { color: white; background: #102b49; }
+.primary-navigation button.active::after { position: absolute; right: 8px; bottom: 0; left: 8px; height: 3px; content: ""; background: #4aa3df; }
+.global-search { position: relative; min-width: 210px; height: 32px; display: grid; grid-template-columns: 28px minmax(0, 1fr) auto; align-items: center; border: 1px solid #51677e; border-radius: var(--radius); background: #f8fafc; }
+.global-search-icon { color: var(--text-600); text-align: center; }
+.global-search input { min-width: 0; height: 30px; border: 0; border-radius: 0; padding: 5px 7px 5px 0; color: var(--text-900); font-size: 12px; background: transparent; box-shadow: none; }
+.global-search button { height: 30px; border: 0; border-left: 1px solid var(--line-300); padding: 0 9px; color: var(--blue-700); font-size: 11px; font-weight: 800; background: var(--blue-100); }
+.global-search-error { position: absolute; top: 35px; right: 0; left: 0; border: 1px solid #e1bcbc; padding: 6px 8px; color: var(--danger-700); font-size: 11px; background: #fff0f0; box-shadow: var(--shadow-sm); }
+.workspace-control { min-width: 0; display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; gap: 5px; color: #aebdcd; font-size: 9px; font-weight: 800; text-transform: uppercase; }
+.workspace-control input { min-width: 0; height: 30px; border: 1px solid #51677e; border-radius: var(--radius); padding: 5px 7px; color: #eef4f9; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 10px; background: #10233a; box-shadow: none; }
+.workspace-control button { height: 30px; border: 1px solid #51677e; border-radius: var(--radius); padding: 0 7px; color: white; font-size: 10px; font-weight: 800; background: var(--blue-700); }
+.top-status { display: flex; gap: 4px; }
+.top-status span { border: 1px solid #456078; border-radius: var(--radius); padding: 4px 6px; color: #c6d6e5; font-size: 9px; font-weight: 800; white-space: nowrap; background: #0f2843; }
+.profile-menu { position: relative; min-width: 0; }
+.profile-menu summary { max-width: 152px; height: 56px; display: flex; align-items: center; gap: 7px; list-style: none; cursor: pointer; }
+.profile-menu summary::-webkit-details-marker { display: none; }
+.profile-avatar { flex: 0 0 28px; height: 28px; display: grid; place-items: center; border: 1px solid #62809c; border-radius: 50%; color: white; font-size: 11px; font-weight: 800; background: var(--blue-700); }
+.profile-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: #e5edf5; font-size: 11px; }
+.profile-menu-panel { position: absolute; right: 0; top: 50px; width: 190px; display: grid; border: 1px solid var(--line-300); border-radius: var(--radius); padding: 5px; color: var(--text-900); background: white; box-shadow: 0 8px 28px rgba(7, 20, 38, .24); }
+.profile-menu-panel button { border: 0; padding: 9px 10px; color: var(--text-900); text-align: left; font-size: 12px; background: transparent; }
+.profile-menu-panel button:hover, .profile-menu-panel button:focus-visible { color: var(--blue-700); background: var(--blue-100); }
+.workspace { min-width: 0; }
+.shell-notice { width: min(1500px, calc(100% - 32px)); grid-template-columns: minmax(0, 1fr) auto; align-items: center; margin: 12px auto 0; }
+.page-content { width: min(1500px, 100%); margin: 0 auto; padding: 16px 20px 56px; }
+.page-title { min-height: 76px; display: grid; grid-template-columns: 44px minmax(0, 1fr) auto; align-items: center; gap: 12px; margin-bottom: 14px; border: 1px solid var(--line-300); border-left: 4px solid var(--blue-700); border-radius: var(--radius); padding: 10px 14px; background: var(--cream-50); box-shadow: var(--shadow-sm); }
+.page-title-icon { width: 40px; height: 40px; display: grid; place-items: center; border: 1px solid #7cb1d3; border-radius: var(--radius); color: white; font-size: 11px; font-weight: 800; letter-spacing: .03em; background: var(--blue-700); }
+.page-title-copy { min-width: 0; }
+.page-title-copy h1 { margin: 2px 0; color: var(--navy-900); font-size: 20px; line-height: 1.2; letter-spacing: -.025em; }
+.page-title-copy > p:last-child { margin: 0; overflow: hidden; color: var(--text-600); font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
+.page-title-actions { display: flex; align-items: center; gap: 6px; }
+
+@media (max-width: 1220px) {
+  .top-navigation { grid-template-columns: 40px minmax(330px, 1fr) 180px 200px 36px; }
+  .top-status { display: none; }
+  .top-brand > span:last-child, .workspace-control label, .profile-name, .profile-menu summary > span:last-child { display: none; }
+  .primary-navigation button { padding: 0 7px; font-size: 11px; }
+  .workspace-control { grid-template-columns: minmax(0, 1fr) auto; }
+  .profile-menu summary { width: 30px; }
+}

@@ -3,6 +3,7 @@ import { newIdempotencyKey, type ApiClient } from '../../api/client'
 import type { ChangeRequestRecord } from '../../api/types'
 import { AssuranceNotice, type AssuranceActions } from '../../components/AssuranceNotice'
 import { ErrorNotice } from '../../components/ErrorNotice'
+import { PageTitle } from '../../components/layout/PageTitle'
 
 const nextStates: Record<string, string[]> = {
   REGISTERED: ['IN_REVIEW', 'CANCELLED'],
@@ -78,7 +79,13 @@ export function GovernancePage({
 
   return (
     <section>
-      <div className="page-heading"><div><p className="eyebrow">Four-eyes Governance</p><h2>변경 요청과 승인</h2></div><button className="button button-secondary" onClick={() => void load()}>새로고침</button></div>
+      <PageTitle
+        icon="CR"
+        eyebrow="Four-eyes Governance"
+        title="변경 요청과 승인"
+        description="타입이 지정된 변경을 검토하고 Maker-Checker 상태 전이와 적용 증거를 관리합니다."
+        actions={<button className="button button-secondary" onClick={() => void load()}>새로고침</button>}
+      />
       <div className="panel-grid governance-grid">
         <form className="panel form-stack" onSubmit={(event) => void submit(event)}>
           <h3>DataHub aspect 변경 제안</h3>

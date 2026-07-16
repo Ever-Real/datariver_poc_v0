@@ -35,6 +35,7 @@ export function RetentionPolicyAdmin(props: Props) {
   const [rules, setRules] = useState<RuleDraft>(emptyRules)
   const [proposalReason, setProposalReason] = useState('')
   const [decisionReason, setDecisionReason] = useState('')
+  const canManage = context?.allowed_operations.includes('RETENTION_POLICY_MANAGE') ?? false
 
   const load = useCallback(async () => {
     try {
@@ -81,12 +82,12 @@ export function RetentionPolicyAdmin(props: Props) {
     })
   }
   const canCheck = Boolean(
-    selected?.state === 'DRAFT' && context && context.subject_id !== selected.requester_id,
+    canManage && selected?.state === 'DRAFT' && context && context.subject_id !== selected.requester_id,
   )
 
   return <>
-    <div className="admin-two-column">
-      <form className="panel form-stack" onSubmit={propose}>
+    <div className={canManage ? 'admin-two-column' : ''}>
+      {canManage && <form className="panel form-stack" onSubmit={propose}>
         <h3>{messages.policyProposal}</h3>
         <RuleField label={messages.completedDays} value={rules.completed_operation_days} max={3650} onChange={(value) => setRules({ ...rules, completed_operation_days: value })} />
         <RuleField label={messages.chatDays} value={rules.chat_content_days} max={3650} onChange={(value) => setRules({ ...rules, chat_content_days: value })} />
@@ -95,7 +96,7 @@ export function RetentionPolicyAdmin(props: Props) {
         <label>{messages.reason}<textarea value={proposalReason} onChange={(event) => setProposalReason(event.target.value)} maxLength={4000} required /></label>
         <button className="button">{messages.propose}</button>
         <p className="callout">{messages.automationDisabled}</p>
-      </form>
+      </form>}
       <section className="panel"><div className="section-heading"><h3>{messages.policyHistory}</h3><button className="button button-secondary" onClick={() => void load()}>{messages.refresh}</button></div>
         <div className="compact-list">{policies.map((policy) => <button key={policy.policy_id} className={selectedId === policy.policy_id ? 'selected' : ''} onClick={() => setSelectedId(policy.policy_id)}><span><strong>#{policy.policy_number}</strong><small>{policy.request_reason}</small></span><span className="badge">{policy.state}</span></button>)}</div>
       </section>
@@ -124,6 +125,8 @@ export function LegalHoldAdmin(props: Props) {
   const [scopeId, setScopeId] = useState('')
   const [placeReason, setPlaceReason] = useState('')
   const [releaseReason, setReleaseReason] = useState('')
+  const canPlace = context?.allowed_operations.includes('LEGAL_HOLD_PLACE') ?? false
+  const canRelease = context?.allowed_operations.includes('LEGAL_HOLD_RELEASE') ?? false
 
   const load = useCallback(async () => {
     try {
@@ -171,23 +174,24 @@ export function LegalHoldAdmin(props: Props) {
     })
   }
   const replaceHold = (next: LegalHold) => setHolds((current) => current.map((hold) => hold.hold_id === next.hold_id ? next : hold))
-  const canRequestRelease = selected && ['ACTIVE', 'RELEASE_REJECTED'].includes(selected.state)
+  const canRequestRelease = canRelease && selected && ['ACTIVE', 'RELEASE_REJECTED'].includes(selected.state)
   const canDecideRelease = Boolean(
-    selected?.state === 'RELEASE_REQUESTED'
+    canRelease
+    && selected?.state === 'RELEASE_REQUESTED'
     && context
     && context.subject_id !== selected.release_requested_by,
   )
 
   return <>
-    <div className="admin-two-column">
-      <form className="panel form-stack" onSubmit={place}>
+    <div className={canPlace ? 'admin-two-column' : ''}>
+      {canPlace && <form className="panel form-stack" onSubmit={place}>
         <h3>{messages.holdPlacement}</h3>
         <label>{messages.dataClass}<select value={dataClass} onChange={(event) => setDataClass(event.target.value as RetentionDataClass)}><option>COMPLETED_OPERATIONS</option><option>CHAT_CONTENT</option><option>AUDIT_EVIDENCE</option><option>OBJECT_DATA</option></select></label>
         <label>{messages.scope}<select value={scope} onChange={(event) => setScope(event.target.value as LegalHoldScope)}><option>WORKSPACE</option><option>SUBJECT</option><option>RESOURCE</option></select></label>
         {scope !== 'WORKSPACE' && <label>{messages.scopeId}<input value={scopeId} onChange={(event) => setScopeId(event.target.value)} required pattern="[0-9a-fA-F-]{36}" /></label>}
         <label>{messages.reason}<textarea value={placeReason} onChange={(event) => setPlaceReason(event.target.value)} maxLength={4000} required /></label>
         <button className="button">{messages.placeHold}</button>
-      </form>
+      </form>}
       <section className="panel"><div className="section-heading"><h3>{messages.holdHistory}</h3><button className="button button-secondary" onClick={() => void load()}>{messages.refresh}</button></div>
         <div className="compact-list">{holds.map((hold) => <button key={hold.hold_id} className={selectedId === hold.hold_id ? 'selected' : ''} onClick={() => setSelectedId(hold.hold_id)}><span><strong>{hold.data_class}</strong><small>{hold.scope} · {hold.scope_id ?? 'workspace'}</small></span><span className="badge">{hold.state}</span></button>)}</div>
       </section>

@@ -3,6 +3,7 @@ import { newIdempotencyKey, type ApiClient } from '../../api/client'
 import type { ApiProduct, ConsumerGrant, KnowledgeGraph } from '../../api/types'
 import { AssuranceNotice, type AssuranceActions } from '../../components/AssuranceNotice'
 import { ErrorNotice } from '../../components/ErrorNotice'
+import { PageTitle } from '../../components/layout/PageTitle'
 
 type Surface = 'SNAPSHOT' | 'NEIGHBORS' | 'CHAT'
 
@@ -115,7 +116,7 @@ export function SharingPage({
 
   return (
     <section>
-      <div className="page-heading"><div><p className="eyebrow">Release-pinned contracts</p><h2>API 공유 관리</h2></div></div>
+      <PageTitle icon="API" eyebrow="Release-pinned contracts" title="API 공유 관리" description="불변 release와 명시 scope·분류·쿼터에 고정된 공유 계약을 운영합니다." />
       <div className="panel-grid governance-grid">
         <form className="form-stack panel" onSubmit={(event) => void createProduct(event)}>
           <h3>API Product 초안</h3>

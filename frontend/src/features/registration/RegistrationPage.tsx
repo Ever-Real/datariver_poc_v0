@@ -3,6 +3,7 @@ import { useCallback, useEffect, useState, type FormEvent } from 'react'
 import { newIdempotencyKey, type ApiClient } from '../../api/client'
 import type { ChangeRequestRecord, UploadRecord } from '../../api/types'
 import { ErrorNotice } from '../../components/ErrorNotice'
+import { PageTitle } from '../../components/layout/PageTitle'
 
 const HASH_CHUNK_SIZE = 4 * 1024 * 1024
 const TERMINAL_STATES = new Set(['ACCEPTED', 'REJECTED', 'ABORTED', 'EXPIRED'])
@@ -114,7 +115,13 @@ export function RegistrationPage({ client }: { client: ApiClient }) {
 
   return (
     <section>
-      <div className="page-heading"><div><p className="eyebrow">Quarantine-first</p><h2>데이터 등록</h2></div><button className="button button-secondary" onClick={() => void load()}>목록 새로고침</button></div>
+      <PageTitle
+        icon="RG"
+        eyebrow="Quarantine-first"
+        title="데이터 등록"
+        description="업로드를 격리·검증한 뒤 승인 가능한 메타데이터 변경 제안으로 전환합니다."
+        actions={<button className="button button-secondary" onClick={() => void load()}>목록 새로고침</button>}
+      />
       <div className="panel-grid">
         <form className="panel form-stack" onSubmit={(event) => void upload(event)}>
           <label>등록 파일<input type="file" accept=".csv,.json,.parquet,.yaml,.yml,.xlsx" onChange={(event) => setFile(event.target.files?.[0])} required /></label>

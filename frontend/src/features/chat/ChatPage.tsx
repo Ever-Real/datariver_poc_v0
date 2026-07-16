@@ -2,6 +2,7 @@ import { useState, type FormEvent } from 'react'
 import type { ApiClient } from '../../api/client'
 import type { ChatResponse } from '../../api/types'
 import { ErrorNotice } from '../../components/ErrorNotice'
+import { PageTitle } from '../../components/layout/PageTitle'
 
 export function ChatPage({ client }: { client: ApiClient }) {
   const [question, setQuestion] = useState('')
@@ -28,7 +29,7 @@ export function ChatPage({ client }: { client: ApiClient }) {
 
   return (
     <section className="chat-page">
-      <div className="page-heading"><div><p className="eyebrow">Evidence-first Assistant</p><h2>카탈로그 CHAT</h2></div></div>
+      <PageTitle icon="AI" eyebrow="Evidence-first Assistant" title="카탈로그 Chat" description="인가되고 버전이 고정된 근거만 사용하며 citation이 없으면 검증 불가로 종료합니다." />
       <p className="callout">현재 모드는 외부 LLM에 데이터를 보내지 않으며, ABAC 검증을 통과한 카탈로그 근거만 답변합니다.</p>
       <ErrorNotice error={error} />
       <div className="chat-log" aria-live="polite">

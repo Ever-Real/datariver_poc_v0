@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from 'react'
 import type { ApiClient } from '../../api/client'
 import type { Capability, OperationsSummary } from '../../api/types'
 import { ErrorNotice } from '../../components/ErrorNotice'
+import { PageTitle } from '../../components/layout/PageTitle'
 
 export function DashboardPage({ client }: { client: ApiClient }) {
   const [capabilities, setCapabilities] = useState<Capability[]>([])
@@ -26,10 +27,13 @@ export function DashboardPage({ client }: { client: ApiClient }) {
 
   return (
     <section>
-      <div className="page-heading">
-        <div><p className="eyebrow">운영 관제</p><h2>플랫폼 상태</h2></div>
-        <button className="button button-secondary" onClick={() => void refresh()}>새로고침</button>
-      </div>
+      <PageTitle
+        icon="OP"
+        eyebrow="운영 관제"
+        title="플랫폼 상태"
+        description="핵심 의존성과 비동기 작업 상태를 서로 독립적으로 확인합니다."
+        actions={<button className="button button-secondary" onClick={() => void refresh()}>새로고침</button>}
+      />
       <ErrorNotice error={error} />
       <div className="metric-grid">
         {capabilities.map((item) => (

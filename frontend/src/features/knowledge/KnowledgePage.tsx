@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState, type FormEvent } from 'react'
 import { newIdempotencyKey, type ApiClient } from '../../api/client'
 import type { KnowledgeGraph } from '../../api/types'
 import { ErrorNotice } from '../../components/ErrorNotice'
+import { PageTitle } from '../../components/layout/PageTitle'
 
 export function KnowledgePage({ client }: { client: ApiClient }) {
   const [graphs, setGraphs] = useState<KnowledgeGraph[]>([])
@@ -34,7 +35,7 @@ export function KnowledgePage({ client }: { client: ApiClient }) {
 
   return (
     <section>
-      <div className="page-heading"><div><p className="eyebrow">Immutable Releases</p><h2>지식그래프 관리</h2></div></div>
+      <PageTitle icon="KG" eyebrow="Immutable Releases" title="지식그래프 관리" description="타입이 지정된 changeset을 검증·승인하고 불변 release로 발행합니다." />
       <form className="inline-form panel" onSubmit={(event) => void submit(event)}>
         <label>그래프 이름<input value={name} onChange={(event) => setName(event.target.value)} required /></label>
         <label>Slug<input value={slug} onChange={(event) => setSlug(event.target.value.toLowerCase())} pattern="[a-z][a-z0-9-]{2,99}" required /></label>

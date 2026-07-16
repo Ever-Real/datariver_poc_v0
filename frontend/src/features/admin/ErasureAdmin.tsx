@@ -32,6 +32,8 @@ export function ErasureAdmin({
   const [reviewTtlSeconds, setReviewTtlSeconds] = useState('')
   const [requestReason, setRequestReason] = useState('')
   const [decisionReason, setDecisionReason] = useState('')
+  const canRequest = context?.allowed_operations.includes('ERASURE_REQUEST') ?? false
+  const canApprove = context?.allowed_operations.includes('ERASURE_APPROVE') ?? false
 
   const load = useCallback(async () => {
     try {
@@ -110,15 +112,16 @@ export function ErasureAdmin({
     || (selected.target_type === 'SUBJECT_DATA' && context?.subject_id === selected.target_id)
   )
   const canDecide = Boolean(
-    selected?.state === 'PENDING'
+    canApprove
+    && selected?.state === 'PENDING'
     && context
     && context.subject_id !== selected.requester_id
     && !isOwner,
   )
 
   return <>
-    <div className="admin-two-column">
-      <form className="panel form-stack" onSubmit={create}>
+    <div className={canRequest ? 'admin-two-column' : ''}>
+      {canRequest && <form className="panel form-stack" onSubmit={create}>
         <h3>{messages.erasureRequest}</h3>
         <label>{messages.targetType}<select value={targetType} onChange={(event) => setTargetType(event.target.value as ErasureTargetType)}><option>SUBJECT_DATA</option><option>CHAT_SESSION</option><option>UPLOAD_OBJECT</option></select></label>
         <label>{messages.targetId}<input value={targetId} onChange={(event) => setTargetId(event.target.value)} required pattern="[0-9a-fA-F-]{36}" /></label>
@@ -126,7 +129,7 @@ export function ErasureAdmin({
         <label>{messages.reason}<textarea value={requestReason} onChange={(event) => setRequestReason(event.target.value)} maxLength={4000} required /></label>
         <button className="button">{messages.requestReview}</button>
         <p className="callout">{messages.erasureNonExecuting}</p>
-      </form>
+      </form>}
       <section className="panel">
         <div className="section-heading"><h3>{messages.erasureHistory}</h3><button className="button button-secondary" onClick={() => void load()}>{messages.refresh}</button></div>
         <div className="compact-list">{requests.map((request) => <button key={request.erasure_request_id} className={selectedId === request.erasure_request_id ? 'selected' : ''} onClick={() => setSelectedId(request.erasure_request_id)}><span><strong>{request.target_type}</strong><small>{request.target_id}</small></span><span className="badge">{request.state}</span></button>)}</div>

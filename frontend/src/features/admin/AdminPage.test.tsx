@@ -47,6 +47,7 @@ describe('AdminPage mutation safety', () => {
     />)
 
     const update = await screen.findByRole('button', { name: /보안키로 직접 변경|Update with security key/ })
+    expect(screen.queryByRole('button', { name: /보존정책|Retention policies/ })).not.toBeInTheDocument()
     fireEvent.click(update)
     expect(fetchMock.mock.calls.filter(([, init]) => init?.method === 'PUT')).toHaveLength(0)
 
