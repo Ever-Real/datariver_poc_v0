@@ -6,6 +6,10 @@ from types import TracebackType
 from typing import Any, Protocol, Self, runtime_checkable
 from uuid import UUID
 
+from datariver.application.assistant_inference import (
+    AuthorizedInferencePackage,
+    ProviderInferenceDraft,
+)
 from datariver.application.classification_access import ClassificationAccessSnapshot
 from datariver.application.dto import (
     ApiProductRecord,
@@ -731,6 +735,14 @@ class ChatAnswerComposer(Protocol):
         question: str,
         evidence: Sequence[ChatEvidence],
     ) -> ChatDraft: ...
+
+
+class AssistantInferenceAdapter(Protocol):
+    async def infer(
+        self,
+        *,
+        package: AuthorizedInferencePackage,
+    ) -> ProviderInferenceDraft: ...
 
 
 class KnowledgeEvidenceReader(Protocol):
