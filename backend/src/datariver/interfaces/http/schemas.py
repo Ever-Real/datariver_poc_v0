@@ -240,6 +240,16 @@ class ChangeItemResponse(BaseModel):
     operation: str
     before_hash: str | None
     after_hash: str | None
+    target_asset_id: UUID | None
+    target_asset_type: str | None
+    target_system_id: UUID | None
+    target_domain_id: UUID | None
+    target_owner_department_id: UUID | None
+    target_classification: str | None
+    target_lifecycle: str | None
+    target_source_version: str | None
+    target_observed_at: datetime | None
+    target_binding_hash: str | None
 
 
 class ApprovalResponse(BaseModel):

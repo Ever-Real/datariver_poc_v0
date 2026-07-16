@@ -16,8 +16,13 @@ from datariver.application.dto import (
     GovernanceApplyClaim,
 )
 from datariver.application.services.governance_apply import GovernanceApplyWorker
+from datariver.domain.authz import Classification
 from datariver.domain.common import canonical_json_hash
-from datariver.domain.governance import ChangeItem, ChangeRequest
+from datariver.domain.governance import (
+    ChangeItem,
+    ChangeRequest,
+    change_target_binding_hash,
+)
 
 
 class MemoryApplyStore:
@@ -110,6 +115,8 @@ class MemoryDataHub:
 def make_claim() -> tuple[GovernanceApplyClaim, str]:
     document = {"description": "governed"}
     expected_hash = canonical_json_hash(document)
+    asset_id = uuid4()
+    target_ref = "urn:li:dataset:test"
     request = ChangeRequest.create(
         workspace_id=uuid4(),
         number="CR-1",
@@ -121,12 +128,28 @@ def make_claim() -> tuple[GovernanceApplyClaim, str]:
             ChangeItem(
                 item_id=uuid4(),
                 target_type="DATAHUB_ASPECT",
-                target_ref="urn:li:dataset:test",
+                target_ref=target_ref,
                 operation="UPSERT",
                 after_document=document,
                 aspect_name="datasetProperties",
                 before_hash="b" * 64,
                 after_hash=expected_hash,
+                target_asset_id=asset_id,
+                target_asset_type="DATASET",
+                target_classification=Classification.INTERNAL,
+                target_lifecycle="ACTIVE",
+                target_source_version="1",
+                target_observed_at=datetime.now(UTC),
+                target_binding_hash=change_target_binding_hash(
+                    target_ref=target_ref,
+                    asset_id=asset_id,
+                    asset_type="DATASET",
+                    system_id=None,
+                    domain_id=None,
+                    owner_department_id=None,
+                    classification=Classification.INTERNAL,
+                    lifecycle="ACTIVE",
+                ),
             )
         ],
     )
@@ -217,6 +240,35 @@ async def test_worker_revalidates_legacy_queued_item_contract() -> None:
         operation=original.operation,
         after_document=original.after_document,
         aspect_name="unsafeLegacyAspect",
+        before_hash=original.before_hash,
+        after_hash=original.after_hash,
+    )
+    store = MemoryApplyStore(claim)
+    gateway = MemoryDataHub(observed_hash=expected_hash)
+    worker = GovernanceApplyWorker(
+        store=store,
+        datahub=gateway,
+        worker_id="worker-1",
+        system_actor_id=uuid4(),
+    )
+
+    assert await worker.run_once() is True
+    assert gateway.reads == 0
+    assert gateway.applied == 0
+    assert store.failed == ("UNSAFE_QUEUED_CHANGE", False)
+
+
+@pytest.mark.asyncio
+async def test_worker_rejects_legacy_unbound_item_before_provider_read() -> None:
+    claim, expected_hash = make_claim()
+    original = claim.change_request.items[0]
+    claim.change_request.items[0] = ChangeItem(
+        item_id=original.item_id,
+        target_type=original.target_type,
+        target_ref=original.target_ref,
+        operation=original.operation,
+        after_document=original.after_document,
+        aspect_name=original.aspect_name,
         before_hash=original.before_hash,
         after_hash=original.after_hash,
     )

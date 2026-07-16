@@ -44,7 +44,7 @@ scale/availability/team-ownership evidence.
 
 ## 3. Verified baseline and important limitations
 
-The current branch passes 366 backend tests, strict mypy over 182 source/test files, Ruff, and 17 frontend
+The current branch passes 371 backend tests, strict mypy over 183 source/test files, Ruff, and 17 frontend
 test files/69 tests plus type/lint/build. The frontend artifact is JS 476.15 kB (gzip 136.83 kB) and
 CSS 36.31 kB (gzip 7.54 kB). Deterministic migration generation and static
 architecture/Compose/role checks also pass.
@@ -128,7 +128,7 @@ eligibility controls.
 | PostgreSQL search | implemented: stored `tsvector`, GIN FTS, `pg_trgm` name index, active scope/order partial index and lower-name short-prefix index | target-distribution EXPLAIN/BUFFERS and write-cost measurement |
 | search cache | implemented: search/facet/suggestion short TTL keys include workspace, full permission scope, policy version, request and transactional local projection version; access/source counters expose hit/miss/error/write paths; local same-token membership/deny/scope revocation p99 is below 200 ms | Valkey eviction exporter and two-identity revocation timing under target load |
 | ABAC audit amplification | Search/facet/suggestion and Chat candidates are SQL-prefiltered as sets; each request keeps a top-level authorization decision and Chat retains one grouped evidence decision row | export coverage and partition/retention volume proof |
-| change-target authorization | partial: create resolves each provider DATASET URN through the authorization-pruned local workspace projection, checks actual system/domain/classification with a grouped decision set, forbids classification downgrade, permits exactly one item, allowlists six executable aspects and requires/rechecks the provider source hash; worker rejects unsafe legacy queued shapes and reconciles an already-observed approved hash | reauthorize the current bound target/policy at approval and apply, serialize each target key and use provider CAS where available; replace ordinary raw aspect JSON with typed edit DTOs and bind accepted upload content to the exact proposal |
+| change-target authorization | partial: new items persist a server-only immutable local dataset identity/scope binding; create and state mutation share the request DB session, projection rows use share locking, lists use one grouped current-target decision, point reads hide denied targets, approval/forward transitions reject target fingerprint drift, legacy unbound rows are quarantined, and the worker rejects unsafe/unbound queued shapes and reconciles an already-observed approved hash | revalidate current requester/classification policy at apply under an approved least-privilege worker read capability, serialize provider+URN+aspect, obtain provider CAS where available, replace ordinary raw aspect JSON with typed edit DTOs and bind accepted upload content to the exact proposal |
 | DataHub isolation | timeout, concurrency bulkhead, circuit breaker, fresh + bounded stale detail fallback; fixed-label request/duration/in-flight/rejection/circuit metrics | target contract/fault test; worker-process metrics; incremental watermark |
 | local read projection | search and base detail survive DataHub read failure inside stale bound | project approved detail aspects and display freshness consistently in UI |
 | worker privilege | separate API/relay/upload/governance/bootstrap DB roles and secrets; upload has no DataHub secret | egress policy in target orchestrator; correlation/scope guard for every BYPASSRLS claim |

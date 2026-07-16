@@ -129,6 +129,17 @@ class CatalogIndexReader(Protocol):
     ) -> Sequence[CatalogAssetIndex]: ...
 
 
+class CatalogChangeTargetReader(Protocol):
+    async def get_authorized_assets_by_external_urns(
+        self,
+        *,
+        subject: SubjectAttributes,
+        access: ClassificationAccessSnapshot,
+        external_urns: Sequence[str],
+        lock_for_share: bool = False,
+    ) -> Sequence[CatalogAssetIndex]: ...
+
+
 class CatalogDiscoveryReader(Protocol):
     async def facets(
         self,

@@ -174,6 +174,20 @@ def change_request_response(change_request: ChangeRequest) -> ChangeRequestRespo
                 operation=item.operation,
                 before_hash=item.before_hash,
                 after_hash=item.after_hash,
+                target_asset_id=item.target_asset_id,
+                target_asset_type=item.target_asset_type,
+                target_system_id=item.target_system_id,
+                target_domain_id=item.target_domain_id,
+                target_owner_department_id=item.target_owner_department_id,
+                target_classification=(
+                    item.target_classification.name
+                    if item.target_classification is not None
+                    else None
+                ),
+                target_lifecycle=item.target_lifecycle,
+                target_source_version=item.target_source_version,
+                target_observed_at=item.target_observed_at,
+                target_binding_hash=item.target_binding_hash,
             )
             for item in change_request.items
         ],

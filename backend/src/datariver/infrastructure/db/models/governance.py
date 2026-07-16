@@ -4,7 +4,16 @@ from datetime import datetime
 from typing import Any
 from uuid import UUID
 
-from sqlalchemy import ForeignKeyConstraint, Index, String, Text, UniqueConstraint, Uuid
+from sqlalchemy import (
+    CheckConstraint,
+    DateTime,
+    ForeignKeyConstraint,
+    Index,
+    String,
+    Text,
+    UniqueConstraint,
+    Uuid,
+)
 from sqlalchemy.orm import Mapped, mapped_column
 
 from datariver.infrastructure.db.base import (
@@ -39,7 +48,34 @@ class ChangeItemModel(Base, UuidPrimaryKeyMixin):
     __tablename__ = "change_request_items"
     __table_args__ = (
         Index("ix_change_items_request", "change_request_id"),
+        Index(
+            "ix_change_items_target",
+            "workspace_id",
+            "target_asset_id",
+            "aspect_name",
+        ),
         UniqueConstraint("change_request_id", "ordinal"),
+        CheckConstraint(
+            "(target_asset_id IS NULL AND target_asset_type IS NULL "
+            "AND target_system_id IS NULL AND target_domain_id IS NULL "
+            "AND target_owner_department_id IS NULL "
+            "AND target_classification IS NULL AND target_lifecycle IS NULL "
+            "AND target_source_version IS NULL AND target_observed_at IS NULL "
+            "AND target_binding_hash IS NULL) OR "
+            "(target_asset_id IS NOT NULL AND target_asset_type IS NOT NULL "
+            "AND target_classification IS NOT NULL AND target_lifecycle IS NOT NULL "
+            "AND target_source_version IS NOT NULL AND target_observed_at IS NOT NULL "
+            "AND target_binding_hash IS NOT NULL)",
+            name="target_binding_shape",
+        ),
+        CheckConstraint(
+            "target_classification IS NULL OR target_classification BETWEEN 0 AND 3",
+            name="target_classification_range",
+        ),
+        CheckConstraint(
+            "target_binding_hash IS NULL OR target_binding_hash ~ '^[0-9a-f]{64}$'",
+            name="target_binding_hash_sha256",
+        ),
         ForeignKeyConstraint(
             ("workspace_id", "change_request_id"),
             ("governance.change_requests.workspace_id", "governance.change_requests.id"),
@@ -58,6 +94,16 @@ class ChangeItemModel(Base, UuidPrimaryKeyMixin):
     before_hash: Mapped[str | None] = mapped_column(String(64))
     after_document: Mapped[dict[str, Any]] = mapped_column(JSON_DOCUMENT, nullable=False)
     after_hash: Mapped[str | None] = mapped_column(String(64))
+    target_asset_id: Mapped[UUID | None] = mapped_column(Uuid(as_uuid=True))
+    target_asset_type: Mapped[str | None] = mapped_column(String(100))
+    target_system_id: Mapped[UUID | None] = mapped_column(Uuid(as_uuid=True))
+    target_domain_id: Mapped[UUID | None] = mapped_column(Uuid(as_uuid=True))
+    target_owner_department_id: Mapped[UUID | None] = mapped_column(Uuid(as_uuid=True))
+    target_classification: Mapped[int | None]
+    target_lifecycle: Mapped[str | None] = mapped_column(String(50))
+    target_source_version: Mapped[str | None] = mapped_column(String(255))
+    target_observed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    target_binding_hash: Mapped[str | None] = mapped_column(String(64))
 
 
 class ApprovalModel(Base, UuidPrimaryKeyMixin):

@@ -41,7 +41,10 @@ def _service(request: Request, session: AsyncSession | None = None) -> Governanc
         decision_writer=SqlDecisionWriter(container.database.session_factory)
     )
     return GovernanceService(
-        lambda: SqlGovernanceUnitOfWork(container.database.session_factory),
+        lambda: SqlGovernanceUnitOfWork(
+            container.database.session_factory,
+            session=session,
+        ),
         authorization,
         target_authorizer=(
             CatalogChangeTargetAuthorizer(
@@ -68,6 +71,7 @@ def _expected_version(if_match: str) -> int:
 async def list_change_requests(
     request: Request,
     context: ContextDep,
+    session: SessionDep,
     state: Annotated[str | None, Query(max_length=32)] = None,
     limit: Annotated[int, Query(ge=1, le=100)] = 50,
 ) -> ChangeRequestListResponse:
@@ -75,7 +79,7 @@ async def list_change_requests(
         parsed_state = ChangeState(state) if state else None
     except ValueError as error:
         raise ValidationError("The change-request state filter is invalid.") from error
-    values = await _service(request).list_change_requests(
+    values = await _service(request, session).list_change_requests(
         workspace_id=context.workspace_id,
         state=parsed_state,
         limit=limit,
@@ -91,8 +95,9 @@ async def get_change_request(
     change_request_id: UUID,
     request: Request,
     context: ContextDep,
+    session: SessionDep,
 ) -> ChangeRequestResponse:
-    value = await _service(request).get_change_request(
+    value = await _service(request, session).get_change_request(
         workspace_id=context.workspace_id,
         change_request_id=change_request_id,
         subject=context.subject,
@@ -155,6 +160,7 @@ async def add_approval(
     payload: ApprovalRequest,
     request: Request,
     context: ContextDep,
+    session: SessionDep,
     if_match: Annotated[str, Header(alias="If-Match", max_length=100)],
     idempotency_key: Annotated[str, Header(alias="Idempotency-Key", min_length=16, max_length=200)],
 ) -> ChangeRequestResponse:
@@ -172,7 +178,7 @@ async def add_approval(
             option=orjson.OPT_SORT_KEYS,
         )
     ).hexdigest()
-    change_request = await _service(request).add_approval(
+    change_request = await _service(request, session).add_approval(
         workspace_id=context.workspace_id,
         change_request_id=change_request_id,
         stage=payload.stage,
@@ -194,6 +200,7 @@ async def transition_change_request(
     payload: TransitionRequest,
     request: Request,
     context: ContextDep,
+    session: SessionDep,
     if_match: Annotated[str, Header(alias="If-Match", max_length=100)],
     idempotency_key: Annotated[str, Header(alias="Idempotency-Key", min_length=16, max_length=200)],
 ) -> ChangeRequestResponse:
@@ -213,7 +220,7 @@ async def transition_change_request(
             option=orjson.OPT_SORT_KEYS,
         )
     ).hexdigest()
-    change_request = await _service(request).transition(
+    change_request = await _service(request, session).transition(
         workspace_id=context.workspace_id,
         change_request_id=change_request_id,
         target=target,

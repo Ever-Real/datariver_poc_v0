@@ -62,7 +62,7 @@ generation; a separate facet projection and a true incremental DataHub source cu
 | Table | Key columns and constraints | Purpose |
 |---|---|---|
 | `governance.change_requests` | `id`, `workspace_id + number UQ`, type/title/description/state/requester/classification, `version`, timestamps | change aggregate/state machine |
-| `governance.change_request_items` | `id`, `change_request_id + ordinal UQ`, `target_type`, `target_ref`, `aspect_name`, `operation`, before/after hashes, `after_document` | ordered typed DataHub aspects |
+| `governance.change_request_items` | `id`, `change_request_id + ordinal UQ`, typed provider target/aspect/operation, before/after hashes and document, nullable all-or-none server binding (`asset/type/system/domain/owner/classification/lifecycle/source/observed/hash`) | one immutable typed DataHub aspect plus creation-time target evidence; unbound legacy rows are quarantined |
 | `governance.approvals` | `id`, `change_request_id + stage + actor_id UQ`, decision/reason/actor/policy/time | append-only actor-separated decisions |
 | `governance.state_transitions` | `id`, request, from/to, actor, reason, policy decision, occurrence | append-only state history |
 
@@ -144,6 +144,12 @@ Alembic `0014` adds `catalog.export_requests`, owner-select and workspace RLS, i
 security/source snapshot bindings, non-RESTRICTED classification ceiling, artifact-shape/hash
 constraints and only the API grants needed to insert/read owner records and create jobs. It does not
 provision an export DB role or S3 identity; runtime enablement remains a separate operator action.
+Alembic `0015` adds nullable all-or-none governance target-binding evidence and its bounded lookup
+index. It performs no historical backfill: existing unbound items cannot be presented as if current
+projection values were their creation-time evidence. New domain creation requires a complete,
+server-generated binding. The authorization fingerprint covers identity and scope attributes;
+source version and observation time remain separate evidence. No foreign key points to the
+rebuildable catalog projection.
 
 ## Constraints enforced outside DDL
 

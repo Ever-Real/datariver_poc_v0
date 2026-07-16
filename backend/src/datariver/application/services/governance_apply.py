@@ -80,6 +80,8 @@ class GovernanceApplyWorker:
                 or item.operation != "UPSERT"
                 or item.aspect_name not in ALLOWED_DATAHUB_ASPECTS
                 or not item.target_ref.startswith("urn:li:dataset:")
+                or not item.has_complete_target_binding
+                or item.expected_target_binding_hash() != item.target_binding_hash
             ):
                 raise ConflictError(
                     "The queued provider change is outside the executable contract.",

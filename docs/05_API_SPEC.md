@@ -80,8 +80,8 @@ Completion does not mean accepted. Durable states are `INITIATED → COMPLETION_
 
 | Method/path | Action | Purpose |
 |---|---|---|
-| `GET /change-requests?state=&limit=` | `change.read` | clearance-filtered list |
-| `GET /change-requests/{id}` | `change.read` | items, approvals and transition audit |
+| `GET /change-requests?state=&limit=` | `change.read` | clearance-filtered candidates followed by one grouped current-target authorization; hidden, deleted and legacy-unbound targets are omitted |
+| `GET /change-requests/{id}` | `change.read` | items, immutable server target binding, approvals and transition audit; current-target denial is existence-hiding 404 |
 | `POST /change-requests` | `change.create` | typed executable DataHub aspect proposal |
 | `POST /change-requests/{id}/approvals` | `change.review` / `change.approve` | append immutable decision |
 | `POST /change-requests/{id}/transitions` | derived | legal user-controlled transition/retry |
@@ -92,8 +92,10 @@ classification, and rejects a request classification lower than any target. The 
 allowlist is `datasetProperties`, `domains`, `globalTags`, `glossaryTerms`, `ownership` and
 `schemaMetadata`. A request currently contains exactly one item until durable per-item checkpoints
 exist. The item must carry the current provider aspect SHA-256; omission or mismatch fails closed
-before provider mutation. Apply-time target/policy reauthorization and an external atomic CAS remain
-required hardening gates; create-time authorization alone is not a durable target binding.
+before provider mutation. The server persists a creation-time target binding and approval/forward
+transition re-resolves current identity and scope under the same request transaction. Apply-time
+requester/policy reauthorization, DataRiver target serialization and an external atomic CAS remain
+required hardening gates.
 
 Implemented change item contract:
 
@@ -109,7 +111,13 @@ Implemented change item contract:
 }
 ```
 
-The server canonicalizes and stores `after_hash`. If a supplied hash differs, creation fails. `APPLYING`, `APPLIED` and `APPLY_FAILED` are worker-only states. A requester cannot final-approve; confidential/restricted requests require two distinct final approvers. `APPLIED` requires post-write DataHub re-read hash equality.
+The server canonicalizes and stores `after_hash`. It also stores read-only target asset/type/scope,
+classification/lifecycle, source version/observation and binding-hash fields; those fields are not
+accepted in the create body. If a supplied content hash differs, creation fails. `APPLYING`, `APPLIED`
+and `APPLY_FAILED` are worker-only states. A requester cannot final-approve;
+confidential/restricted requests require two distinct final approvers. `APPLIED` requires post-write
+DataHub re-read hash equality. Legacy items without a verifiable server binding are quarantined and
+cannot re-enter the ordinary workflow.
 
 ### Knowledge graph and analysis
 

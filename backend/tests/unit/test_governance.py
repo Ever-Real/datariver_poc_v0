@@ -1,3 +1,4 @@
+from datetime import UTC, datetime
 from uuid import uuid4
 
 import pytest
@@ -9,10 +10,13 @@ from datariver.domain.governance import (
     ChangeItem,
     ChangeRequest,
     ChangeState,
+    change_target_binding_hash,
 )
 
 
 def make_request() -> ChangeRequest:
+    asset_id = uuid4()
+    target_ref = "urn:li:dataset:test"
     return ChangeRequest.create(
         workspace_id=uuid4(),
         number="CR-2026-000001",
@@ -24,11 +28,27 @@ def make_request() -> ChangeRequest:
             ChangeItem(
                 item_id=uuid4(),
                 target_type="DATAHUB_ASPECT",
-                target_ref="urn:li:dataset:test",
+                target_ref=target_ref,
                 operation="UPSERT",
                 after_document={"owners": ["urn:li:corpuser:steward"]},
                 aspect_name="ownership",
                 before_hash="b" * 64,
+                target_asset_id=asset_id,
+                target_asset_type="DATASET",
+                target_classification=Classification.INTERNAL,
+                target_lifecycle="ACTIVE",
+                target_source_version="1",
+                target_observed_at=datetime.now(UTC),
+                target_binding_hash=change_target_binding_hash(
+                    target_ref=target_ref,
+                    asset_id=asset_id,
+                    asset_type="DATASET",
+                    system_id=None,
+                    domain_id=None,
+                    owner_department_id=None,
+                    classification=Classification.INTERNAL,
+                    lifecycle="ACTIVE",
+                ),
             )
         ],
     )

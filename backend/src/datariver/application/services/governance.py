@@ -32,7 +32,19 @@ class ChangeTargetAuthorizer(Protocol):
         request_classification: Classification,
         environment: EnvironmentAttributes,
         request_id: str,
-    ) -> None: ...
+    ) -> tuple[ChangeItem, ...]: ...
+
+    async def filter_authorized_change_requests(
+        self,
+        *,
+        workspace_id: UUID,
+        subject: SubjectAttributes,
+        change_requests: Sequence[ChangeRequest],
+        action: Action,
+        environment: EnvironmentAttributes,
+        request_id: str,
+        strict_binding: bool,
+    ) -> tuple[ChangeRequest, ...]: ...
 
 
 class ChangeRequestNotFound(NotFoundError):
@@ -53,16 +65,45 @@ class GovernanceService:
 
     @staticmethod
     def _resource(change_request: ChangeRequest) -> ResourceAttributes:
+        item = change_request.items[0] if len(change_request.items) == 1 else None
+        target_classification = (
+            item.target_classification
+            if item is not None and item.target_classification is not None
+            else change_request.classification
+        )
         return ResourceAttributes(
             resource_id=change_request.change_request_id,
             workspace_id=change_request.workspace_id,
             resource_type="change_request",
-            owner_department_id=None,
-            system_id=None,
-            domain_id=None,
-            classification=change_request.classification,
+            owner_department_id=item.target_owner_department_id if item is not None else None,
+            system_id=item.target_system_id if item is not None else None,
+            domain_id=item.target_domain_id if item is not None else None,
+            classification=max(change_request.classification, target_classification),
             lifecycle=change_request.state.value,
             requester_id=change_request.requester_id,
+        )
+
+    async def _authorize_current_targets(
+        self,
+        *,
+        change_requests: Sequence[ChangeRequest],
+        workspace_id: UUID,
+        subject: SubjectAttributes,
+        action: Action,
+        environment: EnvironmentAttributes,
+        request_id: str,
+        strict_binding: bool,
+    ) -> tuple[ChangeRequest, ...]:
+        if self._target_authorizer is None:
+            raise RuntimeError("Change-request access requires a target authorizer.")
+        return await self._target_authorizer.filter_authorized_change_requests(
+            workspace_id=workspace_id,
+            subject=subject,
+            change_requests=change_requests,
+            action=action,
+            environment=environment,
+            request_id=request_id,
+            strict_binding=strict_binding,
         )
 
     async def get_change_request(
@@ -89,6 +130,17 @@ class GovernanceService:
                     environment=environment,
                     request_id=request_id,
                 )
+                authorized = await self._authorize_current_targets(
+                    change_requests=(change_request,),
+                    workspace_id=workspace_id,
+                    subject=subject,
+                    action=Action.CHANGE_READ,
+                    environment=environment,
+                    request_id=request_id,
+                    strict_binding=False,
+                )
+                if not authorized:
+                    raise ForbiddenError("The change target is not available.")
             except ForbiddenError as error:
                 raise ChangeRequestNotFound("The change request does not exist.") from error
             await uow.commit()
@@ -129,7 +181,15 @@ class GovernanceService:
                 limit=limit,
             )
             await uow.commit()
-        return tuple(values)
+        return await self._authorize_current_targets(
+            change_requests=values,
+            workspace_id=workspace_id,
+            subject=subject,
+            action=Action.CHANGE_READ,
+            environment=environment,
+            request_id=request_id,
+            strict_binding=False,
+        )
 
     async def create_change_request(
         self,
@@ -150,7 +210,7 @@ class GovernanceService:
     ) -> ChangeRequest:
         if self._target_authorizer is None:
             raise RuntimeError("Change-request creation requires a target authorizer.")
-        await self._target_authorizer.authorize_targets(
+        bound_items = await self._target_authorizer.authorize_targets(
             workspace_id=workspace_id,
             subject=subject,
             items=items,
@@ -193,6 +253,16 @@ class GovernanceService:
                 )
                 if existing_request is None:
                     raise ConflictError("The idempotent result is no longer available.")
+                if not await self._authorize_current_targets(
+                    change_requests=(existing_request,),
+                    workspace_id=workspace_id,
+                    subject=subject,
+                    action=Action.CHANGE_CREATE,
+                    environment=environment,
+                    request_id=request_id,
+                    strict_binding=True,
+                ):
+                    raise ForbiddenError("The change target is not available.")
                 return existing_request
             change_request = ChangeRequest.create(
                 workspace_id=workspace_id,
@@ -201,7 +271,7 @@ class GovernanceService:
                 title=title,
                 description=description,
                 requester_id=requester_id,
-                items=items,
+                items=list(bound_items),
                 classification=classification,
             )
             await uow.change_requests.add(change_request)
@@ -264,6 +334,16 @@ class GovernanceService:
                 environment=environment,
                 request_id=request_id,
             )
+            if not await self._authorize_current_targets(
+                change_requests=(change_request,),
+                workspace_id=workspace_id,
+                subject=subject,
+                action=action,
+                environment=environment,
+                request_id=request_id,
+                strict_binding=True,
+            ):
+                raise ForbiddenError("The change target is not available.")
             if existing is not None:
                 if existing.request_hash != request_hash:
                     raise ConflictError("The idempotency key was used with a different request.")
@@ -329,6 +409,16 @@ class GovernanceService:
                 environment=environment,
                 request_id=request_id,
             )
+            if not await self._authorize_current_targets(
+                change_requests=(change_request,),
+                workspace_id=workspace_id,
+                subject=subject,
+                action=action,
+                environment=environment,
+                request_id=request_id,
+                strict_binding=True,
+            ):
+                raise ForbiddenError("The change target is not available.")
             if existing is not None:
                 if existing.request_hash != request_hash:
                     raise ConflictError("The idempotency key was used with a different request.")

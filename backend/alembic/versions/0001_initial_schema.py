@@ -406,13 +406,27 @@ def upgrade() -> None:
         sa.Column('before_hash', sa.String(length=64), nullable=True),
         sa.Column('after_document', sa.JSON().with_variant(postgresql.JSONB(none_as_null=True, astext_type=Text()), 'postgresql'), nullable=False),
         sa.Column('after_hash', sa.String(length=64), nullable=True),
+        sa.Column('target_asset_id', sa.Uuid(), nullable=True),
+        sa.Column('target_asset_type', sa.String(length=100), nullable=True),
+        sa.Column('target_system_id', sa.Uuid(), nullable=True),
+        sa.Column('target_domain_id', sa.Uuid(), nullable=True),
+        sa.Column('target_owner_department_id', sa.Uuid(), nullable=True),
+        sa.Column('target_classification', sa.Integer(), nullable=True),
+        sa.Column('target_lifecycle', sa.String(length=50), nullable=True),
+        sa.Column('target_source_version', sa.String(length=255), nullable=True),
+        sa.Column('target_observed_at', sa.DateTime(timezone=True), nullable=True),
+        sa.Column('target_binding_hash', sa.String(length=64), nullable=True),
         sa.Column('id', sa.Uuid(), nullable=False),
+        sa.CheckConstraint("target_binding_hash IS NULL OR target_binding_hash ~ '^[0-9a-f]{64}$'", name=op.f('ck_change_request_items_target_binding_hash_sha256')),
+        sa.CheckConstraint('(target_asset_id IS NULL AND target_asset_type IS NULL AND target_system_id IS NULL AND target_domain_id IS NULL AND target_owner_department_id IS NULL AND target_classification IS NULL AND target_lifecycle IS NULL AND target_source_version IS NULL AND target_observed_at IS NULL AND target_binding_hash IS NULL) OR (target_asset_id IS NOT NULL AND target_asset_type IS NOT NULL AND target_classification IS NOT NULL AND target_lifecycle IS NOT NULL AND target_source_version IS NOT NULL AND target_observed_at IS NOT NULL AND target_binding_hash IS NOT NULL)', name=op.f('ck_change_request_items_target_binding_shape')),
+        sa.CheckConstraint('target_classification IS NULL OR target_classification BETWEEN 0 AND 3', name=op.f('ck_change_request_items_target_classification_range')),
         sa.ForeignKeyConstraint(['workspace_id', 'change_request_id'], ['governance.change_requests.workspace_id', 'governance.change_requests.id'], name=op.f('fk_change_request_items_workspace_id_change_request_id_change_requests'), ondelete='CASCADE'),
         sa.PrimaryKeyConstraint('id', name=op.f('pk_change_request_items')),
         sa.UniqueConstraint('change_request_id', 'ordinal', name=op.f('uq_change_request_items_change_request_id_ordinal')),
         schema='governance'
         )
         op.create_index('ix_change_items_request', 'change_request_items', ['change_request_id'], unique=False, schema='governance')
+        op.create_index('ix_change_items_target', 'change_request_items', ['workspace_id', 'target_asset_id', 'aspect_name'], unique=False, schema='governance')
         op.execute('ALTER TABLE governance.change_request_items ENABLE ROW LEVEL SECURITY')
         op.execute('ALTER TABLE governance.change_request_items FORCE ROW LEVEL SECURITY')
         op.execute("CREATE POLICY workspace_isolation ON governance.change_request_items USING (workspace_id = NULLIF(current_setting('app.workspace_id', true), '')::uuid) WITH CHECK (workspace_id = NULLIF(current_setting('app.workspace_id', true), '')::uuid)")

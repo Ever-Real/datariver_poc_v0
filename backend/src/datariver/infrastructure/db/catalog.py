@@ -661,6 +661,7 @@ class SqlCatalogIndexReader(CatalogIndexReader):
         subject: SubjectAttributes,
         access: ClassificationAccessSnapshot,
         external_urns: Sequence[str],
+        lock_for_share: bool = False,
     ) -> Sequence[CatalogAssetIndex]:
         unique_urns = tuple(dict.fromkeys(external_urns))
         if len(unique_urns) > 1_000:
@@ -671,6 +672,8 @@ class SqlCatalogIndexReader(CatalogIndexReader):
             AssetProjectionModel.external_urn.in_(unique_urns),
             and_(*self._scope_conditions(subject, access)),
         )
+        if lock_for_share:
+            statement = statement.with_for_update(read=True, of=AssetProjectionModel)
         return tuple(_to_index(model) for model in (await self._session.scalars(statement)).all())
 
 

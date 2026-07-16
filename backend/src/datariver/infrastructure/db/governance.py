@@ -68,6 +68,20 @@ class SqlChangeRequestRepository(ChangeRequestRepository):
                     before_hash=item.before_hash,
                     after_document=item.after_document,
                     after_hash=item.after_hash,
+                    target_asset_id=item.target_asset_id,
+                    target_asset_type=item.target_asset_type,
+                    target_system_id=item.target_system_id,
+                    target_domain_id=item.target_domain_id,
+                    target_owner_department_id=item.target_owner_department_id,
+                    target_classification=(
+                        int(item.target_classification)
+                        if item.target_classification is not None
+                        else None
+                    ),
+                    target_lifecycle=item.target_lifecycle,
+                    target_source_version=item.target_source_version,
+                    target_observed_at=item.target_observed_at,
+                    target_binding_hash=item.target_binding_hash,
                 )
                 for ordinal, item in enumerate(change_request.items)
             ]
@@ -138,6 +152,20 @@ class SqlChangeRequestRepository(ChangeRequestRepository):
                     aspect_name=item.aspect_name,
                     before_hash=item.before_hash,
                     after_hash=item.after_hash,
+                    target_asset_id=item.target_asset_id,
+                    target_asset_type=item.target_asset_type,
+                    target_system_id=item.target_system_id,
+                    target_domain_id=item.target_domain_id,
+                    target_owner_department_id=item.target_owner_department_id,
+                    target_classification=(
+                        Classification(item.target_classification)
+                        if item.target_classification is not None
+                        else None
+                    ),
+                    target_lifecycle=item.target_lifecycle,
+                    target_source_version=item.target_source_version,
+                    target_observed_at=item.target_observed_at,
+                    target_binding_hash=item.target_binding_hash,
                 )
                 for item in items
             ],
@@ -328,16 +356,23 @@ class SqlIdempotencyStore:
 
 
 class SqlGovernanceUnitOfWork(GovernanceUnitOfWork):
-    def __init__(self, session_factory: async_sessionmaker[AsyncSession]) -> None:
+    def __init__(
+        self,
+        session_factory: async_sessionmaker[AsyncSession],
+        *,
+        session: AsyncSession | None = None,
+    ) -> None:
         self._session_factory = session_factory
-        self._session: AsyncSession | None = None
+        self._session: AsyncSession | None = session
+        self._owns_session = session is None
         self.change_requests: SqlChangeRequestRepository
         self.outbox: SqlOutboxWriter
         self.idempotency: SqlIdempotencyStore
         self._committed = False
 
     async def __aenter__(self) -> SqlGovernanceUnitOfWork:
-        self._session = self._session_factory()
+        if self._session is None:
+            self._session = self._session_factory()
         self.change_requests = SqlChangeRequestRepository(self._session)
         self.outbox = SqlOutboxWriter(self._session)
         self.idempotency = SqlIdempotencyStore(self._session)
@@ -354,7 +389,8 @@ class SqlGovernanceUnitOfWork(GovernanceUnitOfWork):
             return
         if exc_type is not None or not self._committed:
             await self._session.rollback()
-        await self._session.close()
+        if self._owns_session:
+            await self._session.close()
 
     async def commit(self) -> None:
         if self._session is None:

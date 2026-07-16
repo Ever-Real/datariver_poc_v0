@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Sequence
+from dataclasses import replace
 from datetime import UTC, datetime
 from types import TracebackType
 from typing import Self, cast
@@ -21,7 +22,11 @@ from datariver.domain.authz import (
     SubjectAttributes,
 )
 from datariver.domain.common import DomainEvent
-from datariver.domain.governance import ChangeItem, ChangeRequest
+from datariver.domain.governance import (
+    ChangeItem,
+    ChangeRequest,
+    change_target_binding_hash,
+)
 
 
 class MemoryTargetAuthorizer:
@@ -37,9 +42,37 @@ class MemoryTargetAuthorizer:
         request_classification: Classification,
         environment: EnvironmentAttributes,
         request_id: str,
-    ) -> None:
-        del workspace_id, subject, items, request_classification, environment, request_id
+    ) -> tuple[ChangeItem, ...]:
+        del subject, environment, request_id
         self.calls += 1
+        asset_id = uuid4()
+        return tuple(
+            replace(
+                item,
+                target_asset_id=asset_id,
+                target_asset_type="DATASET",
+                target_classification=request_classification,
+                target_lifecycle="ACTIVE",
+                target_source_version="1",
+                target_observed_at=datetime.now(UTC),
+                target_binding_hash=change_target_binding_hash(
+                    target_ref=item.target_ref,
+                    asset_id=asset_id,
+                    asset_type="DATASET",
+                    system_id=None,
+                    domain_id=None,
+                    owner_department_id=None,
+                    classification=request_classification,
+                    lifecycle="ACTIVE",
+                ),
+            )
+            for item in items
+        )
+
+    async def filter_authorized_change_requests(
+        self, *, change_requests: Sequence[ChangeRequest], **_: object
+    ) -> tuple[ChangeRequest, ...]:
+        return tuple(change_requests)
 
 
 class MemoryDecisionWriter:

@@ -7,7 +7,14 @@ from typing import Any
 from uuid import UUID
 
 from datariver.domain.authz import Classification
-from datariver.domain.common import ConflictError, DomainEvent, ValidationError, utc_now, uuid7
+from datariver.domain.common import (
+    ConflictError,
+    DomainEvent,
+    ValidationError,
+    canonical_json_hash,
+    utc_now,
+    uuid7,
+)
 
 
 class ChangeState(StrEnum):
@@ -84,6 +91,78 @@ class ChangeItem:
     aspect_name: str
     before_hash: str | None = None
     after_hash: str | None = None
+    target_asset_id: UUID | None = None
+    target_asset_type: str | None = None
+    target_system_id: UUID | None = None
+    target_domain_id: UUID | None = None
+    target_owner_department_id: UUID | None = None
+    target_classification: Classification | None = None
+    target_lifecycle: str | None = None
+    target_source_version: str | None = None
+    target_observed_at: datetime | None = None
+    target_binding_hash: str | None = None
+
+    @property
+    def has_complete_target_binding(self) -> bool:
+        return all(
+            value is not None
+            for value in (
+                self.target_asset_id,
+                self.target_asset_type,
+                self.target_classification,
+                self.target_lifecycle,
+                self.target_source_version,
+                self.target_observed_at,
+                self.target_binding_hash,
+            )
+        )
+
+    def expected_target_binding_hash(self) -> str | None:
+        if not self.has_complete_target_binding:
+            return None
+        assert self.target_asset_id is not None
+        assert self.target_asset_type is not None
+        assert self.target_classification is not None
+        assert self.target_lifecycle is not None
+        return change_target_binding_hash(
+            target_ref=self.target_ref,
+            asset_id=self.target_asset_id,
+            asset_type=self.target_asset_type,
+            system_id=self.target_system_id,
+            domain_id=self.target_domain_id,
+            owner_department_id=self.target_owner_department_id,
+            classification=self.target_classification,
+            lifecycle=self.target_lifecycle,
+        )
+
+
+def change_target_binding_hash(
+    *,
+    target_ref: str,
+    asset_id: UUID,
+    asset_type: str,
+    system_id: UUID | None,
+    domain_id: UUID | None,
+    owner_department_id: UUID | None,
+    classification: Classification,
+    lifecycle: str,
+) -> str:
+    """Hash immutable target identity and authorization-relevant snapshot attributes."""
+
+    return canonical_json_hash(
+        {
+            "target_ref": target_ref,
+            "asset_id": str(asset_id),
+            "asset_type": asset_type,
+            "system_id": str(system_id) if system_id is not None else None,
+            "domain_id": str(domain_id) if domain_id is not None else None,
+            "owner_department_id": (
+                str(owner_department_id) if owner_department_id is not None else None
+            ),
+            "classification": int(classification),
+            "lifecycle": lifecycle,
+        }
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -161,6 +240,24 @@ class ChangeRequest:
                 raise ValidationError(
                     "A current DataHub aspect hash is required for optimistic concurrency."
                 )
+            if not item.has_complete_target_binding:
+                raise ValidationError("A server-verified catalog target binding is required.")
+            if item.target_asset_type != "DATASET" or item.target_lifecycle != "ACTIVE":
+                raise ValidationError("The catalog target binding is not an active dataset.")
+            if item.target_classification is None or classification < item.target_classification:
+                raise ValidationError(
+                    "The change-request classification cannot be lower than its target."
+                )
+            if not item.target_source_version or not item.target_source_version.strip():
+                raise ValidationError("The catalog target source version is required.")
+            if (
+                item.target_observed_at is None
+                or item.target_observed_at.tzinfo is None
+                or item.target_observed_at.utcoffset() is None
+            ):
+                raise ValidationError("The catalog target observation time must be timezone-aware.")
+            if item.expected_target_binding_hash() != item.target_binding_hash:
+                raise ValidationError("The catalog target binding is invalid.")
         request = cls(
             change_request_id=uuid7(),
             workspace_id=workspace_id,
