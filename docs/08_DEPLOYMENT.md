@@ -2,6 +2,12 @@
 
 ## Implemented Compose topology
 
+All repository Compose overlays and the hybrid host-development shape are labeled **Single-node
+Pilot**. They are not HA, regardless of local replica count. An HA environment is an external
+deployment promotion that satisfies ADR-0013: at least three independent hosts/VMs, off-host
+replicated/distributed storage, end-to-end failure-domain review and accepted failover/restore
+evidence.
+
 | File/profile | Components | Boundary |
 |---|---|---|
 | `compose.yaml` | PostgreSQL 17.10, two Valkey 9.1 instances, SeaweedFS 4.39, migration/storage init, API, UI, outbox relay, upload completion/validation and governance apply workers | portable core |
@@ -133,6 +139,10 @@ CI verifies backend format/lint/types/tests, frontend type/lint/tests/build, gen
 7. signed acceptance report with unresolved exceptions and expiry.
 
 Image tags are exact in development manifests; production promotes digest-pinned images. `latest` is forbidden. Major dependency upgrades require an ADR, migration rehearsal and rollback evidence.
+
+SeaweedFS remains the local/Pilot upload implementation. Immutable archive production promotion uses
+the separate port and evidence gate in ADR-0012; no checked-in product label or Object Lock setting
+is treated as WORM acceptance.
 
 ## Failure behavior
 

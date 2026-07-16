@@ -44,6 +44,11 @@ flowchart LR
 
 Only the gateway/UI ports are public. PostgreSQL, Valkey, object storage, OPA, DataHub credentials, graph protocols, and telemetry backends stay on private networks.
 
+The checked-in Compose and hybrid host-development views are Single-node Pilot topologies. Multiple
+processes on the same host improve process recovery but do not establish HA. ADR-0013 requires at
+least three independent nodes plus off-host distributed storage and accepted failure drills before
+an environment may claim HA.
+
 ## Bounded contexts
 
 | Context | Responsibility | Canonical data |
@@ -197,6 +202,7 @@ Cache keys include workspace, permission-scope hash, policy version, request par
 | Airflow | scheduled/bulk jobs delayed; synchronous core unaffected |
 | object storage | upload/download unavailable; metadata/workflow state retained |
 | immutable archive capability | export, explicit erasure that requires archive, automatic deletion and partition drop stop; ordinary authorized reads remain available |
+| telemetry backend/collector | canonical workflows continue; bounded telemetry may buffer or drop according to deployment policy without exporting protected payloads |
 | policy service | sensitive reads and all writes fail closed; public health remains available |
 
 ## Service extraction criteria

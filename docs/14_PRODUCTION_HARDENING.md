@@ -213,6 +213,11 @@ prompt-injection control.
 
 ## 9. P3 deployment and observability decision
 
+The current Compose/host-development topology is explicitly Single-node Pilot. ADR-0013 prohibits an
+HA claim until at least three independent nodes, off-host distributed storage and measured failover/
+restore evidence are accepted. Likewise, ADR-0012 keeps SeaweedFS as Pilot upload storage and does
+not make archived MinIO OSS the default for a new immutable-archive deployment.
+
 Implemented foundation: process liveness is separate from schema-aware readiness; readiness uses a
 bounded real pool lease and requires the packaged sole Alembic head. Compose, APISIX and host startup
 gate downstream processes/traffic on readiness. API and worker pool size, overflow and lease timeout
@@ -230,8 +235,9 @@ budget visibility, not multi-replica HA or a target `max_connections` value.
   durable event log. Kafka/Pulsar does not replace canonical outbox/inbox semantics.
 - Airflow: LocalExecutor remains valid for a small single machine; use a remote/container executor
   for multi-machine or large batch after operational-cost review.
-- Signals: deploy Prometheus plus OTel Collector/backend with request/trace/job correlation; include
-  queue/outbox lag, DB pool/locks, DataHub bulkhead/circuit/latency, cache hit/eviction, projection lag,
+- Signals: use OTel Collector as the vendor-neutral boundary and deploy the approved Prometheus,
+  Alertmanager, Grafana, Tempo and Loki roles or enterprise exporter adapters with request/trace/job
+  correlation; include queue/outbox lag, DB pool/locks, DataHub bulkhead/circuit/latency, cache hit/eviction, projection lag,
   denial rates and later LLM latency/tokens/cost/citation/refusal metrics.
 
 The current Prometheus endpoint now exports bounded configured/current API DB-pool gauges. Database

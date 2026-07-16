@@ -86,6 +86,10 @@ The `local-identity` bootstrap is rejected when `APP_ENV=production`. With an en
 
 Use this topology while API, workers and UI are changing frequently. PostgreSQL, the two Valkeys, SeaweedFS, Keycloak and APISIX stay in containers; Uvicorn, all four long-running backend relay/workers and Vite run directly from the checked-out source. The production-oriented base Compose remains private by default; `compose.host-dev.yaml` publishes only the required development ports on loopback.
 
+Every repository Compose/host-development combination is a **Single-node Pilot**, even if multiple
+processes run on that host. HA requires independent nodes, off-host distributed storage and accepted
+failover/restore evidence; replica settings alone are not an HA claim (ADR-0013).
+
 The v1 repository still does not own DataHub. The example below reuses a DataHub GMS already exposed on host port `8080`; replace both URLs and the scoped token when the external service is elsewhere.
 
 For a native Windows checkout, bootstrap from PowerShell. First use includes `-DataHubToken '<scoped-token>'`; later runs preserve the existing token when omitted.
@@ -206,6 +210,11 @@ An OIDC issuer is an identity, not merely a port mapping. For browser sign-in on
 - API sharing: create a release-pinned contract version, publish it with recent strong authentication, grant an OIDC `client_id` explicit scopes/classification/validity and quotas, revoke it, and invoke bounded neighbor analysis through an atomic grant-and-usage check.
 - Chat: deterministic baseline answers only from catalog or active-release knowledge evidence that passed prefiltering and per-item authorization. Immutable chunks bind workspace, classification, typed scope, source/version/effective time and content hash; only validated cited chunk IDs are persisted, otherwise the answer is `검증 불가`. A disabled-first typed inference worker contract rejects SQL, Cypher, arbitrary HTTP, tools and mutation fields and validates cited output, but no provider adapter, endpoint, secret, durable job or external call is wired. External inference remains disabled until live revalidation, delivery/streaming, metrics and scaled red-team gates are accepted.
 - Monitoring: liveness, readiness, dependency capabilities, workspace counts, outbox dead letters and ABAC-protected Prometheus HTTP metrics remain independent so one degraded optional dependency does not hide core state. Database-pool metrics expose only bounded connection states and configured limits, never workspace, subject or query labels.
+
+SeaweedFS is the local/Pilot upload store, not accepted WORM storage. The immutable-archive port is
+promoted only against a maintained, target-specific S3 deployment that passes Object Lock negative
+conformance and restore gates. Archived MinIO OSS is not the default for new production deployments;
+see ADR-0012 for the governed legacy exception and provider-neutral alternative.
 
 The bundled Airflow password file and `SimpleAuthManager` are strictly loopback local-development conveniences. Before any non-local Airflow exposure, use the deployment's supported enterprise/FAB SSO integration; the included DAG service account already uses short-lived Keycloak client credentials for DataRiver API calls.
 
