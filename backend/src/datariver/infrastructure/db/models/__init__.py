@@ -40,6 +40,8 @@ from datariver.infrastructure.db.models.knowledge import (
     ValidationResultModel,
 )
 from datariver.infrastructure.db.models.platform import (
+    AdminAccessApprovalModel,
+    AdminAccessRequestModel,
     SubjectModel,
     WorkspaceMembershipModel,
     WorkspaceModel,
@@ -52,6 +54,8 @@ from datariver.infrastructure.db.models.sharing import (
 )
 
 __all__ = [
+    "AdminAccessApprovalModel",
+    "AdminAccessRequestModel",
     "ApiInvocationModel",
     "ApiProductModel",
     "ApiProductVersionModel",

@@ -76,6 +76,12 @@ the actual authentication time required by the backend. Target deployments must 
 key enrollment/revocation, spare-key recovery, RP ID/origins and any organization-approved
 attestation/AAGUID policy.
 
+The optional administrator password fallback remains disabled by default. Do not set
+`ADMIN_PASSWORD_FALLBACK_ENABLED=true` until the target workspace has at least two real, active,
+RESTRICTED-cleared human `security-administrators` with `admin.manage`, the IdP password
+reauthentication redirect uses `max_age=0`, and the full maker-checker-consume browser/API journey
+has passed. Local bootstrap intentionally does not manufacture a second administrator.
+
 ## Network and identity rules
 
 - Loopback development ports: web `8080`, API `8000`, Keycloak `8081`, APISIX `9080`, Airflow `8082` when their overlays are enabled.
@@ -88,7 +94,7 @@ attestation/AAGUID policy.
 
 ## Worker correctness
 
-- PostgreSQL outbox is canonical. Relay publishes IDs to queue Valkey; failed events are individually retried, dead-lettered after the configured maximum and exposed in operations. Published outbox and completed inbox rows are pruned by retention policy.
+- PostgreSQL outbox is canonical. Relay publishes IDs to queue Valkey; failed events are individually retried, dead-lettered after the configured maximum and exposed in operations. Published outbox and completed inbox rows are not automatically pruned until the governed WORM/Legal-Hold/Maker-Checker retention gate is implemented and accepted.
 - Cache Valkey has bounded volatile memory and `allkeys-lfu`; queue Valkey is separate, `noeviction`, AOF-backed. They never share a URL/database.
 - Upload completion reconciles an already-completed multipart operation via object `HEAD`. Validation streams chunks and promotes with copy-before-manifest-commit; a stale quarantine duplicate is safe to clean later.
 - Governance application uses a PostgreSQL job/attempt lease. Transient DataHub failures back off automatically; terminal/mismatched content reaches `APPLY_FAILED` and requires authorized requeue.
@@ -101,9 +107,9 @@ The Compose overlay intentionally uses Airflow `SimpleAuthManager` only for loop
 
 ## Database and object operations
 
-- Alembic has one head at `0006`: the generated current initial schema plus conditional compatibility bridges for local databases that had already applied an earlier `0001`. Deployment runs migration before API/workers. The API role can only read `public.alembic_version` for readiness; migration ownership remains separate.
+- Alembic has one head at `0007`: the generated current initial schema plus conditional compatibility bridges for local databases that had already applied an earlier `0001`. Deployment runs migration before API/workers. The API role can only read `public.alembic_version` for readiness; migration ownership remains separate.
 - PostgreSQL pool size/overflow/lease timeout, statement timeout, idle-transaction timeout and application names are explicit. Budget `API replicas × (API pool + overflow) + long-running workers × (worker pool + overflow) + one-shot/IdP/Airflow/admin reserve`; current one-API/four-worker defaults have a ceiling of 60 before reserve.
-- Liveness is process-only. Readiness leases the API pool and requires exactly packaged Alembic head `0006`; Compose and APISIX use readiness for upstream health.
+- Liveness is process-only. Readiness leases the API pool and requires exactly packaged Alembic head `0007`; Compose and APISIX use readiness for upstream health.
 - Back up PostgreSQL and SeaweedFS as a consistency set or record a watermark; restore into isolation and follow the drill in [operations runbook](13_OPERATIONS_RUNBOOK.md) before traffic.
 - Accepted-object retention/lifecycle is environment policy. Quarantine receives a shorter cleanup policy, but never delete an object whose manifest is actively leased.
 - Initial recovery targets (RPO <= 5 minutes, RTO <= 60 minutes) are objectives until an environment drill records measured evidence.

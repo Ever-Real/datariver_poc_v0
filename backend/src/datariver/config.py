@@ -58,6 +58,8 @@ class Settings(BaseSettings):
     oidc_password_reauth_acr_values: tuple[str, ...] = ("1",)
     oidc_password_amr_values: tuple[str, ...] = ("pwd",)
     high_risk_auth_max_age_seconds: int = Field(default=300, ge=60, le=900)
+    admin_password_fallback_enabled: bool = False
+    admin_password_fallback_ttl_seconds: int = Field(default=300, ge=60, le=300)
 
     datahub_base_url: str
     datahub_secret_ref: str

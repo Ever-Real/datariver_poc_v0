@@ -6,6 +6,7 @@ import pytest
 
 from datariver.application.dto import DecisionAuditItem
 from datariver.application.services.authorization import AuthorizationService
+from datariver.domain.admin_access import AdminFallbackStage
 from datariver.domain.authz import (
     Action,
     AuthenticationAssurance,
@@ -359,6 +360,89 @@ async def test_authentication_only_denials_have_bounded_remediation(
         )
 
     assert captured.value.details["remediation"] == {"kind": expected}
+
+
+@pytest.mark.parametrize(
+    ("stage", "assurance", "allowed"),
+    [
+        (AdminFallbackStage.REQUEST, AuthenticationAssurance.PASSWORD_REAUTH, True),
+        (AdminFallbackStage.CONSUME, AuthenticationAssurance.PASSWORD_REAUTH, True),
+        (AdminFallbackStage.READ, AuthenticationAssurance.PASSWORD_REAUTH, True),
+        (AdminFallbackStage.APPROVE, AuthenticationAssurance.PASSWORD_REAUTH, True),
+        (AdminFallbackStage.READ, AuthenticationAssurance.HARDWARE_WEBAUTHN, True),
+        (AdminFallbackStage.APPROVE, AuthenticationAssurance.HARDWARE_WEBAUTHN, True),
+        (AdminFallbackStage.REQUEST, AuthenticationAssurance.HARDWARE_WEBAUTHN, False),
+        (AdminFallbackStage.CONSUME, AuthenticationAssurance.HARDWARE_WEBAUTHN, False),
+        (AdminFallbackStage.REQUEST, AuthenticationAssurance.PASSWORD, False),
+        (AdminFallbackStage.APPROVE, AuthenticationAssurance.OTHER_MFA, False),
+    ],
+)
+async def test_admin_fallback_has_an_exact_assurance_matrix(
+    stage: AdminFallbackStage,
+    assurance: AuthenticationAssurance,
+    allowed: bool,
+) -> None:
+    subject, resource, environment = make_context(action=Action.ADMIN_MANAGE)
+    subject = replace(
+        subject,
+        groups=frozenset({"security-administrators"}),
+        job_function="SECURITY_ADMINISTRATOR",
+        clearance=Classification.RESTRICTED,
+        authentication_assurance=assurance,
+        authentication_time=environment.requested_at - timedelta(seconds=10),
+    )
+    resource = replace(resource, classification=Classification.RESTRICTED)
+    service = AuthorizationService(decision_writer=BatchDecisionWriter())
+
+    if allowed:
+        decision = await service.authorize_admin_fallback(
+            subject=subject,
+            resource=resource,
+            stage=stage,
+            environment=environment,
+            request_id="fallback-assurance",
+        )
+        assert decision.allowed
+    else:
+        with pytest.raises(ForbiddenError):
+            await service.authorize_admin_fallback(
+                subject=subject,
+                resource=resource,
+                stage=stage,
+                environment=environment,
+                request_id="fallback-assurance",
+            )
+
+
+@pytest.mark.parametrize(
+    ("groups", "job_function"),
+    [
+        (frozenset({"stewards"}), "DATA_STEWARD"),
+        (frozenset({"security-administrators", "service-accounts"}), "SERVICE_ACCOUNT"),
+    ],
+)
+async def test_admin_fallback_requires_a_human_security_administrator(
+    groups: frozenset[str], job_function: str
+) -> None:
+    subject, resource, environment = make_context(action=Action.ADMIN_MANAGE)
+    subject = replace(
+        subject,
+        groups=groups,
+        job_function=job_function,
+        clearance=Classification.RESTRICTED,
+        authentication_assurance=AuthenticationAssurance.PASSWORD_REAUTH,
+        authentication_time=environment.requested_at - timedelta(seconds=10),
+    )
+    resource = replace(resource, classification=Classification.RESTRICTED)
+
+    with pytest.raises(ForbiddenError):
+        await AuthorizationService(decision_writer=BatchDecisionWriter()).authorize_admin_fallback(
+            subject=subject,
+            resource=resource,
+            stage=AdminFallbackStage.REQUEST,
+            environment=environment,
+            request_id="fallback-human-only",
+        )
 
 
 async def test_non_authentication_denial_does_not_offer_misleading_remediation() -> None:

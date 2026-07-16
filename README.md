@@ -266,6 +266,14 @@ explicit (`webauthn-register:skip_if_exists`) rather than a realm-wide first-log
 portable profile accepts user-verifying cross-platform authenticators; production-approved
 attestation roots and AAGUID allowlists remain deployment inputs and promotion gates.
 
+The administrator API uses recent hardware WebAuthn for direct membership-access changes. A typed
+password-reauthentication Maker-Checker path exists only for the exact
+`WORKSPACE_MEMBERSHIP_ACCESS_UPDATE_V1` command and is disabled by default. Do not enable
+`ADMIN_PASSWORD_FALLBACK_ENABLED` until two real eligible human security administrators have been
+provisioned and the target IdP/browser `max_age=0` reauthentication plus one-time consume journey
+has passed. The local bootstrap does not create a fake second administrator; with the default local
+bootstrap the fallback therefore remains unavailable.
+
 For a non-production integration check, add `--probe-browser-flow` and a valid
 `--probe-redirect-uri`. The probe creates a random temporary user, proves that LoA 1 issues an
 authorization code and access token with `acr=1`, `amr=pwd` and `auth_time`, while LoA 2 stops at
@@ -293,6 +301,8 @@ CI repeats these checks, audits dependencies, scans source/IaC and release-equiv
 - Application ABAC and PostgreSQL RLS remain mandatory even behind APISIX.
 - Search/list/count, Chat evidence, export and analysis use the same workspace/classification boundary.
 - Requester final self-approval is forbidden; high-risk operations require recent strong authentication.
+- Administrator self-access changes are forbidden. Password fallback is typed, five-minute,
+  Maker-Checker, one-time and default-disabled; it never converts password/OTP into hardware assurance.
 - API, relay, upload, governance, bootstrap and migration database identities are separate; each worker receives only its own table grants and mounted secrets.
 - DataHub writes cannot bypass governance, and an external acknowledgement alone never means applied.
 - Valkey loss affects latency/delivery only; PostgreSQL outbox and leased job state recover correctness.

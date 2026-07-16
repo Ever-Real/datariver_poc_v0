@@ -365,6 +365,22 @@ def verify_database_roles() -> None:
         )
     if re.search(r"GRANT[^;]*(?:UPDATE|DELETE)[^;]*assistant\.evidence_citations", generator):
         raise AssertionError("the app role cannot mutate or delete assistant evidence citations")
+    required_admin_grants = {
+        "GRANT UPDATE (active, clearance, attributes, version, updated_at)\n"
+        "            ON iam.workspace_memberships TO datariver_app;",
+        "GRANT SELECT, INSERT ON iam.admin_access_requests TO datariver_app;",
+        "GRANT UPDATE (state, checker_id, consumed_by, consumed_at,\n"
+        "            consume_policy_decision_id, version, updated_at)\n"
+        "            ON iam.admin_access_requests TO datariver_app;",
+        "GRANT SELECT, INSERT ON iam.admin_access_approvals TO datariver_app;",
+    }
+    missing_admin_grants = {grant for grant in required_admin_grants if grant not in generator}
+    if missing_admin_grants:
+        raise AssertionError("administrator workflow grants are not column-bounded")
+    if re.search(r"GRANT[^;]*DELETE[^;]*iam\.admin_access_", generator):
+        raise AssertionError("administrator workflow evidence cannot be deleted by the app role")
+    if re.search(r"GRANT[^;]*UPDATE[^;]*iam\.admin_access_approvals", generator):
+        raise AssertionError("administrator approvals must remain append-only")
     relay_block = generator.split("rolname = 'datariver_relay'", maxsplit=1)[1].split(
         "END IF;", maxsplit=1
     )[0]

@@ -32,6 +32,7 @@ from datariver.application.dto import (
     MultipartUpload,
     ObjectMetadata,
 )
+from datariver.domain.admin_access import AdminAccessRequest, MembershipAccessUpdate
 from datariver.domain.authz import Decision, SubjectAttributes
 from datariver.domain.common import DomainEvent
 from datariver.domain.governance import ChangeRequest
@@ -187,6 +188,56 @@ class GovernanceUnitOfWork(Protocol):
     async def commit(self) -> None: ...
 
     async def rollback(self) -> None: ...
+
+    async def set_security_context(self, *, workspace_id: UUID, subject_id: UUID) -> None: ...
+
+
+class AdminAccessRequestRepository(Protocol):
+    async def add(self, request: AdminAccessRequest) -> None: ...
+
+    async def get_for_update(
+        self, *, workspace_id: UUID, access_request_id: UUID
+    ) -> AdminAccessRequest | None: ...
+
+    async def get(
+        self, *, workspace_id: UUID, access_request_id: UUID
+    ) -> AdminAccessRequest | None: ...
+
+    async def list(
+        self, *, workspace_id: UUID, state: str | None, limit: int
+    ) -> Sequence[AdminAccessRequest]: ...
+
+    async def save(self, request: AdminAccessRequest) -> None: ...
+
+
+class MembershipAccessRepository(Protocol):
+    async def apply(self, command: MembershipAccessUpdate) -> int: ...
+
+    async def assert_current_version(self, command: MembershipAccessUpdate) -> None: ...
+
+    async def assert_eligible_human_administrators(
+        self, *, workspace_id: UUID, subject_ids: frozenset[UUID]
+    ) -> None: ...
+
+
+class AdminAccessUnitOfWork(Protocol):
+    requests: AdminAccessRequestRepository
+    memberships: MembershipAccessRepository
+    outbox: OutboxWriter
+    idempotency: IdempotencyStore
+
+    async def __aenter__(self) -> Self: ...
+
+    async def __aexit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc_value: BaseException | None,
+        traceback: TracebackType | None,
+    ) -> None: ...
+
+    async def commit(self) -> None: ...
+
+    async def lock_workspace_access(self, *, workspace_id: UUID) -> None: ...
 
     async def set_security_context(self, *, workspace_id: UUID, subject_id: UUID) -> None: ...
 

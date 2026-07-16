@@ -14,6 +14,12 @@ Untrusted inputs include browser/API payloads, OIDC claims before verification, 
   deployment-approved ACR and AMR combination plus `auth_time`; generic MFA, OTP and `iat` are not
   substitutes. Password reauthentication never becomes hardware assurance.
 - Service identities are separate from users, scoped to one purpose and never impersonate a human approver.
+- Administrator membership changes never accept arbitrary identity-provider JSON. The direct path
+  requires recent hardware WebAuthn. The default-disabled fallback accepts only the versioned full
+  membership-access command and requires a recent password-authenticated maker, an independent
+  eligible human checker, a five-minute expiry, canonical payload confirmation and one-time consume.
+  At least two eligible human security administrators must remain; service accounts, OTP and
+  ordinary password assurance are ineligible.
 - The browser stores only a versioned authentication intent and a same-origin relative return path.
   It never stores a mutation body, idempotency key or executable callback in OIDC state, and never
   replays an approval/publish operation after WebAuthn. Backend authorization remains authoritative.

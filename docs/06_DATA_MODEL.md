@@ -20,7 +20,9 @@ The SQLAlchemy metadata and generated `backend/alembic/versions/0001_initial_sch
 |---|---|---|
 | `platform.workspaces` | `id`, `slug UQ`, `name`, `status`, `settings`, `version`, timestamps | tenant boundary |
 | `iam.subjects` | `id`, `issuer + external_subject UQ`, `display_name`, `active`, timestamps | external IdP mapping; no credential |
-| `iam.workspace_memberships` | PK `workspace_id + subject_id`, `department_id`, `job_function`, `clearance`, `attributes`, `active` | ABAC subject attributes/grants |
+| `iam.workspace_memberships` | PK `workspace_id + subject_id`, `department_id`, `job_function`, `clearance`, `attributes`, `active`, `version` | versioned ABAC subject attributes/grants |
+| `iam.admin_access_requests` | typed command/envelope, maker/target/checker, canonical hash, expiry/state/consume decision, `version`, timestamps | short-lived membership-access maker-checker aggregate; no arbitrary provider payload |
+| `iam.admin_access_approvals` | request/actor, approve/reject, reason, policy decision, payload hash and request version | append-only independent checker evidence |
 | `authz.resources` | `workspace_id + resource_type + resource_key UQ`, scope/classification/lifecycle columns, `attributes`, `version` | durable resource attribute registry |
 | `authz.policy_decisions` | `id`, `workspace_id`, `subject_id`, `resource_id`, `action`, `effect`, reason/policy JSON, grouped `evaluation_context`, `request_id`, `decided_at` | immutable allow/deny/system-worker or bounded resource-set evidence |
 
@@ -105,6 +107,9 @@ The API supports both complete snapshot publication and changeset author/submit/
 - Graph release publication validates ontology, endpoints, classification and non-empty provenance before insert.
 - Object acceptance requires full streamed SHA-256/size equality and format policy before canonical bucket switch.
 - Search and snapshot queries prefilter classification and scope before enrichment/serialization.
+- Direct administrator membership access requires recent hardware WebAuthn. The optional password
+  path applies only an approved typed request and rechecks maker/checker eligibility, target version
+  and the two-human-security-administrator invariant under a workspace transaction lock.
 
 ## Backlog schema (not implemented)
 

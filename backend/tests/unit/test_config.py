@@ -173,7 +173,10 @@ def test_rejects_readiness_timeout_longer_than_pool_timeout() -> None:
 
 
 def test_rejects_ambiguous_or_unsafe_oidc_assurance_mappings() -> None:
-    assert settings().high_risk_auth_max_age_seconds == 300
+    defaults = settings()
+    assert defaults.high_risk_auth_max_age_seconds == 300
+    assert defaults.admin_password_fallback_enabled is False
+    assert defaults.admin_password_fallback_ttl_seconds == 300
     with pytest.raises(ValidationError, match="ACR allowlists must not overlap"):
         settings(oidc_password_reauth_acr_values=("2",))
     with pytest.raises(ValidationError, match="cannot assert hardware assurance"):

@@ -167,6 +167,10 @@ def test_openapi_contains_all_required_product_modules() -> None:
         "/api/v1/api-products/{product_id}/invoke/neighbors",
         "/api/v1/api-products/{product_id}/invoke/snapshot",
         "/api/v1/api-products/{product_id}/invoke/chat",
+        "/api/v1/admin/workspace-memberships/{target_subject_id}/access",
+        "/api/v1/admin/fallback/workspace-membership-access-requests",
+        "/api/v1/admin/fallback/workspace-membership-access-requests/{access_request_id}/decisions",
+        "/api/v1/admin/fallback/workspace-membership-access-requests/{access_request_id}/consume",
     }.issubset(document["paths"])
 
 

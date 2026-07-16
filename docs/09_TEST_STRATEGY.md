@@ -2,7 +2,7 @@
 
 ## Latest executed baseline
 
-The 2026-07-15 development/integration baseline plus the current P0/P1/P2/P3 foundation passes 118 backend tests, strict mypy over 118 source files, Ruff formatting/lint, 14 frontend tests, TypeScript/ESLint/build, deterministic migration generation and static architecture/Compose/role/readiness checks. The live hybrid-development baseline also passed PostgreSQL RLS, Keycloak service-token OIDC, schema-aware API/APISIX readiness, Vite-to-APISIX proxying, DataHub GraphQL authentication and semiconductor seed verification. The earlier container baseline additionally passed Airflow DAG imports, optional seed remove and repository/IaC Trivy scanning. Exact commands and the distinction between current source and earlier evidence are in [the acceptance report](12_ACCEPTANCE_REPORT.md).
+The 2026-07-15 development/integration baseline plus the current P0/P1/P2/P3 foundation passes 139 backend tests, strict mypy over 124 source files, Ruff formatting/lint, 14 frontend tests, TypeScript/ESLint/build, deterministic migration generation and static architecture/Compose/role/readiness checks. The live hybrid-development baseline also passed PostgreSQL RLS, Keycloak service-token OIDC, schema-aware API/APISIX readiness, Vite-to-APISIX proxying, DataHub GraphQL authentication and semiconductor seed verification. The earlier container baseline additionally passed Airflow DAG imports, optional seed remove and repository/IaC Trivy scanning. Exact commands and the distinction between current source and earlier evidence are in [the acceptance report](12_ACCEPTANCE_REPORT.md).
 
 Executed resilience checks included cache-Valkey stop/recovery, API process restart, API container replacement behind both Nginx and APISIX, and outbox-relay restart. The API replacement test deliberately kept the web container running and verified that its Docker DNS resolver did not retain a stale upstream address.
 
@@ -33,9 +33,13 @@ Retention negative tests must prove that the relay exposes no pruning operation 
 
 The source-level identity suite additionally checks same-origin return-state validation, explicit
 WebAuthn AIA and LoA request arguments, missing/ambiguous ACR fail-closed behavior, bounded problem
-remediation, absence of password/direct-execution fallback controls, and exactly one HTTP attempt
-for a denied mutation. Browser E2E must still prove a real security-key ceremony and confirm the
-user explicitly submits the reviewed mutation after returning from step-up.
+remediation and exactly one HTTP attempt for a denied mutation. The backend administrator suite
+checks the exact password/hardware assurance matrix, default-disabled fallback, maker/checker/target
+separation, five-minute expiry, canonical hash and versions, eligibility revocation, two-admin
+invariant, idempotent one-time consume, minimal outbox data, forced RLS and column-level grants.
+Browser E2E must still prove a real security-key ceremony, `max_age=0` password reauthentication
+with two real users, no password field or direct bypass in the page, and explicit resubmission after
+returning from authentication.
 
 ## Core correctness scenarios
 

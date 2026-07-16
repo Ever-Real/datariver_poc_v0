@@ -69,8 +69,15 @@ BEGIN
         GRANT USAGE ON SCHEMA {RUNTIME_SCHEMAS} TO datariver_app;
         GRANT USAGE ON SCHEMA public TO datariver_app;
         GRANT SELECT ON public.alembic_version TO datariver_app;
-        GRANT SELECT ON platform.workspaces, iam.subjects,
-            iam.workspace_memberships TO datariver_app;
+        GRANT SELECT ON platform.workspaces, iam.subjects TO datariver_app;
+        GRANT SELECT ON iam.workspace_memberships TO datariver_app;
+        GRANT UPDATE (active, clearance, attributes, version, updated_at)
+            ON iam.workspace_memberships TO datariver_app;
+        GRANT SELECT, INSERT ON iam.admin_access_requests TO datariver_app;
+        GRANT UPDATE (state, checker_id, consumed_by, consumed_at,
+            consume_policy_decision_id, version, updated_at)
+            ON iam.admin_access_requests TO datariver_app;
+        GRANT SELECT, INSERT ON iam.admin_access_approvals TO datariver_app;
         GRANT INSERT ON authz.policy_decisions TO datariver_app;
         GRANT SELECT, INSERT, UPDATE ON catalog.assets_projection,
             catalog.sync_runs, catalog.projection_watermarks TO datariver_app;

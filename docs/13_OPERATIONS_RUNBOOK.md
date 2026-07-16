@@ -49,6 +49,13 @@ PostgreSQL remains canonical. Never repair a Valkey stream by inventing events; 
 
 Outbox/inbox automatic pruning is intentionally disabled. Revision `0006` revokes relay `DELETE` privileges, and `/operations/summary` reports `retention_automation_state=DISABLED_NOT_READY`. Do not manually delete retained rows or grant that privilege back. A future dedicated retention worker may delete only after governed policy activation, immutable export checksum and Object-Lock read-back, Legal Hold evaluation and Maker-Checker approval all succeed.
 
+Administrator password fallback is also disabled by default. Before enabling it, query the canonical
+membership/subject stores and prove that at least two active, non-service-account,
+RESTRICTED-cleared human security administrators have `admin.manage` allowed and not denied. Then
+run two distinct real-user password-reauthentication, independent approval, expiry, replay,
+revocation and one-time-consume tests. If the count drops below two or the IdP assurance mapping
+drifts, disable the feature immediately; do not create a synthetic checker or alter approval rows.
+
 `/health/live` returning 200 with `/health/ready` returning 503 is an intentional diagnostic state.
 `SCHEMA_REVISION_MISMATCH` requires the migration identity to apply the packaged sole head;
 `DATABASE_READINESS_TIMEOUT` indicates pool lease/query saturation; `DATABASE_UNAVAILABLE` indicates

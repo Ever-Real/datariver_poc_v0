@@ -170,6 +170,91 @@ class ProblemDetails(BaseModel):
     violations: list[dict[str, Any]] | None = None
 
 
+class MembershipAccessDocumentRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    active: bool
+    clearance: Literal["PUBLIC", "INTERNAL", "CONFIDENTIAL", "RESTRICTED"]
+    groups: list[str] = Field(max_length=100)
+    allowed_actions: list[str] = Field(max_length=100)
+    denied_actions: list[str] = Field(max_length=100)
+    allowed_system_ids: list[UUID] = Field(default_factory=list, max_length=1000)
+    allowed_domain_ids: list[UUID] = Field(default_factory=list, max_length=1000)
+
+
+class AdminFallbackCreateRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    target_subject_id: UUID
+    reason: str = Field(min_length=1, max_length=4000)
+    access: MembershipAccessDocumentRequest
+
+
+class AdminFallbackDecisionRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    decision: Literal["APPROVED", "REJECTED"]
+    reason: str = Field(min_length=1, max_length=4000)
+
+
+class AdminFallbackConsumeRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    confirmed_payload_hash: str = Field(pattern="^[0-9a-f]{64}$")
+
+
+class MembershipAccessCommandResponse(BaseModel):
+    command_type: Literal["WORKSPACE_MEMBERSHIP_ACCESS_UPDATE_V1"]
+    workspace_id: UUID
+    target_subject_id: UUID
+    expected_membership_version: int
+    access: MembershipAccessDocumentRequest
+
+
+class AdminAccessApprovalResponse(BaseModel):
+    id: UUID
+    decision: str
+    actor_id: UUID
+    reason: str
+    policy_decision_id: UUID
+    payload_hash: str
+    request_version: int
+    occurred_at: datetime
+
+
+class AdminAccessRequestResponse(BaseModel):
+    id: UUID
+    workspace_id: UUID
+    requester_id: UUID
+    request_reason: str
+    request_policy_decision_id: UUID
+    command: MembershipAccessCommandResponse
+    payload_hash: str
+    state: str
+    version: int
+    expires_at: datetime
+    checker_id: UUID | None
+    consumed_by: UUID | None
+    consumed_at: datetime | None
+    consume_policy_decision_id: UUID | None
+    approvals: list[AdminAccessApprovalResponse]
+
+
+class AdminAccessRequestListResponse(BaseModel):
+    items: list[AdminAccessRequestResponse]
+
+
+class MembershipAccessUpdateResponse(BaseModel):
+    target_subject_id: UUID
+    membership_version: int
+    payload_hash: str
+
+
+class AdminAccessConsumeResponse(BaseModel):
+    request: AdminAccessRequestResponse
+    membership_version: int
+
+
 class UploadInitiateRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 

@@ -21,11 +21,21 @@ startup realm import is not an update mechanism. The web client includes Keycloa
 the access token; DataRiver does not infer that time from token issuance.
 
 Password reauthentication is a separate assurance type and never silently becomes hardware
-assurance. A password fallback for an administrative mutation is permitted only after a separate,
-typed maker-checker workflow exists. Its approval must bind workspace, action, resource, target
-version and canonical payload hash; use a distinct human checker; expire quickly; revalidate policy;
-and be consumed atomically once. Until that workflow is implemented for an operation, password-only
-execution is denied.
+assurance. The implemented fallback is deliberately limited to the exact typed command
+`WORKSPACE_MEMBERSHIP_ACCESS_UPDATE_V1`, which replaces one existing workspace membership's access
+document. It cannot carry an arbitrary Keycloak patch, provider request or executable command.
+The request binds workspace, target membership version and canonical payload hash; requires a
+different eligible human security-administrator checker; expires within five minutes; revalidates
+maker, checker, target version and the two-eligible-administrator invariant; and is consumed by the
+maker atomically once. Request and consume require recent password reauthentication; read and
+approval accept recent password reauthentication or hardware WebAuthn. Generic password, OTP and
+service-account tokens are denied.
+
+The fallback feature is disabled by default. Enabling it is an environment decision made only after
+two real eligible human security administrators and the browser `max_age=0` password-reauthentication
+journey have been provisioned and tested. The direct membership update path remains
+`admin.manage` plus recent hardware WebAuthn. Both paths prohibit self-access changes and use
+optimistic versions, workspace advisory locking, forced RLS, idempotency and minimal outbox events.
 
 ## Rationale
 
@@ -50,3 +60,8 @@ application contract.
   automatically replay an irreversible request after authentication.
 - Production onboarding requires at least two independent human security administrators and tested
   spare-key/revocation recovery before password fallback can be enabled.
+- The API role may update only the access-bearing membership columns and mutable workflow-state
+  columns. Approval rows are append-only and neither workflow table is deletable by that role.
+- OIDC cannot distinguish an ordinary recent password login from a `max_age=0` password prompt by
+  token claims alone. The maker-checker path is therefore a compensating control, never equivalent
+  to hardware assurance; each target IdP browser profile must be contract-tested before enablement.
