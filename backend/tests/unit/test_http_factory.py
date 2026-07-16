@@ -264,6 +264,14 @@ def test_openapi_exposes_bounded_typed_administrator_read_contracts() -> None:
         "RESTRICTED_SEARCH_GRANT_PROPOSE",
         "RESTRICTED_SEARCH_GRANT_DECIDE",
         "RESTRICTED_SEARCH_GRANT_REVOKE",
+        "RETENTION_POLICY_READ",
+        "RETENTION_POLICY_MANAGE",
+        "LEGAL_HOLD_READ",
+        "LEGAL_HOLD_PLACE",
+        "LEGAL_HOLD_RELEASE",
+        "ERASURE_READ",
+        "ERASURE_REQUEST",
+        "ERASURE_APPROVE",
     }
     assert context_schema["properties"]["action_vocabulary"]["items"] == {
         "$ref": "#/components/schemas/Action"

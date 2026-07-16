@@ -132,6 +132,17 @@ class AdminAccessService:
             AdminOperation.INFERENCE_PROVIDER_PROFILE_READ,
             AdminOperation.RESTRICTED_SEARCH_GRANT_READ,
         ]
+        if (
+            Action.RETENTION_READ in subject.allowed_actions
+            and Action.RETENTION_READ not in subject.denied_actions
+        ):
+            operations.extend(
+                [
+                    AdminOperation.RETENTION_POLICY_READ,
+                    AdminOperation.LEGAL_HOLD_READ,
+                    AdminOperation.ERASURE_READ,
+                ]
+            )
         if subject.authentication_assurance is AuthenticationAssurance.HARDWARE_WEBAUTHN:
             operations.extend(
                 [
@@ -144,6 +155,18 @@ class AdminAccessService:
                     AdminOperation.RESTRICTED_SEARCH_GRANT_DECIDE,
                     AdminOperation.RESTRICTED_SEARCH_GRANT_REVOKE,
                 ]
+            )
+            governed_operations = (
+                (Action.RETENTION_MANAGE, AdminOperation.RETENTION_POLICY_MANAGE),
+                (Action.LEGAL_HOLD_PLACE, AdminOperation.LEGAL_HOLD_PLACE),
+                (Action.LEGAL_HOLD_RELEASE, AdminOperation.LEGAL_HOLD_RELEASE),
+                (Action.ERASURE_REQUEST, AdminOperation.ERASURE_REQUEST),
+                (Action.ERASURE_APPROVE, AdminOperation.ERASURE_APPROVE),
+            )
+            operations.extend(
+                operation
+                for action, operation in governed_operations
+                if action in subject.allowed_actions and action not in subject.denied_actions
             )
         if self._fallback_enabled:
             operations.extend(

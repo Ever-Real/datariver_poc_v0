@@ -161,9 +161,10 @@ fallback feature to be enabled, so the hardware-key direct path can safely load 
 document. Ordinary password, OTP and service identities are denied before membership data is read.
 The list returns summaries only; a client must fetch the detail immediately before editing and use
 its quoted version for `If-Match`. Unknown stored action/scope values fail closed instead of being
-silently omitted. `allowed_operations` in `/admin/me` reflects the current token assurance and the
-fallback feature flag; every mutation still performs its operation-specific authorization and
-maker/checker/target validation.
+silently omitted. `allowed_operations` in `/admin/me` reflects the current token assurance, fallback
+feature flag and effective retention/Legal-Hold/erasure action grants and denies. Clients use it to
+avoid exposing or preloading unrelated administration surfaces; every mutation still performs its
+operation-specific authorization and maker/checker/target validation.
 
 ### Classification access and inference-provider administration
 

@@ -211,6 +211,8 @@ def _administrator(
     *,
     assurance: AuthenticationAssurance,
     now: datetime,
+    allowed_actions: frozenset[Action] | None = None,
+    denied_actions: frozenset[Action] = frozenset(),
 ) -> SubjectAttributes:
     return SubjectAttributes(
         subject_id=subject_id,
@@ -220,7 +222,8 @@ def _administrator(
         groups=frozenset({"security-administrators"}),
         job_function="SECURITY_ADMINISTRATOR",
         clearance=Classification.RESTRICTED,
-        allowed_actions=frozenset({Action.ADMIN_MANAGE}),
+        allowed_actions=allowed_actions or frozenset({Action.ADMIN_MANAGE}),
+        denied_actions=denied_actions,
         authentication_time=now - timedelta(seconds=5),
         authentication_assurance=assurance,
     )
@@ -455,6 +458,53 @@ async def test_admin_read_context_exposes_only_current_assurance_operations(
     assert set(context.allowed_operations) == expected_operations
     assert context.fallback_enabled is enabled
     assert context.action_vocabulary == tuple(sorted(Action, key=lambda action: action.value))
+
+
+@pytest.mark.asyncio
+async def test_admin_read_context_exposes_only_granted_governance_surfaces() -> None:
+    workspace_id, target_id, administrator_id, other_admin_id = (uuid4() for _ in range(4))
+    now = datetime.now(UTC)
+    state = _state(workspace_id, target_id, administrator_id, other_admin_id)
+    cast(dict[UUID, WorkspaceMembershipAccessRecord], state["membership_records"])[
+        administrator_id
+    ] = _membership_record(administrator_id, "Administrator")
+    granted_actions = frozenset(
+        {
+            Action.ADMIN_MANAGE,
+            Action.RETENTION_READ,
+            Action.RETENTION_MANAGE,
+            Action.LEGAL_HOLD_PLACE,
+            Action.LEGAL_HOLD_RELEASE,
+            Action.ERASURE_REQUEST,
+            Action.ERASURE_APPROVE,
+        }
+    )
+
+    context = await _service(state).get_admin_read_context(
+        workspace_id=workspace_id,
+        subject=_administrator(
+            workspace_id,
+            administrator_id,
+            assurance=AuthenticationAssurance.HARDWARE_WEBAUTHN,
+            now=now,
+            allowed_actions=granted_actions,
+            denied_actions=frozenset({Action.LEGAL_HOLD_RELEASE}),
+        ),
+        environment=EnvironmentAttributes(requested_at=now),
+        request_id="admin-governance-capabilities",
+    )
+
+    operations = set(context.allowed_operations)
+    assert {
+        AdminOperation.RETENTION_POLICY_READ,
+        AdminOperation.RETENTION_POLICY_MANAGE,
+        AdminOperation.LEGAL_HOLD_READ,
+        AdminOperation.LEGAL_HOLD_PLACE,
+        AdminOperation.ERASURE_READ,
+        AdminOperation.ERASURE_REQUEST,
+        AdminOperation.ERASURE_APPROVE,
+    } <= operations
+    assert AdminOperation.LEGAL_HOLD_RELEASE not in operations
 
 
 @pytest.mark.asyncio

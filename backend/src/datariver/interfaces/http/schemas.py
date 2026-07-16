@@ -243,6 +243,14 @@ class AdminReadContextResponse(BaseModel):
             "RESTRICTED_SEARCH_GRANT_PROPOSE",
             "RESTRICTED_SEARCH_GRANT_DECIDE",
             "RESTRICTED_SEARCH_GRANT_REVOKE",
+            "RETENTION_POLICY_READ",
+            "RETENTION_POLICY_MANAGE",
+            "LEGAL_HOLD_READ",
+            "LEGAL_HOLD_PLACE",
+            "LEGAL_HOLD_RELEASE",
+            "ERASURE_READ",
+            "ERASURE_REQUEST",
+            "ERASURE_APPROVE",
         ]
     ]
     action_vocabulary: list[Action]
