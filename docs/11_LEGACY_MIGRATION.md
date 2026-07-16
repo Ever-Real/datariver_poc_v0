@@ -4,6 +4,8 @@
 
 The current implementation is preserved at `../../datariver_v0_3/legacy/datariver_v0_3_reference_20260714/` as read-only reference. It is not a source package dependency and is excluded from new images, tests and runtime configuration. The original working tree remains untouched apart from the separate new-project and snapshot paths.
 
+The v0.3 screen and interaction model is an explicit migration source. Its traceability matrix, safe behavior substitutions, delivery stages, and visual acceptance rules are maintained in [the legacy UX parity plan](15_LEGACY_UX_PARITY_PLAN.md). UX parity does not authorize importing legacy runtime or persistence patterns.
+
 ## Migration strategy
 
 Use a strangler boundary at `/api/v1` with explicit compatibility adapters only where an existing consumer must remain. New domain models and DTOs are not shaped around legacy database tables. Each legacy capability is retired after contract comparison, data reconciliation and consumer sign-off.

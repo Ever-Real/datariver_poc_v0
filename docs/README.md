@@ -17,6 +17,7 @@
 | 12 | [Acceptance report](12_ACCEPTANCE_REPORT.md) | executed evidence and known limitations | Development/integration accepted; production gates open |
 | 13 | [Operations runbook](13_OPERATIONS_RUNBOOK.md) | backup, restore, recovery and incident procedures | Baseline |
 | 14 | [Production hardening](14_PRODUCTION_HARDENING.md) | scale assumptions, P0-P3 disposition and decision gates | Active |
+| 15 | [Legacy UX parity](15_LEGACY_UX_PARITY_PLAN.md) | v0.3 visual/workflow traceability, safe substitutions and staged acceptance | Active |
 
 Independent review records: [Data Architect](reviews/2026-07-14_DATA_ARCHITECT_REVIEW.md) and [Data Engineer/SRE](reviews/2026-07-14_DATA_ENGINEER_REVIEW.md).
 
