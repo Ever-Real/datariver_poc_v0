@@ -53,6 +53,8 @@ def _policy() -> ClassificationAccessPolicy:
     return ClassificationAccessPolicy.propose(
         workspace_id=uuid4(),
         policy_number=4,
+        required_jurisdiction="jurisdiction-a",
+        restricted_search_grant_maximum_days=30,
         rules=_rules(),
         requester_id=uuid4(),
         reason="Narrow classification access",
@@ -69,6 +71,8 @@ def _grant(
     start = valid_from or now
     return RestrictedSearchGrant.propose(
         workspace_id=uuid4(),
+        classification_policy_id=uuid4(),
+        classification_policy_hash="a" * 64,
         subject_id=uuid4(),
         scope=RestrictedSearchScope.RESOURCE,
         scope_id=uuid4(),
@@ -79,6 +83,7 @@ def _grant(
         reason="Temporary investigation access",
         policy_decision_id=uuid4(),
         now=now,
+        maximum_lifetime=timedelta(days=30),
     )
 
 
@@ -181,6 +186,8 @@ def test_policy_requires_exactly_one_typed_rule_per_classification() -> None:
         ClassificationAccessPolicy.propose(
             workspace_id=uuid4(),
             policy_number=1,
+            required_jurisdiction="jurisdiction-a",
+            restricted_search_grant_maximum_days=30,
             rules=rules[:-1],
             requester_id=uuid4(),
             reason="Incomplete",
@@ -190,6 +197,8 @@ def test_policy_requires_exactly_one_typed_rule_per_classification() -> None:
         ClassificationAccessPolicy.propose(
             workspace_id=uuid4(),
             policy_number=1,
+            required_jurisdiction="jurisdiction-a",
+            restricted_search_grant_maximum_days=30,
             rules=(rules[0], rules[1], rules[2], rules[2]),
             requester_id=uuid4(),
             reason="Duplicate",
@@ -202,6 +211,8 @@ def test_policy_payload_is_canonical_and_uuid7_evented() -> None:
     common = {
         "workspace_id": uuid4(),
         "policy_number": 3,
+        "required_jurisdiction": "jurisdiction-a",
+        "restricted_search_grant_maximum_days": 30,
         "requester_id": uuid4(),
         "reason": "Canonical proposal",
         "policy_decision_id": uuid4(),
@@ -309,14 +320,14 @@ def test_policy_active_rejected_and_superseded_states_are_terminal() -> None:
 
 def test_grant_scope_payload_and_lifetime_are_bounded() -> None:
     now = datetime.now(UTC)
-    grant = _grant(now=now, expires_at=now + timedelta(days=90))
+    grant = _grant(now=now, expires_at=now + timedelta(days=30))
     assert grant.grant_id.version == 7
     assert grant.scope is RestrictedSearchScope.RESOURCE
     assert grant.state is RestrictedSearchGrantState.PENDING
     assert grant.events[0].payload["scope_id"] == str(grant.scope_id)
 
-    with pytest.raises(ValidationError, match="90 days"):
-        _grant(now=now, expires_at=now + timedelta(days=90, microseconds=1))
+    with pytest.raises(ValidationError, match="active policy maximum"):
+        _grant(now=now, expires_at=now + timedelta(days=30, microseconds=1))
     with pytest.raises(ValidationError, match="backdated"):
         _grant(now=now, valid_from=now - timedelta(microseconds=1))
     with pytest.raises(ValidationError, match="include a timezone"):

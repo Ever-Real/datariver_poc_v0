@@ -14,8 +14,8 @@ from datariver.domain.common import (
     uuid7,
 )
 
-MAXIMUM_RESTRICTED_SEARCH_GRANT_LIFETIME = timedelta(days=90)
 _TEXT_LIMIT = 4000
+_JURISDICTION_LIMIT = 64
 
 
 class ClassificationAccessPolicyState(StrEnum):
@@ -98,6 +98,8 @@ class ClassificationAccessPolicy:
     policy_id: UUID
     workspace_id: UUID
     policy_number: int
+    required_jurisdiction: str
+    restricted_search_grant_maximum_days: int
     rules: tuple[ClassificationAccessRule, ...]
     payload_hash: str
     requester_id: UUID
@@ -121,6 +123,8 @@ class ClassificationAccessPolicy:
         *,
         workspace_id: UUID,
         policy_number: int,
+        required_jurisdiction: str,
+        restricted_search_grant_maximum_days: int,
         rules: tuple[ClassificationAccessRule, ...],
         requester_id: UUID,
         reason: str,
@@ -128,13 +132,26 @@ class ClassificationAccessPolicy:
     ) -> ClassificationAccessPolicy:
         if policy_number < 1:
             raise ValidationError("The classification policy number must be positive.")
+        jurisdiction = _required_jurisdiction(required_jurisdiction)
+        if not 1 <= restricted_search_grant_maximum_days <= 365:
+            raise ValidationError(
+                "The RESTRICTED Search grant maximum must be between 1 and 365 days."
+            )
         validated_rules = _validated_rules(rules)
         request_reason = _required_text(reason, "A classification policy reason is required.")
-        payload_hash = canonical_json_hash(_rules_document(validated_rules))
+        payload_hash = canonical_json_hash(
+            _policy_document(
+                required_jurisdiction=jurisdiction,
+                restricted_search_grant_maximum_days=restricted_search_grant_maximum_days,
+                rules=validated_rules,
+            )
+        )
         policy = cls(
             policy_id=uuid7(),
             workspace_id=workspace_id,
             policy_number=policy_number,
+            required_jurisdiction=jurisdiction,
+            restricted_search_grant_maximum_days=restricted_search_grant_maximum_days,
             rules=validated_rules,
             payload_hash=payload_hash,
             requester_id=requester_id,
@@ -246,7 +263,12 @@ class ClassificationAccessPolicy:
 
     def _assert_payload_integrity(self) -> None:
         rules = _validated_rules(self.rules)
-        if canonical_json_hash(_rules_document(rules)) != self.payload_hash:
+        document = _policy_document(
+            required_jurisdiction=_required_jurisdiction(self.required_jurisdiction),
+            restricted_search_grant_maximum_days=(self.restricted_search_grant_maximum_days),
+            rules=rules,
+        )
+        if canonical_json_hash(document) != self.payload_hash:
             raise ConflictError("The classification policy payload failed its integrity check.")
 
     def _check_version(self, expected_version: int) -> None:
@@ -261,6 +283,8 @@ class ClassificationAccessPolicy:
 class RestrictedSearchGrant:
     grant_id: UUID
     workspace_id: UUID
+    classification_policy_id: UUID
+    classification_policy_hash: str
     subject_id: UUID
     scope: RestrictedSearchScope
     scope_id: UUID
@@ -288,6 +312,8 @@ class RestrictedSearchGrant:
         cls,
         *,
         workspace_id: UUID,
+        classification_policy_id: UUID,
+        classification_policy_hash: str,
         subject_id: UUID,
         scope: RestrictedSearchScope,
         scope_id: UUID,
@@ -298,14 +324,26 @@ class RestrictedSearchGrant:
         reason: str,
         policy_decision_id: UUID,
         now: datetime,
+        maximum_lifetime: timedelta,
     ) -> RestrictedSearchGrant:
-        _validate_grant_interval(valid_from=valid_from, expires_at=expires_at, now=now)
+        _validate_grant_interval(
+            valid_from=valid_from,
+            expires_at=expires_at,
+            now=now,
+            maximum_lifetime=maximum_lifetime,
+        )
+        if not isinstance(classification_policy_id, UUID) or not _is_sha256(
+            classification_policy_hash
+        ):
+            raise ValidationError("The governing classification policy binding is invalid.")
         if not isinstance(scope, RestrictedSearchScope) or not isinstance(scope_id, UUID):
             raise ValidationError("The RESTRICTED Search grant scope is invalid.")
         cleaned_purpose = _required_text(purpose, "A RESTRICTED Search purpose is required.")
         request_reason = _required_text(reason, "A RESTRICTED Search grant reason is required.")
         document = _grant_document(
             workspace_id=workspace_id,
+            classification_policy_id=classification_policy_id,
+            classification_policy_hash=classification_policy_hash,
             subject_id=subject_id,
             scope=scope,
             scope_id=scope_id,
@@ -316,6 +354,8 @@ class RestrictedSearchGrant:
         grant = cls(
             grant_id=uuid7(),
             workspace_id=workspace_id,
+            classification_policy_id=classification_policy_id,
+            classification_policy_hash=classification_policy_hash,
             subject_id=subject_id,
             scope=scope,
             scope_id=scope_id,
@@ -440,6 +480,8 @@ class RestrictedSearchGrant:
     def _assert_payload_integrity(self) -> None:
         document = _grant_document(
             workspace_id=self.workspace_id,
+            classification_policy_id=self.classification_policy_id,
+            classification_policy_hash=self.classification_policy_hash,
             subject_id=self.subject_id,
             scope=self.scope,
             scope_id=self.scope_id,
@@ -470,8 +512,17 @@ def _validated_rules(
     return tuple(sorted(rules, key=lambda rule: rule.classification.value))
 
 
-def _rules_document(rules: tuple[ClassificationAccessRule, ...]) -> dict[str, object]:
-    return {"rules": [rule.document() for rule in rules]}
+def _policy_document(
+    *,
+    required_jurisdiction: str,
+    restricted_search_grant_maximum_days: int,
+    rules: tuple[ClassificationAccessRule, ...],
+) -> dict[str, object]:
+    return {
+        "required_jurisdiction": required_jurisdiction,
+        "restricted_search_grant_maximum_days": restricted_search_grant_maximum_days,
+        "rules": [rule.document() for rule in rules],
+    }
 
 
 def _lint_rule_security_floor(rule: ClassificationAccessRule) -> None:
@@ -500,7 +551,13 @@ def _lint_rule_security_floor(rule: ClassificationAccessRule) -> None:
         )
 
 
-def _validate_grant_interval(*, valid_from: datetime, expires_at: datetime, now: datetime) -> None:
+def _validate_grant_interval(
+    *,
+    valid_from: datetime,
+    expires_at: datetime,
+    now: datetime,
+    maximum_lifetime: timedelta,
+) -> None:
     _require_aware_datetime(now, "RESTRICTED Search grant proposal")
     _require_aware_datetime(valid_from, "RESTRICTED Search grant start")
     _require_aware_datetime(expires_at, "RESTRICTED Search grant expiry")
@@ -508,13 +565,17 @@ def _validate_grant_interval(*, valid_from: datetime, expires_at: datetime, now:
         raise ValidationError("A RESTRICTED Search grant cannot be backdated.")
     if expires_at <= valid_from:
         raise ValidationError("A RESTRICTED Search grant expiry must follow its start.")
-    if expires_at - valid_from > MAXIMUM_RESTRICTED_SEARCH_GRANT_LIFETIME:
-        raise ValidationError("A RESTRICTED Search grant cannot exceed 90 days.")
+    if maximum_lifetime <= timedelta(0):
+        raise ValidationError("The RESTRICTED Search grant maximum lifetime is invalid.")
+    if expires_at - valid_from > maximum_lifetime:
+        raise ValidationError("A RESTRICTED Search grant cannot exceed the active policy maximum.")
 
 
 def _grant_document(
     *,
     workspace_id: UUID,
+    classification_policy_id: UUID,
+    classification_policy_hash: str,
     subject_id: UUID,
     scope: RestrictedSearchScope,
     scope_id: UUID,
@@ -524,6 +585,8 @@ def _grant_document(
 ) -> dict[str, object]:
     return {
         "workspace_id": str(workspace_id),
+        "classification_policy_id": str(classification_policy_id),
+        "classification_policy_hash": classification_policy_hash,
         "subject_id": str(subject_id),
         "scope": scope.value,
         "scope_id": str(scope_id),
@@ -538,6 +601,21 @@ def _required_text(value: str, message: str) -> str:
     if not cleaned or len(cleaned) > _TEXT_LIMIT:
         raise ValidationError(message)
     return cleaned
+
+
+def _required_jurisdiction(value: str) -> str:
+    cleaned = value.strip()
+    if not cleaned or len(cleaned) > _JURISDICTION_LIMIT or "://" in cleaned:
+        raise ValidationError("A governed jurisdiction identifier is required.")
+    return cleaned
+
+
+def _is_sha256(value: object) -> bool:
+    return (
+        isinstance(value, str)
+        and len(value) == 64
+        and all(character in "0123456789abcdef" for character in value)
+    )
 
 
 def _require_aware_datetime(value: datetime, name: str) -> None:
