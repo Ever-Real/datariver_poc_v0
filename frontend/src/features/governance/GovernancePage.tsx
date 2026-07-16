@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState, type FormEvent } from 'react'
 import { newIdempotencyKey, type ApiClient } from '../../api/client'
 import type { ChangeRequestRecord } from '../../api/types'
+import { AssuranceNotice, type AssuranceActions } from '../../components/AssuranceNotice'
 import { ErrorNotice } from '../../components/ErrorNotice'
 
 const nextStates: Record<string, string[]> = {
@@ -11,7 +12,7 @@ const nextStates: Record<string, string[]> = {
   APPLY_FAILED: ['APPLY_QUEUED', 'CANCELLED'],
 }
 
-export function GovernancePage({ client }: { client: ApiClient }) {
+export function GovernancePage({ client, onStepUp, onEnroll }: { client: ApiClient } & AssuranceActions) {
   const [title, setTitle] = useState('')
   const [targetRef, setTargetRef] = useState('')
   const [aspectName, setAspectName] = useState('datasetProperties')
@@ -92,6 +93,7 @@ export function GovernancePage({ client }: { client: ApiClient }) {
           </div>
         </div>
       </div>
+      <AssuranceNotice error={error} onStepUp={onStepUp} onEnroll={onEnroll} />
       <ErrorNotice error={error} />
       {selected && <article className="result-card governance-detail">
         <div><span className="badge">{selected.state}</span><span className="badge badge-soft">{selected.classification}</span></div>

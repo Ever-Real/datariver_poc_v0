@@ -7,6 +7,7 @@ from datariver.application.dto import DecisionAuditItem
 from datariver.application.ports import DecisionSetWriter, DecisionWriter
 from datariver.domain.authz import (
     Action,
+    AuthenticationAssurance,
     BuiltinPolicyEngine,
     Decision,
     EnvironmentAttributes,
@@ -14,6 +15,31 @@ from datariver.domain.authz import (
     SubjectAttributes,
 )
 from datariver.domain.common import ForbiddenError, uuid7
+
+AUTHENTICATION_DENIAL_REASONS = frozenset(
+    {
+        "PHISHING_RESISTANT_AUTH_REQUIRED",
+        "AUTHENTICATION_TIME_REQUIRED",
+        "AUTHENTICATION_TIME_INVALID",
+        "AUTHENTICATION_TOO_OLD",
+    }
+)
+
+
+def _remediation_kind(
+    *, action: Action, subject: SubjectAttributes, decision: Decision
+) -> str | None:
+    reasons = frozenset(decision.reason_codes)
+    if not reasons or not reasons.issubset(AUTHENTICATION_DENIAL_REASONS):
+        return None
+    if (
+        action is Action.ADMIN_MANAGE
+        and subject.authentication_assurance is AuthenticationAssurance.PASSWORD_REAUTH
+    ):
+        return "FALLBACK_UNAVAILABLE"
+    if subject.authentication_assurance is AuthenticationAssurance.HARDWARE_WEBAUTHN:
+        return "REAUTH_REQUIRED"
+    return "FIDO2_REQUIRED"
 
 
 class AuthorizationService:
@@ -47,12 +73,16 @@ class AuthorizationService:
             request_id=request_id,
         )
         if not decision.allowed:
+            remediation_kind = _remediation_kind(action=action, subject=subject, decision=decision)
+            details: dict[str, object] = {
+                "decision_id": str(decision.decision_id),
+                "reason_codes": decision.reason_codes,
+            }
+            if remediation_kind is not None:
+                details["remediation"] = {"kind": remediation_kind}
             raise ForbiddenError(
                 "The requested action is not permitted.",
-                details={
-                    "decision_id": str(decision.decision_id),
-                    "reason_codes": decision.reason_codes,
-                },
+                details=details,
             )
         return decision
 

@@ -147,6 +147,7 @@ Set-ProcessEnvironment "VITE_USE_POLLING" "true"
 Set-ProcessEnvironment "VITE_OIDC_AUTHORITY" "http://localhost:$KeycloakPort/realms/datariver"
 Set-ProcessEnvironment "VITE_OIDC_CLIENT_ID" "datariver-web"
 Set-ProcessEnvironment "VITE_OIDC_REDIRECT_URI" "http://localhost:$WebPort"
+Set-ProcessEnvironment "VITE_OIDC_HIGH_ASSURANCE_ACR" "2"
 
 $records = [Collections.Generic.List[object]]::new()
 function Start-HostProcess(

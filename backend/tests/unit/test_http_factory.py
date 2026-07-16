@@ -6,6 +6,7 @@ from typing import cast
 from fastapi.testclient import TestClient
 
 from datariver.config import Settings
+from datariver.domain.common import ForbiddenError
 from datariver.infrastructure.db.session import DatabaseReadiness
 from datariver.infrastructure.observability.metrics import HttpMetrics
 from datariver.interfaces.http.container import AppContainer
@@ -167,3 +168,29 @@ def test_openapi_contains_all_required_product_modules() -> None:
         "/api/v1/api-products/{product_id}/invoke/snapshot",
         "/api/v1/api-products/{product_id}/invoke/chat",
     }.issubset(document["paths"])
+
+
+def test_forbidden_problem_exposes_only_bounded_remediation() -> None:
+    factory = cast(Callable[[Settings], AppContainer], lambda _: LiveOnlyContainer())
+    app = create_app(settings(), container_factory=factory)
+
+    @app.get("/test-remediation")
+    async def remediation_error() -> None:
+        raise ForbiddenError(
+            "Step-up is required.",
+            details={
+                "decision_id": "internal-decision",
+                "reason_codes": ("PHISHING_RESISTANT_AUTH_REQUIRED",),
+                "remediation": {"kind": "FIDO2_REQUIRED", "internal": "not-public"},
+            },
+        )
+
+    with TestClient(app) as client:
+        response = client.get("/test-remediation")
+
+    assert response.status_code == 403
+    assert response.headers["Content-Type"].startswith("application/problem+json")
+    assert response.json()["remediation"] == {"kind": "FIDO2_REQUIRED"}
+    assert "reason_codes" not in response.json()
+    assert "decision_id" not in response.json()
+    assert "internal" not in response.text

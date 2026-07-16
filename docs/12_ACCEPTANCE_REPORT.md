@@ -8,7 +8,7 @@ Decision: **development and local integration baseline accepted; production rele
 
 This report supersedes the source-only report and the runtime-open statements in the 2026-07-14 independent reviews. It records repeatable evidence from the current working tree, not a signed release artifact or production environment.
 
-P0–P3 foundation addendum, updated 2026-07-16: current source checks additionally include the stable DataHub v1.6.0 release contract and typed OIDC assurance. Hardware WebAuthn requires an exact approved ACR+AMR combination and `auth_time`; OTP, generic MFA and refreshed-token `iat` cannot satisfy high-risk authorization. Compatibility migrations and the current hybrid runtime have separate live evidence below.
+P0–P3 foundation addendum, updated 2026-07-16: current source checks additionally include the stable DataHub v1.6.0 release contract and typed OIDC assurance. Hardware WebAuthn requires an exact approved ACR+AMR combination and `auth_time`; OTP, generic MFA and refreshed-token `iat` cannot satisfy high-risk authorization. Browser remediation is bounded to typed authentication actions, rejects unsafe return locations, and never automatically replays a denied mutation after an authentication redirect. Compatibility migrations and the current hybrid runtime have separate live evidence below.
 
 ## Source and build evidence
 
@@ -16,9 +16,9 @@ P0–P3 foundation addendum, updated 2026-07-16: current source checks additiona
 |---|---|---|
 | Python format/lint | PASS | Ruff format and check across backend, tests, DAGs, migrations and static-verification scripts |
 | Python type safety | PASS | strict mypy: 117 source files, zero issues; a local cache was placed on `C:\\tmp` to avoid the known SQLite lock behavior on a Windows UNC mount |
-| Backend behavior | PASS | 111 pytest tests: typed OIDC assurance, managed Keycloak LoA flow convergence/drift rejection and future/missing authentication-time denials, ABAC/set audit, version-scoped search cache, DataHub release/circuit/bulkhead checks, schema readiness/timeouts, state machines, governance, idempotency, reconciliation, bounded uploads, KG lifecycle, sharing, immutable evidence/citation fail-closed behavior, seed and OpenAPI |
-| Frontend | PASS | TypeScript build mode, ESLint zero warnings, 3 test files/6 tests, and Vite production build |
-| Frontend artifact | PASS | current source build: JS 307.51 kB / gzip 93.04 kB; CSS 8.26 kB / gzip 2.70 kB |
+| Backend behavior | PASS | 116 pytest tests: typed OIDC assurance and bounded remediation, managed Keycloak LoA flow convergence/drift rejection and future/missing authentication-time denials, ABAC/set audit, version-scoped search cache, DataHub release/circuit/bulkhead checks, schema readiness/timeouts, state machines, governance, idempotency, reconciliation, bounded uploads, KG lifecycle, sharing, immutable evidence/citation fail-closed behavior, seed and OpenAPI |
+| Frontend | PASS | TypeScript build mode, ESLint zero warnings, 5 test files/14 tests covering safe authentication return state and no automatic mutation replay, and Vite production build |
+| Frontend artifact | PASS | current source build: JS 312.20 kB / gzip 94.63 kB; CSS 8.26 kB / gzip 2.70 kB |
 | Dependency audit | PASS | `pip-audit 2.10.0`: no known runtime vulnerabilities; `npm audit`: 0 vulnerabilities |
 | Repository/IaC scan | PASS | Trivy 0.70.0 `vuln,secret,misconfig`, HIGH/CRITICAL, ignored-unfixed: zero findings after making the Keycloak non-root user explicit |
 | Migration | PASS | regenerated twice with unchanged `0001` SHA-256 `1d3855a23efdbdc78f60f7167beb919fdaa7a4defbbd787b14091a2f215bb90c`; Alembic head `0005` upgraded the populated local database without reset |

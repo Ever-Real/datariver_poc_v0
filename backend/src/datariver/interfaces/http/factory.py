@@ -29,6 +29,7 @@ from datariver.interfaces.http.router import api_router
 
 logger = structlog.get_logger(__name__)
 REQUEST_ID_PATTERN = re.compile(r"^[A-Za-z0-9._-]{1,100}$")
+PUBLIC_REMEDIATION_KINDS = frozenset({"FIDO2_REQUIRED", "REAUTH_REQUIRED", "FALLBACK_UNAVAILABLE"})
 
 
 def _route_template(app: FastAPI, request: Request) -> str:
@@ -165,6 +166,11 @@ def create_app(
         }
         if error.details.get("violations"):
             content["violations"] = error.details["violations"]
+        remediation = error.details.get("remediation")
+        if isinstance(error, ForbiddenError) and isinstance(remediation, dict):
+            kind = remediation.get("kind")
+            if isinstance(kind, str) and kind in PUBLIC_REMEDIATION_KINDS:
+                content["remediation"] = {"kind": kind}
         response = JSONResponse(
             status_code=status, content=content, media_type="application/problem+json"
         )

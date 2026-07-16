@@ -1,3 +1,5 @@
+export type RemediationKind = 'FIDO2_REQUIRED' | 'REAUTH_REQUIRED' | 'FALLBACK_UNAVAILABLE'
+
 export interface ProblemDetails {
   type: string
   title: string
@@ -5,7 +7,14 @@ export interface ProblemDetails {
   detail: string
   code: string
   request_id: string
+  remediation?: { kind: RemediationKind }
 }
+
+const remediationKinds = new Set<RemediationKind>([
+  'FIDO2_REQUIRED',
+  'REAUTH_REQUIRED',
+  'FALLBACK_UNAVAILABLE',
+])
 
 export class ApiError extends Error {
   readonly problem: ProblemDetails
@@ -62,16 +71,30 @@ export async function parseProblem(response: Response): Promise<ProblemDetails> 
     request_id: response.headers.get('X-Request-Id') ?? 'unknown',
   }
   try {
-    const value = (await response.json()) as Partial<ProblemDetails>
+    const value = (await response.json()) as Record<string, unknown>
+    const rawRemediation = value.remediation
+    const kind = rawRemediation && typeof rawRemediation === 'object'
+      ? (rawRemediation as { kind?: unknown }).kind
+      : undefined
+    const remediation = typeof kind === 'string' && remediationKinds.has(kind as RemediationKind)
+      ? { kind: kind as RemediationKind }
+      : undefined
     return {
-      ...fallback,
-      ...value,
+      type: typeof value.type === 'string' ? value.type : fallback.type,
+      title: typeof value.title === 'string' ? value.title : fallback.title,
       status: response.status,
-      request_id: value.request_id ?? fallback.request_id,
+      detail: typeof value.detail === 'string' ? value.detail : fallback.detail,
+      code: typeof value.code === 'string' ? value.code : fallback.code,
+      request_id: typeof value.request_id === 'string' ? value.request_id : fallback.request_id,
+      remediation,
     }
   } catch {
     return fallback
   }
+}
+
+export function remediationKind(error: unknown): RemediationKind | undefined {
+  return error instanceof ApiError ? error.problem.remediation?.kind : undefined
 }
 
 export function newIdempotencyKey(prefix: string): string {

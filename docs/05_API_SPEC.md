@@ -9,12 +9,18 @@ Generated OpenAPI at `/api/v1/openapi.json` is authoritative for implemented pay
 - `X-Request-Id` is accepted only when it matches the safe ID pattern; otherwise the server creates one.
 - Mutation endpoints declare `Idempotency-Key` where replay could duplicate business effects.
 - Aggregate updates declare `If-Match: "<version>"`; graph publish uses `"none"` or a release SHA-256.
-- Errors are sanitized `application/problem+json` with `type,title,status,detail,instance,code,request_id,violations?`.
+- Errors are sanitized `application/problem+json` with
+  `type,title,status,detail,instance,code,request_id,violations?,remediation?`.
 - `401` is invalid identity, `403` audited policy denial, `404` may conceal forbidden existence, `409` version/idempotency conflict, `422` semantic validation, `429` grant/gateway quota, and `502/503` a classified dependency failure.
 - High-risk authorization is fail-closed. `PHISHING_RESISTANT_AUTH_REQUIRED`,
   `AUTHENTICATION_TIME_REQUIRED`, `AUTHENTICATION_TIME_INVALID` and
   `AUTHENTICATION_TOO_OLD` are audited policy reason codes. Request fields and headers cannot assert
   them; only the normalized context from a verified OIDC token is used.
+- Authentication-only denials may expose one bounded remediation kind:
+  `FIDO2_REQUIRED`, `REAUTH_REQUIRED` or `FALLBACK_UNAVAILABLE`. Raw policy reasons, decision IDs,
+  token claims and fallback payloads are never returned. If a non-auth policy reason is also
+  present, no authentication remediation is offered because reauthentication cannot make that
+  request permissible.
 
 ## Implemented endpoint inventory
 

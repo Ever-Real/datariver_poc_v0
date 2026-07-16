@@ -29,6 +29,12 @@ The strategy below remains the production release matrix. Target DataHub/object 
 | Security/supply chain | pip-audit, npm audit, Trivy secret/vulnerability/IaC/image scan, CycloneDX, license allowlist | zero unresolved Critical/High, retained SBOM |
 | Recovery | isolated restore/rebuild scripts | PostgreSQL restore and graph projection deterministic hash |
 
+The source-level identity suite additionally checks same-origin return-state validation, explicit
+WebAuthn AIA and LoA request arguments, missing/ambiguous ACR fail-closed behavior, bounded problem
+remediation, absence of password/direct-execution fallback controls, and exactly one HTTP attempt
+for a denied mutation. Browser E2E must still prove a real security-key ceremony and confirm the
+user explicitly submits the reviewed mutation after returning from step-up.
+
 ## Core correctness scenarios
 
 - State machine rejects every undeclared transition and stale aggregate version.

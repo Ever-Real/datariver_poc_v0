@@ -226,6 +226,19 @@ def verify_identity_assurance_contract() -> None:
     }:
         raise AssertionError("Keycloak WebAuthn execution must emit an AMR reference")
 
+    compose = _yaml(ROOT / "compose.yaml")
+    web_args = compose["services"]["web"]["build"].get("args", {})
+    if web_args.get("VITE_OIDC_HIGH_ASSURANCE_ACR") != "${OIDC_STEP_UP_ACR:-2}":
+        raise AssertionError("web step-up ACR must be a deployment setting")
+    dockerfile = (ROOT / "frontend" / "Dockerfile").read_text(encoding="utf-8")
+    if "ARG VITE_OIDC_HIGH_ASSURANCE_ACR" not in dockerfile:
+        raise AssertionError("web image must receive the deployment step-up ACR")
+    frontend_auth = (ROOT / "frontend" / "src" / "auth" / "redirectState.ts").read_text(
+        encoding="utf-8"
+    )
+    if "webauthn-register:skip_if_exists" not in frontend_auth or "max_age: 0" not in frontend_auth:
+        raise AssertionError("web must use explicit fresh WebAuthn enrollment and step-up")
+
 
 def verify_runtime_hardening() -> None:
     documents = {path.name: _yaml(path) for path in COMPOSE_FILES}

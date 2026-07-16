@@ -75,6 +75,11 @@ Open `http://localhost:8080`, sign in as `datariver-admin`, and read the generat
 00000000-0000-4000-8000-000000000100
 ```
 
+Use **USB 보안키 등록** in the signed-in profile area to enroll a FIDO2 security key. A denied
+high-risk action shows **보안키로 인증** and returns to the same `?page=...` view after Keycloak
+step-up. DataRiver never replays the approval or publish request automatically; review it and click
+the operation again. The local identity profile has no mobile-OTP setup step.
+
 The `local-identity` bootstrap is rejected when `APP_ENV=production`. With an enterprise IdP, provision `(issuer, sub)` and a workspace membership through the controlled environment onboarding process; do not reuse local identities.
 
 ## Host-development quick start

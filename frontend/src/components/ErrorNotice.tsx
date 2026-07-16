@@ -1,7 +1,8 @@
-import { ApiError } from '../api/client'
+import { ApiError, remediationKind } from '../api/client'
 
 export function ErrorNotice({ error }: { error?: unknown }) {
   if (!error) return null
+  if (remediationKind(error)) return null
   if (error instanceof ApiError) {
     return (
       <div className="notice notice-error" role="alert">

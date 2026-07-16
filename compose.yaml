@@ -310,6 +310,7 @@ services:
         VITE_OIDC_AUTHORITY: ${OIDC_PUBLIC_AUTHORITY:-http://localhost:8081/realms/datariver}
         VITE_OIDC_CLIENT_ID: ${OIDC_CLIENT_ID:-datariver-web}
         VITE_OIDC_REDIRECT_URI: ${APP_PUBLIC_ORIGIN:-http://localhost:8080}
+        VITE_OIDC_HIGH_ASSURANCE_ACR: ${OIDC_STEP_UP_ACR:-2}
     environment:
       S3_PUBLIC_ORIGIN: ${S3_PUBLIC_ORIGIN:-http://localhost:8333}
       OIDC_PUBLIC_ORIGIN: ${OIDC_PUBLIC_ORIGIN:-http://localhost:8081}

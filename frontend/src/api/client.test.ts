@@ -1,5 +1,7 @@
-import { describe, expect, it } from 'vitest'
-import { newIdempotencyKey, parseProblem } from './client'
+import { afterEach, describe, expect, it, vi } from 'vitest'
+import { ApiClient, ApiError, newIdempotencyKey, parseProblem } from './client'
+
+afterEach(() => vi.unstubAllGlobals())
 
 describe('API problem handling', () => {
   it('preserves the server request id', async () => {
@@ -18,5 +20,38 @@ describe('API problem handling', () => {
     const second = newIdempotencyKey('upload')
     expect(first).toMatch(/^upload-/)
     expect(first).not.toBe(second)
+  })
+
+  it('accepts only the bounded remediation contract', async () => {
+    const accepted = await parseProblem(new Response(JSON.stringify({
+      remediation: { kind: 'FIDO2_REQUIRED', internal: 'drop-me' },
+    }), { status: 403 }))
+    const rejected = await parseProblem(new Response(JSON.stringify({
+      remediation: { kind: 'BYPASS_POLICY' },
+    }), { status: 403 }))
+
+    expect(accepted.remediation).toEqual({ kind: 'FIDO2_REQUIRED' })
+    expect(accepted).not.toHaveProperty('internal')
+    expect(rejected.remediation).toBeUndefined()
+  })
+
+  it('never retries a denied mutation automatically', async () => {
+    const fetchMock = vi.fn(() => Promise.resolve(new Response(JSON.stringify({
+      type: 'urn:datariver:problem:forbidden',
+      title: 'Forbidden',
+      detail: 'denied',
+      code: 'forbidden',
+      request_id: 'request-one',
+      remediation: { kind: 'FIDO2_REQUIRED' },
+    }), { status: 403, headers: { 'Content-Type': 'application/problem+json' } })))
+    vi.stubGlobal('fetch', fetchMock)
+    const client = new ApiClient('/api/v1', () => 'token', () => 'workspace')
+
+    await expect(client.request('/change-requests/request/approvals', {
+      method: 'POST',
+      body: JSON.stringify({ decision: 'APPROVED' }),
+    })).rejects.toBeInstanceOf(ApiError)
+
+    expect(fetchMock).toHaveBeenCalledOnce()
   })
 })

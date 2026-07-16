@@ -1,5 +1,8 @@
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from uuid import UUID, uuid4
+
+import pytest
 
 from datariver.application.dto import DecisionAuditItem
 from datariver.application.services.authorization import AuthorizationService
@@ -13,6 +16,7 @@ from datariver.domain.authz import (
     ResourceAttributes,
     SubjectAttributes,
 )
+from datariver.domain.common import ForbiddenError
 
 
 class BatchDecisionWriter:
@@ -312,3 +316,62 @@ async def test_resource_set_is_evaluated_once_and_returns_only_allowed_items() -
     assert writer.single_calls == 0
     assert len(writer.sets) == 1
     assert len(writer.sets[0]) == 2
+
+
+@pytest.mark.parametrize(
+    ("action", "assurance", "authentication_age", "expected"),
+    [
+        (Action.KG_PUBLISH, AuthenticationAssurance.PASSWORD, 10, "FIDO2_REQUIRED"),
+        (
+            Action.KG_PUBLISH,
+            AuthenticationAssurance.HARDWARE_WEBAUTHN,
+            3600,
+            "REAUTH_REQUIRED",
+        ),
+        (
+            Action.ADMIN_MANAGE,
+            AuthenticationAssurance.PASSWORD_REAUTH,
+            10,
+            "FALLBACK_UNAVAILABLE",
+        ),
+    ],
+)
+async def test_authentication_only_denials_have_bounded_remediation(
+    action: Action,
+    assurance: AuthenticationAssurance,
+    authentication_age: int,
+    expected: str,
+) -> None:
+    subject, resource, environment = make_context(action=action)
+    subject = replace(
+        subject,
+        authentication_assurance=assurance,
+        authentication_time=environment.requested_at - timedelta(seconds=authentication_age),
+    )
+
+    with pytest.raises(ForbiddenError) as captured:
+        await AuthorizationService(decision_writer=BatchDecisionWriter()).authorize(
+            subject=subject,
+            resource=resource,
+            action=action,
+            environment=environment,
+            request_id="request-remediation",
+        )
+
+    assert captured.value.details["remediation"] == {"kind": expected}
+
+
+async def test_non_authentication_denial_does_not_offer_misleading_remediation() -> None:
+    subject, resource, environment = make_context(action=Action.CHANGE_APPROVE)
+    resource = replace(resource, requester_id=subject.subject_id)
+
+    with pytest.raises(ForbiddenError) as captured:
+        await AuthorizationService(decision_writer=BatchDecisionWriter()).authorize(
+            subject=subject,
+            resource=resource,
+            action=Action.CHANGE_APPROVE,
+            environment=environment,
+            request_id="request-self-approval",
+        )
+
+    assert "remediation" not in captured.value.details

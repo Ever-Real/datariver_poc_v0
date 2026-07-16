@@ -14,6 +14,9 @@ Untrusted inputs include browser/API payloads, OIDC claims before verification, 
   deployment-approved ACR and AMR combination plus `auth_time`; generic MFA, OTP and `iat` are not
   substitutes. Password reauthentication never becomes hardware assurance.
 - Service identities are separate from users, scoped to one purpose and never impersonate a human approver.
+- The browser stores only a versioned authentication intent and a same-origin relative return path.
+  It never stores a mutation body, idempotency key or executable callback in OIDC state, and never
+  replays an approval/publish operation after WebAuthn. Backend authorization remains authoritative.
 
 ## ABAC vocabulary
 

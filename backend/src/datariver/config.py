@@ -53,6 +53,7 @@ class Settings(BaseSettings):
     oidc_jwks_url: str
     oidc_allowed_algorithms: tuple[str, ...] = ("RS256", "ES256")
     oidc_hardware_acr_values: tuple[str, ...] = ("2",)
+    oidc_step_up_acr: str = "2"
     oidc_hardware_amr_values: tuple[str, ...] = ("webauthn", "hwk")
     oidc_password_reauth_acr_values: tuple[str, ...] = ("1",)
     oidc_password_amr_values: tuple[str, ...] = ("pwd",)
@@ -137,6 +138,12 @@ class Settings(BaseSettings):
             raise ValueError("OIDC assurance claim allowlists cannot be empty.")
         if assurance_sets["hardware ACR"] & assurance_sets["password ACR"]:
             raise ValueError("Hardware and password ACR allowlists must not overlap.")
+        if not self.oidc_step_up_acr or any(
+            character.isspace() for character in self.oidc_step_up_acr
+        ):
+            raise ValueError("The OIDC step-up ACR must be one non-empty value.")
+        if self.oidc_step_up_acr not in assurance_sets["hardware ACR"]:
+            raise ValueError("The OIDC step-up ACR must be in the hardware ACR allowlist.")
         if assurance_sets["hardware AMR"] & assurance_sets["password AMR"]:
             raise ValueError("Hardware and password AMR allowlists must not overlap.")
         unsafe_hardware_references = {"mfa", "otp", "pwd", "password"}

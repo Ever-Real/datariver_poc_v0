@@ -178,3 +178,7 @@ def test_rejects_ambiguous_or_unsafe_oidc_assurance_mappings() -> None:
         settings(oidc_password_reauth_acr_values=("2",))
     with pytest.raises(ValidationError, match="cannot assert hardware assurance"):
         settings(oidc_hardware_amr_values=("webauthn", "otp"))
+    with pytest.raises(ValidationError, match="step-up ACR must be in"):
+        settings(oidc_step_up_acr="gold")
+    with pytest.raises(ValidationError, match="step-up ACR must be one"):
+        settings(oidc_step_up_acr="2 gold", oidc_hardware_acr_values=("2 gold",))
