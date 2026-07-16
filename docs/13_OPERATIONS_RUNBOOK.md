@@ -40,10 +40,11 @@ Host-port overrides do not change an OIDC issuer. When browser-facing origins ch
 5. Start Keycloak/Airflow overlays where applicable; DAGs remain paused until probes pass.
 6. Check `/health/ready`, `/capabilities`, `/operations/summary` and protected `/operations/metrics`.
 
-The protected metrics endpoint exposes bounded-label catalog cache access/detail-source counters and
-DataHub request outcome/duration/in-flight, queue-rejection and circuit-state signals. It does not
-expose query text, URNs, workspace IDs, tokens or provider payloads. Cache-server memory, eviction
-and keyspace signals still require the deployment's Valkey exporter.
+The protected metrics endpoint exposes bounded-label catalog cache access/detail-source counters,
+DataHub request outcome/duration/in-flight, queue-rejection and circuit-state signals, plus current
+API database-pool checked-in/checked-out/overflow counts and configured base/overflow limits. It does
+not expose query text, URNs, workspace IDs, subject IDs, tokens or provider payloads. Cache-server
+memory, eviction and keyspace signals still require the deployment's Valkey exporter.
 
 PostgreSQL remains canonical. Never repair a Valkey stream by inventing events; recover the relay from unpublished outbox rows.
 

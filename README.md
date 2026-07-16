@@ -150,6 +150,10 @@ reserve`. The current one-API/four-worker defaults can lease at most 60 DataRive
 connections before that reserve; this is a ceiling calculation, not a recommended production
 `max_connections` value.
 
+The repository includes a fail-closed PgBouncer/RLS probe contract and source tests, but the
+development or production database path does not deploy PgBouncer. A target transaction-mode
+pooler must pass the live two-workspace connection-reuse probe before adoption.
+
 Apply and verify the optional synthetic semiconductor reference data after migration and local identity bootstrap:
 
 ```bash
@@ -197,10 +201,11 @@ An OIDC issuer is an identity, not merely a port mapping. For browser sign-in on
 - Catalog: an authorized local projection is searched first; selected details are enriched through a fixed DataHub adapter. A `sync_id`-bound full reconciliation is sequential, single-writer and tombstones missing DataHub-owned assets without touching seed-owned rows. Airflow obtains short-lived Keycloak service tokens automatically.
 - Registration: browser multipart upload goes directly to quarantine storage. Workers complete the object, stream SHA-256/size/format checks with bounded memory, and promote accepted objects. An accepted upload can create an evidence-linked DataHub aspect proposal that still requires normal governance approval.
 - Change management: typed DataHub aspect UPSERT requests move through legal transitions and distinct final approval. Confidential/restricted changes need two final approvers. A leased worker applies each aspect idempotently and only marks `APPLIED` after re-read hash equality.
+- Classification access administration: eligible human security administrators can review and independently approve versioned four-class Search/Chat policies, review or revoke immutable inference-provider profile versions, and govern policy-bound RESTRICTED Search grants. The Admin UI never accepts provider endpoints or credentials, and RESTRICTED evidence is never eligible for Chat.
 - Knowledge graph: create a graph/ontology, author typed node/edge changesets, validate, independently review, publish or roll back immutable releases, export governed views and call bounded analysis. Raw SQL/Cypher is never accepted.
 - API sharing: create a release-pinned contract version, publish it with recent strong authentication, grant an OIDC `client_id` explicit scopes/classification/validity and quotas, revoke it, and invoke bounded neighbor analysis through an atomic grant-and-usage check.
-- Chat: deterministic baseline answers only from catalog or active-release knowledge evidence that passed prefiltering and per-item authorization. Immutable chunks bind workspace, classification, typed scope, source/version/effective time and content hash; only validated cited chunk IDs are persisted, otherwise the answer is `검증 불가`. External inference remains disabled until an isolated worker and the remaining policy/red-team gates are accepted.
-- Monitoring: liveness, readiness, dependency capabilities, workspace counts, outbox dead letters and ABAC-protected Prometheus HTTP metrics remain independent so one degraded optional dependency does not hide core state.
+- Chat: deterministic baseline answers only from catalog or active-release knowledge evidence that passed prefiltering and per-item authorization. Immutable chunks bind workspace, classification, typed scope, source/version/effective time and content hash; only validated cited chunk IDs are persisted, otherwise the answer is `검증 불가`. A disabled-first typed inference worker contract rejects SQL, Cypher, arbitrary HTTP, tools and mutation fields and validates cited output, but no provider adapter, endpoint, secret, durable job or external call is wired. External inference remains disabled until live revalidation, delivery/streaming, metrics and scaled red-team gates are accepted.
+- Monitoring: liveness, readiness, dependency capabilities, workspace counts, outbox dead letters and ABAC-protected Prometheus HTTP metrics remain independent so one degraded optional dependency does not hide core state. Database-pool metrics expose only bounded connection states and configured limits, never workspace, subject or query labels.
 
 The bundled Airflow password file and `SimpleAuthManager` are strictly loopback local-development conveniences. Before any non-local Airflow exposure, use the deployment's supported enterprise/FAB SSO integration; the included DAG service account already uses short-lived Keycloak client credentials for DataRiver API calls.
 

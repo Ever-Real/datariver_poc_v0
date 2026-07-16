@@ -25,8 +25,16 @@ The SQLAlchemy metadata and generated `backend/alembic/versions/0001_initial_sch
 | `iam.admin_access_approvals` | request/actor, approve/reject, reason, policy decision, payload hash and request version | append-only independent checker evidence |
 | `authz.resources` | `workspace_id + resource_type + resource_key UQ`, scope/classification/lifecycle columns, `attributes`, `version` | durable resource attribute registry |
 | `authz.policy_decisions` | `id`, `workspace_id`, `subject_id`, `resource_id`, `action`, `effect`, reason/policy JSON, grouped `evaluation_context`, `request_id`, `decided_at` | immutable allow/deny/system-worker or bounded resource-set evidence |
+| `authz.classification_access_policy_versions` | workspace/policy number UQ, required jurisdiction, grant maximum, payload hash, maker/checker/supersede state and optimistic version | independently approved four-class Search/Chat policy |
+| `authz.classification_access_policy_rules` | workspace/policy/classification UQ, policy hash, typed Search/Chat modes and optional immutable provider-profile version FK | exactly one immutable rule for each of the four classifications |
+| `authz.restricted_search_grants` | active policy ID/hash, subject, typed resource/system/domain scope, validity, payload hash, maker/checker/revocation and optimistic version | explicit policy-bound RESTRICTED Search entitlement |
+| `authz.restricted_search_grant_events` | grant/version UQ, action/actor/reason/policy decision/time/payload hash | append-only grant history |
+| `authz.classification_access_generations` | workspace PK, monotonic generation and update time | transactional authorization/cache invalidation generation |
 
-The active baseline policy is code-versioned (`builtin-abac-v2`); database-authored policy/version/binding tables are backlog for the future OPA adapter. Version 2 records typed authentication assurance and rejects non-WebAuthn high-risk execution.
+The general ABAC decision engine remains code-versioned (`builtin-abac-v2`); generic database-authored
+OPA policy/binding tables remain backlog. The narrower classification-access policy above is
+implemented operating data and is evaluated together with ordinary ABAC, never as its replacement.
+Missing or inconsistent active state falls back to the portable static floor.
 
 ### Catalog projection
 
@@ -64,6 +72,8 @@ DataHub source cursor remain backlog.
 | `integration.idempotency_keys` | PK `workspace + operation + key_hash`, request hash/result/expiry | HTTP/command replay control |
 | `integration.object_manifests` | `id`, `bucket + object_key UQ`, declared/actual size-MIME-SHA, multipart/parts, state/classification/owner, completion/validation attempts, lease/error/summary, expiry/retention, `version`, timestamps | quarantine-to-accepted lifecycle |
 | `integration.seed_runs` | `id`, `workspace + namespace + pack_version UQ`, content hash/state/counts/apply/remove time | optional pack ownership/audit |
+| `integration.inference_provider_profile_versions` | workspace/profile key/version UQ, server route key, provider/model/deployment identities, kind, jurisdiction/region, classification ceiling, two bounded attestation snapshots, payload hash, maker/checker/revocation and optimistic version | immutable server-registered routing eligibility; no endpoint or credential |
+| `integration.inference_provider_generations` | workspace PK, monotonic generation and update time | transactional provider-routing invalidation generation |
 
 ### Retention governance
 
@@ -116,6 +126,11 @@ The API supports both complete snapshot publication and changeset author/submit/
 | `assistant.chat_messages` | `id`, workspace/session/actor/content/created time | append-only messages |
 | `assistant.assistant_runs` | `id`, workspace/session/request message/provider/model/template/policy/state/metrics/timestamps | answer execution audit |
 | `assistant.evidence_citations` | `id`, workspace/run/chunk/resource, classification, typed system/domain/owner scope, type/locator/version, SHA-256 content hash, effective interval, extraction method, positive unique rank | append-only immutable authorized evidence snapshot |
+
+Alembic `0011` adds the classification policy/rule/generation, RESTRICTED grant/event and inference
+profile/generation tables with forced workspace RLS, composite workspace foreign keys, immutable
+rule/event/profile payloads and no application delete path. The assistant inference package/result
+contract is source-only: it adds no durable inference job, provider endpoint/secret or execution table.
 
 ## Constraints enforced outside DDL
 

@@ -25,7 +25,7 @@ flowchart LR
     A --> VC["Valkey cache"]
     A --> O["Upload-oriented S3-compatible storage"]
     A --> D["External DataHub read facade"]
-    A --> L["Approved LLM provider"]
+    A --> C["Deterministic evidence Chat (current)"]
     A --> Z["ABAC policy decision"]
     P --> R["Outbox relay"]
     R --> VQ["Valkey job delivery"]
@@ -36,8 +36,10 @@ flowchart LR
     RW["Future governed retention worker"] --> P
     RW --> IA["Separate immutable archive port"]
     AF["Airflow scheduled and bulk workflows"] --> A
-    A --> OT["OpenTelemetry"]
-    W --> OT
+    A -. "future durable dispatch; not wired" .-> IW["Typed assistant inference worker contract (disabled first)"]
+    IW -. "future approved adapter" .-> L["Approved inference provider"]
+    A -. "future trace export" .-> OT["OpenTelemetry collector/backend (not deployed)"]
+    W -. "future trace export" .-> OT
 ```
 
 Only the gateway/UI ports are public. PostgreSQL, Valkey, object storage, OPA, DataHub credentials, graph protocols, and telemetry backends stay on private networks.
@@ -157,6 +159,23 @@ Graph types are `CATALOG_MIRROR`, `CURATED_KNOWLEDGE`, and `ANALYTIC_PRODUCT`. O
 
 Filtering a DataHub page after retrieval leaks counts, pagination, and asset existence. A local `catalog.assets_projection` therefore stores searchable/base-detail metadata and security attributes. The API calculates the permitted asset set before DataHub enrichment. Literal search is normalized/escaped and backed by FTS/trigram/active-scope indexes. Search cache keys bind workspace, permission scope, policy version and projection watermark. Chat uses the same permitted set before retrieval; candidate decisions are grouped into request-level audit evidence, and citations include version and source locator.
 
+The active classification-access snapshot is a versioned, workspace-scoped four-class policy. Its
+rules and authorization generation bind cache/evaluation state; RESTRICTED Search additionally
+requires an exact subject/resource, system or domain grant bound to the active policy ID and hash.
+Missing, malformed, expired or revoked policy/provider/grant state falls back to the static
+fail-closed floor. RESTRICTED Chat is always denied.
+
+## Assistant inference boundary
+
+Current Chat remains an in-process deterministic evidence composer and makes no model call. The
+separate assistant-inference source boundary is only a typed, disabled-first worker contract: it
+accepts a pre-authorized package containing policy, provider-attestation and immutable evidence
+snapshots, and returns either bounded cited text/metrics or `검증 불가`. Neither input nor output has
+SQL, Cypher, arbitrary HTTP, tool or mutation fields. There is no configured provider adapter,
+provider endpoint/secret, API-to-worker dispatch, durable inference job, streaming transport or
+deployed worker process in this baseline. Dotted inference edges in the runtime view are future
+seams, not current network calls.
+
 ## Valkey topology
 
 | Instance | Persistence | Eviction | Content |
@@ -174,7 +193,7 @@ Cache keys include workspace, permission-scope hash, policy version, request par
 | cache Valkey | direct authorized DB/DataHub path; higher latency |
 | queue Valkey | outbox accumulates and relay retries; writes remain durable |
 | graph projection | catalog remains available; graph Chat/analytics clearly degraded |
-| LLM | evidence search remains; answer generation 503; no graph mutation |
+| future inference provider/worker | deterministic evidence Chat remains; the disabled-first contract refuses with `검증 불가`; no provider call or graph mutation |
 | Airflow | scheduled/bulk jobs delayed; synchronous core unaffected |
 | object storage | upload/download unavailable; metadata/workflow state retained |
 | immutable archive capability | export, explicit erasure that requires archive, automatic deletion and partition drop stop; ordinary authorized reads remain available |

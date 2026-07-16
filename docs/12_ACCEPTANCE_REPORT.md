@@ -1,6 +1,6 @@
 # Acceptance report — development/integration baseline
 
-Report date: 2026-07-15 (Asia/Seoul)  
+Report date: 2026-07-16 (Asia/Seoul)
 Artifact: current local `datariver_v1` branch
 Environment: Windows + WSL2 Ubuntu 22.04, Docker Engine 29.6.0, Compose 5.2.0  
 Toolchain: Python 3.12.12, uv 0.9.17, Node.js 22.19.0, npm 10.9.3  
@@ -15,13 +15,15 @@ P0–P3 foundation addendum, updated 2026-07-16: current source checks additiona
 | Gate | Result | Executed evidence |
 |---|---|---|
 | Python format/lint | PASS | Ruff format and check across backend, tests, DAGs, migrations and static-verification scripts |
-| Python type safety | PASS | strict mypy: 140 source files, zero issues |
-| Backend behavior | PASS | 219 pytest tests: typed OIDC assurance and bounded remediation, governed administrator access and exact fallback assurance/maker-checker/idempotency/revocation controls, governed retention policies, Legal Holds and non-executing erasure Maker-Checker review, append-only immutable archive attestations/receipts, retention pruning/relay-delete negative controls, managed Keycloak LoA flow convergence/drift rejection, ABAC/set audit, version-scoped search cache, protected-classification fail-closed floors, DataHub release/circuit/bulkhead checks, schema readiness/timeouts, state machines, governance, reconciliation, bounded uploads, KG lifecycle, sharing, immutable evidence/citation fail-closed behavior, seed and OpenAPI |
-| Frontend | PASS | TypeScript build mode, ESLint zero warnings, 8 test files/25 tests covering safe authentication return state, no automatic mutation replay, Admin ETag/idempotency contracts and bounded erasure review, and Vite production build |
-| Frontend artifact | PASS | current source build: JS 351.62 kB / gzip 103.19 kB; CSS 9.99 kB / gzip 3.08 kB |
+| Python type safety | PASS | strict mypy: 121 source files, zero issues |
+| Backend behavior | PASS | 307 pytest tests: prior identity, governance, retention, RLS, search/DataHub, KG, sharing and evidence gates plus governed classification access/provider/grant administration, disabled-first inference contracts, bounded DB-pool metrics and the PgBouncer probe source contract |
+| Frontend | PASS | TypeScript build mode, ESLint zero warnings, 9 test files/31 tests including classification-policy, provider-profile and RESTRICTED-grant Admin states and mutation contracts |
+| Frontend artifact | PASS | current source build: JS 377.75 kB / gzip 107.56 kB; CSS 9.99 kB / gzip 3.08 kB |
 | Dependency audit | PASS | `pip-audit 2.10.0`: no known runtime vulnerabilities; `npm audit`: 0 vulnerabilities |
 | Repository/IaC scan | PASS | Trivy 0.70.0 `vuln,secret,misconfig`, HIGH/CRITICAL, ignored-unfixed: zero findings after making the Keycloak non-root user explicit |
-| Migration | PASS | regenerated twice with unchanged `0001` SHA-256 `ebcd0b628237eb59a84b483770b563b03c06c95cb09a5773ef0dc1ee94d2412f`; Alembic head `0010` upgraded the populated local database without reset and also applied from empty and historical `0009` schemas; normalized archive-schema fingerprints matched |
+| Migration | PASS | current generated `0001` SHA-256 `295efc02404c8c9d27d6de8eca8f1b2ddc9e4dd60570ae6bbe0b3bfedf2daf1d`; Alembic sole head `0011` upgraded the populated local database and is the packaged/runtime readiness revision |
+| Assistant inference contract | PASS (source/unit only) | typed authorized package/result has no SQL, Cypher, arbitrary HTTP, tool or mutation fields; invalid/unavailable output refuses to `검증 불가`; no adapter, endpoint, secret, durable job or provider call is wired |
+| PgBouncer RLS gate | PASS (source/unit only) | the probe validates passwordless URLs, file secrets, transaction mode, single-server reuse and fail-closed workspace fixtures; PgBouncer is not deployed and no live pooler result is claimed |
 | Static invariants | PASS | Compose dependencies/secrets, DataHub release and identity-assurance contracts, runtime hardening, architecture imports, least-privilege DB roles, tenant foreign keys, seed determinism and documentation links |
 | Scripts/config | PASS | POSIX/Bash/PowerShell parsing and base, identity, Airflow, gateway and combined Compose interpolation |
 | Reference preservation | PASS | 424 files / 4,763,143 bytes; zero missing, byte or SHA-256 mismatches; secret/cache exclusions verified |
@@ -48,6 +50,7 @@ ownership.
 | Retention governance `0008` | PASS (backend/local DB) | versioned policy proposal/independent decision and immediate Legal Hold placement/release Maker-Checker APIs passed with optimistic concurrency, idempotency and integrity hashes. Forced RLS, least-privilege column grants and append-only hold events were verified from both clean and upgraded databases. All automated deletion and erasure execution remain explicitly `DISABLED_NOT_READY`; no destructive endpoint exists |
 | Erasure review `0009` | PASS (backend/local DB) | typed request/independent decision APIs bind the canonical target snapshot and active policy ID/hash, recheck applicable Legal Holds and expose no execution capability. Clean and upgraded schema fingerprints matched; cross-workspace/empty-context access, immutable-column and event mutation, stale version, duplicate payload, altered policy hash and expired approval were denied. Expired rejection remained available to close stale reviews. The populated local database upgraded in place and API/Gateway readiness returned 200 after the host source processes restarted |
 | Immutable archive evidence `0010` | PASS (backend/local DB) | clean and historical migrations produced the same archive schema; capability and receipt rows are forced-RLS append-only evidence with app-role read-only grants. Exact policy/configuration/encryption/runtime-principal composite bindings, provider/full-readback checksum equality, retention read-back, literal-null version, raw Chat source and no-cascade negatives passed. No archive/export/deletion worker or target WORM claim was enabled |
+| Governed classification access `0011` | PASS (backend/local DB) | four immutable policy rules, authorization/provider generations, active-policy-bound RESTRICTED grants with append-only events, and immutable inference profile versions passed forced-RLS, least-privilege, maker-checker, revocation and generation checks. Admin API/FE contracts are implemented; no external inference execution was enabled |
 | Concurrent watermark | PASS | two app-role sessions advancing one workspace returned generations `[1, 2]`; rollback preserved `2`; a cross-workspace advance was denied by RLS |
 | Seed generation | PASS | migration backfill `1`, remove `2`, re-apply `3`; verify was a no-op; final counts remained 12 assets/257 nodes/279 edges |
 | Authorized search | PASS | same-token semiconductor `wafer` search returned the two expected authorized assets after API source reload |
@@ -117,10 +120,10 @@ These items are not source defects, but they prevent a production-readiness clai
 2. Complete real multipart/CORS/copy/checksum/lifecycle tests against the target object-storage deployment and a PostgreSQL + object consistency backup/restore drill with measured RPO/RTO.
 3. Run the full ABAC matrix with two real OIDC user identities, browser PKCE/password reset/hardware-WebAuthn step-up journeys, policy revocation timing, password-fallback maker-checker consumption, Legal Hold release, erasure review and audited enterprise subject/workspace administration.
 4. Replace Airflow `SimpleAuthManager`, which is deliberately local-development only, with the environment's supported enterprise/FAB SSO configuration before any non-local exposure.
-5. Run browser E2E, 60-minute target load/soak, queue saturation, worker kill/reclaim, DataHub fault injection and projection rebuild/chaos tests on the reference deployment shape.
+5. Run browser E2E, 60-minute target load/soak, queue saturation, worker kill/reclaim, DataHub fault injection and projection rebuild/chaos tests on the reference deployment shape. External inference additionally requires pre/post-call live policy/profile/attestation revalidation, durable queue/idempotency, SSE timing/cancellation, provider metrics and scaled red-team evidence.
 6. Execute backend/frontend and all promoted overlay image scans in an isolated CI/release runner, retain CycloneDX SBOM and license reports, and promote digest-pinned images. Local repository/IaC scanning passed; a Docker socket was intentionally not mounted into a third-party scanner container.
 7. Produce a clean-clone CI run tied to a commit SHA, immutable image digests, target-environment evidence and accountable reviewer sign-off with exception expiry.
 
 ## Conclusion
 
-No known formatter, linter, type, unit, frontend-build, migration-graph or static-architecture error remains in the current source. The hybrid runtime, compatibility migrations through `0010`, local RLS/gateway/seed and post-hardening API smoke checks passed. The project is suitable for Git sharing and continued environment integration. Production release remains blocked by the target-system, scale/load, recovery, browser, HA, external-inference and signed supply-chain gates listed above.
+No known formatter, linter, type, unit, frontend-build, migration-graph or static-architecture error remains in the current source. The hybrid runtime, compatibility migrations through `0011`, local RLS/gateway/seed and post-hardening API smoke checks passed. The project is suitable for Git sharing and continued environment integration. Production release remains blocked by the target-system, scale/load, recovery, browser, HA, external-inference and signed supply-chain gates listed above.

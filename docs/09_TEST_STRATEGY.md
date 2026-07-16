@@ -2,7 +2,7 @@
 
 ## Latest executed baseline
 
-The current development/integration baseline passes 219 backend tests, strict mypy over 140 source files, Ruff formatting/lint, 25 frontend tests, TypeScript/ESLint/build, deterministic migration generation and static architecture/Compose/role/readiness checks. The live hybrid-development baseline also passed PostgreSQL RLS, Keycloak service-token OIDC, schema-aware API/APISIX readiness, Vite-to-APISIX proxying, DataHub GraphQL authentication and semiconductor seed verification. The earlier container baseline additionally passed Airflow DAG imports, optional seed remove and repository/IaC Trivy scanning. Exact commands and the distinction between current source and earlier evidence are in [the acceptance report](12_ACCEPTANCE_REPORT.md).
+The current development/integration baseline passes 307 backend tests, strict mypy over 121 source files, Ruff formatting/lint, 9 frontend test files/31 tests, TypeScript/ESLint/build, deterministic migration generation and static architecture/Compose/role/readiness checks. The frontend build emits JS 377.75 kB (gzip 107.56 kB) and CSS 9.99 kB (gzip 3.08 kB). The live hybrid-development baseline also passed PostgreSQL RLS, Keycloak service-token OIDC, schema-aware API/APISIX readiness, Vite-to-APISIX proxying, DataHub GraphQL authentication and semiconductor seed verification. The earlier container baseline additionally passed Airflow DAG imports, optional seed remove and repository/IaC Trivy scanning. Exact commands and the distinction between current source and earlier evidence are in [the acceptance report](12_ACCEPTANCE_REPORT.md).
 
 Executed resilience checks included cache-Valkey stop/recovery, API process restart, API container replacement behind both Nginx and APISIX, and outbox-relay restart. The API replacement test deliberately kept the web container running and verified that its Docker DNS resolver did not retain a stale upstream address.
 
@@ -40,6 +40,14 @@ invariant, idempotent one-time consume, minimal outbox data, forced RLS and colu
 Browser E2E must still prove a real security-key ceremony, `max_age=0` password reauthentication
 with two real users, no password field or direct bypass in the page, and explicit resubmission after
 returning from authentication.
+
+The source-level inference suite checks that the package and provider draft contain no SQL, Cypher,
+HTTP, tool or mutation fields; RESTRICTED and cross-workspace evidence is rejected; policy/profile
+hashes, jurisdiction, classification ceiling and both attestations are bound; unavailable or invalid
+provider output becomes `검증 불가`; and citations are a bounded, duplicate-free subset of the exact
+authorized chunks. This is contract evidence only. External enablement still requires pre-call and
+post-call live policy/profile/attestation revalidation, durable delivery/idempotency, SSE timing and
+cancellation tests, provider metrics and the scaled red-team corpus.
 
 ## Core correctness scenarios
 

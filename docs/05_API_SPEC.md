@@ -165,6 +165,32 @@ silently omitted. `allowed_operations` in `/admin/me` reflects the current token
 fallback feature flag; every mutation still performs its operation-specific authorization and
 maker/checker/target validation.
 
+### Classification access and inference-provider administration
+
+| Method/path | Assurance/authorization | Purpose |
+|---|---|---|
+| `GET /admin/classification-access/policies?state=&limit=` | eligible human security administrator | list bounded policy versions |
+| `GET /admin/classification-access/policies/current` | eligible human security administrator | return the active four-class policy or null |
+| `GET /admin/classification-access/policies/{policy_id}` | eligible human security administrator | return one exact policy version and `ETag` |
+| `POST /admin/classification-access/policies` | recent hardware WebAuthn | propose exactly four Search/Chat rules |
+| `POST /admin/classification-access/policies/{policy_id}/decisions` | independent checker + recent hardware WebAuthn | approve/activate or reject a policy |
+| `GET /admin/classification-access/restricted-search-grants?state=&subject_id=&limit=` | eligible human security administrator | list bounded policy-bound grants |
+| `GET /admin/classification-access/restricted-search-grants/{grant_id}` | eligible human security administrator | return an exact grant and `ETag` |
+| `POST /admin/classification-access/restricted-search-grants` | recent hardware WebAuthn | propose a typed resource/system/domain grant; the server binds the active policy ID/hash |
+| `POST /admin/classification-access/restricted-search-grants/{grant_id}/decisions` | independent checker + recent hardware WebAuthn | approve or reject the bound grant |
+| `POST /admin/classification-access/restricted-search-grants/{grant_id}/revocations` | recent hardware WebAuthn | revoke a grant immediately |
+| `GET /admin/inference/provider-profiles?profile_key=&state=&limit=` | eligible human security administrator | list server-registered immutable profile versions |
+| `GET /admin/inference/provider-profiles/{profile_version_id}` | eligible human security administrator | return an exact profile version and `ETag` |
+| `POST /admin/inference/provider-profiles/{profile_version_id}/decisions` | independent checker + recent hardware WebAuthn | approve or reject a server-registered profile |
+| `POST /admin/inference/provider-profiles/{profile_version_id}/revocations` | recent hardware WebAuthn | revoke a profile immediately |
+
+Every mutation requires `Idempotency-Key`; decisions and revocations also require quoted positive
+`If-Match`. The browser cannot create a provider profile and no contract accepts a provider endpoint,
+credential or secret. Policy activation and request-time resolution revalidate immutable profile
+versions, jurisdiction, classification ceiling and bounded residency/zero-retention attestations.
+RESTRICTED Chat is invariantly denied; RESTRICTED Search still intersects the exact grant with normal
+workspace, clearance and system/domain authorization.
+
 ### Retention policy and Legal Hold administration
 
 | Method/path | Action | Purpose |
@@ -205,4 +231,4 @@ contract tests in the external DataHub deployment.
 
 ## Planned compatibility endpoints
 
-The remaining backlog, not present in current OpenAPI, is catalog facets/suggestions/lineage routes; upload cancel/download and governed erasure execution/consumption; automated graph extraction and projection rebuild; Chat session history/SSE/external-model adapters; governed classification policy, provider profiles and explicit Search grants; immutable archive export/target-conformance workers; and job/audit browsing/retry. PostgreSQL can persist verified archive evidence, but no HTTP route, export worker or deletion capability is exposed. Backlog features may not be emulated with generic provider or arbitrary query pass-through.
+The remaining backlog, not present in current OpenAPI, is catalog facets/suggestions/lineage routes; upload cancel/download and governed erasure execution/consumption; automated graph extraction and projection rebuild; Chat session history/SSE/external-model adapters; immutable archive export/target-conformance workers; and job/audit browsing/retry. PostgreSQL can persist verified archive evidence, but no HTTP route, export worker or deletion capability is exposed. The disabled-first assistant inference source contract is not an HTTP route or deployed provider integration. Backlog features may not be emulated with generic provider or arbitrary query pass-through.

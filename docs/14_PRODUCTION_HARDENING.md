@@ -34,6 +34,8 @@ Cypher, Bolt, shell or arbitrary HTTP surface is exposed.
 | SeaweedFS S3 profile | quarantine/accepted objects behind the object-store port; PostgreSQL owns the manifest |
 | Airflow overlay | paused catalog probe/full reconciliation DAGs using short-lived Keycloak client credentials |
 | APISIX/Keycloak overlays | optional local edge/OIDC; application ABAC remains mandatory |
+| classification/inference governance | versioned four-class policies, provider-profile eligibility and policy-bound RESTRICTED Search grants with Admin API/UI |
+| assistant inference seam | disabled-first typed worker contract and output validation only; no provider integration or runtime process |
 
 The code dependency rule is `interfaces/workers/infrastructure -> application -> domain`; domain code
 does not import provider frameworks. Independent processes share a versioned distribution, not
@@ -42,8 +44,10 @@ scale/availability/team-ownership evidence.
 
 ## 3. Verified baseline and important limitations
 
-The current branch passes 219 backend tests, strict mypy over 140 files, Ruff, frontend
-type/lint/test/build, deterministic migration generation and static architecture/Compose/role checks.
+The current branch passes 307 backend tests, strict mypy over 121 source files, Ruff, and 9 frontend
+test files/31 tests plus type/lint/build. The frontend artifact is JS 377.75 kB (gzip 107.56 kB) and
+CSS 9.99 kB (gzip 3.08 kB). Deterministic migration generation and static
+architecture/Compose/role checks also pass.
 The hybrid runtime has live evidence for PostgreSQL RLS, Keycloak service-token OIDC, APISIX,
 Vite proxying, DataHub authentication and semiconductor seed verification. Target DataHub, target
 object storage, production identity, large data, backup/restore and 60-minute soak gates remain open.
@@ -53,10 +57,11 @@ promotion requires the external deployment to pin the reviewed OCI digests, enab
 enforcement and pass live scan/detail/lineage/apply/read-back contract tests. A matching version
 string alone is not production acceptance evidence.
 
-The frontend is a functional integration baseline, not a completed enterprise UX: catalog facets,
-autocomplete/lineage, policy administration, audit/job browsing, Chat history/SSE/external-model
-adapter, automated KG extraction/projection rebuild and several upload lifecycle endpoints remain
-explicit API backlog.
+The frontend is a functional integration baseline, not a completed enterprise UX. Classification
+policy, inference-profile review/revocation and RESTRICTED-grant administration are implemented.
+Catalog facets, autocomplete/lineage, audit/job browsing, Chat history/SSE/external-model adapter,
+automated KG extraction/projection rebuild and several upload lifecycle endpoints remain explicit API
+backlog.
 
 ## 4. Provisional capacity hypothesis
 
@@ -105,12 +110,13 @@ Proposed production default, pending security/data-owner approval:
 | CONFIDENTIAL | clearance + system/domain | named Chat entitlement only | no prompt/evidence content cache; zero-retention private provider |
 | RESTRICTED | named direct-read entitlement | denied by default | no external LLM; metadata-only operational signals |
 
-The current deterministic Chat calls no external model and persists cited authorized evidence. Until
-a governed classification-policy snapshot and explicit RESTRICTED Search grant can be evaluated,
-catalog Search/detail fail closed above CONFIDENTIAL and every Chat surface retrieves at most
-INTERNAL evidence. This blocks RESTRICTED Search and CONFIDENTIAL/RESTRICTED Chat instead of treating
-clearance as the missing entitlement. Production external inference stays disabled until the full
-matrix, provider-profile attestation and routing controls are approved and enforced.
+The active governed classification-policy snapshot, immutable provider-profile version and exact
+policy-bound RESTRICTED Search grants are now evaluated in Search/detail and Chat retrieval. A
+missing, malformed, expired or revoked dependency falls back to the portable static floor.
+RESTRICTED Search requires both the explicit scope grant and ordinary ABAC; RESTRICTED Chat is always
+denied. The current Chat still calls no external model and persists only validated cited evidence.
+Production external inference remains disabled despite the implemented administration/routing
+eligibility controls.
 
 ## 6. P0 implementation and remaining gates
 
@@ -191,14 +197,19 @@ source/version/locator, effective time, extraction method and canonical content 
 asset/node IDs. A provider-neutral composer returns cited chunk IDs; empty, duplicate, unauthorized
 or hash-invalid citations fail closed to `검증 불가` and persist no citation.
 
-External inference still requires a separate assistant worker so API processes do not hold model
-calls, embedding work or long provider connections. No model provider is configured in this baseline.
+The separate assistant worker source boundary now defines a disabled-first typed execution contract,
+so API processes still make no model call and hold no provider connection. The default adapter has no
+SDK, endpoint, secret or egress and always refuses. No durable inference job, dispatch path or model
+provider is configured in this baseline.
 
-The model receives no SQL, Cypher, arbitrary HTTP or apply/publish tool. Answers without authorized
-citations return `검증 불가`; KG output is only a proposed changeset routed through existing validation,
-independent review and immutable release publication. Maintain a separate red-team corpus for direct/
-indirect prompt injection, poisoned RAG documents, encoding/Unicode, tool abuse, data exfiltration and
-malicious output markup. RAG relevance is not a prompt-injection control.
+The inference package/result schema has no SQL, Cypher, arbitrary HTTP, tool or mutation field.
+Answers without an exact authorized citation subset return `검증 불가`; KG output remains only a future
+proposed changeset routed through existing validation, independent review and immutable publication.
+Before any provider enablement, implement pre-call and post-call live policy/profile/attestation
+revalidation, durable queue/idempotency, SSE timing/cancellation, latency/token/cost/refusal metrics
+and a scaled red-team corpus for direct/indirect prompt injection, poisoned RAG documents,
+encoding/Unicode, tool abuse, data exfiltration and malicious output markup. RAG relevance is not a
+prompt-injection control.
 
 ## 9. P3 deployment and observability decision
 
@@ -209,7 +220,8 @@ are Settings-backed with the previous effective defaults preserved. This proves 
 budget visibility, not multi-replica HA or a target `max_connections` value.
 
 - API: multiple replicas, independent liveness/readiness, explicit pool budget per replica; introduce
-  PgBouncer only after transaction-local RLS context leakage tests.
+  PgBouncer only after transaction-local RLS context leakage tests. The fail-closed probe and unit
+  contract exist, but no PgBouncer deployment or live pass does.
 - PostgreSQL: HA topology, PITR/WAL archive, isolated restore drill, partition/autovacuum plans and
   measured RPO <= 5 minutes/RTO <= 60 minutes.
 - Objects: replicated, encrypted S3-compatible target with lifecycle, checksum, Object Lock where
@@ -221,6 +233,10 @@ budget visibility, not multi-replica HA or a target `max_connections` value.
 - Signals: deploy Prometheus plus OTel Collector/backend with request/trace/job correlation; include
   queue/outbox lag, DB pool/locks, DataHub bulkhead/circuit/latency, cache hit/eviction, projection lag,
   denial rates and later LLM latency/tokens/cost/citation/refusal metrics.
+
+The current Prometheus endpoint now exports bounded configured/current API DB-pool gauges. Database
+lock/wait metrics, multi-replica aggregation, exporters, dashboards, alerts and the OTel pipeline
+remain target-deployment gates.
 
 ## 10. Ordered execution backlog
 
@@ -240,7 +256,8 @@ budget visibility, not multi-replica HA or a target `max_connections` value.
    partitions table-family by table-family only after approved volume/legal inputs, and keep all
    automatic deletion/detach/drop disabled until verified receipts and restore evidence exist.
 6. Apply the P1 decision gate. If it fails, extract search indexing first through the outbox port.
-7. Add the isolated assistant worker and expand the checked-in initial attack corpus into the full
+7. Wire the isolated assistant contract only after durable dispatch and pre/post-call authorization
+   revalidation exist, then expand the checked-in initial attack corpus into the full
    ABAC/prompt-injection/tool-abuse evaluation gate before enabling any external model.
 8. Complete HA/PITR/object recovery, browser E2E, enterprise OIDC/Airflow auth, signed images/SBOM and
    accountable production acceptance.
