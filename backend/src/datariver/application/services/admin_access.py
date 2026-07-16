@@ -126,9 +126,25 @@ class AdminAccessService:
             )
             if membership is None:
                 raise NotFoundError("The administrator workspace membership does not exist.")
-        operations = [AdminOperation.MEMBERSHIP_ACCESS_READ]
+        operations = [
+            AdminOperation.MEMBERSHIP_ACCESS_READ,
+            AdminOperation.CLASSIFICATION_POLICY_READ,
+            AdminOperation.INFERENCE_PROVIDER_PROFILE_READ,
+            AdminOperation.RESTRICTED_SEARCH_GRANT_READ,
+        ]
         if subject.authentication_assurance is AuthenticationAssurance.HARDWARE_WEBAUTHN:
-            operations.append(AdminOperation.MEMBERSHIP_ACCESS_UPDATE)
+            operations.extend(
+                [
+                    AdminOperation.MEMBERSHIP_ACCESS_UPDATE,
+                    AdminOperation.CLASSIFICATION_POLICY_PROPOSE,
+                    AdminOperation.CLASSIFICATION_POLICY_DECIDE,
+                    AdminOperation.INFERENCE_PROVIDER_PROFILE_DECIDE,
+                    AdminOperation.INFERENCE_PROVIDER_PROFILE_REVOKE,
+                    AdminOperation.RESTRICTED_SEARCH_GRANT_PROPOSE,
+                    AdminOperation.RESTRICTED_SEARCH_GRANT_DECIDE,
+                    AdminOperation.RESTRICTED_SEARCH_GRANT_REVOKE,
+                ]
+            )
         if self._fallback_enabled:
             operations.extend(
                 [AdminOperation.FALLBACK_REQUEST_READ, AdminOperation.FALLBACK_REQUEST_DECIDE]

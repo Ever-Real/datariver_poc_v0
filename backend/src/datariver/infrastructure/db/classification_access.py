@@ -1,11 +1,14 @@
 from __future__ import annotations
 
+from collections.abc import Sequence
 from datetime import datetime
+from types import TracebackType
 from typing import Any, cast
 from uuid import UUID
 
-from sqlalchemy import and_, select
-from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy import and_, func, select, text, update
+from sqlalchemy.engine import CursorResult
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from datariver.application.classification_access import (
     ClassificationAccessCandidate,
@@ -13,16 +16,34 @@ from datariver.application.classification_access import (
     ProviderProfileRecord,
     RestrictedGrantRecord,
 )
+from datariver.application.classification_access_admin import ClassificationAccessAdminUnitOfWork
 from datariver.domain.authz import Classification
-from datariver.domain.classification_access import ChatMode, RestrictedSearchScope, SearchMode
-from datariver.domain.common import ConflictError
+from datariver.domain.classification_access import (
+    ChatMode,
+    ClassificationAccessPolicy,
+    ClassificationAccessPolicyState,
+    ClassificationAccessRule,
+    RestrictedSearchGrant,
+    RestrictedSearchGrantState,
+    RestrictedSearchScope,
+    SearchMode,
+)
+from datariver.domain.common import (
+    ConflictError,
+    canonical_json_hash,
+    uuid7,
+)
+from datariver.infrastructure.db.admin_access import SqlMembershipAccessRepository
+from datariver.infrastructure.db.governance import SqlIdempotencyStore, SqlOutboxWriter
 from datariver.infrastructure.db.models.classification_access import (
     ClassificationAccessGenerationModel,
     ClassificationAccessPolicyRuleModel,
     ClassificationAccessPolicyVersionModel,
+    RestrictedSearchGrantEventModel,
     RestrictedSearchGrantModel,
 )
 from datariver.infrastructure.db.models.inference import InferenceProviderProfileVersionModel
+from datariver.infrastructure.db.rls import set_security_context
 
 
 class SqlClassificationAccessSnapshotReader:
@@ -204,4 +225,525 @@ def _candidate_from_rows(rows: list[dict[str, Any]]) -> ClassificationAccessCand
         provider_profiles=tuple(
             profiles[key] for key in sorted(profiles, key=lambda value: value.int)
         ),
+    )
+
+
+class SqlClassificationPolicyRepository:
+    def __init__(self, session: AsyncSession) -> None:
+        self._session = session
+
+    async def add(self, policy: ClassificationAccessPolicy) -> None:
+        self._session.add(_policy_model(policy))
+        self._session.add_all(
+            [
+                ClassificationAccessPolicyRuleModel(
+                    id=uuid7(),
+                    workspace_id=policy.workspace_id,
+                    policy_id=policy.policy_id,
+                    policy_hash=policy.payload_hash,
+                    classification=int(rule.classification),
+                    search_mode=rule.search_mode.value,
+                    chat_mode=rule.chat_mode.value,
+                    provider_profile_version_id=rule.provider_profile_version_id,
+                )
+                for rule in policy.rules
+            ]
+        )
+
+    async def save(self, policy: ClassificationAccessPolicy) -> None:
+        result = await self._session.execute(
+            update(ClassificationAccessPolicyVersionModel)
+            .where(
+                ClassificationAccessPolicyVersionModel.workspace_id == policy.workspace_id,
+                ClassificationAccessPolicyVersionModel.id == policy.policy_id,
+                ClassificationAccessPolicyVersionModel.version == policy.version - 1,
+            )
+            .values(
+                state=policy.state.value,
+                checker_id=policy.checker_id,
+                decision_reason=policy.decision_reason,
+                decision_policy_decision_id=policy.decision_policy_decision_id,
+                decided_at=policy.decided_at,
+                superseded_by=policy.superseded_by,
+                supersede_reason=policy.supersede_reason,
+                supersede_policy_decision_id=policy.supersede_policy_decision_id,
+                superseded_at=policy.superseded_at,
+                version=policy.version,
+            )
+        )
+        if cast(CursorResult[Any], result).rowcount != 1:
+            raise ConflictError("The classification policy was modified by another operation.")
+
+    async def get(
+        self, *, workspace_id: UUID, policy_id: UUID
+    ) -> ClassificationAccessPolicy | None:
+        return await self._one(workspace_id=workspace_id, policy_id=policy_id, lock=False)
+
+    async def get_for_update(
+        self, *, workspace_id: UUID, policy_id: UUID
+    ) -> ClassificationAccessPolicy | None:
+        return await self._one(workspace_id=workspace_id, policy_id=policy_id, lock=True)
+
+    async def get_active(self, *, workspace_id: UUID) -> ClassificationAccessPolicy | None:
+        values = await self._load(
+            workspace_id=workspace_id,
+            state=ClassificationAccessPolicyState.ACTIVE.value,
+            limit=1,
+            lock=False,
+        )
+        return values[0] if values else None
+
+    async def get_active_for_update(
+        self, *, workspace_id: UUID, excluding_policy_id: UUID | None = None
+    ) -> ClassificationAccessPolicy | None:
+        statement = _policy_rows_statement(workspace_id=workspace_id).where(
+            ClassificationAccessPolicyVersionModel.state
+            == ClassificationAccessPolicyState.ACTIVE.value
+        )
+        if excluding_policy_id is not None:
+            statement = statement.where(
+                ClassificationAccessPolicyVersionModel.id != excluding_policy_id
+            )
+        rows = (await self._session.execute(statement.with_for_update())).all()
+        policies = _policies_from_rows(rows)
+        if len(policies) > 1:
+            raise ConflictError("Multiple active classification policies were found.")
+        return policies[0] if policies else None
+
+    async def list(
+        self, *, workspace_id: UUID, state: str | None, limit: int
+    ) -> tuple[ClassificationAccessPolicy, ...]:
+        if limit < 1 or limit > 500:
+            raise ConflictError("The classification policy list limit is invalid.")
+        return await self._load(workspace_id=workspace_id, state=state, limit=limit, lock=False)
+
+    async def next_policy_number(self, *, workspace_id: UUID) -> int:
+        maximum = await self._session.scalar(
+            select(func.max(ClassificationAccessPolicyVersionModel.policy_number)).where(
+                ClassificationAccessPolicyVersionModel.workspace_id == workspace_id
+            )
+        )
+        return int(maximum or 0) + 1
+
+    async def assert_provider_rules_eligible(
+        self, *, policy: ClassificationAccessPolicy, now: datetime
+    ) -> None:
+        enabled = tuple(rule for rule in policy.rules if rule.chat_mode is not ChatMode.DENY)
+        if any(rule.provider_profile_version_id is None for rule in enabled):
+            raise ConflictError("Every enabled Chat rule requires one provider profile.")
+        profile_ids = frozenset(cast(UUID, rule.provider_profile_version_id) for rule in enabled)
+        profiles = (
+            await self._session.scalars(
+                select(InferenceProviderProfileVersionModel)
+                .where(
+                    InferenceProviderProfileVersionModel.workspace_id == policy.workspace_id,
+                    InferenceProviderProfileVersionModel.id.in_(profile_ids),
+                )
+                .with_for_update()
+            )
+        ).all()
+        by_id = {profile.id: profile for profile in profiles}
+        for rule in enabled:
+            profile_id = rule.provider_profile_version_id
+            profile = by_id.get(profile_id) if profile_id is not None else None
+            if (
+                profile is None
+                or profile.state != "APPROVED"
+                or profile.jurisdiction != policy.required_jurisdiction
+                or profile.maximum_classification < int(rule.classification)
+                or profile.residency_attestation_observed_at > now
+                or profile.residency_attestation_expires_at <= now
+                or profile.zero_retention_attestation_observed_at > now
+                or profile.zero_retention_attestation_expires_at <= now
+                or (
+                    rule.chat_mode is ChatMode.INTERNAL_APPROVED_ONLY and profile.kind != "INTERNAL"
+                )
+                or (
+                    rule.classification is Classification.CONFIDENTIAL
+                    and profile.kind != "INTERNAL"
+                )
+            ):
+                raise ConflictError(
+                    "The classification policy references an ineligible provider profile."
+                )
+
+    async def _one(
+        self, *, workspace_id: UUID, policy_id: UUID, lock: bool
+    ) -> ClassificationAccessPolicy | None:
+        statement = _policy_rows_statement(workspace_id=workspace_id).where(
+            ClassificationAccessPolicyVersionModel.id == policy_id
+        )
+        if lock:
+            statement = statement.with_for_update()
+        policies = _policies_from_rows((await self._session.execute(statement)).all())
+        return policies[0] if policies else None
+
+    async def _load(
+        self, *, workspace_id: UUID, state: str | None, limit: int, lock: bool
+    ) -> tuple[ClassificationAccessPolicy, ...]:
+        policy_ids = select(ClassificationAccessPolicyVersionModel.id).where(
+            ClassificationAccessPolicyVersionModel.workspace_id == workspace_id
+        )
+        if state is not None:
+            policy_ids = policy_ids.where(ClassificationAccessPolicyVersionModel.state == state)
+        policy_ids = policy_ids.order_by(
+            ClassificationAccessPolicyVersionModel.policy_number.desc()
+        ).limit(limit)
+        statement = _policy_rows_statement(workspace_id=workspace_id).where(
+            ClassificationAccessPolicyVersionModel.id.in_(policy_ids)
+        )
+        if lock:
+            statement = statement.with_for_update()
+        return _policies_from_rows((await self._session.execute(statement)).all())
+
+
+class SqlRestrictedSearchGrantRepository:
+    def __init__(self, session: AsyncSession) -> None:
+        self._session = session
+
+    async def add(self, grant: RestrictedSearchGrant) -> None:
+        self._session.add(_grant_model(grant))
+        self._session.add(_grant_event_model(grant))
+
+    async def save(self, grant: RestrictedSearchGrant) -> None:
+        result = await self._session.execute(
+            update(RestrictedSearchGrantModel)
+            .where(
+                RestrictedSearchGrantModel.workspace_id == grant.workspace_id,
+                RestrictedSearchGrantModel.id == grant.grant_id,
+                RestrictedSearchGrantModel.version == grant.version - 1,
+            )
+            .values(
+                state=grant.state.value,
+                checker_id=grant.checker_id,
+                decision_reason=grant.decision_reason,
+                decision_policy_decision_id=grant.decision_policy_decision_id,
+                decided_at=grant.decided_at,
+                revoked_by=grant.revoked_by,
+                revocation_reason=grant.revocation_reason,
+                revocation_policy_decision_id=grant.revocation_policy_decision_id,
+                revoked_at=grant.revoked_at,
+                version=grant.version,
+            )
+        )
+        if cast(CursorResult[Any], result).rowcount != 1:
+            raise ConflictError("The RESTRICTED Search grant was modified by another operation.")
+        self._session.add(_grant_event_model(grant))
+
+    async def get(self, *, workspace_id: UUID, grant_id: UUID) -> RestrictedSearchGrant | None:
+        return await self._one(workspace_id=workspace_id, grant_id=grant_id, lock=False)
+
+    async def get_for_update(
+        self, *, workspace_id: UUID, grant_id: UUID
+    ) -> RestrictedSearchGrant | None:
+        return await self._one(workspace_id=workspace_id, grant_id=grant_id, lock=True)
+
+    async def list(
+        self,
+        *,
+        workspace_id: UUID,
+        subject_id: UUID | None,
+        state: str | None,
+        limit: int,
+    ) -> tuple[RestrictedSearchGrant, ...]:
+        if limit < 1 or limit > 500:
+            raise ConflictError("The RESTRICTED Search grant list limit is invalid.")
+        statement = (
+            select(RestrictedSearchGrantModel)
+            .where(RestrictedSearchGrantModel.workspace_id == workspace_id)
+            .order_by(RestrictedSearchGrantModel.created_at.desc())
+            .limit(limit)
+        )
+        if subject_id is not None:
+            statement = statement.where(RestrictedSearchGrantModel.subject_id == subject_id)
+        if state is not None:
+            statement = statement.where(RestrictedSearchGrantModel.state == state)
+        return tuple(
+            _hydrate_grant(model) for model in (await self._session.scalars(statement)).all()
+        )
+
+    async def _one(
+        self, *, workspace_id: UUID, grant_id: UUID, lock: bool
+    ) -> RestrictedSearchGrant | None:
+        statement = select(RestrictedSearchGrantModel).where(
+            RestrictedSearchGrantModel.workspace_id == workspace_id,
+            RestrictedSearchGrantModel.id == grant_id,
+        )
+        if lock:
+            statement = statement.with_for_update()
+        model = (await self._session.scalars(statement)).one_or_none()
+        return _hydrate_grant(model) if model is not None else None
+
+
+class SqlClassificationAccessAdminUnitOfWork(ClassificationAccessAdminUnitOfWork):
+    def __init__(self, session_factory: async_sessionmaker[AsyncSession]) -> None:
+        self._session_factory = session_factory
+        self._session: AsyncSession | None = None
+        self.policies: SqlClassificationPolicyRepository
+        self.grants: SqlRestrictedSearchGrantRepository
+        self.memberships: SqlMembershipAccessRepository
+        self.idempotency: SqlIdempotencyStore
+        self.outbox: SqlOutboxWriter
+        self._committed = False
+
+    async def __aenter__(self) -> SqlClassificationAccessAdminUnitOfWork:
+        self._session = self._session_factory()
+        self.policies = SqlClassificationPolicyRepository(self._session)
+        self.grants = SqlRestrictedSearchGrantRepository(self._session)
+        self.memberships = SqlMembershipAccessRepository(self._session)
+        self.idempotency = SqlIdempotencyStore(self._session)
+        self.outbox = SqlOutboxWriter(self._session)
+        return self
+
+    async def __aexit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc_value: BaseException | None,
+        traceback: TracebackType | None,
+    ) -> None:
+        del exc_value, traceback
+        if self._session is None:
+            return
+        if exc_type is not None or not self._committed:
+            await self._session.rollback()
+        await self._session.close()
+
+    async def set_security_context(self, *, workspace_id: UUID, subject_id: UUID) -> None:
+        if self._session is None:
+            raise RuntimeError("Unit of work has not been entered.")
+        await set_security_context(self._session, workspace_id=workspace_id, subject_id=subject_id)
+
+    async def lock_workspace(self, *, workspace_id: UUID) -> None:
+        if self._session is None:
+            raise RuntimeError("Unit of work has not been entered.")
+        await self._session.execute(
+            text("SELECT pg_advisory_xact_lock(hashtextextended(:lock_key, 0))"),
+            {"lock_key": f"datariver:classification-access:{workspace_id}"},
+        )
+
+    async def commit(self) -> None:
+        if self._session is None:
+            raise RuntimeError("Unit of work has not been entered.")
+        await self._session.commit()
+        self._committed = True
+
+
+def _policy_rows_statement(*, workspace_id: UUID) -> Any:
+    return (
+        select(ClassificationAccessPolicyVersionModel, ClassificationAccessPolicyRuleModel)
+        .join(
+            ClassificationAccessPolicyRuleModel,
+            and_(
+                ClassificationAccessPolicyRuleModel.workspace_id
+                == ClassificationAccessPolicyVersionModel.workspace_id,
+                ClassificationAccessPolicyRuleModel.policy_id
+                == ClassificationAccessPolicyVersionModel.id,
+                ClassificationAccessPolicyRuleModel.policy_hash
+                == ClassificationAccessPolicyVersionModel.payload_hash,
+            ),
+        )
+        .where(ClassificationAccessPolicyVersionModel.workspace_id == workspace_id)
+        .order_by(
+            ClassificationAccessPolicyVersionModel.policy_number.desc(),
+            ClassificationAccessPolicyRuleModel.classification,
+        )
+    )
+
+
+def _policies_from_rows(rows: Sequence[Any]) -> tuple[ClassificationAccessPolicy, ...]:
+    grouped: dict[UUID, tuple[ClassificationAccessPolicyVersionModel, list[Any]]] = {}
+    for policy_model, rule_model in rows:
+        entry = grouped.setdefault(policy_model.id, (policy_model, []))
+        entry[1].append(rule_model)
+    return tuple(_hydrate_policy(model, rules) for model, rules in grouped.values())
+
+
+def _hydrate_policy(
+    model: ClassificationAccessPolicyVersionModel,
+    rule_models: list[ClassificationAccessPolicyRuleModel],
+) -> ClassificationAccessPolicy:
+    try:
+        rules = tuple(
+            ClassificationAccessRule(
+                classification=Classification(rule.classification),
+                search_mode=SearchMode(rule.search_mode),
+                chat_mode=ChatMode(rule.chat_mode),
+                provider_profile_version_id=rule.provider_profile_version_id,
+            )
+            for rule in sorted(rule_models, key=lambda value: value.classification)
+        )
+        state = ClassificationAccessPolicyState(model.state)
+    except ValueError as error:
+        raise ConflictError("The stored classification policy is invalid.") from error
+    if len(rules) != 4 or {rule.classification for rule in rules} != set(Classification):
+        raise ConflictError("The stored classification policy rule set is incomplete.")
+    document = {
+        "required_jurisdiction": model.required_jurisdiction,
+        "restricted_search_grant_maximum_days": model.restricted_search_grant_maximum_days,
+        "rules": [rule.document() for rule in rules],
+    }
+    if canonical_json_hash(document) != model.payload_hash:
+        raise ConflictError("The stored classification policy failed its integrity check.")
+    return ClassificationAccessPolicy(
+        policy_id=model.id,
+        workspace_id=model.workspace_id,
+        policy_number=model.policy_number,
+        required_jurisdiction=model.required_jurisdiction,
+        restricted_search_grant_maximum_days=model.restricted_search_grant_maximum_days,
+        rules=rules,
+        payload_hash=model.payload_hash,
+        requester_id=model.requester_id,
+        request_reason=model.request_reason,
+        request_policy_decision_id=model.request_policy_decision_id,
+        state=state,
+        checker_id=model.checker_id,
+        decision_reason=model.decision_reason,
+        decision_policy_decision_id=model.decision_policy_decision_id,
+        decided_at=model.decided_at,
+        superseded_by=model.superseded_by,
+        supersede_reason=model.supersede_reason,
+        supersede_policy_decision_id=model.supersede_policy_decision_id,
+        superseded_at=model.superseded_at,
+        version=model.version,
+    )
+
+
+def _policy_model(policy: ClassificationAccessPolicy) -> ClassificationAccessPolicyVersionModel:
+    return ClassificationAccessPolicyVersionModel(
+        id=policy.policy_id,
+        workspace_id=policy.workspace_id,
+        policy_number=policy.policy_number,
+        required_jurisdiction=policy.required_jurisdiction,
+        restricted_search_grant_maximum_days=policy.restricted_search_grant_maximum_days,
+        payload_hash=policy.payload_hash,
+        requester_id=policy.requester_id,
+        request_reason=policy.request_reason,
+        request_policy_decision_id=policy.request_policy_decision_id,
+        state=policy.state.value,
+        checker_id=policy.checker_id,
+        decision_reason=policy.decision_reason,
+        decision_policy_decision_id=policy.decision_policy_decision_id,
+        decided_at=policy.decided_at,
+        superseded_by=policy.superseded_by,
+        supersede_reason=policy.supersede_reason,
+        supersede_policy_decision_id=policy.supersede_policy_decision_id,
+        superseded_at=policy.superseded_at,
+        version=policy.version,
+    )
+
+
+def _grant_model(grant: RestrictedSearchGrant) -> RestrictedSearchGrantModel:
+    return RestrictedSearchGrantModel(
+        id=grant.grant_id,
+        workspace_id=grant.workspace_id,
+        classification_policy_id=grant.classification_policy_id,
+        classification_policy_hash=grant.classification_policy_hash,
+        subject_id=grant.subject_id,
+        scope=grant.scope.value,
+        scope_id=grant.scope_id,
+        purpose=grant.purpose,
+        valid_from=grant.valid_from,
+        expires_at=grant.expires_at,
+        payload_hash=grant.payload_hash,
+        requester_id=grant.requester_id,
+        request_reason=grant.request_reason,
+        request_policy_decision_id=grant.request_policy_decision_id,
+        state=grant.state.value,
+        checker_id=grant.checker_id,
+        decision_reason=grant.decision_reason,
+        decision_policy_decision_id=grant.decision_policy_decision_id,
+        decided_at=grant.decided_at,
+        revoked_by=grant.revoked_by,
+        revocation_reason=grant.revocation_reason,
+        revocation_policy_decision_id=grant.revocation_policy_decision_id,
+        revoked_at=grant.revoked_at,
+        version=grant.version,
+    )
+
+
+def _hydrate_grant(model: RestrictedSearchGrantModel) -> RestrictedSearchGrant:
+    try:
+        scope = RestrictedSearchScope(model.scope)
+        state = RestrictedSearchGrantState(model.state)
+    except ValueError as error:
+        raise ConflictError("The stored RESTRICTED Search grant is invalid.") from error
+    document = {
+        "workspace_id": str(model.workspace_id),
+        "classification_policy_id": str(model.classification_policy_id),
+        "classification_policy_hash": model.classification_policy_hash,
+        "subject_id": str(model.subject_id),
+        "scope": scope.value,
+        "scope_id": str(model.scope_id),
+        "purpose": model.purpose,
+        "valid_from": model.valid_from.isoformat(),
+        "expires_at": model.expires_at.isoformat(),
+    }
+    if canonical_json_hash(document) != model.payload_hash:
+        raise ConflictError("The stored RESTRICTED Search grant failed its integrity check.")
+    return RestrictedSearchGrant(
+        grant_id=model.id,
+        workspace_id=model.workspace_id,
+        classification_policy_id=model.classification_policy_id,
+        classification_policy_hash=model.classification_policy_hash,
+        subject_id=model.subject_id,
+        scope=scope,
+        scope_id=model.scope_id,
+        purpose=model.purpose,
+        valid_from=model.valid_from,
+        expires_at=model.expires_at,
+        payload_hash=model.payload_hash,
+        requester_id=model.requester_id,
+        request_reason=model.request_reason,
+        request_policy_decision_id=model.request_policy_decision_id,
+        state=state,
+        checker_id=model.checker_id,
+        decision_reason=model.decision_reason,
+        decision_policy_decision_id=model.decision_policy_decision_id,
+        decided_at=model.decided_at,
+        revoked_by=model.revoked_by,
+        revocation_reason=model.revocation_reason,
+        revocation_policy_decision_id=model.revocation_policy_decision_id,
+        revoked_at=model.revoked_at,
+        version=model.version,
+    )
+
+
+def _grant_event_model(grant: RestrictedSearchGrant) -> RestrictedSearchGrantEventModel:
+    if grant.version == 1:
+        action = "PROPOSED"
+        actor_id = grant.requester_id
+        reason = grant.request_reason
+        policy_decision_id = grant.request_policy_decision_id
+    elif grant.version == 2:
+        if grant.checker_id is None or grant.decision_reason is None:
+            raise ConflictError("The RESTRICTED Search grant decision evidence is incomplete.")
+        action = "APPROVED" if grant.state is RestrictedSearchGrantState.ACTIVE else "REJECTED"
+        actor_id = grant.checker_id
+        reason = grant.decision_reason
+        policy_decision_id = cast(UUID, grant.decision_policy_decision_id)
+    elif grant.version == 3:
+        if grant.revoked_by is None or grant.revocation_reason is None:
+            raise ConflictError("The RESTRICTED Search grant revocation evidence is incomplete.")
+        action = "REVOKED"
+        actor_id = grant.revoked_by
+        reason = grant.revocation_reason
+        policy_decision_id = cast(UUID, grant.revocation_policy_decision_id)
+    else:
+        raise ConflictError("The RESTRICTED Search grant version is invalid.")
+    occurred_at = (
+        grant.events[-1].occurred_at
+        if grant.events
+        else (grant.revoked_at or grant.decided_at or grant.valid_from)
+    )
+    return RestrictedSearchGrantEventModel(
+        id=uuid7(),
+        workspace_id=grant.workspace_id,
+        grant_id=grant.grant_id,
+        action=action,
+        actor_id=actor_id,
+        reason=reason,
+        policy_decision_id=policy_decision_id,
+        occurred_at=occurred_at,
+        grant_version=grant.version,
+        payload_hash=grant.payload_hash,
     )

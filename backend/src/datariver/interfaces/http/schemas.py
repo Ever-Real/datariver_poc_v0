@@ -233,6 +233,16 @@ class AdminReadContextResponse(BaseModel):
             "FALLBACK_REQUEST_CREATE",
             "FALLBACK_REQUEST_DECIDE",
             "FALLBACK_REQUEST_CONSUME",
+            "CLASSIFICATION_POLICY_READ",
+            "CLASSIFICATION_POLICY_PROPOSE",
+            "CLASSIFICATION_POLICY_DECIDE",
+            "INFERENCE_PROVIDER_PROFILE_READ",
+            "INFERENCE_PROVIDER_PROFILE_DECIDE",
+            "INFERENCE_PROVIDER_PROFILE_REVOKE",
+            "RESTRICTED_SEARCH_GRANT_READ",
+            "RESTRICTED_SEARCH_GRANT_PROPOSE",
+            "RESTRICTED_SEARCH_GRANT_DECIDE",
+            "RESTRICTED_SEARCH_GRANT_REVOKE",
         ]
     ]
     action_vocabulary: list[Action]

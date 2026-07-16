@@ -4,8 +4,10 @@ from datariver.interfaces.http.routes import (
     admin,
     catalog,
     chat,
+    classification_access_admin,
     governance,
     health,
+    inference_admin,
     knowledge,
     operations,
     registration,
@@ -15,7 +17,9 @@ from datariver.interfaces.http.routes import (
 
 api_router = APIRouter()
 api_router.include_router(admin.router)
+api_router.include_router(classification_access_admin.router)
 api_router.include_router(health.router)
+api_router.include_router(inference_admin.router)
 api_router.include_router(catalog.router)
 api_router.include_router(governance.router)
 api_router.include_router(registration.router)

@@ -174,7 +174,45 @@ def test_openapi_contains_all_required_product_modules() -> None:
         "/api/v1/admin/fallback/workspace-membership-access-requests",
         "/api/v1/admin/fallback/workspace-membership-access-requests/{access_request_id}/decisions",
         "/api/v1/admin/fallback/workspace-membership-access-requests/{access_request_id}/consume",
+        "/api/v1/admin/classification-access/policies",
+        "/api/v1/admin/classification-access/policies/current",
+        "/api/v1/admin/classification-access/policies/{policy_id}/decisions",
+        "/api/v1/admin/classification-access/restricted-search-grants",
+        "/api/v1/admin/classification-access/restricted-search-grants/{grant_id}/decisions",
+        "/api/v1/admin/classification-access/restricted-search-grants/{grant_id}/revocations",
+        "/api/v1/admin/inference/provider-profiles",
+        "/api/v1/admin/inference/provider-profiles/{profile_version_id}/decisions",
+        "/api/v1/admin/inference/provider-profiles/{profile_version_id}/revocations",
     }.issubset(document["paths"])
+
+
+def test_openapi_keeps_inference_profile_proposals_out_of_the_browser_contract() -> None:
+    factory = cast(Callable[[Settings], AppContainer], lambda _: LiveOnlyContainer())
+    document = create_app(settings(), container_factory=factory).openapi()
+
+    collection = document["paths"]["/api/v1/admin/inference/provider-profiles"]
+    assert set(collection) == {"get"}
+    serialized = str(document["components"]["schemas"]).lower()
+    for forbidden in ("endpoint_url", "api_key", "credential", "secret_key"):
+        assert forbidden not in serialized
+
+
+def test_classification_admin_requests_cannot_supply_policy_bindings_for_grants() -> None:
+    factory = cast(Callable[[Settings], AppContainer], lambda _: LiveOnlyContainer())
+    document = create_app(settings(), container_factory=factory).openapi()
+
+    grant_request = document["components"]["schemas"]["RestrictedSearchGrantProposalRequest"]
+    assert set(grant_request["properties"]) == {
+        "subject_id",
+        "scope",
+        "scope_id",
+        "purpose",
+        "valid_from",
+        "expires_at",
+        "reason",
+    }
+    assert "classification_policy_id" not in grant_request["properties"]
+    assert "classification_policy_hash" not in grant_request["properties"]
 
 
 def test_openapi_exposes_bounded_typed_administrator_read_contracts() -> None:
@@ -216,6 +254,16 @@ def test_openapi_exposes_bounded_typed_administrator_read_contracts() -> None:
         "FALLBACK_REQUEST_CREATE",
         "FALLBACK_REQUEST_DECIDE",
         "FALLBACK_REQUEST_CONSUME",
+        "CLASSIFICATION_POLICY_READ",
+        "CLASSIFICATION_POLICY_PROPOSE",
+        "CLASSIFICATION_POLICY_DECIDE",
+        "INFERENCE_PROVIDER_PROFILE_READ",
+        "INFERENCE_PROVIDER_PROFILE_DECIDE",
+        "INFERENCE_PROVIDER_PROFILE_REVOKE",
+        "RESTRICTED_SEARCH_GRANT_READ",
+        "RESTRICTED_SEARCH_GRANT_PROPOSE",
+        "RESTRICTED_SEARCH_GRANT_DECIDE",
+        "RESTRICTED_SEARCH_GRANT_REVOKE",
     }
     assert context_schema["properties"]["action_vocabulary"]["items"] == {
         "$ref": "#/components/schemas/Action"
