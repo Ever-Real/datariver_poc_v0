@@ -31,6 +31,11 @@ export interface RequestOptions extends RequestInit {
   ifMatch?: string
 }
 
+export interface ApiResponse<T> {
+  data: T
+  etag?: string
+}
+
 export class ApiClient {
   constructor(
     private readonly baseUrl: string,
@@ -39,6 +44,10 @@ export class ApiClient {
   ) {}
 
   async request<T>(path: string, options: RequestOptions = {}): Promise<T> {
+    return (await this.requestWithMeta<T>(path, options)).data
+  }
+
+  async requestWithMeta<T>(path: string, options: RequestOptions = {}): Promise<ApiResponse<T>> {
     const token = this.accessToken()
     if (!token) throw new Error('로그인이 필요합니다.')
     const workspace = this.workspaceId()
@@ -56,8 +65,8 @@ export class ApiClient {
     if (!response.ok) {
       throw new ApiError(await parseProblem(response))
     }
-    if (response.status === 204) return undefined as T
-    return (await response.json()) as T
+    const data = response.status === 204 ? undefined as T : await response.json() as T
+    return { data, etag: response.headers.get('ETag') ?? undefined }
   }
 }
 

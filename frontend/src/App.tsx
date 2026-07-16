@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import { ApiClient } from './api/client'
 import { useAuth } from './auth/AuthProvider'
+import { AdminPage } from './features/admin/AdminPage'
 import { CatalogPage } from './features/catalog/CatalogPage'
 import { ChatPage } from './features/chat/ChatPage'
 import { DashboardPage } from './features/dashboard/DashboardPage'
@@ -17,6 +18,7 @@ const pages = [
   ['knowledge', '지식그래프'],
   ['sharing', 'API 공유'],
   ['chat', 'CHAT'],
+  ['admin', '관리자'],
 ] as const
 type Page = typeof pages[number][0]
 
@@ -89,6 +91,7 @@ export function App() {
           {page === 'knowledge' && <KnowledgePage client={client} />}
           {page === 'sharing' && <SharingPage client={client} onStepUp={auth.beginStepUp} onPasswordReauth={auth.beginPasswordReauth} onEnroll={auth.beginWebAuthnEnrollment} />}
           {page === 'chat' && <ChatPage client={client} />}
+          {page === 'admin' && <AdminPage client={client} onStepUp={auth.beginStepUp} onPasswordReauth={auth.beginPasswordReauth} onEnroll={auth.beginWebAuthnEnrollment} />}
         </div>
       </main>
     </div>

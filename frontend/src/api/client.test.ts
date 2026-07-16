@@ -54,4 +54,17 @@ describe('API problem handling', () => {
 
     expect(fetchMock).toHaveBeenCalledOnce()
   })
+
+  it('returns a response ETag without issuing a second request', async () => {
+    const fetchMock = vi.fn(() => Promise.resolve(new Response(JSON.stringify({ version: 7 }), {
+      status: 200, headers: { ETag: '"7"', 'Content-Type': 'application/json' },
+    })))
+    vi.stubGlobal('fetch', fetchMock)
+    const client = new ApiClient('/api/v1', () => 'token', () => 'workspace')
+
+    await expect(client.requestWithMeta<{ version: number }>('/resource')).resolves.toEqual({
+      data: { version: 7 }, etag: '"7"',
+    })
+    expect(fetchMock).toHaveBeenCalledOnce()
+  })
 })
