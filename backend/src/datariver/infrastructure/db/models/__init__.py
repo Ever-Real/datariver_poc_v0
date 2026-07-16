@@ -13,11 +13,22 @@ from datariver.infrastructure.db.models.catalog import (
     CatalogProjectionWatermarkModel,
     CatalogSyncRunModel,
 )
+from datariver.infrastructure.db.models.classification_access import (
+    ClassificationAccessGenerationModel,
+    ClassificationAccessPolicyRuleModel,
+    ClassificationAccessPolicyVersionModel,
+    RestrictedSearchGrantEventModel,
+    RestrictedSearchGrantModel,
+)
 from datariver.infrastructure.db.models.governance import (
     ApprovalModel,
     ChangeItemModel,
     ChangeRequestModel,
     StateTransitionModel,
+)
+from datariver.infrastructure.db.models.inference import (
+    InferenceProviderGenerationModel,
+    InferenceProviderProfileVersionModel,
 )
 from datariver.infrastructure.db.models.integration import (
     IdempotencyKeyModel,
@@ -80,6 +91,9 @@ __all__ = [
     "ChangeSetModel",
     "ChatMessageModel",
     "ChatSessionModel",
+    "ClassificationAccessGenerationModel",
+    "ClassificationAccessPolicyRuleModel",
+    "ClassificationAccessPolicyVersionModel",
     "ConsumerGrantModel",
     "ErasureRequestEventModel",
     "ErasureRequestModel",
@@ -88,6 +102,8 @@ __all__ = [
     "IdempotencyKeyModel",
     "ImmutableArchiveReceiptModel",
     "InboxMessageModel",
+    "InferenceProviderGenerationModel",
+    "InferenceProviderProfileVersionModel",
     "JobAttemptModel",
     "JobModel",
     "LegalHoldEventModel",
@@ -101,6 +117,8 @@ __all__ = [
     "ReleaseModel",
     "ReleaseNodeModel",
     "ResourceModel",
+    "RestrictedSearchGrantEventModel",
+    "RestrictedSearchGrantModel",
     "RetentionPolicyVersionModel",
     "SeedRunModel",
     "StateTransitionModel",

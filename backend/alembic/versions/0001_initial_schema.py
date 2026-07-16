@@ -350,6 +350,18 @@ def upgrade() -> None:
         op.execute('ALTER TABLE assistant.chat_messages ENABLE ROW LEVEL SECURITY')
         op.execute('ALTER TABLE assistant.chat_messages FORCE ROW LEVEL SECURITY')
         op.execute("CREATE POLICY workspace_isolation ON assistant.chat_messages USING (workspace_id = NULLIF(current_setting('app.workspace_id', true), '')::uuid) WITH CHECK (workspace_id = NULLIF(current_setting('app.workspace_id', true), '')::uuid)")
+        op.create_table('classification_access_generations',
+        sa.Column('workspace_id', sa.Uuid(), nullable=False),
+        sa.Column('generation', sa.BigInteger(), nullable=False),
+        sa.Column('updated_at', sa.DateTime(timezone=True), nullable=False),
+        sa.CheckConstraint('generation >= 0', name=op.f('ck_classification_access_generations_generation_nonnegative')),
+        sa.ForeignKeyConstraint(['workspace_id'], ['platform.workspaces.id'], name=op.f('fk_classification_access_generations_workspace_id_workspaces')),
+        sa.PrimaryKeyConstraint('workspace_id', name=op.f('pk_classification_access_generations')),
+        schema='authz'
+        )
+        op.execute('ALTER TABLE authz.classification_access_generations ENABLE ROW LEVEL SECURITY')
+        op.execute('ALTER TABLE authz.classification_access_generations FORCE ROW LEVEL SECURITY')
+        op.execute("CREATE POLICY workspace_isolation ON authz.classification_access_generations USING (workspace_id = NULLIF(current_setting('app.workspace_id', true), '')::uuid) WITH CHECK (workspace_id = NULLIF(current_setting('app.workspace_id', true), '')::uuid)")
         op.create_table('projection_watermarks',
         sa.Column('workspace_id', sa.Uuid(), nullable=False),
         sa.Column('projection_version', sa.BigInteger(), server_default=sa.text('0'), nullable=False),
@@ -438,6 +450,18 @@ def upgrade() -> None:
         op.execute('ALTER TABLE iam.workspace_memberships ENABLE ROW LEVEL SECURITY')
         op.execute('ALTER TABLE iam.workspace_memberships FORCE ROW LEVEL SECURITY')
         op.execute("CREATE POLICY workspace_isolation ON iam.workspace_memberships USING (workspace_id = NULLIF(current_setting('app.workspace_id', true), '')::uuid) WITH CHECK (workspace_id = NULLIF(current_setting('app.workspace_id', true), '')::uuid)")
+        op.create_table('inference_provider_generations',
+        sa.Column('workspace_id', sa.Uuid(), nullable=False),
+        sa.Column('generation', sa.BigInteger(), nullable=False),
+        sa.Column('updated_at', sa.DateTime(timezone=True), nullable=False),
+        sa.CheckConstraint('generation >= 0', name=op.f('ck_inference_provider_generations_generation_nonnegative')),
+        sa.ForeignKeyConstraint(['workspace_id'], ['platform.workspaces.id'], name=op.f('fk_inference_provider_generations_workspace_id_workspaces')),
+        sa.PrimaryKeyConstraint('workspace_id', name=op.f('pk_inference_provider_generations')),
+        schema='integration'
+        )
+        op.execute('ALTER TABLE integration.inference_provider_generations ENABLE ROW LEVEL SECURITY')
+        op.execute('ALTER TABLE integration.inference_provider_generations FORCE ROW LEVEL SECURITY')
+        op.execute("CREATE POLICY workspace_isolation ON integration.inference_provider_generations USING (workspace_id = NULLIF(current_setting('app.workspace_id', true), '')::uuid) WITH CHECK (workspace_id = NULLIF(current_setting('app.workspace_id', true), '')::uuid)")
         op.create_table('job_attempts',
         sa.Column('workspace_id', sa.Uuid(), nullable=False),
         sa.Column('job_id', sa.Uuid(), nullable=False),
@@ -567,6 +591,52 @@ def upgrade() -> None:
         op.execute('ALTER TABLE assistant.assistant_runs ENABLE ROW LEVEL SECURITY')
         op.execute('ALTER TABLE assistant.assistant_runs FORCE ROW LEVEL SECURITY')
         op.execute("CREATE POLICY workspace_isolation ON assistant.assistant_runs USING (workspace_id = NULLIF(current_setting('app.workspace_id', true), '')::uuid) WITH CHECK (workspace_id = NULLIF(current_setting('app.workspace_id', true), '')::uuid)")
+        op.create_table('classification_access_policy_versions',
+        sa.Column('workspace_id', sa.Uuid(), nullable=False),
+        sa.Column('policy_number', sa.Integer(), nullable=False),
+        sa.Column('required_jurisdiction', sa.String(length=64), nullable=False),
+        sa.Column('restricted_search_grant_maximum_days', sa.Integer(), nullable=False),
+        sa.Column('payload_hash', sa.String(length=64), nullable=False),
+        sa.Column('requester_id', sa.Uuid(), nullable=False),
+        sa.Column('request_reason', sa.String(length=4000), nullable=False),
+        sa.Column('request_policy_decision_id', sa.Uuid(), nullable=False),
+        sa.Column('state', sa.String(length=20), nullable=False),
+        sa.Column('checker_id', sa.Uuid(), nullable=True),
+        sa.Column('decision_reason', sa.String(length=4000), nullable=True),
+        sa.Column('decision_policy_decision_id', sa.Uuid(), nullable=True),
+        sa.Column('decided_at', sa.DateTime(timezone=True), nullable=True),
+        sa.Column('superseded_by', sa.Uuid(), nullable=True),
+        sa.Column('supersede_reason', sa.String(length=4000), nullable=True),
+        sa.Column('supersede_policy_decision_id', sa.Uuid(), nullable=True),
+        sa.Column('superseded_at', sa.DateTime(timezone=True), nullable=True),
+        sa.Column('id', sa.Uuid(), nullable=False),
+        sa.Column('created_at', sa.DateTime(timezone=True), server_default=sa.text('CURRENT_TIMESTAMP'), nullable=False),
+        sa.Column('updated_at', sa.DateTime(timezone=True), server_default=sa.text('CURRENT_TIMESTAMP'), nullable=False),
+        sa.Column('version', sa.Integer(), nullable=False),
+        sa.CheckConstraint("(state = 'PROPOSED' AND version = 1 AND checker_id IS NULL AND decision_reason IS NULL AND decision_policy_decision_id IS NULL AND decided_at IS NULL AND superseded_by IS NULL AND supersede_reason IS NULL AND supersede_policy_decision_id IS NULL AND superseded_at IS NULL) OR (state IN ('ACTIVE', 'REJECTED') AND version = 2 AND checker_id IS NOT NULL AND decision_reason IS NOT NULL AND decision_policy_decision_id IS NOT NULL AND decided_at IS NOT NULL AND superseded_by IS NULL AND supersede_reason IS NULL AND supersede_policy_decision_id IS NULL AND superseded_at IS NULL) OR (state = 'SUPERSEDED' AND version = 3 AND checker_id IS NOT NULL AND decision_reason IS NOT NULL AND decision_policy_decision_id IS NOT NULL AND decided_at IS NOT NULL AND superseded_by IS NOT NULL AND supersede_reason IS NOT NULL AND supersede_policy_decision_id IS NOT NULL AND superseded_at IS NOT NULL)", name=op.f('ck_classification_access_policy_versions_state_shape')),
+        sa.CheckConstraint("payload_hash ~ '^[0-9a-f]{64}$'", name=op.f('ck_classification_access_policy_versions_payload_hash_sha256')),
+        sa.CheckConstraint("state IN ('PROPOSED', 'ACTIVE', 'REJECTED', 'SUPERSEDED')", name=op.f('ck_classification_access_policy_versions_state')),
+        sa.CheckConstraint('checker_id IS NULL OR checker_id <> requester_id', name=op.f('ck_classification_access_policy_versions_independent_checker')),
+        sa.CheckConstraint('length(btrim(request_reason)) > 0 AND (decision_reason IS NULL OR length(btrim(decision_reason)) > 0) AND (supersede_reason IS NULL OR length(btrim(supersede_reason)) > 0)', name=op.f('ck_classification_access_policy_versions_reasons_nonempty')),
+        sa.CheckConstraint('length(btrim(required_jurisdiction)) BETWEEN 1 AND 64', name=op.f('ck_classification_access_policy_versions_jurisdiction')),
+        sa.CheckConstraint('policy_number > 0', name=op.f('ck_classification_access_policy_versions_policy_number_positive')),
+        sa.CheckConstraint('restricted_search_grant_maximum_days BETWEEN 1 AND 365', name=op.f('ck_classification_access_policy_versions_grant_maximum_days')),
+        sa.CheckConstraint('version > 0', name=op.f('ck_classification_access_policy_versions_version_positive')),
+        sa.ForeignKeyConstraint(['workspace_id', 'checker_id'], ['iam.workspace_memberships.workspace_id', 'iam.workspace_memberships.subject_id'], name='fk_classification_policy_versions_checker_membership'),
+        sa.ForeignKeyConstraint(['workspace_id', 'requester_id'], ['iam.workspace_memberships.workspace_id', 'iam.workspace_memberships.subject_id'], name='fk_classification_policy_versions_requester_membership'),
+        sa.ForeignKeyConstraint(['workspace_id', 'superseded_by'], ['iam.workspace_memberships.workspace_id', 'iam.workspace_memberships.subject_id'], name='fk_classification_policy_versions_superseder_membership'),
+        sa.ForeignKeyConstraint(['workspace_id'], ['platform.workspaces.id'], name=op.f('fk_classification_access_policy_versions_workspace_id_workspaces')),
+        sa.PrimaryKeyConstraint('id', name=op.f('pk_classification_access_policy_versions')),
+        sa.UniqueConstraint('workspace_id', 'id', 'payload_hash', name='uq_classification_policy_versions_exact'),
+        sa.UniqueConstraint('workspace_id', 'id', name='uq_classification_policy_versions_workspace_id'),
+        sa.UniqueConstraint('workspace_id', 'policy_number', name='uq_classification_policy_versions_number'),
+        schema='authz'
+        )
+        op.create_index('ix_classification_policy_versions_workspace_number', 'classification_access_policy_versions', ['workspace_id', 'policy_number'], unique=False, schema='authz')
+        op.create_index('uq_classification_policy_versions_workspace_active', 'classification_access_policy_versions', ['workspace_id'], unique=True, schema='authz', postgresql_where=sa.text("state = 'ACTIVE'"))
+        op.execute('ALTER TABLE authz.classification_access_policy_versions ENABLE ROW LEVEL SECURITY')
+        op.execute('ALTER TABLE authz.classification_access_policy_versions FORCE ROW LEVEL SECURITY')
+        op.execute("CREATE POLICY workspace_isolation ON authz.classification_access_policy_versions USING (workspace_id = NULLIF(current_setting('app.workspace_id', true), '')::uuid) WITH CHECK (workspace_id = NULLIF(current_setting('app.workspace_id', true), '')::uuid)")
         op.create_table('admin_access_requests',
         sa.Column('workspace_id', sa.Uuid(), nullable=False),
         sa.Column('requester_id', sa.Uuid(), nullable=False),
@@ -607,6 +677,68 @@ def upgrade() -> None:
         op.execute('ALTER TABLE iam.admin_access_requests ENABLE ROW LEVEL SECURITY')
         op.execute('ALTER TABLE iam.admin_access_requests FORCE ROW LEVEL SECURITY')
         op.execute("CREATE POLICY workspace_isolation ON iam.admin_access_requests USING (workspace_id = NULLIF(current_setting('app.workspace_id', true), '')::uuid) WITH CHECK (workspace_id = NULLIF(current_setting('app.workspace_id', true), '')::uuid)")
+        op.create_table('inference_provider_profile_versions',
+        sa.Column('workspace_id', sa.Uuid(), nullable=False),
+        sa.Column('profile_key', sa.String(length=128), nullable=False),
+        sa.Column('profile_version', sa.Integer(), nullable=False),
+        sa.Column('server_route_key', sa.String(length=128), nullable=False),
+        sa.Column('kind', sa.String(length=20), nullable=False),
+        sa.Column('provider_identity', sa.String(length=256), nullable=False),
+        sa.Column('model_identity', sa.String(length=256), nullable=False),
+        sa.Column('deployment_identity', sa.String(length=256), nullable=False),
+        sa.Column('jurisdiction', sa.String(length=64), nullable=False),
+        sa.Column('region', sa.String(length=64), nullable=False),
+        sa.Column('maximum_classification', sa.Integer(), nullable=False),
+        sa.Column('residency_attestation_fingerprint', sa.String(length=64), nullable=False),
+        sa.Column('residency_attestation_observed_at', sa.DateTime(timezone=True), nullable=False),
+        sa.Column('residency_attestation_expires_at', sa.DateTime(timezone=True), nullable=False),
+        sa.Column('zero_retention_attestation_fingerprint', sa.String(length=64), nullable=False),
+        sa.Column('zero_retention_attestation_observed_at', sa.DateTime(timezone=True), nullable=False),
+        sa.Column('zero_retention_attestation_expires_at', sa.DateTime(timezone=True), nullable=False),
+        sa.Column('payload_hash', sa.String(length=64), nullable=False),
+        sa.Column('maker_id', sa.Uuid(), nullable=False),
+        sa.Column('proposal_reason', sa.String(length=1000), nullable=False),
+        sa.Column('proposal_policy_decision_id', sa.Uuid(), nullable=False),
+        sa.Column('proposed_at', sa.DateTime(timezone=True), nullable=False),
+        sa.Column('state', sa.String(length=20), nullable=False),
+        sa.Column('checker_id', sa.Uuid(), nullable=True),
+        sa.Column('decision_reason', sa.String(length=1000), nullable=True),
+        sa.Column('decision_policy_decision_id', sa.Uuid(), nullable=True),
+        sa.Column('decided_at', sa.DateTime(timezone=True), nullable=True),
+        sa.Column('revoked_by', sa.Uuid(), nullable=True),
+        sa.Column('revocation_reason', sa.String(length=1000), nullable=True),
+        sa.Column('revocation_policy_decision_id', sa.Uuid(), nullable=True),
+        sa.Column('revoked_at', sa.DateTime(timezone=True), nullable=True),
+        sa.Column('id', sa.Uuid(), nullable=False),
+        sa.Column('created_at', sa.DateTime(timezone=True), server_default=sa.text('CURRENT_TIMESTAMP'), nullable=False),
+        sa.Column('updated_at', sa.DateTime(timezone=True), server_default=sa.text('CURRENT_TIMESTAMP'), nullable=False),
+        sa.Column('version', sa.Integer(), nullable=False),
+        sa.CheckConstraint("(state = 'PROPOSED' AND version = 1 AND checker_id IS NULL AND decision_reason IS NULL AND decision_policy_decision_id IS NULL AND decided_at IS NULL AND revoked_by IS NULL AND revocation_reason IS NULL AND revocation_policy_decision_id IS NULL AND revoked_at IS NULL) OR (state IN ('APPROVED', 'REJECTED') AND version = 2 AND checker_id IS NOT NULL AND decision_reason IS NOT NULL AND decision_policy_decision_id IS NOT NULL AND decided_at IS NOT NULL AND revoked_by IS NULL AND revocation_reason IS NULL AND revocation_policy_decision_id IS NULL AND revoked_at IS NULL) OR (state = 'REVOKED' AND version = 3 AND checker_id IS NOT NULL AND decision_reason IS NOT NULL AND decision_policy_decision_id IS NOT NULL AND decided_at IS NOT NULL AND revoked_by IS NOT NULL AND revocation_reason IS NOT NULL AND revocation_policy_decision_id IS NOT NULL AND revoked_at IS NOT NULL)", name=op.f('ck_inference_provider_profile_versions_state_shape')),
+        sa.CheckConstraint("kind <> 'EXTERNAL' OR maximum_classification <= 1", name=op.f('ck_inference_provider_profile_versions_external_classification_floor')),
+        sa.CheckConstraint("kind IN ('INTERNAL', 'EXTERNAL')", name=op.f('ck_inference_provider_profile_versions_kind')),
+        sa.CheckConstraint("payload_hash ~ '^[0-9a-f]{64}$'", name=op.f('ck_inference_provider_profile_versions_payload_hash_sha256')),
+        sa.CheckConstraint("profile_key !~ '://' AND server_route_key !~ '://' AND provider_identity !~ '://' AND model_identity !~ '://' AND deployment_identity !~ '://'", name=op.f('ck_inference_provider_profile_versions_no_endpoint_values')),
+        sa.CheckConstraint("residency_attestation_fingerprint ~ '^[0-9a-f]{64}$' AND zero_retention_attestation_fingerprint ~ '^[0-9a-f]{64}$'", name=op.f('ck_inference_provider_profile_versions_attestation_hashes')),
+        sa.CheckConstraint("state IN ('PROPOSED', 'APPROVED', 'REJECTED', 'REVOKED')", name=op.f('ck_inference_provider_profile_versions_state')),
+        sa.CheckConstraint('checker_id IS NULL OR checker_id <> maker_id', name=op.f('ck_inference_provider_profile_versions_independent_checker')),
+        sa.CheckConstraint('length(btrim(proposal_reason)) > 0 AND (decision_reason IS NULL OR length(btrim(decision_reason)) > 0) AND (revocation_reason IS NULL OR length(btrim(revocation_reason)) > 0)', name=op.f('ck_inference_provider_profile_versions_reasons_nonempty')),
+        sa.CheckConstraint('maximum_classification BETWEEN 0 AND 2', name=op.f('ck_inference_provider_profile_versions_classification')),
+        sa.CheckConstraint('profile_version > 0', name=op.f('ck_inference_provider_profile_versions_profile_version_positive')),
+        sa.CheckConstraint('residency_attestation_expires_at > residency_attestation_observed_at AND zero_retention_attestation_expires_at > zero_retention_attestation_observed_at', name=op.f('ck_inference_provider_profile_versions_attestation_windows')),
+        sa.CheckConstraint('version > 0', name=op.f('ck_inference_provider_profile_versions_version_positive')),
+        sa.ForeignKeyConstraint(['workspace_id', 'checker_id'], ['iam.workspace_memberships.workspace_id', 'iam.workspace_memberships.subject_id'], name='fk_inference_profile_versions_checker_membership'),
+        sa.ForeignKeyConstraint(['workspace_id', 'maker_id'], ['iam.workspace_memberships.workspace_id', 'iam.workspace_memberships.subject_id'], name='fk_inference_profile_versions_maker_membership'),
+        sa.ForeignKeyConstraint(['workspace_id', 'revoked_by'], ['iam.workspace_memberships.workspace_id', 'iam.workspace_memberships.subject_id'], name='fk_inference_profile_versions_revoker_membership'),
+        sa.ForeignKeyConstraint(['workspace_id'], ['platform.workspaces.id'], name=op.f('fk_inference_provider_profile_versions_workspace_id_workspaces')),
+        sa.PrimaryKeyConstraint('id', name=op.f('pk_inference_provider_profile_versions')),
+        sa.UniqueConstraint('workspace_id', 'id', name='uq_inference_profile_versions_workspace_id'),
+        sa.UniqueConstraint('workspace_id', 'profile_key', 'profile_version', name='uq_inference_profile_versions_key_version'),
+        schema='integration'
+        )
+        op.create_index('ix_inference_profile_versions_workspace_state', 'inference_provider_profile_versions', ['workspace_id', 'state', 'profile_key'], unique=False, schema='integration')
+        op.execute('ALTER TABLE integration.inference_provider_profile_versions ENABLE ROW LEVEL SECURITY')
+        op.execute('ALTER TABLE integration.inference_provider_profile_versions FORCE ROW LEVEL SECURITY')
+        op.execute("CREATE POLICY workspace_isolation ON integration.inference_provider_profile_versions USING (workspace_id = NULLIF(current_setting('app.workspace_id', true), '')::uuid) WITH CHECK (workspace_id = NULLIF(current_setting('app.workspace_id', true), '')::uuid)")
         op.create_table('changesets',
         sa.Column('workspace_id', sa.Uuid(), nullable=False),
         sa.Column('graph_id', sa.Uuid(), nullable=False),
@@ -784,6 +916,84 @@ def upgrade() -> None:
         op.execute('ALTER TABLE assistant.evidence_citations ENABLE ROW LEVEL SECURITY')
         op.execute('ALTER TABLE assistant.evidence_citations FORCE ROW LEVEL SECURITY')
         op.execute("CREATE POLICY workspace_isolation ON assistant.evidence_citations USING (workspace_id = NULLIF(current_setting('app.workspace_id', true), '')::uuid) WITH CHECK (workspace_id = NULLIF(current_setting('app.workspace_id', true), '')::uuid)")
+        op.create_table('classification_access_policy_rules',
+        sa.Column('workspace_id', sa.Uuid(), nullable=False),
+        sa.Column('policy_id', sa.Uuid(), nullable=False),
+        sa.Column('policy_hash', sa.String(length=64), nullable=False),
+        sa.Column('classification', sa.Integer(), nullable=False),
+        sa.Column('search_mode', sa.String(length=30), nullable=False),
+        sa.Column('chat_mode', sa.String(length=30), nullable=False),
+        sa.Column('provider_profile_version_id', sa.Uuid(), nullable=True),
+        sa.Column('id', sa.Uuid(), nullable=False),
+        sa.CheckConstraint("(chat_mode = 'DENY' AND provider_profile_version_id IS NULL) OR (chat_mode <> 'DENY' AND provider_profile_version_id IS NOT NULL)", name=op.f('ck_classification_access_policy_rules_provider_binding')),
+        sa.CheckConstraint("(classification = 3 AND search_mode IN ('DENY', 'EXPLICIT_GRANT_ONLY') AND chat_mode = 'DENY') OR (classification <> 3 AND search_mode <> 'EXPLICIT_GRANT_ONLY')", name=op.f('ck_classification_access_policy_rules_restricted_floor')),
+        sa.CheckConstraint("chat_mode IN ('DENY', 'INTERNAL_APPROVED_ONLY', 'APPROVED_PROVIDER_ONLY')", name=op.f('ck_classification_access_policy_rules_chat_mode')),
+        sa.CheckConstraint("classification <> 2 OR chat_mode IN ('DENY', 'INTERNAL_APPROVED_ONLY')", name=op.f('ck_classification_access_policy_rules_confidential_chat_floor')),
+        sa.CheckConstraint("search_mode IN ('ABAC', 'DENY', 'EXPLICIT_GRANT_ONLY')", name=op.f('ck_classification_access_policy_rules_search_mode')),
+        sa.CheckConstraint('classification BETWEEN 0 AND 3', name=op.f('ck_classification_access_policy_rules_classification')),
+        sa.ForeignKeyConstraint(['workspace_id', 'policy_id', 'policy_hash'], ['authz.classification_access_policy_versions.workspace_id', 'authz.classification_access_policy_versions.id', 'authz.classification_access_policy_versions.payload_hash'], name='fk_classification_policy_rules_policy'),
+        sa.ForeignKeyConstraint(['workspace_id', 'provider_profile_version_id'], ['integration.inference_provider_profile_versions.workspace_id', 'integration.inference_provider_profile_versions.id'], name='fk_classification_policy_rules_provider_profile'),
+        sa.ForeignKeyConstraint(['workspace_id'], ['platform.workspaces.id'], name=op.f('fk_classification_access_policy_rules_workspace_id_workspaces')),
+        sa.PrimaryKeyConstraint('id', name=op.f('pk_classification_access_policy_rules')),
+        sa.UniqueConstraint('workspace_id', 'policy_id', 'classification', name='uq_classification_policy_rules_classification'),
+        schema='authz'
+        )
+        op.create_index('ix_classification_policy_rules_policy', 'classification_access_policy_rules', ['workspace_id', 'policy_id'], unique=False, schema='authz')
+        op.execute('ALTER TABLE authz.classification_access_policy_rules ENABLE ROW LEVEL SECURITY')
+        op.execute('ALTER TABLE authz.classification_access_policy_rules FORCE ROW LEVEL SECURITY')
+        op.execute("CREATE POLICY workspace_isolation ON authz.classification_access_policy_rules USING (workspace_id = NULLIF(current_setting('app.workspace_id', true), '')::uuid) WITH CHECK (workspace_id = NULLIF(current_setting('app.workspace_id', true), '')::uuid)")
+        op.create_table('restricted_search_grants',
+        sa.Column('workspace_id', sa.Uuid(), nullable=False),
+        sa.Column('classification_policy_id', sa.Uuid(), nullable=False),
+        sa.Column('classification_policy_hash', sa.String(length=64), nullable=False),
+        sa.Column('subject_id', sa.Uuid(), nullable=False),
+        sa.Column('scope', sa.String(length=20), nullable=False),
+        sa.Column('scope_id', sa.Uuid(), nullable=False),
+        sa.Column('purpose', sa.String(length=4000), nullable=False),
+        sa.Column('valid_from', sa.DateTime(timezone=True), nullable=False),
+        sa.Column('expires_at', sa.DateTime(timezone=True), nullable=False),
+        sa.Column('payload_hash', sa.String(length=64), nullable=False),
+        sa.Column('requester_id', sa.Uuid(), nullable=False),
+        sa.Column('request_reason', sa.String(length=4000), nullable=False),
+        sa.Column('request_policy_decision_id', sa.Uuid(), nullable=False),
+        sa.Column('state', sa.String(length=20), nullable=False),
+        sa.Column('checker_id', sa.Uuid(), nullable=True),
+        sa.Column('decision_reason', sa.String(length=4000), nullable=True),
+        sa.Column('decision_policy_decision_id', sa.Uuid(), nullable=True),
+        sa.Column('decided_at', sa.DateTime(timezone=True), nullable=True),
+        sa.Column('revoked_by', sa.Uuid(), nullable=True),
+        sa.Column('revocation_reason', sa.String(length=4000), nullable=True),
+        sa.Column('revocation_policy_decision_id', sa.Uuid(), nullable=True),
+        sa.Column('revoked_at', sa.DateTime(timezone=True), nullable=True),
+        sa.Column('id', sa.Uuid(), nullable=False),
+        sa.Column('created_at', sa.DateTime(timezone=True), server_default=sa.text('CURRENT_TIMESTAMP'), nullable=False),
+        sa.Column('updated_at', sa.DateTime(timezone=True), server_default=sa.text('CURRENT_TIMESTAMP'), nullable=False),
+        sa.Column('version', sa.Integer(), nullable=False),
+        sa.CheckConstraint("(state = 'PENDING' AND version = 1 AND checker_id IS NULL AND decision_reason IS NULL AND decision_policy_decision_id IS NULL AND decided_at IS NULL AND revoked_by IS NULL AND revocation_reason IS NULL AND revocation_policy_decision_id IS NULL AND revoked_at IS NULL) OR (state IN ('ACTIVE', 'REJECTED') AND version = 2 AND checker_id IS NOT NULL AND decision_reason IS NOT NULL AND decision_policy_decision_id IS NOT NULL AND decided_at IS NOT NULL AND revoked_by IS NULL AND revocation_reason IS NULL AND revocation_policy_decision_id IS NULL AND revoked_at IS NULL) OR (state = 'REVOKED' AND version = 3 AND checker_id IS NOT NULL AND decision_reason IS NOT NULL AND decision_policy_decision_id IS NOT NULL AND decided_at IS NOT NULL AND revoked_by IS NOT NULL AND revocation_reason IS NOT NULL AND revocation_policy_decision_id IS NOT NULL AND revoked_at IS NOT NULL)", name=op.f('ck_restricted_search_grants_state_shape')),
+        sa.CheckConstraint("classification_policy_hash ~ '^[0-9a-f]{64}$'", name=op.f('ck_restricted_search_grants_policy_hash_sha256')),
+        sa.CheckConstraint("payload_hash ~ '^[0-9a-f]{64}$'", name=op.f('ck_restricted_search_grants_payload_hash_sha256')),
+        sa.CheckConstraint("scope IN ('RESOURCE', 'SYSTEM', 'DOMAIN')", name=op.f('ck_restricted_search_grants_scope')),
+        sa.CheckConstraint("state IN ('PENDING', 'ACTIVE', 'REJECTED', 'REVOKED')", name=op.f('ck_restricted_search_grants_state')),
+        sa.CheckConstraint('checker_id IS NULL OR checker_id <> requester_id', name=op.f('ck_restricted_search_grants_independent_checker')),
+        sa.CheckConstraint('checker_id IS NULL OR checker_id <> subject_id', name=op.f('ck_restricted_search_grants_subject_cannot_check')),
+        sa.CheckConstraint('expires_at > valid_from', name=op.f('ck_restricted_search_grants_validity_window')),
+        sa.CheckConstraint('length(btrim(purpose)) > 0 AND length(btrim(request_reason)) > 0 AND (decision_reason IS NULL OR length(btrim(decision_reason)) > 0) AND (revocation_reason IS NULL OR length(btrim(revocation_reason)) > 0)', name=op.f('ck_restricted_search_grants_reasons_nonempty')),
+        sa.CheckConstraint('version > 0', name=op.f('ck_restricted_search_grants_version_positive')),
+        sa.ForeignKeyConstraint(['workspace_id', 'checker_id'], ['iam.workspace_memberships.workspace_id', 'iam.workspace_memberships.subject_id'], name='fk_restricted_search_grants_checker_membership'),
+        sa.ForeignKeyConstraint(['workspace_id', 'classification_policy_id', 'classification_policy_hash'], ['authz.classification_access_policy_versions.workspace_id', 'authz.classification_access_policy_versions.id', 'authz.classification_access_policy_versions.payload_hash'], name='fk_restricted_search_grants_policy'),
+        sa.ForeignKeyConstraint(['workspace_id', 'requester_id'], ['iam.workspace_memberships.workspace_id', 'iam.workspace_memberships.subject_id'], name='fk_restricted_search_grants_requester_membership'),
+        sa.ForeignKeyConstraint(['workspace_id', 'revoked_by'], ['iam.workspace_memberships.workspace_id', 'iam.workspace_memberships.subject_id'], name='fk_restricted_search_grants_revoker_membership'),
+        sa.ForeignKeyConstraint(['workspace_id', 'subject_id'], ['iam.workspace_memberships.workspace_id', 'iam.workspace_memberships.subject_id'], name='fk_restricted_search_grants_subject_membership'),
+        sa.ForeignKeyConstraint(['workspace_id'], ['platform.workspaces.id'], name=op.f('fk_restricted_search_grants_workspace_id_workspaces')),
+        sa.PrimaryKeyConstraint('id', name=op.f('pk_restricted_search_grants')),
+        sa.UniqueConstraint('workspace_id', 'id', name='uq_restricted_search_grants_workspace_id'),
+        schema='authz'
+        )
+        op.create_index('ix_restricted_search_grants_scope_active', 'restricted_search_grants', ['workspace_id', 'scope', 'scope_id', 'state', 'expires_at'], unique=False, schema='authz')
+        op.create_index('ix_restricted_search_grants_subject_active', 'restricted_search_grants', ['workspace_id', 'subject_id', 'state', 'expires_at'], unique=False, schema='authz')
+        op.execute('ALTER TABLE authz.restricted_search_grants ENABLE ROW LEVEL SECURITY')
+        op.execute('ALTER TABLE authz.restricted_search_grants FORCE ROW LEVEL SECURITY')
+        op.execute("CREATE POLICY workspace_isolation ON authz.restricted_search_grants USING (workspace_id = NULLIF(current_setting('app.workspace_id', true), '')::uuid) WITH CHECK (workspace_id = NULLIF(current_setting('app.workspace_id', true), '')::uuid)")
         op.create_table('admin_access_approvals',
         sa.Column('workspace_id', sa.Uuid(), nullable=False),
         sa.Column('access_request_id', sa.Uuid(), nullable=False),
@@ -1095,6 +1305,32 @@ def upgrade() -> None:
         op.execute('ALTER TABLE sharing.api_product_versions ENABLE ROW LEVEL SECURITY')
         op.execute('ALTER TABLE sharing.api_product_versions FORCE ROW LEVEL SECURITY')
         op.execute("CREATE POLICY workspace_isolation ON sharing.api_product_versions USING (workspace_id = NULLIF(current_setting('app.workspace_id', true), '')::uuid) WITH CHECK (workspace_id = NULLIF(current_setting('app.workspace_id', true), '')::uuid)")
+        op.create_table('restricted_search_grant_events',
+        sa.Column('workspace_id', sa.Uuid(), nullable=False),
+        sa.Column('grant_id', sa.Uuid(), nullable=False),
+        sa.Column('action', sa.String(length=20), nullable=False),
+        sa.Column('actor_id', sa.Uuid(), nullable=False),
+        sa.Column('reason', sa.String(length=4000), nullable=False),
+        sa.Column('policy_decision_id', sa.Uuid(), nullable=False),
+        sa.Column('occurred_at', sa.DateTime(timezone=True), nullable=False),
+        sa.Column('grant_version', sa.Integer(), nullable=False),
+        sa.Column('payload_hash', sa.String(length=64), nullable=False),
+        sa.Column('id', sa.Uuid(), nullable=False),
+        sa.CheckConstraint("action IN ('PROPOSED', 'APPROVED', 'REJECTED', 'REVOKED')", name=op.f('ck_restricted_search_grant_events_action')),
+        sa.CheckConstraint("payload_hash ~ '^[0-9a-f]{64}$'", name=op.f('ck_restricted_search_grant_events_payload_hash_sha256')),
+        sa.CheckConstraint('grant_version BETWEEN 1 AND 3', name=op.f('ck_restricted_search_grant_events_grant_version')),
+        sa.CheckConstraint('length(btrim(reason)) > 0', name=op.f('ck_restricted_search_grant_events_reason_nonempty')),
+        sa.ForeignKeyConstraint(['workspace_id', 'actor_id'], ['iam.workspace_memberships.workspace_id', 'iam.workspace_memberships.subject_id'], name='fk_restricted_search_grant_events_actor_membership'),
+        sa.ForeignKeyConstraint(['workspace_id', 'grant_id'], ['authz.restricted_search_grants.workspace_id', 'authz.restricted_search_grants.id'], name='fk_restricted_search_grant_events_grant'),
+        sa.ForeignKeyConstraint(['workspace_id'], ['platform.workspaces.id'], name=op.f('fk_restricted_search_grant_events_workspace_id_workspaces')),
+        sa.PrimaryKeyConstraint('id', name=op.f('pk_restricted_search_grant_events')),
+        sa.UniqueConstraint('workspace_id', 'grant_id', 'grant_version', name='uq_grant_events_version'),
+        schema='authz'
+        )
+        op.create_index('ix_restricted_search_grant_events_grant', 'restricted_search_grant_events', ['workspace_id', 'grant_id', 'occurred_at'], unique=False, schema='authz')
+        op.execute('ALTER TABLE authz.restricted_search_grant_events ENABLE ROW LEVEL SECURITY')
+        op.execute('ALTER TABLE authz.restricted_search_grant_events FORCE ROW LEVEL SECURITY')
+        op.execute("CREATE POLICY workspace_isolation ON authz.restricted_search_grant_events USING (workspace_id = NULLIF(current_setting('app.workspace_id', true), '')::uuid) WITH CHECK (workspace_id = NULLIF(current_setting('app.workspace_id', true), '')::uuid)")
         op.create_table('erasure_request_events',
         sa.Column('workspace_id', sa.Uuid(), nullable=False),
         sa.Column('erasure_request_id', sa.Uuid(), nullable=False),
@@ -1184,6 +1420,7 @@ def downgrade() -> None:
         op.drop_table('api_invocations', schema='sharing')
         op.drop_table('consumer_grants', schema='sharing')
         op.drop_table('erasure_request_events', schema='retention')
+        op.drop_table('restricted_search_grant_events', schema='authz')
         op.drop_table('api_product_versions', schema='sharing')
         op.drop_table('legal_hold_events', schema='retention')
         op.drop_table('immutable_archive_receipts', schema='retention')
@@ -1194,22 +1431,28 @@ def downgrade() -> None:
         op.drop_table('projection_deployments', schema='knowledge')
         op.drop_table('change_operations', schema='knowledge')
         op.drop_table('admin_access_approvals', schema='iam')
+        op.drop_table('restricted_search_grants', schema='authz')
+        op.drop_table('classification_access_policy_rules', schema='authz')
         op.drop_table('evidence_citations', schema='assistant')
         op.drop_table('policy_versions', schema='retention')
         op.drop_table('legal_holds', schema='retention')
         op.drop_table('releases', schema='knowledge')
         op.drop_table('changesets', schema='knowledge')
+        op.drop_table('inference_provider_profile_versions', schema='integration')
         op.drop_table('admin_access_requests', schema='iam')
+        op.drop_table('classification_access_policy_versions', schema='authz')
         op.drop_table('assistant_runs', schema='assistant')
         op.drop_table('api_products', schema='sharing')
         op.drop_table('archive_capability_attestations', schema='retention')
         op.drop_table('ontology_versions', schema='knowledge')
         op.drop_table('job_attempts', schema='integration')
+        op.drop_table('inference_provider_generations', schema='integration')
         op.drop_table('workspace_memberships', schema='iam')
         op.drop_table('state_transitions', schema='governance')
         op.drop_table('change_request_items', schema='governance')
         op.drop_table('approvals', schema='governance')
         op.drop_table('projection_watermarks', schema='catalog')
+        op.drop_table('classification_access_generations', schema='authz')
         op.drop_table('chat_messages', schema='assistant')
         op.drop_table('workspaces', schema='platform')
         op.drop_table('graphs', schema='knowledge')
