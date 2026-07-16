@@ -13,10 +13,8 @@ An object store contains archive bytes but never decides whether data is eligibl
 release or erasure.
 
 Retention durations are authored, independently approved, versioned and activated as deployment or
-workspace operating data. Values discussed for one installation, including the proposed
-30-day/90-day/13-month/7-year profile, are examples of an operating policy input and are not
-portable source defaults. No duration value, object lifecycle rule or expired timestamp enables a
-delete by itself.
+workspace operating data. Installation-specific durations are not portable source defaults. No
+duration value, object lifecycle rule or expired timestamp enables a delete by itself.
 
 Legal Hold takes precedence over every ordinary expiry and deletion policy. The UI may present a
 toggle, but the application translates it into typed place or governed release commands with an

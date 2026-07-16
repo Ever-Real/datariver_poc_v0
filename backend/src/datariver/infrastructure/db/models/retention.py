@@ -4,6 +4,8 @@ from datetime import datetime
 from uuid import UUID
 
 from sqlalchemy import (
+    BigInteger,
+    Boolean,
     CheckConstraint,
     ForeignKey,
     ForeignKeyConstraint,
@@ -446,3 +448,290 @@ class ErasureRequestEventModel(Base, UuidPrimaryKeyMixin):
     occurred_at: Mapped[datetime] = mapped_column(nullable=False)
     request_version: Mapped[int] = mapped_column(Integer, nullable=False)
     payload_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+
+
+class ArchiveCapabilityAttestationModel(Base, UuidPrimaryKeyMixin):
+    __tablename__ = "archive_capability_attestations"
+    __table_args__ = (
+        UniqueConstraint(
+            "workspace_id", "id", name="uq_archive_capability_attestations_workspace_id_id"
+        ),
+        UniqueConstraint(
+            "workspace_id",
+            "id",
+            "configuration_fingerprint",
+            "encryption_profile_fingerprint",
+            "runtime_principal_fingerprint",
+            name="uq_archive_capability_attestations_workspace_id_fingerprint",
+        ),
+        UniqueConstraint(
+            "workspace_id",
+            "configuration_fingerprint",
+            "observed_at",
+            name="uq_archive_capability_attestations_observation",
+        ),
+        CheckConstraint(
+            "configuration_fingerprint ~ '^[0-9a-f]{64}$'",
+            name="configuration_fingerprint_sha256",
+        ),
+        CheckConstraint(
+            "encryption_profile_fingerprint ~ '^[0-9a-f]{64}$'",
+            name="encryption_profile_fingerprint_sha256",
+        ),
+        CheckConstraint(
+            "runtime_principal_fingerprint ~ '^[0-9a-f]{64}$'",
+            name="runtime_principal_fingerprint_sha256",
+        ),
+        CheckConstraint("challenge_hash ~ '^[0-9a-f]{64}$'", name="challenge_hash_sha256"),
+        CheckConstraint(
+            "length(probe_contract_version) BETWEEN 1 AND 100",
+            name="probe_contract_version",
+        ),
+        CheckConstraint(
+            "object_bucket ~ '^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$'",
+            name="object_bucket",
+        ),
+        CheckConstraint("payload_hash ~ '^[0-9a-f]{64}$'", name="payload_hash_sha256"),
+        CheckConstraint(
+            "expires_at > observed_at AND expires_at <= observed_at + INTERVAL '24 hours'",
+            name="observation_window",
+        ),
+        CheckConstraint("state IN ('VERIFIED', 'FAILED')", name="state"),
+        CheckConstraint(
+            "(state = 'VERIFIED' AND failure_code IS NULL "
+            "AND versioning_enabled AND object_lock_enabled "
+            "AND compliance_retention_supported AND checksum_sha256_supported "
+            "AND full_readback_verified AND retention_shorten_denied "
+            "AND retained_version_delete_denied) OR "
+            "(state = 'FAILED' AND failure_code IS NOT NULL "
+            "AND length(btrim(failure_code)) BETWEEN 1 AND 100)",
+            name="state_shape",
+        ),
+        Index(
+            "ix_archive_capability_attestations_workspace_observed",
+            "workspace_id",
+            "configuration_fingerprint",
+            "observed_at",
+        ),
+        {"schema": "retention"},
+    )
+
+    workspace_id: Mapped[UUID] = mapped_column(
+        Uuid(as_uuid=True), ForeignKey("platform.workspaces.id"), nullable=False
+    )
+    configuration_fingerprint: Mapped[str] = mapped_column(String(64), nullable=False)
+    encryption_profile_fingerprint: Mapped[str] = mapped_column(String(64), nullable=False)
+    runtime_principal_fingerprint: Mapped[str] = mapped_column(String(64), nullable=False)
+    probe_contract_version: Mapped[str] = mapped_column(String(100), nullable=False)
+    challenge_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    object_bucket: Mapped[str] = mapped_column(String(63), nullable=False)
+    observed_at: Mapped[datetime] = mapped_column(nullable=False)
+    expires_at: Mapped[datetime] = mapped_column(nullable=False)
+    versioning_enabled: Mapped[bool] = mapped_column(Boolean, nullable=False)
+    object_lock_enabled: Mapped[bool] = mapped_column(Boolean, nullable=False)
+    compliance_retention_supported: Mapped[bool] = mapped_column(Boolean, nullable=False)
+    checksum_sha256_supported: Mapped[bool] = mapped_column(Boolean, nullable=False)
+    full_readback_verified: Mapped[bool] = mapped_column(Boolean, nullable=False)
+    retention_shorten_denied: Mapped[bool] = mapped_column(Boolean, nullable=False)
+    retained_version_delete_denied: Mapped[bool] = mapped_column(Boolean, nullable=False)
+    state: Mapped[str] = mapped_column(String(20), nullable=False)
+    failure_code: Mapped[str | None] = mapped_column(String(100))
+    payload_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    recorded_at: Mapped[datetime] = mapped_column(
+        nullable=False, server_default=text("CURRENT_TIMESTAMP")
+    )
+
+
+class ImmutableArchiveReceiptModel(Base, UuidPrimaryKeyMixin):
+    __tablename__ = "immutable_archive_receipts"
+    __table_args__ = (
+        UniqueConstraint(
+            "workspace_id", "id", name="uq_immutable_archive_receipts_workspace_id_id"
+        ),
+        UniqueConstraint(
+            "workspace_id",
+            "source",
+            "source_start",
+            "source_end",
+            "manifest_hash",
+            name="uq_immutable_archive_receipts_source_manifest",
+        ),
+        UniqueConstraint(
+            "object_bucket",
+            "object_key",
+            "object_version_id",
+            name="uq_immutable_archive_receipts_object_version",
+        ),
+        ForeignKeyConstraint(
+            [
+                "workspace_id",
+                "capability_attestation_id",
+                "capability_fingerprint",
+                "encryption_profile_fingerprint",
+                "worker_principal_fingerprint",
+            ],
+            [
+                "retention.archive_capability_attestations.workspace_id",
+                "retention.archive_capability_attestations.id",
+                "retention.archive_capability_attestations.configuration_fingerprint",
+                "retention.archive_capability_attestations.encryption_profile_fingerprint",
+                "retention.archive_capability_attestations.runtime_principal_fingerprint",
+            ],
+            name="fk_immutable_archive_receipts_capability_attestation",
+        ),
+        ForeignKeyConstraint(
+            ["workspace_id", "retention_policy_id", "retention_policy_hash"],
+            [
+                "retention.policy_versions.workspace_id",
+                "retention.policy_versions.id",
+                "retention.policy_versions.payload_hash",
+            ],
+            name="fk_immutable_archive_receipts_retention_policy",
+        ),
+        CheckConstraint(
+            "source IN ('OUTBOX_EVENTS', 'INBOX_MESSAGES', 'POLICY_DECISIONS', 'ASSISTANT_RUNS')",
+            name="source",
+        ),
+        CheckConstraint(
+            "source_partition ~ '^[a-z][a-z0-9_]{1,49}_[0-9]{4}_[0-9]{2}$'",
+            name="source_partition",
+        ),
+        CheckConstraint("row_count > 0", name="row_count_positive"),
+        CheckConstraint("byte_count > 0", name="byte_count_positive"),
+        CheckConstraint("source_end > source_start", name="source_range"),
+        CheckConstraint("manifest_hash ~ '^[0-9a-f]{64}$'", name="manifest_hash_sha256"),
+        CheckConstraint("content_sha256 ~ '^[0-9a-f]{64}$'", name="content_sha256"),
+        CheckConstraint("length(provider_checksum) BETWEEN 1 AND 512", name="provider_checksum"),
+        CheckConstraint("provider_checksum_algorithm = 'SHA256'", name="checksum_algorithm"),
+        CheckConstraint(
+            "provider_checksum_encoding IN ('HEX', 'BASE64')", name="checksum_encoding"
+        ),
+        CheckConstraint("provider_checksum_type = 'FULL_OBJECT'", name="checksum_type"),
+        CheckConstraint(
+            "provider_checksum_normalized_sha256 ~ '^[0-9a-f]{64}$'",
+            name="provider_checksum_normalized_sha256",
+        ),
+        CheckConstraint("readback_sha256 ~ '^[0-9a-f]{64}$'", name="readback_sha256"),
+        CheckConstraint("readback_byte_count > 0", name="readback_byte_count_positive"),
+        CheckConstraint(
+            "content_sha256 = readback_sha256 "
+            "AND content_sha256 = provider_checksum_normalized_sha256 "
+            "AND byte_count = readback_byte_count",
+            name="content_readback_match",
+        ),
+        CheckConstraint(
+            "object_bucket ~ '^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$'",
+            name="object_bucket",
+        ),
+        CheckConstraint(
+            "length(object_key) BETWEEN 1 AND 1024 AND object_key !~ '^/'",
+            name="object_key",
+        ),
+        CheckConstraint(
+            "length(object_version_id) BETWEEN 1 AND 1024 "
+            "AND lower(btrim(object_version_id)) <> 'null'",
+            name="object_version_id",
+        ),
+        CheckConstraint("retention_mode = 'COMPLIANCE'", name="retention_mode"),
+        CheckConstraint(
+            "retention_until = requested_retention_until "
+            "AND retention_until = readback_retention_until "
+            "AND retention_until > verified_at",
+            name="retention_readback_match",
+        ),
+        CheckConstraint(
+            "written_at <= content_verified_at "
+            "AND written_at <= retention_verified_at "
+            "AND content_verified_at <= verified_at "
+            "AND retention_verified_at <= verified_at",
+            name="verification_timeline",
+        ),
+        CheckConstraint(
+            "retention_policy_hash ~ '^[0-9a-f]{64}$'",
+            name="retention_policy_hash_sha256",
+        ),
+        CheckConstraint(
+            "capability_fingerprint ~ '^[0-9a-f]{64}$'",
+            name="capability_fingerprint_sha256",
+        ),
+        CheckConstraint(
+            "encryption_profile_fingerprint ~ '^[0-9a-f]{64}$'",
+            name="encryption_profile_fingerprint_sha256",
+        ),
+        CheckConstraint("payload_hash ~ '^[0-9a-f]{64}$'", name="payload_hash_sha256"),
+        CheckConstraint(
+            "worker_principal_fingerprint ~ '^[0-9a-f]{64}$'",
+            name="worker_principal_fingerprint_sha256",
+        ),
+        CheckConstraint(
+            "length(correlation_id) BETWEEN 1 AND 100",
+            name="correlation_id",
+        ),
+        CheckConstraint(
+            "length(canonicalization_version) BETWEEN 1 AND 100 "
+            "AND length(media_type) BETWEEN 1 AND 255 "
+            "AND length(media_type_version) BETWEEN 1 AND 100 "
+            "AND length(compression) BETWEEN 1 AND 50 "
+            "AND length(compression_version) BETWEEN 1 AND 100",
+            name="format_metadata",
+        ),
+        Index(
+            "ix_immutable_archive_receipts_workspace_source",
+            "workspace_id",
+            "source",
+            "source_partition",
+        ),
+        Index(
+            "ix_immutable_archive_receipts_workspace_verified",
+            "workspace_id",
+            "verified_at",
+        ),
+        {"schema": "retention"},
+    )
+
+    workspace_id: Mapped[UUID] = mapped_column(
+        Uuid(as_uuid=True), ForeignKey("platform.workspaces.id"), nullable=False
+    )
+    source: Mapped[str] = mapped_column(String(32), nullable=False)
+    source_partition: Mapped[str] = mapped_column(String(64), nullable=False)
+    source_start: Mapped[datetime] = mapped_column(nullable=False)
+    source_end: Mapped[datetime] = mapped_column(nullable=False)
+    retention_policy_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), nullable=False)
+    retention_policy_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    row_count: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    byte_count: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    manifest_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    content_sha256: Mapped[str] = mapped_column(String(64), nullable=False)
+    provider_checksum: Mapped[str] = mapped_column(String(512), nullable=False)
+    provider_checksum_algorithm: Mapped[str] = mapped_column(String(20), nullable=False)
+    provider_checksum_encoding: Mapped[str] = mapped_column(String(20), nullable=False)
+    provider_checksum_type: Mapped[str] = mapped_column(String(30), nullable=False)
+    provider_checksum_normalized_sha256: Mapped[str] = mapped_column(String(64), nullable=False)
+    readback_sha256: Mapped[str] = mapped_column(String(64), nullable=False)
+    readback_byte_count: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    object_bucket: Mapped[str] = mapped_column(String(63), nullable=False)
+    object_key: Mapped[str] = mapped_column(String(1024), nullable=False)
+    object_version_id: Mapped[str] = mapped_column(String(1024), nullable=False)
+    retention_mode: Mapped[str] = mapped_column(String(20), nullable=False)
+    retention_until: Mapped[datetime] = mapped_column(nullable=False)
+    requested_retention_until: Mapped[datetime] = mapped_column(nullable=False)
+    readback_retention_until: Mapped[datetime] = mapped_column(nullable=False)
+    legal_hold: Mapped[bool] = mapped_column(Boolean, nullable=False)
+    written_at: Mapped[datetime] = mapped_column(nullable=False)
+    content_verified_at: Mapped[datetime] = mapped_column(nullable=False)
+    retention_verified_at: Mapped[datetime] = mapped_column(nullable=False)
+    verified_at: Mapped[datetime] = mapped_column(nullable=False)
+    canonicalization_version: Mapped[str] = mapped_column(String(100), nullable=False)
+    media_type: Mapped[str] = mapped_column(String(255), nullable=False)
+    media_type_version: Mapped[str] = mapped_column(String(100), nullable=False)
+    compression: Mapped[str] = mapped_column(String(50), nullable=False)
+    compression_version: Mapped[str] = mapped_column(String(100), nullable=False)
+    worker_principal_fingerprint: Mapped[str] = mapped_column(String(64), nullable=False)
+    correlation_id: Mapped[str] = mapped_column(String(100), nullable=False)
+    capability_attestation_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), nullable=False)
+    capability_fingerprint: Mapped[str] = mapped_column(String(64), nullable=False)
+    encryption_profile_fingerprint: Mapped[str] = mapped_column(String(64), nullable=False)
+    payload_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    recorded_at: Mapped[datetime] = mapped_column(
+        nullable=False, server_default=text("CURRENT_TIMESTAMP")
+    )

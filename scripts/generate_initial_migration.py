@@ -120,6 +120,8 @@ BEGIN
             decision_policy_decision_id, decided_at, version, updated_at)
             ON retention.erasure_requests TO datariver_app;
         GRANT SELECT, INSERT ON retention.erasure_request_events TO datariver_app;
+        GRANT SELECT ON retention.archive_capability_attestations,
+            retention.immutable_archive_receipts TO datariver_app;
         GRANT SELECT, INSERT, UPDATE ON sharing.api_products,
             sharing.api_product_versions, sharing.consumer_grants TO datariver_app;
         GRANT SELECT, INSERT ON sharing.api_invocations TO datariver_app;

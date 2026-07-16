@@ -74,10 +74,13 @@ DataHub source cursor remain backlog.
 | `retention.legal_hold_events` | hold/version UQ, typed action, actor/reason/policy decision/time and action hash | append-only placement and release history |
 | `retention.erasure_requests` | typed canonical target snapshot, classification, policy ID/hash, maker/checker, bounded expiry, payload hash, terminal review state and optimistic version | independently reviewed erasure intent; APPROVED never grants an execution capability |
 | `retention.erasure_request_events` | request/version UQ, typed action, actor/reason/policy decision/time and request payload hash | append-only creation and decision history |
+| `retention.archive_capability_attestations` | configuration/encryption/runtime-principal fingerprints, probe contract/challenge, bucket, bounded observation window, seven verified controls, state/failure and canonical payload hash | append-only target conformance evidence; a provider label alone cannot create VERIFIED state |
+| `retention.immutable_archive_receipts` | exact source range and manifest, active policy ID/hash, typed full-object checksum, full content/retention read-back, object version, capability/encryption/principal binding and canonical payload hash | append-only proof for a verified archive object version; never a deletion capability |
 
-All five tables use forced workspace RLS and composite membership/aggregate foreign keys. Retention
+All seven tables use forced workspace RLS and composite membership/aggregate foreign keys. Retention
 foreign keys do not cascade, the application role cannot delete these rows, and Legal Hold/erasure
-events cannot be updated. Immutable archive receipts, erasure execution claims/attempts and
+events cannot be updated. The application role has read-only access to archive evidence; no API or
+ordinary unit of work can create it. Archive export attempts, erasure execution claims/attempts and
 destructive completion tables remain unimplemented.
 
 ### Knowledge graph
@@ -131,9 +134,9 @@ The API supports both complete snapshot publication and changeset author/submit/
 Versioned general ABAC policies/bindings, catalog relationships/facets, connection registry,
 governance attachments/general audit export, graph sources/extraction runs, saved-query templates
 beyond the built-in surfaces and embedding partitions remain target tables. Governed retention
-policy versions, Legal Hold history and typed Maker-Checker erasure requests/decisions are
-implemented. Erasure execution claims/attempts, immutable archive exports and verified receipts
-remain target tables.
+policy versions, Legal Hold history, typed Maker-Checker erasure requests/decisions and immutable
+archive capability/receipt evidence are implemented. Erasure execution claims/attempts and archive
+export attempts remain target tables.
 These future records remain PostgreSQL canonical state; object-store metadata is not a policy, hold
 or deletion authority. They require a later Alembic revision and updated API/retention/security
 tests; their mention in PRD/architecture is not permission to create ad-hoc columns.
@@ -143,10 +146,9 @@ tests; their mention in PRD/architecture is not permission to create ad-hoc colu
 ## Retention and deletion
 
 An approved database policy version distinguishes legal audit, Chat content, completed delivery
-events, accepted data, quarantine and telemetry. Durations proposed for a particular installation,
-including the 30-day/90-day/13-month/7-year profile, are operating inputs to that version and not
-portable schema, migration or source defaults. Activating a policy version does not by itself enable
-deletion.
+events, accepted data, quarantine and telemetry. Installation-specific durations are operating
+inputs to that version and not portable schema, migration or source defaults. Activating a policy
+version does not by itself enable deletion.
 
 Legal Hold is a versioned aggregate with typed place and governed release commands plus append-only
 history, not a mutable object-manifest boolean. It takes precedence over ordinary expiry and blocks

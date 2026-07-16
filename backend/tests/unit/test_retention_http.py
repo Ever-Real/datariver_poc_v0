@@ -60,7 +60,7 @@ def test_retention_presenters_keep_every_destructive_effect_disabled() -> None:
     policy = RetentionPolicyVersion.propose(
         workspace_id=workspace_id,
         policy_number=1,
-        rules=RetentionRules(30, 90, 13, 7),
+        rules=RetentionRules(17, 29, 8, 4),
         requester_id=uuid4(),
         reason="Operating policy",
         policy_decision_id=uuid4(),

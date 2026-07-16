@@ -476,6 +476,49 @@ def upgrade() -> None:
         op.execute('ALTER TABLE knowledge.ontology_versions ENABLE ROW LEVEL SECURITY')
         op.execute('ALTER TABLE knowledge.ontology_versions FORCE ROW LEVEL SECURITY')
         op.execute("CREATE POLICY workspace_isolation ON knowledge.ontology_versions USING (workspace_id = NULLIF(current_setting('app.workspace_id', true), '')::uuid) WITH CHECK (workspace_id = NULLIF(current_setting('app.workspace_id', true), '')::uuid)")
+        op.create_table('archive_capability_attestations',
+        sa.Column('workspace_id', sa.Uuid(), nullable=False),
+        sa.Column('configuration_fingerprint', sa.String(length=64), nullable=False),
+        sa.Column('encryption_profile_fingerprint', sa.String(length=64), nullable=False),
+        sa.Column('runtime_principal_fingerprint', sa.String(length=64), nullable=False),
+        sa.Column('probe_contract_version', sa.String(length=100), nullable=False),
+        sa.Column('challenge_hash', sa.String(length=64), nullable=False),
+        sa.Column('object_bucket', sa.String(length=63), nullable=False),
+        sa.Column('observed_at', sa.DateTime(timezone=True), nullable=False),
+        sa.Column('expires_at', sa.DateTime(timezone=True), nullable=False),
+        sa.Column('versioning_enabled', sa.Boolean(), nullable=False),
+        sa.Column('object_lock_enabled', sa.Boolean(), nullable=False),
+        sa.Column('compliance_retention_supported', sa.Boolean(), nullable=False),
+        sa.Column('checksum_sha256_supported', sa.Boolean(), nullable=False),
+        sa.Column('full_readback_verified', sa.Boolean(), nullable=False),
+        sa.Column('retention_shorten_denied', sa.Boolean(), nullable=False),
+        sa.Column('retained_version_delete_denied', sa.Boolean(), nullable=False),
+        sa.Column('state', sa.String(length=20), nullable=False),
+        sa.Column('failure_code', sa.String(length=100), nullable=True),
+        sa.Column('payload_hash', sa.String(length=64), nullable=False),
+        sa.Column('recorded_at', sa.DateTime(timezone=True), server_default=sa.text('CURRENT_TIMESTAMP'), nullable=False),
+        sa.Column('id', sa.Uuid(), nullable=False),
+        sa.CheckConstraint("(state = 'VERIFIED' AND failure_code IS NULL AND versioning_enabled AND object_lock_enabled AND compliance_retention_supported AND checksum_sha256_supported AND full_readback_verified AND retention_shorten_denied AND retained_version_delete_denied) OR (state = 'FAILED' AND failure_code IS NOT NULL AND length(btrim(failure_code)) BETWEEN 1 AND 100)", name=op.f('ck_archive_capability_attestations_state_shape')),
+        sa.CheckConstraint("challenge_hash ~ '^[0-9a-f]{64}$'", name=op.f('ck_archive_capability_attestations_challenge_hash_sha256')),
+        sa.CheckConstraint("configuration_fingerprint ~ '^[0-9a-f]{64}$'", name=op.f('ck_archive_capability_attestations_configuration_fingerprint_sha256')),
+        sa.CheckConstraint("encryption_profile_fingerprint ~ '^[0-9a-f]{64}$'", name=op.f('ck_archive_capability_attestations_encryption_profile_fingerprint_sha256')),
+        sa.CheckConstraint("expires_at > observed_at AND expires_at <= observed_at + INTERVAL '24 hours'", name=op.f('ck_archive_capability_attestations_observation_window')),
+        sa.CheckConstraint("object_bucket ~ '^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$'", name=op.f('ck_archive_capability_attestations_object_bucket')),
+        sa.CheckConstraint("payload_hash ~ '^[0-9a-f]{64}$'", name=op.f('ck_archive_capability_attestations_payload_hash_sha256')),
+        sa.CheckConstraint("runtime_principal_fingerprint ~ '^[0-9a-f]{64}$'", name=op.f('ck_archive_capability_attestations_runtime_principal_fingerprint_sha256')),
+        sa.CheckConstraint("state IN ('VERIFIED', 'FAILED')", name=op.f('ck_archive_capability_attestations_state')),
+        sa.CheckConstraint('length(probe_contract_version) BETWEEN 1 AND 100', name=op.f('ck_archive_capability_attestations_probe_contract_version')),
+        sa.ForeignKeyConstraint(['workspace_id'], ['platform.workspaces.id'], name=op.f('fk_archive_capability_attestations_workspace_id_workspaces')),
+        sa.PrimaryKeyConstraint('id', name=op.f('pk_archive_capability_attestations')),
+        sa.UniqueConstraint('workspace_id', 'configuration_fingerprint', 'observed_at', name='uq_archive_capability_attestations_observation'),
+        sa.UniqueConstraint('workspace_id', 'id', 'configuration_fingerprint', 'encryption_profile_fingerprint', 'runtime_principal_fingerprint', name='uq_archive_capability_attestations_workspace_id_fingerprint'),
+        sa.UniqueConstraint('workspace_id', 'id', name='uq_archive_capability_attestations_workspace_id_id'),
+        schema='retention'
+        )
+        op.create_index('ix_archive_capability_attestations_workspace_observed', 'archive_capability_attestations', ['workspace_id', 'configuration_fingerprint', 'observed_at'], unique=False, schema='retention')
+        op.execute('ALTER TABLE retention.archive_capability_attestations ENABLE ROW LEVEL SECURITY')
+        op.execute('ALTER TABLE retention.archive_capability_attestations FORCE ROW LEVEL SECURITY')
+        op.execute("CREATE POLICY workspace_isolation ON retention.archive_capability_attestations USING (workspace_id = NULLIF(current_setting('app.workspace_id', true), '')::uuid) WITH CHECK (workspace_id = NULLIF(current_setting('app.workspace_id', true), '')::uuid)")
         op.create_table('api_products',
         sa.Column('workspace_id', sa.Uuid(), nullable=False),
         sa.Column('slug', sa.String(length=100), nullable=False),
@@ -910,6 +953,92 @@ def upgrade() -> None:
         op.execute('ALTER TABLE retention.erasure_requests ENABLE ROW LEVEL SECURITY')
         op.execute('ALTER TABLE retention.erasure_requests FORCE ROW LEVEL SECURITY')
         op.execute("CREATE POLICY workspace_isolation ON retention.erasure_requests USING (workspace_id = NULLIF(current_setting('app.workspace_id', true), '')::uuid) WITH CHECK (workspace_id = NULLIF(current_setting('app.workspace_id', true), '')::uuid)")
+        op.create_table('immutable_archive_receipts',
+        sa.Column('workspace_id', sa.Uuid(), nullable=False),
+        sa.Column('source', sa.String(length=32), nullable=False),
+        sa.Column('source_partition', sa.String(length=64), nullable=False),
+        sa.Column('source_start', sa.DateTime(timezone=True), nullable=False),
+        sa.Column('source_end', sa.DateTime(timezone=True), nullable=False),
+        sa.Column('retention_policy_id', sa.Uuid(), nullable=False),
+        sa.Column('retention_policy_hash', sa.String(length=64), nullable=False),
+        sa.Column('row_count', sa.BigInteger(), nullable=False),
+        sa.Column('byte_count', sa.BigInteger(), nullable=False),
+        sa.Column('manifest_hash', sa.String(length=64), nullable=False),
+        sa.Column('content_sha256', sa.String(length=64), nullable=False),
+        sa.Column('provider_checksum', sa.String(length=512), nullable=False),
+        sa.Column('provider_checksum_algorithm', sa.String(length=20), nullable=False),
+        sa.Column('provider_checksum_encoding', sa.String(length=20), nullable=False),
+        sa.Column('provider_checksum_type', sa.String(length=30), nullable=False),
+        sa.Column('provider_checksum_normalized_sha256', sa.String(length=64), nullable=False),
+        sa.Column('readback_sha256', sa.String(length=64), nullable=False),
+        sa.Column('readback_byte_count', sa.BigInteger(), nullable=False),
+        sa.Column('object_bucket', sa.String(length=63), nullable=False),
+        sa.Column('object_key', sa.String(length=1024), nullable=False),
+        sa.Column('object_version_id', sa.String(length=1024), nullable=False),
+        sa.Column('retention_mode', sa.String(length=20), nullable=False),
+        sa.Column('retention_until', sa.DateTime(timezone=True), nullable=False),
+        sa.Column('requested_retention_until', sa.DateTime(timezone=True), nullable=False),
+        sa.Column('readback_retention_until', sa.DateTime(timezone=True), nullable=False),
+        sa.Column('legal_hold', sa.Boolean(), nullable=False),
+        sa.Column('written_at', sa.DateTime(timezone=True), nullable=False),
+        sa.Column('content_verified_at', sa.DateTime(timezone=True), nullable=False),
+        sa.Column('retention_verified_at', sa.DateTime(timezone=True), nullable=False),
+        sa.Column('verified_at', sa.DateTime(timezone=True), nullable=False),
+        sa.Column('canonicalization_version', sa.String(length=100), nullable=False),
+        sa.Column('media_type', sa.String(length=255), nullable=False),
+        sa.Column('media_type_version', sa.String(length=100), nullable=False),
+        sa.Column('compression', sa.String(length=50), nullable=False),
+        sa.Column('compression_version', sa.String(length=100), nullable=False),
+        sa.Column('worker_principal_fingerprint', sa.String(length=64), nullable=False),
+        sa.Column('correlation_id', sa.String(length=100), nullable=False),
+        sa.Column('capability_attestation_id', sa.Uuid(), nullable=False),
+        sa.Column('capability_fingerprint', sa.String(length=64), nullable=False),
+        sa.Column('encryption_profile_fingerprint', sa.String(length=64), nullable=False),
+        sa.Column('payload_hash', sa.String(length=64), nullable=False),
+        sa.Column('recorded_at', sa.DateTime(timezone=True), server_default=sa.text('CURRENT_TIMESTAMP'), nullable=False),
+        sa.Column('id', sa.Uuid(), nullable=False),
+        sa.CheckConstraint("capability_fingerprint ~ '^[0-9a-f]{64}$'", name=op.f('ck_immutable_archive_receipts_capability_fingerprint_sha256')),
+        sa.CheckConstraint("content_sha256 ~ '^[0-9a-f]{64}$'", name=op.f('ck_immutable_archive_receipts_content_sha256')),
+        sa.CheckConstraint("encryption_profile_fingerprint ~ '^[0-9a-f]{64}$'", name=op.f('ck_immutable_archive_receipts_encryption_profile_fingerprint_sha256')),
+        sa.CheckConstraint("length(object_key) BETWEEN 1 AND 1024 AND object_key !~ '^/'", name=op.f('ck_immutable_archive_receipts_object_key')),
+        sa.CheckConstraint("length(object_version_id) BETWEEN 1 AND 1024 AND lower(btrim(object_version_id)) <> 'null'", name=op.f('ck_immutable_archive_receipts_object_version_id')),
+        sa.CheckConstraint("manifest_hash ~ '^[0-9a-f]{64}$'", name=op.f('ck_immutable_archive_receipts_manifest_hash_sha256')),
+        sa.CheckConstraint("object_bucket ~ '^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$'", name=op.f('ck_immutable_archive_receipts_object_bucket')),
+        sa.CheckConstraint("payload_hash ~ '^[0-9a-f]{64}$'", name=op.f('ck_immutable_archive_receipts_payload_hash_sha256')),
+        sa.CheckConstraint("provider_checksum_algorithm = 'SHA256'", name=op.f('ck_immutable_archive_receipts_checksum_algorithm')),
+        sa.CheckConstraint("provider_checksum_encoding IN ('HEX', 'BASE64')", name=op.f('ck_immutable_archive_receipts_checksum_encoding')),
+        sa.CheckConstraint("provider_checksum_normalized_sha256 ~ '^[0-9a-f]{64}$'", name=op.f('ck_immutable_archive_receipts_provider_checksum_normalized_sha256')),
+        sa.CheckConstraint("provider_checksum_type = 'FULL_OBJECT'", name=op.f('ck_immutable_archive_receipts_checksum_type')),
+        sa.CheckConstraint("readback_sha256 ~ '^[0-9a-f]{64}$'", name=op.f('ck_immutable_archive_receipts_readback_sha256')),
+        sa.CheckConstraint("retention_mode = 'COMPLIANCE'", name=op.f('ck_immutable_archive_receipts_retention_mode')),
+        sa.CheckConstraint("retention_policy_hash ~ '^[0-9a-f]{64}$'", name=op.f('ck_immutable_archive_receipts_retention_policy_hash_sha256')),
+        sa.CheckConstraint("source IN ('OUTBOX_EVENTS', 'INBOX_MESSAGES', 'POLICY_DECISIONS', 'ASSISTANT_RUNS')", name=op.f('ck_immutable_archive_receipts_source')),
+        sa.CheckConstraint("source_partition ~ '^[a-z][a-z0-9_]{1,49}_[0-9]{4}_[0-9]{2}$'", name=op.f('ck_immutable_archive_receipts_source_partition')),
+        sa.CheckConstraint("worker_principal_fingerprint ~ '^[0-9a-f]{64}$'", name=op.f('ck_immutable_archive_receipts_worker_principal_fingerprint_sha256')),
+        sa.CheckConstraint('byte_count > 0', name=op.f('ck_immutable_archive_receipts_byte_count_positive')),
+        sa.CheckConstraint('content_sha256 = readback_sha256 AND content_sha256 = provider_checksum_normalized_sha256 AND byte_count = readback_byte_count', name=op.f('ck_immutable_archive_receipts_content_readback_match')),
+        sa.CheckConstraint('length(canonicalization_version) BETWEEN 1 AND 100 AND length(media_type) BETWEEN 1 AND 255 AND length(media_type_version) BETWEEN 1 AND 100 AND length(compression) BETWEEN 1 AND 50 AND length(compression_version) BETWEEN 1 AND 100', name=op.f('ck_immutable_archive_receipts_format_metadata')),
+        sa.CheckConstraint('length(correlation_id) BETWEEN 1 AND 100', name=op.f('ck_immutable_archive_receipts_correlation_id')),
+        sa.CheckConstraint('length(provider_checksum) BETWEEN 1 AND 512', name=op.f('ck_immutable_archive_receipts_provider_checksum')),
+        sa.CheckConstraint('readback_byte_count > 0', name=op.f('ck_immutable_archive_receipts_readback_byte_count_positive')),
+        sa.CheckConstraint('retention_until = requested_retention_until AND retention_until = readback_retention_until AND retention_until > verified_at', name=op.f('ck_immutable_archive_receipts_retention_readback_match')),
+        sa.CheckConstraint('row_count > 0', name=op.f('ck_immutable_archive_receipts_row_count_positive')),
+        sa.CheckConstraint('source_end > source_start', name=op.f('ck_immutable_archive_receipts_source_range')),
+        sa.CheckConstraint('written_at <= content_verified_at AND written_at <= retention_verified_at AND content_verified_at <= verified_at AND retention_verified_at <= verified_at', name=op.f('ck_immutable_archive_receipts_verification_timeline')),
+        sa.ForeignKeyConstraint(['workspace_id', 'capability_attestation_id', 'capability_fingerprint', 'encryption_profile_fingerprint', 'worker_principal_fingerprint'], ['retention.archive_capability_attestations.workspace_id', 'retention.archive_capability_attestations.id', 'retention.archive_capability_attestations.configuration_fingerprint', 'retention.archive_capability_attestations.encryption_profile_fingerprint', 'retention.archive_capability_attestations.runtime_principal_fingerprint'], name='fk_immutable_archive_receipts_capability_attestation'),
+        sa.ForeignKeyConstraint(['workspace_id', 'retention_policy_id', 'retention_policy_hash'], ['retention.policy_versions.workspace_id', 'retention.policy_versions.id', 'retention.policy_versions.payload_hash'], name='fk_immutable_archive_receipts_retention_policy'),
+        sa.ForeignKeyConstraint(['workspace_id'], ['platform.workspaces.id'], name=op.f('fk_immutable_archive_receipts_workspace_id_workspaces')),
+        sa.PrimaryKeyConstraint('id', name=op.f('pk_immutable_archive_receipts')),
+        sa.UniqueConstraint('object_bucket', 'object_key', 'object_version_id', name='uq_immutable_archive_receipts_object_version'),
+        sa.UniqueConstraint('workspace_id', 'id', name='uq_immutable_archive_receipts_workspace_id_id'),
+        sa.UniqueConstraint('workspace_id', 'source', 'source_start', 'source_end', 'manifest_hash', name='uq_immutable_archive_receipts_source_manifest'),
+        schema='retention'
+        )
+        op.create_index('ix_immutable_archive_receipts_workspace_source', 'immutable_archive_receipts', ['workspace_id', 'source', 'source_partition'], unique=False, schema='retention')
+        op.create_index('ix_immutable_archive_receipts_workspace_verified', 'immutable_archive_receipts', ['workspace_id', 'verified_at'], unique=False, schema='retention')
+        op.execute('ALTER TABLE retention.immutable_archive_receipts ENABLE ROW LEVEL SECURITY')
+        op.execute('ALTER TABLE retention.immutable_archive_receipts FORCE ROW LEVEL SECURITY')
+        op.execute("CREATE POLICY workspace_isolation ON retention.immutable_archive_receipts USING (workspace_id = NULLIF(current_setting('app.workspace_id', true), '')::uuid) WITH CHECK (workspace_id = NULLIF(current_setting('app.workspace_id', true), '')::uuid)")
         op.create_table('legal_hold_events',
         sa.Column('workspace_id', sa.Uuid(), nullable=False),
         sa.Column('hold_id', sa.Uuid(), nullable=False),
@@ -1044,7 +1173,7 @@ def upgrade() -> None:
         op.create_foreign_key(op.f('fk_changesets_workspace_id_graph_id_base_release_id_releases'), 'changesets', 'releases', ['workspace_id', 'graph_id', 'base_release_id'], ['workspace_id', 'graph_id', 'id'], source_schema='knowledge', referent_schema='knowledge', use_alter=True)
         op.create_foreign_key(op.f('fk_changesets_workspace_id_graph_id_published_release_id_releases'), 'changesets', 'releases', ['workspace_id', 'graph_id', 'published_release_id'], ['workspace_id', 'graph_id', 'id'], source_schema='knowledge', referent_schema='knowledge', use_alter=True)
         op.create_foreign_key(op.f('fk_graphs_workspace_id_id_active_release_id_releases'), 'graphs', 'releases', ['workspace_id', 'id', 'active_release_id'], ['workspace_id', 'graph_id', 'id'], source_schema='knowledge', referent_schema='knowledge', use_alter=True)
-        op.execute("DO $datariver$\nBEGIN\n    IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'datariver_app') THEN\n        GRANT USAGE ON SCHEMA platform, iam, authz, catalog, governance, integration, knowledge, assistant, sharing, retention TO datariver_app;\n        GRANT USAGE ON SCHEMA public TO datariver_app;\n        GRANT SELECT ON public.alembic_version TO datariver_app;\n        GRANT SELECT ON platform.workspaces, iam.subjects TO datariver_app;\n        GRANT SELECT ON iam.workspace_memberships TO datariver_app;\n        GRANT UPDATE (active, clearance, attributes, version, updated_at)\n            ON iam.workspace_memberships TO datariver_app;\n        GRANT SELECT, INSERT ON iam.admin_access_requests TO datariver_app;\n        GRANT UPDATE (state, checker_id, consumed_by, consumed_at,\n            consume_policy_decision_id, version, updated_at)\n            ON iam.admin_access_requests TO datariver_app;\n        GRANT SELECT, INSERT ON iam.admin_access_approvals TO datariver_app;\n        GRANT INSERT ON authz.policy_decisions TO datariver_app;\n        GRANT SELECT, INSERT, UPDATE ON catalog.assets_projection,\n            catalog.sync_runs, catalog.projection_watermarks TO datariver_app;\n        GRANT SELECT, INSERT ON governance.change_request_items,\n            governance.approvals, governance.state_transitions TO datariver_app;\n        GRANT SELECT, INSERT, UPDATE ON governance.change_requests TO datariver_app;\n        GRANT SELECT ON integration.jobs, integration.job_attempts TO datariver_app;\n        GRANT SELECT, INSERT, UPDATE ON integration.object_manifests TO datariver_app;\n        GRANT SELECT, INSERT ON integration.idempotency_keys,\n            integration.outbox_events TO datariver_app;\n        GRANT SELECT ON knowledge.graphs, knowledge.ontology_versions,\n            knowledge.releases, knowledge.release_nodes, knowledge.release_edges,\n            knowledge.changesets, knowledge.change_operations,\n            knowledge.validation_results, knowledge.projection_deployments TO datariver_app;\n        GRANT INSERT ON knowledge.graphs, knowledge.ontology_versions,\n            knowledge.releases, knowledge.release_nodes, knowledge.release_edges,\n            knowledge.changesets, knowledge.change_operations,\n            knowledge.validation_results, knowledge.projection_deployments TO datariver_app;\n        GRANT UPDATE ON knowledge.graphs, knowledge.changesets,\n            knowledge.projection_deployments TO datariver_app;\n        GRANT DELETE ON knowledge.validation_results TO datariver_app;\n        GRANT SELECT, INSERT ON assistant.chat_sessions, assistant.chat_messages,\n            assistant.assistant_runs, assistant.evidence_citations TO datariver_app;\n        GRANT UPDATE ON assistant.chat_sessions TO datariver_app;\n        GRANT SELECT, INSERT ON retention.policy_versions TO datariver_app;\n        GRANT UPDATE (state, checker_id, decision_reason,\n            decision_policy_decision_id, decided_at, superseded_by, supersede_reason,\n            supersede_policy_decision_id, superseded_at, version, updated_at)\n            ON retention.policy_versions TO datariver_app;\n        GRANT SELECT, INSERT ON retention.legal_holds TO datariver_app;\n        GRANT UPDATE (state, release_requested_by, release_request_reason,\n            release_request_policy_decision_id, release_checker_id,\n            release_decision_reason, release_decision_policy_decision_id,\n            released_at, version, updated_at)\n            ON retention.legal_holds TO datariver_app;\n        GRANT SELECT, INSERT ON retention.legal_hold_events TO datariver_app;\n        GRANT SELECT, INSERT ON retention.erasure_requests TO datariver_app;\n        GRANT UPDATE (state, checker_id, decision_reason,\n            decision_policy_decision_id, decided_at, version, updated_at)\n            ON retention.erasure_requests TO datariver_app;\n        GRANT SELECT, INSERT ON retention.erasure_request_events TO datariver_app;\n        GRANT SELECT, INSERT, UPDATE ON sharing.api_products,\n            sharing.api_product_versions, sharing.consumer_grants TO datariver_app;\n        GRANT SELECT, INSERT ON sharing.api_invocations TO datariver_app;\n    END IF;\n\n    IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'datariver_relay') THEN\n        GRANT USAGE ON SCHEMA integration TO datariver_relay;\n        GRANT SELECT, UPDATE ON integration.outbox_events TO datariver_relay;\n        GRANT SELECT ON integration.inbox_messages TO datariver_relay;\n    END IF;\n\n    IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'datariver_upload') THEN\n        GRANT USAGE ON SCHEMA integration TO datariver_upload;\n        GRANT SELECT, UPDATE ON integration.object_manifests TO datariver_upload;\n        GRANT SELECT, INSERT ON integration.outbox_events TO datariver_upload;\n        GRANT SELECT, INSERT, UPDATE ON integration.inbox_messages TO datariver_upload;\n    END IF;\n\n    IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'datariver_governance') THEN\n        GRANT USAGE ON SCHEMA authz, governance, integration TO datariver_governance;\n        GRANT SELECT, INSERT ON authz.policy_decisions TO datariver_governance;\n        GRANT SELECT, UPDATE ON governance.change_requests TO datariver_governance;\n        GRANT SELECT ON governance.change_request_items, governance.approvals,\n            governance.state_transitions TO datariver_governance;\n        GRANT INSERT ON governance.state_transitions TO datariver_governance;\n        GRANT SELECT, INSERT, UPDATE ON integration.jobs,\n            integration.job_attempts, integration.inbox_messages TO datariver_governance;\n        GRANT SELECT, INSERT ON integration.outbox_events TO datariver_governance;\n    END IF;\n\n    IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'datariver_bootstrap') THEN\n        GRANT USAGE ON SCHEMA platform, iam TO datariver_bootstrap;\n        GRANT SELECT, INSERT, UPDATE ON platform.workspaces, iam.subjects,\n            iam.workspace_memberships TO datariver_bootstrap;\n    END IF;\nEND\n$datariver$")
+        op.execute("DO $datariver$\nBEGIN\n    IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'datariver_app') THEN\n        GRANT USAGE ON SCHEMA platform, iam, authz, catalog, governance, integration, knowledge, assistant, sharing, retention TO datariver_app;\n        GRANT USAGE ON SCHEMA public TO datariver_app;\n        GRANT SELECT ON public.alembic_version TO datariver_app;\n        GRANT SELECT ON platform.workspaces, iam.subjects TO datariver_app;\n        GRANT SELECT ON iam.workspace_memberships TO datariver_app;\n        GRANT UPDATE (active, clearance, attributes, version, updated_at)\n            ON iam.workspace_memberships TO datariver_app;\n        GRANT SELECT, INSERT ON iam.admin_access_requests TO datariver_app;\n        GRANT UPDATE (state, checker_id, consumed_by, consumed_at,\n            consume_policy_decision_id, version, updated_at)\n            ON iam.admin_access_requests TO datariver_app;\n        GRANT SELECT, INSERT ON iam.admin_access_approvals TO datariver_app;\n        GRANT INSERT ON authz.policy_decisions TO datariver_app;\n        GRANT SELECT, INSERT, UPDATE ON catalog.assets_projection,\n            catalog.sync_runs, catalog.projection_watermarks TO datariver_app;\n        GRANT SELECT, INSERT ON governance.change_request_items,\n            governance.approvals, governance.state_transitions TO datariver_app;\n        GRANT SELECT, INSERT, UPDATE ON governance.change_requests TO datariver_app;\n        GRANT SELECT ON integration.jobs, integration.job_attempts TO datariver_app;\n        GRANT SELECT, INSERT, UPDATE ON integration.object_manifests TO datariver_app;\n        GRANT SELECT, INSERT ON integration.idempotency_keys,\n            integration.outbox_events TO datariver_app;\n        GRANT SELECT ON knowledge.graphs, knowledge.ontology_versions,\n            knowledge.releases, knowledge.release_nodes, knowledge.release_edges,\n            knowledge.changesets, knowledge.change_operations,\n            knowledge.validation_results, knowledge.projection_deployments TO datariver_app;\n        GRANT INSERT ON knowledge.graphs, knowledge.ontology_versions,\n            knowledge.releases, knowledge.release_nodes, knowledge.release_edges,\n            knowledge.changesets, knowledge.change_operations,\n            knowledge.validation_results, knowledge.projection_deployments TO datariver_app;\n        GRANT UPDATE ON knowledge.graphs, knowledge.changesets,\n            knowledge.projection_deployments TO datariver_app;\n        GRANT DELETE ON knowledge.validation_results TO datariver_app;\n        GRANT SELECT, INSERT ON assistant.chat_sessions, assistant.chat_messages,\n            assistant.assistant_runs, assistant.evidence_citations TO datariver_app;\n        GRANT UPDATE ON assistant.chat_sessions TO datariver_app;\n        GRANT SELECT, INSERT ON retention.policy_versions TO datariver_app;\n        GRANT UPDATE (state, checker_id, decision_reason,\n            decision_policy_decision_id, decided_at, superseded_by, supersede_reason,\n            supersede_policy_decision_id, superseded_at, version, updated_at)\n            ON retention.policy_versions TO datariver_app;\n        GRANT SELECT, INSERT ON retention.legal_holds TO datariver_app;\n        GRANT UPDATE (state, release_requested_by, release_request_reason,\n            release_request_policy_decision_id, release_checker_id,\n            release_decision_reason, release_decision_policy_decision_id,\n            released_at, version, updated_at)\n            ON retention.legal_holds TO datariver_app;\n        GRANT SELECT, INSERT ON retention.legal_hold_events TO datariver_app;\n        GRANT SELECT, INSERT ON retention.erasure_requests TO datariver_app;\n        GRANT UPDATE (state, checker_id, decision_reason,\n            decision_policy_decision_id, decided_at, version, updated_at)\n            ON retention.erasure_requests TO datariver_app;\n        GRANT SELECT, INSERT ON retention.erasure_request_events TO datariver_app;\n        GRANT SELECT ON retention.archive_capability_attestations,\n            retention.immutable_archive_receipts TO datariver_app;\n        GRANT SELECT, INSERT, UPDATE ON sharing.api_products,\n            sharing.api_product_versions, sharing.consumer_grants TO datariver_app;\n        GRANT SELECT, INSERT ON sharing.api_invocations TO datariver_app;\n    END IF;\n\n    IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'datariver_relay') THEN\n        GRANT USAGE ON SCHEMA integration TO datariver_relay;\n        GRANT SELECT, UPDATE ON integration.outbox_events TO datariver_relay;\n        GRANT SELECT ON integration.inbox_messages TO datariver_relay;\n    END IF;\n\n    IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'datariver_upload') THEN\n        GRANT USAGE ON SCHEMA integration TO datariver_upload;\n        GRANT SELECT, UPDATE ON integration.object_manifests TO datariver_upload;\n        GRANT SELECT, INSERT ON integration.outbox_events TO datariver_upload;\n        GRANT SELECT, INSERT, UPDATE ON integration.inbox_messages TO datariver_upload;\n    END IF;\n\n    IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'datariver_governance') THEN\n        GRANT USAGE ON SCHEMA authz, governance, integration TO datariver_governance;\n        GRANT SELECT, INSERT ON authz.policy_decisions TO datariver_governance;\n        GRANT SELECT, UPDATE ON governance.change_requests TO datariver_governance;\n        GRANT SELECT ON governance.change_request_items, governance.approvals,\n            governance.state_transitions TO datariver_governance;\n        GRANT INSERT ON governance.state_transitions TO datariver_governance;\n        GRANT SELECT, INSERT, UPDATE ON integration.jobs,\n            integration.job_attempts, integration.inbox_messages TO datariver_governance;\n        GRANT SELECT, INSERT ON integration.outbox_events TO datariver_governance;\n    END IF;\n\n    IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'datariver_bootstrap') THEN\n        GRANT USAGE ON SCHEMA platform, iam TO datariver_bootstrap;\n        GRANT SELECT, INSERT, UPDATE ON platform.workspaces, iam.subjects,\n            iam.workspace_memberships TO datariver_bootstrap;\n    END IF;\nEND\n$datariver$")
 
 
 def downgrade() -> None:
@@ -1057,6 +1186,7 @@ def downgrade() -> None:
         op.drop_table('erasure_request_events', schema='retention')
         op.drop_table('api_product_versions', schema='sharing')
         op.drop_table('legal_hold_events', schema='retention')
+        op.drop_table('immutable_archive_receipts', schema='retention')
         op.drop_table('erasure_requests', schema='retention')
         op.drop_table('validation_results', schema='knowledge')
         op.drop_table('release_nodes', schema='knowledge')
@@ -1072,6 +1202,7 @@ def downgrade() -> None:
         op.drop_table('admin_access_requests', schema='iam')
         op.drop_table('assistant_runs', schema='assistant')
         op.drop_table('api_products', schema='sharing')
+        op.drop_table('archive_capability_attestations', schema='retention')
         op.drop_table('ontology_versions', schema='knowledge')
         op.drop_table('job_attempts', schema='integration')
         op.drop_table('workspace_memberships', schema='iam')

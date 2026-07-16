@@ -47,8 +47,10 @@ from datariver.infrastructure.db.models.platform import (
     WorkspaceModel,
 )
 from datariver.infrastructure.db.models.retention import (
+    ArchiveCapabilityAttestationModel,
     ErasureRequestEventModel,
     ErasureRequestModel,
+    ImmutableArchiveReceiptModel,
     LegalHoldEventModel,
     LegalHoldModel,
     RetentionPolicyVersionModel,
@@ -67,6 +69,7 @@ __all__ = [
     "ApiProductModel",
     "ApiProductVersionModel",
     "ApprovalModel",
+    "ArchiveCapabilityAttestationModel",
     "AssetProjectionModel",
     "AssistantRunModel",
     "CatalogProjectionWatermarkModel",
@@ -83,6 +86,7 @@ __all__ = [
     "EvidenceCitationModel",
     "GraphModel",
     "IdempotencyKeyModel",
+    "ImmutableArchiveReceiptModel",
     "InboxMessageModel",
     "JobAttemptModel",
     "JobModel",

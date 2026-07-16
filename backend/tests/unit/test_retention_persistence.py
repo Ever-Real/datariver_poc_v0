@@ -7,8 +7,10 @@ from typing import ClassVar, Protocol, cast
 from sqlalchemy import CheckConstraint, ForeignKeyConstraint, Index, Table
 
 from datariver.infrastructure.db.models.retention import (
+    ArchiveCapabilityAttestationModel,
     ErasureRequestEventModel,
     ErasureRequestModel,
+    ImmutableArchiveReceiptModel,
     LegalHoldEventModel,
     LegalHoldModel,
     RetentionPolicyVersionModel,
@@ -225,3 +227,80 @@ def test_erasure_review_window_allows_expired_rejection_but_not_approval() -> No
     expression = str(review_window.sqltext)
     assert "state <> 'APPROVED' OR decided_at < expires_at" in expression
     assert "decided_at IS NULL OR decided_at >= created_at" in expression
+
+
+def test_archive_evidence_has_exact_bindings_and_no_cascade() -> None:
+    assert {
+        "uq_archive_capability_attestations_workspace_id_fingerprint",
+        "ck_archive_capability_attestations_observation_window",
+        "ck_archive_capability_attestations_state_shape",
+        "ck_archive_capability_attestations_encryption_profile_fingerprint_sha256",
+    } <= _constraint_names(ArchiveCapabilityAttestationModel)
+    assert {
+        "fk_immutable_archive_receipts_capability_attestation",
+        "fk_immutable_archive_receipts_retention_policy",
+        "ck_immutable_archive_receipts_content_readback_match",
+        "ck_immutable_archive_receipts_retention_readback_match",
+        "ck_immutable_archive_receipts_object_version_id",
+    } <= _constraint_names(ImmutableArchiveReceiptModel)
+
+    capability_binding = next(
+        constraint
+        for constraint in _table(ImmutableArchiveReceiptModel).constraints
+        if isinstance(constraint, ForeignKeyConstraint)
+        and constraint.name == "fk_immutable_archive_receipts_capability_attestation"
+    )
+    assert [column.name for column in capability_binding.columns] == [
+        "workspace_id",
+        "capability_attestation_id",
+        "capability_fingerprint",
+        "encryption_profile_fingerprint",
+        "worker_principal_fingerprint",
+    ]
+    policy_binding = next(
+        constraint
+        for constraint in _table(ImmutableArchiveReceiptModel).constraints
+        if isinstance(constraint, ForeignKeyConstraint)
+        and constraint.name == "fk_immutable_archive_receipts_retention_policy"
+    )
+    assert [column.name for column in policy_binding.columns] == [
+        "workspace_id",
+        "retention_policy_id",
+        "retention_policy_hash",
+    ]
+    for model in (ArchiveCapabilityAttestationModel, ImmutableArchiveReceiptModel):
+        table = _table(model)
+        assert "version" not in table.columns
+        for constraint in table.foreign_key_constraints:
+            assert constraint.ondelete in {None, "NO ACTION", "RESTRICT"}
+
+
+def test_archive_evidence_is_owner_written_and_application_read_only() -> None:
+    root = Path(__file__).resolve().parents[3]
+    generator = (root / "scripts/generate_initial_migration.py").read_text(encoding="utf-8")
+    migration = (root / "backend/alembic/versions/0010_immutable_archive_evidence.py").read_text(
+        encoding="utf-8"
+    )
+    repository = (root / "backend/src/datariver/infrastructure/db/retention.py").read_text(
+        encoding="utf-8"
+    )
+
+    for source in (generator, migration):
+        assert "GRANT SELECT ON retention.archive_capability_attestations" in source
+        assert "retention.immutable_archive_receipts TO datariver_app" in source
+        assert not re.search(
+            r"GRANT[^;]*(?:INSERT|UPDATE|DELETE)[^;]*"
+            r"(?:archive_capability_attestations|immutable_archive_receipts)",
+            source,
+        )
+    assert "FORCE ROW LEVEL SECURITY" in migration
+    assert "REVOKE INSERT, UPDATE, DELETE" in migration
+    archive_repository = repository.split("class SqlArchiveEvidenceRepository", maxsplit=1)[
+        1
+    ].split("class SqlRetentionUnitOfWork", maxsplit=1)[0]
+    assert "delete(" not in archive_repository.lower()
+    assert "ImmutableArchiveStore" not in archive_repository
+    unit_of_work = repository.split("class SqlRetentionUnitOfWork", maxsplit=1)[1].split(
+        "def _policy_model", maxsplit=1
+    )[0]
+    assert "SqlArchiveEvidenceRepository" not in unit_of_work

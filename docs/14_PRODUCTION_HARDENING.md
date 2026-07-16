@@ -42,7 +42,7 @@ scale/availability/team-ownership evidence.
 
 ## 3. Verified baseline and important limitations
 
-The current branch passes 118 backend tests, strict mypy over 118 files, Ruff, frontend
+The current branch passes 219 backend tests, strict mypy over 140 files, Ruff, frontend
 type/lint/test/build, deterministic migration generation and static architecture/Compose/role checks.
 The hybrid runtime has live evidence for PostgreSQL RLS, Keycloak service-token OIDC, APISIX,
 Vite proxying, DataHub authentication and semiconductor seed verification. Target DataHub, target
@@ -133,10 +133,9 @@ retention are approved. The migration must account for PostgreSQL's requirement 
 unique/primary keys include partition keys. Pre-create at least two future partitions, alert on the
 default partition and rehearse late-event and restore behavior. No detach/drop path exists yet.
 
-Retention durations are not portable source defaults. The previously discussed
-30-day/90-day/13-month/7-year profile is an example operating input for one deployment and must be
-authored, independently approved, versioned and activated in the future database policy aggregate.
-Neither policy activation nor expiry alone authorizes deletion.
+Retention durations are not portable source defaults. Deployment values must be authored,
+independently approved, versioned and activated in the database policy aggregate. Neither policy
+activation nor expiry alone authorizes deletion.
 
 Before a future detach/drop, the exact immutable range must be exported through an archive port that
 is separate from upload storage. The worker records a deterministic manifest, row/byte counts and
@@ -152,9 +151,10 @@ payload hash, distinct maker/checker, strong authentication and atomic one-time 
 partition containing any applicable hold is initially retained in full.
 
 Automatic deletion, expiry-driven object lifecycle deletion and monthly-partition detach/drop remain
-`DISABLED_NOT_READY`. They stay disabled until the policy aggregate, hold and erasure workflows,
-separate least-privilege retention worker, verified archive receipts and target conformance/restore
-evidence are implemented. Relay roles retain no delete privilege. See ADR-0010.
+`DISABLED_NOT_READY`. PostgreSQL now persists append-only capability attestations and receipts, but
+no export or retention worker is wired and the current development object store has not proved WORM
+conformance. Destructive paths stay disabled until a separate least-privilege worker and target
+conformance/restore evidence exist. Relay roles retain no delete privilege. See ADR-0010.
 
 ### Search-plan evidence matrix
 
@@ -234,9 +234,9 @@ budget visibility, not multi-replica HA or a target `max_connections` value.
    worker/sync/Valkey metrics remain.
 4. Implement and contract-test incremental DataHub change-watermark ingestion, retaining nightly full
    reconcile as drift verification/recovery.
-5. Complete the immutable archive receipt and non-destructive erasure conformance gates around the
-   implemented policy, Legal Hold and Maker-Checker review aggregates. Add provider-neutral target
-   capability conformance and later a separate one-time execution claim. Provision monthly
+5. Add the provider-neutral archive export/conformance worker around the implemented append-only
+   capability and receipt evidence plus policy, Legal Hold and Maker-Checker aggregates, then add a
+   separate one-time execution claim. Provision monthly
    partitions table-family by table-family only after approved volume/legal inputs, and keep all
    automatic deletion/detach/drop disabled until verified receipts and restore evidence exist.
 6. Apply the P1 decision gate. If it fails, extract search indexing first through the outbox port.

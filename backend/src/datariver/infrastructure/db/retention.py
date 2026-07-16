@@ -1,5 +1,10 @@
 from __future__ import annotations
 
+import base64
+import binascii
+import re
+from dataclasses import dataclass
+from datetime import datetime, timedelta
 from types import TracebackType
 from uuid import UUID
 
@@ -22,12 +27,16 @@ from datariver.domain.common import (
     uuid7,
 )
 from datariver.domain.retention import (
+    ArchiveCapability,
+    ArchiveRetentionMode,
+    ArchiveSource,
     ErasureApproval,
     ErasureRequest,
     ErasureRequestState,
     ErasureTargetSnapshot,
     ErasureTargetType,
     GovernanceDecision,
+    ImmutableArchiveReceipt,
     LegalHold,
     LegalHoldAction,
     LegalHoldActionType,
@@ -43,13 +52,54 @@ from datariver.infrastructure.db.models.assistant import ChatSessionModel
 from datariver.infrastructure.db.models.integration import ObjectManifestModel
 from datariver.infrastructure.db.models.platform import WorkspaceMembershipModel
 from datariver.infrastructure.db.models.retention import (
+    ArchiveCapabilityAttestationModel,
     ErasureRequestEventModel,
     ErasureRequestModel,
+    ImmutableArchiveReceiptModel,
     LegalHoldEventModel,
     LegalHoldModel,
     RetentionPolicyVersionModel,
 )
 from datariver.infrastructure.db.rls import set_security_context
+
+MAXIMUM_ARCHIVE_CAPABILITY_LIFETIME = timedelta(hours=24)
+
+
+@dataclass(frozen=True, slots=True)
+class ArchiveCapabilityEvidence:
+    encryption_profile_fingerprint: str
+    runtime_principal_fingerprint: str
+    probe_contract_version: str
+    challenge_hash: str
+    object_bucket: str
+    failure_code: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class ArchiveReceiptEvidence:
+    source_start: datetime
+    source_end: datetime
+    retention_policy_id: UUID
+    retention_policy_hash: str
+    manifest_hash: str
+    provider_checksum_algorithm: str
+    provider_checksum_encoding: str
+    provider_checksum_type: str
+    readback_sha256: str
+    readback_byte_count: int
+    requested_retention_until: datetime
+    readback_retention_until: datetime
+    written_at: datetime
+    content_verified_at: datetime
+    retention_verified_at: datetime
+    canonicalization_version: str
+    media_type: str
+    media_type_version: str
+    compression: str
+    compression_version: str
+    worker_principal_fingerprint: str
+    correlation_id: str
+    encryption_profile_fingerprint: str
 
 
 class SqlRetentionPolicyRepository(RetentionPolicyRepository):
@@ -456,6 +506,136 @@ class SqlErasureTargetReader(ErasureTargetReader):
         )
 
 
+class SqlArchiveEvidenceRepository:
+    """Owner-only persistence for verified, append-only archive evidence.
+
+    This repository is deliberately not exposed by the application unit of work. The normal
+    application role has SELECT-only database privileges for these records; a future dedicated
+    archive worker role may call these methods after its operational boundary is approved.
+    """
+
+    def __init__(self, session: AsyncSession) -> None:
+        self._session = session
+
+    async def add_capability(
+        self,
+        *,
+        workspace_id: UUID,
+        capability: ArchiveCapability,
+        evidence: ArchiveCapabilityEvidence,
+    ) -> UUID:
+        now = utc_now()
+        if capability.observed_at > now:
+            raise ValidationError("Archive capability observations cannot be in the future.")
+        if capability.expires_at - capability.observed_at > MAXIMUM_ARCHIVE_CAPABILITY_LIFETIME:
+            raise ValidationError("Archive capability attestations cannot exceed 24 hours.")
+        model = _archive_capability_model(
+            workspace_id=workspace_id,
+            capability=capability,
+            evidence=evidence,
+        )
+        self._session.add(model)
+        return model.id
+
+    async def get_latest_capability(
+        self, *, workspace_id: UUID, configuration_fingerprint: str
+    ) -> ArchiveCapability | None:
+        now = utc_now()
+        model = (
+            await self._session.scalars(
+                select(ArchiveCapabilityAttestationModel)
+                .where(
+                    ArchiveCapabilityAttestationModel.workspace_id == workspace_id,
+                    ArchiveCapabilityAttestationModel.configuration_fingerprint
+                    == configuration_fingerprint,
+                    ArchiveCapabilityAttestationModel.state == "VERIFIED",
+                    ArchiveCapabilityAttestationModel.observed_at <= now,
+                    ArchiveCapabilityAttestationModel.expires_at > now,
+                )
+                .order_by(ArchiveCapabilityAttestationModel.observed_at.desc())
+                .limit(1)
+            )
+        ).one_or_none()
+        return _hydrate_archive_capability(model)
+
+    async def add_receipt(
+        self,
+        *,
+        receipt: ImmutableArchiveReceipt,
+        evidence: ArchiveReceiptEvidence,
+    ) -> None:
+        if receipt.verified_at > utc_now():
+            raise ValidationError("Archive receipt verification cannot be in the future.")
+        if receipt.object_version_id.strip().lower() == "null":
+            raise ValidationError("The archive object version cannot be the literal null value.")
+        attestation = (
+            await self._session.scalars(
+                select(ArchiveCapabilityAttestationModel)
+                .where(
+                    ArchiveCapabilityAttestationModel.workspace_id == receipt.workspace_id,
+                    ArchiveCapabilityAttestationModel.configuration_fingerprint
+                    == receipt.capability_fingerprint,
+                    ArchiveCapabilityAttestationModel.encryption_profile_fingerprint
+                    == evidence.encryption_profile_fingerprint,
+                    ArchiveCapabilityAttestationModel.runtime_principal_fingerprint
+                    == evidence.worker_principal_fingerprint,
+                    ArchiveCapabilityAttestationModel.object_bucket == receipt.object_bucket,
+                    ArchiveCapabilityAttestationModel.state == "VERIFIED",
+                    ArchiveCapabilityAttestationModel.observed_at <= receipt.verified_at,
+                    ArchiveCapabilityAttestationModel.expires_at > receipt.verified_at,
+                )
+                .order_by(ArchiveCapabilityAttestationModel.observed_at.desc())
+                .limit(1)
+            )
+        ).one_or_none()
+        if attestation is None:
+            raise ConflictError(
+                "No current verified archive capability matches the receipt evidence."
+            )
+        capability = _required_archive_capability(attestation)
+        capability.assert_usable(now=receipt.verified_at)
+
+        policy = (
+            await self._session.scalars(
+                select(RetentionPolicyVersionModel).where(
+                    RetentionPolicyVersionModel.workspace_id == receipt.workspace_id,
+                    RetentionPolicyVersionModel.id == evidence.retention_policy_id,
+                    RetentionPolicyVersionModel.payload_hash == evidence.retention_policy_hash,
+                    RetentionPolicyVersionModel.state == RetentionPolicyState.ACTIVE.value,
+                )
+            )
+        ).one_or_none()
+        if policy is None:
+            raise ConflictError("The immutable archive receipt must bind the active policy.")
+        active_policy = _required_policy(policy)
+        minimum_retention_until = _advance_calendar_years(
+            evidence.source_end, active_policy.rules.immutable_archive_years
+        )
+        if receipt.retention_until < minimum_retention_until:
+            raise ConflictError("The archive retention deadline is shorter than the active policy.")
+
+        self._session.add(
+            _archive_receipt_model(
+                receipt=receipt,
+                evidence=evidence,
+                capability_attestation_id=attestation.id,
+            )
+        )
+
+    async def get_receipt(
+        self, *, workspace_id: UUID, receipt_id: UUID
+    ) -> ImmutableArchiveReceipt | None:
+        model = (
+            await self._session.scalars(
+                select(ImmutableArchiveReceiptModel).where(
+                    ImmutableArchiveReceiptModel.workspace_id == workspace_id,
+                    ImmutableArchiveReceiptModel.id == receipt_id,
+                )
+            )
+        ).one_or_none()
+        return _hydrate_archive_receipt(model)
+
+
 class SqlRetentionUnitOfWork(RetentionUnitOfWork):
     def __init__(self, session_factory: async_sessionmaker[AsyncSession]) -> None:
         self._session_factory = session_factory
@@ -860,3 +1040,435 @@ def _classification_or_restricted(value: int | None) -> Classification:
         return Classification(value)
     except ValueError:
         return Classification.RESTRICTED
+
+
+def _archive_capability_model(
+    *,
+    workspace_id: UUID,
+    capability: ArchiveCapability,
+    evidence: ArchiveCapabilityEvidence,
+) -> ArchiveCapabilityAttestationModel:
+    _require_archive_hash(
+        evidence.encryption_profile_fingerprint, "archive encryption profile fingerprint"
+    )
+    _require_archive_hash(
+        evidence.runtime_principal_fingerprint, "archive runtime principal fingerprint"
+    )
+    _require_archive_hash(evidence.challenge_hash, "archive capability challenge")
+    _require_archive_text(evidence.probe_contract_version, 100, "probe contract version")
+    _require_archive_bucket(evidence.object_bucket)
+    controls_verified = all(
+        (
+            capability.versioning_enabled,
+            capability.object_lock_enabled,
+            capability.compliance_retention_supported,
+            capability.checksum_sha256_supported,
+            capability.full_readback_verified,
+            capability.retention_shorten_denied,
+            capability.retained_version_delete_denied,
+        )
+    )
+    if controls_verified and evidence.failure_code is None:
+        state = "VERIFIED"
+    else:
+        _require_archive_text(evidence.failure_code, 100, "capability failure code")
+        state = "FAILED"
+
+    attestation_id = uuid7()
+    document = _archive_capability_document(
+        attestation_id=attestation_id,
+        workspace_id=workspace_id,
+        capability=capability,
+        evidence=evidence,
+        state=state,
+    )
+    return ArchiveCapabilityAttestationModel(
+        id=attestation_id,
+        workspace_id=workspace_id,
+        configuration_fingerprint=capability.configuration_fingerprint,
+        encryption_profile_fingerprint=evidence.encryption_profile_fingerprint,
+        runtime_principal_fingerprint=evidence.runtime_principal_fingerprint,
+        probe_contract_version=evidence.probe_contract_version,
+        challenge_hash=evidence.challenge_hash,
+        object_bucket=evidence.object_bucket,
+        observed_at=capability.observed_at,
+        expires_at=capability.expires_at,
+        versioning_enabled=capability.versioning_enabled,
+        object_lock_enabled=capability.object_lock_enabled,
+        compliance_retention_supported=capability.compliance_retention_supported,
+        checksum_sha256_supported=capability.checksum_sha256_supported,
+        full_readback_verified=capability.full_readback_verified,
+        retention_shorten_denied=capability.retention_shorten_denied,
+        retained_version_delete_denied=capability.retained_version_delete_denied,
+        state=state,
+        failure_code=evidence.failure_code,
+        payload_hash=canonical_json_hash(document),
+    )
+
+
+def _archive_capability_document(
+    *,
+    attestation_id: UUID,
+    workspace_id: UUID,
+    capability: ArchiveCapability,
+    evidence: ArchiveCapabilityEvidence,
+    state: str,
+) -> dict[str, object]:
+    return {
+        "attestation_id": str(attestation_id),
+        "workspace_id": str(workspace_id),
+        "configuration_fingerprint": capability.configuration_fingerprint,
+        "encryption_profile_fingerprint": evidence.encryption_profile_fingerprint,
+        "runtime_principal_fingerprint": evidence.runtime_principal_fingerprint,
+        "probe_contract_version": evidence.probe_contract_version,
+        "challenge_hash": evidence.challenge_hash,
+        "object_bucket": evidence.object_bucket,
+        "observed_at": capability.observed_at.isoformat(),
+        "expires_at": capability.expires_at.isoformat(),
+        "versioning_enabled": capability.versioning_enabled,
+        "object_lock_enabled": capability.object_lock_enabled,
+        "compliance_retention_supported": capability.compliance_retention_supported,
+        "checksum_sha256_supported": capability.checksum_sha256_supported,
+        "full_readback_verified": capability.full_readback_verified,
+        "retention_shorten_denied": capability.retention_shorten_denied,
+        "retained_version_delete_denied": capability.retained_version_delete_denied,
+        "state": state,
+        "failure_code": evidence.failure_code,
+    }
+
+
+def _hydrate_archive_capability(
+    model: ArchiveCapabilityAttestationModel | None,
+) -> ArchiveCapability | None:
+    if model is None:
+        return None
+    return _required_archive_capability(model)
+
+
+def _required_archive_capability(
+    model: ArchiveCapabilityAttestationModel,
+) -> ArchiveCapability:
+    if model.state != "VERIFIED" or model.failure_code is not None:
+        raise ConflictError("The stored archive capability is not verified.")
+    try:
+        capability = ArchiveCapability(
+            configuration_fingerprint=model.configuration_fingerprint,
+            observed_at=model.observed_at,
+            expires_at=model.expires_at,
+            versioning_enabled=model.versioning_enabled,
+            object_lock_enabled=model.object_lock_enabled,
+            compliance_retention_supported=model.compliance_retention_supported,
+            checksum_sha256_supported=model.checksum_sha256_supported,
+            full_readback_verified=model.full_readback_verified,
+            retention_shorten_denied=model.retention_shorten_denied,
+            retained_version_delete_denied=model.retained_version_delete_denied,
+        )
+        evidence = ArchiveCapabilityEvidence(
+            encryption_profile_fingerprint=model.encryption_profile_fingerprint,
+            runtime_principal_fingerprint=model.runtime_principal_fingerprint,
+            probe_contract_version=model.probe_contract_version,
+            challenge_hash=model.challenge_hash,
+            object_bucket=model.object_bucket,
+            failure_code=model.failure_code,
+        )
+    except (ValueError, ValidationError) as error:
+        raise ConflictError("The stored archive capability evidence is invalid.") from error
+    document = _archive_capability_document(
+        attestation_id=model.id,
+        workspace_id=model.workspace_id,
+        capability=capability,
+        evidence=evidence,
+        state=model.state,
+    )
+    if canonical_json_hash(document) != model.payload_hash:
+        raise ConflictError("The stored archive capability failed its integrity check.")
+    return capability
+
+
+def _archive_receipt_model(
+    *,
+    receipt: ImmutableArchiveReceipt,
+    evidence: ArchiveReceiptEvidence,
+    capability_attestation_id: UUID,
+) -> ImmutableArchiveReceiptModel:
+    normalized_provider_checksum = _normalized_provider_checksum(
+        value=receipt.provider_checksum,
+        algorithm=evidence.provider_checksum_algorithm,
+        encoding=evidence.provider_checksum_encoding,
+        checksum_type=evidence.provider_checksum_type,
+    )
+    _validate_archive_receipt_evidence(
+        receipt=receipt,
+        evidence=evidence,
+        normalized_provider_checksum=normalized_provider_checksum,
+    )
+    document = _archive_receipt_document(
+        receipt=receipt,
+        evidence=evidence,
+        capability_attestation_id=capability_attestation_id,
+        normalized_provider_checksum=normalized_provider_checksum,
+    )
+    return ImmutableArchiveReceiptModel(
+        id=receipt.receipt_id,
+        workspace_id=receipt.workspace_id,
+        source=receipt.source.value,
+        source_partition=receipt.source_partition,
+        source_start=evidence.source_start,
+        source_end=evidence.source_end,
+        retention_policy_id=evidence.retention_policy_id,
+        retention_policy_hash=evidence.retention_policy_hash,
+        row_count=receipt.row_count,
+        byte_count=receipt.byte_count,
+        manifest_hash=evidence.manifest_hash,
+        content_sha256=receipt.content_sha256,
+        provider_checksum=receipt.provider_checksum,
+        provider_checksum_algorithm=evidence.provider_checksum_algorithm,
+        provider_checksum_encoding=evidence.provider_checksum_encoding,
+        provider_checksum_type=evidence.provider_checksum_type,
+        provider_checksum_normalized_sha256=normalized_provider_checksum,
+        readback_sha256=evidence.readback_sha256,
+        readback_byte_count=evidence.readback_byte_count,
+        object_bucket=receipt.object_bucket,
+        object_key=receipt.object_key,
+        object_version_id=receipt.object_version_id,
+        retention_mode=receipt.retention_mode.value,
+        retention_until=receipt.retention_until,
+        requested_retention_until=evidence.requested_retention_until,
+        readback_retention_until=evidence.readback_retention_until,
+        legal_hold=receipt.legal_hold,
+        written_at=evidence.written_at,
+        content_verified_at=evidence.content_verified_at,
+        retention_verified_at=evidence.retention_verified_at,
+        verified_at=receipt.verified_at,
+        canonicalization_version=evidence.canonicalization_version,
+        media_type=evidence.media_type,
+        media_type_version=evidence.media_type_version,
+        compression=evidence.compression,
+        compression_version=evidence.compression_version,
+        worker_principal_fingerprint=evidence.worker_principal_fingerprint,
+        correlation_id=evidence.correlation_id,
+        capability_attestation_id=capability_attestation_id,
+        capability_fingerprint=receipt.capability_fingerprint,
+        encryption_profile_fingerprint=evidence.encryption_profile_fingerprint,
+        payload_hash=canonical_json_hash(document),
+    )
+
+
+def _validate_archive_receipt_evidence(
+    *,
+    receipt: ImmutableArchiveReceipt,
+    evidence: ArchiveReceiptEvidence,
+    normalized_provider_checksum: str,
+) -> None:
+    for timestamp, name in (
+        (evidence.source_start, "archive source start"),
+        (evidence.source_end, "archive source end"),
+        (evidence.requested_retention_until, "requested archive retention"),
+        (evidence.readback_retention_until, "read-back archive retention"),
+        (evidence.written_at, "archive write"),
+        (evidence.content_verified_at, "archive content verification"),
+        (evidence.retention_verified_at, "archive retention verification"),
+    ):
+        _require_archive_timestamp(timestamp, name)
+    if evidence.source_end <= evidence.source_start:
+        raise ValidationError("The archive source range must be positive.")
+    for value, name in (
+        (evidence.retention_policy_hash, "retention policy hash"),
+        (evidence.manifest_hash, "archive manifest hash"),
+        (evidence.readback_sha256, "archive read-back hash"),
+        (evidence.worker_principal_fingerprint, "archive worker principal fingerprint"),
+        (evidence.encryption_profile_fingerprint, "archive encryption profile fingerprint"),
+    ):
+        _require_archive_hash(value, name)
+    if evidence.readback_byte_count < 1:
+        raise ValidationError("The archive read-back byte count must be positive.")
+    if not (
+        receipt.content_sha256 == normalized_provider_checksum == evidence.readback_sha256
+        and receipt.byte_count == evidence.readback_byte_count
+    ):
+        raise ValidationError("Provider and full read-back evidence must match the archive.")
+    if not (
+        receipt.retention_until
+        == evidence.requested_retention_until
+        == evidence.readback_retention_until
+    ):
+        raise ValidationError("Requested and read-back retention evidence must match.")
+    if not (
+        evidence.written_at <= evidence.content_verified_at <= receipt.verified_at
+        and evidence.written_at <= evidence.retention_verified_at <= receipt.verified_at
+    ):
+        raise ValidationError("The immutable archive verification timeline is invalid.")
+    _require_archive_text(evidence.canonicalization_version, 100, "canonicalization version")
+    _require_archive_text(evidence.media_type, 255, "archive media type")
+    _require_archive_text(evidence.media_type_version, 100, "archive media type version")
+    _require_archive_text(evidence.compression, 50, "archive compression")
+    _require_archive_text(evidence.compression_version, 100, "archive compression version")
+    _require_archive_text(evidence.correlation_id, 100, "archive correlation identifier")
+
+
+def _archive_receipt_document(
+    *,
+    receipt: ImmutableArchiveReceipt,
+    evidence: ArchiveReceiptEvidence,
+    capability_attestation_id: UUID,
+    normalized_provider_checksum: str,
+) -> dict[str, object]:
+    return {
+        "receipt_id": str(receipt.receipt_id),
+        "workspace_id": str(receipt.workspace_id),
+        "source": receipt.source.value,
+        "source_partition": receipt.source_partition,
+        "source_start": evidence.source_start.isoformat(),
+        "source_end": evidence.source_end.isoformat(),
+        "retention_policy_id": str(evidence.retention_policy_id),
+        "retention_policy_hash": evidence.retention_policy_hash,
+        "row_count": receipt.row_count,
+        "byte_count": receipt.byte_count,
+        "manifest_hash": evidence.manifest_hash,
+        "content_sha256": receipt.content_sha256,
+        "provider_checksum": receipt.provider_checksum,
+        "provider_checksum_algorithm": evidence.provider_checksum_algorithm,
+        "provider_checksum_encoding": evidence.provider_checksum_encoding,
+        "provider_checksum_type": evidence.provider_checksum_type,
+        "provider_checksum_normalized_sha256": normalized_provider_checksum,
+        "readback_sha256": evidence.readback_sha256,
+        "readback_byte_count": evidence.readback_byte_count,
+        "object_bucket": receipt.object_bucket,
+        "object_key": receipt.object_key,
+        "object_version_id": receipt.object_version_id,
+        "retention_mode": receipt.retention_mode.value,
+        "retention_until": receipt.retention_until.isoformat(),
+        "requested_retention_until": evidence.requested_retention_until.isoformat(),
+        "readback_retention_until": evidence.readback_retention_until.isoformat(),
+        "legal_hold": receipt.legal_hold,
+        "written_at": evidence.written_at.isoformat(),
+        "content_verified_at": evidence.content_verified_at.isoformat(),
+        "retention_verified_at": evidence.retention_verified_at.isoformat(),
+        "verified_at": receipt.verified_at.isoformat(),
+        "canonicalization_version": evidence.canonicalization_version,
+        "media_type": evidence.media_type,
+        "media_type_version": evidence.media_type_version,
+        "compression": evidence.compression,
+        "compression_version": evidence.compression_version,
+        "worker_principal_fingerprint": evidence.worker_principal_fingerprint,
+        "correlation_id": evidence.correlation_id,
+        "capability_attestation_id": str(capability_attestation_id),
+        "capability_fingerprint": receipt.capability_fingerprint,
+        "encryption_profile_fingerprint": evidence.encryption_profile_fingerprint,
+    }
+
+
+def _hydrate_archive_receipt(
+    model: ImmutableArchiveReceiptModel | None,
+) -> ImmutableArchiveReceipt | None:
+    if model is None:
+        return None
+    try:
+        receipt = ImmutableArchiveReceipt(
+            receipt_id=model.id,
+            workspace_id=model.workspace_id,
+            source=ArchiveSource(model.source),
+            source_partition=model.source_partition,
+            row_count=model.row_count,
+            byte_count=model.byte_count,
+            content_sha256=model.content_sha256,
+            provider_checksum=model.provider_checksum,
+            object_bucket=model.object_bucket,
+            object_key=model.object_key,
+            object_version_id=model.object_version_id,
+            retention_mode=ArchiveRetentionMode(model.retention_mode),
+            retention_until=model.retention_until,
+            legal_hold=model.legal_hold,
+            verified_at=model.verified_at,
+            capability_fingerprint=model.capability_fingerprint,
+        )
+        evidence = ArchiveReceiptEvidence(
+            source_start=model.source_start,
+            source_end=model.source_end,
+            retention_policy_id=model.retention_policy_id,
+            retention_policy_hash=model.retention_policy_hash,
+            manifest_hash=model.manifest_hash,
+            provider_checksum_algorithm=model.provider_checksum_algorithm,
+            provider_checksum_encoding=model.provider_checksum_encoding,
+            provider_checksum_type=model.provider_checksum_type,
+            readback_sha256=model.readback_sha256,
+            readback_byte_count=model.readback_byte_count,
+            requested_retention_until=model.requested_retention_until,
+            readback_retention_until=model.readback_retention_until,
+            written_at=model.written_at,
+            content_verified_at=model.content_verified_at,
+            retention_verified_at=model.retention_verified_at,
+            canonicalization_version=model.canonicalization_version,
+            media_type=model.media_type,
+            media_type_version=model.media_type_version,
+            compression=model.compression,
+            compression_version=model.compression_version,
+            worker_principal_fingerprint=model.worker_principal_fingerprint,
+            correlation_id=model.correlation_id,
+            encryption_profile_fingerprint=model.encryption_profile_fingerprint,
+        )
+        _validate_archive_receipt_evidence(
+            receipt=receipt,
+            evidence=evidence,
+            normalized_provider_checksum=model.provider_checksum_normalized_sha256,
+        )
+    except (ValueError, ValidationError) as error:
+        raise ConflictError("The stored immutable archive receipt is invalid.") from error
+    document = _archive_receipt_document(
+        receipt=receipt,
+        evidence=evidence,
+        capability_attestation_id=model.capability_attestation_id,
+        normalized_provider_checksum=model.provider_checksum_normalized_sha256,
+    )
+    if canonical_json_hash(document) != model.payload_hash:
+        raise ConflictError("The stored immutable archive receipt failed its integrity check.")
+    return receipt
+
+
+def _normalized_provider_checksum(
+    *, value: str, algorithm: str, encoding: str, checksum_type: str
+) -> str:
+    if algorithm != "SHA256" or checksum_type != "FULL_OBJECT":
+        raise ValidationError("Immutable archives require a full-object SHA-256 checksum.")
+    if encoding == "HEX":
+        if not re.fullmatch(r"[0-9a-f]{64}", value):
+            raise ValidationError("The provider SHA-256 hex checksum is invalid.")
+        return value
+    if encoding != "BASE64":
+        raise ValidationError("The provider checksum encoding is unsupported.")
+    try:
+        decoded = base64.b64decode(value, validate=True)
+    except (binascii.Error, ValueError) as error:
+        raise ValidationError("The provider SHA-256 base64 checksum is invalid.") from error
+    if len(decoded) != 32:
+        raise ValidationError("The provider SHA-256 base64 checksum is invalid.")
+    return decoded.hex()
+
+
+def _advance_calendar_years(value: datetime, years: int) -> datetime:
+    """Advance a policy deadline by calendar years; Feb-29 becomes Feb-28."""
+    _require_archive_timestamp(value, "archive retention basis")
+    try:
+        return value.replace(year=value.year + years)
+    except ValueError:
+        return value.replace(year=value.year + years, month=2, day=28)
+
+
+def _require_archive_hash(value: str, name: str) -> None:
+    if not re.fullmatch(r"[0-9a-f]{64}", value):
+        raise ValidationError(f"The {name} is invalid.")
+
+
+def _require_archive_text(value: str | None, maximum: int, name: str) -> None:
+    if value is None or not value.strip() or len(value) > maximum:
+        raise ValidationError(f"The {name} is invalid.")
+
+
+def _require_archive_bucket(value: str) -> None:
+    if not re.fullmatch(r"[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]", value):
+        raise ValidationError("The immutable archive bucket name is invalid.")
+
+
+def _require_archive_timestamp(value: datetime, name: str) -> None:
+    if value.tzinfo is None or value.utcoffset() is None:
+        raise ValidationError(f"The {name} timestamp must include a timezone.")

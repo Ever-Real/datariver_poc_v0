@@ -67,13 +67,13 @@ def test_policy_hydration_rejects_a_tampered_rules_hash() -> None:
     policy = RetentionPolicyVersion.propose(
         workspace_id=uuid4(),
         policy_number=1,
-        rules=RetentionRules(30, 90, 13, 7),
+        rules=RetentionRules(17, 29, 8, 4),
         requester_id=uuid4(),
         reason="Operating policy",
         policy_decision_id=uuid4(),
     )
     model = _policy_model(policy)
-    model.completed_operation_days = 31
+    model.completed_operation_days = 18
 
     with pytest.raises(ConflictError, match="integrity"):
         _required_policy(model)

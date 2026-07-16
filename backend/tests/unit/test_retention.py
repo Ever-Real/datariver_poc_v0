@@ -30,10 +30,10 @@ from datariver.domain.retention import (
 
 def rules() -> RetentionRules:
     return RetentionRules(
-        completed_operation_days=30,
-        chat_content_days=90,
-        audit_online_months=13,
-        immutable_archive_years=7,
+        completed_operation_days=17,
+        chat_content_days=29,
+        audit_online_months=8,
+        immutable_archive_years=4,
     )
 
 
