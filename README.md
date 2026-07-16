@@ -33,6 +33,8 @@ The legacy repository is not mixed into this codebase. Its filtered read-only re
 
 - Git, Docker Engine/Desktop with Compose v2, at least 8 GiB free memory for core + local identity, and about 12 GiB when Airflow is also enabled.
 - An existing DataHub endpoint and a scoped service token. DataRiver does not start, migrate or delete DataHub.
+- Production supports the stable DataHub `v1.6.0` contract and enforces the external runtime version;
+  the external deployment pins each component using `infra/contracts/datahub-v1.6.0-images.json`.
 - For local source checks: Python 3.12, `uv 0.9.17`, Node.js 22.19 and npm 10.
 
 No real `.env`, secret, uploaded object, database volume or generated Keycloak realm is committed.
@@ -210,7 +212,7 @@ Apply/remove require explicit confirmation. Production mode rejects any non-`non
 ```bash
 uv sync --frozen --all-extras
 uv run ruff format --check backend/src backend/tests infra/airflow/dags
-uv run ruff check backend/src backend/tests infra/airflow/dags scripts/generate_initial_migration.py scripts/probe_policy_revocation.py scripts/verify_static.py
+uv run ruff check backend/src backend/tests infra/airflow/dags scripts/generate_initial_migration.py scripts/probe_policy_revocation.py scripts/verify_datahub_contract.py scripts/verify_static.py
 uv run mypy backend/src backend/tests
 uv run pytest backend/tests -q
 uv run python scripts/verify_static.py
@@ -221,6 +223,13 @@ npm run typecheck
 npm run lint
 npm run test -- --run
 npm run build
+```
+
+Before production promotion, verify the external DataHub runtime independently of application
+startup:
+
+```bash
+uv run python scripts/verify_datahub_contract.py --base-url https://datahub.example.internal
 ```
 
 With the local semiconductor seed, Keycloak and host API running, measure same-token policy

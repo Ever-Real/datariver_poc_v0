@@ -57,6 +57,7 @@ def test_api_container_passes_the_configured_pool_budget(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     captured: dict[str, Any] = {}
+    datahub_captured: dict[str, Any] = {}
 
     def database(url: str, **kwargs: Any) -> object:
         captured.update(url=url, **kwargs)
@@ -65,7 +66,11 @@ def test_api_container_passes_the_configured_pool_budget(
     monkeypatch.setattr(http_container, "SecretResolver", Resolver)
     monkeypatch.setattr(http_container, "Database", database)
     monkeypatch.setattr(http_container, "ValkeyCache", lambda *args, **kwargs: object())
-    monkeypatch.setattr(http_container, "HttpDataHubGateway", lambda **kwargs: object())
+    monkeypatch.setattr(
+        http_container,
+        "HttpDataHubGateway",
+        lambda **kwargs: datahub_captured.update(kwargs) or object(),
+    )
     monkeypatch.setattr(http_container, "OidcTokenVerifier", lambda **kwargs: object())
     monkeypatch.setattr(http_container, "S3ObjectStore", lambda **kwargs: object())
 
@@ -74,6 +79,9 @@ def test_api_container_passes_the_configured_pool_budget(
     assert captured["pool_size"] == 7
     assert captured["max_overflow"] == 3
     assert captured["pool_timeout_seconds"] == 9
+    assert datahub_captured["expected_version"] == "v1.6.0"
+    assert datahub_captured["version_enforcement"] == "report"
+    assert datahub_captured["version_probe_ttl_seconds"] == 300
 
 
 def test_worker_container_passes_the_configured_pool_budget(

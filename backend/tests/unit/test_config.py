@@ -85,10 +85,39 @@ def test_accepts_secure_production_configuration() -> None:
         oidc_issuer="https://idp.example.com/realms/data",
         oidc_jwks_url="https://idp.example.com/realms/data/certs",
         datahub_base_url="https://datahub.example.com",
+        datahub_version_enforcement="enforce",
         s3_public_endpoint_url="https://objects.example.com",
     )
 
     assert configured.app_env == "production"
+
+
+def test_production_requires_datahub_version_enforcement() -> None:
+    with pytest.raises(ValidationError, match="DataHub version contract"):
+        settings(
+            app_env="production",
+            app_public_origin="https://catalog.example.com",
+            app_cors_origins=("https://catalog.example.com",),
+            oidc_issuer="https://idp.example.com/realms/data",
+            oidc_jwks_url="https://idp.example.com/realms/data/certs",
+            datahub_base_url="https://datahub.example.com",
+            s3_public_endpoint_url="https://objects.example.com",
+        )
+
+
+def test_production_rejects_prerelease_datahub_contract() -> None:
+    with pytest.raises(ValidationError, match="stable immutable releases"):
+        settings(
+            app_env="production",
+            app_public_origin="https://catalog.example.com",
+            app_cors_origins=("https://catalog.example.com",),
+            oidc_issuer="https://idp.example.com/realms/data",
+            oidc_jwks_url="https://idp.example.com/realms/data/certs",
+            datahub_base_url="https://datahub.example.com",
+            datahub_version_enforcement="enforce",
+            datahub_expected_version="v1.6.0rc1",
+            s3_public_endpoint_url="https://objects.example.com",
+        )
 
 
 def test_parses_comma_separated_collection_environment_values(

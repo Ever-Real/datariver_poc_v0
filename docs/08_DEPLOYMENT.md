@@ -12,6 +12,17 @@
 
 No Compose file starts DataHub. OPA, a separate graph database and a full observability stack are documented extension seams, not shipped runtime dependencies in this baseline.
 
+The supported production DataHub provider contract is stable `v1.6.0`. The external deployment
+owner must use the component OCI index digests in
+[`infra/contracts/datahub-v1.6.0-images.json`](../infra/contracts/datahub-v1.6.0-images.json), not the
+mutable `head`, `latest` or RC tags. DataRiver production sets
+`DATAHUB_VERSION_ENFORCEMENT=enforce`; development may use `report` only to expose a degraded
+capability while an external stack is being upgraded.
+
+Run `uv run python scripts/verify_datahub_contract.py --base-url <target-datahub-url>` during
+promotion. A successful version probe is only the first gate; the live provider contract tests
+listed below remain mandatory.
+
 ## Configuration and bootstrap
 
 Bootstrap requires a DataHub token and generates ignored, permission-restricted secret files plus `.env` and the runtime Keycloak realm:

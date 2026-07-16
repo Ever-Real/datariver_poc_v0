@@ -55,6 +55,9 @@ class Settings(BaseSettings):
 
     datahub_base_url: str
     datahub_secret_ref: str
+    datahub_expected_version: str = "v1.6.0"
+    datahub_version_enforcement: Literal["report", "enforce"] = "report"
+    datahub_version_probe_ttl_seconds: int = Field(default=300, ge=30, le=3600)
     datahub_timeout_seconds: float = Field(default=10.0, ge=0.1, le=60)
     datahub_max_concurrency: int = Field(default=20, ge=1, le=200)
     datahub_queue_timeout_seconds: float = Field(default=2.0, ge=0.1, le=30)
@@ -165,6 +168,14 @@ class Settings(BaseSettings):
                 raise ValueError(f"Production requires HTTPS for: {', '.join(sorted(insecure))}.")
             if self.seed_profile != "none":
                 raise ValueError("Seed profiles cannot be enabled in production mode.")
+            if self.datahub_version_enforcement != "enforce":
+                raise ValueError("Production must enforce the approved DataHub version contract.")
+            forbidden_version_markers = ("rc", "snapshot", "head", "latest")
+            if any(
+                marker in self.datahub_expected_version.lower()
+                for marker in forbidden_version_markers
+            ):
+                raise ValueError("Production DataHub versions must be stable immutable releases.")
         return self
 
 

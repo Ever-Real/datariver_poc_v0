@@ -48,6 +48,11 @@ The hybrid runtime has live evidence for PostgreSQL RLS, Keycloak service-token 
 Vite proxying, DataHub authentication and semiconductor seed verification. Target DataHub, target
 object storage, production identity, large data, backup/restore and 60-minute soak gates remain open.
 
+The approved DataHub provider baseline is the stable `v1.6.0` contract in ADR-0008. Production
+promotion requires the external deployment to pin the reviewed OCI digests, enable runtime version
+enforcement and pass live scan/detail/lineage/apply/read-back contract tests. A matching version
+string alone is not production acceptance evidence.
+
 The frontend is a functional integration baseline, not a completed enterprise UX: catalog facets,
 autocomplete/lineage, policy administration, audit/job browsing, Chat history/SSE/external-model
 adapter, automated KG extraction/projection rebuild and several upload lifecycle endpoints remain

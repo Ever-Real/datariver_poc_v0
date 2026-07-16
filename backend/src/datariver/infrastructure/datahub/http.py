@@ -4,7 +4,7 @@ import asyncio
 import json
 import time
 from datetime import UTC, datetime
-from typing import Any, Protocol
+from typing import Any, Literal, Protocol
 from urllib.parse import quote
 
 import httpx
@@ -125,6 +125,27 @@ def _aspect_document(envelope: Any) -> dict[str, Any]:
     return candidate
 
 
+def _datahub_version_from_config(payload: object) -> str:
+    if not isinstance(payload, dict):
+        raise ExternalDependencyError(
+            "DataHub returned an invalid version contract.",
+            dependency="datahub",
+            retryable=False,
+            provider_code="INVALID_VERSION_CONTRACT",
+        )
+    versions = payload.get("versions")
+    product = versions.get("acryldata/datahub") if isinstance(versions, dict) else None
+    version = product.get("version") if isinstance(product, dict) else None
+    if not isinstance(version, str) or not version.strip():
+        raise ExternalDependencyError(
+            "DataHub did not report a supported version contract.",
+            dependency="datahub",
+            retryable=False,
+            provider_code="INVALID_VERSION_CONTRACT",
+        )
+    return version.strip()
+
+
 class HttpDataHubGateway:
     def __init__(
         self,
@@ -132,6 +153,9 @@ class HttpDataHubGateway:
         base_url: str,
         token: str,
         timeout_seconds: float,
+        expected_version: str | None = None,
+        version_enforcement: Literal["report", "enforce"] = "report",
+        version_probe_ttl_seconds: int = 300,
         maximum_concurrency: int = 20,
         queue_timeout_seconds: float = 2.0,
         circuit_failure_threshold: int = 5,
@@ -147,6 +171,12 @@ class HttpDataHubGateway:
             follow_redirects=False,
         )
         self._owns_client = client is None
+        self._expected_version = expected_version
+        self._version_enforcement = version_enforcement
+        self._version_probe_ttl_seconds = version_probe_ttl_seconds
+        self._version_lock = asyncio.Lock()
+        self._version_checked_at = 0.0
+        self._observed_version: str | None = None
         self._semaphore = asyncio.Semaphore(maximum_concurrency)
         self._queue_timeout_seconds = queue_timeout_seconds
         self._circuit_failure_threshold = circuit_failure_threshold
@@ -297,6 +327,7 @@ class HttpDataHubGateway:
         return "client_error"
 
     async def _graphql(self, query: str, variables: dict[str, Any]) -> dict[str, Any]:
+        await self._ensure_version_contract()
         response = await self._request(
             "POST", "/api/graphql", json={"query": query, "variables": variables}
         )
@@ -514,6 +545,7 @@ class HttpDataHubGateway:
         document: dict[str, Any],
         idempotency_key: str,
     ) -> DataHubApplyReceipt:
+        await self._ensure_version_contract()
         proposal = {
             "proposal": {
                 "entityType": "dataset",
@@ -557,6 +589,7 @@ class HttpDataHubGateway:
         )
 
     async def read_aspect(self, *, external_urn: str, aspect_name: str) -> DataHubAspectSnapshot:
+        await self._ensure_version_contract()
         encoded_urn = quote(external_urn, safe="")
         response = await self._request(
             "GET",
@@ -587,18 +620,82 @@ class HttpDataHubGateway:
             observed_at=datetime.now(UTC),
         )
 
+    async def _read_reported_version(self) -> str:
+        response = await self._request("GET", "/config")
+        if response.status_code in {401, 403}:
+            raise ExternalDependencyError(
+                "DataHub rejected the service identity.",
+                dependency="datahub",
+                retryable=False,
+                provider_code="UNAUTHORIZED",
+            )
+        if response.status_code == 429 or response.status_code >= 500:
+            raise ExternalDependencyError(
+                "DataHub could not report its version contract.",
+                dependency="datahub",
+                retryable=True,
+                provider_code=str(response.status_code),
+            )
+        if response.status_code >= 400:
+            raise ExternalDependencyError(
+                "DataHub rejected the version contract probe.",
+                dependency="datahub",
+                retryable=False,
+                provider_code=str(response.status_code),
+            )
+        try:
+            payload = response.json()
+        except ValueError as error:
+            raise ExternalDependencyError(
+                "DataHub returned invalid version JSON.",
+                dependency="datahub",
+                retryable=False,
+                provider_code="INVALID_VERSION_CONTRACT",
+            ) from error
+        return _datahub_version_from_config(payload)
+
+    async def _reported_version(self, *, force: bool = False) -> str:
+        now = time.monotonic()
+        if (
+            not force
+            and self._observed_version is not None
+            and now - self._version_checked_at < self._version_probe_ttl_seconds
+        ):
+            return self._observed_version
+        async with self._version_lock:
+            now = time.monotonic()
+            if (
+                not force
+                and self._observed_version is not None
+                and now - self._version_checked_at < self._version_probe_ttl_seconds
+            ):
+                return self._observed_version
+            observed = await self._read_reported_version()
+            self._observed_version = observed
+            self._version_checked_at = time.monotonic()
+            return observed
+
+    async def _ensure_version_contract(self) -> None:
+        if self._expected_version is None:
+            return
+        observed = await self._reported_version()
+        if observed != self._expected_version and self._version_enforcement == "enforce":
+            raise ExternalDependencyError(
+                "DataHub does not match the approved release contract.",
+                dependency="datahub",
+                retryable=False,
+                provider_code="VERSION_MISMATCH",
+            )
+
     async def capability(self) -> CapabilityStatus:
         started = time.perf_counter()
         state = "healthy"
         detail_code = None
         try:
-            response = await self._request("GET", "/config")
-            if response.status_code >= 500:
-                state = "unavailable"
-                detail_code = str(response.status_code)
-            elif response.status_code >= 400:
+            observed = await self._reported_version(force=True)
+            if self._expected_version is not None and observed != self._expected_version:
                 state = "degraded"
-                detail_code = str(response.status_code)
+                detail_code = "VERSION_MISMATCH"
         except ExternalDependencyError as error:
             state = "unavailable"
             detail_code = str(error.details.get("provider_code") or "NETWORK")

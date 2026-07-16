@@ -12,6 +12,8 @@ from datariver.domain.common import canonical_json_hash
 from datariver.infrastructure.datahub.http import HttpDataHubGateway
 from datariver.infrastructure.observability.metrics import HttpMetrics
 
+DATAHUB_V160_CONFIG = {"versions": {"acryldata/datahub": {"version": "v1.6.0"}}}
+
 
 async def test_asset_contract_uses_fixed_graphql_and_service_identity() -> None:
     async def handler(request: httpx.Request) -> httpx.Response:
@@ -256,4 +258,87 @@ async def test_bulkhead_rejects_excess_work_and_records_the_rejection() -> None:
         'datariver_datahub_requests_total{operation="graphql",outcome="overloaded"} 1.0'
         in rendered_metrics
     )
+    await client.aclose()
+
+
+async def test_capability_is_healthy_for_the_approved_datahub_release() -> None:
+    client = httpx.AsyncClient(
+        base_url="https://datahub.example",
+        transport=httpx.MockTransport(
+            lambda request: httpx.Response(200, json=DATAHUB_V160_CONFIG)
+        ),
+    )
+    gateway = HttpDataHubGateway(
+        base_url="https://datahub.example",
+        token="unused",
+        timeout_seconds=1,
+        expected_version="v1.6.0",
+        version_enforcement="enforce",
+        client=client,
+    )
+
+    capability = await gateway.capability()
+
+    assert capability.state == "healthy"
+    assert capability.detail_code is None
+    await client.aclose()
+
+
+async def test_capability_reports_a_datahub_release_mismatch_as_degraded() -> None:
+    client = httpx.AsyncClient(
+        base_url="https://datahub.example",
+        transport=httpx.MockTransport(
+            lambda request: httpx.Response(
+                200,
+                json={"versions": {"acryldata/datahub": {"version": "v1.6.0rc1"}}},
+            )
+        ),
+    )
+    gateway = HttpDataHubGateway(
+        base_url="https://datahub.example",
+        token="unused",
+        timeout_seconds=1,
+        expected_version="v1.6.0",
+        version_enforcement="report",
+        client=client,
+    )
+
+    capability = await gateway.capability()
+
+    assert capability.state == "degraded"
+    assert capability.detail_code == "VERSION_MISMATCH"
+    await client.aclose()
+
+
+async def test_enforcement_blocks_graphql_before_an_unapproved_datahub_release() -> None:
+    requested_paths: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requested_paths.append(request.url.path)
+        if request.url.path == "/config":
+            return httpx.Response(
+                200,
+                json={"versions": {"acryldata/datahub": {"version": "v1.6.0rc1"}}},
+            )
+        return httpx.Response(500, json={"message": "must not be called"})
+
+    client = httpx.AsyncClient(
+        base_url="https://datahub.example",
+        transport=httpx.MockTransport(handler),
+    )
+    gateway = HttpDataHubGateway(
+        base_url="https://datahub.example",
+        token="unused",
+        timeout_seconds=1,
+        expected_version="v1.6.0",
+        version_enforcement="enforce",
+        client=client,
+    )
+
+    with pytest.raises(ExternalDependencyError) as caught:
+        await gateway.get_asset("urn:li:dataset:test")
+
+    assert caught.value.details["retryable"] is False
+    assert caught.value.details["provider_code"] == "VERSION_MISMATCH"
+    assert requested_paths == ["/config"]
     await client.aclose()
