@@ -8,6 +8,11 @@ from pathlib import Path
 from typing import Any
 from uuid import UUID, uuid4
 
+from datariver.application.classification_access import (
+    ClassificationAccessPosture,
+    ClassificationAccessSnapshot,
+    ClassificationRuleRecord,
+)
 from datariver.application.dto import (
     CatalogAssetDetail,
     CatalogAssetIndex,
@@ -26,6 +31,7 @@ from datariver.domain.authz import (
     EnvironmentAttributes,
     SubjectAttributes,
 )
+from datariver.domain.classification_access import ChatMode, SearchMode
 from datariver.domain.common import uuid7
 
 
@@ -38,20 +44,73 @@ class FakeIndex:
         self,
         *,
         subject: SubjectAttributes,
+        access: object,
         query: str,
         filters: dict[str, Any],
         cursor: str | None,
         limit: int,
     ) -> CatalogPage:
         self.search_subject = subject
-        del query, filters, cursor, limit
+        del access, query, filters, cursor, limit
         return CatalogPage(items=(self.item,), next_cursor=None, observed_at=datetime.now(UTC))
 
     async def get_authorized_asset(
-        self, *, subject: SubjectAttributes, asset_id: UUID
+        self, *, subject: SubjectAttributes, access: object, asset_id: UUID
     ) -> CatalogAssetDetail | None:
-        del subject, asset_id
+        del subject, access, asset_id
         return None
+
+
+def test_chat_retrieval_translates_governed_chat_modes_into_sql_search_modes() -> None:
+    profile_id = uuid4()
+    access = ClassificationAccessSnapshot(
+        posture=ClassificationAccessPosture.GOVERNED,
+        policy_id=uuid4(),
+        policy_hash="a" * 64,
+        policy_version=2,
+        required_jurisdiction="jurisdiction-a",
+        authorization_generation=3,
+        rules=(
+            ClassificationRuleRecord(
+                Classification.PUBLIC,
+                SearchMode.ABAC,
+                ChatMode.INTERNAL_APPROVED_ONLY,
+                profile_id,
+            ),
+            ClassificationRuleRecord(
+                Classification.INTERNAL,
+                SearchMode.ABAC,
+                ChatMode.DENY,
+                None,
+            ),
+            ClassificationRuleRecord(
+                Classification.CONFIDENTIAL,
+                SearchMode.ABAC,
+                ChatMode.INTERNAL_APPROVED_ONLY,
+                profile_id,
+            ),
+            ClassificationRuleRecord(
+                Classification.RESTRICTED,
+                SearchMode.EXPLICIT_GRANT_ONLY,
+                ChatMode.DENY,
+                None,
+            ),
+        ),
+        restricted_resource_ids=frozenset({uuid4()}),
+        restricted_system_ids=frozenset(),
+        restricted_domain_ids=frozenset(),
+        nearest_validity_boundary=None,
+    )
+    transformed = ChatService._chat_retrieval_access(
+        access,
+        subject=replace(chat_subject(uuid4()), clearance=Classification.RESTRICTED),
+    )
+
+    assert transformed.rule_for(Classification.PUBLIC).search_mode is SearchMode.ABAC
+    assert transformed.rule_for(Classification.INTERNAL).search_mode is SearchMode.DENY
+    assert transformed.rule_for(Classification.CONFIDENTIAL).search_mode is SearchMode.ABAC
+    assert transformed.rule_for(Classification.RESTRICTED).search_mode is SearchMode.DENY
+    assert transformed.restricted_resource_ids == frozenset()
 
 
 class FakeChatStore:

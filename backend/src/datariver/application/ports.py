@@ -6,6 +6,7 @@ from types import TracebackType
 from typing import Any, Protocol, Self, runtime_checkable
 from uuid import UUID
 
+from datariver.application.classification_access import ClassificationAccessSnapshot
 from datariver.application.dto import (
     ApiProductRecord,
     ApiProductVersionRecord,
@@ -91,6 +92,7 @@ class CatalogIndexReader(Protocol):
         self,
         *,
         subject: SubjectAttributes,
+        access: ClassificationAccessSnapshot,
         query: str,
         filters: dict[str, Any],
         cursor: str | None,
@@ -98,7 +100,11 @@ class CatalogIndexReader(Protocol):
     ) -> CatalogPage: ...
 
     async def get_authorized_asset(
-        self, *, subject: SubjectAttributes, asset_id: UUID
+        self,
+        *,
+        subject: SubjectAttributes,
+        access: ClassificationAccessSnapshot,
+        asset_id: UUID,
     ) -> CatalogAssetDetail | None: ...
 
 

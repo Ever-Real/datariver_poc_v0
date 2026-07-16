@@ -1,11 +1,13 @@
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from dataclasses import replace
+from datetime import UTC, datetime, timedelta
 from typing import Any, cast
 from uuid import uuid4
 
 import pytest
 
+from datariver.application.classification_access import static_classification_access_floor
 from datariver.application.dto import (
     CatalogAssetDetail,
     CatalogAssetIndex,
@@ -50,8 +52,9 @@ class FakeIndex:
         )
 
     async def get_authorized_asset(
-        self, *, subject: SubjectAttributes, asset_id: object
+        self, *, subject: SubjectAttributes, access: object, asset_id: object
     ) -> CatalogAssetDetail | None:
+        del access
         return self.detail
 
 
@@ -97,6 +100,30 @@ class FakeCache:
 class AllowAuthorization:
     async def authorize(self, **_: object) -> None:
         return None
+
+
+def test_search_cache_ttl_never_crosses_policy_or_grant_boundary() -> None:
+    now = datetime.now(UTC)
+    access = replace(
+        static_classification_access_floor(),
+        nearest_validity_boundary=now + timedelta(seconds=3, microseconds=900_000),
+    )
+    assert (
+        CatalogService._bounded_cache_ttl(
+            configured_ttl=30,
+            access=access,
+            now=now,
+        )
+        == 3
+    )
+    assert (
+        CatalogService._bounded_cache_ttl(
+            configured_ttl=30,
+            access=access,
+            now=now + timedelta(seconds=4),
+        )
+        == 0
+    )
 
 
 @pytest.mark.asyncio

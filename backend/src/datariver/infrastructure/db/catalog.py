@@ -8,10 +8,14 @@ from datetime import UTC, datetime, timedelta
 from typing import Any
 from uuid import NAMESPACE_URL, UUID, uuid5
 
-from sqlalchemy import and_, func, or_, select, update
+from sqlalchemy import and_, false, func, or_, select, update
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from datariver.application.classification_access import (
+    ClassificationAccessSnapshot,
+    static_classification_access_floor,
+)
 from datariver.application.dto import (
     CatalogAssetDetail,
     CatalogAssetIndex,
@@ -20,7 +24,7 @@ from datariver.application.dto import (
 )
 from datariver.application.ports import CatalogIndexReader, CatalogProjectionWriter
 from datariver.domain.authz import Classification, SubjectAttributes
-from datariver.domain.classification_policy import unconfigured_search_ceiling
+from datariver.domain.classification_access import SearchMode
 from datariver.domain.common import ConflictError, ValidationError, utc_now, uuid7
 from datariver.infrastructure.db.governance import SqlIdempotencyStore
 from datariver.infrastructure.db.models.catalog import (
@@ -73,13 +77,50 @@ class SqlCatalogIndexReader(CatalogIndexReader):
     def __init__(self, session: AsyncSession) -> None:
         self._session = session
 
-    def _scope_conditions(self, subject: SubjectAttributes) -> list[Any]:
+    def _scope_conditions(
+        self,
+        subject: SubjectAttributes,
+        access: ClassificationAccessSnapshot | None = None,
+    ) -> list[Any]:
+        resolved_access = access or static_classification_access_floor()
+        standard_classifications = tuple(
+            int(classification)
+            for classification in Classification
+            if classification is not Classification.RESTRICTED
+            and classification <= subject.clearance
+            and resolved_access.rule_for(classification).search_mode is SearchMode.ABAC
+        )
+        restricted_scope: Any = false()
+        restricted_rule = resolved_access.rule_for(Classification.RESTRICTED)
+        if (
+            subject.clearance >= Classification.RESTRICTED
+            and restricted_rule.search_mode is SearchMode.EXPLICIT_GRANT_ONLY
+        ):
+            scoped_conditions: list[Any] = []
+            if resolved_access.restricted_resource_ids:
+                scoped_conditions.append(
+                    AssetProjectionModel.id.in_(resolved_access.restricted_resource_ids)
+                )
+            if resolved_access.restricted_system_ids:
+                scoped_conditions.append(
+                    AssetProjectionModel.system_id.in_(resolved_access.restricted_system_ids)
+                )
+            if resolved_access.restricted_domain_ids:
+                scoped_conditions.append(
+                    AssetProjectionModel.domain_id.in_(resolved_access.restricted_domain_ids)
+                )
+            restricted_scope = or_(*scoped_conditions) if scoped_conditions else false()
         conditions: list[Any] = [
             AssetProjectionModel.workspace_id == subject.workspace_id,
             AssetProjectionModel.deleted_at.is_(None),
             AssetProjectionModel.lifecycle == "ACTIVE",
-            AssetProjectionModel.classification
-            <= int(unconfigured_search_ceiling(subject.clearance)),
+            or_(
+                AssetProjectionModel.classification.in_(standard_classifications),
+                and_(
+                    AssetProjectionModel.classification == int(Classification.RESTRICTED),
+                    restricted_scope,
+                ),
+            ),
         ]
         conditions.append(
             or_(
@@ -113,12 +154,13 @@ class SqlCatalogIndexReader(CatalogIndexReader):
         self,
         *,
         subject: SubjectAttributes,
+        access: ClassificationAccessSnapshot,
         query: str,
         filters: dict[str, Any],
         cursor: str | None,
         limit: int,
     ) -> CatalogPage:
-        conditions = self._scope_conditions(subject)
+        conditions = self._scope_conditions(subject, access)
         if query:
             pattern = _literal_contains_pattern(query)
             conditions.append(
@@ -176,11 +218,15 @@ class SqlCatalogIndexReader(CatalogIndexReader):
         )
 
     async def get_authorized_asset(
-        self, *, subject: SubjectAttributes, asset_id: UUID
+        self,
+        *,
+        subject: SubjectAttributes,
+        access: ClassificationAccessSnapshot,
+        asset_id: UUID,
     ) -> CatalogAssetDetail | None:
         statement = select(AssetProjectionModel).where(
             AssetProjectionModel.id == asset_id,
-            and_(*self._scope_conditions(subject)),
+            and_(*self._scope_conditions(subject, access)),
         )
         model = (await self._session.scalars(statement)).one_or_none()
         if model is None:

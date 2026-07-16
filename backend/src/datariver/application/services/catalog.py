@@ -7,6 +7,11 @@ from datetime import UTC, datetime, timedelta
 from typing import Any
 from uuid import UUID
 
+from datariver.application.classification_access import (
+    ClassificationAccessResolver,
+    ClassificationAccessSnapshot,
+    static_classification_access_floor,
+)
 from datariver.application.dto import (
     CatalogAssetDetail,
     CatalogAssetIndex,
@@ -47,6 +52,7 @@ class CatalogService:
         search_cache_ttl_seconds: int,
         minimum_query_length: int,
         policy_version: str,
+        classification_access: ClassificationAccessResolver | None = None,
         telemetry: CatalogTelemetry | None = None,
     ) -> None:
         self._index = index
@@ -59,6 +65,7 @@ class CatalogService:
         self._search_cache_ttl_seconds = search_cache_ttl_seconds
         self._minimum_query_length = minimum_query_length
         self._policy_version = policy_version
+        self._classification_access = classification_access
         self._telemetry = telemetry
 
     async def search(
@@ -96,6 +103,10 @@ class CatalogService:
             environment=environment,
             request_id=request_id,
         )
+        access = await self._resolve_classification_access(
+            subject=subject,
+            now=environment.requested_at,
+        )
         watermark = await self._watermark.get_search_watermark(workspace_id=subject.workspace_id)
         cache_key = self._search_cache_key(
             subject=subject,
@@ -104,34 +115,43 @@ class CatalogService:
             cursor=cursor,
             limit=limit,
             watermark=watermark,
+            access=access,
         )
-        try:
-            cached = await self._cache.get_json(cache_key)
-        except Exception:
-            self._cache_access(cache="search", outcome="error")
-        else:
-            cached_page = self._cached_page(cached)
-            if cached_page is not None:
-                self._cache_access(cache="search", outcome="hit")
-                return cached_page
-            self._cache_access(cache="search", outcome="miss")
+        cache_ttl = self._bounded_cache_ttl(
+            configured_ttl=self._search_cache_ttl_seconds,
+            access=access,
+            now=environment.requested_at,
+        )
+        if cache_ttl > 0:
+            try:
+                cached = await self._cache.get_json(cache_key)
+            except Exception:
+                self._cache_access(cache="search", outcome="error")
+            else:
+                cached_page = self._cached_page(cached)
+                if cached_page is not None:
+                    self._cache_access(cache="search", outcome="hit")
+                    return cached_page
+                self._cache_access(cache="search", outcome="miss")
         page = await self._index.search(
             subject=subject,
+            access=access,
             query=normalized_query,
             filters=filters,
             cursor=cursor,
             limit=limit,
         )
-        try:
-            await self._cache.set_json(
-                cache_key,
-                self._page_document(page),
-                ttl_seconds=self._search_cache_ttl_seconds,
-            )
-        except Exception:
-            self._cache_access(cache="search_write", outcome="error")
-            return page
-        self._cache_access(cache="search_write", outcome="success")
+        if cache_ttl > 0:
+            try:
+                await self._cache.set_json(
+                    cache_key,
+                    self._page_document(page),
+                    ttl_seconds=cache_ttl,
+                )
+            except Exception:
+                self._cache_access(cache="search_write", outcome="error")
+                return page
+            self._cache_access(cache="search_write", outcome="success")
         return page
 
     async def get_asset(
@@ -142,7 +162,15 @@ class CatalogService:
         environment: EnvironmentAttributes,
         request_id: str,
     ) -> CatalogAssetDetail | None:
-        authorized = await self._index.get_authorized_asset(subject=subject, asset_id=asset_id)
+        access = await self._resolve_classification_access(
+            subject=subject,
+            now=environment.requested_at,
+        )
+        authorized = await self._index.get_authorized_asset(
+            subject=subject,
+            access=access,
+            asset_id=asset_id,
+        )
         if authorized is None:
             return None
         await self._authorization.authorize(
@@ -168,6 +196,7 @@ class CatalogService:
             "scope": permission_scope_hash,
             "policy": self._policy_version,
             "classification_policy_floor": CLASSIFICATION_ACCESS_FLOOR_VERSION,
+            "classification_access": self._classification_access_document(access),
             "source": authorized.index.source_version,
         }
         key_hash = hashlib.sha256(json.dumps(key_document, sort_keys=True).encode()).hexdigest()
@@ -270,12 +299,14 @@ class CatalogService:
         cursor: str | None,
         limit: int,
         watermark: int,
+        access: ClassificationAccessSnapshot,
     ) -> str:
         key_document = {
             "workspace": str(subject.workspace_id),
             "scope": self._permission_scope_hash(subject),
             "policy": self._policy_version,
             "classification_policy_floor": CLASSIFICATION_ACCESS_FLOOR_VERSION,
+            "classification_access": self._classification_access_document(access),
             "projection_version": watermark,
             "query": query,
             "filters": filters,
@@ -288,6 +319,55 @@ class CatalogService:
                 json.dumps(key_document, sort_keys=True, default=str).encode()
             ).hexdigest()
         )
+
+    async def _resolve_classification_access(
+        self,
+        *,
+        subject: SubjectAttributes,
+        now: datetime,
+    ) -> ClassificationAccessSnapshot:
+        if self._classification_access is None:
+            return static_classification_access_floor()
+        return await self._classification_access.resolve(
+            workspace_id=subject.workspace_id,
+            subject_id=subject.subject_id,
+            now=now,
+        )
+
+    @staticmethod
+    def _classification_access_document(
+        access: ClassificationAccessSnapshot,
+    ) -> dict[str, Any]:
+        return {
+            "posture": access.posture.value,
+            "policy_id": str(access.policy_id) if access.policy_id else None,
+            "policy_hash": access.policy_hash,
+            "policy_version": access.policy_version,
+            "authorization_generation": access.authorization_generation,
+            "rules": [
+                {
+                    "classification": int(rule.classification),
+                    "search_mode": rule.search_mode.value,
+                }
+                for rule in access.rules
+            ],
+            "restricted_resources": sorted(str(value) for value in access.restricted_resource_ids),
+            "restricted_systems": sorted(str(value) for value in access.restricted_system_ids),
+            "restricted_domains": sorted(str(value) for value in access.restricted_domain_ids),
+        }
+
+    @staticmethod
+    def _bounded_cache_ttl(
+        *,
+        configured_ttl: int,
+        access: ClassificationAccessSnapshot,
+        now: datetime,
+    ) -> int:
+        boundary = access.nearest_validity_boundary
+        if boundary is None:
+            return configured_ttl
+        remaining_seconds = int((boundary - now).total_seconds())
+        return max(0, min(configured_ttl, remaining_seconds))
 
     @staticmethod
     def _page_document(page: CatalogPage) -> dict[str, Any]:

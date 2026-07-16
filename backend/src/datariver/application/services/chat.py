@@ -2,8 +2,15 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 from dataclasses import replace
+from datetime import datetime
 from uuid import UUID
 
+from datariver.application.classification_access import (
+    ClassificationAccessResolver,
+    ClassificationAccessSnapshot,
+    ClassificationRuleRecord,
+    static_classification_access_floor,
+)
 from datariver.application.dto import ChatDraft, ChatEvidence, ChatExchange
 from datariver.application.evidence import build_evidence_chunk, evidence_chunk_is_valid
 from datariver.application.ports import (
@@ -20,10 +27,7 @@ from datariver.domain.authz import (
     ResourceAttributes,
     SubjectAttributes,
 )
-from datariver.domain.classification_policy import (
-    unconfigured_chat_ceiling,
-    unconfigured_chat_evidence_allowed,
-)
+from datariver.domain.classification_access import ChatMode, SearchMode
 
 UNVERIFIABLE_ANSWER = "검증 불가"
 
@@ -56,12 +60,14 @@ class ChatService:
         knowledge_evidence: KnowledgeEvidenceReader | None = None,
         store: ChatStore,
         authorization: AuthorizationService,
+        classification_access: ClassificationAccessResolver | None = None,
         composer: ChatAnswerComposer | None = None,
     ) -> None:
         self._catalog_index = catalog_index
         self._knowledge_evidence = knowledge_evidence
         self._store = store
         self._authorization = authorization
+        self._classification_access = classification_access
         self._composer = composer or DeterministicChatAnswerComposer()
 
     async def query(
@@ -92,18 +98,30 @@ class ChatService:
             environment=environment,
             request_id=request_id,
         )
+        access = await self._resolve_classification_access(
+            subject=subject,
+            now=environment.requested_at,
+        )
+        chat_access = self._chat_retrieval_access(access, subject=subject)
+        allowed_chat_classifications = {
+            rule.classification for rule in chat_access.rules if rule.search_mode is SearchMode.ABAC
+        }
         page = await self._catalog_index.search(
             subject=replace(
                 subject,
-                clearance=unconfigured_chat_ceiling(subject.clearance),
+                clearance=self._chat_ceiling(
+                    allowed_chat_classifications,
+                    subject=subject,
+                ),
             ),
+            access=chat_access,
             query=self._search_term(question),
             filters={},
             cursor=None,
             limit=maximum_evidence,
         )
         catalog_items = tuple(
-            item for item in page.items if unconfigured_chat_evidence_allowed(item.classification)
+            item for item in page.items if item.classification in allowed_chat_classifications
         )
         catalog_resources = tuple(
             ResourceAttributes(
@@ -153,13 +171,15 @@ class ChatService:
             candidates = await self._knowledge_evidence.search_active_nodes(
                 workspace_id=workspace_id,
                 query=self._search_term(question),
-                maximum_classification=int(unconfigured_chat_ceiling(subject.clearance)),
+                maximum_classification=int(
+                    self._chat_ceiling(allowed_chat_classifications, subject=subject)
+                ),
                 limit=maximum_evidence - len(evidence),
             )
             candidates = tuple(
                 candidate
                 for candidate in candidates
-                if unconfigured_chat_evidence_allowed(candidate.classification)
+                if candidate.classification in allowed_chat_classifications
             )
             knowledge_resources = tuple(
                 ResourceAttributes(
@@ -214,6 +234,65 @@ class ChatService:
             evidence=cited_evidence,
             policy_decision_id=chat_decision.decision_id,
         )
+
+    async def _resolve_classification_access(
+        self,
+        *,
+        subject: SubjectAttributes,
+        now: datetime,
+    ) -> ClassificationAccessSnapshot:
+        if self._classification_access is None:
+            return static_classification_access_floor()
+        return await self._classification_access.resolve(
+            workspace_id=subject.workspace_id,
+            subject_id=subject.subject_id,
+            now=now,
+        )
+
+    @staticmethod
+    def _chat_retrieval_access(
+        access: ClassificationAccessSnapshot,
+        *,
+        subject: SubjectAttributes,
+    ) -> ClassificationAccessSnapshot:
+        rules = tuple(
+            ClassificationRuleRecord(
+                classification=rule.classification,
+                search_mode=(
+                    SearchMode.ABAC
+                    if rule.chat_mode is not ChatMode.DENY
+                    and rule.classification <= subject.clearance
+                    and rule.classification is not Classification.RESTRICTED
+                    else SearchMode.DENY
+                ),
+                chat_mode=rule.chat_mode,
+                provider_profile_version_id=rule.provider_profile_version_id,
+            )
+            for rule in access.rules
+        )
+        return replace(
+            access,
+            rules=rules,
+            restricted_resource_ids=frozenset(),
+            restricted_system_ids=frozenset(),
+            restricted_domain_ids=frozenset(),
+        )
+
+    @staticmethod
+    def _chat_ceiling(
+        allowed: set[Classification],
+        *,
+        subject: SubjectAttributes,
+    ) -> Classification:
+        visible = tuple(
+            classification
+            for classification in allowed
+            if classification <= subject.clearance
+            and classification is not Classification.RESTRICTED
+        )
+        if not visible:
+            return Classification.PUBLIC
+        return max(visible)
 
     @staticmethod
     def _search_term(question: str) -> str:

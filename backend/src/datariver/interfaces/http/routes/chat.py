@@ -2,11 +2,15 @@ from __future__ import annotations
 
 from fastapi import APIRouter, Request
 
+from datariver.application.classification_access import ClassificationAccessResolver
 from datariver.application.services.authorization import AuthorizationService
 from datariver.application.services.chat import ChatService
 from datariver.infrastructure.db.authz import SqlDecisionWriter
 from datariver.infrastructure.db.catalog import SqlCatalogIndexReader
 from datariver.infrastructure.db.chat import SqlChatStore
+from datariver.infrastructure.db.classification_access import (
+    SqlClassificationAccessSnapshotReader,
+)
 from datariver.infrastructure.db.knowledge_evidence import SqlKnowledgeEvidenceReader
 from datariver.interfaces.http.dependencies import ContextDep, SessionDep, get_container
 from datariver.interfaces.http.schemas import (
@@ -32,6 +36,9 @@ async def query(
         store=SqlChatStore(session),
         authorization=AuthorizationService(
             decision_writer=SqlDecisionWriter(container.database.session_factory)
+        ),
+        classification_access=ClassificationAccessResolver(
+            SqlClassificationAccessSnapshotReader(session)
         ),
     ).query(
         workspace_id=context.workspace_id,
