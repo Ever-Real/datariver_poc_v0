@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import hashlib
-from typing import Annotated
+from typing import Annotated, Literal
 from uuid import UUID
 
 import orjson
@@ -25,12 +25,16 @@ from datariver.interfaces.http.schemas import (
     CatalogDiscoveryPolicyMeta,
     CatalogFacetBucketResponse,
     CatalogFacetsResponse,
+    CatalogLineageEdgeResponse,
+    CatalogLineageResponse,
     CatalogPolicyMeta,
     CatalogSearchResponse,
     CatalogSuggestionResponse,
     CatalogSuggestionsResponse,
     CatalogSyncRequest,
     CatalogSyncResponse,
+    CatalogTreeNodeResponse,
+    CatalogTreeResponse,
     PageMeta,
 )
 
@@ -243,6 +247,57 @@ async def catalog_suggestions(
     )
 
 
+@router.get("/tree/nodes", response_model=CatalogTreeResponse)
+async def catalog_tree_nodes(
+    request: Request,
+    context: ContextDep,
+    session: SessionDep,
+    q: Annotated[str, Query(max_length=500)] = "",
+    parent_kind: Annotated[Literal["ROOT", "PLATFORM", "DATABASE", "SCHEMA"], Query()] = "ROOT",
+    platform: Annotated[str | None, Query(max_length=100)] = None,
+    database_name: Annotated[str | None, Query(alias="database", max_length=255)] = None,
+    schema_name: Annotated[str | None, Query(alias="schema", max_length=255)] = None,
+    cursor: Annotated[str | None, Query(max_length=2000)] = None,
+    limit: Annotated[int, Query(ge=1, le=100)] = 50,
+) -> CatalogTreeResponse:
+    page = await _service(request, session).tree_nodes(
+        subject=context.subject,
+        query=q,
+        parent_kind=parent_kind,
+        platform=platform,
+        database_name=database_name,
+        schema_name=schema_name,
+        cursor=cursor,
+        limit=limit,
+        environment=context.environment,
+        request_id=context.request_id,
+    )
+    return CatalogTreeResponse(
+        items=[
+            CatalogTreeNodeResponse(
+                id=item.node_id,
+                kind=item.kind,
+                label=item.label,
+                asset_count=item.asset_count,
+                has_children=item.has_children,
+                platform=item.platform,
+                database_name=item.database_name,
+                schema_name=item.schema_name,
+                asset=catalog_summary(item.asset) if item.asset is not None else None,
+            )
+            for item in page.items
+        ],
+        page=PageMeta(next_cursor=page.next_cursor, limit=limit),
+        meta=CatalogDiscoveryPolicyMeta(
+            observed_at=page.observed_at,
+            projection_version=page.projection_version,
+            policy_version=page.policy_version,
+            classification_policy_version=page.classification_policy_version,
+            authorization_generation=page.authorization_generation,
+        ),
+    )
+
+
 @router.get("/assets/{asset_id}", response_model=CatalogAssetResponse)
 async def get_asset(
     asset_id: UUID,
@@ -270,3 +325,56 @@ async def get_asset(
             },
         )
     return catalog_detail(asset)
+
+
+@router.get("/assets/{asset_id}/lineage", response_model=CatalogLineageResponse)
+async def get_asset_lineage(
+    asset_id: UUID,
+    request: Request,
+    context: ContextDep,
+    session: SessionDep,
+    direction: Annotated[Literal["UPSTREAM", "DOWNSTREAM", "BOTH"], Query()] = "BOTH",
+    depth: Annotated[int, Query(ge=1, le=3)] = 2,
+) -> CatalogLineageResponse | JSONResponse:
+    lineage = await _service(request, session).lineage(
+        subject=context.subject,
+        asset_id=asset_id,
+        direction=direction,
+        depth=depth,
+        environment=context.environment,
+        request_id=context.request_id,
+    )
+    if lineage is None:
+        return JSONResponse(
+            status_code=404,
+            content={
+                "type": "urn:datariver:problem:not_found",
+                "title": "Not found",
+                "status": 404,
+                "detail": "The catalog asset does not exist.",
+                "instance": str(request.url.path),
+                "code": "not_found",
+                "request_id": context.request_id,
+            },
+        )
+    return CatalogLineageResponse(
+        center_asset_id=lineage.center_asset_id,
+        nodes=[catalog_summary(item) for item in lineage.nodes],
+        edges=[
+            CatalogLineageEdgeResponse(
+                source_asset_id=item.source_asset_id,
+                target_asset_id=item.target_asset_id,
+            )
+            for item in lineage.edges
+        ],
+        direction=lineage.direction,
+        depth=lineage.depth,
+        truncated=lineage.truncated,
+        meta=CatalogPolicyMeta(
+            observed_at=lineage.observed_at,
+            projection_version=lineage.projection_version,
+            policy_version=lineage.policy_version,
+            classification_policy_version=lineage.classification_policy_version,
+            authorization_generation=lineage.authorization_generation,
+        ),
+    )

@@ -143,7 +143,7 @@ export function App() {
       onClearNotice={auth.clearNotice}
     >
       {page === 'dashboard' && <DashboardPage client={client} />}
-      {page === 'catalog' && <CatalogPage client={client} initialQuery={catalogQuery} />}
+      {page === 'catalog' && <CatalogPage client={client} initialQuery={catalogQuery} onQueryChange={searchCatalog} />}
       {page === 'registration' && <RegistrationPage client={client} />}
       {page === 'change-management' && <GovernancePage client={client} onStepUp={auth.beginStepUp} onPasswordReauth={auth.beginPasswordReauth} onEnroll={auth.beginWebAuthnEnrollment} />}
       {page === 'quality' && <QualityPage />}

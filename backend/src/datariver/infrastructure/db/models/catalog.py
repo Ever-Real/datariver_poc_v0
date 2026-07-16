@@ -54,6 +54,16 @@ class AssetProjectionModel(Base, UuidPrimaryKeyMixin, TimestampMixin):
             postgresql_ops={"name": "gin_trgm_ops"},
             postgresql_where=text("deleted_at IS NULL AND lifecycle = 'ACTIVE'"),
         ),
+        Index(
+            "ix_assets_projection_tree_active",
+            "workspace_id",
+            "platform",
+            "database_name",
+            "schema_name",
+            "name",
+            "id",
+            postgresql_where=text("deleted_at IS NULL AND lifecycle = 'ACTIVE'"),
+        ),
         {"schema": "catalog"},
     )
 
@@ -73,6 +83,8 @@ class AssetProjectionModel(Base, UuidPrimaryKeyMixin, TimestampMixin):
         nullable=False,
     )
     platform: Mapped[str | None] = mapped_column(String(100))
+    database_name: Mapped[str | None] = mapped_column(String(255))
+    schema_name: Mapped[str | None] = mapped_column(String(255))
     domain_id: Mapped[UUID | None] = mapped_column(Uuid(as_uuid=True))
     system_id: Mapped[UUID | None] = mapped_column(Uuid(as_uuid=True))
     owner_department_id: Mapped[UUID | None] = mapped_column(Uuid(as_uuid=True))

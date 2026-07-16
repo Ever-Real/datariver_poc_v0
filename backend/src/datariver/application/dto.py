@@ -26,6 +26,16 @@ class CatalogAssetIndex:
     lifecycle: str
     source_version: str
     observed_at: datetime
+    database_name: str | None = None
+    schema_name: str | None = None
+    matches: tuple[CatalogMatchFragment, ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
+class CatalogMatchFragment:
+    field: str
+    text: str
+    matched_terms: tuple[str, ...]
 
 
 @dataclass(frozen=True, slots=True)
@@ -70,6 +80,23 @@ class DataHubScanAsset:
     owner_ref: str | None
     classification: Classification | None
     source_version: str
+    database_name: str | None = None
+    schema_name: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class DataHubLineageNode:
+    external_urn: str
+    degree: int
+    paths: tuple[tuple[str, ...], ...]
+    truncated_children: bool
+
+
+@dataclass(frozen=True, slots=True)
+class DataHubLineagePage:
+    items: tuple[DataHubLineageNode, ...]
+    total: int
+    partial: bool
 
 
 @dataclass(frozen=True, slots=True)
@@ -131,6 +158,51 @@ class CatalogSuggestion:
 class CatalogSuggestions:
     items: tuple[CatalogSuggestion, ...]
     observed_at: datetime | None
+    projection_version: int = 0
+    policy_version: str = ""
+    classification_policy_version: int | None = None
+    authorization_generation: int | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class CatalogTreeNode:
+    node_id: UUID
+    kind: str
+    label: str
+    asset_count: int
+    has_children: bool
+    platform: str | None = None
+    database_name: str | None = None
+    schema_name: str | None = None
+    asset: CatalogAssetIndex | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class CatalogTreePage:
+    items: tuple[CatalogTreeNode, ...]
+    next_cursor: str | None
+    observed_at: datetime | None
+    projection_version: int = 0
+    policy_version: str = ""
+    classification_policy_version: int | None = None
+    authorization_generation: int | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class CatalogLineageEdge:
+    source_asset_id: UUID
+    target_asset_id: UUID
+
+
+@dataclass(frozen=True, slots=True)
+class CatalogLineage:
+    center_asset_id: UUID
+    nodes: tuple[CatalogAssetIndex, ...]
+    edges: tuple[CatalogLineageEdge, ...]
+    direction: str
+    depth: int
+    truncated: bool
+    observed_at: datetime
     projection_version: int = 0
     policy_version: str = ""
     classification_policy_version: int | None = None

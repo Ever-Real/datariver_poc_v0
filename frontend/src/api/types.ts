@@ -30,16 +30,91 @@ export interface CatalogAsset {
   name: string
   description?: string
   platform?: string
+  database_name?: string
+  schema_name?: string
   classification: string
   lifecycle: string
   observed_at: string
   stale_at?: string
+  matches: CatalogMatchFragment[]
+}
+
+export interface CatalogMatchFragment {
+  field: 'NAME' | 'DESCRIPTION'
+  text: string
+  matched_terms: string[]
+}
+
+export interface CatalogPolicyMeta {
+  observed_at?: string
+  stale_at?: string
+  projection_version: number
+  policy_version: string
+  classification_policy_version?: number
+  authorization_generation?: number
 }
 
 export interface CatalogSearch {
   items: CatalogAsset[]
   page: { next_cursor?: string; limit: number }
-  meta: { observed_at: string; stale_at?: string }
+  meta: CatalogPolicyMeta
+  match_mode: 'ALL'
+}
+
+export interface CatalogFacets {
+  asset_types: Array<{ value?: string; count: number }>
+  platforms: Array<{ value?: string; count: number }>
+  classifications: Array<{ value?: string; count: number }>
+  meta: CatalogPolicyMeta
+}
+
+export interface CatalogSuggestion {
+  id: string
+  name: string
+  asset_type: string
+  platform?: string
+}
+
+export interface CatalogSuggestions {
+  items: CatalogSuggestion[]
+  meta: CatalogPolicyMeta
+}
+
+export interface CatalogAssetDetail extends CatalogAsset {
+  ownership: Array<Record<string, unknown>>
+  glossary_terms: Array<Record<string, unknown>>
+  tags: string[]
+  schema_fields: Array<Record<string, unknown>>
+  quality: Record<string, unknown>
+  source_version: string
+}
+
+export interface CatalogTreeNode {
+  id: string
+  kind: 'PLATFORM' | 'DATABASE' | 'SCHEMA' | 'ASSET'
+  label: string
+  asset_count: number
+  has_children: boolean
+  platform?: string
+  database_name?: string
+  schema_name?: string
+  asset?: CatalogAsset
+}
+
+export interface CatalogTreePage {
+  items: CatalogTreeNode[]
+  page: { next_cursor?: string; limit: number }
+  meta: CatalogPolicyMeta
+}
+
+export interface CatalogLineage {
+  center_asset_id: string
+  nodes: CatalogAsset[]
+  edges: Array<{ source_asset_id: string; target_asset_id: string }>
+  direction: 'UPSTREAM' | 'DOWNSTREAM' | 'BOTH'
+  depth: number
+  truncated: boolean
+  meta: CatalogPolicyMeta
 }
 
 export interface UploadRecord {

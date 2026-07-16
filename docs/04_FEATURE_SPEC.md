@@ -8,13 +8,15 @@ The shared shell follows the controlled v0.3 parity contract: 56-pixel navy GNB;
 
 ## Catalog search and discovery
 
-- Search text, domains, platforms, owners, tags, glossary terms, certification, quality, freshness, classification and lifecycle filters.
+- Literal multi-term search uses explicit ALL semantics across full text, name and description; `%`, `_` and backslash remain data rather than wildcard syntax. Domains, platforms, owners, tags, glossary terms, certification, quality, freshness, classification and lifecycle are the target filter set; the current facade exposes asset type, platform, classification and lifecycle.
 - Cursor pagination with server-enforced ABAC before enrichment.
-- Detail includes canonical URN, description, schema, ownership, glossary, quality, freshness, lineage and explicit `observed_at`/`stale_at`.
+- The Resource Tree lazily pages canonical `platform -> database -> schema -> asset` branches. Hierarchy is projected only from typed source containers and is never inferred by splitting an external URN.
+- Detail includes canonical URN, description, schema, ownership, glossary, quality, freshness, lineage and explicit `observed_at`/`stale_at`. Current detail exposes the fixed-contract schema/ownership/glossary/quality fields returned by DataHub and bounded depth-1..3 lineage.
+- Lineage candidate nodes and every intermediary are set-filtered through the same workspace/classification/scope authorization. A hidden intermediary truncates the path; visible endpoints are never reconnected across it.
 - Saved filters are per subject/workspace; export requires separate `catalog.export` permission.
 - No catalog read endpoint mutates DataHub.
 
-Acceptance: hidden assets do not alter total count, autocomplete, facets or cursor sequence; DataHub credentials never reach the browser.
+Acceptance: hidden assets do not alter branch counts, autocomplete, facets or cursor sequence; response paging does not expose a hidden global total; DataHub credentials never reach the browser. Governed server-side export is not yet exposed, and the browser must not crawl result pages as a substitute.
 
 ## Registration management
 

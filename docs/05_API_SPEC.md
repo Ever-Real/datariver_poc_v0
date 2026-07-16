@@ -38,10 +38,12 @@ Generated OpenAPI at `/api/v1/openapi.json` is authoritative for implemented pay
 
 | Method/path | Action | Purpose |
 |---|---|---|
-| `GET /catalog/assets?q=&asset_type=&platform=&classification=&lifecycle=&cursor=&limit=` | `catalog.search` | ABAC-prefiltered literal/full-text projection search; non-empty `q` minimum defaults to 2; cursor is bound to the exact permission/policy/projection/request snapshot |
+| `GET /catalog/assets?q=&asset_type=&platform=&classification=&lifecycle=&cursor=&limit=` | `catalog.search` | ABAC-prefiltered ALL-term literal/full-text projection search with plain-text match fragments; non-empty `q` minimum defaults to 2; cursor is bound to the exact permission/policy/projection/request snapshot |
 | `GET /catalog/facets?q=&asset_type=&platform=&classification=&lifecycle=&limit=` | `catalog.search` | permission-prefiltered asset type, platform and classification buckets; null platform remains an explicit null bucket |
 | `GET /catalog/suggestions?q=&limit=` | `catalog.search` | permission-prefiltered name autocomplete, maximum 20; two-character requests use the bounded prefix path and longer requests may use trigram similarity |
+| `GET /catalog/tree/nodes?q=&parent_kind=ROOT\|PLATFORM\|DATABASE\|SCHEMA&platform=&database=&schema=&cursor=&limit=` | `catalog.search` | lazy canonical Resource Tree branch; authorization-pruned child counts, branch cursor and cache context are bound to the request security/projection snapshot |
 | `GET /catalog/assets/{asset_id}` | `catalog.read` | authorized local base detail plus typed DataHub enrichment; optional `stale_at` marks bounded fallback |
+| `GET /catalog/assets/{asset_id}/lineage?direction=UP\|DOWN\|BOTH&depth=1..3` | `catalog.read` | bounded typed DataHub lineage with set-based local authorization; a hidden intermediate truncates rather than bridges a path |
 | `POST /catalog/sync/datahub` | `catalog.sync` | idempotently upsert one fixed-contract DataHub scan page |
 
 Search, facet and suggestion metadata identifies the built-in policy version, governed classification
@@ -239,4 +241,4 @@ contract tests in the external DataHub deployment.
 
 ## Planned compatibility endpoints
 
-The remaining backlog, not present in current OpenAPI, is normalized lazy catalog hierarchy and lineage routes; upload cancel/download and governed erasure execution/consumption; automated graph extraction and projection rebuild; Chat session history/SSE/external-model adapters; immutable archive export/target-conformance workers; and job/audit browsing/retry. PostgreSQL can persist verified archive evidence, but no HTTP route, export worker or deletion capability is exposed. The disabled-first assistant inference source contract is not an HTTP route or deployed provider integration. Backlog features may not be emulated with generic provider or arbitrary query pass-through.
+The remaining backlog, not present in current OpenAPI, is governed server-side catalog export; upload cancel/download and governed erasure execution/consumption; automated graph extraction and projection rebuild; Chat session history/SSE/external-model adapters; immutable archive export/target-conformance workers; and job/audit browsing/retry. PostgreSQL can persist verified archive evidence, but no HTTP route, export worker or deletion capability is exposed. The disabled-first assistant inference source contract is not an HTTP route or deployed provider integration. Backlog features may not be emulated with generic provider or arbitrary query pass-through.

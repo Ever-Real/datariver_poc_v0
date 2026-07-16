@@ -124,9 +124,19 @@ def catalog_summary(asset: CatalogAssetIndex) -> CatalogAssetSummary:
         name=asset.name,
         description=asset.description,
         platform=asset.platform,
+        database_name=asset.database_name,
+        schema_name=asset.schema_name,
         classification=asset.classification.name,
         lifecycle=asset.lifecycle,
         observed_at=asset.observed_at,
+        matches=[
+            {
+                "field": fragment.field,
+                "text": fragment.text,
+                "matched_terms": list(fragment.matched_terms),
+            }
+            for fragment in asset.matches
+        ],
     )
 
 

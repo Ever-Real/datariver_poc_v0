@@ -16,7 +16,11 @@ from datariver.application.dto import (
     CatalogPage,
     CatalogSuggestion,
     CatalogSuggestions,
+    CatalogTreeNode,
+    CatalogTreePage,
     DataHubAssetEnrichment,
+    DataHubLineageNode,
+    DataHubLineagePage,
 )
 from datariver.application.errors import ExternalDependencyError
 from datariver.application.ports import (
@@ -35,7 +39,13 @@ from datariver.domain.authz import (
     SubjectAttributes,
 )
 from datariver.domain.common import ValidationError
-from datariver.infrastructure.db.catalog import _literal_contains_pattern, _literal_prefix_pattern
+from datariver.infrastructure.db.catalog import (
+    _literal_contains_pattern,
+    _literal_prefix_pattern,
+    _match_fragments,
+    _query_terms,
+)
+from datariver.infrastructure.db.models.catalog import AssetProjectionModel
 from datariver.infrastructure.observability.metrics import HttpMetrics
 
 
@@ -45,7 +55,9 @@ class FakeIndex:
         self.search_calls = 0
         self.facet_calls = 0
         self.suggestion_calls = 0
+        self.tree_calls = 0
         self.projection_version = 1
+        self.lineage_assets = (detail.index,)
 
     async def get_search_watermark(self, *, workspace_id: object) -> int:
         return self.projection_version
@@ -87,12 +99,36 @@ class FakeIndex:
             observed_at=self.detail.observed_at,
         )
 
+    async def tree_nodes(self, **_: object) -> CatalogTreePage:
+        self.tree_calls += 1
+        return CatalogTreePage(
+            items=(
+                CatalogTreeNode(
+                    node_id=uuid4(),
+                    kind="PLATFORM",
+                    label="snowflake",
+                    asset_count=1,
+                    has_children=True,
+                    platform="snowflake",
+                ),
+            ),
+            next_cursor=None,
+            observed_at=self.detail.observed_at,
+        )
+
+    async def get_authorized_assets_by_external_urns(
+        self, *, external_urns: object, **_: object
+    ) -> tuple[CatalogAssetIndex, ...]:
+        del external_urns
+        return self.lineage_assets
+
 
 class FakeGateway:
     def __init__(self, enrichment: DataHubAssetEnrichment) -> None:
         self.enrichment = enrichment
         self.calls = 0
         self.fail = False
+        self.lineage_page = DataHubLineagePage(items=(), total=0, partial=False)
 
     async def get_asset(self, external_urn: str) -> DataHubAssetEnrichment:
         self.calls += 1
@@ -104,6 +140,9 @@ class FakeGateway:
                 provider_code="NETWORK",
             )
         return self.enrichment
+
+    async def get_lineage(self, **_: object) -> DataHubLineagePage:
+        return self.lineage_page
 
 
 class FakeCache:
@@ -309,6 +348,34 @@ async def test_authorized_detail_enrichment_uses_scope_versioned_cache() -> None
     assert first_suggestions == second_suggestions
     assert first_suggestions.projection_version == 2
     assert index_reader.suggestion_calls == 1
+
+    first_tree = await service.tree_nodes(
+        subject=subject,
+        query="wafer",
+        parent_kind="ROOT",
+        platform=None,
+        database_name=None,
+        schema_name=None,
+        cursor=None,
+        limit=50,
+        environment=environment,
+        request_id="tree-one",
+    )
+    second_tree = await service.tree_nodes(
+        subject=subject,
+        query="wafer",
+        parent_kind="ROOT",
+        platform=None,
+        database_name=None,
+        schema_name=None,
+        cursor=None,
+        limit=50,
+        environment=environment,
+        request_id="tree-two",
+    )
+    assert first_tree == second_tree
+    assert first_tree.projection_version == 2
+    assert index_reader.tree_calls == 1
     rendered_metrics = metrics.render().decode()
     assert 'datariver_catalog_cache_access_total{cache="search",outcome="miss"} 2.0' in (
         rendered_metrics
@@ -349,9 +416,126 @@ async def test_authorized_detail_enrichment_uses_scope_versioned_cache() -> None
         )
 
 
+@pytest.mark.asyncio
+async def test_lineage_does_not_bridge_across_an_unauthorized_intermediate_node() -> None:
+    now = datetime.now(UTC)
+    workspace_id = uuid4()
+    center = CatalogAssetIndex(
+        asset_id=uuid4(),
+        workspace_id=workspace_id,
+        external_urn="urn:li:dataset:center",
+        asset_type="DATASET",
+        name="center",
+        description=None,
+        platform="snowflake",
+        domain_id=None,
+        system_id=None,
+        owner_department_id=None,
+        classification=Classification.PUBLIC,
+        lifecycle="ACTIVE",
+        source_version="v1",
+        observed_at=now,
+    )
+    visible = replace(
+        center,
+        asset_id=uuid4(),
+        external_urn="urn:li:dataset:visible",
+        name="visible",
+    )
+    detail = CatalogAssetDetail(center, (), (), (), (), {}, "v1", now)
+    index_reader = FakeIndex(detail)
+    index_reader.lineage_assets = (center, visible)
+    gateway = FakeGateway(DataHubAssetEnrichment((), (), (), (), {}, "v1", now))
+    gateway.lineage_page = DataHubLineagePage(
+        items=(
+            DataHubLineageNode(
+                external_urn=visible.external_urn,
+                degree=2,
+                paths=(
+                    (
+                        center.external_urn,
+                        "urn:li:dataset:hidden",
+                        visible.external_urn,
+                    ),
+                ),
+                truncated_children=False,
+            ),
+        ),
+        total=1,
+        partial=False,
+    )
+    service = CatalogService(
+        index=cast(CatalogIndexReader, index_reader),
+        discovery=cast(CatalogDiscoveryReader, index_reader),
+        watermark=cast(CatalogWatermarkReader, index_reader),
+        datahub=cast(DataHubGateway, gateway),
+        cache=cast(Cache, FakeCache()),
+        authorization=cast(AuthorizationService, AllowAuthorization()),
+        detail_cache_ttl_seconds=60,
+        stale_detail_ttl_seconds=900,
+        search_cache_ttl_seconds=30,
+        minimum_query_length=2,
+        policy_version=BuiltinPolicyEngine.policy_version,
+    )
+    subject = SubjectAttributes(
+        subject_id=uuid4(),
+        workspace_id=workspace_id,
+        active=True,
+        department_id=None,
+        groups=frozenset(),
+        job_function=None,
+        clearance=Classification.PUBLIC,
+    )
+
+    lineage = await service.lineage(
+        subject=subject,
+        asset_id=center.asset_id,
+        direction="UPSTREAM",
+        depth=2,
+        environment=EnvironmentAttributes(requested_at=now),
+        request_id="lineage",
+    )
+
+    assert lineage is not None
+    assert {node.asset_id for node in lineage.nodes} == {center.asset_id, visible.asset_id}
+    assert lineage.edges == ()
+    assert lineage.truncated is True
+
+
 def test_catalog_literal_pattern_escapes_wildcards() -> None:
     assert _literal_contains_pattern(r"100%_yield\path") == r"%100\%\_yield\\path%"
     assert _literal_prefix_pattern(r"100%_yield\path") == r"100\%\_yield\\path%"
+
+
+def test_catalog_match_fragments_use_all_normalized_terms_without_html() -> None:
+    assert _query_terms("wafer  yield wafer") == ("wafer", "yield")
+    fragments = _match_fragments(
+        name="wafer_events",
+        description="Yield evidence without <mark> injection.",
+        query="wafer yield",
+    )
+
+    assert [fragment.field for fragment in fragments] == ["NAME", "DESCRIPTION"]
+    assert fragments[0].matched_terms == ("wafer",)
+    assert fragments[1].matched_terms == ("yield",)
+    assert "<mark>" in fragments[1].text
+
+
+def test_catalog_projection_declares_canonical_hierarchy_and_active_tree_index() -> None:
+    table = AssetProjectionModel.__table__
+
+    assert {"database_name", "schema_name"} <= set(table.columns.keys())
+    tree_index = next(
+        index for index in table.indexes if index.name == "ix_assets_projection_tree_active"
+    )
+    assert [column.name for column in tree_index.columns] == [
+        "workspace_id",
+        "platform",
+        "database_name",
+        "schema_name",
+        "name",
+        "id",
+    ]
 
 
 def test_catalog_cursor_is_bound_to_the_authorized_request_snapshot() -> None:

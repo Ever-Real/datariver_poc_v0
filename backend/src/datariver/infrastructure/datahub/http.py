@@ -14,6 +14,8 @@ from datariver.application.dto import (
     DataHubApplyReceipt,
     DataHubAspectSnapshot,
     DataHubAssetEnrichment,
+    DataHubLineageNode,
+    DataHubLineagePage,
     DataHubScanAsset,
     DataHubScanPage,
 )
@@ -27,7 +29,15 @@ query DataRiverAsset($urn: String!) {
     urn
     type
     ... on Dataset {
-      ownership { owners { owner { urn type } type } }
+      ownership {
+        owners {
+          owner {
+            ... on CorpUser { urn }
+            ... on CorpGroup { urn }
+          }
+          type
+        }
+      }
       globalTags { tags { tag { urn name } } }
       glossaryTerms { terms { term { urn name } } }
       schemaMetadata { fields { fieldPath type description } }
@@ -52,7 +62,15 @@ class DataHubTelemetry(Protocol):
 LINEAGE_QUERY = """
 query DataRiverLineage($input: ScrollAcrossLineageInput!) {
   scrollAcrossLineage(input: $input) {
-    searchResults { entity { urn type } degree paths }
+    count
+    total
+    isPartial
+    searchResults {
+      entity { urn type }
+      degree
+      truncatedChildren
+      paths { path { urn type } }
+    }
     nextScrollId
   }
 }
@@ -72,8 +90,28 @@ query DataRiverCatalogScan($input: SearchAcrossEntitiesInput!) {
           name
           platform { urn name }
           properties { name description }
+          browsePathV2 {
+            path {
+              name
+              entity {
+                urn
+                type
+                ... on Container {
+                  properties { name qualifiedName }
+                  subTypes { typeNames }
+                }
+              }
+            }
+          }
           domain { domain { urn } }
-          ownership { owners { owner { urn } } }
+          ownership {
+            owners {
+              owner {
+                ... on CorpUser { urn }
+                ... on CorpGroup { urn }
+              }
+            }
+          }
           globalTags { tags { tag { name } } }
         }
       }
@@ -99,6 +137,36 @@ def _classification_from_tags(tags: object) -> Classification | None:
         except KeyError:
             return None
     return next(iter(values)) if len(values) == 1 else None
+
+
+def _catalog_hierarchy_from_browse_path(value: object) -> tuple[str | None, str | None]:
+    path = value.get("path") if isinstance(value, dict) else None
+    database_names: set[str] = set()
+    schema_names: set[str] = set()
+    for entry in path if isinstance(path, list) else []:
+        entity = entry.get("entity") if isinstance(entry, dict) else None
+        if not isinstance(entity, dict) or entity.get("type") != "CONTAINER":
+            continue
+        subtypes = entity.get("subTypes")
+        raw_type_names = subtypes.get("typeNames") if isinstance(subtypes, dict) else None
+        type_names = {
+            str(item).strip().casefold()
+            for item in (raw_type_names if isinstance(raw_type_names, list) else [])
+            if isinstance(item, str) and item.strip()
+        }
+        properties = entity.get("properties")
+        raw_name = properties.get("name") if isinstance(properties, dict) else None
+        if not isinstance(raw_name, str) or not raw_name.strip():
+            continue
+        name = raw_name.strip()[:255]
+        if "database" in type_names:
+            database_names.add(name)
+        if "schema" in type_names:
+            schema_names.add(name)
+    return (
+        next(iter(database_names)) if len(database_names) == 1 else None,
+        next(iter(schema_names)) if len(schema_names) == 1 else None,
+    )
 
 
 def _aspect_document(envelope: Any) -> dict[str, Any]:
@@ -432,8 +500,8 @@ class HttpDataHubGateway:
 
     async def get_lineage(
         self, *, external_urn: str, direction: str, depth: int
-    ) -> tuple[dict[str, Any], ...]:
-        if direction not in {"UPSTREAM", "DOWNSTREAM"} or not 1 <= depth <= 5:
+    ) -> DataHubLineagePage:
+        if direction not in {"UPSTREAM", "DOWNSTREAM"} or not 1 <= depth <= 3:
             raise ValueError("Lineage direction or depth is invalid.")
         data = await self._graphql(
             LINEAGE_QUERY,
@@ -447,8 +515,66 @@ class HttpDataHubGateway:
                 }
             },
         )
-        result = data.get("scrollAcrossLineage") or {}
-        return tuple(result.get("searchResults") or ())
+        result = data.get("scrollAcrossLineage")
+        raw_items = result.get("searchResults") if isinstance(result, dict) else None
+        if not isinstance(result, dict) or not isinstance(raw_items, list):
+            raise ExternalDependencyError(
+                "DataHub returned an invalid lineage contract.",
+                dependency="datahub",
+                retryable=False,
+                provider_code="INVALID_RESPONSE",
+            )
+        items: list[DataHubLineageNode] = []
+        for raw in raw_items:
+            entity = raw.get("entity") if isinstance(raw, dict) else None
+            raw_paths = raw.get("paths") if isinstance(raw, dict) else None
+            if (
+                not isinstance(raw, dict)
+                or not isinstance(entity, dict)
+                or not isinstance(entity.get("urn"), str)
+                or not isinstance(raw.get("degree"), int)
+                or not isinstance(raw_paths, list)
+            ):
+                raise ExternalDependencyError(
+                    "DataHub returned an invalid lineage result.",
+                    dependency="datahub",
+                    retryable=False,
+                    provider_code="INVALID_RESPONSE",
+                )
+            paths: list[tuple[str, ...]] = []
+            for raw_path in raw_paths:
+                raw_entities = raw_path.get("path") if isinstance(raw_path, dict) else None
+                if not isinstance(raw_entities, list):
+                    continue
+                path = tuple(
+                    str(path_entity["urn"])
+                    for path_entity in raw_entities
+                    if isinstance(path_entity, dict) and isinstance(path_entity.get("urn"), str)
+                )
+                if path:
+                    paths.append(path)
+            items.append(
+                DataHubLineageNode(
+                    external_urn=str(entity["urn"]),
+                    degree=int(raw["degree"]),
+                    paths=tuple(paths),
+                    truncated_children=bool(raw.get("truncatedChildren", False)),
+                )
+            )
+        try:
+            total = int(result.get("total", len(items)))
+        except (TypeError, ValueError) as error:
+            raise ExternalDependencyError(
+                "DataHub returned invalid lineage pagination.",
+                dependency="datahub",
+                retryable=False,
+                provider_code="INVALID_RESPONSE",
+            ) from error
+        return DataHubLineagePage(
+            items=tuple(items),
+            total=total,
+            partial=bool(result.get("isPartial", False)),
+        )
 
     async def scan_assets(self, *, offset: int, limit: int) -> DataHubScanPage:
         if offset < 0 or not 1 <= limit <= 100:
@@ -502,6 +628,9 @@ class HttpDataHubGateway:
                 if isinstance(owner, dict) and owner.get("urn")
             )
             name = properties.get("name") or entity.get("name") or entity["urn"]
+            database_name, schema_name = _catalog_hierarchy_from_browse_path(
+                entity.get("browsePathV2")
+            )
             items.append(
                 DataHubScanAsset(
                     external_urn=entity["urn"],
@@ -511,6 +640,8 @@ class HttpDataHubGateway:
                         str(properties["description"]) if properties.get("description") else None
                     ),
                     platform=str(platform_name)[:100] if platform_name else None,
+                    database_name=database_name,
+                    schema_name=schema_name,
                     domain_ref=str(domain_ref) if domain_ref else None,
                     system_ref=str(system_ref) if system_ref else None,
                     owner_ref=owner_refs[0] if owner_refs else None,

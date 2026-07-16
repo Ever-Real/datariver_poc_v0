@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import base64
 import binascii
 import hashlib
@@ -7,6 +8,7 @@ import json
 import unicodedata
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
+from itertools import pairwise
 from typing import Any
 from uuid import UUID
 
@@ -20,9 +22,14 @@ from datariver.application.dto import (
     CatalogAssetIndex,
     CatalogFacetBucket,
     CatalogFacets,
+    CatalogLineage,
+    CatalogLineageEdge,
+    CatalogMatchFragment,
     CatalogPage,
     CatalogSuggestion,
     CatalogSuggestions,
+    CatalogTreeNode,
+    CatalogTreePage,
     DataHubAssetEnrichment,
 )
 from datariver.application.errors import ExternalDependencyError
@@ -303,6 +310,104 @@ class CatalogService:
                 self._cache_access(cache="suggestions_write", outcome="success")
         return suggestions
 
+    async def tree_nodes(
+        self,
+        *,
+        subject: SubjectAttributes,
+        query: str,
+        parent_kind: str,
+        platform: str | None,
+        database_name: str | None,
+        schema_name: str | None,
+        cursor: str | None,
+        limit: int,
+        environment: EnvironmentAttributes,
+        request_id: str,
+    ) -> CatalogTreePage:
+        if not 1 <= limit <= 100:
+            raise ValueError("Catalog tree page limit must be between 1 and 100.")
+        normalized_query, access, watermark = await self._prepare_discovery(
+            subject=subject,
+            query=query,
+            environment=environment,
+            request_id=request_id,
+        )
+        tree_context = {
+            "parent_kind": parent_kind,
+            "platform": platform,
+            "database_name": database_name,
+            "schema_name": schema_name,
+        }
+        cursor_context = self._search_cursor_context(
+            subject=subject,
+            query=normalized_query,
+            filters=tree_context,
+            limit=limit,
+            watermark=watermark,
+            access=access,
+        )
+        repository_cursor = self._unwrap_search_cursor(cursor, expected_context=cursor_context)
+        cache_key = self._discovery_cache_key(
+            surface="tree",
+            subject=subject,
+            query=normalized_query,
+            filters={**tree_context, "cursor": repository_cursor},
+            limit=limit,
+            watermark=watermark,
+            access=access,
+        )
+        cache_ttl = self._bounded_cache_ttl(
+            configured_ttl=self._search_cache_ttl_seconds,
+            access=access,
+            now=environment.requested_at,
+        )
+        if cache_ttl > 0:
+            try:
+                cached = await self._cache.get_json(cache_key)
+            except Exception:
+                self._cache_access(cache="tree", outcome="error")
+            else:
+                cached_page = self._cached_tree_page(cached)
+                if cached_page is not None:
+                    self._cache_access(cache="tree", outcome="hit")
+                    return cached_page
+                self._cache_access(cache="tree", outcome="miss")
+        page = await self._discovery.tree_nodes(
+            subject=subject,
+            access=access,
+            query=normalized_query,
+            parent_kind=parent_kind,
+            platform=platform,
+            database_name=database_name,
+            schema_name=schema_name,
+            cursor=repository_cursor,
+            limit=limit,
+        )
+        page = replace(
+            page,
+            next_cursor=(
+                self._wrap_search_cursor(page.next_cursor, context=cursor_context)
+                if page.next_cursor
+                else None
+            ),
+            projection_version=watermark,
+            policy_version=self._policy_version,
+            classification_policy_version=access.policy_version,
+            authorization_generation=access.authorization_generation,
+        )
+        if cache_ttl > 0:
+            try:
+                await self._cache.set_json(
+                    cache_key,
+                    self._tree_page_document(page),
+                    ttl_seconds=cache_ttl,
+                )
+            except Exception:
+                self._cache_access(cache="tree_write", outcome="error")
+            else:
+                self._cache_access(cache="tree_write", outcome="success")
+        return page
+
     async def get_asset(
         self,
         *,
@@ -420,6 +525,139 @@ class CatalogService:
             return detail
         self._cache_access(cache="detail_write", outcome="success")
         return detail
+
+    async def lineage(
+        self,
+        *,
+        subject: SubjectAttributes,
+        asset_id: UUID,
+        direction: str,
+        depth: int,
+        environment: EnvironmentAttributes,
+        request_id: str,
+    ) -> CatalogLineage | None:
+        if direction not in {"UPSTREAM", "DOWNSTREAM", "BOTH"}:
+            raise ValidationError("Unsupported lineage direction.")
+        if not 1 <= depth <= 3:
+            raise ValidationError("Lineage depth must be between one and three.")
+        access = await self._resolve_classification_access(
+            subject=subject, now=environment.requested_at
+        )
+        center = await self._index.get_authorized_asset(
+            subject=subject, access=access, asset_id=asset_id
+        )
+        if center is None:
+            return None
+        await self._authorization.authorize(
+            subject=subject,
+            resource=ResourceAttributes(
+                resource_id=center.index.asset_id,
+                workspace_id=center.index.workspace_id,
+                resource_type="catalog_lineage",
+                owner_department_id=center.index.owner_department_id,
+                system_id=center.index.system_id,
+                domain_id=center.index.domain_id,
+                classification=center.index.classification,
+                lifecycle=center.index.lifecycle,
+            ),
+            action=Action.CATALOG_READ,
+            environment=environment,
+            request_id=request_id,
+        )
+        directions = ("UPSTREAM", "DOWNSTREAM") if direction == "BOTH" else (direction,)
+        remote_pages = await asyncio.gather(
+            *(
+                self._datahub.get_lineage(
+                    external_urn=center.index.external_urn,
+                    direction=item,
+                    depth=depth,
+                )
+                for item in directions
+            )
+        )
+        candidate_urns = {center.index.external_urn}
+        for page in remote_pages:
+            for item in page.items:
+                candidate_urns.add(item.external_urn)
+                candidate_urns.update(urn for path in item.paths for urn in path)
+        authorized = await self._index.get_authorized_assets_by_external_urns(
+            subject=subject,
+            access=access,
+            external_urns=tuple(candidate_urns),
+        )
+        by_urn = {item.external_urn: item for item in authorized}
+        by_urn[center.index.external_urn] = center.index
+        visible_urns = {center.index.external_urn}
+        edge_ids: set[tuple[UUID, UUID]] = set()
+        truncated = any(page.partial or page.total > len(page.items) for page in remote_pages)
+        for remote_direction, page in zip(directions, remote_pages, strict=True):
+            for item in page.items:
+                truncated = truncated or item.truncated_children
+                if item.external_urn in by_urn:
+                    visible_urns.add(item.external_urn)
+                paths = item.paths
+                if not paths and item.degree == 1:
+                    paths = ((center.index.external_urn, item.external_urn),)
+                for path in paths:
+                    oriented = self._oriented_lineage_path(
+                        path=path,
+                        center_urn=center.index.external_urn,
+                        direction=remote_direction,
+                    )
+                    if oriented is None:
+                        truncated = True
+                        continue
+                    for source_urn, target_urn in pairwise(oriented):
+                        source = by_urn.get(source_urn)
+                        target = by_urn.get(target_urn)
+                        if source is None or target is None:
+                            truncated = True
+                            continue
+                        if source.asset_id == target.asset_id:
+                            continue
+                        visible_urns.update((source_urn, target_urn))
+                        edge_ids.add((source.asset_id, target.asset_id))
+        nodes = tuple(
+            sorted(
+                (by_urn[urn] for urn in visible_urns if urn in by_urn),
+                key=lambda item: (
+                    item.asset_id != center.index.asset_id,
+                    item.name.casefold(),
+                    str(item.asset_id),
+                ),
+            )
+        )
+        watermark = await self._watermark.get_search_watermark(workspace_id=subject.workspace_id)
+        return CatalogLineage(
+            center_asset_id=center.index.asset_id,
+            nodes=nodes,
+            edges=tuple(
+                CatalogLineageEdge(source_asset_id=source, target_asset_id=target)
+                for source, target in sorted(
+                    edge_ids, key=lambda edge: (str(edge[0]), str(edge[1]))
+                )
+            ),
+            direction=direction,
+            depth=depth,
+            truncated=truncated,
+            observed_at=datetime.now(UTC),
+            projection_version=watermark,
+            policy_version=self._policy_version,
+            classification_policy_version=access.policy_version,
+            authorization_generation=access.authorization_generation,
+        )
+
+    @staticmethod
+    def _oriented_lineage_path(
+        *, path: tuple[str, ...], center_urn: str, direction: str
+    ) -> tuple[str, ...] | None:
+        if len(path) < 2 or center_urn not in path:
+            return None
+        if path[0] == center_urn:
+            return path if direction == "DOWNSTREAM" else tuple(reversed(path))
+        if path[-1] == center_urn:
+            return tuple(reversed(path)) if direction == "DOWNSTREAM" else path
+        return None
 
     def _cache_access(self, *, cache: str, outcome: str) -> None:
         if self._telemetry is not None:
@@ -645,7 +883,7 @@ class CatalogService:
     @staticmethod
     def _page_document(page: CatalogPage) -> dict[str, Any]:
         return {
-            "schema": 2,
+            "schema": 3,
             "items": [
                 {
                     "asset_id": str(item.asset_id),
@@ -655,6 +893,8 @@ class CatalogService:
                     "name": item.name,
                     "description": item.description,
                     "platform": item.platform,
+                    "database_name": item.database_name,
+                    "schema_name": item.schema_name,
                     "domain_id": str(item.domain_id) if item.domain_id else None,
                     "system_id": str(item.system_id) if item.system_id else None,
                     "owner_department_id": (
@@ -664,6 +904,14 @@ class CatalogService:
                     "lifecycle": item.lifecycle,
                     "source_version": item.source_version,
                     "observed_at": item.observed_at.isoformat(),
+                    "matches": [
+                        {
+                            "field": fragment.field,
+                            "text": fragment.text,
+                            "matched_terms": list(fragment.matched_terms),
+                        }
+                        for fragment in item.matches
+                    ],
                 }
                 for item in page.items
             ],
@@ -678,7 +926,7 @@ class CatalogService:
 
     @staticmethod
     def _cached_page(value: object) -> CatalogPage | None:
-        if not isinstance(value, dict) or value.get("schema") != 2:
+        if not isinstance(value, dict) or value.get("schema") != 3:
             return None
         try:
             items = tuple(
@@ -692,6 +940,14 @@ class CatalogService:
                         str(item["description"]) if item.get("description") is not None else None
                     ),
                     platform=str(item["platform"]) if item.get("platform") is not None else None,
+                    database_name=(
+                        str(item["database_name"])
+                        if item.get("database_name") is not None
+                        else None
+                    ),
+                    schema_name=(
+                        str(item["schema_name"]) if item.get("schema_name") is not None else None
+                    ),
                     domain_id=UUID(str(item["domain_id"])) if item.get("domain_id") else None,
                     system_id=UUID(str(item["system_id"])) if item.get("system_id") else None,
                     owner_department_id=(
@@ -703,6 +959,14 @@ class CatalogService:
                     lifecycle=str(item["lifecycle"]),
                     source_version=str(item["source_version"]),
                     observed_at=datetime.fromisoformat(str(item["observed_at"])),
+                    matches=tuple(
+                        CatalogMatchFragment(
+                            field=str(fragment["field"]),
+                            text=str(fragment["text"]),
+                            matched_terms=tuple(str(term) for term in fragment["matched_terms"]),
+                        )
+                        for fragment in item.get("matches", [])
+                    ),
                 )
                 for item in value["items"]
             )
@@ -727,6 +991,142 @@ class CatalogService:
             )
         except (KeyError, TypeError, ValueError):
             return None
+
+    @staticmethod
+    def _tree_page_document(page: CatalogTreePage) -> dict[str, Any]:
+        return {
+            "schema": 1,
+            "items": [
+                {
+                    "node_id": str(item.node_id),
+                    "kind": item.kind,
+                    "label": item.label,
+                    "asset_count": item.asset_count,
+                    "has_children": item.has_children,
+                    "platform": item.platform,
+                    "database_name": item.database_name,
+                    "schema_name": item.schema_name,
+                    "asset": (
+                        CatalogService._asset_index_document(item.asset)
+                        if item.asset is not None
+                        else None
+                    ),
+                }
+                for item in page.items
+            ],
+            "next_cursor": page.next_cursor,
+            "observed_at": page.observed_at.isoformat() if page.observed_at else None,
+            "projection_version": page.projection_version,
+            "policy_version": page.policy_version,
+            "classification_policy_version": page.classification_policy_version,
+            "authorization_generation": page.authorization_generation,
+        }
+
+    @staticmethod
+    def _cached_tree_page(value: object) -> CatalogTreePage | None:
+        if not isinstance(value, dict) or value.get("schema") != 1:
+            return None
+        try:
+            return CatalogTreePage(
+                items=tuple(
+                    CatalogTreeNode(
+                        node_id=UUID(str(item["node_id"])),
+                        kind=str(item["kind"]),
+                        label=str(item["label"]),
+                        asset_count=int(item["asset_count"]),
+                        has_children=bool(item["has_children"]),
+                        platform=(
+                            str(item["platform"]) if item.get("platform") is not None else None
+                        ),
+                        database_name=(
+                            str(item["database_name"])
+                            if item.get("database_name") is not None
+                            else None
+                        ),
+                        schema_name=(
+                            str(item["schema_name"])
+                            if item.get("schema_name") is not None
+                            else None
+                        ),
+                        asset=(
+                            CatalogService._asset_index_from_document(item["asset"])
+                            if item.get("asset") is not None
+                            else None
+                        ),
+                    )
+                    for item in value["items"]
+                ),
+                next_cursor=(str(value["next_cursor"]) if value.get("next_cursor") else None),
+                observed_at=(
+                    datetime.fromisoformat(str(value["observed_at"]))
+                    if value.get("observed_at")
+                    else None
+                ),
+                projection_version=int(value["projection_version"]),
+                policy_version=str(value["policy_version"]),
+                classification_policy_version=(
+                    int(value["classification_policy_version"])
+                    if value.get("classification_policy_version") is not None
+                    else None
+                ),
+                authorization_generation=(
+                    int(value["authorization_generation"])
+                    if value.get("authorization_generation") is not None
+                    else None
+                ),
+            )
+        except (KeyError, TypeError, ValueError):
+            return None
+
+    @staticmethod
+    def _asset_index_document(item: CatalogAssetIndex) -> dict[str, Any]:
+        return {
+            "asset_id": str(item.asset_id),
+            "workspace_id": str(item.workspace_id),
+            "external_urn": item.external_urn,
+            "asset_type": item.asset_type,
+            "name": item.name,
+            "description": item.description,
+            "platform": item.platform,
+            "database_name": item.database_name,
+            "schema_name": item.schema_name,
+            "domain_id": str(item.domain_id) if item.domain_id else None,
+            "system_id": str(item.system_id) if item.system_id else None,
+            "owner_department_id": (
+                str(item.owner_department_id) if item.owner_department_id else None
+            ),
+            "classification": int(item.classification),
+            "lifecycle": item.lifecycle,
+            "source_version": item.source_version,
+            "observed_at": item.observed_at.isoformat(),
+        }
+
+    @staticmethod
+    def _asset_index_from_document(item: object) -> CatalogAssetIndex:
+        if not isinstance(item, dict):
+            raise ValueError("Invalid cached catalog asset.")
+        return CatalogAssetIndex(
+            asset_id=UUID(str(item["asset_id"])),
+            workspace_id=UUID(str(item["workspace_id"])),
+            external_urn=str(item["external_urn"]),
+            asset_type=str(item["asset_type"]),
+            name=str(item["name"]),
+            description=(str(item["description"]) if item.get("description") is not None else None),
+            platform=str(item["platform"]) if item.get("platform") is not None else None,
+            database_name=(
+                str(item["database_name"]) if item.get("database_name") is not None else None
+            ),
+            schema_name=(str(item["schema_name"]) if item.get("schema_name") is not None else None),
+            domain_id=UUID(str(item["domain_id"])) if item.get("domain_id") else None,
+            system_id=UUID(str(item["system_id"])) if item.get("system_id") else None,
+            owner_department_id=(
+                UUID(str(item["owner_department_id"])) if item.get("owner_department_id") else None
+            ),
+            classification=Classification(int(item["classification"])),
+            lifecycle=str(item["lifecycle"]),
+            source_version=str(item["source_version"]),
+            observed_at=datetime.fromisoformat(str(item["observed_at"])),
+        )
 
     @staticmethod
     def _facets_document(facets: CatalogFacets) -> dict[str, Any]:

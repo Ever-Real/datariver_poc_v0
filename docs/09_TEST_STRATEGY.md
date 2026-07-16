@@ -91,6 +91,9 @@ For each route, test no token, invalid issuer/audience/algorithm, inactive subje
 - Queue eviction count stays zero; cache respects maxmemory and TTL.
 - Test ABAC-aware pagination/facets at realistic permitted/denied ratios.
 - Reuse a search cursor only with its exact workspace, permission scope, policy/generation, projection version, query, filters and page size; stale or cross-shape cursors must fail explicitly.
+- Prove multi-term search uses ALL semantics while `%`, `_` and backslash remain literal data, and render only client-escaped highlights from server plain-text match fragments.
+- Expand Resource Tree branches one page at a time; no browser test may preload the catalog to synthesize hierarchy or count hidden rows.
+- Filter every lineage node and intermediary as a set through the catalog authorization predicate; a denied intermediary must truncate the path and must never be bypassed to connect two visible endpoints.
 
 ## Migration and portability
 

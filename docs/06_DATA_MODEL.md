@@ -40,7 +40,7 @@ Missing or inconsistent active state falls back to the portable static floor.
 
 | Table | Key columns and constraints | Purpose |
 |---|---|---|
-| `catalog.assets_projection` | `id`, `workspace_id + urn_hash UQ`, external identity/scope/classification/lifecycle, stored `search_vector`, source version/owner, `last_seen_sync_id`, observed/deleted times | authorized search/base-detail projection; DataHub remains canonical |
+| `catalog.assets_projection` | `id`, `workspace_id + urn_hash UQ`, external identity/scope/classification/lifecycle, nullable typed-container `database_name`/`schema_name`, stored `search_vector`, source version/owner, `last_seen_sync_id`, observed/deleted times | authorized search/tree/base-detail projection; DataHub remains canonical |
 | `catalog.sync_runs` | PK workspace/sync, state/next offset/start/heartbeat/completion | single-writer ordered full reconciliation and stale-run recovery |
 | `catalog.projection_watermarks` | `workspace_id PK/FK`, non-negative `projection_version BIGINT` | transactional local read-model generation used for cache invalidation |
 
@@ -49,10 +49,12 @@ advances the workspace projection version exactly once in the same transaction; 
 and rollback do not. Final-page reconciliation tombstones missing `DATAHUB` rows and never
 seed-owned rows. `sync_runs.state` records reconciliation completeness, while the version records
 only a committed local generation. Active rows have a workspace/scope/order partial index, GIN
-full-text index, `pg_trgm` name index and a lower-name prefix index for two-character autocomplete.
-Facets are derived from the same authorization-prefiltered projection and cached by security and
-projection generation; a separate facet projection, normalized database/schema hierarchy and a true
-incremental DataHub source cursor remain backlog.
+full-text index, `pg_trgm` name index, a lower-name prefix index for two-character autocomplete and
+a workspace/platform/database/schema/name partial index for lazy tree branches. Database/schema
+values are nullable projections of typed DataHub `Database`/`Schema` browse containers; an absent
+typed container stays absent and is never reconstructed from a URN. Facets and tree branches are
+derived from the same authorization-prefiltered projection and cached by security and projection
+generation; a separate facet projection and a true incremental DataHub source cursor remain backlog.
 
 ### Governance
 
@@ -135,6 +137,8 @@ rule/event/profile payloads and no application delete path. The assistant infere
 contract is source-only: it adds no durable inference job, provider endpoint/secret or execution table.
 Alembic `0012` adds only the active lower-name prefix index used by the governed two-character
 suggestion contract; no new source-of-truth or cross-workspace table is introduced.
+Alembic `0013` adds nullable database/schema hierarchy projection columns and the active hierarchy
+partial index. It changes no canonical ownership: DataHub remains the applied metadata source.
 
 ## Constraints enforced outside DDL
 

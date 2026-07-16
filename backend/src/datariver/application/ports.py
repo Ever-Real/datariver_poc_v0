@@ -16,9 +16,11 @@ from datariver.application.dto import (
     ApiProductVersionRecord,
     CapabilityStatus,
     CatalogAssetDetail,
+    CatalogAssetIndex,
     CatalogFacets,
     CatalogPage,
     CatalogSuggestions,
+    CatalogTreePage,
     ChatDraft,
     ChatEvidence,
     ChatExchange,
@@ -26,6 +28,7 @@ from datariver.application.dto import (
     DataHubApplyReceipt,
     DataHubAspectSnapshot,
     DataHubAssetEnrichment,
+    DataHubLineagePage,
     DataHubScanAsset,
     DataHubScanPage,
     DecisionAuditItem,
@@ -113,6 +116,14 @@ class CatalogIndexReader(Protocol):
         asset_id: UUID,
     ) -> CatalogAssetDetail | None: ...
 
+    async def get_authorized_assets_by_external_urns(
+        self,
+        *,
+        subject: SubjectAttributes,
+        access: ClassificationAccessSnapshot,
+        external_urns: Sequence[str],
+    ) -> Sequence[CatalogAssetIndex]: ...
+
 
 class CatalogDiscoveryReader(Protocol):
     async def facets(
@@ -134,6 +145,20 @@ class CatalogDiscoveryReader(Protocol):
         limit: int,
     ) -> CatalogSuggestions: ...
 
+    async def tree_nodes(
+        self,
+        *,
+        subject: SubjectAttributes,
+        access: ClassificationAccessSnapshot,
+        query: str,
+        parent_kind: str,
+        platform: str | None,
+        database_name: str | None,
+        schema_name: str | None,
+        cursor: str | None,
+        limit: int,
+    ) -> CatalogTreePage: ...
+
 
 class CatalogWatermarkReader(Protocol):
     async def get_search_watermark(self, *, workspace_id: UUID) -> int: ...
@@ -150,7 +175,7 @@ class DataHubGateway(Protocol):
 
     async def get_lineage(
         self, *, external_urn: str, direction: str, depth: int
-    ) -> Sequence[dict[str, Any]]: ...
+    ) -> DataHubLineagePage: ...
 
     async def apply_change(
         self, *, external_urn: str, aspect_name: str, document: dict[str, Any], idempotency_key: str

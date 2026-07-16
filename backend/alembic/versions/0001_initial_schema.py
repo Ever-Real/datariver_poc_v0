@@ -99,6 +99,8 @@ def upgrade() -> None:
         sa.Column('description', sa.Text(), nullable=True),
         sa.Column('search_vector', postgresql.TSVECTOR(), sa.Computed("to_tsvector('simple'::regconfig, coalesce(name, '') || ' ' || coalesce(description, ''))", persisted=True), nullable=False),
         sa.Column('platform', sa.String(length=100), nullable=True),
+        sa.Column('database_name', sa.String(length=255), nullable=True),
+        sa.Column('schema_name', sa.String(length=255), nullable=True),
         sa.Column('domain_id', sa.Uuid(), nullable=True),
         sa.Column('system_id', sa.Uuid(), nullable=True),
         sa.Column('owner_department_id', sa.Uuid(), nullable=True),
@@ -121,6 +123,7 @@ def upgrade() -> None:
         op.create_index('ix_assets_projection_name_trgm_active', 'assets_projection', ['name'], unique=False, schema='catalog', postgresql_using='gin', postgresql_ops={'name': 'gin_trgm_ops'}, postgresql_where=sa.text("deleted_at IS NULL AND lifecycle = 'ACTIVE'"))
         op.create_index('ix_assets_projection_scope', 'assets_projection', ['workspace_id', 'classification', 'system_id', 'domain_id'], unique=False, schema='catalog')
         op.create_index('ix_assets_projection_search_fts_active', 'assets_projection', ['search_vector'], unique=False, schema='catalog', postgresql_using='gin', postgresql_where=sa.text("deleted_at IS NULL AND lifecycle = 'ACTIVE'"))
+        op.create_index('ix_assets_projection_tree_active', 'assets_projection', ['workspace_id', 'platform', 'database_name', 'schema_name', 'name', 'id'], unique=False, schema='catalog', postgresql_where=sa.text("deleted_at IS NULL AND lifecycle = 'ACTIVE'"))
         op.execute('ALTER TABLE catalog.assets_projection ENABLE ROW LEVEL SECURITY')
         op.execute('ALTER TABLE catalog.assets_projection FORCE ROW LEVEL SECURITY')
         op.execute("CREATE POLICY workspace_isolation ON catalog.assets_projection USING (workspace_id = NULLIF(current_setting('app.workspace_id', true), '')::uuid) WITH CHECK (workspace_id = NULLIF(current_setting('app.workspace_id', true), '')::uuid)")

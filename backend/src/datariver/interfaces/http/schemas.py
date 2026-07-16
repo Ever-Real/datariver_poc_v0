@@ -33,15 +33,25 @@ class CatalogAssetSummary(BaseModel):
     name: str
     description: str | None
     platform: str | None
+    database_name: str | None
+    schema_name: str | None
     classification: str
     lifecycle: str
     observed_at: datetime
+    matches: list[CatalogMatchFragmentResponse] = Field(default_factory=list)
+
+
+class CatalogMatchFragmentResponse(BaseModel):
+    field: Literal["NAME", "DESCRIPTION"]
+    text: str
+    matched_terms: list[str]
 
 
 class CatalogSearchResponse(BaseModel):
     items: list[CatalogAssetSummary]
     page: PageMeta
     meta: CatalogPolicyMeta
+    match_mode: Literal["ALL"] = "ALL"
 
 
 class CatalogFacetBucketResponse(BaseModel):
@@ -74,6 +84,39 @@ class CatalogSuggestionResponse(BaseModel):
 class CatalogSuggestionsResponse(BaseModel):
     items: list[CatalogSuggestionResponse]
     meta: CatalogDiscoveryPolicyMeta
+
+
+class CatalogTreeNodeResponse(BaseModel):
+    id: UUID
+    kind: Literal["PLATFORM", "DATABASE", "SCHEMA", "ASSET"]
+    label: str
+    asset_count: int = Field(ge=1)
+    has_children: bool
+    platform: str | None
+    database_name: str | None
+    schema_name: str | None
+    asset: CatalogAssetSummary | None
+
+
+class CatalogTreeResponse(BaseModel):
+    items: list[CatalogTreeNodeResponse]
+    page: PageMeta
+    meta: CatalogDiscoveryPolicyMeta
+
+
+class CatalogLineageEdgeResponse(BaseModel):
+    source_asset_id: UUID
+    target_asset_id: UUID
+
+
+class CatalogLineageResponse(BaseModel):
+    center_asset_id: UUID
+    nodes: list[CatalogAssetSummary]
+    edges: list[CatalogLineageEdgeResponse]
+    direction: Literal["UPSTREAM", "DOWNSTREAM", "BOTH"]
+    depth: int = Field(ge=1, le=3)
+    truncated: bool
+    meta: CatalogPolicyMeta
 
 
 class CatalogAssetResponse(CatalogAssetSummary):

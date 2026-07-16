@@ -132,6 +132,24 @@ async def test_catalog_scan_maps_a_fixed_datahub_contract_and_paginates() -> Non
                                         "name": "snowflake",
                                     },
                                     "properties": {"name": "wafer_events", "description": "events"},
+                                    "browsePathV2": {
+                                        "path": [
+                                            {
+                                                "entity": {
+                                                    "type": "CONTAINER",
+                                                    "properties": {"name": "analytics"},
+                                                    "subTypes": {"typeNames": ["Database"]},
+                                                }
+                                            },
+                                            {
+                                                "entity": {
+                                                    "type": "CONTAINER",
+                                                    "properties": {"name": "manufacturing"},
+                                                    "subTypes": {"typeNames": ["Schema"]},
+                                                }
+                                            },
+                                        ]
+                                    },
                                     "domain": {"domain": {"urn": "urn:li:domain:manufacturing"}},
                                     "ownership": {
                                         "owners": [{"owner": {"urn": "urn:li:corpGroup:yield"}}]
@@ -158,11 +176,64 @@ async def test_catalog_scan_maps_a_fixed_datahub_contract_and_paginates() -> Non
 
     assert page.items[0].name == "wafer_events"
     assert page.items[0].platform == "snowflake"
+    assert page.items[0].database_name == "analytics"
+    assert page.items[0].schema_name == "manufacturing"
     assert page.items[0].domain_ref == "urn:li:domain:manufacturing"
     assert page.items[0].system_ref == "urn:li:dataPlatform:snowflake"
     assert page.items[0].classification is Classification.CONFIDENTIAL
     assert page.next_offset == 1
     assert page.total == 2
+    await client.aclose()
+
+
+async def test_lineage_contract_returns_only_typed_bounded_paths() -> None:
+    async def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content)
+        assert "paths { path { urn type } }" in body["query"]
+        assert body["variables"]["input"]["maxDegree"] == 2
+        return httpx.Response(
+            200,
+            json={
+                "data": {
+                    "scrollAcrossLineage": {
+                        "count": 1,
+                        "total": 2,
+                        "isPartial": True,
+                        "searchResults": [
+                            {
+                                "entity": {"urn": "urn:li:dataset:upstream", "type": "DATASET"},
+                                "degree": 2,
+                                "truncatedChildren": True,
+                                "paths": [
+                                    {
+                                        "path": [
+                                            {"urn": "urn:li:dataset:center", "type": "DATASET"},
+                                            {"urn": "urn:li:dataset:upstream", "type": "DATASET"},
+                                        ]
+                                    }
+                                ],
+                            }
+                        ],
+                    }
+                }
+            },
+        )
+
+    client = httpx.AsyncClient(
+        base_url="https://datahub.example", transport=httpx.MockTransport(handler)
+    )
+    gateway = HttpDataHubGateway(
+        base_url="https://datahub.example", token="unused", timeout_seconds=1, client=client
+    )
+
+    page = await gateway.get_lineage(
+        external_urn="urn:li:dataset:center", direction="UPSTREAM", depth=2
+    )
+
+    assert page.partial is True
+    assert page.total == 2
+    assert page.items[0].paths == (("urn:li:dataset:center", "urn:li:dataset:upstream"),)
+    assert page.items[0].truncated_children is True
     await client.aclose()
 
 

@@ -1,56 +1,176 @@
-import { useEffect, useState, type FormEvent } from 'react'
+import { useEffect, useMemo, useRef, useState, type FormEvent, type KeyboardEvent } from 'react'
+import type { ColumnDef } from '@tanstack/react-table'
+import { Filter, Search } from 'lucide-react'
 import type { ApiClient } from '../../api/client'
-import type { CatalogAsset, CatalogSearch } from '../../api/types'
+import type {
+  CatalogAsset,
+  CatalogFacets,
+  CatalogSearch,
+  CatalogSuggestion,
+  CatalogSuggestions,
+} from '../../api/types'
 import { ErrorNotice } from '../../components/ErrorNotice'
+import { CursorPagination } from '../../components/common/CursorPagination'
+import { DenseDataTable } from '../../components/common/DenseDataTable'
+import { TruncatedText } from '../../components/common/TruncatedText'
 import { PageTitle } from '../../components/layout/PageTitle'
+import { CatalogDetailPane } from './CatalogDetailPane'
+import { CatalogMatchPreview } from './CatalogMatchText'
+import { CatalogResourceTree } from './CatalogResourceTree'
 
 export function validCatalogQuery(query: string): boolean {
   const length = query.trim().length
   return length === 0 || length >= 2
 }
 
-export function CatalogPage({ client, initialQuery = '' }: { client: ApiClient; initialQuery?: string }) {
+interface Filters {
+  assetType: string
+  platform: string
+  classification: string
+}
+
+const emptyFilters: Filters = { assetType: '', platform: '', classification: '' }
+
+function searchPath(query: string, filters: Filters, cursor: string | undefined, limit: number) {
+  const parameters = new URLSearchParams({ q: query, limit: String(limit) })
+  if (filters.assetType) parameters.set('asset_type', filters.assetType)
+  if (filters.platform) parameters.set('platform', filters.platform)
+  if (filters.classification) parameters.set('classification', filters.classification)
+  if (cursor) parameters.set('cursor', cursor)
+  return parameters
+}
+
+export function CatalogPage({
+  client,
+  initialQuery = '',
+  onQueryChange,
+}: {
+  client: ApiClient
+  initialQuery?: string
+  onQueryChange?: (query: string) => void
+}) {
+  const [draftQuery, setDraftQuery] = useState(initialQuery)
   const [query, setQuery] = useState(initialQuery)
-  const [items, setItems] = useState<CatalogAsset[]>([])
-  const [error, setError] = useState<unknown>()
+  const [filters, setFilters] = useState<Filters>(emptyFilters)
+  const [result, setResult] = useState<CatalogSearch>()
+  const [facets, setFacets] = useState<CatalogFacets>()
+  const [suggestions, setSuggestions] = useState<CatalogSuggestion[]>([])
+  const [suggestionIndex, setSuggestionIndex] = useState(-1)
+  const [selectedAssetId, setSelectedAssetId] = useState<string>()
+  const [cursors, setCursors] = useState<Array<string | undefined>>([undefined])
+  const [pageIndex, setPageIndex] = useState(0)
+  const [pageSize, setPageSize] = useState(50)
   const [loading, setLoading] = useState(false)
+  const [error, setError] = useState<unknown>()
+  const suggestionRoot = useRef<HTMLDivElement>(null)
+  const initialQueryRef = useRef(initialQuery)
 
-  useEffect(() => setQuery(initialQuery), [initialQuery])
+  useEffect(() => {
+    if (initialQueryRef.current === initialQuery) return
+    initialQueryRef.current = initialQuery
+    setDraftQuery(initialQuery); setQuery(initialQuery); setCursors([undefined]); setPageIndex(0)
+  }, [initialQuery])
 
-  const search = async (event: FormEvent) => {
-    event.preventDefault()
-    if (!validCatalogQuery(query)) {
-      setError(new Error('검색어는 비워 두거나 2자 이상 입력하세요.'))
-      return
+  useEffect(() => {
+    const controller = new AbortController()
+    setLoading(true); setError(undefined); setSelectedAssetId(undefined)
+    const parameters = searchPath(query, filters, cursors[pageIndex], pageSize)
+    void Promise.all([
+      client.request<CatalogSearch>(`/catalog/assets?${parameters}`, { signal: controller.signal }),
+      client.request<CatalogFacets>(`/catalog/facets?${searchPath(query, filters, undefined, 30)}`, { signal: controller.signal }),
+    ]).then(([nextResult, nextFacets]) => {
+      if (!controller.signal.aborted) { setResult(nextResult); setFacets(nextFacets) }
+    }).catch((next: unknown) => { if (!controller.signal.aborted) setError(next) })
+      .finally(() => { if (!controller.signal.aborted) setLoading(false) })
+    return () => controller.abort()
+  }, [client, cursors, filters, pageIndex, pageSize, query])
+
+  useEffect(() => {
+    const normalized = draftQuery.trim()
+    if (normalized.length < 2 || normalized === query) { setSuggestions([]); return }
+    const controller = new AbortController()
+    const timer = window.setTimeout(() => {
+      void client.request<CatalogSuggestions>(`/catalog/suggestions?q=${encodeURIComponent(normalized)}&limit=8`, { signal: controller.signal })
+        .then((response) => { if (!controller.signal.aborted) { setSuggestions(response.items); setSuggestionIndex(-1) } })
+        .catch(() => { if (!controller.signal.aborted) setSuggestions([]) })
+    }, 300)
+    return () => { controller.abort(); window.clearTimeout(timer) }
+  }, [client, draftQuery, query])
+
+  useEffect(() => {
+    const close = (event: MouseEvent) => {
+      if (!suggestionRoot.current?.contains(event.target as Node)) setSuggestions([])
     }
-    setLoading(true); setError(undefined)
-    try {
-      const result = await client.request<CatalogSearch>(`/catalog/assets?q=${encodeURIComponent(query)}&limit=50`)
-      setItems(result.items)
-    } catch (next) { setError(next) } finally { setLoading(false) }
+    document.addEventListener('mousedown', close)
+    return () => document.removeEventListener('mousedown', close)
+  }, [])
+
+  const commitQuery = (value: string) => {
+    const normalized = value.trim()
+    if (!validCatalogQuery(normalized)) { setError(new Error('검색어는 비워 두거나 2자 이상 입력하세요.')); return }
+    setDraftQuery(normalized); setQuery(normalized); setSuggestions([]); setCursors([undefined]); setPageIndex(0)
+    onQueryChange?.(normalized)
   }
 
-  return (
-    <section>
-      <PageTitle icon="SR" eyebrow="DataHub Wrapper" title="데이터 카탈로그 검색" description="Workspace·분류정책·권한 범위 안의 로컬 projection을 검색합니다." />
-      <form className="search-bar" onSubmit={(event) => void search(event)}>
-        <label className="sr-only" htmlFor="catalog-query">데이터셋 이름이나 설명 검색</label>
-        <input id="catalog-query" value={query} onChange={(event) => setQuery(event.target.value)} placeholder="데이터셋 이름이나 설명 검색 (2자 이상)" maxLength={500} aria-describedby="catalog-search-hint" />
-        <button className="button" disabled={loading}>{loading ? '검색 중…' : '검색'}</button>
+  const submit = (event: FormEvent) => { event.preventDefault(); commitQuery(draftQuery) }
+  const navigateSuggestions = (event: KeyboardEvent<HTMLInputElement>) => {
+    if (event.key === 'Escape') { setSuggestions([]); return }
+    if (suggestions.length === 0 || !['ArrowDown', 'ArrowUp', 'Enter'].includes(event.key)) return
+    event.preventDefault()
+    if (event.key === 'ArrowDown') setSuggestionIndex((current) => Math.min(current + 1, suggestions.length - 1))
+    if (event.key === 'ArrowUp') setSuggestionIndex((current) => Math.max(current - 1, 0))
+    if (event.key === 'Enter' && suggestionIndex >= 0) {
+      const selected = suggestions[suggestionIndex]
+      if (selected) commitQuery(selected.name)
+    }
+  }
+
+  const columns = useMemo<ColumnDef<CatalogAsset>[]>(() => [
+    { accessorKey: 'asset_type', header: 'Type', size: 72, enableSorting: false, cell: ({ row }) => <span className="badge">{row.original.asset_type}</span> },
+    { accessorKey: 'platform', header: 'Platform', size: 96, enableSorting: false, cell: ({ row }) => <TruncatedText value={row.original.platform ?? '—'} /> },
+    { accessorKey: 'database_name', header: 'Database', size: 110, enableSorting: false, cell: ({ row }) => <TruncatedText value={row.original.database_name ?? '—'} /> },
+    { accessorKey: 'schema_name', header: 'Schema', size: 110, enableSorting: false, cell: ({ row }) => <TruncatedText value={row.original.schema_name ?? '—'} /> },
+    { accessorKey: 'name', header: 'Table / Asset', size: 210, enableSorting: false, cell: ({ row }) => <TruncatedText value={row.original.name} className="catalog-asset-name" /> },
+    { accessorKey: 'classification', header: 'Class', size: 100, enableSorting: false, cell: ({ row }) => <span className="badge badge-soft">{row.original.classification}</span> },
+    { accessorKey: 'description', header: 'Description', size: 260, enableSorting: false, cell: ({ row }) => <TruncatedText value={row.original.description ?? '설명 없음'} /> },
+    { id: 'matches', header: 'Matches', size: 300, enableSorting: false, cell: ({ row }) => <CatalogMatchPreview fragments={row.original.matches} /> },
+  ], [])
+
+  const updateFilter = (name: keyof Filters, value: string) => {
+    setFilters((current) => ({ ...current, [name]: value })); setCursors([undefined]); setPageIndex(0)
+  }
+
+  return <section className="catalog-page">
+    <PageTitle icon="SR" eyebrow="DataHub Wrapper" title="데이터 카탈로그 검색" description="Workspace·분류정책·권한 범위 안의 로컬 projection을 검색합니다." />
+    <div className="catalog-search-panel panel">
+      <form className="catalog-search-form" role="search" aria-label="카탈로그 상세 검색" onSubmit={submit}>
+        <div className="catalog-query-control" ref={suggestionRoot}>
+          <Search size={16} aria-hidden="true" />
+          <label className="sr-only" htmlFor="catalog-query">데이터셋 이름이나 설명 검색</label>
+          <input id="catalog-query" value={draftQuery} onChange={(event) => setDraftQuery(event.target.value)} onKeyDown={navigateSuggestions} placeholder="데이터셋 이름이나 설명 검색 (2자 이상)" maxLength={500} autoComplete="off" aria-controls={suggestions.length ? 'catalog-suggestions' : undefined} aria-expanded={suggestions.length > 0} />
+          {suggestions.length > 0 && <ul id="catalog-suggestions" className="catalog-suggestions" role="listbox">
+            {suggestions.map((suggestion, index) => <li key={suggestion.id} role="option" aria-selected={index === suggestionIndex}><button type="button" onMouseDown={(event) => event.preventDefault()} onClick={() => commitQuery(suggestion.name)}><span><b>{suggestion.name}</b><small>{suggestion.asset_type} · {suggestion.platform ?? 'platform 미지정'}</small></span></button></li>)}
+          </ul>}
+        </div>
+        <button className="button" disabled={loading}><Search size={13} />{loading ? '검색 중…' : '검색'}</button>
       </form>
-      <p id="catalog-search-hint" className="muted">검색어를 비워 전체 허용 범위를 탐색하거나 2자 이상 입력하세요.</p>
-      <ErrorNotice error={error} />
-      <div className="result-list">
-        {items.map((item) => (
-          <article className="result-card" key={item.id}>
-            <div><span className="badge">{item.asset_type}</span><span className="badge badge-soft">{item.classification}</span></div>
-            <h3>{item.name}</h3>
-            <p>{item.description || '설명이 등록되지 않았습니다.'}</p>
-            <footer><span>{item.platform || 'platform 미지정'}</span><code>{item.external_urn}</code></footer>
-          </article>
-        ))}
-        {!loading && items.length === 0 && <div className="empty-state">검색 조건을 입력해 카탈로그를 탐색하세요.</div>}
+      <div className="catalog-filters" aria-label="검색 필터"><Filter size={14} aria-hidden="true" />
+        <label>Type<select value={filters.assetType} onChange={(event) => updateFilter('assetType', event.target.value)}><option value="">전체</option>{facets?.asset_types.map((item) => item.value && <option key={item.value} value={item.value}>{item.value} ({item.count})</option>)}</select></label>
+        <label>Platform<select value={filters.platform} onChange={(event) => updateFilter('platform', event.target.value)}><option value="">전체</option>{facets?.platforms.map((item) => item.value && <option key={item.value} value={item.value}>{item.value} ({item.count})</option>)}</select></label>
+        <label>Classification<select value={filters.classification} onChange={(event) => updateFilter('classification', event.target.value)}><option value="">전체</option>{facets?.classifications.map((item) => item.value && <option key={item.value} value={item.value}>{item.value} ({item.count})</option>)}</select></label>
+        <button type="button" className="button button-secondary" onClick={() => { setFilters(emptyFilters); setCursors([undefined]); setPageIndex(0) }}>필터 초기화</button>
       </div>
-    </section>
-  )
+    </div>
+    <ErrorNotice error={error} />
+    <div className={`catalog-workspace ${selectedAssetId ? 'with-detail' : ''}`}>
+      <CatalogResourceTree client={client} query={query} selectedAssetId={selectedAssetId} onSelectAsset={setSelectedAssetId} />
+      <section className="catalog-results" aria-label="카탈로그 검색 결과">
+        <header><div><span className="eyebrow">Permission scoped</span><h2>Search Results</h2></div><span>{result?.items.length ?? 0} items · ALL keywords</span></header>
+        <DenseDataTable caption="카탈로그 검색 결과" columns={columns} data={result?.items ?? []} getRowId={(item) => item.id} loading={loading} emptyMessage={query ? '검색 조건에 맞는 허용 자산이 없습니다.' : '현재 권한 범위에서 표시할 자산이 없습니다.'} selectedRowId={selectedAssetId} onRowActivate={(item) => setSelectedAssetId(item.id)} />
+        <CursorPagination page={pageIndex + 1} pageSize={pageSize} canPrevious={pageIndex > 0} canNext={Boolean(result?.page.next_cursor)} itemCount={result?.items.length} onPrevious={() => setPageIndex((current) => Math.max(0, current - 1))} onNext={() => { if (!result?.page.next_cursor) return; setCursors((current) => [...current.slice(0, pageIndex + 1), result.page.next_cursor]); setPageIndex((current) => current + 1) }} onPageSizeChange={(value) => { setPageSize(value); setCursors([undefined]); setPageIndex(0) }} />
+        {result && <footer className="catalog-result-meta"><span>projection v{result.meta.projection_version}</span><span>policy {result.meta.policy_version}</span><time dateTime={result.meta.observed_at}>{result.meta.observed_at ? new Date(result.meta.observed_at).toLocaleString() : '관측 시각 없음'}</time></footer>}
+      </section>
+      {selectedAssetId && <CatalogDetailPane key={selectedAssetId} client={client} assetId={selectedAssetId} onClose={() => setSelectedAssetId(undefined)} />}
+    </div>
+  </section>
 }

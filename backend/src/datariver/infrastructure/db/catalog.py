@@ -4,6 +4,7 @@ import base64
 import hashlib
 import json
 from collections.abc import Sequence
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from typing import Any
 from uuid import NAMESPACE_URL, UUID, uuid5
@@ -21,9 +22,12 @@ from datariver.application.dto import (
     CatalogAssetIndex,
     CatalogFacetBucket,
     CatalogFacets,
+    CatalogMatchFragment,
     CatalogPage,
     CatalogSuggestion,
     CatalogSuggestions,
+    CatalogTreeNode,
+    CatalogTreePage,
     DataHubScanAsset,
 )
 from datariver.application.ports import CatalogIndexReader, CatalogProjectionWriter
@@ -62,6 +66,8 @@ def _to_index(model: AssetProjectionModel) -> CatalogAssetIndex:
         name=model.name,
         description=model.description,
         platform=model.platform,
+        database_name=model.database_name,
+        schema_name=model.schema_name,
         domain_id=model.domain_id,
         system_id=model.system_id,
         owner_department_id=model.owner_department_id,
@@ -70,6 +76,91 @@ def _to_index(model: AssetProjectionModel) -> CatalogAssetIndex:
         source_version=model.source_version,
         observed_at=model.observed_at,
     )
+
+
+def _query_terms(query: str) -> tuple[str, ...]:
+    return tuple(dict.fromkeys(term for term in query.split() if term))
+
+
+def _catalog_query_condition(query: str) -> Any:
+    terms = _query_terms(query)
+    literal_all = and_(
+        *(
+            or_(
+                AssetProjectionModel.name.ilike(_literal_contains_pattern(term), escape="\\"),
+                AssetProjectionModel.description.ilike(
+                    _literal_contains_pattern(term), escape="\\"
+                ),
+            )
+            for term in terms
+        )
+    )
+    return or_(
+        AssetProjectionModel.search_vector.op("@@")(func.plainto_tsquery("simple", query)),
+        literal_all,
+    )
+
+
+def _match_fragments(
+    *, name: str, description: str | None, query: str
+) -> tuple[CatalogMatchFragment, ...]:
+    terms = _query_terms(query)
+    if not terms:
+        return ()
+    fragments: list[CatalogMatchFragment] = []
+    for field, value in (("NAME", name), ("DESCRIPTION", description)):
+        if not value:
+            continue
+        folded = value.casefold()
+        matched = tuple(term for term in terms if term.casefold() in folded)
+        if not matched:
+            continue
+        if len(value) <= 240:
+            context = value
+        else:
+            positions = [folded.find(term.casefold()) for term in matched]
+            first = min(position for position in positions if position >= 0)
+            start = max(0, first - 80)
+            end = min(len(value), start + 240)
+            context = ("…" if start else "") + value[start:end] + ("…" if end < len(value) else "")
+        fragments.append(CatalogMatchFragment(field=field, text=context, matched_terms=matched))
+    return tuple(fragments)
+
+
+def _group_cursor(value: str) -> str:
+    return (
+        base64.urlsafe_b64encode(json.dumps([value], separators=(",", ":")).encode())
+        .decode()
+        .rstrip("=")
+    )
+
+
+def _decode_group_cursor(cursor: str) -> str:
+    try:
+        payload = base64.urlsafe_b64decode(cursor + "=" * (-len(cursor) % 4))
+        values = json.loads(payload)
+        if not isinstance(values, list) or len(values) != 1 or not isinstance(values[0], str):
+            raise ValueError
+        return values[0]
+    except (ValueError, TypeError, json.JSONDecodeError) as error:
+        raise ValidationError("The catalog tree cursor is invalid.") from error
+
+
+def _tree_node_id(
+    *,
+    workspace_id: UUID,
+    kind: str,
+    platform: str | None,
+    database_name: str | None,
+    schema_name: str | None,
+    asset_id: UUID | None = None,
+) -> UUID:
+    document = json.dumps(
+        [str(workspace_id), kind, platform, database_name, schema_name, str(asset_id or "")],
+        ensure_ascii=False,
+        separators=(",", ":"),
+    )
+    return uuid5(NAMESPACE_URL, f"urn:datariver:catalog-tree:{document}")
 
 
 def _literal_contains_pattern(query: str) -> str:
@@ -171,16 +262,7 @@ class SqlCatalogIndexReader(CatalogIndexReader):
     ) -> CatalogPage:
         conditions = self._scope_conditions(subject, access)
         if query:
-            pattern = _literal_contains_pattern(query)
-            conditions.append(
-                or_(
-                    AssetProjectionModel.search_vector.op("@@")(
-                        func.plainto_tsquery("simple", query)
-                    ),
-                    AssetProjectionModel.name.ilike(pattern, escape="\\"),
-                    AssetProjectionModel.description.ilike(pattern, escape="\\"),
-                )
-            )
+            conditions.append(_catalog_query_condition(query))
         conditions.extend(self._filter_conditions(filters))
         if cursor:
             cursor_name, cursor_id = _decode_cursor(cursor)
@@ -209,7 +291,15 @@ class SqlCatalogIndexReader(CatalogIndexReader):
         )
         observed_at = max((row.observed_at for row in visible_rows), default=datetime.now(UTC))
         return CatalogPage(
-            items=tuple(_to_index(row) for row in visible_rows),
+            items=tuple(
+                replace(
+                    _to_index(row),
+                    matches=_match_fragments(
+                        name=row.name, description=row.description, query=query
+                    ),
+                )
+                for row in visible_rows
+            ),
             next_cursor=next_cursor,
             observed_at=observed_at,
         )
@@ -227,16 +317,7 @@ class SqlCatalogIndexReader(CatalogIndexReader):
             raise ValueError("Catalog facet limit must be between 1 and 100.")
         conditions = self._scope_conditions(subject, access)
         if query:
-            pattern = _literal_contains_pattern(query)
-            conditions.append(
-                or_(
-                    AssetProjectionModel.search_vector.op("@@")(
-                        func.plainto_tsquery("simple", query)
-                    ),
-                    AssetProjectionModel.name.ilike(pattern, escape="\\"),
-                    AssetProjectionModel.description.ilike(pattern, escape="\\"),
-                )
-            )
+            conditions.append(_catalog_query_condition(query))
         conditions.extend(self._filter_conditions(filters))
         facet_columns = {
             "asset_type": AssetProjectionModel.asset_type,
@@ -328,6 +409,147 @@ class SqlCatalogIndexReader(CatalogIndexReader):
             observed_at=max((row.observed_at for row in rows), default=None),
         )
 
+    async def tree_nodes(
+        self,
+        *,
+        subject: SubjectAttributes,
+        access: ClassificationAccessSnapshot,
+        query: str,
+        parent_kind: str,
+        platform: str | None,
+        database_name: str | None,
+        schema_name: str | None,
+        cursor: str | None,
+        limit: int,
+    ) -> CatalogTreePage:
+        if not 1 <= limit <= 100:
+            raise ValueError("Catalog tree page limit must be between 1 and 100.")
+        if parent_kind not in {"ROOT", "PLATFORM", "DATABASE", "SCHEMA"}:
+            raise ValidationError("Unsupported catalog tree parent kind.")
+        required = {
+            "ROOT": (),
+            "PLATFORM": (platform,),
+            "DATABASE": (platform, database_name),
+            "SCHEMA": (platform, database_name, schema_name),
+        }[parent_kind]
+        if any(value is None or not value.strip() for value in required):
+            raise ValidationError("The catalog tree parent path is incomplete.")
+        conditions = self._scope_conditions(subject, access)
+        if query:
+            conditions.append(_catalog_query_condition(query))
+        if parent_kind in {"PLATFORM", "DATABASE", "SCHEMA"}:
+            conditions.append(AssetProjectionModel.platform == platform)
+        if parent_kind in {"DATABASE", "SCHEMA"}:
+            conditions.append(AssetProjectionModel.database_name == database_name)
+        if parent_kind == "SCHEMA":
+            conditions.append(AssetProjectionModel.schema_name == schema_name)
+            if cursor:
+                cursor_name, cursor_id = _decode_cursor(cursor)
+                conditions.append(
+                    or_(
+                        AssetProjectionModel.name > cursor_name,
+                        and_(
+                            AssetProjectionModel.name == cursor_name,
+                            AssetProjectionModel.id > cursor_id,
+                        ),
+                    )
+                )
+            asset_statement = (
+                select(AssetProjectionModel)
+                .where(and_(*conditions))
+                .order_by(AssetProjectionModel.name, AssetProjectionModel.id)
+                .limit(limit + 1)
+            )
+            asset_rows = list((await self._session.scalars(asset_statement)).all())
+            visible = asset_rows[:limit]
+            return CatalogTreePage(
+                items=tuple(
+                    CatalogTreeNode(
+                        node_id=_tree_node_id(
+                            workspace_id=subject.workspace_id,
+                            kind="ASSET",
+                            platform=row.platform,
+                            database_name=row.database_name,
+                            schema_name=row.schema_name,
+                            asset_id=row.id,
+                        ),
+                        kind="ASSET",
+                        label=row.name,
+                        asset_count=1,
+                        has_children=False,
+                        platform=row.platform,
+                        database_name=row.database_name,
+                        schema_name=row.schema_name,
+                        asset=_to_index(row),
+                    )
+                    for row in visible
+                ),
+                next_cursor=(
+                    _encode_cursor(visible[-1].name, visible[-1].id)
+                    if len(asset_rows) > limit and visible
+                    else None
+                ),
+                observed_at=max((row.observed_at for row in visible), default=None),
+            )
+
+        column, child_kind = {
+            "ROOT": (AssetProjectionModel.platform, "PLATFORM"),
+            "PLATFORM": (AssetProjectionModel.database_name, "DATABASE"),
+            "DATABASE": (AssetProjectionModel.schema_name, "SCHEMA"),
+        }[parent_kind]
+        conditions.append(column.is_not(None))
+        if cursor:
+            conditions.append(column > _decode_group_cursor(cursor))
+        group_statement = (
+            select(
+                column.label("label"),
+                func.count(AssetProjectionModel.id).label("asset_count"),
+                func.max(AssetProjectionModel.observed_at).label("observed_at"),
+            )
+            .where(and_(*conditions))
+            .group_by(column)
+            .order_by(column)
+            .limit(limit + 1)
+        )
+        group_rows = list((await self._session.execute(group_statement)).mappings().all())
+        visible_rows = group_rows[:limit]
+        nodes: list[CatalogTreeNode] = []
+        for row in visible_rows:
+            label = str(row["label"])
+            child_platform = label if child_kind == "PLATFORM" else platform
+            child_database = label if child_kind == "DATABASE" else database_name
+            child_schema = label if child_kind == "SCHEMA" else schema_name
+            nodes.append(
+                CatalogTreeNode(
+                    node_id=_tree_node_id(
+                        workspace_id=subject.workspace_id,
+                        kind=child_kind,
+                        platform=child_platform,
+                        database_name=child_database,
+                        schema_name=child_schema,
+                    ),
+                    kind=child_kind,
+                    label=label,
+                    asset_count=int(row["asset_count"]),
+                    has_children=True,
+                    platform=child_platform,
+                    database_name=child_database,
+                    schema_name=child_schema,
+                )
+            )
+        return CatalogTreePage(
+            items=tuple(nodes),
+            next_cursor=(
+                _group_cursor(str(visible_rows[-1]["label"]))
+                if len(group_rows) > limit and visible_rows
+                else None
+            ),
+            observed_at=max(
+                (row["observed_at"] for row in visible_rows if row["observed_at"]),
+                default=None,
+            ),
+        )
+
     @staticmethod
     def _filter_conditions(filters: dict[str, Any]) -> list[Any]:
         allowed_filters = {
@@ -380,6 +602,24 @@ class SqlCatalogIndexReader(CatalogIndexReader):
             observed_at=model.observed_at,
         )
 
+    async def get_authorized_assets_by_external_urns(
+        self,
+        *,
+        subject: SubjectAttributes,
+        access: ClassificationAccessSnapshot,
+        external_urns: Sequence[str],
+    ) -> Sequence[CatalogAssetIndex]:
+        unique_urns = tuple(dict.fromkeys(external_urns))
+        if len(unique_urns) > 1_000:
+            raise ValueError("The lineage candidate set exceeds the configured bound.")
+        if not unique_urns:
+            return ()
+        statement = select(AssetProjectionModel).where(
+            AssetProjectionModel.external_urn.in_(unique_urns),
+            and_(*self._scope_conditions(subject, access)),
+        )
+        return tuple(_to_index(model) for model in (await self._session.scalars(statement)).all())
+
 
 class SqlCatalogProjectionWriter(CatalogProjectionWriter):
     def __init__(self, session: AsyncSession) -> None:
@@ -408,8 +648,14 @@ class SqlCatalogProjectionWriter(CatalogProjectionWriter):
             if existing.request_hash != request_hash:
                 raise ConflictError("The idempotency key was used with a different request.")
             return int(existing.result["upserted"]), int(existing.result["tombstoned"])
+        workspace_lock_key = int.from_bytes(
+            hashlib.sha256(f"catalog-sync:{workspace_id}".encode()).digest()[:8],
+            byteorder="big",
+            signed=True,
+        )
+        await self._session.execute(select(func.pg_advisory_xact_lock(workspace_lock_key)))
         workspace = await self._session.scalar(
-            select(WorkspaceModel).where(WorkspaceModel.id == workspace_id).with_for_update()
+            select(WorkspaceModel).where(WorkspaceModel.id == workspace_id)
         )
         if workspace is None:
             raise ValidationError("The catalog sync workspace does not exist.")
@@ -462,6 +708,8 @@ class SqlCatalogProjectionWriter(CatalogProjectionWriter):
                 name=item.name,
                 description=item.description,
                 platform=item.platform,
+                database_name=item.database_name,
+                schema_name=item.schema_name,
                 domain_id=domain_id,
                 system_id=system_id,
                 owner_department_id=owner_department_id,
@@ -484,6 +732,8 @@ class SqlCatalogProjectionWriter(CatalogProjectionWriter):
                     "name": item.name,
                     "description": item.description,
                     "platform": item.platform,
+                    "database_name": item.database_name,
+                    "schema_name": item.schema_name,
                     "domain_id": domain_id,
                     "system_id": system_id,
                     "owner_department_id": owner_department_id,
