@@ -1,0 +1,545 @@
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+from datetime import datetime, timedelta
+from enum import StrEnum
+from uuid import UUID
+
+from datariver.domain.authz import Classification
+from datariver.domain.common import (
+    ConflictError,
+    DomainEvent,
+    ValidationError,
+    canonical_json_hash,
+    uuid7,
+)
+
+MAXIMUM_RESTRICTED_SEARCH_GRANT_LIFETIME = timedelta(days=90)
+_TEXT_LIMIT = 4000
+
+
+class ClassificationAccessPolicyState(StrEnum):
+    PROPOSED = "PROPOSED"
+    ACTIVE = "ACTIVE"
+    REJECTED = "REJECTED"
+    SUPERSEDED = "SUPERSEDED"
+
+
+class PolicyDecision(StrEnum):
+    APPROVED = "APPROVED"
+    REJECTED = "REJECTED"
+
+
+class SearchMode(StrEnum):
+    ABAC = "ABAC"
+    DENY = "DENY"
+    EXPLICIT_GRANT_ONLY = "EXPLICIT_GRANT_ONLY"
+
+
+class ChatMode(StrEnum):
+    DENY = "DENY"
+    INTERNAL_APPROVED_ONLY = "INTERNAL_APPROVED_ONLY"
+    APPROVED_PROVIDER_ONLY = "APPROVED_PROVIDER_ONLY"
+
+
+class RestrictedSearchScope(StrEnum):
+    RESOURCE = "RESOURCE"
+    SYSTEM = "SYSTEM"
+    DOMAIN = "DOMAIN"
+
+
+class RestrictedSearchGrantState(StrEnum):
+    PENDING = "PENDING"
+    ACTIVE = "ACTIVE"
+    REJECTED = "REJECTED"
+    REVOKED = "REVOKED"
+
+
+class GrantDecision(StrEnum):
+    APPROVED = "APPROVED"
+    REJECTED = "REJECTED"
+
+
+@dataclass(frozen=True, slots=True)
+class ClassificationAccessRule:
+    classification: Classification
+    search_mode: SearchMode
+    chat_mode: ChatMode
+    provider_profile_version_id: UUID | None = None
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.classification, Classification):
+            raise ValidationError("The classification access rule classification is invalid.")
+        if not isinstance(self.search_mode, SearchMode):
+            raise ValidationError("The classification Search mode is invalid.")
+        if not isinstance(self.chat_mode, ChatMode):
+            raise ValidationError("The classification Chat mode is invalid.")
+        if self.provider_profile_version_id is not None and not isinstance(
+            self.provider_profile_version_id, UUID
+        ):
+            raise ValidationError("The provider-profile version identifier is invalid.")
+        _lint_rule_security_floor(self)
+
+    def document(self) -> dict[str, object]:
+        return {
+            "classification": self.classification.name,
+            "search_mode": self.search_mode.value,
+            "chat_mode": self.chat_mode.value,
+            "provider_profile_version_id": (
+                str(self.provider_profile_version_id)
+                if self.provider_profile_version_id is not None
+                else None
+            ),
+        }
+
+
+@dataclass(slots=True)
+class ClassificationAccessPolicy:
+    policy_id: UUID
+    workspace_id: UUID
+    policy_number: int
+    rules: tuple[ClassificationAccessRule, ...]
+    payload_hash: str
+    requester_id: UUID
+    request_reason: str
+    request_policy_decision_id: UUID
+    state: ClassificationAccessPolicyState = ClassificationAccessPolicyState.PROPOSED
+    checker_id: UUID | None = None
+    decision_reason: str | None = None
+    decision_policy_decision_id: UUID | None = None
+    decided_at: datetime | None = None
+    superseded_by: UUID | None = None
+    supersede_reason: str | None = None
+    supersede_policy_decision_id: UUID | None = None
+    superseded_at: datetime | None = None
+    version: int = 1
+    events: list[DomainEvent] = field(default_factory=list)
+
+    @classmethod
+    def propose(
+        cls,
+        *,
+        workspace_id: UUID,
+        policy_number: int,
+        rules: tuple[ClassificationAccessRule, ...],
+        requester_id: UUID,
+        reason: str,
+        policy_decision_id: UUID,
+    ) -> ClassificationAccessPolicy:
+        if policy_number < 1:
+            raise ValidationError("The classification policy number must be positive.")
+        validated_rules = _validated_rules(rules)
+        request_reason = _required_text(reason, "A classification policy reason is required.")
+        payload_hash = canonical_json_hash(_rules_document(validated_rules))
+        policy = cls(
+            policy_id=uuid7(),
+            workspace_id=workspace_id,
+            policy_number=policy_number,
+            rules=validated_rules,
+            payload_hash=payload_hash,
+            requester_id=requester_id,
+            request_reason=request_reason,
+            request_policy_decision_id=policy_decision_id,
+        )
+        policy.events.append(
+            DomainEvent.create(
+                event_type="authz.classification_access_policy.proposed.v1",
+                aggregate_type="classification_access_policy",
+                aggregate_id=policy.policy_id,
+                workspace_id=workspace_id,
+                payload={
+                    "policy_number": policy_number,
+                    "payload_hash": payload_hash,
+                    "version": policy.version,
+                },
+            )
+        )
+        return policy
+
+    def decide(
+        self,
+        *,
+        decision: PolicyDecision,
+        actor_id: UUID,
+        reason: str,
+        policy_decision_id: UUID,
+        expected_version: int,
+        now: datetime,
+    ) -> None:
+        self._check_version(expected_version)
+        _require_aware_datetime(now, "classification policy decision")
+        if not isinstance(decision, PolicyDecision):
+            raise ValidationError("The classification policy decision is invalid.")
+        if self.state is not ClassificationAccessPolicyState.PROPOSED:
+            raise ConflictError("The classification policy proposal has already been decided.")
+        if actor_id == self.requester_id:
+            raise ValidationError("The classification policy maker cannot be its checker.")
+        self._assert_payload_integrity()
+        decision_reason = _required_text(
+            reason, "A classification policy decision reason is required."
+        )
+        self.state = (
+            ClassificationAccessPolicyState.ACTIVE
+            if decision is PolicyDecision.APPROVED
+            else ClassificationAccessPolicyState.REJECTED
+        )
+        self.checker_id = actor_id
+        self.decision_reason = decision_reason
+        self.decision_policy_decision_id = policy_decision_id
+        self.decided_at = now
+        self.version += 1
+        self.events.append(
+            DomainEvent.create(
+                event_type=f"authz.classification_access_policy.{decision.value.lower()}.v1",
+                aggregate_type="classification_access_policy",
+                aggregate_id=self.policy_id,
+                workspace_id=self.workspace_id,
+                payload={
+                    "policy_number": self.policy_number,
+                    "checker_id": str(actor_id),
+                    "payload_hash": self.payload_hash,
+                    "version": self.version,
+                },
+            )
+        )
+
+    def supersede(
+        self,
+        *,
+        actor_id: UUID,
+        reason: str,
+        policy_decision_id: UUID,
+        expected_version: int,
+        now: datetime,
+    ) -> None:
+        self._check_version(expected_version)
+        _require_aware_datetime(now, "classification policy supersession")
+        if self.state is not ClassificationAccessPolicyState.ACTIVE:
+            raise ConflictError("Only an active classification policy can be superseded.")
+        self._assert_payload_integrity()
+        supersede_reason = _required_text(
+            reason, "A classification policy supersession reason is required."
+        )
+        self.state = ClassificationAccessPolicyState.SUPERSEDED
+        self.superseded_by = actor_id
+        self.supersede_reason = supersede_reason
+        self.supersede_policy_decision_id = policy_decision_id
+        self.superseded_at = now
+        self.version += 1
+        self.events.append(
+            DomainEvent.create(
+                event_type="authz.classification_access_policy.superseded.v1",
+                aggregate_type="classification_access_policy",
+                aggregate_id=self.policy_id,
+                workspace_id=self.workspace_id,
+                payload={
+                    "actor_id": str(actor_id),
+                    "policy_number": self.policy_number,
+                    "payload_hash": self.payload_hash,
+                    "version": self.version,
+                },
+            )
+        )
+
+    def rule_for(self, classification: Classification) -> ClassificationAccessRule:
+        return next(rule for rule in self.rules if rule.classification is classification)
+
+    def _assert_payload_integrity(self) -> None:
+        rules = _validated_rules(self.rules)
+        if canonical_json_hash(_rules_document(rules)) != self.payload_hash:
+            raise ConflictError("The classification policy payload failed its integrity check.")
+
+    def _check_version(self, expected_version: int) -> None:
+        if expected_version != self.version:
+            raise ConflictError(
+                "The classification policy was modified by another operation.",
+                details={"expected": expected_version, "actual": self.version},
+            )
+
+
+@dataclass(slots=True)
+class RestrictedSearchGrant:
+    grant_id: UUID
+    workspace_id: UUID
+    subject_id: UUID
+    scope: RestrictedSearchScope
+    scope_id: UUID
+    purpose: str
+    valid_from: datetime
+    expires_at: datetime
+    payload_hash: str
+    requester_id: UUID
+    request_reason: str
+    request_policy_decision_id: UUID
+    state: RestrictedSearchGrantState = RestrictedSearchGrantState.PENDING
+    checker_id: UUID | None = None
+    decision_reason: str | None = None
+    decision_policy_decision_id: UUID | None = None
+    decided_at: datetime | None = None
+    revoked_by: UUID | None = None
+    revocation_reason: str | None = None
+    revocation_policy_decision_id: UUID | None = None
+    revoked_at: datetime | None = None
+    version: int = 1
+    events: list[DomainEvent] = field(default_factory=list)
+
+    @classmethod
+    def propose(
+        cls,
+        *,
+        workspace_id: UUID,
+        subject_id: UUID,
+        scope: RestrictedSearchScope,
+        scope_id: UUID,
+        purpose: str,
+        valid_from: datetime,
+        expires_at: datetime,
+        requester_id: UUID,
+        reason: str,
+        policy_decision_id: UUID,
+        now: datetime,
+    ) -> RestrictedSearchGrant:
+        _validate_grant_interval(valid_from=valid_from, expires_at=expires_at, now=now)
+        if not isinstance(scope, RestrictedSearchScope) or not isinstance(scope_id, UUID):
+            raise ValidationError("The RESTRICTED Search grant scope is invalid.")
+        cleaned_purpose = _required_text(purpose, "A RESTRICTED Search purpose is required.")
+        request_reason = _required_text(reason, "A RESTRICTED Search grant reason is required.")
+        document = _grant_document(
+            workspace_id=workspace_id,
+            subject_id=subject_id,
+            scope=scope,
+            scope_id=scope_id,
+            purpose=cleaned_purpose,
+            valid_from=valid_from,
+            expires_at=expires_at,
+        )
+        grant = cls(
+            grant_id=uuid7(),
+            workspace_id=workspace_id,
+            subject_id=subject_id,
+            scope=scope,
+            scope_id=scope_id,
+            purpose=cleaned_purpose,
+            valid_from=valid_from,
+            expires_at=expires_at,
+            payload_hash=canonical_json_hash(document),
+            requester_id=requester_id,
+            request_reason=request_reason,
+            request_policy_decision_id=policy_decision_id,
+        )
+        grant.events.append(
+            DomainEvent.create(
+                event_type="authz.restricted_search_grant.proposed.v1",
+                aggregate_type="restricted_search_grant",
+                aggregate_id=grant.grant_id,
+                workspace_id=workspace_id,
+                payload={
+                    "subject_id": str(subject_id),
+                    "scope": scope.value,
+                    "scope_id": str(scope_id),
+                    "payload_hash": grant.payload_hash,
+                    "version": grant.version,
+                },
+            )
+        )
+        return grant
+
+    def decide(
+        self,
+        *,
+        decision: GrantDecision,
+        actor_id: UUID,
+        reason: str,
+        policy_decision_id: UUID,
+        expected_version: int,
+        now: datetime,
+    ) -> None:
+        self._check_version(expected_version)
+        _require_aware_datetime(now, "RESTRICTED Search grant decision")
+        if not isinstance(decision, GrantDecision):
+            raise ValidationError("The RESTRICTED Search grant decision is invalid.")
+        if self.state is not RestrictedSearchGrantState.PENDING:
+            raise ConflictError("The RESTRICTED Search grant has already been decided.")
+        if actor_id == self.requester_id:
+            raise ValidationError("The RESTRICTED Search grant maker cannot be its checker.")
+        if actor_id == self.subject_id:
+            raise ValidationError("The grant subject cannot approve their own RESTRICTED access.")
+        if decision is GrantDecision.APPROVED and now >= self.expires_at:
+            raise ConflictError("An expired RESTRICTED Search grant cannot be approved.")
+        self._assert_payload_integrity()
+        decision_reason = _required_text(reason, "A RESTRICTED Search decision reason is required.")
+        self.state = (
+            RestrictedSearchGrantState.ACTIVE
+            if decision is GrantDecision.APPROVED
+            else RestrictedSearchGrantState.REJECTED
+        )
+        self.checker_id = actor_id
+        self.decision_reason = decision_reason
+        self.decision_policy_decision_id = policy_decision_id
+        self.decided_at = now
+        self.version += 1
+        self.events.append(
+            DomainEvent.create(
+                event_type=f"authz.restricted_search_grant.{decision.value.lower()}.v1",
+                aggregate_type="restricted_search_grant",
+                aggregate_id=self.grant_id,
+                workspace_id=self.workspace_id,
+                payload={
+                    "subject_id": str(self.subject_id),
+                    "checker_id": str(actor_id),
+                    "payload_hash": self.payload_hash,
+                    "version": self.version,
+                },
+            )
+        )
+
+    def revoke(
+        self,
+        *,
+        actor_id: UUID,
+        reason: str,
+        policy_decision_id: UUID,
+        expected_version: int,
+        now: datetime,
+    ) -> None:
+        self._check_version(expected_version)
+        _require_aware_datetime(now, "RESTRICTED Search grant revocation")
+        if self.state is not RestrictedSearchGrantState.ACTIVE:
+            raise ConflictError("Only an active RESTRICTED Search grant can be revoked.")
+        revocation_reason = _required_text(
+            reason, "A RESTRICTED Search revocation reason is required."
+        )
+        self.state = RestrictedSearchGrantState.REVOKED
+        self.revoked_by = actor_id
+        self.revocation_reason = revocation_reason
+        self.revocation_policy_decision_id = policy_decision_id
+        self.revoked_at = now
+        self.version += 1
+        self.events.append(
+            DomainEvent.create(
+                event_type="authz.restricted_search_grant.revoked.v1",
+                aggregate_type="restricted_search_grant",
+                aggregate_id=self.grant_id,
+                workspace_id=self.workspace_id,
+                payload={
+                    "subject_id": str(self.subject_id),
+                    "actor_id": str(actor_id),
+                    "payload_hash": self.payload_hash,
+                    "version": self.version,
+                },
+            )
+        )
+
+    def is_active_at(self, now: datetime) -> bool:
+        _require_aware_datetime(now, "RESTRICTED Search grant evaluation")
+        return (
+            self.state is RestrictedSearchGrantState.ACTIVE
+            and self.valid_from <= now < self.expires_at
+        )
+
+    def _assert_payload_integrity(self) -> None:
+        document = _grant_document(
+            workspace_id=self.workspace_id,
+            subject_id=self.subject_id,
+            scope=self.scope,
+            scope_id=self.scope_id,
+            purpose=self.purpose,
+            valid_from=self.valid_from,
+            expires_at=self.expires_at,
+        )
+        if canonical_json_hash(document) != self.payload_hash:
+            raise ConflictError("The RESTRICTED Search grant payload failed its integrity check.")
+
+    def _check_version(self, expected_version: int) -> None:
+        if expected_version != self.version:
+            raise ConflictError(
+                "The RESTRICTED Search grant was modified by another operation.",
+                details={"expected": expected_version, "actual": self.version},
+            )
+
+
+def _validated_rules(
+    rules: tuple[ClassificationAccessRule, ...],
+) -> tuple[ClassificationAccessRule, ...]:
+    if not isinstance(rules, tuple) or len(rules) != len(Classification):
+        raise ValidationError("A classification policy requires exactly four typed rules.")
+    if any(not isinstance(rule, ClassificationAccessRule) for rule in rules):
+        raise ValidationError("A classification policy accepts typed rules only.")
+    if {rule.classification for rule in rules} != set(Classification):
+        raise ValidationError("A classification policy requires one rule per classification.")
+    return tuple(sorted(rules, key=lambda rule: rule.classification.value))
+
+
+def _rules_document(rules: tuple[ClassificationAccessRule, ...]) -> dict[str, object]:
+    return {"rules": [rule.document() for rule in rules]}
+
+
+def _lint_rule_security_floor(rule: ClassificationAccessRule) -> None:
+    profile_id = rule.provider_profile_version_id
+    if rule.chat_mode is ChatMode.DENY:
+        if profile_id is not None:
+            raise ValidationError("A denied Chat rule cannot reference a provider profile.")
+    elif profile_id is None:
+        raise ValidationError("An enabled Chat rule requires a provider-profile version.")
+
+    if rule.classification is Classification.RESTRICTED:
+        if rule.chat_mode is not ChatMode.DENY:
+            raise ValidationError("RESTRICTED Chat must remain denied.")
+        if rule.search_mode not in {SearchMode.DENY, SearchMode.EXPLICIT_GRANT_ONLY}:
+            raise ValidationError("RESTRICTED Search requires deny or an explicit grant.")
+        return
+
+    if rule.search_mode is SearchMode.EXPLICIT_GRANT_ONLY:
+        raise ValidationError("Explicit Search grants are available only for RESTRICTED data.")
+    if rule.classification is Classification.CONFIDENTIAL and rule.chat_mode not in {
+        ChatMode.DENY,
+        ChatMode.INTERNAL_APPROVED_ONLY,
+    }:
+        raise ValidationError(
+            "CONFIDENTIAL Chat requires a specifically approved internal profile."
+        )
+
+
+def _validate_grant_interval(*, valid_from: datetime, expires_at: datetime, now: datetime) -> None:
+    _require_aware_datetime(now, "RESTRICTED Search grant proposal")
+    _require_aware_datetime(valid_from, "RESTRICTED Search grant start")
+    _require_aware_datetime(expires_at, "RESTRICTED Search grant expiry")
+    if valid_from < now:
+        raise ValidationError("A RESTRICTED Search grant cannot be backdated.")
+    if expires_at <= valid_from:
+        raise ValidationError("A RESTRICTED Search grant expiry must follow its start.")
+    if expires_at - valid_from > MAXIMUM_RESTRICTED_SEARCH_GRANT_LIFETIME:
+        raise ValidationError("A RESTRICTED Search grant cannot exceed 90 days.")
+
+
+def _grant_document(
+    *,
+    workspace_id: UUID,
+    subject_id: UUID,
+    scope: RestrictedSearchScope,
+    scope_id: UUID,
+    purpose: str,
+    valid_from: datetime,
+    expires_at: datetime,
+) -> dict[str, object]:
+    return {
+        "workspace_id": str(workspace_id),
+        "subject_id": str(subject_id),
+        "scope": scope.value,
+        "scope_id": str(scope_id),
+        "purpose": purpose,
+        "valid_from": valid_from.isoformat(),
+        "expires_at": expires_at.isoformat(),
+    }
+
+
+def _required_text(value: str, message: str) -> str:
+    cleaned = value.strip()
+    if not cleaned or len(cleaned) > _TEXT_LIMIT:
+        raise ValidationError(message)
+    return cleaned
+
+
+def _require_aware_datetime(value: datetime, name: str) -> None:
+    if value.tzinfo is None or value.utcoffset() is None:
+        raise ValidationError(f"The {name} timestamp must include a timezone.")
