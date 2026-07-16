@@ -115,6 +115,11 @@ BEGIN
             released_at, version, updated_at)
             ON retention.legal_holds TO datariver_app;
         GRANT SELECT, INSERT ON retention.legal_hold_events TO datariver_app;
+        GRANT SELECT, INSERT ON retention.erasure_requests TO datariver_app;
+        GRANT UPDATE (state, checker_id, decision_reason,
+            decision_policy_decision_id, decided_at, version, updated_at)
+            ON retention.erasure_requests TO datariver_app;
+        GRANT SELECT, INSERT ON retention.erasure_request_events TO datariver_app;
         GRANT SELECT, INSERT, UPDATE ON sharing.api_products,
             sharing.api_product_versions, sharing.consumer_grants TO datariver_app;
         GRANT SELECT, INSERT ON sharing.api_invocations TO datariver_app;

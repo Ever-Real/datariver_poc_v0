@@ -188,14 +188,16 @@ def test_subject_cannot_check_release_of_their_own_hold() -> None:
 def test_active_legal_hold_blocks_erasure_approval() -> None:
     now = datetime.now(UTC)
     policy_id = uuid4()
+    owner = uuid4()
     request = ErasureRequest.create(
         workspace_id=uuid4(),
         target_type=ErasureTargetType.CHAT_SESSION,
         target_id=uuid4(),
         target_version=1,
-        target_owner_id=uuid4(),
+        target_owner_id=owner,
         classification=Classification.INTERNAL,
         retention_policy_id=policy_id,
+        retention_policy_hash="a" * 64,
         requester_id=uuid4(),
         reason="Retention expired",
         policy_decision_id=uuid4(),
@@ -212,7 +214,10 @@ def test_active_legal_hold_blocks_erasure_approval() -> None:
             now=now,
             active_legal_hold=True,
             current_target_version=1,
+            current_target_owner_id=owner,
+            current_classification=Classification.INTERNAL,
             active_retention_policy_id=policy_id,
+            active_retention_policy_hash="a" * 64,
         )
     assert request.state is ErasureRequestState.PENDING
 
@@ -220,14 +225,16 @@ def test_active_legal_hold_blocks_erasure_approval() -> None:
 def test_erasure_approval_never_enables_execution() -> None:
     now = datetime.now(UTC)
     policy_id = uuid4()
+    owner = uuid4()
     request = ErasureRequest.create(
         workspace_id=uuid4(),
         target_type=ErasureTargetType.UPLOAD_OBJECT,
         target_id=uuid4(),
         target_version=3,
-        target_owner_id=uuid4(),
+        target_owner_id=owner,
         classification=Classification.CONFIDENTIAL,
         retention_policy_id=policy_id,
+        retention_policy_hash="b" * 64,
         requester_id=uuid4(),
         reason="Approved destruction request",
         policy_decision_id=uuid4(),
@@ -243,7 +250,10 @@ def test_erasure_approval_never_enables_execution() -> None:
         now=now,
         active_legal_hold=False,
         current_target_version=3,
+        current_target_owner_id=owner,
+        current_classification=Classification.CONFIDENTIAL,
         active_retention_policy_id=policy_id,
+        active_retention_policy_hash="b" * 64,
     )
     assert request.state is ErasureRequestState.APPROVED
     assert request.execution_state == AUTOMATION_DISABLED
@@ -252,14 +262,16 @@ def test_erasure_approval_never_enables_execution() -> None:
 def test_erasure_approval_rejects_stale_target_and_policy_versions() -> None:
     now = datetime.now(UTC)
     policy_id = uuid4()
+    owner = uuid4()
     request = ErasureRequest.create(
         workspace_id=uuid4(),
         target_type=ErasureTargetType.UPLOAD_OBJECT,
         target_id=uuid4(),
         target_version=3,
-        target_owner_id=uuid4(),
+        target_owner_id=owner,
         classification=Classification.CONFIDENTIAL,
         retention_policy_id=policy_id,
+        retention_policy_hash="c" * 64,
         requester_id=uuid4(),
         reason="Approved destruction request",
         policy_decision_id=uuid4(),
@@ -277,7 +289,10 @@ def test_erasure_approval_rejects_stale_target_and_policy_versions() -> None:
             now=now,
             active_legal_hold=False,
             current_target_version=4,
+            current_target_owner_id=owner,
+            current_classification=Classification.CONFIDENTIAL,
             active_retention_policy_id=policy_id,
+            active_retention_policy_hash="c" * 64,
         )
     assert request.state is ErasureRequestState.PENDING
 
@@ -291,9 +306,85 @@ def test_erasure_approval_rejects_stale_target_and_policy_versions() -> None:
             now=now,
             active_legal_hold=False,
             current_target_version=3,
+            current_target_owner_id=owner,
+            current_classification=Classification.CONFIDENTIAL,
             active_retention_policy_id=uuid4(),
+            active_retention_policy_hash="c" * 64,
         )
     assert request.state is ErasureRequestState.PENDING
+
+
+def test_erasure_decision_rejects_altered_bound_payload() -> None:
+    now = datetime.now(UTC)
+    policy_id = uuid4()
+    request = ErasureRequest.create(
+        workspace_id=uuid4(),
+        target_type=ErasureTargetType.UPLOAD_OBJECT,
+        target_id=uuid4(),
+        target_version=1,
+        target_owner_id=uuid4(),
+        classification=Classification.INTERNAL,
+        retention_policy_id=policy_id,
+        retention_policy_hash="d" * 64,
+        requester_id=uuid4(),
+        reason="Governed request",
+        policy_decision_id=uuid4(),
+        now=now,
+        expires_at=now + timedelta(hours=1),
+    )
+    request.request_reason = "Altered after creation"
+
+    with pytest.raises(ConflictError, match="integrity"):
+        request.decide(
+            decision=GovernanceDecision.REJECTED,
+            actor_id=uuid4(),
+            reason="Reject altered request",
+            policy_decision_id=uuid4(),
+            expected_version=1,
+            now=now,
+            active_legal_hold=False,
+            current_target_version=1,
+            current_target_owner_id=request.target_owner_id,
+            current_classification=request.classification,
+            active_retention_policy_id=policy_id,
+            active_retention_policy_hash="d" * 64,
+        )
+
+
+def test_expired_stale_erasure_request_can_be_rejected_but_not_approved() -> None:
+    now = datetime.now(UTC)
+    policy_id = uuid4()
+    owner = uuid4()
+    request = ErasureRequest.create(
+        workspace_id=uuid4(),
+        target_type=ErasureTargetType.CHAT_SESSION,
+        target_id=uuid4(),
+        target_version=2,
+        target_owner_id=owner,
+        classification=Classification.CONFIDENTIAL,
+        retention_policy_id=policy_id,
+        retention_policy_hash="e" * 64,
+        requester_id=uuid4(),
+        reason="Expired review",
+        policy_decision_id=uuid4(),
+        now=now,
+        expires_at=now + timedelta(minutes=5),
+    )
+    request.decide(
+        decision=GovernanceDecision.REJECTED,
+        actor_id=uuid4(),
+        reason="Close stale review",
+        policy_decision_id=uuid4(),
+        expected_version=1,
+        now=now + timedelta(minutes=10),
+        active_legal_hold=True,
+        current_target_version=99,
+        current_target_owner_id=None,
+        current_classification=Classification.RESTRICTED,
+        active_retention_policy_id=uuid4(),
+        active_retention_policy_hash="f" * 64,
+    )
+    assert request.state is ErasureRequestState.REJECTED
 
 
 def test_archive_receipt_requires_verified_versioned_compliance_object() -> None:

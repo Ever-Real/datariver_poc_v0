@@ -47,6 +47,8 @@ from datariver.infrastructure.db.models.platform import (
     WorkspaceModel,
 )
 from datariver.infrastructure.db.models.retention import (
+    ErasureRequestEventModel,
+    ErasureRequestModel,
     LegalHoldEventModel,
     LegalHoldModel,
     RetentionPolicyVersionModel,
@@ -76,6 +78,8 @@ __all__ = [
     "ChatMessageModel",
     "ChatSessionModel",
     "ConsumerGrantModel",
+    "ErasureRequestEventModel",
+    "ErasureRequestModel",
     "EvidenceCitationModel",
     "GraphModel",
     "IdempotencyKeyModel",

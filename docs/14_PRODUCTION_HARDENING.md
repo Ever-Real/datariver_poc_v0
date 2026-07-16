@@ -120,7 +120,7 @@ external inference stays disabled until this matrix is approved and enforced.
 | DataHub isolation | timeout, concurrency bulkhead, circuit breaker, fresh + bounded stale detail fallback; fixed-label request/duration/in-flight/rejection/circuit metrics | target contract/fault test; worker-process metrics; incremental watermark |
 | local read projection | search and base detail survive DataHub read failure inside stale bound | project approved detail aspects and display freshness consistently in UI |
 | worker privilege | separate API/relay/upload/governance/bootstrap DB roles and secrets; upload has no DataHub secret | egress policy in target orchestrator; correlation/scope guard for every BYPASSRLS claim |
-| audit/event retention | governed policy versions and Legal Hold/API/history are implemented with forced RLS and no cascading/delete privilege; relay pruning remains removed | maker-checker erasure persistence, verified WORM receipt/conformance, archive-only worker, restore proof, then table-family monthly partitions |
+| audit/event retention | governed policy versions, Legal Hold and non-executing erasure Maker-Checker persistence/API/history are implemented with forced RLS and no cascading/delete privilege; relay pruning remains removed | verified WORM receipt/conformance, one-time execution claim, archive-only/erasure workers, restore proof, then table-family monthly partitions |
 
 ### Partition and WORM design gate
 
@@ -231,8 +231,9 @@ budget visibility, not multi-replica HA or a target `max_connections` value.
    worker/sync/Valkey metrics remain.
 4. Implement and contract-test incremental DataHub change-watermark ingestion, retaining nightly full
    reconcile as drift verification/recovery.
-5. Implement the governed retention policy, Legal Hold and maker-checker erasure aggregates; add the
-   separate immutable archive port and provider-neutral capability conformance. Provision monthly
+5. Complete the immutable archive receipt and non-destructive erasure conformance gates around the
+   implemented policy, Legal Hold and Maker-Checker review aggregates. Add provider-neutral target
+   capability conformance and later a separate one-time execution claim. Provision monthly
    partitions table-family by table-family only after approved volume/legal inputs, and keep all
    automatic deletion/detach/drop disabled until verified receipts and restore evidence exist.
 6. Apply the P1 decision gate. If it fails, extract search indexing first through the outbox port.

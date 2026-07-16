@@ -73,6 +73,19 @@ class ErasureRequestState(StrEnum):
     REJECTED = "REJECTED"
 
 
+@dataclass(frozen=True, slots=True)
+class ErasureTargetSnapshot:
+    target_type: ErasureTargetType
+    target_id: UUID
+    version: int
+    owner_id: UUID | None
+    classification: Classification
+
+    def __post_init__(self) -> None:
+        if self.version < 1:
+            raise ValidationError("The erasure target version must be positive.")
+
+
 class ArchiveSource(StrEnum):
     OUTBOX_EVENTS = "OUTBOX_EVENTS"
     INBOX_MESSAGES = "INBOX_MESSAGES"
@@ -470,6 +483,7 @@ class LegalHold:
         expected_version: int,
         now: datetime,
     ) -> None:
+        _require_aware_datetime(now, "Legal Hold release decision")
         self._check_version(expected_version)
         if self.state is not LegalHoldState.RELEASE_REQUESTED:
             raise ConflictError("The Legal Hold has no release request awaiting review.")
@@ -581,6 +595,7 @@ class ErasureRequest:
     target_owner_id: UUID | None
     classification: Classification
     retention_policy_id: UUID
+    retention_policy_hash: str
     requester_id: UUID
     request_reason: str
     request_policy_decision_id: UUID
@@ -606,6 +621,7 @@ class ErasureRequest:
         target_owner_id: UUID | None,
         classification: Classification,
         retention_policy_id: UUID,
+        retention_policy_hash: str,
         requester_id: UUID,
         reason: str,
         policy_decision_id: UUID,
@@ -618,6 +634,9 @@ class ErasureRequest:
             raise ValidationError("The erasure target version must be positive.")
         if expires_at <= now or expires_at - now > MAXIMUM_ERASURE_REVIEW_LIFETIME:
             raise ValidationError("An erasure request must expire within seven days.")
+        if not re.fullmatch(r"[0-9a-f]{64}", retention_policy_hash):
+            raise ValidationError("The retention policy hash is invalid.")
+        cleaned_reason = _required_reason(reason, "An erasure request reason is required.")
         document = {
             "workspace_id": str(workspace_id),
             "target_type": target_type.value,
@@ -626,7 +645,10 @@ class ErasureRequest:
             "target_owner_id": str(target_owner_id) if target_owner_id else None,
             "classification": classification.name,
             "retention_policy_id": str(retention_policy_id),
+            "retention_policy_hash": retention_policy_hash,
             "requester_id": str(requester_id),
+            "request_reason": cleaned_reason,
+            "request_policy_decision_id": str(policy_decision_id),
             "expires_at": expires_at.isoformat(),
         }
         request = cls(
@@ -638,8 +660,9 @@ class ErasureRequest:
             target_owner_id=target_owner_id,
             classification=classification,
             retention_policy_id=retention_policy_id,
+            retention_policy_hash=retention_policy_hash,
             requester_id=requester_id,
-            request_reason=_required_reason(reason, "An erasure request reason is required."),
+            request_reason=cleaned_reason,
             request_policy_decision_id=policy_decision_id,
             payload_hash=canonical_json_hash(document),
             expires_at=expires_at,
@@ -662,9 +685,13 @@ class ErasureRequest:
         now: datetime,
         active_legal_hold: bool,
         current_target_version: int,
+        current_target_owner_id: UUID | None,
+        current_classification: Classification,
         active_retention_policy_id: UUID,
+        active_retention_policy_hash: str,
     ) -> None:
         _require_aware_datetime(now, "erasure decision")
+        self.assert_integrity()
         if expected_version != self.version:
             raise ConflictError(
                 "The erasure request was modified by another operation.",
@@ -672,22 +699,34 @@ class ErasureRequest:
             )
         if self.state is not ErasureRequestState.PENDING:
             raise ConflictError("The erasure request has already been decided.")
-        if now >= self.expires_at:
-            raise ConflictError("The erasure request has expired.")
         if actor_id == self.requester_id:
             raise ValidationError("The erasure request maker cannot be its checker.")
         if actor_id == self.target_owner_id or (
             self.target_type is ErasureTargetType.SUBJECT_DATA and actor_id == self.target_id
         ):
             raise ValidationError("A subject cannot approve erasure of their own data.")
-        if current_target_version != self.target_version:
-            raise ConflictError("The erasure target changed after the request was created.")
-        if active_retention_policy_id != self.retention_policy_id:
-            raise ConflictError(
-                "The active retention policy changed after the request was created."
-            )
-        if decision is GovernanceDecision.APPROVED and active_legal_hold:
-            raise ConflictError("An active Legal Hold blocks erasure approval.")
+        if decision is GovernanceDecision.APPROVED:
+            if now >= self.expires_at:
+                raise ConflictError("The erasure request has expired.")
+            if current_target_version != self.target_version:
+                raise ConflictError("The erasure target changed after the request was created.")
+            if current_target_owner_id != self.target_owner_id:
+                raise ConflictError(
+                    "The erasure target owner changed after the request was created."
+                )
+            if current_classification is not self.classification:
+                raise ConflictError(
+                    "The erasure target classification changed after the request was created."
+                )
+            if (
+                active_retention_policy_id != self.retention_policy_id
+                or active_retention_policy_hash != self.retention_policy_hash
+            ):
+                raise ConflictError(
+                    "The active retention policy changed after the request was created."
+                )
+            if active_legal_hold:
+                raise ConflictError("An active Legal Hold blocks erasure approval.")
         cleaned_reason = _required_reason(reason, "An erasure decision reason is required.")
         self.state = (
             ErasureRequestState.APPROVED
@@ -713,6 +752,24 @@ class ErasureRequest:
         )
         self.events.append(self._event(decision.value.lower(), actor_id))
 
+    def assert_integrity(self) -> None:
+        document = {
+            "workspace_id": str(self.workspace_id),
+            "target_type": self.target_type.value,
+            "target_id": str(self.target_id),
+            "target_version": self.target_version,
+            "target_owner_id": str(self.target_owner_id) if self.target_owner_id else None,
+            "classification": self.classification.name,
+            "retention_policy_id": str(self.retention_policy_id),
+            "retention_policy_hash": self.retention_policy_hash,
+            "requester_id": str(self.requester_id),
+            "request_reason": self.request_reason,
+            "request_policy_decision_id": str(self.request_policy_decision_id),
+            "expires_at": self.expires_at.isoformat(),
+        }
+        if canonical_json_hash(document) != self.payload_hash:
+            raise ConflictError("The erasure request payload failed its integrity check.")
+
     def _event(self, action: str, actor_id: UUID) -> DomainEvent:
         return _event(
             event_type=f"governance.erasure_request.{action}.v1",
@@ -725,6 +782,7 @@ class ErasureRequest:
                 "target_version": self.target_version,
                 "classification": self.classification.name,
                 "retention_policy_id": str(self.retention_policy_id),
+                "retention_policy_hash": self.retention_policy_hash,
                 "payload_hash": self.payload_hash,
                 "actor_id": str(actor_id),
                 "execution_state": AUTOMATION_DISABLED,

@@ -54,7 +54,7 @@ Only the gateway/UI ports are public. PostgreSQL, Valkey, object storage, OPA, D
 | Knowledge Studio | ontology, proposals, changesets, validation and releases | immutable graph releases/provenance |
 | Assistant | sessions, messages, runs and authorized evidence | chat audit/evidence metadata |
 | Sharing | release-pinned API products, contracts, grants and usage | sharing control plane |
-| Retention & Erasure | implemented approved retention versions and Legal Hold; target explicit erasure and archive verification | policy/hold aggregates and append-only history now; future erasure and immutable archive receipts in PostgreSQL |
+| Retention & Erasure | approved retention versions, Legal Hold and non-executing erasure Maker-Checker review; target archive verification and destructive execution | policy/hold/erasure review aggregates and append-only history now; future immutable archive receipts and execution claims in PostgreSQL |
 | Operations | capability health and operator actions | connection/job snapshots, not raw telemetry |
 
 The API gateway is a deployment boundary, not an authorization context. It validates identity and coarse quotas; each use case resolves resource attributes and performs ABAC again.
@@ -96,9 +96,11 @@ not source defaults; a duration or expired timestamp never acts as a deletion sw
 
 Legal Hold always wins over expiry. A UI toggle issues typed place/release commands and immutable
 history rather than editing a boolean. Explicit sensitive-data erasure is separate from automatic
-expiry and binds maker, independent checker, target and target version, canonical payload hash,
-policy decision and one-time consumption. Raw bucket keys, table names or provider operations are
-never client-supplied erasure commands.
+expiry and binds maker, independent checker, canonical target version/owner/classification, active
+policy ID/hash and a canonical payload hash. The current aggregate records only APPROVED/REJECTED
+review evidence and cannot be consumed or executed. A future executor additionally requires
+one-time atomic consumption and final authorization/hold/version/archive checks. Raw bucket keys,
+table names or provider operations are never client-supplied erasure commands.
 
 Automatic deletion and monthly-partition detach/drop are currently `DISABLED_NOT_READY`. They remain
 so until the dedicated least-privilege worker, approved policy aggregate, hold/erasure workflows,

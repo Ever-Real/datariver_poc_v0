@@ -210,6 +210,7 @@ def test_high_risk_action_requires_recent_hardware_authentication() -> None:
         Action.RETENTION_MANAGE,
         Action.LEGAL_HOLD_PLACE,
         Action.LEGAL_HOLD_RELEASE,
+        Action.ERASURE_REQUEST,
         Action.ERASURE_APPROVE,
     ],
 )
@@ -232,8 +233,18 @@ def test_retention_governance_mutations_require_hardware_authentication(action: 
     assert "PHISHING_RESISTANT_AUTH_REQUIRED" in decision.reason_codes
 
 
-def test_retention_governance_mutations_reject_service_accounts() -> None:
-    subject, resource, environment = make_context(action=Action.RETENTION_MANAGE)
+@pytest.mark.parametrize(
+    "action",
+    [
+        Action.RETENTION_MANAGE,
+        Action.LEGAL_HOLD_PLACE,
+        Action.LEGAL_HOLD_RELEASE,
+        Action.ERASURE_REQUEST,
+        Action.ERASURE_APPROVE,
+    ],
+)
+def test_retention_governance_mutations_reject_service_accounts(action: Action) -> None:
+    subject, resource, environment = make_context(action=action)
     subject = replace(
         subject,
         groups=frozenset({"security-administrators", "service-accounts"}),
@@ -243,7 +254,7 @@ def test_retention_governance_mutations_reject_service_accounts() -> None:
     decision = BuiltinPolicyEngine().decide(
         subject=subject,
         resource=resource,
-        action=Action.RETENTION_MANAGE,
+        action=action,
         environment=environment,
     )
 

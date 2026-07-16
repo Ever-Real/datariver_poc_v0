@@ -5,7 +5,10 @@ from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from datariver.domain.authz import Classification
 from datariver.domain.retention import (
+    ErasureRequestState,
+    ErasureTargetType,
     GovernanceDecision,
     LegalHoldActionType,
     LegalHoldScope,
@@ -108,3 +111,49 @@ class LegalHoldResponse(BaseModel):
 
 class LegalHoldListResponse(BaseModel):
     items: list[LegalHoldResponse]
+
+
+class ErasureRequestCreate(StrictRetentionRequest):
+    target_type: ErasureTargetType
+    target_id: UUID
+    reason: str = Field(min_length=1, max_length=4000)
+    review_ttl_seconds: int = Field(ge=300, le=604800)
+
+
+class ErasureApprovalResponse(BaseModel):
+    approval_id: UUID
+    decision: GovernanceDecision
+    actor_id: UUID
+    reason: str
+    policy_decision_id: UUID
+    payload_hash: str
+    request_version: int
+    occurred_at: datetime
+
+
+class ErasureRequestResponse(BaseModel):
+    erasure_request_id: UUID
+    target_type: ErasureTargetType
+    target_id: UUID
+    target_version: int
+    target_owner_id: UUID | None
+    classification: Classification
+    retention_policy_id: UUID
+    retention_policy_hash: str
+    requester_id: UUID
+    request_reason: str
+    request_policy_decision_id: UUID
+    payload_hash: str
+    expires_at: datetime
+    state: ErasureRequestState
+    checker_id: UUID | None
+    decision_reason: str | None
+    decision_policy_decision_id: UUID | None
+    decided_at: datetime | None
+    version: int
+    approvals: list[ErasureApprovalResponse]
+    execution_state: str
+
+
+class ErasureRequestListResponse(BaseModel):
+    items: list[ErasureRequestResponse]

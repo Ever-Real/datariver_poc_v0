@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Sequence
+from datetime import timedelta
 from uuid import UUID
 
 from datariver.application.ports import RetentionUnitOfWork
@@ -15,6 +16,10 @@ from datariver.domain.authz import (
 )
 from datariver.domain.common import ConflictError, NotFoundError
 from datariver.domain.retention import (
+    ErasureRequest,
+    ErasureRequestState,
+    ErasureTargetSnapshot,
+    ErasureTargetType,
     GovernanceDecision,
     LegalHold,
     LegalHoldScope,
@@ -267,6 +272,7 @@ class RetentionGovernanceService:
         operation = "retention.legal_hold.place"
         async with self._uow_factory() as uow:
             await uow.set_security_context(workspace_id=workspace_id, subject_id=subject.subject_id)
+            await uow.lock_workspace(workspace_id=workspace_id)
             existing = await uow.idempotency.get_result(
                 workspace_id=workspace_id, key=idempotency_key, operation=operation
             )
@@ -420,6 +426,264 @@ class RetentionGovernanceService:
             ),
         )
 
+    async def request_erasure(
+        self,
+        *,
+        workspace_id: UUID,
+        target_type: ErasureTargetType,
+        target_id: UUID,
+        reason: str,
+        review_ttl_seconds: int,
+        subject: SubjectAttributes,
+        environment: EnvironmentAttributes,
+        request_id: str,
+        idempotency_key: str,
+        request_hash: str,
+    ) -> ErasureRequest:
+        operation = f"retention.erasure.request:{target_type.value}:{target_id}"
+        async with self._uow_factory() as uow:
+            await uow.set_security_context(workspace_id=workspace_id, subject_id=subject.subject_id)
+            await uow.lock_workspace(workspace_id=workspace_id)
+            target = await uow.erasure_targets.get_erasure_target_snapshot(
+                workspace_id=workspace_id,
+                target_type=target_type,
+                target_id=target_id,
+            )
+            if target is None:
+                raise NotFoundError("The erasure target does not exist.")
+            decision = await self._authorize_erasure(
+                workspace_id=workspace_id,
+                target=target,
+                action=Action.ERASURE_REQUEST,
+                subject=subject,
+                environment=environment,
+                request_id=request_id,
+            )
+            existing = await uow.idempotency.get_result(
+                workspace_id=workspace_id, key=idempotency_key, operation=operation
+            )
+            if existing is not None:
+                _verify_idempotency(
+                    existing.request_hash,
+                    request_hash,
+                    existing.result.get("actor_id"),
+                    subject.subject_id,
+                )
+                stored = await uow.erasure_requests.get(
+                    workspace_id=workspace_id,
+                    erasure_request_id=UUID(str(existing.result["erasure_request_id"])),
+                )
+                if stored is None:
+                    raise ConflictError("The idempotent erasure request result is unavailable.")
+                _verify_replay_snapshot(
+                    stored_state=existing.result.get("state"),
+                    stored_version=existing.result.get("version"),
+                    current_state=stored.state.value,
+                    current_version=stored.version,
+                )
+                return stored
+            policy = await uow.policies.get_active(workspace_id=workspace_id)
+            if policy is None:
+                raise ConflictError("An active retention policy is required for erasure review.")
+            erasure_request = ErasureRequest.create(
+                workspace_id=workspace_id,
+                target_type=target.target_type,
+                target_id=target.target_id,
+                target_version=target.version,
+                target_owner_id=target.owner_id,
+                classification=target.classification,
+                retention_policy_id=policy.policy_id,
+                retention_policy_hash=policy.payload_hash,
+                requester_id=subject.subject_id,
+                reason=reason,
+                policy_decision_id=decision.decision_id,
+                now=environment.requested_at,
+                expires_at=environment.requested_at + timedelta(seconds=review_ttl_seconds),
+            )
+            await uow.erasure_requests.add(erasure_request)
+            await uow.outbox.add_events(erasure_request.events)
+            await uow.idempotency.save_result(
+                workspace_id=workspace_id,
+                key=idempotency_key,
+                operation=operation,
+                request_hash=request_hash,
+                result={
+                    "actor_id": str(subject.subject_id),
+                    "erasure_request_id": str(erasure_request.erasure_request_id),
+                    "state": erasure_request.state.value,
+                    "version": erasure_request.version,
+                },
+            )
+            await uow.commit()
+        erasure_request.events.clear()
+        return erasure_request
+
+    async def list_erasure_requests(
+        self,
+        *,
+        workspace_id: UUID,
+        state: ErasureRequestState | None,
+        limit: int,
+        subject: SubjectAttributes,
+        environment: EnvironmentAttributes,
+        request_id: str,
+    ) -> Sequence[ErasureRequest]:
+        await self._authorize(
+            workspace_id=workspace_id,
+            resource_id=workspace_id,
+            action=Action.RETENTION_READ,
+            subject=subject,
+            environment=environment,
+            request_id=request_id,
+        )
+        async with self._uow_factory() as uow:
+            await uow.set_security_context(workspace_id=workspace_id, subject_id=subject.subject_id)
+            return await uow.erasure_requests.list(
+                workspace_id=workspace_id,
+                state=state.value if state is not None else None,
+                limit=limit,
+            )
+
+    async def get_erasure_request(
+        self,
+        *,
+        workspace_id: UUID,
+        erasure_request_id: UUID,
+        subject: SubjectAttributes,
+        environment: EnvironmentAttributes,
+        request_id: str,
+    ) -> ErasureRequest:
+        await self._authorize(
+            workspace_id=workspace_id,
+            resource_id=erasure_request_id,
+            action=Action.RETENTION_READ,
+            subject=subject,
+            environment=environment,
+            request_id=request_id,
+        )
+        async with self._uow_factory() as uow:
+            await uow.set_security_context(workspace_id=workspace_id, subject_id=subject.subject_id)
+            value = await uow.erasure_requests.get(
+                workspace_id=workspace_id,
+                erasure_request_id=erasure_request_id,
+            )
+            if value is None:
+                raise NotFoundError("The erasure request does not exist.")
+            return value
+
+    async def decide_erasure(
+        self,
+        *,
+        workspace_id: UUID,
+        erasure_request_id: UUID,
+        governance_decision: GovernanceDecision,
+        reason: str,
+        expected_version: int,
+        subject: SubjectAttributes,
+        environment: EnvironmentAttributes,
+        request_id: str,
+        idempotency_key: str,
+        request_hash: str,
+    ) -> ErasureRequest:
+        operation = f"retention.erasure.decide:{erasure_request_id}"
+        async with self._uow_factory() as uow:
+            await uow.set_security_context(workspace_id=workspace_id, subject_id=subject.subject_id)
+            await uow.lock_workspace(workspace_id=workspace_id)
+            erasure_request = await uow.erasure_requests.get_for_update(
+                workspace_id=workspace_id,
+                erasure_request_id=erasure_request_id,
+            )
+            if erasure_request is None:
+                raise NotFoundError("The erasure request does not exist.")
+            target = await uow.erasure_targets.get_erasure_target_snapshot(
+                workspace_id=workspace_id,
+                target_type=erasure_request.target_type,
+                target_id=erasure_request.target_id,
+            )
+            if target is None and governance_decision is GovernanceDecision.APPROVED:
+                raise ConflictError("The erasure target no longer exists.")
+            authorization_target = target or ErasureTargetSnapshot(
+                target_type=erasure_request.target_type,
+                target_id=erasure_request.target_id,
+                version=erasure_request.target_version,
+                owner_id=erasure_request.target_owner_id,
+                classification=erasure_request.classification,
+            )
+            decision = await self._authorize_erasure(
+                workspace_id=workspace_id,
+                target=authorization_target,
+                action=Action.ERASURE_APPROVE,
+                subject=subject,
+                environment=environment,
+                request_id=request_id,
+                requester_id=erasure_request.requester_id,
+            )
+            existing = await uow.idempotency.get_result(
+                workspace_id=workspace_id, key=idempotency_key, operation=operation
+            )
+            if existing is not None:
+                _verify_idempotency(
+                    existing.request_hash,
+                    request_hash,
+                    existing.result.get("actor_id"),
+                    subject.subject_id,
+                )
+                _verify_replay_snapshot(
+                    stored_state=existing.result.get("state"),
+                    stored_version=existing.result.get("version"),
+                    current_state=erasure_request.state.value,
+                    current_version=erasure_request.version,
+                )
+                return erasure_request
+            policy = await uow.policies.get_active(workspace_id=workspace_id)
+            if policy is None and governance_decision is GovernanceDecision.APPROVED:
+                raise ConflictError("An active retention policy is required for erasure approval.")
+            active_legal_hold = False
+            if target is not None and governance_decision is GovernanceDecision.APPROVED:
+                active_legal_hold = await uow.legal_holds.has_active_for_erasure_target(
+                    workspace_id=workspace_id,
+                    target_type=target.target_type,
+                    target_id=target.target_id,
+                    target_owner_id=target.owner_id,
+                )
+            erasure_request.decide(
+                decision=governance_decision,
+                actor_id=subject.subject_id,
+                reason=reason,
+                policy_decision_id=decision.decision_id,
+                expected_version=expected_version,
+                now=environment.requested_at,
+                active_legal_hold=active_legal_hold,
+                current_target_version=authorization_target.version,
+                current_target_owner_id=authorization_target.owner_id,
+                current_classification=authorization_target.classification,
+                active_retention_policy_id=(
+                    policy.policy_id if policy is not None else erasure_request.retention_policy_id
+                ),
+                active_retention_policy_hash=(
+                    policy.payload_hash
+                    if policy is not None
+                    else erasure_request.retention_policy_hash
+                ),
+            )
+            await uow.erasure_requests.save(erasure_request)
+            await uow.outbox.add_events(erasure_request.events)
+            await uow.idempotency.save_result(
+                workspace_id=workspace_id,
+                key=idempotency_key,
+                operation=operation,
+                request_hash=request_hash,
+                result={
+                    "actor_id": str(subject.subject_id),
+                    "erasure_request_id": str(erasure_request_id),
+                    "state": erasure_request.state.value,
+                    "version": erasure_request.version,
+                },
+            )
+            await uow.commit()
+        erasure_request.events.clear()
+        return erasure_request
+
     async def _change_hold(
         self,
         *,
@@ -494,6 +758,36 @@ class RetentionGovernanceService:
                 domain_id=None,
                 classification=Classification.RESTRICTED,
                 lifecycle="ACTIVE",
+            ),
+            action=action,
+            environment=environment,
+            request_id=request_id,
+        )
+
+    async def _authorize_erasure(
+        self,
+        *,
+        workspace_id: UUID,
+        target: ErasureTargetSnapshot,
+        action: Action,
+        subject: SubjectAttributes,
+        environment: EnvironmentAttributes,
+        request_id: str,
+        requester_id: UUID | None = None,
+    ) -> Decision:
+        return await self._authorization.authorize(
+            subject=subject,
+            resource=ResourceAttributes(
+                resource_id=target.target_id,
+                workspace_id=workspace_id,
+                resource_type=f"erasure_target:{target.target_type.value}",
+                owner_department_id=None,
+                system_id=None,
+                domain_id=None,
+                classification=target.classification,
+                lifecycle="ACTIVE",
+                requester_id=requester_id,
+                owner_subject_id=target.owner_id,
             ),
             action=action,
             environment=environment,

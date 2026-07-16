@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Callable, Sequence
 from copy import deepcopy
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from types import TracebackType
 from typing import Self, cast
@@ -23,6 +24,10 @@ from datariver.domain.authz import (
 )
 from datariver.domain.common import ConflictError, DomainEvent, ForbiddenError, ValidationError
 from datariver.domain.retention import (
+    ErasureRequest,
+    ErasureRequestState,
+    ErasureTargetSnapshot,
+    ErasureTargetType,
     GovernanceDecision,
     LegalHold,
     LegalHoldScope,
@@ -115,8 +120,9 @@ class MemoryPolicies:
 
 
 class MemoryLegalHolds:
-    def __init__(self, values: dict[UUID, LegalHold]) -> None:
+    def __init__(self, values: dict[UUID, LegalHold], state: dict[str, object]) -> None:
         self.values = values
+        self.state = state
 
     async def add(self, hold: LegalHold) -> None:
         self.values[hold.hold_id] = hold
@@ -139,6 +145,62 @@ class MemoryLegalHolds:
 
     async def save(self, hold: LegalHold) -> None:
         self.values[hold.hold_id] = hold
+
+    async def has_active_for_erasure_target(
+        self,
+        *,
+        workspace_id: UUID,
+        target_type: ErasureTargetType,
+        target_id: UUID,
+        target_owner_id: UUID | None,
+    ) -> bool:
+        del target_type, target_id, target_owner_id
+        assert workspace_id == self.state["workspace_id"]
+        return cast(bool, self.state["hold_blocks"])
+
+
+class MemoryErasureRequests:
+    def __init__(self, values: dict[UUID, ErasureRequest]) -> None:
+        self.values = values
+
+    async def add(self, request: ErasureRequest) -> None:
+        self.values[request.erasure_request_id] = request
+
+    async def get(self, *, workspace_id: UUID, erasure_request_id: UUID) -> ErasureRequest | None:
+        value = self.values.get(erasure_request_id)
+        return value if value is not None and value.workspace_id == workspace_id else None
+
+    async def get_for_update(
+        self, *, workspace_id: UUID, erasure_request_id: UUID
+    ) -> ErasureRequest | None:
+        return await self.get(workspace_id=workspace_id, erasure_request_id=erasure_request_id)
+
+    async def list(
+        self, *, workspace_id: UUID, state: str | None, limit: int
+    ) -> Sequence[ErasureRequest]:
+        return tuple(
+            value
+            for value in self.values.values()
+            if value.workspace_id == workspace_id and (state is None or value.state.value == state)
+        )[:limit]
+
+    async def save(self, request: ErasureRequest) -> None:
+        self.values[request.erasure_request_id] = request
+
+
+class MemoryErasureTargets:
+    def __init__(self, values: dict[tuple[ErasureTargetType, UUID], ErasureTargetSnapshot]) -> None:
+        self.values = values
+
+    async def get_erasure_target_snapshot(
+        self,
+        *,
+        workspace_id: UUID,
+        target_type: ErasureTargetType,
+        target_id: UUID,
+    ) -> ErasureTargetSnapshot | None:
+        del workspace_id
+        return self.values.get((target_type, target_id))
 
 
 class MemoryOutbox:
@@ -176,7 +238,16 @@ class MemoryRetentionUnitOfWork:
     def __init__(self, state: dict[str, object]) -> None:
         self.state = state
         self.policies = MemoryPolicies(cast(dict[UUID, RetentionPolicyVersion], state["policies"]))
-        self.legal_holds = MemoryLegalHolds(cast(dict[UUID, LegalHold], state["holds"]))
+        self.legal_holds = MemoryLegalHolds(cast(dict[UUID, LegalHold], state["holds"]), state)
+        self.erasure_requests = MemoryErasureRequests(
+            cast(dict[UUID, ErasureRequest], state["erasure_requests"])
+        )
+        self.erasure_targets = MemoryErasureTargets(
+            cast(
+                dict[tuple[ErasureTargetType, UUID], ErasureTargetSnapshot],
+                state["erasure_targets"],
+            )
+        )
         self.outbox = MemoryOutbox(cast(list[DomainEvent], state["outbox"]))
         self.idempotency = MemoryIdempotency(
             cast(dict[tuple[UUID, str, str], IdempotencyRecord], state["idempotency"])
@@ -217,6 +288,9 @@ def _state(workspace_id: UUID) -> dict[str, object]:
         "workspace_id": workspace_id,
         "policies": {},
         "holds": {},
+        "erasure_requests": {},
+        "erasure_targets": {},
+        "hold_blocks": False,
         "outbox": [],
         "idempotency": {},
         "lock_count": 0,
@@ -278,6 +352,29 @@ async def _propose(
         request_id=f"propose-{suffix}",
         idempotency_key=f"retention-propose-{suffix}",
         request_hash=suffix * 64,
+    )
+
+
+async def _activate_policy(
+    service: RetentionGovernanceService,
+    *,
+    workspace_id: UUID,
+    now: datetime,
+) -> RetentionPolicyVersion:
+    maker = _subject(workspace_id, actions=frozenset({Action.RETENTION_MANAGE}), now=now)
+    checker = _subject(workspace_id, actions=frozenset({Action.RETENTION_MANAGE}), now=now)
+    policy = await _propose(service, workspace_id=workspace_id, subject=maker, now=now, suffix="p")
+    return await service.decide_policy(
+        workspace_id=workspace_id,
+        policy_id=policy.policy_id,
+        governance_decision=GovernanceDecision.APPROVED,
+        reason="Independent policy approval",
+        expected_version=1,
+        subject=checker,
+        environment=EnvironmentAttributes(requested_at=now),
+        request_id="activate-erasure-policy",
+        idempotency_key="retention-activate-erasure-policy",
+        request_hash="q" * 64,
     )
 
 
@@ -508,3 +605,161 @@ async def test_idempotent_proposal_replay_never_returns_a_later_mutated_snapshot
             now=now,
             suffix="6",
         )
+
+
+@pytest.mark.asyncio
+async def test_erasure_request_binds_canonical_target_and_active_policy() -> None:
+    workspace_id = uuid4()
+    now = datetime.now(UTC)
+    state = _state(workspace_id)
+    service = _service(state)
+    policy = await _activate_policy(service, workspace_id=workspace_id, now=now)
+    target_id = uuid4()
+    target = ErasureTargetSnapshot(
+        target_type=ErasureTargetType.UPLOAD_OBJECT,
+        target_id=target_id,
+        version=7,
+        owner_id=uuid4(),
+        classification=Classification.CONFIDENTIAL,
+    )
+    cast(
+        dict[tuple[ErasureTargetType, UUID], ErasureTargetSnapshot],
+        state["erasure_targets"],
+    )[(target.target_type, target.target_id)] = target
+    maker = _subject(workspace_id, actions=frozenset({Action.ERASURE_REQUEST}), now=now)
+
+    request = await service.request_erasure(
+        workspace_id=workspace_id,
+        target_type=target.target_type,
+        target_id=target.target_id,
+        reason="Approved destruction request",
+        review_ttl_seconds=3600,
+        subject=maker,
+        environment=EnvironmentAttributes(requested_at=now),
+        request_id="request-erasure",
+        idempotency_key="retention-request-erasure",
+        request_hash="r" * 64,
+    )
+
+    assert request.target_version == 7
+    assert request.target_owner_id == target.owner_id
+    assert request.classification is Classification.CONFIDENTIAL
+    assert request.retention_policy_id == policy.policy_id
+    assert request.retention_policy_hash == policy.payload_hash
+    assert request.execution_state == "DISABLED_NOT_READY"
+    assert request.state is ErasureRequestState.PENDING
+
+
+@pytest.mark.asyncio
+async def test_erasure_approval_is_blocked_by_hold_then_succeeds_for_checker() -> None:
+    workspace_id = uuid4()
+    now = datetime.now(UTC)
+    state = _state(workspace_id)
+    service = _service(state)
+    await _activate_policy(service, workspace_id=workspace_id, now=now)
+    target_id = uuid4()
+    target = ErasureTargetSnapshot(
+        target_type=ErasureTargetType.CHAT_SESSION,
+        target_id=target_id,
+        version=2,
+        owner_id=uuid4(),
+        classification=Classification.RESTRICTED,
+    )
+    cast(
+        dict[tuple[ErasureTargetType, UUID], ErasureTargetSnapshot],
+        state["erasure_targets"],
+    )[(target.target_type, target.target_id)] = target
+    maker = _subject(workspace_id, actions=frozenset({Action.ERASURE_REQUEST}), now=now)
+    checker = _subject(workspace_id, actions=frozenset({Action.ERASURE_APPROVE}), now=now)
+    request = await service.request_erasure(
+        workspace_id=workspace_id,
+        target_type=target.target_type,
+        target_id=target.target_id,
+        reason="Delete expired chat",
+        review_ttl_seconds=3600,
+        subject=maker,
+        environment=EnvironmentAttributes(requested_at=now),
+        request_id="request-chat-erasure",
+        idempotency_key="retention-request-chat-erasure",
+        request_hash="s" * 64,
+    )
+    state["hold_blocks"] = True
+    with pytest.raises(ConflictError):
+        await service.decide_erasure(
+            workspace_id=workspace_id,
+            erasure_request_id=request.erasure_request_id,
+            governance_decision=GovernanceDecision.APPROVED,
+            reason="Independent approval",
+            expected_version=1,
+            subject=checker,
+            environment=EnvironmentAttributes(requested_at=now),
+            request_id="approve-held-erasure",
+            idempotency_key="retention-approve-held-erasure",
+            request_hash="t" * 64,
+        )
+    stored = cast(dict[UUID, ErasureRequest], state["erasure_requests"])[request.erasure_request_id]
+    assert stored.state is ErasureRequestState.PENDING
+
+    state["hold_blocks"] = False
+    approved = await service.decide_erasure(
+        workspace_id=workspace_id,
+        erasure_request_id=request.erasure_request_id,
+        governance_decision=GovernanceDecision.APPROVED,
+        reason="Independent approval",
+        expected_version=1,
+        subject=checker,
+        environment=EnvironmentAttributes(requested_at=now),
+        request_id="approve-erasure",
+        idempotency_key="retention-approve-erasure",
+        request_hash="u" * 64,
+    )
+    assert approved.state is ErasureRequestState.APPROVED
+    assert approved.execution_state == "DISABLED_NOT_READY"
+
+
+@pytest.mark.asyncio
+async def test_erasure_request_rejects_password_and_service_accounts() -> None:
+    workspace_id = uuid4()
+    now = datetime.now(UTC)
+    state = _state(workspace_id)
+    service = _service(state)
+    await _activate_policy(service, workspace_id=workspace_id, now=now)
+    target = ErasureTargetSnapshot(
+        target_type=ErasureTargetType.SUBJECT_DATA,
+        target_id=uuid4(),
+        version=1,
+        owner_id=uuid4(),
+        classification=Classification.RESTRICTED,
+    )
+    cast(
+        dict[tuple[ErasureTargetType, UUID], ErasureTargetSnapshot],
+        state["erasure_targets"],
+    )[(target.target_type, target.target_id)] = target
+    weak = _subject(
+        workspace_id,
+        actions=frozenset({Action.ERASURE_REQUEST}),
+        assurance=AuthenticationAssurance.PASSWORD_REAUTH,
+        now=now,
+    )
+    service_account = replace(
+        weak,
+        subject_id=uuid4(),
+        groups=frozenset({"security-administrators", "service-accounts"}),
+        job_function="SERVICE_ACCOUNT",
+        authentication_assurance=AuthenticationAssurance.HARDWARE_WEBAUTHN,
+    )
+
+    for actor in (weak, service_account):
+        with pytest.raises(ForbiddenError):
+            await service.request_erasure(
+                workspace_id=workspace_id,
+                target_type=target.target_type,
+                target_id=target.target_id,
+                reason="Governed subject request",
+                review_ttl_seconds=3600,
+                subject=actor,
+                environment=EnvironmentAttributes(requested_at=now),
+                request_id=f"deny-erasure-{actor.subject_id}",
+                idempotency_key=f"retention-deny-{actor.subject_id}",
+                request_hash="v" * 64,
+            )

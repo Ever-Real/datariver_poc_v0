@@ -177,13 +177,21 @@ maker/checker/target validation.
 | `POST /admin/retention/legal-holds` | `legal_hold.place` + recent hardware WebAuthn | place a typed hold immediately |
 | `POST .../legal-holds/{hold_id}/release-requests` | `legal_hold.release` + recent hardware WebAuthn | create a version-bound release request |
 | `POST .../legal-holds/{hold_id}/release-decisions` | independent `legal_hold.release` checker + recent hardware WebAuthn | approve or reject release |
+| `GET /admin/retention/erasure-requests?state=&limit=` | `retention.read` | list bounded Maker-Checker requests; approval is not execution |
+| `GET /admin/retention/erasure-requests/{erasure_request_id}` | `retention.read` | return the exact request snapshot and quoted version |
+| `POST /admin/retention/erasure-requests` | `erasure.request` + recent hardware WebAuthn | request review for a typed canonical target; the server resolves owner, version and classification |
+| `POST .../erasure-requests/{erasure_request_id}/decisions` | independent `erasure.approve` checker + recent hardware WebAuthn | approve or reject after re-reading target, policy and applicable Legal Holds |
 
 Every mutation requires `Idempotency-Key`; decisions and release commands also require a quoted
 positive `If-Match`. Policy durations have no source default and are covered by a canonical payload
 hash. Legal Hold placement and every release action have separate canonical hashes. Placement is
 conservative and immediate; release requires a different human checker. Service identities are
 denied. All responses expose `DISABLED_NOT_READY` for automatic partition/deletion effects, and
-there is no delete, execute, partition-detach or archive-verification endpoint in this slice.
+there is no delete, execute, consume, partition-detach or archive-verification endpoint in this
+slice. Erasure request input cannot contain classification, owner, target version, object location,
+SQL or provider commands. Approval rechecks the canonical target version/owner/classification, the
+active policy ID and payload hash, and workspace/resource/subject Legal Holds. Rejection can close a
+stale or expired request, but it never enables execution.
 
 ## DataHub adapter contract
 
@@ -197,4 +205,4 @@ contract tests in the external DataHub deployment.
 
 ## Planned compatibility endpoints
 
-The remaining backlog, not present in current OpenAPI, is catalog facets/suggestions/lineage routes; upload cancel/download and governed erasure execution; automated graph extraction and projection rebuild; Chat session history/SSE/external-model adapters; general ABAC policy authoring beyond typed retention and membership-access commands; immutable archive verification; and job/audit browsing/retry. They may not be emulated with generic provider or arbitrary query pass-through.
+The remaining backlog, not present in current OpenAPI, is catalog facets/suggestions/lineage routes; upload cancel/download and governed erasure execution/consumption; automated graph extraction and projection rebuild; Chat session history/SSE/external-model adapters; general ABAC policy authoring beyond typed retention and membership-access commands; immutable archive verification; and job/audit browsing/retry. They may not be emulated with generic provider or arbitrary query pass-through.

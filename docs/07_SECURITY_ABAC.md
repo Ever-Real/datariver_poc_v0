@@ -107,9 +107,11 @@ checksum/version read-back and protected-version shortening/delete denial.
   release is a high-risk command; release-pending is treated as held.
 - Explicit erasure accepts only allowlisted target kinds and canonical UUIDs resolved server-side.
   Raw object keys, bucket names, tables, SQL and arbitrary provider requests are prohibited.
-- Destructive execution binds workspace, target version, classification, policy version and payload
-  hash; requires a distinct eligible maker and checker; is strongly authenticated, idempotent and
-  consumed atomically once; and rechecks policy, authorization and holds immediately before effect.
+- Erasure review binds workspace, canonical target version/owner/classification, policy ID/hash and
+  payload hash; requires a distinct eligible human maker and checker; is hardware-WebAuthn
+  authenticated, idempotent and optimistic-version guarded. APPROVED remains non-executable.
+- Future destructive execution additionally requires atomic one-time consumption and rechecks
+  policy, authorization, target state and holds immediately before any effect.
 - Archive-required deletion proceeds only after a deterministic manifest and SHA-256 content are
   written, fully read back, retention/Object-Lock state is read back and a matching immutable receipt
   is committed. Missing, stale, unsupported or contradictory capability evidence fails closed.

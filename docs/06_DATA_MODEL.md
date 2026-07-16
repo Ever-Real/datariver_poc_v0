@@ -72,11 +72,13 @@ DataHub source cursor remain backlog.
 | `retention.policy_versions` | workspace/policy number UQ, typed duration fields, canonical payload hash, maker/checker decisions, state and optimistic version; one ACTIVE row per workspace | independently approved operating retention policy; activation never authorizes deletion by itself |
 | `retention.legal_holds` | typed data class/scope, canonical payload hash, creator, governed release fields, blocking state and optimistic version | Legal Hold canonical state; every state except RELEASED blocks destructive eligibility |
 | `retention.legal_hold_events` | hold/version UQ, typed action, actor/reason/policy decision/time and action hash | append-only placement and release history |
+| `retention.erasure_requests` | typed canonical target snapshot, classification, policy ID/hash, maker/checker, bounded expiry, payload hash, terminal review state and optimistic version | independently reviewed erasure intent; APPROVED never grants an execution capability |
+| `retention.erasure_request_events` | request/version UQ, typed action, actor/reason/policy decision/time and request payload hash | append-only creation and decision history |
 
-All three tables use forced workspace RLS and composite membership/hold foreign keys. Retention
-foreign keys do not cascade, the application role cannot delete these rows, and Legal Hold events
-cannot be updated. The archive receipt, erasure request and destructive execution tables remain
-unimplemented.
+All five tables use forced workspace RLS and composite membership/aggregate foreign keys. Retention
+foreign keys do not cascade, the application role cannot delete these rows, and Legal Hold/erasure
+events cannot be updated. Immutable archive receipts, erasure execution claims/attempts and
+destructive completion tables remain unimplemented.
 
 ### Knowledge graph
 
@@ -129,8 +131,9 @@ The API supports both complete snapshot publication and changeset author/submit/
 Versioned general ABAC policies/bindings, catalog relationships/facets, connection registry,
 governance attachments/general audit export, graph sources/extraction runs, saved-query templates
 beyond the built-in surfaces and embedding partitions remain target tables. Governed retention
-policy versions and Legal Hold history are implemented. Typed maker-checker erasure
-requests/approvals/attempts, immutable archive exports and verified receipts remain target tables.
+policy versions, Legal Hold history and typed Maker-Checker erasure requests/decisions are
+implemented. Erasure execution claims/attempts, immutable archive exports and verified receipts
+remain target tables.
 These future records remain PostgreSQL canonical state; object-store metadata is not a policy, hold
 or deletion authority. They require a later Alembic revision and updated API/retention/security
 tests; their mention in PRD/architecture is not permission to create ad-hoc columns.
@@ -151,13 +154,18 @@ explicit erasure, row pruning and partition detach/drop. A release-pending hold 
 The first partition implementation over-retains a whole partition when any applicable hold exists.
 
 Object deletion follows canonical manifest/session state through a retryable typed erasure workflow.
-The request binds workspace, target kind and UUID, target version, classification, policy version and
-canonical payload hash. Destructive execution requires an independent checker, current policy and
-authorization, one-time atomic consumption and a final hold/version check. Requests never carry raw
+The request binds workspace, target kind and UUID, target version/owner/classification, policy
+version ID and payload hash, request reason/decision evidence and canonical payload hash.
+Approval requires an independent checker, current policy and authorization plus a current
+hold/version check. A future destructive executor additionally requires one-time atomic consumption
+and a final authorization/hold/version check. Requests never carry raw
 SQL, table names, object keys or provider operations. Immutable audit/release evidence is
 pseudonymized where legally allowed rather than edited; a completion receipt preserves only the
 minimum legally permitted evidence. Seed removal remains fixed namespace/run scoped and cannot match
 non-seed resources.
+
+The current implementation stops at APPROVED/REJECTED review evidence. APPROVED remains
+`DISABLED_NOT_READY`: there is no consumption, worker claim, provider delete or partition operation.
 
 Immutable archive storage is accessed through a port separate from the registration object store.
 The canonical receipt records deterministic manifest hash, row/byte counts, SHA-256, object version,

@@ -44,6 +44,9 @@ from datariver.domain.retention import (
     ArchiveCapability,
     ArchiveRetentionObservation,
     ArchiveWriteReceipt,
+    ErasureRequest,
+    ErasureTargetSnapshot,
+    ErasureTargetType,
     LegalHold,
     RetentionPolicyVersion,
 )
@@ -240,10 +243,49 @@ class LegalHoldRepository(Protocol):
 
     async def save(self, hold: LegalHold) -> None: ...
 
+    async def has_active_for_erasure_target(
+        self,
+        *,
+        workspace_id: UUID,
+        target_type: ErasureTargetType,
+        target_id: UUID,
+        target_owner_id: UUID | None,
+    ) -> bool: ...
+
+
+class ErasureRequestRepository(Protocol):
+    async def add(self, request: ErasureRequest) -> None: ...
+
+    async def get(
+        self, *, workspace_id: UUID, erasure_request_id: UUID
+    ) -> ErasureRequest | None: ...
+
+    async def get_for_update(
+        self, *, workspace_id: UUID, erasure_request_id: UUID
+    ) -> ErasureRequest | None: ...
+
+    async def list(
+        self, *, workspace_id: UUID, state: str | None, limit: int
+    ) -> Sequence[ErasureRequest]: ...
+
+    async def save(self, request: ErasureRequest) -> None: ...
+
+
+class ErasureTargetReader(Protocol):
+    async def get_erasure_target_snapshot(
+        self,
+        *,
+        workspace_id: UUID,
+        target_type: ErasureTargetType,
+        target_id: UUID,
+    ) -> ErasureTargetSnapshot | None: ...
+
 
 class RetentionUnitOfWork(Protocol):
     policies: RetentionPolicyRepository
     legal_holds: LegalHoldRepository
+    erasure_requests: ErasureRequestRepository
+    erasure_targets: ErasureTargetReader
     outbox: OutboxWriter
     idempotency: IdempotencyStore
 

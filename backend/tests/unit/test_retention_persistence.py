@@ -7,6 +7,8 @@ from typing import ClassVar, Protocol, cast
 from sqlalchemy import CheckConstraint, ForeignKeyConstraint, Index, Table
 
 from datariver.infrastructure.db.models.retention import (
+    ErasureRequestEventModel,
+    ErasureRequestModel,
     LegalHoldEventModel,
     LegalHoldModel,
     RetentionPolicyVersionModel,
@@ -38,6 +40,7 @@ def test_retention_tables_have_tenant_keys_and_shape_constraints() -> None:
     assert {
         "uq_retention_policy_versions_workspace_id_id",
         "uq_retention_policy_versions_workspace_number",
+        "uq_retention_policy_versions_workspace_id_hash",
         "fk_retention_policy_versions_requester_membership",
         "fk_retention_policy_versions_checker_membership",
         "fk_retention_policy_versions_superseder_membership",
@@ -58,8 +61,42 @@ def test_retention_tables_have_tenant_keys_and_shape_constraints() -> None:
         "fk_legal_hold_events_actor_membership",
         "ck_legal_hold_events_action_version_shape",
     } <= _constraint_names(LegalHoldEventModel)
+    assert {
+        "uq_erasure_requests_workspace_id_id",
+        "uq_erasure_requests_idempotent_payload",
+        "fk_erasure_requests_retention_policy",
+        "fk_erasure_requests_requester_membership",
+        "fk_erasure_requests_checker_membership",
+        "fk_erasure_requests_target_owner_membership",
+        "ck_erasure_requests_retention_policy_hash_sha256",
+        "ck_erasure_requests_review_window",
+        "ck_erasure_requests_state_shape",
+    } <= _constraint_names(ErasureRequestModel)
+    policy_binding = next(
+        constraint
+        for constraint in _table(ErasureRequestModel).constraints
+        if isinstance(constraint, ForeignKeyConstraint)
+        and constraint.name == "fk_erasure_requests_retention_policy"
+    )
+    assert {column.name for column in policy_binding.columns} == {
+        "workspace_id",
+        "retention_policy_id",
+        "retention_policy_hash",
+    }
+    assert {
+        "uq_erasure_request_events_request_version",
+        "fk_erasure_request_events_request",
+        "fk_erasure_request_events_actor_membership",
+        "ck_erasure_request_events_action_version_shape",
+    } <= _constraint_names(ErasureRequestEventModel)
 
-    for model in (RetentionPolicyVersionModel, LegalHoldModel, LegalHoldEventModel):
+    for model in (
+        RetentionPolicyVersionModel,
+        LegalHoldModel,
+        LegalHoldEventModel,
+        ErasureRequestModel,
+        ErasureRequestEventModel,
+    ):
         table = _table(model)
         for constraint in table.constraints:
             if not isinstance(constraint, ForeignKeyConstraint):
@@ -131,3 +168,60 @@ def test_retention_grants_cannot_mutate_policy_or_hold_identity() -> None:
     assert "data_class" not in app_block
     assert "scope_id" not in app_block
     assert "created_by" not in app_block
+
+
+def test_erasure_persistence_has_no_execution_or_destructive_grant() -> None:
+    root = Path(__file__).resolve().parents[3]
+    generator = (root / "scripts/generate_initial_migration.py").read_text(encoding="utf-8")
+    migration = (root / "backend/alembic/versions/0009_erasure_request_maker_checker.py").read_text(
+        encoding="utf-8"
+    )
+    repository = (root / "backend/src/datariver/infrastructure/db/retention.py").read_text(
+        encoding="utf-8"
+    )
+
+    for source in (generator, migration):
+        assert "GRANT SELECT, INSERT ON retention.erasure_requests TO datariver_app;" in source
+        assert (
+            "GRANT SELECT, INSERT ON retention.erasure_request_events TO datariver_app;" in source
+        )
+        assert not re.search(
+            r"GRANT[^;]*(?:UPDATE|DELETE)[^;]*retention\.erasure_request_events",
+            source,
+        )
+        assert not re.search(r"GRANT[^;]*DELETE[^;]*retention\.erasure", source)
+
+    grant_columns = migration.split("GRANT UPDATE (", maxsplit=1)[1].split(")", maxsplit=1)[0]
+    assert "state" in grant_columns
+    assert "checker_id" in grant_columns
+    for immutable_column in (
+        "target_id",
+        "target_version",
+        "classification",
+        "retention_policy_id",
+        "retention_policy_hash",
+        "requester_id",
+        "payload_hash",
+        "expires_at",
+    ):
+        assert immutable_column not in grant_columns
+
+    erasure_repository = repository.split("class SqlErasureRequestRepository", maxsplit=1)[1].split(
+        "class SqlErasureTargetReader", maxsplit=1
+    )[0]
+    assert "delete(" not in erasure_repository.lower()
+    assert "archive" not in erasure_repository.lower()
+    assert "execution" not in erasure_repository.lower()
+    assert _table(ErasureRequestEventModel).schema == "retention"
+
+
+def test_erasure_review_window_allows_expired_rejection_but_not_approval() -> None:
+    review_window = next(
+        constraint
+        for constraint in _table(ErasureRequestModel).constraints
+        if isinstance(constraint, CheckConstraint)
+        and constraint.name == "ck_erasure_requests_review_window"
+    )
+    expression = str(review_window.sqltext)
+    assert "state <> 'APPROVED' OR decided_at < expires_at" in expression
+    assert "decided_at IS NULL OR decided_at >= created_at" in expression

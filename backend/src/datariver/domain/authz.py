@@ -70,6 +70,7 @@ HIGH_RISK_ACTIONS = frozenset(
         Action.RETENTION_MANAGE,
         Action.LEGAL_HOLD_PLACE,
         Action.LEGAL_HOLD_RELEASE,
+        Action.ERASURE_REQUEST,
         Action.ERASURE_APPROVE,
     }
 )
@@ -79,6 +80,7 @@ HUMAN_GOVERNANCE_ACTIONS = frozenset(
         Action.RETENTION_MANAGE,
         Action.LEGAL_HOLD_PLACE,
         Action.LEGAL_HOLD_RELEASE,
+        Action.ERASURE_REQUEST,
         Action.ERASURE_APPROVE,
     }
 )
