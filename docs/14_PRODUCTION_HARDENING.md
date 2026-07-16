@@ -42,7 +42,7 @@ scale/availability/team-ownership evidence.
 
 ## 3. Verified baseline and important limitations
 
-The current branch passes 109 backend tests, strict mypy over 117 files, Ruff, frontend
+The current branch passes 118 backend tests, strict mypy over 118 files, Ruff, frontend
 type/lint/test/build, deterministic migration generation and static architecture/Compose/role checks.
 The hybrid runtime has live evidence for PostgreSQL RLS, Keycloak service-token OIDC, APISIX,
 Vite proxying, DataHub authentication and semiconductor seed verification. Target DataHub, target
@@ -120,7 +120,7 @@ external inference stays disabled until this matrix is approved and enforced.
 | DataHub isolation | timeout, concurrency bulkhead, circuit breaker, fresh + bounded stale detail fallback; fixed-label request/duration/in-flight/rejection/circuit metrics | target contract/fault test; worker-process metrics; incremental watermark |
 | local read projection | search and base detail survive DataHub read failure inside stale bound | project approved detail aspects and display freshness consistently in UI |
 | worker privilege | separate API/relay/upload/governance/bootstrap DB roles and secrets; upload has no DataHub secret | egress policy in target orchestrator; correlation/scope guard for every BYPASSRLS claim |
-| audit/event retention | config has event retention; Chat defaults 90 days | monthly partitions, legal retention, deletion jobs and WORM export |
+| audit/event retention | target retention is configured, but relay pruning is removed and its delete privilege is revoked fail-closed | governed policy versions, monthly partitions, Legal Hold/Maker-Checker, dedicated deletion worker and verified WORM export |
 
 ### Partition and WORM design gate
 
@@ -131,9 +131,11 @@ unique/primary keys include partition keys. Pre-create at least two future parti
 default partition, detach expired partitions, checksum and export them to an Object-Lock/WORM-capable
 bucket before deletion.
 
-Provisional retention: outbox/inbox online 30 days after completed/published, Chat content 90 days
-unless workspace policy is shorter, policy decisions and governance audit online 13 months plus
-immutable archive for 7 years. Legal, privacy and trade-secret owners must approve these values.
+The configurable baseline target is outbox/inbox online for 30 days after completed/published, Chat
+content for 90 days, policy decisions and governance audit online for 13 months, and immutable archive
+for 7 years. These values do not activate deletion. Until the policy aggregate, Legal Hold precedence,
+Maker-Checker erasure workflow and WORM capability/read-back gates are implemented, all automatic
+deletion remains disabled and relay roles have no delete privilege.
 
 ### Search-plan evidence matrix
 

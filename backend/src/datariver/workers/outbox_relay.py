@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-import time
 
 import structlog
 
@@ -16,7 +15,6 @@ async def run() -> None:
     settings = get_settings()
     container = build_relay_container(settings)
     store = SqlOutboxRelayStore(container.database.session_factory)
-    next_prune = 0.0
     try:
         while True:
             try:
@@ -43,16 +41,6 @@ async def run() -> None:
                         await LOGGER.aexception(
                             "outbox_event_delivery_failed", event_id=str(event.event_id)
                         )
-                if time.monotonic() >= next_prune:
-                    deleted_outbox, deleted_inbox = await store.prune_completed(
-                        retention_days=settings.event_retention_days
-                    )
-                    await LOGGER.ainfo(
-                        "event_retention_pruned",
-                        outbox=deleted_outbox,
-                        inbox=deleted_inbox,
-                    )
-                    next_prune = time.monotonic() + 3600
                 if not events:
                     await asyncio.sleep(settings.worker_poll_seconds)
             except asyncio.CancelledError:

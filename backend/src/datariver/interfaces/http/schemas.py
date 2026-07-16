@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Any
+from typing import Any, Literal
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
@@ -475,6 +475,7 @@ class OperationsSummaryResponse(BaseModel):
     unpublished_outbox_events: int
     dead_lettered_outbox_events: int
     oldest_unpublished_age_seconds: int | None
+    retention_automation_state: Literal["DISABLED_NOT_READY"]
 
 
 class ApiContractRequest(BaseModel):

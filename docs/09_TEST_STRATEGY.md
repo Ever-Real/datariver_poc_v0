@@ -2,7 +2,7 @@
 
 ## Latest executed baseline
 
-The 2026-07-15 development/integration baseline plus the current P0/P1/P2/P3 foundation passed 109 backend tests, strict mypy over 117 source files, Ruff formatting/lint, 6 frontend tests, TypeScript/ESLint/build, deterministic migration generation and static architecture/Compose/role/readiness checks. The live hybrid-development baseline also passed PostgreSQL RLS, Keycloak service-token OIDC, schema-aware API/APISIX readiness, Vite-to-APISIX proxying, DataHub GraphQL authentication and semiconductor seed verification. The earlier container baseline additionally passed Airflow DAG imports, optional seed remove and repository/IaC Trivy scanning. Exact commands and the distinction between current source and earlier evidence are in [the acceptance report](12_ACCEPTANCE_REPORT.md).
+The 2026-07-15 development/integration baseline plus the current P0/P1/P2/P3 foundation passes 118 backend tests, strict mypy over 118 source files, Ruff formatting/lint, 14 frontend tests, TypeScript/ESLint/build, deterministic migration generation and static architecture/Compose/role/readiness checks. The live hybrid-development baseline also passed PostgreSQL RLS, Keycloak service-token OIDC, schema-aware API/APISIX readiness, Vite-to-APISIX proxying, DataHub GraphQL authentication and semiconductor seed verification. The earlier container baseline additionally passed Airflow DAG imports, optional seed remove and repository/IaC Trivy scanning. Exact commands and the distinction between current source and earlier evidence are in [the acceptance report](12_ACCEPTANCE_REPORT.md).
 
 Executed resilience checks included cache-Valkey stop/recovery, API process restart, API container replacement behind both Nginx and APISIX, and outbox-relay restart. The API replacement test deliberately kept the web container running and verified that its Docker DNS resolver did not retain a stale upstream address.
 
@@ -27,6 +27,8 @@ The strategy below remains the production release matrix. Target DataHub/object 
 | Resilience | Toxiproxy/process kill | dependency failure matrix and recovery |
 | Performance | k6 plus RSS/DB/Valkey metrics | p95, error rate, memory and soak stability |
 | Security/supply chain | pip-audit, npm audit, Trivy secret/vulnerability/IaC/image scan, CycloneDX, license allowlist | zero unresolved Critical/High, retained SBOM |
+
+Retention negative tests must prove that the relay exposes no pruning operation and has no `DELETE` privilege. Future retention automation is not accepted until dependency failure, missing approval, active Legal Hold, WORM retention read-back mismatch and replay/concurrency cases all produce zero deletions.
 | Recovery | isolated restore/rebuild scripts | PostgreSQL restore and graph projection deterministic hash |
 
 The source-level identity suite additionally checks same-origin return-state validation, explicit

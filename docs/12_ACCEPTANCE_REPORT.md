@@ -15,13 +15,13 @@ P0–P3 foundation addendum, updated 2026-07-16: current source checks additiona
 | Gate | Result | Executed evidence |
 |---|---|---|
 | Python format/lint | PASS | Ruff format and check across backend, tests, DAGs, migrations and static-verification scripts |
-| Python type safety | PASS | strict mypy: 117 source files, zero issues; a local cache was placed on `C:\\tmp` to avoid the known SQLite lock behavior on a Windows UNC mount |
-| Backend behavior | PASS | 116 pytest tests: typed OIDC assurance and bounded remediation, managed Keycloak LoA flow convergence/drift rejection and future/missing authentication-time denials, ABAC/set audit, version-scoped search cache, DataHub release/circuit/bulkhead checks, schema readiness/timeouts, state machines, governance, idempotency, reconciliation, bounded uploads, KG lifecycle, sharing, immutable evidence/citation fail-closed behavior, seed and OpenAPI |
+| Python type safety | PASS | strict mypy: 118 source files, zero issues; a local cache was placed on `C:\\tmp` to avoid the known SQLite lock behavior on a Windows UNC mount |
+| Backend behavior | PASS | 118 pytest tests: typed OIDC assurance and bounded remediation, retention pruning/relay-delete negative controls, managed Keycloak LoA flow convergence/drift rejection and future/missing authentication-time denials, ABAC/set audit, version-scoped search cache, DataHub release/circuit/bulkhead checks, schema readiness/timeouts, state machines, governance, idempotency, reconciliation, bounded uploads, KG lifecycle, sharing, immutable evidence/citation fail-closed behavior, seed and OpenAPI |
 | Frontend | PASS | TypeScript build mode, ESLint zero warnings, 5 test files/14 tests covering safe authentication return state and no automatic mutation replay, and Vite production build |
-| Frontend artifact | PASS | current source build: JS 312.20 kB / gzip 94.63 kB; CSS 8.26 kB / gzip 2.70 kB |
+| Frontend artifact | PASS | current source build: JS 312.50 kB / gzip 94.73 kB; CSS 8.26 kB / gzip 2.70 kB |
 | Dependency audit | PASS | `pip-audit 2.10.0`: no known runtime vulnerabilities; `npm audit`: 0 vulnerabilities |
 | Repository/IaC scan | PASS | Trivy 0.70.0 `vuln,secret,misconfig`, HIGH/CRITICAL, ignored-unfixed: zero findings after making the Keycloak non-root user explicit |
-| Migration | PASS | regenerated twice with unchanged `0001` SHA-256 `1d3855a23efdbdc78f60f7167beb919fdaa7a4defbbd787b14091a2f215bb90c`; Alembic head `0005` upgraded the populated local database without reset |
+| Migration | PASS | regenerated twice with unchanged `0001` SHA-256 `72607493a405abc68618fff732f8e0fe67b2af43ab017d1a4b3a7c3eef86793f`; Alembic head `0006` upgraded the populated local database without reset |
 | Static invariants | PASS | Compose dependencies/secrets, DataHub release and identity-assurance contracts, runtime hardening, architecture imports, least-privilege DB roles, tenant foreign keys, seed determinism and documentation links |
 | Scripts/config | PASS | POSIX/Bash/PowerShell parsing and base, identity, Airflow, gateway and combined Compose interpolation |
 | Reference preservation | PASS | 424 files / 4,763,143 bytes; zero missing, byte or SHA-256 mismatches; secret/cache exclusions verified |
@@ -43,6 +43,7 @@ ownership.
 | Migration `0003` | PASS | populated `0002` database upgraded; watermark table has forced RLS, app `SELECT/INSERT/UPDATE` only and obsolete timestamp index is absent |
 | Migration/readiness `0004` | PASS | app role received only version-table read access; direct API readiness requires the packaged sole head while liveness remains independent |
 | Immutable evidence `0005` | PASS | populated database upgraded in place; citation columns/checks/unique rank and chunk constraints are present, forced RLS remains enabled and the app role has only `SELECT/INSERT`; direct `UPDATE/DELETE` were denied |
+| Retention safety `0006` | PASS | populated database upgraded in place; relay pruning API/call path is absent, `datariver_relay` has zero table `DELETE` privileges, and automatic retention reports `DISABLED_NOT_READY` until governed WORM/Legal-Hold/Maker-Checker gates exist |
 | Concurrent watermark | PASS | two app-role sessions advancing one workspace returned generations `[1, 2]`; rollback preserved `2`; a cross-workspace advance was denied by RLS |
 | Seed generation | PASS | migration backfill `1`, remove `2`, re-apply `3`; verify was a no-op; final counts remained 12 assets/257 nodes/279 edges |
 | Authorized search | PASS | same-token semiconductor `wafer` search returned the two expected authorized assets after API source reload |
@@ -118,4 +119,4 @@ These items are not source defects, but they prevent a production-readiness clai
 
 ## Conclusion
 
-No known formatter, linter, type, unit, frontend-build, migration-graph or static-architecture error remains in the current source. The hybrid runtime, compatibility migrations through `0005`, local RLS/gateway/seed and post-hardening API smoke checks passed. The project is suitable for Git sharing and continued environment integration. Production release remains blocked by the target-system, scale/load, recovery, browser, HA, external-inference and signed supply-chain gates listed above.
+No known formatter, linter, type, unit, frontend-build, migration-graph or static-architecture error remains in the current source. The hybrid runtime, compatibility migrations through `0006`, local RLS/gateway/seed and post-hardening API smoke checks passed. The project is suitable for Git sharing and continued environment integration. Production release remains blocked by the target-system, scale/load, recovery, browser, HA, external-inference and signed supply-chain gates listed above.

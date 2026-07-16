@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from datetime import timedelta
 from uuid import UUID
 
-from sqlalchemy import delete, or_, select
+from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from datariver.domain.common import utc_now
@@ -78,31 +78,6 @@ class SqlOutboxRelayStore:
             model.lease_until = None
             if model.attempts >= maximum_attempts:
                 model.dead_lettered_at = utc_now()
-
-    async def prune_completed(self, *, retention_days: int) -> tuple[int, int]:
-        cutoff = utc_now() - timedelta(days=retention_days)
-        async with self._session_factory() as session, session.begin():
-            outbox_ids = (
-                await session.scalars(
-                    delete(OutboxEventModel)
-                    .where(
-                        OutboxEventModel.published_at.is_not(None),
-                        OutboxEventModel.published_at < cutoff,
-                    )
-                    .returning(OutboxEventModel.id)
-                )
-            ).all()
-            inbox_ids = (
-                await session.scalars(
-                    delete(InboxMessageModel)
-                    .where(
-                        InboxMessageModel.completed_at.is_not(None),
-                        InboxMessageModel.completed_at < cutoff,
-                    )
-                    .returning(InboxMessageModel.event_id)
-                )
-            ).all()
-            return len(outbox_ids), len(inbox_ids)
 
 
 class SqlInboxStore:

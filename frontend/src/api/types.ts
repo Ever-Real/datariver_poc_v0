@@ -14,6 +14,7 @@ export interface OperationsSummary {
   unpublished_outbox_events: number
   dead_lettered_outbox_events: number
   oldest_unpublished_age_seconds?: number
+  retention_automation_state: 'DISABLED_NOT_READY'
 }
 
 export interface CatalogAsset {

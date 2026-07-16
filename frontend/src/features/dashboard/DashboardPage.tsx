@@ -54,6 +54,11 @@ export function DashboardPage({ client }: { client: ApiClient }) {
               Dead letter {summary.dead_lettered_outbox_events.toLocaleString()}건
             </p>
           </article>
+          <article className="panel">
+            <p className="eyebrow">보존 자동화</p>
+            <h3>안전 잠금</h3>
+            <p className="notice">WORM 검증과 승인 워크플로우가 준비될 때까지 자동 삭제가 중지됩니다.</p>
+          </article>
         </div>
       )}
     </section>

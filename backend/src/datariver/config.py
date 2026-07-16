@@ -82,7 +82,12 @@ class Settings(BaseSettings):
     worker_poll_seconds: float = Field(default=0.5, ge=0.1, le=10)
     outbox_lease_seconds: int = Field(default=30, ge=5, le=300)
     outbox_maximum_attempts: int = Field(default=20, ge=1, le=100)
-    event_retention_days: int = Field(default=30, ge=1, le=3650)
+    event_retention_days: int = Field(
+        default=30,
+        ge=1,
+        le=3650,
+        description="Target online retention only; it never enables automatic deletion.",
+    )
     upload_lease_seconds: int = Field(default=120, ge=30, le=900)
     upload_maximum_attempts: int = Field(default=8, ge=1, le=20)
     upload_validation_lease_seconds: int = Field(default=300, ge=30, le=3600)

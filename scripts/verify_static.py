@@ -364,6 +364,19 @@ def verify_database_roles() -> None:
         )
     if re.search(r"GRANT[^;]*(?:UPDATE|DELETE)[^;]*assistant\.evidence_citations", generator):
         raise AssertionError("the app role cannot mutate or delete assistant evidence citations")
+    relay_block = generator.split("rolname = 'datariver_relay'", maxsplit=1)[1].split(
+        "END IF;", maxsplit=1
+    )[0]
+    if "DELETE" in relay_block:
+        raise AssertionError("the outbox relay role cannot delete retained event evidence")
+    relay_worker = (ROOT / "backend/src/datariver/workers/outbox_relay.py").read_text(
+        encoding="utf-8"
+    )
+    relay_store = (ROOT / "backend/src/datariver/infrastructure/db/outbox.py").read_text(
+        encoding="utf-8"
+    )
+    if "prune_completed" in relay_worker + relay_store:
+        raise AssertionError("event pruning must remain disabled until governed archival is ready")
 
 
 def verify_architecture_imports() -> None:

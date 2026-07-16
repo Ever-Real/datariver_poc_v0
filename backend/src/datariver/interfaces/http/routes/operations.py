@@ -104,6 +104,7 @@ async def summary(
         oldest_unpublished_age_seconds=(
             max(0, int((observed_at - oldest).total_seconds())) if oldest is not None else None
         ),
+        retention_automation_state="DISABLED_NOT_READY",
     )
 
 

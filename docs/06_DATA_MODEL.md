@@ -57,8 +57,8 @@ DataHub source cursor remain backlog.
 |---|---|---|
 | `integration.jobs` | `id`, `job_type + causation_id UQ`, workspace/state/requester/progress/result, `lease_until`, `attempts`, `last_error_code`, `version`, timestamps | durable external-side-effect job |
 | `integration.job_attempts` | `id`, `job_id + attempt_no UQ`, worker/state/error/external hash/start/finish | worker attempt evidence |
-| `integration.outbox_events` | event PK, workspace/aggregate/type/schema/payload/time, publish/dead-letter/lease/attempt/error | transactional event recovery source and isolated poison-event evidence |
-| `integration.inbox_messages` | PK `consumer + event_id`, workspace/received/completed/result hash | consumer deduplication |
+| `integration.outbox_events` | event PK, workspace/aggregate/type/schema/payload/time, publish/dead-letter/lease/attempt/error | transactional event recovery source and isolated poison-event evidence; relay deletion is revoked |
+| `integration.inbox_messages` | PK `consumer + event_id`, workspace/received/completed/result hash | consumer deduplication; relay deletion is revoked |
 | `integration.idempotency_keys` | PK `workspace + operation + key_hash`, request hash/result/expiry | HTTP/command replay control |
 | `integration.object_manifests` | `id`, `bucket + object_key UQ`, declared/actual size-MIME-SHA, multipart/parts, state/classification/owner, completion/validation attempts, lease/error/summary, expiry/retention, `version`, timestamps | quarantine-to-accepted lifecycle |
 | `integration.seed_runs` | `id`, `workspace + namespace + pack_version UQ`, content hash/state/counts/apply/remove time | optional pack ownership/audit |
@@ -109,6 +109,8 @@ The API supports both complete snapshot publication and changeset author/submit/
 ## Backlog schema (not implemented)
 
 Versioned authored policies/bindings, catalog relationships/facets, connection registry, governance attachments/general audit export, graph sources/extraction runs, saved-query templates beyond the built-in surfaces and embedding partitions remain target tables. They require an Alembic revision and updated API/retention/security tests; their mention in PRD/architecture is not permission to create ad-hoc columns.
+
+`EVENT_RETENTION_DAYS` is a target online-retention input, not a deletion switch. Automatic event deletion remains disabled until immutable export has been written and read back from a verified Object-Lock store, Legal Hold precedence and Maker-Checker erasure approval are implemented, and a dedicated least-privilege retention worker is introduced.
 
 ## Retention and deletion
 
