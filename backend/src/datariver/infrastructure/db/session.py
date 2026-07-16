@@ -26,6 +26,8 @@ class Database:
         pool_timeout_seconds: float = 10,
         application_name: str = "datariver-next-api",
     ) -> None:
+        self._configured_pool_size = pool_size
+        self._configured_max_overflow = max_overflow
         self.engine: AsyncEngine = create_async_engine(
             database_url,
             pool_pre_ping=True,
@@ -53,6 +55,16 @@ class Database:
 
     async def close(self) -> None:
         await self.engine.dispose()
+
+    def pool_snapshot(self) -> DatabasePoolSnapshot:
+        pool = self.engine.sync_engine.pool
+        return DatabasePoolSnapshot(
+            configured_size=self._configured_pool_size,
+            configured_max_overflow=self._configured_max_overflow,
+            checked_in=int(pool.checkedin()),  # type: ignore[attr-defined]
+            checked_out=int(pool.checkedout()),  # type: ignore[attr-defined]
+            overflow=max(0, int(pool.overflow())),  # type: ignore[attr-defined]
+        )
 
     async def readiness(
         self,
@@ -89,3 +101,12 @@ class Database:
 class DatabaseReadiness:
     ready: bool
     code: str | None
+
+
+@dataclass(frozen=True, slots=True)
+class DatabasePoolSnapshot:
+    configured_size: int
+    configured_max_overflow: int
+    checked_in: int
+    checked_out: int
+    overflow: int

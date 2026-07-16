@@ -69,6 +69,18 @@ class HttpMetrics:
             registry=self._registry,
         )
         self._datahub_circuit_state.set(0)
+        self._database_pool_connections = Gauge(
+            "datariver_database_pool_connections",
+            "Current API database pool connections by bounded state.",
+            ("state",),
+            registry=self._registry,
+        )
+        self._database_pool_limit = Gauge(
+            "datariver_database_pool_limit",
+            "Configured API database pool connection limits.",
+            ("kind",),
+            registry=self._registry,
+        )
 
     def request_started(self) -> None:
         self._in_flight.inc()
@@ -102,6 +114,21 @@ class HttpMetrics:
     def datahub_circuit_changed(self, *, state: str) -> None:
         values = {"closed": 0, "open": 1, "half_open": 2}
         self._datahub_circuit_state.set(values[state])
+
+    def database_pool_observed(
+        self,
+        *,
+        configured_size: int,
+        configured_max_overflow: int,
+        checked_in: int,
+        checked_out: int,
+        overflow: int,
+    ) -> None:
+        self._database_pool_limit.labels(kind="base").set(configured_size)
+        self._database_pool_limit.labels(kind="overflow").set(configured_max_overflow)
+        self._database_pool_connections.labels(state="checked_in").set(checked_in)
+        self._database_pool_connections.labels(state="checked_out").set(checked_out)
+        self._database_pool_connections.labels(state="overflow").set(overflow)
 
     def render(self) -> bytes:
         from prometheus_client import generate_latest

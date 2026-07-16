@@ -111,5 +111,14 @@ async def summary(
 @router.get("/metrics", response_class=Response)
 async def metrics(request: Request, context: ContextDep) -> Response:
     await _authorize_operations(request, context)
-    telemetry = get_container(request).metrics
+    container = get_container(request)
+    telemetry = container.metrics
+    pool = container.database.pool_snapshot()
+    telemetry.database_pool_observed(
+        configured_size=pool.configured_size,
+        configured_max_overflow=pool.configured_max_overflow,
+        checked_in=pool.checked_in,
+        checked_out=pool.checked_out,
+        overflow=pool.overflow,
+    )
     return Response(content=telemetry.render(), headers={"Content-Type": telemetry.content_type})
