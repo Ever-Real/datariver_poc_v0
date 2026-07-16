@@ -137,6 +137,9 @@ Request is `{session_id?,question,maximum_evidence<=10}`. Response carries sessi
 
 | Method/path | Assurance/authorization | Purpose |
 |---|---|---|
+| `GET /admin/me` | eligible human security administrator + recent password reauth or hardware WebAuthn | internal subject identity, current-assurance operations, fallback availability and the supported action vocabulary |
+| `GET /admin/workspace-memberships?limit=` | eligible human security administrator + recent password reauth or hardware WebAuthn | bounded workspace membership display/version summaries, maximum 100 |
+| `GET /admin/workspace-memberships/{subject_id}/access` | eligible human security administrator + recent password reauth or hardware WebAuthn | exact typed full access document plus display metadata, membership version and matching `ETag` |
 | `PUT /admin/workspace-memberships/{subject_id}/access` | `admin.manage` + recent hardware WebAuthn | exact full access-document replacement for another subject |
 | `GET /admin/fallback/workspace-membership-access-requests?state=&limit=` | eligible human security administrator + recent password reauth or hardware WebAuthn | bounded workspace fallback queue |
 | `POST /admin/fallback/workspace-membership-access-requests` | eligible human security administrator + recent password reauth | create a five-minute typed maker request |
@@ -153,6 +156,35 @@ remaining eligible human security administrators in the mutation transaction. Fa
 unless `ADMIN_PASSWORD_FALLBACK_ENABLED=true`; disabled requests return only the bounded
 `FALLBACK_UNAVAILABLE` remediation.
 
+Administrator read contracts reuse the fallback `READ` assurance policy but do not require the
+fallback feature to be enabled, so the hardware-key direct path can safely load the exact current
+document. Ordinary password, OTP and service identities are denied before membership data is read.
+The list returns summaries only; a client must fetch the detail immediately before editing and use
+its quoted version for `If-Match`. Unknown stored action/scope values fail closed instead of being
+silently omitted. `allowed_operations` in `/admin/me` reflects the current token assurance and the
+fallback feature flag; every mutation still performs its operation-specific authorization and
+maker/checker/target validation.
+
+### Retention policy and Legal Hold administration
+
+| Method/path | Action | Purpose |
+|---|---|---|
+| `GET /admin/retention/policies?state=&limit=` | `retention.read` | list bounded policy versions and explicit disabled automation state |
+| `GET /admin/retention/policies/current` | `retention.read` | return the workspace ACTIVE version or null |
+| `POST /admin/retention/policies` | `retention.manage` + recent hardware WebAuthn | propose typed durations as runtime policy data |
+| `POST .../policies/{policy_id}/decisions` | independent `retention.manage` checker + recent hardware WebAuthn | approve/activate or reject; atomically supersede the previous ACTIVE version |
+| `GET /admin/retention/legal-holds?state=&limit=` | `retention.read` | list holds with append-only action history |
+| `POST /admin/retention/legal-holds` | `legal_hold.place` + recent hardware WebAuthn | place a typed hold immediately |
+| `POST .../legal-holds/{hold_id}/release-requests` | `legal_hold.release` + recent hardware WebAuthn | create a version-bound release request |
+| `POST .../legal-holds/{hold_id}/release-decisions` | independent `legal_hold.release` checker + recent hardware WebAuthn | approve or reject release |
+
+Every mutation requires `Idempotency-Key`; decisions and release commands also require a quoted
+positive `If-Match`. Policy durations have no source default and are covered by a canonical payload
+hash. Legal Hold placement and every release action have separate canonical hashes. Placement is
+conservative and immediate; release requires a different human checker. Service identities are
+denied. All responses expose `DISABLED_NOT_READY` for automatic partition/deletion effects, and
+there is no delete, execute, partition-detach or archive-verification endpoint in this slice.
+
 ## DataHub adapter contract
 
 The inward port exposes `scan_assets`, `get_asset`, `get_lineage`, `apply_change`, `read_aspect` and `capability`. Current HTTP routes use scan, detail, apply/reconcile and capability. Queries and proposal shapes are constants. The adapter classifies authentication, contract, rate-limit, network and provider failures without returning provider payloads or tokens.
@@ -165,4 +197,4 @@ contract tests in the external DataHub deployment.
 
 ## Planned compatibility endpoints
 
-The remaining backlog, not present in current OpenAPI, is catalog facets/suggestions/lineage routes; upload cancel/download/erasure; automated graph extraction and projection rebuild; Chat session history/SSE/external-model adapters; authored policy administration beyond the typed membership-access command; and job/audit browsing/retry. They may not be emulated with generic provider or arbitrary query pass-through.
+The remaining backlog, not present in current OpenAPI, is catalog facets/suggestions/lineage routes; upload cancel/download and governed erasure execution; automated graph extraction and projection rebuild; Chat session history/SSE/external-model adapters; general ABAC policy authoring beyond typed retention and membership-access commands; immutable archive verification; and job/audit browsing/retry. They may not be emulated with generic provider or arbitrary query pass-through.

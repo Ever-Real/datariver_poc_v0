@@ -120,7 +120,7 @@ external inference stays disabled until this matrix is approved and enforced.
 | DataHub isolation | timeout, concurrency bulkhead, circuit breaker, fresh + bounded stale detail fallback; fixed-label request/duration/in-flight/rejection/circuit metrics | target contract/fault test; worker-process metrics; incremental watermark |
 | local read projection | search and base detail survive DataHub read failure inside stale bound | project approved detail aspects and display freshness consistently in UI |
 | worker privilege | separate API/relay/upload/governance/bootstrap DB roles and secrets; upload has no DataHub secret | egress policy in target orchestrator; correlation/scope guard for every BYPASSRLS claim |
-| audit/event retention | target retention is configured, but relay pruning is removed and its delete privilege is revoked fail-closed | governed policy versions, monthly partitions, Legal Hold/Maker-Checker, dedicated deletion worker and verified WORM export |
+| audit/event retention | governed policy versions and Legal Hold/API/history are implemented with forced RLS and no cascading/delete privilege; relay pruning remains removed | maker-checker erasure persistence, verified WORM receipt/conformance, archive-only worker, restore proof, then table-family monthly partitions |
 
 ### Partition and WORM design gate
 

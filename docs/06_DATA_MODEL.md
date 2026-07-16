@@ -65,6 +65,19 @@ DataHub source cursor remain backlog.
 | `integration.object_manifests` | `id`, `bucket + object_key UQ`, declared/actual size-MIME-SHA, multipart/parts, state/classification/owner, completion/validation attempts, lease/error/summary, expiry/retention, `version`, timestamps | quarantine-to-accepted lifecycle |
 | `integration.seed_runs` | `id`, `workspace + namespace + pack_version UQ`, content hash/state/counts/apply/remove time | optional pack ownership/audit |
 
+### Retention governance
+
+| Table | Key columns and constraints | Purpose |
+|---|---|---|
+| `retention.policy_versions` | workspace/policy number UQ, typed duration fields, canonical payload hash, maker/checker decisions, state and optimistic version; one ACTIVE row per workspace | independently approved operating retention policy; activation never authorizes deletion by itself |
+| `retention.legal_holds` | typed data class/scope, canonical payload hash, creator, governed release fields, blocking state and optimistic version | Legal Hold canonical state; every state except RELEASED blocks destructive eligibility |
+| `retention.legal_hold_events` | hold/version UQ, typed action, actor/reason/policy decision/time and action hash | append-only placement and release history |
+
+All three tables use forced workspace RLS and composite membership/hold foreign keys. Retention
+foreign keys do not cascade, the application role cannot delete these rows, and Legal Hold events
+cannot be updated. The archive receipt, erasure request and destructive execution tables remain
+unimplemented.
+
 ### Knowledge graph
 
 | Table | Key columns and constraints | Purpose |
@@ -113,15 +126,14 @@ The API supports both complete snapshot publication and changeset author/submit/
 
 ## Backlog schema (not implemented)
 
-Versioned authored policies/bindings, catalog relationships/facets, connection registry, governance
-attachments/general audit export, graph sources/extraction runs, saved-query templates beyond the
-built-in surfaces and embedding partitions remain target tables. Governed retention additionally
-requires a policy aggregate with immutable approved versions, Legal Hold commands and append-only
-history, typed maker-checker erasure requests/approvals/attempts, immutable archive exports and
-verified receipts. These records remain PostgreSQL canonical state; object-store metadata is not a
-policy, hold or deletion authority. They require an Alembic revision and updated
-API/retention/security tests; their mention in PRD/architecture is not permission to create ad-hoc
-columns.
+Versioned general ABAC policies/bindings, catalog relationships/facets, connection registry,
+governance attachments/general audit export, graph sources/extraction runs, saved-query templates
+beyond the built-in surfaces and embedding partitions remain target tables. Governed retention
+policy versions and Legal Hold history are implemented. Typed maker-checker erasure
+requests/approvals/attempts, immutable archive exports and verified receipts remain target tables.
+These future records remain PostgreSQL canonical state; object-store metadata is not a policy, hold
+or deletion authority. They require a later Alembic revision and updated API/retention/security
+tests; their mention in PRD/architecture is not permission to create ad-hoc columns.
 
 `EVENT_RETENTION_DAYS` is a target online-retention input, not a deletion switch. Automatic event deletion remains disabled until immutable export has been written and read back from a verified Object-Lock store, Legal Hold precedence and Maker-Checker erasure approval are implemented, and a dedicated least-privilege retention worker is introduced.
 

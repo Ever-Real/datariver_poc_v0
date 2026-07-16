@@ -21,6 +21,7 @@ SCHEMAS = (
     "knowledge",
     "assistant",
     "sharing",
+    "retention",
 )
 RLS_SETTING = "NULLIF(current_setting('app.workspace_id', true), '')::uuid"
 RUNTIME_SCHEMAS = ", ".join(SCHEMAS)
@@ -102,6 +103,18 @@ BEGIN
         GRANT SELECT, INSERT ON assistant.chat_sessions, assistant.chat_messages,
             assistant.assistant_runs, assistant.evidence_citations TO datariver_app;
         GRANT UPDATE ON assistant.chat_sessions TO datariver_app;
+        GRANT SELECT, INSERT ON retention.policy_versions TO datariver_app;
+        GRANT UPDATE (state, checker_id, decision_reason,
+            decision_policy_decision_id, decided_at, superseded_by, supersede_reason,
+            supersede_policy_decision_id, superseded_at, version, updated_at)
+            ON retention.policy_versions TO datariver_app;
+        GRANT SELECT, INSERT ON retention.legal_holds TO datariver_app;
+        GRANT UPDATE (state, release_requested_by, release_request_reason,
+            release_request_policy_decision_id, release_checker_id,
+            release_decision_reason, release_decision_policy_decision_id,
+            released_at, version, updated_at)
+            ON retention.legal_holds TO datariver_app;
+        GRANT SELECT, INSERT ON retention.legal_hold_events TO datariver_app;
         GRANT SELECT, INSERT, UPDATE ON sharing.api_products,
             sharing.api_product_versions, sharing.consumer_grants TO datariver_app;
         GRANT SELECT, INSERT ON sharing.api_invocations TO datariver_app;

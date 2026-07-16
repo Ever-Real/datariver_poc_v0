@@ -106,6 +106,7 @@ def test_legal_hold_scope_is_typed() -> None:
             reason="Investigation",
             actor_id=uuid4(),
             policy_decision_id=uuid4(),
+            now=datetime.now(UTC),
         )
 
 
@@ -119,12 +120,14 @@ def test_legal_hold_release_is_maker_checker_and_rejection_remains_active() -> N
         reason="Investigation",
         actor_id=uuid4(),
         policy_decision_id=uuid4(),
+        now=datetime.now(UTC),
     )
     hold.request_release(
         actor_id=maker,
         reason="Case closed",
         policy_decision_id=uuid4(),
         expected_version=1,
+        now=datetime.now(UTC),
     )
     with pytest.raises(ValidationError):
         hold.decide_release(
@@ -145,6 +148,11 @@ def test_legal_hold_release_is_maker_checker_and_rejection_remains_active() -> N
     )
     assert hold.state is LegalHoldState.RELEASE_REJECTED
     assert hold.active
+    assert [action.action.value for action in hold.actions] == [
+        "PLACED",
+        "RELEASE_REQUESTED",
+        "RELEASE_REJECTED",
+    ]
 
 
 def test_subject_cannot_check_release_of_their_own_hold() -> None:
@@ -157,12 +165,14 @@ def test_subject_cannot_check_release_of_their_own_hold() -> None:
         reason="Litigation",
         actor_id=uuid4(),
         policy_decision_id=uuid4(),
+        now=datetime.now(UTC),
     )
     hold.request_release(
         actor_id=uuid4(),
         reason="Release requested",
         policy_decision_id=uuid4(),
         expected_version=1,
+        now=datetime.now(UTC),
     )
     with pytest.raises(ValidationError):
         hold.decide_release(

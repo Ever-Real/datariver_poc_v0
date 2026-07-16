@@ -9,6 +9,7 @@ from datariver.interfaces.http.routes import (
     knowledge,
     operations,
     registration,
+    retention,
     sharing,
 )
 
@@ -18,6 +19,7 @@ api_router.include_router(health.router)
 api_router.include_router(catalog.router)
 api_router.include_router(governance.router)
 api_router.include_router(registration.router)
+api_router.include_router(retention.router)
 api_router.include_router(knowledge.router)
 api_router.include_router(chat.router)
 api_router.include_router(operations.router)

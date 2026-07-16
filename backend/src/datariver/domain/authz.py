@@ -74,6 +74,15 @@ HIGH_RISK_ACTIONS = frozenset(
     }
 )
 
+HUMAN_GOVERNANCE_ACTIONS = frozenset(
+    {
+        Action.RETENTION_MANAGE,
+        Action.LEGAL_HOLD_PLACE,
+        Action.LEGAL_HOLD_RELEASE,
+        Action.ERASURE_APPROVE,
+    }
+)
+
 
 @dataclass(frozen=True, slots=True)
 class SubjectAttributes:
@@ -184,6 +193,10 @@ class BuiltinPolicyEngine:
                 > environment.maximum_authentication_age
             ):
                 reasons.append("AUTHENTICATION_TOO_OLD")
+        if action in HUMAN_GOVERNANCE_ACTIONS and (
+            subject.job_function == "SERVICE_ACCOUNT" or "service-accounts" in subject.groups
+        ):
+            reasons.append("HUMAN_ACTOR_REQUIRED")
 
         effect = Effect.DENY if reasons else Effect.ALLOW
         return Decision(

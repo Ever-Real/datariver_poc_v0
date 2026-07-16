@@ -54,6 +54,13 @@ class LegalHoldState(StrEnum):
     RELEASED = "RELEASED"
 
 
+class LegalHoldActionType(StrEnum):
+    PLACED = "PLACED"
+    RELEASE_REQUESTED = "RELEASE_REQUESTED"
+    RELEASE_APPROVED = "RELEASE_APPROVED"
+    RELEASE_REJECTED = "RELEASE_REJECTED"
+
+
 class ErasureTargetType(StrEnum):
     SUBJECT_DATA = "SUBJECT_DATA"
     CHAT_SESSION = "CHAT_SESSION"
@@ -205,6 +212,10 @@ class RetentionPolicyVersion:
     decision_reason: str | None = None
     decision_policy_decision_id: UUID | None = None
     decided_at: datetime | None = None
+    superseded_by: UUID | None = None
+    supersede_reason: str | None = None
+    supersede_policy_decision_id: UUID | None = None
+    superseded_at: datetime | None = None
     version: int = 1
     events: list[DomainEvent] = field(default_factory=list)
 
@@ -257,6 +268,7 @@ class RetentionPolicyVersion:
         expected_version: int,
         now: datetime,
     ) -> None:
+        _require_aware_datetime(now, "retention policy decision")
         self._check_version(expected_version)
         if self.state is not RetentionPolicyState.DRAFT:
             raise ConflictError("The retention policy proposal has already been decided.")
@@ -290,11 +302,39 @@ class RetentionPolicyVersion:
             )
         )
 
-    def supersede(self) -> None:
+    def supersede(
+        self,
+        *,
+        actor_id: UUID,
+        reason: str,
+        policy_decision_id: UUID,
+        now: datetime,
+    ) -> None:
+        _require_aware_datetime(now, "retention policy supersession")
         if self.state is not RetentionPolicyState.ACTIVE:
             raise ConflictError("Only an active retention policy can be superseded.")
+        cleaned_reason = _required_reason(reason, "A policy supersession reason is required.")
         self.state = RetentionPolicyState.SUPERSEDED
+        self.superseded_by = actor_id
+        self.supersede_reason = cleaned_reason
+        self.supersede_policy_decision_id = policy_decision_id
+        self.superseded_at = now
         self.version += 1
+        self.events.append(
+            _event(
+                event_type="governance.retention_policy.superseded.v1",
+                aggregate_type="retention_policy",
+                aggregate_id=self.policy_id,
+                workspace_id=self.workspace_id,
+                payload={
+                    "actor_id": str(actor_id),
+                    "policy_decision_id": str(policy_decision_id),
+                    "superseded_at": now.isoformat(),
+                    "payload_hash": self.payload_hash,
+                    "version": self.version,
+                },
+            )
+        )
 
     def _check_version(self, expected_version: int) -> None:
         if expected_version != self.version:
@@ -302,6 +342,18 @@ class RetentionPolicyVersion:
                 "The retention policy was modified by another operation.",
                 details={"expected": expected_version, "actual": self.version},
             )
+
+
+@dataclass(frozen=True, slots=True)
+class LegalHoldAction:
+    action_id: UUID
+    action: LegalHoldActionType
+    actor_id: UUID
+    reason: str
+    policy_decision_id: UUID
+    occurred_at: datetime
+    hold_version: int
+    payload_hash: str
 
 
 @dataclass(slots=True)
@@ -312,6 +364,7 @@ class LegalHold:
     scope: LegalHoldScope
     scope_id: UUID | None
     reason: str
+    payload_hash: str
     created_by: UUID
     create_policy_decision_id: UUID
     state: LegalHoldState = LegalHoldState.ACTIVE
@@ -323,6 +376,7 @@ class LegalHold:
     release_decision_policy_decision_id: UUID | None = None
     released_at: datetime | None = None
     version: int = 1
+    actions: list[LegalHoldAction] = field(default_factory=list)
     events: list[DomainEvent] = field(default_factory=list)
 
     @classmethod
@@ -336,17 +390,37 @@ class LegalHold:
         reason: str,
         actor_id: UUID,
         policy_decision_id: UUID,
+        now: datetime,
     ) -> LegalHold:
         _validate_hold_scope(scope, scope_id)
+        _require_aware_datetime(now, "Legal Hold placement")
+        cleaned_reason = _required_reason(reason, "A Legal Hold reason is required.")
+        payload_hash = canonical_json_hash(
+            {
+                "workspace_id": str(workspace_id),
+                "data_class": data_class.value,
+                "scope": scope.value,
+                "scope_id": str(scope_id) if scope_id else None,
+                "reason": cleaned_reason,
+            }
+        )
         hold = cls(
             hold_id=uuid7(),
             workspace_id=workspace_id,
             data_class=data_class,
             scope=scope,
             scope_id=scope_id,
-            reason=_required_reason(reason, "A Legal Hold reason is required."),
+            reason=cleaned_reason,
+            payload_hash=payload_hash,
             created_by=actor_id,
             create_policy_decision_id=policy_decision_id,
+        )
+        hold._record_action(
+            action=LegalHoldActionType.PLACED,
+            actor_id=actor_id,
+            reason=cleaned_reason,
+            policy_decision_id=policy_decision_id,
+            occurred_at=now,
         )
         hold.events.append(hold._event("created", actor_id))
         return hold
@@ -362,7 +436,9 @@ class LegalHold:
         reason: str,
         policy_decision_id: UUID,
         expected_version: int,
+        now: datetime,
     ) -> None:
+        _require_aware_datetime(now, "Legal Hold release request")
         self._check_version(expected_version)
         if self.state not in {LegalHoldState.ACTIVE, LegalHoldState.RELEASE_REJECTED}:
             raise ConflictError("The Legal Hold cannot enter release review.")
@@ -375,6 +451,13 @@ class LegalHold:
         self.release_decision_reason = None
         self.release_decision_policy_decision_id = None
         self.version += 1
+        self._record_action(
+            action=LegalHoldActionType.RELEASE_REQUESTED,
+            actor_id=actor_id,
+            reason=cleaned_reason,
+            policy_decision_id=policy_decision_id,
+            occurred_at=now,
+        )
         self.events.append(self._event("release_requested", actor_id))
 
     def decide_release(
@@ -407,6 +490,17 @@ class LegalHold:
         self.release_decision_policy_decision_id = policy_decision_id
         self.released_at = now if decision is GovernanceDecision.APPROVED else None
         self.version += 1
+        self._record_action(
+            action=(
+                LegalHoldActionType.RELEASE_APPROVED
+                if decision is GovernanceDecision.APPROVED
+                else LegalHoldActionType.RELEASE_REJECTED
+            ),
+            actor_id=actor_id,
+            reason=cleaned_reason,
+            policy_decision_id=policy_decision_id,
+            occurred_at=now,
+        )
         self.events.append(self._event(f"release_{decision.value.lower()}", actor_id))
 
     def _check_version(self, expected_version: int) -> None:
@@ -431,6 +525,51 @@ class LegalHold:
             },
         )
 
+    def _record_action(
+        self,
+        *,
+        action: LegalHoldActionType,
+        actor_id: UUID,
+        reason: str,
+        policy_decision_id: UUID,
+        occurred_at: datetime,
+    ) -> None:
+        action_hash = canonical_json_hash(
+            {
+                "hold_id": str(self.hold_id),
+                "action": action.value,
+                "actor_id": str(actor_id),
+                "reason": reason,
+                "policy_decision_id": str(policy_decision_id),
+                "hold_version": self.version,
+                "placement_payload_hash": self.payload_hash,
+            }
+        )
+        self.actions.append(
+            LegalHoldAction(
+                action_id=uuid7(),
+                action=action,
+                actor_id=actor_id,
+                reason=reason,
+                policy_decision_id=policy_decision_id,
+                occurred_at=occurred_at,
+                hold_version=self.version,
+                payload_hash=action_hash,
+            )
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class ErasureApproval:
+    approval_id: UUID
+    decision: GovernanceDecision
+    actor_id: UUID
+    reason: str
+    policy_decision_id: UUID
+    payload_hash: str
+    request_version: int
+    occurred_at: datetime
+
 
 @dataclass(slots=True)
 class ErasureRequest:
@@ -453,6 +592,7 @@ class ErasureRequest:
     decision_policy_decision_id: UUID | None = None
     decided_at: datetime | None = None
     version: int = 1
+    approvals: list[ErasureApproval] = field(default_factory=list)
     events: list[DomainEvent] = field(default_factory=list)
 
     @classmethod
@@ -559,6 +699,18 @@ class ErasureRequest:
         self.decision_policy_decision_id = policy_decision_id
         self.decided_at = now
         self.version += 1
+        self.approvals.append(
+            ErasureApproval(
+                approval_id=uuid7(),
+                decision=decision,
+                actor_id=actor_id,
+                reason=cleaned_reason,
+                policy_decision_id=policy_decision_id,
+                payload_hash=self.payload_hash,
+                request_version=self.version,
+                occurred_at=now,
+            )
+        )
         self.events.append(self._event(decision.value.lower(), actor_id))
 
     def _event(self, action: str, actor_id: UUID) -> DomainEvent:

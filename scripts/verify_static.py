@@ -231,14 +231,27 @@ def verify_identity_assurance_contract() -> None:
     web_args = compose["services"]["web"]["build"].get("args", {})
     if web_args.get("VITE_OIDC_HIGH_ASSURANCE_ACR") != "${OIDC_STEP_UP_ACR:-2}":
         raise AssertionError("web step-up ACR must be a deployment setting")
+    if web_args.get("VITE_OIDC_PASSWORD_REAUTH_ACR") != ("${OIDC_PASSWORD_REAUTH_REQUEST_ACR:-1}"):
+        raise AssertionError("web password reauthentication ACR must be a deployment setting")
     dockerfile = (ROOT / "frontend" / "Dockerfile").read_text(encoding="utf-8")
     if "ARG VITE_OIDC_HIGH_ASSURANCE_ACR" not in dockerfile:
         raise AssertionError("web image must receive the deployment step-up ACR")
+    if "ARG VITE_OIDC_PASSWORD_REAUTH_ACR" not in dockerfile:
+        raise AssertionError("web image must receive the password reauthentication ACR")
     frontend_auth = (ROOT / "frontend" / "src" / "auth" / "redirectState.ts").read_text(
         encoding="utf-8"
     )
     if "webauthn-register:skip_if_exists" not in frontend_auth or "max_age: 0" not in frontend_auth:
         raise AssertionError("web must use explicit fresh WebAuthn enrollment and step-up")
+    frontend_provider = (ROOT / "frontend" / "src" / "auth" / "AuthProvider.tsx").read_text(
+        encoding="utf-8"
+    )
+    if (
+        "VITE_OIDC_PASSWORD_REAUTH_ACR" not in frontend_provider
+        or "beginPasswordReauth" not in frontend_provider
+        or "PASSWORD_REAUTH" not in frontend_auth
+    ):
+        raise AssertionError("web password reauthentication must remain explicit and fail-closed")
 
 
 def verify_runtime_hardening() -> None:
@@ -381,6 +394,33 @@ def verify_database_roles() -> None:
         raise AssertionError("administrator workflow evidence cannot be deleted by the app role")
     if re.search(r"GRANT[^;]*UPDATE[^;]*iam\.admin_access_approvals", generator):
         raise AssertionError("administrator approvals must remain append-only")
+    required_retention_grants = {
+        "GRANT SELECT, INSERT ON retention.policy_versions TO datariver_app;",
+        "GRANT SELECT, INSERT ON retention.legal_holds TO datariver_app;",
+        "GRANT SELECT, INSERT ON retention.legal_hold_events TO datariver_app;",
+    }
+    missing_retention_grants = {
+        grant for grant in required_retention_grants if grant not in generator
+    }
+    if missing_retention_grants:
+        raise AssertionError("retention governance grants are incomplete")
+    if re.search(r"GRANT[^;]*DELETE[^;]*retention\.", generator):
+        raise AssertionError("the application role cannot delete retention governance evidence")
+    if re.search(r"GRANT[^;]*UPDATE[^;]*retention\.legal_hold_events", generator):
+        raise AssertionError("Legal Hold history must remain append-only")
+    archive_port = (
+        (ROOT / "backend/src/datariver/application/ports.py")
+        .read_text(encoding="utf-8")
+        .split("class ImmutableArchiveStore", maxsplit=1)[1]
+        .split("class UploadRepository", maxsplit=1)[0]
+    )
+    if re.search(r"(?:async\s+)?def\s+[^\n]*(?:delete|bypass)", archive_port, re.IGNORECASE):
+        raise AssertionError("the immutable archive port cannot expose delete or bypass operations")
+    retention_domain = (ROOT / "backend/src/datariver/domain/retention.py").read_text(
+        encoding="utf-8"
+    )
+    if 'AUTOMATION_DISABLED = "DISABLED_NOT_READY"' not in retention_domain:
+        raise AssertionError("retention automation must remain fail-closed")
     relay_block = generator.split("rolname = 'datariver_relay'", maxsplit=1)[1].split(
         "END IF;", maxsplit=1
     )[0]

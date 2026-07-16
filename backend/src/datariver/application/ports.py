@@ -44,6 +44,8 @@ from datariver.domain.retention import (
     ArchiveCapability,
     ArchiveRetentionObservation,
     ArchiveWriteReceipt,
+    LegalHold,
+    RetentionPolicyVersion,
 )
 
 
@@ -195,6 +197,68 @@ class GovernanceUnitOfWork(Protocol):
     async def commit(self) -> None: ...
 
     async def rollback(self) -> None: ...
+
+    async def set_security_context(self, *, workspace_id: UUID, subject_id: UUID) -> None: ...
+
+
+class RetentionPolicyRepository(Protocol):
+    async def add(self, policy: RetentionPolicyVersion) -> None: ...
+
+    async def get(
+        self, *, workspace_id: UUID, policy_id: UUID
+    ) -> RetentionPolicyVersion | None: ...
+
+    async def get_for_update(
+        self, *, workspace_id: UUID, policy_id: UUID
+    ) -> RetentionPolicyVersion | None: ...
+
+    async def get_active(self, *, workspace_id: UUID) -> RetentionPolicyVersion | None: ...
+
+    async def get_active_for_update(
+        self, *, workspace_id: UUID, excluding_policy_id: UUID | None = None
+    ) -> RetentionPolicyVersion | None: ...
+
+    async def list(
+        self, *, workspace_id: UUID, state: str | None, limit: int
+    ) -> Sequence[RetentionPolicyVersion]: ...
+
+    async def next_policy_number(self, *, workspace_id: UUID) -> int: ...
+
+    async def save(self, policy: RetentionPolicyVersion) -> None: ...
+
+
+class LegalHoldRepository(Protocol):
+    async def add(self, hold: LegalHold) -> None: ...
+
+    async def get(self, *, workspace_id: UUID, hold_id: UUID) -> LegalHold | None: ...
+
+    async def get_for_update(self, *, workspace_id: UUID, hold_id: UUID) -> LegalHold | None: ...
+
+    async def list(
+        self, *, workspace_id: UUID, state: str | None, limit: int
+    ) -> Sequence[LegalHold]: ...
+
+    async def save(self, hold: LegalHold) -> None: ...
+
+
+class RetentionUnitOfWork(Protocol):
+    policies: RetentionPolicyRepository
+    legal_holds: LegalHoldRepository
+    outbox: OutboxWriter
+    idempotency: IdempotencyStore
+
+    async def __aenter__(self) -> Self: ...
+
+    async def __aexit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc_value: BaseException | None,
+        traceback: TracebackType | None,
+    ) -> None: ...
+
+    async def commit(self) -> None: ...
+
+    async def lock_workspace(self, *, workspace_id: UUID) -> None: ...
 
     async def set_security_context(self, *, workspace_id: UUID, subject_id: UUID) -> None: ...
 

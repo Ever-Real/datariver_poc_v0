@@ -46,6 +46,11 @@ from datariver.infrastructure.db.models.platform import (
     WorkspaceMembershipModel,
     WorkspaceModel,
 )
+from datariver.infrastructure.db.models.retention import (
+    LegalHoldEventModel,
+    LegalHoldModel,
+    RetentionPolicyVersionModel,
+)
 from datariver.infrastructure.db.models.sharing import (
     ApiInvocationModel,
     ApiProductModel,
@@ -77,6 +82,8 @@ __all__ = [
     "InboxMessageModel",
     "JobAttemptModel",
     "JobModel",
+    "LegalHoldEventModel",
+    "LegalHoldModel",
     "ObjectManifestModel",
     "OntologyVersionModel",
     "OutboxEventModel",
@@ -86,6 +93,7 @@ __all__ = [
     "ReleaseModel",
     "ReleaseNodeModel",
     "ResourceModel",
+    "RetentionPolicyVersionModel",
     "SeedRunModel",
     "StateTransitionModel",
     "SubjectModel",

@@ -232,6 +232,25 @@ def test_retention_governance_mutations_require_hardware_authentication(action: 
     assert "PHISHING_RESISTANT_AUTH_REQUIRED" in decision.reason_codes
 
 
+def test_retention_governance_mutations_reject_service_accounts() -> None:
+    subject, resource, environment = make_context(action=Action.RETENTION_MANAGE)
+    subject = replace(
+        subject,
+        groups=frozenset({"security-administrators", "service-accounts"}),
+        job_function="SERVICE_ACCOUNT",
+    )
+
+    decision = BuiltinPolicyEngine().decide(
+        subject=subject,
+        resource=resource,
+        action=Action.RETENTION_MANAGE,
+        environment=environment,
+    )
+
+    assert not decision.allowed
+    assert "HUMAN_ACTOR_REQUIRED" in decision.reason_codes
+
+
 def test_password_and_otp_do_not_satisfy_hardware_authentication() -> None:
     subject, resource, environment = make_context(action=Action.ADMIN_MANAGE)
 

@@ -54,7 +54,7 @@ Only the gateway/UI ports are public. PostgreSQL, Valkey, object storage, OPA, D
 | Knowledge Studio | ontology, proposals, changesets, validation and releases | immutable graph releases/provenance |
 | Assistant | sessions, messages, runs and authorized evidence | chat audit/evidence metadata |
 | Sharing | release-pinned API products, contracts, grants and usage | sharing control plane |
-| Retention & Erasure (target) | approved retention versions, Legal Hold, explicit erasure and archive verification | policy/hold/erasure aggregates and immutable archive receipts in PostgreSQL |
+| Retention & Erasure | implemented approved retention versions and Legal Hold; target explicit erasure and archive verification | policy/hold aggregates and append-only history now; future erasure and immutable archive receipts in PostgreSQL |
 | Operations | capability health and operator actions | connection/job snapshots, not raw telemetry |
 
 The API gateway is a deployment boundary, not an authorization context. It validates identity and coarse quotas; each use case resolves resource attributes and performs ABAC again.
