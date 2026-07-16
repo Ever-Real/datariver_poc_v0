@@ -164,9 +164,67 @@ def verify_identity_assurance_contract() -> None:
     }
     if "oidc-amr-mapper" not in mapper_ids:
         raise AssertionError("Keycloak web client must emit authentication method references")
+    if web_client.get("attributes", {}).get("default.acr.values") != "1":
+        raise AssertionError("Keycloak web client must default ordinary login to LoA 1")
+    if "basic" not in web_client.get("defaultClientScopes", []):
+        raise AssertionError("Keycloak web client must include the built-in auth_time mapper scope")
     for user in users:
         if isinstance(user, dict) and "CONFIGURE_TOTP" in user.get("requiredActions", []):
             raise AssertionError("Mobile TOTP cannot be a required DataRiver user action")
+
+    step_up_alias = "datariver-browser-step-up-v1"
+    if realm.get("browserFlow") != step_up_alias:
+        raise AssertionError("Keycloak must bind the managed browser step-up flow")
+    expected_policy = {
+        "webAuthnPolicyAuthenticatorAttachment": "cross-platform",
+        "webAuthnPolicyResidentKey": "discouraged",
+        "webAuthnPolicyUserVerificationRequirement": "required",
+        "webAuthnPolicyAvoidSameAuthenticatorRegister": True,
+    }
+    if any(realm.get(key) != value for key, value in expected_policy.items()):
+        raise AssertionError("Keycloak WebAuthn policy must require a cross-platform verified key")
+
+    flows = {
+        flow.get("alias"): flow
+        for flow in realm.get("authenticationFlows", [])
+        if isinstance(flow, dict)
+    }
+    required_flows = {
+        step_up_alias,
+        "datariver-authentication-v1",
+        "datariver-loa1-v1",
+        "datariver-loa2-v1",
+    }
+    if not required_flows.issubset(flows):
+        raise AssertionError("Keycloak managed LoA flows are incomplete")
+
+    loa2_executions = flows["datariver-loa2-v1"].get("authenticationExecutions", [])
+    webauthn = next(
+        (
+            execution
+            for execution in loa2_executions
+            if execution.get("authenticator") == "webauthn-authenticator"
+        ),
+        None,
+    )
+    if not isinstance(webauthn, dict) or webauthn.get("requirement") != "REQUIRED":
+        raise AssertionError("Keycloak LoA 2 must require WebAuthn")
+
+    configs = {
+        config.get("alias"): config.get("config")
+        for config in realm.get("authenticatorConfig", [])
+        if isinstance(config, dict)
+    }
+    if configs.get("datariver-loa2-condition-v1") != {
+        "loa-condition-level": "2",
+        "loa-max-age": "0",
+    }:
+        raise AssertionError("Keycloak LoA 2 condition must require fresh authentication")
+    if configs.get("datariver-webauthn-reference-v1") != {
+        "default.reference.value": "webauthn",
+        "default.reference.maxAge": "0",
+    }:
+        raise AssertionError("Keycloak WebAuthn execution must emit an AMR reference")
 
 
 def verify_runtime_hardening() -> None:

@@ -69,7 +69,7 @@ docker compose --profile tools -f compose.yaml -f compose.identity.yaml `
   run --rm local-bootstrap
 ```
 
-Open `http://localhost:8080`, sign in as `datariver-admin`, and read the generated temporary password from `secrets/keycloak_demo_password`. The first sign-in requires a new password but does not request a mobile OTP. High-risk approval/publish/admin operations remain fail-closed until the deployment's approved hardware-WebAuthn step-up flow is registered and the resulting token satisfies the configured ACR, AMR and `auth_time` contract. Enter workspace ID:
+Open `http://localhost:8080`, sign in as `datariver-admin`, and read the generated temporary password from `secrets/keycloak_demo_password`. The first sign-in requires a new password but does not request a mobile OTP. The local realm keeps ordinary login at LoA 1 and reserves its user-verifying cross-platform WebAuthn key for an explicitly requested LoA 2 step-up. High-risk operations remain fail-closed until the user enrolls a key, completes step-up, and the resulting token satisfies the configured ACR, AMR and `auth_time` contract. Enter workspace ID:
 
 ```text
 00000000-0000-4000-8000-000000000100
@@ -233,8 +233,9 @@ uv run python scripts/verify_datahub_contract.py --base-url https://datahub.exam
 ```
 
 An existing Keycloak realm is not updated by startup import. Apply and re-read the assurance
-foundation with a file-mounted admin credential; this removes the mobile-TOTP required action and
-adds the AMR mapper, but intentionally does not claim that WebAuthn step-up is complete:
+contract with a file-mounted admin credential. The migration removes a stale mobile-TOTP user
+action, adds the AMR mapper, creates and validates the password/LoA-1 plus WebAuthn/LoA-2 flow, and
+binds it only after structural verification:
 
 ```bash
 uv run python scripts/configure_keycloak_assurance.py \
@@ -242,9 +243,21 @@ uv run python scripts/configure_keycloak_assurance.py \
   --admin-username '<bootstrap-admin>' \
   --admin-password-file /run/secrets/keycloak_admin_password \
   --username '<managed-security-admin>' \
+  --configure-step-up \
   --revoke-user-sessions \
   --apply
 ```
+
+Rerun the same command without `--apply` to perform a read-only drift check. WebAuthn enrollment is
+explicit (`webauthn-register:skip_if_exists`) rather than a realm-wide first-login action. The
+portable profile accepts user-verifying cross-platform authenticators; production-approved
+attestation roots and AAGUID allowlists remain deployment inputs and promotion gates.
+
+For a non-production integration check, add `--probe-browser-flow` and a valid
+`--probe-redirect-uri`. The probe creates a random temporary user, proves that LoA 1 issues an
+authorization code and access token with `acr=1`, `amr=pwd` and `auth_time`, while LoA 2 stops at
+WebAuthn, and removes the user in a `finally` cleanup. It never prints the generated password and
+does not attempt to emulate a real security key.
 
 With the local semiconductor seed, Keycloak and host API running, measure same-token policy
 revocation against the direct API (100 iterations each for inactive membership, explicit action deny

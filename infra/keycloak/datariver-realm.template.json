@@ -14,6 +14,11 @@
   "accessTokenLifespan": 300,
   "ssoSessionIdleTimeout": 1800,
   "ssoSessionMaxLifespan": 28800,
+  "webAuthnPolicyAuthenticatorAttachment": "cross-platform",
+  "webAuthnPolicyResidentKey": "discouraged",
+  "webAuthnPolicyUserVerificationRequirement": "required",
+  "webAuthnPolicyAvoidSameAuthenticatorRegister": true,
+  "browserFlow": "datariver-browser-step-up-v1",
   "clients": [
     {
       "clientId": "datariver-web",
@@ -28,7 +33,8 @@
       "webOrigins": ["__WEB_PUBLIC_ORIGIN__"],
       "attributes": {
         "pkce.code.challenge.method": "S256",
-        "post.logout.redirect.uris": "__WEB_PUBLIC_ORIGIN__/*"
+        "post.logout.redirect.uris": "__WEB_PUBLIC_ORIGIN__/*",
+        "default.acr.values": "1"
       },
       "protocolMappers": [
         {
@@ -54,7 +60,7 @@
           }
         }
       ],
-      "defaultClientScopes": ["web-origins", "acr", "profile", "email", "roles"]
+      "defaultClientScopes": ["web-origins", "basic", "acr", "profile", "email", "roles"]
     },
     {
       "clientId": "datariver-airflow",
@@ -80,6 +86,134 @@
         }
       ],
       "defaultClientScopes": ["acr", "roles"]
+    }
+  ],
+  "authenticationFlows": [
+    {
+      "alias": "datariver-browser-step-up-v1",
+      "description": "DataRiver password login with hardware WebAuthn step-up.",
+      "providerId": "basic-flow",
+      "topLevel": true,
+      "builtIn": false,
+      "authenticationExecutions": [
+        {
+          "authenticator": "auth-cookie",
+          "authenticatorFlow": false,
+          "requirement": "ALTERNATIVE",
+          "priority": 10,
+          "userSetupAllowed": false
+        },
+        {
+          "authenticatorFlow": true,
+          "requirement": "ALTERNATIVE",
+          "priority": 20,
+          "flowAlias": "datariver-authentication-v1",
+          "userSetupAllowed": false
+        }
+      ]
+    },
+    {
+      "alias": "datariver-authentication-v1",
+      "description": "DataRiver managed authentication assurance flow.",
+      "providerId": "basic-flow",
+      "topLevel": false,
+      "builtIn": false,
+      "authenticationExecutions": [
+        {
+          "authenticatorFlow": true,
+          "requirement": "CONDITIONAL",
+          "priority": 10,
+          "flowAlias": "datariver-loa1-v1",
+          "userSetupAllowed": false
+        },
+        {
+          "authenticatorFlow": true,
+          "requirement": "CONDITIONAL",
+          "priority": 20,
+          "flowAlias": "datariver-loa2-v1",
+          "userSetupAllowed": false
+        }
+      ]
+    },
+    {
+      "alias": "datariver-loa1-v1",
+      "description": "DataRiver managed authentication assurance flow.",
+      "providerId": "basic-flow",
+      "topLevel": false,
+      "builtIn": false,
+      "authenticationExecutions": [
+        {
+          "authenticatorConfig": "datariver-loa1-condition-v1",
+          "authenticator": "conditional-level-of-authentication",
+          "authenticatorFlow": false,
+          "requirement": "REQUIRED",
+          "priority": 10,
+          "userSetupAllowed": false
+        },
+        {
+          "authenticatorConfig": "datariver-password-reference-v1",
+          "authenticator": "auth-username-password-form",
+          "authenticatorFlow": false,
+          "requirement": "REQUIRED",
+          "priority": 20,
+          "userSetupAllowed": false
+        }
+      ]
+    },
+    {
+      "alias": "datariver-loa2-v1",
+      "description": "DataRiver managed authentication assurance flow.",
+      "providerId": "basic-flow",
+      "topLevel": false,
+      "builtIn": false,
+      "authenticationExecutions": [
+        {
+          "authenticatorConfig": "datariver-loa2-condition-v1",
+          "authenticator": "conditional-level-of-authentication",
+          "authenticatorFlow": false,
+          "requirement": "REQUIRED",
+          "priority": 10,
+          "userSetupAllowed": false
+        },
+        {
+          "authenticatorConfig": "datariver-webauthn-reference-v1",
+          "authenticator": "webauthn-authenticator",
+          "authenticatorFlow": false,
+          "requirement": "REQUIRED",
+          "priority": 20,
+          "userSetupAllowed": true
+        }
+      ]
+    }
+  ],
+  "authenticatorConfig": [
+    {
+      "alias": "datariver-loa1-condition-v1",
+      "config": {
+        "loa-condition-level": "1",
+        "loa-max-age": "36000"
+      }
+    },
+    {
+      "alias": "datariver-password-reference-v1",
+      "config": {
+        "default.reference.value": "pwd",
+        "default.reference.maxAge": "0"
+      }
+    },
+    {
+      "alias": "datariver-loa2-condition-v1",
+      "config": {
+        "loa-condition-level": "2",
+        "loa-max-age": "0"
+      }
+    },
+    {
+      "alias": "datariver-webauthn-reference-v1",
+      "config": {
+        "default.reference.value": "webauthn",
+        "default.reference.maxAge": "0"
+      }
     }
   ],
   "users": [

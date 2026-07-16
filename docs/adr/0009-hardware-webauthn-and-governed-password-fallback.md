@@ -11,10 +11,14 @@ deployment's hardware allowlist, its AMR contains a hardware/WebAuthn reference 
 approved issuer profile, and `auth_time` is present and recent. Generic `mfa`, OTP, password, a
 numeric ACR by itself and access-token `iat` do not provide hardware assurance.
 
-The local identity profile does not require mobile TOTP. It emits the AMR claim but remains
-fail-closed for high-risk actions until an explicit WebAuthn step-up flow and execution references
-have been deployed and contract-tested. Existing realms require an idempotent Admin API migration;
-startup realm import is not an update mechanism.
+The local identity profile does not require mobile TOTP. Ordinary password login is LoA 1. A
+separate conditional LoA 2 requires the WebAuthn authenticator, has zero reusable max age and emits
+the `webauthn` AMR execution reference. WebAuthn registration is enabled for explicit application-
+initiated enrollment but is never a default action for every user. Existing realms use an
+idempotent Admin API migration that builds and verifies the complete flow before binding it;
+startup realm import is not an update mechanism. The web client includes Keycloak's built-in
+`basic` client scope so its official `AUTH_TIME` session-note mapper emits the real `auth_time` in
+the access token; DataRiver does not infer that time from token issuance.
 
 Password reauthentication is a separate assurance type and never silently becomes hardware
 assurance. A password fallback for an administrative mutation is permitted only after a separate,
@@ -36,6 +40,9 @@ application contract.
 - Assurance claim allowlists are deployment configuration and must be contract-tested for every
   issuer. Organization-specific ACR names, RP IDs, origins, attestation roots and AAGUIDs are not
   source defaults.
+- The portable local profile requires a user-verifying cross-platform authenticator. A production
+  deployment that must restrict enrollment to approved security-key models additionally supplies
+  and tests its attestation trust and AAGUID allowlist outside the portable source defaults.
 - Policy-decision context records only normalized assurance and authentication time. Tokens, raw
   claims, WebAuthn assertions and credential identifiers are not audit payloads.
 - High-risk actions reject missing, stale or implausibly future authentication times.

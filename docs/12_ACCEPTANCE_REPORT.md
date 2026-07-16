@@ -16,7 +16,7 @@ P0–P3 foundation addendum, updated 2026-07-16: current source checks additiona
 |---|---|---|
 | Python format/lint | PASS | Ruff format and check across backend, tests, DAGs, migrations and static-verification scripts |
 | Python type safety | PASS | strict mypy: 117 source files, zero issues; a local cache was placed on `C:\\tmp` to avoid the known SQLite lock behavior on a Windows UNC mount |
-| Backend behavior | PASS | 109 pytest tests: typed OIDC assurance and future/missing authentication-time denials, ABAC/set audit, version-scoped search cache, DataHub release/circuit/bulkhead checks, schema readiness/timeouts, state machines, governance, idempotency, reconciliation, bounded uploads, KG lifecycle, sharing, immutable evidence/citation fail-closed behavior, seed and OpenAPI |
+| Backend behavior | PASS | 111 pytest tests: typed OIDC assurance, managed Keycloak LoA flow convergence/drift rejection and future/missing authentication-time denials, ABAC/set audit, version-scoped search cache, DataHub release/circuit/bulkhead checks, schema readiness/timeouts, state machines, governance, idempotency, reconciliation, bounded uploads, KG lifecycle, sharing, immutable evidence/citation fail-closed behavior, seed and OpenAPI |
 | Frontend | PASS | TypeScript build mode, ESLint zero warnings, 3 test files/6 tests, and Vite production build |
 | Frontend artifact | PASS | current source build: JS 307.51 kB / gzip 93.04 kB; CSS 8.26 kB / gzip 2.70 kB |
 | Dependency audit | PASS | `pip-audit 2.10.0`: no known runtime vulnerabilities; `npm audit`: 0 vulnerabilities |
@@ -47,6 +47,7 @@ ownership.
 | Seed generation | PASS | migration backfill `1`, remove `2`, re-apply `3`; verify was a no-op; final counts remained 12 assets/257 nodes/279 edges |
 | Authorized search | PASS | same-token semiconductor `wafer` search returned the two expected authorized assets after API source reload |
 | Same-token policy revocation | PASS (local direct API) | 100 iterations/scenario: inactive membership p99 100.660 ms, explicit search deny p99 167.743 ms, system/domain scope removal p99 193.388 ms; original Airflow membership restored and verified. APISIX correctly rate-limited the first high-rate attempt, so cache-policy timing was rerun directly on `:8000` |
+| Local interactive OIDC assurance | PASS (flow/probe) | existing Keycloak realm migrated and re-read with no drift; an ephemeral browser-flow probe received a LoA 1 token carrying `acr=1`, `amr=pwd` and `auth_time`, and a WebAuthn-required page for LoA 2, then removed the probe user; zero probe users remained. A real USB key ceremony and hardware-token/backend journey remain a target-environment gate |
 
 ## Live Compose evidence (pre-P0-hardening runtime baseline)
 

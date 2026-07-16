@@ -54,6 +54,28 @@ docker compose -f compose.yaml -f compose.identity.yaml \
 
 For local Keycloak, merge `compose.identity.yaml` and run the non-production identity bootstrap described in the root README. Enterprise identity deployments provision workspace/subject attributes through controlled environment onboarding.
 
+An imported clean realm already contains the managed LoA flow. Because Keycloak import does not
+update an existing realm, migrate and verify an existing deployment through the Admin API:
+
+```bash
+uv run python scripts/configure_keycloak_assurance.py \
+  --base-url https://identity.example.internal \
+  --admin-username '<bootstrap-admin>' \
+  --admin-password-file /run/secrets/keycloak_admin_password \
+  --username '<managed-security-admin>' \
+  --configure-step-up --revoke-user-sessions --apply
+```
+
+The command constructs the unbound flow first, re-reads every execution and authenticator config,
+and binds it only after verification. A same-name drifted flow is not overwritten. Ordinary login
+uses password LoA 1; an explicit LoA 2 request requires WebAuthn with max age zero. The WebAuthn
+registration action is enabled but not a default user action, so no mobile OTP or universal first-
+login security-key enrollment is introduced. The web client is also attached to Keycloak's built-in
+`basic` scope after its `AUTH_TIME` session-note mapper is verified, ensuring the access token has
+the actual authentication time required by the backend. Target deployments must separately test browser PKCE,
+key enrollment/revocation, spare-key recovery, RP ID/origins and any organization-approved
+attestation/AAGUID policy.
+
 ## Network and identity rules
 
 - Loopback development ports: web `8080`, API `8000`, Keycloak `8081`, APISIX `9080`, Airflow `8082` when their overlays are enabled.
