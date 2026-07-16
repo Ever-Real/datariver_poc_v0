@@ -90,6 +90,21 @@ For each route, test no token, invalid issuer/audience/algorithm, inactive subje
 - Clean clone on Windows/WSL2, Linux and macOS follows one documented Compose path.
 - No absolute path, committed secret, volume, upload, test artifact or seed appears in a clean production checkout.
 
+### PgBouncer pre-adoption RLS gate
+
+PgBouncer must not become an API database path until transaction-local workspace and subject context
+has passed `scripts/probe_pgbouncer_rls.py`. Run the probe only against an isolated integration
+database with at least one catalog fixture in each of two distinct workspaces. Its separate admin
+connection verifies transaction mode and `default_pool_size=1`; the application connection then
+forces reuse of one PostgreSQL server connection across commit, rollback and database-error paths,
+checks an interrupted transaction, and proves both context reset and cross-workspace row denial.
+
+The URLs must not contain passwords and every secret must be a `file:` reference. The command has no
+portable endpoint, identity or workspace defaults; the deployment supplies all six values. A missing
+fixture, a non-reused server connection or an unavailable PgBouncer admin console is inconclusive and
+therefore fails the gate. This probe is a prerequisite, not evidence that PgBouncer, a connection
+budget or a target `max_connections` value has been accepted for production.
+
 ## Release gate
 
 CI success alone is insufficient. The acceptance report records commit/image digest, environment, dataset, commands, machine-readable reports, reviewer, exceptions and expiry. Image scanners run only in an isolated CI/release runner; never grant a third-party scanner a developer Docker socket merely to produce local evidence. Release is blocked by failed functional/ABAC/migration/recovery gates or unresolved Critical/High security findings. Performance variance is a documented block unless the acceptance owner approves a time-bounded exception with mitigation.

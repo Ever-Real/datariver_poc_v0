@@ -225,7 +225,7 @@ Apply/remove require explicit confirmation. Production mode rejects any non-`non
 ```bash
 uv sync --frozen --all-extras
 uv run ruff format --check backend/src backend/tests infra/airflow/dags
-uv run ruff check backend/src backend/tests infra/airflow/dags scripts/configure_keycloak_assurance.py scripts/generate_initial_migration.py scripts/probe_policy_revocation.py scripts/verify_datahub_contract.py scripts/verify_static.py
+uv run ruff check backend/src backend/tests infra/airflow/dags scripts/configure_keycloak_assurance.py scripts/generate_initial_migration.py scripts/probe_pgbouncer_rls.py scripts/probe_policy_revocation.py scripts/verify_datahub_contract.py scripts/verify_static.py
 uv run mypy backend/src backend/tests
 uv run pytest backend/tests -q
 uv run python scripts/verify_static.py
