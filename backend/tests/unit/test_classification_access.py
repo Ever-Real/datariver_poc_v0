@@ -208,17 +208,29 @@ def test_policy_requires_exactly_one_typed_rule_per_classification() -> None:
 
 def test_policy_payload_is_canonical_and_uuid7_evented() -> None:
     rules = _rules()
-    common = {
-        "workspace_id": uuid4(),
-        "policy_number": 3,
-        "required_jurisdiction": "jurisdiction-a",
-        "restricted_search_grant_maximum_days": 30,
-        "requester_id": uuid4(),
-        "reason": "Canonical proposal",
-        "policy_decision_id": uuid4(),
-    }
-    first = ClassificationAccessPolicy.propose(rules=rules, **common)
-    second = ClassificationAccessPolicy.propose(rules=tuple(reversed(rules)), **common)
+    workspace_id = uuid4()
+    requester_id = uuid4()
+    policy_decision_id = uuid4()
+    first = ClassificationAccessPolicy.propose(
+        workspace_id=workspace_id,
+        policy_number=3,
+        required_jurisdiction="jurisdiction-a",
+        restricted_search_grant_maximum_days=30,
+        rules=rules,
+        requester_id=requester_id,
+        reason="Canonical proposal",
+        policy_decision_id=policy_decision_id,
+    )
+    second = ClassificationAccessPolicy.propose(
+        workspace_id=workspace_id,
+        policy_number=3,
+        required_jurisdiction="jurisdiction-a",
+        restricted_search_grant_maximum_days=30,
+        rules=tuple(reversed(rules)),
+        requester_id=requester_id,
+        reason="Canonical proposal",
+        policy_decision_id=policy_decision_id,
+    )
     assert first.payload_hash == second.payload_hash
     assert first.policy_id.version == 7
     assert first.state is ClassificationAccessPolicyState.PROPOSED
@@ -277,7 +289,7 @@ def test_policy_active_rejected_and_superseded_states_are_terminal() -> None:
     now = datetime.now(UTC)
     active = _policy()
     _approve_policy(active, now=now)
-    assert active.state is ClassificationAccessPolicyState.ACTIVE
+    assert active.state.value == ClassificationAccessPolicyState.ACTIVE.value
     assert active.version == 2
     active.supersede(
         actor_id=uuid4(),
@@ -286,7 +298,7 @@ def test_policy_active_rejected_and_superseded_states_are_terminal() -> None:
         expected_version=2,
         now=now + timedelta(seconds=1),
     )
-    assert active.state is ClassificationAccessPolicyState.SUPERSEDED
+    assert active.state.value == ClassificationAccessPolicyState.SUPERSEDED.value
     assert active.version == 3
     assert active.events[-1].event_type.endswith("superseded.v1")
     with pytest.raises(ConflictError, match="Only an active"):

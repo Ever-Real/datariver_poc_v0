@@ -88,7 +88,7 @@ def _approve(proposal: InferenceProviderProfileVersion, *, checker_id: UUID | No
 def test_internal_confidential_profile_requires_independent_approval() -> None:
     proposal = _proposal()
 
-    assert proposal.state is InferenceProviderProfileState.PROPOSED
+    assert proposal.state.value == InferenceProviderProfileState.PROPOSED.value
     assert not proposal.eligible(
         now=NOW,
         effective_classification=Classification.INTERNAL,
@@ -98,7 +98,7 @@ def test_internal_confidential_profile_requires_independent_approval() -> None:
 
     checker_id = _approve(proposal)
 
-    assert proposal.state is InferenceProviderProfileState.APPROVED
+    assert proposal.state.value == InferenceProviderProfileState.APPROVED.value
     assert proposal.checker_id == checker_id
     assert proposal.version == 2
     assert proposal.eligible(
