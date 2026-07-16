@@ -24,6 +24,7 @@ REQUIRED_DOCKERIGNORE_ENTRIES = {
     "secrets",
     "runtime",
     ".venv",
+    ".venv-wsl",
     "frontend/node_modules",
 }
 EXPECTED_SERVICE_SECRETS = {

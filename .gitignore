@@ -6,6 +6,7 @@
 *.crt
 secrets/
 .venv/
+.venv-wsl/
 venv/
 __pycache__/
 *.py[cod]

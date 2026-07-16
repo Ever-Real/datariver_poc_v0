@@ -116,9 +116,17 @@ docker compose --profile tools -f compose.yaml -f compose.identity.yaml \
 Run the changing source processes from Windows PowerShell so the supported Windows uv/Node toolchains are used:
 
 ```powershell
+# Create this once with the supported native Windows uv/Python toolchain.
+uv venv --python 3.12 .venv
+$env:VIRTUAL_ENV = (Resolve-Path .venv).ProviderPath
+uv sync --active --frozen --all-extras
+
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 `
   start -DataHubBaseUrl http://127.0.0.1:8080
 ```
+
+When the same checkout is also tested from WSL, keep its interpreter separate so it cannot replace
+the native Windows host runtime: `UV_PROJECT_ENVIRONMENT=.venv-wsl uv sync --frozen --all-extras`.
 
 Start the gateway from WSL only after the Windows host API is live. The script discovers the current WSL-to-Windows gateway address:
 
