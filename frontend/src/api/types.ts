@@ -175,6 +175,16 @@ export type AdminOperation =
   | 'FALLBACK_REQUEST_CREATE'
   | 'FALLBACK_REQUEST_DECIDE'
   | 'FALLBACK_REQUEST_CONSUME'
+  | 'CLASSIFICATION_POLICY_READ'
+  | 'CLASSIFICATION_POLICY_PROPOSE'
+  | 'CLASSIFICATION_POLICY_DECIDE'
+  | 'INFERENCE_PROVIDER_PROFILE_READ'
+  | 'INFERENCE_PROVIDER_PROFILE_DECIDE'
+  | 'INFERENCE_PROVIDER_PROFILE_REVOKE'
+  | 'RESTRICTED_SEARCH_GRANT_READ'
+  | 'RESTRICTED_SEARCH_GRANT_PROPOSE'
+  | 'RESTRICTED_SEARCH_GRANT_DECIDE'
+  | 'RESTRICTED_SEARCH_GRANT_REVOKE'
 
 export interface MembershipAccessDocument {
   active: boolean
@@ -349,4 +359,116 @@ export interface ErasureRequest {
     request_version: number
     occurred_at: string
   }>
+}
+
+export type ClassificationSearchMode = 'ABAC' | 'DENY' | 'EXPLICIT_GRANT_ONLY'
+export type ClassificationChatMode =
+  | 'DENY'
+  | 'INTERNAL_APPROVED_ONLY'
+  | 'APPROVED_PROVIDER_ONLY'
+export type ClassificationAccessPolicyState = 'PROPOSED' | 'ACTIVE' | 'REJECTED' | 'SUPERSEDED'
+
+export interface ClassificationAccessRule {
+  classification: Classification
+  search_mode: ClassificationSearchMode
+  chat_mode: ClassificationChatMode
+  provider_profile_version_id: string | null
+}
+
+export interface ClassificationAccessPolicy {
+  policy_id: string
+  policy_number: number
+  required_jurisdiction: string
+  restricted_search_grant_maximum_days: number
+  rules: ClassificationAccessRule[]
+  payload_hash: string
+  requester_id: string
+  request_reason: string
+  state: ClassificationAccessPolicyState
+  checker_id: string | null
+  decision_reason: string | null
+  decided_at: string | null
+  superseded_by: string | null
+  supersede_reason: string | null
+  superseded_at: string | null
+  version: number
+}
+
+export interface ProviderAttestationSummary {
+  fingerprint: string
+  observed_at: string
+  expires_at: string
+}
+
+export type InferenceProviderKind = 'INTERNAL' | 'EXTERNAL'
+export type InferenceProviderProfileState = 'PROPOSED' | 'APPROVED' | 'REJECTED' | 'REVOKED'
+
+export interface InferenceProviderProfile {
+  provider_profile_version_id: string
+  profile_key: string
+  profile_version: number
+  kind: InferenceProviderKind
+  provider_identity: string
+  model_identity: string
+  deployment_identity: string
+  jurisdiction: string
+  region: string
+  maximum_classification: Exclude<Classification, 'RESTRICTED'>
+  residency_attestation: ProviderAttestationSummary
+  zero_retention_attestation: ProviderAttestationSummary
+  payload_hash: string
+  maker_id: string
+  proposal_reason: string
+  proposed_at: string
+  state: InferenceProviderProfileState
+  checker_id: string | null
+  decision_reason: string | null
+  decided_at: string | null
+  revoked_by: string | null
+  revocation_reason: string | null
+  revoked_at: string | null
+  version: number
+}
+
+export type RestrictedSearchScope = 'RESOURCE' | 'SYSTEM' | 'DOMAIN'
+export type RestrictedSearchGrantState = 'PENDING' | 'ACTIVE' | 'REJECTED' | 'REVOKED'
+
+export interface RestrictedSearchGrant {
+  grant_id: string
+  classification_policy_id: string
+  classification_policy_hash: string
+  subject_id: string
+  scope: RestrictedSearchScope
+  scope_id: string
+  purpose: string
+  valid_from: string
+  expires_at: string
+  payload_hash: string
+  requester_id: string
+  request_reason: string
+  state: RestrictedSearchGrantState
+  checker_id: string | null
+  decision_reason: string | null
+  decided_at: string | null
+  revoked_by: string | null
+  revocation_reason: string | null
+  revoked_at: string | null
+  version: number
+}
+
+export interface ClassificationAccessPolicyProposal {
+  required_jurisdiction: string
+  restricted_search_grant_maximum_days: number
+  rules: ClassificationAccessRule[]
+  reason: string
+}
+
+export interface RestrictedSearchGrantProposal {
+  subject_id: string
+  scope: RestrictedSearchScope
+  scope_id: string
+  purpose: string
+  valid_from: string
+  expires_at: string
+  reason: string
 }

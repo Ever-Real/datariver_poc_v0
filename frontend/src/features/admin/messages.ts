@@ -1,5 +1,6 @@
 export type AdminMessageKey =
   | 'eyebrow' | 'title' | 'refresh' | 'memberships' | 'fallback' | 'retention' | 'holds' | 'erasure'
+  | 'classification' | 'providers' | 'restrictedGrants'
   | 'adminContext' | 'currentAssurance' | 'fallbackState' | 'enabled' | 'disabled'
   | 'members' | 'selectMember' | 'accessDocument' | 'active' | 'clearance' | 'groups'
   | 'allowedActions' | 'deniedActions' | 'systemScopes' | 'domainScopes' | 'directUpdate'
@@ -12,12 +13,20 @@ export type AdminMessageKey =
   | 'noErasure' | 'versionConflict' | 'makerCannotCheck' | 'select' | 'erasureRequest'
   | 'erasureDecision' | 'erasureHistory' | 'erasureNonExecuting' | 'targetType'
   | 'targetId' | 'targetVersion' | 'reviewTtlSeconds' | 'requestReview'
+  | 'classificationPolicyProposal' | 'classificationPolicyHistory' | 'currentPolicy'
+  | 'jurisdiction' | 'grantMaximumDays' | 'classificationMatrix' | 'searchMode' | 'chatMode'
+  | 'providerProfile' | 'chooseProvider' | 'noEligibleProvider' | 'providerHistory'
+  | 'providerReadOnly' | 'providerDecision' | 'revoke' | 'revocationReason'
+  | 'residencyAttestation' | 'zeroRetentionAttestation' | 'restrictedGrantProposal'
+  | 'restrictedGrantHistory' | 'subject' | 'purpose' | 'validFrom' | 'activePolicyRequired'
+  | 'restrictedGrantDisabled' | 'browserTimezone' | 'grantMaximumHint'
 
 export type AdminMessages = Record<AdminMessageKey, string>
 
 const ko: AdminMessages = {
-  eyebrow: 'Governed administration', title: '관리자 및 보존 거버넌스', refresh: '새로고침',
+  eyebrow: 'Governed administration', title: '관리자 및 데이터 거버넌스', refresh: '새로고침',
   memberships: '계정·권한', fallback: 'Maker-Checker', retention: '보존정책', holds: 'Legal Hold', erasure: '파기 검토',
+  classification: '분류정책', providers: 'LLM Provider', restrictedGrants: 'RESTRICTED 검색권한',
   adminContext: '현재 관리자 컨텍스트', currentAssurance: '인증 보증', fallbackState: '비밀번호 예외 경로',
   enabled: '활성', disabled: '비활성', members: '워크스페이스 멤버', selectMember: '편집할 멤버를 선택하세요.',
   accessDocument: '전체 Access 문서', active: '멤버십 활성', clearance: '허용 등급', groups: '그룹',
@@ -40,11 +49,26 @@ const ko: AdminMessages = {
   erasureNonExecuting: '승인은 검토 증거일 뿐입니다. 실제 삭제·파기·자동 실행은 비활성입니다.',
   targetType: '대상 유형', targetId: '대상 UUID', targetVersion: '대상 버전',
   reviewTtlSeconds: '검토 유효시간(초)', requestReview: '검토 요청',
+  classificationPolicyProposal: '분류 접근정책 제안', classificationPolicyHistory: '분류 접근정책 이력',
+  currentPolicy: '현재 적용 정책', jurisdiction: '승인 관할', grantMaximumDays: 'RESTRICTED Grant 최대 일수',
+  classificationMatrix: '고정 분류등급 정책', searchMode: 'Search 모드', chatMode: 'Chat 모드',
+  providerProfile: '승인 Provider profile', chooseProvider: 'Provider profile을 선택하세요',
+  noEligibleProvider: '현재 정책 조건에 적격한 승인 Provider profile이 없습니다.',
+  providerHistory: 'Provider profile 이력',
+  providerReadOnly: 'Provider endpoint와 secret은 이 화면에서 등록하거나 변경할 수 없습니다.',
+  providerDecision: 'Provider profile 판단', revoke: '즉시 철회', revocationReason: '철회 사유',
+  residencyAttestation: 'Residency attestation', zeroRetentionAttestation: 'Zero-retention attestation',
+  restrictedGrantProposal: 'RESTRICTED Search grant 제안', restrictedGrantHistory: 'RESTRICTED Search grant 이력',
+  subject: '대상 사용자', purpose: '접근 목적', validFrom: '유효 시작',
+  activePolicyRequired: '활성 분류 접근정책이 있어야 grant를 제안할 수 있습니다.',
+  restrictedGrantDisabled: '현재 정책은 RESTRICTED Search explicit grant를 허용하지 않습니다.',
+  browserTimezone: '브라우저 시간대', grantMaximumHint: '현재 활성 정책의 최대 허용 기간',
 }
 
 const en: AdminMessages = {
-  eyebrow: 'Governed administration', title: 'Administration and retention governance', refresh: 'Refresh',
+  eyebrow: 'Governed administration', title: 'Administration and data governance', refresh: 'Refresh',
   memberships: 'Accounts & access', fallback: 'Maker-Checker', retention: 'Retention policies', holds: 'Legal Hold', erasure: 'Erasure review',
+  classification: 'Classification policy', providers: 'LLM providers', restrictedGrants: 'RESTRICTED Search access',
   adminContext: 'Current administrator context', currentAssurance: 'Authentication assurance',
   fallbackState: 'Password fallback', enabled: 'Enabled', disabled: 'Disabled', members: 'Workspace members',
   selectMember: 'Select a member to edit.', accessDocument: 'Complete access document', active: 'Membership active',
@@ -69,6 +93,22 @@ const en: AdminMessages = {
   erasureNonExecuting: 'Approval is review evidence only. Delete, erasure and automation remain disabled.',
   targetType: 'Target type', targetId: 'Target UUID', targetVersion: 'Target version',
   reviewTtlSeconds: 'Review lifetime (seconds)', requestReview: 'Request review',
+  classificationPolicyProposal: 'Propose classification access policy',
+  classificationPolicyHistory: 'Classification access policy history', currentPolicy: 'Current policy',
+  jurisdiction: 'Approved jurisdiction', grantMaximumDays: 'Maximum RESTRICTED grant days',
+  classificationMatrix: 'Fixed classification policy', searchMode: 'Search mode', chatMode: 'Chat mode',
+  providerProfile: 'Approved provider profile', chooseProvider: 'Select a provider profile',
+  noEligibleProvider: 'No approved provider profile is eligible for the current policy conditions.',
+  providerHistory: 'Provider profile history',
+  providerReadOnly: 'Provider endpoints and secrets cannot be registered or changed on this screen.',
+  providerDecision: 'Provider profile decision', revoke: 'Revoke immediately',
+  revocationReason: 'Revocation reason', residencyAttestation: 'Residency attestation',
+  zeroRetentionAttestation: 'Zero-retention attestation',
+  restrictedGrantProposal: 'Propose RESTRICTED Search grant',
+  restrictedGrantHistory: 'RESTRICTED Search grant history', subject: 'Subject', purpose: 'Purpose',
+  validFrom: 'Valid from', activePolicyRequired: 'An active classification policy is required.',
+  restrictedGrantDisabled: 'The current policy does not permit explicit RESTRICTED Search grants.',
+  browserTimezone: 'Browser time zone', grantMaximumHint: 'Maximum allowed by the active policy',
 }
 
 export function getAdminMessages(locale = globalThis.navigator?.language ?? 'ko'): AdminMessages {

@@ -3,18 +3,26 @@ import type {
   AdminAccessRequest,
   AdminAccessRequestState,
   AdminReadContext,
+  ClassificationAccessPolicy,
+  ClassificationAccessPolicyProposal,
+  ClassificationAccessPolicyState,
   ErasureRequest,
   ErasureRequestState,
   ErasureTargetType,
   LegalHold,
   LegalHoldScope,
   LegalHoldState,
+  InferenceProviderProfile,
+  InferenceProviderProfileState,
   MembershipAccessDocument,
   MembershipAccessUpdateResult,
   RetentionDataClass,
   RetentionPolicy,
   RetentionPolicyState,
   RetentionRules,
+  RestrictedSearchGrant,
+  RestrictedSearchGrantProposal,
+  RestrictedSearchGrantState,
   WorkspaceMembershipAccess,
   WorkspaceMembershipSummary,
 } from '../../api/types'
@@ -153,6 +161,149 @@ export class AdminApi {
         ifMatch: quotedVersion(policy.version),
         idempotencyKey,
         body: JSON.stringify({ decision, reason }),
+      },
+    )
+  }
+
+  async listClassificationAccessPolicies(state?: ClassificationAccessPolicyState) {
+    const query = state ? `?state=${state}&limit=100` : '?limit=100'
+    return (await this.client.request<{ items: ClassificationAccessPolicy[] }>(
+      `/admin/classification-access/policies${query}`,
+    )).items
+  }
+
+  getCurrentClassificationAccessPolicy() {
+    return this.client.request<ClassificationAccessPolicy | null>(
+      '/admin/classification-access/policies/current',
+    )
+  }
+
+  proposeClassificationAccessPolicy(
+    proposal: ClassificationAccessPolicyProposal,
+    idempotencyKey: string,
+  ) {
+    return this.client.request<ClassificationAccessPolicy>(
+      '/admin/classification-access/policies',
+      {
+        method: 'POST',
+        idempotencyKey,
+        body: JSON.stringify(proposal),
+      },
+    )
+  }
+
+  decideClassificationAccessPolicy(
+    policy: ClassificationAccessPolicy,
+    decision: GovernanceDecision,
+    reason: string,
+    idempotencyKey: string,
+  ) {
+    return this.client.request<ClassificationAccessPolicy>(
+      `/admin/classification-access/policies/${encodeURIComponent(policy.policy_id)}/decisions`,
+      {
+        method: 'POST',
+        ifMatch: quotedVersion(policy.version),
+        idempotencyKey,
+        body: JSON.stringify({ decision, reason }),
+      },
+    )
+  }
+
+  async listInferenceProviderProfiles(state?: InferenceProviderProfileState) {
+    const query = state ? `?state=${state}&limit=100` : '?limit=100'
+    return (await this.client.request<{ items: InferenceProviderProfile[] }>(
+      `/admin/inference/provider-profiles${query}`,
+    )).items
+  }
+
+  decideInferenceProviderProfile(
+    profile: InferenceProviderProfile,
+    decision: GovernanceDecision,
+    reason: string,
+    idempotencyKey: string,
+  ) {
+    return this.client.request<InferenceProviderProfile>(
+      `/admin/inference/provider-profiles/${encodeURIComponent(profile.provider_profile_version_id)}/decisions`,
+      {
+        method: 'POST',
+        ifMatch: quotedVersion(profile.version),
+        idempotencyKey,
+        body: JSON.stringify({ decision, reason }),
+      },
+    )
+  }
+
+  revokeInferenceProviderProfile(
+    profile: InferenceProviderProfile,
+    reason: string,
+    idempotencyKey: string,
+  ) {
+    return this.client.request<InferenceProviderProfile>(
+      `/admin/inference/provider-profiles/${encodeURIComponent(profile.provider_profile_version_id)}/revocations`,
+      {
+        method: 'POST',
+        ifMatch: quotedVersion(profile.version),
+        idempotencyKey,
+        body: JSON.stringify({ reason }),
+      },
+    )
+  }
+
+  async listRestrictedSearchGrants(
+    state?: RestrictedSearchGrantState,
+    subjectId?: string,
+  ) {
+    const query = new URLSearchParams({ limit: '100' })
+    if (state) query.set('state', state)
+    if (subjectId) query.set('subject_id', subjectId)
+    return (await this.client.request<{ items: RestrictedSearchGrant[] }>(
+      `/admin/classification-access/restricted-search-grants?${query.toString()}`,
+    )).items
+  }
+
+  proposeRestrictedSearchGrant(
+    proposal: RestrictedSearchGrantProposal,
+    idempotencyKey: string,
+  ) {
+    return this.client.request<RestrictedSearchGrant>(
+      '/admin/classification-access/restricted-search-grants',
+      {
+        method: 'POST',
+        idempotencyKey,
+        body: JSON.stringify(proposal),
+      },
+    )
+  }
+
+  decideRestrictedSearchGrant(
+    grant: RestrictedSearchGrant,
+    decision: GovernanceDecision,
+    reason: string,
+    idempotencyKey: string,
+  ) {
+    return this.client.request<RestrictedSearchGrant>(
+      `/admin/classification-access/restricted-search-grants/${encodeURIComponent(grant.grant_id)}/decisions`,
+      {
+        method: 'POST',
+        ifMatch: quotedVersion(grant.version),
+        idempotencyKey,
+        body: JSON.stringify({ decision, reason }),
+      },
+    )
+  }
+
+  revokeRestrictedSearchGrant(
+    grant: RestrictedSearchGrant,
+    reason: string,
+    idempotencyKey: string,
+  ) {
+    return this.client.request<RestrictedSearchGrant>(
+      `/admin/classification-access/restricted-search-grants/${encodeURIComponent(grant.grant_id)}/revocations`,
+      {
+        method: 'POST',
+        ifMatch: quotedVersion(grant.version),
+        idempotencyKey,
+        body: JSON.stringify({ reason }),
       },
     )
   }

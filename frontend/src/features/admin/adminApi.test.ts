@@ -1,5 +1,15 @@
 import { describe, expect, it, vi } from 'vitest'
-import type { AdminAccessRequest, ErasureRequest, LegalHold, RetentionPolicy, WorkspaceMembershipAccess } from '../../api/types'
+import type {
+  AdminAccessRequest,
+  ClassificationAccessPolicy,
+  ClassificationAccessRule,
+  ErasureRequest,
+  InferenceProviderProfile,
+  LegalHold,
+  RestrictedSearchGrant,
+  RetentionPolicy,
+  WorkspaceMembershipAccess,
+} from '../../api/types'
 import { AdminApi } from './adminApi'
 
 function mockClient() {
@@ -112,5 +122,71 @@ describe('AdminApi', () => {
     expect(requestWithMeta.mock.calls.at(-1)?.[1]).toMatchObject({
       ifMatch: '"1"', idempotencyKey: 'erasure-decision-key',
     })
+  })
+
+  it('binds classification, provider, and RESTRICTED grant mutations to versions', async () => {
+    const { api, request } = mockClient()
+    const rules: ClassificationAccessRule[] = [
+      { classification: 'PUBLIC', search_mode: 'ABAC', chat_mode: 'DENY', provider_profile_version_id: null },
+      { classification: 'INTERNAL', search_mode: 'ABAC', chat_mode: 'DENY', provider_profile_version_id: null },
+      { classification: 'CONFIDENTIAL', search_mode: 'DENY', chat_mode: 'DENY', provider_profile_version_id: null },
+      { classification: 'RESTRICTED', search_mode: 'EXPLICIT_GRANT_ONLY', chat_mode: 'DENY', provider_profile_version_id: null },
+    ]
+    const policy = { policy_id: 'policy-one', version: 1, rules } as ClassificationAccessPolicy
+    const profile = {
+      provider_profile_version_id: 'profile-one', version: 2,
+    } as InferenceProviderProfile
+    const grant = { grant_id: 'grant-one', version: 2 } as RestrictedSearchGrant
+    request.mockResolvedValue({})
+
+    await api.proposeClassificationAccessPolicy({
+      required_jurisdiction: 'approved-jurisdiction',
+      restricted_search_grant_maximum_days: 30,
+      rules,
+      reason: 'reviewed',
+    }, 'classification-propose-key')
+    await api.decideClassificationAccessPolicy(policy, 'APPROVED', 'checked', 'classification-decision-key')
+    await api.decideInferenceProviderProfile(profile, 'APPROVED', 'checked', 'provider-decision-key')
+    await api.revokeInferenceProviderProfile(profile, 'deny first', 'provider-revoke-key')
+    await api.decideRestrictedSearchGrant(grant, 'APPROVED', 'checked', 'grant-decision-key')
+    await api.revokeRestrictedSearchGrant(grant, 'deny first', 'grant-revoke-key')
+
+    expect(request.mock.calls.map((call) => String(call[0]))).toEqual([
+      '/admin/classification-access/policies',
+      '/admin/classification-access/policies/policy-one/decisions',
+      '/admin/inference/provider-profiles/profile-one/decisions',
+      '/admin/inference/provider-profiles/profile-one/revocations',
+      '/admin/classification-access/restricted-search-grants/grant-one/decisions',
+      '/admin/classification-access/restricted-search-grants/grant-one/revocations',
+    ])
+    expect(request.mock.calls[0]?.[1]).toMatchObject({ idempotencyKey: 'classification-propose-key' })
+    expect(request.mock.calls[1]?.[1] as unknown).toMatchObject({ ifMatch: '"1"', idempotencyKey: 'classification-decision-key' })
+    expect(request.mock.calls[2]?.[1] as unknown).toMatchObject({ ifMatch: '"2"', idempotencyKey: 'provider-decision-key' })
+    expect(request.mock.calls[3]?.[1] as unknown).toMatchObject({ ifMatch: '"2"', idempotencyKey: 'provider-revoke-key' })
+    expect(request.mock.calls[4]?.[1] as unknown).toMatchObject({ ifMatch: '"2"', idempotencyKey: 'grant-decision-key' })
+    expect(request.mock.calls[5]?.[1] as unknown).toMatchObject({ ifMatch: '"2"', idempotencyKey: 'grant-revoke-key' })
+  })
+
+  it('never lets a grant proposal choose its governing policy binding', async () => {
+    const { api, request } = mockClient()
+    request.mockResolvedValue({})
+    await api.proposeRestrictedSearchGrant({
+      subject_id: 'subject-one',
+      scope: 'RESOURCE',
+      scope_id: 'resource-one',
+      purpose: 'investigation',
+      valid_from: '2030-01-01T00:00:00.000Z',
+      expires_at: '2030-01-02T00:00:00.000Z',
+      reason: 'reviewed request',
+    }, 'grant-propose-key')
+
+    const options = request.mock.calls[0]?.[1] as unknown as { body?: BodyInit }
+    if (typeof options.body !== 'string') throw new Error('expected a JSON request body')
+    const body = JSON.parse(options.body) as Record<string, unknown>
+    expect(request.mock.calls[0]?.[0]).toBe('/admin/classification-access/restricted-search-grants')
+    expect(options).toMatchObject({ method: 'POST', idempotencyKey: 'grant-propose-key' })
+    expect(body).not.toHaveProperty('classification_policy_id')
+    expect(body).not.toHaveProperty('classification_policy_hash')
+    expect(body).not.toHaveProperty('provider')
   })
 })

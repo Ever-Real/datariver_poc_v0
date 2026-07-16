@@ -5,12 +5,20 @@ import { AssuranceNotice, type AssuranceActions } from '../../components/Assuran
 import { ErrorNotice } from '../../components/ErrorNotice'
 import { AdminApi } from './adminApi'
 import { AdminMutationConfirmDialog, type PendingAdminMutation } from './AdminMutationConfirmDialog'
+import {
+  ClassificationPolicyAdmin,
+  InferenceProviderProfileAdmin,
+  RestrictedSearchGrantAdmin,
+} from './ClassificationAccessAdmin'
 import { ErasureAdmin } from './ErasureAdmin'
 import { FallbackQueueAdmin, MembershipAccessAdmin } from './MembershipAdmin'
 import { LegalHoldAdmin, RetentionPolicyAdmin } from './RetentionAdmin'
 import { getAdminMessages } from './messages'
 
-const sections = ['memberships', 'fallback', 'retention', 'holds', 'erasure'] as const
+const sections = [
+  'memberships', 'fallback', 'classification', 'providers', 'restrictedGrants',
+  'retention', 'holds', 'erasure',
+] as const
 type AdminSection = typeof sections[number]
 
 function sectionFromLocation(): AdminSection {
@@ -79,6 +87,9 @@ export function AdminPage({ client, ...assurance }: { client: ApiClient } & Assu
     <ErrorNotice error={error} />
     {section === 'memberships' && <MembershipAccessAdmin {...shared} />}
     {section === 'fallback' && <FallbackQueueAdmin {...shared} />}
+    {section === 'classification' && <ClassificationPolicyAdmin {...shared} />}
+    {section === 'providers' && <InferenceProviderProfileAdmin {...shared} />}
+    {section === 'restrictedGrants' && <RestrictedSearchGrantAdmin {...shared} />}
     {section === 'retention' && <RetentionPolicyAdmin {...shared} />}
     {section === 'holds' && <LegalHoldAdmin {...shared} />}
     {section === 'erasure' && <ErasureAdmin {...shared} />}
