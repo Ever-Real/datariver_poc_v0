@@ -1,14 +1,17 @@
-import { useEffect, useState, type FormEvent } from 'react'
+import { useState } from 'react'
 import { ChevronLeft, ChevronRight } from 'lucide-react'
 import type { Page } from '../../app/navigation'
 import type { ExternalSystemLink } from '../../api/types'
+import type { ApiClient } from '../../api/client'
 import { primaryNavigation } from '../../app/navigation'
 import { GlobalCatalogSearch } from './GlobalCatalogSearch'
 import { ExternalSystemLinks } from './ExternalSystemLinks'
 import { ProfileMenu, type AdminMenuItem } from './ProfileMenu'
+import { DataRiverMark } from './DataRiverMark'
 
 interface TopNavigationProps {
   page: Page
+  client?: ApiClient
   workspace: string
   displayName: string
   adminMenuItems: AdminMenuItem[]
@@ -23,6 +26,7 @@ interface TopNavigationProps {
 
 export function TopNavigation({
   page,
+  client,
   workspace,
   displayName,
   adminMenuItems,
@@ -34,19 +38,12 @@ export function TopNavigation({
   onEnrollSecurityKey,
   onSignOut,
 }: TopNavigationProps) {
-  const [workspaceDraft, setWorkspaceDraft] = useState(workspace)
   const [navigation, setNavigation] = useState<HTMLElement | null>(null)
-  useEffect(() => setWorkspaceDraft(workspace), [workspace])
-
-  const applyWorkspace = (event: FormEvent) => {
-    event.preventDefault()
-    onWorkspaceChange(workspaceDraft.trim())
-  }
 
   return (
     <header className="top-navigation">
       <button className="top-brand" type="button" onClick={() => onNavigate('dashboard')} aria-label="DataRiver 홈">
-        <span className="top-brand-mark" aria-hidden="true">DR</span>
+        <span className="top-brand-mark" aria-hidden="true"><DataRiverMark /></span>
         <span>DataRiver</span>
       </button>
       <nav className="primary-navigation" aria-label="주 메뉴">
@@ -67,27 +64,14 @@ export function TopNavigation({
         </div>
         <button className="navigation-scroll navigation-scroll-right" type="button" aria-label="다음 메뉴" onClick={() => navigation?.scrollBy({ left: 240, behavior: 'smooth' })}><ChevronRight size={14} /></button>
       </nav>
-      <GlobalCatalogSearch onSearch={onSearch} />
-      <form className="workspace-control" onSubmit={applyWorkspace}>
-        <label htmlFor="workspace-id">Workspace</label>
-        <input
-          id="workspace-id"
-          value={workspaceDraft}
-          onChange={(event) => setWorkspaceDraft(event.target.value)}
-          placeholder="Workspace UUID"
-          aria-label="Workspace ID"
-        />
-        <button type="submit">적용</button>
-      </form>
-      <div className="top-status" aria-label="배포 상태">
-        <span title="현재 저장소의 단일 호스트 배포 등급">Single-node Pilot</span>
-        <span title="서버가 최종 권한을 평가합니다">ABAC</span>
-      </div>
+      <GlobalCatalogSearch client={client} onSearch={onSearch} />
       <ExternalSystemLinks links={externalSystemLinks} />
       <ProfileMenu
         displayName={displayName}
+        workspace={workspace}
         adminMenuItems={adminMenuItems}
         onAdmin={onNavigateAdmin}
+        onWorkspaceChange={onWorkspaceChange}
         onEnrollSecurityKey={onEnrollSecurityKey}
         onSignOut={onSignOut}
       />

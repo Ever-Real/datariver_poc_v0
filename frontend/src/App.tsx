@@ -140,6 +140,7 @@ export function App() {
   return (
     <AppShell
       page={page}
+      client={client}
       workspace={workspace}
       displayName={auth.user.profile.name ?? auth.user.profile.sub}
       adminMenuItems={adminMenuItems}

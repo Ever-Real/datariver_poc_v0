@@ -1,12 +1,14 @@
 import type { ReactNode } from 'react'
 import type { AuthNotice } from '../../auth/AuthProvider'
 import type { ExternalSystemLink } from '../../api/types'
+import type { ApiClient } from '../../api/client'
 import type { Page } from '../../app/navigation'
 import { TopNavigation } from './TopNavigation'
 import type { AdminMenuItem } from './ProfileMenu'
 
 interface AppShellProps {
   page: Page
+  client?: ApiClient
   workspace: string
   displayName: string
   adminMenuItems: AdminMenuItem[]
@@ -24,6 +26,7 @@ interface AppShellProps {
 
 export function AppShell({
   page,
+  client,
   workspace,
   displayName,
   adminMenuItems,
@@ -43,6 +46,7 @@ export function AppShell({
       <a className="skip-link" href="#main-content">본문으로 건너뛰기</a>
       <TopNavigation
         page={page}
+        client={client}
         workspace={workspace}
         displayName={displayName}
         adminMenuItems={adminMenuItems}

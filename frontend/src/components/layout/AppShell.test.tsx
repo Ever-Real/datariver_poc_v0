@@ -87,8 +87,10 @@ describe('application shell contracts', () => {
     render(
       <ProfileMenu
         displayName="Administrator"
+        workspace="workspace-one"
         adminMenuItems={[]}
         onAdmin={vi.fn()}
+        onWorkspaceChange={vi.fn()}
         onEnrollSecurityKey={vi.fn()}
         onSignOut={vi.fn()}
       />,
@@ -105,8 +107,10 @@ describe('application shell contracts', () => {
     render(
       <ProfileMenu
         displayName="Administrator"
+        workspace="workspace-one"
         adminMenuItems={[{ id: 'retention', label: '보존정책' }]}
         onAdmin={onAdmin}
+        onWorkspaceChange={vi.fn()}
         onEnrollSecurityKey={onEnrollSecurityKey}
         onSignOut={onSignOut}
       />,
@@ -164,12 +168,14 @@ describe('application shell contracts', () => {
     expect(within(navigation).getByRole('button', { name: '거버넌스' })).toBeInTheDocument()
     fireEvent.click(screen.getByRole('button', { name: '변경관리' }))
     expect(onNavigate).toHaveBeenCalledWith('change-management')
+    fireEvent.click(screen.getByRole('button', { name: 'User 사용자 메뉴' }))
     const workspace = screen.getByRole('textbox', { name: 'Workspace ID' })
     fireEvent.change(workspace, { target: { value: ' workspace-two ' } })
     expect(onWorkspaceChange).not.toHaveBeenCalled()
     fireEvent.click(screen.getByRole('button', { name: '적용' }))
     expect(onWorkspaceChange).toHaveBeenCalledWith('workspace-two')
-    expect(screen.getByText('Single-node Pilot')).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'User 사용자 메뉴' }))
+    expect(screen.getByText(/Single-node Pilot/)).toBeInTheDocument()
     expect(screen.getByRole('link', { name: 'DataHub' })).toHaveAttribute('href', 'https://datahub.example.com')
     expect(screen.getByRole('link', { name: 'DataHub' })).toHaveAttribute('rel', 'noopener noreferrer')
   })

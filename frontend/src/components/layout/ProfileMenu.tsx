@@ -1,27 +1,34 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useRef, useState, type FormEvent } from 'react'
 import { ChevronDown, KeyRound, LogOut, ShieldCheck, UserRound } from 'lucide-react'
 
 export interface AdminMenuItem { id: string; label: string }
 
 interface ProfileMenuProps {
   displayName: string
+  workspace: string
   adminMenuItems: AdminMenuItem[]
   onAdmin: (section: string) => void
+  onWorkspaceChange: (workspace: string) => void
   onEnrollSecurityKey: () => void
   onSignOut: () => void
 }
 
 export function ProfileMenu({
   displayName,
+  workspace,
   adminMenuItems,
   onAdmin,
+  onWorkspaceChange,
   onEnrollSecurityKey,
   onSignOut,
 }: ProfileMenuProps) {
   const [open, setOpen] = useState(false)
+  const [workspaceDraft, setWorkspaceDraft] = useState(workspace)
   const menuRef = useRef<HTMLDivElement>(null)
   const triggerRef = useRef<HTMLButtonElement>(null)
   const initial = displayName.trim().slice(0, 1).toUpperCase() || 'U'
+
+  useEffect(() => setWorkspaceDraft(workspace), [workspace])
 
   useEffect(() => {
     if (!open) return
@@ -44,6 +51,14 @@ export function ProfileMenu({
     setOpen(false); action()
   }
 
+  const applyWorkspace = (event: FormEvent) => {
+    event.preventDefault()
+    const next = workspaceDraft.trim()
+    if (!next) return
+    setOpen(false)
+    onWorkspaceChange(next)
+  }
+
   return (
     <div className="profile-menu" ref={menuRef}>
       <button
@@ -63,8 +78,12 @@ export function ProfileMenu({
         <div className="profile-menu-panel" role="menu" aria-label="사용자 작업">
           <header>
             <UserRound size={16} aria-hidden="true" />
-            <div><strong title={displayName}>{displayName}</strong><small>조직 계정</small></div>
+            <div><strong title={displayName}>{displayName}</strong><small>조직 계정 · Single-node Pilot</small></div>
           </header>
+          <form className="profile-workspace" onSubmit={applyWorkspace}>
+            <label htmlFor="profile-workspace-id">Workspace</label>
+            <div><input id="profile-workspace-id" aria-label="Workspace ID" value={workspaceDraft} onChange={(event) => setWorkspaceDraft(event.target.value)} /><button type="submit">적용</button></div>
+          </form>
           {adminMenuItems.length > 0 && (
             <section aria-label="Administration">
               <p>Administration</p>
