@@ -25,6 +25,7 @@ from datariver.infrastructure.db.models.governance import (
     ApprovalModel,
     ChangeItemModel,
     ChangeRequestModel,
+    RegistrationContentBindingModel,
     StateTransitionModel,
 )
 from datariver.infrastructure.db.models.inference import (
@@ -39,6 +40,9 @@ from datariver.infrastructure.db.models.integration import (
     ObjectManifestModel,
     OutboxEventModel,
     SeedRunModel,
+    UploadPreparationJobModel,
+    UploadPreparationReceiptModel,
+    UploadRegistrationCandidateModel,
 )
 from datariver.infrastructure.db.models.knowledge import (
     ChangeOperationModel,
@@ -115,6 +119,7 @@ __all__ = [
     "OutboxEventModel",
     "PolicyDecisionModel",
     "ProjectionDeploymentModel",
+    "RegistrationContentBindingModel",
     "ReleaseEdgeModel",
     "ReleaseModel",
     "ReleaseNodeModel",
@@ -125,6 +130,9 @@ __all__ = [
     "SeedRunModel",
     "StateTransitionModel",
     "SubjectModel",
+    "UploadPreparationJobModel",
+    "UploadPreparationReceiptModel",
+    "UploadRegistrationCandidateModel",
     "ValidationResultModel",
     "WorkspaceMembershipModel",
     "WorkspaceModel",

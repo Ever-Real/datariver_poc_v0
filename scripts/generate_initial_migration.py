@@ -63,6 +63,7 @@ def build_upgrade() -> ops.UpgradeOps:
                         "NULLIF(current_setting('app.subject_id', true), '')::uuid)"
                     )
                 )
+    operations.append(ops.ExecuteSQLOp(_manifest_content_profile_immutability_sql()))
     operations.extend(
         ops.CreateForeignKeyOp.from_constraint(constraint)
         for constraint in _deferred_foreign_keys()
@@ -94,10 +95,14 @@ BEGIN
         GRANT SELECT, INSERT ON catalog.export_requests TO datariver_app;
         GRANT SELECT, INSERT ON governance.change_request_items,
             governance.approvals, governance.state_transitions TO datariver_app;
+        GRANT SELECT, INSERT ON governance.registration_content_bindings TO datariver_app;
         GRANT SELECT, INSERT, UPDATE ON governance.change_requests TO datariver_app;
         GRANT SELECT ON integration.jobs, integration.job_attempts TO datariver_app;
         GRANT INSERT ON integration.jobs TO datariver_app;
         GRANT SELECT, INSERT, UPDATE ON integration.object_manifests TO datariver_app;
+        GRANT SELECT, INSERT ON integration.upload_preparation_jobs TO datariver_app;
+        GRANT SELECT ON integration.upload_preparation_receipts,
+            integration.upload_registration_candidates TO datariver_app;
         GRANT SELECT, INSERT ON integration.idempotency_keys,
             integration.outbox_events TO datariver_app;
         GRANT SELECT ON knowledge.graphs, knowledge.ontology_versions,
@@ -173,10 +178,43 @@ $datariver$
 """.strip()
 
 
+def _manifest_content_profile_immutability_sql() -> str:
+    return """
+CREATE FUNCTION integration.reject_object_manifest_content_profile_change()
+RETURNS trigger
+LANGUAGE plpgsql
+SECURITY INVOKER
+SET search_path = pg_catalog
+AS $function$
+BEGIN
+    IF NEW.content_profile IS DISTINCT FROM OLD.content_profile THEN
+        RAISE EXCEPTION 'object manifest content_profile is immutable'
+            USING ERRCODE = '23514';
+    END IF;
+    RETURN NEW;
+END
+$function$;
+
+CREATE TRIGGER reject_object_manifest_content_profile_change
+BEFORE UPDATE OF content_profile ON integration.object_manifests
+FOR EACH ROW
+EXECUTE FUNCTION integration.reject_object_manifest_content_profile_change()
+""".strip()
+
+
 def build_downgrade() -> ops.DowngradeOps:
     operations: list[ops.MigrateOperation] = [
-        ops.DropConstraintOp.from_constraint(constraint)
-        for constraint in reversed(_deferred_foreign_keys())
+        ops.ExecuteSQLOp(
+            "DROP TRIGGER reject_object_manifest_content_profile_change "
+            "ON integration.object_manifests"
+        ),
+        ops.ExecuteSQLOp(
+            "DROP FUNCTION integration.reject_object_manifest_content_profile_change()"
+        ),
+        *(
+            ops.DropConstraintOp.from_constraint(constraint)
+            for constraint in reversed(_deferred_foreign_keys())
+        ),
     ]
     for table in reversed(Base.metadata.sorted_tables):
         operations.append(ops.DropTableOp.from_table(table))

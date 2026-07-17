@@ -63,6 +63,7 @@ generation; a separate facet projection and a true incremental DataHub source cu
 |---|---|---|
 | `governance.change_requests` | `id`, `workspace_id + number UQ`, type/title/description/state/requester/classification, `version`, timestamps | change aggregate/state machine |
 | `governance.change_request_items` | `id`, `change_request_id + ordinal UQ`, typed provider target/aspect/operation, before/after hashes and document, nullable all-or-none server binding (`asset/type/system/domain/owner/classification/lifecycle/source/observed/hash`) | one immutable typed DataHub aspect plus creation-time target evidence; unbound legacy rows are quarantined |
+| `governance.registration_content_bindings` | candidate/hash UQ, change item UQ, request/item/creator composite workspace FKs, created time | append-only candidate-to-governed-item provenance; no ordinary update/delete grant |
 | `governance.approvals` | `id`, `change_request_id + stage + actor_id UQ`, decision/reason/actor/policy/time | append-only actor-separated decisions |
 | `governance.state_transitions` | `id`, request, from/to, actor, reason, policy decision, occurrence | append-only state history |
 
@@ -75,7 +76,10 @@ generation; a separate facet projection and a true incremental DataHub source cu
 | `integration.outbox_events` | event PK, workspace/aggregate/type/schema/payload/time, publish/dead-letter/lease/attempt/error | transactional event recovery source and isolated poison-event evidence; relay deletion is revoked |
 | `integration.inbox_messages` | PK `consumer + event_id`, workspace/received/completed/result hash | consumer deduplication; relay deletion is revoked |
 | `integration.idempotency_keys` | PK `workspace + operation + key_hash`, request hash/result/expiry | HTTP/command replay control |
-| `integration.object_manifests` | `id`, `bucket + object_key UQ`, declared/actual size-MIME-SHA, multipart/parts, state/classification/owner, completion/validation attempts, lease/error/summary, expiry/retention, `version`, timestamps | quarantine-to-accepted lifecycle |
+| `integration.object_manifests` | `id`, `workspace + id UQ`, `bucket + object_key UQ`, declared/actual size-MIME-SHA, explicit allowlisted content profile, multipart/parts, state/classification/owner, completion/validation attempts, lease/error/summary, expiry/retention, `version`, timestamps | quarantine-to-accepted lifecycle; filename/MIME never implies proposal capability |
+| `integration.upload_preparation_jobs` | upload/requester composite FKs, exact source-evidence identity UQ, source configuration UQ, typed state, lease token/time, attempts/progress/error, optimistic version | durable typed preparation claim; execution role access is deliberately not granted by `0016` |
+| `integration.upload_preparation_receipts` | exact job source-evidence/upload composite FKs and UQs, source/accepted SHA equality, locator hash, optional ETag/VersionId, parser/scanner/schema/config versions, counts/root/receipt hashes | append-only full-input preparation receipt |
+| `integration.upload_registration_candidates` | receipt/ordinal UQ, receipt/asset UQ, local asset ID, typed description operation/value and candidate hash | append-only server-prepared candidate; no URN, Aspect, classification, provider document or object coordinate |
 | `integration.seed_runs` | `id`, `workspace + namespace + pack_version UQ`, content hash/state/counts/apply/remove time | optional pack ownership/audit |
 | `integration.inference_provider_profile_versions` | workspace/profile key/version UQ, server route key, provider/model/deployment identities, kind, jurisdiction/region, classification ceiling, two bounded attestation snapshots, payload hash, maker/checker/revocation and optimistic version | immutable server-registered routing eligibility; no endpoint or credential |
 | `integration.inference_provider_generations` | workspace PK, monotonic generation and update time | transactional provider-routing invalidation generation |
@@ -150,6 +154,16 @@ projection values were their creation-time evidence. New domain creation require
 server-generated binding. The authorization fingerprint covers identity and scope attributes;
 source version and observation time remain separate evidence. No foreign key points to the
 rebuildable catalog projection.
+Alembic `0016` adds the disabled-first typed BULK preparation foundation from ADR-0016: existing
+manifests default to non-executable `FORMAT_ONLY_V1`, preparation jobs have lease/state constraints,
+and completed receipts, candidates and candidate-to-change bindings are append-only to ordinary
+roles. All relationships carry workspace, all new tables use forced RLS, and every new foreign key
+uses `RESTRICT`. The manifest content profile is immutable after insert. Because the catalog projection
+is rebuildable, candidate target IDs are historical evidence rather than physical foreign keys and
+must be re-resolved under the same workspace before proposal creation. The existing BYPASSRLS upload
+role receives no access to the new tables; a workspace/correlation-bound execution boundary remains
+an activation prerequisite. No preparation endpoint, parser worker or proposal capability is enabled
+by this schema revision.
 
 ## Constraints enforced outside DDL
 

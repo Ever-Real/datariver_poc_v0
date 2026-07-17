@@ -44,13 +44,20 @@ scale/availability/team-ownership evidence.
 
 ## 3. Verified baseline and important limitations
 
-The current branch passes 388 backend tests, strict mypy over 186 source/test files, Ruff, and 18 frontend
+The current branch passes 393 backend tests, strict mypy over 187 source/test files, Ruff, and 18 frontend
 test files/75 tests plus type/lint/build. The frontend artifact is JS 479.89 kB (gzip 137.78 kB) and
 CSS 38.74 kB (gzip 7.87 kB). Deterministic migration generation and static
 architecture/Compose/role checks also pass.
 The hybrid runtime has live evidence for PostgreSQL RLS, Keycloak service-token OIDC, APISIX,
 Vite proxying, DataHub authentication and semiconductor seed verification. Target DataHub, target
 object storage, production identity, large data, backup/restore and 60-minute soak gates remain open.
+
+The typed BULK path now has a disabled-first persistence foundation: an explicit non-executable
+default profile, leased preparation jobs, immutable receipts/candidates and a unique candidate-to-CR
+provenance table with forced RLS and API-only bounded grants. The existing BYPASSRLS upload role has
+no access to these new tables. No parser, preparation endpoint or proposal capability is deployed.
+Full malicious-input scanning, target Object VersionId/conditional copy, manifest lock-and-verify,
+a workspace/correlation-bound execution role and durable batch checkpoints remain promotion gates.
 
 The approved DataHub provider baseline is the stable `v1.6.0` contract in ADR-0008. Production
 promotion requires the external deployment to pin the reviewed OCI digests, enable runtime version

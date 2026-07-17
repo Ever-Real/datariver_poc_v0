@@ -55,6 +55,13 @@ class ChangeItemModel(Base, UuidPrimaryKeyMixin):
             "aspect_name",
         ),
         UniqueConstraint("change_request_id", "ordinal"),
+        UniqueConstraint("workspace_id", "id"),
+        UniqueConstraint(
+            "workspace_id",
+            "change_request_id",
+            "id",
+            name="uq_change_request_item_request_identity",
+        ),
         CheckConstraint(
             "(target_asset_id IS NULL AND target_asset_type IS NULL "
             "AND target_system_id IS NULL AND target_domain_id IS NULL "
@@ -104,6 +111,60 @@ class ChangeItemModel(Base, UuidPrimaryKeyMixin):
     target_source_version: Mapped[str | None] = mapped_column(String(255))
     target_observed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     target_binding_hash: Mapped[str | None] = mapped_column(String(64))
+
+
+class RegistrationContentBindingModel(Base, UuidPrimaryKeyMixin):
+    __tablename__ = "registration_content_bindings"
+    __table_args__ = (
+        UniqueConstraint("workspace_id", "id"),
+        UniqueConstraint("workspace_id", "candidate_id"),
+        UniqueConstraint("workspace_id", "change_item_id"),
+        CheckConstraint(
+            "candidate_hash ~ '^[0-9a-f]{64}$'",
+            name="candidate_hash_valid",
+        ),
+        ForeignKeyConstraint(
+            ("workspace_id", "candidate_id", "candidate_hash"),
+            (
+                "integration.upload_registration_candidates.workspace_id",
+                "integration.upload_registration_candidates.id",
+                "integration.upload_registration_candidates.candidate_hash",
+            ),
+            name="fk_reg_content_bindings_candidate_content",
+            ondelete="RESTRICT",
+        ),
+        ForeignKeyConstraint(
+            ("workspace_id", "change_request_id"),
+            ("governance.change_requests.workspace_id", "governance.change_requests.id"),
+            name="fk_reg_content_bindings_workspace_request",
+            ondelete="RESTRICT",
+        ),
+        ForeignKeyConstraint(
+            ("workspace_id", "change_request_id", "change_item_id"),
+            (
+                "governance.change_request_items.workspace_id",
+                "governance.change_request_items.change_request_id",
+                "governance.change_request_items.id",
+            ),
+            name="fk_reg_content_bindings_request_item",
+            ondelete="RESTRICT",
+        ),
+        ForeignKeyConstraint(
+            ("workspace_id", "created_by"),
+            ("iam.workspace_memberships.workspace_id", "iam.workspace_memberships.subject_id"),
+            name="fk_reg_content_bindings_workspace_creator",
+            ondelete="RESTRICT",
+        ),
+        {"schema": "governance"},
+    )
+
+    workspace_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), nullable=False)
+    candidate_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), nullable=False)
+    candidate_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    change_request_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), nullable=False)
+    change_item_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), nullable=False)
+    created_by: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
 
 class ApprovalModel(Base, UuidPrimaryKeyMixin):
