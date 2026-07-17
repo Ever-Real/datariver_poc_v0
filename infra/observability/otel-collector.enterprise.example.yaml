@@ -1,0 +1,18 @@
+# Deployment-owned extension. Copy this file to a protected runtime location,
+# replace the endpoint, and add the exporter to the required pipelines in the
+# base collector configuration. Never commit the endpoint credential.
+exporters:
+  otlphttp/enterprise:
+    endpoint: https://observability.example.internal/otlp
+    headers:
+      Authorization: ${env:OTEL_ENTERPRISE_AUTHORIZATION}
+
+# Example after identity, TLS and redaction review:
+# service:
+#   pipelines:
+#     traces:
+#       exporters: [otlp/tempo, otlphttp/enterprise]
+#     metrics:
+#       exporters: [prometheus, otlphttp/enterprise]
+#     logs:
+#       exporters: [otlphttp/loki, otlphttp/enterprise]

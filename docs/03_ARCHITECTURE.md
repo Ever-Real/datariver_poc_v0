@@ -38,8 +38,8 @@ flowchart LR
     AF["Airflow scheduled and bulk workflows"] --> A
     A -. "future durable dispatch; not wired" .-> IW["Typed assistant inference worker contract (disabled first)"]
     IW -. "future approved adapter" .-> L["Approved inference provider"]
-    A -. "future trace export" .-> OT["OpenTelemetry collector/backend (not deployed)"]
-    W -. "future trace export" .-> OT
+    A -. "reviewed OTLP instrumentation" .-> OT["Optional OpenTelemetry Collector -> Prometheus/Grafana/Tempo/Loki"]
+    W -. "reviewed OTLP instrumentation" .-> OT
 ```
 
 Only the gateway/UI ports are public. PostgreSQL, Valkey, object storage, OPA, DataHub credentials, graph protocols, and telemetry backends stay on private networks.

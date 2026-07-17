@@ -18,6 +18,7 @@ COMPOSE_FILES = (
     ROOT / "compose.airflow.yaml",
     ROOT / "compose.gateway.yaml",
 )
+AUX_COMPOSE_FILE = ROOT / "aux-compose.yml"
 REQUIRED_DOCKERIGNORE_ENTRIES = {
     ".env",
     ".env.*",
@@ -72,7 +73,8 @@ def _yaml(path: Path) -> dict[str, Any]:
 
 
 def verify_compose() -> None:
-    documents = {path: _yaml(path) for path in COMPOSE_FILES}
+    compose_files = (*COMPOSE_FILES, AUX_COMPOSE_FILE)
+    documents = {path: _yaml(path) for path in compose_files}
     base_services = set(documents[COMPOSE_FILES[0]].get("services", {}))
     base_secrets = set(documents[COMPOSE_FILES[0]].get("secrets", {}))
     for path, document in documents.items():
@@ -110,6 +112,55 @@ def verify_compose() -> None:
                         f"{path.name}:{name} violates least-privilege secret set: "
                         f"expected={sorted(expected)}, actual={sorted(names)}"
                     )
+
+
+def verify_observability_contract() -> None:
+    auxiliary = _yaml(AUX_COMPOSE_FILE)
+    services = auxiliary.get("services", {})
+    if not isinstance(services, dict):
+        raise AssertionError("aux-compose.yml: services must be a mapping")
+    expected_services = {
+        "otel-collector",
+        "prometheus",
+        "grafana",
+        "alertmanager",
+        "tempo",
+        "loki",
+    }
+    if set(services) != expected_services:
+        raise AssertionError("aux-compose.yml must contain the approved observability services")
+    grafana = services["grafana"]
+    if grafana.get("secrets") != ["grafana_admin_password"]:
+        raise AssertionError("Grafana must use a generated file-mounted admin secret")
+    environment = grafana.get("environment", {})
+    if environment.get("GF_SECURITY_ADMIN_PASSWORD__FILE") != (
+        "/run/secrets/grafana_admin_password"
+    ):
+        raise AssertionError("Grafana admin password must be sourced from its Compose secret")
+    for name, service in services.items():
+        profiles = service.get("profiles", [])
+        if profiles != ["observability"]:
+            raise AssertionError(f"aux-compose.yml:{name} must remain opt-in")
+        if "no-new-privileges:true" not in service.get("security_opt", []):
+            raise AssertionError(f"aux-compose.yml:{name} must prevent privilege escalation")
+    required_files = {
+        ROOT / "infra" / "observability" / "otel-collector.yaml",
+        ROOT / "infra" / "observability" / "otel-collector.enterprise.example.yaml",
+        ROOT / "infra" / "observability" / "prometheus.yml",
+        ROOT / "infra" / "observability" / "alertmanager.yml",
+        ROOT / "infra" / "observability" / "tempo.yaml",
+        ROOT / "infra" / "observability" / "loki.yaml",
+        ROOT
+        / "infra"
+        / "observability"
+        / "grafana"
+        / "provisioning"
+        / "datasources"
+        / "datariver.yaml",
+    }
+    missing = {path.relative_to(ROOT).as_posix() for path in required_files if not path.is_file()}
+    if missing:
+        raise AssertionError(f"observability configuration is incomplete: {sorted(missing)}")
 
 
 def verify_build_context() -> None:
@@ -255,7 +306,7 @@ def verify_identity_assurance_contract() -> None:
 
 
 def verify_runtime_hardening() -> None:
-    documents = {path.name: _yaml(path) for path in COMPOSE_FILES}
+    documents = {path.name: _yaml(path) for path in (*COMPOSE_FILES, AUX_COMPOSE_FILE)}
     expected_read_only = {
         "compose.yaml": {
             "api",
@@ -267,6 +318,7 @@ def verify_runtime_hardening() -> None:
         },
         "compose.identity.yaml": {"keycloak"},
         "compose.gateway.yaml": {"apisix"},
+        "aux-compose.yml": {"otel-collector", "prometheus", "alertmanager"},
     }
     expected_no_new_privileges = {
         "compose.yaml": expected_read_only["compose.yaml"],
@@ -278,6 +330,14 @@ def verify_runtime_hardening() -> None:
             "airflow-scheduler",
             "airflow-dag-processor",
             "airflow-triggerer",
+        },
+        "aux-compose.yml": {
+            "otel-collector",
+            "prometheus",
+            "grafana",
+            "alertmanager",
+            "tempo",
+            "loki",
         },
     }
     for filename, names in expected_read_only.items():
@@ -536,6 +596,7 @@ def verify_document_links() -> None:
 
 def main() -> None:
     verify_compose()
+    verify_observability_contract()
     verify_build_context()
     verify_datahub_release_contract()
     verify_identity_assurance_contract()

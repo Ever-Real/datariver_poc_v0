@@ -147,6 +147,32 @@ def test_production_rejects_prerelease_datahub_contract() -> None:
         )
 
 
+def test_production_rejects_an_unapproved_stable_datahub_contract() -> None:
+    with pytest.raises(ValidationError, match=r"approved DataHub v1\.6\.0"):
+        settings(
+            app_env="production",
+            app_public_origin="https://catalog.example.com",
+            app_cors_origins=("https://catalog.example.com",),
+            oidc_issuer="https://idp.example.com/realms/data",
+            oidc_jwks_url="https://idp.example.com/realms/data/certs",
+            datahub_base_url="https://datahub.example.com",
+            datahub_version_enforcement="enforce",
+            datahub_expected_version="v1.7.0",
+            s3_public_endpoint_url="https://objects.example.com",
+        )
+
+
+def test_ha_accepted_requires_an_explicit_evidence_reference() -> None:
+    with pytest.raises(ValidationError, match="deployment evidence"):
+        settings(deployment_tier="HA_ACCEPTED")
+
+    configured = settings(
+        deployment_tier="HA_ACCEPTED",
+        deployment_evidence_reference="release-2026-07-17-ha-drill",
+    )
+    assert configured.deployment_tier == "HA_ACCEPTED"
+
+
 def test_parses_comma_separated_collection_environment_values(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

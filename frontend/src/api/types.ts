@@ -15,6 +15,7 @@ export interface ExternalSystemLink {
 export interface CapabilitiesResponse {
   items: Capability[]
   external_system_links: ExternalSystemLink[]
+  deployment_tier: 'SINGLE_NODE_PILOT' | 'HA_CANDIDATE' | 'HA_ACCEPTED'
 }
 
 export interface CatalogExportCapability {

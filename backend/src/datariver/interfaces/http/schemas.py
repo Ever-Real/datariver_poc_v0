@@ -354,6 +354,7 @@ class ExternalSystemLinkResponse(BaseModel):
 class CapabilitiesResponse(BaseModel):
     items: list[CapabilityResponse]
     external_system_links: list[ExternalSystemLinkResponse] = Field(default_factory=list)
+    deployment_tier: Literal["SINGLE_NODE_PILOT", "HA_CANDIDATE", "HA_ACCEPTED"]
 
 
 class ProblemDetails(BaseModel):

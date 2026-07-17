@@ -28,6 +28,10 @@ class Settings(BaseSettings):
         "127.0.0.1",
         "api",
     )
+    deployment_tier: Literal["SINGLE_NODE_PILOT", "HA_CANDIDATE", "HA_ACCEPTED"] = (
+        "SINGLE_NODE_PILOT"
+    )
+    deployment_evidence_reference: str | None = Field(default=None, max_length=500)
 
     database_url: str
     database_secret_ref: str
@@ -318,6 +322,10 @@ class Settings(BaseSettings):
                 for marker in forbidden_version_markers
             ):
                 raise ValueError("Production DataHub versions must be stable immutable releases.")
+            if self.datahub_expected_version != "v1.6.0":
+                raise ValueError("Production must use the approved DataHub v1.6.0 contract.")
+        if self.deployment_tier == "HA_ACCEPTED" and not self.deployment_evidence_reference:
+            raise ValueError("HA_ACCEPTED requires an accepted deployment evidence reference.")
         return self
 
 

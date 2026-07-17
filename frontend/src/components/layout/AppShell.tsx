@@ -10,6 +10,7 @@ interface AppShellProps {
   page: Page
   client?: ApiClient
   workspace: string
+  deploymentTier?: 'SINGLE_NODE_PILOT' | 'HA_CANDIDATE' | 'HA_ACCEPTED'
   displayName: string
   adminMenuItems: AdminMenuItem[]
   externalSystemLinks: ExternalSystemLink[]
@@ -28,6 +29,7 @@ export function AppShell({
   page,
   client,
   workspace,
+  deploymentTier = 'SINGLE_NODE_PILOT',
   displayName,
   adminMenuItems,
   externalSystemLinks,
@@ -48,6 +50,7 @@ export function AppShell({
         page={page}
         client={client}
         workspace={workspace}
+        deploymentTier={deploymentTier}
         displayName={displayName}
         adminMenuItems={adminMenuItems}
         externalSystemLinks={externalSystemLinks}
@@ -67,6 +70,7 @@ export function AppShell({
         )}
         <div className="page-content" key={workspace || 'workspace-unset'}>{children}</div>
       </main>
+      <footer className="deployment-footer">{deploymentTier === 'SINGLE_NODE_PILOT' ? '[Environment: Single-node Pilot]' : `[Environment: ${deploymentTier === 'HA_CANDIDATE' ? 'HA Candidate' : 'HA Accepted'}]`}</footer>
     </div>
   )
 }

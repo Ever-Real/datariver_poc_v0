@@ -6,6 +6,7 @@ export interface AdminMenuItem { id: string; label: string }
 interface ProfileMenuProps {
   displayName: string
   workspace: string
+  deploymentTier: 'SINGLE_NODE_PILOT' | 'HA_CANDIDATE' | 'HA_ACCEPTED'
   adminMenuItems: AdminMenuItem[]
   onAdmin: (section: string) => void
   onWorkspaceChange: (workspace: string) => void
@@ -16,6 +17,7 @@ interface ProfileMenuProps {
 export function ProfileMenu({
   displayName,
   workspace,
+  deploymentTier,
   adminMenuItems,
   onAdmin,
   onWorkspaceChange,
@@ -78,7 +80,7 @@ export function ProfileMenu({
         <div className="profile-menu-panel" role="menu" aria-label="사용자 작업">
           <header>
             <UserRound size={16} aria-hidden="true" />
-            <div><strong title={displayName}>{displayName}</strong><small>조직 계정 · Single-node Pilot</small></div>
+            <div><strong title={displayName}>{displayName}</strong><small>조직 계정 · {deploymentTierLabel(deploymentTier)}</small></div>
           </header>
           <form className="profile-workspace" onSubmit={applyWorkspace}>
             <label htmlFor="profile-workspace-id">Workspace</label>
@@ -102,4 +104,12 @@ export function ProfileMenu({
       )}
     </div>
   )
+}
+
+export function deploymentTierLabel(tier: ProfileMenuProps['deploymentTier']): string {
+  return ({
+    SINGLE_NODE_PILOT: 'Environment: Single-node Pilot',
+    HA_CANDIDATE: 'Environment: HA Candidate',
+    HA_ACCEPTED: 'Environment: HA Accepted',
+  } as const)[tier]
 }

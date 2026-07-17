@@ -27,14 +27,14 @@ Reviewed 2026-07-14 against official project documentation/repositories.
 | object API | SeaweedFS 4.39 S3 | Apache-2.0 | active S3-compatible default, conformance tested |
 | authorization policy | embedded typed ABAC; OPA adapter/profile | Apache-2.0 for OPA | app remains enforcement point |
 | identity | external OIDC; Keycloak local profile | Apache-2.0 | no application passwords |
-| telemetry | OpenTelemetry, Prometheus, Jaeger | Apache-2.0 | vendor-neutral signals |
+| telemetry | OpenTelemetry Collector, Prometheus, Grafana, Alertmanager, Tempo, Loki | component-specific review | opt-in vendor-neutral signal boundary |
 | gateway | Apache APISIX profile | Apache-2.0 | auth/routing/coarse quota; app ABAC remains |
 
 ## Restricted alternatives
 
 - MinIO is not the new default: its official repository is archived/read-only as of 2026-04-25 and the community distribution/license posture no longer meets the continuing-maintenance preference. Existing S3/MinIO endpoints remain possible through the S3 port after conformance testing.
 - Neo4j Community is an optional compatibility/read-projection profile only. Correctness cannot depend on clustering, online backup, or fine-grained authorization available only outside Community. Bolt is never public.
-- Grafana is an opt-in observability UI because AGPL obligations need an explicit distribution review; Prometheus/Jaeger remain usable without it.
+- Grafana, Tempo and Loki remain opt-in observability components because their distribution/license posture needs an explicit review. The `aux-compose.yml` Pilot overlay is not a production acceptance shortcut.
 - A message broker may replace Valkey delivery when throughput/retention warrants it, but canonical outbox/inbox semantics may not change.
 
 ## Dependency policy

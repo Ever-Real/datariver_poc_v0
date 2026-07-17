@@ -63,6 +63,7 @@ ensure_random_secret airflow_client_secret 32
 ensure_random_secret airflow_admin_password 24
 ensure_random_secret keycloak_demo_password 18
 ensure_random_secret keycloak_admin_password 24
+ensure_random_secret grafana_admin_password 24
 ensure_random_secret valkey_cache_password 32
 ensure_random_secret valkey_queue_password 32
 if [ -n "$datahub_token" ]; then

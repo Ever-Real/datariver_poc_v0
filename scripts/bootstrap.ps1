@@ -96,6 +96,7 @@ $airflowClientSecret = Get-OrCreateSecret "airflow_client_secret"
 $airflowAdminPassword = Get-OrCreateSecret "airflow_admin_password" 24
 $keycloakDemoPassword = Get-OrCreateSecret "keycloak_demo_password" 18
 $keycloakAdminPassword = Get-OrCreateSecret "keycloak_admin_password" 24
+$grafanaAdminPassword = Get-OrCreateSecret "grafana_admin_password" 24
 $cachePassword = Get-OrCreateSecret "valkey_cache_password"
 $queuePassword = Get-OrCreateSecret "valkey_queue_password"
 $s3AccessKeyPath = Join-Path $secretsDirectory "s3_access_key"

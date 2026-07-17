@@ -14,9 +14,10 @@ evidence.
 | `compose.identity.yaml` | Keycloak 26.7 and isolated Keycloak database/credentials | local identity only |
 | `compose.airflow.yaml` | Airflow 3.3 API server, scheduler, DAG processor, triggerer and init using LocalExecutor/isolated DB role | scheduled scan/probe only |
 | `compose.gateway.yaml` | APISIX 3.17 standalone configuration | local gateway/rate limit/health-check profile |
+| `aux-compose.yml` + `observability` profile | OTel Collector, Prometheus, Grafana, Alertmanager, Tempo and Loki | optional Single-node Pilot telemetry backend; not an HA or production evidence claim |
 | `semiconductor-seed` profile | deterministic one-shot seed command | explicit non-production data |
 
-No Compose file starts DataHub. OPA, a separate graph database and a full observability stack are documented extension seams, not shipped runtime dependencies in this baseline.
+No Compose file starts DataHub. OPA and a separate graph database remain documented extension seams.
 
 The supported production DataHub provider contract is stable `v1.6.0`. The external deployment
 owner must use the component OCI index digests in
@@ -25,9 +26,23 @@ mutable `head`, `latest` or RC tags. DataRiver production sets
 `DATAHUB_VERSION_ENFORCEMENT=enforce`; development may use `report` only to expose a degraded
 capability while an external stack is being upgraded.
 
-Run `uv run python scripts/verify_datahub_contract.py --base-url <target-datahub-url>` during
-promotion. A successful version probe is only the first gate; the live provider contract tests
-listed below remain mandatory.
+During promotion, the external DataHub owner renders its own Compose deployment and proves both its
+images and runtime endpoint. The v1 repository deliberately does not add an incomplete DataHub
+stack just to own these images.
+
+```bash
+# At the external DataHub deployment repository, after all overrides are merged.
+docker compose -f <datahub-compose-files> config --format json \
+  > runtime/datahub-rendered.compose.json
+
+# From DataRiver, this fails on an absent component, tag-only image, or a different digest.
+uv run python scripts/verify_datahub_image_inventory.py \
+  runtime/datahub-rendered.compose.json
+uv run python scripts/verify_datahub_contract.py --base-url <target-datahub-url>
+```
+
+A successful image/version check is only the first gate; the live provider contract tests listed
+below remain mandatory.
 
 ## Configuration and bootstrap
 
@@ -57,6 +72,26 @@ docker compose -f compose.yaml -f compose.identity.yaml \
 docker compose -f compose.yaml -f compose.identity.yaml \
   -f compose.airflow.yaml -f compose.gateway.yaml up -d --build --wait
 ```
+
+The observability services are an explicit opt-in profile. They bind their three UIs to loopback
+only, generate the Grafana bootstrap password in the ignored `secrets/` directory, and do not get
+the API's OIDC token or DataHub secret:
+
+```bash
+docker compose -f compose.yaml -f aux-compose.yml --profile observability config --quiet
+docker compose -f compose.yaml -f aux-compose.yml --profile observability up -d --wait
+```
+
+The overlay provides the approved telemetry backends and an OTLP intake boundary. It does **not**
+scrape the ABAC-protected DataRiver `/operations/metrics` endpoint with an administrator token, and
+it does not claim application tracing is already installed. A target deployment must provision a
+least-privilege scrape/OTLP identity, reviewed instrumentation, redaction test evidence, dashboards,
+alerts and a retention plan before signals are used operationally. The collector configuration
+removes authorization, SQL, prompt, evidence, URN and object-key attributes before export; this is
+a guardrail, not a substitute for source-side minimization. For an existing enterprise telemetry
+platform, use the reviewed deployment-owned OTLP exporter pattern in
+[`infra/observability/otel-collector.enterprise.example.yaml`](../infra/observability/otel-collector.enterprise.example.yaml);
+the checked-in Pilot config never embeds an enterprise endpoint or credential.
 
 For local Keycloak, merge `compose.identity.yaml` and run the non-production identity bootstrap described in the root README. Enterprise identity deployments provision workspace/subject attributes through controlled environment onboarding.
 
@@ -144,9 +179,12 @@ CI verifies backend format/lint/types/tests, frontend type/lint/tests/build, gen
 
 Image tags are exact in development manifests; production promotes digest-pinned images. `latest` is forbidden. Major dependency upgrades require an ADR, migration rehearsal and rollback evidence.
 
-SeaweedFS remains the local/Pilot upload implementation. Immutable archive production promotion uses
-the separate port and evidence gate in ADR-0012; no checked-in product label or Object Lock setting
-is treated as WORM acceptance.
+SeaweedFS remains the local/Pilot upload implementation. `application.ports.ObjectStore` is the
+provider-neutral S3 boundary and `infrastructure.object_store.S3ObjectStore` uses only that S3
+contract, so an existing MinIO-compatible endpoint can be selected by deployment configuration
+without changing use cases. Immutable archive production promotion uses the separate port and
+evidence gate in ADR-0012; no checked-in product label or Object Lock setting is treated as WORM
+acceptance.
 
 ## Failure behavior
 

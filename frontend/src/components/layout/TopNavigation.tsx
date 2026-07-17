@@ -13,6 +13,7 @@ interface TopNavigationProps {
   page: Page
   client?: ApiClient
   workspace: string
+  deploymentTier: 'SINGLE_NODE_PILOT' | 'HA_CANDIDATE' | 'HA_ACCEPTED'
   displayName: string
   adminMenuItems: AdminMenuItem[]
   externalSystemLinks: ExternalSystemLink[]
@@ -28,6 +29,7 @@ export function TopNavigation({
   page,
   client,
   workspace,
+  deploymentTier,
   displayName,
   adminMenuItems,
   externalSystemLinks,
@@ -69,6 +71,7 @@ export function TopNavigation({
       <ProfileMenu
         displayName={displayName}
         workspace={workspace}
+        deploymentTier={deploymentTier}
         adminMenuItems={adminMenuItems}
         onAdmin={onNavigateAdmin}
         onWorkspaceChange={onWorkspaceChange}

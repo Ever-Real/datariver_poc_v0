@@ -25,6 +25,7 @@ export function App() {
   const [catalogQuery, setCatalogQuery] = useState(() => new URL(window.location.href).searchParams.get('q') ?? '')
   const [workspace, setWorkspace] = useState(() => window.localStorage.getItem('datariver.workspace') ?? '')
   const [externalSystemLinks, setExternalSystemLinks] = useState<ExternalSystemLink[]>([])
+  const [deploymentTier, setDeploymentTier] = useState<CapabilitiesResponse['deployment_tier']>('SINGLE_NODE_PILOT')
   const [catalogExportWorkerEnabled, setCatalogExportWorkerEnabled] = useState(false)
   const [adminAccess, setAdminAccess] = useState<{
     workspace: string
@@ -71,11 +72,20 @@ export function App() {
     let active = true
     if (!workspace) {
       setExternalSystemLinks([])
+      setDeploymentTier('SINGLE_NODE_PILOT')
       return () => { active = false }
     }
     void client.request<CapabilitiesResponse>('/capabilities')
-      .then((response) => { if (active) setExternalSystemLinks(response.external_system_links) })
-      .catch(() => { if (active) setExternalSystemLinks([]) })
+      .then((response) => {
+        if (!active) return
+        setExternalSystemLinks(response.external_system_links)
+        setDeploymentTier(response.deployment_tier)
+      })
+      .catch(() => {
+        if (!active) return
+        setExternalSystemLinks([])
+        setDeploymentTier('SINGLE_NODE_PILOT')
+      })
     return () => { active = false }
   }, [client, workspace])
 
@@ -142,6 +152,7 @@ export function App() {
       page={page}
       client={client}
       workspace={workspace}
+      deploymentTier={deploymentTier}
       displayName={auth.user.profile.name ?? auth.user.profile.sub}
       adminMenuItems={adminMenuItems}
       externalSystemLinks={externalSystemLinks}

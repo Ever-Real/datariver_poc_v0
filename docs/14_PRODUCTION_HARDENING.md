@@ -295,9 +295,12 @@ budget visibility, not multi-replica HA or a target `max_connections` value.
   correlation; include queue/outbox lag, DB pool/locks, DataHub bulkhead/circuit/latency, cache hit/eviction, projection lag,
   denial rates and later LLM latency/tokens/cost/citation/refusal metrics.
 
-The current Prometheus endpoint now exports bounded configured/current API DB-pool gauges. Database
-lock/wait metrics, multi-replica aggregation, exporters, dashboards, alerts and the OTel pipeline
-remain target-deployment gates.
+The optional `aux-compose.yml` profile now provides a loopback-only Single-node Pilot OTel
+Collector, Prometheus, Grafana, Alertmanager, Tempo and Loki backbone with file-mounted Grafana
+credentials and collector-side sensitive-attribute deletion. It intentionally has no administrator
+bearer token and no implicit application exporter. Database lock/wait metrics, reviewed application
+OTLP instrumentation, least-privilege scrape identity, multi-replica aggregation, dashboards,
+alert routing and telemetry retention remain target-deployment gates.
 
 ## 10. Ordered execution backlog
 

@@ -384,3 +384,5 @@ secrets:
     file: ./secrets/s3_secret_key
   seaweed_s3_config:
     file: ./secrets/seaweed_s3_config.json
+  grafana_admin_password:
+    file: ./secrets/grafana_admin_password

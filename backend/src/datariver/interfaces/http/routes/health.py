@@ -127,4 +127,5 @@ async def capabilities(request: Request, context: ContextDep) -> CapabilitiesRes
             )
             if url is not None
         ],
+        deployment_tier=container.settings.deployment_tier,
     )

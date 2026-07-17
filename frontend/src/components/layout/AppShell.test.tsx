@@ -88,6 +88,7 @@ describe('application shell contracts', () => {
       <ProfileMenu
         displayName="Administrator"
         workspace="workspace-one"
+        deploymentTier="SINGLE_NODE_PILOT"
         adminMenuItems={[]}
         onAdmin={vi.fn()}
         onWorkspaceChange={vi.fn()}
@@ -108,6 +109,7 @@ describe('application shell contracts', () => {
       <ProfileMenu
         displayName="Administrator"
         workspace="workspace-one"
+        deploymentTier="SINGLE_NODE_PILOT"
         adminMenuItems={[{ id: 'retention', label: '보존정책' }]}
         onAdmin={onAdmin}
         onWorkspaceChange={vi.fn()}
@@ -148,6 +150,7 @@ describe('application shell contracts', () => {
       <TopNavigation
         page="catalog"
         workspace="workspace-one"
+        deploymentTier="SINGLE_NODE_PILOT"
         displayName="User"
         adminMenuItems={[{ id: 'memberships', label: '계정·권한' }]}
         externalSystemLinks={[{ system_id: 'datahub', label: 'DataHub', url: 'https://datahub.example.com' }]}
@@ -175,7 +178,7 @@ describe('application shell contracts', () => {
     fireEvent.click(screen.getByRole('button', { name: '적용' }))
     expect(onWorkspaceChange).toHaveBeenCalledWith('workspace-two')
     fireEvent.click(screen.getByRole('button', { name: 'User 사용자 메뉴' }))
-    expect(screen.getByText(/Single-node Pilot/)).toBeInTheDocument()
+    expect(screen.getByText(/Environment: Single-node Pilot/)).toBeInTheDocument()
     expect(screen.getByRole('link', { name: 'DataHub' })).toHaveAttribute('href', 'https://datahub.example.com')
     expect(screen.getByRole('link', { name: 'DataHub' })).toHaveAttribute('rel', 'noopener noreferrer')
   })
