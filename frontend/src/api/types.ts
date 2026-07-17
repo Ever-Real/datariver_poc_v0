@@ -174,6 +174,16 @@ export interface CatalogExportDownload {
   expires_seconds: number
 }
 
+export type UploadContentProfile = 'FORMAT_ONLY_V1' | 'DATASET_DESCRIPTION_CSV_V1'
+
+export type UploadPreparationState =
+  | 'QUEUED'
+  | 'PREPARING'
+  | 'READY'
+  | 'FAILED'
+  | 'CANCELLED'
+  | 'STALE'
+
 export interface UploadRecord {
   id: string
   display_name: string
@@ -182,12 +192,29 @@ export interface UploadRecord {
   content_type: string
   sha256: string
   classification: string
-  content_profile: 'FORMAT_ONLY_V1' | 'DATASET_DESCRIPTION_CSV_V1'
+  content_profile: UploadContentProfile
   expires_at: string
   version: number
   recommended_part_size_bytes: number
   validation_summary: Record<string, unknown>
   last_error_code: string | null
+}
+
+export interface UploadPreparation {
+  id: string
+  upload_id: string
+  content_profile: 'DATASET_DESCRIPTION_CSV_V1'
+  source_manifest_version: number
+  source_sha256: string
+  configuration_hash: string
+  state: UploadPreparationState
+  attempts: number
+  rows_processed: number
+  total_rows: number | null
+  last_error_code: string | null
+  created_at: string
+  updated_at: string
+  version: number
 }
 
 export interface ChangeRequestRecord {

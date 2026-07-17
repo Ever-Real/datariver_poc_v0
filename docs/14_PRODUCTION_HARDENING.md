@@ -45,10 +45,10 @@ scale/availability/team-ownership evidence.
 ## 3. Verified baseline and important limitations
 
 The current branch passes 429 backend tests, strict mypy over 191 source/test files and Ruff. The
-frontend type/lint/build gates and the changed registration workbench's 6 tests pass; the last
+frontend type/lint/build gates and the two changed registration test files' 17 tests pass; the last
 complete frontend baseline remains 18 files/75 tests, while the exact current whole-suite run remains
-open because bounded Windows/WSL network-drive runs ended without assertion output. The frontend artifact is JS 479.89 kB (gzip 137.78 kB) and
-CSS 38.74 kB (gzip 7.87 kB). Deterministic migration generation and static
+open because ordinary and single-worker five-minute Windows/WSL network-drive runs ended without assertion output. The frontend artifact is JS 487.87 kB (gzip 139.82 kB) and
+CSS 41.58 kB (gzip 8.31 kB). Deterministic migration generation and static
 architecture/Compose/role checks also pass.
 The hybrid runtime has live evidence for PostgreSQL RLS, Keycloak service-token OIDC, APISIX,
 Vite proxying, DataHub authentication and semiconductor seed verification. Target DataHub, target

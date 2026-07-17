@@ -102,6 +102,12 @@ ordered result chain over ordinal and candidate hash, not a Merkle inclusion pro
 authorized target resolver, fenced staging/finalize path, receipt/candidate read API and
 candidate-to-change command are not yet enabled; a `QUEUED` preparation is not an executable proposal.
 
+The current BULK UI sends `content_profile` explicitly rather than relying on the server default.
+Only an `ACCEPTED` `DATASET_DESCRIPTION_CSV_V1` upload exposes preparation controls. It first reads
+the no-store preparation list, then sends a bodyless create request with the exact quoted upload
+manifest version and a new idempotency key. Format-only, failed/stale and `READY` preparation views
+do not expose raw proposal, candidate execution or DataHub update actions.
+
 ### Change management
 
 | Method/path | Action | Purpose |

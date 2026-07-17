@@ -46,6 +46,13 @@ No runtime worker is wired: target rows must still be batch-resolved as authoriz
 with exact hierarchy matches, and attempt-local staging must be atomically fenced before a receipt
 or candidate can become visible.
 
+The BULK browser preserves the v0.3 300-pixel upload panel and dark workflow tracker while replacing
+client-side parsing and simulated updates with server truth. It sends the explicitly selected profile
+on upload initiation, lists/creates preparation only for an `ACCEPTED` typed source, uses the exact
+quoted manifest `If-Match` and a fresh idempotency key, and displays indeterminate progress until the
+server reports a row count. `READY` means preparation evidence only: no candidate, raw Aspect,
+change-request or DataHub action is exposed until the governed server contracts exist.
+
 ## Change management
 
 State machine:
