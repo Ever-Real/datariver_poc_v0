@@ -197,7 +197,7 @@ export function App() {
       {page === 'change-management' && <GovernancePage client={client} onStepUp={auth.beginStepUp} onPasswordReauth={auth.beginPasswordReauth} onEnroll={auth.beginWebAuthnEnrollment} />}
       {page === 'quality' && <QualityPage />}
       {page === 'knowledge' && <KnowledgePage client={client} />}
-      {page === 'monitoring' && <MonitoringPage />}
+      {page === 'monitoring' && <MonitoringPage client={client} />}
       {page === 'governance' && <PolicyGovernancePage />}
       {page === 'sharing' && <SharingPage client={client} onStepUp={auth.beginStepUp} onPasswordReauth={auth.beginPasswordReauth} onEnroll={auth.beginWebAuthnEnrollment} />}
       {page === 'chat' && <ChatPage client={client} />}

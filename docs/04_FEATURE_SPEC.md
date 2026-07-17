@@ -83,6 +83,7 @@ Any pre-apply review state → REJECTED or CANCELLED under policy
 
 - Capability cards for API, PostgreSQL, DataHub, cache, queue, object storage, graph, LLM, Airflow and policy.
 - The dashboard's legacy asset card layout is backed by the current typed DataHub projection: total non-deleted assets and non-blank description coverage, plus a bounded platform/database/schema breakdown. Tags, glossary mappings, quality scores, time-window history and audit rows are not manufactured when their governed read model is absent; their visible cards state that the metric is not collected under the current contract.
+- Monitoring restores the legacy full-height observability panel and refresh control using the authenticated capabilities response. A configured server-validated Grafana link opens as an external page; iframe embedding remains disabled until the deployment supplies approved origin, SSO and CSP/sandbox evidence.
 - Health is `healthy`, `degraded`, `unavailable`, or `unknown`; an unrelated unavailable capability does not blank the whole UI.
 - Job explorer shows attempts, retry class, correlation, external response hash and DLQ status without secret payloads.
 - Operator replay is an audited command that creates a new attempt; it does not rewrite history.
