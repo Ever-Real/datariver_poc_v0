@@ -385,6 +385,21 @@ class CatalogDescriptionPreview:
 
 
 @dataclass(frozen=True, slots=True)
+class CatalogColumnDescriptionPreview:
+    asset_id: UUID
+    target_ref: str
+    aspect_name: str
+    field_path: str
+    current_description: str | None
+    proposed_description: str
+    before_hash: str
+    after_hash: str
+    preview_etag: str
+    source_version: str
+    observed_at: datetime
+
+
+@dataclass(frozen=True, slots=True)
 class GovernanceApplyClaim:
     change_request: ChangeRequest
     job_id: UUID

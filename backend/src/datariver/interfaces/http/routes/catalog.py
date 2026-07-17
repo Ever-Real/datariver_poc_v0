@@ -37,6 +37,9 @@ from datariver.interfaces.http.presenters import (
 )
 from datariver.interfaces.http.schemas import (
     CatalogAssetResponse,
+    CatalogColumnDescriptionChangeRequest,
+    CatalogColumnDescriptionPreviewRequest,
+    CatalogColumnDescriptionPreviewResponse,
     CatalogDataHubEmbedResponse,
     CatalogDescriptionChangeRequest,
     CatalogDescriptionPreviewRequest,
@@ -672,6 +675,110 @@ async def create_asset_description_change_request(
         title=payload.title,
         change_description=payload.change_description,
         number=number,
+        subject=context.subject,
+        environment=context.environment,
+        request_id=context.request_id,
+        idempotency_key=idempotency_key,
+        request_hash=request_hash,
+    )
+    return change_request_response(change_request)
+
+
+@router.post(
+    "/assets/{asset_id}/column-description-previews",
+    response_model=CatalogColumnDescriptionPreviewResponse,
+)
+async def preview_asset_column_description(
+    asset_id: UUID,
+    payload: CatalogColumnDescriptionPreviewRequest,
+    request: Request,
+    response: Response,
+    context: ContextDep,
+    session: SessionDep,
+) -> CatalogColumnDescriptionPreviewResponse:
+    preview = await _description_service(request, session).preview_column_description(
+        asset_id=asset_id,
+        field_path=payload.field_path,
+        description=payload.description,
+        subject=context.subject,
+        environment=context.environment,
+        request_id=context.request_id,
+    )
+    response.headers["ETag"] = preview.preview_etag
+    response.headers["Cache-Control"] = "no-store, private"
+    return CatalogColumnDescriptionPreviewResponse(
+        asset_id=preview.asset_id,
+        target_ref=preview.target_ref,
+        aspect_name="schemaMetadata",
+        field_path=preview.field_path,
+        current_description=preview.current_description,
+        proposed_description=preview.proposed_description,
+        before_hash=preview.before_hash,
+        after_hash=preview.after_hash,
+        preview_etag=preview.preview_etag,
+        source_version=preview.source_version,
+        observed_at=preview.observed_at,
+    )
+
+
+@router.post(
+    "/assets/{asset_id}/column-description-change-requests",
+    response_model=ChangeRequestResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+async def create_asset_column_description_change_request(
+    asset_id: UUID,
+    payload: CatalogColumnDescriptionChangeRequest,
+    request: Request,
+    context: ContextDep,
+    session: SessionDep,
+    if_match: Annotated[str, Header(alias="If-Match", min_length=66, max_length=66)],
+    idempotency_key: Annotated[str, Header(alias="Idempotency-Key", min_length=16, max_length=200)],
+) -> ChangeRequestResponse | JSONResponse:
+    expected_preview_etag = _description_preview_etag(if_match)
+    request_hash = hashlib.sha256(
+        orjson.dumps(
+            {
+                "operation": "catalog.column-description-change-request.v1",
+                "asset_id": str(asset_id),
+                "expected_preview_etag": expected_preview_etag,
+                "field_path": payload.field_path,
+                "description": payload.description,
+                "title": payload.title,
+                "change_description": payload.change_description,
+            },
+            option=orjson.OPT_SORT_KEYS,
+        )
+    ).hexdigest()
+    current_target = await _service(request, session).get_asset(
+        subject=context.subject,
+        asset_id=asset_id,
+        environment=context.environment,
+        request_id=context.request_id,
+    )
+    if current_target is None:
+        return JSONResponse(
+            status_code=404,
+            content={
+                "type": "urn:datariver:problem:not_found",
+                "title": "Not found",
+                "status": 404,
+                "detail": "The catalog asset does not exist.",
+                "instance": str(request.url.path),
+                "code": "not_found",
+                "request_id": context.request_id,
+            },
+        )
+    change_request = await _description_service(
+        request, session
+    ).create_column_description_change_request(
+        asset_id=asset_id,
+        expected_preview_etag=expected_preview_etag,
+        field_path=payload.field_path,
+        description=payload.description,
+        title=payload.title,
+        change_description=payload.change_description,
+        number=change_request_number(current_target.index.platform),
         subject=context.subject,
         environment=context.environment,
         request_id=context.request_id,

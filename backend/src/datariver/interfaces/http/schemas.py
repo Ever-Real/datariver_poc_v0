@@ -183,6 +183,57 @@ class CatalogDescriptionPreviewResponse(BaseModel):
     observed_at: datetime
 
 
+class CatalogColumnDescriptionPreviewRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    field_path: str = Field(min_length=1, max_length=2_000)
+    description: str = Field(max_length=10_000)
+
+    @field_validator("field_path", "description")
+    @classmethod
+    def reject_column_description_nul(cls, value: str) -> str:
+        if "\x00" in value:
+            raise ValueError("Column description fields must not contain NUL characters.")
+        return value
+
+
+class CatalogColumnDescriptionChangeRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    field_path: str = Field(min_length=1, max_length=2_000)
+    description: str = Field(max_length=10_000)
+    title: str = Field(min_length=1, max_length=500)
+    change_description: str = Field(min_length=1, max_length=10_000)
+
+    @field_validator("field_path", "description", "title", "change_description")
+    @classmethod
+    def reject_column_change_nul(cls, value: str) -> str:
+        if "\x00" in value:
+            raise ValueError("Column change fields must not contain NUL characters.")
+        return value
+
+    @field_validator("title", "change_description")
+    @classmethod
+    def require_column_auditable_text(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("Title and change_description must contain visible text.")
+        return value
+
+
+class CatalogColumnDescriptionPreviewResponse(BaseModel):
+    asset_id: UUID
+    target_ref: str
+    aspect_name: Literal["schemaMetadata"]
+    field_path: str
+    current_description: str | None
+    proposed_description: str
+    before_hash: str = Field(pattern="^[0-9a-f]{64}$")
+    after_hash: str = Field(pattern="^[0-9a-f]{64}$")
+    preview_etag: str = Field(pattern='^"[0-9a-f]{64}"$')
+    source_version: str
+    observed_at: datetime
+
+
 class CatalogSyncRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 

@@ -8,6 +8,7 @@ from uuid import UUID
 from datariver.application.classification_access import ClassificationAccessResolver
 from datariver.application.dto import (
     CatalogAssetIndex,
+    CatalogColumnDescriptionPreview,
     CatalogDescriptionPreview,
     DataHubAspectSnapshot,
 )
@@ -39,7 +40,9 @@ from datariver.domain.governance import (
 )
 
 DATASET_PROPERTIES_ASPECT = "datasetProperties"
+SCHEMA_METADATA_ASPECT = "schemaMetadata"
 MAXIMUM_DESCRIPTION_LENGTH = 10_000
+MAXIMUM_FIELD_PATH_LENGTH = 2_000
 
 
 class GovernedChangeRequestCreator(Protocol):
@@ -119,6 +122,46 @@ class CatalogDescriptionService:
             observed_at=snapshot.observed_at,
         )
 
+    async def preview_column_description(
+        self,
+        *,
+        asset_id: UUID,
+        field_path: str,
+        description: str,
+        subject: SubjectAttributes,
+        environment: EnvironmentAttributes,
+        request_id: str,
+    ) -> CatalogColumnDescriptionPreview:
+        asset, snapshot = await self._read_current(
+            asset_id=asset_id,
+            subject=subject,
+            environment=environment,
+            request_id=request_id,
+            aspect_name=SCHEMA_METADATA_ASPECT,
+        )
+        current_description, proposed_document = self._proposed_schema_document(
+            snapshot=snapshot,
+            field_path=field_path,
+            proposed_description=description,
+        )
+        return CatalogColumnDescriptionPreview(
+            asset_id=asset.asset_id,
+            target_ref=asset.external_urn,
+            aspect_name=SCHEMA_METADATA_ASPECT,
+            field_path=field_path,
+            current_description=current_description,
+            proposed_description=description,
+            before_hash=snapshot.content_hash,
+            after_hash=canonical_json_hash(proposed_document),
+            preview_etag=self._column_preview_etag(
+                asset=asset,
+                snapshot=snapshot,
+                field_path=field_path,
+            ),
+            source_version=snapshot.source_version,
+            observed_at=snapshot.observed_at,
+        )
+
     async def create_change_request(
         self,
         *,
@@ -184,6 +227,78 @@ class CatalogDescriptionService:
             require_raw_operator_gate=False,
         )
 
+    async def create_column_description_change_request(
+        self,
+        *,
+        asset_id: UUID,
+        expected_preview_etag: str,
+        field_path: str,
+        description: str,
+        title: str,
+        change_description: str,
+        number: str,
+        subject: SubjectAttributes,
+        environment: EnvironmentAttributes,
+        request_id: str,
+        idempotency_key: str,
+        request_hash: str,
+    ) -> ChangeRequest:
+        asset, snapshot = await self._read_current(
+            asset_id=asset_id,
+            subject=subject,
+            environment=environment,
+            request_id=request_id,
+            aspect_name=SCHEMA_METADATA_ASPECT,
+        )
+        locked_asset = await self._lock_current_target(
+            expected=asset,
+            subject=subject,
+            environment=environment,
+        )
+        current_preview_etag = self._column_preview_etag(
+            asset=locked_asset,
+            snapshot=snapshot,
+            field_path=field_path,
+        )
+        if current_preview_etag != expected_preview_etag:
+            raise ConflictError(
+                "The column description preview is stale.",
+                details={"code": "PREVIEW_ETAG_MISMATCH"},
+            )
+        _, proposed_document = self._proposed_schema_document(
+            snapshot=snapshot,
+            field_path=field_path,
+            proposed_description=description,
+        )
+        after_hash = canonical_json_hash(proposed_document)
+        return await self._governance.create_change_request(
+            workspace_id=subject.workspace_id,
+            number=number,
+            request_type="CATALOG_COLUMN_DESCRIPTION",
+            title=title,
+            description=change_description,
+            requester_id=subject.subject_id,
+            items=[
+                ChangeItem(
+                    item_id=uuid7(),
+                    target_type="DATAHUB_ASPECT",
+                    target_ref=locked_asset.external_urn,
+                    operation="UPSERT",
+                    after_document=proposed_document,
+                    aspect_name=SCHEMA_METADATA_ASPECT,
+                    before_hash=snapshot.content_hash,
+                    after_hash=after_hash,
+                )
+            ],
+            subject=subject,
+            classification=locked_asset.classification,
+            environment=environment,
+            request_id=request_id,
+            idempotency_key=idempotency_key,
+            request_hash=request_hash,
+            require_raw_operator_gate=False,
+        )
+
     async def _read_current(
         self,
         *,
@@ -191,6 +306,7 @@ class CatalogDescriptionService:
         subject: SubjectAttributes,
         environment: EnvironmentAttributes,
         request_id: str,
+        aspect_name: str = DATASET_PROPERTIES_ASPECT,
     ) -> tuple[CatalogAssetIndex, DataHubAspectSnapshot]:
         self._validate_description_request_time(environment)
         access = await self._classification_access.resolve(
@@ -241,9 +357,9 @@ class CatalogDescriptionService:
         )
         snapshot = await self._datahub.read_aspect(
             external_urn=asset.external_urn,
-            aspect_name=DATASET_PROPERTIES_ASPECT,
+            aspect_name=aspect_name,
         )
-        self._validate_snapshot(asset=asset, snapshot=snapshot)
+        self._validate_snapshot(asset=asset, snapshot=snapshot, aspect_name=aspect_name)
         return asset, snapshot
 
     async def _lock_current_target(
@@ -316,11 +432,70 @@ class CatalogDescriptionService:
             document["description"] = proposed_description
         return current, document
 
+    @classmethod
+    def _proposed_schema_document(
+        cls,
+        *,
+        snapshot: DataHubAspectSnapshot,
+        field_path: str,
+        proposed_description: str,
+    ) -> tuple[str | None, dict[str, Any]]:
+        cls._validate_field_path(field_path)
+        cls._validate_description(proposed_description)
+        document = _mutable_json_object(snapshot.document)
+        fields = document.get("fields")
+        if not isinstance(fields, list):
+            raise ExternalDependencyError(
+                "DataHub returned an invalid schemaMetadata fields document.",
+                dependency="datahub",
+                retryable=False,
+                provider_code="INVALID_RESPONSE",
+            )
+        matches = [
+            field
+            for field in fields
+            if isinstance(field, dict) and field.get("fieldPath") == field_path
+        ]
+        if len(matches) != 1:
+            raise ConflictError(
+                "The requested schema field is no longer available in DataHub.",
+                details={"code": "SCHEMA_FIELD_DRIFT"},
+            )
+        field = matches[0]
+        current = field.get("description")
+        if current is not None and not isinstance(current, str):
+            raise ExternalDependencyError(
+                "DataHub returned an invalid schema field description.",
+                dependency="datahub",
+                retryable=False,
+                provider_code="INVALID_RESPONSE",
+            )
+        if proposed_description == "":
+            if current in {None, ""}:
+                raise ValidationError(
+                    "The proposed column description does not change the current value.",
+                    details={"code": "DESCRIPTION_UNCHANGED"},
+                )
+            field.pop("description", None)
+        else:
+            if current == proposed_description:
+                raise ValidationError(
+                    "The proposed column description does not change the current value.",
+                    details={"code": "DESCRIPTION_UNCHANGED"},
+                )
+            field["description"] = proposed_description
+        return current, document
+
     @staticmethod
-    def _validate_snapshot(*, asset: CatalogAssetIndex, snapshot: DataHubAspectSnapshot) -> None:
+    def _validate_snapshot(
+        *,
+        asset: CatalogAssetIndex,
+        snapshot: DataHubAspectSnapshot,
+        aspect_name: str,
+    ) -> None:
         if (
             snapshot.urn != asset.external_urn
-            or snapshot.aspect_name != DATASET_PROPERTIES_ASPECT
+            or snapshot.aspect_name != aspect_name
             or not snapshot.source_version
             or snapshot.observed_at.tzinfo is None
             or snapshot.observed_at.utcoffset() is None
@@ -368,10 +543,37 @@ class CatalogDescriptionService:
         )
         return f'"{composite_hash}"'
 
+    @classmethod
+    def _column_preview_etag(
+        cls,
+        *,
+        asset: CatalogAssetIndex,
+        snapshot: DataHubAspectSnapshot,
+        field_path: str,
+    ) -> str:
+        composite_hash = canonical_json_hash(
+            {
+                "contract": "catalog-column-description-preview-v1",
+                "workspace_id": str(asset.workspace_id),
+                "asset_id": str(asset.asset_id),
+                "target_binding_hash": cls._target_binding_hash(asset),
+                "aspect_name": SCHEMA_METADATA_ASPECT,
+                "field_path": field_path,
+                "aspect_hash": snapshot.content_hash,
+                "provider_source_version": snapshot.source_version,
+            }
+        )
+        return f'"{composite_hash}"'
+
     @staticmethod
     def _validate_description(value: str) -> None:
         if len(value) > MAXIMUM_DESCRIPTION_LENGTH or "\x00" in value:
             raise ValidationError("The proposed description is invalid.")
+
+    @staticmethod
+    def _validate_field_path(value: str) -> None:
+        if not value.strip() or len(value) > MAXIMUM_FIELD_PATH_LENGTH or "\x00" in value:
+            raise ValidationError("The requested schema field path is invalid.")
 
     @staticmethod
     def _validate_description_request_time(environment: EnvironmentAttributes) -> None:

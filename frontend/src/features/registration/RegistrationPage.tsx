@@ -6,6 +6,7 @@ import { PageTitle } from '../../components/layout/PageTitle'
 import { CatalogDetailPane } from '../catalog/CatalogDetailPane'
 import { CatalogResourceTree } from '../catalog/CatalogResourceTree'
 import { RegistrationBulkWorkbench } from './RegistrationBulkWorkbench'
+import { RegistrationColumnDescriptionEditor } from './RegistrationColumnDescriptionEditor'
 import { RegistrationDescriptionEditor } from './RegistrationDescriptionEditor'
 
 type RegistrationMode = 'MANUAL' | 'BULK'
@@ -81,11 +82,18 @@ export function RegistrationPage({ client }: { client: ApiClient }) {
             {selectedAssetId ? (
               <>
                 {selectedAssetDetail && (
-                  <RegistrationDescriptionEditor
-                    key={selectedAssetDetail.id}
-                    client={client}
-                    asset={selectedAssetDetail}
-                  />
+                  <>
+                    <RegistrationDescriptionEditor
+                      key={selectedAssetDetail.id}
+                      client={client}
+                      asset={selectedAssetDetail}
+                    />
+                    <RegistrationColumnDescriptionEditor
+                      key={`${selectedAssetDetail.id}:columns`}
+                      client={client}
+                      asset={selectedAssetDetail}
+                    />
+                  </>
                 )}
                 <CatalogDetailPane
                   client={client}

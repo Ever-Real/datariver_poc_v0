@@ -257,6 +257,108 @@ async def test_create_rechecks_composite_locks_target_and_merges_only_descriptio
 
 
 @pytest.mark.asyncio
+async def test_column_description_change_preserves_the_schema_document_and_field_identity() -> None:
+    service, index, datahub, governance, subject, environment, _ = _fixture()
+    schema_document = {
+        "dataset": index.detail.index.external_urn,
+        "fields": [
+            {"fieldPath": "event_id", "description": "Legacy identifier", "type": "BIGINT"},
+            {"fieldPath": "event_time", "description": "Event time", "type": "TIMESTAMP"},
+        ],
+        "platform": "postgres",
+    }
+    datahub.snapshot = replace(
+        datahub.snapshot,
+        aspect_name="schemaMetadata",
+        document=MappingProxyType(schema_document),
+        content_hash=canonical_json_hash(schema_document),
+    )
+
+    preview = await service.preview_column_description(
+        asset_id=index.detail.index.asset_id,
+        field_path="event_id",
+        description="Immutable event identifier",
+        subject=subject,
+        environment=environment,
+        request_id="column-preview",
+    )
+
+    assert preview.aspect_name == "schemaMetadata"
+    assert preview.field_path == "event_id"
+    assert preview.current_description == "Legacy identifier"
+    assert preview.before_hash == datahub.snapshot.content_hash
+    assert preview.after_hash == canonical_json_hash(
+        {
+            "dataset": index.detail.index.external_urn,
+            "fields": [
+                {
+                    "fieldPath": "event_id",
+                    "description": "Immutable event identifier",
+                    "type": "BIGINT",
+                },
+                {"fieldPath": "event_time", "description": "Event time", "type": "TIMESTAMP"},
+            ],
+            "platform": "postgres",
+        }
+    )
+
+    await service.create_column_description_change_request(
+        asset_id=index.detail.index.asset_id,
+        expected_preview_etag=preview.preview_etag,
+        field_path="event_id",
+        description="Immutable event identifier",
+        title="event_id column description update",
+        change_description="Clarify the primary event identifier.",
+        number="CR-FAB-260717-7F2A",
+        subject=subject,
+        environment=environment,
+        request_id="column-create",
+        idempotency_key="typed-column-description-0001",
+        request_hash="f" * 64,
+    )
+
+    assert governance.arguments is not None
+    item = governance.arguments["items"][0]
+    assert item.aspect_name == "schemaMetadata"
+    assert item.before_hash == preview.before_hash
+    assert item.after_hash == preview.after_hash
+    assert item.after_document["fields"][0] == {
+        "fieldPath": "event_id",
+        "description": "Immutable event identifier",
+        "type": "BIGINT",
+    }
+    assert item.after_document["fields"][1] == {
+        "fieldPath": "event_time",
+        "description": "Event time",
+        "type": "TIMESTAMP",
+    }
+
+
+@pytest.mark.asyncio
+async def test_column_description_rejects_a_schema_field_that_drifted() -> None:
+    service, index, datahub, governance, subject, environment, _ = _fixture()
+    schema_document = {"fields": [{"fieldPath": "event_id", "description": "Identifier"}]}
+    datahub.snapshot = replace(
+        datahub.snapshot,
+        aspect_name="schemaMetadata",
+        document=MappingProxyType(schema_document),
+        content_hash=canonical_json_hash(schema_document),
+    )
+
+    with pytest.raises(ConflictError, match="schema field is no longer available"):
+        await service.preview_column_description(
+            asset_id=index.detail.index.asset_id,
+            field_path="removed_column",
+            description="Will not be submitted",
+            subject=subject,
+            environment=environment,
+            request_id="column-drift",
+        )
+
+    assert governance.arguments is None
+
+
+@pytest.mark.asyncio
 async def test_empty_description_removes_only_the_description_field() -> None:
     service, index, _, governance, subject, environment, _ = _fixture()
     preview = await service.preview(

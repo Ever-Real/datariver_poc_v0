@@ -112,6 +112,20 @@ export interface CatalogDescriptionPreview {
   observed_at: string
 }
 
+export interface CatalogColumnDescriptionPreview {
+  asset_id: string
+  target_ref: string
+  aspect_name: 'schemaMetadata'
+  field_path: string
+  current_description: string | null
+  proposed_description: string
+  before_hash: string
+  after_hash: string
+  preview_etag: string
+  source_version: string
+  observed_at: string
+}
+
 export interface CatalogTreeNode {
   id: string
   kind: 'PLATFORM' | 'DATABASE' | 'SCHEMA' | 'ASSET'
