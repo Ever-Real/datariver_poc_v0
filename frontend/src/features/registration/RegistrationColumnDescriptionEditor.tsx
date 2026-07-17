@@ -67,7 +67,7 @@ export function RegistrationColumnDescriptionEditor({
   const requestController = useRef<AbortController | null>(null)
   const requestGuard = useRef(false)
   const generation = useRef(0)
-  const idempotencyKey = useRef<string>()
+  const idempotencyKey = useRef<string | undefined>(undefined)
 
   useEffect(() => {
     generation.current += 1
