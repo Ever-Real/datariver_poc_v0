@@ -23,6 +23,8 @@ Independent review records: [Data Architect](reviews/2026-07-14_DATA_ARCHITECT_R
 
 Architecture decisions are immutable records under `adr/`. Superseded artifacts remain in Git and link to their replacement; they are not silently overwritten.
 
+Current retention decisions: [governed retention and immutable archive](adr/0010-governed-retention-and-immutable-archive.md), [maintained S3 and archive promotion](adr/0012-maintained-s3-and-immutable-archive-promotion.md), and [Chat active-policy binding](adr/0018-chat-retention-policy-binding.md).
+
 ## Change control
 
 - Requirements use stable IDs (`FR-*`, `NFR-*`, `SEC-*`).

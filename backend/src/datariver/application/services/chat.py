@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import replace
 from datetime import datetime
 from uuid import UUID
@@ -11,12 +11,17 @@ from datariver.application.classification_access import (
     ClassificationRuleRecord,
     static_classification_access_floor,
 )
-from datariver.application.dto import ChatDraft, ChatEvidence, ChatExchange
+from datariver.application.dto import (
+    ChatDraft,
+    ChatEvidence,
+    ChatExchange,
+    ChatRetentionBinding,
+)
 from datariver.application.evidence import build_evidence_chunk, evidence_chunk_is_valid
 from datariver.application.ports import (
     CatalogIndexReader,
     ChatAnswerComposer,
-    ChatStore,
+    ChatPersistenceUnitOfWork,
     KnowledgeEvidenceReader,
 )
 from datariver.application.services.authorization import AuthorizationService
@@ -28,6 +33,8 @@ from datariver.domain.authz import (
     SubjectAttributes,
 )
 from datariver.domain.classification_access import ChatMode, SearchMode
+from datariver.domain.common import ConflictError
+from datariver.domain.retention import RetentionPolicyState
 
 UNVERIFIABLE_ANSWER = "검증 불가"
 
@@ -58,14 +65,14 @@ class ChatService:
         *,
         catalog_index: CatalogIndexReader,
         knowledge_evidence: KnowledgeEvidenceReader | None = None,
-        store: ChatStore,
+        uow_factory: Callable[[], ChatPersistenceUnitOfWork],
         authorization: AuthorizationService,
         classification_access: ClassificationAccessResolver | None = None,
         composer: ChatAnswerComposer | None = None,
     ) -> None:
         self._catalog_index = catalog_index
         self._knowledge_evidence = knowledge_evidence
-        self._store = store
+        self._uow_factory = uow_factory
         self._authorization = authorization
         self._classification_access = classification_access
         self._composer = composer or DeterministicChatAnswerComposer()
@@ -225,15 +232,35 @@ class ChatService:
             authorized_evidence=evidence,
             workspace_id=workspace_id,
         )
-        return await self._store.save_exchange(
-            workspace_id=workspace_id,
-            owner_id=subject.subject_id,
-            session_id=session_id,
-            question=question,
-            answer=answer,
-            evidence=cited_evidence,
-            policy_decision_id=chat_decision.decision_id,
-        )
+        async with self._uow_factory() as uow:
+            await uow.set_security_context(
+                workspace_id=workspace_id,
+                subject_id=subject.subject_id,
+            )
+            await uow.lock_retention_workspace(workspace_id=workspace_id)
+            policy = await uow.retention_policies.get_active_for_update(workspace_id=workspace_id)
+            if policy is None or policy.state is not RetentionPolicyState.ACTIVE:
+                raise ConflictError(
+                    "An active retention policy is required to persist Chat content."
+                )
+            binding = ChatRetentionBinding(
+                policy_id=policy.policy_id,
+                policy_hash=policy.payload_hash,
+                binding_basis_at=await uow.transaction_time(),
+                chat_content_days=policy.rules.chat_content_days,
+            )
+            exchange = await uow.chats.save_exchange(
+                workspace_id=workspace_id,
+                owner_id=subject.subject_id,
+                session_id=session_id,
+                question=question,
+                answer=answer,
+                evidence=cited_evidence,
+                policy_decision_id=chat_decision.decision_id,
+                retention=binding,
+            )
+            await uow.commit()
+            return exchange
 
     async def _resolve_classification_access(
         self,

@@ -63,8 +63,13 @@ def build_upgrade() -> ops.UpgradeOps:
                         "NULLIF(current_setting('app.subject_id', true), '')::uuid)"
                     )
                 )
-    operations.append(ops.ExecuteSQLOp(_manifest_content_profile_immutability_sql()))
-    operations.append(ops.ExecuteSQLOp(_candidate_evidence_immutability_sql()))
+    operations.extend(
+        ops.ExecuteSQLOp(statement) for statement in _manifest_content_profile_immutability_sql()
+    )
+    operations.extend(
+        ops.ExecuteSQLOp(statement) for statement in _candidate_evidence_immutability_sql()
+    )
+    operations.extend(ops.ExecuteSQLOp(statement) for statement in _chat_retention_binding_sql())
     operations.extend(
         ops.CreateForeignKeyOp.from_constraint(constraint)
         for constraint in _deferred_foreign_keys()
@@ -119,7 +124,7 @@ BEGIN
         GRANT DELETE ON knowledge.validation_results TO datariver_app;
         GRANT SELECT, INSERT ON assistant.chat_sessions, assistant.chat_messages,
             assistant.assistant_runs, assistant.evidence_citations TO datariver_app;
-        GRANT UPDATE ON assistant.chat_sessions TO datariver_app;
+        GRANT UPDATE (version, updated_at) ON assistant.chat_sessions TO datariver_app;
         GRANT SELECT, INSERT ON retention.policy_versions TO datariver_app;
         GRANT UPDATE (state, checker_id, decision_reason,
             decision_policy_decision_id, decided_at, superseded_by, supersede_reason,
@@ -179,8 +184,8 @@ $datariver$
 """.strip()
 
 
-def _manifest_content_profile_immutability_sql() -> str:
-    return """
+def _manifest_content_profile_immutability_sql() -> tuple[str, ...]:
+    function = """
 CREATE FUNCTION integration.reject_object_manifest_content_profile_change()
 RETURNS trigger
 LANGUAGE plpgsql
@@ -194,17 +199,19 @@ BEGIN
     END IF;
     RETURN NEW;
 END
-$function$;
-
+$function$
+""".strip()
+    trigger = """
 CREATE TRIGGER reject_object_manifest_content_profile_change
 BEFORE UPDATE OF content_profile ON integration.object_manifests
 FOR EACH ROW
 EXECUTE FUNCTION integration.reject_object_manifest_content_profile_change()
 """.strip()
+    return function, trigger
 
 
-def _candidate_evidence_immutability_sql() -> str:
-    return """
+def _candidate_evidence_immutability_sql() -> tuple[str, ...]:
+    function = """
 CREATE FUNCTION integration.reject_upload_registration_candidate_evidence_mutation()
 RETURNS trigger
 LANGUAGE plpgsql
@@ -222,17 +229,130 @@ BEGIN
     END IF;
     RETURN NEW;
 END
-$function$;
-
+$function$
+""".strip()
+    trigger = """
 CREATE TRIGGER reject_upload_registration_candidate_evidence_mutation
 BEFORE INSERT OR UPDATE OR DELETE ON integration.upload_registration_candidates
 FOR EACH ROW
 EXECUTE FUNCTION integration.reject_upload_registration_candidate_evidence_mutation()
 """.strip()
+    return function, trigger
+
+
+def _chat_retention_binding_sql() -> tuple[str, ...]:
+    session_function = """
+CREATE FUNCTION assistant.enforce_chat_session_retention_binding()
+RETURNS trigger
+LANGUAGE plpgsql
+SECURITY INVOKER
+SET search_path = pg_catalog
+AS $function$
+DECLARE
+    policy_days integer;
+BEGIN
+    IF TG_OP = 'UPDATE' THEN
+        IF NEW.workspace_id IS DISTINCT FROM OLD.workspace_id
+           OR NEW.owner_id IS DISTINCT FROM OLD.owner_id
+           OR NEW.created_at IS DISTINCT FROM OLD.created_at
+           OR NEW.retention_until IS DISTINCT FROM OLD.retention_until
+           OR NEW.retention_policy_id IS DISTINCT FROM OLD.retention_policy_id
+           OR NEW.retention_policy_hash IS DISTINCT FROM OLD.retention_policy_hash
+           OR NEW.retention_basis_at IS DISTINCT FROM OLD.retention_basis_at
+           OR NEW.retention_binding_version IS DISTINCT FROM OLD.retention_binding_version THEN
+            RAISE EXCEPTION 'Chat session retention evidence is immutable'
+                USING ERRCODE = '23514';
+        END IF;
+        RETURN NEW;
+    END IF;
+
+    IF NEW.retention_binding_version <> 'ACTIVE_POLICY_V1' THEN
+        RAISE EXCEPTION 'new Chat sessions require an active-policy retention binding'
+            USING ERRCODE = '23514';
+    END IF;
+
+    SELECT policy.chat_content_days
+    INTO policy_days
+    FROM retention.policy_versions AS policy
+    WHERE policy.workspace_id = NEW.workspace_id
+      AND policy.id = NEW.retention_policy_id
+      AND policy.payload_hash = NEW.retention_policy_hash
+      AND policy.state = 'ACTIVE'
+    FOR KEY SHARE;
+
+    IF NOT FOUND THEN
+        RAISE EXCEPTION 'Chat retention policy binding is not active'
+            USING ERRCODE = '23514';
+    END IF;
+    IF NEW.retention_basis_at IS DISTINCT FROM transaction_timestamp() THEN
+        RAISE EXCEPTION 'Chat retention basis must equal the persistence transaction time'
+            USING ERRCODE = '23514';
+    END IF;
+    IF NEW.retention_until IS DISTINCT FROM
+       NEW.retention_basis_at + make_interval(days => policy_days) THEN
+        RAISE EXCEPTION 'Chat retention deadline does not match the active policy'
+            USING ERRCODE = '23514';
+    END IF;
+    RETURN NEW;
+END
+$function$
+""".strip()
+    session_trigger = """
+CREATE TRIGGER enforce_chat_session_retention_binding
+BEFORE INSERT OR UPDATE ON assistant.chat_sessions
+FOR EACH ROW
+EXECUTE FUNCTION assistant.enforce_chat_session_retention_binding()
+""".strip()
+    message_function = """
+CREATE FUNCTION assistant.enforce_chat_message_retention_binding()
+RETURNS trigger
+LANGUAGE plpgsql
+SECURITY INVOKER
+SET search_path = pg_catalog
+AS $function$
+BEGIN
+    PERFORM 1
+    FROM assistant.chat_sessions AS session
+    JOIN retention.policy_versions AS policy
+      ON policy.workspace_id = session.workspace_id
+     AND policy.id = session.retention_policy_id
+     AND policy.payload_hash = session.retention_policy_hash
+    WHERE session.workspace_id = NEW.workspace_id
+      AND session.id = NEW.session_id
+      AND session.owner_id =
+          NULLIF(current_setting('app.subject_id', true), '')::uuid
+      AND session.retention_binding_version = 'ACTIVE_POLICY_V1'
+      AND session.retention_until > transaction_timestamp()
+      AND policy.state = 'ACTIVE'
+    FOR KEY SHARE OF session, policy;
+
+    IF NOT FOUND THEN
+        RAISE EXCEPTION 'Chat session is not appendable under the active retention policy'
+            USING ERRCODE = '23514';
+    END IF;
+    RETURN NEW;
+END
+$function$
+""".strip()
+    message_trigger = """
+CREATE TRIGGER enforce_chat_message_retention_binding
+BEFORE INSERT ON assistant.chat_messages
+FOR EACH ROW
+EXECUTE FUNCTION assistant.enforce_chat_message_retention_binding()
+""".strip()
+    return session_function, session_trigger, message_function, message_trigger
 
 
 def build_downgrade() -> ops.DowngradeOps:
     operations: list[ops.MigrateOperation] = [
+        ops.ExecuteSQLOp(
+            "DROP TRIGGER enforce_chat_message_retention_binding ON assistant.chat_messages"
+        ),
+        ops.ExecuteSQLOp("DROP FUNCTION assistant.enforce_chat_message_retention_binding()"),
+        ops.ExecuteSQLOp(
+            "DROP TRIGGER enforce_chat_session_retention_binding ON assistant.chat_sessions"
+        ),
+        ops.ExecuteSQLOp("DROP FUNCTION assistant.enforce_chat_session_retention_binding()"),
         ops.ExecuteSQLOp(
             "DROP TRIGGER reject_upload_registration_candidate_evidence_mutation "
             "ON integration.upload_registration_candidates"

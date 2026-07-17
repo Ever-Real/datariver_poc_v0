@@ -171,6 +171,12 @@ Graph types are `CATALOG_MIRROR`, `CURATED_KNOWLEDGE`, and `ANALYTIC_PRODUCT`. O
 
 Filtering a DataHub page after retrieval leaks counts, pagination, and asset existence. A local `catalog.assets_projection` therefore stores searchable/base-detail metadata and security attributes. The API calculates the permitted asset set before DataHub enrichment. Literal search is normalized/escaped and backed by FTS/trigram/active-scope indexes. Search cache keys bind workspace, permission scope, policy version and projection watermark. Chat uses the same permitted set before retrieval; candidate decisions are grouped into request-level audit evidence, and citations include version and source locator.
 
+After retrieval/composition, Chat opens a separate final persistence transaction, applies workspace
+and owner RLS context, serializes against retention-policy administration and binds the session to
+the exact ACTIVE retention ID/hash and database-time deadline. This transaction is the only place
+that writes Chat content. Missing policy, policy supersession, expiry or legacy-unbound evidence
+fails closed; it does not invent a duration or authorize deletion.
+
 The active classification-access snapshot is a versioned, workspace-scoped four-class policy. Its
 rules and authorization generation bind cache/evaluation state; RESTRICTED Search additionally
 requires an exact subject/resource, system or domain grant bound to the active policy ID and hash.

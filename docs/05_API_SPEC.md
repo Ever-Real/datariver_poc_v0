@@ -206,6 +206,13 @@ Product versions accept only the registered `SNAPSHOT`, `NEIGHBORS` or `CHAT` su
 
 Request is `{session_id?,question,maximum_evidence<=10}`. Response carries session/message IDs, answer and immutable evidence chunk metadata: `chunk_id`, resource/workspace-authorized classification and typed scope, source type/locator/version, SHA-256 content hash, effective interval and extraction method. Composer citations must be a non-empty, duplicate-free subset of the exact authorized chunk input and pass hash/workspace revalidation; any forged, empty or invalid citation fails closed to the exact answer `검증 불가` with no returned/persisted evidence. The baseline deliberately has no external LLM.
 
+Final persistence requires a workspace ACTIVE retention-policy version. A new session binds the
+exact policy ID/hash, database transaction time and policy-derived deadline in one locked
+transaction. Missing active policy returns `409`; a legacy-unbound, expired or superseded-policy
+session also returns `409` and the caller must start a new session. These failures persist no Chat
+session/message. Policy activation is available only through the independent retention
+maker-checker API; there is no Chat-specific duration parameter or fallback.
+
 ### Administrator membership access
 
 | Method/path | Assurance/authorization | Purpose |

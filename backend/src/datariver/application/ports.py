@@ -28,6 +28,7 @@ from datariver.application.dto import (
     ChatDraft,
     ChatEvidence,
     ChatExchange,
+    ChatRetentionBinding,
     ConsumerGrantRecord,
     DataHubApplyReceipt,
     DataHubAspectSnapshot,
@@ -936,7 +937,32 @@ class ChatStore(Protocol):
         answer: str,
         evidence: Sequence[ChatEvidence],
         policy_decision_id: UUID,
+        retention: ChatRetentionBinding,
     ) -> ChatExchange: ...
+
+
+class ChatPersistenceUnitOfWork(Protocol):
+    chats: ChatStore
+    retention_policies: RetentionPolicyRepository
+
+    async def __aenter__(self) -> Self: ...
+
+    async def __aexit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc_value: BaseException | None,
+        traceback: TracebackType | None,
+    ) -> None: ...
+
+    async def commit(self) -> None: ...
+
+    async def rollback(self) -> None: ...
+
+    async def lock_retention_workspace(self, *, workspace_id: UUID) -> None: ...
+
+    async def set_security_context(self, *, workspace_id: UUID, subject_id: UUID) -> None: ...
+
+    async def transaction_time(self) -> datetime: ...
 
 
 class ChatAnswerComposer(Protocol):

@@ -13,6 +13,7 @@ from sqlalchemy import (
     Text,
     UniqueConstraint,
     Uuid,
+    text,
 )
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -30,6 +31,38 @@ class ChatSessionModel(Base, UuidPrimaryKeyMixin, TimestampMixin, VersionMixin):
     __table_args__ = (
         Index("ix_chat_sessions_owner", "workspace_id", "owner_id", "updated_at"),
         UniqueConstraint("workspace_id", "id"),
+        ForeignKeyConstraint(
+            ("workspace_id", "retention_policy_id", "retention_policy_hash"),
+            (
+                "retention.policy_versions.workspace_id",
+                "retention.policy_versions.id",
+                "retention.policy_versions.payload_hash",
+            ),
+            name="fk_chat_sessions_retention_policy_binding",
+            ondelete="RESTRICT",
+        ),
+        CheckConstraint(
+            "retention_binding_version IN ('LEGACY_UNBOUND_V1', 'ACTIVE_POLICY_V1')",
+            name="retention_binding_version_allowlist",
+        ),
+        CheckConstraint(
+            "(retention_binding_version = 'LEGACY_UNBOUND_V1' "
+            "AND retention_policy_id IS NULL AND retention_policy_hash IS NULL "
+            "AND retention_basis_at IS NULL) OR "
+            "(retention_binding_version = 'ACTIVE_POLICY_V1' "
+            "AND retention_policy_id IS NOT NULL AND retention_policy_hash IS NOT NULL "
+            "AND retention_basis_at IS NOT NULL AND retention_until IS NOT NULL)",
+            name="retention_binding_shape",
+        ),
+        CheckConstraint(
+            "retention_policy_hash IS NULL OR retention_policy_hash ~ '^[0-9a-f]{64}$'",
+            name="retention_policy_hash_sha256",
+        ),
+        CheckConstraint(
+            "retention_until IS NULL OR retention_basis_at IS NULL "
+            "OR retention_until > retention_basis_at",
+            name="retention_window",
+        ),
         {"schema": "assistant"},
     )
 
@@ -38,6 +71,12 @@ class ChatSessionModel(Base, UuidPrimaryKeyMixin, TimestampMixin, VersionMixin):
     title: Mapped[str] = mapped_column(String(500), nullable=False)
     scope: Mapped[dict[str, Any]] = mapped_column(JSON_DOCUMENT, default=dict, nullable=False)
     retention_until: Mapped[datetime | None]
+    retention_policy_id: Mapped[UUID | None] = mapped_column(Uuid(as_uuid=True))
+    retention_policy_hash: Mapped[str | None] = mapped_column(String(64))
+    retention_basis_at: Mapped[datetime | None]
+    retention_binding_version: Mapped[str] = mapped_column(
+        String(32), server_default=text("'ACTIVE_POLICY_V1'"), nullable=False
+    )
 
 
 class ChatMessageModel(Base, UuidPrimaryKeyMixin):

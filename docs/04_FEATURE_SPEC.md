@@ -92,7 +92,9 @@ Any pre-apply review state → REJECTED or CANCELLED under policy
 
 ## Chat and analysis
 
-- Conversation is workspace-bound with retention policy and explicit deletion.
+- Conversation is workspace/owner-bound and persists only under an exact active retention-policy
+  ID/hash and policy-derived deadline. Legacy, expired and superseded-policy sessions are
+  append-closed. Explicit deletion remains governed backlog and is not a current Chat command.
 - User chooses catalog, graph and optional release scope only from authorized resources.
 - Retrieval filters before LLM invocation. Responses include evidence cards, source locator, observed/release version and whether data is stale.
 - Prompt/model/tool metadata are audited without logging raw secrets or confidential content by default.

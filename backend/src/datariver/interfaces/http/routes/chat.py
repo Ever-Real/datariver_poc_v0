@@ -7,7 +7,7 @@ from datariver.application.services.authorization import AuthorizationService
 from datariver.application.services.chat import ChatService
 from datariver.infrastructure.db.authz import SqlDecisionWriter
 from datariver.infrastructure.db.catalog import SqlCatalogIndexReader
-from datariver.infrastructure.db.chat import SqlChatStore
+from datariver.infrastructure.db.chat import SqlChatPersistenceUnitOfWork
 from datariver.infrastructure.db.classification_access import (
     SqlClassificationAccessSnapshotReader,
 )
@@ -33,7 +33,7 @@ async def query(
     exchange = await ChatService(
         catalog_index=SqlCatalogIndexReader(session),
         knowledge_evidence=SqlKnowledgeEvidenceReader(session),
-        store=SqlChatStore(session),
+        uow_factory=lambda: SqlChatPersistenceUnitOfWork(container.database.session_factory),
         authorization=AuthorizationService(
             decision_writer=SqlDecisionWriter(container.database.session_factory)
         ),

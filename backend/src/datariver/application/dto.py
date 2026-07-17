@@ -622,6 +622,14 @@ class ChatDraft:
 
 
 @dataclass(frozen=True, slots=True)
+class ChatRetentionBinding:
+    policy_id: UUID
+    policy_hash: str
+    binding_basis_at: datetime
+    chat_content_days: int
+
+
+@dataclass(frozen=True, slots=True)
 class ChatExchange:
     session_id: UUID
     request_message_id: UUID

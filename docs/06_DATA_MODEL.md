@@ -131,7 +131,7 @@ The API supports both complete snapshot publication and changeset author/submit/
 
 | Table | Key columns and constraints | Purpose |
 |---|---|---|
-| `assistant.chat_sessions` | `id`, workspace/owner/title/scope/retention, `version`, timestamps | owner-scoped session |
+| `assistant.chat_sessions` | `id`, workspace/owner/title/scope, retention policy ID/hash/basis/deadline/binding version, `version`, timestamps; composite policy FK and immutable binding trigger | owner-scoped, active-policy-bound session; legacy/superseded/expired sessions are append-closed |
 | `assistant.chat_messages` | `id`, workspace/session/actor/content/created time | append-only messages |
 | `assistant.assistant_runs` | `id`, workspace/session/request message/provider/model/template/policy/state/metrics/timestamps | answer execution audit |
 | `assistant.evidence_citations` | `id`, workspace/run/chunk/resource, classification, typed system/domain/owner scope, type/locator/version, SHA-256 content hash, effective interval, extraction method, positive unique rank | append-only immutable authorized evidence snapshot |
@@ -178,6 +178,14 @@ page through one current authorization-pruned ACTIVE DATASET lookup. It never re
 DataHub and exposes no raw provider/object coordinates. Candidate publication, preview commands and
 proposal creation remain disabled until fenced publish and execution authorization are proven.
 
+Alembic `0018` removes the fixed Chat retention duration. Existing sessions are honestly marked
+`LEGACY_UNBOUND_V1`; new sessions require an exact `ACTIVE_POLICY_V1` binding to the workspace's
+active policy ID/hash, database transaction time and calculated `chat_content_days` deadline.
+PostgreSQL triggers reject fabricated deadlines, inactive policy bindings, non-owner message
+appends and mutation of retention evidence. The application role retains only session
+`version`/`updated_at` update privilege and no Chat delete privilege. Clean installations validate
+the canonical `0001` contract, upgrades install it atomically, and partial schemas fail closed.
+
 ## Constraints enforced outside DDL
 
 - Domain code owns legal change/upload/graph transitions and optimistic-version checks.
@@ -213,6 +221,11 @@ An approved database policy version distinguishes legal audit, Chat content, com
 events, accepted data, quarantine and telemetry. Installation-specific durations are operating
 inputs to that version and not portable schema, migration or source defaults. Activating a policy
 version does not by itself enable deletion.
+
+Chat persistence is the narrower exception to the last sentence: activation authorizes only the
+calculation and immutable recording of a content deadline. It does not authorize expiry deletion,
+partition detach/drop, object lifecycle action or WORM export. Policy supersession immediately
+append-closes sessions bound to the prior version; it does not rewrite or delete their evidence.
 
 Legal Hold is a versioned aggregate with typed place and governed release commands plus append-only
 history, not a mutable object-manifest boolean. It takes precedence over ordinary expiry and blocks

@@ -30,24 +30,6 @@ def upgrade() -> None:
         op.execute('CREATE SCHEMA IF NOT EXISTS assistant')
         op.execute('CREATE SCHEMA IF NOT EXISTS sharing')
         op.execute('CREATE SCHEMA IF NOT EXISTS retention')
-        op.create_table('chat_sessions',
-        sa.Column('workspace_id', sa.Uuid(), nullable=False),
-        sa.Column('owner_id', sa.Uuid(), nullable=False),
-        sa.Column('title', sa.String(length=500), nullable=False),
-        sa.Column('scope', sa.JSON().with_variant(postgresql.JSONB(none_as_null=True, astext_type=Text()), 'postgresql'), nullable=False),
-        sa.Column('retention_until', sa.DateTime(timezone=True), nullable=True),
-        sa.Column('id', sa.Uuid(), nullable=False),
-        sa.Column('created_at', sa.DateTime(timezone=True), server_default=sa.text('CURRENT_TIMESTAMP'), nullable=False),
-        sa.Column('updated_at', sa.DateTime(timezone=True), server_default=sa.text('CURRENT_TIMESTAMP'), nullable=False),
-        sa.Column('version', sa.Integer(), nullable=False),
-        sa.PrimaryKeyConstraint('id', name=op.f('pk_chat_sessions')),
-        sa.UniqueConstraint('workspace_id', 'id', name=op.f('uq_chat_sessions_workspace_id_id')),
-        schema='assistant'
-        )
-        op.create_index('ix_chat_sessions_owner', 'chat_sessions', ['workspace_id', 'owner_id', 'updated_at'], unique=False, schema='assistant')
-        op.execute('ALTER TABLE assistant.chat_sessions ENABLE ROW LEVEL SECURITY')
-        op.execute('ALTER TABLE assistant.chat_sessions FORCE ROW LEVEL SECURITY')
-        op.execute("CREATE POLICY workspace_isolation ON assistant.chat_sessions USING (workspace_id = NULLIF(current_setting('app.workspace_id', true), '')::uuid) WITH CHECK (workspace_id = NULLIF(current_setting('app.workspace_id', true), '')::uuid)")
         op.create_table('policy_decisions',
         sa.Column('workspace_id', sa.Uuid(), nullable=False),
         sa.Column('subject_id', sa.Uuid(), nullable=False),
@@ -340,23 +322,6 @@ def upgrade() -> None:
         op.execute('ALTER TABLE platform.workspaces ENABLE ROW LEVEL SECURITY')
         op.execute('ALTER TABLE platform.workspaces FORCE ROW LEVEL SECURITY')
         op.execute("CREATE POLICY workspace_isolation ON platform.workspaces USING (id = NULLIF(current_setting('app.workspace_id', true), '')::uuid) WITH CHECK (id = NULLIF(current_setting('app.workspace_id', true), '')::uuid)")
-        op.create_table('chat_messages',
-        sa.Column('workspace_id', sa.Uuid(), nullable=False),
-        sa.Column('session_id', sa.Uuid(), nullable=False),
-        sa.Column('actor', sa.String(length=20), nullable=False),
-        sa.Column('content', sa.Text(), nullable=True),
-        sa.Column('content_ref', sa.Text(), nullable=True),
-        sa.Column('created_at', sa.DateTime(timezone=True), nullable=False),
-        sa.Column('id', sa.Uuid(), nullable=False),
-        sa.ForeignKeyConstraint(['workspace_id', 'session_id'], ['assistant.chat_sessions.workspace_id', 'assistant.chat_sessions.id'], name=op.f('fk_chat_messages_workspace_id_session_id_chat_sessions'), ondelete='CASCADE'),
-        sa.PrimaryKeyConstraint('id', name=op.f('pk_chat_messages')),
-        sa.UniqueConstraint('workspace_id', 'session_id', 'id', name=op.f('uq_chat_messages_workspace_id_session_id_id')),
-        schema='assistant'
-        )
-        op.create_index('ix_chat_messages_session_time', 'chat_messages', ['session_id', 'created_at'], unique=False, schema='assistant')
-        op.execute('ALTER TABLE assistant.chat_messages ENABLE ROW LEVEL SECURITY')
-        op.execute('ALTER TABLE assistant.chat_messages FORCE ROW LEVEL SECURITY')
-        op.execute("CREATE POLICY workspace_isolation ON assistant.chat_messages USING (workspace_id = NULLIF(current_setting('app.workspace_id', true), '')::uuid) WITH CHECK (workspace_id = NULLIF(current_setting('app.workspace_id', true), '')::uuid)")
         op.create_table('classification_access_generations',
         sa.Column('workspace_id', sa.Uuid(), nullable=False),
         sa.Column('generation', sa.BigInteger(), nullable=False),
@@ -591,29 +556,6 @@ def upgrade() -> None:
         op.execute('ALTER TABLE sharing.api_products ENABLE ROW LEVEL SECURITY')
         op.execute('ALTER TABLE sharing.api_products FORCE ROW LEVEL SECURITY')
         op.execute("CREATE POLICY workspace_isolation ON sharing.api_products USING (workspace_id = NULLIF(current_setting('app.workspace_id', true), '')::uuid) WITH CHECK (workspace_id = NULLIF(current_setting('app.workspace_id', true), '')::uuid)")
-        op.create_table('assistant_runs',
-        sa.Column('workspace_id', sa.Uuid(), nullable=False),
-        sa.Column('session_id', sa.Uuid(), nullable=False),
-        sa.Column('request_message_id', sa.Uuid(), nullable=False),
-        sa.Column('provider', sa.String(length=100), nullable=False),
-        sa.Column('model', sa.String(length=255), nullable=False),
-        sa.Column('prompt_template_version', sa.String(length=100), nullable=False),
-        sa.Column('policy_decision_id', sa.Uuid(), nullable=False),
-        sa.Column('state', sa.String(length=32), nullable=False),
-        sa.Column('metrics', sa.JSON().with_variant(postgresql.JSONB(none_as_null=True, astext_type=Text()), 'postgresql'), nullable=False),
-        sa.Column('started_at', sa.DateTime(timezone=True), nullable=False),
-        sa.Column('finished_at', sa.DateTime(timezone=True), nullable=True),
-        sa.Column('id', sa.Uuid(), nullable=False),
-        sa.ForeignKeyConstraint(['workspace_id', 'session_id', 'request_message_id'], ['assistant.chat_messages.workspace_id', 'assistant.chat_messages.session_id', 'assistant.chat_messages.id'], name=op.f('fk_assistant_runs_workspace_id_session_id_request_message_id_chat_messages')),
-        sa.ForeignKeyConstraint(['workspace_id', 'session_id'], ['assistant.chat_sessions.workspace_id', 'assistant.chat_sessions.id'], name=op.f('fk_assistant_runs_workspace_id_session_id_chat_sessions'), ondelete='CASCADE'),
-        sa.PrimaryKeyConstraint('id', name=op.f('pk_assistant_runs')),
-        sa.UniqueConstraint('workspace_id', 'id', name=op.f('uq_assistant_runs_workspace_id_id')),
-        schema='assistant'
-        )
-        op.create_index('ix_assistant_runs_session', 'assistant_runs', ['session_id', 'started_at'], unique=False, schema='assistant')
-        op.execute('ALTER TABLE assistant.assistant_runs ENABLE ROW LEVEL SECURITY')
-        op.execute('ALTER TABLE assistant.assistant_runs FORCE ROW LEVEL SECURITY')
-        op.execute("CREATE POLICY workspace_isolation ON assistant.assistant_runs USING (workspace_id = NULLIF(current_setting('app.workspace_id', true), '')::uuid) WITH CHECK (workspace_id = NULLIF(current_setting('app.workspace_id', true), '')::uuid)")
         op.create_table('classification_access_policy_versions',
         sa.Column('workspace_id', sa.Uuid(), nullable=False),
         sa.Column('policy_number', sa.Integer(), nullable=False),
@@ -1000,38 +942,33 @@ def upgrade() -> None:
         op.execute('ALTER TABLE retention.policy_versions ENABLE ROW LEVEL SECURITY')
         op.execute('ALTER TABLE retention.policy_versions FORCE ROW LEVEL SECURITY')
         op.execute("CREATE POLICY workspace_isolation ON retention.policy_versions USING (workspace_id = NULLIF(current_setting('app.workspace_id', true), '')::uuid) WITH CHECK (workspace_id = NULLIF(current_setting('app.workspace_id', true), '')::uuid)")
-        op.create_table('evidence_citations',
+        op.create_table('chat_sessions',
         sa.Column('workspace_id', sa.Uuid(), nullable=False),
-        sa.Column('run_id', sa.Uuid(), nullable=False),
-        sa.Column('chunk_id', sa.Uuid(), nullable=False),
-        sa.Column('resource_id', sa.Uuid(), nullable=False),
-        sa.Column('classification', sa.Integer(), nullable=False),
-        sa.Column('system_id', sa.Uuid(), nullable=True),
-        sa.Column('domain_id', sa.Uuid(), nullable=True),
-        sa.Column('owner_department_id', sa.Uuid(), nullable=True),
-        sa.Column('source_type', sa.String(length=50), nullable=False),
-        sa.Column('source_locator', sa.Text(), nullable=False),
-        sa.Column('source_version', sa.String(length=255), nullable=False),
-        sa.Column('content_hash', sa.String(length=64), nullable=False),
-        sa.Column('effective_from', sa.DateTime(timezone=True), nullable=False),
-        sa.Column('effective_until', sa.DateTime(timezone=True), nullable=True),
-        sa.Column('extraction_method', sa.String(length=100), nullable=False),
-        sa.Column('rank', sa.Integer(), nullable=False),
+        sa.Column('owner_id', sa.Uuid(), nullable=False),
+        sa.Column('title', sa.String(length=500), nullable=False),
+        sa.Column('scope', sa.JSON().with_variant(postgresql.JSONB(none_as_null=True, astext_type=Text()), 'postgresql'), nullable=False),
+        sa.Column('retention_until', sa.DateTime(timezone=True), nullable=True),
+        sa.Column('retention_policy_id', sa.Uuid(), nullable=True),
+        sa.Column('retention_policy_hash', sa.String(length=64), nullable=True),
+        sa.Column('retention_basis_at', sa.DateTime(timezone=True), nullable=True),
+        sa.Column('retention_binding_version', sa.String(length=32), server_default=sa.text("'ACTIVE_POLICY_V1'"), nullable=False),
         sa.Column('id', sa.Uuid(), nullable=False),
-        sa.CheckConstraint("content_hash ~ '^[0-9a-f]{64}$'", name=op.f('ck_evidence_citations_content_hash_sha256')),
-        sa.CheckConstraint('classification >= 0 AND classification <= 3', name=op.f('ck_evidence_citations_classification_range')),
-        sa.CheckConstraint('effective_until IS NULL OR effective_until >= effective_from', name=op.f('ck_evidence_citations_effective_window')),
-        sa.CheckConstraint('rank > 0', name=op.f('ck_evidence_citations_rank_positive')),
-        sa.ForeignKeyConstraint(['workspace_id', 'run_id'], ['assistant.assistant_runs.workspace_id', 'assistant.assistant_runs.id'], name=op.f('fk_evidence_citations_workspace_id_run_id_assistant_runs'), ondelete='CASCADE'),
-        sa.PrimaryKeyConstraint('id', name=op.f('pk_evidence_citations')),
-        sa.UniqueConstraint('workspace_id', 'run_id', 'chunk_id', name=op.f('uq_evidence_citations_workspace_id_run_id_chunk_id')),
-        sa.UniqueConstraint('workspace_id', 'run_id', 'rank', name=op.f('uq_evidence_citations_workspace_id_run_id_rank')),
+        sa.Column('created_at', sa.DateTime(timezone=True), server_default=sa.text('CURRENT_TIMESTAMP'), nullable=False),
+        sa.Column('updated_at', sa.DateTime(timezone=True), server_default=sa.text('CURRENT_TIMESTAMP'), nullable=False),
+        sa.Column('version', sa.Integer(), nullable=False),
+        sa.CheckConstraint("(retention_binding_version = 'LEGACY_UNBOUND_V1' AND retention_policy_id IS NULL AND retention_policy_hash IS NULL AND retention_basis_at IS NULL) OR (retention_binding_version = 'ACTIVE_POLICY_V1' AND retention_policy_id IS NOT NULL AND retention_policy_hash IS NOT NULL AND retention_basis_at IS NOT NULL AND retention_until IS NOT NULL)", name=op.f('ck_chat_sessions_retention_binding_shape')),
+        sa.CheckConstraint("retention_binding_version IN ('LEGACY_UNBOUND_V1', 'ACTIVE_POLICY_V1')", name=op.f('ck_chat_sessions_retention_binding_version_allowlist')),
+        sa.CheckConstraint("retention_policy_hash IS NULL OR retention_policy_hash ~ '^[0-9a-f]{64}$'", name=op.f('ck_chat_sessions_retention_policy_hash_sha256')),
+        sa.CheckConstraint('retention_until IS NULL OR retention_basis_at IS NULL OR retention_until > retention_basis_at', name=op.f('ck_chat_sessions_retention_window')),
+        sa.ForeignKeyConstraint(['workspace_id', 'retention_policy_id', 'retention_policy_hash'], ['retention.policy_versions.workspace_id', 'retention.policy_versions.id', 'retention.policy_versions.payload_hash'], name='fk_chat_sessions_retention_policy_binding', ondelete='RESTRICT'),
+        sa.PrimaryKeyConstraint('id', name=op.f('pk_chat_sessions')),
+        sa.UniqueConstraint('workspace_id', 'id', name=op.f('uq_chat_sessions_workspace_id_id')),
         schema='assistant'
         )
-        op.create_index('ix_evidence_citations_run_rank', 'evidence_citations', ['run_id', 'rank'], unique=False, schema='assistant')
-        op.execute('ALTER TABLE assistant.evidence_citations ENABLE ROW LEVEL SECURITY')
-        op.execute('ALTER TABLE assistant.evidence_citations FORCE ROW LEVEL SECURITY')
-        op.execute("CREATE POLICY workspace_isolation ON assistant.evidence_citations USING (workspace_id = NULLIF(current_setting('app.workspace_id', true), '')::uuid) WITH CHECK (workspace_id = NULLIF(current_setting('app.workspace_id', true), '')::uuid)")
+        op.create_index('ix_chat_sessions_owner', 'chat_sessions', ['workspace_id', 'owner_id', 'updated_at'], unique=False, schema='assistant')
+        op.execute('ALTER TABLE assistant.chat_sessions ENABLE ROW LEVEL SECURITY')
+        op.execute('ALTER TABLE assistant.chat_sessions FORCE ROW LEVEL SECURITY')
+        op.execute("CREATE POLICY workspace_isolation ON assistant.chat_sessions USING (workspace_id = NULLIF(current_setting('app.workspace_id', true), '')::uuid) WITH CHECK (workspace_id = NULLIF(current_setting('app.workspace_id', true), '')::uuid)")
         op.create_table('classification_access_policy_rules',
         sa.Column('workspace_id', sa.Uuid(), nullable=False),
         sa.Column('policy_id', sa.Uuid(), nullable=False),
@@ -1463,6 +1400,23 @@ def upgrade() -> None:
         op.execute('ALTER TABLE sharing.api_product_versions ENABLE ROW LEVEL SECURITY')
         op.execute('ALTER TABLE sharing.api_product_versions FORCE ROW LEVEL SECURITY')
         op.execute("CREATE POLICY workspace_isolation ON sharing.api_product_versions USING (workspace_id = NULLIF(current_setting('app.workspace_id', true), '')::uuid) WITH CHECK (workspace_id = NULLIF(current_setting('app.workspace_id', true), '')::uuid)")
+        op.create_table('chat_messages',
+        sa.Column('workspace_id', sa.Uuid(), nullable=False),
+        sa.Column('session_id', sa.Uuid(), nullable=False),
+        sa.Column('actor', sa.String(length=20), nullable=False),
+        sa.Column('content', sa.Text(), nullable=True),
+        sa.Column('content_ref', sa.Text(), nullable=True),
+        sa.Column('created_at', sa.DateTime(timezone=True), nullable=False),
+        sa.Column('id', sa.Uuid(), nullable=False),
+        sa.ForeignKeyConstraint(['workspace_id', 'session_id'], ['assistant.chat_sessions.workspace_id', 'assistant.chat_sessions.id'], name=op.f('fk_chat_messages_workspace_id_session_id_chat_sessions'), ondelete='CASCADE'),
+        sa.PrimaryKeyConstraint('id', name=op.f('pk_chat_messages')),
+        sa.UniqueConstraint('workspace_id', 'session_id', 'id', name=op.f('uq_chat_messages_workspace_id_session_id_id')),
+        schema='assistant'
+        )
+        op.create_index('ix_chat_messages_session_time', 'chat_messages', ['session_id', 'created_at'], unique=False, schema='assistant')
+        op.execute('ALTER TABLE assistant.chat_messages ENABLE ROW LEVEL SECURITY')
+        op.execute('ALTER TABLE assistant.chat_messages FORCE ROW LEVEL SECURITY')
+        op.execute("CREATE POLICY workspace_isolation ON assistant.chat_messages USING (workspace_id = NULLIF(current_setting('app.workspace_id', true), '')::uuid) WITH CHECK (workspace_id = NULLIF(current_setting('app.workspace_id', true), '')::uuid)")
         op.create_table('restricted_search_grant_events',
         sa.Column('workspace_id', sa.Uuid(), nullable=False),
         sa.Column('grant_id', sa.Uuid(), nullable=False),
@@ -1582,6 +1536,29 @@ def upgrade() -> None:
         op.execute('ALTER TABLE sharing.consumer_grants ENABLE ROW LEVEL SECURITY')
         op.execute('ALTER TABLE sharing.consumer_grants FORCE ROW LEVEL SECURITY')
         op.execute("CREATE POLICY workspace_isolation ON sharing.consumer_grants USING (workspace_id = NULLIF(current_setting('app.workspace_id', true), '')::uuid) WITH CHECK (workspace_id = NULLIF(current_setting('app.workspace_id', true), '')::uuid)")
+        op.create_table('assistant_runs',
+        sa.Column('workspace_id', sa.Uuid(), nullable=False),
+        sa.Column('session_id', sa.Uuid(), nullable=False),
+        sa.Column('request_message_id', sa.Uuid(), nullable=False),
+        sa.Column('provider', sa.String(length=100), nullable=False),
+        sa.Column('model', sa.String(length=255), nullable=False),
+        sa.Column('prompt_template_version', sa.String(length=100), nullable=False),
+        sa.Column('policy_decision_id', sa.Uuid(), nullable=False),
+        sa.Column('state', sa.String(length=32), nullable=False),
+        sa.Column('metrics', sa.JSON().with_variant(postgresql.JSONB(none_as_null=True, astext_type=Text()), 'postgresql'), nullable=False),
+        sa.Column('started_at', sa.DateTime(timezone=True), nullable=False),
+        sa.Column('finished_at', sa.DateTime(timezone=True), nullable=True),
+        sa.Column('id', sa.Uuid(), nullable=False),
+        sa.ForeignKeyConstraint(['workspace_id', 'session_id', 'request_message_id'], ['assistant.chat_messages.workspace_id', 'assistant.chat_messages.session_id', 'assistant.chat_messages.id'], name=op.f('fk_assistant_runs_workspace_id_session_id_request_message_id_chat_messages')),
+        sa.ForeignKeyConstraint(['workspace_id', 'session_id'], ['assistant.chat_sessions.workspace_id', 'assistant.chat_sessions.id'], name=op.f('fk_assistant_runs_workspace_id_session_id_chat_sessions'), ondelete='CASCADE'),
+        sa.PrimaryKeyConstraint('id', name=op.f('pk_assistant_runs')),
+        sa.UniqueConstraint('workspace_id', 'id', name=op.f('uq_assistant_runs_workspace_id_id')),
+        schema='assistant'
+        )
+        op.create_index('ix_assistant_runs_session', 'assistant_runs', ['session_id', 'started_at'], unique=False, schema='assistant')
+        op.execute('ALTER TABLE assistant.assistant_runs ENABLE ROW LEVEL SECURITY')
+        op.execute('ALTER TABLE assistant.assistant_runs FORCE ROW LEVEL SECURITY')
+        op.execute("CREATE POLICY workspace_isolation ON assistant.assistant_runs USING (workspace_id = NULLIF(current_setting('app.workspace_id', true), '')::uuid) WITH CHECK (workspace_id = NULLIF(current_setting('app.workspace_id', true), '')::uuid)")
         op.create_table('registration_content_bindings',
         sa.Column('workspace_id', sa.Uuid(), nullable=False),
         sa.Column('candidate_id', sa.Uuid(), nullable=False),
@@ -1623,17 +1600,59 @@ def upgrade() -> None:
         op.execute('ALTER TABLE sharing.api_invocations ENABLE ROW LEVEL SECURITY')
         op.execute('ALTER TABLE sharing.api_invocations FORCE ROW LEVEL SECURITY')
         op.execute("CREATE POLICY workspace_isolation ON sharing.api_invocations USING (workspace_id = NULLIF(current_setting('app.workspace_id', true), '')::uuid) WITH CHECK (workspace_id = NULLIF(current_setting('app.workspace_id', true), '')::uuid)")
-        op.execute("CREATE FUNCTION integration.reject_object_manifest_content_profile_change()\nRETURNS trigger\nLANGUAGE plpgsql\nSECURITY INVOKER\nSET search_path = pg_catalog\nAS $function$\nBEGIN\n    IF NEW.content_profile IS DISTINCT FROM OLD.content_profile THEN\n        RAISE EXCEPTION 'object manifest content_profile is immutable'\n            USING ERRCODE = '23514';\n    END IF;\n    RETURN NEW;\nEND\n$function$;\n\nCREATE TRIGGER reject_object_manifest_content_profile_change\nBEFORE UPDATE OF content_profile ON integration.object_manifests\nFOR EACH ROW\nEXECUTE FUNCTION integration.reject_object_manifest_content_profile_change()")
-        op.execute("CREATE FUNCTION integration.reject_upload_registration_candidate_evidence_mutation()\nRETURNS trigger\nLANGUAGE plpgsql\nSECURITY INVOKER\nSET search_path = pg_catalog\nAS $function$\nBEGIN\n    IF TG_OP = 'INSERT' AND NEW.evidence_version <> 'DATASET_DESCRIPTION_CANDIDATE_V2' THEN\n        RAISE EXCEPTION 'new upload registration candidates require V2 evidence'\n            USING ERRCODE = '23514';\n    END IF;\n    IF TG_OP IN ('UPDATE', 'DELETE') THEN\n        RAISE EXCEPTION 'upload registration candidate evidence is immutable'\n            USING ERRCODE = '23514';\n    END IF;\n    RETURN NEW;\nEND\n$function$;\n\nCREATE TRIGGER reject_upload_registration_candidate_evidence_mutation\nBEFORE INSERT OR UPDATE OR DELETE ON integration.upload_registration_candidates\nFOR EACH ROW\nEXECUTE FUNCTION integration.reject_upload_registration_candidate_evidence_mutation()")
+        op.create_table('evidence_citations',
+        sa.Column('workspace_id', sa.Uuid(), nullable=False),
+        sa.Column('run_id', sa.Uuid(), nullable=False),
+        sa.Column('chunk_id', sa.Uuid(), nullable=False),
+        sa.Column('resource_id', sa.Uuid(), nullable=False),
+        sa.Column('classification', sa.Integer(), nullable=False),
+        sa.Column('system_id', sa.Uuid(), nullable=True),
+        sa.Column('domain_id', sa.Uuid(), nullable=True),
+        sa.Column('owner_department_id', sa.Uuid(), nullable=True),
+        sa.Column('source_type', sa.String(length=50), nullable=False),
+        sa.Column('source_locator', sa.Text(), nullable=False),
+        sa.Column('source_version', sa.String(length=255), nullable=False),
+        sa.Column('content_hash', sa.String(length=64), nullable=False),
+        sa.Column('effective_from', sa.DateTime(timezone=True), nullable=False),
+        sa.Column('effective_until', sa.DateTime(timezone=True), nullable=True),
+        sa.Column('extraction_method', sa.String(length=100), nullable=False),
+        sa.Column('rank', sa.Integer(), nullable=False),
+        sa.Column('id', sa.Uuid(), nullable=False),
+        sa.CheckConstraint("content_hash ~ '^[0-9a-f]{64}$'", name=op.f('ck_evidence_citations_content_hash_sha256')),
+        sa.CheckConstraint('classification >= 0 AND classification <= 3', name=op.f('ck_evidence_citations_classification_range')),
+        sa.CheckConstraint('effective_until IS NULL OR effective_until >= effective_from', name=op.f('ck_evidence_citations_effective_window')),
+        sa.CheckConstraint('rank > 0', name=op.f('ck_evidence_citations_rank_positive')),
+        sa.ForeignKeyConstraint(['workspace_id', 'run_id'], ['assistant.assistant_runs.workspace_id', 'assistant.assistant_runs.id'], name=op.f('fk_evidence_citations_workspace_id_run_id_assistant_runs'), ondelete='CASCADE'),
+        sa.PrimaryKeyConstraint('id', name=op.f('pk_evidence_citations')),
+        sa.UniqueConstraint('workspace_id', 'run_id', 'chunk_id', name=op.f('uq_evidence_citations_workspace_id_run_id_chunk_id')),
+        sa.UniqueConstraint('workspace_id', 'run_id', 'rank', name=op.f('uq_evidence_citations_workspace_id_run_id_rank')),
+        schema='assistant'
+        )
+        op.create_index('ix_evidence_citations_run_rank', 'evidence_citations', ['run_id', 'rank'], unique=False, schema='assistant')
+        op.execute('ALTER TABLE assistant.evidence_citations ENABLE ROW LEVEL SECURITY')
+        op.execute('ALTER TABLE assistant.evidence_citations FORCE ROW LEVEL SECURITY')
+        op.execute("CREATE POLICY workspace_isolation ON assistant.evidence_citations USING (workspace_id = NULLIF(current_setting('app.workspace_id', true), '')::uuid) WITH CHECK (workspace_id = NULLIF(current_setting('app.workspace_id', true), '')::uuid)")
+        op.execute("CREATE FUNCTION integration.reject_object_manifest_content_profile_change()\nRETURNS trigger\nLANGUAGE plpgsql\nSECURITY INVOKER\nSET search_path = pg_catalog\nAS $function$\nBEGIN\n    IF NEW.content_profile IS DISTINCT FROM OLD.content_profile THEN\n        RAISE EXCEPTION 'object manifest content_profile is immutable'\n            USING ERRCODE = '23514';\n    END IF;\n    RETURN NEW;\nEND\n$function$")
+        op.execute('CREATE TRIGGER reject_object_manifest_content_profile_change\nBEFORE UPDATE OF content_profile ON integration.object_manifests\nFOR EACH ROW\nEXECUTE FUNCTION integration.reject_object_manifest_content_profile_change()')
+        op.execute("CREATE FUNCTION integration.reject_upload_registration_candidate_evidence_mutation()\nRETURNS trigger\nLANGUAGE plpgsql\nSECURITY INVOKER\nSET search_path = pg_catalog\nAS $function$\nBEGIN\n    IF TG_OP = 'INSERT' AND NEW.evidence_version <> 'DATASET_DESCRIPTION_CANDIDATE_V2' THEN\n        RAISE EXCEPTION 'new upload registration candidates require V2 evidence'\n            USING ERRCODE = '23514';\n    END IF;\n    IF TG_OP IN ('UPDATE', 'DELETE') THEN\n        RAISE EXCEPTION 'upload registration candidate evidence is immutable'\n            USING ERRCODE = '23514';\n    END IF;\n    RETURN NEW;\nEND\n$function$")
+        op.execute('CREATE TRIGGER reject_upload_registration_candidate_evidence_mutation\nBEFORE INSERT OR UPDATE OR DELETE ON integration.upload_registration_candidates\nFOR EACH ROW\nEXECUTE FUNCTION integration.reject_upload_registration_candidate_evidence_mutation()')
+        op.execute("CREATE FUNCTION assistant.enforce_chat_session_retention_binding()\nRETURNS trigger\nLANGUAGE plpgsql\nSECURITY INVOKER\nSET search_path = pg_catalog\nAS $function$\nDECLARE\n    policy_days integer;\nBEGIN\n    IF TG_OP = 'UPDATE' THEN\n        IF NEW.workspace_id IS DISTINCT FROM OLD.workspace_id\n           OR NEW.owner_id IS DISTINCT FROM OLD.owner_id\n           OR NEW.created_at IS DISTINCT FROM OLD.created_at\n           OR NEW.retention_until IS DISTINCT FROM OLD.retention_until\n           OR NEW.retention_policy_id IS DISTINCT FROM OLD.retention_policy_id\n           OR NEW.retention_policy_hash IS DISTINCT FROM OLD.retention_policy_hash\n           OR NEW.retention_basis_at IS DISTINCT FROM OLD.retention_basis_at\n           OR NEW.retention_binding_version IS DISTINCT FROM OLD.retention_binding_version THEN\n            RAISE EXCEPTION 'Chat session retention evidence is immutable'\n                USING ERRCODE = '23514';\n        END IF;\n        RETURN NEW;\n    END IF;\n\n    IF NEW.retention_binding_version <> 'ACTIVE_POLICY_V1' THEN\n        RAISE EXCEPTION 'new Chat sessions require an active-policy retention binding'\n            USING ERRCODE = '23514';\n    END IF;\n\n    SELECT policy.chat_content_days\n    INTO policy_days\n    FROM retention.policy_versions AS policy\n    WHERE policy.workspace_id = NEW.workspace_id\n      AND policy.id = NEW.retention_policy_id\n      AND policy.payload_hash = NEW.retention_policy_hash\n      AND policy.state = 'ACTIVE'\n    FOR KEY SHARE;\n\n    IF NOT FOUND THEN\n        RAISE EXCEPTION 'Chat retention policy binding is not active'\n            USING ERRCODE = '23514';\n    END IF;\n    IF NEW.retention_basis_at IS DISTINCT FROM transaction_timestamp() THEN\n        RAISE EXCEPTION 'Chat retention basis must equal the persistence transaction time'\n            USING ERRCODE = '23514';\n    END IF;\n    IF NEW.retention_until IS DISTINCT FROM\n       NEW.retention_basis_at + make_interval(days => policy_days) THEN\n        RAISE EXCEPTION 'Chat retention deadline does not match the active policy'\n            USING ERRCODE = '23514';\n    END IF;\n    RETURN NEW;\nEND\n$function$")
+        op.execute('CREATE TRIGGER enforce_chat_session_retention_binding\nBEFORE INSERT OR UPDATE ON assistant.chat_sessions\nFOR EACH ROW\nEXECUTE FUNCTION assistant.enforce_chat_session_retention_binding()')
+        op.execute("CREATE FUNCTION assistant.enforce_chat_message_retention_binding()\nRETURNS trigger\nLANGUAGE plpgsql\nSECURITY INVOKER\nSET search_path = pg_catalog\nAS $function$\nBEGIN\n    PERFORM 1\n    FROM assistant.chat_sessions AS session\n    JOIN retention.policy_versions AS policy\n      ON policy.workspace_id = session.workspace_id\n     AND policy.id = session.retention_policy_id\n     AND policy.payload_hash = session.retention_policy_hash\n    WHERE session.workspace_id = NEW.workspace_id\n      AND session.id = NEW.session_id\n      AND session.owner_id =\n          NULLIF(current_setting('app.subject_id', true), '')::uuid\n      AND session.retention_binding_version = 'ACTIVE_POLICY_V1'\n      AND session.retention_until > transaction_timestamp()\n      AND policy.state = 'ACTIVE'\n    FOR KEY SHARE OF session, policy;\n\n    IF NOT FOUND THEN\n        RAISE EXCEPTION 'Chat session is not appendable under the active retention policy'\n            USING ERRCODE = '23514';\n    END IF;\n    RETURN NEW;\nEND\n$function$")
+        op.execute('CREATE TRIGGER enforce_chat_message_retention_binding\nBEFORE INSERT ON assistant.chat_messages\nFOR EACH ROW\nEXECUTE FUNCTION assistant.enforce_chat_message_retention_binding()')
         op.create_foreign_key(op.f('fk_api_products_workspace_id_id_current_version_id_api_product_versions'), 'api_products', 'api_product_versions', ['workspace_id', 'id', 'current_version_id'], ['workspace_id', 'product_id', 'id'], source_schema='sharing', referent_schema='sharing', use_alter=True)
         op.create_foreign_key('fk_catalog_export_requests_workspace_job', 'export_requests', 'jobs', ['workspace_id', 'job_id'], ['workspace_id', 'id'], source_schema='catalog', referent_schema='integration', ondelete='RESTRICT', use_alter=True)
         op.create_foreign_key(op.f('fk_changesets_workspace_id_graph_id_base_release_id_releases'), 'changesets', 'releases', ['workspace_id', 'graph_id', 'base_release_id'], ['workspace_id', 'graph_id', 'id'], source_schema='knowledge', referent_schema='knowledge', use_alter=True)
         op.create_foreign_key(op.f('fk_changesets_workspace_id_graph_id_published_release_id_releases'), 'changesets', 'releases', ['workspace_id', 'graph_id', 'published_release_id'], ['workspace_id', 'graph_id', 'id'], source_schema='knowledge', referent_schema='knowledge', use_alter=True)
         op.create_foreign_key(op.f('fk_graphs_workspace_id_id_active_release_id_releases'), 'graphs', 'releases', ['workspace_id', 'id', 'active_release_id'], ['workspace_id', 'graph_id', 'id'], source_schema='knowledge', referent_schema='knowledge', use_alter=True)
-        op.execute("DO $datariver$\nBEGIN\n    IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'datariver_app') THEN\n        GRANT USAGE ON SCHEMA platform, iam, authz, catalog, governance, integration, knowledge, assistant, sharing, retention TO datariver_app;\n        GRANT USAGE ON SCHEMA public TO datariver_app;\n        GRANT SELECT ON public.alembic_version TO datariver_app;\n        GRANT SELECT ON platform.workspaces, iam.subjects TO datariver_app;\n        GRANT SELECT ON iam.workspace_memberships TO datariver_app;\n        GRANT UPDATE (active, clearance, attributes, version, updated_at)\n            ON iam.workspace_memberships TO datariver_app;\n        GRANT SELECT, INSERT ON iam.admin_access_requests TO datariver_app;\n        GRANT UPDATE (state, checker_id, consumed_by, consumed_at,\n            consume_policy_decision_id, version, updated_at)\n            ON iam.admin_access_requests TO datariver_app;\n        GRANT SELECT, INSERT ON iam.admin_access_approvals TO datariver_app;\n        GRANT INSERT ON authz.policy_decisions TO datariver_app;\n        GRANT SELECT, INSERT, UPDATE ON catalog.assets_projection,\n            catalog.sync_runs, catalog.projection_watermarks TO datariver_app;\n        GRANT SELECT, INSERT ON catalog.export_requests TO datariver_app;\n        GRANT SELECT, INSERT ON governance.change_request_items,\n            governance.approvals, governance.state_transitions TO datariver_app;\n        GRANT SELECT, INSERT ON governance.registration_content_bindings TO datariver_app;\n        GRANT SELECT, INSERT, UPDATE ON governance.change_requests TO datariver_app;\n        GRANT SELECT ON integration.jobs, integration.job_attempts TO datariver_app;\n        GRANT INSERT ON integration.jobs TO datariver_app;\n        GRANT SELECT, INSERT, UPDATE ON integration.object_manifests TO datariver_app;\n        GRANT SELECT, INSERT ON integration.upload_preparation_jobs TO datariver_app;\n        GRANT SELECT ON integration.upload_preparation_receipts,\n            integration.upload_registration_candidates TO datariver_app;\n        GRANT SELECT, INSERT ON integration.idempotency_keys,\n            integration.outbox_events TO datariver_app;\n        GRANT SELECT ON knowledge.graphs, knowledge.ontology_versions,\n            knowledge.releases, knowledge.release_nodes, knowledge.release_edges,\n            knowledge.changesets, knowledge.change_operations,\n            knowledge.validation_results, knowledge.projection_deployments TO datariver_app;\n        GRANT INSERT ON knowledge.graphs, knowledge.ontology_versions,\n            knowledge.releases, knowledge.release_nodes, knowledge.release_edges,\n            knowledge.changesets, knowledge.change_operations,\n            knowledge.validation_results, knowledge.projection_deployments TO datariver_app;\n        GRANT UPDATE ON knowledge.graphs, knowledge.changesets,\n            knowledge.projection_deployments TO datariver_app;\n        GRANT DELETE ON knowledge.validation_results TO datariver_app;\n        GRANT SELECT, INSERT ON assistant.chat_sessions, assistant.chat_messages,\n            assistant.assistant_runs, assistant.evidence_citations TO datariver_app;\n        GRANT UPDATE ON assistant.chat_sessions TO datariver_app;\n        GRANT SELECT, INSERT ON retention.policy_versions TO datariver_app;\n        GRANT UPDATE (state, checker_id, decision_reason,\n            decision_policy_decision_id, decided_at, superseded_by, supersede_reason,\n            supersede_policy_decision_id, superseded_at, version, updated_at)\n            ON retention.policy_versions TO datariver_app;\n        GRANT SELECT, INSERT ON retention.legal_holds TO datariver_app;\n        GRANT UPDATE (state, release_requested_by, release_request_reason,\n            release_request_policy_decision_id, release_checker_id,\n            release_decision_reason, release_decision_policy_decision_id,\n            released_at, version, updated_at)\n            ON retention.legal_holds TO datariver_app;\n        GRANT SELECT, INSERT ON retention.legal_hold_events TO datariver_app;\n        GRANT SELECT, INSERT ON retention.erasure_requests TO datariver_app;\n        GRANT UPDATE (state, checker_id, decision_reason,\n            decision_policy_decision_id, decided_at, version, updated_at)\n            ON retention.erasure_requests TO datariver_app;\n        GRANT SELECT, INSERT ON retention.erasure_request_events TO datariver_app;\n        GRANT SELECT ON retention.archive_capability_attestations,\n            retention.immutable_archive_receipts TO datariver_app;\n        GRANT SELECT, INSERT, UPDATE ON sharing.api_products,\n            sharing.api_product_versions, sharing.consumer_grants TO datariver_app;\n        GRANT SELECT, INSERT ON sharing.api_invocations TO datariver_app;\n    END IF;\n\n    IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'datariver_relay') THEN\n        GRANT USAGE ON SCHEMA integration TO datariver_relay;\n        GRANT SELECT, UPDATE ON integration.outbox_events TO datariver_relay;\n        GRANT SELECT ON integration.inbox_messages TO datariver_relay;\n    END IF;\n\n    IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'datariver_upload') THEN\n        GRANT USAGE ON SCHEMA integration TO datariver_upload;\n        GRANT SELECT, UPDATE ON integration.object_manifests TO datariver_upload;\n        GRANT SELECT, INSERT ON integration.outbox_events TO datariver_upload;\n        GRANT SELECT, INSERT, UPDATE ON integration.inbox_messages TO datariver_upload;\n    END IF;\n\n    IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'datariver_governance') THEN\n        GRANT USAGE ON SCHEMA authz, governance, integration TO datariver_governance;\n        GRANT SELECT, INSERT ON authz.policy_decisions TO datariver_governance;\n        GRANT SELECT, UPDATE ON governance.change_requests TO datariver_governance;\n        GRANT SELECT ON governance.change_request_items, governance.approvals,\n            governance.state_transitions TO datariver_governance;\n        GRANT INSERT ON governance.state_transitions TO datariver_governance;\n        GRANT SELECT, INSERT, UPDATE ON integration.jobs,\n            integration.job_attempts, integration.inbox_messages TO datariver_governance;\n        GRANT SELECT, INSERT ON integration.outbox_events TO datariver_governance;\n    END IF;\n\n    IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'datariver_bootstrap') THEN\n        GRANT USAGE ON SCHEMA platform, iam TO datariver_bootstrap;\n        GRANT SELECT, INSERT, UPDATE ON platform.workspaces, iam.subjects,\n            iam.workspace_memberships TO datariver_bootstrap;\n    END IF;\nEND\n$datariver$")
+        op.execute("DO $datariver$\nBEGIN\n    IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'datariver_app') THEN\n        GRANT USAGE ON SCHEMA platform, iam, authz, catalog, governance, integration, knowledge, assistant, sharing, retention TO datariver_app;\n        GRANT USAGE ON SCHEMA public TO datariver_app;\n        GRANT SELECT ON public.alembic_version TO datariver_app;\n        GRANT SELECT ON platform.workspaces, iam.subjects TO datariver_app;\n        GRANT SELECT ON iam.workspace_memberships TO datariver_app;\n        GRANT UPDATE (active, clearance, attributes, version, updated_at)\n            ON iam.workspace_memberships TO datariver_app;\n        GRANT SELECT, INSERT ON iam.admin_access_requests TO datariver_app;\n        GRANT UPDATE (state, checker_id, consumed_by, consumed_at,\n            consume_policy_decision_id, version, updated_at)\n            ON iam.admin_access_requests TO datariver_app;\n        GRANT SELECT, INSERT ON iam.admin_access_approvals TO datariver_app;\n        GRANT INSERT ON authz.policy_decisions TO datariver_app;\n        GRANT SELECT, INSERT, UPDATE ON catalog.assets_projection,\n            catalog.sync_runs, catalog.projection_watermarks TO datariver_app;\n        GRANT SELECT, INSERT ON catalog.export_requests TO datariver_app;\n        GRANT SELECT, INSERT ON governance.change_request_items,\n            governance.approvals, governance.state_transitions TO datariver_app;\n        GRANT SELECT, INSERT ON governance.registration_content_bindings TO datariver_app;\n        GRANT SELECT, INSERT, UPDATE ON governance.change_requests TO datariver_app;\n        GRANT SELECT ON integration.jobs, integration.job_attempts TO datariver_app;\n        GRANT INSERT ON integration.jobs TO datariver_app;\n        GRANT SELECT, INSERT, UPDATE ON integration.object_manifests TO datariver_app;\n        GRANT SELECT, INSERT ON integration.upload_preparation_jobs TO datariver_app;\n        GRANT SELECT ON integration.upload_preparation_receipts,\n            integration.upload_registration_candidates TO datariver_app;\n        GRANT SELECT, INSERT ON integration.idempotency_keys,\n            integration.outbox_events TO datariver_app;\n        GRANT SELECT ON knowledge.graphs, knowledge.ontology_versions,\n            knowledge.releases, knowledge.release_nodes, knowledge.release_edges,\n            knowledge.changesets, knowledge.change_operations,\n            knowledge.validation_results, knowledge.projection_deployments TO datariver_app;\n        GRANT INSERT ON knowledge.graphs, knowledge.ontology_versions,\n            knowledge.releases, knowledge.release_nodes, knowledge.release_edges,\n            knowledge.changesets, knowledge.change_operations,\n            knowledge.validation_results, knowledge.projection_deployments TO datariver_app;\n        GRANT UPDATE ON knowledge.graphs, knowledge.changesets,\n            knowledge.projection_deployments TO datariver_app;\n        GRANT DELETE ON knowledge.validation_results TO datariver_app;\n        GRANT SELECT, INSERT ON assistant.chat_sessions, assistant.chat_messages,\n            assistant.assistant_runs, assistant.evidence_citations TO datariver_app;\n        GRANT UPDATE (version, updated_at) ON assistant.chat_sessions TO datariver_app;\n        GRANT SELECT, INSERT ON retention.policy_versions TO datariver_app;\n        GRANT UPDATE (state, checker_id, decision_reason,\n            decision_policy_decision_id, decided_at, superseded_by, supersede_reason,\n            supersede_policy_decision_id, superseded_at, version, updated_at)\n            ON retention.policy_versions TO datariver_app;\n        GRANT SELECT, INSERT ON retention.legal_holds TO datariver_app;\n        GRANT UPDATE (state, release_requested_by, release_request_reason,\n            release_request_policy_decision_id, release_checker_id,\n            release_decision_reason, release_decision_policy_decision_id,\n            released_at, version, updated_at)\n            ON retention.legal_holds TO datariver_app;\n        GRANT SELECT, INSERT ON retention.legal_hold_events TO datariver_app;\n        GRANT SELECT, INSERT ON retention.erasure_requests TO datariver_app;\n        GRANT UPDATE (state, checker_id, decision_reason,\n            decision_policy_decision_id, decided_at, version, updated_at)\n            ON retention.erasure_requests TO datariver_app;\n        GRANT SELECT, INSERT ON retention.erasure_request_events TO datariver_app;\n        GRANT SELECT ON retention.archive_capability_attestations,\n            retention.immutable_archive_receipts TO datariver_app;\n        GRANT SELECT, INSERT, UPDATE ON sharing.api_products,\n            sharing.api_product_versions, sharing.consumer_grants TO datariver_app;\n        GRANT SELECT, INSERT ON sharing.api_invocations TO datariver_app;\n    END IF;\n\n    IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'datariver_relay') THEN\n        GRANT USAGE ON SCHEMA integration TO datariver_relay;\n        GRANT SELECT, UPDATE ON integration.outbox_events TO datariver_relay;\n        GRANT SELECT ON integration.inbox_messages TO datariver_relay;\n    END IF;\n\n    IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'datariver_upload') THEN\n        GRANT USAGE ON SCHEMA integration TO datariver_upload;\n        GRANT SELECT, UPDATE ON integration.object_manifests TO datariver_upload;\n        GRANT SELECT, INSERT ON integration.outbox_events TO datariver_upload;\n        GRANT SELECT, INSERT, UPDATE ON integration.inbox_messages TO datariver_upload;\n    END IF;\n\n    IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'datariver_governance') THEN\n        GRANT USAGE ON SCHEMA authz, governance, integration TO datariver_governance;\n        GRANT SELECT, INSERT ON authz.policy_decisions TO datariver_governance;\n        GRANT SELECT, UPDATE ON governance.change_requests TO datariver_governance;\n        GRANT SELECT ON governance.change_request_items, governance.approvals,\n            governance.state_transitions TO datariver_governance;\n        GRANT INSERT ON governance.state_transitions TO datariver_governance;\n        GRANT SELECT, INSERT, UPDATE ON integration.jobs,\n            integration.job_attempts, integration.inbox_messages TO datariver_governance;\n        GRANT SELECT, INSERT ON integration.outbox_events TO datariver_governance;\n    END IF;\n\n    IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'datariver_bootstrap') THEN\n        GRANT USAGE ON SCHEMA platform, iam TO datariver_bootstrap;\n        GRANT SELECT, INSERT, UPDATE ON platform.workspaces, iam.subjects,\n            iam.workspace_memberships TO datariver_bootstrap;\n    END IF;\nEND\n$datariver$")
 
 
 def downgrade() -> None:
+        op.execute('DROP TRIGGER enforce_chat_message_retention_binding ON assistant.chat_messages')
+        op.execute('DROP FUNCTION assistant.enforce_chat_message_retention_binding()')
+        op.execute('DROP TRIGGER enforce_chat_session_retention_binding ON assistant.chat_sessions')
+        op.execute('DROP FUNCTION assistant.enforce_chat_session_retention_binding()')
         op.execute('DROP TRIGGER reject_upload_registration_candidate_evidence_mutation ON integration.upload_registration_candidates')
         op.execute('DROP FUNCTION integration.reject_upload_registration_candidate_evidence_mutation()')
         op.execute('DROP TRIGGER reject_object_manifest_content_profile_change ON integration.object_manifests')
@@ -1643,12 +1662,15 @@ def downgrade() -> None:
         op.drop_constraint(op.f('fk_changesets_workspace_id_graph_id_base_release_id_releases'), 'changesets', schema='knowledge', type_='foreignkey')
         op.drop_constraint('fk_catalog_export_requests_workspace_job', 'export_requests', schema='catalog', type_='foreignkey')
         op.drop_constraint(op.f('fk_api_products_workspace_id_id_current_version_id_api_product_versions'), 'api_products', schema='sharing', type_='foreignkey')
+        op.drop_table('evidence_citations', schema='assistant')
         op.drop_table('api_invocations', schema='sharing')
         op.drop_table('registration_content_bindings', schema='governance')
+        op.drop_table('assistant_runs', schema='assistant')
         op.drop_table('consumer_grants', schema='sharing')
         op.drop_table('erasure_request_events', schema='retention')
         op.drop_table('upload_registration_candidates', schema='integration')
         op.drop_table('restricted_search_grant_events', schema='authz')
+        op.drop_table('chat_messages', schema='assistant')
         op.drop_table('api_product_versions', schema='sharing')
         op.drop_table('legal_hold_events', schema='retention')
         op.drop_table('immutable_archive_receipts', schema='retention')
@@ -1662,7 +1684,7 @@ def downgrade() -> None:
         op.drop_table('admin_access_approvals', schema='iam')
         op.drop_table('restricted_search_grants', schema='authz')
         op.drop_table('classification_access_policy_rules', schema='authz')
-        op.drop_table('evidence_citations', schema='assistant')
+        op.drop_table('chat_sessions', schema='assistant')
         op.drop_table('policy_versions', schema='retention')
         op.drop_table('legal_holds', schema='retention')
         op.drop_table('releases', schema='knowledge')
@@ -1672,7 +1694,6 @@ def downgrade() -> None:
         op.drop_table('admin_access_requests', schema='iam')
         op.drop_table('export_requests', schema='catalog')
         op.drop_table('classification_access_policy_versions', schema='authz')
-        op.drop_table('assistant_runs', schema='assistant')
         op.drop_table('api_products', schema='sharing')
         op.drop_table('archive_capability_attestations', schema='retention')
         op.drop_table('ontology_versions', schema='knowledge')
@@ -1684,7 +1705,6 @@ def downgrade() -> None:
         op.drop_table('approvals', schema='governance')
         op.drop_table('projection_watermarks', schema='catalog')
         op.drop_table('classification_access_generations', schema='authz')
-        op.drop_table('chat_messages', schema='assistant')
         op.drop_table('workspaces', schema='platform')
         op.drop_table('graphs', schema='knowledge')
         op.drop_table('seed_runs', schema='integration')
@@ -1699,7 +1719,6 @@ def downgrade() -> None:
         op.drop_table('assets_projection', schema='catalog')
         op.drop_table('resources', schema='authz')
         op.drop_table('policy_decisions', schema='authz')
-        op.drop_table('chat_sessions', schema='assistant')
         op.execute('DROP SCHEMA IF EXISTS retention')
         op.execute('DROP SCHEMA IF EXISTS sharing')
         op.execute('DROP SCHEMA IF EXISTS assistant')

@@ -1,12 +1,15 @@
 from __future__ import annotations
 
 import json
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from types import TracebackType
+from typing import Any, Self, cast
 from uuid import UUID, uuid4
+
+import pytest
 
 from datariver.application.classification_access import (
     ClassificationAccessPosture,
@@ -20,9 +23,11 @@ from datariver.application.dto import (
     ChatDraft,
     ChatEvidence,
     ChatExchange,
+    ChatRetentionBinding,
     KnowledgeEvidenceCandidate,
 )
 from datariver.application.evidence import build_evidence_chunk, evidence_chunk_is_valid
+from datariver.application.ports import ChatStore, RetentionPolicyRepository
 from datariver.application.services.authorization import AuthorizationService, NullDecisionWriter
 from datariver.application.services.chat import UNVERIFIABLE_ANSWER, ChatService
 from datariver.domain.authz import (
@@ -32,7 +37,13 @@ from datariver.domain.authz import (
     SubjectAttributes,
 )
 from datariver.domain.classification_access import ChatMode, SearchMode
-from datariver.domain.common import uuid7
+from datariver.domain.common import ConflictError, uuid7
+from datariver.domain.retention import (
+    GovernanceDecision,
+    RetentionPolicyState,
+    RetentionPolicyVersion,
+    RetentionRules,
+)
 
 
 class FakeIndex:
@@ -126,6 +137,7 @@ def test_chat_retrieval_translates_governed_chat_modes_into_sql_search_modes() -
 class FakeChatStore:
     def __init__(self) -> None:
         self.saved_evidence: tuple[ChatEvidence, ...] = ()
+        self.saved_retention: ChatRetentionBinding | None = None
 
     async def save_exchange(
         self,
@@ -137,9 +149,11 @@ class FakeChatStore:
         answer: str,
         evidence: Sequence[ChatEvidence],
         policy_decision_id: UUID,
+        retention: ChatRetentionBinding,
     ) -> ChatExchange:
         del workspace_id, owner_id, question, policy_decision_id
         self.saved_evidence = tuple(evidence)
+        self.saved_retention = retention
         return ChatExchange(
             session_id=session_id or uuid7(),
             request_message_id=uuid7(),
@@ -147,6 +161,167 @@ class FakeChatStore:
             answer=answer,
             evidence=self.saved_evidence,
         )
+
+
+def active_retention_policy(
+    workspace_id: UUID, *, chat_content_days: int = 90
+) -> RetentionPolicyVersion:
+    policy = RetentionPolicyVersion.propose(
+        workspace_id=workspace_id,
+        policy_number=1,
+        rules=RetentionRules(
+            completed_operation_days=30,
+            chat_content_days=chat_content_days,
+            audit_online_months=13,
+            immutable_archive_years=7,
+        ),
+        requester_id=uuid4(),
+        reason="Approved operating retention",
+        policy_decision_id=uuid4(),
+    )
+    policy.decide(
+        decision=GovernanceDecision.APPROVED,
+        actor_id=uuid4(),
+        reason="Independent retention approval",
+        policy_decision_id=uuid4(),
+        expected_version=1,
+        now=datetime(2026, 7, 17, tzinfo=UTC),
+    )
+    assert policy.state is RetentionPolicyState.ACTIVE
+    return policy
+
+
+class FakeRetentionPolicies:
+    def __init__(self, *, available: bool = True, chat_content_days: int = 90) -> None:
+        self.available = available
+        self.chat_content_days = chat_content_days
+
+    async def get_active_for_update(
+        self,
+        *,
+        workspace_id: UUID,
+        excluding_policy_id: UUID | None = None,
+    ) -> RetentionPolicyVersion | None:
+        del excluding_policy_id
+        if not self.available:
+            return None
+        return active_retention_policy(
+            workspace_id,
+            chat_content_days=self.chat_content_days,
+        )
+
+
+class FakeChatPersistenceUnitOfWork:
+    def __init__(
+        self,
+        store: FakeChatStore,
+        *,
+        policy_available: bool = True,
+        chat_content_days: int = 90,
+    ) -> None:
+        self.chats = cast(ChatStore, store)
+        self.retention_policies = cast(
+            RetentionPolicyRepository,
+            FakeRetentionPolicies(
+                available=policy_available,
+                chat_content_days=chat_content_days,
+            ),
+        )
+        self.committed = False
+        self.rolled_back = False
+        self.context: tuple[UUID, UUID] | None = None
+        self.locked_workspace: UUID | None = None
+
+    async def __aenter__(self) -> Self:
+        return self
+
+    async def __aexit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc_value: BaseException | None,
+        traceback: TracebackType | None,
+    ) -> None:
+        del exc_value, traceback
+        if exc_type is not None or not self.committed:
+            self.rolled_back = True
+
+    async def commit(self) -> None:
+        self.committed = True
+
+    async def rollback(self) -> None:
+        self.rolled_back = True
+
+    async def lock_retention_workspace(self, *, workspace_id: UUID) -> None:
+        self.locked_workspace = workspace_id
+
+    async def set_security_context(self, *, workspace_id: UUID, subject_id: UUID) -> None:
+        self.context = (workspace_id, subject_id)
+
+    async def transaction_time(self) -> datetime:
+        return datetime(2026, 7, 17, 12, 0, tzinfo=UTC)
+
+
+def chat_uow_factory(
+    store: FakeChatStore,
+    *,
+    policy_available: bool = True,
+    chat_content_days: int = 90,
+) -> Callable[[], FakeChatPersistenceUnitOfWork]:
+    return lambda: FakeChatPersistenceUnitOfWork(
+        store,
+        policy_available=policy_available,
+        chat_content_days=chat_content_days,
+    )
+
+
+async def test_chat_persistence_uses_the_active_policy_duration() -> None:
+    workspace_id = uuid4()
+    store = FakeChatStore()
+    service = ChatService(
+        catalog_index=FakeIndex(asset(workspace_id)),
+        uow_factory=chat_uow_factory(store, chat_content_days=37),
+        authorization=AuthorizationService(decision_writer=NullDecisionWriter()),
+    )
+
+    await service.query(
+        workspace_id=workspace_id,
+        subject=chat_subject(workspace_id),
+        session_id=None,
+        question="정책 결속을 확인해줘",
+        maximum_evidence=1,
+        environment=EnvironmentAttributes(requested_at=datetime.now(UTC)),
+        request_id="request-retention-binding",
+    )
+
+    assert store.saved_retention is not None
+    assert store.saved_retention.chat_content_days == 37
+    assert store.saved_retention.policy_hash != ""
+
+
+async def test_chat_persistence_fails_closed_without_an_active_policy() -> None:
+    workspace_id = uuid4()
+    store = FakeChatStore()
+    uow = FakeChatPersistenceUnitOfWork(store, policy_available=False)
+    service = ChatService(
+        catalog_index=FakeIndex(asset(workspace_id)),
+        uow_factory=lambda: uow,
+        authorization=AuthorizationService(decision_writer=NullDecisionWriter()),
+    )
+
+    with pytest.raises(ConflictError, match="active retention policy"):
+        await service.query(
+            workspace_id=workspace_id,
+            subject=chat_subject(workspace_id),
+            session_id=None,
+            question="정책 없는 저장을 거부해줘",
+            maximum_evidence=1,
+            environment=EnvironmentAttributes(requested_at=datetime.now(UTC)),
+            request_id="request-missing-retention",
+        )
+
+    assert store.saved_retention is None
+    assert uow.committed is False
+    assert uow.rolled_back is True
 
 
 class FakeKnowledgeEvidence:
@@ -255,7 +430,7 @@ async def test_chat_persists_only_evidence_that_passes_catalog_read_abac() -> No
     store = FakeChatStore()
     service = ChatService(
         catalog_index=FakeIndex(asset(workspace_id)),
-        store=store,
+        uow_factory=chat_uow_factory(store),
         authorization=AuthorizationService(decision_writer=NullDecisionWriter()),
     )
 
@@ -290,7 +465,7 @@ async def test_chat_omits_evidence_when_catalog_read_is_not_granted() -> None:
     store = FakeChatStore()
     service = ChatService(
         catalog_index=FakeIndex(asset(workspace_id)),
-        store=store,
+        uow_factory=chat_uow_factory(store),
         authorization=AuthorizationService(decision_writer=NullDecisionWriter()),
     )
 
@@ -316,7 +491,7 @@ async def test_chat_excludes_protected_evidence_until_provider_policy_is_active(
     subject = replace(chat_subject(workspace_id), clearance=Classification.RESTRICTED)
     service = ChatService(
         catalog_index=index,
-        store=store,
+        uow_factory=chat_uow_factory(store),
         authorization=AuthorizationService(decision_writer=NullDecisionWriter()),
     )
 
@@ -352,7 +527,7 @@ async def test_chat_can_use_only_authorized_release_pinned_knowledge_evidence() 
     service = ChatService(
         catalog_index=FakeIndex(asset(workspace_id)),
         knowledge_evidence=FakeKnowledgeEvidence(workspace_id),
-        store=FakeChatStore(),
+        uow_factory=chat_uow_factory(FakeChatStore()),
         authorization=AuthorizationService(decision_writer=NullDecisionWriter()),
     )
 
@@ -381,7 +556,7 @@ async def test_chat_rejects_forged_or_zero_citations_without_persisting_evidence
         store = FakeChatStore()
         service = ChatService(
             catalog_index=FakeIndex(asset(workspace_id)),
-            store=store,
+            uow_factory=chat_uow_factory(store),
             authorization=AuthorizationService(decision_writer=NullDecisionWriter()),
             composer=FixedComposer(draft),
         )
@@ -405,7 +580,7 @@ async def test_chat_rejects_tampered_chunk_hash() -> None:
     service = ChatService(
         catalog_index=FakeIndex(asset(workspace_id)),
         knowledge_evidence=FakeKnowledgeEvidence(workspace_id, tamper_hash=True),
-        store=store,
+        uow_factory=chat_uow_factory(store),
         authorization=AuthorizationService(decision_writer=NullDecisionWriter()),
         composer=SelectingComposer((1,)),
     )
@@ -428,7 +603,7 @@ async def test_chat_persists_only_the_valid_cited_subset_in_citation_order() -> 
     service = ChatService(
         catalog_index=FakeIndex(asset(workspace_id)),
         knowledge_evidence=FakeKnowledgeEvidence(workspace_id),
-        store=FakeChatStore(),
+        uow_factory=chat_uow_factory(FakeChatStore()),
         authorization=AuthorizationService(decision_writer=NullDecisionWriter()),
         composer=SelectingComposer((1, 0)),
     )
@@ -456,7 +631,7 @@ async def test_assistant_red_team_corpus_cannot_forge_citations_or_trigger_tools
         store = FakeChatStore()
         service = ChatService(
             catalog_index=FakeIndex(asset(workspace_id, description=str(case["content"]))),
-            store=store,
+            uow_factory=chat_uow_factory(store),
             authorization=AuthorizationService(decision_writer=NullDecisionWriter()),
             composer=FixedComposer(ChatDraft(answer="tool output", cited_chunk_ids=(uuid4(),))),
         )

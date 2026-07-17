@@ -50,6 +50,14 @@ PostgreSQL remains canonical. Never repair a Valkey stream by inventing events; 
 
 Outbox/inbox automatic pruning is intentionally disabled. Revision `0006` revokes relay `DELETE` privileges, and `/operations/summary` reports `retention_automation_state=DISABLED_NOT_READY`. Do not manually delete retained rows or grant that privilege back. A future dedicated retention worker may delete only after governed policy activation, immutable export checksum and Object-Lock read-back, Legal Hold evaluation and Maker-Checker approval all succeed.
 
+Chat content persistence is also fail-closed on retention governance. Before enabling Chat for a
+workspace, two distinct eligible administrators must propose and approve the policy through the
+Admin retention page/API. Confirm `GET /admin/retention/policies/current` returns the intended exact
+version and durations. Do not insert an ACTIVE row, alter a session deadline or broaden
+`assistant.chat_sessions` privileges manually. With no ACTIVE policy, `/chat/query` returns `409`
+after authorization and stores no session/message. Activating a replacement policy append-closes
+sessions bound to the prior version; clients start a new session instead of editing history.
+
 ## Managed catalog export activation
 
 Catalog export is disabled by default and must remain disabled until all of these controls pass in

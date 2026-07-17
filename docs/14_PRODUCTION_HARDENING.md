@@ -167,7 +167,7 @@ eligibility controls.
 | DataHub isolation | timeout, concurrency bulkhead, circuit breaker, fresh + bounded stale detail fallback; fixed-label request/duration/in-flight/rejection/circuit metrics | target contract/fault test; worker-process metrics; incremental watermark |
 | local read projection | search and base detail survive DataHub read failure inside stale bound | project approved detail aspects and display freshness consistently in UI |
 | worker privilege | separate API/relay/upload/governance/bootstrap DB roles and secrets; upload has no DataHub secret | egress policy in target orchestrator; correlation/scope guard for every BYPASSRLS claim |
-| audit/event retention | governed policy versions, Legal Hold and non-executing erasure Maker-Checker persistence/API/history are implemented with forced RLS and no cascading/delete privilege; relay pruning remains removed | verified WORM receipt/conformance, one-time execution claim, archive-only/erasure workers, restore proof, then table-family monthly partitions |
+| audit/event retention | governed policy versions, Legal Hold and non-executing erasure Maker-Checker persistence/API/history are implemented with forced RLS and no cascading/delete privilege; Chat sessions bind the exact ACTIVE policy/hash and policy-derived deadline in one locked transaction, while legacy/superseded/expired sessions are append-closed; relay pruning remains removed | verified WORM receipt/conformance, one-time execution claim, archive-only/erasure workers, restore proof, then table-family monthly partitions |
 
 ### Partition and WORM design gate
 
@@ -180,6 +180,11 @@ default partition and rehearse late-event and restore behavior. No detach/drop p
 Retention durations are not portable source defaults. Deployment values must be authored,
 independently approved, versioned and activated in the database policy aggregate. Neither policy
 activation nor expiry alone authorizes deletion.
+
+Chat has no fixed-duration fallback: final persistence requires and immutably records that ACTIVE
+version. This makes the deadline auditable but creates no destructive capability. A missing policy
+or a session bound to a no-longer-active version returns a conflict and leaves Chat content tables
+unchanged.
 
 Before a future detach/drop, the exact immutable range must be exported through an archive port that
 is separate from upload storage. The worker records a deterministic manifest, row/byte counts and

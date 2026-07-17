@@ -19,6 +19,11 @@ MIGRATIONS: tuple[MigrationCase, ...] = (
         "add_column",
         "_install_immutability_contract",
     ),
+    (
+        "0018_chat_retention_policy_binding.py",
+        "add_column",
+        "_assert_chat_retention_binding_contract",
+    ),
 )
 
 
