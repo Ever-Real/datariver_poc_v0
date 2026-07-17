@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from functools import lru_cache
 from typing import Literal, Self
-from urllib.parse import urlsplit
+from urllib.parse import quote, urlsplit, urlunsplit
 from uuid import UUID
 
 from pydantic import Field, HttpUrl, field_validator, model_validator
@@ -83,6 +83,8 @@ class Settings(BaseSettings):
     ui_grafana_url: HttpUrl | None = None
     ui_prometheus_url: HttpUrl | None = None
     ui_graph_url: HttpUrl | None = None
+    datahub_embed_base_url: HttpUrl | None = None
+    datahub_embed_enabled: bool = False
 
     valkey_cache_url: str
     valkey_queue_url: str
@@ -158,6 +160,7 @@ class Settings(BaseSettings):
         "ui_grafana_url",
         "ui_prometheus_url",
         "ui_graph_url",
+        "datahub_embed_base_url",
     )
     @classmethod
     def reject_ui_link_credentials(cls, value: HttpUrl | None) -> HttpUrl | None:
@@ -167,6 +170,20 @@ class Settings(BaseSettings):
         if parsed.username is not None or parsed.password is not None:
             raise ValueError("External UI links cannot contain user information.")
         return value
+
+    def datahub_lineage_embed_url(self, external_urn: str) -> str | None:
+        if not self.datahub_embed_enabled or self.datahub_embed_base_url is None:
+            return None
+        parsed = urlsplit(str(self.datahub_embed_base_url))
+        return urlunsplit(
+            (
+                parsed.scheme,
+                parsed.netloc,
+                f"/dataset/{quote(external_urn, safe='')}/Lineage",
+                "",
+                "",
+            )
+        )
 
     @model_validator(mode="after")
     def validate_security_posture(self) -> Self:
@@ -178,6 +195,20 @@ class Settings(BaseSettings):
             raise ValueError("The DataHub stale TTL cannot be shorter than the fresh cache TTL.")
         if self.database_readiness_timeout_seconds > self.database_pool_timeout_seconds:
             raise ValueError("The database readiness timeout cannot exceed the API pool timeout.")
+        if self.datahub_embed_enabled and self.datahub_embed_base_url is None:
+            raise ValueError(
+                "Enabled DataHub embedding requires one configured DataHub embed origin."
+            )
+        if self.datahub_embed_base_url is not None:
+            parsed_embed_url = urlsplit(str(self.datahub_embed_base_url))
+            if (
+                parsed_embed_url.path not in ("", "/")
+                or parsed_embed_url.query
+                or parsed_embed_url.fragment
+            ):
+                raise ValueError(
+                    "The DataHub embed URL must be one exact origin without a path or query."
+                )
         assurance_sets = {
             "hardware ACR": set(self.oidc_hardware_acr_values),
             "hardware AMR": set(self.oidc_hardware_amr_values),
@@ -303,6 +334,7 @@ class Settings(BaseSettings):
                         "ui_grafana_url": self.ui_grafana_url,
                         "ui_prometheus_url": self.ui_prometheus_url,
                         "ui_graph_url": self.ui_graph_url,
+                        "datahub_embed_base_url": self.datahub_embed_base_url,
                     }.items()
                     if url is not None
                 },

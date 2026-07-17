@@ -1,10 +1,12 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
-import { ArrowDownToLine, ArrowUpFromLine, Network, X } from 'lucide-react'
+import { useEffect, useRef, useState } from 'react'
+import { Network, X } from 'lucide-react'
 import type { ApiClient } from '../../api/client'
 import type { CatalogAssetDetail, CatalogLineage } from '../../api/types'
 import { ErrorNotice } from '../../components/ErrorNotice'
 import { AccordionItem } from '../../components/common/Accordion'
 import { TruncatedText } from '../../components/common/TruncatedText'
+import { DataHubLineageDialog } from './DataHubLineageDialog'
+import { CatalogLineageGraph } from './CatalogLineageGraph'
 
 function valueOf(document: Record<string, unknown>, ...keys: string[]): string {
   for (const key of keys) {
@@ -32,6 +34,7 @@ export function CatalogDetailPane({
   const [lineageLoading, setLineageLoading] = useState(false)
   const [error, setError] = useState<unknown>()
   const [lineageError, setLineageError] = useState<unknown>()
+  const [embedAssetId, setEmbedAssetId] = useState<string>()
   const lineageController = useRef<AbortController | null>(null)
 
   useEffect(() => {
@@ -75,12 +78,8 @@ export function CatalogDetailPane({
     }
   }
 
-  const nodeById = useMemo(
-    () => new Map(lineage?.nodes.map((node) => [node.id, node]) ?? []),
-    [lineage],
-  )
-
-  return <aside className="catalog-detail panel" aria-label="카탈로그 상세">
+  return <>
+    <aside className="catalog-detail panel" aria-label="카탈로그 상세">
     <header>
       <div><span className="eyebrow">Authorized detail</span><h2>{detail?.name ?? '상세 정보'}</h2></div>
       <button type="button" aria-label="상세 닫기" onClick={onClose}><X size={16} /></button>
@@ -111,14 +110,12 @@ export function CatalogDetailPane({
         <ErrorNotice error={lineageError} />
         {lineage && <div className="catalog-lineage">
           <div className="catalog-lineage-summary"><Network size={15} /><span>{lineage.nodes.length} nodes · {lineage.edges.length} edges</span>{lineage.truncated && <b>일부 경로 생략</b>}</div>
-          <ul>{lineage.edges.map((edge) => {
-            const source = nodeById.get(edge.source_asset_id)
-            const target = nodeById.get(edge.target_asset_id)
-            return <li key={`${edge.source_asset_id}-${edge.target_asset_id}`}><ArrowUpFromLine size={12} /><TruncatedText value={source?.name ?? edge.source_asset_id} /><span aria-hidden="true">→</span><ArrowDownToLine size={12} /><TruncatedText value={target?.name ?? edge.target_asset_id} /></li>
-          })}</ul>
+          <CatalogLineageGraph lineage={lineage} onOpenDataHub={setEmbedAssetId} />
           {lineage.edges.length === 0 && <div className="catalog-detail-state">표시 가능한 연결 관계가 없습니다.</div>}
         </div>}
       </AccordionItem>
     </div>}
-  </aside>
+    </aside>
+    <DataHubLineageDialog client={client} assetId={embedAssetId} onClose={() => setEmbedAssetId(undefined)} />
+  </>
 }

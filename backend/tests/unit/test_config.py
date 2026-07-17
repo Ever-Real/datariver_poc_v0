@@ -84,6 +84,23 @@ def test_external_ui_links_are_optional_and_cannot_embed_credentials() -> None:
         settings(ui_grafana_url="https://admin:secret@observe.example.com")
 
 
+def test_datahub_embed_is_disabled_first_and_uses_one_exact_origin() -> None:
+    assert settings().datahub_lineage_embed_url("urn:li:dataset:(a,b,c)") is None
+    with pytest.raises(ValidationError, match="requires one configured"):
+        settings(datahub_embed_enabled=True)
+    with pytest.raises(ValidationError, match="exact origin"):
+        settings(datahub_embed_base_url="https://datahub.example.com/legacy")
+
+    configured = settings(
+        datahub_embed_enabled=True,
+        datahub_embed_base_url="https://datahub.example.com",
+    )
+
+    assert configured.datahub_lineage_embed_url("urn:li:dataset:(a,b,c)") == (
+        "https://datahub.example.com/dataset/urn%3Ali%3Adataset%3A%28a%2Cb%2Cc%29/Lineage"
+    )
+
+
 def test_production_external_ui_links_require_tls() -> None:
     with pytest.raises(ValidationError, match="ui_grafana_url"):
         settings(

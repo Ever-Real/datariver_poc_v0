@@ -140,6 +140,12 @@ export interface CatalogLineage {
   meta: CatalogPolicyMeta
 }
 
+export interface CatalogDataHubEmbed {
+  state: 'AVAILABLE' | 'UNAVAILABLE'
+  url?: string
+  reason_code?: 'DISABLED' | 'NOT_CONFIGURED'
+}
+
 export interface CatalogExportCreateRequest {
   q: string
   asset_type?: string

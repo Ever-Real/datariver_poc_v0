@@ -129,6 +129,12 @@ class CatalogAssetResponse(CatalogAssetSummary):
     stale_at: datetime | None = None
 
 
+class CatalogDataHubEmbedResponse(BaseModel):
+    state: Literal["AVAILABLE", "UNAVAILABLE"]
+    url: HttpUrl | None = None
+    reason_code: Literal["DISABLED", "NOT_CONFIGURED"] | None = None
+
+
 class CatalogDescriptionPreviewRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 

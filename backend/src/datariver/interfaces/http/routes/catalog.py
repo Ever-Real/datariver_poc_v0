@@ -37,6 +37,7 @@ from datariver.interfaces.http.presenters import (
 )
 from datariver.interfaces.http.schemas import (
     CatalogAssetResponse,
+    CatalogDataHubEmbedResponse,
     CatalogDescriptionChangeRequest,
     CatalogDescriptionPreviewRequest,
     CatalogDescriptionPreviewResponse,
@@ -537,6 +538,48 @@ async def get_asset(
             },
         )
     return catalog_detail(asset)
+
+
+@router.get(
+    "/assets/{asset_id}/datahub-lineage-embed",
+    response_model=CatalogDataHubEmbedResponse,
+)
+async def get_asset_datahub_lineage_embed(
+    asset_id: UUID,
+    request: Request,
+    response: Response,
+    context: ContextDep,
+    session: SessionDep,
+) -> CatalogDataHubEmbedResponse | JSONResponse:
+    """Return a server-built, allowlisted DataHub lineage frame for an authorized asset only."""
+    asset = await _service(request, session).get_asset(
+        subject=context.subject,
+        asset_id=asset_id,
+        environment=context.environment,
+        request_id=context.request_id,
+    )
+    if asset is None:
+        return JSONResponse(
+            status_code=404,
+            content={
+                "type": "urn:datariver:problem:not_found",
+                "title": "Not found",
+                "status": 404,
+                "detail": "The catalog asset does not exist.",
+                "instance": str(request.url.path),
+                "code": "not_found",
+                "request_id": context.request_id,
+            },
+        )
+    url = get_container(request).settings.datahub_lineage_embed_url(asset.index.external_urn)
+    response.headers["Cache-Control"] = "no-store, private"
+    if url is None:
+        settings = get_container(request).settings
+        return CatalogDataHubEmbedResponse(
+            state="UNAVAILABLE",
+            reason_code=("NOT_CONFIGURED" if settings.datahub_embed_enabled else "DISABLED"),
+        )
+    return CatalogDataHubEmbedResponse(state="AVAILABLE", url=url)
 
 
 @router.post(

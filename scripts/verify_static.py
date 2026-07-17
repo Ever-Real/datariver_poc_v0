@@ -378,6 +378,11 @@ def verify_runtime_hardening() -> None:
         raise AssertionError("web proxy must re-resolve a replaced API container")
     if "proxy_pass http://api:8000" in nginx_template:
         raise AssertionError("web proxy contains a startup-only API resolution")
+    if "${DATAHUB_EMBED_BASE_URL}" not in nginx_template:
+        raise AssertionError("web CSP must allow only the deployment-approved DataHub embed origin")
+    web_environment = documents["compose.yaml"]["services"]["web"].get("environment", {})
+    if web_environment.get("DATAHUB_EMBED_BASE_URL") != "${DATAHUB_EMBED_BASE_URL:-}":
+        raise AssertionError("web CSP must receive the same DataHub embed origin as the API")
 
 
 def verify_readiness_contract() -> None:
