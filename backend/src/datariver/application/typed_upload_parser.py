@@ -405,29 +405,20 @@ def _candidate_from_fields(
             "The typed upload description is invalid.",
             ordinal=ordinal,
         )
-    submitted_identity_hash = canonical_json_hash(
-        {
-            "contract": _CANDIDATE_IDENTITY_HASH_CONTRACT,
-            "database_name": database_name,
-            "platform": platform,
-            "schema_name": schema_name,
-            "table_name": table_name,
-            "target_asset_id": str(target_asset_id),
-            "workspace_id": str(workspace_id),
-        }
+    submitted_identity_hash = dataset_description_submitted_identity_hash(
+        workspace_id=workspace_id,
+        target_asset_id=target_asset_id,
+        platform=platform,
+        database_name=database_name,
+        schema_name=schema_name,
+        table_name=table_name,
     )
-    candidate_hash = canonical_json_hash(
-        {
-            "candidate_kind": DATASET_DESCRIPTION_CANDIDATE_KIND,
-            "content_profile": definition.content_profile.value,
-            "contract": _CANDIDATE_HASH_CONTRACT,
-            "evidence_version": DATASET_DESCRIPTION_CANDIDATE_EVIDENCE_VERSION,
-            "proposed_description": description,
-            "schema_version": definition.schema_version,
-            "submitted_identity_hash": submitted_identity_hash,
-            "target_asset_id": str(target_asset_id),
-            "workspace_id": str(workspace_id),
-        }
+    candidate_hash = dataset_description_candidate_hash(
+        workspace_id=workspace_id,
+        target_asset_id=target_asset_id,
+        proposed_description=description,
+        submitted_identity_hash=submitted_identity_hash,
+        definition=definition,
     )
     return DatasetDescriptionCandidateDraft(
         workspace_id=workspace_id,
@@ -440,6 +431,55 @@ def _candidate_from_fields(
         proposed_description=description,
         submitted_identity_hash=submitted_identity_hash,
         candidate_hash=candidate_hash,
+    )
+
+
+def dataset_description_submitted_identity_hash(
+    *,
+    workspace_id: UUID,
+    target_asset_id: UUID,
+    platform: str,
+    database_name: str,
+    schema_name: str,
+    table_name: str,
+) -> str:
+    """Rebuild the immutable V2 submitted-identity digest for read-time verification."""
+
+    return canonical_json_hash(
+        {
+            "contract": _CANDIDATE_IDENTITY_HASH_CONTRACT,
+            "database_name": database_name,
+            "platform": platform,
+            "schema_name": schema_name,
+            "table_name": table_name,
+            "target_asset_id": str(target_asset_id),
+            "workspace_id": str(workspace_id),
+        }
+    )
+
+
+def dataset_description_candidate_hash(
+    *,
+    workspace_id: UUID,
+    target_asset_id: UUID,
+    proposed_description: str,
+    submitted_identity_hash: str,
+    definition: TypedUploadProfileDefinition = DATASET_DESCRIPTION_CSV_V1,
+) -> str:
+    """Rebuild the immutable V2 candidate digest without accepting provider-shaped input."""
+
+    return canonical_json_hash(
+        {
+            "candidate_kind": DATASET_DESCRIPTION_CANDIDATE_KIND,
+            "content_profile": definition.content_profile.value,
+            "contract": _CANDIDATE_HASH_CONTRACT,
+            "evidence_version": DATASET_DESCRIPTION_CANDIDATE_EVIDENCE_VERSION,
+            "proposed_description": proposed_description,
+            "schema_version": definition.schema_version,
+            "submitted_identity_hash": submitted_identity_hash,
+            "target_asset_id": str(target_asset_id),
+            "workspace_id": str(workspace_id),
+        }
     )
 
 

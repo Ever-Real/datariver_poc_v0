@@ -11,11 +11,13 @@ from fastapi import APIRouter, Header, Query, Request, Response
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from datariver.application.classification_access import ClassificationAccessResolver
+from datariver.application.dto import UploadRegistrationCandidatePage
 from datariver.application.services.authorization import AuthorizationService
 from datariver.application.services.change_targets import CatalogChangeTargetAuthorizer
 from datariver.application.services.governance import GovernanceService
 from datariver.application.services.registration import RegistrationService
-from datariver.domain.authz import Classification
+from datariver.application.services.registration_candidates import RegistrationCandidateQueryService
+from datariver.domain.authz import BuiltinPolicyEngine, Classification
 from datariver.domain.common import ConflictError, ValidationError, canonical_json_hash, uuid7
 from datariver.domain.governance import ChangeItem
 from datariver.domain.registration import (
@@ -32,11 +34,21 @@ from datariver.infrastructure.db.classification_access import (
     SqlClassificationAccessSnapshotReader,
 )
 from datariver.infrastructure.db.governance import SqlGovernanceUnitOfWork
-from datariver.infrastructure.db.registration import SqlUploadUnitOfWork
+from datariver.infrastructure.db.registration import (
+    SqlUploadCandidateReader,
+    SqlUploadPreparationRepository,
+    SqlUploadRepository,
+    SqlUploadUnitOfWork,
+)
 from datariver.interfaces.http.dependencies import ContextDep, SessionDep, get_container
 from datariver.interfaces.http.presenters import change_request_response
 from datariver.interfaces.http.schemas import (
     ChangeRequestResponse,
+    PageMeta,
+    UploadCandidateCurrentTargetResponse,
+    UploadCandidatePolicyMetaResponse,
+    UploadCandidateReceiptResponse,
+    UploadCandidateSubmittedIdentityResponse,
     UploadCompleteRequest,
     UploadInitiateRequest,
     UploadListResponse,
@@ -44,6 +56,8 @@ from datariver.interfaces.http.schemas import (
     UploadPartResponse,
     UploadPreparationListResponse,
     UploadPreparationResponse,
+    UploadRegistrationCandidateListResponse,
+    UploadRegistrationCandidateResponse,
     UploadRegistrationProposal,
     UploadResponse,
 )
@@ -82,6 +96,28 @@ def _governance_service(request: Request, session: AsyncSession) -> GovernanceSe
     )
 
 
+def _candidate_service(
+    request: Request,
+    session: AsyncSession,
+) -> RegistrationCandidateQueryService:
+    container = get_container(request)
+    catalog = SqlCatalogIndexReader(session)
+    return RegistrationCandidateQueryService(
+        uploads=SqlUploadRepository(session),
+        preparations=SqlUploadPreparationRepository(session),
+        candidates=SqlUploadCandidateReader(session),
+        catalog=catalog,
+        watermark=catalog,
+        classification_access=ClassificationAccessResolver(
+            SqlClassificationAccessSnapshotReader(session)
+        ),
+        authorization=AuthorizationService(
+            decision_writer=SqlDecisionWriter(container.database.session_factory)
+        ),
+        policy_version=BuiltinPolicyEngine.policy_version,
+    )
+
+
 def _response(manifest: UploadManifest) -> UploadResponse:
     return UploadResponse(
         id=manifest.upload_id,
@@ -115,6 +151,90 @@ def _preparation_response(preparation: UploadPreparation) -> UploadPreparationRe
         created_at=preparation.created_at,
         updated_at=preparation.updated_at,
         version=preparation.version,
+    )
+
+
+def _candidate_list_response(
+    page: UploadRegistrationCandidatePage,
+    *,
+    limit: int,
+) -> UploadRegistrationCandidateListResponse:
+    receipt = page.receipt
+    items: list[UploadRegistrationCandidateResponse] = []
+    for value in page.items:
+        candidate = value.evidence
+        target = value.current_target
+        submitted_values = (
+            candidate.submitted_platform,
+            candidate.submitted_database_name,
+            candidate.submitted_schema_name,
+            candidate.submitted_table_name,
+            candidate.submitted_identity_hash,
+        )
+        if any(item is None for item in submitted_values):
+            raise ConflictError("The upload preparation evidence is unavailable.")
+        platform, database_name, schema_name, table_name, identity_hash = submitted_values
+        assert isinstance(platform, str)
+        assert isinstance(database_name, str)
+        assert isinstance(schema_name, str)
+        assert isinstance(table_name, str)
+        assert isinstance(identity_hash, str)
+        if target.platform is None or target.database_name is None or target.schema_name is None:
+            raise ConflictError("The candidate target is unavailable.")
+        items.append(
+            UploadRegistrationCandidateResponse(
+                id=candidate.candidate_id,
+                ordinal=candidate.ordinal,
+                evidence_version="DATASET_DESCRIPTION_CANDIDATE_V2",
+                candidate_kind="DATASET_DESCRIPTION_UPDATE",
+                proposed_description=candidate.proposed_description,
+                submitted_identity=UploadCandidateSubmittedIdentityResponse(
+                    platform=platform,
+                    database_name=database_name,
+                    schema_name=schema_name,
+                    table_name=table_name,
+                    identity_hash=identity_hash,
+                ),
+                candidate_hash=candidate.candidate_hash,
+                created_at=candidate.created_at,
+                current_target=UploadCandidateCurrentTargetResponse(
+                    id=target.asset_id,
+                    asset_type="DATASET",
+                    name=target.name,
+                    platform=target.platform,
+                    database_name=target.database_name,
+                    schema_name=target.schema_name,
+                    classification=target.classification.name,
+                    lifecycle="ACTIVE",
+                    source_version=target.source_version,
+                    observed_at=target.observed_at,
+                ),
+            )
+        )
+    return UploadRegistrationCandidateListResponse(
+        items=items,
+        page=PageMeta(next_cursor=page.next_cursor, limit=limit),
+        receipt=UploadCandidateReceiptResponse(
+            id=receipt.receipt_id,
+            preparation_id=receipt.preparation_id,
+            manifest_version=receipt.manifest_version,
+            source_sha256=receipt.source_sha256,
+            content_profile="DATASET_DESCRIPTION_CSV_V1",
+            parser_version=receipt.parser_version,
+            scanner_version=receipt.scanner_version,
+            schema_version=receipt.schema_version,
+            configuration_hash=receipt.configuration_hash,
+            candidate_root_hash=receipt.candidate_root_hash,
+            receipt_hash=receipt.receipt_hash,
+            observed_at=receipt.observed_at,
+            created_at=receipt.created_at,
+        ),
+        meta=UploadCandidatePolicyMetaResponse(
+            projection_version=page.projection_version,
+            policy_version=page.policy_version,
+            classification_policy_version=page.classification_policy_version,
+            authorization_generation=page.authorization_generation,
+        ),
     )
 
 
@@ -287,6 +407,34 @@ async def get_upload_preparation(
         preparation=preparation,
     )
     return _preparation_response(preparation)
+
+
+@router.get(
+    "/{upload_id}/preparations/{preparation_id}/candidates",
+    response_model=UploadRegistrationCandidateListResponse,
+)
+async def list_upload_registration_candidates(
+    upload_id: UUID,
+    preparation_id: UUID,
+    request: Request,
+    response: Response,
+    context: ContextDep,
+    session: SessionDep,
+    cursor: Annotated[str | None, Query(min_length=1, max_length=2048)] = None,
+    limit: Annotated[int, Query(ge=1, le=50)] = 20,
+) -> UploadRegistrationCandidateListResponse:
+    page = await _candidate_service(request, session).list_candidates(
+        workspace_id=context.workspace_id,
+        upload_id=upload_id,
+        preparation_id=preparation_id,
+        subject=context.subject,
+        environment=context.environment,
+        request_id=context.request_id,
+        cursor=cursor,
+        limit=limit,
+    )
+    response.headers["Cache-Control"] = "private, no-store"
+    return _candidate_list_response(page, limit=limit)
 
 
 @router.post("/{upload_id}/parts", response_model=UploadPartResponse)

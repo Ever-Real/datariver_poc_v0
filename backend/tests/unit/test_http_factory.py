@@ -154,6 +154,7 @@ def test_openapi_contains_all_required_product_modules() -> None:
         "/api/v1/uploads",
         "/api/v1/uploads/{upload_id}/preparations",
         "/api/v1/uploads/{upload_id}/preparations/{preparation_id}",
+        "/api/v1/uploads/{upload_id}/preparations/{preparation_id}/candidates",
         "/api/v1/uploads/{upload_id}/registration-proposals",
         "/api/v1/change-requests",
         "/api/v1/operations/summary",
@@ -241,6 +242,52 @@ def test_upload_preparation_openapi_is_typed_and_server_managed() -> None:
         "parser_configuration",
         "rows",
     }.isdisjoint(response["properties"])
+
+
+def test_upload_candidate_openapi_is_bounded_read_only_and_non_disclosing() -> None:
+    factory = cast(Callable[[Settings], AppContainer], lambda _: LiveOnlyContainer())
+    document = create_app(settings(), container_factory=factory).openapi()
+
+    operation = document["paths"][
+        "/api/v1/uploads/{upload_id}/preparations/{preparation_id}/candidates"
+    ]["get"]
+    parameters = {parameter["name"]: parameter for parameter in operation["parameters"]}
+    assert parameters["limit"]["schema"] == {
+        "type": "integer",
+        "maximum": 50,
+        "minimum": 1,
+        "default": 20,
+        "title": "Limit",
+    }
+    assert parameters["cursor"]["schema"]["anyOf"][0]["maxLength"] == 2048
+    assert "requestBody" not in operation
+
+    page = document["components"]["schemas"]["UploadRegistrationCandidateListResponse"]
+    assert set(page["properties"]) == {"items", "page", "receipt", "meta"}
+    candidate = document["components"]["schemas"]["UploadRegistrationCandidateResponse"]
+    assert set(candidate["properties"]) == {
+        "ordinal",
+        "candidate_hash",
+        "id",
+        "evidence_version",
+        "candidate_kind",
+        "proposed_description",
+        "submitted_identity",
+        "current_target",
+        "created_at",
+    }
+    serialized = str({page["title"]: page, candidate["title"]: candidate}).lower()
+    for forbidden in (
+        "total",
+        "bucket",
+        "object_key",
+        "etag",
+        "requested_by",
+        "raw",
+        "provider",
+        "after_document",
+    ):
+        assert forbidden not in serialized
 
 
 def test_registration_if_match_requires_a_canonical_quoted_positive_version() -> None:

@@ -85,6 +85,7 @@ Response carries `upserted,tombstoned,next_offset,total,observed_at`. A single a
 | `POST /uploads/{upload_id}/preparations` | `registration.read` + `registration.validate` | queue/reuse the server-owned typed configuration for an exact accepted manifest version; requires `If-Match` and `Idempotency-Key`, accepts no body |
 | `GET /uploads/{upload_id}/preparations?state=&limit=` | `registration.read` | list bounded typed preparation state/progress without object coordinates or parser payload |
 | `GET /uploads/{upload_id}/preparations/{preparation_id}` | `registration.read` | read one upload-scoped typed preparation with private no-store response |
+| `GET /uploads/{upload_id}/preparations/{preparation_id}/candidates?cursor=&limit=` | `registration.read` + `catalog.read` + `change.create` | page immutable V2 submitted evidence and separately authorized current ACTIVE DATASET targets; private no-store, opaque cursor, no total or provider/object coordinates |
 | `POST /uploads/{upload_id}/registration-proposals` | `registration.read` + `change.create` + `change.raw.create` | operator/recovery-only raw proposal from an `ACCEPTED` upload; not exposed in the ordinary UI and not accepted as typed-content binding |
 
 Completion does not mean accepted. Durable states are `INITIATED → COMPLETION_QUEUED → COMPLETING → QUARANTINED → VALIDATING → ACCEPTED`, with terminal `REJECTED/ABORTED/EXPIRED`. Workers stream object bytes, compare declared size/SHA-256, apply bounded format rules, copy to the accepted bucket, commit canonical location, then best-effort clean quarantine.
@@ -97,10 +98,14 @@ validator configuration hash server-side and creates at most one preparation for
 and configuration. It rejects non-`ACCEPTED`, stale-version, format-only and incomplete promoted-byte
 evidence. The source-only parser accepts LF/CRLF and a BOM only at byte zero, preserves exact
 description content and uses strict all-or-nothing failure: a valid result has `rejected_count=0`.
-Candidate hashes bind workspace, asset, profile/schema and exact description. The receipt root is an
-ordered result chain over ordinal and candidate hash, not a Merkle inclusion proof. The parser worker,
-authorized target resolver, fenced staging/finalize path, receipt/candidate read API and
-candidate-to-change command are not yet enabled; a `QUEUED` preparation is not an executable proposal.
+Candidate hashes bind workspace, asset, submitted identity, profile/schema and exact description.
+The receipt root is an ordered result chain over ordinal and candidate hash, not a Merkle inclusion
+proof. Candidate reads require a current classification snapshot and one set-based local projection
+lookup; a legacy candidate or any missing, denied or identity-drifted target fails the whole page with
+a non-disclosing response. The opaque cursor binds upload/preparation/receipt, subject permission
+scope, policy/classification snapshot, projection watermark and limit. The parser worker, fenced
+staging/finalize path and candidate-to-change command are not enabled; a `QUEUED` preparation is not
+an executable proposal.
 
 The current BULK UI sends `content_profile` explicitly rather than relying on the server default.
 Only an `ACCEPTED` `DATASET_DESCRIPTION_CSV_V1` upload exposes preparation controls. It first reads

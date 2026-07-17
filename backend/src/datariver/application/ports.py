@@ -45,6 +45,8 @@ from datariver.application.dto import (
     KnowledgeReleaseRecord,
     MultipartUpload,
     ObjectMetadata,
+    UploadPreparationReceiptEvidence,
+    UploadRegistrationCandidateEvidence,
     WorkspaceMembershipAccessRecord,
     WorkspaceMembershipSummary,
 )
@@ -137,6 +139,16 @@ class CatalogChangeTargetReader(Protocol):
         access: ClassificationAccessSnapshot,
         external_urns: Sequence[str],
         lock_for_share: bool = False,
+    ) -> Sequence[CatalogAssetIndex]: ...
+
+
+class CatalogCandidateTargetReader(Protocol):
+    async def get_authorized_assets_by_ids(
+        self,
+        *,
+        subject: SubjectAttributes,
+        access: ClassificationAccessSnapshot,
+        asset_ids: Sequence[UUID],
     ) -> Sequence[CatalogAssetIndex]: ...
 
 
@@ -698,6 +710,25 @@ class UploadPreparationRepository(Protocol):
         state: str | None,
         limit: int,
     ) -> Sequence[UploadPreparation]: ...
+
+
+class UploadCandidateReader(Protocol):
+    async def get_ready_receipt(
+        self,
+        *,
+        workspace_id: UUID,
+        upload_id: UUID,
+        preparation_id: UUID,
+    ) -> UploadPreparationReceiptEvidence | None: ...
+
+    async def list_candidates(
+        self,
+        *,
+        workspace_id: UUID,
+        receipt_id: UUID,
+        after_ordinal: int,
+        limit: int,
+    ) -> Sequence[UploadRegistrationCandidateEvidence]: ...
 
 
 class UploadUnitOfWork(Protocol):

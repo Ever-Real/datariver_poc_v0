@@ -165,16 +165,18 @@ role receives no access to the new tables; a workspace/correlation-bound executi
 an activation prerequisite. The API now persists and reads authorized `upload_preparation_jobs`
 through ordinary forced-RLS sessions after locking and verifying the exact accepted manifest,
 immutable content profile, promoted-byte SHA-256 evidence and server configuration hash. It cannot
-claim a lease, write a receipt/candidate or create candidate provenance. No parser worker, candidate
-API or typed proposal capability is enabled.
+claim a lease, write a receipt/candidate or create candidate provenance. No parser worker or typed
+proposal capability is enabled.
 
 Alembic `0017` closes the submitted-identity evidence gap without rewriting history. Existing
 candidate rows become `LEGACY_V1` with no fabricated hierarchy; new rows must be
 `DATASET_DESCRIPTION_CANDIDATE_V2` and carry all four submitted hierarchy values plus their identity
 hash. Parser/configuration and ordered-root contracts advance to V2, and a trigger rejects new legacy
-rows plus every candidate update/delete. No new role grant is introduced. Candidate publication and
-read/preview/proposal APIs remain disabled until fenced publish and current set-based authorization
-are proven.
+rows plus every candidate update/delete. No new role grant is introduced. The read-only candidate
+API accepts only READY receipt evidence, recomputes V2 identity/candidate invariants and resolves a
+page through one current authorization-pruned ACTIVE DATASET lookup. It never reads object storage or
+DataHub and exposes no raw provider/object coordinates. Candidate publication, preview commands and
+proposal creation remain disabled until fenced publish and execution authorization are proven.
 
 ## Constraints enforced outside DDL
 

@@ -42,16 +42,19 @@ The first typed BULK profile is an all-or-nothing dataset-description CSV. Its s
 uses bounded async chunks, strict UTF-8 and CSV states, exact ordered headers, canonical lowercase
 asset UUIDs, projection-compatible identity limits, duplicate rejection and exact source/candidate
 hashes. It preserves description content, including an empty clear proposal and quoted newlines.
-No runtime worker is wired: target rows must still be batch-resolved as authorized ACTIVE DATASETs
-with exact hierarchy matches, and attempt-local staging must be atomically fenced before a receipt
-or candidate can become visible.
+No runtime worker is wired. A separately published `READY` receipt can be inspected through a
+bounded read-only candidate API: it revalidates V2 receipt/hash invariants, resolves the page of
+targets in one authorization-pruned ACTIVE DATASET batch and exposes immutable submitted identity
+separately from the current projection. Any legacy, missing, denied or identity-drifted target makes
+the whole page unavailable without disclosing which row failed. Attempt-local staging must still be
+atomically fenced before a receipt or candidate can become visible.
 
 The BULK browser preserves the v0.3 300-pixel upload panel and dark workflow tracker while replacing
 client-side parsing and simulated updates with server truth. It sends the explicitly selected profile
 on upload initiation, lists/creates preparation only for an `ACCEPTED` typed source, uses the exact
 quoted manifest `If-Match` and a fresh idempotency key, and displays indeterminate progress until the
-server reports a row count. `READY` means preparation evidence only: no candidate, raw Aspect,
-change-request or DataHub action is exposed until the governed server contracts exist.
+server reports a row count. `READY` enables read-only candidate evidence only; no raw Aspect,
+change-request or DataHub mutation action is exposed until the governed command contracts exist.
 
 ## Change management
 

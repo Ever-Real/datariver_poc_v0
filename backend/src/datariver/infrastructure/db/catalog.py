@@ -676,6 +676,25 @@ class SqlCatalogIndexReader(CatalogIndexReader):
             statement = statement.with_for_update(read=True, of=AssetProjectionModel)
         return tuple(_to_index(model) for model in (await self._session.scalars(statement)).all())
 
+    async def get_authorized_assets_by_ids(
+        self,
+        *,
+        subject: SubjectAttributes,
+        access: ClassificationAccessSnapshot,
+        asset_ids: Sequence[UUID],
+    ) -> Sequence[CatalogAssetIndex]:
+        unique_ids = tuple(dict.fromkeys(asset_ids))
+        if len(unique_ids) > 1_000:
+            raise ValueError("The catalog candidate target set exceeds the configured bound.")
+        if not unique_ids:
+            return ()
+        statement = select(AssetProjectionModel).where(
+            AssetProjectionModel.id.in_(unique_ids),
+            AssetProjectionModel.asset_type == "DATASET",
+            and_(*self._scope_conditions(subject, access)),
+        )
+        return tuple(_to_index(model) for model in (await self._session.scalars(statement)).all())
+
 
 class SqlCatalogProjectionWriter(CatalogProjectionWriter):
     def __init__(self, session: AsyncSession) -> None:

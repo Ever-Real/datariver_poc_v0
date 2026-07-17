@@ -219,6 +219,68 @@ class CatalogLineage:
 
 
 @dataclass(frozen=True, slots=True)
+class UploadPreparationReceiptEvidence:
+    receipt_id: UUID
+    workspace_id: UUID
+    preparation_id: UUID
+    upload_id: UUID
+    manifest_version: int
+    source_sha256: str
+    accepted_sha256: str
+    content_profile: str
+    parser_version: str
+    scanner_version: str
+    schema_version: str
+    configuration_hash: str
+    item_count: int
+    rejected_count: int
+    candidate_root_hash: str
+    receipt_hash: str
+    observed_at: datetime
+    created_at: datetime
+    candidate_count: int
+    first_ordinal: int | None
+    last_ordinal: int | None
+    legacy_candidate_count: int
+
+
+@dataclass(frozen=True, slots=True)
+class UploadRegistrationCandidateEvidence:
+    candidate_id: UUID
+    workspace_id: UUID
+    receipt_id: UUID
+    ordinal: int
+    target_asset_id: UUID
+    candidate_kind: str
+    proposed_description: str
+    evidence_version: str
+    submitted_platform: str | None
+    submitted_database_name: str | None
+    submitted_schema_name: str | None
+    submitted_table_name: str | None
+    submitted_identity_hash: str | None
+    candidate_hash: str
+    created_at: datetime
+
+
+@dataclass(frozen=True, slots=True)
+class UploadRegistrationCandidateView:
+    evidence: UploadRegistrationCandidateEvidence
+    current_target: CatalogAssetIndex
+
+
+@dataclass(frozen=True, slots=True)
+class UploadRegistrationCandidatePage:
+    items: tuple[UploadRegistrationCandidateView, ...]
+    next_cursor: str | None
+    receipt: UploadPreparationReceiptEvidence
+    projection_version: int
+    policy_version: str
+    classification_policy_version: int | None
+    authorization_generation: int | None
+
+
+@dataclass(frozen=True, slots=True)
 class CatalogExportRequest:
     query: str
     filters: dict[str, str]

@@ -4,11 +4,16 @@ from datetime import timedelta
 from types import TracebackType
 from uuid import UUID
 
-from sqlalchemy import and_, or_, select
+from sqlalchemy import and_, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from datariver.application.dto import ObjectMetadata
+from datariver.application.dto import (
+    ObjectMetadata,
+    UploadPreparationReceiptEvidence,
+    UploadRegistrationCandidateEvidence,
+)
 from datariver.application.ports import (
+    UploadCandidateReader,
     UploadCompletionStore,
     UploadPreparationRepository,
     UploadRepository,
@@ -29,6 +34,8 @@ from datariver.infrastructure.db.governance import SqlIdempotencyStore, SqlOutbo
 from datariver.infrastructure.db.models.integration import (
     ObjectManifestModel,
     UploadPreparationJobModel,
+    UploadPreparationReceiptModel,
+    UploadRegistrationCandidateModel,
 )
 from datariver.infrastructure.db.rls import set_security_context
 
@@ -294,6 +301,153 @@ class SqlUploadPreparationRepository(UploadPreparationRepository):
             ).all()
         )
         return [_to_preparation(model) for model in models]
+
+
+class SqlUploadCandidateReader(UploadCandidateReader):
+    _V2 = "DATASET_DESCRIPTION_CANDIDATE_V2"
+
+    def __init__(self, session: AsyncSession) -> None:
+        self._session = session
+
+    async def get_ready_receipt(
+        self,
+        *,
+        workspace_id: UUID,
+        upload_id: UUID,
+        preparation_id: UUID,
+    ) -> UploadPreparationReceiptEvidence | None:
+        candidates = UploadRegistrationCandidateModel
+        candidate_stats = (
+            select(
+                candidates.receipt_id.label("receipt_id"),
+                func.count(candidates.id).label("candidate_count"),
+                func.min(candidates.ordinal).label("first_ordinal"),
+                func.max(candidates.ordinal).label("last_ordinal"),
+                func.count(candidates.id)
+                .filter(candidates.evidence_version != self._V2)
+                .label("legacy_candidate_count"),
+            )
+            .where(candidates.workspace_id == workspace_id)
+            .group_by(candidates.receipt_id)
+            .subquery()
+        )
+        receipts = UploadPreparationReceiptModel
+        jobs = UploadPreparationJobModel
+        statement = (
+            select(
+                receipts.id.label("receipt_id"),
+                receipts.workspace_id,
+                receipts.preparation_job_id.label("preparation_id"),
+                receipts.upload_id,
+                receipts.manifest_version,
+                receipts.source_sha256,
+                receipts.accepted_sha256,
+                receipts.content_profile,
+                receipts.parser_version,
+                receipts.scanner_version,
+                receipts.schema_version,
+                receipts.configuration_hash,
+                receipts.item_count,
+                receipts.rejected_count,
+                receipts.candidate_root_hash,
+                receipts.receipt_hash,
+                receipts.observed_at,
+                receipts.created_at,
+                candidate_stats.c.candidate_count,
+                candidate_stats.c.first_ordinal,
+                candidate_stats.c.last_ordinal,
+                candidate_stats.c.legacy_candidate_count,
+            )
+            .join(
+                jobs,
+                and_(
+                    jobs.workspace_id == receipts.workspace_id,
+                    jobs.id == receipts.preparation_job_id,
+                    jobs.upload_id == receipts.upload_id,
+                ),
+            )
+            .join(
+                candidate_stats,
+                candidate_stats.c.receipt_id == receipts.id,
+            )
+            .where(
+                receipts.workspace_id == workspace_id,
+                receipts.upload_id == upload_id,
+                receipts.preparation_job_id == preparation_id,
+                jobs.state == UploadPreparationState.READY.value,
+            )
+        )
+        row = (await self._session.execute(statement)).mappings().one_or_none()
+        if row is None:
+            return None
+        return UploadPreparationReceiptEvidence(
+            receipt_id=row["receipt_id"],
+            workspace_id=row["workspace_id"],
+            preparation_id=row["preparation_id"],
+            upload_id=row["upload_id"],
+            manifest_version=row["manifest_version"],
+            source_sha256=row["source_sha256"],
+            accepted_sha256=row["accepted_sha256"],
+            content_profile=row["content_profile"],
+            parser_version=row["parser_version"],
+            scanner_version=row["scanner_version"],
+            schema_version=row["schema_version"],
+            configuration_hash=row["configuration_hash"],
+            item_count=row["item_count"],
+            rejected_count=row["rejected_count"],
+            candidate_root_hash=row["candidate_root_hash"],
+            receipt_hash=row["receipt_hash"],
+            observed_at=row["observed_at"],
+            created_at=row["created_at"],
+            candidate_count=row["candidate_count"],
+            first_ordinal=row["first_ordinal"],
+            last_ordinal=row["last_ordinal"],
+            legacy_candidate_count=row["legacy_candidate_count"],
+        )
+
+    async def list_candidates(
+        self,
+        *,
+        workspace_id: UUID,
+        receipt_id: UUID,
+        after_ordinal: int,
+        limit: int,
+    ) -> list[UploadRegistrationCandidateEvidence]:
+        models = list(
+            (
+                await self._session.scalars(
+                    select(UploadRegistrationCandidateModel)
+                    .where(
+                        UploadRegistrationCandidateModel.workspace_id == workspace_id,
+                        UploadRegistrationCandidateModel.receipt_id == receipt_id,
+                        UploadRegistrationCandidateModel.ordinal > after_ordinal,
+                    )
+                    .order_by(UploadRegistrationCandidateModel.ordinal.asc())
+                    .limit(limit)
+                )
+            ).all()
+        )
+        return [_to_candidate(model) for model in models]
+
+
+def _to_candidate(model: UploadRegistrationCandidateModel) -> UploadRegistrationCandidateEvidence:
+    return UploadRegistrationCandidateEvidence(
+        candidate_id=model.id,
+        workspace_id=model.workspace_id,
+        receipt_id=model.receipt_id,
+        ordinal=model.ordinal,
+        target_asset_id=model.target_asset_id,
+        candidate_kind=model.candidate_kind,
+        proposed_description=model.proposed_description,
+        evidence_version=model.evidence_version,
+        submitted_platform=model.submitted_platform,
+        submitted_database_name=model.submitted_database_name,
+        submitted_schema_name=model.submitted_schema_name,
+        submitted_table_name=model.submitted_table_name,
+        submitted_identity_hash=model.submitted_identity_hash,
+        candidate_hash=model.candidate_hash,
+        created_at=model.created_at,
+    )
 
 
 def _to_preparation(model: UploadPreparationJobModel) -> UploadPreparation:

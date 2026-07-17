@@ -33,8 +33,12 @@ identity fields. Candidate V2 then binds that identity hash together with the ev
 operation, profile/schema, workspace, target asset ID and exact proposed description. The ordered
 candidate-root domain tag also advances to V2. Golden vectors freeze all three values.
 
-A later read API must return the submitted fields as immutable evidence and the authorization-pruned
-projection separately as `current_target`. It must never treat either as authority for execution.
+The read API returns the submitted fields as immutable evidence and the authorization-pruned
+projection separately as `current_target`. It never treats either as authority for execution. It is
+local-only and read-only: READY receipt and V2 hashes are revalidated, targets are fetched as one
+current ACTIVE DATASET batch, and any legacy, missing, denied or identity-drifted target makes the
+whole page unavailable. Its cursor binds receipt, subject scope, policy/classification snapshot,
+projection watermark and limit, and responses expose neither totals nor provider/object coordinates.
 Preview and change creation must re-resolve every target under the current subject, policy,
 classification-access snapshot and active DATASET scope, and must fail closed when the submitted and
 current identities no longer match.
@@ -48,6 +52,7 @@ current identities no longer match.
   check and insert trigger require all submitted fields and their hash for every new V2 row.
 - Downgrade is refused once a V2 candidate exists because discarding its submitted evidence would be
   destructive.
-- Runtime preparation execution, candidate publication/read/preview and proposal creation remain
-  disabled until the separate least-privilege worker identity, fenced atomic publish invariants,
-  scanner/object-version evidence and current set-based authorization tests are complete.
+- Runtime preparation execution, candidate publication/preview and proposal creation remain disabled
+  until the separate least-privilege worker identity, fenced atomic publish invariants and
+  scanner/object-version evidence are complete. Read-only candidate inspection is enabled only for
+  already valid READY/V2 evidence and has current set-based authorization tests.

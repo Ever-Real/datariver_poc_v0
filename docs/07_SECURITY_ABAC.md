@@ -45,6 +45,12 @@ Untrusted inputs include browser/API payloads, OIDC claims before verification, 
 8. Apply field-level redaction.
 9. Persist decision ID, policy versions and reason codes; a bounded list/Chat evaluation may use one grouped record containing per-resource effects instead of one transaction/row per candidate. Avoid sensitive raw inputs.
 
+Typed upload candidate reads require `registration.read`, `catalog.read` and `change.create`. The
+service first validates READY receipt/V2 hash evidence, then batch-loads only current ACTIVE DATASET
+targets under the classification snapshot and applies grouped authorization. A missing, denied,
+legacy or identity-drifted row fails the complete page through the same existence-hiding response;
+the API never reveals the failing ordinal or falls back to DataHub/object storage.
+
 ## Mandatory policies
 
 - Workspace mismatch always denies.
