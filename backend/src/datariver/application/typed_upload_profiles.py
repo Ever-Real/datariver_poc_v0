@@ -17,6 +17,10 @@ class TypedUploadProfileDefinition:
     maximum_file_bytes: int
     maximum_rows: int
     maximum_row_bytes: int
+    maximum_platform_characters: int
+    maximum_database_name_characters: int
+    maximum_schema_name_characters: int
+    maximum_table_name_characters: int
     maximum_description_characters: int
     acceptance_validator_version: str
     parser_version: str
@@ -35,8 +39,12 @@ class TypedUploadProfileDefinition:
                 "headers": list(self.headers),
                 "maximum_description_characters": self.maximum_description_characters,
                 "maximum_file_bytes": self.maximum_file_bytes,
+                "maximum_database_name_characters": self.maximum_database_name_characters,
+                "maximum_platform_characters": self.maximum_platform_characters,
                 "maximum_row_bytes": self.maximum_row_bytes,
                 "maximum_rows": self.maximum_rows,
+                "maximum_schema_name_characters": self.maximum_schema_name_characters,
+                "maximum_table_name_characters": self.maximum_table_name_characters,
                 "parser_version": self.parser_version,
                 "schema_version": self.schema_version,
             }
@@ -60,6 +68,10 @@ DATASET_DESCRIPTION_CSV_V1 = TypedUploadProfileDefinition(
     maximum_file_bytes=512 * 1024 * 1024,
     maximum_rows=50_000,
     maximum_row_bytes=64 * 1024,
+    maximum_platform_characters=100,
+    maximum_database_name_characters=255,
+    maximum_schema_name_characters=255,
+    maximum_table_name_characters=500,
     maximum_description_characters=10_000,
     acceptance_validator_version="integrity-format-v1",
     parser_version="dataset-description-csv-parser-v1",

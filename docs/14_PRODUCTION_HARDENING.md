@@ -44,7 +44,7 @@ scale/availability/team-ownership evidence.
 
 ## 3. Verified baseline and important limitations
 
-The current branch passes 402 backend tests, strict mypy over 189 source/test files and Ruff. The
+The current branch passes 429 backend tests, strict mypy over 191 source/test files and Ruff. The
 frontend type/lint/build gates and the changed registration workbench's 6 tests pass; the last
 complete frontend baseline remains 18 files/75 tests, while the exact current whole-suite run remains
 open because bounded Windows/WSL network-drive runs ended without assertion output. The frontend artifact is JS 479.89 kB (gzip 137.78 kB) and
@@ -60,8 +60,11 @@ immutable receipts/candidates and a unique candidate-to-CR provenance table with
 API-only bounded grants. The API can queue/reuse and read a job only after manifest locking,
 authorization, exact version/profile and mandatory promoted-byte SHA-256 verification; clients
 cannot supply parser configuration or storage coordinates. The existing BYPASSRLS upload role has
-no access to these new tables. No parser, candidate API or proposal capability is deployed. Full
-malicious-input scanning, target Object VersionId/conditional copy, a separately approved
+no access to these new tables. No parser worker, candidate API or proposal capability is deployed.
+The source contains a bounded all-or-nothing parser with strict CSV/UTF-8/header/identity/duplicate/
+hash controls and golden result-chain vectors, but it has no runtime factory or persistence port.
+Full malicious-input scanning, authorization-pruned target/hierarchy resolution, attempt-local
+staging with fenced atomic publish, target Object VersionId/conditional copy, a separately approved
 NOBYPASSRLS workspace/correlation-bound execution role and durable batch checkpoints remain
 promotion gates.
 

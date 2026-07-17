@@ -87,6 +87,9 @@ from an object-key pattern or delete the quarantine source before the committed 
 Typed upload preparation is currently control-plane only. An authorized API request may create or
 read a `QUEUED` job after exact accepted-byte verification, but no deployed worker may claim it and
 operators must not mark it `READY`, insert receipts/candidates or reuse the BYPASSRLS upload role.
+The checked-in parser is a source/unit contract only; invoking it without lease-token staging and a
+single fenced publish transaction is unsupported because final SHA or target validation can still
+fail after rows have been observed.
 Provisioning a parser requires an explicitly approved, separate NOBYPASSRLS database identity,
 workspace/correlation-scoped claim capability, object read limited to the verified source and no
 DataHub write credential. Until that gate passes, queue age is expected and is not a reason to edit

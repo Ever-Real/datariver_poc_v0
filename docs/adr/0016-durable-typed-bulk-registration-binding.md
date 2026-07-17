@@ -88,3 +88,20 @@ configuration hash server-side and converges different keys on one source/config
 Responses expose progress and cryptographic evidence but no object coordinates, lease, requested-by
 identity or parser payload. The parser/execution role, completed receipt, candidate API, preview and
 candidate-to-change command remain deliberately disabled and require a later reviewed slice.
+
+The next source-only slice fixes the V1 parser contract without enabling execution. It accepts
+bounded asynchronous byte chunks, strict UTF-8 with a BOM only at the file start, LF/CRLF records,
+strict quoted-field states and the exact six-column header. Canonical lowercase asset UUIDs are
+required; identity fields preserve case/Unicode but reject padding, controls and values beyond the
+catalog projection limits. Descriptions preserve exact text and quoted CR/LF, with empty text meaning
+clear, while forbidden controls and values over 10,000 characters fail the whole preparation.
+Duplicates, malformed rows, limit violations and final source-hash mismatch also fail all-or-nothing.
+
+Candidate V1 hashes bind contract, workspace, target asset, kind, profile/schema and exact
+description. The bounded ordered result chain is fixed as `seed = SHA256(domain_tag)` and
+`H_i = SHA256(domain_tag || H_(i-1) || uint64be(ordinal) || candidate_hash_bytes)`; it is not a
+Merkle inclusion proof. Golden vectors freeze both candidate hashes and roots. This parser may emit
+to attempt-local staging before the final source hash is known, so no consumer may write canonical
+receipt/candidate tables directly. Runtime wiring remains blocked on an authorization-pruned ACTIVE
+DATASET plus exact-hierarchy resolver, lease-token staging, a single fenced publish transaction,
+scanner and target object-version/conditional-read evidence.

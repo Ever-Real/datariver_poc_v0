@@ -38,6 +38,14 @@ DB/S3 principal gate. The browser must not crawl result pages as a substitute.
 
 Uploads can be aborted, expire automatically, and cannot be downloaded with an old authorization decision. Validation never equals approval.
 
+The first typed BULK profile is an all-or-nothing dataset-description CSV. Its source-only parser
+uses bounded async chunks, strict UTF-8 and CSV states, exact ordered headers, canonical lowercase
+asset UUIDs, projection-compatible identity limits, duplicate rejection and exact source/candidate
+hashes. It preserves description content, including an empty clear proposal and quoted newlines.
+No runtime worker is wired: target rows must still be batch-resolved as authorized ACTIVE DATASETs
+with exact hierarchy matches, and attempt-local staging must be atomically fenced before a receipt
+or candidate can become visible.
+
 ## Change management
 
 State machine:

@@ -91,11 +91,16 @@ Completion does not mean accepted. Durable states are `INITIATED → COMPLETION_
 
 The first typed profile is `DATASET_DESCRIPTION_CSV_V1`: UTF-8-with-BOM-compatible CSV with the exact
 ordered headers `asset_id,platform,database_name,schema_name,table_name,description`, maximum 512 MiB,
-50,000 rows, 64 KiB per row and 10,000 description characters. The API derives the parser/schema/
+50,000 rows, 64 KiB per logical row and 10,000 description characters. Platform is bounded to 100,
+database/schema to 255 and table name to 500 characters. The API derives the parser/schema/
 validator configuration hash server-side and creates at most one preparation for an upload version
 and configuration. It rejects non-`ACCEPTED`, stale-version, format-only and incomplete promoted-byte
-evidence. The parser worker, receipt/candidate read API and candidate-to-change command are not yet
-enabled; a `QUEUED` preparation is not an executable proposal.
+evidence. The source-only parser accepts LF/CRLF and a BOM only at byte zero, preserves exact
+description content and uses strict all-or-nothing failure: a valid result has `rejected_count=0`.
+Candidate hashes bind workspace, asset, profile/schema and exact description. The receipt root is an
+ordered result chain over ordinal and candidate hash, not a Merkle inclusion proof. The parser worker,
+authorized target resolver, fenced staging/finalize path, receipt/candidate read API and
+candidate-to-change command are not yet enabled; a `QUEUED` preparation is not an executable proposal.
 
 ### Change management
 
