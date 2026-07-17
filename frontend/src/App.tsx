@@ -46,7 +46,8 @@ export function App() {
     String(import.meta.env.VITE_API_BASE_URL || '/api/v1'),
     () => auth.user?.access_token,
     () => workspace,
-  ), [auth.user?.access_token, workspace])
+    auth.renewAccessToken,
+  ), [auth.renewAccessToken, auth.user?.access_token, workspace])
 
   useEffect(() => {
     const restore = () => {

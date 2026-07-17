@@ -36,11 +36,14 @@ export interface ApiResponse<T> {
   etag?: string
 }
 
+export type AccessTokenRenewer = () => Promise<string | undefined>
+
 export class ApiClient {
   constructor(
     private readonly baseUrl: string,
     private readonly accessToken: () => string | undefined,
     private readonly workspaceId: () => string,
+    private readonly renewAccessToken?: AccessTokenRenewer,
   ) {}
 
   async request<T>(path: string, options: RequestOptions = {}): Promise<T> {
@@ -52,6 +55,24 @@ export class ApiClient {
     if (!token) throw new Error('로그인이 필요합니다.')
     const workspace = this.workspaceId()
     if (!workspace) throw new Error('워크스페이스 ID를 입력하세요.')
+    let response = await this.fetchAuthorized(path, options, token, workspace)
+    if (response.status === 401 && this.canRetryAfterRenewal(options) && this.renewAccessToken) {
+      const renewedToken = await this.renewAccessToken()
+      if (renewedToken) response = await this.fetchAuthorized(path, options, renewedToken, workspace)
+    }
+    if (!response.ok) {
+      throw new ApiError(await parseProblem(response))
+    }
+    const data = response.status === 204 ? undefined as T : await response.json() as T
+    return { data, etag: response.headers.get('ETag') ?? undefined }
+  }
+
+  private async fetchAuthorized(
+    path: string,
+    options: RequestOptions,
+    token: string,
+    workspace: string,
+  ): Promise<Response> {
     const headers = new Headers(options.headers)
     headers.set('Authorization', `Bearer ${token}`)
     headers.set('X-Workspace-Id', workspace)
@@ -61,12 +82,15 @@ export class ApiClient {
     }
     if (options.idempotencyKey) headers.set('Idempotency-Key', options.idempotencyKey)
     if (options.ifMatch) headers.set('If-Match', options.ifMatch)
-    const response = await fetch(`${this.baseUrl}${path}`, { ...options, headers })
-    if (!response.ok) {
-      throw new ApiError(await parseProblem(response))
-    }
-    const data = response.status === 204 ? undefined as T : await response.json() as T
-    return { data, etag: response.headers.get('ETag') ?? undefined }
+    return fetch(`${this.baseUrl}${path}`, { ...options, headers })
+  }
+
+  private canRetryAfterRenewal(options: RequestOptions): boolean {
+    const method = (options.method ?? 'GET').toUpperCase()
+    // A retry must be safe even if the browser receives a response after the
+    // server has already accepted work. Reads are intrinsically safe; writes
+    // need the application's durable idempotency boundary.
+    return method === 'GET' || method === 'HEAD' || Boolean(options.idempotencyKey)
   }
 }
 

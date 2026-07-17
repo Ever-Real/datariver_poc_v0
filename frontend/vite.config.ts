@@ -33,5 +33,13 @@ export default defineConfig(({ mode }) => {
         },
       },
     },
+    build: {
+      rollupOptions: {
+        input: {
+          main: 'index.html',
+          'oidc-silent-callback': 'oidc-silent-callback.html',
+        },
+      },
+    },
   }
 })

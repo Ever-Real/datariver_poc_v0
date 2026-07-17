@@ -1,12 +1,15 @@
-import { fireEvent, render, screen } from '@testing-library/react'
+import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 const oidc = vi.hoisted(() => ({
+  addAccessTokenExpiring: vi.fn(),
   addUserLoaded: vi.fn(),
   addUserUnloaded: vi.fn(),
   getUser: vi.fn(),
   removeUserLoaded: vi.fn(),
   removeUserUnloaded: vi.fn(),
+  removeAccessTokenExpiring: vi.fn(),
+  signinSilent: vi.fn(),
   signinRedirect: vi.fn(),
   signinRedirectCallback: vi.fn(),
   signoutRedirect: vi.fn(),
@@ -22,12 +25,15 @@ vi.mock('oidc-client-ts', () => ({
   UserManager: vi.fn(function UserManager() {
     return {
       events: {
+        addAccessTokenExpiring: oidc.addAccessTokenExpiring,
         addUserLoaded: oidc.addUserLoaded,
         addUserUnloaded: oidc.addUserUnloaded,
+        removeAccessTokenExpiring: oidc.removeAccessTokenExpiring,
         removeUserLoaded: oidc.removeUserLoaded,
         removeUserUnloaded: oidc.removeUserUnloaded,
       },
       getUser: oidc.getUser,
+      signinSilent: oidc.signinSilent,
       signinRedirect: oidc.signinRedirect,
       signinRedirectCallback: oidc.signinRedirectCallback,
       signoutRedirect: oidc.signoutRedirect,
@@ -47,6 +53,7 @@ function Harness() {
       {auth.notice && <span>{auth.notice.message}</span>}
       {auth.profile && <span>{auth.profile.display_name}:{auth.profile.roles.join(',')}</span>}
       <button onClick={() => void auth.beginPasswordReauth()}>password reauth</button>
+      <button onClick={() => void auth.renewAccessToken()}>renew access token</button>
     </div>
   )
 }
@@ -63,6 +70,7 @@ describe('AuthProvider password reauthentication', () => {
     vi.stubEnv('VITE_OIDC_HIGH_ASSURANCE_ACR', 'hardware')
     window.history.replaceState({}, '', '/')
     oidc.getUser.mockResolvedValue(undefined)
+    oidc.signinSilent.mockResolvedValue(undefined)
     oidc.signinRedirect.mockResolvedValue(undefined)
     oidc.signinRedirectCallback.mockResolvedValue(undefined)
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
@@ -148,5 +156,38 @@ describe('AuthProvider password reauthentication', () => {
       },
       extraQueryParams: { prompt: 'none' },
     })
+  })
+
+  it('renews in memory before expiry, then rehydrates the server-verified profile', async () => {
+    oidc.getUser.mockResolvedValue({
+      access_token: 'old-token', expired: false, profile: { sub: 'subject-one' },
+    })
+    oidc.signinSilent.mockResolvedValue({
+      access_token: 'new-token', expired: false, profile: { sub: 'subject-one' },
+    })
+    render(<AuthProvider><Harness /></AuthProvider>)
+
+    await screen.findByText('DataRiver Admin:administrator')
+    const expiring = oidc.addAccessTokenExpiring.mock.calls[0]?.[0] as (() => void) | undefined
+    expect(expiring).toBeTypeOf('function')
+    expiring?.()
+
+    await waitFor(() => expect(oidc.signinSilent).toHaveBeenCalledOnce())
+    await waitFor(() => expect(fetch).toHaveBeenLastCalledWith('/api/v1/auth/me', expect.objectContaining({
+      headers: { Authorization: 'Bearer new-token', Accept: 'application/json' },
+    })))
+  })
+
+  it('returns to the existing custom login state when renewal fails', async () => {
+    oidc.getUser.mockResolvedValue({
+      access_token: 'old-token', expired: false, profile: { sub: 'subject-one' },
+    })
+    oidc.signinSilent.mockRejectedValue(new Error('refresh rejected'))
+    render(<AuthProvider><Harness /></AuthProvider>)
+
+    fireEvent.click(await screen.findByRole('button', { name: 'renew access token' }))
+
+    expect(await screen.findByText(/인증 세션을 갱신하지 못했습니다/)).toBeInTheDocument()
+    expect(oidc.signinRedirect).not.toHaveBeenCalled()
   })
 })

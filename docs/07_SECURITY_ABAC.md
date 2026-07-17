@@ -96,6 +96,10 @@ the API never reveals the failing ordinal or falls back to DataHub/object storag
 - Strict CORS allowlist; never wildcard with credentials.
 - Secure, HttpOnly, SameSite cookies only if a BFF session is used; otherwise short-lived bearer
   tokens stay in memory and a refresh/new-tab requires the normal OIDC session journey.
+- In-memory OIDC renewal uses the provider's standard refresh/silent flow. A `401` retries only one
+  `GET`/`HEAD` request or a request carrying DataRiver's durable `Idempotency-Key`; a non-idempotent
+  mutation is never replayed. Failed renewal clears in-memory identity and returns the existing
+  custom login state without another automatic redirect loop.
 - CSRF protection for cookie-authenticated mutations.
 - Request/body/file limits, rate limits by subject/workspace/product, and bounded decompression.
 - Security headers: CSP, frame ancestors, nosniff, referrer policy, HSTS at TLS edge.

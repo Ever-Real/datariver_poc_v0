@@ -28,6 +28,7 @@ interface AuthValue {
   profile?: AuthenticatedProfile
   loading: boolean
   notice?: AuthNotice
+  renewAccessToken: () => Promise<string | undefined>
   signIn: () => Promise<void>
   signOut: () => Promise<void>
   beginWebAuthnEnrollment: () => Promise<void>
@@ -52,6 +53,7 @@ function createManager(): UserManager {
     authority,
     client_id: clientId,
     redirect_uri: redirectUri,
+    silent_redirect_uri: new URL('/oidc-silent-callback.html', configuredOrigin).toString(),
     post_logout_redirect_uri: window.location.origin,
     response_type: 'code',
     scope: 'openid profile email',
@@ -59,6 +61,8 @@ function createManager(): UserManager {
     // storage. The OIDC library keeps only its separate, short-lived PKCE
     // transaction state across the redirect.
     userStore: new WebStorageStateStore({ store: new InMemoryWebStorage() }),
+    // Renewal is coordinated by AuthProvider so an expiring-token event and a
+    // concurrent API 401 share one in-memory renewal promise.
     automaticSilentRenew: false,
     monitorSession: true,
   })
@@ -73,22 +77,51 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const mounted = useRef(false)
   const callbackInProgress = useRef(false)
   const ssoProbeStarted = useRef(false)
+  const renewalInProgress = useRef<Promise<string | undefined> | undefined>(undefined)
+
+  const hydrate = useCallback(async (next: User): Promise<boolean> => {
+    if (!next.access_token || next.expired) return false
+    const response = await fetch(`${String(import.meta.env.VITE_API_BASE_URL || '/api/v1')}/auth/me`, {
+      headers: { Authorization: `Bearer ${next.access_token}`, Accept: 'application/json' },
+    })
+    if (!response.ok) throw new Error('서버가 현재 인증 세션을 확인하지 못했습니다.')
+    const value = await response.json() as AuthenticatedProfile
+    if (mounted.current) {
+      setUser(next)
+      setProfile(value)
+    }
+    return true
+  }, [])
+
+  const renewAccessToken = useCallback((): Promise<string | undefined> => {
+    if (renewalInProgress.current) return renewalInProgress.current
+    const renewal = (async () => {
+      try {
+        const next = await manager.signinSilent()
+        if (!next || !next.access_token || next.expired || !await hydrate(next)) {
+          throw new Error('OIDC 갱신 응답에 사용할 access token이 없습니다.')
+        }
+        return next.access_token
+      } catch {
+        if (mounted.current) {
+          setUser(undefined)
+          setProfile(undefined)
+          setNotice({
+            kind: 'INFO',
+            message: '인증 세션을 갱신하지 못했습니다. 계속하려면 Sign In을 선택하세요.',
+          })
+        }
+        return undefined
+      } finally {
+        renewalInProgress.current = undefined
+      }
+    })()
+    renewalInProgress.current = renewal
+    return renewal
+  }, [hydrate, manager])
 
   useEffect(() => {
     mounted.current = true
-    const hydrate = async (next: User) => {
-      if (!next.access_token || next.expired) return false
-      const response = await fetch(`${String(import.meta.env.VITE_API_BASE_URL || '/api/v1')}/auth/me`, {
-        headers: { Authorization: `Bearer ${next.access_token}`, Accept: 'application/json' },
-      })
-      if (!response.ok) throw new Error('서버가 현재 인증 세션을 확인하지 못했습니다.')
-      const value = await response.json() as AuthenticatedProfile
-      if (mounted.current) {
-        setUser(next)
-        setProfile(value)
-      }
-      return true
-    }
     const initialize = async () => {
       try {
         const params = new URLSearchParams(window.location.search)
@@ -160,17 +193,22 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         if (mounted.current) setLoading(false)
       }
     }
-    const loaded = (next: User) => { void hydrate(next) }
+    const loaded = (next: User) => {
+      if (!renewalInProgress.current) void hydrate(next)
+    }
     const unloaded = () => { setUser(undefined); setProfile(undefined) }
+    const expiring = () => { void renewAccessToken() }
     manager.events.addUserLoaded(loaded)
     manager.events.addUserUnloaded(unloaded)
+    manager.events.addAccessTokenExpiring(expiring)
     void initialize()
     return () => {
       mounted.current = false
       manager.events.removeUserLoaded(loaded)
       manager.events.removeUserUnloaded(unloaded)
+      manager.events.removeAccessTokenExpiring(expiring)
     }
-  }, [manager])
+  }, [hydrate, manager, renewAccessToken])
 
   const beginRedirect = useCallback(async (intent: AuthIntent) => {
     try {
@@ -191,6 +229,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const value = useMemo<AuthValue>(() => ({
     user,
     profile,
+    renewAccessToken,
     loading,
     notice,
     signIn: () => beginRedirect('SIGN_IN'),
@@ -199,7 +238,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     beginStepUp: () => beginRedirect('STEP_UP'),
     beginPasswordReauth: () => beginRedirect('PASSWORD_REAUTH'),
     clearNotice: () => setNotice(undefined),
-  }), [beginRedirect, loading, manager, notice, profile, user])
+  }), [beginRedirect, loading, manager, notice, profile, renewAccessToken, user])
 
   return <AuthContext value={value}>{children}</AuthContext>
 }

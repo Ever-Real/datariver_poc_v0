@@ -67,7 +67,7 @@ than browser-owned authority:
 | Step | Scope | Completion evidence |
 |---|---|---|
 | 0 | This traceability plan, the v0.3 source inventory and architecture/security contracts | each directive requirement has a parity row or an explicit governed backend dependency |
-| 1 | Admin catalog visibility, custom login, Workspace/OIDC hydration and token renewal | human security administrator sees its workspace's quarantined DataHub projection through the real API; ordinary users remain policy-pruned; refresh/retry and reload cases pass |
+| 1 | Admin catalog visibility, custom login, Workspace/OIDC hydration and token renewal | human security administrator sees its workspace's quarantined DataHub projection through the real API; ordinary users remain policy-pruned; in-memory pre-expiry renewal plus one idempotent `401` retry and reload cases pass |
 | 2 | Common shell and catalog | v0.3 GNB/profile menu/title box, dense Tree/result/detail/lineage layout use live catalog APIs with no mock records |
 | 3 | Registration, CR, knowledge, monitoring, governance and Chat submenus | each legacy control is wired to a typed command/read model, or visibly reports the server's real unavailable/degraded capability without a fabricated outcome |
 | 4 | End-to-end acceptance | administrator and non-administrator browser journeys, API negative cases, reference-viewport comparison and documented deployment gates pass |
@@ -95,7 +95,7 @@ Status values are `READY` (parity accepted), `PARTIAL` (a governed v1 contract o
 
 | ID | Area | Required parity outcome | Current status | Acceptance focus |
 |---|---|---|---|---|
-| UX-PAR-001 | Common shell | v0.3-recognizable GNB, page title, compact sizing, profile administration menu | PARTIAL | source/unit complete; profile exposes URL-restored Workspace selection, security-key/logout controls and server-derived administrator sections. OIDC profile/role state is hydrated from `/auth/me` into React memory; sensitive mutations alone show reauthentication guidance. Authenticated reference-viewport visual snapshot remains open |
+| UX-PAR-001 | Common shell | v0.3-recognizable GNB, page title, compact sizing, profile administration menu | PARTIAL | source/unit complete; profile exposes URL-restored Workspace selection, security-key/logout controls and server-derived administrator sections. OIDC profile/role state is hydrated from `/auth/me` into React memory; pre-expiry OIDC renewal and a one-time idempotent `401` retry preserve a verified session without browser storage. Sensitive mutations alone show reauthentication guidance. Authenticated reference-viewport visual snapshot remains open |
 | UX-PAR-002 | Global search | debounced authorized suggestions with preview, minimum length, multi-keyword handoff | PARTIAL | stale-cache labelling, no cross-workspace or policy-version leakage |
 | UX-PAR-003 | Catalog layout | left Resource Tree, middle dense result table, filter/facet bar, paging and export | IN PROGRESS | lazy canonical tree, permission-safe counts, ALL search, cursor paging and URL-restored Workspace/page are implemented. Step 1 adds human-admin quarantined-projection visibility through the same API; isolated export-worker runtime and visual acceptance remain |
 | UX-PAR-004 | Catalog detail | row accordion with table/column metadata and lineage graph | PARTIAL | fixed-contract detail and bounded authorization-pruned deterministic React lineage graph are implemented; selected-state URL/back-forward and authenticated visual gate remain |

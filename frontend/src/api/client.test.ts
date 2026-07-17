@@ -55,6 +55,71 @@ describe('API problem handling', () => {
     expect(fetchMock).toHaveBeenCalledOnce()
   })
 
+  it('renews once and retries an idempotent read after 401', async () => {
+    const responses = [
+      new Response(JSON.stringify({ detail: 'expired' }), { status: 401 }),
+      new Response(JSON.stringify({ value: 'fresh' }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      }),
+    ]
+    const requests: RequestInit[] = []
+    const fetchMock = vi.fn((_input: RequestInfo | URL, init?: RequestInit) => {
+      if (init) requests.push(init)
+      const response = responses.shift()
+      if (!response) throw new Error('unexpected request')
+      return Promise.resolve(response)
+    })
+    const renew = vi.fn().mockResolvedValue('fresh-token')
+    vi.stubGlobal('fetch', fetchMock)
+    const client = new ApiClient('/api/v1', () => 'expired-token', () => 'workspace', renew)
+
+    await expect(client.request<{ value: string }>('/catalog/assets?q=wafer')).resolves.toEqual({
+      value: 'fresh',
+    })
+
+    expect(renew).toHaveBeenCalledOnce()
+    expect(fetchMock).toHaveBeenCalledTimes(2)
+    expect(new Headers(requests[1]?.headers).get('Authorization')).toBe(
+      'Bearer fresh-token',
+    )
+  })
+
+  it('does not retry a non-idempotent write after 401', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({ detail: 'expired' }), {
+      status: 401,
+    }))
+    const renew = vi.fn().mockResolvedValue('fresh-token')
+    vi.stubGlobal('fetch', fetchMock)
+    const client = new ApiClient('/api/v1', () => 'expired-token', () => 'workspace', renew)
+
+    await expect(client.request('/change-requests', {
+      method: 'POST',
+      body: JSON.stringify({}),
+    })).rejects.toBeInstanceOf(ApiError)
+
+    expect(renew).not.toHaveBeenCalled()
+    expect(fetchMock).toHaveBeenCalledOnce()
+  })
+
+  it('retries a mutation only when it carries the durable idempotency key', async () => {
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify({ detail: 'expired' }), { status: 401 }))
+      .mockResolvedValueOnce(new Response(null, { status: 204 }))
+    const renew = vi.fn().mockResolvedValue('fresh-token')
+    vi.stubGlobal('fetch', fetchMock)
+    const client = new ApiClient('/api/v1', () => 'expired-token', () => 'workspace', renew)
+
+    await expect(client.request('/change-requests', {
+      method: 'POST',
+      body: JSON.stringify({}),
+      idempotencyKey: 'change-00000000-0000-4000-8000-000000000001',
+    })).resolves.toBeUndefined()
+
+    expect(renew).toHaveBeenCalledOnce()
+    expect(fetchMock).toHaveBeenCalledTimes(2)
+  })
+
   it('returns a response ETag without issuing a second request', async () => {
     const fetchMock = vi.fn(() => Promise.resolve(new Response(JSON.stringify({ version: 7 }), {
       status: 200, headers: { ETag: '"7"', 'Content-Type': 'application/json' },
