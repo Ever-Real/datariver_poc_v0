@@ -102,6 +102,25 @@ change-request write p95 <= 400 ms and error rate < 1%. Add p99 <= 1.5 s for unc
 prevent a good p95 from hiding long authorization/DB waits. API RSS, DB CPU/connections/locks, Valkey
 memory/evictions, DataHub latency/concurrency and audit rows/transaction must accompany latency.
 
+### Deployment-supplied validation profile
+
+The portable stress envelope above is not an installation default. Every target environment supplies
+its accountable workload, SLO and reference-host inputs in an ignored JSON file and validates it
+before a target load run:
+
+```bash
+uv run python scripts/validate_deployment_profile.py runtime/deployment-profile.json --require-ready
+```
+
+The strict contract fixes `workspace_boundary` to `LOGICAL_TENANT`; a workspace is an RLS and
+authorization boundary and is never inferred from a physical server. It records both typical and
+migration-burst change volume, Search RPS, Chat QPS and concurrent streams, graph size, the 60-minute
+soak, Search/Chat/graph/ingestion/freshness/availability objectives, and CPU/RAM/storage/network
+evidence for the reference production host. Missing storage, network, socket or core inputs keep
+`ready_for_target_load=false`; the validator does not invent sizing values. Profile files and raw
+load reports remain deployment evidence below ignored `runtime/`, while signed aggregate results
+are attached to the promoted release artifact.
+
 ## 5. Freshness, revocation and classification objectives
 
 Provisional objectives are incremental projection lag p95 <= 5 minutes and p99 <= 15 minutes;

@@ -27,9 +27,16 @@ The strategy below remains the production release matrix. Target DataHub/object 
 | Resilience | Toxiproxy/process kill | dependency failure matrix and recovery |
 | Performance | k6 plus RSS/DB/Valkey metrics | p95, error rate, memory and soak stability |
 | Security/supply chain | pip-audit, npm audit, Trivy secret/vulnerability/IaC/image scan, CycloneDX, license allowlist | zero unresolved Critical/High, retained SBOM |
+| Recovery | isolated restore/rebuild scripts | PostgreSQL restore and graph projection deterministic hash |
+
+Target performance runs must first validate their ignored deployment input with
+`uv run python scripts/validate_deployment_profile.py runtime/deployment-profile.json --require-ready`.
+The profile treats a workspace as a logical tenant/security boundary, keeps workload and SLO values
+out of portable defaults, and refuses target-ready status until production CPU topology, RAM,
+storage and network evidence are complete. Chat sizing records QPS and concurrent streams together;
+TTFT or token rate alone is not sufficient capacity evidence.
 
 Retention negative tests must prove that the relay exposes no pruning operation and has no `DELETE` privilege. Future retention automation is not accepted until dependency failure, missing approval, active Legal Hold, WORM retention read-back mismatch and replay/concurrency cases all produce zero deletions.
-| Recovery | isolated restore/rebuild scripts | PostgreSQL restore and graph projection deterministic hash |
 
 The source-level identity suite additionally checks same-origin return-state validation, explicit
 WebAuthn AIA and LoA request arguments, missing/ambiguous ACR fail-closed behavior, bounded problem
