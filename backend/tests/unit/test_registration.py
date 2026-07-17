@@ -3,9 +3,19 @@ from uuid import uuid4
 
 import pytest
 
+from datariver.application.typed_upload_profiles import (
+    DATASET_DESCRIPTION_CSV_V1,
+    validate_upload_profile,
+)
 from datariver.domain.authz import Classification
 from datariver.domain.common import ConflictError, ValidationError, utc_now
-from datariver.domain.registration import CompletedUploadPart, UploadManifest, UploadState
+from datariver.domain.registration import (
+    CompletedUploadPart,
+    UploadContentProfile,
+    UploadManifest,
+    UploadPreparation,
+    UploadState,
+)
 
 
 def manifest() -> UploadManifest:
@@ -119,3 +129,76 @@ def test_validation_acceptance_promotes_location_and_records_summary() -> None:
     assert upload.state is UploadState.ACCEPTED
     assert upload.bucket == "accepted"
     assert upload.validation_summary["coverage"] == "FULL"
+
+
+def test_format_only_is_the_safe_default_and_typed_profile_requires_csv() -> None:
+    upload = manifest()
+
+    assert upload.content_profile is UploadContentProfile.FORMAT_ONLY_V1
+    with pytest.raises(ValidationError, match="requires a CSV"):
+        UploadManifest(
+            upload_id=uuid4(),
+            workspace_id=uuid4(),
+            owner_id=uuid4(),
+            bucket="quarantine",
+            object_key="quarantine/object",
+            display_name="metadata.json",
+            declared_size_bytes=100,
+            declared_mime="application/json",
+            declared_sha256="a" * 64,
+            classification=Classification.INTERNAL,
+            multipart_upload_id="multipart-1",
+            expires_at=utc_now() + timedelta(hours=1),
+            content_profile=UploadContentProfile.DATASET_DESCRIPTION_CSV_V1,
+        )
+
+
+def test_typed_profile_definition_is_bounded_and_hashes_exact_schema() -> None:
+    definition = DATASET_DESCRIPTION_CSV_V1
+
+    assert definition.headers == (
+        "asset_id",
+        "platform",
+        "database_name",
+        "schema_name",
+        "table_name",
+        "description",
+    )
+    assert definition.maximum_rows == 50_000
+    assert len(definition.configuration_hash) == 64
+    validate_upload_profile(
+        content_profile=UploadContentProfile.DATASET_DESCRIPTION_CSV_V1,
+        display_name="dataset-description.csv",
+        content_type="text/csv",
+        size_bytes=1024,
+    )
+    with pytest.raises(ValidationError, match="bounded file-size"):
+        validate_upload_profile(
+            content_profile=UploadContentProfile.DATASET_DESCRIPTION_CSV_V1,
+            display_name="dataset-description.csv",
+            content_type="text/csv",
+            size_bytes=definition.maximum_file_bytes + 1,
+        )
+
+
+def test_preparation_queue_is_server_owned_and_emits_bounded_event() -> None:
+    upload = manifest()
+    preparation = UploadPreparation.queue(
+        workspace_id=upload.workspace_id,
+        upload_id=upload.upload_id,
+        requested_by=upload.owner_id,
+        content_profile=UploadContentProfile.DATASET_DESCRIPTION_CSV_V1,
+        source_manifest_version=7,
+        source_sha256="a" * 64,
+        configuration_hash="b" * 64,
+    )
+
+    assert preparation.state.value == "QUEUED"
+    assert preparation.rows_processed == 0
+    assert preparation.attempts == 0
+    assert preparation.events[0].payload == {
+        "preparation_id": str(preparation.preparation_id),
+        "upload_id": str(upload.upload_id),
+        "source_manifest_version": 7,
+        "content_profile": "DATASET_DESCRIPTION_CSV_V1",
+    }

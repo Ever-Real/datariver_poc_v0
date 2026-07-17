@@ -182,6 +182,7 @@ export interface UploadRecord {
   content_type: string
   sha256: string
   classification: string
+  content_profile: 'FORMAT_ONLY_V1' | 'DATASET_DESCRIPTION_CSV_V1'
   expires_at: string
   version: number
   recommended_part_size_bytes: number

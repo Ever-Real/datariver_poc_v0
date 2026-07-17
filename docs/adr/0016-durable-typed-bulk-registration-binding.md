@@ -79,3 +79,12 @@ Apply-time requester/policy/local-target reauthorization, provider compare-and-s
 single-writer serialization, malware/scanner availability, orphan reconciliation, retention/Legal
 Hold integration and cross-process idempotency concurrency evidence remain production gates. No
 automatic deletion or WORM export is enabled by this decision.
+
+The first implementation slice now validates the explicit upload profile and exposes body-free
+create plus bounded read/list preparation endpoints. Creation locks the manifest, performs both
+upload-read and validation authorization, requires exact optimistic version and idempotency headers,
+requires the accepted validation and promoted-byte SHA-256 evidence, derives the parser/schema
+configuration hash server-side and converges different keys on one source/configuration job.
+Responses expose progress and cryptographic evidence but no object coordinates, lease, requested-by
+identity or parser payload. The parser/execution role, completed receipt, candidate API, preview and
+candidate-to-change command remain deliberately disabled and require a later reviewed slice.

@@ -162,8 +162,11 @@ uses `RESTRICT`. The manifest content profile is immutable after insert. Because
 is rebuildable, candidate target IDs are historical evidence rather than physical foreign keys and
 must be re-resolved under the same workspace before proposal creation. The existing BYPASSRLS upload
 role receives no access to the new tables; a workspace/correlation-bound execution boundary remains
-an activation prerequisite. No preparation endpoint, parser worker or proposal capability is enabled
-by this schema revision.
+an activation prerequisite. The API now persists and reads authorized `upload_preparation_jobs`
+through ordinary forced-RLS sessions after locking and verifying the exact accepted manifest,
+immutable content profile, promoted-byte SHA-256 evidence and server configuration hash. It cannot
+claim a lease, write a receipt/candidate or create candidate provenance. No parser worker, candidate
+API or typed proposal capability is enabled.
 
 ## Constraints enforced outside DDL
 

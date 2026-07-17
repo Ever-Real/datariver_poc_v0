@@ -3,15 +3,17 @@ from __future__ import annotations
 from collections.abc import Callable
 from typing import cast
 
+import pytest
 from fastapi.testclient import TestClient
 
 from datariver.config import Settings
 from datariver.domain.authz import Action
-from datariver.domain.common import ForbiddenError
+from datariver.domain.common import ForbiddenError, ValidationError
 from datariver.infrastructure.db.session import DatabaseReadiness
 from datariver.infrastructure.observability.metrics import HttpMetrics
 from datariver.interfaces.http.container import AppContainer
 from datariver.interfaces.http.factory import create_app
+from datariver.interfaces.http.routes.registration import _expected_version
 
 
 class LiveOnlyContainer:
@@ -150,6 +152,8 @@ def test_openapi_contains_all_required_product_modules() -> None:
         "/api/v1/catalog/assets/{asset_id}/description-previews",
         "/api/v1/catalog/assets/{asset_id}/description-change-requests",
         "/api/v1/uploads",
+        "/api/v1/uploads/{upload_id}/preparations",
+        "/api/v1/uploads/{upload_id}/preparations/{preparation_id}",
         "/api/v1/uploads/{upload_id}/registration-proposals",
         "/api/v1/change-requests",
         "/api/v1/operations/summary",
@@ -192,6 +196,58 @@ def test_openapi_contains_all_required_product_modules() -> None:
         "/api/v1/admin/inference/provider-profiles/{profile_version_id}/decisions",
         "/api/v1/admin/inference/provider-profiles/{profile_version_id}/revocations",
     }.issubset(document["paths"])
+
+
+def test_upload_preparation_openapi_is_typed_and_server_managed() -> None:
+    factory = cast(Callable[[Settings], AppContainer], lambda _: LiveOnlyContainer())
+    document = create_app(settings(), container_factory=factory).openapi()
+
+    initiate = document["components"]["schemas"]["UploadInitiateRequest"]
+    profile = initiate["properties"]["content_profile"]
+    assert profile["default"] == "FORMAT_ONLY_V1"
+    assert profile["enum"] == ["FORMAT_ONLY_V1", "DATASET_DESCRIPTION_CSV_V1"]
+
+    create = document["paths"]["/api/v1/uploads/{upload_id}/preparations"]["post"]
+    assert "requestBody" not in create
+    headers = {parameter["name"]: parameter for parameter in create["parameters"]}
+    assert headers["If-Match"]["required"] is True
+    assert headers["If-Match"]["schema"]["minLength"] == 3
+    assert headers["Idempotency-Key"]["required"] is True
+    assert headers["Idempotency-Key"]["schema"]["minLength"] == 16
+
+    response = document["components"]["schemas"]["UploadPreparationResponse"]
+    assert set(response["properties"]) == {
+        "id",
+        "upload_id",
+        "content_profile",
+        "source_manifest_version",
+        "source_sha256",
+        "configuration_hash",
+        "state",
+        "attempts",
+        "rows_processed",
+        "total_rows",
+        "last_error_code",
+        "created_at",
+        "updated_at",
+        "version",
+    }
+    assert {
+        "bucket",
+        "object_key",
+        "lease_token",
+        "lease_until",
+        "requested_by",
+        "parser_configuration",
+        "rows",
+    }.isdisjoint(response["properties"])
+
+
+def test_registration_if_match_requires_a_canonical_quoted_positive_version() -> None:
+    assert _expected_version('"7"') == 7
+    for value in ("7", '"0"', '"01"', 'W/"7"', '"-1"'):
+        with pytest.raises(ValidationError):
+            _expected_version(value)
 
 
 def test_catalog_description_openapi_is_typed_and_server_binds_the_target() -> None:

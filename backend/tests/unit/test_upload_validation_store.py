@@ -99,6 +99,7 @@ def _model(manifest: UploadManifest, *, version: int | None = None) -> ObjectMan
         validation_summary={},
         completion_parts=[],
         state=manifest.state.value,
+        content_profile=manifest.content_profile.value,
         classification=int(manifest.classification),
         owner_id=manifest.owner_id,
         retention_until=None,

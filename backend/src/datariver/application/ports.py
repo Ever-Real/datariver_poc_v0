@@ -53,7 +53,7 @@ from datariver.domain.authz import Decision, SubjectAttributes
 from datariver.domain.common import DomainEvent
 from datariver.domain.governance import ChangeRequest
 from datariver.domain.knowledge import ChangeSetState, GraphChangeOperation, GraphSnapshot
-from datariver.domain.registration import CompletedUploadPart, UploadManifest
+from datariver.domain.registration import CompletedUploadPart, UploadManifest, UploadPreparation
 from datariver.domain.retention import (
     ArchiveCapability,
     ArchiveRetentionObservation,
@@ -650,6 +650,8 @@ class ImmutableArchiveStore(Protocol):
 class UploadRepository(Protocol):
     async def add(self, manifest: UploadManifest) -> None: ...
 
+    async def get(self, *, workspace_id: UUID, upload_id: UUID) -> UploadManifest | None: ...
+
     async def get_for_update(
         self, *, workspace_id: UUID, upload_id: UUID
     ) -> UploadManifest | None: ...
@@ -667,8 +669,40 @@ class UploadRepository(Protocol):
     ) -> Sequence[UploadManifest]: ...
 
 
+class UploadPreparationRepository(Protocol):
+    async def add(self, preparation: UploadPreparation) -> None: ...
+
+    async def get(
+        self,
+        *,
+        workspace_id: UUID,
+        upload_id: UUID,
+        preparation_id: UUID,
+    ) -> UploadPreparation | None: ...
+
+    async def find_source_configuration(
+        self,
+        *,
+        workspace_id: UUID,
+        upload_id: UUID,
+        source_manifest_version: int,
+        content_profile: str,
+        configuration_hash: str,
+    ) -> UploadPreparation | None: ...
+
+    async def list(
+        self,
+        *,
+        workspace_id: UUID,
+        upload_id: UUID,
+        state: str | None,
+        limit: int,
+    ) -> Sequence[UploadPreparation]: ...
+
+
 class UploadUnitOfWork(Protocol):
     uploads: UploadRepository
+    preparations: UploadPreparationRepository
     outbox: OutboxWriter
     idempotency: IdempotencyStore
 

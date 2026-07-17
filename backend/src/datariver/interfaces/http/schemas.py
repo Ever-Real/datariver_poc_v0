@@ -540,6 +540,7 @@ class UploadInitiateRequest(BaseModel):
     classification: str = Field(
         default="INTERNAL", pattern="^(PUBLIC|INTERNAL|CONFIDENTIAL|RESTRICTED)$"
     )
+    content_profile: Literal["FORMAT_ONLY_V1", "DATASET_DESCRIPTION_CSV_V1"] = "FORMAT_ONLY_V1"
 
     @field_validator("display_name")
     @classmethod
@@ -558,6 +559,7 @@ class UploadResponse(BaseModel):
     content_type: str
     sha256: str
     classification: str
+    content_profile: Literal["FORMAT_ONLY_V1", "DATASET_DESCRIPTION_CSV_V1"]
     expires_at: datetime
     version: int
     validation_summary: dict[str, object]
@@ -567,6 +569,27 @@ class UploadResponse(BaseModel):
 
 class UploadListResponse(BaseModel):
     items: list[UploadResponse]
+
+
+class UploadPreparationResponse(BaseModel):
+    id: UUID
+    upload_id: UUID
+    content_profile: Literal["DATASET_DESCRIPTION_CSV_V1"]
+    source_manifest_version: int = Field(ge=1)
+    source_sha256: str = Field(pattern="^[0-9a-f]{64}$")
+    configuration_hash: str = Field(pattern="^[0-9a-f]{64}$")
+    state: Literal["QUEUED", "PREPARING", "READY", "FAILED", "CANCELLED", "STALE"]
+    attempts: int = Field(ge=0)
+    rows_processed: int = Field(ge=0)
+    total_rows: int | None = Field(default=None, ge=0)
+    last_error_code: str | None
+    created_at: datetime
+    updated_at: datetime
+    version: int = Field(ge=1)
+
+
+class UploadPreparationListResponse(BaseModel):
+    items: list[UploadPreparationResponse]
 
 
 class UploadPartRequest(BaseModel):

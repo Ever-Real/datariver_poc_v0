@@ -84,6 +84,14 @@ against the committed manifest ID/version/location and full SHA-256 evidence; re
 unreferenced attempt object through the reviewed incident procedure. Never infer canonical state
 from an object-key pattern or delete the quarantine source before the committed receipt is known.
 
+Typed upload preparation is currently control-plane only. An authorized API request may create or
+read a `QUEUED` job after exact accepted-byte verification, but no deployed worker may claim it and
+operators must not mark it `READY`, insert receipts/candidates or reuse the BYPASSRLS upload role.
+Provisioning a parser requires an explicitly approved, separate NOBYPASSRLS database identity,
+workspace/correlation-scoped claim capability, object read limited to the verified source and no
+DataHub write credential. Until that gate passes, queue age is expected and is not a reason to edit
+job evidence manually.
+
 Administrator password fallback is also disabled by default. Before enabling it, query the canonical
 membership/subject stores and prove that at least two active, non-service-account,
 RESTRICTED-cleared human security administrators have `admin.manage` allowed and not denied. Then

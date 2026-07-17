@@ -10,15 +10,26 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from datariver.application.dto import ObjectMetadata
 from datariver.application.ports import (
     UploadCompletionStore,
+    UploadPreparationRepository,
     UploadRepository,
     UploadUnitOfWork,
     UploadValidationStore,
 )
 from datariver.domain.authz import Classification
 from datariver.domain.common import utc_now
-from datariver.domain.registration import CompletedUploadPart, UploadManifest, UploadState
+from datariver.domain.registration import (
+    CompletedUploadPart,
+    UploadContentProfile,
+    UploadManifest,
+    UploadPreparation,
+    UploadPreparationState,
+    UploadState,
+)
 from datariver.infrastructure.db.governance import SqlIdempotencyStore, SqlOutboxWriter
-from datariver.infrastructure.db.models.integration import ObjectManifestModel
+from datariver.infrastructure.db.models.integration import (
+    ObjectManifestModel,
+    UploadPreparationJobModel,
+)
 from datariver.infrastructure.db.rls import set_security_context
 
 
@@ -48,6 +59,7 @@ class SqlUploadRepository(UploadRepository):
             validation_summary=manifest.validation_summary,
             completion_parts=[],
             state=manifest.state.value,
+            content_profile=manifest.content_profile.value,
             classification=int(manifest.classification),
             owner_id=manifest.owner_id,
             retention_until=None,
@@ -58,19 +70,37 @@ class SqlUploadRepository(UploadRepository):
         self._tracked[manifest.upload_id] = model
 
     async def get_for_update(self, *, workspace_id: UUID, upload_id: UUID) -> UploadManifest | None:
-        model = (
-            await self._session.scalars(
-                select(ObjectManifestModel)
-                .where(
-                    ObjectManifestModel.id == upload_id,
-                    ObjectManifestModel.workspace_id == workspace_id,
-                )
-                .with_for_update()
-            )
-        ).one_or_none()
+        return await self._get(
+            workspace_id=workspace_id,
+            upload_id=upload_id,
+            for_update=True,
+        )
+
+    async def get(self, *, workspace_id: UUID, upload_id: UUID) -> UploadManifest | None:
+        return await self._get(
+            workspace_id=workspace_id,
+            upload_id=upload_id,
+            for_update=False,
+        )
+
+    async def _get(
+        self,
+        *,
+        workspace_id: UUID,
+        upload_id: UUID,
+        for_update: bool,
+    ) -> UploadManifest | None:
+        statement = select(ObjectManifestModel).where(
+            ObjectManifestModel.id == upload_id,
+            ObjectManifestModel.workspace_id == workspace_id,
+        )
+        if for_update:
+            statement = statement.with_for_update()
+        model = (await self._session.scalars(statement)).one_or_none()
         if model is None or model.expires_at is None:
             return None
-        self._tracked[upload_id] = model
+        if for_update:
+            self._tracked[upload_id] = model
         return _to_domain(model)
 
     async def save(self, manifest: UploadManifest) -> None:
@@ -125,6 +155,7 @@ def _to_domain(model: ObjectManifestModel) -> UploadManifest:
         classification=Classification(model.classification),
         multipart_upload_id=model.multipart_upload_id or "",
         expires_at=model.expires_at,
+        content_profile=UploadContentProfile(model.content_profile),
         state=UploadState(model.state),
         version=model.version,
         completion_parts=[
@@ -168,6 +199,122 @@ def _apply_manifest(model: ObjectManifestModel, manifest: UploadManifest) -> Non
         }
         for part in manifest.completion_parts
     ]
+
+
+class SqlUploadPreparationRepository(UploadPreparationRepository):
+    def __init__(self, session: AsyncSession) -> None:
+        self._session = session
+
+    async def add(self, preparation: UploadPreparation) -> None:
+        self._session.add(
+            UploadPreparationJobModel(
+                id=preparation.preparation_id,
+                workspace_id=preparation.workspace_id,
+                upload_id=preparation.upload_id,
+                requested_by=preparation.requested_by,
+                content_profile=preparation.content_profile.value,
+                source_manifest_version=preparation.source_manifest_version,
+                source_sha256=preparation.source_sha256,
+                configuration_hash=preparation.configuration_hash,
+                state=preparation.state.value,
+                lease_token=None,
+                lease_until=None,
+                attempts=preparation.attempts,
+                rows_processed=preparation.rows_processed,
+                total_rows=preparation.total_rows,
+                last_error_code=preparation.last_error_code,
+                created_at=preparation.created_at,
+                updated_at=preparation.updated_at,
+                version=preparation.version,
+            )
+        )
+
+    async def get(
+        self,
+        *,
+        workspace_id: UUID,
+        upload_id: UUID,
+        preparation_id: UUID,
+    ) -> UploadPreparation | None:
+        model = (
+            await self._session.scalars(
+                select(UploadPreparationJobModel).where(
+                    UploadPreparationJobModel.id == preparation_id,
+                    UploadPreparationJobModel.workspace_id == workspace_id,
+                    UploadPreparationJobModel.upload_id == upload_id,
+                )
+            )
+        ).one_or_none()
+        return _to_preparation(model) if model is not None else None
+
+    async def find_source_configuration(
+        self,
+        *,
+        workspace_id: UUID,
+        upload_id: UUID,
+        source_manifest_version: int,
+        content_profile: str,
+        configuration_hash: str,
+    ) -> UploadPreparation | None:
+        model = (
+            await self._session.scalars(
+                select(UploadPreparationJobModel).where(
+                    UploadPreparationJobModel.workspace_id == workspace_id,
+                    UploadPreparationJobModel.upload_id == upload_id,
+                    UploadPreparationJobModel.source_manifest_version == source_manifest_version,
+                    UploadPreparationJobModel.content_profile == content_profile,
+                    UploadPreparationJobModel.configuration_hash == configuration_hash,
+                )
+            )
+        ).one_or_none()
+        return _to_preparation(model) if model is not None else None
+
+    async def list(
+        self,
+        *,
+        workspace_id: UUID,
+        upload_id: UUID,
+        state: str | None,
+        limit: int,
+    ) -> list[UploadPreparation]:
+        statement = select(UploadPreparationJobModel).where(
+            UploadPreparationJobModel.workspace_id == workspace_id,
+            UploadPreparationJobModel.upload_id == upload_id,
+        )
+        if state is not None:
+            statement = statement.where(UploadPreparationJobModel.state == state)
+        models = list(
+            (
+                await self._session.scalars(
+                    statement.order_by(
+                        UploadPreparationJobModel.created_at.desc(),
+                        UploadPreparationJobModel.id.desc(),
+                    ).limit(limit)
+                )
+            ).all()
+        )
+        return [_to_preparation(model) for model in models]
+
+
+def _to_preparation(model: UploadPreparationJobModel) -> UploadPreparation:
+    return UploadPreparation(
+        preparation_id=model.id,
+        workspace_id=model.workspace_id,
+        upload_id=model.upload_id,
+        requested_by=model.requested_by,
+        content_profile=UploadContentProfile(model.content_profile),
+        source_manifest_version=model.source_manifest_version,
+        source_sha256=model.source_sha256,
+        configuration_hash=model.configuration_hash,
+        state=UploadPreparationState(model.state),
+        attempts=model.attempts,
+        rows_processed=model.rows_processed,
+        total_rows=model.total_rows,
+        last_error_code=model.last_error_code,
+        created_at=model.created_at,
+        updated_at=model.updated_at,
+        version=model.version,
+    )
 
 
 class SqlUploadCompletionStore(UploadCompletionStore):
@@ -354,6 +501,7 @@ class SqlUploadUnitOfWork(UploadUnitOfWork):
         self._session_factory = session_factory
         self._session: AsyncSession | None = None
         self.uploads: SqlUploadRepository
+        self.preparations: SqlUploadPreparationRepository
         self.outbox: SqlOutboxWriter
         self.idempotency: SqlIdempotencyStore
         self._committed = False
@@ -361,6 +509,7 @@ class SqlUploadUnitOfWork(UploadUnitOfWork):
     async def __aenter__(self) -> SqlUploadUnitOfWork:
         self._session = self._session_factory()
         self.uploads = SqlUploadRepository(self._session)
+        self.preparations = SqlUploadPreparationRepository(self._session)
         self.outbox = SqlOutboxWriter(self._session)
         self.idempotency = SqlIdempotencyStore(self._session)
         return self

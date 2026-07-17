@@ -79,12 +79,23 @@ Response carries `upserted,tombstoned,next_offset,total,observed_at`. A single a
 |---|---|---|
 | `GET /uploads?state=&limit=` | `registration.read` | caller-owned manifests; security administrators may see workspace scope |
 | `GET /uploads/{upload_id}` | `registration.read` | manifest, worker state, validation summary/failure code |
-| `POST /uploads` | `registration.create` | create private multipart quarantine intent |
+| `POST /uploads` | `registration.create` | create private multipart quarantine intent with explicit format-only or bounded dataset-description content profile |
 | `POST /uploads/{upload_id}/parts` | `registration.create` | issue short-lived part URL |
 | `POST /uploads/{upload_id}/complete` | `registration.create` | persist completion intent; returns `202` |
+| `POST /uploads/{upload_id}/preparations` | `registration.read` + `registration.validate` | queue/reuse the server-owned typed configuration for an exact accepted manifest version; requires `If-Match` and `Idempotency-Key`, accepts no body |
+| `GET /uploads/{upload_id}/preparations?state=&limit=` | `registration.read` | list bounded typed preparation state/progress without object coordinates or parser payload |
+| `GET /uploads/{upload_id}/preparations/{preparation_id}` | `registration.read` | read one upload-scoped typed preparation with private no-store response |
 | `POST /uploads/{upload_id}/registration-proposals` | `registration.read` + `change.create` + `change.raw.create` | operator/recovery-only raw proposal from an `ACCEPTED` upload; not exposed in the ordinary UI and not accepted as typed-content binding |
 
 Completion does not mean accepted. Durable states are `INITIATED → COMPLETION_QUEUED → COMPLETING → QUARANTINED → VALIDATING → ACCEPTED`, with terminal `REJECTED/ABORTED/EXPIRED`. Workers stream object bytes, compare declared size/SHA-256, apply bounded format rules, copy to the accepted bucket, commit canonical location, then best-effort clean quarantine.
+
+The first typed profile is `DATASET_DESCRIPTION_CSV_V1`: UTF-8-with-BOM-compatible CSV with the exact
+ordered headers `asset_id,platform,database_name,schema_name,table_name,description`, maximum 512 MiB,
+50,000 rows, 64 KiB per row and 10,000 description characters. The API derives the parser/schema/
+validator configuration hash server-side and creates at most one preparation for an upload version
+and configuration. It rejects non-`ACCEPTED`, stale-version, format-only and incomplete promoted-byte
+evidence. The parser worker, receipt/candidate read API and candidate-to-change command are not yet
+enabled; a `QUEUED` preparation is not an executable proposal.
 
 ### Change management
 

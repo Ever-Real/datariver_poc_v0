@@ -1,12 +1,13 @@
 from __future__ import annotations
 
 import hashlib
+import re
 from datetime import UTC, datetime
 from typing import Annotated
 from uuid import UUID
 
 import orjson
-from fastapi import APIRouter, Header, Query, Request
+from fastapi import APIRouter, Header, Query, Request, Response
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from datariver.application.classification_access import ClassificationAccessResolver
@@ -17,7 +18,14 @@ from datariver.application.services.registration import RegistrationService
 from datariver.domain.authz import Classification
 from datariver.domain.common import ConflictError, ValidationError, canonical_json_hash, uuid7
 from datariver.domain.governance import ChangeItem
-from datariver.domain.registration import CompletedUploadPart, UploadManifest, UploadState
+from datariver.domain.registration import (
+    CompletedUploadPart,
+    UploadContentProfile,
+    UploadManifest,
+    UploadPreparation,
+    UploadPreparationState,
+    UploadState,
+)
 from datariver.infrastructure.db.authz import SqlDecisionWriter
 from datariver.infrastructure.db.catalog import SqlCatalogIndexReader
 from datariver.infrastructure.db.classification_access import (
@@ -34,6 +42,8 @@ from datariver.interfaces.http.schemas import (
     UploadListResponse,
     UploadPartRequest,
     UploadPartResponse,
+    UploadPreparationListResponse,
+    UploadPreparationResponse,
     UploadRegistrationProposal,
     UploadResponse,
 )
@@ -81,6 +91,7 @@ def _response(manifest: UploadManifest) -> UploadResponse:
         content_type=manifest.declared_mime,
         sha256=manifest.declared_sha256,
         classification=manifest.classification.name,
+        content_profile=manifest.content_profile.value,
         expires_at=manifest.expires_at,
         version=manifest.version,
         validation_summary=manifest.validation_summary,
@@ -88,11 +99,43 @@ def _response(manifest: UploadManifest) -> UploadResponse:
     )
 
 
+def _preparation_response(preparation: UploadPreparation) -> UploadPreparationResponse:
+    return UploadPreparationResponse(
+        id=preparation.preparation_id,
+        upload_id=preparation.upload_id,
+        content_profile=preparation.content_profile.value,
+        source_manifest_version=preparation.source_manifest_version,
+        source_sha256=preparation.source_sha256,
+        configuration_hash=preparation.configuration_hash,
+        state=preparation.state.value,
+        attempts=preparation.attempts,
+        rows_processed=preparation.rows_processed,
+        total_rows=preparation.total_rows,
+        last_error_code=preparation.last_error_code,
+        created_at=preparation.created_at,
+        updated_at=preparation.updated_at,
+        version=preparation.version,
+    )
+
+
+def _set_preparation_response_headers(
+    response: Response,
+    *,
+    upload_id: UUID,
+    preparation: UploadPreparation,
+) -> None:
+    response.headers["Cache-Control"] = "private, no-store"
+    response.headers["ETag"] = f'"{preparation.version}"'
+    response.headers["Location"] = (
+        f"/api/v1/uploads/{upload_id}/preparations/{preparation.preparation_id}"
+    )
+
+
 def _expected_version(if_match: str) -> int:
-    value = if_match.strip().strip('"')
-    if not value.isdigit() or int(value) < 1:
+    match = re.fullmatch(r'"([1-9][0-9]*)"', if_match.strip())
+    if match is None:
         raise ValidationError("If-Match must contain a quoted positive aggregate version.")
-    return int(value)
+    return int(match.group(1))
 
 
 @router.get("", response_model=UploadListResponse)
@@ -151,12 +194,99 @@ async def initiate_upload(
         declared_mime=payload.content_type,
         declared_sha256=payload.sha256,
         classification=Classification[payload.classification],
+        content_profile=UploadContentProfile(payload.content_profile),
         environment=context.environment,
         request_id=context.request_id,
         idempotency_key=idempotency_key,
         request_hash=request_hash,
     )
     return _response(manifest)
+
+
+@router.post(
+    "/{upload_id}/preparations",
+    status_code=202,
+    response_model=UploadPreparationResponse,
+)
+async def create_upload_preparation(
+    upload_id: UUID,
+    request: Request,
+    response: Response,
+    context: ContextDep,
+    if_match: Annotated[str, Header(alias="If-Match", min_length=3, max_length=100)],
+    idempotency_key: Annotated[str, Header(alias="Idempotency-Key", min_length=16, max_length=200)],
+) -> UploadPreparationResponse:
+    preparation = await _service(request).create_preparation(
+        workspace_id=context.workspace_id,
+        upload_id=upload_id,
+        subject=context.subject,
+        expected_manifest_version=_expected_version(if_match),
+        environment=context.environment,
+        request_id=context.request_id,
+        idempotency_key=idempotency_key,
+    )
+    _set_preparation_response_headers(
+        response,
+        upload_id=upload_id,
+        preparation=preparation,
+    )
+    return _preparation_response(preparation)
+
+
+@router.get(
+    "/{upload_id}/preparations",
+    response_model=UploadPreparationListResponse,
+)
+async def list_upload_preparations(
+    upload_id: UUID,
+    request: Request,
+    response: Response,
+    context: ContextDep,
+    state: Annotated[str | None, Query(max_length=32)] = None,
+    limit: Annotated[int, Query(ge=1, le=20)] = 20,
+) -> UploadPreparationListResponse:
+    try:
+        parsed_state = UploadPreparationState(state) if state else None
+    except ValueError as error:
+        raise ValidationError("The upload preparation state filter is invalid.") from error
+    values = await _service(request).list_preparations(
+        workspace_id=context.workspace_id,
+        upload_id=upload_id,
+        state=parsed_state,
+        limit=limit,
+        subject=context.subject,
+        environment=context.environment,
+        request_id=context.request_id,
+    )
+    response.headers["Cache-Control"] = "private, no-store"
+    return UploadPreparationListResponse(items=[_preparation_response(value) for value in values])
+
+
+@router.get(
+    "/{upload_id}/preparations/{preparation_id}",
+    response_model=UploadPreparationResponse,
+)
+async def get_upload_preparation(
+    upload_id: UUID,
+    preparation_id: UUID,
+    request: Request,
+    response: Response,
+    context: ContextDep,
+) -> UploadPreparationResponse:
+    preparation = await _service(request).get_preparation(
+        workspace_id=context.workspace_id,
+        upload_id=upload_id,
+        preparation_id=preparation_id,
+        subject=context.subject,
+        environment=context.environment,
+        request_id=context.request_id,
+    )
+    _set_preparation_response_headers(
+        response,
+        upload_id=upload_id,
+        preparation=preparation,
+    )
+    return _preparation_response(preparation)
 
 
 @router.post("/{upload_id}/parts", response_model=UploadPartResponse)

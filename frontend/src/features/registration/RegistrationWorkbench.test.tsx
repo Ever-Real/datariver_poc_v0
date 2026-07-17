@@ -32,6 +32,7 @@ function uploadRecord(
     content_type: 'text/csv',
     sha256: 'a'.repeat(64),
     classification: 'INTERNAL',
+    content_profile: 'FORMAT_ONLY_V1',
     expires_at: '2026-01-02T00:00:00Z',
     version: 3,
     recommended_part_size_bytes: 5_242_880,

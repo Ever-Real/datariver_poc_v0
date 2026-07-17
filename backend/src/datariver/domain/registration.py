@@ -6,7 +6,7 @@ from enum import StrEnum
 from uuid import UUID
 
 from datariver.domain.authz import Classification
-from datariver.domain.common import ConflictError, DomainEvent, ValidationError, utc_now
+from datariver.domain.common import ConflictError, DomainEvent, ValidationError, utc_now, uuid7
 
 
 class UploadState(StrEnum):
@@ -19,6 +19,20 @@ class UploadState(StrEnum):
     REJECTED = "REJECTED"
     ABORTED = "ABORTED"
     EXPIRED = "EXPIRED"
+
+
+class UploadContentProfile(StrEnum):
+    FORMAT_ONLY_V1 = "FORMAT_ONLY_V1"
+    DATASET_DESCRIPTION_CSV_V1 = "DATASET_DESCRIPTION_CSV_V1"
+
+
+class UploadPreparationState(StrEnum):
+    QUEUED = "QUEUED"
+    PREPARING = "PREPARING"
+    READY = "READY"
+    FAILED = "FAILED"
+    CANCELLED = "CANCELLED"
+    STALE = "STALE"
 
 
 @dataclass(frozen=True, slots=True)
@@ -42,6 +56,7 @@ class UploadManifest:
     classification: Classification
     multipart_upload_id: str
     expires_at: datetime
+    content_profile: UploadContentProfile = UploadContentProfile.FORMAT_ONLY_V1
     state: UploadState = UploadState.INITIATED
     version: int = 1
     completion_parts: list[CompletedUploadPart] = field(default_factory=list)
@@ -53,6 +68,13 @@ class UploadManifest:
     validation_summary: dict[str, object] = field(default_factory=dict)
     last_error_code: str | None = None
     events: list[DomainEvent] = field(default_factory=list)
+
+    def __post_init__(self) -> None:
+        if (
+            self.content_profile is UploadContentProfile.DATASET_DESCRIPTION_CSV_V1
+            and self.declared_mime != "text/csv"
+        ):
+            raise ValidationError("The dataset-description profile requires a CSV upload.")
 
     def queue_completion(self, *, parts: list[CompletedUploadPart], expected_version: int) -> None:
         self._check_version(expected_version)
@@ -217,3 +239,84 @@ class UploadManifest:
     @property
     def expired(self) -> bool:
         return self.expires_at <= utc_now()
+
+
+@dataclass(slots=True)
+class UploadPreparation:
+    preparation_id: UUID
+    workspace_id: UUID
+    upload_id: UUID
+    requested_by: UUID
+    content_profile: UploadContentProfile
+    source_manifest_version: int
+    source_sha256: str
+    configuration_hash: str
+    state: UploadPreparationState
+    attempts: int
+    rows_processed: int
+    total_rows: int | None
+    last_error_code: str | None
+    created_at: datetime
+    updated_at: datetime
+    version: int
+    events: list[DomainEvent] = field(default_factory=list)
+
+    @classmethod
+    def queue(
+        cls,
+        *,
+        workspace_id: UUID,
+        upload_id: UUID,
+        requested_by: UUID,
+        content_profile: UploadContentProfile,
+        source_manifest_version: int,
+        source_sha256: str,
+        configuration_hash: str,
+    ) -> UploadPreparation:
+        if content_profile is not UploadContentProfile.DATASET_DESCRIPTION_CSV_V1:
+            raise ValidationError("The upload profile has no typed preparation workflow.")
+        if source_manifest_version < 1:
+            raise ValidationError("The source manifest version is invalid.")
+        for field_name, digest_value in (
+            ("source_sha256", source_sha256),
+            ("configuration_hash", configuration_hash),
+        ):
+            if len(digest_value) != 64 or any(
+                character not in "0123456789abcdef" for character in digest_value
+            ):
+                raise ValidationError(f"The {field_name} value is invalid.")
+        preparation_id = uuid7()
+        now = utc_now()
+        preparation = cls(
+            preparation_id=preparation_id,
+            workspace_id=workspace_id,
+            upload_id=upload_id,
+            requested_by=requested_by,
+            content_profile=content_profile,
+            source_manifest_version=source_manifest_version,
+            source_sha256=source_sha256,
+            configuration_hash=configuration_hash,
+            state=UploadPreparationState.QUEUED,
+            attempts=0,
+            rows_processed=0,
+            total_rows=None,
+            last_error_code=None,
+            created_at=now,
+            updated_at=now,
+            version=1,
+        )
+        preparation.events.append(
+            DomainEvent.create(
+                event_type="registration.upload.preparation_queued.v1",
+                aggregate_type="upload_preparation",
+                aggregate_id=preparation_id,
+                workspace_id=workspace_id,
+                payload={
+                    "preparation_id": str(preparation_id),
+                    "upload_id": str(upload_id),
+                    "source_manifest_version": source_manifest_version,
+                    "content_profile": content_profile.value,
+                },
+            )
+        )
+        return preparation

@@ -7,6 +7,11 @@ from uuid import UUID
 from datariver.application.dto import MultipartUpload
 from datariver.application.ports import ObjectStore, UploadUnitOfWork
 from datariver.application.services.authorization import AuthorizationService
+from datariver.application.typed_upload_profiles import (
+    TypedUploadProfileDefinition,
+    typed_profile_definition,
+    validate_upload_profile,
+)
 from datariver.domain.authz import (
     Action,
     Classification,
@@ -14,12 +19,30 @@ from datariver.domain.authz import (
     ResourceAttributes,
     SubjectAttributes,
 )
-from datariver.domain.common import ConflictError, DomainError, NotFoundError, utc_now, uuid7
-from datariver.domain.registration import CompletedUploadPart, UploadManifest, UploadState
+from datariver.domain.common import (
+    ConflictError,
+    DomainError,
+    NotFoundError,
+    canonical_json_hash,
+    utc_now,
+    uuid7,
+)
+from datariver.domain.registration import (
+    CompletedUploadPart,
+    UploadContentProfile,
+    UploadManifest,
+    UploadPreparation,
+    UploadPreparationState,
+    UploadState,
+)
 
 
 class UploadNotFound(NotFoundError):
     code = "upload_not_found"
+
+
+class UploadPreparationNotFound(NotFoundError):
+    code = "upload_preparation_not_found"
 
 
 class RegistrationService:
@@ -48,11 +71,18 @@ class RegistrationService:
         declared_mime: str,
         declared_sha256: str,
         classification: Classification,
+        content_profile: UploadContentProfile,
         environment: EnvironmentAttributes,
         request_id: str,
         idempotency_key: str,
         request_hash: str,
     ) -> UploadManifest:
+        validate_upload_profile(
+            content_profile=content_profile,
+            display_name=display_name,
+            content_type=declared_mime,
+            size_bytes=declared_size_bytes,
+        )
         upload_id = uuid7()
         await self._authorization.authorize(
             subject=subject,
@@ -96,6 +126,7 @@ class RegistrationService:
                         "workspace-id": str(workspace_id),
                         "upload-id": str(upload_id),
                         "declared-sha256": declared_sha256,
+                        "content-profile": content_profile.value,
                     },
                 )
                 manifest = UploadManifest(
@@ -111,6 +142,7 @@ class RegistrationService:
                     classification=classification,
                     multipart_upload_id=multipart.upload_id,
                     expires_at=utc_now() + timedelta(hours=24),
+                    content_profile=content_profile,
                 )
                 await uow.uploads.add(manifest)
                 await uow.idempotency.save_result(
@@ -176,7 +208,7 @@ class RegistrationService:
     ) -> UploadManifest:
         async with self._uow_factory() as uow:
             await uow.set_security_context(workspace_id=workspace_id, subject_id=subject.subject_id)
-            manifest = await uow.uploads.get_for_update(
+            manifest = await uow.uploads.get(
                 workspace_id=workspace_id,
                 upload_id=upload_id,
             )
@@ -287,6 +319,191 @@ class RegistrationService:
         manifest.events.clear()
         return manifest
 
+    async def create_preparation(
+        self,
+        *,
+        workspace_id: UUID,
+        upload_id: UUID,
+        subject: SubjectAttributes,
+        expected_manifest_version: int,
+        environment: EnvironmentAttributes,
+        request_id: str,
+        idempotency_key: str,
+    ) -> UploadPreparation:
+        async with self._uow_factory() as uow:
+            await uow.set_security_context(
+                workspace_id=workspace_id,
+                subject_id=subject.subject_id,
+            )
+            manifest = await uow.uploads.get_for_update(
+                workspace_id=workspace_id,
+                upload_id=upload_id,
+            )
+            if manifest is None:
+                raise UploadNotFound("The upload does not exist.")
+            await self._authorize_manifest(
+                manifest=manifest,
+                subject=subject,
+                action=Action.REGISTRATION_READ,
+                environment=environment,
+                request_id=request_id,
+            )
+            await self._authorize_manifest(
+                manifest=manifest,
+                subject=subject,
+                action=Action.REGISTRATION_VALIDATE,
+                environment=environment,
+                request_id=request_id,
+            )
+            if manifest.version != expected_manifest_version:
+                raise ConflictError(
+                    "The upload was modified by another operation.",
+                    details={
+                        "expected": expected_manifest_version,
+                        "actual": manifest.version,
+                    },
+                )
+            definition = typed_profile_definition(manifest.content_profile)
+            self._verify_preparation_source(manifest=manifest, definition=definition)
+            operation = f"upload.preparation.create:{upload_id}"
+            request_hash = canonical_json_hash(
+                {
+                    "configuration_hash": definition.configuration_hash,
+                    "content_profile": manifest.content_profile.value,
+                    "expected_manifest_version": expected_manifest_version,
+                    "source_sha256": manifest.declared_sha256,
+                    "upload_id": str(upload_id),
+                    "workspace_id": str(workspace_id),
+                }
+            )
+            idempotent = await uow.idempotency.get_result(
+                workspace_id=workspace_id,
+                key=idempotency_key,
+                operation=operation,
+            )
+            if idempotent is not None:
+                if idempotent.request_hash != request_hash:
+                    raise ConflictError("The idempotency key was used with a different request.")
+                if idempotent.result.get("owner_id") != str(subject.subject_id):
+                    raise ConflictError("The idempotency key belongs to another subject.")
+                preparation = await uow.preparations.get(
+                    workspace_id=workspace_id,
+                    upload_id=upload_id,
+                    preparation_id=UUID(str(idempotent.result["preparation_id"])),
+                )
+                if preparation is None:
+                    raise ConflictError("The idempotent preparation result is unavailable.")
+                return preparation
+
+            preparation = await uow.preparations.find_source_configuration(
+                workspace_id=workspace_id,
+                upload_id=upload_id,
+                source_manifest_version=manifest.version,
+                content_profile=manifest.content_profile.value,
+                configuration_hash=definition.configuration_hash,
+            )
+            created = preparation is None
+            if preparation is None:
+                preparation = UploadPreparation.queue(
+                    workspace_id=workspace_id,
+                    upload_id=upload_id,
+                    requested_by=subject.subject_id,
+                    content_profile=manifest.content_profile,
+                    source_manifest_version=manifest.version,
+                    source_sha256=manifest.declared_sha256,
+                    configuration_hash=definition.configuration_hash,
+                )
+                await uow.preparations.add(preparation)
+                await uow.outbox.add_events(preparation.events)
+            await uow.idempotency.save_result(
+                workspace_id=workspace_id,
+                key=idempotency_key,
+                operation=operation,
+                request_hash=request_hash,
+                result={
+                    "preparation_id": str(preparation.preparation_id),
+                    "owner_id": str(subject.subject_id),
+                },
+            )
+            await uow.commit()
+        if created:
+            preparation.events.clear()
+        return preparation
+
+    async def get_preparation(
+        self,
+        *,
+        workspace_id: UUID,
+        upload_id: UUID,
+        preparation_id: UUID,
+        subject: SubjectAttributes,
+        environment: EnvironmentAttributes,
+        request_id: str,
+    ) -> UploadPreparation:
+        async with self._uow_factory() as uow:
+            await uow.set_security_context(
+                workspace_id=workspace_id,
+                subject_id=subject.subject_id,
+            )
+            manifest = await uow.uploads.get(
+                workspace_id=workspace_id,
+                upload_id=upload_id,
+            )
+            if manifest is None:
+                raise UploadNotFound("The upload does not exist.")
+            await self._authorize_manifest(
+                manifest=manifest,
+                subject=subject,
+                action=Action.REGISTRATION_READ,
+                environment=environment,
+                request_id=request_id,
+            )
+            preparation = await uow.preparations.get(
+                workspace_id=workspace_id,
+                upload_id=upload_id,
+                preparation_id=preparation_id,
+            )
+            if preparation is None:
+                raise UploadPreparationNotFound("The upload preparation does not exist.")
+            return preparation
+
+    async def list_preparations(
+        self,
+        *,
+        workspace_id: UUID,
+        upload_id: UUID,
+        state: UploadPreparationState | None,
+        limit: int,
+        subject: SubjectAttributes,
+        environment: EnvironmentAttributes,
+        request_id: str,
+    ) -> tuple[UploadPreparation, ...]:
+        async with self._uow_factory() as uow:
+            await uow.set_security_context(
+                workspace_id=workspace_id,
+                subject_id=subject.subject_id,
+            )
+            manifest = await uow.uploads.get(
+                workspace_id=workspace_id,
+                upload_id=upload_id,
+            )
+            if manifest is None:
+                raise UploadNotFound("The upload does not exist.")
+            await self._authorize_manifest(
+                manifest=manifest,
+                subject=subject,
+                action=Action.REGISTRATION_READ,
+                environment=environment,
+                request_id=request_id,
+            )
+            preparations = await uow.preparations.list(
+                workspace_id=workspace_id,
+                upload_id=upload_id,
+                state=state.value if state is not None else None,
+                limit=limit,
+            )
+            return tuple(preparations)
+
     async def _authorize_manifest(
         self,
         *,
@@ -339,3 +556,32 @@ class RegistrationService:
             bucket=manifest.bucket,
             object_key=manifest.object_key,
         )
+
+    @staticmethod
+    def _verify_preparation_source(
+        *,
+        manifest: UploadManifest,
+        definition: TypedUploadProfileDefinition,
+    ) -> None:
+        if manifest.state is not UploadState.ACCEPTED:
+            raise ConflictError("Only an accepted upload can create a typed preparation.")
+        if (
+            manifest.declared_mime != definition.content_type
+            or not manifest.display_name.lower().endswith(definition.filename_suffix)
+        ):
+            raise ConflictError("The accepted upload does not match its typed content profile.")
+        summary = manifest.validation_summary
+        expected_evidence: tuple[tuple[str, object], ...] = (
+            ("validator_version", definition.acceptance_validator_version),
+            ("sha256", manifest.declared_sha256),
+            ("size_bytes", manifest.declared_size_bytes),
+            ("content_type", manifest.declared_mime),
+        )
+        if any(summary.get(key) != expected for key, expected in expected_evidence):
+            raise ConflictError("The accepted upload validation evidence is incomplete or stale.")
+        if (
+            manifest.actual_size_bytes != manifest.declared_size_bytes
+            or manifest.actual_mime != manifest.declared_mime
+            or manifest.actual_sha256 != manifest.declared_sha256
+        ):
+            raise ConflictError("The accepted upload metadata does not match its declaration.")
