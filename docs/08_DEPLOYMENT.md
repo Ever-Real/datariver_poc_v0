@@ -22,7 +22,10 @@ No Compose file starts DataHub. OPA and a separate graph database remain documen
 The current example DataHub provider contract is stable `v1.6.0`. Each deployment provides its own
 exact stable `DATAHUB_EXPECTED_VERSION` and reviewed component OCI index digest contract (the current
 example is [`infra/contracts/datahub-v1.6.0-images.json`](../infra/contracts/datahub-v1.6.0-images.json)).
-Mutable `head`, `latest` and RC tags are invalid. DataRiver production sets
+An external owner may temporarily set `DATAHUB_ALLOWED_VERSIONS` to a reviewed numbered RC of that
+same exact release, such as `v1.6.0rc1` for `v1.6.0`; it is an operational compatibility exception,
+not a replacement stable contract or a mutable image tag. `head`, `latest`, partial versions and a
+different release line remain invalid. DataRiver production sets
 `DATAHUB_VERSION_ENFORCEMENT=enforce`; development may use `report` only to expose a degraded
 capability while an external stack is being upgraded.
 

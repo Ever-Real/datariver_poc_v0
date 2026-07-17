@@ -24,6 +24,7 @@ def settings(**overrides: object) -> Settings:
         "datahub_base_url": "http://datahub",
         "datahub_secret_ref": "file:/run/secrets/datahub_token",
         "datahub_expected_version": "v1.6.0",
+        "datahub_allowed_versions": (),
         "valkey_cache_url": "redis://cache:6379/0",
         "valkey_queue_url": "redis://queue:6379/0",
         "valkey_cache_secret_ref": "file:/run/secrets/valkey_cache_password",
@@ -170,6 +171,18 @@ def test_production_uses_the_deployment_configured_stable_datahub_contract() -> 
     )
 
     assert configured.datahub_expected_version == "v1.7.0"
+
+
+def test_allows_an_explicit_numbered_rc_for_the_configured_datahub_release() -> None:
+    configured = settings(datahub_allowed_versions=("v1.6.0rc1",))
+
+    assert configured.datahub_allowed_versions == ("v1.6.0rc1",)
+
+
+@pytest.mark.parametrize("allowed_version", ("v1.6.0rc", "v1.6.1rc1", "v1.6.0", "latest"))
+def test_rejects_datahub_exceptions_outside_the_configured_release(allowed_version: str) -> None:
+    with pytest.raises(ValidationError, match="numbered release candidates"):
+        settings(datahub_allowed_versions=(allowed_version,))
 
 
 def test_ha_accepted_requires_an_explicit_evidence_reference() -> None:

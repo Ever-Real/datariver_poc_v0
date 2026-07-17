@@ -1,11 +1,22 @@
-import { useEffect, useRef, useState, type FormEvent } from 'react'
-import { ChevronDown, KeyRound, LogOut, ShieldCheck, UserRound } from 'lucide-react'
+import { useEffect, useRef, useState, type FormEvent, type ReactNode } from 'react'
+import {
+  BellRing,
+  BookOpen,
+  ChevronDown,
+  FileText,
+  KeyRound,
+  LogOut,
+  Settings,
+  ShieldCheck,
+  UserRound,
+} from 'lucide-react'
 
 export interface AdminMenuItem { id: string; label: string }
 export type AdminContextStatus = 'checking' | 'allowed' | 'denied' | 'reauth_required'
 
 interface ProfileMenuProps {
   displayName: string
+  email?: string
   workspace: string
   deploymentTier: 'SINGLE_NODE_PILOT' | 'HA_CANDIDATE' | 'HA_ACCEPTED'
   adminMenuItems: AdminMenuItem[]
@@ -19,6 +30,7 @@ interface ProfileMenuProps {
 
 export function ProfileMenu({
   displayName,
+  email,
   workspace,
   deploymentTier,
   adminMenuItems,
@@ -31,9 +43,10 @@ export function ProfileMenu({
 }: ProfileMenuProps) {
   const [open, setOpen] = useState(false)
   const [workspaceDraft, setWorkspaceDraft] = useState(workspace)
+  const [workspaceEditorOpen, setWorkspaceEditorOpen] = useState(false)
   const menuRef = useRef<HTMLDivElement>(null)
   const triggerRef = useRef<HTMLButtonElement>(null)
-  const initial = displayName.trim().slice(0, 1).toUpperCase() || 'U'
+  const workspaceRef = useRef<HTMLInputElement>(null)
 
   useEffect(() => setWorkspaceDraft(workspace), [workspace])
 
@@ -66,6 +79,13 @@ export function ProfileMenu({
     onWorkspaceChange(next)
   }
 
+  const openWorkspaceEditor = () => {
+    setWorkspaceEditorOpen(true)
+    window.requestAnimationFrame(() => workspaceRef.current?.focus())
+  }
+  const membership = adminMenuItems.find((item) => item.id === 'memberships')
+  const remainingAdminItems = adminMenuItems.filter((item) => item.id !== 'memberships')
+
   return (
     <div className="profile-menu" ref={menuRef}>
       <button
@@ -77,23 +97,24 @@ export function ProfileMenu({
         aria-expanded={open}
         onClick={() => setOpen((value) => !value)}
       >
-        <span className="profile-avatar" aria-hidden="true">{initial}</span>
-        <span className="profile-name" title={displayName}>{displayName}</span>
+        <span className="profile-avatar" aria-hidden="true"><UserRound size={18} /></span>
         <ChevronDown size={14} aria-hidden="true" />
       </button>
       {open && (
         <div className="profile-menu-panel" role="menu" aria-label="사용자 작업">
           <header>
-            <UserRound size={16} aria-hidden="true" />
-            <div><strong title={displayName}>{displayName}</strong><small>조직 계정 · {deploymentTierLabel(deploymentTier)}</small></div>
+            <div><strong title={displayName}>{displayName}</strong><small title={email}>{email || `조직 계정 · ${deploymentTierLabel(deploymentTier)}`}</small></div>
           </header>
-          <section aria-label="프로필 설정">
-            <p>프로필 설정</p>
+          <section className="legacy-profile-items" aria-label="프로필 설정">
+            <button type="button" role="menuitem" onClick={openWorkspaceEditor}><UserRound size={14} aria-hidden="true" /><span>프로필</span></button>
+            <button type="button" role="menuitem" onClick={openWorkspaceEditor}><Settings size={14} aria-hidden="true" /><span>설정</span></button>
+          </section>
+          {workspaceEditorOpen && <section className="profile-workspace-section" aria-label="프로필 Workspace 설정">
             <form className="profile-workspace" onSubmit={applyWorkspace}>
               <label htmlFor="profile-workspace-id">Workspace</label>
-              <div><input id="profile-workspace-id" aria-label="Workspace ID" value={workspaceDraft} onChange={(event) => setWorkspaceDraft(event.target.value)} /><button type="submit">적용</button></div>
+              <div><input ref={workspaceRef} id="profile-workspace-id" aria-label="Workspace ID" value={workspaceDraft} onChange={(event) => setWorkspaceDraft(event.target.value)} /><button type="submit">적용</button></div>
             </form>
-          </section>
+          </section>}
           {adminContextStatus === 'reauth_required' && onPasswordReauth && (
             <section aria-label="관리자 인증">
               <p>관리자 인증</p>
@@ -104,9 +125,19 @@ export function ProfileMenu({
             </section>
           )}
           {adminMenuItems.length > 0 && (
-            <section aria-label="Administration">
-              <p>Administration</p>
-              {adminMenuItems.map((item) => (
+            <section className="legacy-admin-items" aria-label="Administration">
+              {membership ? (
+                <button type="button" role="menuitem" onClick={() => perform(() => onAdmin(membership.id))}>
+                  <ShieldCheck size={14} aria-hidden="true" /><span>관리 (사용자관리)</span>
+                </button>
+              ) : (
+                <LegacyUnavailable icon={<ShieldCheck size={14} aria-hidden="true" />} label="관리 (사용자관리)" />
+              )}
+              <LegacyUnavailable icon={<FileText size={14} aria-hidden="true" />} label="로그" />
+              <LegacyUnavailable icon={<BellRing size={14} aria-hidden="true" />} label="알람규칙" />
+              <LegacyUnavailable icon={<BookOpen size={14} aria-hidden="true" />} label="한글화 사전" />
+              {remainingAdminItems.length > 0 && <p>Administration</p>}
+              {remainingAdminItems.map((item) => (
                 <button key={item.id} type="button" role="menuitem" onClick={() => perform(() => onAdmin(item.id))}>
                   <ShieldCheck size={14} aria-hidden="true" /><span>{item.label}</span>
                 </button>
@@ -115,12 +146,18 @@ export function ProfileMenu({
           )}
           <div className="profile-menu-actions">
             <button type="button" role="menuitem" onClick={() => perform(onEnrollSecurityKey)}><KeyRound size={14} aria-hidden="true" /><span>USB 보안키 등록</span></button>
-            <button type="button" role="menuitem" className="danger" onClick={() => perform(onSignOut)}><LogOut size={14} aria-hidden="true" /><span>로그아웃</span></button>
+            <button type="button" role="menuitem" className="danger" onClick={() => perform(onSignOut)}><LogOut size={14} aria-hidden="true" /><span>나가기</span></button>
           </div>
         </div>
       )}
     </div>
   )
+}
+
+function LegacyUnavailable({ icon, label }: { icon: ReactNode; label: string }) {
+  return <button type="button" role="menuitem" disabled aria-disabled="true" title="v1 API 계약이 준비되지 않았습니다.">
+    {icon}<span>{label}</span><small>준비 중</small>
+  </button>
 }
 
 export function deploymentTierLabel(tier: ProfileMenuProps['deploymentTier']): string {

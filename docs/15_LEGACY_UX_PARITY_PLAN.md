@@ -117,6 +117,7 @@ Status values are `READY` (parity accepted), `PARTIAL` (a governed v1 contract o
 | UX-PAR-020 | Chat modes | GENERAL, VECTOR, GRAPH, AUTO selector, per-user history and favorites | PARTIAL | separate inference worker, mode policy and timeout/degraded states |
 | UX-PAR-021 | Chat evidence | right evidence accordion, workflow/status, asset badges, detail modal and graph | PARTIAL | every factual claim cites authorized, versioned evidence |
 | UX-PAR-022 | Administration | profile-only capability menu for users, access, classification, retention and audit | PARTIAL | server capability discovery; no client role guess |
+| UX-PAR-023 | Administrator profile dropdown | Restore the v0.3 top-right rounded profile control, verified identity header, profile/settings rows, administrator menu composition and logout row at the same screen position | PARTIAL | restored through server-verified `/auth/me` and `/admin/me` memory state with focused component coverage; legacy audit-log, alarm-rule and Korean-dictionary APIs are not present in v1, so those visible rows state their real unavailable status instead of reintroducing local role storage or mock routes. Authenticated reference-viewport acceptance remains open |
 
 `BLOCKED` means the browser must render a useful unavailable state until the deployment capability is supplied. It does not permit a hard-coded local endpoint.
 

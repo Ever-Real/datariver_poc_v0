@@ -231,6 +231,7 @@ class HttpDataHubGateway:
         token: str,
         timeout_seconds: float,
         expected_version: str | None = None,
+        allowed_versions: tuple[str, ...] = (),
         version_enforcement: Literal["report", "enforce"] = "report",
         version_probe_ttl_seconds: int = 300,
         maximum_concurrency: int = 20,
@@ -249,6 +250,9 @@ class HttpDataHubGateway:
         )
         self._owns_client = client is None
         self._expected_version = expected_version
+        self._accepted_versions = frozenset(
+            version for version in (expected_version, *allowed_versions) if version is not None
+        )
         self._version_enforcement = version_enforcement
         self._version_probe_ttl_seconds = version_probe_ttl_seconds
         self._version_lock = asyncio.Lock()
@@ -821,7 +825,7 @@ class HttpDataHubGateway:
         if self._expected_version is None:
             return
         observed = await self._reported_version()
-        if observed != self._expected_version and self._version_enforcement == "enforce":
+        if observed not in self._accepted_versions and self._version_enforcement == "enforce":
             raise ExternalDependencyError(
                 "DataHub does not match the approved release contract.",
                 dependency="datahub",
@@ -835,7 +839,7 @@ class HttpDataHubGateway:
         detail_code = None
         try:
             observed = await self._reported_version(force=True)
-            if self._expected_version is not None and observed != self._expected_version:
+            if self._expected_version is not None and observed not in self._accepted_versions:
                 state = "degraded"
                 detail_code = "VERSION_MISMATCH"
         except ExternalDependencyError as error:

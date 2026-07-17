@@ -73,6 +73,10 @@ class Settings(BaseSettings):
     # The approved DataHub release is an environment-owned deployment contract.
     # It must never be silently substituted by an application default.
     datahub_expected_version: str
+    # A deployment may explicitly allow a numbered release candidate for the
+    # same exact stable release while its external DataHub owner completes an
+    # upgrade.  This is intentionally empty by default.
+    datahub_allowed_versions: tuple[str, ...] = ()
     datahub_version_enforcement: Literal["report", "enforce"] = "report"
     datahub_version_probe_ttl_seconds: int = Field(default=300, ge=30, le=3600)
     datahub_timeout_seconds: float = Field(default=10.0, ge=0.1, le=60)
@@ -149,6 +153,7 @@ class Settings(BaseSettings):
         "oidc_hardware_amr_values",
         "oidc_password_reauth_acr_values",
         "oidc_password_amr_values",
+        "datahub_allowed_versions",
         mode="before",
     )
     @classmethod
@@ -165,6 +170,14 @@ class Settings(BaseSettings):
             raise ValueError(
                 "DataHub expected version must be an exact stable release such as v1.6.0."
             )
+        return normalized
+
+    @field_validator("datahub_allowed_versions")
+    @classmethod
+    def normalize_allowed_datahub_versions(cls, values: tuple[str, ...]) -> tuple[str, ...]:
+        normalized = tuple(value.strip() for value in values)
+        if any(not value for value in normalized) or len(set(normalized)) != len(normalized):
+            raise ValueError("DataHub allowed versions must be non-empty and unique.")
         return normalized
 
     @field_validator(
@@ -206,6 +219,17 @@ class Settings(BaseSettings):
             raise ValueError("Cache and queue must use separate Valkey endpoints/databases.")
         if self.datahub_stale_ttl_seconds < self.cache_default_ttl_seconds:
             raise ValueError("The DataHub stale TTL cannot be shorter than the fresh cache TTL.")
+        for allowed_version in self.datahub_allowed_versions:
+            if (
+                re.fullmatch(
+                    rf"{re.escape(self.datahub_expected_version)}rc[1-9]\d*", allowed_version
+                )
+                is None
+            ):
+                raise ValueError(
+                    "DataHub allowed versions must be numbered release candidates for the "
+                    "configured exact stable release."
+                )
         if self.database_readiness_timeout_seconds > self.database_pool_timeout_seconds:
             raise ValueError("The database readiness timeout cannot exceed the API pool timeout.")
         if self.datahub_embed_enabled and self.datahub_embed_base_url is None:

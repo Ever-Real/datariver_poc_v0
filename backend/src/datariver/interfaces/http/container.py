@@ -55,6 +55,7 @@ def build_container(settings: Settings) -> AppContainer:
             token=datahub_token,
             timeout_seconds=settings.datahub_timeout_seconds,
             expected_version=settings.datahub_expected_version,
+            allowed_versions=settings.datahub_allowed_versions,
             version_enforcement=settings.datahub_version_enforcement,
             version_probe_ttl_seconds=settings.datahub_version_probe_ttl_seconds,
             maximum_concurrency=settings.datahub_max_concurrency,

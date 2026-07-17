@@ -36,6 +36,7 @@ def settings() -> Settings:
         datahub_base_url="http://datahub",
         datahub_secret_ref="file:/run/secrets/datahub_token",
         datahub_expected_version="v1.6.0",
+        datahub_allowed_versions=(),
         valkey_cache_url="redis://cache:6379/0",
         valkey_queue_url="redis://queue:6379/0",
         valkey_cache_secret_ref="file:/run/secrets/valkey_cache_password",
@@ -86,6 +87,7 @@ def test_api_container_passes_the_configured_pool_budget(
     assert captured["max_overflow"] == 3
     assert captured["pool_timeout_seconds"] == 9
     assert datahub_captured["expected_version"] == "v1.6.0"
+    assert datahub_captured["allowed_versions"] == ()
     assert datahub_captured["version_enforcement"] == "report"
     assert datahub_captured["version_probe_ttl_seconds"] == 300
     assert oidc_captured["hardware_acr_values"] == ("2",)

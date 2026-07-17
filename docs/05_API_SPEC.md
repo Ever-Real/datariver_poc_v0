@@ -329,7 +329,9 @@ The inward port exposes `scan_assets`, `get_asset`, `get_lineage`, `apply_change
 
 `DATAHUB_EXPECTED_VERSION` supplies the exact stable DataHub release for a deployment; the current
 example contract is `v1.6.0`. The adapter reads `/config.versions["acryldata/datahub"].version`; a
-different or missing value degrades capability. RC, snapshot, head, latest and partial version values
+different or missing value degrades capability. `DATAHUB_ALLOWED_VERSIONS` is empty by default and may
+contain only an explicitly reviewed numbered RC for that exact configured release (for example,
+`v1.6.0rc1` for `v1.6.0`). Snapshot, head, latest, partial values and RCs from any other release line
 are rejected during configuration. Production enforcement blocks enrichment, scan, apply and read-back
 with sanitized `VERSION_MISMATCH`. This runtime check complements, rather than replaces, digest pinning
 and live contract tests in the external DataHub deployment.

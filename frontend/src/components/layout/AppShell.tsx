@@ -12,6 +12,7 @@ interface AppShellProps {
   workspace: string
   deploymentTier?: 'SINGLE_NODE_PILOT' | 'HA_CANDIDATE' | 'HA_ACCEPTED'
   displayName: string
+  email?: string
   adminMenuItems: AdminMenuItem[]
   adminContextStatus?: AdminContextStatus
   externalSystemLinks: ExternalSystemLink[]
@@ -33,6 +34,7 @@ export function AppShell({
   workspace,
   deploymentTier = 'SINGLE_NODE_PILOT',
   displayName,
+  email,
   adminMenuItems,
   adminContextStatus,
   externalSystemLinks,
@@ -56,6 +58,7 @@ export function AppShell({
         workspace={workspace}
         deploymentTier={deploymentTier}
         displayName={displayName}
+        email={email}
         adminMenuItems={adminMenuItems}
         adminContextStatus={adminContextStatus}
         externalSystemLinks={externalSystemLinks}

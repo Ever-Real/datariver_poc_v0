@@ -178,6 +178,7 @@ export function App() {
       workspace={workspace}
       deploymentTier={deploymentTier}
       displayName={auth.profile?.display_name ?? auth.user.profile.name ?? auth.user.profile.sub}
+      email={auth.profile?.email}
       adminMenuItems={adminMenuItems}
       adminContextStatus={currentAdminStatus}
       externalSystemLinks={externalSystemLinks}

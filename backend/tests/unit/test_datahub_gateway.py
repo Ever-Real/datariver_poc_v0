@@ -386,6 +386,81 @@ async def test_capability_reports_a_datahub_release_mismatch_as_degraded() -> No
     await client.aclose()
 
 
+async def test_capability_is_healthy_for_an_explicitly_allowed_same_release_candidate() -> None:
+    client = httpx.AsyncClient(
+        base_url="https://datahub.example",
+        transport=httpx.MockTransport(
+            lambda request: httpx.Response(
+                200,
+                json={"versions": {"acryldata/datahub": {"version": "v1.6.0rc1"}}},
+            )
+        ),
+    )
+    gateway = HttpDataHubGateway(
+        base_url="https://datahub.example",
+        token="unused",
+        timeout_seconds=1,
+        expected_version="v1.6.0",
+        allowed_versions=("v1.6.0rc1",),
+        version_enforcement="enforce",
+        client=client,
+    )
+
+    capability = await gateway.capability()
+
+    assert capability.state == "healthy"
+    assert capability.detail_code is None
+    await client.aclose()
+
+
+async def test_enforcement_allows_graphql_for_an_explicitly_allowed_release_candidate() -> None:
+    requested_paths: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requested_paths.append(request.url.path)
+        if request.url.path == "/config":
+            return httpx.Response(
+                200,
+                json={"versions": {"acryldata/datahub": {"version": "v1.6.0rc1"}}},
+            )
+        return httpx.Response(
+            200,
+            json={
+                "data": {
+                    "entity": {
+                        "urn": "urn:li:dataset:test",
+                        "type": "DATASET",
+                        "ownership": {"owners": []},
+                        "globalTags": {"tags": []},
+                        "glossaryTerms": {"terms": []},
+                        "schemaMetadata": {"fields": []},
+                    }
+                }
+            },
+        )
+
+    client = httpx.AsyncClient(
+        base_url="https://datahub.example",
+        transport=httpx.MockTransport(handler),
+    )
+    gateway = HttpDataHubGateway(
+        base_url="https://datahub.example",
+        token="unused",
+        timeout_seconds=1,
+        expected_version="v1.6.0",
+        allowed_versions=("v1.6.0rc1",),
+        version_enforcement="enforce",
+        client=client,
+    )
+
+    asset = await gateway.get_asset("urn:li:dataset:test")
+
+    assert asset.tags == ()
+    assert asset.schema_fields == ()
+    assert requested_paths == ["/config", "/api/graphql"]
+    await client.aclose()
+
+
 async def test_enforcement_blocks_graphql_before_an_unapproved_datahub_release() -> None:
     requested_paths: list[str] = []
 

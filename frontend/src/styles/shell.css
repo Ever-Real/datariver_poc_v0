@@ -37,26 +37,30 @@
 .external-system-links a { width: 25px; height: 25px; display: grid; place-items: center; border: 1px solid #3a526a; border-radius: var(--radius); color: #aebfd0; font-size: 8px; font-weight: 900; letter-spacing: -.02em; text-decoration: none; background: #10263f; }
 .external-system-links a:hover, .external-system-links a:focus-visible { border-color: #6ba3c9; color: white; background: var(--blue-700); }
 .profile-menu { position: relative; min-width: 0; }
-.profile-menu-trigger { max-width: 152px; height: 56px; display: flex; align-items: center; gap: 7px; border: 0; padding: 0 4px; color: white; background: transparent; }
-.profile-menu-trigger:hover, .profile-menu-trigger:focus-visible { background: var(--navy-800); }
-.profile-avatar { flex: 0 0 28px; height: 28px; display: grid; place-items: center; border: 1px solid #62809c; border-radius: 50%; color: white; font-size: 11px; font-weight: 800; background: var(--blue-700); }
-.profile-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: #e5edf5; font-size: 11px; }
-.profile-menu-panel { position: absolute; right: 0; top: 52px; width: 250px; max-height: calc(100vh - 64px); overflow: auto; display: grid; border: 1px solid var(--line-300); border-radius: var(--radius); padding: 5px; color: var(--text-900); background: white; box-shadow: 0 8px 28px rgba(7, 20, 38, .24); }
-.profile-menu-panel header { display: grid; grid-template-columns: 22px minmax(0, 1fr); gap: 8px; align-items: center; border-bottom: 1px solid var(--line-200); padding: 8px; }
+.profile-menu-trigger { width: 48px; height: 36px; display: flex; align-items: center; justify-content: center; gap: 3px; border: 1px solid rgba(255, 255, 255, .14); border-radius: 999px; padding: 3px; color: white; background: transparent; transition: background .15s ease; }
+.profile-menu-trigger:hover, .profile-menu-trigger:focus-visible { background: rgba(0, 0, 0, .16); }
+.profile-avatar { flex: 0 0 28px; height: 28px; display: grid; place-items: center; border-radius: 50%; color: var(--navy-900); background: rgba(255, 255, 255, .84); }
+.profile-menu-panel { position: absolute; right: 0; top: 44px; width: 224px; max-height: calc(100vh - 64px); overflow: auto; display: grid; border: 1px solid rgba(10, 25, 47, .08); border-radius: 12px; padding: 8px 0; color: var(--text-900); background: white; box-shadow: 0 18px 42px rgba(7, 20, 38, .24); transform-origin: top right; z-index: 100; }
+.profile-menu-panel header { display: block; border-bottom: 1px solid rgba(10, 25, 47, .08); margin-bottom: 7px; padding: 0 16px 8px; }
 .profile-menu-panel header div, .profile-menu-panel header strong, .profile-menu-panel header small { min-width: 0; display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.profile-menu-panel header strong { font-size: 12px; }
-.profile-menu-panel header small { margin-top: 2px; color: var(--text-500); font-size: 9px; }
-.profile-workspace { display: grid; gap: 4px; border-bottom: 1px solid var(--line-200); padding: 7px 8px; }
+.profile-menu-panel header strong { font-size: 14px; }
+.profile-menu-panel header small { margin-top: 2px; color: var(--text-500); font-size: 11px; }
+.legacy-profile-items, .legacy-admin-items { display: grid; padding: 0; }
+.profile-workspace-section { display: grid; }
+.profile-workspace { display: grid; gap: 4px; border-bottom: 1px solid rgba(10, 25, 47, .08); padding: 7px 16px; }
 .profile-workspace label { color: var(--text-500); font-size: 8px; font-weight: 900; letter-spacing: .08em; text-transform: uppercase; }
 .profile-workspace > div { min-width: 0; display: grid; grid-template-columns: minmax(0, 1fr) 38px; }
 .profile-workspace input { min-width: 0; height: 27px; border: 1px solid var(--line-300); border-radius: var(--radius) 0 0 var(--radius); padding: 3px 5px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 8px; }
 .profile-workspace button { height: 27px; display: block; border: 1px solid var(--blue-700); border-radius: 0 var(--radius) var(--radius) 0; padding: 0 4px; color: white; font-size: 9px; font-weight: 800; text-align: center; background: var(--blue-700); }
-.profile-menu-panel section { display: grid; padding: 5px 0; }
-.profile-menu-panel section > p { margin: 0; padding: 5px 9px 3px; color: #8a949d; font-size: 8px; font-weight: 900; letter-spacing: .11em; text-transform: uppercase; }
-.profile-menu-panel button { display: grid; grid-template-columns: 18px minmax(0, 1fr); align-items: center; gap: 6px; border: 0; padding: 7px 9px; color: var(--text-900); text-align: left; font-size: 11px; background: transparent; }
+.profile-menu-panel section { display: grid; padding: 0; }
+.profile-menu-panel section > p { margin: 3px 0 0; border-top: 1px solid rgba(10, 25, 47, .08); padding: 7px 16px 3px; color: #8a949d; font-size: 8px; font-weight: 900; letter-spacing: .11em; text-transform: uppercase; }
+.profile-menu-panel button { display: grid; grid-template-columns: 18px minmax(0, 1fr) auto; align-items: center; gap: 9px; border: 0; padding: 8px 16px; color: #394550; text-align: left; font-size: 13px; background: transparent; transition: background .15s ease; }
 .profile-menu-panel button span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.profile-menu-panel button:hover, .profile-menu-panel button:focus-visible { color: var(--blue-700); background: var(--blue-100); }
-.profile-menu-actions { display: grid; border-top: 1px solid var(--line-200); padding-top: 5px; }
+.profile-menu-panel button small { color: var(--text-500); font-size: 9px; }
+.profile-menu-panel button:hover, .profile-menu-panel button:focus-visible { color: var(--text-900); background: rgba(0, 0, 0, .05); }
+.profile-menu-panel button:disabled { cursor: not-allowed; opacity: .56; }
+.profile-menu-panel button:disabled:hover { background: transparent; }
+.profile-menu-actions { display: grid; border-top: 1px solid rgba(10, 25, 47, .08); margin-top: 7px; padding-top: 7px; }
 .profile-menu-actions .danger { color: var(--danger-700); }
 .workspace { min-width: 0; }
 .shell-notice { width: min(1500px, calc(100% - 32px)); grid-template-columns: minmax(0, 1fr) auto; align-items: center; margin: 12px auto 0; }

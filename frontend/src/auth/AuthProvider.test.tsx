@@ -52,6 +52,7 @@ function Harness() {
     <div>
       {auth.notice && <span>{auth.notice.message}</span>}
       {auth.profile && <span>{auth.profile.display_name}:{auth.profile.roles.join(',')}</span>}
+      <button onClick={() => void auth.signIn()}>sign in</button>
       <button onClick={() => void auth.beginPasswordReauth()}>password reauth</button>
       <button onClick={() => void auth.renewAccessToken()}>renew access token</button>
     </div>
@@ -92,6 +93,16 @@ describe('AuthProvider password reauthentication', () => {
       acr_values: 'password-reauth',
       max_age: 0,
       state: { version: 1, intent: 'PASSWORD_REAUTH', returnTo: '/' },
+    })
+  })
+
+  it('shows a redirecting state immediately when custom sign-in is selected', async () => {
+    render(<AuthProvider><Harness /></AuthProvider>)
+    fireEvent.click(await screen.findByRole('button', { name: 'sign in' }))
+
+    expect(await screen.findByText('loading')).toBeInTheDocument()
+    expect(oidc.signinRedirect).toHaveBeenLastCalledWith({
+      state: { version: 1, intent: 'SIGN_IN', returnTo: '/' },
     })
   })
 

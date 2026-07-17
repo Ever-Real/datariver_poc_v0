@@ -211,6 +211,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, [hydrate, manager, renewAccessToken])
 
   const beginRedirect = useCallback(async (intent: AuthIntent) => {
+    // An explicit user action must visibly leave the custom login surface at
+    // once.  The browser navigation is performed by oidc-client-ts; if it
+    // rejects synchronously, restore the same custom surface with guidance.
+    setLoading(true)
+    setNotice(undefined)
     try {
       const highAssuranceAcr = String(import.meta.env.VITE_OIDC_HIGH_ASSURANCE_ACR || '')
       const passwordReauthAcr = String(import.meta.env.VITE_OIDC_PASSWORD_REAUTH_ACR || '')
@@ -219,6 +224,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         passwordReauthAcr,
       }))
     } catch (error) {
+      if (mounted.current) setLoading(false)
       setNotice({
         kind: 'ERROR',
         message: error instanceof Error ? error.message : '인증 요청을 시작하지 못했습니다.',

@@ -14,7 +14,10 @@ of materials. The verified multi-platform index digests are recorded in
 The application does not hard-code that release string: every deployment supplies its exact stable
 release through required `DATAHUB_EXPECTED_VERSION`. The `v1.6.0` contract in this repository is the
 current reviewed example. Replacing it requires an explicit reviewed digest contract and deployment
-configuration change; partial versions and prereleases remain invalid in every environment.
+configuration change. A deployment may separately name a numbered same-release RC in
+`DATAHUB_ALLOWED_VERSIONS` for an externally owned operational compatibility window; that exception
+does not change the required stable contract and cannot allow partial versions, mutable tags or a
+different release line.
 
 DataRiver continues not to start, migrate or delete DataHub. It reports a degraded DataHub
 capability when `/config` reports a different version. Production configuration must use enforcement

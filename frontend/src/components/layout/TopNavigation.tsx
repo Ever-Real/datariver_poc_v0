@@ -15,6 +15,7 @@ interface TopNavigationProps {
   workspace: string
   deploymentTier: 'SINGLE_NODE_PILOT' | 'HA_CANDIDATE' | 'HA_ACCEPTED'
   displayName: string
+  email?: string
   adminMenuItems: AdminMenuItem[]
   adminContextStatus?: AdminContextStatus
   externalSystemLinks: ExternalSystemLink[]
@@ -33,6 +34,7 @@ export function TopNavigation({
   workspace,
   deploymentTier,
   displayName,
+  email,
   adminMenuItems,
   adminContextStatus,
   externalSystemLinks,
@@ -77,6 +79,7 @@ export function TopNavigation({
         workspace={workspace}
         deploymentTier={deploymentTier}
         adminMenuItems={adminMenuItems}
+        email={email}
         adminContextStatus={adminContextStatus}
         onAdmin={onNavigateAdmin}
         onWorkspaceChange={onWorkspaceChange}
