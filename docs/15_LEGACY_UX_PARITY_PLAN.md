@@ -83,6 +83,61 @@ Status values are `READY` (parity accepted), `PARTIAL` (a governed v1 contract o
 
 `BLOCKED` means the browser must render a useful unavailable state until the deployment capability is supplied. It does not permit a hard-coded local endpoint.
 
+## v0.3 source-level page and control checklist (2026-07-17)
+
+This is the implementation audit for the read-only reference at
+`../datariver_v0_3/src/frontend/src`. It covers every route registered in
+the legacy `App.tsx`, plus the visible GNB/Profile dropdown and their nested
+controls. `PRESENT` means that a safe v1 replacement is actually available;
+it does **not** claim authenticated browser acceptance. `UNAVAILABLE` is an
+intentional, explained v1 state rather than a dead menu or mock panel;
+`UNSAFE_NOT_PORTED` marks a prohibited legacy mechanism.
+
+| Legacy route / source surface | Controls observed in v0.3 | v1 disposition and current evidence | Status |
+|---|---|---|---|
+| `/login` `LoginPage` | Browser username/password form and local token creation | v1 uses the organization OIDC authorization-code + PKCE flow. The local password/token implementation is not retained. | PRESENT (safe substitution) |
+| Common GNB and `ProfileDropdown` | Primary menus, global suggestion search, external system icons, profile, admin links, logout | `AppShell` keeps the navigation/search/profile interaction. External links come only from `/capabilities`; profile controls expose in-memory Workspace selection, security-key enrollment, reauthentication and OIDC logout. Admin items come only from `/admin/me`, never a client `role` field. | PARTIAL |
+| `FloatingChatWidget` | Global shortcut that opens a Chat surface from every protected page | v1 keeps a first-class Chat navigation item. A floating launcher is deferred until it can preserve typed Chat session/evidence state without a client-side bypass. | PARTIAL |
+| `/` `DashboardPage` | Date filters, asset/quality cards, expandable platform list, governance shortcut, audit summary | `DashboardPage` uses the governed operations summary and an honest WORM/approval lock. Legacy aggregate cards/date filters require same-ABAC read models before they may be restored. | PARTIAL |
+| `/search` `SearchPage` | Query/suggestions, advanced filters, tree, dense sortable table, paging, Excel, detail/columns, lineage, URN copy, DataHub iframe | `CatalogPage` has typed search, facets, tree, details, bounded lineage, and governed export capability. The facet PostgreSQL union uses a common textual value type. DataHub is an opaque allowlisted descriptor, not a raw URL; full URL state and worker deployment evidence remain open. | PARTIAL |
+| `/ingestion` `IngestionPage` | Manual table/column edit, CSV selection/template, preview paging, version/save and Airflow trigger | `RegistrationPage` provides manual typed description proposals and profile-bounded multipart preparation/evidence. It deliberately has no browser-triggered Airflow command, no client bucket/key, and no direct DataHub write. Candidate correction and candidate-to-CR contracts remain open. | PARTIAL |
+| `/change-management` `ChangeManagementPage` and CR views | System/assignee/status buckets, text/date filters, refresh, new request, list/detail/modals | `GovernancePage` has a typed, authorization-fresh list/detail and guarded transitions/approvals. System/owner grouped totals, urgency/due-date, revision/test and attachment contracts are not yet available, so the old controls are not rendered. | PARTIAL |
+| `/quality` `QualityPage` | Dataset search, rule list, rule create/action controls | `QualityPage` is an explicit unavailable capability because no v1 quality rules/results/issues contract exists. It must not show legacy static results. | UNAVAILABLE |
+| `/monitoring` `MonitoringPage` | Refresh and Grafana iframe/failure panel | `MonitoringPage` is capability-gated. An embedded Grafana view remains blocked until approved origin, SSO and sandbox evidence exist; no localhost iframe is restored. | BLOCKED |
+| `/governance` `GovernancePage` | Document TOC, text/visual tabs, in-place edit | `PolicyGovernancePage` is an explicit unavailable state until immutable document versions, maker-checker approval and policy authorization are implemented. A non-persistent textarea is intentionally absent. | UNAVAILABLE |
+| `/chat` `LLMChatPage` | Session create/open/rename/delete/favorite, mode tabs, prompt/stop, evidence drawer, asset detail/lineage, retry/copy/feedback | `ChatPage` supplies an evidence-first question flow using authorized citations. Durable sessions/favorites, typed modes, resumable runs, feedback/retry and evidence-detail contracts remain open; raw Cypher is not exposed. | PARTIAL |
+| `/profile` `ProfilePage` | Personal name/email/department edit, password change, DataHub linking, usage panels | v1 delegates identity/profile/password lifecycle to OIDC. The profile menu supports only safe local controls (Workspace, reauth, security key, sign-out); no shadow identity editor or DataHub account linking is presented. | PRESENT (safe substitution) |
+| `/admin/users` `UsersPage`, `UserDetailModal`, `UserFormModal`, `SystemsManagementView` | Search/filter, user create/edit/delete, password field, system assignment | `MembershipAccessAdmin` exposes workspace membership, group/action/scope/clearance change through server validation, assurance, confirmation and audit. Generic identity CRUD/password reset/system mutation has no v1 contract and is not displayed. | PARTIAL |
+| `/admin/dictionary` `DictionaryPage` | Search/scope chips, JSON export, mapping create/edit/delete modal | No governed glossary translation/version/export API exists. The menu is not restored until a typed vocabulary proposal/review contract exists. | UNAVAILABLE |
+| `/admin/audit-logs` `AuditLogsPage` | Metadata audit search/filter/paging/export/detail | v1 writes auditable decisions/evidence but does not expose a scoped human audit-read API. There is no client-side log mock or admin menu entry. | UNAVAILABLE |
+| `/admin/system-audit` `SystemAuditLogsPage` | Security-access log search/filter/paging/export | No separately authorized security-audit read/retention contract exists. It is intentionally not surfaced. | UNAVAILABLE |
+| `/admin/alarm-rules` `AlarmRulesPage` | Rule creation, enable/disable, edit/delete | No notification-rule aggregate, delivery, escalation or audit contract exists. Do not restore the legacy in-memory toggles. | UNAVAILABLE |
+| `/admin/connections` `ConnectionsPage` | Endpoint, ID/secret fields, connection test/save, provider settings | Browser-side endpoint/credential editing is prohibited. v1 offers approved inference-provider profiles under governed administration; infrastructure credentials remain operator-managed secret references. | PRESENT (safe substitution) |
+| `/admin/connections` `admin/SystemSettingsPage` | YAML endpoint/auth-secret editor, ping/save for DataHub/Neo4j/Airflow/Grafana/MinIO/LLM | `SystemSettingsPage` is deliberately not ported. A browser cannot submit arbitrary YAML, URLs or secrets, and no arbitrary SSRF-capable ping route may be added. | UNSAFE_NOT_PORTED |
+| `/knowledge` `KnowledgeDashboard` | Registry/Studio/Chat shortcuts | `KnowledgePage` has graph creation/list and immutable-release vocabulary. The old layout shortcuts can be added only to routes backed by the same release/projection contracts. | PARTIAL |
+| `/knowledge/registry` `RegistryView` | Asset table, row detail/history, JSON edit, create/edit/delete | v1 supports graph/release state but not arbitrary JSON graph save/delete UI. Typed changesets, validation, approval and releases replace raw blob editing. | PARTIAL |
+| `/knowledge/ingest` `IngestionStudio` | DB/file source selector, LLM analysis, visual editor, raw Cypher editor/preview, execute and graph preview | Raw Cypher, filesystem-like source selection and direct Neo4j execution are forbidden. The future replacement is an approved source snapshot plus typed, evidence-linked changeset reviewed before immutable release. | UNSAFE_NOT_PORTED |
+| `/knowledge/chat` `KnowledgeChat` and `QuerySearch` | Asset selector, natural-language query, answer/evidence and displayed/copied Cypher | v1 Chat is permitted only through bounded, authorized query templates and citations. It cannot reveal or execute generated Cypher; GraphRAG evaluation/session contracts remain planned. | PARTIAL |
+
+### Legacy security disposition
+
+The audit also found the following legacy implementation mechanisms. They are
+not merely deferred visual work; they are prohibited replacements.
+
+| Legacy mechanism | Reference locations | v1 rule / verification |
+|---|---|---|
+| Long-lived bearer token in `localStorage` and logout by clearing storage | `contexts/AuthContext.tsx`, `lib/api.ts`, GNB, ingestion, CR and Chat views | OIDC user/token state uses `InMemoryWebStorage`; Workspace is React memory only. `scripts/verify_static.py` rejects `localStorage` anywhere below `frontend/src` and persistent session storage in `AuthProvider`. |
+| Browser-submitted endpoint, ID, secret or YAML; client-controlled connection ping | `ConnectionsPage.tsx`, `admin/SystemSettingsPage.tsx`, `lib/api.ts` | Secrets stay in server/operator-managed references. Provider profile approval is typed and audited; there is no generic endpoint/YAML/secret route. |
+| Client raw Cypher editor/generator and displayed generated Cypher | `knowledge/IngestionStudio.tsx`, `knowledge/QuerySearch.tsx`, `LLMChatPage.tsx` | Browser receives no raw Cypher surface. The planned graph contract accepts typed changesets and uses registered bounded templates only. |
+| Hard-coded or hostname-rewritten localhost links and raw external iframe | GNB, `SearchPage.tsx`, `MonitoringPage.tsx`, knowledge diff view | `/capabilities` supplies redacted, allowlisted links. Safe DataHub embedding uses a server-issued descriptor; Grafana remains unavailable pending deployment evidence. |
+| Client-issued DataHub token / direct external command | `lib/api.ts`, ingestion/search views | The browser never receives provider credentials. DataHub is an ACL-backed anti-corruption dependency and writes proceed through approved worker jobs plus read-back. |
+| Mock CR creation, static quality/audit/alarm data and non-persistent document edits | CR views, quality/audit/alarm/governance pages | A v1 screen requires a typed canonical contract. Otherwise it renders an explained unavailable state and does not invent success, history or authorization. |
+
+Before changing any `PARTIAL`, `UNAVAILABLE`, or `BLOCKED` row to `READY`, add
+the governing API/data contract, negative authorization tests, and an
+authenticated visual/browser acceptance result. Do not restore an omitted menu
+by linking it to a placeholder.
+
 ## Required v1 contract deltas
 
 These contracts are required to reproduce the legacy interaction without reproducing its unsafe data flow:
