@@ -400,6 +400,26 @@ def verify_readiness_contract() -> None:
         raise AssertionError("APISIX healthcheck must verify proxied readiness")
 
 
+def verify_browser_storage_boundary() -> None:
+    frontend_source = ROOT / "frontend" / "src"
+    source_files = tuple(frontend_source.rglob("*.ts")) + tuple(frontend_source.rglob("*.tsx"))
+    local_storage_files = [
+        path.relative_to(ROOT)
+        for path in source_files
+        if "localStorage" in path.read_text(encoding="utf-8")
+    ]
+    if local_storage_files:
+        raise AssertionError(
+            "browser source must not persist security or tenant context in localStorage: "
+            f"{local_storage_files}"
+        )
+    auth_provider = (frontend_source / "auth" / "AuthProvider.tsx").read_text(encoding="utf-8")
+    if "new InMemoryWebStorage()" not in auth_provider:
+        raise AssertionError("OIDC user tokens must use in-memory storage")
+    if "window.sessionStorage" in auth_provider:
+        raise AssertionError("OIDC user tokens must not use sessionStorage")
+
+
 def verify_ci_supply_chain() -> None:
     workflow = (ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
     required = {
@@ -607,6 +627,7 @@ def main() -> None:
     verify_identity_assurance_contract()
     verify_runtime_hardening()
     verify_readiness_contract()
+    verify_browser_storage_boundary()
     verify_ci_supply_chain()
     verify_database_roles()
     verify_architecture_imports()
@@ -616,7 +637,7 @@ def main() -> None:
     print(
         "static verification passed: compose, build context, DataHub release contract, "
         "identity assurance contract, "
-        "runtime hardening/readiness, "
+        "runtime hardening/readiness/browser storage, "
         "CI supply chain, "
         "database roles, architecture, tenant foreign keys, seed, documentation"
     )

@@ -76,6 +76,12 @@ Open `http://localhost:8080`, sign in as `datariver-admin`, and read the generat
 00000000-0000-4000-8000-000000000100
 ```
 
+Workspace context is intentionally held only in the running browser tab, so enter it again after a
+reload or in a new tab. The local administrator is a `security-administrators` member, but the
+profile's administrator entry first requests explicit password reauthentication (`max_age=0`) before
+it shows sensitive administration context; no administrator action is automatically replayed after
+that redirect.
+
 Use **USB 보안키 등록** in the signed-in profile area to enroll a FIDO2 security key. A denied
 high-risk action shows **보안키로 인증** and returns to the same `?page=...` view after Keycloak
 step-up. DataRiver never replays the approval or publish request automatically; review it and click

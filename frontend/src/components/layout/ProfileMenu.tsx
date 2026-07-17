@@ -2,14 +2,17 @@ import { useEffect, useRef, useState, type FormEvent } from 'react'
 import { ChevronDown, KeyRound, LogOut, ShieldCheck, UserRound } from 'lucide-react'
 
 export interface AdminMenuItem { id: string; label: string }
+export type AdminContextStatus = 'checking' | 'allowed' | 'denied' | 'reauth_required'
 
 interface ProfileMenuProps {
   displayName: string
   workspace: string
   deploymentTier: 'SINGLE_NODE_PILOT' | 'HA_CANDIDATE' | 'HA_ACCEPTED'
   adminMenuItems: AdminMenuItem[]
+  adminContextStatus?: AdminContextStatus
   onAdmin: (section: string) => void
   onWorkspaceChange: (workspace: string) => void
+  onPasswordReauth?: () => void
   onEnrollSecurityKey: () => void
   onSignOut: () => void
 }
@@ -19,8 +22,10 @@ export function ProfileMenu({
   workspace,
   deploymentTier,
   adminMenuItems,
+  adminContextStatus = 'denied',
   onAdmin,
   onWorkspaceChange,
+  onPasswordReauth,
   onEnrollSecurityKey,
   onSignOut,
 }: ProfileMenuProps) {
@@ -82,10 +87,22 @@ export function ProfileMenu({
             <UserRound size={16} aria-hidden="true" />
             <div><strong title={displayName}>{displayName}</strong><small>조직 계정 · {deploymentTierLabel(deploymentTier)}</small></div>
           </header>
-          <form className="profile-workspace" onSubmit={applyWorkspace}>
-            <label htmlFor="profile-workspace-id">Workspace</label>
-            <div><input id="profile-workspace-id" aria-label="Workspace ID" value={workspaceDraft} onChange={(event) => setWorkspaceDraft(event.target.value)} /><button type="submit">적용</button></div>
-          </form>
+          <section aria-label="프로필 설정">
+            <p>프로필 설정</p>
+            <form className="profile-workspace" onSubmit={applyWorkspace}>
+              <label htmlFor="profile-workspace-id">Workspace</label>
+              <div><input id="profile-workspace-id" aria-label="Workspace ID" value={workspaceDraft} onChange={(event) => setWorkspaceDraft(event.target.value)} /><button type="submit">적용</button></div>
+            </form>
+          </section>
+          {adminContextStatus === 'reauth_required' && onPasswordReauth && (
+            <section aria-label="관리자 인증">
+              <p>관리자 인증</p>
+              <small>관리자 메뉴를 확인하려면 현재 Workspace에 대해 비밀번호 재인증이 필요합니다.</small>
+              <button type="button" role="menuitem" onClick={() => perform(onPasswordReauth)}>
+                <KeyRound size={14} aria-hidden="true" /><span>관리자 재인증</span>
+              </button>
+            </section>
+          )}
           {adminMenuItems.length > 0 && (
             <section aria-label="Administration">
               <p>Administration</p>

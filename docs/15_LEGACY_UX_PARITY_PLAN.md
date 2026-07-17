@@ -58,7 +58,7 @@ Status values are `READY` (parity accepted), `PARTIAL` (a governed v1 contract o
 
 | ID | Area | Required parity outcome | Current status | Acceptance focus |
 |---|---|---|---|---|
-| UX-PAR-001 | Common shell | v0.3-recognizable GNB, page title, compact sizing, profile administration menu | PARTIAL | source/unit complete; authenticated reference-viewport visual snapshot remains open |
+| UX-PAR-001 | Common shell | v0.3-recognizable GNB, page title, compact sizing, profile administration menu | PARTIAL | source/unit complete; profile exposes Workspace/security-key/logout controls, server-derived administrator sections and explicit password-reauth guidance without persisting token or Workspace state. Authenticated reference-viewport visual snapshot remains open |
 | UX-PAR-002 | Global search | debounced authorized suggestions with preview, minimum length, multi-keyword handoff | PARTIAL | stale-cache labelling, no cross-workspace or policy-version leakage |
 | UX-PAR-003 | Catalog layout | left Resource Tree, middle dense result table, filter/facet bar, paging and export | PARTIAL | lazy canonical tree, permission-safe counts, ALL search, cursor paging and disabled-first governed export source/UI are implemented; isolated export-worker runtime, full URL state and visual acceptance remain |
 | UX-PAR-004 | Catalog detail | row accordion with table/column metadata and lineage graph | PARTIAL | fixed-contract detail and bounded authorization-pruned deterministic React lineage graph are implemented; selected-state URL/back-forward and authenticated visual gate remain |

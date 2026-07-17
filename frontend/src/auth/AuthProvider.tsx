@@ -7,7 +7,7 @@ import {
   useState,
   type ReactNode,
 } from 'react'
-import { UserManager, WebStorageStateStore, type User } from 'oidc-client-ts'
+import { InMemoryWebStorage, UserManager, WebStorageStateStore, type User } from 'oidc-client-ts'
 import { readRedirectState, signinRedirectArgs, type AuthIntent } from './redirectState'
 
 export interface AuthNotice {
@@ -37,7 +37,10 @@ function createManager(): UserManager {
     post_logout_redirect_uri: window.location.origin,
     response_type: 'code',
     scope: 'openid profile email',
-    userStore: new WebStorageStateStore({ store: window.sessionStorage }),
+    // Access/refresh tokens and the selected user must not survive in browser
+    // storage. The OIDC library keeps only its separate, short-lived PKCE
+    // transaction state across the redirect.
+    userStore: new WebStorageStateStore({ store: new InMemoryWebStorage() }),
     automaticSilentRenew: false,
     monitorSession: true,
   })

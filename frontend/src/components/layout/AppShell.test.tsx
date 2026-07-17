@@ -128,6 +128,29 @@ describe('application shell contracts', () => {
     expect(onSignOut).toHaveBeenCalledOnce()
   })
 
+  it('offers an explicit password reauthentication entry when the server requires it', () => {
+    const onPasswordReauth = vi.fn()
+    render(
+      <ProfileMenu
+        displayName="Administrator"
+        workspace="workspace-one"
+        deploymentTier="SINGLE_NODE_PILOT"
+        adminMenuItems={[]}
+        adminContextStatus="reauth_required"
+        onAdmin={vi.fn()}
+        onWorkspaceChange={vi.fn()}
+        onPasswordReauth={onPasswordReauth}
+        onEnrollSecurityKey={vi.fn()}
+        onSignOut={vi.fn()}
+      />,
+    )
+
+    fireEvent.click(screen.getByRole('button', { name: 'Administrator 사용자 메뉴' }))
+    expect(screen.getByText(/현재 Workspace에 대해 비밀번호 재인증/)).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('menuitem', { name: '관리자 재인증' }))
+    expect(onPasswordReauth).toHaveBeenCalledOnce()
+  })
+
   it('provides one accessible page heading, description and action area', () => {
     render(
       <PageTitle

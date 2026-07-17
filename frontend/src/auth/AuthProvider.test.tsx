@@ -10,6 +10,12 @@ const oidc = vi.hoisted(() => ({
   signinRedirect: vi.fn(),
   signinRedirectCallback: vi.fn(),
   signoutRedirect: vi.fn(),
+  InMemoryWebStorage: vi.fn(function InMemoryWebStorage() {
+    return {}
+  }),
+  WebStorageStateStore: vi.fn(function WebStorageStateStore() {
+    return {}
+  }),
 }))
 
 vi.mock('oidc-client-ts', () => ({
@@ -27,9 +33,8 @@ vi.mock('oidc-client-ts', () => ({
       signoutRedirect: oidc.signoutRedirect,
     }
   }),
-  WebStorageStateStore: vi.fn(function WebStorageStateStore() {
-    return {}
-  }),
+  InMemoryWebStorage: oidc.InMemoryWebStorage,
+  WebStorageStateStore: oidc.WebStorageStateStore,
 }))
 
 import { AuthProvider, useAuth } from './AuthProvider'
@@ -60,6 +65,8 @@ describe('AuthProvider password reauthentication', () => {
     render(<AuthProvider><Harness /></AuthProvider>)
     fireEvent.click(await screen.findByRole('button', { name: 'password reauth' }))
 
+    expect(oidc.InMemoryWebStorage).toHaveBeenCalledOnce()
+    expect(oidc.WebStorageStateStore).toHaveBeenCalledOnce()
     expect(oidc.signinRedirect).toHaveBeenCalledWith({
       acr_values: 'password-reauth',
       max_age: 0,

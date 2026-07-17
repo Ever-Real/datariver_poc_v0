@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
-import { ApiClient } from './api/client'
+import { ApiClient, remediationKind } from './api/client'
 import type { AdminReadContext, CapabilitiesResponse, ExternalSystemLink } from './api/types'
 import { pageFromLocation, pageUrl, type Page } from './app/navigation'
 import { useAuth } from './auth/AuthProvider'
@@ -23,13 +23,15 @@ export function App() {
   const auth = useAuth()
   const [page, setPage] = useState<Page>(pageFromLocation)
   const [catalogQuery, setCatalogQuery] = useState(() => new URL(window.location.href).searchParams.get('q') ?? '')
-  const [workspace, setWorkspace] = useState(() => window.localStorage.getItem('datariver.workspace') ?? '')
+  // A workspace selects a tenant/RLS boundary. Keep it in-memory so a prior
+  // browser session cannot silently reuse a security context.
+  const [workspace, setWorkspace] = useState('')
   const [externalSystemLinks, setExternalSystemLinks] = useState<ExternalSystemLink[]>([])
   const [deploymentTier, setDeploymentTier] = useState<CapabilitiesResponse['deployment_tier']>('SINGLE_NODE_PILOT')
   const [catalogExportWorkerEnabled, setCatalogExportWorkerEnabled] = useState(false)
   const [adminAccess, setAdminAccess] = useState<{
     workspace: string
-    status: 'checking' | 'allowed' | 'denied'
+    status: 'checking' | 'allowed' | 'denied' | 'reauth_required'
     context?: AdminReadContext
   }>({ workspace: '', status: 'checking' })
   const client = useMemo(() => new ApiClient(
@@ -62,8 +64,12 @@ export function App() {
           context,
         })
       })
-      .catch(() => {
-        if (active) setAdminAccess({ workspace, status: 'denied' })
+      .catch((error: unknown) => {
+        if (!active) return
+        setAdminAccess({
+          workspace,
+          status: remediationKind(error) === 'REAUTH_REQUIRED' ? 'reauth_required' : 'denied',
+        })
       })
     return () => { active = false }
   }, [client, workspace])
@@ -135,7 +141,6 @@ export function App() {
 
   const saveWorkspace = (value: string) => {
     setWorkspace(value)
-    window.localStorage.setItem('datariver.workspace', value)
   }
 
   const currentAdminContext = adminAccess.workspace === workspace && adminAccess.status === 'allowed'
@@ -155,12 +160,14 @@ export function App() {
       deploymentTier={deploymentTier}
       displayName={auth.user.profile.name ?? auth.user.profile.sub}
       adminMenuItems={adminMenuItems}
+      adminContextStatus={currentAdminStatus}
       externalSystemLinks={externalSystemLinks}
       notice={auth.notice}
       onNavigate={navigate}
       onNavigateAdmin={navigateAdmin}
       onSearch={searchCatalog}
       onWorkspaceChange={saveWorkspace}
+      onPasswordReauth={() => void auth.beginPasswordReauth()}
       onEnrollSecurityKey={() => void auth.beginWebAuthnEnrollment()}
       onSignOut={() => void auth.signOut()}
       onClearNotice={auth.clearNotice}
@@ -181,7 +188,14 @@ export function App() {
           icon="AD"
           eyebrow="Governed administration"
           title="관리자 권한 확인"
-          description={currentAdminStatus === 'checking' ? '서버에서 현재 Workspace의 관리 권한을 확인하고 있습니다.' : '현재 사용자에게 노출 가능한 관리자 기능이 없습니다.'}
+          description={currentAdminStatus === 'checking'
+            ? '서버에서 현재 Workspace의 관리 권한을 확인하고 있습니다.'
+            : currentAdminStatus === 'reauth_required'
+              ? '로컬 관리자 멤버십은 확인되었지만, 민감한 관리 컨텍스트를 표시하려면 최근 비밀번호 재인증이 필요합니다. 재인증 후 작업은 자동으로 실행되지 않습니다.'
+              : '현재 사용자에게 노출 가능한 관리자 기능이 없습니다.'}
+          actions={currentAdminStatus === 'reauth_required'
+            ? <button className="button" type="button" onClick={() => void auth.beginPasswordReauth()}>관리자 재인증</button>
+            : undefined}
         />
       )}
     </AppShell>

@@ -241,6 +241,9 @@ unless `ADMIN_PASSWORD_FALLBACK_ENABLED=true`; disabled requests return only the
 Administrator read contracts reuse the fallback `READ` assurance policy but do not require the
 fallback feature to be enabled, so the hardware-key direct path can safely load the exact current
 document. Ordinary password, OTP and service identities are denied before membership data is read.
+An ordinary local LoA-1 login therefore receives a bounded `REAUTH_REQUIRED` remediation rather
+than administrator data; the browser must offer an explicit `max_age=0` password-reauthentication
+redirect and must not retry or replay an administrator command automatically after return.
 The list returns summaries only; a client must fetch the detail immediately before editing and use
 its quoted version for `If-Match`. Unknown stored action/scope values fail closed instead of being
 silently omitted. `allowed_operations` in `/admin/me` reflects the current token assurance, fallback

@@ -4,7 +4,7 @@ import type { ExternalSystemLink } from '../../api/types'
 import type { ApiClient } from '../../api/client'
 import type { Page } from '../../app/navigation'
 import { TopNavigation } from './TopNavigation'
-import type { AdminMenuItem } from './ProfileMenu'
+import type { AdminContextStatus, AdminMenuItem } from './ProfileMenu'
 
 interface AppShellProps {
   page: Page
@@ -13,6 +13,7 @@ interface AppShellProps {
   deploymentTier?: 'SINGLE_NODE_PILOT' | 'HA_CANDIDATE' | 'HA_ACCEPTED'
   displayName: string
   adminMenuItems: AdminMenuItem[]
+  adminContextStatus?: AdminContextStatus
   externalSystemLinks: ExternalSystemLink[]
   notice?: AuthNotice
   children: ReactNode
@@ -20,6 +21,7 @@ interface AppShellProps {
   onNavigateAdmin: (section: string) => void
   onSearch: (query: string) => void
   onWorkspaceChange: (workspace: string) => void
+  onPasswordReauth?: () => void
   onEnrollSecurityKey: () => void
   onSignOut: () => void
   onClearNotice: () => void
@@ -32,6 +34,7 @@ export function AppShell({
   deploymentTier = 'SINGLE_NODE_PILOT',
   displayName,
   adminMenuItems,
+  adminContextStatus,
   externalSystemLinks,
   notice,
   children,
@@ -39,6 +42,7 @@ export function AppShell({
   onNavigateAdmin,
   onSearch,
   onWorkspaceChange,
+  onPasswordReauth,
   onEnrollSecurityKey,
   onSignOut,
   onClearNotice,
@@ -53,11 +57,13 @@ export function AppShell({
         deploymentTier={deploymentTier}
         displayName={displayName}
         adminMenuItems={adminMenuItems}
+        adminContextStatus={adminContextStatus}
         externalSystemLinks={externalSystemLinks}
         onNavigate={onNavigate}
         onNavigateAdmin={onNavigateAdmin}
         onSearch={onSearch}
         onWorkspaceChange={onWorkspaceChange}
+        onPasswordReauth={onPasswordReauth}
         onEnrollSecurityKey={onEnrollSecurityKey}
         onSignOut={onSignOut}
       />

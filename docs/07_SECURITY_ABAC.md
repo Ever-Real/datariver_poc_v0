@@ -20,9 +20,12 @@ Untrusted inputs include browser/API payloads, OIDC claims before verification, 
   eligible human checker, a five-minute expiry, canonical payload confirmation and one-time consume.
   At least two eligible human security administrators must remain; service accounts, OTP and
   ordinary password assurance are ineligible.
-- The browser stores only a versioned authentication intent and a same-origin relative return path.
-  It never stores a mutation body, idempotency key or executable callback in OIDC state, and never
-  replays an approval/publish operation after WebAuthn. Backend authorization remains authoritative.
+- The browser keeps the OIDC user/token object and the selected Workspace only in memory: neither
+  `localStorage` nor `sessionStorage` holds a bearer token, refresh token or tenant/RLS context.
+  Only the OIDC library's short-lived PKCE transaction state carries a versioned authentication
+  intent and same-origin relative return path across a redirect. It never carries a mutation body,
+  idempotency key or executable callback, and approval/publish operations are never replayed after
+  WebAuthn. Backend authorization remains authoritative.
 
 ## ABAC vocabulary
 
@@ -84,7 +87,8 @@ the API never reveals the failing ordinal or falls back to DataHub/object storag
 ## API and browser controls
 
 - Strict CORS allowlist; never wildcard with credentials.
-- Secure, HttpOnly, SameSite cookies only if a BFF session is used; otherwise short-lived bearer tokens stay in memory.
+- Secure, HttpOnly, SameSite cookies only if a BFF session is used; otherwise short-lived bearer
+  tokens stay in memory and a refresh/new-tab requires the normal OIDC session journey.
 - CSRF protection for cookie-authenticated mutations.
 - Request/body/file limits, rate limits by subject/workspace/product, and bounded decompression.
 - Security headers: CSP, frame ancestors, nosniff, referrer policy, HSTS at TLS edge.

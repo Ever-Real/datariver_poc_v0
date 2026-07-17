@@ -6,7 +6,7 @@ import type { ApiClient } from '../../api/client'
 import { primaryNavigation } from '../../app/navigation'
 import { GlobalCatalogSearch } from './GlobalCatalogSearch'
 import { ExternalSystemLinks } from './ExternalSystemLinks'
-import { ProfileMenu, type AdminMenuItem } from './ProfileMenu'
+import { ProfileMenu, type AdminContextStatus, type AdminMenuItem } from './ProfileMenu'
 import { DataRiverMark } from './DataRiverMark'
 
 interface TopNavigationProps {
@@ -16,11 +16,13 @@ interface TopNavigationProps {
   deploymentTier: 'SINGLE_NODE_PILOT' | 'HA_CANDIDATE' | 'HA_ACCEPTED'
   displayName: string
   adminMenuItems: AdminMenuItem[]
+  adminContextStatus?: AdminContextStatus
   externalSystemLinks: ExternalSystemLink[]
   onNavigate: (page: Page) => void
   onNavigateAdmin: (section: string) => void
   onSearch: (query: string) => void
   onWorkspaceChange: (workspace: string) => void
+  onPasswordReauth?: () => void
   onEnrollSecurityKey: () => void
   onSignOut: () => void
 }
@@ -32,11 +34,13 @@ export function TopNavigation({
   deploymentTier,
   displayName,
   adminMenuItems,
+  adminContextStatus,
   externalSystemLinks,
   onNavigate,
   onNavigateAdmin,
   onSearch,
   onWorkspaceChange,
+  onPasswordReauth,
   onEnrollSecurityKey,
   onSignOut,
 }: TopNavigationProps) {
@@ -73,8 +77,10 @@ export function TopNavigation({
         workspace={workspace}
         deploymentTier={deploymentTier}
         adminMenuItems={adminMenuItems}
+        adminContextStatus={adminContextStatus}
         onAdmin={onNavigateAdmin}
         onWorkspaceChange={onWorkspaceChange}
+        onPasswordReauth={onPasswordReauth}
         onEnrollSecurityKey={onEnrollSecurityKey}
         onSignOut={onSignOut}
       />
