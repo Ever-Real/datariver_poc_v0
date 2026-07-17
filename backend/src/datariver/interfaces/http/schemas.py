@@ -981,11 +981,25 @@ class ChatQueryResponse(BaseModel):
     evidence: list[ChatEvidenceResponse]
 
 
+class CatalogSchemaMetricResponse(BaseModel):
+    """Current typed DataHub projection coverage for one source hierarchy branch."""
+
+    platform: str | None
+    database_name: str | None
+    schema_name: str | None
+    asset_count: int
+    described_asset_count: int
+
+
 class OperationsSummaryResponse(BaseModel):
     observed_at: datetime
     jobs_by_state: dict[str, int]
     uploads_by_state: dict[str, int]
     changes_by_state: dict[str, int]
+    catalog_asset_count: int
+    catalog_described_asset_count: int
+    catalog_schema_metrics: list[CatalogSchemaMetricResponse]
+    catalog_schema_metrics_truncated: bool
     unpublished_outbox_events: int
     dead_lettered_outbox_events: int
     oldest_unpublished_age_seconds: int | None

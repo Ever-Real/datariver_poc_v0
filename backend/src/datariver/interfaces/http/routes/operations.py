@@ -4,13 +4,14 @@ from datetime import UTC, datetime
 from uuid import UUID
 
 from fastapi import APIRouter, Request, Response
-from sqlalchemy import func, select
+from sqlalchemy import case, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import InstrumentedAttribute
 
 from datariver.application.services.authorization import AuthorizationService
 from datariver.domain.authz import Action, Classification, ResourceAttributes
 from datariver.infrastructure.db.authz import SqlDecisionWriter
+from datariver.infrastructure.db.models.catalog import AssetProjectionModel
 from datariver.infrastructure.db.models.governance import ChangeRequestModel
 from datariver.infrastructure.db.models.integration import (
     JobModel,
@@ -18,7 +19,10 @@ from datariver.infrastructure.db.models.integration import (
     OutboxEventModel,
 )
 from datariver.interfaces.http.dependencies import ContextDep, SessionDep, get_container
-from datariver.interfaces.http.schemas import OperationsSummaryResponse
+from datariver.interfaces.http.schemas import (
+    CatalogSchemaMetricResponse,
+    OperationsSummaryResponse,
+)
 
 router = APIRouter(prefix="/operations", tags=["operations"])
 
@@ -59,6 +63,80 @@ async def _state_counts(
     return {str(name): int(count) for name, count in rows}
 
 
+async def _catalog_coverage(
+    session: AsyncSession,
+    workspace_id: UUID,
+) -> tuple[int, int, list[CatalogSchemaMetricResponse], bool]:
+    """Return bounded, source-derived dashboard coverage without provider calls.
+
+    The operations dashboard is authorized independently from catalog discovery.
+    It therefore reports workspace-level projection aggregates only, never asset
+    names, URNs, classifications, tags, glossary terms, or DataHub documents.
+    """
+
+    description_present = func.nullif(func.btrim(AssetProjectionModel.description), "").is_not(None)
+    scope = (
+        AssetProjectionModel.workspace_id == workspace_id,
+        AssetProjectionModel.deleted_at.is_(None),
+    )
+    asset_count, described_asset_count = (
+        await session.execute(
+            select(
+                func.count(AssetProjectionModel.id),
+                func.coalesce(
+                    func.sum(case((description_present, 1), else_=0)),
+                    0,
+                ),
+            ).where(*scope)
+        )
+    ).one()
+    # A dashboard is not an unbounded hierarchy browser.  The extra row makes
+    # truncation explicit instead of silently presenting a partial result.
+    metric_rows = (
+        await session.execute(
+            select(
+                AssetProjectionModel.platform,
+                AssetProjectionModel.database_name,
+                AssetProjectionModel.schema_name,
+                func.count(AssetProjectionModel.id),
+                func.coalesce(
+                    func.sum(case((description_present, 1), else_=0)),
+                    0,
+                ),
+            )
+            .where(*scope)
+            .group_by(
+                AssetProjectionModel.platform,
+                AssetProjectionModel.database_name,
+                AssetProjectionModel.schema_name,
+            )
+            .order_by(
+                func.count(AssetProjectionModel.id).desc(),
+                AssetProjectionModel.platform.asc().nulls_last(),
+                AssetProjectionModel.database_name.asc().nulls_last(),
+                AssetProjectionModel.schema_name.asc().nulls_last(),
+            )
+            .limit(201)
+        )
+    ).all()
+    truncated = len(metric_rows) > 200
+    return (
+        int(asset_count),
+        int(described_asset_count),
+        [
+            CatalogSchemaMetricResponse(
+                platform=platform,
+                database_name=database_name,
+                schema_name=schema_name,
+                asset_count=int(count),
+                described_asset_count=int(descriptions),
+            )
+            for platform, database_name, schema_name, count, descriptions in metric_rows[:200]
+        ],
+        truncated,
+    )
+
+
 @router.get("/summary", response_model=OperationsSummaryResponse)
 async def summary(
     request: Request,
@@ -82,6 +160,12 @@ async def summary(
             OutboxEventModel.dead_lettered_at.is_not(None),
         )
     )
+    (
+        catalog_asset_count,
+        catalog_described_asset_count,
+        catalog_schema_metrics,
+        catalog_schema_metrics_truncated,
+    ) = await _catalog_coverage(session, context.workspace_id)
     return OperationsSummaryResponse(
         observed_at=observed_at,
         jobs_by_state=await _state_counts(
@@ -99,6 +183,10 @@ async def summary(
             ChangeRequestModel.workspace_id,
             context.workspace_id,
         ),
+        catalog_asset_count=catalog_asset_count,
+        catalog_described_asset_count=catalog_described_asset_count,
+        catalog_schema_metrics=catalog_schema_metrics,
+        catalog_schema_metrics_truncated=catalog_schema_metrics_truncated,
         unpublished_outbox_events=int(outbox_count),
         dead_lettered_outbox_events=int(dead_letter_count or 0),
         oldest_unpublished_age_seconds=(

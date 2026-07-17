@@ -36,10 +36,22 @@ export interface OperationsSummary {
   jobs_by_state: Record<string, number>
   uploads_by_state: Record<string, number>
   changes_by_state: Record<string, number>
+  catalog_asset_count: number
+  catalog_described_asset_count: number
+  catalog_schema_metrics: CatalogSchemaMetric[]
+  catalog_schema_metrics_truncated: boolean
   unpublished_outbox_events: number
   dead_lettered_outbox_events: number
   oldest_unpublished_age_seconds?: number
   retention_automation_state: 'DISABLED_NOT_READY'
+}
+
+export interface CatalogSchemaMetric {
+  platform?: string
+  database_name?: string
+  schema_name?: string
+  asset_count: number
+  described_asset_count: number
 }
 
 export interface CatalogAsset {
