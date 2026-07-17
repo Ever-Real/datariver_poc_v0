@@ -54,7 +54,9 @@ Generated OpenAPI at `/api/v1/openapi.json` is authoritative for implemented pay
 
 Search, facet and suggestion metadata identifies the built-in policy version, governed classification
 policy version, authorization generation and committed local `projection_version`. The latter is not a
-DataHub source cursor or proof that a full reconciliation completed. Facet/suggestion `observed_at` is
+DataHub source cursor or proof that a full reconciliation completed. Facet values are textual at the
+HTTP boundary: `classification` uses its enum name, as do `asset_type` and `platform` values. This
+also keeps PostgreSQL `UNION ALL` aggregation type-consistent. Facet/suggestion `observed_at` is
 nullable when no authorized row contributes a source observation.
 
 The ordinary MANUAL description contract accepts only `{description}` for preview and

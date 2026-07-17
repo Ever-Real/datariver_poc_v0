@@ -9,7 +9,7 @@ from datetime import UTC, datetime, timedelta
 from typing import Any
 from uuid import NAMESPACE_URL, UUID, uuid5
 
-from sqlalchemy import and_, false, func, literal, or_, select, union_all, update
+from sqlalchemy import String, and_, cast, false, func, literal, or_, select, union_all, update
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -382,7 +382,12 @@ class SqlCatalogIndexReader(CatalogIndexReader):
             statements.append(
                 select(
                     literal(facet).label("facet"),
-                    column.label("value"),
+                    # PostgreSQL requires a common type for every UNION column.  The
+                    # public facet DTO is textual (classification is rendered as its
+                    # enum name below), so normalize every grouped value at the SQL
+                    # boundary instead of allowing an integer classification branch
+                    # to be unioned with asset/platform strings.
+                    cast(column, String).label("value"),
                     func.count(AssetProjectionModel.id).label("count"),
                     func.max(AssetProjectionModel.observed_at).label("observed_at"),
                 )
