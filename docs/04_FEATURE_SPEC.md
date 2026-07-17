@@ -10,6 +10,12 @@ The shared shell follows the controlled v0.3 parity contract: 56-pixel navy GNB;
 
 - Literal multi-term search uses explicit ALL semantics across full text, name and description; `%`, `_` and backslash remain data rather than wildcard syntax. Domains, platforms, owners, tags, glossary terms, certification, quality, freshness, classification and lifecycle are the target filter set; the current facade exposes asset type, platform, classification and lifecycle.
 - Cursor pagination with server-enforced ABAC before enrichment.
+- An active human security administrator with `RESTRICTED` clearance and explicit
+  `catalog.search`, `catalog.read` and `admin.manage` grants may use the audited ADR-0020 review
+  scope to discover non-deleted quarantined projections in the current workspace for classification
+  remediation. Ordinary users retain the normal lifecycle/classification scope. This read-only
+  scope does not include export, Chat, attachment, arbitrary provider or mutation access; the
+  existing typed DataHub metadata enrichment for catalog detail remains available.
 - The Resource Tree lazily pages canonical `platform -> database -> schema -> asset` branches. Hierarchy is projected only from typed source containers and is never inferred by splitting an external URN.
 - Detail includes canonical URN, description, schema, ownership, glossary, quality, freshness, lineage and explicit `observed_at`/`stale_at`. Current detail exposes the fixed-contract schema/ownership/glossary/quality fields returned by DataHub and bounded depth-1..3 lineage.
 - Lineage candidate nodes and every intermediary are set-filtered through the same workspace/classification/scope authorization. A hidden intermediary truncates the path; visible endpoints are never reconnected across it.

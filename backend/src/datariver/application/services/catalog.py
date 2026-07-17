@@ -423,6 +423,7 @@ class CatalogService:
         access = await self._resolve_classification_access(
             subject=subject,
             now=environment.requested_at,
+            request_id=request_id,
         )
         authorized = await self._index.get_authorized_asset(
             subject=subject,
@@ -431,22 +432,23 @@ class CatalogService:
         )
         if authorized is None:
             return None
-        await self._authorization.authorize(
-            subject=subject,
-            resource=ResourceAttributes(
-                resource_id=authorized.index.asset_id,
-                workspace_id=authorized.index.workspace_id,
-                resource_type="catalog_asset",
-                owner_department_id=authorized.index.owner_department_id,
-                system_id=authorized.index.system_id,
-                domain_id=authorized.index.domain_id,
-                classification=authorized.index.classification,
-                lifecycle=authorized.index.lifecycle,
-            ),
-            action=Action.CATALOG_READ,
-            environment=environment,
-            request_id=request_id,
-        )
+        if not access.admin_quarantine_review:
+            await self._authorization.authorize(
+                subject=subject,
+                resource=ResourceAttributes(
+                    resource_id=authorized.index.asset_id,
+                    workspace_id=authorized.index.workspace_id,
+                    resource_type="catalog_asset",
+                    owner_department_id=authorized.index.owner_department_id,
+                    system_id=authorized.index.system_id,
+                    domain_id=authorized.index.domain_id,
+                    classification=authorized.index.classification,
+                    lifecycle=authorized.index.lifecycle,
+                ),
+                action=Action.CATALOG_READ,
+                environment=environment,
+                request_id=request_id,
+            )
         permission_scope_hash = self._permission_scope_hash(subject)
         key_document = {
             "workspace": str(subject.workspace_id),
@@ -545,7 +547,9 @@ class CatalogService:
         if not 1 <= depth <= 3:
             raise ValidationError("Lineage depth must be between one and three.")
         access = await self._resolve_classification_access(
-            subject=subject, now=environment.requested_at
+            subject=subject,
+            now=environment.requested_at,
+            request_id=request_id,
         )
         center = await self._index.get_authorized_asset(
             subject=subject, access=access, asset_id=asset_id
@@ -824,6 +828,7 @@ class CatalogService:
         access = await self._resolve_classification_access(
             subject=subject,
             now=environment.requested_at,
+            request_id=request_id,
         )
         watermark = await self._watermark.get_search_watermark(workspace_id=subject.workspace_id)
         return normalized_query, access, watermark
@@ -833,14 +838,25 @@ class CatalogService:
         *,
         subject: SubjectAttributes,
         now: datetime,
+        request_id: str,
     ) -> ClassificationAccessSnapshot:
         if self._classification_access is None:
-            return static_classification_access_floor()
-        return await self._classification_access.resolve(
-            workspace_id=subject.workspace_id,
-            subject_id=subject.subject_id,
-            now=now,
-        )
+            access = static_classification_access_floor()
+        else:
+            access = await self._classification_access.resolve(
+                workspace_id=subject.workspace_id,
+                subject_id=subject.subject_id,
+                now=now,
+            )
+        if "security-administrators" not in subject.groups:
+            return access
+        if await self._authorization.can_review_quarantined_catalog(
+            subject=subject,
+            environment=EnvironmentAttributes(requested_at=now),
+            request_id=request_id,
+        ):
+            return replace(access, admin_quarantine_review=True)
+        return access
 
     @staticmethod
     def _classification_access_document(

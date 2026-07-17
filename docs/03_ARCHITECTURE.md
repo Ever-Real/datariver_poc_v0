@@ -171,6 +171,13 @@ Graph types are `CATALOG_MIRROR`, `CURATED_KNOWLEDGE`, and `ANALYTIC_PRODUCT`. O
 
 Filtering a DataHub page after retrieval leaks counts, pagination, and asset existence. A local `catalog.assets_projection` therefore stores searchable/base-detail metadata and security attributes. The API calculates the permitted asset set before DataHub enrichment. Literal search is normalized/escaped and backed by FTS/trigram/active-scope indexes. Search cache keys bind workspace, permission scope, policy version and projection watermark. Chat uses the same permitted set before retrieval; candidate decisions are grouped into request-level audit evidence, and citations include version and source locator.
 
+ADR-0020 adds one deliberately narrow remediation view: after a durable human-security-administrator
+decision, the local catalog reader may enumerate non-deleted quarantined projections in that same
+workspace so those real DataHub assets can be classified. The decision bit is part of the cache and
+cursor security scope. It never reaches export, Chat, attachment, provider, mutation or
+cross-workspace paths, except for the existing typed DataHub metadata enrichment of its catalog
+detail, and does not make DataHub a canonical authorization authority.
+
 The optional DataHub lineage frame is not a generic external-URL feature. It is disabled by default;
 after a local authorized asset lookup, the API alone constructs the configured exact-origin lineage
 URL. CSP permits only that origin, the browser sends an opaque asset ID rather than a URN and the

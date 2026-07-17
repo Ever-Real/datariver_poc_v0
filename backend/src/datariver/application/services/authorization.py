@@ -10,6 +10,7 @@ from datariver.domain.authz import (
     Action,
     AuthenticationAssurance,
     BuiltinPolicyEngine,
+    Classification,
     Decision,
     EnvironmentAttributes,
     ResourceAttributes,
@@ -86,6 +87,52 @@ class AuthorizationService:
                 details=details,
             )
         return decision
+
+    async def can_review_quarantined_catalog(
+        self,
+        *,
+        subject: SubjectAttributes,
+        environment: EnvironmentAttributes,
+        request_id: str,
+    ) -> bool:
+        """Return the narrowly-scoped admin review decision without denying ordinary catalog reads.
+
+        This is deliberately separate from generic catalog ABAC: it permits a human security
+        administrator to inspect DataHub projections that are awaiting classification, while
+        preserving normal lifecycle/classification filtering for every other subject and surface.
+        """
+        del environment
+        reasons: list[str] = []
+        if not subject.active:
+            reasons.append("SUBJECT_INACTIVE")
+        if "security-administrators" not in subject.groups:
+            reasons.append("SECURITY_ADMINISTRATOR_REQUIRED")
+        if "service-accounts" in subject.groups or subject.job_function == "SERVICE_ACCOUNT":
+            reasons.append("HUMAN_ADMINISTRATOR_REQUIRED")
+        for action in (Action.CATALOG_SEARCH, Action.CATALOG_READ, Action.ADMIN_MANAGE):
+            if action in subject.denied_actions:
+                reasons.append("EXPLICIT_ACTION_DENY")
+            elif action not in subject.allowed_actions:
+                reasons.append("ACTION_NOT_GRANTED")
+        if subject.clearance < Classification.RESTRICTED:
+            reasons.append("CLEARANCE_INSUFFICIENT")
+        decision = Decision(
+            decision_id=uuid7(),
+            effect=Effect.DENY if reasons else Effect.ALLOW,
+            reason_codes=tuple(reasons or ["POLICY_ALLOW"]),
+            policy_versions=("builtin-admin-quarantine-review-v1",),
+            authentication_assurance=subject.authentication_assurance,
+            authentication_time=subject.authentication_time,
+        )
+        await self._decision_writer.append_decision(
+            decision=decision,
+            subject_id=subject.subject_id,
+            workspace_id=subject.workspace_id,
+            resource_id=subject.workspace_id,
+            action=Action.CATALOG_QUARANTINE_READ.value,
+            request_id=request_id,
+        )
+        return decision.allowed
 
     async def authorize_admin_fallback(
         self,

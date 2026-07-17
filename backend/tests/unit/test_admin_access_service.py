@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Callable, Sequence
 from copy import deepcopy
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from types import TracebackType
 from typing import Self, cast
@@ -288,6 +289,55 @@ def _service(state: dict[str, object], *, enabled: bool = True) -> AdminAccessSe
         fallback_enabled=enabled,
         fallback_ttl_seconds=300,
     )
+
+
+@pytest.mark.asyncio
+async def test_quarantined_catalog_review_is_human_admin_only_and_audited() -> None:
+    workspace_id, administrator_id = uuid4(), uuid4()
+    now = datetime.now(UTC)
+    decision_writer = MemoryDecisionWriter()
+    authorization = AuthorizationService(decision_writer=decision_writer)
+    administrator = _administrator(
+        workspace_id,
+        administrator_id,
+        assurance=AuthenticationAssurance.PASSWORD,
+        now=now,
+        allowed_actions=frozenset(
+            {Action.CATALOG_SEARCH, Action.CATALOG_READ, Action.ADMIN_MANAGE}
+        ),
+    )
+
+    assert await authorization.can_review_quarantined_catalog(
+        subject=administrator,
+        environment=EnvironmentAttributes(requested_at=now),
+        request_id="quarantine-review-allow",
+    )
+    action, decision = decision_writer.decisions[-1]
+    assert action == Action.CATALOG_QUARANTINE_READ.value
+    assert decision.allowed is True
+
+    service_identity = replace(
+        administrator,
+        groups=frozenset({"security-administrators", "service-accounts"}),
+        job_function="SERVICE_ACCOUNT",
+    )
+    assert not await authorization.can_review_quarantined_catalog(
+        subject=service_identity,
+        environment=EnvironmentAttributes(requested_at=now),
+        request_id="quarantine-review-service-account",
+    )
+    assert "HUMAN_ADMINISTRATOR_REQUIRED" in decision_writer.decisions[-1][1].reason_codes
+
+    explicitly_denied = replace(
+        administrator,
+        denied_actions=frozenset({Action.CATALOG_SEARCH}),
+    )
+    assert not await authorization.can_review_quarantined_catalog(
+        subject=explicitly_denied,
+        environment=EnvironmentAttributes(requested_at=now),
+        request_id="quarantine-review-explicit-deny",
+    )
+    assert "EXPLICIT_ACTION_DENY" in decision_writer.decisions[-1][1].reason_codes
 
 
 @pytest.mark.parametrize(

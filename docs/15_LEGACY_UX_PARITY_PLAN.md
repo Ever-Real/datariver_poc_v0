@@ -52,6 +52,43 @@ Visual similarity never permits an invented success state. A disabled action mus
 | Client-side Excel export | Export is generated from a fresh, server-authorized result scope and requires the export capability; it cannot infer access from visible rows. |
 | Production mock or cached fallback | No mock fallback. A bounded stale response carries its source version, observation time, and stale reason. |
 
+## Enterprise integration directive — ordered delivery (2026-07-17)
+
+The current delivery objective is **visual and workflow parity with the v0.3 application**, not a
+replacement dashboard or mock-data demonstration. Every legacy route, menu, title box, dense grid,
+dialog, accordion and empty/loading/error state must remain recognizable at its v0.3 location while
+its data and commands use the typed v1 API. A provider or contract gap is never an excuse to remove
+the surrounding v0.3 screen: the visible control must show the real unavailable/degraded state and
+must not invent a successful result.
+
+The work is deliberately ordered so that a visual clone is built over real, bounded state rather
+than browser-owned authority:
+
+| Step | Scope | Completion evidence |
+|---|---|---|
+| 0 | This traceability plan, the v0.3 source inventory and architecture/security contracts | each directive requirement has a parity row or an explicit governed backend dependency |
+| 1 | Admin catalog visibility, custom login, Workspace/OIDC hydration and token renewal | human security administrator sees its workspace's quarantined DataHub projection through the real API; ordinary users remain policy-pruned; refresh/retry and reload cases pass |
+| 2 | Common shell and catalog | v0.3 GNB/profile menu/title box, dense Tree/result/detail/lineage layout use live catalog APIs with no mock records |
+| 3 | Registration, CR, knowledge, monitoring, governance and Chat submenus | each legacy control is wired to a typed command/read model, or visibly reports the server's real unavailable/degraded capability without a fabricated outcome |
+| 4 | End-to-end acceptance | administrator and non-administrator browser journeys, API negative cases, reference-viewport comparison and documented deployment gates pass |
+
+### Non-negotiable implementation rules
+
+- Roles, profile and tokens remain server-verified and React-memory-only; the URL may retain a
+  validated Workspace/page selection but never authorization.
+- A `401` is recovered through the OIDC provider's standard refresh/renewal flow and the original
+  idempotent read request is retried once. A failed renewal returns to the existing custom login
+  state without an authentication loop or a fabricated response.
+- The administrator's unclassified/quarantined DataHub projection is a separate, read-only,
+  audit-recorded catalog-review scope. It cannot authorize export, Chat retrieval, arbitrary
+  provider calls, DataHub mutation, attachment access, cross-workspace access or a service account;
+  the existing typed DataHub metadata enrichment remains available for catalog detail.
+- The clone contains no client mock dataset, fake counts, fake workflow success or browser-held
+  provider credential. Visible controls are driven by real API state.
+- Each completed step includes focused tests and a separate commit. UI parity remains incomplete
+  until the administrator and ordinary-user browser acceptance journeys pass at the reference
+  viewports.
+
 ## Screen and capability traceability
 
 Status values are `READY` (parity accepted), `PARTIAL` (a governed v1 contract or first UI exists), `PLANNED`, and `BLOCKED` (requires an external deployment decision or service).
@@ -60,7 +97,7 @@ Status values are `READY` (parity accepted), `PARTIAL` (a governed v1 contract o
 |---|---|---|---|---|
 | UX-PAR-001 | Common shell | v0.3-recognizable GNB, page title, compact sizing, profile administration menu | PARTIAL | source/unit complete; profile exposes URL-restored Workspace selection, security-key/logout controls and server-derived administrator sections. OIDC profile/role state is hydrated from `/auth/me` into React memory; sensitive mutations alone show reauthentication guidance. Authenticated reference-viewport visual snapshot remains open |
 | UX-PAR-002 | Global search | debounced authorized suggestions with preview, minimum length, multi-keyword handoff | PARTIAL | stale-cache labelling, no cross-workspace or policy-version leakage |
-| UX-PAR-003 | Catalog layout | left Resource Tree, middle dense result table, filter/facet bar, paging and export | PARTIAL | lazy canonical tree, permission-safe counts, ALL search, cursor paging and disabled-first governed export source/UI are implemented; isolated export-worker runtime, full URL state and visual acceptance remain |
+| UX-PAR-003 | Catalog layout | left Resource Tree, middle dense result table, filter/facet bar, paging and export | IN PROGRESS | lazy canonical tree, permission-safe counts, ALL search, cursor paging and URL-restored Workspace/page are implemented. Step 1 adds human-admin quarantined-projection visibility through the same API; isolated export-worker runtime and visual acceptance remain |
 | UX-PAR-004 | Catalog detail | row accordion with table/column metadata and lineage graph | PARTIAL | fixed-contract detail and bounded authorization-pruned deterministic React lineage graph are implemented; selected-state URL/back-forward and authenticated visual gate remain |
 | UX-PAR-005 | DataHub lineage | selected lineage node opens an allowlisted sandboxed DataHub view | PARTIAL | opaque asset-ID descriptor, exact-origin configuration, CSP, no-referrer sandbox and new-tab fallback are implemented disabled-first; DataHub identity/frame-header evidence remains external |
 | UX-PAR-006 | Manual registration | tree selection, table/column edit, controlled term/tag selection, delete proposal | PARTIAL | tree/detail plus typed dataset- and existing-column-description live preview/create, empty clear, source drift, server classification and whole-provider-document preservation are implemented; domain/term/tag DTOs, logical naming, other schema mutations and full delete proposal remain |

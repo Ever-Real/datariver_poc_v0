@@ -8,7 +8,10 @@ from uuid import uuid4
 import pytest
 from sqlalchemy import Table
 
-from datariver.application.classification_access import static_classification_access_floor
+from datariver.application.classification_access import (
+    ClassificationAccessSnapshot,
+    static_classification_access_floor,
+)
 from datariver.application.dto import (
     CatalogAssetDetail,
     CatalogAssetIndex,
@@ -34,6 +37,7 @@ from datariver.application.ports import (
 from datariver.application.services.authorization import AuthorizationService
 from datariver.application.services.catalog import CatalogService
 from datariver.domain.authz import (
+    Action,
     BuiltinPolicyEngine,
     Classification,
     EnvironmentAttributes,
@@ -57,14 +61,16 @@ class FakeIndex:
         self.facet_calls = 0
         self.suggestion_calls = 0
         self.tree_calls = 0
+        self.last_search_access: ClassificationAccessSnapshot | None = None
         self.projection_version = 1
         self.lineage_assets: tuple[CatalogAssetIndex, ...] = (detail.index,)
 
     async def get_search_watermark(self, *, workspace_id: object) -> int:
         return self.projection_version
 
-    async def search(self, **_: object) -> CatalogPage:
+    async def search(self, **kwargs: object) -> CatalogPage:
         self.search_calls += 1
+        self.last_search_access = cast(ClassificationAccessSnapshot | None, kwargs.get("access"))
         return CatalogPage(
             items=(self.detail.index,),
             next_cursor=None,
@@ -171,6 +177,19 @@ class AllowAuthorization:
     async def authorize(self, **_: object) -> None:
         return None
 
+    async def can_review_quarantined_catalog(self, **_: object) -> bool:
+        return False
+
+
+class AdminReviewAuthorization(AllowAuthorization):
+    async def can_review_quarantined_catalog(self, **_: object) -> bool:
+        return True
+
+
+class ReviewOnlyAuthorization(AdminReviewAuthorization):
+    async def authorize(self, **_: object) -> None:
+        raise AssertionError("The separate audited review scope must not re-enter generic ABAC.")
+
 
 def test_search_cache_ttl_never_crosses_policy_or_grant_boundary() -> None:
     now = datetime.now(UTC)
@@ -194,6 +213,142 @@ def test_search_cache_ttl_never_crosses_policy_or_grant_boundary() -> None:
         )
         == 0
     )
+
+
+@pytest.mark.asyncio
+async def test_catalog_search_marks_authorized_admin_quarantine_review_scope() -> None:
+    now = datetime.now(UTC)
+    workspace_id, asset_id = uuid4(), uuid4()
+    asset = CatalogAssetIndex(
+        asset_id=asset_id,
+        workspace_id=workspace_id,
+        external_urn="urn:li:dataset:quarantined",
+        asset_type="DATASET",
+        name="unclassified_source",
+        description="Awaiting DataHub classification.",
+        platform="postgres",
+        domain_id=None,
+        system_id=None,
+        owner_department_id=None,
+        classification=Classification.RESTRICTED,
+        lifecycle="QUARANTINED",
+        source_version="projection-v1",
+        observed_at=now,
+    )
+    detail = CatalogAssetDetail(asset, (), (), (), (), {}, "projection-v1", now)
+    index_reader = FakeIndex(detail)
+    service = CatalogService(
+        index=cast(CatalogIndexReader, index_reader),
+        discovery=cast(CatalogDiscoveryReader, index_reader),
+        watermark=cast(CatalogWatermarkReader, index_reader),
+        datahub=cast(
+            DataHubGateway, FakeGateway(DataHubAssetEnrichment((), (), (), (), {}, "v1", now))
+        ),
+        cache=cast(Cache, FakeCache()),
+        authorization=cast(AuthorizationService, AdminReviewAuthorization()),
+        detail_cache_ttl_seconds=60,
+        stale_detail_ttl_seconds=900,
+        search_cache_ttl_seconds=30,
+        minimum_query_length=2,
+        policy_version=BuiltinPolicyEngine.policy_version,
+    )
+    subject = SubjectAttributes(
+        subject_id=uuid4(),
+        workspace_id=workspace_id,
+        active=True,
+        department_id=None,
+        groups=frozenset({"security-administrators"}),
+        job_function="SECURITY_ADMINISTRATOR",
+        clearance=Classification.RESTRICTED,
+        allowed_actions=frozenset(
+            {Action.CATALOG_SEARCH, Action.CATALOG_READ, Action.ADMIN_MANAGE}
+        ),
+    )
+
+    page = await service.search(
+        subject=subject,
+        query="unclassified",
+        filters={},
+        cursor=None,
+        limit=25,
+        environment=EnvironmentAttributes(requested_at=now),
+        request_id="admin-quarantine-search",
+    )
+
+    assert page.items == (asset,)
+    assert index_reader.last_search_access is not None
+    assert index_reader.last_search_access.admin_quarantine_review is True
+
+
+@pytest.mark.asyncio
+async def test_catalog_detail_allows_typed_datahub_enrichment_for_review_scope() -> None:
+    now = datetime.now(UTC)
+    workspace_id, asset_id = uuid4(), uuid4()
+    asset = CatalogAssetIndex(
+        asset_id=asset_id,
+        workspace_id=workspace_id,
+        external_urn="urn:li:dataset:quarantined-detail",
+        asset_type="DATASET",
+        name="unclassified_source",
+        description="Awaiting DataHub classification.",
+        platform="postgres",
+        domain_id=None,
+        system_id=None,
+        owner_department_id=None,
+        classification=Classification.RESTRICTED,
+        lifecycle="QUARANTINED",
+        source_version="projection-v1",
+        observed_at=now,
+    )
+    local_detail = CatalogAssetDetail(asset, (), (), (), (), {}, "projection-v1", now)
+    index_reader = FakeIndex(local_detail)
+    gateway = FakeGateway(
+        DataHubAssetEnrichment(
+            ownership=({"owner": "security-admin"},),
+            glossary_terms=(),
+            tags=(),
+            schema_fields=(),
+            quality={},
+            raw_version="datahub-v1",
+            observed_at=now,
+        )
+    )
+    service = CatalogService(
+        index=cast(CatalogIndexReader, index_reader),
+        discovery=cast(CatalogDiscoveryReader, index_reader),
+        watermark=cast(CatalogWatermarkReader, index_reader),
+        datahub=cast(DataHubGateway, gateway),
+        cache=cast(Cache, FakeCache()),
+        authorization=cast(AuthorizationService, ReviewOnlyAuthorization()),
+        detail_cache_ttl_seconds=60,
+        stale_detail_ttl_seconds=900,
+        search_cache_ttl_seconds=30,
+        minimum_query_length=2,
+        policy_version=BuiltinPolicyEngine.policy_version,
+    )
+    subject = SubjectAttributes(
+        subject_id=uuid4(),
+        workspace_id=workspace_id,
+        active=True,
+        department_id=None,
+        groups=frozenset({"security-administrators"}),
+        job_function="SECURITY_ADMINISTRATOR",
+        clearance=Classification.RESTRICTED,
+        allowed_actions=frozenset(
+            {Action.CATALOG_SEARCH, Action.CATALOG_READ, Action.ADMIN_MANAGE}
+        ),
+    )
+
+    detail = await service.get_asset(
+        subject=subject,
+        asset_id=asset_id,
+        environment=EnvironmentAttributes(requested_at=now),
+        request_id="admin-quarantine-detail",
+    )
+
+    assert detail is not None
+    assert detail.ownership == ({"owner": "security-admin"},)
+    assert gateway.calls == 1
 
 
 @pytest.mark.asyncio

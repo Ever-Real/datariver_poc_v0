@@ -18,6 +18,7 @@ class Classification(IntEnum):
 class Action(StrEnum):
     CATALOG_SEARCH = "catalog.search"
     CATALOG_READ = "catalog.read"
+    CATALOG_QUARANTINE_READ = "catalog.quarantine.read"
     CATALOG_LINEAGE_READ = "catalog.lineage.read"
     CATALOG_SYNC = "catalog.sync"
     CATALOG_EXPORT = "catalog.export"

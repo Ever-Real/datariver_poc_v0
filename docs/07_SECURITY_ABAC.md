@@ -62,10 +62,17 @@ the API never reveals the failing ordinal or falls back to DataHub/object storag
 - A requester cannot provide final approval. High-classification publish/apply/share requires two distinct eligible approvers.
 - Attachment URL issuance and every actual download perform fresh authorization.
 - Search, facets, suggestions, counts, exports and SSE apply the same ABAC scope as detail reads.
+  ADR-0020 is the sole exception: its audited `catalog.quarantine.read` decision permits an eligible
+  human security administrator to inspect only non-deleted, same-workspace quarantined catalog
+  projections for classification remediation. It never applies to export, Chat, attachments,
+  arbitrary provider egress, mutations, service identities or another workspace. The existing typed
+  DataHub metadata enrichment remains available only through authorized catalog detail.
 - Chat filters evidence before model invocation and re-authorizes citations before response.
 - Before a governed workspace classification policy is active, Search/detail cannot return
   RESTRICTED assets and Chat cannot retrieve evidence above INTERNAL. A future explicit Search grant
   may narrow the Search deny, while RESTRICTED Chat remains a non-overridable deny.
+  The ADR-0020 administrator review scope may expose the local quarantined projection only; it is
+  not a RESTRICTED Search grant and cannot expose Chat evidence or an export artifact.
 - Search cache keys bind workspace, complete subject permission scope, policy version, request shape and projection watermark; non-empty short queries and unescaped wildcard semantics are rejected.
 - Policy service failure is fail-closed for protected reads and writes.
 - Gateway authentication, DataHub permissions, a UI-hidden button, or graph-database users never substitute for application authorization.

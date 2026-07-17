@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import UTC, datetime
-from typing import cast
+from typing import Any, cast
 from uuid import uuid4
 
 import pytest
+from sqlalchemy import select
 from sqlalchemy.dialects import postgresql
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.sql.elements import ClauseElement
@@ -12,6 +14,7 @@ from sqlalchemy.sql.elements import ClauseElement
 from datariver.application.classification_access import static_classification_access_floor
 from datariver.domain.authz import Classification, SubjectAttributes
 from datariver.infrastructure.db.catalog import SqlCatalogIndexReader
+from datariver.infrastructure.db.models.catalog import AssetProjectionModel
 
 
 class _MappingResult:
@@ -33,6 +36,12 @@ class _Session:
     async def execute(self, statement: object) -> _MappingResult:
         self.statements.append(statement)
         return _MappingResult(self._rows)
+
+
+def _compile_postgresql(statement: ClauseElement) -> str:
+    compiler = cast(Any, statement).compile
+    dialect = cast(Any, postgresql).dialect()
+    return str(compiler(dialect=dialect))
 
 
 @pytest.mark.asyncio
@@ -82,10 +91,39 @@ async def test_facets_normalizes_classification_for_postgresql_union() -> None:
     )
 
     assert len(session.statements) == 1
-    statement = cast(ClauseElement, session.statements[0]).compile(dialect=postgresql.dialect())
-    sql = str(statement)
+    sql = _compile_postgresql(cast(ClauseElement, session.statements[0]))
     assert "UNION ALL" in sql
     assert "CAST(catalog.assets_projection.asset_type AS VARCHAR) AS value" in sql
     assert "CAST(catalog.assets_projection.platform AS VARCHAR) AS value" in sql
     assert "CAST(catalog.assets_projection.classification AS VARCHAR) AS value" in sql
     assert facets.classifications[0].value == "INTERNAL"
+
+
+def test_quarantine_review_scope_keeps_workspace_and_tombstone_boundaries() -> None:
+    workspace_id = uuid4()
+    subject = SubjectAttributes(
+        subject_id=uuid4(),
+        workspace_id=workspace_id,
+        active=True,
+        department_id=None,
+        groups=frozenset({"security-administrators"}),
+        job_function="SECURITY_ADMINISTRATOR",
+        clearance=Classification.RESTRICTED,
+    )
+    reader = SqlCatalogIndexReader(cast(AsyncSession, _Session([])))
+    standard = _compile_postgresql(
+        select(AssetProjectionModel.id).where(
+            *reader._scope_conditions(subject, static_classification_access_floor())
+        )
+    )
+    review_access = replace(static_classification_access_floor(), admin_quarantine_review=True)
+    review = _compile_postgresql(
+        select(AssetProjectionModel.id).where(*reader._scope_conditions(subject, review_access))
+    )
+
+    assert "workspace_id" in review
+    assert "deleted_at" in review
+    assert "lifecycle" in standard
+    assert "classification" in standard
+    assert "lifecycle" not in review
+    assert "classification" not in review

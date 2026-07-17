@@ -76,6 +76,7 @@ class ClassificationAccessSnapshot:
     restricted_system_ids: frozenset[UUID]
     restricted_domain_ids: frozenset[UUID]
     nearest_validity_boundary: datetime | None
+    admin_quarantine_review: bool = False
 
     def rule_for(self, classification: Classification) -> ClassificationRuleRecord:
         return next(rule for rule in self.rules if rule.classification is classification)

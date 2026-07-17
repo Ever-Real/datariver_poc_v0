@@ -58,6 +58,14 @@ Generated OpenAPI at `/api/v1/openapi.json` is authoritative for implemented pay
 | `POST /catalog/exports/{export_id}/download` | `catalog.export` + owner | revalidate current permission/policy/projection and object metadata, then issue a 60-second URL with `Cache-Control: no-store` |
 | `POST /catalog/sync/datahub` | `catalog.sync` | idempotently upsert one fixed-contract DataHub scan page |
 
+Under ADR-0020, the four discovery endpoints and `GET /catalog/assets/{asset_id}` use the same
+standard response schema for an eligible human security administrator's audited
+`catalog.quarantine.read` review. Its query is restricted to non-deleted rows in that
+administrator's current workspace so unclassified/`QUARANTINED` DataHub projections can be
+classified. It may use the existing typed DataHub metadata enrichment for that catalog detail, but
+never changes `/catalog/exports`, Chat, attachment, arbitrary provider or mutation authorization and
+is not available to a service identity.
+
 Search, facet and suggestion metadata identifies the built-in policy version, governed classification
 policy version, authorization generation and committed local `projection_version`. The latter is not a
 DataHub source cursor or proof that a full reconciliation completed. Facet values are textual at the

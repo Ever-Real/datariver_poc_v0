@@ -183,6 +183,15 @@ class SqlCatalogIndexReader(CatalogIndexReader):
         access: ClassificationAccessSnapshot | None = None,
     ) -> list[Any]:
         resolved_access = access or static_classification_access_floor()
+        if resolved_access.admin_quarantine_review:
+            # The service has independently recorded a human security-administrator
+            # decision. This read-only review path never reaches export, Chat or mutation
+            # services, but lets the administrator classify DataHub projections before
+            # their normal ACTIVE/classification policy becomes available to users.
+            return [
+                AssetProjectionModel.workspace_id == subject.workspace_id,
+                AssetProjectionModel.deleted_at.is_(None),
+            ]
         standard_classifications = tuple(
             int(classification)
             for classification in Classification

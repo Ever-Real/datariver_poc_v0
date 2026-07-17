@@ -44,6 +44,7 @@ def catalog_classification_access_document(
         "restricted_resources": sorted(str(value) for value in access.restricted_resource_ids),
         "restricted_systems": sorted(str(value) for value in access.restricted_system_ids),
         "restricted_domains": sorted(str(value) for value in access.restricted_domain_ids),
+        "admin_quarantine_review": access.admin_quarantine_review,
     }
 
 
