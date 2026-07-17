@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from functools import lru_cache
 from typing import Literal, Self
 from urllib.parse import quote, urlsplit, urlunsplit
@@ -69,7 +70,9 @@ class Settings(BaseSettings):
 
     datahub_base_url: str
     datahub_secret_ref: str
-    datahub_expected_version: str = "v1.6.0"
+    # The approved DataHub release is an environment-owned deployment contract.
+    # It must never be silently substituted by an application default.
+    datahub_expected_version: str
     datahub_version_enforcement: Literal["report", "enforce"] = "report"
     datahub_version_probe_ttl_seconds: int = Field(default=300, ge=30, le=3600)
     datahub_timeout_seconds: float = Field(default=10.0, ge=0.1, le=60)
@@ -153,6 +156,16 @@ class Settings(BaseSettings):
         if isinstance(value, str):
             return tuple(part.strip() for part in value.split(",") if part.strip())
         return value
+
+    @field_validator("datahub_expected_version")
+    @classmethod
+    def require_exact_stable_datahub_version(cls, value: str) -> str:
+        normalized = value.strip()
+        if re.fullmatch(r"v\d+\.\d+\.\d+", normalized) is None:
+            raise ValueError(
+                "DataHub expected version must be an exact stable release such as v1.6.0."
+            )
+        return normalized
 
     @field_validator(
         "ui_datahub_url",
@@ -348,14 +361,6 @@ class Settings(BaseSettings):
                 raise ValueError("Seed profiles cannot be enabled in production mode.")
             if self.datahub_version_enforcement != "enforce":
                 raise ValueError("Production must enforce the approved DataHub version contract.")
-            forbidden_version_markers = ("rc", "snapshot", "head", "latest")
-            if any(
-                marker in self.datahub_expected_version.lower()
-                for marker in forbidden_version_markers
-            ):
-                raise ValueError("Production DataHub versions must be stable immutable releases.")
-            if self.datahub_expected_version != "v1.6.0":
-                raise ValueError("Production must use the approved DataHub v1.6.0 contract.")
         if self.deployment_tier == "HA_ACCEPTED" and not self.deployment_evidence_reference:
             raise ValueError("HA_ACCEPTED requires an accepted deployment evidence reference.")
         return self

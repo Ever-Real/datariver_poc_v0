@@ -23,6 +23,7 @@ def settings(**overrides: object) -> Settings:
         "oidc_jwks_url": "http://idp/jwks",
         "datahub_base_url": "http://datahub",
         "datahub_secret_ref": "file:/run/secrets/datahub_token",
+        "datahub_expected_version": "v1.6.0",
         "valkey_cache_url": "redis://cache:6379/0",
         "valkey_queue_url": "redis://queue:6379/0",
         "valkey_cache_secret_ref": "file:/run/secrets/valkey_cache_password",
@@ -149,34 +150,26 @@ def test_production_requires_datahub_version_enforcement() -> None:
         )
 
 
-def test_production_rejects_prerelease_datahub_contract() -> None:
-    with pytest.raises(ValidationError, match="stable immutable releases"):
-        settings(
-            app_env="production",
-            app_public_origin="https://catalog.example.com",
-            app_cors_origins=("https://catalog.example.com",),
-            oidc_issuer="https://idp.example.com/realms/data",
-            oidc_jwks_url="https://idp.example.com/realms/data/certs",
-            datahub_base_url="https://datahub.example.com",
-            datahub_version_enforcement="enforce",
-            datahub_expected_version="v1.6.0rc1",
-            s3_public_endpoint_url="https://objects.example.com",
-        )
+@pytest.mark.parametrize("version", ("v1.6.0rc1", "v1.6.0-rc.1", "v1.6", "latest"))
+def test_rejects_non_exact_stable_datahub_contract(version: str) -> None:
+    with pytest.raises(ValidationError, match="exact stable release"):
+        settings(datahub_expected_version=version)
 
 
-def test_production_rejects_an_unapproved_stable_datahub_contract() -> None:
-    with pytest.raises(ValidationError, match=r"approved DataHub v1\.6\.0"):
-        settings(
-            app_env="production",
-            app_public_origin="https://catalog.example.com",
-            app_cors_origins=("https://catalog.example.com",),
-            oidc_issuer="https://idp.example.com/realms/data",
-            oidc_jwks_url="https://idp.example.com/realms/data/certs",
-            datahub_base_url="https://datahub.example.com",
-            datahub_version_enforcement="enforce",
-            datahub_expected_version="v1.7.0",
-            s3_public_endpoint_url="https://objects.example.com",
-        )
+def test_production_uses_the_deployment_configured_stable_datahub_contract() -> None:
+    configured = settings(
+        app_env="production",
+        app_public_origin="https://catalog.example.com",
+        app_cors_origins=("https://catalog.example.com",),
+        oidc_issuer="https://idp.example.com/realms/data",
+        oidc_jwks_url="https://idp.example.com/realms/data/certs",
+        datahub_base_url="https://datahub.example.com",
+        datahub_version_enforcement="enforce",
+        datahub_expected_version="v1.7.0",
+        s3_public_endpoint_url="https://objects.example.com",
+    )
+
+    assert configured.datahub_expected_version == "v1.7.0"
 
 
 def test_ha_accepted_requires_an_explicit_evidence_reference() -> None:

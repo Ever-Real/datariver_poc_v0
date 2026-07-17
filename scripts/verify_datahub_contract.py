@@ -1,9 +1,12 @@
 from __future__ import annotations
 
 import argparse
+import re
 import sys
 
 import httpx
+
+EXACT_STABLE_RELEASE = re.compile(r"v\d+\.\d+\.\d+\Z")
 
 
 def _reported_version(payload: object) -> str:
@@ -17,12 +20,21 @@ def _reported_version(payload: object) -> str:
     return version.strip()
 
 
+def _expected_stable_release(value: str) -> str:
+    normalized = value.strip()
+    if EXACT_STABLE_RELEASE.fullmatch(normalized) is None:
+        raise argparse.ArgumentTypeError(
+            "expected version must be an exact stable release such as v1.6.0"
+        )
+    return normalized
+
+
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="Verify an external DataHub runtime against an approved stable release."
     )
     parser.add_argument("--base-url", required=True, help="DataHub base URL")
-    parser.add_argument("--expected-version", default="v1.6.0")
+    parser.add_argument("--expected-version", required=True, type=_expected_stable_release)
     parser.add_argument("--timeout-seconds", type=float, default=5.0)
     return parser
 

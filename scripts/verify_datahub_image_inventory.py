@@ -2,13 +2,20 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import sys
 from pathlib import Path
 from typing import Any
 
 MAX_INVENTORY_BYTES = 5 * 1024 * 1024
 ROOT = Path(__file__).resolve().parents[1]
-DEFAULT_CONTRACT = ROOT / "infra" / "contracts" / "datahub-v1.6.0-images.json"
+CONTRACT_DIRECTORY = ROOT / "infra" / "contracts"
+EXACT_STABLE_RELEASE = re.compile(r"v\d+\.\d+\.\d+\Z")
+
+
+def _default_contract() -> Path | None:
+    contracts = tuple(sorted(CONTRACT_DIRECTORY.glob("datahub-*-images.json")))
+    return contracts[0] if len(contracts) == 1 else None
 
 
 def _load_json_mapping(path: Path, *, description: str) -> dict[str, Any]:
@@ -27,8 +34,11 @@ def _load_json_mapping(path: Path, *, description: str) -> dict[str, Any]:
 
 
 def approved_component_references(contract: dict[str, Any]) -> dict[str, str]:
-    if contract.get("schema_version") != 1 or contract.get("release") != "v1.6.0":
-        raise ValueError("DataHub contract must be the approved stable v1.6.0 release")
+    release = contract.get("release")
+    if contract.get("schema_version") != 1 or not isinstance(release, str):
+        raise ValueError("DataHub contract must declare an exact stable release")
+    if EXACT_STABLE_RELEASE.fullmatch(release) is None:
+        raise ValueError("DataHub contract release must be an exact stable version")
     components = contract.get("components")
     if not isinstance(components, dict) or not components:
         raise ValueError("DataHub contract components are missing")
@@ -40,6 +50,10 @@ def approved_component_references(contract: dict[str, Any]) -> dict[str, str]:
         digest = entry.get("oci_index_digest")
         if not isinstance(image, str) or not isinstance(digest, str):
             raise ValueError(f"DataHub contract component {component} is incomplete")
+        if f":{release}" not in image:
+            raise ValueError(
+                f"DataHub contract component {component} does not use the declared release tag"
+            )
         references[component] = f"{image}@{digest}"
     return references
 
@@ -89,7 +103,7 @@ def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description=(
             "Verify a rendered external DataHub Docker Compose inventory against the approved "
-            "v1.6.0 OCI digests."
+            "stable-release OCI digests."
         )
     )
     parser.add_argument(
@@ -100,13 +114,15 @@ def _parser() -> argparse.ArgumentParser:
             "DataHub stack"
         ),
     )
-    parser.add_argument("--contract", type=Path, default=DEFAULT_CONTRACT)
+    parser.add_argument("--contract", type=Path, default=_default_contract())
     return parser
 
 
 def main(argv: list[str] | None = None) -> int:
     args = _parser().parse_args(argv)
     try:
+        if args.contract is None:
+            raise ValueError("provide --contract when no single DataHub contract is available")
         inventory = _load_json_mapping(args.inventory, description="rendered Compose inventory")
         contract = _load_json_mapping(args.contract, description="DataHub image contract")
         matched = verify_inventory(inventory, contract)

@@ -19,10 +19,10 @@ evidence.
 
 No Compose file starts DataHub. OPA and a separate graph database remain documented extension seams.
 
-The supported production DataHub provider contract is stable `v1.6.0`. The external deployment
-owner must use the component OCI index digests in
-[`infra/contracts/datahub-v1.6.0-images.json`](../infra/contracts/datahub-v1.6.0-images.json), not the
-mutable `head`, `latest` or RC tags. DataRiver production sets
+The current example DataHub provider contract is stable `v1.6.0`. Each deployment provides its own
+exact stable `DATAHUB_EXPECTED_VERSION` and reviewed component OCI index digest contract (the current
+example is [`infra/contracts/datahub-v1.6.0-images.json`](../infra/contracts/datahub-v1.6.0-images.json)).
+Mutable `head`, `latest` and RC tags are invalid. DataRiver production sets
 `DATAHUB_VERSION_ENFORCEMENT=enforce`; development may use `report` only to expose a degraded
 capability while an external stack is being upgraded.
 
@@ -38,7 +38,9 @@ docker compose -f <datahub-compose-files> config --format json \
 # From DataRiver, this fails on an absent component, tag-only image, or a different digest.
 uv run python scripts/verify_datahub_image_inventory.py \
   runtime/datahub-rendered.compose.json
-uv run python scripts/verify_datahub_contract.py --base-url <target-datahub-url>
+uv run python scripts/verify_datahub_contract.py \
+  --base-url <target-datahub-url> \
+  --expected-version "$DATAHUB_EXPECTED_VERSION"
 ```
 
 A successful image/version check is only the first gate; the live provider contract tests listed

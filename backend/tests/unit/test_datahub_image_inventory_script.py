@@ -70,3 +70,32 @@ def test_rejects_missing_required_datahub_component() -> None:
 
     with pytest.raises(ValueError, match="missing DataHub component: actions"):
         module.verify_inventory(inventory, _contract())
+
+
+def test_accepts_a_different_configured_exact_stable_release() -> None:
+    module = _module()
+    contract = _contract()
+    contract["release"] = "v1.7.0"
+    components = contract["components"]
+    assert isinstance(components, dict)
+    for component in components.values():
+        assert isinstance(component, dict)
+        image = component["image"]
+        assert isinstance(image, str)
+        component["image"] = image.replace("v1.6.0", "v1.7.0")
+
+    references = module.approved_component_references(contract)
+
+    assert all(
+        ":v1.7.0" in reference and "@sha256:" in reference for reference in references.values()
+    )
+
+
+@pytest.mark.parametrize("release", ("v1.6.0rc1", "v1.6.0-rc.1", "v1.6", "latest"))
+def test_rejects_prerelease_or_partial_contract_release(release: str) -> None:
+    module = _module()
+    contract = _contract()
+    contract["release"] = release
+
+    with pytest.raises(ValueError, match="exact stable version"):
+        module.approved_component_references(contract)

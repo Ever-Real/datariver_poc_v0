@@ -68,10 +68,10 @@ staging with fenced atomic publish, target Object VersionId/conditional copy, a 
 NOBYPASSRLS workspace/correlation-bound execution role and durable batch checkpoints remain
 promotion gates.
 
-The approved DataHub provider baseline is the stable `v1.6.0` contract in ADR-0008. Production
-promotion requires the external deployment to pin the reviewed OCI digests, enable runtime version
-enforcement and pass live scan/detail/lineage/apply/read-back contract tests. A matching version
-string alone is not production acceptance evidence.
+The current example DataHub provider baseline is the stable `v1.6.0` contract in ADR-0008. Production
+promotion requires a deployment-supplied exact stable `DATAHUB_EXPECTED_VERSION`, reviewed OCI digests,
+runtime version enforcement and live scan/detail/lineage/apply/read-back contract tests. A matching
+version string alone is not production acceptance evidence.
 
 The frontend now has a governed enterprise shell with dense square-edge tokens, typed navigation,
 a URL-restored non-authoritative Workspace selection, a no-preload two-character global-search floor

@@ -11,6 +11,11 @@ external DataHub deployment owner pins every component by OCI digest and retains
 of materials. The verified multi-platform index digests are recorded in
 `infra/contracts/datahub-v1.6.0-images.json`.
 
+The application does not hard-code that release string: every deployment supplies its exact stable
+release through required `DATAHUB_EXPECTED_VERSION`. The `v1.6.0` contract in this repository is the
+current reviewed example. Replacing it requires an explicit reviewed digest contract and deployment
+configuration change; partial versions and prereleases remain invalid in every environment.
+
 DataRiver continues not to start, migrate or delete DataHub. It reports a degraded DataHub
 capability when `/config` reports a different version. Production configuration must use enforcement
 mode, which prevents search enrichment, synchronization and governed metadata application from

@@ -59,10 +59,10 @@ EXPECTED_SERVICE_SECRETS = {
         "datahub_token",
     },
 }
-DATAHUB_CONTRACT = ROOT / "infra" / "contracts" / "datahub-v1.6.0-images.json"
-DATAHUB_RELEASE = "v1.6.0"
+DATAHUB_CONTRACT_DIRECTORY = ROOT / "infra" / "contracts"
 DATAHUB_COMPONENTS = {"actions", "frontend", "gms", "upgrade"}
 IMMUTABLE_DIGEST = re.compile(r"sha256:[0-9a-f]{64}\Z")
+EXACT_STABLE_RELEASE = re.compile(r"v\d+\.\d+\.\d+\Z")
 
 
 def _yaml(path: Path) -> dict[str, Any]:
@@ -176,24 +176,32 @@ def verify_build_context() -> None:
 
 
 def verify_datahub_release_contract() -> None:
-    contract = json.loads(DATAHUB_CONTRACT.read_text(encoding="utf-8"))
-    if contract.get("schema_version") != 1 or contract.get("release") != DATAHUB_RELEASE:
-        raise AssertionError("DataHub contract must identify the approved stable v1.6.0 release")
-    components = contract.get("components")
-    if not isinstance(components, dict) or set(components) != DATAHUB_COMPONENTS:
-        raise AssertionError("DataHub contract component set is incomplete")
-    forbidden = (":head", ":latest", "rc", "snapshot")
-    for name, component in components.items():
-        if not isinstance(component, dict):
-            raise AssertionError(f"DataHub component {name} must be a mapping")
-        image = component.get("image")
-        digest = component.get("oci_index_digest")
-        if not isinstance(image, str) or f":{DATAHUB_RELEASE}" not in image:
-            raise AssertionError(f"DataHub component {name} does not use the approved release tag")
-        if any(marker in image.lower() for marker in forbidden):
-            raise AssertionError(f"DataHub component {name} uses a mutable or prerelease tag")
-        if not isinstance(digest, str) or IMMUTABLE_DIGEST.fullmatch(digest) is None:
-            raise AssertionError(f"DataHub component {name} has no immutable OCI index digest")
+    contracts = tuple(sorted(DATAHUB_CONTRACT_DIRECTORY.glob("datahub-*-images.json")))
+    if not contracts:
+        raise AssertionError("At least one reviewed DataHub image contract is required")
+    for contract_path in contracts:
+        contract = json.loads(contract_path.read_text(encoding="utf-8"))
+        release = contract.get("release")
+        if contract.get("schema_version") != 1 or not isinstance(release, str):
+            raise AssertionError(f"{contract_path.name} must declare an exact stable release")
+        if EXACT_STABLE_RELEASE.fullmatch(release) is None:
+            raise AssertionError(
+                f"{contract_path.name} uses a prerelease or partial DataHub version"
+            )
+        components = contract.get("components")
+        if not isinstance(components, dict) or set(components) != DATAHUB_COMPONENTS:
+            raise AssertionError(f"{contract_path.name} component set is incomplete")
+        for name, component in components.items():
+            if not isinstance(component, dict):
+                raise AssertionError(f"DataHub component {name} must be a mapping")
+            image = component.get("image")
+            digest = component.get("oci_index_digest")
+            if not isinstance(image, str) or f":{release}" not in image:
+                raise AssertionError(
+                    f"DataHub component {name} does not use its declared release tag"
+                )
+            if not isinstance(digest, str) or IMMUTABLE_DIGEST.fullmatch(digest) is None:
+                raise AssertionError(f"DataHub component {name} has no immutable OCI index digest")
 
 
 def verify_identity_assurance_contract() -> None:

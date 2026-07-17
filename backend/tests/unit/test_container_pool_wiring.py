@@ -35,6 +35,7 @@ def settings() -> Settings:
         oidc_jwks_url="http://idp/jwks",
         datahub_base_url="http://datahub",
         datahub_secret_ref="file:/run/secrets/datahub_token",
+        datahub_expected_version="v1.6.0",
         valkey_cache_url="redis://cache:6379/0",
         valkey_queue_url="redis://queue:6379/0",
         valkey_cache_secret_ref="file:/run/secrets/valkey_cache_password",

@@ -33,9 +33,10 @@ The legacy repository is not mixed into this codebase. Its filtered read-only re
 
 - Git, Docker Engine/Desktop with Compose v2, at least 8 GiB free memory for core + local identity, and about 12 GiB when Airflow is also enabled.
 - An existing DataHub endpoint and a scoped service token. DataRiver does not start, migrate or delete DataHub.
-- Production supports the stable DataHub `v1.6.0` contract and enforces the external runtime version;
-  the external deployment pins each component using `infra/contracts/datahub-v1.6.0-images.json` and
-  proves its rendered images with `scripts/verify_datahub_image_inventory.py`.
+- `DATAHUB_EXPECTED_VERSION` is a required deployment setting and must be an exact stable release;
+  the current example is `v1.6.0`. The external deployment pins each component using its reviewed
+  contract (the current example is `infra/contracts/datahub-v1.6.0-images.json`) and proves its
+  rendered images with `scripts/verify_datahub_image_inventory.py`.
 - For local source checks: Python 3.12, `uv 0.9.17`, Node.js 22.19 and npm 10.
 
 No real `.env`, secret, uploaded object, database volume or generated Keycloak realm is committed.
