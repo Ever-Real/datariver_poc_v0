@@ -51,7 +51,12 @@ class UploadValidationWorker:
             return False
         source_bucket = manifest.bucket
         source_key = manifest.object_key
-        destination_key = f"accepted/{manifest.workspace_id}/{manifest.upload_id}"
+        destination_key = (
+            f"accepted/{manifest.workspace_id}/{manifest.upload_id}/"
+            f"validation-v{manifest.version}-attempt-{manifest.validation_attempts}"
+        )
+        destination_created = False
+        acceptance_started = False
         try:
             inspection = await self._inspect(manifest)
             summary = self._validate_format(manifest, inspection)
@@ -61,6 +66,7 @@ class UploadValidationWorker:
                 destination_bucket=self._accepted_bucket,
                 destination_key=destination_key,
             )
+            destination_created = True
             if (
                 promoted.size_bytes != inspection.size_bytes
                 or promoted.content_type != manifest.declared_mime
@@ -71,18 +77,31 @@ class UploadValidationWorker:
                     retryable=True,
                     provider_code="PROMOTION_MISMATCH",
                 )
-            await self._store.mark_accepted(
+            await self._inspect_object(
+                manifest,
+                bucket=self._accepted_bucket,
+                object_key=destination_key,
+            )
+            acceptance_started = True
+            accepted = await self._store.mark_accepted(
                 manifest=manifest,
                 accepted_bucket=self._accepted_bucket,
                 accepted_object_key=destination_key,
                 validation_summary=summary,
             )
-            try:
-                await self._object_store.delete_object(bucket=source_bucket, object_key=source_key)
-            except DomainError:
-                # The accepted manifest is canonical; duplicate quarantine cleanup is recoverable.
-                pass
+            if not accepted:
+                await self._delete_best_effort(
+                    bucket=self._accepted_bucket,
+                    object_key=destination_key,
+                )
+                return True
+            await self._delete_best_effort(bucket=source_bucket, object_key=source_key)
         except DomainError as error:
+            if destination_created and not acceptance_started:
+                await self._delete_best_effort(
+                    bucket=self._accepted_bucket,
+                    object_key=destination_key,
+                )
             await self._store.mark_failed(
                 manifest=manifest,
                 error_code=self._error_code(error),
@@ -90,6 +109,11 @@ class UploadValidationWorker:
                 maximum_attempts=self._maximum_attempts,
             )
         except Exception as error:
+            if destination_created and not acceptance_started:
+                await self._delete_best_effort(
+                    bucket=self._accepted_bucket,
+                    object_key=destination_key,
+                )
             await self._store.mark_failed(
                 manifest=manifest,
                 error_code=f"UNEXPECTED_{type(error).__name__}"[:100],
@@ -99,6 +123,19 @@ class UploadValidationWorker:
         return True
 
     async def _inspect(self, manifest: UploadManifest) -> Inspection:
+        return await self._inspect_object(
+            manifest,
+            bucket=manifest.bucket,
+            object_key=manifest.object_key,
+        )
+
+    async def _inspect_object(
+        self,
+        manifest: UploadManifest,
+        *,
+        bucket: str,
+        object_key: str,
+    ) -> Inspection:
         digest = hashlib.sha256()
         prefix = bytearray()
         tail = b""
@@ -106,7 +143,7 @@ class UploadValidationWorker:
         size = 0
         contains_vba = False
         async for chunk in self._object_store.iter_object_chunks(
-            bucket=manifest.bucket, object_key=manifest.object_key
+            bucket=bucket, object_key=object_key
         ):
             size += len(chunk)
             if size > manifest.declared_size_bytes:
@@ -134,6 +171,12 @@ class UploadValidationWorker:
                 details={"code": "CHECKSUM_MISMATCH"},
             )
         return Inspection(size, actual_hash, bytes(prefix), tail, contains_vba)
+
+    async def _delete_best_effort(self, *, bucket: str, object_key: str) -> None:
+        try:
+            await self._object_store.delete_object(bucket=bucket, object_key=object_key)
+        except DomainError:
+            pass
 
     @staticmethod
     def _validate_format(manifest: UploadManifest, inspection: Inspection) -> dict[str, object]:

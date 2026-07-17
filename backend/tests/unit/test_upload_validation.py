@@ -4,21 +4,31 @@ import hashlib
 from collections.abc import AsyncIterator
 from datetime import UTC, datetime, timedelta
 from typing import cast
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import pytest
 
 from datariver.application.dto import ObjectMetadata
-from datariver.application.ports import ObjectStore
+from datariver.application.errors import ExternalDependencyError
+from datariver.application.ports import ObjectStore, UploadValidationStore
 from datariver.application.services.upload_validation import UploadValidationWorker
 from datariver.domain.authz import Classification
 from datariver.domain.registration import UploadManifest, UploadState
 
 
 class MemoryValidationStore:
-    def __init__(self, manifest: UploadManifest) -> None:
+    def __init__(
+        self,
+        manifest: UploadManifest,
+        *,
+        accept_result: bool = True,
+        accept_error: Exception | None = None,
+    ) -> None:
         self.manifest: UploadManifest | None = manifest
+        self.accept_result = accept_result
+        self.accept_error = accept_error
         self.accepted: dict[str, object] | None = None
+        self.accepted_object_key: str | None = None
         self.failed: tuple[str, bool] | None = None
 
     async def claim_next(
@@ -35,9 +45,14 @@ class MemoryValidationStore:
         accepted_bucket: str,
         accepted_object_key: str,
         validation_summary: dict[str, object],
-    ) -> None:
-        del manifest, accepted_bucket, accepted_object_key
-        self.accepted = validation_summary
+    ) -> bool:
+        del manifest, accepted_bucket
+        self.accepted_object_key = accepted_object_key
+        if self.accept_error is not None:
+            raise self.accept_error
+        if self.accept_result:
+            self.accepted = validation_summary
+        return self.accept_result
 
     async def mark_failed(
         self,
@@ -52,19 +67,35 @@ class MemoryValidationStore:
 
 
 class MemoryObjectStore:
-    def __init__(self, content: bytes, content_type: str) -> None:
-        self.content = content
+    def __init__(
+        self,
+        *,
+        source_bucket: str,
+        source_key: str,
+        content: bytes,
+        content_type: str,
+        corrupt_copy: bytes | None = None,
+        cleanup_failures: set[tuple[str, str]] | None = None,
+    ) -> None:
         self.content_type = content_type
-        self.deleted = False
+        self.corrupt_copy = corrupt_copy
+        self.cleanup_failures = cleanup_failures or set()
+        self.objects: dict[tuple[str, str], bytes] = {(source_bucket, source_key): content}
+        self.copy_destinations: list[tuple[str, str]] = []
+        self.read_paths: list[tuple[str, str]] = []
+        self.delete_attempts: list[tuple[str, str]] = []
 
     async def iter_object_chunks(
         self, *, bucket: str, object_key: str, chunk_size: int = 1024 * 1024
     ) -> AsyncIterator[bytes]:
-        del bucket, object_key, chunk_size
-        midpoint = max(len(self.content) // 2, 1)
-        yield self.content[:midpoint]
-        if self.content[midpoint:]:
-            yield self.content[midpoint:]
+        del chunk_size
+        path = (bucket, object_key)
+        self.read_paths.append(path)
+        content = self.objects[path]
+        midpoint = max(len(content) // 2, 1)
+        yield content[:midpoint]
+        if content[midpoint:]:
+            yield content[midpoint:]
 
     async def copy_object(
         self,
@@ -74,26 +105,46 @@ class MemoryObjectStore:
         destination_bucket: str,
         destination_key: str,
     ) -> ObjectMetadata:
-        del source_bucket, source_key
+        source = self.objects[(source_bucket, source_key)]
+        copied = self.corrupt_copy if self.corrupt_copy is not None else source
+        destination = (destination_bucket, destination_key)
+        self.objects[destination] = copied
+        self.copy_destinations.append(destination)
         return ObjectMetadata(
             destination_bucket,
             destination_key,
-            len(self.content),
+            len(copied),
             self.content_type,
             "etag",
-            hashlib.sha256(self.content).hexdigest(),
+            hashlib.sha256(copied).hexdigest(),
             {},
         )
 
     async def delete_object(self, *, bucket: str, object_key: str) -> None:
-        del bucket, object_key
-        self.deleted = True
+        path = (bucket, object_key)
+        self.delete_attempts.append(path)
+        if path in self.cleanup_failures:
+            raise ExternalDependencyError(
+                "cleanup failed",
+                dependency="object_store",
+                retryable=True,
+                provider_code="DELETE_FAILED",
+            )
+        self.objects.pop(path, None)
 
 
-def manifest(content: bytes, *, declared_hash: str | None = None) -> UploadManifest:
+def manifest(
+    content: bytes,
+    *,
+    declared_hash: str | None = None,
+    upload_id: UUID | None = None,
+    workspace_id: UUID | None = None,
+    version: int = 7,
+    validation_attempts: int = 2,
+) -> UploadManifest:
     return UploadManifest(
-        upload_id=uuid4(),
-        workspace_id=uuid4(),
+        upload_id=upload_id or uuid4(),
+        workspace_id=workspace_id or uuid4(),
         owner_id=uuid4(),
         bucket="quarantine",
         object_key="object",
@@ -105,6 +156,16 @@ def manifest(content: bytes, *, declared_hash: str | None = None) -> UploadManif
         multipart_upload_id="multipart",
         expires_at=datetime.now(UTC) + timedelta(hours=1),
         state=UploadState.VALIDATING,
+        version=version,
+        validation_attempts=validation_attempts,
+    )
+
+
+def worker(*, store: MemoryValidationStore, objects: MemoryObjectStore) -> UploadValidationWorker:
+    return UploadValidationWorker(
+        store=cast(UploadValidationStore, store),
+        object_store=cast(ObjectStore, objects),
+        accepted_bucket="accepted",
     )
 
 
@@ -113,18 +174,29 @@ async def test_streaming_csv_integrity_validation_promotes_then_cleans_quarantin
     content = b"asset_id,name\n1,wafer\n2,die\n"
     upload = manifest(content)
     store = MemoryValidationStore(upload)
-    objects = MemoryObjectStore(content, "text/csv")
-    worker = UploadValidationWorker(
-        store=store,
-        object_store=cast(ObjectStore, objects),
-        accepted_bucket="accepted",
+    objects = MemoryObjectStore(
+        source_bucket=upload.bucket,
+        source_key=upload.object_key,
+        content=content,
+        content_type="text/csv",
     )
 
-    assert await worker.run_once() is True
+    assert await worker(store=store, objects=objects).run_once() is True
+
+    destination_key = (
+        f"accepted/{upload.workspace_id}/{upload.upload_id}/"
+        f"validation-v{upload.version}-attempt-{upload.validation_attempts}"
+    )
     assert store.failed is None
     assert store.accepted is not None
     assert store.accepted["column_count"] == 2
-    assert objects.deleted is True
+    assert store.accepted_object_key == destination_key
+    assert objects.read_paths == [
+        (upload.bucket, upload.object_key),
+        ("accepted", destination_key),
+    ]
+    assert (upload.bucket, upload.object_key) not in objects.objects
+    assert ("accepted", destination_key) in objects.objects
 
 
 @pytest.mark.asyncio
@@ -132,14 +204,180 @@ async def test_checksum_mismatch_is_terminal_and_never_promoted() -> None:
     content = b"asset_id,name\n1,wafer\n"
     upload = manifest(content, declared_hash="0" * 64)
     store = MemoryValidationStore(upload)
-    objects = MemoryObjectStore(content, "text/csv")
-    worker = UploadValidationWorker(
-        store=store,
-        object_store=cast(ObjectStore, objects),
-        accepted_bucket="accepted",
+    objects = MemoryObjectStore(
+        source_bucket=upload.bucket,
+        source_key=upload.object_key,
+        content=content,
+        content_type="text/csv",
     )
 
-    assert await worker.run_once() is True
+    assert await worker(store=store, objects=objects).run_once() is True
+
     assert store.accepted is None
     assert store.failed == ("CHECKSUM_MISMATCH", False)
-    assert objects.deleted is False
+    assert objects.copy_destinations == []
+    assert (upload.bucket, upload.object_key) in objects.objects
+
+
+@pytest.mark.asyncio
+async def test_stale_claim_uses_a_unique_destination_and_removes_only_its_orphan() -> None:
+    content = b"asset_id,name\n1,wafer\n"
+    upload_id = uuid4()
+    workspace_id = uuid4()
+    stale = manifest(
+        content,
+        upload_id=upload_id,
+        workspace_id=workspace_id,
+        version=7,
+        validation_attempts=2,
+    )
+    current = manifest(
+        content,
+        upload_id=upload_id,
+        workspace_id=workspace_id,
+        version=9,
+        validation_attempts=3,
+    )
+    objects = MemoryObjectStore(
+        source_bucket=stale.bucket,
+        source_key=stale.object_key,
+        content=content,
+        content_type="text/csv",
+    )
+
+    stale_store = MemoryValidationStore(stale, accept_result=False)
+    assert await worker(store=stale_store, objects=objects).run_once() is True
+    stale_destination = objects.copy_destinations[-1]
+    assert stale_store.failed is None
+    assert stale_destination not in objects.objects
+    assert (stale.bucket, stale.object_key) in objects.objects
+
+    current_store = MemoryValidationStore(current)
+    assert await worker(store=current_store, objects=objects).run_once() is True
+    current_destination = objects.copy_destinations[-1]
+    assert current_destination != stale_destination
+    assert current_destination in objects.objects
+    assert (current.bucket, current.object_key) not in objects.objects
+
+
+@pytest.mark.asyncio
+async def test_same_size_corrupt_copy_is_detected_by_full_readback_and_cleaned() -> None:
+    content = b"asset_id,name\n1,wafer\n"
+    corrupt = b"asset_id,name\n1,XXXXX\n"
+    assert len(corrupt) == len(content)
+    upload = manifest(content)
+    store = MemoryValidationStore(upload)
+    objects = MemoryObjectStore(
+        source_bucket=upload.bucket,
+        source_key=upload.object_key,
+        content=content,
+        content_type="text/csv",
+        corrupt_copy=corrupt,
+    )
+
+    assert await worker(store=store, objects=objects).run_once() is True
+
+    destination = objects.copy_destinations[0]
+    assert store.accepted is None
+    assert store.failed == ("CHECKSUM_MISMATCH", False)
+    assert destination in objects.read_paths
+    assert destination not in objects.objects
+    assert (upload.bucket, upload.object_key) in objects.objects
+
+
+@pytest.mark.asyncio
+async def test_stale_orphan_cleanup_failure_preserves_source_and_does_not_fail_claim() -> None:
+    content = b"asset_id,name\n1,wafer\n"
+    upload = manifest(content)
+    destination_key = (
+        f"accepted/{upload.workspace_id}/{upload.upload_id}/"
+        f"validation-v{upload.version}-attempt-{upload.validation_attempts}"
+    )
+    destination = ("accepted", destination_key)
+    store = MemoryValidationStore(upload, accept_result=False)
+    objects = MemoryObjectStore(
+        source_bucket=upload.bucket,
+        source_key=upload.object_key,
+        content=content,
+        content_type="text/csv",
+        cleanup_failures={destination},
+    )
+
+    assert await worker(store=store, objects=objects).run_once() is True
+
+    assert store.failed is None
+    assert destination in objects.delete_attempts
+    assert destination in objects.objects
+    assert (upload.bucket, upload.object_key) in objects.objects
+
+
+@pytest.mark.asyncio
+async def test_ambiguous_accept_commit_never_deletes_destination_or_source() -> None:
+    content = b"asset_id,name\n1,wafer\n"
+    upload = manifest(content)
+    store = MemoryValidationStore(
+        upload,
+        accept_error=ExternalDependencyError(
+            "commit result is unknown",
+            dependency="postgresql",
+            retryable=True,
+            provider_code="AMBIGUOUS_COMMIT",
+        ),
+    )
+    objects = MemoryObjectStore(
+        source_bucket=upload.bucket,
+        source_key=upload.object_key,
+        content=content,
+        content_type="text/csv",
+    )
+
+    assert await worker(store=store, objects=objects).run_once() is True
+
+    destination = objects.copy_destinations[0]
+    assert store.failed == ("AMBIGUOUS_COMMIT", True)
+    assert destination in objects.objects
+    assert (upload.bucket, upload.object_key) in objects.objects
+    assert objects.delete_attempts == []
+
+
+@pytest.mark.asyncio
+async def test_domain_cleanup_errors_are_best_effort_after_acceptance() -> None:
+    content = b"asset_id,name\n1,wafer\n"
+    upload = manifest(content)
+    source = (upload.bucket, upload.object_key)
+    store = MemoryValidationStore(upload)
+    objects = MemoryObjectStore(
+        source_bucket=upload.bucket,
+        source_key=upload.object_key,
+        content=content,
+        content_type="text/csv",
+        cleanup_failures={source},
+    )
+
+    assert await worker(store=store, objects=objects).run_once() is True
+
+    assert store.accepted is not None
+    assert store.failed is None
+    assert source in objects.objects
+
+
+@pytest.mark.parametrize("error_type", [RuntimeError])
+@pytest.mark.asyncio
+async def test_unexpected_accept_error_is_ambiguous_and_keeps_both_objects(
+    error_type: type[Exception],
+) -> None:
+    content = b"asset_id,name\n1,wafer\n"
+    upload = manifest(content)
+    store = MemoryValidationStore(upload, accept_error=error_type("unknown"))
+    objects = MemoryObjectStore(
+        source_bucket=upload.bucket,
+        source_key=upload.object_key,
+        content=content,
+        content_type="text/csv",
+    )
+
+    assert await worker(store=store, objects=objects).run_once() is True
+
+    assert store.failed == ("UNEXPECTED_RuntimeError", True)
+    assert objects.copy_destinations[0] in objects.objects
+    assert (upload.bucket, upload.object_key) in objects.objects

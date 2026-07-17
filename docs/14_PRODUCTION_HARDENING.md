@@ -27,7 +27,7 @@ Cypher, Bolt, shell or arbitrary HTTP surface is exposed.
 | API process | FastAPI/OIDC boundary, request IDs, ABAC, RLS context, typed use cases and Prometheus endpoint |
 | PostgreSQL 17 | nine canonical schemas, RLS, optimistic versions, immutable releases and durable delivery state |
 | outbox relay | leases unpublished PostgreSQL events and sends event IDs to queue Valkey |
-| upload workers | multipart completion/reconcile and bounded-memory validation/promotion; no DataHub secret |
+| upload workers | multipart completion/reconcile and bounded-memory validation; attempt-scoped promotion, full promoted-byte hash read-back and commit-receipt-gated cleanup; no DataHub secret |
 | governance worker | leased typed DataHub aspect apply plus re-read hash reconciliation |
 | DataHub adapter | fixed GraphQL/aspect contracts, timeout/error mapping, bounded concurrency and circuit breaker |
 | Valkey cache/queue | separate TTL/evictable cache and AOF/no-eviction delivery instances; never canonical |
@@ -44,7 +44,7 @@ scale/availability/team-ownership evidence.
 
 ## 3. Verified baseline and important limitations
 
-The current branch passes 379 backend tests, strict mypy over 185 source/test files, Ruff, and 18 frontend
+The current branch passes 388 backend tests, strict mypy over 186 source/test files, Ruff, and 18 frontend
 test files/75 tests plus type/lint/build. The frontend artifact is JS 479.89 kB (gzip 137.78 kB) and
 CSS 38.74 kB (gzip 7.87 kB). Deterministic migration generation and static
 architecture/Compose/role checks also pass.

@@ -719,7 +719,7 @@ class UploadValidationStore(Protocol):
         accepted_bucket: str,
         accepted_object_key: str,
         validation_summary: dict[str, object],
-    ) -> None: ...
+    ) -> bool: ...
 
     async def mark_failed(
         self,

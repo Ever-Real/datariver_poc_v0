@@ -307,11 +307,11 @@ class SqlUploadValidationStore(UploadValidationStore):
         accepted_bucket: str,
         accepted_object_key: str,
         validation_summary: dict[str, object],
-    ) -> None:
+    ) -> bool:
         async with self._session_factory() as session, session.begin():
             model = await SqlUploadCompletionStore._locked(session, manifest)
             if model is None or model.version != manifest.version:
-                return
+                return False
             current = _to_domain(model)
             current.mark_accepted(
                 accepted_bucket=accepted_bucket,
@@ -323,6 +323,7 @@ class SqlUploadValidationStore(UploadValidationStore):
             model.processing_lease_until = None
             model.last_error_code = None
             await SqlOutboxWriter(session).add_events(current.events)
+        return True
 
     async def mark_failed(
         self,

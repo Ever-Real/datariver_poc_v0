@@ -157,7 +157,10 @@ rebuildable catalog projection.
 - Confidential/restricted apply requires two distinct final approvers; requester final approval is denied.
 - `APPLIED` requires aggregate expected/observed hash equality after DataHub re-read.
 - Graph release publication validates ontology, endpoints, classification and non-empty provenance before insert.
-- Object acceptance requires full streamed SHA-256/size equality and format policy before canonical bucket switch.
+- Object acceptance requires full streamed source SHA-256/size equality and format policy, an
+  attempt-scoped destination, a full promoted-byte SHA-256/size read-back and a committed
+  version-fenced manifest receipt before quarantine cleanup. Provider Object VersionId and
+  conditional-copy evidence remain target-environment gates.
 - Search and snapshot queries prefilter classification and scope before enrichment/serialization.
 - Direct administrator membership access requires recent hardware WebAuthn. The optional password
   path applies only an approved typed request and rechecks maker/checker eligibility, target version

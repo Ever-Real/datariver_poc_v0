@@ -78,6 +78,12 @@ worker. Existing 60-second download URLs are allowed to expire; do not delete re
 evidence during containment. Failed or abandoned multipart uploads are reconciled through the
 reviewed storage procedure, never by editing a completed database receipt.
 
+Upload promotion uses validation-attempt-scoped destination keys. If the acceptance transaction
+outcome is ambiguous, both quarantine and promoted objects are intentionally preserved. Reconcile
+against the committed manifest ID/version/location and full SHA-256 evidence; remove only a proven
+unreferenced attempt object through the reviewed incident procedure. Never infer canonical state
+from an object-key pattern or delete the quarantine source before the committed receipt is known.
+
 Administrator password fallback is also disabled by default. Before enabling it, query the canonical
 membership/subject stores and prove that at least two active, non-service-account,
 RESTRICTED-cleared human security administrators have `admin.manage` allowed and not denied. Then
