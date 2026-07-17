@@ -2,6 +2,7 @@
   "realm": "datariver",
   "enabled": true,
   "displayName": "DataRiver Local Development",
+  "loginTheme": "datariver",
   "sslRequired": "none",
   "registrationAllowed": false,
   "resetPasswordAllowed": true,

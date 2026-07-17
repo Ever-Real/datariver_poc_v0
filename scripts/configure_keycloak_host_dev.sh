@@ -38,6 +38,10 @@ docker exec "$container" bash -ec '
     -s "webOrigins=[\"$web_origin\"]" \
     -s "attributes={\"pkce.code.challenge.method\":\"S256\",\"post.logout.redirect.uris\":\"$web_origin/*\"}" \
     >/dev/null
+  /opt/keycloak/bin/kcadm.sh update realms/datariver \
+    --config "$config" \
+    -s "loginTheme=datariver" \
+    >/dev/null
 ' -- "$web_origin"
 
-echo "Keycloak datariver-web redirects configured for $web_origin."
+echo "Keycloak datariver-web redirects and DataRiver login theme configured for $web_origin."

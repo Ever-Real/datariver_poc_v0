@@ -34,6 +34,28 @@ export function currentReturnTo(): string {
   return safeReturnTo(`${window.location.pathname}${window.location.search}${window.location.hash}`)
 }
 
+/**
+ * Removes protocol response parameters while retaining the already-safe local
+ * navigation state. This lets a top-level SSO redirect return to the selected
+ * workspace and page without treating that selection as an authorization fact.
+ */
+export function callbackReturnTo(href = window.location.href): string {
+  const url = new URL(href, window.location.origin)
+  for (const parameter of [
+    'code',
+    'state',
+    'session_state',
+    'iss',
+    'error',
+    'error_description',
+    'error_uri',
+    'kc_action_status',
+  ]) {
+    url.searchParams.delete(parameter)
+  }
+  return safeReturnTo(`${url.pathname}${url.search}${url.hash}`)
+}
+
 export function redirectState(intent: AuthIntent, returnTo = currentReturnTo()): AuthRedirectState {
   return { version: AUTH_REDIRECT_STATE_VERSION, intent, returnTo: safeReturnTo(returnTo) }
 }

@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
+import { ArrowRight, ShieldCheck } from 'lucide-react'
 import { ApiClient, remediationKind } from './api/client'
 import type { AdminReadContext, CapabilitiesResponse, ExternalSystemLink } from './api/types'
 import { pageFromLocation, pageUrl, type Page } from './app/navigation'
@@ -19,13 +20,20 @@ import { QualityPage } from './features/quality/QualityPage'
 import { RegistrationPage } from './features/registration/RegistrationPage'
 import { SharingPage } from './features/sharing/SharingPage'
 
+function workspaceFromLocation(href = window.location.href): string {
+  const candidate = new URL(href).searchParams.get('workspace')?.trim() ?? ''
+  return /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(candidate)
+    ? candidate
+    : ''
+}
+
 export function App() {
   const auth = useAuth()
   const [page, setPage] = useState<Page>(pageFromLocation)
   const [catalogQuery, setCatalogQuery] = useState(() => new URL(window.location.href).searchParams.get('q') ?? '')
-  // A workspace selects a tenant/RLS boundary. Keep it in-memory so a prior
-  // browser session cannot silently reuse a security context.
-  const [workspace, setWorkspace] = useState('')
+  // The URL keeps the selected tenant across reloads without trusting it for
+  // authorization; every request still binds it to server-side membership/RLS.
+  const [workspace, setWorkspace] = useState(workspaceFromLocation)
   const [externalSystemLinks, setExternalSystemLinks] = useState<ExternalSystemLink[]>([])
   const [deploymentTier, setDeploymentTier] = useState<CapabilitiesResponse['deployment_tier']>('SINGLE_NODE_PILOT')
   const [catalogExportWorkerEnabled, setCatalogExportWorkerEnabled] = useState(false)
@@ -44,6 +52,7 @@ export function App() {
     const restore = () => {
       setPage(pageFromLocation())
       setCatalogQuery(new URL(window.location.href).searchParams.get('q') ?? '')
+      setWorkspace(workspaceFromLocation())
     }
     window.addEventListener('popstate', restore)
     return () => window.removeEventListener('popstate', restore)
@@ -128,19 +137,28 @@ export function App() {
 
   if (auth.loading) return <main className="centered"><div className="loader" /><p>인증 상태를 확인하고 있습니다.</p></main>
   if (!auth.user) return (
-    <main className="login-shell">
-      <section className="login-card">
-        <p className="eyebrow">Data governance, made navigable</p>
-        <h1>DataRiver</h1>
-        <p>DataHub 카탈로그, 변경관리, 지식그래프와 근거 기반 CHAT을 하나의 보안 경계 안에서 운영합니다.</p>
+    <main className="legacy-login-shell">
+      <section className="legacy-login-card" aria-labelledby="login-title">
+        <header>
+          <div className="legacy-login-mark"><ShieldCheck size={32} aria-hidden="true" /></div>
+          <h1 id="login-title">DataRiver</h1>
+          <p>Integrated Data Catalog Platform</p>
+        </header>
         {auth.notice && <div className={`notice ${auth.notice.kind === 'ERROR' ? 'notice-error' : ''}`} role="alert"><span>{auth.notice.message}</span></div>}
-        <button className="button" onClick={() => void auth.signIn()}>조직 계정으로 로그인</button>
+        <p className="legacy-login-guidance">조직 계정으로 안전하게 로그인합니다. 인증 정보는 DataRiver 브라우저 코드에 저장되지 않습니다.</p>
+        <button className="legacy-login-submit" onClick={() => void auth.signIn()}>Sign In <ArrowRight size={18} aria-hidden="true" /></button>
+        <footer>DATARIVER · SECURE ENVIRONMENT</footer>
       </section>
     </main>
   )
 
   const saveWorkspace = (value: string) => {
-    setWorkspace(value)
+    const normalized = value.trim()
+    const url = new URL(window.location.href)
+    if (normalized) url.searchParams.set('workspace', normalized)
+    else url.searchParams.delete('workspace')
+    window.history.replaceState({}, '', `${url.pathname}${url.search}${url.hash}`)
+    setWorkspace(normalized)
   }
 
   const currentAdminContext = adminAccess.workspace === workspace && adminAccess.status === 'allowed'
@@ -158,7 +176,7 @@ export function App() {
       client={client}
       workspace={workspace}
       deploymentTier={deploymentTier}
-      displayName={auth.user.profile.name ?? auth.user.profile.sub}
+      displayName={auth.profile?.display_name ?? auth.user.profile.name ?? auth.user.profile.sub}
       adminMenuItems={adminMenuItems}
       adminContextStatus={currentAdminStatus}
       externalSystemLinks={externalSystemLinks}

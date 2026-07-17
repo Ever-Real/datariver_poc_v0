@@ -74,10 +74,11 @@ enforcement and pass live scan/detail/lineage/apply/read-back contract tests. A 
 string alone is not production acceptance evidence.
 
 The frontend now has a governed enterprise shell with dense square-edge tokens, typed navigation,
-explicit in-memory Workspace commit/remount, a no-preload two-character global-search floor and
-server-scoped Admin visibility. An ordinary LoA-1 administrator is directed to explicit password
-reauthentication before any sensitive admin context is shown; tokens and Workspace context are not
-persisted in browser storage. It is not a completed enterprise UX. Classification policy,
+a URL-restored non-authoritative Workspace selection, a no-preload two-character global-search floor
+and server-scoped Admin visibility. OIDC user/profile/role state is hydrated into React memory via
+`/auth/me`; it is never persisted in browser storage. An ordinary eligible administrator may discover
+its menus, while each sensitive write/delete operation independently requires its configured
+password-reauthentication or hardware WebAuthn policy. It is not a completed enterprise UX. Classification policy,
 inference-profile review/revocation and RESTRICTED-grant administration are implemented.
 Catalog normalized hierarchy/lineage, audit/job browsing, Chat history/SSE/external-model adapter,
 automated KG extraction/projection rebuild and several upload lifecycle endpoints remain explicit API

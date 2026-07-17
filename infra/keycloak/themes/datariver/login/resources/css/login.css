@@ -1,0 +1,20 @@
+:root { color-scheme: light; font-family: Inter, "Noto Sans KR", Arial, sans-serif; }
+* { box-sizing: border-box; }
+body { margin: 0; background: #f8f9fa; color: #101828; }
+.login-shell { min-height: 100vh; display: grid; place-items: center; padding: 24px; }
+.login-card { width: min(100%, 420px); padding: 40px; background: #fff; border: 1px solid rgba(16, 24, 40, .08); box-shadow: 0 24px 48px rgba(16, 24, 40, .14); }
+.login-brand { display: grid; justify-items: center; margin-bottom: 34px; text-align: center; }
+.brand-mark { display: grid; place-items: center; width: 64px; height: 64px; margin-bottom: 22px; border-radius: 2px; background: #004b87; color: #fff; font-size: 33px; font-weight: 900; box-shadow: 0 12px 24px rgba(0, 75, 135, .22); }
+h1 { margin: 0; font-size: 28px; font-weight: 900; letter-spacing: -.04em; text-transform: uppercase; }
+.login-brand p, footer { margin: 8px 0 0; color: rgba(16, 24, 40, .42); font-size: 10px; font-weight: 800; letter-spacing: .15em; text-transform: uppercase; }
+form { display: grid; gap: 8px; }
+label { margin: 6px 0 0 4px; color: rgba(16, 24, 40, .45); font-size: 10px; font-weight: 900; letter-spacing: .13em; text-transform: uppercase; }
+.field { position: relative; }
+.field span { position: absolute; top: 50%; left: 16px; color: rgba(16, 24, 40, .28); transform: translateY(-50%); }
+input[type="text"], input[type="password"] { width: 100%; min-height: 48px; padding: 0 16px 0 42px; border: 1px solid rgba(16, 24, 40, .1); border-radius: 2px; background: rgba(16, 24, 40, .02); color: #101828; font: inherit; font-size: 14px; font-weight: 700; outline: none; }
+input:focus { border-color: #004b87; box-shadow: 0 0 0 3px rgba(0, 75, 135, .12); }
+.remember { display: flex; align-items: center; gap: 7px; font-size: 10px; letter-spacing: .05em; text-transform: none; }
+button { display: flex; min-height: 54px; align-items: center; justify-content: center; gap: 12px; margin-top: 22px; border: 0; border-radius: 2px; background: #101828; color: #fff; cursor: pointer; font: inherit; font-size: 13px; font-weight: 900; letter-spacing: .12em; text-transform: uppercase; box-shadow: 0 12px 24px rgba(16, 24, 40, .2); }
+button:hover, button:focus-visible { background: #293247; }
+.login-message { margin: 0 0 14px; padding: 10px 12px; border: 1px solid #fecaca; background: #fef2f2; color: #b42318; font-size: 12px; font-weight: 700; text-align: center; }
+footer { margin-top: 30px; padding-top: 20px; border-top: 1px solid rgba(16, 24, 40, .08); text-align: center; }

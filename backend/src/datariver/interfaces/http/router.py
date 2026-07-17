@@ -2,6 +2,7 @@ from fastapi import APIRouter
 
 from datariver.interfaces.http.routes import (
     admin,
+    auth,
     catalog,
     chat,
     classification_access_admin,
@@ -16,6 +17,7 @@ from datariver.interfaces.http.routes import (
 )
 
 api_router = APIRouter()
+api_router.include_router(auth.router)
 api_router.include_router(admin.router)
 api_router.include_router(classification_access_admin.router)
 api_router.include_router(health.router)

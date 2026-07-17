@@ -142,6 +142,7 @@ def test_openapi_contains_all_required_product_modules() -> None:
     document = create_app(settings(), container_factory=factory).openapi()
 
     assert {
+        "/api/v1/auth/me",
         "/api/v1/catalog/assets",
         "/api/v1/catalog/facets",
         "/api/v1/catalog/suggestions",

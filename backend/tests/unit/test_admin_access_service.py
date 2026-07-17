@@ -293,6 +293,7 @@ def _service(state: dict[str, object], *, enabled: bool = True) -> AdminAccessSe
 @pytest.mark.parametrize(
     "assurance",
     [
+        AuthenticationAssurance.PASSWORD,
         AuthenticationAssurance.PASSWORD_REAUTH,
         AuthenticationAssurance.HARDWARE_WEBAUTHN,
     ],
@@ -359,33 +360,19 @@ async def test_membership_detail_hides_unknown_or_other_workspace_subject() -> N
         )
 
 
-@pytest.mark.asyncio
-async def test_membership_reads_reject_ordinary_password_before_repository_access() -> None:
-    workspace_id, target_id, administrator_id, other_admin_id = (uuid4() for _ in range(4))
-    now = datetime.now(UTC)
-    state = _state(workspace_id, target_id, administrator_id, other_admin_id)
-
-    with pytest.raises(ForbiddenError) as captured:
-        await _service(state).list_workspace_memberships(
-            workspace_id=workspace_id,
-            limit=50,
-            subject=_administrator(
-                workspace_id,
-                administrator_id,
-                assurance=AuthenticationAssurance.PASSWORD,
-                now=now,
-            ),
-            environment=EnvironmentAttributes(requested_at=now),
-            request_id="membership-weak-auth",
-        )
-
-    assert captured.value.details["remediation"] == {"kind": "REAUTH_REQUIRED"}
-    assert state["membership_read_count"] == 0
-
-
 @pytest.mark.parametrize(
     ("enabled", "assurance", "expected_operations"),
     [
+        (
+            False,
+            AuthenticationAssurance.PASSWORD,
+            {
+                AdminOperation.MEMBERSHIP_ACCESS_READ,
+                AdminOperation.CLASSIFICATION_POLICY_READ,
+                AdminOperation.INFERENCE_PROVIDER_PROFILE_READ,
+                AdminOperation.RESTRICTED_SEARCH_GRANT_READ,
+            },
+        ),
         (
             False,
             AuthenticationAssurance.PASSWORD_REAUTH,

@@ -414,6 +414,15 @@ class CapabilitiesResponse(BaseModel):
     deployment_tier: Literal["SINGLE_NODE_PILOT", "HA_CANDIDATE", "HA_ACCEPTED"]
 
 
+class AuthMeResponse(BaseModel):
+    subject: str
+    display_name: str
+    email: str | None = None
+    roles: list[str] = Field(default_factory=list)
+    authentication_assurance: str
+    authentication_time: datetime | None
+
+
 class ProblemDetails(BaseModel):
     type: str
     title: str

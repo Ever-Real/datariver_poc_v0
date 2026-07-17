@@ -24,6 +24,12 @@ Generated OpenAPI at `/api/v1/openapi.json` is authoritative for implemented pay
 
 ## Implemented endpoint inventory
 
+### Authentication profile hydration
+
+| Method/path | Authorization | Purpose |
+|---|---|---|
+| `GET /auth/me` | verified bearer identity; no Workspace header | sanitized subject, display name, email, realm roles, normalized assurance and authentication time for React in-memory hydration after an OIDC callback or silent SSO round-trip |
+
 ### Health and operations
 
 | Method/path | Authorization | Purpose |
@@ -219,11 +225,11 @@ maker-checker API; there is no Chat-specific duration parameter or fallback.
 
 | Method/path | Assurance/authorization | Purpose |
 |---|---|---|
-| `GET /admin/me` | eligible human security administrator + recent password reauth or hardware WebAuthn | internal subject identity, current-assurance operations, fallback availability and the supported action vocabulary |
-| `GET /admin/workspace-memberships?limit=` | eligible human security administrator + recent password reauth or hardware WebAuthn | bounded workspace membership display/version summaries, maximum 100 |
-| `GET /admin/workspace-memberships/{subject_id}/access` | eligible human security administrator + recent password reauth or hardware WebAuthn | exact typed full access document plus display metadata, membership version and matching `ETag` |
+| `GET /admin/me` | eligible human security administrator with a valid current OIDC identity | internal subject identity, current-assurance operations, fallback availability and the supported action vocabulary; read discovery never grants mutation authority |
+| `GET /admin/workspace-memberships?limit=` | eligible human security administrator with a valid current OIDC identity | bounded workspace membership display/version summaries, maximum 100 |
+| `GET /admin/workspace-memberships/{subject_id}/access` | eligible human security administrator with a valid current OIDC identity | exact typed full access document plus display metadata, membership version and matching `ETag` |
 | `PUT /admin/workspace-memberships/{subject_id}/access` | `admin.manage` + recent hardware WebAuthn | exact full access-document replacement for another subject |
-| `GET /admin/fallback/workspace-membership-access-requests?state=&limit=` | eligible human security administrator + recent password reauth or hardware WebAuthn | bounded workspace fallback queue |
+| `GET /admin/fallback/workspace-membership-access-requests?state=&limit=` | eligible human security administrator with a valid current OIDC identity | bounded workspace fallback queue |
 | `POST /admin/fallback/workspace-membership-access-requests` | eligible human security administrator + recent password reauth | create a five-minute typed maker request |
 | `POST .../{request_id}/decisions` | independent eligible human checker + recent password reauth or hardware WebAuthn | append approve/reject evidence |
 | `POST .../{request_id}/consume` | original maker + recent password reauth | atomically apply the approved command once |
@@ -238,12 +244,12 @@ remaining eligible human security administrators in the mutation transaction. Fa
 unless `ADMIN_PASSWORD_FALLBACK_ENABLED=true`; disabled requests return only the bounded
 `FALLBACK_UNAVAILABLE` remediation.
 
-Administrator read contracts reuse the fallback `READ` assurance policy but do not require the
-fallback feature to be enabled, so the hardware-key direct path can safely load the exact current
-document. Ordinary password, OTP and service identities are denied before membership data is read.
-An ordinary local LoA-1 login therefore receives a bounded `REAUTH_REQUIRED` remediation rather
-than administrator data; the browser must offer an explicit `max_age=0` password-reauthentication
-redirect and must not retry or replay an administrator command automatically after return.
+Administrator read contracts are discovery only: an eligible authenticated human may load
+`/admin/me` and the bounded read documents without password reauthentication, and the read path
+never grants mutation authority. Service identities remain denied. Sensitive write/delete operations
+continue to require their operation-specific hardware WebAuthn or typed password fallback policy;
+the browser offers explicit reauthentication only after such a response and never retries or replays
+a command automatically after return.
 The list returns summaries only; a client must fetch the detail immediately before editing and use
 its quoted version for `If-Match`. Unknown stored action/scope values fail closed instead of being
 silently omitted. `allowed_operations` in `/admin/me` reflects the current token assurance, fallback

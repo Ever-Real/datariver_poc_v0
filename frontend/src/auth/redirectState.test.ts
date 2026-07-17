@@ -1,5 +1,11 @@
 import { describe, expect, it } from 'vitest'
-import { readRedirectState, redirectState, safeReturnTo, signinRedirectArgs } from './redirectState'
+import {
+  callbackReturnTo,
+  readRedirectState,
+  redirectState,
+  safeReturnTo,
+  signinRedirectArgs,
+} from './redirectState'
 
 describe('OIDC redirect state', () => {
   it('preserves only same-origin relative return paths', () => {
@@ -25,6 +31,12 @@ describe('OIDC redirect state', () => {
       intent: 'PASSWORD_REAUTH',
       returnTo: '/?page=admin',
     })
+  })
+
+  it('removes only OIDC callback parameters while retaining a workspace selection', () => {
+    expect(callbackReturnTo(
+      'https://catalog.example/?workspace=00000000-0000-4000-8000-000000000100&page=catalog&code=code&state=state&session_state=session',
+    )).toBe('/?workspace=00000000-0000-4000-8000-000000000100&page=catalog')
   })
 
   it('builds explicit WebAuthn enrollment and fresh step-up requests', () => {

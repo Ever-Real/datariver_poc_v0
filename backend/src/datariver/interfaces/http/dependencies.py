@@ -54,10 +54,8 @@ async def get_request_context(
     workspace_id: Annotated[UUID, Header(alias="X-Workspace-Id")],
     purpose: Annotated[str | None, Header(alias="X-Purpose")] = None,
 ) -> RequestContext:
-    if credentials is None or credentials.scheme.lower() != "bearer":
-        raise AuthenticationError("A bearer access token is required.")
+    identity = await get_authenticated_identity(request, credentials)
     container = get_container(request)
-    identity = await container.oidc.verify(credentials.credentials)
     async with container.database.session_factory() as session:
         await set_security_context(session, workspace_id=workspace_id, subject_id=None)
         subject = await SqlSubjectReader(session).get_subject(
@@ -87,6 +85,16 @@ async def get_request_context(
     )
 
 
+async def get_authenticated_identity(
+    request: Request,
+    credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(bearer)],
+) -> VerifiedIdentity:
+    if credentials is None or credentials.scheme.lower() != "bearer":
+        raise AuthenticationError("A bearer access token is required.")
+    container = get_container(request)
+    return await container.oidc.verify(credentials.credentials)
+
+
 async def get_session(
     request: Request,
     context: Annotated[RequestContext, Depends(get_request_context)],
@@ -103,3 +111,4 @@ async def get_session(
 
 SessionDep = Annotated[AsyncSession, Depends(get_session)]
 ContextDep = Annotated[RequestContext, Depends(get_request_context)]
+AuthenticatedIdentityDep = Annotated[VerifiedIdentity, Depends(get_authenticated_identity)]

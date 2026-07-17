@@ -76,11 +76,14 @@ Open `http://localhost:8080`, sign in as `datariver-admin`, and read the generat
 00000000-0000-4000-8000-000000000100
 ```
 
-Workspace context is intentionally held only in the running browser tab, so enter it again after a
-reload or in a new tab. The local administrator is a `security-administrators` member, but the
-profile's administrator entry first requests explicit password reauthentication (`max_age=0`) before
-it shows sensitive administration context; no administrator action is automatically replayed after
-that redirect.
+The Workspace selector is retained as a validated URL selection, not browser-stored authority, so a
+reload or new tab keeps the requested workspace/page while every API request rechecks membership,
+RLS and ABAC on the server. OIDC user/profile/role state remains in React memory only: startup uses
+the Keycloak SSO session for a silent authorization-code + PKCE round-trip, then hydrates the
+verified profile from `GET /auth/me`. The local administrator is a `security-administrators` member
+and can read its server-derived administrator menu without reauthentication. Password reauth or
+hardware WebAuthn is requested only by the corresponding sensitive mutation; no operation is
+automatically replayed after that redirect.
 
 Use **USB 보안키 등록** in the signed-in profile area to enroll a FIDO2 security key. A denied
 high-risk action shows **보안키로 인증** and returns to the same `?page=...` view after Keycloak

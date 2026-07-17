@@ -221,11 +221,13 @@ are future seams, not current network calls.
 
 Cache keys include workspace, permission-scope hash, policy version, request parameters and the local projection version. Tokens, credentials, presigned URLs, full uploads, canonical job state and confidential prompts are prohibited.
 
-The browser treats its selected Workspace as a tenant/RLS context, not a preference: it is held only
-in the running application and is sent on each typed request. The OIDC user/token object is likewise
-in-memory; browser persistence is limited to the short-lived PKCE redirect transaction state, which
-contains only a versioned intent and validated same-origin return path. A fresh tab or reload must
-establish its context again, and the server always re-resolves membership and authorization.
+The browser treats its selected Workspace as a tenant/RLS context, not an authorization fact. The
+safe UUID selection is retained in the same-origin URL so an OIDC round-trip, reload or new tab can
+restore the requested page; it is still sent on each typed request and the server always re-resolves
+membership, RLS and ABAC. The OIDC user/token object plus verified `/auth/me` profile and roles stay
+in React memory. Browser persistence is limited to the short-lived PKCE redirect transaction state,
+which contains only a versioned intent and validated same-origin return path; no client-side role or
+administrator flag exists.
 
 ## Degradation model
 

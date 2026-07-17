@@ -18,6 +18,15 @@ export interface CapabilitiesResponse {
   deployment_tier: 'SINGLE_NODE_PILOT' | 'HA_CANDIDATE' | 'HA_ACCEPTED'
 }
 
+export interface AuthenticatedProfile {
+  subject: string
+  display_name: string
+  email?: string
+  roles: string[]
+  authentication_assurance: 'UNKNOWN' | 'PASSWORD' | 'PASSWORD_REAUTH' | 'OTHER_MFA' | 'HARDWARE_WEBAUTHN'
+  authentication_time?: string
+}
+
 export interface CatalogExportCapability {
   enabled: boolean
 }
@@ -494,7 +503,7 @@ export interface AdminReadContext {
   subject_id: string
   workspace_id: string
   display_name: string
-  authentication_assurance: 'PASSWORD_REAUTH' | 'HARDWARE_WEBAUTHN'
+  authentication_assurance: 'UNKNOWN' | 'PASSWORD' | 'PASSWORD_REAUTH' | 'OTHER_MFA' | 'HARDWARE_WEBAUTHN'
   fallback_enabled: boolean
   allowed_operations: AdminOperation[]
   action_vocabulary: string[]

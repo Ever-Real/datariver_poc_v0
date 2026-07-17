@@ -115,21 +115,27 @@ class AuthorizationService:
         if "service-accounts" in subject.groups or subject.job_function == "SERVICE_ACCOUNT":
             reasons.append("HUMAN_ADMINISTRATOR_REQUIRED")
         allowed_assurance = {AuthenticationAssurance.PASSWORD_REAUTH}
-        if stage in {AdminFallbackStage.READ, AdminFallbackStage.APPROVE}:
+        if stage is AdminFallbackStage.READ:
+            # Read-only administration discovery never grants a mutation. It
+            # must remain available after a normal OIDC login so the browser
+            # can hydrate its server-derived menu without a reauth loop.
+            allowed_assurance = set(AuthenticationAssurance)
+        elif stage is AdminFallbackStage.APPROVE:
             allowed_assurance.add(AuthenticationAssurance.HARDWARE_WEBAUTHN)
         if subject.authentication_assurance not in allowed_assurance:
             reasons.append("PASSWORD_REAUTH_REQUIRED")
-        if subject.authentication_time is None:
-            reasons.append("AUTHENTICATION_TIME_REQUIRED")
-        elif subject.authentication_time > (
-            environment.requested_at + environment.maximum_clock_skew
-        ):
-            reasons.append("AUTHENTICATION_TIME_INVALID")
-        elif (
-            environment.requested_at - subject.authentication_time
-            > environment.maximum_authentication_age
-        ):
-            reasons.append("AUTHENTICATION_TOO_OLD")
+        if stage is not AdminFallbackStage.READ:
+            if subject.authentication_time is None:
+                reasons.append("AUTHENTICATION_TIME_REQUIRED")
+            elif subject.authentication_time > (
+                environment.requested_at + environment.maximum_clock_skew
+            ):
+                reasons.append("AUTHENTICATION_TIME_INVALID")
+            elif (
+                environment.requested_at - subject.authentication_time
+                > environment.maximum_authentication_age
+            ):
+                reasons.append("AUTHENTICATION_TOO_OLD")
         decision = Decision(
             decision_id=uuid7(),
             effect=Effect.DENY if reasons else Effect.ALLOW,
