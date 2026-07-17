@@ -74,7 +74,7 @@ DATASET_DESCRIPTION_CSV_V1 = TypedUploadProfileDefinition(
     maximum_table_name_characters=500,
     maximum_description_characters=10_000,
     acceptance_validator_version="integrity-format-v1",
-    parser_version="dataset-description-csv-parser-v1",
+    parser_version="dataset-description-csv-parser-v2",
     schema_version="dataset-description-csv-schema-v1",
 )
 

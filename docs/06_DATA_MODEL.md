@@ -79,7 +79,7 @@ generation; a separate facet projection and a true incremental DataHub source cu
 | `integration.object_manifests` | `id`, `workspace + id UQ`, `bucket + object_key UQ`, declared/actual size-MIME-SHA, explicit allowlisted content profile, multipart/parts, state/classification/owner, completion/validation attempts, lease/error/summary, expiry/retention, `version`, timestamps | quarantine-to-accepted lifecycle; filename/MIME never implies proposal capability |
 | `integration.upload_preparation_jobs` | upload/requester composite FKs, exact source-evidence identity UQ, source configuration UQ, typed state, lease token/time, attempts/progress/error, optimistic version | durable typed preparation claim; execution role access is deliberately not granted by `0016` |
 | `integration.upload_preparation_receipts` | exact job source-evidence/upload composite FKs and UQs, source/accepted SHA equality, locator hash, optional ETag/VersionId, parser/scanner/schema/config versions, counts/root/receipt hashes | append-only full-input preparation receipt |
-| `integration.upload_registration_candidates` | receipt/ordinal UQ, receipt/asset UQ, local asset ID, typed description operation/value and candidate hash | append-only server-prepared candidate; no URN, Aspect, classification, provider document or object coordinate |
+| `integration.upload_registration_candidates` | receipt/ordinal UQ, receipt/asset UQ, local asset ID, evidence version, submitted platform/database/schema/table plus identity hash, typed description operation/value and candidate hash | append-only server-prepared candidate; submitted evidence remains distinct from the current catalog target; no URN, Aspect, classification, provider document or object coordinate |
 | `integration.seed_runs` | `id`, `workspace + namespace + pack_version UQ`, content hash/state/counts/apply/remove time | optional pack ownership/audit |
 | `integration.inference_provider_profile_versions` | workspace/profile key/version UQ, server route key, provider/model/deployment identities, kind, jurisdiction/region, classification ceiling, two bounded attestation snapshots, payload hash, maker/checker/revocation and optimistic version | immutable server-registered routing eligibility; no endpoint or credential |
 | `integration.inference_provider_generations` | workspace PK, monotonic generation and update time | transactional provider-routing invalidation generation |
@@ -167,6 +167,14 @@ through ordinary forced-RLS sessions after locking and verifying the exact accep
 immutable content profile, promoted-byte SHA-256 evidence and server configuration hash. It cannot
 claim a lease, write a receipt/candidate or create candidate provenance. No parser worker, candidate
 API or typed proposal capability is enabled.
+
+Alembic `0017` closes the submitted-identity evidence gap without rewriting history. Existing
+candidate rows become `LEGACY_V1` with no fabricated hierarchy; new rows must be
+`DATASET_DESCRIPTION_CANDIDATE_V2` and carry all four submitted hierarchy values plus their identity
+hash. Parser/configuration and ordered-root contracts advance to V2, and a trigger rejects new legacy
+rows plus every candidate update/delete. No new role grant is introduced. Candidate publication and
+read/preview/proposal APIs remain disabled until fenced publish and current set-based authorization
+are proven.
 
 ## Constraints enforced outside DDL
 

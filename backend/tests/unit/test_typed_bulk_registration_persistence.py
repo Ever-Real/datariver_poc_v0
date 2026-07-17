@@ -35,6 +35,9 @@ def test_typed_bulk_models_keep_profile_rows_and_provider_coordinates_server_own
     assert "ck_upload_preparation_jobs_lease_shape" in _check_names(jobs)
     assert "ck_upload_preparation_receipts_accepted_source_sha256_equal" in _check_names(receipts)
     assert "ck_upload_registration_candidates_candidate_kind_allowlist" in _check_names(candidates)
+    assert "ck_upload_registration_candidates_submitted_identity_evidence_shape" in _check_names(
+        candidates
+    )
     assert "ck_registration_content_bindings_candidate_hash_valid" in _check_names(bindings)
 
     assert {
@@ -45,6 +48,12 @@ def test_typed_bulk_models_keep_profile_rows_and_provider_coordinates_server_own
         "target_asset_id",
         "candidate_kind",
         "proposed_description",
+        "evidence_version",
+        "submitted_platform",
+        "submitted_database_name",
+        "submitted_schema_name",
+        "submitted_table_name",
+        "submitted_identity_hash",
         "candidate_hash",
         "created_at",
     } == set(candidates.c.keys())
@@ -122,7 +131,7 @@ def test_typed_bulk_migration_forces_rls_and_limits_mutation_grants() -> None:
         root / "backend/alembic/versions/0016_typed_bulk_registration_foundation.py"
     ).read_text(encoding="utf-8")
 
-    assert REQUIRED_DATABASE_REVISION == "0016"
+    assert REQUIRED_DATABASE_REVISION == "0017"
     for schema, table in (
         ("integration", "upload_preparation_jobs"),
         ("integration", "upload_preparation_receipts"),
@@ -144,6 +153,21 @@ def test_typed_bulk_migration_forces_rls_and_limits_mutation_grants() -> None:
     assert "GRANT UPDATE ON integration.upload_registration_candidates" not in migration
     assert "GRANT DELETE ON integration.upload_" not in migration
     assert "BYPASSRLS" not in migration
+
+
+def test_candidate_identity_evidence_migration_preserves_legacy_and_requires_v2() -> None:
+    root = Path(__file__).resolve().parents[3]
+    migration = (
+        root / "backend/alembic/versions/0017_candidate_submitted_identity_evidence.py"
+    ).read_text(encoding="utf-8")
+
+    assert 'server_default="LEGACY_V1"' in migration
+    assert "server_default=V2" in migration
+    assert "submitted_identity_hash ~ '^[0-9a-f]{64}$'" in migration
+    assert "new upload registration candidates require V2 evidence" in migration
+    assert "upload registration candidate evidence is immutable" in migration
+    assert "0017 downgrade refused: V2 submitted candidate identity evidence exists" in migration
+    assert "GRANT" not in migration
 
 
 def test_initial_schema_generator_preserves_typed_bulk_role_boundary() -> None:

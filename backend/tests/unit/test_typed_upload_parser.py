@@ -90,19 +90,24 @@ async def test_parser_streams_bom_multiline_and_empty_description_deterministica
 
 
 @pytest.mark.asyncio
-async def test_candidate_hash_binds_workspace_asset_and_exact_description() -> None:
+async def test_candidate_hash_binds_workspace_asset_submitted_identity_and_description() -> None:
     asset_id = uuid4()
     workspace_id = uuid4()
     other_workspace = uuid4()
     value = (HEADER + f"{asset_id},p,d,s,t,exact text\n").encode()
     changed = (HEADER + f"{asset_id},p,d,s,t,exact text \n").encode()
+    changed_identity = (HEADER + f"{asset_id},p,d,s,other,exact text\n").encode()
 
     first, _ = await _parse(value, workspace_id=workspace_id)
     other_scope, _ = await _parse(value, workspace_id=other_workspace)
     other_text, _ = await _parse(changed, workspace_id=workspace_id)
+    other_identity, _ = await _parse(changed_identity, workspace_id=workspace_id)
 
     assert first[0].candidate_hash != other_scope[0].candidate_hash
     assert first[0].candidate_hash != other_text[0].candidate_hash
+    assert first[0].candidate_hash != other_identity[0].candidate_hash
+    assert first[0].submitted_identity_hash != other_identity[0].submitted_identity_hash
+    assert len(first[0].submitted_identity_hash) == 64
 
 
 @pytest.mark.asyncio
@@ -239,14 +244,19 @@ async def test_candidate_and_ordered_result_chain_match_golden_contract() -> Non
         '00000000-0000-4000-8000-000000000203,p3,d3,s3,t3,"three\nlines"\r\n',
     )
     expected_hashes = (
-        "ce0f3761934180e2e0b1bac057ccd5469633d5ddb06b2f5c06e029c10dbebe8c",
-        "be9f2d27ca2a443482c7aadb2233a111eff9f409a6d04e38a80e1f7a59971016",
-        "79650a8a9ee01b242b18c40e76afe9ef9646120d60fab1fd7a7e0345a6631090",
+        "c13c6619e816cd7ad37b96be7dee56aeb86945df45952654b67868efb34b0da7",
+        "6dc36a14be02bf9ef4ba22bc447fd3e672b871474e1a1849a7b1b09f643d15f7",
+        "ed69b3f50b7f26119fd3620134756b4c5bc542260f1c3321be5d9b6c6dab223c",
+    )
+    expected_identity_hashes = (
+        "84095cd4056048d05c78b0a56425a4c91bcc87c647a5d299d6a35e839b89b0bb",
+        "859e9f4f07b4f7e4a554343a414a4d55ccc3df5f2547b590ebb0bc7aa25cb793",
+        "e2149deb34bc5268ef50e6f71dae1243cccf2f80898a16a519278916ce7807f4",
     )
     expected_roots = (
-        "bc441108bee086f267305998e241e65c48d2fc2c4cfe054d4afd0c97e2b2836e",
-        "7466ea898b8038f3b671a0465a2b6bd366694a001444587340f757e2e8eed91e",
-        "f3a38cc34b7fce556191f5977e342377892170797c126bb3fb28d3e0e187f247",
+        "b7b9f7d35e6875b522b55555cc648b0d4b1a5942118abe1107a97eda5ba96655",
+        "4a3d061a45ae972461d9d7d8f19ae08afe41f0bafd612145cadabbe3e664db51",
+        "b21e86d193588fa7a89338a2b76839e76d0b24a3f270d065f519732b3bf8479a",
     )
 
     for count in (1, 2, 3):
@@ -260,6 +270,10 @@ async def test_candidate_and_ordered_result_chain_match_golden_contract() -> Non
             assert (
                 tuple(candidate.candidate_hash for candidate in candidates)
                 == expected_hashes[:count]
+            )
+            assert (
+                tuple(candidate.submitted_identity_hash for candidate in candidates)
+                == expected_identity_hashes[:count]
             )
             assert summary.candidate_root_hash == expected_roots[count - 1]
 

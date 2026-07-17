@@ -105,3 +105,7 @@ to attempt-local staging before the final source hash is known, so no consumer m
 receipt/candidate tables directly. Runtime wiring remains blocked on an authorization-pruned ACTIVE
 DATASET plus exact-hierarchy resolver, lease-token staging, a single fenced publish transaction,
 scanner and target object-version/conditional-read evidence.
+
+ADR-0017 supersedes only this candidate hash/evidence sub-contract for new rows. It preserves any
+existing V1 row as explicit legacy evidence and requires submitted hierarchy plus V2 identity,
+candidate and ordered-root hashes for all future publication. It does not enable the worker or API.

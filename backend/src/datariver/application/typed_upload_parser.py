@@ -16,8 +16,10 @@ from datariver.domain.common import ValidationError, canonical_json_hash
 from datariver.domain.registration import UploadContentProfile
 
 DATASET_DESCRIPTION_CANDIDATE_KIND = "DATASET_DESCRIPTION_UPDATE"
-_CANDIDATE_HASH_CONTRACT = "dataset-description-candidate-v1"
-_CANDIDATE_ROOT_CONTRACT = b"datariver-dataset-description-root-v1\0"
+DATASET_DESCRIPTION_CANDIDATE_EVIDENCE_VERSION = "DATASET_DESCRIPTION_CANDIDATE_V2"
+_CANDIDATE_IDENTITY_HASH_CONTRACT = "dataset-description-submitted-identity-v1"
+_CANDIDATE_HASH_CONTRACT = "dataset-description-candidate-v2"
+_CANDIDATE_ROOT_CONTRACT = b"datariver-dataset-description-root-v2\0"
 _UTF8_BOM = b"\xef\xbb\xbf"
 
 
@@ -74,8 +76,10 @@ class DatasetDescriptionCandidateDraft:
     schema_name: str
     table_name: str
     proposed_description: str
+    submitted_identity_hash: str
     candidate_hash: str
     candidate_kind: str = DATASET_DESCRIPTION_CANDIDATE_KIND
+    evidence_version: str = DATASET_DESCRIPTION_CANDIDATE_EVIDENCE_VERSION
 
 
 @dataclass(frozen=True, slots=True)
@@ -401,13 +405,26 @@ def _candidate_from_fields(
             "The typed upload description is invalid.",
             ordinal=ordinal,
         )
+    submitted_identity_hash = canonical_json_hash(
+        {
+            "contract": _CANDIDATE_IDENTITY_HASH_CONTRACT,
+            "database_name": database_name,
+            "platform": platform,
+            "schema_name": schema_name,
+            "table_name": table_name,
+            "target_asset_id": str(target_asset_id),
+            "workspace_id": str(workspace_id),
+        }
+    )
     candidate_hash = canonical_json_hash(
         {
             "candidate_kind": DATASET_DESCRIPTION_CANDIDATE_KIND,
             "content_profile": definition.content_profile.value,
             "contract": _CANDIDATE_HASH_CONTRACT,
+            "evidence_version": DATASET_DESCRIPTION_CANDIDATE_EVIDENCE_VERSION,
             "proposed_description": description,
             "schema_version": definition.schema_version,
+            "submitted_identity_hash": submitted_identity_hash,
             "target_asset_id": str(target_asset_id),
             "workspace_id": str(workspace_id),
         }
@@ -421,6 +438,7 @@ def _candidate_from_fields(
         schema_name=schema_name,
         table_name=table_name,
         proposed_description=description,
+        submitted_identity_hash=submitted_identity_hash,
         candidate_hash=candidate_hash,
     )
 

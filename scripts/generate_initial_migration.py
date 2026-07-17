@@ -64,6 +64,7 @@ def build_upgrade() -> ops.UpgradeOps:
                     )
                 )
     operations.append(ops.ExecuteSQLOp(_manifest_content_profile_immutability_sql()))
+    operations.append(ops.ExecuteSQLOp(_candidate_evidence_immutability_sql()))
     operations.extend(
         ops.CreateForeignKeyOp.from_constraint(constraint)
         for constraint in _deferred_foreign_keys()
@@ -202,8 +203,43 @@ EXECUTE FUNCTION integration.reject_object_manifest_content_profile_change()
 """.strip()
 
 
+def _candidate_evidence_immutability_sql() -> str:
+    return """
+CREATE FUNCTION integration.reject_upload_registration_candidate_evidence_mutation()
+RETURNS trigger
+LANGUAGE plpgsql
+SECURITY INVOKER
+SET search_path = pg_catalog
+AS $function$
+BEGIN
+    IF TG_OP = 'INSERT' AND NEW.evidence_version <> 'DATASET_DESCRIPTION_CANDIDATE_V2' THEN
+        RAISE EXCEPTION 'new upload registration candidates require V2 evidence'
+            USING ERRCODE = '23514';
+    END IF;
+    IF TG_OP IN ('UPDATE', 'DELETE') THEN
+        RAISE EXCEPTION 'upload registration candidate evidence is immutable'
+            USING ERRCODE = '23514';
+    END IF;
+    RETURN NEW;
+END
+$function$;
+
+CREATE TRIGGER reject_upload_registration_candidate_evidence_mutation
+BEFORE INSERT OR UPDATE OR DELETE ON integration.upload_registration_candidates
+FOR EACH ROW
+EXECUTE FUNCTION integration.reject_upload_registration_candidate_evidence_mutation()
+""".strip()
+
+
 def build_downgrade() -> ops.DowngradeOps:
     operations: list[ops.MigrateOperation] = [
+        ops.ExecuteSQLOp(
+            "DROP TRIGGER reject_upload_registration_candidate_evidence_mutation "
+            "ON integration.upload_registration_candidates"
+        ),
+        ops.ExecuteSQLOp(
+            "DROP FUNCTION integration.reject_upload_registration_candidate_evidence_mutation()"
+        ),
         ops.ExecuteSQLOp(
             "DROP TRIGGER reject_object_manifest_content_profile_change "
             "ON integration.object_manifests"

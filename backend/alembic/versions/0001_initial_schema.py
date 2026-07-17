@@ -1496,13 +1496,25 @@ def upgrade() -> None:
         sa.Column('target_asset_id', sa.Uuid(), nullable=False),
         sa.Column('candidate_kind', sa.String(length=100), nullable=False),
         sa.Column('proposed_description', sa.Text(), nullable=False),
+        sa.Column('evidence_version', sa.String(length=100), server_default='DATASET_DESCRIPTION_CANDIDATE_V2', nullable=False),
+        sa.Column('submitted_platform', sa.String(length=100), nullable=True),
+        sa.Column('submitted_database_name', sa.String(length=255), nullable=True),
+        sa.Column('submitted_schema_name', sa.String(length=255), nullable=True),
+        sa.Column('submitted_table_name', sa.String(length=500), nullable=True),
+        sa.Column('submitted_identity_hash', sa.String(length=64), nullable=True),
         sa.Column('candidate_hash', sa.String(length=64), nullable=False),
         sa.Column('created_at', sa.DateTime(timezone=True), nullable=False),
         sa.Column('id', sa.Uuid(), nullable=False),
+        sa.CheckConstraint("(evidence_version = 'LEGACY_V1' AND submitted_platform IS NULL AND submitted_database_name IS NULL AND submitted_schema_name IS NULL AND submitted_table_name IS NULL AND submitted_identity_hash IS NULL) OR (evidence_version = 'DATASET_DESCRIPTION_CANDIDATE_V2' AND submitted_platform IS NOT NULL AND submitted_database_name IS NOT NULL AND submitted_schema_name IS NOT NULL AND submitted_table_name IS NOT NULL AND submitted_identity_hash ~ '^[0-9a-f]{64}$')", name=op.f('ck_upload_registration_candidates_submitted_identity_evidence_shape')),
         sa.CheckConstraint("candidate_hash ~ '^[0-9a-f]{64}$'", name=op.f('ck_upload_registration_candidates_candidate_hash_valid')),
         sa.CheckConstraint("candidate_kind = 'DATASET_DESCRIPTION_UPDATE'", name=op.f('ck_upload_registration_candidates_candidate_kind_allowlist')),
+        sa.CheckConstraint("evidence_version IN ('LEGACY_V1', 'DATASET_DESCRIPTION_CANDIDATE_V2')", name=op.f('ck_upload_registration_candidates_evidence_version_allowlist')),
         sa.CheckConstraint('char_length(proposed_description) <= 10000', name=op.f('ck_upload_registration_candidates_description_length')),
         sa.CheckConstraint('ordinal > 0', name=op.f('ck_upload_registration_candidates_ordinal_positive')),
+        sa.CheckConstraint('submitted_database_name IS NULL OR (char_length(submitted_database_name) BETWEEN 1 AND 255 AND submitted_database_name = btrim(submitted_database_name))', name=op.f('ck_upload_registration_candidates_submitted_database_name_valid')),
+        sa.CheckConstraint('submitted_platform IS NULL OR (char_length(submitted_platform) BETWEEN 1 AND 100 AND submitted_platform = btrim(submitted_platform))', name=op.f('ck_upload_registration_candidates_submitted_platform_valid')),
+        sa.CheckConstraint('submitted_schema_name IS NULL OR (char_length(submitted_schema_name) BETWEEN 1 AND 255 AND submitted_schema_name = btrim(submitted_schema_name))', name=op.f('ck_upload_registration_candidates_submitted_schema_name_valid')),
+        sa.CheckConstraint('submitted_table_name IS NULL OR (char_length(submitted_table_name) BETWEEN 1 AND 500 AND submitted_table_name = btrim(submitted_table_name))', name=op.f('ck_upload_registration_candidates_submitted_table_name_valid')),
         sa.ForeignKeyConstraint(['workspace_id', 'receipt_id'], ['integration.upload_preparation_receipts.workspace_id', 'integration.upload_preparation_receipts.id'], name='fk_upload_reg_candidates_workspace_receipt', ondelete='RESTRICT'),
         sa.PrimaryKeyConstraint('id', name=op.f('pk_upload_registration_candidates')),
         sa.UniqueConstraint('workspace_id', 'id', 'candidate_hash', name='uq_upload_registration_candidate_content'),
@@ -1612,6 +1624,7 @@ def upgrade() -> None:
         op.execute('ALTER TABLE sharing.api_invocations FORCE ROW LEVEL SECURITY')
         op.execute("CREATE POLICY workspace_isolation ON sharing.api_invocations USING (workspace_id = NULLIF(current_setting('app.workspace_id', true), '')::uuid) WITH CHECK (workspace_id = NULLIF(current_setting('app.workspace_id', true), '')::uuid)")
         op.execute("CREATE FUNCTION integration.reject_object_manifest_content_profile_change()\nRETURNS trigger\nLANGUAGE plpgsql\nSECURITY INVOKER\nSET search_path = pg_catalog\nAS $function$\nBEGIN\n    IF NEW.content_profile IS DISTINCT FROM OLD.content_profile THEN\n        RAISE EXCEPTION 'object manifest content_profile is immutable'\n            USING ERRCODE = '23514';\n    END IF;\n    RETURN NEW;\nEND\n$function$;\n\nCREATE TRIGGER reject_object_manifest_content_profile_change\nBEFORE UPDATE OF content_profile ON integration.object_manifests\nFOR EACH ROW\nEXECUTE FUNCTION integration.reject_object_manifest_content_profile_change()")
+        op.execute("CREATE FUNCTION integration.reject_upload_registration_candidate_evidence_mutation()\nRETURNS trigger\nLANGUAGE plpgsql\nSECURITY INVOKER\nSET search_path = pg_catalog\nAS $function$\nBEGIN\n    IF TG_OP = 'INSERT' AND NEW.evidence_version <> 'DATASET_DESCRIPTION_CANDIDATE_V2' THEN\n        RAISE EXCEPTION 'new upload registration candidates require V2 evidence'\n            USING ERRCODE = '23514';\n    END IF;\n    IF TG_OP IN ('UPDATE', 'DELETE') THEN\n        RAISE EXCEPTION 'upload registration candidate evidence is immutable'\n            USING ERRCODE = '23514';\n    END IF;\n    RETURN NEW;\nEND\n$function$;\n\nCREATE TRIGGER reject_upload_registration_candidate_evidence_mutation\nBEFORE INSERT OR UPDATE OR DELETE ON integration.upload_registration_candidates\nFOR EACH ROW\nEXECUTE FUNCTION integration.reject_upload_registration_candidate_evidence_mutation()")
         op.create_foreign_key(op.f('fk_api_products_workspace_id_id_current_version_id_api_product_versions'), 'api_products', 'api_product_versions', ['workspace_id', 'id', 'current_version_id'], ['workspace_id', 'product_id', 'id'], source_schema='sharing', referent_schema='sharing', use_alter=True)
         op.create_foreign_key('fk_catalog_export_requests_workspace_job', 'export_requests', 'jobs', ['workspace_id', 'job_id'], ['workspace_id', 'id'], source_schema='catalog', referent_schema='integration', ondelete='RESTRICT', use_alter=True)
         op.create_foreign_key(op.f('fk_changesets_workspace_id_graph_id_base_release_id_releases'), 'changesets', 'releases', ['workspace_id', 'graph_id', 'base_release_id'], ['workspace_id', 'graph_id', 'id'], source_schema='knowledge', referent_schema='knowledge', use_alter=True)
@@ -1621,6 +1634,8 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
+        op.execute('DROP TRIGGER reject_upload_registration_candidate_evidence_mutation ON integration.upload_registration_candidates')
+        op.execute('DROP FUNCTION integration.reject_upload_registration_candidate_evidence_mutation()')
         op.execute('DROP TRIGGER reject_object_manifest_content_profile_change ON integration.object_manifests')
         op.execute('DROP FUNCTION integration.reject_object_manifest_content_profile_change()')
         op.drop_constraint(op.f('fk_graphs_workspace_id_id_active_release_id_releases'), 'graphs', schema='knowledge', type_='foreignkey')

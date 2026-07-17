@@ -173,7 +173,7 @@ def test_typed_profile_definition_is_bounded_and_hashes_exact_schema() -> None:
     ) == (100, 255, 255, 500)
     assert (
         definition.configuration_hash
-        == "b179e85d41626ab0d046485df5aab2ca3fa035cf50d8d821fada561b5be41289"
+        == "17f0dfc313b5ca93ed8beee80a1be1a51a82196489a3be97dca5bd8b096ef5bb"
     )
     validate_upload_profile(
         content_profile=UploadContentProfile.DATASET_DESCRIPTION_CSV_V1,

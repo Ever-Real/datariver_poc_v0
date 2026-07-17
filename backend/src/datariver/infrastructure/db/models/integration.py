@@ -359,6 +359,44 @@ class UploadRegistrationCandidateModel(Base, UuidPrimaryKeyMixin):
             name="description_length",
         ),
         CheckConstraint("candidate_hash ~ '^[0-9a-f]{64}$'", name="candidate_hash_valid"),
+        CheckConstraint(
+            "evidence_version IN ('LEGACY_V1', 'DATASET_DESCRIPTION_CANDIDATE_V2')",
+            name="evidence_version_allowlist",
+        ),
+        CheckConstraint(
+            "(evidence_version = 'LEGACY_V1' AND submitted_platform IS NULL "
+            "AND submitted_database_name IS NULL AND submitted_schema_name IS NULL "
+            "AND submitted_table_name IS NULL AND submitted_identity_hash IS NULL) OR "
+            "(evidence_version = 'DATASET_DESCRIPTION_CANDIDATE_V2' "
+            "AND submitted_platform IS NOT NULL AND submitted_database_name IS NOT NULL "
+            "AND submitted_schema_name IS NOT NULL AND submitted_table_name IS NOT NULL "
+            "AND submitted_identity_hash ~ '^[0-9a-f]{64}$')",
+            name="submitted_identity_evidence_shape",
+        ),
+        CheckConstraint(
+            "submitted_platform IS NULL OR "
+            "(char_length(submitted_platform) BETWEEN 1 AND 100 "
+            "AND submitted_platform = btrim(submitted_platform))",
+            name="submitted_platform_valid",
+        ),
+        CheckConstraint(
+            "submitted_database_name IS NULL OR "
+            "(char_length(submitted_database_name) BETWEEN 1 AND 255 "
+            "AND submitted_database_name = btrim(submitted_database_name))",
+            name="submitted_database_name_valid",
+        ),
+        CheckConstraint(
+            "submitted_schema_name IS NULL OR "
+            "(char_length(submitted_schema_name) BETWEEN 1 AND 255 "
+            "AND submitted_schema_name = btrim(submitted_schema_name))",
+            name="submitted_schema_name_valid",
+        ),
+        CheckConstraint(
+            "submitted_table_name IS NULL OR "
+            "(char_length(submitted_table_name) BETWEEN 1 AND 500 "
+            "AND submitted_table_name = btrim(submitted_table_name))",
+            name="submitted_table_name_valid",
+        ),
         ForeignKeyConstraint(
             ("workspace_id", "receipt_id"),
             (
@@ -377,6 +415,17 @@ class UploadRegistrationCandidateModel(Base, UuidPrimaryKeyMixin):
     target_asset_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), nullable=False)
     candidate_kind: Mapped[str] = mapped_column(String(100), nullable=False)
     proposed_description: Mapped[str] = mapped_column(Text, nullable=False)
+    evidence_version: Mapped[str] = mapped_column(
+        String(100),
+        default="DATASET_DESCRIPTION_CANDIDATE_V2",
+        server_default="DATASET_DESCRIPTION_CANDIDATE_V2",
+        nullable=False,
+    )
+    submitted_platform: Mapped[str | None] = mapped_column(String(100))
+    submitted_database_name: Mapped[str | None] = mapped_column(String(255))
+    submitted_schema_name: Mapped[str | None] = mapped_column(String(255))
+    submitted_table_name: Mapped[str | None] = mapped_column(String(500))
+    submitted_identity_hash: Mapped[str | None] = mapped_column(String(64))
     candidate_hash: Mapped[str] = mapped_column(String(64), nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
