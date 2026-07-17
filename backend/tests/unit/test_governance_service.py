@@ -25,6 +25,7 @@ from datariver.domain.common import DomainEvent, ForbiddenError
 from datariver.domain.governance import (
     ChangeItem,
     ChangeRequest,
+    ChangeState,
     change_target_binding_hash,
 )
 
@@ -320,3 +321,80 @@ async def test_raw_creation_requires_explicit_hardware_human_operator_before_tar
     assert service_writer.decisions[0].reason_codes == ("HUMAN_ACTOR_REQUIRED",)
     assert service_target_authorizer.calls == 0
     assert service_state["requests"] == {}
+
+
+@pytest.mark.asyncio
+async def test_resubmission_requires_the_requester_and_uses_change_edit_authorization() -> None:
+    workspace_id = uuid4()
+    requester = replace(subject(workspace_id), allowed_actions=frozenset({Action.CHANGE_EDIT}))
+    target_authorizer = MemoryTargetAuthorizer()
+    items = await target_authorizer.authorize_targets(
+        workspace_id=workspace_id,
+        subject=requester,
+        items=[
+            ChangeItem(
+                uuid4(),
+                "DATAHUB_ASPECT",
+                "urn:li:dataset:resubmit",
+                "UPSERT",
+                {"name": "resubmit"},
+                "datasetProperties",
+                "b" * 64,
+            )
+        ],
+        request_classification=Classification.INTERNAL,
+        environment=EnvironmentAttributes(requested_at=datetime.now(UTC)),
+        request_id="request-resubmit-bind-1",
+    )
+    change_request = ChangeRequest.create(
+        workspace_id=workspace_id,
+        number="CR-FAB-260717-7F2A",
+        request_type="CATALOG_METADATA",
+        title="Update table description",
+        description="Correct the governed description.",
+        requester_id=requester.subject_id,
+        items=list(items),
+    )
+    reviewer = uuid4()
+    change_request.transition(
+        target=ChangeState.IN_REVIEW,
+        actor_id=reviewer,
+        reason="Review started",
+        policy_decision_id=uuid4(),
+        expected_version=change_request.version,
+    )
+    change_request.transition(
+        target=ChangeState.CHANGES_REQUESTED,
+        actor_id=reviewer,
+        reason="Please add test evidence.",
+        policy_decision_id=uuid4(),
+        expected_version=change_request.version,
+    )
+    state: dict[str, object] = {
+        "requests": {change_request.change_request_id: change_request},
+        "outbox": [],
+        "idempotency": {},
+    }
+    writer = MemoryDecisionWriter()
+    service = GovernanceService(
+        cast(Callable[[], GovernanceUnitOfWork], lambda: MemoryUnitOfWork(state)),
+        AuthorizationService(decision_writer=writer),
+        target_authorizer=target_authorizer,
+    )
+
+    result = await service.transition(
+        workspace_id=workspace_id,
+        change_request_id=change_request.change_request_id,
+        target=ChangeState.REGISTERED,
+        actor_id=requester.subject_id,
+        reason="Evidence attached and resubmitted.",
+        expected_version=change_request.version,
+        subject=requester,
+        environment=EnvironmentAttributes(requested_at=datetime.now(UTC)),
+        request_id="request-resubmit-1",
+        idempotency_key="idempotency-resubmit-0001",
+        request_hash="d" * 64,
+    )
+
+    assert result.state is ChangeState.REGISTERED
+    assert writer.actions == [Action.CHANGE_EDIT.value]

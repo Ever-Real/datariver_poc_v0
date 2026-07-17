@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import hashlib
-from datetime import UTC, datetime
 from typing import Annotated
 from uuid import UUID
 
@@ -9,6 +8,7 @@ import orjson
 from fastapi import APIRouter, Header, Query, Request
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from datariver.application.change_numbers import change_request_number
 from datariver.application.classification_access import ClassificationAccessResolver
 from datariver.application.services.authorization import AuthorizationService
 from datariver.application.services.change_targets import CatalogChangeTargetAuthorizer
@@ -135,7 +135,7 @@ async def create_change_request(
     request_hash = hashlib.sha256(
         orjson.dumps(payload.model_dump(mode="json"), option=orjson.OPT_SORT_KEYS)
     ).hexdigest()
-    number = f"CR-{datetime.now(UTC):%Y}-{uuid7().hex[:12].upper()}"
+    number = change_request_number(None)
     change_request = await _service(request, session).create_change_request(
         workspace_id=context.workspace_id,
         number=number,

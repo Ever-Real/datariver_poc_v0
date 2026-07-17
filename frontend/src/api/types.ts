@@ -233,6 +233,7 @@ export type ChangeRequestState =
   | 'APPLYING'
   | 'APPLIED'
   | 'APPLY_FAILED'
+  | 'CHANGES_REQUESTED'
   | 'REJECTED'
   | 'CANCELLED'
 

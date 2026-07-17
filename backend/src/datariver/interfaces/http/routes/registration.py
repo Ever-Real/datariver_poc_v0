@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import hashlib
 import re
-from datetime import UTC, datetime
 from typing import Annotated
 from uuid import UUID
 
@@ -10,6 +9,7 @@ import orjson
 from fastapi import APIRouter, Header, Query, Request, Response
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from datariver.application.change_numbers import change_request_number
 from datariver.application.classification_access import ClassificationAccessResolver
 from datariver.application.dto import UploadRegistrationCandidatePage
 from datariver.application.services.authorization import AuthorizationService
@@ -549,7 +549,7 @@ async def create_registration_proposal(
     ).hexdigest()
     value = await _governance_service(request, session).create_change_request(
         workspace_id=context.workspace_id,
-        number=f"CR-{datetime.now(UTC):%Y}-{uuid7().hex[:12].upper()}",
+        number=change_request_number(None),
         request_type="DATA_REGISTRATION",
         title=payload.title,
         description=f"{payload.description}\n\n{evidence}".strip(),

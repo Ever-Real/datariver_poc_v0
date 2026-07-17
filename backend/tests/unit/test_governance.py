@@ -86,6 +86,49 @@ def test_undeclared_transition_is_rejected() -> None:
         )
 
 
+def test_changes_requested_requires_an_explicit_resubmission_before_review_restarts() -> None:
+    request = make_request()
+    actor = uuid4()
+    request.transition(
+        target=ChangeState.IN_REVIEW,
+        actor_id=actor,
+        reason="Review started",
+        policy_decision_id=uuid4(),
+        expected_version=request.version,
+    )
+    request.transition(
+        target=ChangeState.CHANGES_REQUESTED,
+        actor_id=actor,
+        reason="Please supply test evidence.",
+        policy_decision_id=uuid4(),
+        expected_version=request.version,
+    )
+    with pytest.raises(ValidationError):
+        request.transition(
+            target=ChangeState.IN_REVIEW,
+            actor_id=actor,
+            reason="Cannot skip resubmission.",
+            policy_decision_id=uuid4(),
+            expected_version=request.version,
+        )
+    with pytest.raises(ValidationError, match="Only the requester"):
+        request.transition(
+            target=ChangeState.REGISTERED,
+            actor_id=actor,
+            reason="A reviewer cannot resubmit on behalf of the requester.",
+            policy_decision_id=uuid4(),
+            expected_version=request.version,
+        )
+    request.transition(
+        target=ChangeState.REGISTERED,
+        actor_id=request.requester_id,
+        reason="Supplemented and resubmitted.",
+        policy_decision_id=uuid4(),
+        expected_version=request.version,
+    )
+    assert request.state is ChangeState.REGISTERED
+
+
 def test_change_creation_requires_source_hash() -> None:
     with pytest.raises(ValidationError, match="current DataHub aspect hash"):
         ChangeRequest.create(

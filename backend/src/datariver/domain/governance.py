@@ -26,6 +26,7 @@ class ChangeState(StrEnum):
     APPLYING = "APPLYING"
     APPLIED = "APPLIED"
     APPLY_FAILED = "APPLY_FAILED"
+    CHANGES_REQUESTED = "CHANGES_REQUESTED"
     REJECTED = "REJECTED"
     CANCELLED = "CANCELLED"
 
@@ -38,6 +39,7 @@ ALLOWED_TRANSITIONS: dict[ChangeState, frozenset[ChangeState]] = {
         {
             ChangeState.TESTING,
             ChangeState.FINAL_REVIEW,
+            ChangeState.CHANGES_REQUESTED,
             ChangeState.REJECTED,
             ChangeState.CANCELLED,
         }
@@ -46,18 +48,25 @@ ALLOWED_TRANSITIONS: dict[ChangeState, frozenset[ChangeState]] = {
         {
             ChangeState.IN_REVIEW,
             ChangeState.FINAL_REVIEW,
+            ChangeState.CHANGES_REQUESTED,
             ChangeState.REJECTED,
             ChangeState.CANCELLED,
         }
     ),
     ChangeState.FINAL_REVIEW: frozenset(
-        {ChangeState.APPLY_QUEUED, ChangeState.REJECTED, ChangeState.CANCELLED}
+        {
+            ChangeState.APPLY_QUEUED,
+            ChangeState.CHANGES_REQUESTED,
+            ChangeState.REJECTED,
+            ChangeState.CANCELLED,
+        }
     ),
     ChangeState.APPLY_QUEUED: frozenset(
         {ChangeState.APPLYING, ChangeState.APPLY_FAILED, ChangeState.CANCELLED}
     ),
     ChangeState.APPLYING: frozenset({ChangeState.APPLIED, ChangeState.APPLY_FAILED}),
     ChangeState.APPLY_FAILED: frozenset({ChangeState.APPLY_QUEUED, ChangeState.CANCELLED}),
+    ChangeState.CHANGES_REQUESTED: frozenset({ChangeState.REGISTERED, ChangeState.CANCELLED}),
     ChangeState.APPLIED: frozenset(),
     ChangeState.REJECTED: frozenset(),
     ChangeState.CANCELLED: frozenset(),
@@ -345,6 +354,12 @@ class ChangeRequest:
         if target is ChangeState.APPLIED:
             raise ValidationError("APPLIED requires verified reconciliation.")
         self._assert_transition_allowed(target)
+        if (
+            self.state is ChangeState.CHANGES_REQUESTED
+            and target is ChangeState.REGISTERED
+            and actor_id != self.requester_id
+        ):
+            raise ValidationError("Only the requester can resubmit a change request.")
         if target is ChangeState.APPLY_QUEUED:
             if any(
                 approval.stage == "FINAL" and approval.decision is ApprovalDecision.REJECTED

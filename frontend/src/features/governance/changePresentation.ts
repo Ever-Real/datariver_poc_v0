@@ -10,6 +10,7 @@ export const changeStateOptions: ReadonlyArray<{ value: '' | ChangeRequestState;
   { value: 'APPLYING', label: '적용 중' },
   { value: 'APPLIED', label: '적용 완료' },
   { value: 'APPLY_FAILED', label: '적용 실패' },
+  { value: 'CHANGES_REQUESTED', label: '보완 요청' },
   { value: 'REJECTED', label: '반려' },
   { value: 'CANCELLED', label: '취소' },
 ]
@@ -77,6 +78,7 @@ export function changeActionHints(changeRequest: ChangeRequestRecord): ChangeAct
         reviewApproval,
         transition('TESTING', '변경 / 테스트로 이동', 'primary'),
         transition('FINAL_REVIEW', '최종 검토로 이동'),
+        transition('CHANGES_REQUESTED', '보완 요청', 'danger'),
         transition('REJECTED', '반려', 'danger'),
         transition('CANCELLED', '요청 취소', 'danger'),
       ]
@@ -84,6 +86,7 @@ export function changeActionHints(changeRequest: ChangeRequestRecord): ChangeAct
       return [
         transition('IN_REVIEW', '검토로 되돌리기'),
         transition('FINAL_REVIEW', '최종 검토 요청', 'primary'),
+        transition('CHANGES_REQUESTED', '보완 요청', 'danger'),
         transition('REJECTED', '반려', 'danger'),
         transition('CANCELLED', '요청 취소', 'danger'),
       ]
@@ -91,12 +94,18 @@ export function changeActionHints(changeRequest: ChangeRequestRecord): ChangeAct
       return [
         finalApproval,
         transition('APPLY_QUEUED', '적용 대기열 등록', 'primary'),
+        transition('CHANGES_REQUESTED', '보완 요청', 'danger'),
         transition('REJECTED', '반려', 'danger'),
         transition('CANCELLED', '요청 취소', 'danger'),
       ]
     case 'APPLY_FAILED':
       return [
         transition('APPLY_QUEUED', '적용 재시도 요청', 'primary'),
+        transition('CANCELLED', '요청 취소', 'danger'),
+      ]
+    case 'CHANGES_REQUESTED':
+      return [
+        transition('REGISTERED', '보완 후 재등록', 'primary'),
         transition('CANCELLED', '요청 취소', 'danger'),
       ]
     default:

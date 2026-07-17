@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import hashlib
 import re
-from datetime import UTC, datetime
 from typing import Annotated, Literal
 from uuid import UUID
 
@@ -11,6 +10,7 @@ from fastapi import APIRouter, Header, Query, Request, Response, status
 from fastapi.responses import JSONResponse
 
 from datariver.application.catalog_export_csv import CSV_SAFETY_VERSION
+from datariver.application.change_numbers import change_request_number
 from datariver.application.classification_access import ClassificationAccessResolver
 from datariver.application.dto import CatalogExportRequest
 from datariver.application.services.authorization import AuthorizationService
@@ -21,7 +21,7 @@ from datariver.application.services.catalog_sync import CatalogSyncService
 from datariver.application.services.change_targets import CatalogChangeTargetAuthorizer
 from datariver.application.services.governance import GovernanceService
 from datariver.domain.authz import BuiltinPolicyEngine
-from datariver.domain.common import ValidationError, uuid7
+from datariver.domain.common import ValidationError
 from datariver.infrastructure.db.authz import SqlDecisionWriter
 from datariver.infrastructure.db.catalog import SqlCatalogIndexReader, SqlCatalogProjectionWriter
 from datariver.infrastructure.db.catalog_export import SqlCatalogExportStore
@@ -630,7 +630,7 @@ async def create_asset_description_change_request(
     session: SessionDep,
     if_match: Annotated[str, Header(alias="If-Match", min_length=66, max_length=66)],
     idempotency_key: Annotated[str, Header(alias="Idempotency-Key", min_length=16, max_length=200)],
-) -> ChangeRequestResponse:
+) -> ChangeRequestResponse | JSONResponse:
     expected_preview_etag = _description_preview_etag(if_match)
     request_hash = hashlib.sha256(
         orjson.dumps(
@@ -645,7 +645,26 @@ async def create_asset_description_change_request(
             option=orjson.OPT_SORT_KEYS,
         )
     ).hexdigest()
-    number = f"CR-{datetime.now(UTC):%Y}-{uuid7().hex[:12].upper()}"
+    current_target = await _service(request, session).get_asset(
+        subject=context.subject,
+        asset_id=asset_id,
+        environment=context.environment,
+        request_id=context.request_id,
+    )
+    if current_target is None:
+        return JSONResponse(
+            status_code=404,
+            content={
+                "type": "urn:datariver:problem:not_found",
+                "title": "Not found",
+                "status": 404,
+                "detail": "The catalog asset does not exist.",
+                "instance": str(request.url.path),
+                "code": "not_found",
+                "request_id": context.request_id,
+            },
+        )
+    number = change_request_number(current_target.index.platform)
     change_request = await _description_service(request, session).create_change_request(
         asset_id=asset_id,
         expected_preview_etag=expected_preview_etag,

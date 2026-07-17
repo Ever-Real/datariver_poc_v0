@@ -340,7 +340,12 @@ class GovernanceService:
             if change_request is None:
                 raise ChangeRequestNotFound("The change request does not exist.")
             action = Action.CHANGE_REVIEW
-            if target is ChangeState.APPLY_QUEUED:
+            if (
+                change_request.state is ChangeState.CHANGES_REQUESTED
+                and target is ChangeState.REGISTERED
+            ):
+                action = Action.CHANGE_EDIT
+            elif target is ChangeState.APPLY_QUEUED:
                 action = (
                     Action.CHANGE_RETRY
                     if change_request.state is ChangeState.APPLY_FAILED
