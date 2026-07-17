@@ -95,7 +95,9 @@ async def bootstrap_local_identity() -> dict[str, object]:
             )
             attributes = {
                 "groups": ["security-administrators"],
-                "allowed_actions": [action.value for action in Action],
+                "allowed_actions": [
+                    action.value for action in Action if action is not Action.CHANGE_RAW_CREATE
+                ],
                 "denied_actions": [],
                 "allowed_system_ids": [],
                 "allowed_domain_ids": [],

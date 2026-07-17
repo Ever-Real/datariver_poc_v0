@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import hashlib
+import re
+from datetime import UTC, datetime
 from typing import Annotated, Literal
 from uuid import UUID
 
@@ -13,19 +15,31 @@ from datariver.application.classification_access import ClassificationAccessReso
 from datariver.application.dto import CatalogExportRequest
 from datariver.application.services.authorization import AuthorizationService
 from datariver.application.services.catalog import CatalogService
+from datariver.application.services.catalog_description import CatalogDescriptionService
 from datariver.application.services.catalog_export import CatalogExportService
 from datariver.application.services.catalog_sync import CatalogSyncService
+from datariver.application.services.change_targets import CatalogChangeTargetAuthorizer
+from datariver.application.services.governance import GovernanceService
 from datariver.domain.authz import BuiltinPolicyEngine
+from datariver.domain.common import ValidationError, uuid7
 from datariver.infrastructure.db.authz import SqlDecisionWriter
 from datariver.infrastructure.db.catalog import SqlCatalogIndexReader, SqlCatalogProjectionWriter
 from datariver.infrastructure.db.catalog_export import SqlCatalogExportStore
 from datariver.infrastructure.db.classification_access import (
     SqlClassificationAccessSnapshotReader,
 )
+from datariver.infrastructure.db.governance import SqlGovernanceUnitOfWork
 from datariver.interfaces.http.dependencies import ContextDep, SessionDep, get_container
-from datariver.interfaces.http.presenters import catalog_detail, catalog_summary
+from datariver.interfaces.http.presenters import (
+    catalog_detail,
+    catalog_summary,
+    change_request_response,
+)
 from datariver.interfaces.http.schemas import (
     CatalogAssetResponse,
+    CatalogDescriptionChangeRequest,
+    CatalogDescriptionPreviewRequest,
+    CatalogDescriptionPreviewResponse,
     CatalogDiscoveryPolicyMeta,
     CatalogExportCapabilityResponse,
     CatalogExportCreateRequest,
@@ -44,6 +58,7 @@ from datariver.interfaces.http.schemas import (
     CatalogSyncResponse,
     CatalogTreeNodeResponse,
     CatalogTreeResponse,
+    ChangeRequestResponse,
     PageMeta,
 )
 
@@ -85,6 +100,34 @@ def _sync_service(request: Request, session: SessionDep) -> CatalogSyncService:
     )
 
 
+def _description_service(request: Request, session: SessionDep) -> CatalogDescriptionService:
+    container = get_container(request)
+    index = SqlCatalogIndexReader(session)
+    classification_access = ClassificationAccessResolver(
+        SqlClassificationAccessSnapshotReader(session)
+    )
+    authorization = AuthorizationService(
+        decision_writer=SqlDecisionWriter(container.database.session_factory)
+    )
+    governance = GovernanceService(
+        lambda: SqlGovernanceUnitOfWork(container.database.session_factory, session=session),
+        authorization,
+        target_authorizer=CatalogChangeTargetAuthorizer(
+            index=index,
+            classification_access=classification_access,
+            authorization=authorization,
+        ),
+    )
+    return CatalogDescriptionService(
+        index=index,
+        target_reader=index,
+        classification_access=classification_access,
+        authorization=authorization,
+        datahub=container.datahub,
+        governance=governance,
+    )
+
+
 def _export_service(request: Request, session: SessionDep) -> CatalogExportService:
     container = get_container(request)
     index = SqlCatalogIndexReader(session)
@@ -118,6 +161,12 @@ def _export_filters(payload: CatalogExportCreateRequest) -> dict[str, str]:
         }.items()
         if value is not None
     }
+
+
+def _description_preview_etag(if_match: str) -> str:
+    if re.fullmatch(r'"[0-9a-f]{64}"', if_match) is None:
+        raise ValidationError("If-Match must contain the quoted preview_etag.")
+    return if_match
 
 
 def _export_not_found(request: Request, request_id: str) -> JSONResponse:
@@ -488,6 +537,86 @@ async def get_asset(
             },
         )
     return catalog_detail(asset)
+
+
+@router.post(
+    "/assets/{asset_id}/description-previews",
+    response_model=CatalogDescriptionPreviewResponse,
+)
+async def preview_asset_description(
+    asset_id: UUID,
+    payload: CatalogDescriptionPreviewRequest,
+    request: Request,
+    response: Response,
+    context: ContextDep,
+    session: SessionDep,
+) -> CatalogDescriptionPreviewResponse:
+    preview = await _description_service(request, session).preview(
+        asset_id=asset_id,
+        description=payload.description,
+        subject=context.subject,
+        environment=context.environment,
+        request_id=context.request_id,
+    )
+    response.headers["ETag"] = preview.preview_etag
+    response.headers["Cache-Control"] = "no-store, private"
+    return CatalogDescriptionPreviewResponse(
+        asset_id=preview.asset_id,
+        target_ref=preview.target_ref,
+        aspect_name="datasetProperties",
+        current_description=preview.current_description,
+        proposed_description=preview.proposed_description,
+        before_hash=preview.before_hash,
+        after_hash=preview.after_hash,
+        preview_etag=preview.preview_etag,
+        source_version=preview.source_version,
+        observed_at=preview.observed_at,
+    )
+
+
+@router.post(
+    "/assets/{asset_id}/description-change-requests",
+    response_model=ChangeRequestResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+async def create_asset_description_change_request(
+    asset_id: UUID,
+    payload: CatalogDescriptionChangeRequest,
+    request: Request,
+    context: ContextDep,
+    session: SessionDep,
+    if_match: Annotated[str, Header(alias="If-Match", min_length=66, max_length=66)],
+    idempotency_key: Annotated[str, Header(alias="Idempotency-Key", min_length=16, max_length=200)],
+) -> ChangeRequestResponse:
+    expected_preview_etag = _description_preview_etag(if_match)
+    request_hash = hashlib.sha256(
+        orjson.dumps(
+            {
+                "operation": "catalog.description-change-request.v1",
+                "asset_id": str(asset_id),
+                "expected_preview_etag": expected_preview_etag,
+                "description": payload.description,
+                "title": payload.title,
+                "change_description": payload.change_description,
+            },
+            option=orjson.OPT_SORT_KEYS,
+        )
+    ).hexdigest()
+    number = f"CR-{datetime.now(UTC):%Y}-{uuid7().hex[:12].upper()}"
+    change_request = await _description_service(request, session).create_change_request(
+        asset_id=asset_id,
+        expected_preview_etag=expected_preview_etag,
+        description=payload.description,
+        title=payload.title,
+        change_description=payload.change_description,
+        number=number,
+        subject=context.subject,
+        environment=context.environment,
+        request_id=context.request_id,
+        idempotency_key=idempotency_key,
+        request_hash=request_hash,
+    )
+    return change_request_response(change_request)
 
 
 @router.get("/assets/{asset_id}/lineage", response_model=CatalogLineageResponse)

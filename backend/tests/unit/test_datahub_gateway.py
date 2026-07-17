@@ -101,6 +101,11 @@ async def test_aspect_reread_hashes_only_the_typed_value() -> None:
 
     assert snapshot.content_hash == canonical_json_hash(document)
     assert snapshot.source_version == "version-2"
+    assert dict(snapshot.document) == document
+    with pytest.raises(TypeError):
+        snapshot.document["description"] = "mutated"  # type: ignore[index]
+    with pytest.raises(TypeError):
+        snapshot.document["customProperties"]["tier"] = "mutated"
     await client.aclose()
 
 

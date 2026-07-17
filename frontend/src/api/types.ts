@@ -98,6 +98,19 @@ export interface CatalogAssetDetail extends CatalogAsset {
   source_version: string
 }
 
+export interface CatalogDescriptionPreview {
+  asset_id: string
+  target_ref: string
+  aspect_name: 'datasetProperties'
+  current_description: string | null
+  proposed_description: string
+  before_hash: string
+  after_hash: string
+  preview_etag: string
+  source_version: string
+  observed_at: string
+}
+
 export interface CatalogTreeNode {
   id: string
   kind: 'PLATFORM' | 'DATABASE' | 'SCHEMA' | 'ASSET'

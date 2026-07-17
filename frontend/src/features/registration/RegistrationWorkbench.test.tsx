@@ -1,7 +1,7 @@
-import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { describe, expect, it, vi } from 'vitest'
 import type { ApiClient, RequestOptions } from '../../api/client'
-import type { ChangeRequestRecord, UploadRecord } from '../../api/types'
+import type { UploadRecord } from '../../api/types'
 import { RegistrationPage } from './RegistrationPage'
 
 const emptyTree = {
@@ -41,7 +41,7 @@ function uploadRecord(
 }
 
 describe('Registration workbench', () => {
-  it('opens in a read-only manual catalog workbench', async () => {
+  it('opens in a governed manual catalog workbench', async () => {
     const request = vi.fn((path: string, options?: RequestOptions) => {
       void path
       void options
@@ -51,8 +51,9 @@ describe('Registration workbench', () => {
     render(<RegistrationPage client={clientWith(request)} />)
 
     expect(screen.getByRole('tab', { name: /MANUAL/ })).toHaveAttribute('aria-selected', 'true')
-    expect(screen.getByText('READ ONLY')).toBeInTheDocument()
-    expect(screen.getByText(/typed metadata API/)).toBeInTheDocument()
+    expect(screen.getByText('GOVERNED')).toBeInTheDocument()
+    expect(screen.getByText(/원본 hash 미리보기/)).toBeInTheDocument()
+    expect(screen.queryByLabelText('Aspect JSON')).not.toBeInTheDocument()
     await waitFor(() => expect(request.mock.calls.some(([path, options]) => (
       path.startsWith('/catalog/tree/nodes?') && options?.signal instanceof AbortSignal
     ))).toBe(true))
@@ -99,7 +100,7 @@ describe('Registration workbench', () => {
     expect(screen.queryByText('업로드 또는 검증 상태 확인 실패')).not.toBeInTheDocument()
   })
 
-  it('requires the current aspect hash before an accepted upload can become a proposal', async () => {
+  it('keeps accepted uploads read-only until typed accepted-content binding exists', async () => {
     const upload = uploadRecord()
     const request = vi.fn((path: string, options?: RequestOptions) => {
       void options
@@ -111,10 +112,13 @@ describe('Registration workbench', () => {
     const historyItem = await screen.findByRole('button', { name: /catalog.csv/ })
     fireEvent.click(historyItem)
 
-    const beforeHash = screen.getByLabelText('원본 Aspect SHA-256')
-    expect(beforeHash).toBeRequired()
-    expect(beforeHash).toHaveAttribute('pattern', '[0-9a-f]{64}')
-    expect(screen.getByRole('option', { name: 'schemaMetadata' })).toBeInTheDocument()
+    expect(screen.getByText(/typed 변경 연결은 아직 준비 중/)).toBeInTheDocument()
+    expect(screen.queryByLabelText('대상 URN')).not.toBeInTheDocument()
+    expect(screen.queryByLabelText('Aspect JSON')).not.toBeInTheDocument()
+    expect(request.mock.calls.some(([path]) => path.includes('/registration-proposals'))).toBe(false)
+    const bindingStage = screen.getByText('Typed binding').closest('li')
+    expect(bindingStage).not.toBeNull()
+    expect(within(bindingStage as HTMLElement).getByText('대기')).toBeInTheDocument()
   })
 
   it('purges all bulk form values when the workspace client changes', async () => {
@@ -129,12 +133,6 @@ describe('Registration workbench', () => {
     const view = render(<RegistrationPage client={firstClient} />)
     fireEvent.click(screen.getByRole('tab', { name: /BULK/ }))
     fireEvent.click(await screen.findByRole('button', { name: /catalog-a.csv/ }))
-    fireEvent.change(screen.getByLabelText('대상 URN'), {
-      target: { value: 'urn:li:dataset:workspace-a' },
-    })
-    fireEvent.change(screen.getByLabelText('원본 Aspect SHA-256'), {
-      target: { value: 'b'.repeat(64) },
-    })
     fireEvent.change(screen.getByLabelText('분류등급'), {
       target: { value: 'CONFIDENTIAL' },
     })
@@ -142,53 +140,7 @@ describe('Registration workbench', () => {
     view.rerender(<RegistrationPage client={secondClient} />)
     fireEvent.click(await screen.findByRole('button', { name: /catalog-b.csv/ }))
 
-    expect(screen.getByLabelText('대상 URN')).toHaveValue('')
-    expect(screen.getByLabelText('원본 Aspect SHA-256')).toHaveValue('')
     expect(screen.getByLabelText('분류등급')).toHaveValue('INTERNAL')
-  })
-
-  it('prevents duplicate proposals and locks record switching while one is in flight', async () => {
-    const upload = uploadRecord()
-    let resolveProposal: ((value: ChangeRequestRecord) => void) | undefined
-    const proposalPromise = new Promise<ChangeRequestRecord>((resolve) => {
-      resolveProposal = resolve
-    })
-    const request = vi.fn((path: string, options?: RequestOptions): Promise<unknown> => {
-      void options
-      if (path.endsWith('/registration-proposals')) return proposalPromise
-      return Promise.resolve(path.startsWith('/uploads') ? { items: [upload] } : emptyTree)
-    })
-    render(<RegistrationPage client={clientWith(request)} />)
-    fireEvent.click(screen.getByRole('tab', { name: /BULK/ }))
-    const historyItem = await screen.findByRole('button', { name: /catalog.csv/ })
-    fireEvent.click(historyItem)
-    fireEvent.change(screen.getByLabelText('대상 URN'), {
-      target: { value: 'urn:li:dataset:test' },
-    })
-    fireEvent.change(screen.getByLabelText('원본 Aspect SHA-256'), {
-      target: { value: 'b'.repeat(64) },
-    })
-    const submit = screen.getByRole('button', { name: '변경요청 생성' })
-    fireEvent.click(submit)
-    fireEvent.click(submit)
-
-    await waitFor(() => expect(request.mock.calls.filter(
-      ([path]) => path.endsWith('/registration-proposals'),
-    )).toHaveLength(1))
-    expect(historyItem).toBeDisabled()
-    expect(screen.getByRole('button', { name: '생성 중…' })).toBeDisabled()
-
-    await act(async () => {
-      resolveProposal?.({
-        id: 'change-1', number: 'CR-1', request_type: 'DATA_REGISTRATION',
-        title: '등록', description: '', state: 'REGISTERED', requester_id: 'subject-1',
-        classification: 'INTERNAL', version: 1, items: [], approvals: [], transitions: [],
-      })
-      await proposalPromise
-    })
-    const proposalStage = screen.getByText('Proposal').closest('li')
-    expect(proposalStage).not.toBeNull()
-    expect(within(proposalStage as HTMLElement).getByText('완료')).toBeInTheDocument()
   })
 
   it('renders rejected validation as failure rather than completion', async () => {

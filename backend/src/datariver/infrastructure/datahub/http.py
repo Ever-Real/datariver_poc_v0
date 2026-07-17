@@ -4,6 +4,7 @@ import asyncio
 import json
 import time
 from datetime import UTC, datetime
+from types import MappingProxyType
 from typing import Any, Literal, Protocol
 from urllib.parse import quote
 
@@ -191,6 +192,14 @@ def _aspect_document(envelope: Any) -> dict[str, Any]:
             provider_code="INVALID_RESPONSE",
         )
     return candidate
+
+
+def _immutable_json(value: Any) -> Any:
+    if isinstance(value, dict):
+        return MappingProxyType({key: _immutable_json(item) for key, item in value.items()})
+    if isinstance(value, list):
+        return tuple(_immutable_json(item) for item in value)
+    return value
 
 
 def _datahub_version_from_config(payload: object) -> str:
@@ -743,12 +752,14 @@ class HttpDataHubGateway:
                 retryable=False,
                 provider_code="INVALID_RESPONSE",
             ) from error
+        normalized = _aspect_document(document)
         return DataHubAspectSnapshot(
             urn=external_urn,
             aspect_name=aspect_name,
-            content_hash=canonical_json_hash(_aspect_document(document)),
+            content_hash=canonical_json_hash(normalized),
             source_version=response.headers.get("etag", "unknown"),
             observed_at=datetime.now(UTC),
+            document=_immutable_json(normalized),
         )
 
     async def _read_reported_version(self) -> str:

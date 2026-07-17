@@ -21,7 +21,7 @@ from datariver.domain.authz import (
     EnvironmentAttributes,
     SubjectAttributes,
 )
-from datariver.domain.common import DomainEvent
+from datariver.domain.common import DomainEvent, ForbiddenError
 from datariver.domain.governance import (
     ChangeItem,
     ChangeRequest,
@@ -78,6 +78,7 @@ class MemoryTargetAuthorizer:
 class MemoryDecisionWriter:
     def __init__(self) -> None:
         self.decisions: list[Decision] = []
+        self.actions: list[str] = []
 
     async def append_decision(
         self,
@@ -89,8 +90,9 @@ class MemoryDecisionWriter:
         action: str,
         request_id: str,
     ) -> None:
-        del subject_id, workspace_id, resource_id, action, request_id
+        del subject_id, workspace_id, resource_id, request_id
         self.decisions.append(decision)
+        self.actions.append(action)
 
 
 class MemoryChangeRequests:
@@ -221,6 +223,7 @@ async def test_create_is_idempotent_and_writes_one_outbox_event() -> None:
         "request_id": "request-1",
         "idempotency_key": "idempotency-key-0001",
         "request_hash": "a" * 64,
+        "require_raw_operator_gate": False,
     }
 
     first = await service.create_change_request(**arguments)  # type: ignore[arg-type]
@@ -231,3 +234,89 @@ async def test_create_is_idempotent_and_writes_one_outbox_event() -> None:
     assert len(state["outbox"]) == 1  # type: ignore[arg-type]
     assert len(writer.decisions) == 2
     assert target_authorizer.calls == 2
+
+
+@pytest.mark.asyncio
+async def test_raw_creation_requires_explicit_hardware_human_operator_before_target_access() -> (
+    None
+):
+    workspace_id = uuid4()
+    base_actor = subject(workspace_id)
+    traces: list[tuple[dict[str, object], MemoryDecisionWriter, MemoryTargetAuthorizer]] = []
+
+    async def attempt(
+        *, actor: SubjectAttributes, suffix: str
+    ) -> tuple[
+        ChangeRequest | None,
+        dict[str, object],
+        MemoryDecisionWriter,
+        MemoryTargetAuthorizer,
+    ]:
+        state: dict[str, object] = {"requests": {}, "outbox": [], "idempotency": {}}
+        writer = MemoryDecisionWriter()
+        target_authorizer = MemoryTargetAuthorizer()
+        traces.append((state, writer, target_authorizer))
+        service = GovernanceService(
+            cast(Callable[[], GovernanceUnitOfWork], lambda: MemoryUnitOfWork(state)),
+            AuthorizationService(decision_writer=writer),
+            target_authorizer=target_authorizer,
+        )
+        result = await service.create_change_request(
+            workspace_id=workspace_id,
+            number=f"CR-RAW-{suffix}",
+            request_type="CATALOG_METADATA",
+            title="Raw update",
+            description="Operator controlled raw provider update",
+            requester_id=actor.subject_id,
+            items=[
+                ChangeItem(
+                    uuid4(),
+                    "DATAHUB_ASPECT",
+                    "urn:li:dataset:raw",
+                    "UPSERT",
+                    {"name": "raw"},
+                    "datasetProperties",
+                    "b" * 64,
+                )
+            ],
+            subject=actor,
+            classification=Classification.INTERNAL,
+            environment=EnvironmentAttributes(requested_at=datetime.now(UTC)),
+            request_id=f"request-raw-{suffix}",
+            idempotency_key=f"idempotency-raw-{suffix}-0001",
+            request_hash="c" * 64,
+        )
+        return result, state, writer, target_authorizer
+
+    with pytest.raises(ForbiddenError):
+        await attempt(actor=base_actor, suffix="missing-action")
+    denied_state, denied_writer, denied_target_authorizer = traces[-1]
+    assert denied_writer.actions == [Action.CHANGE_RAW_CREATE.value]
+    assert denied_target_authorizer.calls == 0
+    assert denied_state["requests"] == {}
+
+    allowed_actor = replace(
+        base_actor,
+        allowed_actions=frozenset({Action.CHANGE_CREATE, Action.CHANGE_RAW_CREATE}),
+    )
+    result, state, writer, target_authorizer = await attempt(
+        actor=allowed_actor, suffix="hardware-human"
+    )
+    assert result is not None
+    assert len(state["requests"]) == 1  # type: ignore[arg-type]
+    assert writer.actions == [Action.CHANGE_RAW_CREATE.value, Action.CHANGE_CREATE.value]
+    assert target_authorizer.calls == 1
+
+    service_actor = replace(
+        allowed_actor,
+        subject_id=uuid4(),
+        groups=frozenset({"stewards", "service-accounts"}),
+        job_function="SERVICE_ACCOUNT",
+    )
+    with pytest.raises(ForbiddenError):
+        await attempt(actor=service_actor, suffix="service-account")
+    service_state, service_writer, service_target_authorizer = traces[-1]
+    assert service_writer.actions == [Action.CHANGE_RAW_CREATE.value]
+    assert service_writer.decisions[0].reason_codes == ("HUMAN_ACTOR_REQUIRED",)
+    assert service_target_authorizer.calls == 0
+    assert service_state["requests"] == {}

@@ -5,7 +5,6 @@ import {
   FileUp,
   LoaderCircle,
   RefreshCw,
-  ShieldCheck,
   XCircle,
 } from 'lucide-react'
 import {
@@ -18,20 +17,11 @@ import {
   type FormEvent,
 } from 'react'
 import { newIdempotencyKey, type ApiClient } from '../../api/client'
-import type { ChangeRequestRecord, UploadRecord } from '../../api/types'
+import type { UploadRecord } from '../../api/types'
 import { ErrorNotice } from '../../components/ErrorNotice'
 
 const HASH_CHUNK_SIZE = 4 * 1024 * 1024
 const TERMINAL_STATES = new Set(['ACCEPTED', 'REJECTED', 'ABORTED', 'EXPIRED'])
-const DEFAULT_ASPECT_DOCUMENT = '{\n  "description": ""\n}'
-const ALLOWED_ASPECTS = [
-  'datasetProperties',
-  'domains',
-  'globalTags',
-  'glossaryTerms',
-  'ownership',
-  'schemaMetadata',
-] as const
 
 export function RegistrationBulkWorkbench({ client }: { client: ApiClient }) {
   const inputId = useId()
@@ -43,16 +33,8 @@ export function RegistrationBulkWorkbench({ client }: { client: ApiClient }) {
   const [records, setRecords] = useState<UploadRecord[]>([])
   const [error, setError] = useState<unknown>()
   const [busy, setBusy] = useState(false)
-  const [targetRef, setTargetRef] = useState('')
-  const [aspectName, setAspectName] = useState<(typeof ALLOWED_ASPECTS)[number]>('datasetProperties')
-  const [beforeHash, setBeforeHash] = useState('')
-  const [aspectDocument, setAspectDocument] = useState(DEFAULT_ASPECT_DOCUMENT)
-  const [proposal, setProposal] = useState<ChangeRequestRecord>()
-  const [proposalBusy, setProposalBusy] = useState(false)
   const generation = useRef(0)
   const controllers = useRef(new Set<AbortController>())
-  const proposalInFlight = useRef(false)
-  const proposalIntent = useRef<{ fingerprint: string; key: string } | undefined>(undefined)
   const loadIntent = useRef(0)
 
   const beginOperation = useCallback(() => {
@@ -91,10 +73,7 @@ export function RegistrationBulkWorkbench({ client }: { client: ApiClient }) {
     activeControllers.clear()
     setFile(undefined); setClassification('INTERNAL'); setProgress(0)
     setStatus('파일을 선택하세요.'); setRecord(undefined); setRecords([])
-    setError(undefined); setBusy(false); setProposal(undefined); setProposalBusy(false)
-    proposalInFlight.current = false; proposalIntent.current = undefined; loadIntent.current += 1
-    setTargetRef(''); setAspectName('datasetProperties'); setBeforeHash('')
-    setAspectDocument(DEFAULT_ASPECT_DOCUMENT)
+    setError(undefined); setBusy(false); loadIntent.current += 1
     void load()
     return () => {
       generation.current += 1
@@ -129,7 +108,7 @@ export function RegistrationBulkWorkbench({ client }: { client: ApiClient }) {
     event.preventDefault()
     if (!file) return
     const { controller, expectedGeneration } = beginOperation()
-    setBusy(true); setError(undefined); setProgress(0); setProposal(undefined)
+    setBusy(true); setError(undefined); setProgress(0)
     try {
       setStatus('SHA-256 계산 중')
       const sha256 = await digestFile(file, controller.signal, (value) => setProgress(value * 0.15))
@@ -191,82 +170,32 @@ export function RegistrationBulkWorkbench({ client }: { client: ApiClient }) {
     }
   }
 
-  const createProposal = async (event: FormEvent) => {
-    event.preventDefault()
-    if (!record || record.state !== 'ACCEPTED' || proposalBusy || proposalInFlight.current) return
-    proposalInFlight.current = true
-    const { controller, expectedGeneration } = beginOperation()
-    setError(undefined); setProposalBusy(true)
-    try {
-      const document = JSON.parse(aspectDocument) as Record<string, unknown>
-      const fingerprint = JSON.stringify({
-        uploadId: record.id,
-        targetRef,
-        aspectName,
-        beforeHash,
-        document,
-      })
-      if (proposalIntent.current?.fingerprint !== fingerprint) {
-        proposalIntent.current = {
-          fingerprint,
-          key: newIdempotencyKey('registration-proposal'),
-        }
-      }
-      const value = await client.request<ChangeRequestRecord>(
-        `/uploads/${record.id}/registration-proposals`,
-        {
-          method: 'POST',
-          idempotencyKey: proposalIntent.current.key,
-          signal: controller.signal,
-          body: JSON.stringify({
-            target_ref: targetRef,
-            aspect_name: aspectName,
-            before_hash: beforeHash,
-            after_document: document,
-            title: `${record.display_name} 메타데이터 등록`,
-            description: '검증된 업로드를 근거로 DataHub 메타데이터 변경을 제안합니다.',
-          }),
-        },
-      )
-      if (expectedGeneration === generation.current) setProposal(value)
-    } catch (next) {
-      if (!controller.signal.aborted && expectedGeneration === generation.current) setError(next)
-    } finally {
-      finishOperation(controller)
-      proposalInFlight.current = false
-      if (expectedGeneration === generation.current) setProposalBusy(false)
-    }
-  }
-
   const selectFile = (next?: File) => {
-    if (busy || proposalBusy) return
-    setFile(next); setProgress(0); setRecord(undefined); setProposal(undefined)
-    proposalIntent.current = undefined
+    if (busy) return
+    setFile(next); setProgress(0); setRecord(undefined)
     setStatus(next ? `${next.name} 업로드 준비됨` : '파일을 선택하세요.')
   }
 
   const dropFile = (event: DragEvent<HTMLLabelElement>) => {
     event.preventDefault()
-    if (busy || proposalBusy) return
+    if (busy) return
     selectFile(event.dataTransfer.files[0])
   }
 
   const selectRecord = (next: UploadRecord) => {
-    if (busy || proposalBusy) return
-    setRecord(next); setProposal(undefined); setTargetRef(''); setBeforeHash('')
-    setAspectName('datasetProperties'); setAspectDocument(DEFAULT_ASPECT_DOCUMENT)
-    proposalIntent.current = undefined
+    if (busy) return
+    setRecord(next)
   }
 
   return (
     <div className="registration-bulk-workbench">
       <aside className="registration-bulk-sidebar panel">
-        <header><div><span className="eyebrow">Quarantine first</span><h2>업로드 큐</h2></div><button type="button" aria-label="목록 새로고침" disabled={busy || proposalBusy} onClick={() => void load()}><RefreshCw size={14} /></button></header>
+        <header><div><span className="eyebrow">Quarantine first</span><h2>업로드 큐</h2></div><button type="button" aria-label="목록 새로고침" disabled={busy} onClick={() => void load()}><RefreshCw size={14} /></button></header>
         <form className="registration-upload-form" onSubmit={(event) => void upload(event)}>
           <label
             className="registration-dropzone"
             htmlFor={inputId}
-            aria-disabled={busy || proposalBusy}
+            aria-disabled={busy}
             onDragOver={(event) => event.preventDefault()}
             onDrop={dropFile}
           >
@@ -278,11 +207,11 @@ export function RegistrationBulkWorkbench({ client }: { client: ApiClient }) {
             className="sr-only"
             id={inputId}
             type="file"
-            disabled={busy || proposalBusy}
+            disabled={busy}
             accept=".csv,.json,.parquet,.yaml,.yml,.xlsx"
             onChange={(event) => selectFile(event.target.files?.[0])}
           />
-          <label>분류등급<select disabled={busy || proposalBusy} value={classification} onChange={(event) => setClassification(event.target.value)}><option>PUBLIC</option><option>INTERNAL</option><option>CONFIDENTIAL</option><option>RESTRICTED</option></select></label>
+          <label>분류등급<select disabled={busy} value={classification} onChange={(event) => setClassification(event.target.value)}><option>PUBLIC</option><option>INTERNAL</option><option>CONFIDENTIAL</option><option>RESTRICTED</option></select></label>
           <button className="button" disabled={!file || busy}>{busy ? '처리 중…' : '검증 업로드 시작'}</button>
           <div className="progress-track" role="progressbar" aria-label="업로드 진행률" aria-valuemin={0} aria-valuemax={100} aria-valuenow={Math.round(progress * 100)}><span style={{ width: `${Math.round(progress * 100)}%` }} /></div>
           <p className="muted" aria-live="polite">{status}</p>
@@ -290,7 +219,7 @@ export function RegistrationBulkWorkbench({ client }: { client: ApiClient }) {
         <div className="registration-recent-list">
           <h3>최근 등록 <span>{records.length}</span></h3>
           <div className="compact-list">
-            {records.map((item) => <button type="button" disabled={busy || proposalBusy} aria-pressed={record?.id === item.id} className={record?.id === item.id ? 'selected' : ''} key={item.id} onClick={() => selectRecord(item)}><span><strong>{item.display_name}</strong><small>{item.size_bytes.toLocaleString()} bytes</small></span><span className="badge">{item.state}</span></button>)}
+            {records.map((item) => <button type="button" disabled={busy} aria-pressed={record?.id === item.id} className={record?.id === item.id ? 'selected' : ''} key={item.id} onClick={() => selectRecord(item)}><span><strong>{item.display_name}</strong><small>{item.size_bytes.toLocaleString()} bytes</small></span><span className="badge">{item.state}</span></button>)}
             {!records.length && <p className="muted">등록 이력이 없습니다.</p>}
           </div>
         </div>
@@ -299,7 +228,7 @@ export function RegistrationBulkWorkbench({ client }: { client: ApiClient }) {
       <main className="registration-bulk-detail panel">
         <header><div><span className="eyebrow">Validated workflow</span><h2>{record?.display_name ?? '등록 상세'}</h2></div>{record && <span className="badge">{record.state}</span>}</header>
         <ErrorNotice error={error} />
-        <WorkflowState record={record} fileSelected={Boolean(file)} proposalCreated={Boolean(proposal)} />
+        <WorkflowState record={record} fileSelected={Boolean(file)} />
         {!record && <div className="registration-empty-editor">왼쪽에서 파일을 선택하고 명시적으로 업로드를 시작하세요. 브라우저는 전체 파일을 메모리에 적재하지 않습니다.</div>}
         {record && <section className="registration-upload-summary">
           <dl className="summary-list">
@@ -314,16 +243,15 @@ export function RegistrationBulkWorkbench({ client }: { client: ApiClient }) {
           <h3>검증 결과</h3>
           {Object.keys(record.validation_summary).length > 0 ? <dl className="summary-list">{Object.entries(record.validation_summary).map(([key, value]) => <div key={key}><dt>{key}</dt><dd>{displaySummaryValue(value)}</dd></div>)}</dl> : <p className="muted">검증 요약이 아직 생성되지 않았습니다.</p>}
         </section>}
-        {record?.state === 'ACCEPTED' && <form className="form-stack registration-proposal-form" onSubmit={(event) => void createProposal(event)}>
-          <header><ShieldCheck size={18} /><div><h3>고급 DataHub 변경 제안</h3><p>현재 자산의 원본 hash가 필요한 통합·복구용 임시 경로이며 일반 등록 완료로 간주하지 않습니다.</p></div></header>
-          <label>대상 URN<input disabled={proposalBusy} value={targetRef} onChange={(event) => setTargetRef(event.target.value)} placeholder="urn:li:dataset:(...)" pattern="urn:li:dataset:.+" required /></label>
-          <label>Aspect<select disabled={proposalBusy} value={aspectName} onChange={(event) => setAspectName(event.target.value as (typeof ALLOWED_ASPECTS)[number])}>{ALLOWED_ASPECTS.map((aspect) => <option key={aspect}>{aspect}</option>)}</select></label>
-          <label>원본 Aspect SHA-256<input disabled={proposalBusy} value={beforeHash} onChange={(event) => setBeforeHash(event.target.value)} pattern="[0-9a-f]{64}" minLength={64} maxLength={64} required /></label>
-          <label>Aspect JSON<textarea disabled={proposalBusy} className="code-editor" value={aspectDocument} onChange={(event) => setAspectDocument(event.target.value)} required /></label>
-          <p className="callout">대상은 현재 워크스페이스의 권한 필터된 로컬 자산이어야 하며, 제안은 변경관리 승인과 DataHub 재조회 검증을 거쳐야 합니다.</p>
-          <button className="button" disabled={proposalBusy}>{proposalBusy ? '생성 중…' : '변경요청 생성'}</button>
-          {proposal && <p>생성됨: <strong>{proposal.number}</strong> · {proposal.state}</p>}
-        </form>}
+        {record?.state === 'ACCEPTED' && (
+          <section className="notice registration-binding-pending" role="status">
+            <strong>검증된 업로드의 typed 변경 연결은 아직 준비 중입니다.</strong>
+            <span>
+              파일은 검증·승격되었지만 accepted content를 카탈로그 자산 변경에 안전하게 binding하는 계약이 완성되기 전에는
+              변경 요청을 생성하지 않습니다.
+            </span>
+          </section>
+        )}
       </main>
     </div>
   )
@@ -334,11 +262,9 @@ type WorkflowStatus = 'idle' | 'pending' | 'complete' | 'failed'
 function WorkflowState({
   record,
   fileSelected,
-  proposalCreated,
 }: {
   record?: UploadRecord
   fileSelected: boolean
-  proposalCreated: boolean
 }) {
   const state = record?.state
   const uploadComplete = Boolean(state && !['INITIATED', 'UPLOADING'].includes(state))
@@ -350,7 +276,7 @@ function WorkflowState({
     { key: 'UPLOAD', label: 'Upload', status: terminalUploadFailure ? 'failed' : uploadComplete ? 'complete' : fileSelected || Boolean(record) ? 'pending' : 'idle' },
     { key: 'QUARANTINE', label: 'Quarantine', status: terminalUploadFailure ? 'failed' : quarantineComplete ? 'complete' : state && ['COMPLETION_QUEUED', 'COMPLETING'].includes(state) ? 'pending' : 'idle' },
     { key: 'VALIDATION', label: 'Validation', status: state === 'REJECTED' ? 'failed' : state === 'ACCEPTED' ? 'complete' : state && ['QUARANTINED', 'VALIDATION_QUEUED', 'VALIDATING'].includes(state) ? 'pending' : 'idle' },
-    { key: 'PROPOSAL', label: 'Proposal', status: proposalCreated ? 'complete' : state === 'ACCEPTED' ? 'pending' : 'idle' },
+    { key: 'PROPOSAL', label: 'Typed binding', status: 'idle' },
   ] satisfies Array<{ key: string; label: string; status: WorkflowStatus }>
   const labels: Record<WorkflowStatus, string> = {
     idle: '대기', pending: '진행 중', complete: '완료', failed: '실패',

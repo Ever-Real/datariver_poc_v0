@@ -207,9 +207,28 @@ class GovernanceService:
         request_id: str,
         idempotency_key: str,
         request_hash: str,
+        require_raw_operator_gate: bool = True,
     ) -> ChangeRequest:
         if self._target_authorizer is None:
             raise RuntimeError("Change-request creation requires a target authorizer.")
+        if require_raw_operator_gate:
+            await self._authorization.authorize(
+                subject=subject,
+                resource=ResourceAttributes(
+                    resource_id=workspace_id,
+                    workspace_id=workspace_id,
+                    resource_type="raw_provider_change_entrypoint",
+                    owner_department_id=subject.department_id,
+                    system_id=None,
+                    domain_id=None,
+                    classification=classification,
+                    lifecycle="ACTIVE",
+                    requester_id=requester_id,
+                ),
+                action=Action.CHANGE_RAW_CREATE,
+                environment=environment,
+                request_id=request_id,
+            )
         bound_items = await self._target_authorizer.authorize_targets(
             workspace_id=workspace_id,
             subject=subject,

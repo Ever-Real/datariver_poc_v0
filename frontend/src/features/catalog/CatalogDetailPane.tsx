@@ -18,10 +18,12 @@ export function CatalogDetailPane({
   client,
   assetId,
   onClose,
+  onDetailLoaded,
 }: {
   client: ApiClient
   assetId: string
   onClose: () => void
+  onDetailLoaded?: (detail?: CatalogAssetDetail) => void
 }) {
   const [detail, setDetail] = useState<CatalogAssetDetail>()
   const [lineage, setLineage] = useState<CatalogLineage>()
@@ -35,16 +37,22 @@ export function CatalogDetailPane({
   useEffect(() => {
     const controller = new AbortController()
     lineageController.current?.abort()
+    onDetailLoaded?.(undefined)
     setLoading(true); setError(undefined); setDetail(undefined); setLineage(undefined)
     void client.request<CatalogAssetDetail>(`/catalog/assets/${assetId}`, { signal: controller.signal })
-      .then((value) => { if (!controller.signal.aborted) setDetail(value) })
+      .then((value) => {
+        if (!controller.signal.aborted) {
+          setDetail(value)
+          onDetailLoaded?.(value)
+        }
+      })
       .catch((next: unknown) => { if (!controller.signal.aborted) setError(next) })
       .finally(() => { if (!controller.signal.aborted) setLoading(false) })
     return () => {
       controller.abort()
       lineageController.current?.abort()
     }
-  }, [assetId, client])
+  }, [assetId, client, onDetailLoaded])
 
   const toggle = (section: string) => {
     setExpanded((current) => {

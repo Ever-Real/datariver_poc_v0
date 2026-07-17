@@ -147,6 +147,8 @@ def test_openapi_contains_all_required_product_modules() -> None:
         "/api/v1/catalog/exports/{export_id}",
         "/api/v1/catalog/exports/{export_id}/download",
         "/api/v1/catalog/export-capability",
+        "/api/v1/catalog/assets/{asset_id}/description-previews",
+        "/api/v1/catalog/assets/{asset_id}/description-change-requests",
         "/api/v1/uploads",
         "/api/v1/uploads/{upload_id}/registration-proposals",
         "/api/v1/change-requests",
@@ -190,6 +192,47 @@ def test_openapi_contains_all_required_product_modules() -> None:
         "/api/v1/admin/inference/provider-profiles/{profile_version_id}/decisions",
         "/api/v1/admin/inference/provider-profiles/{profile_version_id}/revocations",
     }.issubset(document["paths"])
+
+
+def test_catalog_description_openapi_is_typed_and_server_binds_the_target() -> None:
+    factory = cast(Callable[[Settings], AppContainer], lambda _: LiveOnlyContainer())
+    document = create_app(settings(), container_factory=factory).openapi()
+
+    preview_request = document["components"]["schemas"]["CatalogDescriptionPreviewRequest"]
+    assert set(preview_request["properties"]) == {"description"}
+    change_request = document["components"]["schemas"]["CatalogDescriptionChangeRequest"]
+    assert set(change_request["properties"]) == {
+        "description",
+        "title",
+        "change_description",
+    }
+    assert {"target_ref", "aspect_name", "classification", "after_document"}.isdisjoint(
+        change_request["properties"]
+    )
+
+    preview_response = document["components"]["schemas"]["CatalogDescriptionPreviewResponse"]
+    assert set(preview_response["properties"]) == {
+        "asset_id",
+        "target_ref",
+        "aspect_name",
+        "current_description",
+        "proposed_description",
+        "before_hash",
+        "after_hash",
+        "preview_etag",
+        "source_version",
+        "observed_at",
+    }
+    assert preview_response["properties"]["preview_etag"]["pattern"] == ('^"[0-9a-f]{64}"$')
+
+    creation = document["paths"]["/api/v1/catalog/assets/{asset_id}/description-change-requests"][
+        "post"
+    ]
+    headers = {parameter["name"]: parameter for parameter in creation["parameters"]}
+    assert headers["If-Match"]["required"] is True
+    assert headers["If-Match"]["schema"]["minLength"] == 66
+    assert headers["If-Match"]["schema"]["maxLength"] == 66
+    assert headers["Idempotency-Key"]["required"] is True
 
 
 def test_catalog_export_openapi_is_server_managed_and_does_not_expose_storage_coordinates() -> None:

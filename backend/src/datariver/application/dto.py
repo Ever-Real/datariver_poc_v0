@@ -1,7 +1,9 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from collections.abc import Mapping
+from dataclasses import dataclass, field
 from datetime import datetime
+from types import MappingProxyType
 from typing import Any
 from uuid import UUID
 
@@ -301,6 +303,21 @@ class DataHubAspectSnapshot:
     urn: str
     aspect_name: str
     content_hash: str
+    source_version: str
+    observed_at: datetime
+    document: Mapping[str, Any] = field(default_factory=lambda: MappingProxyType({}))
+
+
+@dataclass(frozen=True, slots=True)
+class CatalogDescriptionPreview:
+    asset_id: UUID
+    target_ref: str
+    aspect_name: str
+    current_description: str | None
+    proposed_description: str
+    before_hash: str
+    after_hash: str
+    preview_etag: str
     source_version: str
     observed_at: datetime
 

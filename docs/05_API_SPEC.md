@@ -43,6 +43,8 @@ Generated OpenAPI at `/api/v1/openapi.json` is authoritative for implemented pay
 | `GET /catalog/suggestions?q=&limit=` | `catalog.search` | permission-prefiltered name autocomplete, maximum 20; two-character requests use the bounded prefix path and longer requests may use trigram similarity |
 | `GET /catalog/tree/nodes?q=&parent_kind=ROOT\|PLATFORM\|DATABASE\|SCHEMA&platform=&database=&schema=&cursor=&limit=` | `catalog.search` | lazy canonical Resource Tree branch; authorization-pruned child counts, branch cursor and cache context are bound to the request security/projection snapshot |
 | `GET /catalog/assets/{asset_id}` | `catalog.read` | authorized local base detail plus typed DataHub enrichment; optional `stale_at` marks bounded fallback |
+| `POST /catalog/assets/{asset_id}/description-previews` | `catalog.read` + `change.create` | read live `datasetProperties`, preserve every provider field, and return only the typed description diff, source/hash evidence and opaque quoted preview ETag; `Cache-Control: no-store, private` |
+| `POST /catalog/assets/{asset_id}/description-change-requests` | `catalog.read` + `change.create` | require the exact preview `If-Match`, re-read DataHub, share-lock/revalidate the path asset and create one server-classified governed request |
 | `GET /catalog/assets/{asset_id}/lineage?direction=UPSTREAM\|DOWNSTREAM\|BOTH&depth=1..3` | `catalog.read` | bounded typed DataHub lineage with set-based local authorization; a hidden intermediate truncates rather than bridges a path |
 | `GET /catalog/export-capability` | `catalog.export` | separately authorized feature state; missing permission, dependency error or disabled worker is fail-closed in the UI |
 | `POST /catalog/exports` | `catalog.export` | create an owner-scoped CSV job from exact typed search filters and an `Idempotency-Key`; RESTRICTED is denied |
@@ -54,6 +56,14 @@ Search, facet and suggestion metadata identifies the built-in policy version, go
 policy version, authorization generation and committed local `projection_version`. The latter is not a
 DataHub source cursor or proof that a full reconciliation completed. Facet/suggestion `observed_at` is
 nullable when no authorized row contributes a source observation.
+
+The ordinary MANUAL description contract accepts only `{description}` for preview and
+`{description,title,change_description}` for creation. The browser cannot submit a URN, Aspect name,
+classification, provider document or source hash. The preview ETag is a canonical opaque binding of
+workspace, path asset ID, current target fingerprint, Aspect hash and provider source version. An
+empty description is an explicit clear proposal; a live no-op is rejected. Other provider fields,
+including nested/custom properties, are copied from the verified live document and never returned to
+the browser.
 
 DataHub sync request:
 
@@ -72,7 +82,7 @@ Response carries `upserted,tombstoned,next_offset,total,observed_at`. A single a
 | `POST /uploads` | `registration.create` | create private multipart quarantine intent |
 | `POST /uploads/{upload_id}/parts` | `registration.create` | issue short-lived part URL |
 | `POST /uploads/{upload_id}/complete` | `registration.create` | persist completion intent; returns `202` |
-| `POST /uploads/{upload_id}/registration-proposals` | `registration.read` + `change.create` | create a governed aspect proposal from an `ACCEPTED` upload |
+| `POST /uploads/{upload_id}/registration-proposals` | `registration.read` + `change.create` + `change.raw.create` | operator/recovery-only raw proposal from an `ACCEPTED` upload; not exposed in the ordinary UI and not accepted as typed-content binding |
 
 Completion does not mean accepted. Durable states are `INITIATED → COMPLETION_QUEUED → COMPLETING → QUARANTINED → VALIDATING → ACCEPTED`, with terminal `REJECTED/ABORTED/EXPIRED`. Workers stream object bytes, compare declared size/SHA-256, apply bounded format rules, copy to the accepted bucket, commit canonical location, then best-effort clean quarantine.
 
@@ -82,7 +92,7 @@ Completion does not mean accepted. Durable states are `INITIATED → COMPLETION_
 |---|---|---|
 | `GET /change-requests?state=&limit=` | `change.read` | clearance-filtered candidates followed by one grouped current-target authorization; hidden, deleted and legacy-unbound targets are omitted |
 | `GET /change-requests/{id}` | `change.read` | items, immutable server target binding, approvals and transition audit; current-target denial is existence-hiding 404 |
-| `POST /change-requests` | `change.create` | typed executable DataHub aspect proposal |
+| `POST /change-requests` | `change.raw.create` + `change.create` | hardware-human operator/recovery raw DataHub Aspect proposal; absent from the ordinary UI |
 | `POST /change-requests/{id}/approvals` | `change.review` / `change.approve` | append immutable decision |
 | `POST /change-requests/{id}/transitions` | derived | legal user-controlled transition/retry |
 
@@ -97,7 +107,13 @@ transition re-resolves current identity and scope under the same request transac
 requester/policy reauthorization, DataRiver target serialization and an external atomic CAS remain
 required hardening gates.
 
-Implemented change item contract:
+`change.raw.create` is deny-by-default, classified as both high-risk and human-governance-only, and
+is not granted by local identity or semiconductor seed bootstrap. A hardware-authenticated human
+must receive it through controlled access administration; service accounts remain denied even if a
+stored membership is misconfigured to contain the action. Typed MANUAL creation is the only current
+ordinary edit surface and does not use this raw capability.
+
+Operator/recovery raw change item contract:
 
 ```json
 {

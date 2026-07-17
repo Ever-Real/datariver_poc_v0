@@ -25,6 +25,7 @@ class Action(StrEnum):
     REGISTRATION_READ = "registration.read"
     REGISTRATION_VALIDATE = "registration.validate"
     CHANGE_CREATE = "change.create"
+    CHANGE_RAW_CREATE = "change.raw.create"
     CHANGE_READ = "change.read"
     CHANGE_EDIT = "change.edit"
     CHANGE_REVIEW = "change.review"
@@ -64,6 +65,7 @@ class AuthenticationAssurance(StrEnum):
 
 HIGH_RISK_ACTIONS = frozenset(
     {
+        Action.CHANGE_RAW_CREATE,
         Action.CHANGE_APPROVE,
         Action.KG_PUBLISH,
         Action.SHARING_PUBLISH,
@@ -78,6 +80,7 @@ HIGH_RISK_ACTIONS = frozenset(
 
 HUMAN_GOVERNANCE_ACTIONS = frozenset(
     {
+        Action.CHANGE_RAW_CREATE,
         Action.RETENTION_MANAGE,
         Action.LEGAL_HOLD_PLACE,
         Action.LEGAL_HOLD_RELEASE,

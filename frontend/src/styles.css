@@ -133,6 +133,9 @@ textarea { min-height: 110px; resize: vertical; }
 .governance-grid { grid-template-columns: minmax(0, 1.35fr) minmax(280px, .65fr); align-items: start; }
 .governance-detail { margin-top: 14px; }
 .governance-detail label { display: grid; gap: 6px; color: #526762; font-size: 12px; font-weight: 700; }
+.governance-typed-entry { display: grid; align-content: start; gap: 12px; }
+.governance-typed-entry .callout { margin: 0; font-size: 11px; line-height: 1.6; }
+.governance-typed-entry .button { justify-self: start; text-decoration: none; }
 .registration-page { min-width: 0; }
 .registration-mode-tabs { display: flex; gap: 3px; margin: 10px 0 8px; border-bottom: 1px solid var(--line-300); }
 .registration-mode-tabs button { min-width: 190px; display: grid; grid-template-columns: 18px auto; align-items: center; justify-content: start; gap: 0 5px; border: 1px solid var(--line-300); border-bottom: 0; padding: 7px 12px; color: var(--text-600); text-align: left; background: #eef1f2; }
@@ -148,6 +151,31 @@ textarea { min-height: 110px; resize: vertical; }
 .registration-editor-intro strong { display: block; font-size: 12px; }
 .registration-editor-intro p { margin: 2px 0 0; color: var(--text-500); font-size: 10px; }
 .registration-typed-api-notice { margin: 8px; border-left: 3px solid #a47600; color: #66531c; font-size: 10px; line-height: 1.5; background: #fff6d8; }
+.registration-description-editor { margin: 8px; border: 1px solid var(--line-300); background: #fbfcfc; }
+.registration-description-editor > header { display: flex; align-items: center; justify-content: space-between; gap: 8px; border-bottom: 1px solid var(--line-300); padding: 9px 10px; background: #f3f6f7; }
+.registration-description-editor > header h3 { margin: 1px 0 0; color: var(--navy-900); font-size: 12px; }
+.registration-description-editor > .form-stack { max-width: none; gap: 9px; padding: 10px; }
+.registration-description-editor .callout { margin: 0; font-size: 10px; line-height: 1.5; }
+.registration-description-editor textarea { min-height: 76px; resize: vertical; }
+.registration-description-editor #description-change-value { min-height: 112px; }
+.registration-description-status { margin: -4px 0 0; color: var(--text-500); font-size: 9px; }
+.registration-description-actions { display: flex; flex-wrap: wrap; gap: 6px; }
+.registration-description-actions .button { display: inline-flex; align-items: center; justify-content: center; gap: 5px; }
+.registration-source-warning { margin: 0; border-left: 3px solid #a47600; color: #66531c; font-size: 10px; line-height: 1.5; background: #fff6d8; }
+.registration-description-preview { border: 1px solid #87a8bb; background: white; }
+.registration-description-preview > header { display: flex; align-items: center; justify-content: space-between; border-bottom: 1px solid var(--line-300); padding: 7px 9px; color: var(--navy-900); background: var(--blue-100); }
+.registration-description-preview > header strong { font-size: 10px; }
+.registration-description-preview > .notice { margin: 8px; }
+.registration-description-preview dl { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); margin: 0; }
+.registration-description-preview dl > div { min-width: 0; border-bottom: 1px solid var(--line-200); padding: 8px 9px; }
+.registration-description-preview dl > div:nth-child(even):not(.wide) { border-left: 1px solid var(--line-200); }
+.registration-description-preview dl > .wide { grid-column: 1 / -1; }
+.registration-description-preview dt { margin-bottom: 3px; color: var(--text-500); font-size: 8px; font-weight: 800; text-transform: uppercase; }
+.registration-description-preview dd { margin: 0; overflow-wrap: anywhere; color: var(--text-700); font-size: 10px; line-height: 1.5; white-space: pre-wrap; }
+.registration-description-preview code { font-size: 9px; }
+.registration-description-preview .description-before { border-left: 3px solid #a85c4d; background: #fff8f6; }
+.registration-description-preview .description-after { border-left: 3px solid #4d8b5b; background: #f5fbf5; }
+.registration-description-success { margin: 0; border-left: 3px solid #4d8b5b; color: #285b32; font-size: 10px; background: #e8f4e9; }
 .registration-editor-panel > .catalog-detail { max-height: none; margin: 8px; box-shadow: none; }
 .registration-empty-editor { min-height: 280px; display: grid; place-items: center; padding: 32px; color: var(--text-500); text-align: center; font-size: 11px; line-height: 1.6; }
 .registration-bulk-sidebar > header > button { width: 28px; height: 28px; display: grid; place-items: center; border: 1px solid var(--line-300); color: var(--blue-700); background: white; }
@@ -184,11 +212,7 @@ textarea { min-height: 110px; resize: vertical; }
 .registration-upload-summary > h3 { margin: 4px 0 0; font-size: 12px; }
 .registration-upload-summary .summary-list { grid-template-columns: repeat(3, minmax(0, 1fr)); }
 .registration-upload-summary code { overflow-wrap: anywhere; font-size: 9px; }
-.registration-proposal-form { max-width: none; gap: 10px; margin: 0 10px 12px; border-top: 2px solid var(--blue-700); padding: 12px; background: #f6f8f8; }
-.registration-proposal-form > header { display: flex; align-items: flex-start; gap: 8px; color: var(--blue-700); }
-.registration-proposal-form > header h3 { margin: 0; font-size: 12px; }
-.registration-proposal-form > header p { margin: 2px 0 0; color: var(--text-500); font-size: 9px; }
-.registration-proposal-form .callout { margin: 0; font-size: 10px; }
+.registration-binding-pending { margin: 0 10px 12px; border-left: 3px solid #a47600; color: #66531c; font-size: 10px; line-height: 1.55; background: #fff6d8; }
 .action-row { display: flex; flex-wrap: wrap; gap: 8px; margin: 14px 0 20px; }
 .audit-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; margin: 16px 0; }
 .audit-grid > div { border: 1px solid var(--line-200); border-radius: var(--radius); padding: 10px; }

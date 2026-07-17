@@ -1,18 +1,24 @@
 import { useEffect, useState } from 'react'
-import { FileStack, LockKeyhole, PencilLine, UploadCloud } from 'lucide-react'
+import { FileStack, PencilLine, ShieldCheck, UploadCloud } from 'lucide-react'
 import type { ApiClient } from '../../api/client'
+import type { CatalogAssetDetail } from '../../api/types'
 import { PageTitle } from '../../components/layout/PageTitle'
 import { CatalogDetailPane } from '../catalog/CatalogDetailPane'
 import { CatalogResourceTree } from '../catalog/CatalogResourceTree'
 import { RegistrationBulkWorkbench } from './RegistrationBulkWorkbench'
+import { RegistrationDescriptionEditor } from './RegistrationDescriptionEditor'
 
 type RegistrationMode = 'MANUAL' | 'BULK'
 
 export function RegistrationPage({ client }: { client: ApiClient }) {
   const [mode, setMode] = useState<RegistrationMode>('MANUAL')
   const [selectedAssetId, setSelectedAssetId] = useState<string>()
+  const [selectedAssetDetail, setSelectedAssetDetail] = useState<CatalogAssetDetail>()
 
-  useEffect(() => setSelectedAssetId(undefined), [client])
+  useEffect(() => {
+    setSelectedAssetId(undefined)
+    setSelectedAssetDetail(undefined)
+  }, [client])
 
   return (
     <section className="registration-page">
@@ -51,30 +57,46 @@ export function RegistrationPage({ client }: { client: ApiClient }) {
             client={client}
             query=""
             selectedAssetId={selectedAssetId}
-            onSelectAsset={setSelectedAssetId}
+            onSelectAsset={(assetId) => {
+              setSelectedAssetDetail(undefined)
+              setSelectedAssetId(assetId)
+            }}
           />
           <main className="registration-editor-panel panel">
             <header>
-              <div><span className="eyebrow">Manual workbench</span><h2>메타데이터 검토</h2></div>
-              <span className="badge badge-soft"><LockKeyhole size={11} />READ ONLY</span>
+              <div><span className="eyebrow">Manual workbench</span><h2>메타데이터 검토 및 제안</h2></div>
+              <span className="badge badge-soft"><ShieldCheck size={11} />GOVERNED</span>
             </header>
             <div className="registration-editor-intro">
               <FileStack size={22} aria-hidden="true" />
               <div>
                 <strong>권한 범위의 자산을 선택하세요.</strong>
-                <p>현재 화면에서는 설명·컬럼·태그와 bounded lineage를 확인할 수 있습니다.</p>
+                <p>설명 변경은 typed API로 제안하고, 컬럼·태그와 bounded lineage는 검토할 수 있습니다.</p>
               </div>
             </div>
             <p className="notice registration-typed-api-notice">
-              단건 편집은 typed metadata API와 검증 규칙이 연결될 때까지 잠겨 있습니다.
-              원시 Aspect JSON을 브라우저에서 직접 쓰지 않습니다.
+              설명 변경은 원본 hash 미리보기를 확인한 뒤 변경관리 요청으로만 생성됩니다.
+              원시 Aspect JSON 입력은 제공하지 않으며 승인 전에는 DataHub에 적용되지 않습니다.
             </p>
             {selectedAssetId ? (
-              <CatalogDetailPane
-                client={client}
-                assetId={selectedAssetId}
-                onClose={() => setSelectedAssetId(undefined)}
-              />
+              <>
+                {selectedAssetDetail && (
+                  <RegistrationDescriptionEditor
+                    key={selectedAssetDetail.id}
+                    client={client}
+                    asset={selectedAssetDetail}
+                  />
+                )}
+                <CatalogDetailPane
+                  client={client}
+                  assetId={selectedAssetId}
+                  onDetailLoaded={setSelectedAssetDetail}
+                  onClose={() => {
+                    setSelectedAssetId(undefined)
+                    setSelectedAssetDetail(undefined)
+                  }}
+                />
+              </>
             ) : (
               <div className="registration-empty-editor">왼쪽 Resource Tree에서 테이블을 선택하면 현재 검증된 projection을 표시합니다.</div>
             )}

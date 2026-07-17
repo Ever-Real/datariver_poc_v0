@@ -150,6 +150,7 @@ async def create_change_request(
         request_id=context.request_id,
         idempotency_key=idempotency_key,
         request_hash=request_hash,
+        require_raw_operator_gate=True,
     )
     return change_request_response(change_request)
 
