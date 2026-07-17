@@ -217,13 +217,25 @@ export interface UploadPreparation {
   version: number
 }
 
+export type ChangeRequestState =
+  | 'REGISTERED'
+  | 'IN_REVIEW'
+  | 'TESTING'
+  | 'FINAL_REVIEW'
+  | 'APPLY_QUEUED'
+  | 'APPLYING'
+  | 'APPLIED'
+  | 'APPLY_FAILED'
+  | 'REJECTED'
+  | 'CANCELLED'
+
 export interface ChangeRequestRecord {
   id: string
   number: string
   request_type: string
   title: string
   description: string
-  state: string
+  state: ChangeRequestState
   requester_id: string
   classification: string
   version: number
@@ -235,6 +247,16 @@ export interface ChangeRequestRecord {
     operation: string
     before_hash?: string
     after_hash?: string
+    target_asset_id: string | null
+    target_asset_type: string | null
+    target_system_id: string | null
+    target_domain_id: string | null
+    target_owner_department_id: string | null
+    target_classification: string | null
+    target_lifecycle: string | null
+    target_source_version: string | null
+    target_observed_at: string | null
+    target_binding_hash: string | null
   }>
   approvals: Array<{
     id: string
@@ -246,8 +268,8 @@ export interface ChangeRequestRecord {
   }>
   transitions: Array<{
     id: string
-    from_state: string
-    to_state: string
+    from_state: ChangeRequestState
+    to_state: ChangeRequestState
     actor_id: string
     reason: string
     occurred_at: string

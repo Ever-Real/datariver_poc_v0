@@ -130,12 +130,64 @@ textarea { min-height: 110px; resize: vertical; }
 .compact-list button span:first-child { min-width: 0; }
 .compact-list strong, .compact-list small { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .compact-list small { margin-top: 3px; color: #78847f; }
-.governance-grid { grid-template-columns: minmax(0, 1.35fr) minmax(280px, .65fr); align-items: start; }
-.governance-detail { margin-top: 14px; }
-.governance-detail label { display: grid; gap: 6px; color: #526762; font-size: 12px; font-weight: 700; }
-.governance-typed-entry { display: grid; align-content: start; gap: 12px; }
-.governance-typed-entry .callout { margin: 0; font-size: 11px; line-height: 1.6; }
-.governance-typed-entry .button { justify-self: start; text-decoration: none; }
+.governance-page { min-width: 0; }
+.governance-kicker { display: block; color: var(--blue-700); font-size: 9px; font-weight: 900; letter-spacing: .09em; text-transform: uppercase; }
+.governance-toolbar { min-width: 0; display: grid; grid-template-columns: minmax(220px, .8fr) 190px minmax(360px, 1.2fr); align-items: end; gap: 16px; margin: 10px 0 8px; padding: 10px 12px; background: #f3f5f6; }
+.governance-window-summary { display: grid; gap: 2px; }
+.governance-window-summary strong { color: var(--navy-900); font-size: 13px; }
+.governance-window-summary small { color: var(--text-500); font-size: 9px; }
+.governance-state-filter { display: grid; gap: 4px; color: var(--text-600); font-size: 10px; font-weight: 800; }
+.governance-state-filter select { height: 31px; padding: 3px 7px; font-size: 11px; }
+.governance-registration-link { display: flex; align-items: center; justify-content: flex-end; gap: 10px; }
+.governance-registration-link span { max-width: 245px; color: var(--text-500); font-size: 9px; line-height: 1.4; text-align: right; }
+.governance-registration-link .button { flex: 0 0 auto; text-decoration: none; white-space: nowrap; }
+.governance-list-panel { min-width: 0; padding: 0; overflow: hidden; background: white; }
+.governance-list-panel > header { min-height: 48px; display: flex; align-items: center; justify-content: space-between; gap: 14px; border-bottom: 2px solid var(--blue-700); padding: 7px 10px; background: #f3f5f6; }
+.governance-list-panel > header h2 { margin: 1px 0 0; color: var(--navy-900); font-size: 13px; }
+.governance-list-panel > header p { margin: 0; color: var(--text-500); font-size: 9px; }
+.governance-list-panel .dense-table-frame { height: clamp(470px, calc(100vh - 300px), 820px); border: 0; border-radius: 0; }
+.governance-list-panel .dense-data-table { min-width: 1195px; }
+.governance-request-number { color: var(--blue-700); font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11px; font-weight: 900; }
+.governance-request-title { color: var(--text-900); font-weight: 800; }
+.governance-state { max-width: 100%; display: inline-block; overflow: hidden; margin: 0; color: #334652; text-overflow: ellipsis; white-space: nowrap; background: #e4e9ec; }
+.governance-state.state-in_review, .governance-state.state-testing, .governance-state.state-final_review { color: #075381; background: #ddecf5; }
+.governance-state.state-apply_queued, .governance-state.state-applying { color: #674b00; background: #fff0b9; }
+.governance-state.state-applied { color: #1f6b2a; background: #e5f3e5; }
+.governance-state.state-apply_failed, .governance-state.state-rejected, .governance-state.state-cancelled { color: var(--danger-700); background: #fbe9e5; }
+.governance-detail-dialog { min-width: 0; display: grid; gap: 12px; }
+.governance-detail-state { min-height: 180px; display: grid; place-items: center; color: var(--text-500); font-size: 12px; }
+.governance-section-heading { min-height: 32px; display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 6px; }
+.governance-section-heading h3 { margin: 1px 0 0; color: var(--navy-900); font-size: 13px; }
+.governance-summary-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 1px; margin: 0; background: var(--line-200); }
+.governance-summary-grid.compact { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.governance-summary-grid > div { min-width: 0; padding: 7px 8px; background: white; }
+.governance-summary-grid > .wide { grid-column: 1 / -1; }
+.governance-summary-grid dt { color: var(--text-500); font-size: 9px; font-weight: 800; letter-spacing: .04em; text-transform: uppercase; }
+.governance-summary-grid dd { min-width: 0; margin: 3px 0 0; color: var(--text-900); font-size: 11px; overflow-wrap: anywhere; }
+.governance-evidence-stack { min-width: 0; }
+.governance-target-evidence { border: 1px solid var(--line-200); background: #f8f9f9; }
+.governance-target-evidence + .governance-target-evidence { margin-top: 7px; }
+.governance-target-evidence > header { display: flex; align-items: center; justify-content: space-between; gap: 8px; border-bottom: 1px solid var(--line-200); padding: 6px 8px; }
+.governance-target-evidence > header strong { color: var(--navy-900); font-size: 11px; }
+.governance-target-evidence > header span { color: var(--blue-700); font-size: 9px; font-weight: 900; }
+.governance-audit-list { display: grid; gap: 5px; margin: 0; padding: 0; list-style: none; }
+.governance-audit-list li { border-left: 3px solid #8ba6b7; padding: 6px 8px; background: #f6f8f9; }
+.governance-audit-list li > div { display: flex; justify-content: space-between; gap: 10px; }
+.governance-audit-list strong { color: var(--navy-900); font-size: 10px; }
+.governance-audit-list time { color: var(--text-500); font-size: 9px; }
+.governance-audit-list p { margin: 4px 0; color: var(--text-600); font-size: 10px; }
+.governance-audit-list .truncated-text { color: var(--text-500); font-size: 9px; }
+.governance-command-panel { border: 1px solid var(--line-300); padding: 10px; background: #f7f8f8; }
+.governance-server-authority { margin: 0 0 8px; border-left: 3px solid #a47600; font-size: 10px; background: #fff6d8; }
+.governance-command-actions { display: flex; flex-wrap: wrap; gap: 6px; }
+.governance-command-empty { margin: 0; color: var(--text-500); font-size: 10px; }
+.button.button-danger { border-color: #b84238; color: white; background: #b84238; }
+.button.button-secondary.button-danger { color: #a12e27; background: #fff1ef; }
+.button.button-danger:hover { border-color: #96332c; color: white; background: #96332c; }
+.governance-confirm-dialog { display: grid; gap: 10px; }
+.governance-confirm-dialog > label { color: var(--text-600); font-size: 11px; font-weight: 800; }
+.governance-confirm-dialog textarea { min-height: 104px; }
+.governance-field-help { margin: -5px 0 0; color: var(--text-500); font-size: 9px; }
 .registration-page { min-width: 0; }
 .registration-mode-tabs { display: flex; gap: 3px; margin: 10px 0 8px; border-bottom: 1px solid var(--line-300); }
 .registration-mode-tabs button { min-width: 190px; display: grid; grid-template-columns: 18px auto; align-items: center; justify-content: start; gap: 0 5px; border: 1px solid var(--line-300); border-bottom: 0; padding: 7px 12px; color: var(--text-600); text-align: left; background: #eef1f2; }
@@ -287,7 +339,12 @@ textarea { min-height: 110px; resize: vertical; }
 .confirm-dialog ul { padding-left: 22px; color: #51655f; overflow-wrap: anywhere; }
 @keyframes spin { to { transform: rotate(360deg); } }
 @media (max-width: 800px) {
-  .panel-grid, .inline-form, .governance-grid, .audit-grid, .admin-two-column, .admin-context { grid-template-columns: 1fr; }
+  .panel-grid, .inline-form, .audit-grid, .admin-two-column, .admin-context { grid-template-columns: 1fr; }
+  .governance-toolbar, .governance-summary-grid { grid-template-columns: 1fr; }
+  .governance-registration-link { align-items: stretch; flex-direction: column; }
+  .governance-registration-link span { max-width: none; text-align: left; }
+  .governance-registration-link .button { text-align: center; }
+  .governance-list-panel > header { align-items: flex-start; flex-direction: column; }
   .result-card footer, .chat-form { grid-template-columns: 1fr; display: grid; }
   .message { max-width: 92%; }
   .registration-preparation-empty { align-items: stretch; flex-direction: column; }
