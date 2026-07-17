@@ -485,7 +485,12 @@ class AdminReadContextResponse(BaseModel):
     subject_id: UUID
     workspace_id: UUID
     display_name: str
-    authentication_assurance: Literal["PASSWORD_REAUTH", "HARDWARE_WEBAUTHN"]
+    # `/admin/me` is a read-only profile/context hydration endpoint.  It must
+    # report the current verified assurance at ordinary login strength; strong
+    # assurance remains enforced by each sensitive mutation's authorization.
+    authentication_assurance: Literal[
+        "UNKNOWN", "PASSWORD", "OTHER_MFA", "PASSWORD_REAUTH", "HARDWARE_WEBAUTHN"
+    ]
     fallback_enabled: bool
     allowed_operations: list[
         Literal[

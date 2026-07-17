@@ -446,6 +446,9 @@ def test_openapi_exposes_bounded_typed_administrator_read_contracts() -> None:
 
     context_schema = document["components"]["schemas"]["AdminReadContextResponse"]
     assert set(context_schema["properties"]["authentication_assurance"]["enum"]) == {
+        "UNKNOWN",
+        "PASSWORD",
+        "OTHER_MFA",
         "PASSWORD_REAUTH",
         "HARDWARE_WEBAUTHN",
     }

@@ -153,8 +153,9 @@ Start the gateway from WSL only after the Windows host API is live. The script d
 Open Vite at `http://localhost:5173`, API docs at `http://localhost:8000/api/docs`, Keycloak at `http://localhost:18081`, and APISIX at `http://localhost:9080`. Vite proxies `/api` through APISIX. Inspect or stop host processes with `./scripts/dev.ps1 status` and `./scripts/dev.ps1 stop`. Runtime PIDs and logs are written only below the ignored `runtime/host-dev/` directory.
 
 The host process manager starts Uvicorn first and requires `/api/v1/health/ready` before starting
-workers or Vite. `/health/live` proves only that the process is running; readiness also leases an
-API database connection and requires the packaged sole Alembic head. If readiness reports
+workers or Vite. It forces the Uvicorn file watcher to poll so a Windows host process reliably
+reloads backend sources stored in the WSL filesystem before APISIX serves them. `/health/live` proves
+only that the process is running; readiness also leases an API database connection and requires the packaged sole Alembic head. If readiness reports
 `SCHEMA_REVISION_MISMATCH`, run the documented migration command before restarting host processes.
 
 The host-development port map is: PostgreSQL `5432`, cache Valkey `6379`, queue Valkey `6380`, SeaweedFS S3 `8333`, Uvicorn `8000`, APISIX `9080`, Keycloak `18081`, and Vite `5173`. Do not run a bare `docker compose up` for this topology because that would also start the containerized API, workers and web service.

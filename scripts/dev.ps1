@@ -141,6 +141,11 @@ Set-ProcessEnvironment "OIDC_JWKS_URL" "http://localhost:$KeycloakPort/realms/da
 Set-ProcessEnvironment "DATAHUB_BASE_URL" $DataHubBaseUrl
 Set-ProcessEnvironment "DATAHUB_SECRET_REF" (& $secret "datahub_token")
 Set-ProcessEnvironment "SEED_PROFILE" "none"
+# The repository may be served from the WSL filesystem while Uvicorn runs on
+# Windows.  Native file notifications do not cross that boundary reliably;
+# use polling so the source process behind APISIX always reflects the checked
+# out backend rather than an earlier import snapshot.
+Set-ProcessEnvironment "WATCHFILES_FORCE_POLLING" "true"
 Set-ProcessEnvironment "VITE_API_BASE_URL" "/api/v1"
 Set-ProcessEnvironment "VITE_API_PROXY_TARGET" "http://localhost:$GatewayPort"
 Set-ProcessEnvironment "VITE_USE_POLLING" "true"

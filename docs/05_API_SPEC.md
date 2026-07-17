@@ -32,6 +32,7 @@ Generated OpenAPI at `/api/v1/openapi.json` is authoritative for implemented pay
 | Method/path | Authorization | Purpose |
 |---|---|---|
 | `GET /auth/me` | verified bearer identity; no Workspace header | sanitized subject, display name, email, realm roles, normalized assurance and authentication time for React in-memory hydration after an OIDC callback or silent SSO round-trip |
+| `GET /admin/me` | read-only workspace administrator context | reports the current verified assurance (including ordinary `PASSWORD`/`OTHER_MFA`) and server-authorized administrator operations without triggering FIDO2/password reauthentication; each sensitive mutation applies its own assurance check |
 
 ### Health and operations
 
