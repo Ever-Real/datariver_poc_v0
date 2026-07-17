@@ -241,15 +241,27 @@ asset/node IDs. A provider-neutral composer returns cited chunk IDs; empty, dupl
 or hash-invalid citations fail closed to `검증 불가` and persist no citation.
 
 The separate assistant worker source boundary now defines a disabled-first typed execution contract,
-so API processes still make no model call and hold no provider connection. The default adapter has no
-SDK, endpoint, secret or egress and always refuses. No durable inference job, dispatch path or model
-provider is configured in this baseline.
+so API processes still make no model call and hold no provider connection. The contract binds exact
+provider/model/deployment identity and region plus monthly workspace/user token accounting. Internal
+routes are monitor-only. External routes require an atomic hard-limit reservation; exhaustion can
+preselect only an approved internal route that independently passes the same route eligibility
+predicates before execution. External denial and internal monitor-only accounting are distinct.
+Provider failure does not trigger fallback. The default provider and grounding adapters have no SDK,
+endpoint, secret or egress and always refuse. No durable inference job, token ledger, dispatch path
+or model provider is configured in this baseline.
 
 The inference package/result schema has no SQL, Cypher, arbitrary HTTP, tool or mutation field.
-Answers without an exact authorized citation subset return `검증 불가`; KG output remains only a future
-proposed changeset routed through existing validation, independent review and immutable publication.
-Before any provider enablement, implement pre-call and post-call live policy/profile/attestation
-revalidation, durable queue/idempotency, SSE timing/cancellation, latency/token/cost/refusal metrics
+Model answers require canonical URN evidence plus a separate server-side answer/evidence similarity
+assessment bound to package/route, grounding-policy hash and the ordered URN/version/content-hash
+bundle. Its score must meet the policy-owned non-zero threshold. Missing, replayed, forged or
+insufficient grounding
+returns `보안 규정 및 근거 데이터 부족으로 답변할 수 없습니다`; the provider cannot attest its
+own result. Structurally valid token/latency measurements survive a post-call refusal; unavailable
+usage never means zero. KG output remains only a future proposed changeset routed through existing validation,
+independent review and immutable publication. The pure TTFT/token-rate/accuracy evaluator is
+benchmark scaffolding, not live SLA proof. Before any provider enablement, implement the atomic
+reserve/settle ledger, pre-call and post-call live policy/profile/attestation revalidation, durable
+queue/idempotency, independently timed SSE timing/cancellation, latency/token/cost/refusal metrics
 and a scaled red-team corpus for direct/indirect prompt injection, poisoned RAG documents,
 encoding/Unicode, tool abuse, data exfiltration and malicious output markup. RAG relevance is not a
 prompt-injection control.

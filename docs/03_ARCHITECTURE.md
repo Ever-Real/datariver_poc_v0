@@ -186,13 +186,25 @@ fail-closed floor. RESTRICTED Chat is always denied.
 ## Assistant inference boundary
 
 Current Chat remains an in-process deterministic evidence composer and makes no model call. The
-separate assistant-inference source boundary is only a typed, disabled-first worker contract: it
-accepts a pre-authorized package containing policy, provider-attestation and immutable evidence
-snapshots, and returns either bounded cited text/metrics or `검증 불가`. Neither input nor output has
-SQL, Cypher, arbitrary HTTP, tool or mutation fields. There is no configured provider adapter,
-provider endpoint/secret, API-to-worker dispatch, durable inference job, streaming transport or
-deployed worker process in this baseline. Dotted inference edges in the runtime view are future
-seams, not current network calls.
+separate assistant-inference source boundary is only a typed, disabled-first worker contract. Its
+versioned package binds requested/selected provider identity and region, policy, attestations,
+immutable URN-addressed evidence and a monthly workspace/user token-accounting decision. Internal
+routes are monitor-only; an external route requires a durable hard-limit reservation. An exhausted
+external budget can preselect an already approved internal route that passes the same classification,
+jurisdiction and attestation eligibility predicates. The external denial and internal monitor-only
+observation remain separate; the worker still executes one route and never falls back from an
+exception.
+
+Provider citations are passed through a separate server-side grounding-verifier port. Completion
+requires exact package/route IDs, answer hash, cited chunk order and an evidence-bundle hash over
+canonical source URN, source version and content hash. Metric, non-zero threshold and evaluator
+identity come from an immutable grounding-policy snapshot. A structurally valid post-call draft
+retains its usage metrics even when later refused; otherwise the result is
+`보안 규정 및 근거 데이터 부족으로 답변할 수 없습니다`. Neither input nor output has SQL,
+Cypher, arbitrary HTTP, tool or mutation fields. There is no token ledger, configured provider or
+grounding adapter, endpoint/secret, API-to-worker dispatch, durable inference job, streaming
+transport or deployed worker process in this baseline. Dotted inference edges in the runtime view
+are future seams, not current network calls.
 
 ## Valkey topology
 

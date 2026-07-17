@@ -72,8 +72,7 @@ class SqlKnowledgeEvidenceReader(KnowledgeEvidenceReader):
                         name=name,
                         description=str(description_value)[:1000] if description_value else None,
                         source_locator=(
-                            f"knowledge://graphs/{graph.id}/releases/{release.id}/nodes/"
-                            f"{node.entity_id}"
+                            f"urn:datariver:knowledge-node:{graph.id}:{release.id}:{node.entity_id}"
                         ),
                         source_version=release.content_hash,
                         effective_from=release.published_at,

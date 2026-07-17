@@ -8,6 +8,7 @@ from uuid import UUID
 
 from datariver.application.assistant_inference import (
     AuthorizedInferencePackage,
+    InferenceGroundingAssessment,
     ProviderInferenceDraft,
 )
 from datariver.application.classification_access import ClassificationAccessSnapshot
@@ -980,6 +981,15 @@ class AssistantInferenceAdapter(Protocol):
         *,
         package: AuthorizedInferencePackage,
     ) -> ProviderInferenceDraft: ...
+
+
+class AssistantGroundingVerifier(Protocol):
+    async def assess(
+        self,
+        *,
+        package: AuthorizedInferencePackage,
+        draft: ProviderInferenceDraft,
+    ) -> InferenceGroundingAssessment: ...
 
 
 class KnowledgeEvidenceReader(Protocol):
