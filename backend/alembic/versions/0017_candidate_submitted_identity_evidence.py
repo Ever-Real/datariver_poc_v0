@@ -18,9 +18,63 @@ depends_on: str | Sequence[str] | None = None
 TABLE = "upload_registration_candidates"
 SCHEMA = "integration"
 V2 = "DATASET_DESCRIPTION_CANDIDATE_V2"
+EXPECTED_OBJECT_COUNT = 12
+
+
+def _existing_object_count() -> int:
+    return int(
+        op.get_bind()
+        .execute(
+            sa.text(
+                """
+                SELECT
+                    (
+                        SELECT count(*)
+                        FROM information_schema.columns
+                        WHERE table_schema = 'integration'
+                          AND table_name = 'upload_registration_candidates'
+                          AND column_name IN (
+                              'evidence_version', 'submitted_platform',
+                              'submitted_database_name', 'submitted_schema_name',
+                              'submitted_table_name', 'submitted_identity_hash'
+                          )
+                    )
+                    + (
+                        SELECT count(*)
+                        FROM pg_constraint constraint_row
+                        JOIN pg_class table_row ON table_row.oid = constraint_row.conrelid
+                        JOIN pg_namespace namespace_row
+                          ON namespace_row.oid = table_row.relnamespace
+                        WHERE namespace_row.nspname = 'integration'
+                          AND table_row.relname = 'upload_registration_candidates'
+                          AND (
+                              constraint_row.conname IN (
+                                  'ck_upload_registration_candidates_evidence_version_allowlist',
+                                  'ck_upload_registration_candidates_submitted_platform_valid',
+                                  'ck_upload_registration_candidates_submitted_database_name_valid',
+                                  'ck_upload_registration_candidates_submitted_schema_name_valid',
+                                  'ck_upload_registration_candidates_submitted_table_name_valid'
+                              )
+                              OR constraint_row.conname LIKE
+                                  'ck_upload_registration_candidates_submitted_identity_ev_%'
+                          )
+                    )
+                """
+            )
+        )
+        .scalar_one()
+    )
 
 
 def upgrade() -> None:
+    existing_objects = _existing_object_count()
+    if existing_objects:
+        if existing_objects != EXPECTED_OBJECT_COUNT:
+            raise RuntimeError(
+                "The submitted candidate identity evidence schema is only partially present."
+            )
+        _install_immutability_contract()
+        return
     # Existing 0016 evidence cannot be reconstructed from a canonical candidate row. Preserve it
     # explicitly as legacy instead of presenting current catalog hierarchy as submitted evidence.
     op.add_column(
@@ -95,9 +149,14 @@ def upgrade() -> None:
             f"AND {column} = btrim({column}))",
             schema=SCHEMA,
         )
+    _install_immutability_contract()
+
+
+def _install_immutability_contract() -> None:
     op.execute(
         """
-        CREATE FUNCTION integration.reject_upload_registration_candidate_evidence_mutation()
+        CREATE OR REPLACE FUNCTION
+            integration.reject_upload_registration_candidate_evidence_mutation()
         RETURNS trigger
         LANGUAGE plpgsql
         SECURITY INVOKER
@@ -118,6 +177,10 @@ def upgrade() -> None:
         """
     )
     op.execute(
+        "DROP TRIGGER IF EXISTS reject_upload_registration_candidate_evidence_mutation "
+        "ON integration.upload_registration_candidates"
+    )
+    op.execute(
         """
         CREATE TRIGGER reject_upload_registration_candidate_evidence_mutation
         BEFORE INSERT OR UPDATE OR DELETE ON integration.upload_registration_candidates
@@ -128,56 +191,5 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
-    op.execute(
-        """
-        DO $guard$
-        BEGIN
-            IF EXISTS (
-                SELECT 1 FROM integration.upload_registration_candidates
-                WHERE evidence_version = 'DATASET_DESCRIPTION_CANDIDATE_V2'
-            ) THEN
-                RAISE EXCEPTION
-                    '0017 downgrade refused: V2 submitted candidate identity evidence exists';
-            END IF;
-        END
-        $guard$
-        """
-    )
-    op.execute(
-        "DROP TRIGGER reject_upload_registration_candidate_evidence_mutation "
-        "ON integration.upload_registration_candidates"
-    )
-    op.execute("DROP FUNCTION integration.reject_upload_registration_candidate_evidence_mutation()")
-    for column in (
-        "submitted_table_name",
-        "submitted_schema_name",
-        "submitted_database_name",
-        "submitted_platform",
-    ):
-        op.drop_constraint(
-            f"ck_upload_registration_candidates_{column}_valid",
-            TABLE,
-            schema=SCHEMA,
-            type_="check",
-        )
-    op.drop_constraint(
-        "ck_upload_registration_candidates_submitted_identity_evidence_shape",
-        TABLE,
-        schema=SCHEMA,
-        type_="check",
-    )
-    op.drop_constraint(
-        "ck_upload_registration_candidates_evidence_version_allowlist",
-        TABLE,
-        schema=SCHEMA,
-        type_="check",
-    )
-    for column in (
-        "submitted_identity_hash",
-        "submitted_table_name",
-        "submitted_schema_name",
-        "submitted_database_name",
-        "submitted_platform",
-        "evidence_version",
-    ):
-        op.drop_column(TABLE, column, schema=SCHEMA)
+    # Compatibility bridge: regenerated 0001 owns the canonical candidate evidence schema.
+    pass

@@ -15,8 +15,60 @@ down_revision: str | Sequence[str] | None = "0014"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 
+EXPECTED_OBJECT_COUNT = 14
+
+
+def _existing_object_count() -> int:
+    return int(
+        op.get_bind()
+        .execute(
+            sa.text(
+                """
+                SELECT
+                    (
+                        SELECT count(*)
+                        FROM information_schema.columns
+                        WHERE table_schema = 'governance'
+                          AND table_name = 'change_request_items'
+                          AND column_name IN (
+                              'target_asset_id', 'target_asset_type', 'target_system_id',
+                              'target_domain_id', 'target_owner_department_id',
+                              'target_classification', 'target_lifecycle',
+                              'target_source_version', 'target_observed_at',
+                              'target_binding_hash'
+                          )
+                    )
+                    + (
+                        SELECT count(*)
+                        FROM pg_constraint constraint_row
+                        JOIN pg_class table_row ON table_row.oid = constraint_row.conrelid
+                        JOIN pg_namespace namespace_row
+                          ON namespace_row.oid = table_row.relnamespace
+                        WHERE namespace_row.nspname = 'governance'
+                          AND table_row.relname = 'change_request_items'
+                          AND constraint_row.conname IN (
+                              'ck_change_request_items_target_binding_shape',
+                              'ck_change_request_items_target_classification_range',
+                              'ck_change_request_items_target_binding_hash_sha256'
+                          )
+                    )
+                    + CASE
+                        WHEN to_regclass('governance.ix_change_items_target') IS NOT NULL THEN 1
+                        ELSE 0
+                      END
+                """
+            )
+        )
+        .scalar_one()
+    )
+
 
 def upgrade() -> None:
+    existing_objects = _existing_object_count()
+    if existing_objects:
+        if existing_objects != EXPECTED_OBJECT_COUNT:
+            raise RuntimeError("The governance target binding schema is only partially present.")
+        return
     op.add_column(
         "change_request_items",
         sa.Column("target_asset_id", sa.Uuid(), nullable=True),
@@ -103,39 +155,5 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
-    op.drop_index(
-        "ix_change_items_target",
-        table_name="change_request_items",
-        schema="governance",
-    )
-    op.drop_constraint(
-        "ck_change_request_items_target_binding_hash_sha256",
-        "change_request_items",
-        schema="governance",
-        type_="check",
-    )
-    op.drop_constraint(
-        "ck_change_request_items_target_classification_range",
-        "change_request_items",
-        schema="governance",
-        type_="check",
-    )
-    op.drop_constraint(
-        "ck_change_request_items_target_binding_shape",
-        "change_request_items",
-        schema="governance",
-        type_="check",
-    )
-    for column in (
-        "target_binding_hash",
-        "target_observed_at",
-        "target_source_version",
-        "target_lifecycle",
-        "target_classification",
-        "target_owner_department_id",
-        "target_domain_id",
-        "target_system_id",
-        "target_asset_type",
-        "target_asset_id",
-    ):
-        op.drop_column("change_request_items", column, schema="governance")
+    # Compatibility bridge: regenerated 0001 owns the canonical target binding schema.
+    pass

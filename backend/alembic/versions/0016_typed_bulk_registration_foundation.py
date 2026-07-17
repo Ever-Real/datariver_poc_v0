@@ -5,6 +5,8 @@ Revises: 0015
 Create Date: 2026-07-17
 """
 
+# ruff: noqa: S608
+
 from collections.abc import Sequence
 
 import sqlalchemy as sa
@@ -16,19 +18,107 @@ branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 
 RLS_SETTING = "NULLIF(current_setting('app.workspace_id', true), '')::uuid"
+EXPECTED_OBJECT_COUNT = 10
+RLS_TABLES = frozenset(
+    {
+        ("integration", "upload_preparation_jobs"),
+        ("integration", "upload_preparation_receipts"),
+        ("integration", "upload_registration_candidates"),
+        ("governance", "registration_content_bindings"),
+    }
+)
 
 
-def _enable_workspace_rls(schema: str, table: str) -> None:
-    op.execute(f"ALTER TABLE {schema}.{table} ENABLE ROW LEVEL SECURITY")
-    op.execute(f"ALTER TABLE {schema}.{table} FORCE ROW LEVEL SECURITY")
-    op.execute(
-        f"CREATE POLICY workspace_isolation ON {schema}.{table} "
-        f"USING (workspace_id = {RLS_SETTING}) "
-        f"WITH CHECK (workspace_id = {RLS_SETTING})"
+def _existing_object_count() -> int:
+    return int(
+        op.get_bind()
+        .execute(
+            sa.text(
+                """
+                SELECT
+                    (
+                        SELECT count(*)
+                        FROM information_schema.columns
+                        WHERE table_schema = 'integration'
+                          AND table_name = 'object_manifests'
+                          AND column_name = 'content_profile'
+                    )
+                    + (
+                        SELECT count(*)
+                        FROM pg_constraint constraint_row
+                        JOIN pg_class table_row ON table_row.oid = constraint_row.conrelid
+                        JOIN pg_namespace namespace_row
+                          ON namespace_row.oid = table_row.relnamespace
+                        WHERE (
+                            namespace_row.nspname = 'integration'
+                            AND table_row.relname = 'object_manifests'
+                            AND constraint_row.conname IN (
+                                'ck_object_manifests_content_profile_allowlist',
+                                'uq_object_manifests_workspace_id_id'
+                            )
+                        ) OR (
+                            namespace_row.nspname = 'governance'
+                            AND table_row.relname = 'change_request_items'
+                            AND constraint_row.conname IN (
+                                'uq_change_request_items_workspace_id_id',
+                                'uq_change_request_item_request_identity'
+                            )
+                        )
+                    )
+                    + (
+                        SELECT count(*)
+                        FROM (VALUES
+                            ('integration.upload_preparation_jobs'),
+                            ('integration.upload_preparation_receipts'),
+                            ('integration.upload_registration_candidates'),
+                            ('governance.registration_content_bindings')
+                        ) AS expected(relation_name)
+                        WHERE to_regclass(relation_name) IS NOT NULL
+                    )
+                    + CASE
+                        WHEN to_regclass('integration.ix_upload_preparation_jobs_claim')
+                            IS NOT NULL THEN 1
+                        ELSE 0
+                      END
+                """
+            )
+        )
+        .scalar_one()
     )
 
 
+def _enable_workspace_rls(schema: str, table: str) -> None:
+    if (schema, table) not in RLS_TABLES:
+        raise ValueError(f"unsupported RLS table: {schema}.{table}")
+    op.execute(f"ALTER TABLE {schema}.{table} ENABLE ROW LEVEL SECURITY")
+    op.execute(f"ALTER TABLE {schema}.{table} FORCE ROW LEVEL SECURITY")
+    # Identifiers are interpolated only after validation against the closed RLS_TABLES set.
+    policy_statement = f"""
+        DO $datariver$
+        BEGIN
+            IF NOT EXISTS (
+                SELECT 1 FROM pg_policies
+                WHERE schemaname = '{schema}'
+                  AND tablename = '{table}'
+                  AND policyname = 'workspace_isolation'
+            ) THEN
+                CREATE POLICY workspace_isolation ON {schema}.{table}
+                USING (workspace_id = {RLS_SETTING})
+                WITH CHECK (workspace_id = {RLS_SETTING});
+            END IF;
+        END
+        $datariver$
+        """
+    op.execute(policy_statement)
+
+
 def upgrade() -> None:
+    existing_objects = _existing_object_count()
+    if existing_objects:
+        if existing_objects != EXPECTED_OBJECT_COUNT:
+            raise RuntimeError("The typed BULK registration schema is only partially present.")
+        _install_security_contract()
+        return
     op.add_column(
         "object_manifests",
         sa.Column(
@@ -63,33 +153,6 @@ def upgrade() -> None:
         ["workspace_id", "change_request_id", "id"],
         schema="governance",
     )
-    op.execute(
-        """
-        CREATE FUNCTION integration.reject_object_manifest_content_profile_change()
-        RETURNS trigger
-        LANGUAGE plpgsql
-        SECURITY INVOKER
-        SET search_path = pg_catalog
-        AS $function$
-        BEGIN
-            IF NEW.content_profile IS DISTINCT FROM OLD.content_profile THEN
-                RAISE EXCEPTION 'object manifest content_profile is immutable'
-                    USING ERRCODE = '23514';
-            END IF;
-            RETURN NEW;
-        END
-        $function$
-        """
-    )
-    op.execute(
-        """
-        CREATE TRIGGER reject_object_manifest_content_profile_change
-        BEFORE UPDATE OF content_profile ON integration.object_manifests
-        FOR EACH ROW
-        EXECUTE FUNCTION integration.reject_object_manifest_content_profile_change()
-        """
-    )
-
     op.create_table(
         "upload_preparation_jobs",
         sa.Column("workspace_id", sa.Uuid(), nullable=False),
@@ -202,8 +265,6 @@ def upgrade() -> None:
         unique=False,
         schema="integration",
     )
-    _enable_workspace_rls("integration", "upload_preparation_jobs")
-
     op.create_table(
         "upload_preparation_receipts",
         sa.Column("workspace_id", sa.Uuid(), nullable=False),
@@ -308,8 +369,6 @@ def upgrade() -> None:
         ),
         schema="integration",
     )
-    _enable_workspace_rls("integration", "upload_preparation_receipts")
-
     op.create_table(
         "upload_registration_candidates",
         sa.Column("workspace_id", sa.Uuid(), nullable=False),
@@ -372,8 +431,6 @@ def upgrade() -> None:
         ),
         schema="integration",
     )
-    _enable_workspace_rls("integration", "upload_registration_candidates")
-
     op.create_table(
         "registration_content_bindings",
         sa.Column("workspace_id", sa.Uuid(), nullable=False),
@@ -438,8 +495,18 @@ def upgrade() -> None:
         ),
         schema="governance",
     )
-    _enable_workspace_rls("governance", "registration_content_bindings")
+    _install_security_contract()
 
+
+def _install_security_contract() -> None:
+    _install_content_profile_contract()
+    for schema, table in (
+        ("integration", "upload_preparation_jobs"),
+        ("integration", "upload_preparation_receipts"),
+        ("integration", "upload_registration_candidates"),
+        ("governance", "registration_content_bindings"),
+    ):
+        _enable_workspace_rls(schema, table)
     op.execute(
         "DO $datariver$ BEGIN "
         "IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'datariver_app') THEN "
@@ -451,59 +518,39 @@ def upgrade() -> None:
     )
 
 
-def downgrade() -> None:
+def _install_content_profile_contract() -> None:
     op.execute(
         """
-        DO $guard$
+        CREATE OR REPLACE FUNCTION integration.reject_object_manifest_content_profile_change()
+        RETURNS trigger
+        LANGUAGE plpgsql
+        SECURITY INVOKER
+        SET search_path = pg_catalog
+        AS $function$
         BEGIN
-            IF EXISTS (SELECT 1 FROM governance.registration_content_bindings)
-                OR EXISTS (SELECT 1 FROM integration.upload_registration_candidates)
-                OR EXISTS (SELECT 1 FROM integration.upload_preparation_receipts)
-                OR EXISTS (SELECT 1 FROM integration.upload_preparation_jobs)
-            THEN
-                RAISE EXCEPTION
-                    '0016 downgrade refused: typed BULK preparation evidence exists';
+            IF NEW.content_profile IS DISTINCT FROM OLD.content_profile THEN
+                RAISE EXCEPTION 'object manifest content_profile is immutable'
+                    USING ERRCODE = '23514';
             END IF;
+            RETURN NEW;
         END
-        $guard$
+        $function$
         """
-    )
-    op.drop_table("registration_content_bindings", schema="governance")
-    op.drop_table("upload_registration_candidates", schema="integration")
-    op.drop_table("upload_preparation_receipts", schema="integration")
-    op.drop_index(
-        "ix_upload_preparation_jobs_claim",
-        table_name="upload_preparation_jobs",
-        schema="integration",
-    )
-    op.drop_table("upload_preparation_jobs", schema="integration")
-    op.execute(
-        "ALTER TABLE governance.change_request_items "
-        "DROP CONSTRAINT IF EXISTS uq_change_request_item_request_identity"
-    )
-    op.drop_constraint(
-        "uq_change_request_items_workspace_id_id",
-        "change_request_items",
-        schema="governance",
-        type_="unique",
-    )
-    op.drop_constraint(
-        "uq_object_manifests_workspace_id_id",
-        "object_manifests",
-        schema="integration",
-        type_="unique",
-    )
-    op.drop_constraint(
-        "ck_object_manifests_content_profile_allowlist",
-        "object_manifests",
-        schema="integration",
-        type_="check",
     )
     op.execute(
         "DROP TRIGGER IF EXISTS reject_object_manifest_content_profile_change "
         "ON integration.object_manifests"
     )
     op.execute(
-        "DROP FUNCTION IF EXISTS integration.reject_object_manifest_content_profile_change()"
+        """
+        CREATE TRIGGER reject_object_manifest_content_profile_change
+        BEFORE UPDATE OF content_profile ON integration.object_manifests
+        FOR EACH ROW
+        EXECUTE FUNCTION integration.reject_object_manifest_content_profile_change()
+        """
     )
-    op.drop_column("object_manifests", "content_profile", schema="integration")
+
+
+def downgrade() -> None:
+    # Compatibility bridge: regenerated 0001 owns the canonical typed BULK schema.
+    pass

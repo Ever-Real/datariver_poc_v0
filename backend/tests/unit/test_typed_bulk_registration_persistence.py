@@ -132,13 +132,14 @@ def test_typed_bulk_migration_forces_rls_and_limits_mutation_grants() -> None:
     ).read_text(encoding="utf-8")
 
     assert REQUIRED_DATABASE_REVISION == "0017"
+    assert "_enable_workspace_rls(schema, table)" in migration
     for schema, table in (
         ("integration", "upload_preparation_jobs"),
         ("integration", "upload_preparation_receipts"),
         ("integration", "upload_registration_candidates"),
         ("governance", "registration_content_bindings"),
     ):
-        assert f'_enable_workspace_rls("{schema}", "{table}")' in migration
+        assert f'("{schema}", "{table}")' in migration
     assert "FORCE ROW LEVEL SECURITY" in migration
     assert "CREATE POLICY workspace_isolation" in migration
     assert (
@@ -147,7 +148,9 @@ def test_typed_bulk_migration_forces_rls_and_limits_mutation_grants() -> None:
     assert "GRANT SELECT ON integration.upload_preparation_receipts" in migration
     assert "GRANT SELECT, INSERT ON governance.registration_content_bindings" in migration
     assert "reject_object_manifest_content_profile_change" in migration
-    assert "0016 downgrade refused: typed BULK preparation evidence exists" in migration
+    assert (
+        "Compatibility bridge: regenerated 0001 owns the canonical typed BULK schema" in migration
+    )
     assert "TO datariver_upload" not in migration
     assert "GRANT UPDATE ON integration.upload_preparation_receipts" not in migration
     assert "GRANT UPDATE ON integration.upload_registration_candidates" not in migration
@@ -166,7 +169,10 @@ def test_candidate_identity_evidence_migration_preserves_legacy_and_requires_v2(
     assert "submitted_identity_hash ~ '^[0-9a-f]{64}$'" in migration
     assert "new upload registration candidates require V2 evidence" in migration
     assert "upload registration candidate evidence is immutable" in migration
-    assert "0017 downgrade refused: V2 submitted candidate identity evidence exists" in migration
+    assert (
+        "Compatibility bridge: regenerated 0001 owns the canonical candidate evidence schema"
+        in migration
+    )
     assert "GRANT" not in migration
 
 

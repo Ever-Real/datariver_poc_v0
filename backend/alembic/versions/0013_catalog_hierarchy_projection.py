@@ -15,8 +15,41 @@ down_revision: str | Sequence[str] | None = "0012"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 
+EXPECTED_OBJECT_COUNT = 3
+
+
+def _existing_object_count() -> int:
+    return int(
+        op.get_bind()
+        .execute(
+            sa.text(
+                """
+                SELECT
+                    (
+                        SELECT count(*)
+                        FROM information_schema.columns
+                        WHERE table_schema = 'catalog'
+                          AND table_name = 'assets_projection'
+                          AND column_name IN ('database_name', 'schema_name')
+                    )
+                    + CASE
+                        WHEN to_regclass('catalog.ix_assets_projection_tree_active')
+                            IS NOT NULL THEN 1
+                        ELSE 0
+                      END
+                """
+            )
+        )
+        .scalar_one()
+    )
+
 
 def upgrade() -> None:
+    existing_objects = _existing_object_count()
+    if existing_objects:
+        if existing_objects != EXPECTED_OBJECT_COUNT:
+            raise RuntimeError("The catalog hierarchy projection is only partially present.")
+        return
     op.add_column(
         "assets_projection",
         sa.Column("database_name", sa.String(length=255), nullable=True),
@@ -38,10 +71,5 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
-    op.drop_index(
-        "ix_assets_projection_tree_active",
-        table_name="assets_projection",
-        schema="catalog",
-    )
-    op.drop_column("assets_projection", "schema_name", schema="catalog")
-    op.drop_column("assets_projection", "database_name", schema="catalog")
+    # Compatibility bridge: regenerated 0001 owns the canonical hierarchy projection.
+    pass

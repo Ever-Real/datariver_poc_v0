@@ -16,8 +16,36 @@ down_revision: str | Sequence[str] | None = "0013"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 
+EXPECTED_OBJECT_COUNT = 2
+
+
+def _existing_object_count() -> int:
+    return int(
+        op.get_bind()
+        .execute(
+            sa.text(
+                """
+                SELECT
+                    CASE WHEN to_regclass('catalog.export_requests') IS NOT NULL THEN 1 ELSE 0 END
+                    + CASE
+                        WHEN to_regclass('catalog.ix_catalog_exports_owner_time') IS NOT NULL
+                            THEN 1
+                        ELSE 0
+                      END
+                """
+            )
+        )
+        .scalar_one()
+    )
+
 
 def upgrade() -> None:
+    existing_objects = _existing_object_count()
+    if existing_objects:
+        if existing_objects != EXPECTED_OBJECT_COUNT:
+            raise RuntimeError("The governed catalog export schema is only partially present.")
+        _install_security_contract()
+        return
     op.create_table(
         "export_requests",
         sa.Column("workspace_id", sa.Uuid(), nullable=False),
@@ -140,32 +168,54 @@ def upgrade() -> None:
         unique=False,
         schema="catalog",
     )
+    _install_security_contract()
+
+
+def _install_security_contract() -> None:
     op.execute("ALTER TABLE catalog.export_requests ENABLE ROW LEVEL SECURITY")
     op.execute("ALTER TABLE catalog.export_requests FORCE ROW LEVEL SECURITY")
     op.execute(
-        "CREATE POLICY workspace_isolation ON catalog.export_requests "
-        "USING (workspace_id = NULLIF(current_setting('app.workspace_id', true), '')::uuid) "
-        "WITH CHECK (workspace_id = "
-        "NULLIF(current_setting('app.workspace_id', true), '')::uuid)"
-    )
-    op.execute(
-        "CREATE POLICY catalog_export_owner_select ON catalog.export_requests "
-        "AS RESTRICTIVE FOR SELECT USING (current_user <> 'datariver_app' OR requested_by = "
-        "NULLIF(current_setting('app.subject_id', true), '')::uuid)"
-    )
-    op.execute(
-        "DO $datariver$ BEGIN "
-        "IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'datariver_app') THEN "
-        "GRANT SELECT, INSERT ON catalog.export_requests TO datariver_app; "
-        "GRANT INSERT ON integration.jobs TO datariver_app; "
-        "END IF; END $datariver$"
+        """
+        DO $datariver$
+        BEGIN
+            IF NOT EXISTS (
+                SELECT 1 FROM pg_policies
+                WHERE schemaname = 'catalog'
+                  AND tablename = 'export_requests'
+                  AND policyname = 'workspace_isolation'
+            ) THEN
+                CREATE POLICY workspace_isolation ON catalog.export_requests
+                USING (
+                    workspace_id = NULLIF(current_setting('app.workspace_id', true), '')::uuid
+                )
+                WITH CHECK (
+                    workspace_id = NULLIF(current_setting('app.workspace_id', true), '')::uuid
+                );
+            END IF;
+            IF NOT EXISTS (
+                SELECT 1 FROM pg_policies
+                WHERE schemaname = 'catalog'
+                  AND tablename = 'export_requests'
+                  AND policyname = 'catalog_export_owner_select'
+            ) THEN
+                CREATE POLICY catalog_export_owner_select ON catalog.export_requests
+                AS RESTRICTIVE FOR SELECT USING (
+                    current_user <> 'datariver_app'
+                    OR requested_by = NULLIF(
+                        current_setting('app.subject_id', true), ''
+                    )::uuid
+                );
+            END IF;
+            IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'datariver_app') THEN
+                GRANT SELECT, INSERT ON catalog.export_requests TO datariver_app;
+                GRANT INSERT ON integration.jobs TO datariver_app;
+            END IF;
+        END
+        $datariver$
+        """
     )
 
 
 def downgrade() -> None:
-    op.drop_index(
-        "ix_catalog_exports_owner_time",
-        table_name="export_requests",
-        schema="catalog",
-    )
-    op.drop_table("export_requests", schema="catalog")
+    # Compatibility bridge: regenerated 0001 owns the canonical export schema.
+    pass
