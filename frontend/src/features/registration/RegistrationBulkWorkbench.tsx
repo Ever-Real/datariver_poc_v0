@@ -20,6 +20,7 @@ import { newIdempotencyKey, type ApiClient } from '../../api/client'
 import type {
   UploadContentProfile,
   UploadPreparation,
+  UploadRegistrationCandidatePage,
   UploadRecord,
 } from '../../api/types'
 import { ErrorNotice } from '../../components/ErrorNotice'
@@ -41,12 +42,15 @@ export function RegistrationBulkWorkbench({ client }: { client: ApiClient }) {
   const [preparation, setPreparation] = useState<UploadPreparation>()
   const [preparationLoaded, setPreparationLoaded] = useState(false)
   const [preparationBusy, setPreparationBusy] = useState(false)
+  const [candidatePage, setCandidatePage] = useState<UploadRegistrationCandidatePage>()
+  const [candidatesBusy, setCandidatesBusy] = useState(false)
   const [error, setError] = useState<unknown>()
   const [busy, setBusy] = useState(false)
   const generation = useRef(0)
   const controllers = useRef(new Set<AbortController>())
   const loadIntent = useRef(0)
   const preparationIntent = useRef(0)
+  const candidateIntent = useRef(0)
 
   const beginOperation = useCallback(() => {
     const controller = new AbortController()
@@ -82,6 +86,9 @@ export function RegistrationBulkWorkbench({ client }: { client: ApiClient }) {
     preparationIntent.current = expectedIntent
     setPreparation(undefined)
     setPreparationLoaded(false)
+    setCandidatePage(undefined)
+    setCandidatesBusy(false)
+    candidateIntent.current += 1
     if (upload.state !== 'ACCEPTED' || upload.content_profile !== TYPED_DESCRIPTION_PROFILE) {
       setPreparationBusy(false)
       return
@@ -124,7 +131,8 @@ export function RegistrationBulkWorkbench({ client }: { client: ApiClient }) {
     setProgress(0)
     setStatus('파일을 선택하세요.'); setRecord(undefined); setRecords([])
     setPreparation(undefined); setPreparationLoaded(false); setPreparationBusy(false)
-    setError(undefined); setBusy(false); loadIntent.current += 1; preparationIntent.current += 1
+    setCandidatePage(undefined); setCandidatesBusy(false)
+    setError(undefined); setBusy(false); loadIntent.current += 1; preparationIntent.current += 1; candidateIntent.current += 1
     void load()
     return () => {
       generation.current += 1
@@ -256,6 +264,38 @@ export function RegistrationBulkWorkbench({ client }: { client: ApiClient }) {
     setRecord(next)
     setError(undefined)
     void loadPreparations(next)
+  }
+
+  const loadCandidates = async () => {
+    if (!record || !preparation || preparation.state !== 'READY' || candidatesBusy) return
+    const expectedIntent = candidateIntent.current + 1
+    candidateIntent.current = expectedIntent
+    const { controller, expectedGeneration } = beginOperation()
+    setCandidatesBusy(true)
+    setError(undefined)
+    try {
+      const value = await client.request<UploadRegistrationCandidatePage>(
+        `/uploads/${record.id}/preparations/${preparation.id}/candidates?limit=20`,
+        { signal: controller.signal },
+      )
+      if (
+        expectedGeneration === generation.current
+        && expectedIntent === candidateIntent.current
+        && value.receipt.preparation_id === preparation.id
+      ) setCandidatePage(value)
+    } catch (next) {
+      if (
+        !controller.signal.aborted
+        && expectedGeneration === generation.current
+        && expectedIntent === candidateIntent.current
+      ) setError(next)
+    } finally {
+      finishOperation(controller)
+      if (
+        expectedGeneration === generation.current
+        && expectedIntent === candidateIntent.current
+      ) setCandidatesBusy(false)
+    }
   }
 
   const createPreparation = async () => {
@@ -391,6 +431,9 @@ export function RegistrationBulkWorkbench({ client }: { client: ApiClient }) {
             busy={preparationBusy}
             onCreate={() => void createPreparation()}
             onRefresh={() => void loadPreparations(record)}
+            candidatePage={candidatePage}
+            candidatesBusy={candidatesBusy}
+            onLoadCandidates={() => void loadCandidates()}
           />
         )}
         {record?.state === 'ACCEPTED' && record.content_profile === TYPED_DESCRIPTION_PROFILE && (
@@ -413,12 +456,18 @@ function PreparationPanel({
   busy,
   onCreate,
   onRefresh,
+  candidatePage,
+  candidatesBusy,
+  onLoadCandidates,
 }: {
   preparation?: UploadPreparation
   loaded: boolean
   busy: boolean
   onCreate: () => void
   onRefresh: () => void
+  candidatePage?: UploadRegistrationCandidatePage
+  candidatesBusy: boolean
+  onLoadCandidates: () => void
 }) {
   return (
     <section
@@ -471,10 +520,11 @@ function PreparationPanel({
             </p>
           )}
           {preparation.state === 'READY' && (
-            <p className="notice registration-binding-pending" role="status">
-              후보 증거는 준비되었지만 후보 조회·미리보기 API가 활성화되기 전에는 변경 요청을
-              생성하지 않습니다.
-            </p>
+            <CandidatePreviewPanel
+              page={candidatePage}
+              busy={candidatesBusy}
+              onLoad={onLoadCandidates}
+            />
           )}
           {['FAILED', 'CANCELLED', 'STALE'].includes(preparation.state) && (
             <p className="notice registration-binding-pending" role="status">
@@ -482,6 +532,62 @@ function PreparationPanel({
               upload가 필요하며, worker 재처리는 별도 통제 명령으로만 제공됩니다.
             </p>
           )}
+        </>
+      )}
+    </section>
+  )
+}
+
+function CandidatePreviewPanel({
+  page,
+  busy,
+  onLoad,
+}: {
+  page?: UploadRegistrationCandidatePage
+  busy: boolean
+  onLoad: () => void
+}) {
+  return (
+    <section className="registration-candidate-preview" aria-label="등록 후보 미리보기" aria-busy={busy}>
+      <header>
+        <div>
+          <span className="eyebrow">Authorized candidate evidence</span>
+          <h4>Dataset 설명 후보</h4>
+        </div>
+        <button className="button button-secondary" type="button" disabled={busy} onClick={onLoad}>
+          {busy ? '후보 확인 중…' : page ? '후보 새로고침' : '후보 조회'}
+        </button>
+      </header>
+      {!page ? (
+        <p className="notice registration-binding-pending" role="status">
+          서버가 현재 권한·분류·대상 identity를 다시 검사한 후보만 표시합니다. 이 목록은 읽기 전용이며,
+          후보를 브라우저에서 수정하거나 원시 변경 JSON으로 제출할 수 없습니다.
+        </p>
+      ) : (
+        <>
+          <div className="registration-candidate-table-frame">
+            <table>
+              <caption>권한이 확인된 Dataset 설명 후보</caption>
+              <thead><tr><th scope="col">#</th><th scope="col">대상</th><th scope="col">제안 설명</th><th scope="col">등급</th><th scope="col">Source version</th></tr></thead>
+              <tbody>
+                {page.items.map((candidate) => <tr key={candidate.id}>
+                  <td>{candidate.ordinal}</td>
+                  <td title={`${candidate.submitted_identity.platform}.${candidate.submitted_identity.database_name}.${candidate.submitted_identity.schema_name}.${candidate.submitted_identity.table_name}`}><strong>{candidate.submitted_identity.table_name}</strong><small>{candidate.submitted_identity.platform} · {candidate.submitted_identity.database_name}.{candidate.submitted_identity.schema_name}</small></td>
+                  <td title={candidate.proposed_description}>{candidate.proposed_description || '(설명 삭제)'}</td>
+                  <td><span className="badge">{candidate.current_target.classification}</span></td>
+                  <td title={candidate.current_target.source_version}><code>{candidate.current_target.source_version}</code></td>
+                </tr>)}
+                {!page.items.length && <tr><td colSpan={5}>현재 권한 범위에서 표시할 후보가 없습니다.</td></tr>}
+              </tbody>
+            </table>
+          </div>
+          <dl className="registration-candidate-receipt">
+            <div><dt>Receipt SHA-256</dt><dd><code>{page.receipt.receipt_hash}</code></dd></div>
+            <div><dt>Candidate root</dt><dd><code>{page.receipt.candidate_root_hash}</code></dd></div>
+          </dl>
+          <p className="notice registration-binding-pending" role="status">
+            후보별 변경요청 생성은 receipt·candidate hash·현재 provider snapshot을 함께 고정하는 typed 서버 명령으로만 열립니다. 현재 화면은 해당 증거를 검토하는 읽기 전용 단계입니다.
+          </p>
         </>
       )}
     </section>

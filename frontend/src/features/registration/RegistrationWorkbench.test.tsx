@@ -313,6 +313,60 @@ describe('Registration workbench', () => {
     expect(bindingStage).toHaveClass('pending')
   })
 
+  it('renders only server-authorized typed candidates as read-only evidence', async () => {
+    const upload = uploadRecord(
+      'ACCEPTED',
+      'dataset-description.csv',
+      'DATASET_DESCRIPTION_CSV_V1',
+    )
+    const ready = {
+      ...preparationRecord('READY'),
+      rows_processed: 1,
+      total_rows: 1,
+    }
+    const candidates = {
+      items: [{
+        id: 'candidate-1',
+        ordinal: 1,
+        evidence_version: 'DATASET_DESCRIPTION_CANDIDATE_V2',
+        candidate_kind: 'DATASET_DESCRIPTION_UPDATE',
+        proposed_description: 'Clarify the event identifier.',
+        submitted_identity: {
+          platform: 'postgres', database_name: 'fab', schema_name: 'quality', table_name: 'wafer_events', identity_hash: 'a'.repeat(64),
+        },
+        candidate_hash: 'b'.repeat(64),
+        created_at: '2026-01-01T00:00:00Z',
+        current_target: {
+          id: 'asset-1', asset_type: 'DATASET', name: 'wafer_events', platform: 'postgres', database_name: 'fab', schema_name: 'quality', classification: 'INTERNAL', lifecycle: 'ACTIVE', source_version: 'source-v3', observed_at: '2026-01-01T00:00:00Z',
+        },
+      }],
+      page: { limit: 20 },
+      receipt: {
+        id: 'receipt-1', preparation_id: 'preparation-1', manifest_version: 3, source_sha256: 'c'.repeat(64), content_profile: 'DATASET_DESCRIPTION_CSV_V1', parser_version: 'parser-v1', scanner_version: 'scanner-v1', schema_version: 'schema-v1', configuration_hash: 'd'.repeat(64), candidate_root_hash: 'e'.repeat(64), receipt_hash: 'f'.repeat(64), observed_at: '2026-01-01T00:00:00Z', created_at: '2026-01-01T00:00:00Z',
+      },
+      meta: { projection_version: 3, policy_version: 'test', classification_policy_version: 1, authorization_generation: 2 },
+    }
+    const request = vi.fn((path: string) => {
+      if (path.startsWith('/catalog/tree')) return Promise.resolve(emptyTree)
+      if (path === '/uploads?limit=50') return Promise.resolve({ items: [upload] })
+      if (path === '/uploads/upload-1/preparations?limit=20') return Promise.resolve({ items: [ready] })
+      if (path === '/uploads/upload-1/preparations/preparation-1/candidates?limit=20') return Promise.resolve(candidates)
+      throw new Error(`unexpected request: ${path}`)
+    })
+
+    render(<RegistrationPage client={clientWith(request)} />)
+    fireEvent.click(screen.getByRole('tab', { name: /BULK/ }))
+    fireEvent.click(await screen.findByRole('button', { name: /dataset-description.csv/ }))
+    fireEvent.click(await screen.findByRole('button', { name: '후보 조회' }))
+
+    const preview = await screen.findByRole('region', { name: '등록 후보 미리보기' })
+    expect(within(preview).getByText('wafer_events')).toBeInTheDocument()
+    expect(within(preview).getByText('Clarify the event identifier.')).toBeInTheDocument()
+    expect(within(preview).getByText(/typed 서버 명령으로만 열립니다/)).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /변경요청 생성/ })).not.toBeInTheDocument()
+    expect(request.mock.calls.some(([path]) => path.includes('/registration-proposals'))).toBe(false)
+  })
+
   it.each(['READY', 'FAILED', 'STALE'] as const)(
     'keeps %s preparation evidence non-executable',
     async (state) => {

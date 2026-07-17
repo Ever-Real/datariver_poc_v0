@@ -238,6 +238,61 @@ export interface UploadPreparation {
   version: number
 }
 
+export interface UploadRegistrationCandidate {
+  id: string
+  ordinal: number
+  evidence_version: 'DATASET_DESCRIPTION_CANDIDATE_V2'
+  candidate_kind: 'DATASET_DESCRIPTION_UPDATE'
+  proposed_description: string
+  submitted_identity: {
+    platform: string
+    database_name: string
+    schema_name: string
+    table_name: string
+    identity_hash: string
+  }
+  candidate_hash: string
+  created_at: string
+  current_target: {
+    id: string
+    asset_type: 'DATASET'
+    name: string
+    platform: string
+    database_name: string
+    schema_name: string
+    classification: 'PUBLIC' | 'INTERNAL' | 'CONFIDENTIAL' | 'RESTRICTED'
+    lifecycle: 'ACTIVE'
+    source_version: string
+    observed_at: string
+  }
+}
+
+export interface UploadRegistrationCandidatePage {
+  items: UploadRegistrationCandidate[]
+  page: { next_cursor?: string; limit: number }
+  receipt: {
+    id: string
+    preparation_id: string
+    manifest_version: number
+    source_sha256: string
+    content_profile: 'DATASET_DESCRIPTION_CSV_V1'
+    parser_version: string
+    scanner_version: string
+    schema_version: string
+    configuration_hash: string
+    candidate_root_hash: string
+    receipt_hash: string
+    observed_at: string
+    created_at: string
+  }
+  meta: {
+    projection_version: number
+    policy_version: string
+    classification_policy_version: number | null
+    authorization_generation: number | null
+  }
+}
+
 export type ChangeRequestState =
   | 'REGISTERED'
   | 'IN_REVIEW'
