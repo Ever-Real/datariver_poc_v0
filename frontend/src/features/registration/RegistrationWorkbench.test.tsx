@@ -2,11 +2,13 @@ import { fireEvent, render, screen, waitFor, within } from '@testing-library/rea
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { ApiClient, RequestOptions } from '../../api/client'
 import type {
+  CatalogAssetDetail,
   UploadContentProfile,
   UploadPreparation,
   UploadRecord,
 } from '../../api/types'
 import { RegistrationPage } from './RegistrationPage'
+import { RegistrationManualWorkbench } from './RegistrationManualWorkbench'
 
 const emptyTree = {
   items: [],
@@ -83,11 +85,50 @@ describe('Registration workbench', () => {
 
     expect(screen.getByRole('tab', { name: /MANUAL/ })).toHaveAttribute('aria-selected', 'true')
     expect(screen.getByText('GOVERNED')).toBeInTheDocument()
-    expect(screen.getByText(/원본 hash 미리보기/)).toBeInTheDocument()
+    expect(screen.getByText(/Resource Tree에서 테이블을 선택하세요/)).toBeInTheDocument()
+    expect(screen.getByText('Metadata Registration')).toBeInTheDocument()
     expect(screen.queryByLabelText('Aspect JSON')).not.toBeInTheDocument()
     await waitFor(() => expect(request.mock.calls.some(([path, options]) => (
       path.startsWith('/catalog/tree/nodes?') && options?.signal instanceof AbortSignal
     ))).toBe(true))
+  })
+
+  it('uses the v0.3 property table and column grid without direct provider writes', () => {
+    const asset: CatalogAssetDetail = {
+      id: 'asset-1',
+      external_urn: 'urn:li:dataset:(urn:li:dataPlatform:postgres,seed.wafer,DEV)',
+      asset_type: 'TABLE',
+      name: 'wafer',
+      description: 'Wafer production records.',
+      platform: 'postgres',
+      database_name: 'datariver',
+      schema_name: 'semiconductor_seed',
+      domain: 'manufacturing',
+      tags: ['tier:gold'],
+      terms: ['wafer'],
+      classification: 'INTERNAL',
+      lifecycle: 'ACTIVE',
+      observed_at: '2026-01-01T00:00:00Z',
+      matches: [],
+      ownership: [],
+      glossary_terms: [],
+      schema_fields: [{ fieldPath: 'wafer_id', nativeDataType: 'uuid', description: 'Identifier' }],
+      quality: {},
+      source_version: 'source-1',
+    }
+    render(<RegistrationManualWorkbench
+      client={clientWith(vi.fn())}
+      asset={asset}
+      loading={false}
+      onClose={vi.fn()}
+    />)
+
+    expect(screen.getByText('Table Properties')).toBeInTheDocument()
+    expect(screen.getByText('Column Schema Specifications')).toBeInTheDocument()
+    expect(screen.getByText('wafer_id')).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: '설명 변경' }))
+    expect(screen.getByText('설명 변경 제안')).toBeInTheDocument()
+    expect(screen.queryByLabelText('Aspect JSON')).not.toBeInTheDocument()
   })
 
   it('loads upload history only after the bulk workbench is selected', async () => {

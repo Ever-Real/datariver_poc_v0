@@ -108,7 +108,7 @@ number is independently committed only after its relevant checks pass.
 - [x] R1-01 Home/session: verified default Workspace hydration and dashboard CSR navigation.
 - [x] R1-02 Catalog: full authorized paging/tree/detail/filter/export presentation with the narrow
   administrator quarantine-review scope unchanged.
-- [ ] R1-03 Registration: archive and replace the MANUAL body; compact tab parity and shared Oracle
+- [x] R1-03 Registration: archive and replace the MANUAL body; compact tab parity and shared Oracle
   selector behavior.
 - [ ] R1-04 Change management: schema/system-assignee summary and complete typed list fields.
 - [ ] R1-05 Administration: user/system master parity and governed external-service profile master.
