@@ -35,6 +35,11 @@ class CatalogAssetSummary(BaseModel):
     platform: str | None
     database_name: str | None
     schema_name: str | None
+    owner: str | None
+    domain: str | None
+    tags: list[str] = Field(default_factory=list)
+    terms: list[str] = Field(default_factory=list)
+    created_at: datetime | None
     classification: str
     lifecycle: str
     observed_at: datetime

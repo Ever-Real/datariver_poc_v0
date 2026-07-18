@@ -41,7 +41,16 @@ query DataRiverAsset($urn: String!) {
       }
       globalTags { tags { tag { urn name } } }
       glossaryTerms { terms { term { urn name } } }
-      schemaMetadata { fields { fieldPath type description } }
+      schemaMetadata {
+        fields {
+          fieldPath
+          type
+          nativeDataType
+          description
+          globalTags { tags { tag { urn name } } }
+          glossaryTerms { terms { term { urn name } } }
+        }
+      }
     }
   }
 }
@@ -89,8 +98,9 @@ query DataRiverCatalogScan($input: SearchAcrossEntitiesInput!) {
         type
         ... on Dataset {
           name
+          subTypes { typeNames }
           platform { urn name }
-          properties { name description }
+          properties { name description created customProperties { key value } }
           browsePathV2 {
             path {
               name
@@ -114,6 +124,7 @@ query DataRiverCatalogScan($input: SearchAcrossEntitiesInput!) {
             }
           }
           globalTags { tags { tag { name } } }
+          glossaryTerms { terms { term { urn name } } }
         }
       }
     }
@@ -140,13 +151,38 @@ def _classification_from_tags(tags: object) -> Classification | None:
     return next(iter(values)) if len(values) == 1 else None
 
 
+def _container_hierarchy_kind(type_names: set[str]) -> str | None:
+    """Map typed provider container aliases without deriving hierarchy from a URN."""
+    normalized = {
+        "".join(character for character in value.casefold() if character.isalnum())
+        for value in type_names
+    }
+    if any(name == "schema" or name.endswith("schema") for name in normalized):
+        return "SCHEMA"
+    if any(name == "database" or name.endswith("database") for name in normalized):
+        return "DATABASE"
+    return None
+
+
 def _catalog_hierarchy_from_browse_path(value: object) -> tuple[str | None, str | None]:
     path = value.get("path") if isinstance(value, dict) else None
     database_names: set[str] = set()
     schema_names: set[str] = set()
+    untyped_path_names: set[str] = set()
     for entry in path if isinstance(path, list) else []:
         entity = entry.get("entity") if isinstance(entry, dict) else None
         if not isinstance(entity, dict) or entity.get("type") != "CONTAINER":
+            label = entry.get("name") if isinstance(entry, dict) else None
+            if (
+                isinstance(label, str)
+                and label.strip()
+                and not label.strip().startswith("urn:li:")
+            ):
+                # DataHub may return a provider-owned path segment without a
+                # materialized Container entity.  It is still an authoritative
+                # browse-path label, so preserve it as a schema only; a missing
+                # database is never guessed from a dataset URN or platform name.
+                untyped_path_names.add(label.strip()[:255])
             continue
         subtypes = entity.get("subTypes")
         raw_type_names = subtypes.get("typeNames") if isinstance(subtypes, dict) else None
@@ -160,14 +196,81 @@ def _catalog_hierarchy_from_browse_path(value: object) -> tuple[str | None, str 
         if not isinstance(raw_name, str) or not raw_name.strip():
             continue
         name = raw_name.strip()[:255]
-        if "database" in type_names:
+        kind = _container_hierarchy_kind(type_names)
+        if kind == "DATABASE":
             database_names.add(name)
-        if "schema" in type_names:
+        if kind == "SCHEMA":
             schema_names.add(name)
     return (
         next(iter(database_names)) if len(database_names) == 1 else None,
-        next(iter(schema_names)) if len(schema_names) == 1 else None,
+        next(iter(schema_names))
+        if len(schema_names) == 1
+        else next(iter(untyped_path_names))
+        if len(untyped_path_names) == 1
+        else None,
     )
+
+
+def _datahub_timestamp(value: object) -> datetime | None:
+    raw_time = value.get("time") if isinstance(value, dict) else value
+    if isinstance(raw_time, bool) or not isinstance(raw_time, (int, float)):
+        return None
+    try:
+        return datetime.fromtimestamp(raw_time / 1_000, tz=UTC)
+    except (OverflowError, OSError, ValueError):
+        return None
+
+
+def _metadata_names(value: object, *, wrapper: str, entity: str) -> tuple[str, ...]:
+    raw_items = value.get(wrapper, []) if isinstance(value, dict) else []
+    items = raw_items if isinstance(raw_items, list) else []
+    names = {
+        str(reference.get("name") or reference.get("urn")).strip()
+        for item in items
+        if isinstance(item, dict)
+        for reference in [item.get(entity)]
+        if isinstance(reference, dict) and (reference.get("name") or reference.get("urn"))
+    }
+    return tuple(sorted(names))
+
+
+def _custom_property_value(value: object, *, key: str) -> str | None:
+    entries = value if isinstance(value, list) else []
+    values = {
+        str(entry.get("value")).strip()
+        for entry in entries
+        if isinstance(entry, dict)
+        and entry.get("key") == key
+        and isinstance(entry.get("value"), str)
+        and entry["value"].strip()
+    }
+    return next(iter(values)) if len(values) == 1 else None
+
+
+def _dataset_asset_type(entity: dict[str, Any]) -> str:
+    subtypes = entity.get("subTypes")
+    raw_names = subtypes.get("typeNames") if isinstance(subtypes, dict) else []
+    type_names = raw_names if isinstance(raw_names, list) else []
+    normalized = {
+        "".join(character for character in value.casefold() if character.isalnum())
+        for value in type_names if isinstance(value, str)
+    }
+    if any(name == "view" or name.endswith("view") for name in normalized):
+        return "VIEW"
+    if any(name == "table" or name.endswith("table") for name in normalized):
+        return "TABLE"
+    properties = entity.get("properties")
+    seed_kind = _custom_property_value(
+        properties.get("customProperties") if isinstance(properties, dict) else None,
+        key="datariver.seed.object_kind",
+    )
+    if seed_kind is not None:
+        normalized_seed_kind = seed_kind.casefold()
+        if normalized_seed_kind == "view":
+            return "VIEW"
+        if normalized_seed_kind == "table":
+            return "TABLE"
+    return "DATASET"
 
 
 def _aspect_document(envelope: Any) -> dict[str, Any]:
@@ -647,7 +750,7 @@ class HttpDataHubGateway:
             items.append(
                 DataHubScanAsset(
                     external_urn=entity["urn"],
-                    asset_type=str(entity.get("type") or "DATASET"),
+                    asset_type=_dataset_asset_type(entity),
                     name=str(name)[:500],
                     description=(
                         str(properties["description"]) if properties.get("description") else None
@@ -660,6 +763,11 @@ class HttpDataHubGateway:
                     owner_ref=owner_refs[0] if owner_refs else None,
                     classification=_classification_from_tags(entity.get("globalTags")),
                     source_version=canonical_json_hash(entity),
+                    tags=_metadata_names(entity.get("globalTags"), wrapper="tags", entity="tag"),
+                    glossary_terms=_metadata_names(
+                        entity.get("glossaryTerms"), wrapper="terms", entity="term"
+                    ),
+                    created_at=_datahub_timestamp(properties.get("created")),
                 )
             )
         try:

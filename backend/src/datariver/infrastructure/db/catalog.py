@@ -68,6 +68,11 @@ def _to_index(model: AssetProjectionModel) -> CatalogAssetIndex:
         platform=model.platform,
         database_name=model.database_name,
         schema_name=model.schema_name,
+        owner=model.owner_ref,
+        domain=model.domain_ref,
+        tags=tuple(model.tags),
+        glossary_terms=tuple(model.glossary_terms),
+        created_at=model.source_created_at,
         domain_id=model.domain_id,
         system_id=model.system_id,
         owner_department_id=model.owner_department_id,
@@ -142,6 +147,22 @@ def _decode_group_cursor(cursor: str) -> str:
         if not isinstance(values, list) or len(values) != 1 or not isinstance(values[0], str):
             raise ValueError
         return values[0]
+    except (ValueError, TypeError, json.JSONDecodeError) as error:
+        raise ValidationError("The catalog tree cursor is invalid.") from error
+
+
+def _tree_group_cursor(kind: str, label: str) -> str:
+    payload = json.dumps([kind, label], separators=(",", ":")).encode()
+    return base64.urlsafe_b64encode(payload).decode().rstrip("=")
+
+
+def _decode_tree_group_cursor(cursor: str) -> tuple[str, str]:
+    try:
+        payload = base64.urlsafe_b64decode(cursor + "=" * (-len(cursor) % 4))
+        kind, label = json.loads(payload)
+        if kind not in {"DATABASE", "SCHEMA"} or not isinstance(label, str):
+            raise ValueError
+        return kind, label
     except (ValueError, TypeError, json.JSONDecodeError) as error:
         raise ValidationError("The catalog tree cursor is invalid.") from error
 
@@ -497,7 +518,10 @@ class SqlCatalogIndexReader(CatalogIndexReader):
             "ROOT": (),
             "PLATFORM": (platform,),
             "DATABASE": (platform, database_name),
-            "SCHEMA": (platform, database_name, schema_name),
+            # Some providers expose an authoritative schema browse segment
+            # without materializing a database container.  Its schema remains
+            # navigable, but a database label is never invented.
+            "SCHEMA": (platform, schema_name),
         }[parent_kind]
         if any(value is None or not value.strip() for value in required):
             raise ValidationError("The catalog tree parent path is incomplete.")
@@ -506,7 +530,9 @@ class SqlCatalogIndexReader(CatalogIndexReader):
             conditions.append(_catalog_query_condition(query))
         if parent_kind in {"PLATFORM", "DATABASE", "SCHEMA"}:
             conditions.append(AssetProjectionModel.platform == platform)
-        if parent_kind in {"DATABASE", "SCHEMA"}:
+        if parent_kind == "DATABASE" or (
+            parent_kind == "SCHEMA" and database_name is not None
+        ):
             conditions.append(AssetProjectionModel.database_name == database_name)
         if parent_kind == "SCHEMA":
             conditions.append(AssetProjectionModel.schema_name == schema_name)
@@ -559,9 +585,97 @@ class SqlCatalogIndexReader(CatalogIndexReader):
                 observed_at=max((row.observed_at for row in visible), default=None),
             )
 
+        if parent_kind == "PLATFORM":
+            database_groups = (
+                select(
+                    AssetProjectionModel.database_name.label("label"),
+                    literal("DATABASE").label("kind"),
+                    func.count(AssetProjectionModel.id).label("asset_count"),
+                    func.max(AssetProjectionModel.observed_at).label("observed_at"),
+                )
+                .where(
+                    and_(
+                        *conditions,
+                        AssetProjectionModel.database_name.is_not(None),
+                    )
+                )
+                .group_by(AssetProjectionModel.database_name)
+            )
+            schema_without_database_groups = (
+                select(
+                    AssetProjectionModel.schema_name.label("label"),
+                    literal("SCHEMA").label("kind"),
+                    func.count(AssetProjectionModel.id).label("asset_count"),
+                    func.max(AssetProjectionModel.observed_at).label("observed_at"),
+                )
+                .where(
+                    and_(
+                        *conditions,
+                        AssetProjectionModel.database_name.is_(None),
+                        AssetProjectionModel.schema_name.is_not(None),
+                    )
+                )
+                .group_by(AssetProjectionModel.schema_name)
+            )
+            grouped = union_all(database_groups, schema_without_database_groups).subquery()
+            group_conditions: list[Any] = []
+            if cursor:
+                cursor_kind, cursor_label = _decode_tree_group_cursor(cursor)
+                group_conditions.append(
+                    or_(
+                        grouped.c.kind > cursor_kind,
+                        and_(grouped.c.kind == cursor_kind, grouped.c.label > cursor_label),
+                    )
+                )
+            group_statement = (
+                select(grouped)
+                .where(*group_conditions)
+                .order_by(grouped.c.kind, grouped.c.label)
+                .limit(limit + 1)
+            )
+            group_rows = list((await self._session.execute(group_statement)).mappings().all())
+            visible_rows = group_rows[:limit]
+            platform_nodes: list[CatalogTreeNode] = []
+            for row in visible_rows:
+                kind = str(row["kind"])
+                label = str(row["label"])
+                child_database = label if kind == "DATABASE" else None
+                child_schema = label if kind == "SCHEMA" else None
+                platform_nodes.append(
+                    CatalogTreeNode(
+                        node_id=_tree_node_id(
+                            workspace_id=subject.workspace_id,
+                            kind=kind,
+                            platform=platform,
+                            database_name=child_database,
+                            schema_name=child_schema,
+                        ),
+                        kind=kind,
+                        label=label,
+                        asset_count=int(row["asset_count"]),
+                        has_children=True,
+                        platform=platform,
+                        database_name=child_database,
+                        schema_name=child_schema,
+                    )
+                )
+            return CatalogTreePage(
+                items=tuple(platform_nodes),
+                next_cursor=(
+                    _tree_group_cursor(
+                        str(visible_rows[-1]["kind"]), str(visible_rows[-1]["label"])
+                    )
+                    if len(group_rows) > limit and visible_rows
+                    else None
+                ),
+                observed_at=max(
+                    (row["observed_at"] for row in visible_rows if row["observed_at"]),
+                    default=None,
+                ),
+            )
+
         column, child_kind = {
             "ROOT": (AssetProjectionModel.platform, "PLATFORM"),
-            "PLATFORM": (AssetProjectionModel.database_name, "DATABASE"),
             "DATABASE": (AssetProjectionModel.schema_name, "SCHEMA"),
         }[parent_kind]
         conditions.append(column.is_not(None))
@@ -662,7 +776,7 @@ class SqlCatalogIndexReader(CatalogIndexReader):
             index=index,
             ownership=(),
             glossary_terms=(),
-            tags=(),
+            tags=index.tags,
             schema_fields=(),
             quality={},
             raw_version=model.source_version,
@@ -799,6 +913,11 @@ class SqlCatalogProjectionWriter(CatalogProjectionWriter):
                 platform=item.platform,
                 database_name=item.database_name,
                 schema_name=item.schema_name,
+                owner_ref=item.owner_ref,
+                domain_ref=item.domain_ref,
+                tags=list(item.tags),
+                glossary_terms=list(item.glossary_terms),
+                source_created_at=item.created_at,
                 domain_id=domain_id,
                 system_id=system_id,
                 owner_department_id=owner_department_id,
@@ -823,6 +942,11 @@ class SqlCatalogProjectionWriter(CatalogProjectionWriter):
                     "platform": item.platform,
                     "database_name": item.database_name,
                     "schema_name": item.schema_name,
+                    "owner_ref": item.owner_ref,
+                    "domain_ref": item.domain_ref,
+                    "tags": list(item.tags),
+                    "glossary_terms": list(item.glossary_terms),
+                    "source_created_at": item.created_at,
                     "domain_id": domain_id,
                     "system_id": system_id,
                     "owner_department_id": owner_department_id,

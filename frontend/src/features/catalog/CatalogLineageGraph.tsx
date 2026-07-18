@@ -77,10 +77,10 @@ export function layoutLineage(lineage: CatalogLineage): LineageLayout {
 
 export function CatalogLineageGraph({
   lineage,
-  onOpenDataHub,
+  onSelectAsset,
 }: {
   lineage: CatalogLineage
-  onOpenDataHub: (assetId: string) => void
+  onSelectAsset: (assetId: string) => void
 }) {
   const layout = useMemo(() => layoutLineage(lineage), [lineage])
   const byId = useMemo(() => new Map(layout.nodes.map((node) => [node.asset.id, node])), [layout.nodes])
@@ -110,9 +110,9 @@ export function CatalogLineageGraph({
           <button
             className={`catalog-lineage-node catalog-lineage-node-${node.role.toLowerCase()}`}
             key={node.asset.id}
-            onClick={() => onOpenDataHub(node.asset.id)}
+            onClick={() => onSelectAsset(node.asset.id)}
             style={{ left: node.x, top: node.y, width: NODE_WIDTH, minHeight: NODE_HEIGHT }}
-            title={`${node.asset.name} — DataHub Lineage 열기`}
+            title={`${node.asset.name} — 권한 범위의 자산 상세 열기`}
             type="button"
           >
             <span className="catalog-lineage-node-role">{node.role}</span>

@@ -680,7 +680,15 @@ def test_catalog_match_fragments_use_all_normalized_terms_without_html() -> None
 def test_catalog_projection_declares_canonical_hierarchy_and_active_tree_index() -> None:
     table = cast(Table, AssetProjectionModel.__table__)
 
-    assert {"database_name", "schema_name"} <= set(table.columns.keys())
+    assert {
+        "database_name",
+        "schema_name",
+        "owner_ref",
+        "domain_ref",
+        "tags",
+        "glossary_terms",
+        "source_created_at",
+    } <= set(table.columns.keys())
     tree_index = next(
         index for index in table.indexes if index.name == "ix_assets_projection_tree_active"
     )

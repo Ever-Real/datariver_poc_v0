@@ -130,15 +130,20 @@ export function CatalogPage({
   }
 
   const columns = useMemo<ColumnDef<CatalogAsset>[]>(() => [
-    { accessorKey: 'asset_type', header: 'Type', size: 72, enableSorting: false, cell: ({ row }) => <span className="badge">{row.original.asset_type}</span> },
+    { id: 'number', header: 'No', size: 56, enableSorting: false, cell: ({ row }) => <span>{pageIndex * pageSize + row.index + 1}</span> },
+    { accessorKey: 'asset_type', header: 'Type', size: 76, enableSorting: false, cell: ({ row }) => <span className={`badge catalog-asset-type-${row.original.asset_type.toLowerCase()}`}>{row.original.asset_type}</span> },
     { accessorKey: 'platform', header: 'Platform', size: 96, enableSorting: false, cell: ({ row }) => <TruncatedText value={row.original.platform ?? '—'} /> },
     { accessorKey: 'database_name', header: 'Database', size: 110, enableSorting: false, cell: ({ row }) => <TruncatedText value={row.original.database_name ?? '—'} /> },
     { accessorKey: 'schema_name', header: 'Schema', size: 110, enableSorting: false, cell: ({ row }) => <TruncatedText value={row.original.schema_name ?? '—'} /> },
     { accessorKey: 'name', header: 'Table / Asset', size: 210, enableSorting: false, cell: ({ row }) => <TruncatedText value={row.original.name} className="catalog-asset-name" /> },
+    { accessorKey: 'owner', header: 'Owner', size: 140, enableSorting: false, cell: ({ row }) => <TruncatedText value={row.original.owner ?? '—'} /> },
+    { accessorKey: 'domain', header: 'Domain', size: 130, enableSorting: false, cell: ({ row }) => <TruncatedText value={row.original.domain ?? '—'} /> },
+    { accessorKey: 'terms', header: 'Terms', size: 170, enableSorting: false, cell: ({ row }) => <TruncatedText value={row.original.terms?.join(', ') || '—'} /> },
+    { accessorKey: 'tags', header: 'Tags', size: 170, enableSorting: false, cell: ({ row }) => <TruncatedText value={row.original.tags?.join(', ') || '—'} /> },
     { accessorKey: 'classification', header: 'Class', size: 100, enableSorting: false, cell: ({ row }) => <span className="badge badge-soft">{row.original.classification}</span> },
     { accessorKey: 'description', header: 'Description', size: 260, enableSorting: false, cell: ({ row }) => <TruncatedText value={row.original.description ?? '설명 없음'} /> },
     { id: 'matches', header: 'Matches', size: 300, enableSorting: false, cell: ({ row }) => <CatalogMatchPreview fragments={row.original.matches} /> },
-  ], [])
+  ], [pageIndex, pageSize])
 
   const updateFilter = (name: keyof Filters, value: string) => {
     setFilters((current) => ({ ...current, [name]: value })); setCursors([undefined]); setPageIndex(0)
@@ -182,7 +187,7 @@ export function CatalogPage({
         <CursorPagination page={pageIndex + 1} pageSize={pageSize} canPrevious={pageIndex > 0} canNext={Boolean(result?.page.next_cursor)} itemCount={result?.items.length} onPrevious={() => setPageIndex((current) => Math.max(0, current - 1))} onNext={() => { if (!result?.page.next_cursor) return; setCursors((current) => [...current.slice(0, pageIndex + 1), result.page.next_cursor]); setPageIndex((current) => current + 1) }} onPageSizeChange={(value) => { setPageSize(value); setCursors([undefined]); setPageIndex(0) }} />
         {result && <footer className="catalog-result-meta"><span>projection v{result.meta.projection_version}</span><span>policy {result.meta.policy_version}</span><time dateTime={result.meta.observed_at}>{result.meta.observed_at ? new Date(result.meta.observed_at).toLocaleString() : '관측 시각 없음'}</time></footer>}
       </section>
-      {selectedAssetId && <CatalogDetailPane key={selectedAssetId} client={client} assetId={selectedAssetId} onClose={() => setSelectedAssetId(undefined)} />}
+      {selectedAssetId && <CatalogDetailPane key={selectedAssetId} client={client} assetId={selectedAssetId} onClose={() => setSelectedAssetId(undefined)} onSelectAsset={setSelectedAssetId} />}
     </div>
   </section>
 }

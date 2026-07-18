@@ -31,13 +31,13 @@ describe('CatalogLineageGraph', () => {
     ])
   })
 
-  it('opens a server-authorized embed descriptor by opaque asset id only', () => {
-    const onOpenDataHub = vi.fn()
-    render(<CatalogLineageGraph lineage={lineage} onOpenDataHub={onOpenDataHub} />)
+  it('opens an authorized local asset detail by opaque asset id only', () => {
+    const onSelectAsset = vi.fn()
+    render(<CatalogLineageGraph lineage={lineage} onSelectAsset={onSelectAsset} />)
 
     fireEvent.click(screen.getByRole('button', { name: /center_table/i }))
 
-    expect(onOpenDataHub).toHaveBeenCalledWith('center')
-    expect(onOpenDataHub).not.toHaveBeenCalledWith('urn:li:dataset:center')
+    expect(onSelectAsset).toHaveBeenCalledWith('center')
+    expect(onSelectAsset).not.toHaveBeenCalledWith('urn:li:dataset:center')
   })
 })

@@ -33,6 +33,8 @@ class AssetProjectionModel(Base, UuidPrimaryKeyMixin, TimestampMixin):
     __tablename__ = "assets_projection"
     __table_args__ = (
         UniqueConstraint("workspace_id", "urn_hash"),
+        CheckConstraint("jsonb_typeof(tags) = 'array'", name="tags_array"),
+        CheckConstraint("jsonb_typeof(glossary_terms) = 'array'", name="glossary_terms_array"),
         Index(
             "ix_assets_projection_scope",
             "workspace_id",
@@ -92,6 +94,11 @@ class AssetProjectionModel(Base, UuidPrimaryKeyMixin, TimestampMixin):
     platform: Mapped[str | None] = mapped_column(String(100))
     database_name: Mapped[str | None] = mapped_column(String(255))
     schema_name: Mapped[str | None] = mapped_column(String(255))
+    owner_ref: Mapped[str | None] = mapped_column(String(1_000))
+    domain_ref: Mapped[str | None] = mapped_column(String(1_000))
+    tags: Mapped[list[str]] = mapped_column(JSON_DOCUMENT, default=list, nullable=False)
+    glossary_terms: Mapped[list[str]] = mapped_column(JSON_DOCUMENT, default=list, nullable=False)
+    source_created_at: Mapped[datetime | None]
     domain_id: Mapped[UUID | None] = mapped_column(Uuid(as_uuid=True))
     system_id: Mapped[UUID | None] = mapped_column(Uuid(as_uuid=True))
     owner_department_id: Mapped[UUID | None] = mapped_column(Uuid(as_uuid=True))

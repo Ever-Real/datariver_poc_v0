@@ -63,6 +63,11 @@ export interface CatalogAsset {
   platform?: string
   database_name?: string
   schema_name?: string
+  owner?: string
+  domain?: string
+  tags?: string[]
+  terms?: string[]
+  created_at?: string
   classification: string
   lifecycle: string
   observed_at: string

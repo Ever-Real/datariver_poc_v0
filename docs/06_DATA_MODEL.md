@@ -40,7 +40,7 @@ Missing or inconsistent active state falls back to the portable static floor.
 
 | Table | Key columns and constraints | Purpose |
 |---|---|---|
-| `catalog.assets_projection` | `id`, `workspace_id + urn_hash UQ`, external identity/scope/classification/lifecycle, nullable typed-container `database_name`/`schema_name`, stored `search_vector`, source version/owner, `last_seen_sync_id`, observed/deleted times | authorized search/tree/base-detail projection; DataHub remains canonical |
+| `catalog.assets_projection` | `id`, `workspace_id + urn_hash UQ`, external identity/scope/classification/lifecycle, nullable typed-container `database_name`/`schema_name`, bounded provider display summary (`owner_ref`, `domain_ref`, tag/term arrays and source-created time), stored `search_vector`, source version/owner, `last_seen_sync_id`, observed/deleted times | authorized search/tree/base-detail projection; DataHub remains canonical |
 | `catalog.sync_runs` | PK workspace/sync, state/next offset/start/heartbeat/completion | single-writer ordered full reconciliation and stale-run recovery |
 | `catalog.projection_watermarks` | `workspace_id PK/FK`, non-negative `projection_version BIGINT` | transactional local read-model generation used for cache invalidation |
 | `catalog.export_requests` | workspace/requester/job composite FKs, canonical request and security/source hashes, non-RESTRICTED classification ceiling, private artifact receipt, access deadline; owner-select plus forced workspace RLS | owner-scoped managed CSV intent and verified artifact metadata; object content remains private storage state |
@@ -56,6 +56,10 @@ values are nullable projections of typed DataHub `Database`/`Schema` browse cont
 typed container stays absent and is never reconstructed from a URN. Facets and tree branches are
 derived from the same authorization-prefiltered projection and cached by security and projection
 generation; a separate facet projection and a true incremental DataHub source cursor remain backlog.
+Alembic `0019` adds only the bounded, non-authoritative display summary needed by dense catalog
+results; tags and glossary terms are JSONB arrays constrained to their array shape. It is never an
+authorization selector, provider payload or browser mutation surface. Detail continues to read the
+typed DataHub enrichment through the server anti-corruption layer.
 
 ### Governance
 

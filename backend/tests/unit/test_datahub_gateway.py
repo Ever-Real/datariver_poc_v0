@@ -9,7 +9,10 @@ import pytest
 from datariver.application.errors import ExternalDependencyError
 from datariver.domain.authz import Classification
 from datariver.domain.common import canonical_json_hash
-from datariver.infrastructure.datahub.http import HttpDataHubGateway
+from datariver.infrastructure.datahub.http import (
+    HttpDataHubGateway,
+    _catalog_hierarchy_from_browse_path,
+)
 from datariver.infrastructure.observability.metrics import HttpMetrics
 
 DATAHUB_V160_CONFIG = {"versions": {"acryldata/datahub": {"version": "v1.6.0"}}}
@@ -136,7 +139,18 @@ async def test_catalog_scan_maps_a_fixed_datahub_contract_and_paginates() -> Non
                                         "urn": "urn:li:dataPlatform:snowflake",
                                         "name": "snowflake",
                                     },
-                                    "properties": {"name": "wafer_events", "description": "events"},
+                                    "properties": {
+                                        "name": "wafer_events",
+                                        "description": "events",
+                                        "created": 1_721_260_800_000,
+                                        "customProperties": [
+                                            {
+                                                "key": "datariver.seed.object_kind",
+                                                "value": "table",
+                                            }
+                                        ],
+                                    },
+                                    "subTypes": {"typeNames": ["Table"]},
                                     "browsePathV2": {
                                         "path": [
                                             {
@@ -160,7 +174,13 @@ async def test_catalog_scan_maps_a_fixed_datahub_contract_and_paginates() -> Non
                                         "owners": [{"owner": {"urn": "urn:li:corpGroup:yield"}}]
                                     },
                                     "globalTags": {
-                                        "tags": [{"tag": {"name": "classification:confidential"}}]
+                                        "tags": [
+                                            {"tag": {"name": "classification:confidential"}},
+                                            {"tag": {"name": "tier:gold"}},
+                                        ]
+                                    },
+                                    "glossaryTerms": {
+                                        "terms": [{"term": {"urn": "urn:li:glossaryTerm:wafer"}}]
                                     },
                                 }
                             }
@@ -185,10 +205,49 @@ async def test_catalog_scan_maps_a_fixed_datahub_contract_and_paginates() -> Non
     assert page.items[0].schema_name == "manufacturing"
     assert page.items[0].domain_ref == "urn:li:domain:manufacturing"
     assert page.items[0].system_ref == "urn:li:dataPlatform:snowflake"
+    assert page.items[0].asset_type == "TABLE"
+    assert page.items[0].tags == ("classification:confidential", "tier:gold")
+    assert page.items[0].glossary_terms == ("urn:li:glossaryTerm:wafer",)
+    assert page.items[0].created_at is not None
     assert page.items[0].classification is Classification.CONFIDENTIAL
     assert page.next_offset == 1
     assert page.total == 2
     await client.aclose()
+
+
+def test_oracle_browse_container_aliases_map_without_parsing_a_dataset_urn() -> None:
+    database_name, schema_name = _catalog_hierarchy_from_browse_path(
+        {
+            "path": [
+                {
+                    "entity": {
+                        "type": "CONTAINER",
+                        "properties": {"name": "FINANCE"},
+                        "subTypes": {"typeNames": ["Oracle_Database"]},
+                    }
+                },
+                {
+                    "entity": {
+                        "type": "CONTAINER",
+                        "properties": {"name": "AP_PAYABLE"},
+                        "subTypes": {"typeNames": ["Oracle-Schema"]},
+                    }
+                },
+            ]
+        }
+    )
+
+    assert database_name == "FINANCE"
+    assert schema_name == "AP_PAYABLE"
+
+
+def test_browse_path_schema_segment_is_used_without_inferring_a_database() -> None:
+    database_name, schema_name = _catalog_hierarchy_from_browse_path(
+        {"path": [{"name": "semiconductor_seed", "entity": None}]}
+    )
+
+    assert database_name is None
+    assert schema_name == "semiconductor_seed"
 
 
 async def test_lineage_contract_returns_only_typed_bounded_paths() -> None:

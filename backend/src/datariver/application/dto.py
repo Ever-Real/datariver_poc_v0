@@ -37,6 +37,11 @@ class CatalogAssetIndex:
     observed_at: datetime
     database_name: str | None = None
     schema_name: str | None = None
+    owner: str | None = None
+    domain: str | None = None
+    tags: tuple[str, ...] = ()
+    glossary_terms: tuple[str, ...] = ()
+    created_at: datetime | None = None
     matches: tuple[CatalogMatchFragment, ...] = ()
 
 
@@ -91,6 +96,9 @@ class DataHubScanAsset:
     source_version: str
     database_name: str | None = None
     schema_name: str | None = None
+    tags: tuple[str, ...] = ()
+    glossary_terms: tuple[str, ...] = ()
+    created_at: datetime | None = None
 
 
 @dataclass(frozen=True, slots=True)
