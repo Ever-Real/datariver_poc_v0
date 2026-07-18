@@ -3,6 +3,7 @@ import { ArrowRight, ShieldCheck } from 'lucide-react'
 import { ApiClient, remediationKind } from './api/client'
 import type { AdminReadContext, CapabilitiesResponse, ExternalSystemLink } from './api/types'
 import { pageFromLocation, pageUrl, type Page } from './app/navigation'
+import { defaultWorkspaceSelection, workspaceFromLocation } from './app/workspace'
 import { useAuth } from './auth/AuthProvider'
 import { AppShell } from './components/layout/AppShell'
 import { PageTitle } from './components/layout/PageTitle'
@@ -19,13 +20,6 @@ import { PolicyGovernancePage } from './features/policy/PolicyGovernancePage'
 import { QualityPage } from './features/quality/QualityPage'
 import { RegistrationPage } from './features/registration/RegistrationPage'
 import { SharingPage } from './features/sharing/SharingPage'
-
-function workspaceFromLocation(href = window.location.href): string {
-  const candidate = new URL(href).searchParams.get('workspace')?.trim() ?? ''
-  return /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(candidate)
-    ? candidate
-    : ''
-}
 
 export function App() {
   const auth = useAuth()
@@ -58,6 +52,21 @@ export function App() {
     window.addEventListener('popstate', restore)
     return () => window.removeEventListener('popstate', restore)
   }, [])
+
+  useEffect(() => {
+    // The URL selection is only a convenience value; it never grants a
+    // workspace.  When there is no such value, hydrate the verified server
+    // default into React state immediately after the OIDC profile arrives.
+    const defaultWorkspace = defaultWorkspaceSelection(
+      workspace,
+      auth.profile?.default_workspace_id,
+    )
+    if (!defaultWorkspace || defaultWorkspace === workspace) return
+    const url = new URL(window.location.href)
+    url.searchParams.set('workspace', defaultWorkspace)
+    window.history.replaceState({}, '', `${url.pathname}${url.search}${url.hash}`)
+    setWorkspace(defaultWorkspace)
+  }, [auth.profile?.default_workspace_id, workspace])
 
   useEffect(() => {
     let active = true

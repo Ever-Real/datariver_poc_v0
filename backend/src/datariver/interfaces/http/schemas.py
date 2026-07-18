@@ -465,6 +465,7 @@ class AuthMeResponse(BaseModel):
     roles: list[str] = Field(default_factory=list)
     authentication_assurance: str
     authentication_time: datetime | None
+    default_workspace_id: UUID | None = None
 
 
 class ProblemDetails(BaseModel):

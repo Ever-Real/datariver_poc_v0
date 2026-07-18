@@ -25,6 +25,7 @@ export interface AuthenticatedProfile {
   roles: string[]
   authentication_assurance: 'UNKNOWN' | 'PASSWORD' | 'PASSWORD_REAUTH' | 'OTHER_MFA' | 'HARDWARE_WEBAUTHN'
   authentication_time?: string
+  default_workspace_id?: string
 }
 
 export interface CatalogExportCapability {

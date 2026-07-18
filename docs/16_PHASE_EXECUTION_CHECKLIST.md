@@ -98,6 +98,21 @@ mistaken for an authorization or release approval.
   administrator experience, while server-side ABAC remains the enforcement layer; no browser or
   generic DataHub Policy API mutation path is permitted.
 
+## Ordered parity recovery — 2026-07-18
+
+The current implementation begins only after a new v0.3 React/API-router source audit.  The
+authoritative item-level inventory is `PAR-REC-001` through `PAR-REC-017` in
+[`15_LEGACY_UX_PARITY_PLAN.md`](15_LEGACY_UX_PARITY_PLAN.md).  Execute the following in order; each
+number is independently committed only after its relevant checks pass.
+
+- [x] R1-01 Home/session: verified default Workspace hydration and dashboard CSR navigation.
+- [ ] R1-02 Catalog: full authorized paging/tree/detail/filter/export presentation with the narrow
+  administrator quarantine-review scope unchanged.
+- [ ] R1-03 Registration: archive and replace the MANUAL body; compact tab parity and shared Oracle
+  selector behavior.
+- [ ] R1-04 Change management: schema/system-assignee summary and complete typed list fields.
+- [ ] R1-05 Administration: user/system master parity and governed external-service profile master.
+
 The complete item-by-item source inventory remains the controlled matrix in
 [`15_LEGACY_UX_PARITY_PLAN.md`](15_LEGACY_UX_PARITY_PLAN.md). This checklist tracks sequencing, not
 authorization: a checked UI item never substitutes for a server-side ABAC, retention or production

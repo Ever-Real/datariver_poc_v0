@@ -70,6 +70,7 @@ def build_upgrade() -> ops.UpgradeOps:
         ops.ExecuteSQLOp(statement) for statement in _candidate_evidence_immutability_sql()
     )
     operations.extend(ops.ExecuteSQLOp(statement) for statement in _chat_retention_binding_sql())
+    operations.extend(ops.ExecuteSQLOp(statement) for statement in _default_workspace_lookup_sql())
     operations.extend(
         ops.CreateForeignKeyOp.from_constraint(constraint)
         for constraint in _deferred_foreign_keys()
@@ -88,6 +89,7 @@ BEGIN
         GRANT SELECT ON public.alembic_version TO datariver_app;
         GRANT SELECT ON platform.workspaces, iam.subjects TO datariver_app;
         GRANT SELECT ON iam.workspace_memberships TO datariver_app;
+        GRANT EXECUTE ON FUNCTION iam.resolve_default_workspace(text, text) TO datariver_app;
         GRANT UPDATE (active, clearance, attributes, version, updated_at)
             ON iam.workspace_memberships TO datariver_app;
         GRANT SELECT, INSERT ON iam.admin_access_requests TO datariver_app;
@@ -345,6 +347,7 @@ EXECUTE FUNCTION assistant.enforce_chat_message_retention_binding()
 
 def build_downgrade() -> ops.DowngradeOps:
     operations: list[ops.MigrateOperation] = [
+        ops.ExecuteSQLOp("DROP FUNCTION iam.resolve_default_workspace(text, text)"),
         ops.ExecuteSQLOp(
             "DROP TRIGGER enforce_chat_message_retention_binding ON assistant.chat_messages"
         ),
@@ -377,6 +380,49 @@ def build_downgrade() -> ops.DowngradeOps:
     for schema in reversed(SCHEMAS):
         operations.append(ops.ExecuteSQLOp(f"DROP SCHEMA IF EXISTS {schema}"))
     return ops.DowngradeOps(ops=operations)
+
+
+def _default_workspace_lookup_sql() -> tuple[str, ...]:
+    """Create the only cross-workspace IAM lookup available to the app role.
+
+    Normal IAM tables are forced through workspace RLS.  OIDC hydration happens
+    before a workspace is selected, so this function returns one deterministic
+    active membership for the already verified issuer/subject pair.  It has no
+    list shape and therefore cannot become a membership-discovery API.
+    """
+    return (
+        """
+        CREATE FUNCTION iam.resolve_default_workspace(
+            p_issuer text,
+            p_external_subject text
+        )
+        RETURNS uuid
+        LANGUAGE sql
+        STABLE
+        SECURITY DEFINER
+        SET search_path = pg_catalog, iam, platform
+        AS $datariver$
+            SELECT membership.workspace_id
+            FROM iam.subjects AS subject
+            JOIN iam.workspace_memberships AS membership
+              ON membership.subject_id = subject.id
+            JOIN platform.workspaces AS workspace
+              ON workspace.id = membership.workspace_id
+            WHERE subject.issuer = p_issuer
+              AND subject.external_subject = p_external_subject
+              AND subject.active IS TRUE
+              AND membership.active IS TRUE
+              AND workspace.status = 'ACTIVE'
+            ORDER BY
+              CASE WHEN membership.attributes ->> 'default_workspace' = 'true'
+                THEN 0 ELSE 1 END,
+              workspace.slug ASC,
+              membership.workspace_id ASC
+            LIMIT 1
+        $datariver$
+        """,
+        "REVOKE ALL ON FUNCTION iam.resolve_default_workspace(text, text) FROM PUBLIC",
+    )
 
 
 def _deferred_foreign_keys() -> list[ForeignKeyConstraint]:

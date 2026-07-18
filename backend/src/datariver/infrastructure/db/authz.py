@@ -5,7 +5,7 @@ from dataclasses import replace
 from datetime import datetime
 from uuid import UUID
 
-from sqlalchemy import select
+from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from datariver.application.dto import DecisionAuditItem
@@ -150,6 +150,23 @@ class SqlSubjectReader(SubjectReader):
             raise ForbiddenError("No active workspace membership exists.")
         subject, membership = row
         return subject_attributes_from_models(subject=subject, membership=membership)
+
+    async def get_default_workspace_id(self, *, issuer: str, external_subject: str) -> UUID | None:
+        """Return only the caller's deterministic active-workspace selection.
+
+        Authentication hydration has no `X-Workspace-Id` yet, while normal IAM
+        reads are forced through workspace RLS.  The database function is a
+        narrowly scoped SECURITY DEFINER boundary: it receives the verified
+        issuer/subject pair, considers active memberships only, and returns one
+        UUID.  It cannot enumerate memberships or grant any workspace access.
+        """
+        workspace_id = (
+            await self._session.execute(
+                text("SELECT iam.resolve_default_workspace(:issuer, :external_subject)"),
+                {"issuer": issuer, "external_subject": external_subject},
+            )
+        ).scalar_one_or_none()
+        return workspace_id if isinstance(workspace_id, UUID) else None
 
 
 def subject_attributes_from_models(

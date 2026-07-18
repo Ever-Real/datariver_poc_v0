@@ -176,6 +176,69 @@ the governing API/data contract, negative authorization tests, and an
 authenticated visual/browser acceptance result. Do not restore an omitted menu
 by linking it to a placeholder.
 
+## Ordered corrective implementation checklist (2026-07-18)
+
+This is the implementation inventory produced by a fresh source-level comparison of the v0.3
+React pages/components and their corresponding API routers.  It supplements, rather than rewrites,
+the safe-substitution decisions above.  Entries may be checked only after the source contract,
+focused tests and applicable browser/runtime evidence exist.
+
+### 1. Home and session hydration
+
+- [x] `PAR-REC-001` Return a verified active `default_workspace_id` from `/auth/me`; choose only an
+  active membership for the verified `(issuer, sub)`, prefer the explicit membership marker and
+  never treat the resulting browser state as authorization.
+- [x] `PAR-REC-002` Inject that default into Auth/App memory after OIDC callback or silent SSO without
+  local/session storage, show the existing hydration spinner until complete, and preserve an
+  explicitly selected URL Workspace as a non-authoritative convenience value.
+- [x] `PAR-REC-003` Keep every Dashboard/Governance Center shortcut on in-application history
+  navigation; prove it does not reload, show the login surface, or discard the hydrated Workspace.
+
+### 2. Catalog search, tree and detail
+
+- [ ] `PAR-REC-004` Reconcile all eligible catalog rows through bounded cursor paging; retain the
+  maximum HTTP page size and use next cursors rather than a browser/GraphQL `10000` bypass.
+- [ ] `PAR-REC-005` Preserve ADR-0020's human security-administrator review scope on search, facets,
+  tree and detail only; ordinary users remain policy-pruned and review scope never authorizes
+  export, Chat, attachment or mutation access.
+- [ ] `PAR-REC-006` Normalize typed provider platform/database/schema containers for PostgreSQL and
+  Oracle Resource Tree branches; no browser URN splitting or synthetic database names.
+- [ ] `PAR-REC-007` Restore the v0.3 dense result columns (`No`, type, platform, database, schema,
+  owner, domain, terms, tags and description), advanced filters, detail accordion/columns, URN copy
+  feedback and bounded local lineage graph using only real projection/enrichment fields.
+- [ ] `PAR-REC-008` Restore the visible CSV/XLSX export entry design on the server-authorized export
+  boundary. CSV remains worker-gated and XLSX requires its own approved server-side contract; neither
+  is simulated from browser-visible rows.
+
+### 3. Registration workbench
+
+- [ ] `PAR-REC-009` Archive the replaced v1 MANUAL body under `.legacy_archive/` before removal.
+- [ ] `PAR-REC-010` Rebuild MANUAL as the v0.3 left Resource Tree plus selected-table properties and
+  column-grid workbench; apply the shared Oracle tree normalization and retain typed preview/CR
+  creation rather than direct provider writes.
+- [ ] `PAR-REC-011` Match the compact angular MANUAL/BULK tab treatment and hover-only Korean help;
+  retain actual upload/preparation state instead of the legacy simulated Airflow tracker.
+
+### 4. Change-request dashboard
+
+- [ ] `PAR-REC-012` Add an authorization-filtered schema/system summary table with zero rows,
+  expandable assignee details and status-cell filtering from one consistent server read model.
+- [ ] `PAR-REC-013` Restore the top-right `신규 CR 신청` action, side status chips and v0.3-equivalent
+  dense list columns, including request date, requested due date, priority and urgency.
+- [ ] `PAR-REC-014` Add only typed, auditable CR fields/assignee mappings with model, migration,
+  contract and access tests; no client-derived owner/system assignment.
+
+### 5. Integrated administration center
+
+- [ ] `PAR-REC-015` Restore the user/master and system-assignment layouts over canonical Workspace
+  membership access, with active status, group/role template, system/schema scope and developer/Data
+  Steward priority views.
+- [ ] `PAR-REC-016` Add a governed external-service profile master for the approved service catalog.
+  It may manage redacted endpoint metadata and write-only secret references, but never plaintext
+  credentials, arbitrary URLs/YAML or a client-controlled network ping.
+- [ ] `PAR-REC-017` Record every replaced/deleted source module in `.legacy_archive/`, execute the
+  focused checks after each numbered step, and retain one local commit per verified step.
+
 ## Required v1 contract deltas
 
 These contracts are required to reproduce the legacy interaction without reproducing its unsafe data flow:

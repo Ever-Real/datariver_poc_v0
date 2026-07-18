@@ -20,9 +20,15 @@ The SQLAlchemy metadata and generated `backend/alembic/versions/0001_initial_sch
 |---|---|---|
 | `platform.workspaces` | `id`, `slug UQ`, `name`, `status`, `settings`, `version`, timestamps | tenant boundary |
 | `iam.subjects` | `id`, `issuer + external_subject UQ`, `display_name`, `active`, timestamps | external IdP mapping; no credential |
-| `iam.workspace_memberships` | PK `workspace_id + subject_id`, `department_id`, `job_function`, `clearance`, `attributes`, `active`, `version` | versioned ABAC subject attributes/grants |
+| `iam.workspace_memberships` | PK `workspace_id + subject_id`, `department_id`, `job_function`, `clearance`, `attributes`, `active`, `version` | versioned ABAC subject attributes/grants; an optional `attributes.default_workspace: true` chooses the user's hydration default, otherwise active Workspace slug order is deterministic |
 | `iam.admin_access_requests` | typed command/envelope, maker/target/checker, canonical hash, expiry/state/consume decision, `version`, timestamps | short-lived membership-access maker-checker aggregate; no arbitrary provider payload |
 | `iam.admin_access_approvals` | request/actor, approve/reject, reason, policy decision, payload hash and request version | append-only independent checker evidence |
+
+`iam.resolve_default_workspace(issuer, external_subject)` is a narrowly scoped database function,
+not an IAM list API.  It may return only one active Workspace UUID for the already verified OIDC
+subject during `/auth/me` hydration, prefers the optional membership default marker and otherwise
+uses deterministic active-Workspace ordering.  It is executable by the application role but returns
+no attributes, memberships, roles or cross-workspace data; normal IAM reads remain RLS-bound.
 | `authz.resources` | `workspace_id + resource_type + resource_key UQ`, scope/classification/lifecycle columns, `attributes`, `version` | durable resource attribute registry |
 | `authz.policy_decisions` | `id`, `workspace_id`, `subject_id`, `resource_id`, `action`, `effect`, reason/policy JSON, grouped `evaluation_context`, `request_id`, `decided_at` | immutable allow/deny/system-worker or bounded resource-set evidence |
 | `authz.classification_access_policy_versions` | workspace/policy number UQ, required jurisdiction, grant maximum, payload hash, maker/checker/supersede state and optimistic version | independently approved four-class Search/Chat policy |
