@@ -11,6 +11,13 @@ if (authority && clientId) {
     scope: 'openid profile email',
     redirect_uri: window.location.href,
     userStore: new WebStorageStateStore({ store: new InMemoryWebStorage() }),
+    // This must match AuthProvider's short-lived PKCE transaction store. The
+    // callback is loaded in a same-origin frame and does not persist a user,
+    // bearer token, profile, workspace, or authorization decision.
+    stateStore: new WebStorageStateStore({
+      store: window.sessionStorage,
+      prefix: 'datariver.oidc.transaction.',
+    }),
     automaticSilentRenew: false,
     monitorSession: false,
   })

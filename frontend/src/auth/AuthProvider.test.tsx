@@ -88,7 +88,11 @@ describe('AuthProvider password reauthentication', () => {
     fireEvent.click(await screen.findByRole('button', { name: 'password reauth' }))
 
     expect(oidc.InMemoryWebStorage).toHaveBeenCalledOnce()
-    expect(oidc.WebStorageStateStore).toHaveBeenCalledOnce()
+    expect(oidc.WebStorageStateStore).toHaveBeenCalledTimes(2)
+    expect(oidc.WebStorageStateStore).toHaveBeenNthCalledWith(2, {
+      store: window.sessionStorage,
+      prefix: 'datariver.oidc.transaction.',
+    })
     expect(oidc.signinRedirect).toHaveBeenLastCalledWith({
       acr_values: 'password-reauth',
       max_age: 0,

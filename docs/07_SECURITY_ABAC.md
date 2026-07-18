@@ -22,7 +22,8 @@ Untrusted inputs include browser/API payloads, OIDC claims before verification, 
   ordinary password assurance are ineligible.
 - The browser keeps the OIDC user/token object and the selected Workspace only in memory: neither
   `localStorage` nor `sessionStorage` holds a bearer token, refresh token or tenant/RLS context.
-  Only the OIDC library's short-lived PKCE transaction state carries a versioned authentication
+  Only the OIDC library's short-lived PKCE transaction state is stored in tab-scoped
+  `sessionStorage` (never `localStorage`) to validate a redirect; it carries a versioned authentication
   intent and same-origin relative return path across a redirect. It never carries a mutation body,
   idempotency key or executable callback, and approval/publish operations are never replayed after
   WebAuthn. Backend authorization remains authoritative.

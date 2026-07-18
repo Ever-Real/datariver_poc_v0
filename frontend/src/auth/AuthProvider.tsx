@@ -58,9 +58,14 @@ function createManager(): UserManager {
     response_type: 'code',
     scope: 'openid profile email',
     // Access/refresh tokens and the selected user must not survive in browser
-    // storage. The OIDC library keeps only its separate, short-lived PKCE
-    // transaction state across the redirect.
+    // storage. The only persisted browser value is the short-lived PKCE
+    // transaction required to validate the redirect. Keep it scoped to this
+    // tab: oidc-client-ts otherwise defaults this state to localStorage.
     userStore: new WebStorageStateStore({ store: new InMemoryWebStorage() }),
+    stateStore: new WebStorageStateStore({
+      store: window.sessionStorage,
+      prefix: 'datariver.oidc.transaction.',
+    }),
     // Renewal is coordinated by AuthProvider so an expiring-token event and a
     // concurrent API 401 share one in-memory renewal promise.
     automaticSilentRenew: false,
