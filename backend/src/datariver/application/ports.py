@@ -407,6 +407,17 @@ class ManualMetadataSubmissionRepository(Protocol):
         self, *, workspace_id: UUID, submission_id: UUID
     ) -> ManualMetadataSubmission | None: ...
 
+    async def claim_next(
+        self,
+        *,
+        workspace_id: UUID,
+        now: datetime,
+        lease_seconds: int,
+        maximum_attempts: int,
+    ) -> ManualMetadataSubmission | None: ...
+
+    async def save(self, submission: ManualMetadataSubmission) -> None: ...
+
 
 class RetentionPolicyRepository(Protocol):
     async def add(self, policy: RetentionPolicyVersion) -> None: ...

@@ -908,6 +908,13 @@ class ManualMetadataSubmissionResponse(BaseModel):
     version: int = Field(ge=1)
 
 
+class ManualMetadataApplyResponse(BaseModel):
+    processed: bool
+    submission_id: UUID | None = None
+    serial_number: int | None = Field(default=None, ge=1)
+    state: Literal["QUEUED", "FAILED", "APPLIED"] | None = None
+
+
 class OntologyRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 

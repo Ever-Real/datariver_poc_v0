@@ -196,6 +196,7 @@ class ManualMetadataSubmissionModel(Base, UuidPrimaryKeyMixin, TimestampMixin, V
         CheckConstraint("csv_sha256 ~ '^[0-9a-f]{64}$'", name="csv_sha256_valid"),
         CheckConstraint("csv_size_bytes > 0", name="csv_size_bytes_positive"),
         CheckConstraint("row_count > 0", name="row_count_positive"),
+        CheckConstraint("attempts >= 0", name="attempts_nonnegative"),
         CheckConstraint(
             "state IN ('QUEUED', 'APPLYING', 'APPLIED', 'FAILED')",
             name="state_vocabulary",
@@ -231,6 +232,8 @@ class ManualMetadataSubmissionModel(Base, UuidPrimaryKeyMixin, TimestampMixin, V
     state: Mapped[str] = mapped_column(String(32), nullable=False)
     applied_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     last_error_code: Mapped[str | None] = mapped_column(String(100))
+    attempts: Mapped[int] = mapped_column(default=0, nullable=False)
+    lease_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
 
 class ApprovalModel(Base, UuidPrimaryKeyMixin):

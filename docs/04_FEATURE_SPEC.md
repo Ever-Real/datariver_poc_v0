@@ -43,8 +43,10 @@ suggestions.  On Save, the server rechecks the active target, source version, sc
 `catalog.read` plus `registration.create`, then records immutable typed intent and a server-written
 CSV receipt.  The browser receives only an opaque submission ID, status and serial; it never sees a
 MinIO object key, an Airflow endpoint or a DataHub credential.  The configured InfoSchema bucket is
-deployment-owned and has no source-code fallback.  A service-account Airflow apply/read-back
-contract remains a separate runtime gate; saving is never displayed as DataHub application.
+deployment-owned and has no source-code fallback.  The paused Airflow worker streams and hash-checks
+that private CSV, then performs typed DataHub read–merge–read-back for table/column metadata.  Save
+is shown as `QUEUED`; only a complete provider read-back becomes `APPLIED`.  Deployment activation
+and a real Airflow/object-store/DataHub acceptance run remain separate runtime gates.
 
 1. Request a multipart upload session after `registration.create` authorization.
 2. Browser uploads directly to a quarantine object key.

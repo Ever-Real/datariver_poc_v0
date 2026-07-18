@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timedelta
 from enum import StrEnum
 from uuid import UUID
 
@@ -48,6 +48,8 @@ class ManualMetadataSubmission:
     version: int = 1
     applied_at: datetime | None = None
     last_error_code: str | None = None
+    attempts: int = 0
+    lease_expires_at: datetime | None = None
     events: list[DomainEvent] = field(default_factory=list)
 
     @classmethod
@@ -124,6 +126,65 @@ class ManualMetadataSubmission:
             )
         )
         return submission
+
+    def claim_for_apply(self, *, now: datetime, lease_seconds: int) -> None:
+        if lease_seconds < 1:
+            raise ValidationError("The manual metadata apply lease is invalid.")
+        if self.state is ManualMetadataSubmissionState.APPLIED:
+            raise ValidationError("The manual metadata submission is already applied.")
+        if self.state is ManualMetadataSubmissionState.FAILED:
+            raise ValidationError("The manual metadata submission is terminally failed.")
+        if (
+            self.state is ManualMetadataSubmissionState.APPLYING
+            and self.lease_expires_at is not None
+            and self.lease_expires_at > now
+        ):
+            raise ValidationError("The manual metadata submission is already being applied.")
+        self.state = ManualMetadataSubmissionState.APPLYING
+        self.attempts += 1
+        self.lease_expires_at = now + timedelta(seconds=lease_seconds)
+        self.last_error_code = None
+        self.updated_at = now
+        self.version += 1
+
+    def mark_applied(self, *, now: datetime) -> None:
+        if self.state is not ManualMetadataSubmissionState.APPLYING:
+            raise ValidationError("Only an applying manual metadata submission may complete.")
+        self.state = ManualMetadataSubmissionState.APPLIED
+        self.applied_at = now
+        self.lease_expires_at = None
+        self.last_error_code = None
+        self.updated_at = now
+        self.version += 1
+        self.events.append(
+            DomainEvent.create(
+                event_type="registration.manual_metadata.applied.v1",
+                aggregate_type="manual_metadata_submission",
+                aggregate_id=self.submission_id,
+                workspace_id=self.workspace_id,
+                payload={
+                    "submission_id": str(self.submission_id),
+                    "asset_id": str(self.asset_id),
+                    "serial_number": self.serial_number,
+                    "attempts": self.attempts,
+                },
+            )
+        )
+
+    def mark_apply_failed(self, *, now: datetime, error_code: str, retryable: bool) -> None:
+        if self.state is not ManualMetadataSubmissionState.APPLYING:
+            raise ValidationError("Only an applying manual metadata submission may fail.")
+        if not error_code or len(error_code) > 100 or "\x00" in error_code:
+            raise ValidationError("The manual metadata apply error is invalid.")
+        self.state = (
+            ManualMetadataSubmissionState.QUEUED
+            if retryable
+            else ManualMetadataSubmissionState.FAILED
+        )
+        self.lease_expires_at = None
+        self.last_error_code = error_code
+        self.updated_at = now
+        self.version += 1
 
     @staticmethod
     def _validate(

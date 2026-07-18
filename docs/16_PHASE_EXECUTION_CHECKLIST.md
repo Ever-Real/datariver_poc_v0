@@ -142,7 +142,10 @@ replaced source is retained only under `.legacy_archive/`.
   Airflow handoff.
 - [ ] RES-05 Replace the v1 CR-coupled MANUAL body after archiving it.  Implement a separate,
   idempotent manual-submission aggregate, immutable audit/items, server-authored CSV receipt in
-  deployment-configured `datariver-infoschema`, and an Airflow-owned apply/read-back flow.
+  deployment-configured `datariver-infoschema`, and an Airflow-owned apply/read-back flow.  Source
+  implementation now verifies the persisted CSV before bounded typed aspect merge/read-back, but
+  the configured bucket, migration `0024`, Airflow service identity and real DataHub provider run
+  must still be verified together.
 - [ ] RES-06 Audit and restore Change Management (`ChangeManagementPage`, `CRListTable`,
   `CRRegistrationModal`, CR router): schema/system/assignee overview, complete list fields, create
   form and lifecycle, and private request/test attachment manifests.

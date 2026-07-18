@@ -215,9 +215,10 @@ focused tests and applicable browser/runtime evidence exist.
 - [x] `PAR-REC-009` Archive the replaced v1 MANUAL body under `.legacy_archive/` before removal.
 - [ ] `PAR-REC-010` The CR-coupled MANUAL body is archived and replaced with the v0.3 left Resource
   Tree plus selected-table properties and column-grid inputs.  It now stages independent typed
-  metadata evidence and a server-authored CSV receipt; Airflow service-account apply/read-back
-  remains required before this item can be marked complete.  The browser never writes a provider
-  directly.
+  metadata evidence and a server-authored CSV receipt.  The source now includes an Airflow
+  service-account apply/read-back worker with CSV hash/shape verification and aspect leases; a live
+  MinIO/DataHub/Airflow acceptance run remains required before this item can be marked complete.
+  The browser never writes a provider directly.
 - [x] `PAR-REC-011` Match the compact angular MANUAL/BULK tab treatment and hover-only Korean help;
   retain actual upload/preparation state instead of the legacy simulated Airflow tracker.
 

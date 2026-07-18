@@ -57,9 +57,11 @@ the API never reveals the failing ordinal or falls back to DataHub/object storag
 Manual metadata submission requires fresh `catalog.read` and `registration.create` decisions on the
 selected current DATASET, then creates an append-only PostgreSQL record and a server-authored CSV
 receipt in the deployment-configured InfoSchema bucket.  The storage coordinate, Airflow service
-identity and DataHub service credential are never returned to the browser.  Vocabulary suggestions
-are catalog discovery reads under the same authorization scope; entering an absent Tag/Term/Domain
-only creates typed intent and never calls a provider from the browser.
+identity and DataHub service credential are never returned to the browser.  Only the Airflow service
+identity with `catalog.sync` may claim an apply lease; it calls the typed internal boundary, which
+streams and hash-verifies the private CSV before DataHub read–merge–read-back.  Vocabulary
+suggestions are catalog discovery reads under the same authorization scope; entering an absent
+Tag/Term/Domain only creates typed intent and never calls a provider from the browser.
 
 ## Mandatory policies
 

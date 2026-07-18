@@ -31,6 +31,7 @@ MIGRATIONS: tuple[MigrationCase, ...] = (
         "create_unique_constraint",
         "_install_security_contract",
     ),
+    ("0024_manual_metadata_apply_leases.py", "add_column", None),
 )
 
 

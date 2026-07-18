@@ -10,6 +10,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from datariver.application.classification_access import ClassificationAccessResolver
 from datariver.application.services.authorization import AuthorizationService
 from datariver.application.services.manual_metadata import ManualMetadataSubmissionService
+from datariver.application.services.manual_metadata_apply import ManualMetadataApplyService
+from datariver.domain.authz import Action, Classification, ResourceAttributes
 from datariver.domain.manual_metadata import ManualColumnMetadata, ManualMetadataSubmission
 from datariver.infrastructure.db.authz import SqlDecisionWriter
 from datariver.infrastructure.db.catalog import SqlCatalogIndexReader
@@ -19,6 +21,7 @@ from datariver.infrastructure.db.classification_access import (
 from datariver.infrastructure.db.governance import SqlGovernanceUnitOfWork
 from datariver.interfaces.http.dependencies import ContextDep, SessionDep, get_container
 from datariver.interfaces.http.schemas import (
+    ManualMetadataApplyResponse,
     ManualMetadataSubmissionRequest,
     ManualMetadataSubmissionResponse,
 )
@@ -40,6 +43,17 @@ def _service(request: Request, session: AsyncSession) -> ManualMetadataSubmissio
         object_store=container.object_store,
         uow_factory=lambda: SqlGovernanceUnitOfWork(container.database.session_factory),
         infoschema_bucket=container.settings.s3_bucket_infoschema,
+    )
+
+
+def _apply_service(request: Request) -> ManualMetadataApplyService:
+    container = get_container(request)
+    return ManualMetadataApplyService(
+        datahub=container.datahub,
+        object_store=container.object_store,
+        uow_factory=lambda: SqlGovernanceUnitOfWork(container.database.session_factory),
+        lease_seconds=container.settings.governance_apply_lease_seconds,
+        maximum_attempts=container.settings.governance_apply_maximum_attempts,
     )
 
 
@@ -105,3 +119,43 @@ async def submit_manual_metadata(
         request_hash=request_hash,
     )
     return _response(submission)
+
+
+@router.post(
+    "/manual-submissions/apply",
+    response_model=ManualMetadataApplyResponse,
+)
+async def apply_one_manual_metadata_submission(
+    request: Request,
+    context: ContextDep,
+) -> ManualMetadataApplyResponse:
+    """Airflow-only bounded apply entry point; ordinary registration users lack `catalog.sync`."""
+    container = get_container(request)
+    await AuthorizationService(
+        decision_writer=SqlDecisionWriter(container.database.session_factory)
+    ).authorize(
+        subject=context.subject,
+        resource=ResourceAttributes(
+            resource_id=context.workspace_id,
+            workspace_id=context.workspace_id,
+            resource_type="manual_metadata_apply",
+            owner_department_id=None,
+            system_id=None,
+            domain_id=None,
+            classification=Classification.RESTRICTED,
+            lifecycle="ACTIVE",
+        ),
+        action=Action.CATALOG_SYNC,
+        environment=context.environment,
+        request_id=context.request_id,
+    )
+    result = await _apply_service(request).run_once(
+        workspace_id=context.workspace_id,
+        worker_subject_id=context.subject.subject_id,
+    )
+    return ManualMetadataApplyResponse(
+        processed=result.processed,
+        submission_id=result.submission_id,
+        serial_number=result.serial_number,
+        state=result.state,
+    )

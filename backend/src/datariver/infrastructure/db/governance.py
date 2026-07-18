@@ -2,11 +2,11 @@ from __future__ import annotations
 
 import hashlib
 from collections.abc import Sequence
-from datetime import timedelta
+from datetime import datetime, timedelta
 from types import TracebackType
 from uuid import UUID
 
-from sqlalchemy import select, text
+from sqlalchemy import and_, or_, select, text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from datariver.application.dto import IdempotencyRecord
@@ -408,6 +408,8 @@ class SqlManualMetadataSubmissionRepository(ManualMetadataSubmissionRepository):
                 version=submission.version,
                 applied_at=submission.applied_at,
                 last_error_code=submission.last_error_code,
+                attempts=submission.attempts,
+                lease_expires_at=submission.lease_expires_at,
             )
         )
 
@@ -423,6 +425,65 @@ class SqlManualMetadataSubmissionRepository(ManualMetadataSubmissionRepository):
             )
         ).one_or_none()
         return _submission_from_model(model) if model is not None else None
+
+    async def claim_next(
+        self,
+        *,
+        workspace_id: UUID,
+        now: datetime,
+        lease_seconds: int,
+        maximum_attempts: int,
+    ) -> ManualMetadataSubmission | None:
+        model = (
+            await self._session.scalars(
+                select(ManualMetadataSubmissionModel)
+                .where(
+                    ManualMetadataSubmissionModel.workspace_id == workspace_id,
+                    ManualMetadataSubmissionModel.attempts < maximum_attempts,
+                    or_(
+                        ManualMetadataSubmissionModel.state
+                        == ManualMetadataSubmissionState.QUEUED.value,
+                        and_(
+                            ManualMetadataSubmissionModel.state
+                            == ManualMetadataSubmissionState.APPLYING.value,
+                            ManualMetadataSubmissionModel.lease_expires_at.is_not(None),
+                            ManualMetadataSubmissionModel.lease_expires_at <= now,
+                        ),
+                    ),
+                )
+                .order_by(
+                    ManualMetadataSubmissionModel.created_at, ManualMetadataSubmissionModel.id
+                )
+                .with_for_update(skip_locked=True)
+            )
+        ).first()
+        if model is None:
+            return None
+        submission = _submission_from_model(model)
+        submission.claim_for_apply(now=now, lease_seconds=lease_seconds)
+        await self.save(submission)
+        return submission
+
+    async def save(self, submission: ManualMetadataSubmission) -> None:
+        model = (
+            await self._session.scalars(
+                select(ManualMetadataSubmissionModel)
+                .where(
+                    ManualMetadataSubmissionModel.workspace_id == submission.workspace_id,
+                    ManualMetadataSubmissionModel.id == submission.submission_id,
+                )
+                .with_for_update()
+            )
+        ).one_or_none()
+        if model is None:
+            raise RuntimeError("Manual metadata submission persistence is unavailable.")
+        model.state = submission.state.value
+        model.applied_at = submission.applied_at
+        model.last_error_code = submission.last_error_code
+        model.attempts = submission.attempts
+        model.lease_expires_at = submission.lease_expires_at
+        model.updated_at = submission.updated_at
+        model.version = submission.version
 
 
 def _submission_payload(submission: ManualMetadataSubmission) -> dict[str, object]:
@@ -480,6 +541,8 @@ def _submission_from_model(model: ManualMetadataSubmissionModel) -> ManualMetada
         version=model.version,
         applied_at=model.applied_at,
         last_error_code=model.last_error_code,
+        attempts=model.attempts,
+        lease_expires_at=model.lease_expires_at,
     )
 
 

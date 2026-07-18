@@ -159,15 +159,26 @@ has passed. Local bootstrap intentionally does not manufacture a second administ
 
 ## Airflow boundary
 
-Both included DAGs are paused at creation. `datariver_catalog_probe` performs a read probe; `datariver_catalog_sync` calls the versioned page-sync API and never writes application tables. The semiconductor ingestion DAG runs that same bounded reconciliation after its DataHub emission. `DATARIVER_API_BASE_URL` is deployment-owned: the container topology uses `http://api:8000`, while the host-development overlay uses `http://apisix:9080` so Airflow shares the gateway's dynamically discovered WSL-to-host API route. Bootstrap creates the confidential `datariver-airflow` Keycloak client and its mounted client secret. Tasks obtain and refresh short-lived `client_credentials` tokens; no long-lived bearer token is stored. The application membership grants only `catalog.search`, `catalog.read` and `catalog.sync` for the selected workspace.
+All included DAGs are paused at creation. `datariver_catalog_probe` performs a read probe;
+`datariver_catalog_sync` calls the versioned page-sync API; and
+`datariver_manual_metadata_apply` asks DataRiver to claim one bounded MANUAL CSV receipt at a time.
+The last DAG has neither a DataHub nor an object-store credential: DataRiver streams/hash-checks the
+private receipt and owns typed provider read–merge–read-back. The semiconductor ingestion DAG runs
+the same bounded reconciliation after its DataHub emission. `DATARIVER_API_BASE_URL` is
+deployment-owned: the container topology uses `http://api:8000`, while the host-development overlay
+uses `http://apisix:9080` so Airflow shares the gateway's dynamically discovered WSL-to-host API
+route. Bootstrap creates the confidential `datariver-airflow` Keycloak client and its mounted client
+secret. Tasks obtain and refresh short-lived `client_credentials` tokens; no long-lived bearer token
+is stored. The application membership grants only `catalog.search`, `catalog.read` and `catalog.sync`
+for the selected workspace.
 
 The Compose overlay intentionally uses Airflow `SimpleAuthManager` only for loopback development and pre-creates its password file from a secret. Any shared or production deployment must replace it with an environment-supported enterprise/FAB SSO configuration and retest authorization; the DataRiver service-token flow is independent of that human UI login choice.
 
 ## Database and object operations
 
-- Alembic has one head at `0018`: the generated current initial schema plus conditional compatibility bridges for local databases that applied earlier revisions. Deployment runs migration before API/workers. The API role can only read `public.alembic_version` for readiness; migration ownership remains separate. Clean-install bridges validate complete canonical objects, execute only when the feature contract is absent, and reject partially present schemas.
+- Alembic has one head at `0024`: the generated current initial schema plus conditional compatibility bridges for local databases that applied earlier revisions. Deployment runs migration before API/workers. The API role can only read `public.alembic_version` for readiness; migration ownership remains separate. Clean-install bridges validate complete canonical objects, execute only when the feature contract is absent, and reject partially present schemas.
 - PostgreSQL pool size/overflow/lease timeout, statement timeout, idle-transaction timeout and application names are explicit. Budget `API replicas × (API pool + overflow) + long-running workers × (worker pool + overflow) + one-shot/IdP/Airflow/admin reserve`; current one-API/four-worker defaults have a ceiling of 60 before reserve.
-- Liveness is process-only. Readiness leases the API pool and requires exactly packaged Alembic head `0018`; Compose and APISIX use readiness for upstream health.
+- Liveness is process-only. Readiness leases the API pool and requires exactly packaged Alembic head `0024`; Compose and APISIX use readiness for upstream health.
 - `scripts/probe_pgbouncer_rls.py` and its unit contract implement the pre-adoption transaction-pool leakage gate. No Compose profile currently deploys PgBouncer and no live pooler pass has been recorded; direct PostgreSQL remains the supported path until the isolated two-workspace probe succeeds.
 - Back up PostgreSQL and SeaweedFS as a consistency set or record a watermark; restore into isolation and follow the drill in [operations runbook](13_OPERATIONS_RUNBOOK.md) before traffic.
 - Accepted-object retention/lifecycle is environment policy. Quarantine receives a shorter cleanup policy, but never delete an object whose manifest is actively leased.
