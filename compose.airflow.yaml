@@ -12,6 +12,7 @@ x-airflow-common: &airflow-common
     AIRFLOW__CORE__EXPOSE_CONFIG: "false"
     AIRFLOW__CORE__PARALLELISM: "4"
     AIRFLOW__CORE__MAX_ACTIVE_TASKS_PER_DAG: "4"
+    AIRFLOW__CORE__EXECUTION_API_SERVER_URL: http://airflow-api-server:8080/execution/
     AIRFLOW__DAG_PROCESSOR__PARSING_PROCESSES: "2"
     AIRFLOW__CORE__SIMPLE_AUTH_MANAGER_USERS: datariver-operator:admin
     AIRFLOW__CORE__SIMPLE_AUTH_MANAGER_PASSWORDS_FILE: /opt/airflow/auth/passwords.json
@@ -20,11 +21,20 @@ x-airflow-common: &airflow-common
     DATARIVER_OIDC_TOKEN_URL: http://keycloak:8080/realms/datariver/protocol/openid-connect/token
     DATARIVER_OIDC_CLIENT_ID: datariver-airflow
     DATARIVER_OIDC_CLIENT_SECRET_FILE: /run/secrets/airflow_client_secret
+    SEMICONDUCTOR_POSTGRES_HOST: postgres
+    SEMICONDUCTOR_POSTGRES_PORT: "5432"
+    SEMICONDUCTOR_POSTGRES_DATABASE: ${POSTGRES_DB:-datariver}
+    SEMICONDUCTOR_POSTGRES_USER: ${POSTGRES_USER:-datariver_owner}
+    SEMICONDUCTOR_POSTGRES_PASSWORD_FILE: /run/secrets/postgres_password
+    DATAHUB_BASE_URL: ${DATAHUB_BASE_URL:-http://host.docker.internal:8080}
+    DATAHUB_TOKEN_FILE: /run/secrets/datahub_token
   secrets:
     - airflow_db_password
     - airflow_client_secret
     - airflow_api_secret
     - airflow_admin_password
+    - postgres_password
+    - datahub_token
   volumes:
     - ./infra/airflow/entrypoint.sh:/opt/datariver/airflow-entrypoint.sh:ro
     - ./infra/airflow/dags:/opt/airflow/dags:ro
@@ -33,6 +43,8 @@ x-airflow-common: &airflow-common
   networks:
     - app
     - data
+  extra_hosts:
+    - "host.docker.internal:host-gateway"
   user: "50000:0"
   security_opt:
     - no-new-privileges:true

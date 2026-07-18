@@ -19,6 +19,7 @@
 | 14 | [Production hardening](14_PRODUCTION_HARDENING.md) | scale assumptions, P0-P3 disposition and decision gates | Active |
 | 15 | [Legacy UX parity](15_LEGACY_UX_PARITY_PLAN.md) | v0.3 visual/workflow traceability, safe substitutions and staged acceptance | Active |
 | 16 | [Phase execution checklist](16_PHASE_EXECUTION_CHECKLIST.md) | current Phase 1/2 work and paused Phase 3 parity continuation | Active |
+| 17 | [Semiconductor seed workflow](17_SEMICONDUCTOR_SEED_WORKFLOW.md) | restartable external schema, DataHub lineage and Airflow operation | Implemented baseline |
 
 Independent review records: [Data Architect](reviews/2026-07-14_DATA_ARCHITECT_REVIEW.md) and [Data Engineer/SRE](reviews/2026-07-14_DATA_ENGINEER_REVIEW.md).
 

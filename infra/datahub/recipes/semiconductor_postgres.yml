@@ -1,0 +1,29 @@
+# Native DataHub CLI recipe for a real PostgreSQL source.  It is intentionally
+# separate from the local REST emitter in scripts/generate_semiconductor_seed.py:
+# the latter publishes deterministic test metadata, while this recipe is for a
+# deployment that wants DataHub to inspect the actual database connection.
+source:
+  type: postgres
+  config:
+    host_port: "${SEMICONDUCTOR_POSTGRES_HOST}:${SEMICONDUCTOR_POSTGRES_PORT}"
+    database: "${SEMICONDUCTOR_POSTGRES_DATABASE}"
+    username: "${SEMICONDUCTOR_POSTGRES_USER}"
+    password: "${SEMICONDUCTOR_POSTGRES_PASSWORD}"
+    schema_pattern:
+      allow:
+        - "semiconductor_seed"
+    include_views: true
+    include_view_lineage: true
+    profiling:
+      enabled: true
+      profile_table_level_only: true
+      profile_table_row_count_estimate_only: false
+      max_workers: 4
+      include_field_null_count: true
+      include_field_min_value: false
+      include_field_max_value: false
+sink:
+  type: datahub-rest
+  config:
+    server: "${DATAHUB_GMS_URL}"
+    token: "${DATAHUB_GMS_TOKEN}"

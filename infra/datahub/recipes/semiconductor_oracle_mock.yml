@@ -1,0 +1,13 @@
+# Metadata manifest for the Oracle MOCK half of the local seed.
+# This is NOT a native Oracle source recipe and must never be represented as a
+# database scan. scripts/generate_semiconductor_seed.py emits these entities
+# through DataHub's typed dataset-aspect endpoint with execution_mode=MOCK.
+seed:
+  id: semiconductor-value-chain-v1
+  platform: oracle
+  execution_mode: MOCK
+  schema: semiconductor_seed
+  tables: 500
+  views: 500
+  lineage: explicit_fk_and_view_dependencies
+  generated_ddl: runtime/semiconductor-seed/oracle-mock/semiconductor_seed_oracle_mock.sql

@@ -252,12 +252,39 @@ docker compose --profile semiconductor-seed run --rm semiconductor-seed \
 
 Apply/remove require explicit confirmation. Production mode rejects any non-`none` seed profile.
 
+### Large external value-chain seed and DataHub lineage
+
+For catalog-scale and lineage testing, use the separate, restartable external seed workflow in
+[the semiconductor seed workflow](docs/17_SEMICONDUCTOR_SEED_WORKFLOW.md). It is deliberately
+separate from the small in-application reference seed above: it writes only the dedicated
+`semiconductor_seed` PostgreSQL schema, never DataRiver business tables.
+
+The local command creates 500 PostgreSQL tables, 500 PostgreSQL views, 20 deterministic rows per
+table by default, a labelled Oracle **MOCK** DDL artifact, and 2,000 DataHub dataset entities when
+the `dual` scope is selected. The schema is reset only after explicit confirmation and refuses to
+remove unexpected objects.
+
+```powershell
+# Run from the repository root after the host-development dependencies are healthy.
+.\.venv\Scripts\python.exe .\scripts\generate_semiconductor_seed.py `
+  --apply --confirm-reset --ingest-datahub --entity-scope dual
+```
+
+The command reads the local PostgreSQL owner password and DataHub token only from ignored secret
+files, writes its evidence only below ignored `runtime/semiconductor-seed/`, and verifies the exact
+generated DataHub entity count through the typed aspect-read endpoint. It never prints a secret.
+Use the paused-on-creation `datariver_semiconductor_seed_ingestion` Airflow DAG for repeatable
+manual runs; see the workflow document for its bounded resource settings and trigger procedure.
+`infra/datahub/recipes/semiconductor_postgres.yml` is the separate native DataHub CLI recipe for a
+real PostgreSQL source inspection. Do not use its Oracle companion as an Oracle source recipe: it
+is intentionally a MOCK metadata manifest.
+
 ## Source verification
 
 ```bash
 uv sync --frozen --all-extras
 uv run ruff format --check backend/src backend/tests infra/airflow/dags
-uv run ruff check backend/src backend/tests infra/airflow/dags scripts/configure_keycloak_assurance.py scripts/generate_initial_migration.py scripts/probe_pgbouncer_rls.py scripts/probe_policy_revocation.py scripts/verify_datahub_contract.py scripts/verify_datahub_image_inventory.py scripts/verify_static.py
+uv run ruff check backend/src backend/tests infra/airflow/dags scripts/configure_keycloak_assurance.py scripts/generate_initial_migration.py scripts/generate_semiconductor_seed.py scripts/probe_pgbouncer_rls.py scripts/probe_policy_revocation.py scripts/verify_datahub_contract.py scripts/verify_datahub_image_inventory.py scripts/verify_static.py
 uv run mypy backend/src backend/tests
 uv run pytest backend/tests -q
 uv run python scripts/verify_static.py
