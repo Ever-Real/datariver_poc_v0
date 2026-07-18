@@ -224,14 +224,43 @@ focused tests and applicable browser/runtime evidence exist.
 
 ### 4. Change-request dashboard
 
-- [ ] `PAR-REC-012` Add an authorization-filtered schema/system summary table with zero rows,
+The audited v0.3 implementation consists of `ChangeManagementPage`, `CRListTable`,
+`CRRegistrationModal` and the `cr` API client.  Its complete visible/function inventory is:
+
+- refresh; free-text search; preset/custom date ranges; status, system and assignee filters; and a
+  collapsible system summary whose rows and per-assignee children filter the list;
+- summary columns for system/schema, assignee, not-started, total, received, re-requested,
+  change/test, final review and completed; zero counts are rendered rather than suppressed;
+- a dense TanStack list with CR number, title, system, request type, state, requester, assignee,
+  urgency, request date and requested due date; keyboard/row detail access and pagination;
+- a registration modal with catalog target search, table/column change rows, CSV template/import,
+  title/reason/security/due/urgency fields, multiple drag/drop request files and editable existing
+  attachments; and
+- detail/status/assignee updates, revision/re-request, test-result upload and attachment download.
+
+The v0.3 API client uses multipart `POST/PATCH cr`, `cr/{no}/status`, `cr/{no}/assignee`,
+`cr/{no}/attachments`, `cr/{no}/test-result` and `cr/upload-target-excel`, plus filtered `GET cr`
+and `cr/overview`.  v1 never ports its client-supplied raw Aspect payload, caller-supplied assignee
+or object-store coordinates; the target, state and file authorization must remain server-owned.
+
+- [x] `PAR-REC-012` Provide an authorization-filtered schema/system summary table with zero rows,
   expandable assignee details and status-cell filtering from one consistent server read model.
-- [ ] `PAR-REC-013` Restore the top-right `신규 CR 신청` action, side status chips and v0.3-equivalent
-  dense list columns, including request date, requested due date, priority and urgency.
-- [ ] `PAR-REC-014` Add only typed, auditable CR fields/assignee mappings with model, migration,
-  contract and access tests; no client-derived owner/system assignment.
+- [ ] `PAR-REC-013` The top-right `신규 CR 신청` entry, side status chips and dense list columns
+  (request date, requested due date, priority and urgency) are restored.  Replace the current
+  registration-page link with the audited typed CR registration modal and attachment/test views.
+- [x] `PAR-REC-014` Add typed, auditable CR schedule fields and system/assignee mappings with model,
+  migration, contract and access tests; no client-derived owner/system assignment.
 
 ### 5. Integrated administration center
+
+The audited v0.3 `/admin` inventory is `UsersPage`, `SystemsManagementView`, `ConnectionsPage` and
+`admin/SystemSettingsPage`, backed by `auth/users`, `governance/systems` and connection/config API
+calls.  It contains user search/create/edit/delete/detail, system CRUD, schema discovery/selection,
+developer and Data Steward lists with priorities, and per-service endpoint/auth/bucket/model forms
+with test/save.  The YAML editor, plaintext secrets, browser credential test and unrestricted URL
+form are unsafe legacy behavior.  v1 must preserve the visual master-data workflows over canonical
+subjects/memberships/systems/scopes/assignees and redacted approved service profiles, while keeping
+credentials as operator-managed secret references and connection tests allowlisted server commands.
 
 - [ ] `PAR-REC-015` Restore the user/master and system-assignment layouts over canonical Workspace
   membership access, with active status, group/role template, system/schema scope and developer/Data
