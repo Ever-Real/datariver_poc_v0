@@ -195,7 +195,7 @@ export function App() {
       {page === 'dashboard' && <DashboardPage client={client} onNavigate={navigate} />}
       {page === 'catalog' && <CatalogPage client={client} initialQuery={catalogQuery} onQueryChange={searchCatalog} catalogExportWorkerEnabled={catalogExportWorkerEnabled} />}
       {page === 'registration' && <RegistrationPage client={client} />}
-      {page === 'change-management' && <GovernancePage client={client} onStepUp={auth.beginStepUp} onPasswordReauth={auth.beginPasswordReauth} onEnroll={auth.beginWebAuthnEnrollment} />}
+      {page === 'change-management' && <GovernancePage client={client} onNavigate={navigate} onStepUp={auth.beginStepUp} onPasswordReauth={auth.beginPasswordReauth} onEnroll={auth.beginWebAuthnEnrollment} />}
       {page === 'quality' && <QualityPage />}
       {page === 'knowledge' && <KnowledgePage client={client} />}
       {page === 'monitoring' && <MonitoringPage client={client} />}

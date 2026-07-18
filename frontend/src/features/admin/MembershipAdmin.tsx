@@ -10,7 +10,7 @@ import type { AdminApi } from './adminApi'
 import type { PendingAdminMutation } from './AdminMutationConfirmDialog'
 import type { AdminMessages } from './messages'
 
-interface AdminSectionProps extends AssuranceActions {
+export interface AdminSectionProps extends AssuranceActions {
   api: AdminApi
   context?: AdminReadContext
   messages: AdminMessages

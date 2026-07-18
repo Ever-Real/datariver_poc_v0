@@ -105,7 +105,7 @@ describe('GovernancePage', () => {
 
     const loading = screen.getByText('데이터를 불러오는 중입니다.')
     expect(loading.closest('.dense-table-frame')).toHaveAttribute('aria-busy', 'true')
-    expect(screen.getByText('현재 조회된 요청 · 최대 50건')).toBeInTheDocument()
+    expect(screen.getByText('현재 조회된 요청 · 최대 100건')).toBeInTheDocument()
 
     act(() => list.resolve({ items: [] }))
     expect(await screen.findByText('현재 권한 범위에서 조회 가능한 요청이 없습니다.')).toBeInTheDocument()
@@ -115,7 +115,7 @@ describe('GovernancePage', () => {
   it('renders the bounded dense list and routes typed creation to registration', async () => {
     const existing = changeRequest()
     const request = vi.fn((path: string, options?: RequestOptions): Promise<unknown> => {
-      if (path === '/change-requests?limit=50') return Promise.resolve({ items: [existing] })
+      if (path === '/change-requests?limit=100') return Promise.resolve({ items: [existing] })
       throw new Error(`Unexpected request: ${path} ${options?.method ?? 'GET'}`)
     })
     renderPage(apiClient(request))
@@ -126,9 +126,9 @@ describe('GovernancePage', () => {
     expect(screen.getByText('1건 표시')).toBeInTheDocument()
     expect(screen.queryByLabelText('DataHub 대상 URN')).not.toBeInTheDocument()
     expect(screen.queryByLabelText('승인 대상 JSON')).not.toBeInTheDocument()
-    const link = screen.getByRole('link', { name: '등록관리에서 설명 변경 제안' })
+    const link = screen.getByRole('link', { name: '신규 CR 신청' })
     expect(link.getAttribute('href')).toContain('page=registration')
-    const listOptions = request.mock.calls.find(([path]) => path === '/change-requests?limit=50')?.[1]
+    const listOptions = request.mock.calls.find(([path]) => path === '/change-requests?limit=100')?.[1]
     expect(listOptions?.signal).toBeInstanceOf(AbortSignal)
   })
 
@@ -136,8 +136,7 @@ describe('GovernancePage', () => {
     const existing = changeRequest()
     const request = vi.fn((path: string, options?: RequestOptions): Promise<unknown> => {
       void options
-      if (path === '/change-requests?limit=50') return Promise.resolve({ items: [existing] })
-      if (path === '/change-requests?state=IN_REVIEW&limit=50') return Promise.resolve({ items: [] })
+      if (path === '/change-requests?limit=100') return Promise.resolve({ items: [existing] })
       throw new Error(`Unexpected request: ${path}`)
     })
     renderPage(apiClient(request))
@@ -145,7 +144,7 @@ describe('GovernancePage', () => {
 
     fireEvent.change(screen.getByLabelText('상태 필터'), { target: { value: 'IN_REVIEW' } })
     expect(await screen.findByText('선택한 상태에서 조회 가능한 요청이 없습니다.')).toBeInTheDocument()
-    const filterOptions = request.mock.calls.find(([path]) => path === '/change-requests?state=IN_REVIEW&limit=50')?.[1]
+    const filterOptions = request.mock.calls.find(([path]) => path === '/change-requests?limit=100')?.[1]
     expect(filterOptions?.signal).toBeInstanceOf(AbortSignal)
   })
 
@@ -153,7 +152,7 @@ describe('GovernancePage', () => {
     const existing = changeRequest()
     const request = vi.fn((path: string, options?: RequestOptions): Promise<unknown> => {
       void options
-      if (path === '/change-requests?limit=50') return Promise.resolve({ items: [existing] })
+      if (path === '/change-requests?limit=100') return Promise.resolve({ items: [existing] })
       if (path === `/change-requests/${existing.id}`) return Promise.resolve(existing)
       throw new Error(`Unexpected request: ${path}`)
     })
@@ -180,7 +179,7 @@ describe('GovernancePage', () => {
     const existing = changeRequest()
     const updated = changeRequest({ state: 'IN_REVIEW', version: 8 })
     const request = vi.fn((path: string, options?: RequestOptions): Promise<unknown> => {
-      if (path === '/change-requests?limit=50') return Promise.resolve({ items: [existing] })
+      if (path === '/change-requests?limit=100') return Promise.resolve({ items: [existing] })
       if (path === `/change-requests/${existing.id}`) return Promise.resolve(existing)
       if (path === `/change-requests/${existing.id}/transitions` && options?.method === 'POST') return Promise.resolve(updated)
       throw new Error(`Unexpected request: ${path} ${options?.method ?? 'GET'}`)
@@ -213,7 +212,7 @@ describe('GovernancePage', () => {
     const denied = problem(403, 'strong assurance required', 'FIDO2_REQUIRED')
     const onStepUp = vi.fn(() => Promise.resolve())
     const request = vi.fn((path: string, options?: RequestOptions): Promise<unknown> => {
-      if (path === '/change-requests?limit=50') return Promise.resolve({ items: [existing] })
+      if (path === '/change-requests?limit=100') return Promise.resolve({ items: [existing] })
       if (path === `/change-requests/${existing.id}`) return Promise.resolve(existing)
       if (path.endsWith('/transitions') && options?.method === 'POST') return Promise.reject(denied)
       throw new Error(`Unexpected request: ${path}`)
@@ -237,7 +236,7 @@ describe('GovernancePage', () => {
     let detailReads = 0
     let mutations = 0
     const request = vi.fn((path: string, options?: RequestOptions): Promise<unknown> => {
-      if (path === '/change-requests?limit=50') return Promise.resolve({ items: [existing] })
+      if (path === '/change-requests?limit=100') return Promise.resolve({ items: [existing] })
       if (path === `/change-requests/${existing.id}`) {
         detailReads += 1
         return Promise.resolve(detailReads === 1 ? existing : latest)
@@ -274,7 +273,7 @@ describe('GovernancePage', () => {
     const pendingDetail = deferred<ChangeRequestRecord>()
     let firstDetailSignal: AbortSignal | undefined
     const firstRequest = vi.fn((path: string, options?: RequestOptions): Promise<unknown> => {
-      if (path === '/change-requests?limit=50') return Promise.resolve({ items: [first] })
+      if (path === '/change-requests?limit=100') return Promise.resolve({ items: [first] })
       if (path === `/change-requests/${first.id}`) {
         firstDetailSignal = options?.signal ?? undefined
         return pendingDetail.promise
@@ -282,7 +281,7 @@ describe('GovernancePage', () => {
       throw new Error(`Unexpected first-client request: ${path}`)
     })
     const secondRequest = vi.fn((path: string): Promise<unknown> => {
-      if (path === '/change-requests?limit=50') return Promise.resolve({ items: [second] })
+      if (path === '/change-requests?limit=100') return Promise.resolve({ items: [second] })
       throw new Error(`Unexpected second-client request: ${path}`)
     })
     const firstClient = apiClient(firstRequest)
@@ -305,7 +304,7 @@ describe('GovernancePage', () => {
   it('treats apply eligibility as a server decision and never exposes worker-owned transitions', async () => {
     const finalReview = changeRequest({ state: 'FINAL_REVIEW', approvals: [] })
     const request = vi.fn((path: string): Promise<unknown> => {
-      if (path === '/change-requests?limit=50') return Promise.resolve({ items: [finalReview] })
+      if (path === '/change-requests?limit=100') return Promise.resolve({ items: [finalReview] })
       if (path === `/change-requests/${finalReview.id}`) return Promise.resolve(finalReview)
       throw new Error(`Unexpected request: ${path}`)
     })

@@ -13,17 +13,19 @@ import {
 } from './ClassificationAccessAdmin'
 import { ErasureAdmin } from './ErasureAdmin'
 import { FallbackQueueAdmin, MembershipAccessAdmin } from './MembershipAdmin'
+import { RoleAccessAdmin } from './RoleAccessAdmin'
 import { LegalHoldAdmin, RetentionPolicyAdmin } from './RetentionAdmin'
 import { getAdminMessages } from './messages'
 
 const sections = [
-  'memberships', 'fallback', 'classification', 'providers', 'restrictedGrants',
+  'memberships', 'roles', 'fallback', 'classification', 'providers', 'restrictedGrants',
   'retention', 'holds', 'erasure',
 ] as const
 export type AdminSection = typeof sections[number]
 
 const sectionOperations: Record<AdminSection, readonly AdminOperation[]> = {
   memberships: ['MEMBERSHIP_ACCESS_READ', 'MEMBERSHIP_ACCESS_UPDATE'],
+  roles: ['MEMBERSHIP_ACCESS_READ', 'MEMBERSHIP_ACCESS_UPDATE'],
   fallback: ['FALLBACK_REQUEST_READ', 'FALLBACK_REQUEST_CREATE', 'FALLBACK_REQUEST_DECIDE', 'FALLBACK_REQUEST_CONSUME'],
   classification: ['CLASSIFICATION_POLICY_READ', 'CLASSIFICATION_POLICY_PROPOSE', 'CLASSIFICATION_POLICY_DECIDE'],
   providers: ['INFERENCE_PROVIDER_PROFILE_READ', 'INFERENCE_PROVIDER_PROFILE_DECIDE', 'INFERENCE_PROVIDER_PROFILE_REVOKE'],
@@ -127,6 +129,7 @@ export function AdminPage({
     <AssuranceNotice error={error} requiredAssurance={assuranceType} {...assurance} />
     <ErrorNotice error={error} />
     {activeSection === 'memberships' && <MembershipAccessAdmin {...shared} />}
+    {activeSection === 'roles' && <RoleAccessAdmin {...shared} />}
     {activeSection === 'fallback' && <FallbackQueueAdmin {...shared} />}
     {activeSection === 'classification' && <ClassificationPolicyAdmin {...shared} />}
     {activeSection === 'providers' && <InferenceProviderProfileAdmin {...shared} />}

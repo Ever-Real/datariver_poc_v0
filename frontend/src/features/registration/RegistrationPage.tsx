@@ -40,7 +40,8 @@ export function RegistrationPage({ client }: { client: ApiClient }) {
           tabIndex={mode === 'MANUAL' ? 0 : -1}
           className={mode === 'MANUAL' ? 'active' : ''}
           onClick={() => setMode('MANUAL')}
-        ><PencilLine size={15} />MANUAL <small>단건 검토</small></button>
+          title="단건 검토"
+        ><PencilLine size={14} />MANUAL <small>단건 검토</small></button>
         <button
           type="button"
           role="tab"
@@ -50,7 +51,8 @@ export function RegistrationPage({ client }: { client: ApiClient }) {
           tabIndex={mode === 'BULK' ? 0 : -1}
           className={mode === 'BULK' ? 'active' : ''}
           onClick={() => setMode('BULK')}
-        ><UploadCloud size={15} />BULK <small>일괄 등록</small></button>
+          title="일괄 등록"
+        ><UploadCloud size={14} />BULK <small>일괄 등록</small></button>
       </div>
 
       {mode === 'MANUAL' ? (

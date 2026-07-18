@@ -1,9 +1,9 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, type MouseEvent } from 'react'
 import type { ColumnDef } from '@tanstack/react-table'
 import { Search } from 'lucide-react'
 import { ApiError, newIdempotencyKey, type ApiClient } from '../../api/client'
 import type { ChangeRequestRecord, ChangeRequestState } from '../../api/types'
-import { pageUrl } from '../../app/navigation'
+import { pageUrl, type Page } from '../../app/navigation'
 import { AssuranceNotice, type AssuranceActions } from '../../components/AssuranceNotice'
 import { ErrorNotice } from '../../components/ErrorNotice'
 import { DenseDataTable } from '../../components/common/DenseDataTable'
@@ -30,9 +30,15 @@ const columns: ColumnDef<ChangeRequestRecord>[] = [
   {
     accessorKey: 'title',
     header: 'CR명',
-    size: 300,
+    size: 230,
     enableSorting: false,
     cell: ({ row }) => <TruncatedText value={row.original.title} className="governance-request-title" />,
+  },
+  {
+    accessorKey: 'request_type',
+    header: '유형',
+    size: 105,
+    enableSorting: false,
   },
   {
     id: 'aspect',
@@ -40,6 +46,27 @@ const columns: ColumnDef<ChangeRequestRecord>[] = [
     size: 145,
     enableSorting: false,
     cell: ({ row }) => <TruncatedText value={row.original.items[0]?.aspect_name ?? '—'} />,
+  },
+  {
+    id: 'target',
+    header: '대상 데이터셋',
+    size: 230,
+    enableSorting: false,
+    cell: ({ row }) => <TruncatedText value={row.original.items[0]?.target_ref ?? '—'} />,
+  },
+  {
+    id: 'operation',
+    header: '작업',
+    size: 105,
+    enableSorting: false,
+    cell: ({ row }) => <TruncatedText value={row.original.items[0]?.operation ?? '—'} />,
+  },
+  {
+    id: 'items',
+    header: '항목',
+    size: 65,
+    enableSorting: false,
+    cell: ({ row }) => row.original.items.length.toLocaleString(),
   },
   {
     accessorKey: 'state',
@@ -78,7 +105,8 @@ export function GovernancePage({
   onStepUp,
   onPasswordReauth,
   onEnroll,
-}: { client: ApiClient } & AssuranceActions) {
+  onNavigate,
+}: { client: ApiClient; onNavigate?: (page: Page) => void } & AssuranceActions) {
   const [stateFilter, setStateFilter] = useState<'' | ChangeRequestState>('')
   const [textFilter, setTextFilter] = useState('')
   const [requests, setRequests] = useState<ChangeRequestRecord[]>([])
@@ -104,11 +132,9 @@ export function GovernancePage({
     return { controller, expectedGeneration: generation.current }
   }, [])
 
-  const listPath = useMemo(() => (
-    stateFilter
-      ? `/change-requests?state=${encodeURIComponent(stateFilter)}&limit=50`
-      : '/change-requests?limit=50'
-  ), [stateFilter])
+  // Load one authorized server window, then apply the presentation-only badge filter.
+  // Fetching a state-specific list here would make the summary rows misleading.
+  const listPath = useMemo(() => '/change-requests?limit=100', [])
 
   const loadRequests = useCallback(async () => {
     const intent = ++listIntent.current
@@ -257,17 +283,37 @@ export function GovernancePage({
   const fallback = selectedId ? requests.find((item) => item.id === selectedId) : undefined
   const visibleRequests = useMemo(() => {
     const query = textFilter.trim().toLocaleLowerCase()
-    if (!query) return requests
-    return requests.filter((request) => [
+    return requests.filter((request) => {
+      if (stateFilter && request.state !== stateFilter) return false
+      if (!query) return true
+      return [
       request.number, request.title, request.requester_id, request.items[0]?.aspect_name ?? '', request.classification,
-    ].some((value) => value.toLocaleLowerCase().includes(query)))
-  }, [requests, textFilter])
-  const summary = useMemo(() => [
-    { label: '전체', count: requests.length, state: '' as const },
-    { label: '검토 필요', count: requests.filter((item) => ['REGISTERED', 'IN_REVIEW', 'FINAL_REVIEW', 'CHANGES_REQUESTED'].includes(item.state)).length, state: 'IN_REVIEW' as const },
-    { label: '적용 중', count: requests.filter((item) => ['APPLY_QUEUED', 'APPLYING', 'APPLY_FAILED'].includes(item.state)).length, state: 'APPLYING' as const },
-    { label: '적용 완료', count: requests.filter((item) => item.state === 'APPLIED').length, state: 'APPLIED' as const },
-  ], [requests])
+      ].some((value) => value.toLocaleLowerCase().includes(query))
+    })
+  }, [requests, stateFilter, textFilter])
+  const summary = useMemo(() => ({
+    pending: requests.filter((item) => item.state === 'REGISTERED').length,
+    total: requests.length,
+    received: requests.filter((item) => ['REGISTERED', 'IN_REVIEW'].includes(item.state)).length,
+    recheck: requests.filter((item) => ['CHANGES_REQUESTED', 'REJECTED'].includes(item.state)).length,
+    testing: requests.filter((item) => ['TESTING', 'APPLY_QUEUED', 'APPLYING', 'APPLY_FAILED'].includes(item.state)).length,
+    finalReview: requests.filter((item) => item.state === 'FINAL_REVIEW').length,
+    completed: requests.filter((item) => item.state === 'APPLIED').length,
+  }), [requests])
+  const statusBadges: Array<{ label: string; state: '' | ChangeRequestState }> = [
+    { label: '전체', state: '' },
+    { label: '접수', state: 'REGISTERED' },
+    { label: '검토', state: 'IN_REVIEW' },
+    { label: '재검토', state: 'CHANGES_REQUESTED' },
+    { label: '변경/TEST', state: 'TESTING' },
+    { label: '완료검토', state: 'FINAL_REVIEW' },
+    { label: '완료', state: 'APPLIED' },
+  ]
+  const navigateRegistration = (event: MouseEvent<HTMLAnchorElement>) => {
+    if (!onNavigate) return
+    event.preventDefault()
+    onNavigate('registration')
+  }
 
   return (
     <section className="governance-page">
@@ -276,13 +322,13 @@ export function GovernancePage({
         eyebrow="Four-eyes Governance"
         title="변경 요청과 승인"
         description="타입이 지정된 변경을 검토하고 Maker-Checker 상태 전이와 적용 증거를 관리합니다."
-        actions={<button type="button" className="button button-secondary" disabled={listLoading} onClick={() => void loadRequests()}>새로고침</button>}
+        actions={<div className="page-title-actions"><button type="button" className="button button-secondary" disabled={listLoading} onClick={() => void loadRequests()}>새로고침</button><a className="button" href={pageUrl('registration')} onClick={navigateRegistration}>신규 CR 신청</a></div>}
       />
 
       <div className="governance-toolbar panel">
         <div className="governance-window-summary" aria-live="polite">
           <span className="governance-kicker">Authorized window</span>
-          <strong>현재 조회된 요청 · 최대 50건</strong>
+          <strong>현재 조회된 요청 · 최대 100건</strong>
           <small>{listLoading ? '서버에서 권한 범위를 확인하는 중' : `${requests.length.toLocaleString()}건 표시`}</small>
         </div>
         <label className="governance-state-filter">
@@ -297,12 +343,13 @@ export function GovernancePage({
         </label>
         <div className="governance-registration-link">
           <span>새 변경 요청은 서버 검증 미리보기에서 시작합니다.</span>
-          <a className="button" href={pageUrl('registration')}>등록관리에서 설명 변경 제안</a>
+          <a className="button button-secondary" href={pageUrl('registration')} onClick={navigateRegistration}>등록관리 열기</a>
         </div>
       </div>
 
-      <section className="governance-status-overview" aria-label="현재 조회 창의 변경요청 상태 요약">
-        {summary.map((item) => <button key={item.label} type="button" className={stateFilter === item.state ? 'active' : ''} onClick={() => setStateFilter(item.state)}><span>{item.label}</span><strong>{item.count.toLocaleString()}</strong><small>현재 권한 창</small></button>)}
+      <section className="governance-status-overview" aria-label="현재 권한 창의 변경요청 현황">
+        <header><span className="governance-kicker">CR Status Overview</span><small>서버가 반환한 권한 범위에서 집계합니다.</small></header>
+        <div className="governance-status-scroll"><table><thead><tr><th>데이터셋별 미진행</th><th>CR 전체</th><th>접수완료</th><th>재검토</th><th>변경 / TEST</th><th>완료검토</th><th>완료</th></tr></thead><tbody><tr><td>{summary.pending.toLocaleString()}건</td><td>{summary.total.toLocaleString()}건</td><td>{summary.received.toLocaleString()}건</td><td>{summary.recheck.toLocaleString()}건</td><td>{summary.testing.toLocaleString()}건</td><td>{summary.finalReview.toLocaleString()}건</td><td>{summary.completed.toLocaleString()}건</td></tr></tbody></table></div>
       </section>
 
       <AssuranceNotice
@@ -321,6 +368,9 @@ export function GovernancePage({
           </div>
           <p>행을 클릭하거나 Enter/Space로 열면 서버가 상세 권한을 다시 확인합니다. 검색은 현재 서버 권한 창 안에서만 필터링합니다.</p>
         </header>
+        <div className="governance-stage-filters" aria-label="단계별 CR 필터">
+          {statusBadges.map((item) => <button key={item.label} type="button" className={stateFilter === item.state ? 'active' : ''} onClick={() => setStateFilter((current) => current === item.state ? '' : item.state)}>{item.label}</button>)}
+        </div>
         <DenseDataTable
           caption="현재 권한 범위의 변경 요청"
           columns={columns}
