@@ -385,6 +385,92 @@ export interface KnowledgeGraph {
   version: number
 }
 
+export interface KnowledgeRelease {
+  id: string
+  graph_id: string
+  release_no: number
+  ontology_version_id: string
+  content_hash: string
+  node_count: number
+  edge_count: number
+  published_at: string
+}
+
+export interface KnowledgeProvenance {
+  source_ref: string
+  source_locator: string
+  source_version: string
+  method: string
+  confidence: number
+}
+
+export interface KnowledgeGraphNode {
+  id: string
+  entity_type: string
+  properties: Record<string, unknown>
+  classification: number
+  provenance: KnowledgeProvenance[]
+}
+
+export interface KnowledgeGraphEdge {
+  id: string
+  source_id: string
+  target_id: string
+  edge_type: string
+  properties: Record<string, unknown>
+  classification: number
+  provenance: KnowledgeProvenance[]
+}
+
+export interface KnowledgeSnapshot {
+  release: KnowledgeRelease
+  nodes: KnowledgeGraphNode[]
+  edges: KnowledgeGraphEdge[]
+  filtered: boolean
+}
+
+export interface KnowledgeValidation {
+  id: string
+  severity: string
+  code: string
+  location: string
+  message: string
+  validator: string
+  validator_version: string
+}
+
+export interface KnowledgeChangeSet {
+  id: string
+  graph_id: string
+  base_release_id: string | null
+  ontology_version_id: string
+  title: string
+  state: string
+  author_id: string
+  reviewed_by: string | null
+  review_reason: string | null
+  published_release_id: string | null
+  version: number
+  created_at: string
+  updated_at: string
+  operations: Array<{
+    id: string
+    sequence: number
+    operation: string
+    entity_kind: string
+    stable_entity_id: string
+    document: Record<string, unknown>
+    provenance: KnowledgeProvenance[]
+    confidence: number
+  }>
+  validations: KnowledgeValidation[]
+}
+
+export interface KnowledgeChangeSetPublish {
+  changeset: KnowledgeChangeSet
+  release: KnowledgeRelease
+}
+
 export interface ChatResponse {
   session_id: string
   request_message_id: string
