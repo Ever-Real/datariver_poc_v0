@@ -7,6 +7,7 @@ from sqlalchemy import and_, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from datariver.application.catalog_export_csv import CSV_SAFETY_VERSION
+from datariver.application.catalog_export_xlsx import XLSX_SAFETY_VERSION
 from datariver.application.catalog_security import (
     catalog_classification_access_hash,
     catalog_permission_scope_hash,
@@ -28,6 +29,7 @@ from datariver.domain.common import (
     DomainEvent,
     Effect,
     ForbiddenError,
+    ValidationError,
     utc_now,
     uuid7,
 )
@@ -118,8 +120,8 @@ class SqlCatalogExportStore(CatalogExportStore):
             csv_safety_version=csv_safety_version,
             object_bucket=None,
             object_key=None,
-            display_name=f"catalog-export-{export_id}.csv",
-            mime="text/csv; charset=utf-8",
+            display_name=f"catalog-export-{export_id}.{request.format.lower()}",
+            mime=_export_mime(request.format),
             row_count=None,
             size_bytes=None,
             content_sha256=None,
@@ -540,7 +542,7 @@ async def _snapshot_is_current(
         export.access_until > now
         and subject.active
         and export.builtin_policy_version == BuiltinPolicyEngine.policy_version
-        and export.csv_safety_version == CSV_SAFETY_VERSION
+        and export.csv_safety_version == _export_safety_version(export.request_document)
         and export.permission_scope_hash == catalog_permission_scope_hash(subject)
         and export.classification_access_hash == access_hash
         and export.source_projection_version == int(watermark or 0)
@@ -677,3 +679,20 @@ def _request_from_document(document: dict[str, object]) -> CatalogExportRequest:
     if request.document() != document:
         raise ConflictError("The stored catalog export request failed canonical validation.")
     return request
+
+
+def _export_safety_version(document: dict[str, object]) -> str:
+    format_name = document.get("format")
+    if format_name == "CSV":
+        return CSV_SAFETY_VERSION
+    if format_name == "XLSX":
+        return XLSX_SAFETY_VERSION
+    return ""
+
+
+def _export_mime(format_name: str) -> str:
+    if format_name == "CSV":
+        return "text/csv; charset=utf-8"
+    if format_name == "XLSX":
+        return "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    raise ValidationError("The catalog export format is not supported.")

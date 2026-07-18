@@ -42,6 +42,8 @@ from datariver.infrastructure.db.models.catalog import (
 )
 from datariver.infrastructure.db.models.platform import WorkspaceModel
 
+CATALOG_SEARCH_FIELDS = frozenset({"SCHEMA", "TABLE", "COLUMN", "TAG", "TERM", "DESCRIPTION"})
+
 
 def _encode_cursor(name: str, asset_id: UUID) -> str:
     payload = json.dumps([name, str(asset_id)], separators=(",", ":")).encode()
@@ -87,23 +89,47 @@ def _query_terms(query: str) -> tuple[str, ...]:
     return tuple(dict.fromkeys(term for term in query.split() if term))
 
 
-def _catalog_query_condition(query: str) -> Any:
+def _search_fields(filters: dict[str, Any]) -> tuple[str, ...]:
+    raw_value = filters.get("search_fields")
+    if raw_value in (None, ""):
+        return tuple(sorted(CATALOG_SEARCH_FIELDS))
+    if not isinstance(raw_value, str):
+        raise ValidationError("Catalog search fields must be a comma-separated string.")
+    fields = tuple(
+        dict.fromkeys(value.strip().upper() for value in raw_value.split(",") if value.strip())
+    )
+    if not fields or any(field not in CATALOG_SEARCH_FIELDS for field in fields):
+        raise ValidationError("Catalog search fields are invalid.")
+    return fields
+
+
+def _catalog_query_condition(query: str, *, search_fields: tuple[str, ...]) -> Any:
     terms = _query_terms(query)
-    literal_all = and_(
-        *(
-            or_(
-                AssetProjectionModel.name.ilike(_literal_contains_pattern(term), escape="\\"),
-                AssetProjectionModel.description.ilike(
-                    _literal_contains_pattern(term), escape="\\"
-                ),
+    per_term: list[Any] = []
+    for term in terms:
+        pattern = _literal_contains_pattern(term)
+        fields: list[Any] = []
+        if "TABLE" in search_fields:
+            fields.append(AssetProjectionModel.name.ilike(pattern, escape="\\"))
+        if "DESCRIPTION" in search_fields:
+            fields.append(AssetProjectionModel.description.ilike(pattern, escape="\\"))
+        if "SCHEMA" in search_fields:
+            fields.append(AssetProjectionModel.schema_name.ilike(pattern, escape="\\"))
+        if "COLUMN" in search_fields:
+            fields.append(
+                cast(AssetProjectionModel.column_names, String).ilike(pattern, escape="\\")
             )
-            for term in terms
-        )
-    )
-    return or_(
-        AssetProjectionModel.search_vector.op("@@")(func.plainto_tsquery("simple", query)),
-        literal_all,
-    )
+        if "TAG" in search_fields:
+            fields.append(cast(AssetProjectionModel.tags, String).ilike(pattern, escape="\\"))
+        if "TERM" in search_fields:
+            fields.append(
+                cast(AssetProjectionModel.glossary_terms, String).ilike(pattern, escape="\\")
+            )
+        per_term.append(or_(*fields))
+    # Each query token must match one enabled field.  This preserves the v0.3
+    # ALL-keyword behavior while keeping every condition typed and locally
+    # authorization-pruned; no browser-side provider query is constructed.
+    return and_(*per_term)
 
 
 def _match_fragments(
@@ -292,8 +318,13 @@ class SqlCatalogIndexReader(CatalogIndexReader):
     ) -> CatalogPage:
         conditions = self._scope_conditions(subject, access)
         if query:
-            conditions.append(_catalog_query_condition(query))
+            conditions.append(
+                _catalog_query_condition(query, search_fields=_search_fields(filters))
+            )
         conditions.extend(self._filter_conditions(filters))
+        total = await self._session.scalar(
+            select(func.count(AssetProjectionModel.id)).where(and_(*conditions))
+        )
         if cursor:
             cursor_name, cursor_id = _decode_cursor(cursor)
             conditions.append(
@@ -332,6 +363,7 @@ class SqlCatalogIndexReader(CatalogIndexReader):
             ),
             next_cursor=next_cursor,
             observed_at=observed_at,
+            total=int(total or 0),
         )
 
     async def export_page(
@@ -349,7 +381,9 @@ class SqlCatalogIndexReader(CatalogIndexReader):
         conditions = self._scope_conditions(subject, access)
         conditions.append(AssetProjectionModel.classification < int(Classification.RESTRICTED))
         if query:
-            conditions.append(_catalog_query_condition(query))
+            conditions.append(
+                _catalog_query_condition(query, search_fields=_search_fields(filters))
+            )
         conditions.extend(self._filter_conditions(filters))
         if cursor:
             cursor_name, cursor_id = _decode_cursor(cursor)
@@ -400,7 +434,9 @@ class SqlCatalogIndexReader(CatalogIndexReader):
             raise ValueError("Catalog facet limit must be between 1 and 100.")
         conditions = self._scope_conditions(subject, access)
         if query:
-            conditions.append(_catalog_query_condition(query))
+            conditions.append(
+                _catalog_query_condition(query, search_fields=tuple(sorted(CATALOG_SEARCH_FIELDS)))
+            )
         conditions.extend(self._filter_conditions(filters))
         facet_columns = {
             "asset_type": AssetProjectionModel.asset_type,
@@ -527,12 +563,12 @@ class SqlCatalogIndexReader(CatalogIndexReader):
             raise ValidationError("The catalog tree parent path is incomplete.")
         conditions = self._scope_conditions(subject, access)
         if query:
-            conditions.append(_catalog_query_condition(query))
+            conditions.append(
+                _catalog_query_condition(query, search_fields=tuple(sorted(CATALOG_SEARCH_FIELDS)))
+            )
         if parent_kind in {"PLATFORM", "DATABASE", "SCHEMA"}:
             conditions.append(AssetProjectionModel.platform == platform)
-        if parent_kind == "DATABASE" or (
-            parent_kind == "SCHEMA" and database_name is not None
-        ):
+        if parent_kind == "DATABASE" or (parent_kind == "SCHEMA" and database_name is not None):
             conditions.append(AssetProjectionModel.database_name == database_name)
         if parent_kind == "SCHEMA":
             conditions.append(AssetProjectionModel.schema_name == schema_name)
@@ -737,8 +773,11 @@ class SqlCatalogIndexReader(CatalogIndexReader):
             "asset_type": AssetProjectionModel.asset_type,
             "platform": AssetProjectionModel.platform,
             "lifecycle": AssetProjectionModel.lifecycle,
+            "database_name": AssetProjectionModel.database_name,
+            "schema_name": AssetProjectionModel.schema_name,
+            "domain": AssetProjectionModel.domain_ref,
         }
-        unknown_filters = set(filters) - {*allowed_filters, "classification"}
+        unknown_filters = set(filters) - {*allowed_filters, "classification", "search_fields"}
         if unknown_filters:
             raise ValidationError(
                 "Unsupported catalog filters.", details={"filters": sorted(unknown_filters)}
@@ -917,6 +956,7 @@ class SqlCatalogProjectionWriter(CatalogProjectionWriter):
                 domain_ref=item.domain_ref,
                 tags=list(item.tags),
                 glossary_terms=list(item.glossary_terms),
+                column_names=list(item.column_names),
                 source_created_at=item.created_at,
                 domain_id=domain_id,
                 system_id=system_id,
@@ -946,6 +986,7 @@ class SqlCatalogProjectionWriter(CatalogProjectionWriter):
                     "domain_ref": item.domain_ref,
                     "tags": list(item.tags),
                     "glossary_terms": list(item.glossary_terms),
+                    "column_names": list(item.column_names),
                     "source_created_at": item.created_at,
                     "domain_id": domain_id,
                     "system_id": system_id,

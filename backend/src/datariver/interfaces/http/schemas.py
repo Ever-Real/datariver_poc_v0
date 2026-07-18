@@ -55,6 +55,7 @@ class CatalogMatchFragmentResponse(BaseModel):
 class CatalogSearchResponse(BaseModel):
     items: list[CatalogAssetSummary]
     page: PageMeta
+    total: int = Field(ge=0)
     meta: CatalogPolicyMeta
     match_mode: Literal["ALL"] = "ALL"
 
@@ -300,10 +301,14 @@ class CatalogExportCreateRequest(BaseModel):
     q: str = Field(default="", max_length=500)
     asset_type: str | None = Field(default=None, min_length=1, max_length=100)
     platform: str | None = Field(default=None, min_length=1, max_length=100)
+    database_name: str | None = Field(default=None, min_length=1, max_length=255)
+    schema_name: str | None = Field(default=None, min_length=1, max_length=255)
+    domain: str | None = Field(default=None, min_length=1, max_length=1000)
+    search_fields: str | None = Field(default=None, min_length=1, max_length=100)
     classification: Literal["PUBLIC", "INTERNAL", "CONFIDENTIAL", "RESTRICTED"] | None = None
     lifecycle: Literal["ACTIVE"] | None = None
     sort: Literal["NAME_ASC"] = "NAME_ASC"
-    format: Literal["CSV"] = "CSV"
+    format: Literal["CSV", "XLSX"] = "CSV"
 
 
 class CatalogExportCreateResponse(BaseModel):

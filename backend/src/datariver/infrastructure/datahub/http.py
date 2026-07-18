@@ -125,6 +125,7 @@ query DataRiverCatalogScan($input: SearchAcrossEntitiesInput!) {
           }
           globalTags { tags { tag { name } } }
           glossaryTerms { terms { term { urn name } } }
+          schemaMetadata { fields { fieldPath } }
         }
       }
     }
@@ -173,11 +174,7 @@ def _catalog_hierarchy_from_browse_path(value: object) -> tuple[str | None, str 
         entity = entry.get("entity") if isinstance(entry, dict) else None
         if not isinstance(entity, dict) or entity.get("type") != "CONTAINER":
             label = entry.get("name") if isinstance(entry, dict) else None
-            if (
-                isinstance(label, str)
-                and label.strip()
-                and not label.strip().startswith("urn:li:")
-            ):
+            if isinstance(label, str) and label.strip() and not label.strip().startswith("urn:li:"):
                 # DataHub may return a provider-owned path segment without a
                 # materialized Container entity.  It is still an authoritative
                 # browse-path label, so preserve it as a schema only; a missing
@@ -253,7 +250,8 @@ def _dataset_asset_type(entity: dict[str, Any]) -> str:
     type_names = raw_names if isinstance(raw_names, list) else []
     normalized = {
         "".join(character for character in value.casefold() if character.isalnum())
-        for value in type_names if isinstance(value, str)
+        for value in type_names
+        if isinstance(value, str)
     }
     if any(name == "view" or name.endswith("view") for name in normalized):
         return "VIEW"
@@ -271,6 +269,22 @@ def _dataset_asset_type(entity: dict[str, Any]) -> str:
         if normalized_seed_kind == "table":
             return "TABLE"
     return "DATASET"
+
+
+def _column_names(value: object) -> tuple[str, ...]:
+    raw_fields = value.get("fields") if isinstance(value, dict) else []
+    fields = raw_fields if isinstance(raw_fields, list) else []
+    return tuple(
+        sorted(
+            {
+                str(field["fieldPath"]).strip()[:500]
+                for field in fields
+                if isinstance(field, dict)
+                and isinstance(field.get("fieldPath"), str)
+                and field["fieldPath"].strip()
+            }
+        )
+    )
 
 
 def _aspect_document(envelope: Any) -> dict[str, Any]:
@@ -747,6 +761,11 @@ class HttpDataHubGateway:
             database_name, schema_name = _catalog_hierarchy_from_browse_path(
                 entity.get("browsePathV2")
             )
+            if database_name is None:
+                database_name = _custom_property_value(
+                    properties.get("customProperties") if isinstance(properties, dict) else None,
+                    key="datariver.seed.database_name",
+                )
             items.append(
                 DataHubScanAsset(
                     external_urn=entity["urn"],
@@ -756,7 +775,7 @@ class HttpDataHubGateway:
                         str(properties["description"]) if properties.get("description") else None
                     ),
                     platform=str(platform_name)[:100] if platform_name else None,
-                    database_name=database_name,
+                    database_name=database_name[:255] if database_name else None,
                     schema_name=schema_name,
                     domain_ref=str(domain_ref) if domain_ref else None,
                     system_ref=str(system_ref) if system_ref else None,
@@ -767,6 +786,7 @@ class HttpDataHubGateway:
                     glossary_terms=_metadata_names(
                         entity.get("glossaryTerms"), wrapper="terms", entity="term"
                     ),
+                    column_names=_column_names(entity.get("schemaMetadata")),
                     created_at=_datahub_timestamp(properties.get("created")),
                 )
             )

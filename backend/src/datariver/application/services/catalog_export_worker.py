@@ -9,6 +9,7 @@ from datariver.application.catalog_export_csv import (
     catalog_export_csv_header,
     encode_catalog_export_csv_row,
 )
+from datariver.application.catalog_export_xlsx import encode_catalog_export_xlsx
 from datariver.application.dto import CatalogExportClaim
 from datariver.application.errors import ExternalDependencyError
 from datariver.application.ports import CatalogExportObjectStore, CatalogExportWorkerStore
@@ -58,14 +59,15 @@ class CatalogExportWorker:
             )
             return True
 
+        format_name = claim.export.request.format
+        extension = "csv" if format_name == "CSV" else "xlsx"
         object_key = (
             f"exports/{claim.export.workspace_id}/{claim.export.export_id}/"
-            f"attempts/{claim.attempt_id}/catalog.csv"
+            f"attempts/{claim.attempt_id}/catalog.{extension}"
         )
         count = [0]
 
-        async def chunks() -> AsyncIterator[bytes]:
-            yield catalog_export_csv_header()
+        async def rows() -> AsyncIterator[CatalogExportCsvRow]:
             cursor: str | None = None
             while True:
                 page = await self._store.read_page(
@@ -79,26 +81,39 @@ class CatalogExportWorker:
                             "The catalog export exceeds the configured row limit.",
                             details={"code": "EXPORT_ROW_LIMIT"},
                         )
-                    yield encode_catalog_export_csv_row(
-                        CatalogExportCsvRow(
-                            asset_id=asset.asset_id,
-                            external_urn=asset.external_urn,
-                            platform=asset.platform,
-                            database_name=asset.database_name,
-                            schema_name=asset.schema_name,
-                            name=asset.name,
-                            asset_type=asset.asset_type,
-                            classification=asset.classification.name,
-                            lifecycle=asset.lifecycle,
-                            description=asset.description,
-                            source_version=asset.source_version,
-                            observed_at=asset.observed_at.astimezone(UTC).isoformat(),
-                        )
+                    yield CatalogExportCsvRow(
+                        asset_id=asset.asset_id,
+                        external_urn=asset.external_urn,
+                        platform=asset.platform,
+                        database_name=asset.database_name,
+                        schema_name=asset.schema_name,
+                        name=asset.name,
+                        asset_type=asset.asset_type,
+                        classification=asset.classification.name,
+                        lifecycle=asset.lifecycle,
+                        description=asset.description,
+                        source_version=asset.source_version,
+                        observed_at=asset.observed_at.astimezone(UTC).isoformat(),
                     )
                     count[0] += 1
                 if page.next_cursor is None:
                     return
                 cursor = page.next_cursor
+
+        async def chunks() -> AsyncIterator[bytes]:
+            if format_name == "CSV":
+                yield catalog_export_csv_header()
+                async for row in rows():
+                    yield encode_catalog_export_csv_row(row)
+                return
+            if format_name == "XLSX":
+                workbook_rows = [row async for row in rows()]
+                yield encode_catalog_export_xlsx(
+                    workbook_rows,
+                    maximum_bytes=self._maximum_bytes,
+                )
+                return
+            raise ValidationError("The catalog export format is not supported.")
 
         completed_object = False
         try:
@@ -109,7 +124,8 @@ class CatalogExportWorker:
                 metadata={
                     "export-id": str(claim.export.export_id),
                     "request-hash": claim.export.request_hash,
-                    "csv-safety-version": claim.export.csv_safety_version,
+                    "export-safety-version": claim.export.csv_safety_version,
+                    "format": format_name,
                 },
                 maximum_bytes=self._maximum_bytes,
             )

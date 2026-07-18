@@ -39,7 +39,7 @@ function clientWith(request: (path: string, options?: RequestOptions) => Promise
 
 function defaultRequest(path: string, options?: RequestOptions): Promise<unknown> {
   void options
-  if (path.startsWith('/catalog/assets?')) return Promise.resolve({ items: [asset], page: { limit: 50 }, meta, match_mode: 'ALL' })
+  if (path.startsWith('/catalog/assets?')) return Promise.resolve({ items: [asset], page: { limit: 50 }, total: 1, meta, match_mode: 'ALL' })
   if (path.startsWith('/catalog/facets')) return Promise.resolve({ asset_types: [{ value: 'DATASET', count: 1 }], platforms: [{ value: 'snowflake', count: 1 }], classifications: [{ value: 'INTERNAL', count: 1 }], meta })
   if (path.startsWith('/catalog/tree/')) return Promise.resolve({ items: [], page: { limit: 100 }, meta })
   if (path === `/catalog/assets/${asset.id}`) return Promise.resolve({ ...asset, ownership: [{ owner: { urn: 'urn:li:corpGroup:yield' } }], glossary_terms: [{ term: { urn: 'urn:li:glossaryTerm:wafer' } }], tags: ['trusted'], schema_fields: [{ fieldPath: 'wafer_id', type: 'STRING', description: 'identifier', globalTags: { tags: [{ tag: { name: 'tier:gold' } }] }, glossaryTerms: { terms: [{ term: { name: 'wafer' } }] } }], quality: {}, source_version: 'source-v7' })
@@ -79,6 +79,7 @@ describe('catalog workspace', () => {
       path.includes('parent_kind=PLATFORM') && options?.signal instanceof AbortSignal
     ))).toBe(true)
     expect(request.mock.calls.filter(([path]) => String(path).includes('parent_kind=PLATFORM'))).toHaveLength(1)
+    expect(request.mock.calls.some(([path]) => String(path).includes('platform=snowflake'))).toBe(true)
   })
 
   it('opens authorized detail and fetches bounded lineage on demand', async () => {

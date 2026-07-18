@@ -92,15 +92,21 @@
 .catalog-suggestions b, .catalog-suggestions small { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .catalog-suggestions b { color: var(--blue-700); font-size: 12px; }
 .catalog-suggestions small { margin-top: 2px; color: var(--text-500); font-size: 10px; }
-.catalog-filters { display: grid; grid-template-columns: 20px repeat(3, minmax(130px, 190px)) auto; align-items: end; gap: 7px; margin-top: 7px; border-top: 1px solid var(--line-200); padding-top: 7px; }
+.catalog-filters { display: grid; grid-template-columns: 20px minmax(260px, 1.35fr) repeat(3, minmax(130px, 190px)) auto; align-items: end; gap: 7px; margin-top: 7px; border-top: 1px solid var(--line-200); padding-top: 7px; }
 .catalog-filters > svg { align-self: center; color: var(--blue-700); }
 .catalog-filters label { display: grid; grid-template-columns: auto minmax(0, 1fr); align-items: center; gap: 6px; color: var(--text-600); font-size: 10px; font-weight: 800; text-transform: uppercase; }
-.catalog-filters select { height: 29px; padding: 3px 6px; font-size: 10px; }
+.catalog-filters select, .catalog-filters input { min-width: 0; height: 29px; padding: 3px 6px; font-size: 10px; }
 .catalog-filters .button { height: 29px; margin-left: auto; padding: 3px 8px; font-size: 10px; }
+.catalog-search-targets { display: flex; flex-wrap: wrap; align-items: center; gap: 3px 8px; min-width: 0; margin: 0; border: 1px solid var(--line-300); padding: 3px 6px 5px; }
+.catalog-search-targets legend { padding: 0 3px; color: var(--text-500); font-size: 8px; font-weight: 900; text-transform: uppercase; }
+.catalog-filters .catalog-search-targets label { display: inline-flex; grid-template-columns: none; gap: 3px; color: var(--text-600); font-size: 9px; }
+.catalog-filters .catalog-search-targets input { width: 12px; height: 12px; margin: 0; padding: 0; accent-color: var(--blue-700); }
 .catalog-export-control { display: grid; grid-template-columns: minmax(260px, 1fr) auto auto; align-items: center; gap: 10px; margin-top: 7px; border-top: 1px solid var(--line-200); padding-top: 7px; }
 .catalog-export-control strong { display: block; color: var(--navy-900); font-size: 11px; }
 .catalog-export-control p { margin: 2px 0 0; color: var(--text-500); font-size: 9px; line-height: 1.45; }
 .catalog-export-actions, .catalog-export-status { display: flex; align-items: center; gap: 6px; }
+.catalog-export-format { display: inline-flex; align-items: center; gap: 4px; color: var(--text-600); font-size: 9px; font-weight: 800; white-space: nowrap; }
+.catalog-export-format select { height: 29px; min-width: 88px; padding: 3px 5px; font-size: 10px; }
 .catalog-export-actions .button { min-height: 29px; display: inline-flex; align-items: center; justify-content: center; gap: 5px; padding: 3px 8px; white-space: nowrap; font-size: 10px; }
 .catalog-export-actions .button:disabled { cursor: not-allowed; }
 .catalog-export-status { color: var(--text-600); white-space: nowrap; font-size: 9px; }

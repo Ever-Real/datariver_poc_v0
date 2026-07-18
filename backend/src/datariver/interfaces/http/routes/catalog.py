@@ -9,7 +9,6 @@ import orjson
 from fastapi import APIRouter, Header, Query, Request, Response, status
 from fastapi.responses import JSONResponse
 
-from datariver.application.catalog_export_csv import CSV_SAFETY_VERSION
 from datariver.application.change_numbers import change_request_number
 from datariver.application.classification_access import ClassificationAccessResolver
 from datariver.application.dto import CatalogExportRequest
@@ -150,7 +149,6 @@ def _export_service(request: Request, session: SessionDep) -> CatalogExportServi
         object_store=container.object_store,
         minimum_query_length=container.settings.catalog_search_minimum_query_length,
         policy_version=BuiltinPolicyEngine.policy_version,
-        csv_safety_version=CSV_SAFETY_VERSION,
         access_ttl_seconds=container.settings.catalog_export_access_ttl_seconds,
         download_ttl_seconds=container.settings.catalog_export_download_ttl_seconds,
         worker_enabled=container.settings.catalog_export_worker_enabled,
@@ -165,6 +163,10 @@ def _export_filters(payload: CatalogExportCreateRequest) -> dict[str, str]:
             "platform": payload.platform,
             "classification": payload.classification,
             "lifecycle": payload.lifecycle,
+            "database_name": payload.database_name,
+            "schema_name": payload.schema_name,
+            "domain": payload.domain,
+            "search_fields": payload.search_fields,
         }.items()
         if value is not None
     }
@@ -334,6 +336,10 @@ async def search_assets(
     q: Annotated[str, Query(max_length=500)] = "",
     asset_type: Annotated[str | None, Query(max_length=100)] = None,
     platform: Annotated[str | None, Query(max_length=100)] = None,
+    database_name: Annotated[str | None, Query(alias="database", max_length=255)] = None,
+    schema_name: Annotated[str | None, Query(alias="schema", max_length=255)] = None,
+    domain: Annotated[str | None, Query(max_length=1000)] = None,
+    search_fields: Annotated[str | None, Query(max_length=100)] = None,
     lifecycle: Annotated[str | None, Query(max_length=50)] = None,
     classification: Annotated[
         str | None,
@@ -347,6 +353,10 @@ async def search_assets(
         for name, value in {
             "asset_type": asset_type,
             "platform": platform,
+            "database_name": database_name,
+            "schema_name": schema_name,
+            "domain": domain,
+            "search_fields": search_fields,
             "lifecycle": lifecycle,
             "classification": classification,
         }.items()
@@ -364,6 +374,7 @@ async def search_assets(
     return CatalogSearchResponse(
         items=[catalog_summary(item) for item in page.items],
         page=PageMeta(next_cursor=page.next_cursor, limit=limit),
+        total=page.total,
         meta=CatalogPolicyMeta(
             observed_at=page.observed_at,
             stale_at=page.stale_at,
@@ -383,6 +394,10 @@ async def catalog_facets(
     q: Annotated[str, Query(max_length=500)] = "",
     asset_type: Annotated[str | None, Query(max_length=100)] = None,
     platform: Annotated[str | None, Query(max_length=100)] = None,
+    database_name: Annotated[str | None, Query(alias="database", max_length=255)] = None,
+    schema_name: Annotated[str | None, Query(alias="schema", max_length=255)] = None,
+    domain: Annotated[str | None, Query(max_length=1000)] = None,
+    search_fields: Annotated[str | None, Query(max_length=100)] = None,
     lifecycle: Annotated[str | None, Query(max_length=50)] = None,
     classification: Annotated[
         str | None,
@@ -395,6 +410,10 @@ async def catalog_facets(
         for name, value in {
             "asset_type": asset_type,
             "platform": platform,
+            "database_name": database_name,
+            "schema_name": schema_name,
+            "domain": domain,
+            "search_fields": search_fields,
             "lifecycle": lifecycle,
             "classification": classification,
         }.items()

@@ -70,6 +70,7 @@ class TableSpec:
 @dataclass(frozen=True)
 class EntitySpec:
     platform: Literal["postgres", "oracle"]
+    database_name: str
     name: str
     qualified_name: str
     kind: Literal["table", "view"]
@@ -433,18 +434,24 @@ def oracle_view_sql(spec: TableSpec) -> str:
 
 
 def build_entities(
-    table_specs: Sequence[TableSpec], scope: Literal["postgres", "dual"]
+    table_specs: Sequence[TableSpec],
+    scope: Literal["postgres", "dual"],
+    *,
+    postgres_database_name: str,
+    oracle_database_name: str,
 ) -> tuple[EntitySpec, ...]:
     platforms: tuple[Literal["postgres", "oracle"], ...] = (
         ("postgres", "oracle") if scope == "dual" else ("postgres",)
     )
     entities: list[EntitySpec] = []
     for platform in platforms:
+        database_name = postgres_database_name if platform == "postgres" else oracle_database_name
         execution_mode: Literal["APPLIED", "MOCK"] = "APPLIED" if platform == "postgres" else "MOCK"
         for table in table_specs:
             entities.append(
                 EntitySpec(
                     platform=platform,
+                    database_name=database_name,
                     name=table.name,
                     qualified_name=table.qualified_name,
                     kind="table",
@@ -461,6 +468,7 @@ def build_entities(
             entities.append(
                 EntitySpec(
                     platform=platform,
+                    database_name=database_name,
                     name=table.view_name,
                     qualified_name=table.qualified_view_name,
                     kind="view",
@@ -718,6 +726,7 @@ def aspect_documents(entity: EntitySpec, run_id: str) -> tuple[tuple[str, dict[s
             "datariver.seed.run_id": run_id,
             "datariver.seed.execution_mode": entity.execution_mode,
             "datariver.seed.object_kind": entity.kind,
+            "datariver.seed.database_name": entity.database_name,
         },
     }
     upstreams = [
@@ -932,6 +941,11 @@ def build_parser() -> argparse.ArgumentParser:
         "--postgres-database", default=os.getenv("SEMICONDUCTOR_POSTGRES_DATABASE", "datariver")
     )
     parser.add_argument(
+        "--oracle-database",
+        default=os.getenv("SEMICONDUCTOR_ORACLE_DATABASE", "ORCL"),
+        help="DataHub database label for the separately configured Oracle seed metadata.",
+    )
+    parser.add_argument(
         "--postgres-user", default=os.getenv("SEMICONDUCTOR_POSTGRES_USER", "datariver_owner")
     )
     parser.add_argument(
@@ -960,7 +974,12 @@ def build_parser() -> argparse.ArgumentParser:
 
 async def async_main(arguments: argparse.Namespace) -> int:
     table_specs = build_table_specs()
-    entities = build_entities(table_specs, arguments.entity_scope)
+    entities = build_entities(
+        table_specs,
+        arguments.entity_scope,
+        postgres_database_name=arguments.postgres_database,
+        oracle_database_name=arguments.oracle_database,
+    )
     if len(table_specs) != 500 or len(entities) not in {1000, 2000}:
         raise AssertionError("Unexpected deterministic semiconductor seed cardinality.")
     selected_entities = entities[arguments.datahub_start_index :]

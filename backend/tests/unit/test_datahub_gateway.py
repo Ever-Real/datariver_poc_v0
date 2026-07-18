@@ -147,25 +147,21 @@ async def test_catalog_scan_maps_a_fixed_datahub_contract_and_paginates() -> Non
                                             {
                                                 "key": "datariver.seed.object_kind",
                                                 "value": "table",
-                                            }
+                                            },
+                                            {
+                                                "key": "datariver.seed.database_name",
+                                                "value": "seed_catalog",
+                                            },
                                         ],
                                     },
                                     "subTypes": {"typeNames": ["Table"]},
                                     "browsePathV2": {
                                         "path": [
                                             {
+                                                "name": "manufacturing",
                                                 "entity": {
-                                                    "type": "CONTAINER",
-                                                    "properties": {"name": "analytics"},
-                                                    "subTypes": {"typeNames": ["Database"]},
-                                                }
-                                            },
-                                            {
-                                                "entity": {
-                                                    "type": "CONTAINER",
-                                                    "properties": {"name": "manufacturing"},
-                                                    "subTypes": {"typeNames": ["Schema"]},
-                                                }
+                                                    "type": "DATASET",
+                                                },
                                             },
                                         ]
                                     },
@@ -181,6 +177,12 @@ async def test_catalog_scan_maps_a_fixed_datahub_contract_and_paginates() -> Non
                                     },
                                     "glossaryTerms": {
                                         "terms": [{"term": {"urn": "urn:li:glossaryTerm:wafer"}}]
+                                    },
+                                    "schemaMetadata": {
+                                        "fields": [
+                                            {"fieldPath": "wafer_id"},
+                                            {"fieldPath": "yield_pct"},
+                                        ]
                                     },
                                 }
                             }
@@ -201,13 +203,14 @@ async def test_catalog_scan_maps_a_fixed_datahub_contract_and_paginates() -> Non
 
     assert page.items[0].name == "wafer_events"
     assert page.items[0].platform == "snowflake"
-    assert page.items[0].database_name == "analytics"
+    assert page.items[0].database_name == "seed_catalog"
     assert page.items[0].schema_name == "manufacturing"
     assert page.items[0].domain_ref == "urn:li:domain:manufacturing"
     assert page.items[0].system_ref == "urn:li:dataPlatform:snowflake"
     assert page.items[0].asset_type == "TABLE"
     assert page.items[0].tags == ("classification:confidential", "tier:gold")
     assert page.items[0].glossary_terms == ("urn:li:glossaryTerm:wafer",)
+    assert page.items[0].column_names == ("wafer_id", "yield_pct")
     assert page.items[0].created_at is not None
     assert page.items[0].classification is Classification.CONFIDENTIAL
     assert page.next_offset == 1

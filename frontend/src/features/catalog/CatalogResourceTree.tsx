@@ -35,11 +35,13 @@ export function CatalogResourceTree({
   query,
   selectedAssetId,
   onSelectAsset,
+  onSelectScope,
 }: {
   client: ApiClient
   query: string
   selectedAssetId?: string
   onSelectAsset: (assetId: string) => void
+  onSelectScope?: (scope: { platform: string; databaseName: string; schemaName: string }) => void
 }) {
   const [branches, setBranches] = useState<Record<string, Branch>>({})
   const [expanded, setExpanded] = useState<Set<string>>(new Set())
@@ -102,6 +104,11 @@ export function CatalogResourceTree({
 
   const toggle = (node: CatalogTreeNode) => {
     if (node.kind === 'ASSET') { if (node.asset) onSelectAsset(node.asset.id); return }
+    onSelectScope?.({
+      platform: node.platform ?? '',
+      databaseName: node.database_name ?? '',
+      schemaName: node.schema_name ?? '',
+    })
     const key = branchKey(node)
     setExpanded((current) => {
       const next = new Set(current)

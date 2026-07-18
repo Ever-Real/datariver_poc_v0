@@ -98,6 +98,9 @@ class DataHubScanAsset:
     schema_name: str | None = None
     tags: tuple[str, ...] = ()
     glossary_terms: tuple[str, ...] = ()
+    # Column paths are a bounded search projection only. The detailed column
+    # metadata remains an authorized, typed DataHub enrichment on asset open.
+    column_names: tuple[str, ...] = ()
     created_at: datetime | None = None
 
 
@@ -138,6 +141,7 @@ class CatalogPage:
     items: tuple[CatalogAssetIndex, ...]
     next_cursor: str | None
     observed_at: datetime
+    total: int = 0
     stale_at: datetime | None = None
     projection_version: int = 0
     policy_version: str = ""

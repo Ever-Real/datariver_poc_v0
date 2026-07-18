@@ -3,8 +3,10 @@ from __future__ import annotations
 import hashlib
 from collections.abc import AsyncIterator
 from datetime import UTC, datetime, timedelta
+from io import BytesIO
 from typing import cast
 from uuid import UUID, uuid4
+from zipfile import ZipFile
 
 import pytest
 
@@ -45,7 +47,7 @@ def _subject() -> SubjectAttributes:
     )
 
 
-def _claim(*, snapshot_valid: bool = True) -> CatalogExportClaim:
+def _claim(*, snapshot_valid: bool = True, format_name: str = "CSV") -> CatalogExportClaim:
     subject = _subject()
     access = static_classification_access_floor()
     export_id = uuid4()
@@ -55,7 +57,7 @@ def _claim(*, snapshot_valid: bool = True) -> CatalogExportClaim:
             workspace_id=WORKSPACE_ID,
             job_id=uuid4(),
             requested_by=SUBJECT_ID,
-            request=CatalogExportRequest(query="wafer", filters={}),
+            request=CatalogExportRequest(query="wafer", filters={}, format=format_name),
             request_hash="a" * 64,
             permission_scope_hash=catalog_permission_scope_hash(subject),
             classification_access_hash=catalog_classification_access_hash(access),
@@ -66,9 +68,13 @@ def _claim(*, snapshot_valid: bool = True) -> CatalogExportClaim:
             authorization_generation=None,
             source_projection_version=7,
             classification_ceiling=Classification.CONFIDENTIAL,
-            csv_safety_version="csv-safe-v1",
-            display_name=f"catalog-export-{export_id}.csv",
-            mime="text/csv; charset=utf-8",
+            csv_safety_version="xlsx-safe-v1" if format_name == "XLSX" else "csv-safe-v1",
+            display_name=f"catalog-export-{export_id}.{format_name.lower()}",
+            mime=(
+                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                if format_name == "XLSX"
+                else "text/csv; charset=utf-8"
+            ),
             job_state="RUNNING",
             last_error_code=None,
             row_count=None,
@@ -207,6 +213,22 @@ async def test_worker_streams_fixed_csv_and_completes_verified_artifact() -> Non
     assert objects.written_object_key is not None
     assert f"/attempts/{store.claim.attempt_id}/" in objects.written_object_key
     assert store.failed == []
+
+
+@pytest.mark.asyncio
+async def test_worker_generates_formula_safe_xlsx_and_completes_verified_artifact() -> None:
+    page = CatalogPage(items=(_asset("=formula"),), next_cursor=None, observed_at=NOW)
+    store = FakeWorkerStore(_claim(format_name="XLSX"), pages=(page,))
+    objects = FakeExportObjects()
+
+    assert await _worker(store, objects).run_once()
+
+    with ZipFile(BytesIO(objects.content)) as workbook:
+        sheet = workbook.read("xl/worksheets/sheet1.xml").decode("utf-8")
+    assert "asset_id" in sheet
+    assert "'=formula" in sheet
+    assert objects.written_object_key is not None and objects.written_object_key.endswith(".xlsx")
+    assert store.completed[0]["row_count"] == 1
 
 
 def test_only_the_current_unexpired_attempt_can_complete() -> None:

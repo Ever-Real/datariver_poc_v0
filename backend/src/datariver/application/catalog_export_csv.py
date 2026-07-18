@@ -96,7 +96,7 @@ def _encode_record(values: tuple[object | None, ...]) -> bytes:
         quoting=csv.QUOTE_MINIMAL,
         strict=True,
     )
-    writer.writerow(tuple(_safe_cell(value) for value in values))
+    writer.writerow(tuple(catalog_export_safe_cell(value) for value in values))
     encoded = stream.getvalue().encode("utf-8")
     if len(encoded) > MAXIMUM_CSV_RECORD_BYTES:
         raise ValidationError(
@@ -106,11 +106,18 @@ def _encode_record(values: tuple[object | None, ...]) -> bytes:
     return encoded
 
 
-def _safe_cell(value: object | None) -> str:
+def catalog_export_safe_cell(value: object | None) -> str:
+    """Normalize a value for a spreadsheet-like catalog export cell.
+
+    Both CSV and XLSX use this exact policy so a user cannot turn a catalog
+    value into a formula merely by selecting a different download format.
+    """
     text = "" if value is None else str(value)
-    if "\x00" in text:
+    if "\x00" in text or any(
+        ord(character) < 0x20 and character not in "\t\r\n" for character in text
+    ):
         raise ValidationError(
-            "Catalog CSV values must not contain NUL.",
+            "Catalog export values must not contain NUL or prohibited control characters.",
             details={"code": "EXPORT_CSV_INVALID_VALUE"},
         )
     if text[:1] in _LEADING_CONTROL_CHARACTERS:

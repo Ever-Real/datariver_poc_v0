@@ -94,6 +94,7 @@ export interface CatalogPolicyMeta {
 export interface CatalogSearch {
   items: CatalogAsset[]
   page: { next_cursor?: string; limit: number }
+  total: number
   meta: CatalogPolicyMeta
   match_mode: 'ALL'
 }
@@ -206,10 +207,14 @@ export interface CatalogExportCreateRequest {
   q: string
   asset_type?: string
   platform?: string
+  database_name?: string
+  schema_name?: string
+  domain?: string
+  search_fields?: string
   classification?: Classification
   lifecycle?: 'ACTIVE'
   sort: 'NAME_ASC'
-  format: 'CSV'
+  format: 'CSV' | 'XLSX'
 }
 
 export interface CatalogExportCreateResponse {

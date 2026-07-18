@@ -6,6 +6,8 @@ import unicodedata
 from datetime import timedelta
 from uuid import UUID
 
+from datariver.application.catalog_export_csv import CSV_SAFETY_VERSION
+from datariver.application.catalog_export_xlsx import XLSX_SAFETY_VERSION
 from datariver.application.catalog_security import (
     catalog_classification_access_hash,
     catalog_permission_scope_hash,
@@ -39,7 +41,6 @@ class CatalogExportService:
         object_store: ObjectStore,
         minimum_query_length: int,
         policy_version: str,
-        csv_safety_version: str,
         access_ttl_seconds: int,
         download_ttl_seconds: int,
         worker_enabled: bool,
@@ -51,7 +52,6 @@ class CatalogExportService:
         self._object_store = object_store
         self._minimum_query_length = minimum_query_length
         self._policy_version = policy_version
-        self._csv_safety_version = csv_safety_version
         self._access_ttl_seconds = access_ttl_seconds
         self._download_ttl_seconds = download_ttl_seconds
         self._worker_enabled = worker_enabled
@@ -115,7 +115,7 @@ class CatalogExportService:
             authorization_generation=access.authorization_generation,
             source_projection_version=watermark,
             classification_ceiling=int(ceiling),
-            csv_safety_version=self._csv_safety_version,
+            csv_safety_version=_export_safety_version(normalized.format),
             access_until=environment.requested_at + timedelta(seconds=self._access_ttl_seconds),
             idempotency_key=idempotency_key,
         )
@@ -193,7 +193,7 @@ class CatalogExportService:
             metadata.size_bytes != record.size_bytes
             or metadata.user_metadata.get("export-id") != str(record.export_id)
             or metadata.user_metadata.get("request-hash") != record.request_hash
-            or metadata.user_metadata.get("csv-safety-version") != record.csv_safety_version
+            or metadata.user_metadata.get("export-safety-version") != record.csv_safety_version
             or (
                 record.provider_checksum is not None
                 and record.provider_checksum.startswith("etag:")
@@ -237,13 +237,17 @@ class CatalogExportService:
         )
 
     def _normalized_request(self, request: CatalogExportRequest) -> CatalogExportRequest:
-        if request.sort != "NAME_ASC" or request.format != "CSV":
+        if request.sort != "NAME_ASC" or request.format not in {"CSV", "XLSX"}:
             raise ValidationError("The catalog export shape is not supported.")
         unknown_filters = set(request.filters) - {
             "asset_type",
             "platform",
             "classification",
             "lifecycle",
+            "database_name",
+            "schema_name",
+            "domain",
+            "search_fields",
         }
         if unknown_filters:
             raise ValidationError("The catalog export contains unsupported filters.")
@@ -296,3 +300,11 @@ class CatalogExportService:
                 separators=(",", ":"),
             ).encode()
         ).hexdigest()
+
+
+def _export_safety_version(format_name: str) -> str:
+    if format_name == "CSV":
+        return CSV_SAFETY_VERSION
+    if format_name == "XLSX":
+        return XLSX_SAFETY_VERSION
+    raise ValidationError("The catalog export format is not supported.")

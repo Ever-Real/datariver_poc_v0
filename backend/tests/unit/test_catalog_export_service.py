@@ -182,7 +182,6 @@ def _service(
         object_store=cast(ObjectStore, objects),
         minimum_query_length=2,
         policy_version=BuiltinPolicyEngine.policy_version,
-        csv_safety_version="csv-safe-v1",
         access_ttl_seconds=3600,
         download_ttl_seconds=60,
         worker_enabled=worker_enabled,
@@ -304,7 +303,7 @@ async def test_download_revalidates_snapshot_and_artifact_before_presigning() ->
         user_metadata={
             "export-id": str(store.record.export_id),
             "request-hash": store.record.request_hash,
-            "csv-safety-version": "csv-safe-v1",
+            "export-safety-version": "csv-safe-v1",
         },
     )
 

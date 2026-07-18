@@ -29,6 +29,10 @@ interface CatalogExportControlProps {
   query: string
   assetType?: string
   platform?: string
+  databaseName?: string
+  schemaName?: string
+  domain?: string
+  searchFields?: string[]
   classification?: Classification
   navigate?: (url: string) => void
   pollMilliseconds?: number
@@ -40,12 +44,18 @@ export function CatalogExportControl({
   query,
   assetType,
   platform,
+  databaseName,
+  schemaName,
+  domain,
+  searchFields,
   classification,
   navigate = (url) => window.location.assign(url),
   pollMilliseconds = 1_500,
 }: CatalogExportControlProps) {
   const api = useMemo(() => new CatalogExportApi(client), [client])
   const [record, setRecord] = useState<ExportRecord>()
+  const [exportFormat, setExportFormat] = useState<'CSV' | 'XLSX'>('CSV')
+  const [artifactFormat, setArtifactFormat] = useState<'CSV' | 'XLSX'>('CSV')
   const [creating, setCreating] = useState(false)
   const [downloading, setDownloading] = useState(false)
   const [error, setError] = useState<unknown>()
@@ -56,10 +66,11 @@ export function CatalogExportControl({
   useEffect(() => {
     boundaryGeneration.current += 1
     setRecord(undefined)
+    setArtifactFormat('CSV')
     setCreating(false)
     setDownloading(false)
     setError(undefined)
-  }, [assetType, classification, client, platform, query, workerEnabled])
+  }, [assetType, classification, client, databaseName, domain, platform, query, schemaName, searchFields, workerEnabled])
 
   useEffect(() => {
     if (!workerEnabled || !record || !pendingStates.has(record.state)) return
@@ -77,17 +88,25 @@ export function CatalogExportControl({
     setCreating(true)
     setError(undefined)
     const generation = boundaryGeneration.current
+    const requestedFormat = exportFormat
     const payload: CatalogExportCreateRequest = {
       q: query,
       ...(assetType ? { asset_type: assetType } : {}),
       ...(platform ? { platform } : {}),
+      ...(databaseName ? { database_name: databaseName } : {}),
+      ...(schemaName ? { schema_name: schemaName } : {}),
+      ...(domain ? { domain } : {}),
+      ...(searchFields?.length ? { search_fields: searchFields.join(',') } : {}),
       ...(classification ? { classification } : {}),
       sort: 'NAME_ASC',
-      format: 'CSV',
+      format: exportFormat,
     }
     try {
       const created = await api.create(payload, newIdempotencyKey('catalog-export'))
-      if (generation === boundaryGeneration.current) setRecord(created)
+      if (generation === boundaryGeneration.current) {
+        setArtifactFormat(requestedFormat)
+        setRecord(created)
+      }
     } catch (next) {
       if (generation === boundaryGeneration.current) setError(next)
     } finally {
@@ -115,10 +134,10 @@ export function CatalogExportControl({
   const disabledReason = !workerEnabled
     ? '관리형 Catalog Export를 사용할 수 없습니다. catalog.export 권한 또는 운영자의 분리된 DB·Object Storage 자격증명과 worker 설정을 확인하세요.'
     : restricted
-      ? 'RESTRICTED 자산은 Search 명시 권한과 무관하게 CSV 내보내기가 금지됩니다.'
-      : '현재 검색 조건과 권한 스냅샷을 서버에서 검증한 뒤 CSV를 생성합니다.'
+      ? 'RESTRICTED 자산은 Search 명시 권한과 무관하게 CSV 내보내기와 XLSX 내보내기가 금지됩니다.'
+      : '현재 검색 조건과 권한 스냅샷을 서버에서 검증한 뒤 CSV 또는 XLSX를 생성합니다.'
 
-  return <section className="catalog-export-control" aria-label="카탈로그 CSV 내보내기">
+  return <section className="catalog-export-control" aria-label="카탈로그 내보내기">
     <div>
       <strong>Catalog Export</strong>
       <p id="catalog-export-description">{disabledReason}</p>
@@ -132,6 +151,7 @@ export function CatalogExportControl({
       {'last_error_code' in record && record.last_error_code && <code>{record.last_error_code}</code>}
     </div>}
     <div className="catalog-export-actions">
+      <label className="catalog-export-format">형식<select aria-label="내보내기 형식" value={exportFormat} disabled={creating || pending} onChange={(event) => setExportFormat(event.target.value as 'CSV' | 'XLSX')}><option value="CSV">CSV</option><option value="XLSX">Excel (.xlsx)</option></select></label>
       <button
         type="button"
         className="button button-secondary"
@@ -140,7 +160,7 @@ export function CatalogExportControl({
         onClick={() => void create()}
       >
         <Download size={13} aria-hidden="true" />
-        {creating ? '요청 중…' : record?.state === 'COMPLETED' ? '새 CSV 생성' : 'CSV 생성'}
+        {creating ? '요청 중…' : record?.state === 'COMPLETED' ? `새 ${exportFormat} 생성` : `${exportFormat} 생성`}
       </button>
       {workerEnabled && record?.state === 'COMPLETED' && <button
         type="button"
@@ -149,7 +169,7 @@ export function CatalogExportControl({
         onClick={() => void download()}
       >
         <Download size={13} aria-hidden="true" />
-        {downloading ? 'URL 확인 중…' : 'CSV 다운로드'}
+        {downloading ? 'URL 확인 중…' : `${artifactFormat} 다운로드`}
       </button>}
     </div>
     <ErrorNotice error={error} />

@@ -41,7 +41,7 @@ describe('CatalogExportControl', () => {
     />)
 
     expect(screen.getByRole('button', { name: 'CSV 생성' })).toBeDisabled()
-    expect(screen.getByText(/CSV 내보내기가 금지/)).toBeInTheDocument()
+    expect(screen.getByText(/CSV 내보내기와 XLSX 내보내기가 금지/)).toBeInTheDocument()
   })
 
   it('shows queued, running, and completed server states before requesting a download URL', async () => {
@@ -88,6 +88,26 @@ describe('CatalogExportControl', () => {
       'https://objects.example.test/export.csv?signature=short',
     ))
     expect(request.mock.calls.some(([path]) => String(path).includes('/catalog/assets'))).toBe(false)
+  })
+
+  it('requests a server-managed XLSX artifact when Excel is selected', async () => {
+    const request = vi.fn().mockResolvedValue({
+      export_id: completed.export_id, job_id: completed.job_id, state: 'QUEUED',
+    })
+    render(<CatalogExportControl
+      client={{ request } as unknown as ApiClient}
+      workerEnabled
+      query="wafer"
+    />)
+
+    fireEvent.change(screen.getByRole('combobox', { name: '내보내기 형식' }), {
+      target: { value: 'XLSX' },
+    })
+    fireEvent.click(screen.getByRole('button', { name: 'XLSX 생성' }))
+
+    await waitFor(() => expect(request).toHaveBeenCalled())
+    const [, options] = request.mock.calls[0] as [string, { body: string }]
+    expect(JSON.parse(options.body)).toMatchObject({ format: 'XLSX' })
   })
 
   it('stops polling and exposes the server error code after a failed job', async () => {

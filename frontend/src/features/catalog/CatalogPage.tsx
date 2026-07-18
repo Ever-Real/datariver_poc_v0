@@ -28,16 +28,33 @@ export function validCatalogQuery(query: string): boolean {
 interface Filters {
   assetType: string
   platform: string
+  databaseName: string
+  schemaName: string
+  domain: string
   classification: string
+  searchFields: SearchField[]
 }
 
-const emptyFilters: Filters = { assetType: '', platform: '', classification: '' }
+type SearchField = 'SCHEMA' | 'TABLE' | 'COLUMN' | 'TAG' | 'TERM' | 'DESCRIPTION'
+
+const allSearchFields: SearchField[] = ['SCHEMA', 'TABLE', 'COLUMN', 'TAG', 'TERM', 'DESCRIPTION']
+const searchFieldLabels: Record<SearchField, string> = {
+  SCHEMA: 'Schema', TABLE: 'Table', COLUMN: 'Column', TAG: 'Tag', TERM: 'Term', DESCRIPTION: 'Description',
+}
+
+const emptyFilters: Filters = {
+  assetType: '', platform: '', databaseName: '', schemaName: '', domain: '', classification: '', searchFields: allSearchFields,
+}
 
 function searchPath(query: string, filters: Filters, cursor: string | undefined, limit: number) {
   const parameters = new URLSearchParams({ q: query, limit: String(limit) })
   if (filters.assetType) parameters.set('asset_type', filters.assetType)
   if (filters.platform) parameters.set('platform', filters.platform)
+  if (filters.databaseName) parameters.set('database', filters.databaseName)
+  if (filters.schemaName) parameters.set('schema', filters.schemaName)
+  if (filters.domain) parameters.set('domain', filters.domain)
   if (filters.classification) parameters.set('classification', filters.classification)
+  parameters.set('search_fields', filters.searchFields.join(','))
   if (cursor) parameters.set('cursor', cursor)
   return parameters
 }
@@ -149,6 +166,22 @@ export function CatalogPage({
     setFilters((current) => ({ ...current, [name]: value })); setCursors([undefined]); setPageIndex(0)
   }
 
+  const toggleSearchField = (field: SearchField) => {
+    setFilters((current) => {
+      const selected = current.searchFields.includes(field)
+      if (selected && current.searchFields.length === 1) return current
+      const searchFields = selected
+        ? current.searchFields.filter((value) => value !== field)
+        : [...current.searchFields, field]
+      return { ...current, searchFields }
+    })
+    setCursors([undefined]); setPageIndex(0)
+  }
+
+  const selectTreeScope = (scope: Pick<Filters, 'platform' | 'databaseName' | 'schemaName'>) => {
+    setFilters((current) => ({ ...current, ...scope })); setCursors([undefined]); setPageIndex(0)
+  }
+
   return <section className="catalog-page">
     <PageTitle icon="SR" eyebrow="DataHub Wrapper" title="데이터 카탈로그 검색" description="Workspace·분류정책·권한 범위 안의 로컬 projection을 검색합니다." />
     <div className="catalog-search-panel panel">
@@ -164,8 +197,12 @@ export function CatalogPage({
         <button className="button" disabled={loading}><Search size={13} />{loading ? '검색 중…' : '검색'}</button>
       </form>
       <div className="catalog-filters" aria-label="검색 필터"><Filter size={14} aria-hidden="true" />
+        <fieldset className="catalog-search-targets"><legend>Search in</legend>{allSearchFields.map((field) => <label key={field}><input type="checkbox" checked={filters.searchFields.includes(field)} onChange={() => toggleSearchField(field)} />{searchFieldLabels[field]}</label>)}</fieldset>
         <label>Type<select value={filters.assetType} onChange={(event) => updateFilter('assetType', event.target.value)}><option value="">전체</option>{facets?.asset_types.map((item) => item.value && <option key={item.value} value={item.value}>{item.value} ({item.count})</option>)}</select></label>
         <label>Platform<select value={filters.platform} onChange={(event) => updateFilter('platform', event.target.value)}><option value="">전체</option>{facets?.platforms.map((item) => item.value && <option key={item.value} value={item.value}>{item.value} ({item.count})</option>)}</select></label>
+        <label>Database<input value={filters.databaseName} onChange={(event) => updateFilter('databaseName', event.target.value)} placeholder="Tree에서 선택" /></label>
+        <label>Schema<input value={filters.schemaName} onChange={(event) => updateFilter('schemaName', event.target.value)} placeholder="Tree에서 선택" /></label>
+        <label>Domain<input value={filters.domain} onChange={(event) => updateFilter('domain', event.target.value)} placeholder="DataHub domain" /></label>
         <label>Classification<select value={filters.classification} onChange={(event) => updateFilter('classification', event.target.value)}><option value="">전체</option>{facets?.classifications.map((item) => item.value && <option key={item.value} value={item.value}>{item.value} ({item.count})</option>)}</select></label>
         <button type="button" className="button button-secondary" onClick={() => { setFilters(emptyFilters); setCursors([undefined]); setPageIndex(0) }}>필터 초기화</button>
       </div>
@@ -175,14 +212,18 @@ export function CatalogPage({
         query={query}
         assetType={filters.assetType || undefined}
         platform={filters.platform || undefined}
+        databaseName={filters.databaseName || undefined}
+        schemaName={filters.schemaName || undefined}
+        domain={filters.domain || undefined}
+        searchFields={filters.searchFields}
         classification={classificationValue(filters.classification)}
       />
     </div>
     <ErrorNotice error={error} />
     <div className={`catalog-workspace ${selectedAssetId ? 'with-detail' : ''}`}>
-      <CatalogResourceTree client={client} query={query} selectedAssetId={selectedAssetId} onSelectAsset={setSelectedAssetId} />
+      <CatalogResourceTree client={client} query={query} selectedAssetId={selectedAssetId} onSelectAsset={setSelectedAssetId} onSelectScope={selectTreeScope} />
       <section className="catalog-results" aria-label="카탈로그 검색 결과">
-        <header><div><span className="eyebrow">Permission scoped</span><h2>Search Results</h2></div><span>{result?.items.length ?? 0} items · ALL keywords</span></header>
+        <header><div><span className="eyebrow">Permission scoped</span><h2>Search Results</h2></div><span>{result ? `${result.items.length} / ${(result.total ?? result.items.length).toLocaleString()} items` : '0 items'} · ALL keywords</span></header>
         <DenseDataTable caption="카탈로그 검색 결과" columns={columns} data={result?.items ?? []} getRowId={(item) => item.id} loading={loading} emptyMessage={query ? '검색 조건에 맞는 허용 자산이 없습니다.' : '현재 권한 범위에서 표시할 자산이 없습니다.'} selectedRowId={selectedAssetId} onRowActivate={(item) => setSelectedAssetId(item.id)} />
         <CursorPagination page={pageIndex + 1} pageSize={pageSize} canPrevious={pageIndex > 0} canNext={Boolean(result?.page.next_cursor)} itemCount={result?.items.length} onPrevious={() => setPageIndex((current) => Math.max(0, current - 1))} onNext={() => { if (!result?.page.next_cursor) return; setCursors((current) => [...current.slice(0, pageIndex + 1), result.page.next_cursor]); setPageIndex((current) => current + 1) }} onPageSizeChange={(value) => { setPageSize(value); setCursors([undefined]); setPageIndex(0) }} />
         {result && <footer className="catalog-result-meta"><span>projection v{result.meta.projection_version}</span><span>policy {result.meta.policy_version}</span><time dateTime={result.meta.observed_at}>{result.meta.observed_at ? new Date(result.meta.observed_at).toLocaleString() : '관측 시각 없음'}</time></footer>}

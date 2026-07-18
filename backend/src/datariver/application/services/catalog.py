@@ -880,7 +880,7 @@ class CatalogService:
     @staticmethod
     def _page_document(page: CatalogPage) -> dict[str, Any]:
         return {
-            "schema": 3,
+            "schema": 4,
             "items": [
                 {
                     "asset_id": str(item.asset_id),
@@ -914,6 +914,7 @@ class CatalogService:
             ],
             "next_cursor": page.next_cursor,
             "observed_at": page.observed_at.isoformat(),
+            "total": page.total,
             "stale_at": page.stale_at.isoformat() if page.stale_at else None,
             "projection_version": page.projection_version,
             "policy_version": page.policy_version,
@@ -923,7 +924,7 @@ class CatalogService:
 
     @staticmethod
     def _cached_page(value: object) -> CatalogPage | None:
-        if not isinstance(value, dict) or value.get("schema") != 3:
+        if not isinstance(value, dict) or value.get("schema") != 4:
             return None
         try:
             items = tuple(
@@ -972,6 +973,7 @@ class CatalogService:
                 items=items,
                 next_cursor=str(value["next_cursor"]) if value.get("next_cursor") else None,
                 observed_at=datetime.fromisoformat(str(value["observed_at"])),
+                total=int(value["total"]),
                 stale_at=datetime.fromisoformat(str(stale_raw)) if stale_raw else None,
                 projection_version=int(value["projection_version"]),
                 policy_version=str(value["policy_version"]),

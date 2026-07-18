@@ -46,10 +46,10 @@ Missing or inconsistent active state falls back to the portable static floor.
 
 | Table | Key columns and constraints | Purpose |
 |---|---|---|
-| `catalog.assets_projection` | `id`, `workspace_id + urn_hash UQ`, external identity/scope/classification/lifecycle, nullable typed-container `database_name`/`schema_name`, bounded provider display summary (`owner_ref`, `domain_ref`, tag/term arrays and source-created time), stored `search_vector`, source version/owner, `last_seen_sync_id`, observed/deleted times | authorized search/tree/base-detail projection; DataHub remains canonical |
+| `catalog.assets_projection` | `id`, `workspace_id + urn_hash UQ`, external identity/scope/classification/lifecycle, nullable typed-container `database_name`/`schema_name`, bounded provider display summary (`owner_ref`, `domain_ref`, tag/term arrays, projected `column_names` and source-created time), stored `search_vector`, source version/owner, `last_seen_sync_id`, observed/deleted times | authorized search/tree/base-detail projection; projected column paths only power bounded discovery and DataHub remains canonical for detailed column metadata |
 | `catalog.sync_runs` | PK workspace/sync, state/next offset/start/heartbeat/completion | single-writer ordered full reconciliation and stale-run recovery |
 | `catalog.projection_watermarks` | `workspace_id PK/FK`, non-negative `projection_version BIGINT` | transactional local read-model generation used for cache invalidation |
-| `catalog.export_requests` | workspace/requester/job composite FKs, canonical request and security/source hashes, non-RESTRICTED classification ceiling, private artifact receipt, access deadline; owner-select plus forced workspace RLS | owner-scoped managed CSV intent and verified artifact metadata; object content remains private storage state |
+| `catalog.export_requests` | workspace/requester/job composite FKs, canonical request and security/source hashes, non-RESTRICTED classification ceiling, private artifact receipt, format-safety version and access deadline; owner-select plus forced workspace RLS | owner-scoped managed CSV/XLSX intent and verified artifact metadata; object content remains private storage state |
 
 Projection page idempotency is recorded in `integration.idempotency_keys`. Every committed page
 advances the workspace projection version exactly once in the same transaction; replay, rejection

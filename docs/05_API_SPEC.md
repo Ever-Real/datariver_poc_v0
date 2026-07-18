@@ -48,8 +48,8 @@ Generated OpenAPI at `/api/v1/openapi.json` is authoritative for implemented pay
 
 | Method/path | Action | Purpose |
 |---|---|---|
-| `GET /catalog/assets?q=&asset_type=&platform=&classification=&lifecycle=&cursor=&limit=` | `catalog.search` | ABAC-prefiltered ALL-term literal/full-text projection search with plain-text match fragments; non-empty `q` minimum defaults to 2; cursor is bound to the exact permission/policy/projection/request snapshot |
-| `GET /catalog/facets?q=&asset_type=&platform=&classification=&lifecycle=&limit=` | `catalog.search` | permission-prefiltered asset type, platform and classification buckets; null platform remains an explicit null bucket |
+| `GET /catalog/assets?q=&search_fields=&asset_type=&platform=&database=&schema=&domain=&classification=&lifecycle=&cursor=&limit=` | `catalog.search` | ABAC-prefiltered ALL-term local projection search with plain-text match fragments and a bounded `total`; `search_fields` is the fixed `SCHEMA,TABLE,COLUMN,TAG,TERM,DESCRIPTION` vocabulary, and non-empty `q` minimum defaults to 2; cursor is bound to the exact permission/policy/projection/request snapshot |
+| `GET /catalog/facets?q=&search_fields=&asset_type=&platform=&database=&schema=&domain=&classification=&lifecycle=&limit=` | `catalog.search` | permission-prefiltered asset type, platform and classification buckets; null platform remains an explicit null bucket |
 | `GET /catalog/suggestions?q=&limit=` | `catalog.search` | permission-prefiltered name autocomplete, maximum 20; two-character requests use the bounded prefix path and longer requests may use trigram similarity |
 | `GET /catalog/tree/nodes?q=&parent_kind=ROOT\|PLATFORM\|DATABASE\|SCHEMA&platform=&database=&schema=&cursor=&limit=` | `catalog.search` | lazy canonical Resource Tree branch; authorization-pruned child counts, branch cursor and cache context are bound to the request security/projection snapshot |
 | `GET /catalog/assets/{asset_id}` | `catalog.read` | authorized local base detail plus typed DataHub enrichment; optional `stale_at` marks bounded fallback |
@@ -57,7 +57,7 @@ Generated OpenAPI at `/api/v1/openapi.json` is authoritative for implemented pay
 | `POST /catalog/assets/{asset_id}/description-change-requests` | `catalog.read` + `change.create` | require the exact preview `If-Match`, re-read DataHub, share-lock/revalidate the path asset and create one server-classified governed request |
 | `GET /catalog/assets/{asset_id}/lineage?direction=UPSTREAM\|DOWNSTREAM\|BOTH&depth=1..3` | `catalog.read` | bounded typed DataHub lineage with set-based local authorization; a hidden intermediate truncates rather than bridges a path |
 | `GET /catalog/export-capability` | `catalog.export` | separately authorized feature state; missing permission, dependency error or disabled worker is fail-closed in the UI |
-| `POST /catalog/exports` | `catalog.export` | create an owner-scoped CSV job from exact typed search filters and an `Idempotency-Key`; RESTRICTED is denied |
+| `POST /catalog/exports` | `catalog.export` | create an owner-scoped CSV or XLSX job from exact typed search filters and an `Idempotency-Key`; RESTRICTED is denied |
 | `GET /catalog/exports/{export_id}` | `catalog.export` + owner | bounded job/artifact status; never returns bucket, object key or a source cursor |
 | `POST /catalog/exports/{export_id}/download` | `catalog.export` + owner | revalidate current permission/policy/projection and object metadata, then issue a 60-second URL with `Cache-Control: no-store` |
 | `POST /catalog/sync/datahub` | `catalog.sync` | idempotently upsert one fixed-contract DataHub scan page |
@@ -343,9 +343,9 @@ and live contract tests in the external DataHub deployment.
 
 The API never accepts an object coordinate, provider endpoint, arbitrary column list, cursor or raw
 query language for export. Creation persists a canonical request hash plus permission,
-classification-policy, built-in-policy, CSV-safety and projection snapshots in the same transaction
+classification-policy, built-in-policy, format-safety and projection snapshots in the same transaction
 as its job, outbox event and idempotency result. The worker reads only the local authorized
-projection, always excludes `RESTRICTED`, emits a fixed RFC 4180 UTF-8 schema, fails closed on stale
+projection, always excludes `RESTRICTED`, emits one fixed CSV or XLSX column schema, fails closed on stale
 snapshots and uses an attempt-unique private object key. Row, record and object-byte ceilings are
 enforced. A stale/superseded lease cannot complete or overwrite a newer attempt.
 
