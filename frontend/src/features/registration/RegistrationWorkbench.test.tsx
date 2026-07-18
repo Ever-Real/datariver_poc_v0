@@ -116,8 +116,10 @@ describe('Registration workbench', () => {
       quality: {},
       source_version: 'source-1',
     }
+    const submissions: RequestOptions[] = []
     const request = vi.fn((path: string, options?: RequestOptions) => {
       if (path === '/registration/manual-submissions' && options?.method === 'POST') {
+        submissions.push(options)
         return Promise.resolve({
           id: 'submission-1', state: 'QUEUED', serial_number: 3, row_count: 2,
           source_version: 'source-1', created_at: '2026-01-01T00:00:00Z', version: 1,
@@ -140,15 +142,16 @@ describe('Registration workbench', () => {
     expect(screen.queryByLabelText('Aspect JSON')).not.toBeInTheDocument()
     fireEvent.change(screen.getByLabelText('테이블 Description'), { target: { value: 'Verified wafer records.' } })
     fireEvent.click(screen.getByRole('button', { name: 'SAVE' }))
-    await waitFor(() => expect(request).toHaveBeenCalledWith(
-      '/registration/manual-submissions',
-      expect.objectContaining({ method: 'POST', idempotencyKey: expect.stringMatching(/^manual-metadata-/) }),
-    ))
+    await waitFor(() => expect(submissions).toHaveLength(1))
+    expect(submissions[0]?.method).toBe('POST')
+    expect(submissions[0]?.idempotencyKey).toMatch(/^manual-metadata-/)
     expect(screen.getByText(/제출 #3이 2개 행으로 저장되었습니다/)).toBeInTheDocument()
   })
 
   it('loads upload history only after the bulk workbench is selected', async () => {
+    const calls: Array<[string, RequestOptions | undefined]> = []
     const request = vi.fn((path: string, options?: RequestOptions) => {
+      calls.push([path, options])
       void options
       return Promise.resolve(path.startsWith('/uploads') ? { items: [] } : emptyTree)
     })
@@ -157,7 +160,7 @@ describe('Registration workbench', () => {
     fireEvent.click(screen.getByRole('tab', { name: /BULK/ }))
 
     expect(screen.getByRole('tab', { name: /BULK/ })).toHaveAttribute('aria-selected', 'true')
-    await waitFor(() => expect(request.mock.calls.some(([path, options]) => (
+    await waitFor(() => expect(calls.some(([path, options]) => (
       path === '/uploads?limit=50' && options?.signal instanceof AbortSignal
     ))).toBe(true))
   })

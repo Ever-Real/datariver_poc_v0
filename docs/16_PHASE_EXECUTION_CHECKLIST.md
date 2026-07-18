@@ -86,8 +86,9 @@ mistaken for an authorization or release approval.
   node expanded to its 1,000 assets.
 - [ ] P3.5-08 Restore the v0.3-equivalent visible catalog filters and managed CSV/XLSX export entry
   points using the existing server-authorized export-job boundary; the quarantine-review scope must
-  not grant export.  Filters and the CSV job entry are present, but this local runtime deliberately
-  has no isolated export worker and XLSX is not yet an approved export format; neither is simulated.
+  not grant export. Filters and export-job entry points are present, and the opt-in local
+  `catalog-export` worker now uses an independent NOBYPASSRLS database/S3 principal. XLSX delivery
+  and an authorized end-to-end download remain open; neither is simulated.
 - [ ] P3.5-09 Restore registration MANUAL/BULK tab density, Korean hover help, and the v0.3
   MANUAL workbench layout.  The CR-coupled body is now replaced by an independent typed submission
   and immutable CSV-receipt stage; the Airflow-owned provider apply/read-back gate remains open.
@@ -134,8 +135,10 @@ replaced source is retained only under `.legacy_archive/`.
   safe match highlighting, advanced filters, Resource Tree, dense paged table, CSV/XLSX export,
   details, bounded lineage and DataHub-lineage dialog.
 - [ ] RES-03 Verify the configured DataHub lineage embedding capability with an administrator SSO
-  session.  The application must not turn an upstream DataHub 403 into a generic administrator
-  bypass or send a provider token to the browser.
+  session. Local bootstrap now accepts an exact, credential-free DataHub embed origin, and the
+  locally inspected upstream response permits framing; authenticated DataHub SSO rendering remains
+  open. The application must not turn an upstream DataHub 403 into a generic administrator bypass
+  or send a provider token to the browser.
 - [x] RES-04 Audit Registration (`IngestionPage`, `MetadataEditTable`, `ColumnEditTable`,
   `CreatableTagSelect`, ingestion router): selected table/column inputs, comma/Enter tag and term
   selection, controlled vocabulary suggestions/creation, manual CSV evidence, bulk evidence, and

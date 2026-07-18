@@ -27,6 +27,7 @@ services:
       - postgres_relay_password
       - postgres_upload_password
       - postgres_governance_password
+      - postgres_export_password
       - postgres_bootstrap_password
       - keycloak_db_password
       - airflow_db_password
@@ -143,6 +144,7 @@ services:
     <<: *backend
     secrets:
       - postgres_password
+      - postgres_export_password
     command: ["/app/.venv/bin/alembic", "-c", "backend/alembic.ini", "upgrade", "head"]
     depends_on:
       postgres:
@@ -301,6 +303,30 @@ services:
     tmpfs:
       - /tmp:size=32m,noexec,nosuid
 
+  catalog-export-worker:
+    <<: *backend
+    profiles: ["catalog-export"]
+    secrets:
+      - postgres_export_password
+      - valkey_queue_password
+      - s3_export_access_key
+      - s3_export_secret_key
+    command: ["/app/.venv/bin/python", "-m", "datariver.workers.catalog_export"]
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      storage-init:
+        condition: service_completed_successfully
+      valkey-queue:
+        condition: service_healthy
+    networks:
+      - data
+    mem_limit: 512m
+    cpus: 0.75
+    read_only: true
+    tmpfs:
+      - /tmp:size=32m,noexec,nosuid
+
   web:
     build:
       context: .
@@ -359,6 +385,8 @@ secrets:
     file: ./secrets/postgres_upload_password
   postgres_governance_password:
     file: ./secrets/postgres_governance_password
+  postgres_export_password:
+    file: ./secrets/postgres_export_password
   postgres_bootstrap_password:
     file: ./secrets/postgres_bootstrap_password
   keycloak_db_password:
@@ -383,6 +411,10 @@ secrets:
     file: ./secrets/s3_access_key
   s3_secret_key:
     file: ./secrets/s3_secret_key
+  s3_export_access_key:
+    file: ./secrets/s3_export_access_key
+  s3_export_secret_key:
+    file: ./secrets/s3_export_secret_key
   seaweed_s3_config:
     file: ./secrets/seaweed_s3_config.json
   grafana_admin_password:

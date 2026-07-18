@@ -178,6 +178,28 @@ BEGIN
         GRANT SELECT, INSERT ON integration.outbox_events TO datariver_governance;
     END IF;
 
+    IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'datariver_export') THEN
+        GRANT USAGE ON SCHEMA platform, iam, authz, catalog, integration TO datariver_export;
+        GRANT SELECT ON platform.workspaces, iam.subjects,
+            iam.workspace_memberships TO datariver_export;
+        GRANT SELECT ON authz.classification_access_policy_versions,
+            authz.classification_access_policy_rules, authz.classification_access_generations,
+            authz.restricted_search_grants TO datariver_export;
+        GRANT INSERT ON authz.policy_decisions TO datariver_export;
+        GRANT SELECT ON catalog.assets_projection, catalog.projection_watermarks,
+            catalog.export_requests TO datariver_export;
+        GRANT UPDATE (object_bucket, object_key, row_count, size_bytes, content_sha256,
+            provider_checksum, completed_at, version, updated_at)
+            ON catalog.export_requests TO datariver_export;
+        GRANT SELECT ON integration.inference_provider_profile_versions,
+            integration.jobs, integration.job_attempts TO datariver_export;
+        GRANT SELECT, INSERT, UPDATE ON integration.inbox_messages TO datariver_export;
+        GRANT UPDATE (state, progress, result_ref, lease_until, attempts, last_error_code,
+            version, updated_at) ON integration.jobs TO datariver_export;
+        GRANT INSERT, UPDATE (state, error_class, external_response_hash, finished_at)
+            ON integration.job_attempts TO datariver_export;
+    END IF;
+
     IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'datariver_bootstrap') THEN
         GRANT USAGE ON SCHEMA platform, iam TO datariver_bootstrap;
         GRANT SELECT, INSERT, UPDATE ON platform.workspaces, iam.subjects,

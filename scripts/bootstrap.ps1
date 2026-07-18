@@ -1,8 +1,10 @@
 param(
     [string]$DataHubToken,
     [string]$DataHubBaseUrl,
+    [string]$DataHubEmbedOrigin,
     [string]$WebPublicOrigin = "http://localhost:8080",
-    [switch]$HostDevelopment
+    [switch]$HostDevelopment,
+    [switch]$EnableCatalogExportWorker
 )
 
 $ErrorActionPreference = "Stop"
@@ -32,7 +34,12 @@ if ($IsLinux -or $IsMacOS) {
 
 function New-RandomSecret([int]$Bytes = 32) {
     $buffer = New-Object byte[] $Bytes
-    [Security.Cryptography.RandomNumberGenerator]::Fill($buffer)
+    $generator = [Security.Cryptography.RandomNumberGenerator]::Create()
+    try {
+        $generator.GetBytes($buffer)
+    } finally {
+        $generator.Dispose()
+    }
     return [Convert]::ToBase64String($buffer)
 }
 
@@ -88,6 +95,7 @@ $postgresAppPassword = Get-OrCreateSecret "postgres_app_password"
 $postgresRelayPassword = Get-OrCreateSecret "postgres_relay_password"
 $postgresUploadPassword = Get-OrCreateSecret "postgres_upload_password"
 $postgresGovernancePassword = Get-OrCreateSecret "postgres_governance_password"
+$postgresExportPassword = Get-OrCreateSecret "postgres_export_password"
 $postgresBootstrapPassword = Get-OrCreateSecret "postgres_bootstrap_password"
 $keycloakDatabasePassword = Get-OrCreateSecret "keycloak_db_password"
 $airflowDatabasePassword = Get-OrCreateSecret "airflow_db_password"
@@ -108,6 +116,15 @@ if ((Test-Path -LiteralPath $s3AccessKeyPath) -and
     Write-Secret "s3_access_key" $s3AccessKey
 }
 $s3SecretKey = Get-OrCreateSecret "s3_secret_key" 36
+$s3ExportAccessKeyPath = Join-Path $secretsDirectory "s3_export_access_key"
+if ((Test-Path -LiteralPath $s3ExportAccessKeyPath) -and
+    (Get-Item -LiteralPath $s3ExportAccessKeyPath).Length -gt 0) {
+    $s3ExportAccessKey = [IO.File]::ReadAllText($s3ExportAccessKeyPath, [Text.Encoding]::UTF8)
+} else {
+    $s3ExportAccessKey = (New-RandomSecret 18).Replace("/", "A").Replace("+", "B").TrimEnd("=")
+    Write-Secret "s3_export_access_key" $s3ExportAccessKey
+}
+$s3ExportSecretKey = Get-OrCreateSecret "s3_export_secret_key" 36
 
 $dataHubTokenPath = Join-Path $secretsDirectory "datahub_token"
 if ($PSBoundParameters.ContainsKey("DataHubToken") -and $DataHubToken.Length -gt 0) {
@@ -135,6 +152,23 @@ if ($HostDevelopment) {
 if ($PSBoundParameters.ContainsKey("DataHubBaseUrl") -and $DataHubBaseUrl.Length -gt 0) {
     Set-EnvValue "DATAHUB_BASE_URL" $DataHubBaseUrl
 }
+if ($PSBoundParameters.ContainsKey("DataHubEmbedOrigin") -and $DataHubEmbedOrigin.Length -gt 0) {
+    $embedUri = [Uri]$DataHubEmbedOrigin
+    if (-not $embedUri.IsAbsoluteUri -or $embedUri.UserInfo.Length -gt 0 -or
+        $embedUri.AbsolutePath -notin @("", "/") -or $embedUri.Query.Length -gt 0 -or
+        $embedUri.Fragment.Length -gt 0) {
+        throw "DataHubEmbedOrigin must be one credential-free origin without a path, query, or fragment."
+    }
+    Set-EnvValue "DATAHUB_EMBED_BASE_URL" $embedUri.AbsoluteUri.TrimEnd("/")
+    Set-EnvValue "DATAHUB_EMBED_ENABLED" "true"
+}
+if ($EnableCatalogExportWorker) {
+    Set-EnvValue "EXPORT_DATABASE_URL" "postgresql+asyncpg://datariver_export@postgres:5432/datariver"
+    Set-EnvValue "EXPORT_DATABASE_SECRET_REF" "file:/run/secrets/postgres_export_password"
+    Set-EnvValue "S3_EXPORT_ACCESS_KEY_FILE" "/run/secrets/s3_export_access_key"
+    Set-EnvValue "S3_EXPORT_SECRET_KEY_FILE" "/run/secrets/s3_export_secret_key"
+    Set-EnvValue "CATALOG_EXPORT_WORKER_ENABLED" "true"
+}
 
 $seaweedConfig = @{
     identities = @(
@@ -142,6 +176,11 @@ $seaweedConfig = @{
             name = "datariver"
             credentials = @(@{ accessKey = $s3AccessKey; secretKey = $s3SecretKey })
             actions = @("Admin", "Read", "Write", "List", "Tagging")
+        },
+        @{
+            name = "datariver-export"
+            credentials = @(@{ accessKey = $s3ExportAccessKey; secretKey = $s3ExportSecretKey })
+            actions = @("Read", "Write")
         }
     )
 } | ConvertTo-Json -Depth 6

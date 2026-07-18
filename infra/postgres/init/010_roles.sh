@@ -5,6 +5,7 @@ app_password=$(cat /run/secrets/postgres_app_password)
 relay_password=$(cat /run/secrets/postgres_relay_password)
 upload_password=$(cat /run/secrets/postgres_upload_password)
 governance_password=$(cat /run/secrets/postgres_governance_password)
+export_password=$(cat /run/secrets/postgres_export_password)
 bootstrap_password=$(cat /run/secrets/postgres_bootstrap_password)
 keycloak_password=$(cat /run/secrets/keycloak_db_password)
 airflow_password=$(cat /run/secrets/airflow_db_password)
@@ -15,6 +16,7 @@ psql --username "$POSTGRES_USER" --dbname "$POSTGRES_DB" \
   --set=relay_password="$relay_password" \
   --set=upload_password="$upload_password" \
   --set=governance_password="$governance_password" \
+  --set=export_password="$export_password" \
   --set=bootstrap_password="$bootstrap_password" \
   --set=keycloak_password="$keycloak_password" \
   --set=airflow_password="$airflow_password" <<'SQL'
@@ -26,6 +28,8 @@ SELECT format('CREATE ROLE datariver_upload LOGIN PASSWORD %L', :'upload_passwor
 WHERE NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'datariver_upload') \gexec
 SELECT format('CREATE ROLE datariver_governance LOGIN PASSWORD %L', :'governance_password')
 WHERE NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'datariver_governance') \gexec
+SELECT format('CREATE ROLE datariver_export LOGIN PASSWORD %L', :'export_password')
+WHERE NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'datariver_export') \gexec
 SELECT format('CREATE ROLE datariver_bootstrap LOGIN PASSWORD %L', :'bootstrap_password')
 WHERE NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'datariver_bootstrap') \gexec
 SELECT format('CREATE ROLE keycloak LOGIN PASSWORD %L', :'keycloak_password')
@@ -41,6 +45,8 @@ ALTER ROLE datariver_upload WITH LOGIN PASSWORD :'upload_password'
   NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION BYPASSRLS;
 ALTER ROLE datariver_governance WITH LOGIN PASSWORD :'governance_password'
   NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION BYPASSRLS;
+ALTER ROLE datariver_export WITH LOGIN PASSWORD :'export_password'
+  NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS;
 ALTER ROLE datariver_bootstrap WITH LOGIN PASSWORD :'bootstrap_password'
   NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION BYPASSRLS;
 ALTER ROLE keycloak WITH LOGIN PASSWORD :'keycloak_password'

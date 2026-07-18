@@ -29,7 +29,7 @@ REQUIRED_DOCKERIGNORE_ENTRIES = {
     "frontend/node_modules",
 }
 EXPECTED_SERVICE_SECRETS = {
-    "migrate": {"postgres_password"},
+    "migrate": {"postgres_password", "postgres_export_password"},
     "storage-init": {"s3_access_key", "s3_secret_key"},
     "semiconductor-seed": {"postgres_password"},
     "local-bootstrap": {"postgres_bootstrap_password"},
@@ -57,6 +57,12 @@ EXPECTED_SERVICE_SECRETS = {
         "postgres_governance_password",
         "valkey_queue_password",
         "datahub_token",
+    },
+    "catalog-export-worker": {
+        "postgres_export_password",
+        "valkey_queue_password",
+        "s3_export_access_key",
+        "s3_export_secret_key",
     },
 }
 DATAHUB_CONTRACT_DIRECTORY = ROOT / "infra" / "contracts"
@@ -322,6 +328,7 @@ def verify_runtime_hardening() -> None:
             "upload-worker",
             "upload-validation-worker",
             "governance-apply-worker",
+            "catalog-export-worker",
             "web",
         },
         "compose.identity.yaml": {"keycloak"},
@@ -424,7 +431,17 @@ def verify_browser_storage_boundary() -> None:
     auth_provider = (frontend_source / "auth" / "AuthProvider.tsx").read_text(encoding="utf-8")
     if "new InMemoryWebStorage()" not in auth_provider:
         raise AssertionError("OIDC user tokens must use in-memory storage")
-    if "window.sessionStorage" in auth_provider:
+    transaction_store = (
+        "stateStore: new WebStorageStateStore({\n"
+        "      store: window.sessionStorage,\n"
+        "      prefix: 'datariver.oidc.transaction.',\n"
+        "    })"
+    )
+    if transaction_store not in auth_provider:
+        raise AssertionError(
+            "OIDC may use session storage only for the tab-scoped PKCE transaction state"
+        )
+    if "userStore: new WebStorageStateStore({ store: window.sessionStorage" in auth_provider:
         raise AssertionError("OIDC user tokens must not use sessionStorage")
 
 
@@ -454,6 +471,7 @@ def verify_database_roles() -> None:
         "datariver_relay",
         "datariver_upload",
         "datariver_governance",
+        "datariver_export",
         "datariver_bootstrap",
     }
     missing = {role for role in required_roles if role not in combined}

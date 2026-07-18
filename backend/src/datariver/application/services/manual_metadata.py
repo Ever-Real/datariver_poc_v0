@@ -88,7 +88,7 @@ class ManualMetadataSubmissionService:
         request_id: str,
         idempotency_key: str,
         request_hash: str,
-    ) -> _NormalizedManualMetadata:
+    ) -> ManualMetadataSubmission:
         if not self._infoschema_bucket:
             raise ValidationError(
                 "Manual metadata storage is not configured.",
@@ -251,7 +251,7 @@ class ManualMetadataSubmissionService:
         tags: tuple[str, ...],
         terms: tuple[str, ...],
         columns: tuple[ManualColumnMetadata, ...],
-    ) -> ManualMetadataSubmission:
+    ) -> _NormalizedManualMetadata:
         normalized_columns = tuple(
             ManualColumnMetadata(
                 field_path=column.field_path,

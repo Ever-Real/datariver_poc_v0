@@ -11,6 +11,7 @@ from collections.abc import Sequence
 
 import sqlalchemy as sa
 from alembic import op
+from sqlalchemy.dialects import postgresql
 
 revision: str = "0023"
 down_revision: str | Sequence[str] | None = "0022"
@@ -168,7 +169,7 @@ def upgrade() -> None:
         sa.Column("external_urn", sa.Text(), nullable=False),
         sa.Column("source_version", sa.String(length=255), nullable=False),
         sa.Column("serial_number", sa.Integer(), nullable=False),
-        sa.Column("payload", sa.JSON(), nullable=False),
+        sa.Column("payload", postgresql.JSONB(none_as_null=True), nullable=False),
         sa.Column("bucket", sa.String(length=255), nullable=False),
         sa.Column("object_key", sa.Text(), nullable=False),
         sa.Column("csv_sha256", sa.String(length=64), nullable=False),

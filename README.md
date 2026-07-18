@@ -71,6 +71,18 @@ docker compose --profile tools -f compose.yaml -f compose.identity.yaml `
   run --rm local-bootstrap
 ```
 
+To enable the authorized DataHub lineage frame and isolated catalog-export worker locally, make
+the enablement explicit at bootstrap. `DataHubEmbedOrigin` must be the exact credential-free
+DataHub UI origin; the export worker is an opt-in Compose profile with its own database and S3
+credentials.
+
+```powershell
+./scripts/bootstrap.ps1 -DataHubToken '<datahub-service-token>' `
+  -DataHubEmbedOrigin 'http://127.0.0.1:9002' -EnableCatalogExportWorker
+docker compose --profile catalog-export -f compose.yaml -f compose.identity.yaml `
+  up -d --build catalog-export-worker
+```
+
 Open `http://localhost:8080`, sign in as `datariver-admin`, and read the generated temporary password from `secrets/keycloak_demo_password`. The first sign-in requires a new password but does not request a mobile OTP. The local realm keeps ordinary login at LoA 1 and reserves its user-verifying cross-platform WebAuthn key for an explicitly requested LoA 2 step-up. High-risk operations remain fail-closed until the user enrolls a key, completes step-up, and the resulting token satisfies the configured ACR, AMR and `auth_time` contract. Enter workspace ID:
 
 ```text

@@ -60,7 +60,7 @@ function createManager(): UserManager {
     // Access/refresh tokens and the selected user must not survive in browser
     // storage. The only persisted browser value is the short-lived PKCE
     // transaction required to validate the redirect. Keep it scoped to this
-    // tab: oidc-client-ts otherwise defaults this state to localStorage.
+    // tab: oidc-client-ts otherwise defaults this state to a persistent browser store.
     userStore: new WebStorageStateStore({ store: new InMemoryWebStorage() }),
     stateStore: new WebStorageStateStore({
       store: window.sessionStorage,

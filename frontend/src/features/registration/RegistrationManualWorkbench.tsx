@@ -134,7 +134,7 @@ export function RegistrationManualWorkbench({ client, asset, loading, onClose }:
     }))
     setSubmission(undefined)
     setError(undefined)
-  }, [asset?.id, asset?.source_version, asset?.description, asset?.domain, asset?.tags, asset?.glossary_terms, asset?.schema_fields, fields])
+  }, [asset, fields])
 
   const updateColumn = (fieldPath: string, next: Partial<EditableColumn>) => {
     setColumns((current) => current.map((column) => column.field_path === fieldPath ? { ...column, ...next } : column))
