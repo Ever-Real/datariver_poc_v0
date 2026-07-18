@@ -33,7 +33,7 @@ from datariver.domain.authz import (
     SubjectAttributes,
 )
 from datariver.domain.classification_access import ChatMode, SearchMode
-from datariver.domain.common import ConflictError
+from datariver.domain.common import ConflictError, uuid7
 from datariver.domain.retention import RetentionPolicyState
 
 UNVERIFIABLE_ANSWER = "검증 불가"
@@ -69,6 +69,7 @@ class ChatService:
         authorization: AuthorizationService,
         classification_access: ClassificationAccessResolver | None = None,
         composer: ChatAnswerComposer | None = None,
+        allow_ephemeral_without_retention: bool = False,
     ) -> None:
         self._catalog_index = catalog_index
         self._knowledge_evidence = knowledge_evidence
@@ -76,6 +77,7 @@ class ChatService:
         self._authorization = authorization
         self._classification_access = classification_access
         self._composer = composer or DeterministicChatAnswerComposer()
+        self._allow_ephemeral_without_retention = allow_ephemeral_without_retention
 
     async def query(
         self,
@@ -240,6 +242,19 @@ class ChatService:
             await uow.lock_retention_workspace(workspace_id=workspace_id)
             policy = await uow.retention_policies.get_active_for_update(workspace_id=workspace_id)
             if policy is None or policy.state is not RetentionPolicyState.ACTIVE:
+                if self._allow_ephemeral_without_retention:
+                    # This path deliberately returns before the unit of work
+                    # commits. It preserves ABAC/evidence validation but does
+                    # not create a Chat session, message, citation, or policy
+                    # binding when the development workspace has no policy.
+                    return ChatExchange(
+                        session_id=session_id or uuid7(),
+                        request_message_id=uuid7(),
+                        response_message_id=uuid7(),
+                        answer=answer,
+                        evidence=cited_evidence,
+                        persistence="EPHEMERAL_NO_STORE",
+                    )
                 raise ConflictError(
                     "An active retention policy is required to persist Chat content."
                 )

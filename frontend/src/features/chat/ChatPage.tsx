@@ -9,6 +9,7 @@ import { PageTitle } from '../../components/layout/PageTitle'
 export function ChatPage({ client }: { client: ApiClient }) {
   const [question, setQuestion] = useState('')
   const [sessionId, setSessionId] = useState<string>()
+  const [persistence, setPersistence] = useState<ChatResponse['persistence']>()
   const [messages, setMessages] = useState<Array<{ role: string; text: string; evidence?: ChatResponse['evidence'] }>>([])
   const [error, setError] = useState<unknown>()
   const [loading, setLoading] = useState(false)
@@ -27,6 +28,7 @@ export function ChatPage({ client }: { client: ApiClient }) {
         body: JSON.stringify({ session_id: sessionId, question: text, maximum_evidence: 5 }),
       })
       setSessionId(result.session_id)
+      setPersistence(result.persistence)
       setMessages((current) => [...current, { role: 'assistant', text: result.answer, evidence: result.evidence }])
     } catch (next) { setError(next) } finally { setLoading(false) }
   }
@@ -35,6 +37,7 @@ export function ChatPage({ client }: { client: ApiClient }) {
     <section className="chat-page">
       <PageTitle icon="AI" eyebrow="Evidence-first Assistant" title="카탈로그 Chat" description="v0.3의 Chat·근거 패널 구성을 복원하되, 인가되고 버전이 고정된 근거만 답변에 사용합니다." actions={<button className="button button-secondary" type="button" disabled title="지속 세션 저장 계약은 아직 제공되지 않습니다."><MessageSquarePlus size={13} />새 세션</button>} />
       <p className="callout">현재 모드는 외부 LLM에 데이터를 보내지 않으며, ABAC 검증을 통과한 카탈로그 근거만 답변합니다.</p>
+      {persistence === 'EPHEMERAL_NO_STORE' && <p className="callout" role="status">개발 검증 세션입니다. 활성 보존정책이 없으므로 이 대화는 서버에 저장되지 않습니다.</p>}
       <ErrorNotice error={error} />
       <div className="chat-workspace">
         <aside className="chat-session-panel panel"><header><span className="eyebrow">Session</span><h2>대화 이력</h2></header><button type="button" className="active"><Sparkles size={13} /><span><strong>{sessionId ? '현재 evidence 세션' : '새 질문 세션'}</strong><small>{messages.length ? `${messages.length} messages` : '질문을 시작하세요'}</small></span></button><p><Bookmark size={12} />즐겨찾기·이름변경·삭제는 서버 세션 계약이 준비되면 활성화됩니다.</p></aside>

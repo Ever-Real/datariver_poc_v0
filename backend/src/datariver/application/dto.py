@@ -665,3 +665,4 @@ class ChatExchange:
     response_message_id: UUID
     answer: str
     evidence: tuple[ChatEvidence, ...]
+    persistence: str = "PERSISTED"

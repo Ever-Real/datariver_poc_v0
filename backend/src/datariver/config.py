@@ -67,6 +67,10 @@ class Settings(BaseSettings):
     high_risk_auth_max_age_seconds: int = Field(default=300, ge=60, le=900)
     admin_password_fallback_enabled: bool = False
     admin_password_fallback_ttl_seconds: int = Field(default=300, ge=60, le=300)
+    # Development-only: return an ABAC-authorized, no-store Chat exchange when
+    # a security administrator is exercising the local UI before retention
+    # policy governance is configured. This never permits durable Chat writes.
+    chat_ephemeral_admin_without_retention_enabled: bool = False
 
     datahub_base_url: str
     datahub_secret_ref: str
@@ -355,6 +359,8 @@ class Settings(BaseSettings):
                     "Catalog export worker S3 credentials must use separate secret files."
                 )
         if self.app_env == "production":
+            if self.chat_ephemeral_admin_without_retention_enabled:
+                raise ValueError("Development-only ephemeral Chat must be disabled in production.")
             if any(value == "*" or value.startswith("*.") for value in self.app_trusted_hosts):
                 raise ValueError("Production trusted hosts cannot contain wildcards.")
             external_urls = {

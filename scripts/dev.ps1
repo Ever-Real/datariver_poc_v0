@@ -9,7 +9,8 @@ param(
     [int]$KeycloakPort = 18081,
     [int]$ApiPort = 8000,
     [int]$WebPort = 5173,
-    [int]$GatewayPort = 9080
+    [int]$GatewayPort = 9080,
+    [bool]$EnableEphemeralAdminChat = $true
 )
 
 $ErrorActionPreference = "Stop"
@@ -119,7 +120,7 @@ $secret = {
 }
 Set-ProcessEnvironment "APP_PUBLIC_ORIGIN" "http://localhost:$WebPort"
 Set-ProcessEnvironment "APP_CORS_ORIGINS" "http://localhost:$WebPort"
-Set-ProcessEnvironment "APP_TRUSTED_HOSTS" "localhost,127.0.0.1,host.docker.internal"
+Set-ProcessEnvironment "APP_TRUSTED_HOSTS" "localhost,127.0.0.1,host.docker.internal,apisix"
 Set-ProcessEnvironment "DATABASE_URL" "postgresql+asyncpg://datariver_app@127.0.0.1:$PostgresPort/datariver"
 Set-ProcessEnvironment "DATABASE_SECRET_REF" (& $secret "postgres_app_password")
 Set-ProcessEnvironment "RELAY_DATABASE_URL" "postgresql+asyncpg://datariver_relay@127.0.0.1:$PostgresPort/datariver"
@@ -141,6 +142,7 @@ Set-ProcessEnvironment "OIDC_JWKS_URL" "http://localhost:$KeycloakPort/realms/da
 Set-ProcessEnvironment "DATAHUB_BASE_URL" $DataHubBaseUrl
 Set-ProcessEnvironment "DATAHUB_SECRET_REF" (& $secret "datahub_token")
 Set-ProcessEnvironment "SEED_PROFILE" "none"
+Set-ProcessEnvironment "CHAT_EPHEMERAL_ADMIN_WITHOUT_RETENTION_ENABLED" $EnableEphemeralAdminChat.ToString().ToLowerInvariant()
 # The repository may be served from the WSL filesystem while Uvicorn runs on
 # Windows.  Native file notifications do not cross that boundary reliably;
 # use polling so the source process behind APISIX always reflects the checked

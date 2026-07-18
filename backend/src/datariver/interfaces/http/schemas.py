@@ -1022,6 +1022,7 @@ class ChatQueryResponse(BaseModel):
     request_message_id: UUID
     response_message_id: UUID
     answer: str
+    persistence: Literal["PERSISTED", "EPHEMERAL_NO_STORE"]
     evidence: list[ChatEvidenceResponse]
 
 

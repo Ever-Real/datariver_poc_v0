@@ -1,4 +1,20 @@
 services:
+  airflow-api-server:
+    environment:
+      DATARIVER_API_BASE_URL: ${DATARIVER_API_BASE_URL:-http://apisix:9080}
+
+  airflow-scheduler:
+    environment:
+      DATARIVER_API_BASE_URL: ${DATARIVER_API_BASE_URL:-http://apisix:9080}
+
+  airflow-dag-processor:
+    environment:
+      DATARIVER_API_BASE_URL: ${DATARIVER_API_BASE_URL:-http://apisix:9080}
+
+  airflow-triggerer:
+    environment:
+      DATARIVER_API_BASE_URL: ${DATARIVER_API_BASE_URL:-http://apisix:9080}
+
   postgres:
     networks:
       - data

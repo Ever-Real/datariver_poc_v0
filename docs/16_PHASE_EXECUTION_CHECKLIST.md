@@ -31,22 +31,39 @@ checks below used the configured administrator session at `localhost:5173` on 20
 not a substitute for a release-environment ABAC or retention-policy decision.
 
 - [x] P3-01 Complete `UX-PAR-002` through `UX-PAR-005`: authorized Resource Tree, search results,
-  catalog detail and the bounded lineage entry point. The browser rendered ten permission-scoped
-  PostgreSQL assets; the DataHub lineage view rendered the seeded `vw_cost_ledger_advanced_package`
-  graph with its three upstream datasets.
+  catalog detail and the bounded lineage entry point. After the paged DataHub reconciliation the
+  browser rendered 2,010 administrator-reviewable assets (PostgreSQL 1,010; Oracle 1,000), with 50
+  rows per result page and cursor-based tree expansion rather than an unbounded browser payload.
 - [x] P3-02 Complete `UX-PAR-006` through `UX-PAR-011`: manual/bulk registration and governed
   change-request evidence flows. Browser verification selected
   `datariver_core.semiconductor_seed.fact_daily_stock_price` and rendered description, column, and
   typed Domain/Tag/Term change proposals plus current fields and lineage.
 - [x] P3-03 Complete `UX-PAR-012` through `UX-PAR-017`: knowledge registry, change studio and
   bounded graph exploration UI backed by the real knowledge API contracts.
-- [ ] P3-04 Complete `UX-PAR-018` through `UX-PAR-022`: monitoring, governance and Chat capability
-  states and their real API contracts. Monitoring and governance browser checks pass; an evidence
-  Chat query is correctly rejected with HTTP 409 until an accountable owner activates a retention
-  policy. Do not bypass this server-side retention gate with a client-side success state.
+- [x] P3-04 Complete `UX-PAR-018` through `UX-PAR-022`: monitoring, governance and Chat capability
+  states and their real API contracts. Monitoring and governance browser checks pass. For local
+  development only, a security-administrator can make an explicitly labelled `EPHEMERAL_NO_STORE`
+  Chat exchange when no retention policy exists; it creates no session, message, citation, or
+  retention record. Production configuration rejects that switch and all ordinary users retain the
+  regular retention-policy gate.
 - [ ] P3-05 Complete `UX-PAR-023` reference-viewport visual and administrator/non-administrator
-  browser acceptance. The administrator viewport and restored profile menu passed; the separate
-  non-administrator identity and the agreed reference screenshots remain required acceptance inputs.
+  browser acceptance. The administrator viewport and restored profile menu passed, and a temporary
+  ordinary Keycloak identity (no workspace or administrator membership) rendered without a runtime
+  error and without administrator entries. The temporary identity was removed after the test;
+  agreed reference screenshots remain required acceptance input.
+
+## Phase 3.5 — integration blocker correction
+
+- [x] P3.5-01 Reconcile the full DataHub catalog projection through the Airflow-owned, paged sync
+  contract. Host development sends the authenticated service call through APISIX; the deployed
+  origin is configuration, not a source-code localhost fallback.
+- [x] P3.5-02 Preserve the audited security-administrator quarantine-review scope on catalog tree,
+  facets, search and detail reads. It does not become a general ABAC bypass for exports, mutations,
+  or Chat evidence.
+- [x] P3.5-03 Permit the labelled development-only, administrator-only no-store Chat exchange
+  described in P3-04 so local retention-policy absence cannot return HTTP 409 during UI testing.
+- [x] P3.5-04 Verify the ordinary-user viewport and administrator-menu concealment with a live OIDC
+  sign-in; remove the temporary weak-password test identity immediately afterwards.
 
 The complete item-by-item source inventory remains the controlled matrix in
 [`15_LEGACY_UX_PARITY_PLAN.md`](15_LEGACY_UX_PARITY_PLAN.md). This checklist tracks sequencing, not

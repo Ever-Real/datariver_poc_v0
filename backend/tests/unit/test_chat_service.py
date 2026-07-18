@@ -324,6 +324,34 @@ async def test_chat_persistence_fails_closed_without_an_active_policy() -> None:
     assert uow.rolled_back is True
 
 
+async def test_chat_development_ephemeral_exchange_never_persists_without_policy() -> None:
+    workspace_id = uuid4()
+    store = FakeChatStore()
+    uow = FakeChatPersistenceUnitOfWork(store, policy_available=False)
+    service = ChatService(
+        catalog_index=FakeIndex(asset(workspace_id)),
+        uow_factory=lambda: uow,
+        authorization=AuthorizationService(decision_writer=NullDecisionWriter()),
+        allow_ephemeral_without_retention=True,
+    )
+
+    exchange = await service.query(
+        workspace_id=workspace_id,
+        subject=chat_subject(workspace_id),
+        session_id=None,
+        question="개발 검증용 근거를 알려줘",
+        maximum_evidence=1,
+        environment=EnvironmentAttributes(requested_at=datetime.now(UTC)),
+        request_id="request-ephemeral-chat",
+    )
+
+    assert exchange.persistence == "EPHEMERAL_NO_STORE"
+    assert exchange.evidence
+    assert store.saved_retention is None
+    assert uow.committed is False
+    assert uow.rolled_back is True
+
+
 class FakeKnowledgeEvidence:
     def __init__(self, workspace_id: UUID, *, tamper_hash: bool = False) -> None:
         self.workspace_id = workspace_id

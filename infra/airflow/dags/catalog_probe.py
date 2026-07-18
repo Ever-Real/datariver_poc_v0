@@ -6,7 +6,7 @@ import urllib.request
 from datetime import UTC, datetime
 
 from airflow.sdk import dag, task
-from datariver_auth import service_token
+from datariver_auth import datariver_api_base_url, service_token
 
 
 @dag(
@@ -23,8 +23,8 @@ def catalog_probe() -> None:
     def probe() -> dict[str, object]:
         workspace_id = os.environ["DATARIVER_WORKSPACE_ID"]
         token = service_token()
-        request = urllib.request.Request(
-            "http://api:8000/api/v1/catalog/assets?limit=1",
+        request = urllib.request.Request(  # noqa: S310 - origin is validation-owned
+            f"{datariver_api_base_url()}/api/v1/catalog/assets?limit=1",
             headers={
                 "Authorization": f"Bearer {token}",
                 "X-Workspace-Id": workspace_id,

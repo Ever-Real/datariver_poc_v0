@@ -40,6 +40,11 @@ async def query(
         classification_access=ClassificationAccessResolver(
             SqlClassificationAccessSnapshotReader(session)
         ),
+        allow_ephemeral_without_retention=(
+            container.settings.chat_ephemeral_admin_without_retention_enabled
+            and container.settings.app_env == "development"
+            and "security-administrators" in context.subject.groups
+        ),
     ).query(
         workspace_id=context.workspace_id,
         subject=context.subject,
@@ -54,6 +59,7 @@ async def query(
         request_message_id=exchange.request_message_id,
         response_message_id=exchange.response_message_id,
         answer=exchange.answer,
+        persistence=exchange.persistence,
         evidence=[
             ChatEvidenceResponse(
                 chunk_id=item.chunk_id,

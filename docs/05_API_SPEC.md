@@ -231,7 +231,10 @@ exact policy ID/hash, database transaction time and policy-derived deadline in o
 transaction. Missing active policy returns `409`; a legacy-unbound, expired or superseded-policy
 session also returns `409` and the caller must start a new session. These failures persist no Chat
 session/message. Policy activation is available only through the independent retention
-maker-checker API; there is no Chat-specific duration parameter or fallback.
+maker-checker API; there is no Chat-specific duration parameter or fallback. The local
+host-development launcher may explicitly enable a security-administrator-only
+`EPHEMERAL_NO_STORE` response: it still performs Chat and evidence ABAC, but creates no session,
+message, citation or retention binding and production configuration rejects the mode.
 
 ### Administrator membership access
 

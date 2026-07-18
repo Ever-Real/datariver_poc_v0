@@ -80,8 +80,10 @@ an optional complement, not a replacement for the generator's exact entity verif
 
 The `datariver_semiconductor_seed_ingestion` DAG is manual-only, paused on creation, single-active
 run, retry-once and limited to three hours. It invokes the same generator in the Airflow image using
-mounted secret files and the private Compose PostgreSQL network. Its only permitted runtime
-parameters are:
+mounted secret files and the private Compose PostgreSQL network, then calls the bounded
+`datariver_catalog_sync` reconciliation through the Airflow service account. This makes generated
+DataHub entities visible in DataRiver's local projection without copying DataHub credentials to the
+browser. Its only permitted runtime parameters are:
 
 - `rows_per_table`: integer from 10 through 50; defaults to 20.
 - `entity_scope`: `postgres` or `dual`; defaults to `dual`.

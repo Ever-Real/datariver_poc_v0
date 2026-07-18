@@ -47,3 +47,20 @@ def service_token() -> str:
     _token = token
     _refresh_at = now + max(1.0, float(expires_in) - 30.0)
     return token
+
+
+def datariver_api_base_url() -> str:
+    """Return the deployment-owned DataRiver API origin for Airflow tasks."""
+    value = os.getenv("DATARIVER_API_BASE_URL", "http://api:8000").strip()
+    parsed = urlsplit(value)
+    if (
+        parsed.scheme not in {"http", "https"}
+        or not parsed.netloc
+        or parsed.username is not None
+        or parsed.password is not None
+        or parsed.path not in {"", "/"}
+        or parsed.query
+        or parsed.fragment
+    ):
+        raise RuntimeError("DATARIVER_API_BASE_URL must be one credential-free HTTP(S) origin.")
+    return f"{parsed.scheme}://{parsed.netloc}"

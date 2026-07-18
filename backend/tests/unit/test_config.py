@@ -123,6 +123,21 @@ def test_production_requires_tls_and_disables_seed() -> None:
         settings(app_env="production", seed_profile="semiconductor")
 
 
+def test_production_rejects_development_only_ephemeral_chat() -> None:
+    with pytest.raises(ValidationError, match="Development-only ephemeral Chat"):
+        settings(
+            app_env="production",
+            app_public_origin="https://catalog.example.com",
+            app_cors_origins=("https://catalog.example.com",),
+            oidc_issuer="https://idp.example.com/realms/data",
+            oidc_jwks_url="https://idp.example.com/realms/data/certs",
+            datahub_base_url="https://datahub.example.com",
+            datahub_version_enforcement="enforce",
+            s3_public_endpoint_url="https://objects.example.com",
+            chat_ephemeral_admin_without_retention_enabled=True,
+        )
+
+
 def test_accepts_secure_production_configuration() -> None:
     configured = settings(
         app_env="production",

@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any
 
 from airflow.sdk import dag, get_current_context, task
+from datariver_catalog_sync import synchronize_catalog_projection
 
 
 @dag(
@@ -48,11 +49,13 @@ def semiconductor_seed_ingestion() -> None:
             str(output_dir),
         ]
         subprocess.run(command, check=True, env=os.environ.copy())  # noqa: S603
+        catalog_projection = synchronize_catalog_projection(run_id=run_id)
         return {
             "run_id": run_id,
             "rows_per_table": rows_per_table,
             "entity_scope": entity_scope,
             "manifest": str(output_dir / "manifest.json"),
+            "catalog_projection": catalog_projection,
         }
 
     build_and_ingest()

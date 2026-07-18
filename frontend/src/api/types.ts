@@ -491,6 +491,7 @@ export interface ChatResponse {
   request_message_id: string
   response_message_id: string
   answer: string
+  persistence: 'PERSISTED' | 'EPHEMERAL_NO_STORE'
   evidence: Array<{
     chunk_id: string
     resource_id: string
