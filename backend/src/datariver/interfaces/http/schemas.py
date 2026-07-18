@@ -451,6 +451,21 @@ class ChangeRequestResponse(BaseModel):
     transitions: list[TransitionResponse]
 
 
+class ChangeRequestAttachmentResponse(BaseModel):
+    id: UUID
+    kind: Literal["REQUEST", "TEST"]
+    original_name: str
+    serial_number: int
+    content_type: str
+    size_bytes: int
+    content_sha256: str
+    created_at: datetime
+
+
+class ChangeRequestAttachmentListResponse(BaseModel):
+    items: list[ChangeRequestAttachmentResponse]
+
+
 class ChangeRequestAssigneeResponse(BaseModel):
     subject_id: UUID
     display_name: str

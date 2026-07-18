@@ -24,6 +24,7 @@ from datariver.infrastructure.db.models.classification_access import (
 from datariver.infrastructure.db.models.governance import (
     ApprovalModel,
     ChangeItemModel,
+    ChangeRequestAttachmentModel,
     ChangeRequestModel,
     ManualMetadataSubmissionModel,
     RegistrationContentBindingModel,
@@ -98,6 +99,7 @@ __all__ = [
     "CatalogSyncRunModel",
     "ChangeItemModel",
     "ChangeOperationModel",
+    "ChangeRequestAttachmentModel",
     "ChangeRequestModel",
     "ChangeSetModel",
     "ChatMessageModel",

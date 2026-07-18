@@ -124,6 +124,47 @@ class ChangeItemModel(Base, UuidPrimaryKeyMixin):
     target_binding_hash: Mapped[str | None] = mapped_column(String(64))
 
 
+class ChangeRequestAttachmentModel(Base, UuidPrimaryKeyMixin, TimestampMixin):
+    """Private CR request/test evidence; bytes remain only in the configured object store."""
+
+    __tablename__ = "change_request_attachments"
+    __table_args__ = (
+        UniqueConstraint("workspace_id", "id"),
+        UniqueConstraint(
+            "workspace_id",
+            "change_request_id",
+            "kind",
+            "original_name",
+            "serial_number",
+            name="uq_change_request_attachment_serial",
+        ),
+        ForeignKeyConstraint(
+            ("workspace_id", "change_request_id"),
+            ("governance.change_requests.workspace_id", "governance.change_requests.id"),
+            ondelete="CASCADE",
+            name="fk_change_request_attachments_request",
+        ),
+        CheckConstraint("kind IN ('REQUEST', 'TEST')", name="kind_vocabulary"),
+        CheckConstraint("serial_number BETWEEN 1 AND 999999", name="serial_number_range"),
+        CheckConstraint("size_bytes BETWEEN 1 AND 10485760", name="size_bytes_range"),
+        CheckConstraint("content_sha256 ~ '^[0-9a-f]{64}$'", name="content_sha256_valid"),
+        Index("ix_change_request_attachments_request", "workspace_id", "change_request_id"),
+        {"schema": "governance"},
+    )
+
+    workspace_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), nullable=False)
+    change_request_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), nullable=False)
+    kind: Mapped[str] = mapped_column(String(16), nullable=False)
+    original_name: Mapped[str] = mapped_column(String(500), nullable=False)
+    serial_number: Mapped[int] = mapped_column(nullable=False)
+    bucket: Mapped[str] = mapped_column(String(255), nullable=False)
+    object_key: Mapped[str] = mapped_column(Text, nullable=False)
+    content_type: Mapped[str] = mapped_column(String(255), nullable=False)
+    size_bytes: Mapped[int] = mapped_column(nullable=False)
+    content_sha256: Mapped[str] = mapped_column(String(64), nullable=False)
+    uploaded_by: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), nullable=False)
+
+
 class RegistrationContentBindingModel(Base, UuidPrimaryKeyMixin):
     __tablename__ = "registration_content_bindings"
     __table_args__ = (

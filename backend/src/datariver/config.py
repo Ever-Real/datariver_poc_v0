@@ -141,6 +141,7 @@ class Settings(BaseSettings):
     s3_bucket_quarantine: str
     s3_bucket_accepted: str
     s3_bucket_exports: str = "datariver-exports"
+    s3_bucket_filefolder: str | None = None
     # Deployment-owned only: no source fallback chooses a metadata bucket.
     s3_bucket_infoschema: str | None = None
     s3_access_key_file: str

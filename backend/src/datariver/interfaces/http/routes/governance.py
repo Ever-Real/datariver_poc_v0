@@ -1,11 +1,15 @@
 from __future__ import annotations
 
 import hashlib
+import re
+from collections.abc import AsyncIterator
+from pathlib import Path
 from typing import Annotated
 from uuid import UUID
 
 import orjson
-from fastapi import APIRouter, Header, Query, Request
+from fastapi import APIRouter, File, Form, Header, Query, Request, UploadFile
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from datariver.application.change_numbers import change_request_number
@@ -14,7 +18,7 @@ from datariver.application.services.authorization import AuthorizationService
 from datariver.application.services.change_targets import CatalogChangeTargetAuthorizer
 from datariver.application.services.governance import GovernanceService
 from datariver.domain.authz import Classification
-from datariver.domain.common import ValidationError, canonical_json_hash, uuid7
+from datariver.domain.common import NotFoundError, ValidationError, canonical_json_hash, uuid7
 from datariver.domain.governance import (
     ApprovalDecision,
     ChangeItem,
@@ -29,6 +33,10 @@ from datariver.infrastructure.db.classification_access import (
     SqlClassificationAccessSnapshotReader,
 )
 from datariver.infrastructure.db.governance import SqlGovernanceUnitOfWork
+from datariver.infrastructure.db.models.governance import (
+    ChangeRequestAttachmentModel,
+    ChangeRequestModel,
+)
 from datariver.interfaces.http.dependencies import ContextDep, SessionDep, get_container
 from datariver.interfaces.http.presenters import (
     change_request_response,
@@ -36,6 +44,8 @@ from datariver.interfaces.http.presenters import (
 )
 from datariver.interfaces.http.schemas import (
     ApprovalRequest,
+    ChangeRequestAttachmentListResponse,
+    ChangeRequestAttachmentResponse,
     ChangeRequestCreate,
     ChangeRequestListResponse,
     ChangeRequestResponse,
@@ -43,6 +53,9 @@ from datariver.interfaces.http.schemas import (
 )
 
 router = APIRouter(prefix="/change-requests", tags=["governance"])
+
+_MAXIMUM_ATTACHMENT_BYTES = 10 * 1024 * 1024
+_FILE_NAME_DISALLOWED = re.compile(r"[^A-Za-z0-9._-]+")
 
 
 def _service(request: Request, session: AsyncSession | None = None) -> GovernanceService:
@@ -130,6 +143,189 @@ async def get_change_request(
         request_id=context.request_id,
     )
     return change_request_response(value)
+
+
+def _attachment_response(value: ChangeRequestAttachmentModel) -> ChangeRequestAttachmentResponse:
+    return ChangeRequestAttachmentResponse(
+        id=value.id,
+        kind=value.kind,
+        original_name=value.original_name,
+        serial_number=value.serial_number,
+        content_type=value.content_type,
+        size_bytes=value.size_bytes,
+        content_sha256=value.content_sha256,
+        created_at=value.created_at,
+    )
+
+
+async def _upload_chunks(upload: UploadFile) -> AsyncIterator[bytes]:
+    while chunk := await upload.read(1024 * 1024):
+        yield chunk
+
+
+def _safe_attachment_name(name: str | None) -> tuple[str, str, str]:
+    candidate = Path(name or "attachment").name
+    safe = _FILE_NAME_DISALLOWED.sub("_", candidate).strip("._")[:500]
+    if not safe:
+        raise ValidationError("The attachment filename is invalid.")
+    suffix = Path(safe).suffix[:32]
+    stem = Path(safe).stem[: max(1, 460 - len(suffix))]
+    return safe, stem, suffix
+
+
+@router.get("/{change_request_id}/attachments", response_model=ChangeRequestAttachmentListResponse)
+async def list_change_request_attachments(
+    change_request_id: UUID,
+    request: Request,
+    context: ContextDep,
+    session: SessionDep,
+) -> ChangeRequestAttachmentListResponse:
+    await _service(request, session).get_change_request(
+        workspace_id=context.workspace_id,
+        change_request_id=change_request_id,
+        subject=context.subject,
+        environment=context.environment,
+        request_id=context.request_id,
+    )
+    rows = list(
+        (
+            await session.scalars(
+                select(ChangeRequestAttachmentModel)
+                .where(
+                    ChangeRequestAttachmentModel.workspace_id == context.workspace_id,
+                    ChangeRequestAttachmentModel.change_request_id == change_request_id,
+                )
+                .order_by(ChangeRequestAttachmentModel.created_at, ChangeRequestAttachmentModel.id)
+            )
+        ).all()
+    )
+    return ChangeRequestAttachmentListResponse(items=[_attachment_response(row) for row in rows])
+
+
+@router.post("/{change_request_id}/attachments", response_model=ChangeRequestAttachmentResponse)
+async def upload_change_request_attachment(
+    change_request_id: UUID,
+    request: Request,
+    context: ContextDep,
+    session: SessionDep,
+    file: Annotated[UploadFile, File()],
+    kind: Annotated[str, Form(pattern="^(REQUEST|TEST)$")] = "REQUEST",
+) -> ChangeRequestAttachmentResponse:
+    container = get_container(request)
+    bucket = container.settings.s3_bucket_filefolder
+    if not bucket:
+        raise ValidationError(
+            "Change-request attachment storage is not configured.",
+            details={"code": "FILEFOLDER_BUCKET_NOT_CONFIGURED"},
+        )
+    change_request = await _service(request, session).get_change_request(
+        workspace_id=context.workspace_id,
+        change_request_id=change_request_id,
+        subject=context.subject,
+        environment=context.environment,
+        request_id=context.request_id,
+    )
+    original_name, stem, suffix = _safe_attachment_name(file.filename)
+    locked = (
+        await session.scalars(
+            select(ChangeRequestModel)
+            .where(
+                ChangeRequestModel.workspace_id == context.workspace_id,
+                ChangeRequestModel.id == change_request_id,
+            )
+            .with_for_update()
+        )
+    ).one_or_none()
+    if locked is None:
+        raise NotFoundError("The change request does not exist.")
+    serial = (
+        int(
+            await session.scalar(
+                select(
+                    func.coalesce(func.max(ChangeRequestAttachmentModel.serial_number), 0)
+                ).where(
+                    ChangeRequestAttachmentModel.workspace_id == context.workspace_id,
+                    ChangeRequestAttachmentModel.change_request_id == change_request_id,
+                    ChangeRequestAttachmentModel.kind == kind,
+                    ChangeRequestAttachmentModel.original_name == original_name,
+                )
+            )
+            or 0
+        )
+        + 1
+    )
+    object_key = f"{change_request.number}-{kind}-{stem}-{serial:02d}{suffix}"
+    content_type = (file.content_type or "application/octet-stream")[:255]
+    artifact = await container.object_store.write_export(
+        bucket=bucket,
+        object_key=object_key,
+        chunks=_upload_chunks(file),
+        metadata={
+            "workspace-id": str(context.workspace_id),
+            "change-request-id": str(change_request_id),
+            "attachment-kind": kind,
+        },
+        maximum_bytes=_MAXIMUM_ATTACHMENT_BYTES,
+        content_type=content_type,
+    )
+    try:
+        row = ChangeRequestAttachmentModel(
+            id=uuid7(),
+            workspace_id=context.workspace_id,
+            change_request_id=change_request_id,
+            kind=kind,
+            original_name=original_name,
+            serial_number=serial,
+            bucket=bucket,
+            object_key=object_key,
+            content_type=content_type,
+            size_bytes=artifact.size_bytes,
+            content_sha256=artifact.content_sha256,
+            uploaded_by=context.subject.subject_id,
+        )
+        session.add(row)
+        await session.commit()
+    except Exception:
+        await container.object_store.delete_export(bucket=bucket, object_key=object_key)
+        raise
+    return _attachment_response(row)
+
+
+@router.get("/{change_request_id}/attachments/{attachment_id}/download")
+async def download_change_request_attachment(
+    change_request_id: UUID,
+    attachment_id: UUID,
+    request: Request,
+    context: ContextDep,
+    session: SessionDep,
+) -> dict[str, str]:
+    container = get_container(request)
+    await _service(request, session).get_change_request(
+        workspace_id=context.workspace_id,
+        change_request_id=change_request_id,
+        subject=context.subject,
+        environment=context.environment,
+        request_id=context.request_id,
+    )
+    row = (
+        await session.scalars(
+            select(ChangeRequestAttachmentModel).where(
+                ChangeRequestAttachmentModel.workspace_id == context.workspace_id,
+                ChangeRequestAttachmentModel.change_request_id == change_request_id,
+                ChangeRequestAttachmentModel.id == attachment_id,
+            )
+        )
+    ).one_or_none()
+    if row is None:
+        raise NotFoundError("The attachment does not exist.")
+    return {
+        "url": await container.object_store.presign_download(
+            bucket=row.bucket,
+            object_key=row.object_key,
+            download_name=row.original_name,
+            expires_seconds=container.settings.presigned_url_ttl_seconds,
+        )
+    }
 
 
 @router.post("", status_code=201, response_model=ChangeRequestResponse)

@@ -183,9 +183,9 @@ The Compose overlay intentionally uses Airflow `SimpleAuthManager` only for loop
 
 ## Database and object operations
 
-- Alembic has one head at `0026`: the generated current initial schema plus conditional compatibility bridges for local databases that applied earlier revisions. Deployment runs migration before API/workers. The API role can only read `public.alembic_version` for readiness; migration ownership remains separate. Clean-install bridges validate complete canonical objects, execute only when the feature contract is absent, and reject partially present schemas.
+- Alembic has one head at `0027`: the generated current initial schema plus conditional compatibility bridges for local databases that applied earlier revisions. Deployment runs migration before API/workers. The API role can only read `public.alembic_version` for readiness; migration ownership remains separate. Clean-install bridges validate complete canonical objects, execute only when the feature contract is absent, and reject partially present schemas.
 - PostgreSQL pool size/overflow/lease timeout, statement timeout, idle-transaction timeout and application names are explicit. Budget `API replicas × (API pool + overflow) + long-running workers × (worker pool + overflow) + one-shot/IdP/Airflow/admin reserve`; current one-API/four-worker defaults have a ceiling of 60 before reserve.
-- Liveness is process-only. Readiness leases the API pool and requires exactly packaged Alembic head `0026`; Compose and APISIX use readiness for upstream health.
+- Liveness is process-only. Readiness leases the API pool and requires exactly packaged Alembic head `0027`; Compose and APISIX use readiness for upstream health.
 - `scripts/probe_pgbouncer_rls.py` and its unit contract implement the pre-adoption transaction-pool leakage gate. No Compose profile currently deploys PgBouncer and no live pooler pass has been recorded; direct PostgreSQL remains the supported path until the isolated two-workspace probe succeeds.
 - Back up PostgreSQL and SeaweedFS as a consistency set or record a watermark; restore into isolation and follow the drill in [operations runbook](13_OPERATIONS_RUNBOOK.md) before traffic.
 - Accepted-object retention/lifecycle is environment policy. Quarantine receives a shorter cleanup policy, but never delete an object whose manifest is actively leased.

@@ -103,6 +103,7 @@ BEGIN
         GRANT SELECT, INSERT ON catalog.export_requests TO datariver_app;
         GRANT SELECT, INSERT ON governance.change_request_items,
             governance.approvals, governance.state_transitions TO datariver_app;
+        GRANT SELECT, INSERT ON governance.change_request_attachments TO datariver_app;
         GRANT SELECT, INSERT ON governance.registration_content_bindings TO datariver_app;
         GRANT SELECT, INSERT, UPDATE ON governance.change_requests TO datariver_app;
         GRANT SELECT, INSERT, UPDATE ON platform.data_systems, platform.system_schema_scopes,

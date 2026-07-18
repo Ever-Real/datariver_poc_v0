@@ -290,6 +290,7 @@ class CatalogExportObjectStore(Protocol):
         chunks: AsyncIterator[bytes],
         metadata: dict[str, str],
         maximum_bytes: int,
+        content_type: str = "text/csv; charset=utf-8",
     ) -> CatalogExportArtifact: ...
 
     async def delete_export(self, *, bucket: str, object_key: str) -> None: ...

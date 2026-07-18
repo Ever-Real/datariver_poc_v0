@@ -30,6 +30,11 @@ async def run() -> None:
         bucket=settings.s3_bucket_exports,
         allowed_origins=allowed_origins,
     )
+    if settings.s3_bucket_filefolder:
+        await store.ensure_bucket(
+            bucket=settings.s3_bucket_filefolder,
+            allowed_origins=allowed_origins,
+        )
     if settings.s3_bucket_infoschema:
         await store.ensure_bucket(
             bucket=settings.s3_bucket_infoschema,

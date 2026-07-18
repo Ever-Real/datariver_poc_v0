@@ -199,13 +199,14 @@ class S3ObjectStore:
         chunks: AsyncIterator[bytes],
         metadata: dict[str, str],
         maximum_bytes: int,
+        content_type: str = "text/csv; charset=utf-8",
     ) -> CatalogExportArtifact:
         if not 1 <= maximum_bytes <= 5 * 1024 * 1024 * 1024:
             raise ValueError("Catalog export byte limit is outside the safe range.")
         upload = await self.create_multipart_upload(
             bucket=bucket,
             object_key=object_key,
-            content_type="text/csv; charset=utf-8",
+            content_type=content_type,
             metadata=metadata,
         )
         digest = hashlib.sha256()

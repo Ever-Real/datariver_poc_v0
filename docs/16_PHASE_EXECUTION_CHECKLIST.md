@@ -151,7 +151,9 @@ replaced source is retained only under `.legacy_archive/`.
   must still be verified together.
 - [ ] RES-06 Audit and restore Change Management (`ChangeManagementPage`, `CRListTable`,
   `CRRegistrationModal`, CR router): schema/system/assignee overview, complete list fields, create
-  form and lifecycle, and private request/test attachment manifests.
+  form and lifecycle, and private request/test attachment manifests. The v1 attachment contract now
+  persists request/test metadata and server-generated `CR-code-KIND-original-serial` object keys in
+  deployment-configured `datariver-filefolder`; the v0.3-shaped create/edit UI remains open.
 - [ ] RES-07 Audit and restore `/admin` (`UsersPage`, `SystemsManagementView`, `ConnectionsPage`,
   user/system/config routers): subject/membership master, system/schema/assignee priority, and
   redacted approved service-profile administration.  Password provisioning, arbitrary URLs,
