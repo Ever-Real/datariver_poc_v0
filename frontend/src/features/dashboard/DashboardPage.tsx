@@ -16,13 +16,19 @@ import {
 } from 'lucide-react'
 import type { ApiClient } from '../../api/client'
 import type { Capability, CatalogSchemaMetric, OperationsSummary } from '../../api/types'
-import { pageUrl } from '../../app/navigation'
+import { pageUrl, type Page } from '../../app/navigation'
 import { ErrorNotice } from '../../components/ErrorNotice'
 import { PageTitle } from '../../components/layout/PageTitle'
 
 const dashboardPeriods = ['1W', '1M', '3M'] as const
 
-export function DashboardPage({ client }: { client: ApiClient }) {
+export function DashboardPage({
+  client,
+  onNavigate,
+}: {
+  client: ApiClient
+  onNavigate: (page: Page) => void
+}) {
   const [capabilities, setCapabilities] = useState<Capability[]>([])
   const [summary, setSummary] = useState<OperationsSummary>()
   const [error, setError] = useState<unknown>()
@@ -86,7 +92,8 @@ export function DashboardPage({ client }: { client: ApiClient }) {
           unit="Assets"
           icon={<Database size={20} />}
           description={descriptionCoverage == null ? '설명 완성도: 수집 데이터 없음' : `설명 완성도 ${descriptionCoverage}%`}
-          href={pageUrl('catalog')}
+          page="catalog"
+          onNavigate={onNavigate}
         />
         <DashboardStatCard
           title="Business Glossary"
@@ -94,7 +101,8 @@ export function DashboardPage({ client }: { client: ApiClient }) {
           icon={<BookOpen size={20} />}
           description="현재 projection 계약에서는 집계하지 않음"
           unavailable
-          href={pageUrl('knowledge')}
+          page="knowledge"
+          onNavigate={onNavigate}
         />
         <DashboardStatCard
           title="Data Quality"
@@ -102,7 +110,8 @@ export function DashboardPage({ client }: { client: ApiClient }) {
           icon={<ShieldCheck size={20} />}
           description="검증된 품질 점수 read model이 아직 없음"
           unavailable
-          href={pageUrl('quality')}
+          page="quality"
+          onNavigate={onNavigate}
         />
         <DashboardStatCard
           title="CR Status"
@@ -110,7 +119,8 @@ export function DashboardPage({ client }: { client: ApiClient }) {
           unit="Requests"
           icon={<ClipboardList size={20} />}
           description={`신규 ${changes.REGISTERED ?? 0} · 검토/적용 ${reviewingChanges} · 완료 ${changes.APPLIED ?? 0}`}
-          href={pageUrl('change-management')}
+          page="change-management"
+          onNavigate={onNavigate}
         />
       </div>
 
@@ -157,11 +167,11 @@ export function DashboardPage({ client }: { client: ApiClient }) {
       <div className="dashboard-bottom-grid">
         <DashboardSection title="Governance Center" icon={<Activity size={16} />}>
           <nav className="dashboard-quick-actions" aria-label="Governance shortcuts">
-            <QuickAction href={pageUrl('catalog')} icon={<Search size={18} />} label="Catalog Search" description="메타데이터 전역 검색" />
-            <QuickAction href={pageUrl('knowledge')} icon={<Network size={18} />} label="Knowledge Graph" description="지식관리 및 온톨로지" />
-            <QuickAction href={pageUrl('registration')} icon={<HardDrive size={18} />} label="Dataset Registration" description="신규 데이터셋 일괄 등록" />
-            <QuickAction href={pageUrl('change-management')} icon={<Activity size={18} />} label="Change Management" description="CR 생명주기와 증거" />
-            <QuickAction href={pageUrl('chat')} icon={<Terminal size={18} />} label="AI Copilot" description="증거 기반 질의 지원" />
+            <QuickAction page="catalog" onNavigate={onNavigate} icon={<Search size={18} />} label="Catalog Search" description="메타데이터 전역 검색" />
+            <QuickAction page="knowledge" onNavigate={onNavigate} icon={<Network size={18} />} label="Knowledge Graph" description="지식관리 및 온톨로지" />
+            <QuickAction page="registration" onNavigate={onNavigate} icon={<HardDrive size={18} />} label="Dataset Registration" description="신규 데이터셋 일괄 등록" />
+            <QuickAction page="change-management" onNavigate={onNavigate} icon={<Activity size={18} />} label="Change Management" description="CR 생명주기와 증거" />
+            <QuickAction page="chat" onNavigate={onNavigate} icon={<Terminal size={18} />} label="AI Copilot" description="증거 기반 질의 지원" />
           </nav>
         </DashboardSection>
 
@@ -195,7 +205,8 @@ function DashboardStatCard({
   unit,
   icon,
   description,
-  href,
+  page,
+  onNavigate,
   unavailable = false,
 }: {
   title: string
@@ -203,11 +214,16 @@ function DashboardStatCard({
   unit: string
   icon: ReactNode
   description: string
-  href: string
+  page: Page
+  onNavigate: (page: Page) => void
   unavailable?: boolean
 }) {
   return (
-    <a className="dashboard-stat-card" href={href}>
+    <a
+      className="dashboard-stat-card"
+      href={pageUrl(page)}
+      onClick={(event) => { event.preventDefault(); onNavigate(page) }}
+    >
       <span className="dashboard-stat-icon">{icon}</span>
       <p>{title}</p>
       <div><strong>{unavailable ? '—' : value == null ? '…' : value.toLocaleString()}</strong><small>{unit}</small></div>
@@ -246,8 +262,20 @@ function MetricTile({ label, value, unavailable = false }: { label: string; valu
   return <div className={unavailable ? 'metric-tile unavailable' : 'metric-tile'}><small>{label}</small><strong>{value}</strong></div>
 }
 
-function QuickAction({ href, icon, label, description }: { href: string; icon: ReactNode; label: string; description: string }) {
-  return <a href={href}><span>{icon}</span><span><strong>{label}</strong><small>{description}</small></span><ArrowRight size={15} aria-hidden="true" /></a>
+function QuickAction({
+  page,
+  onNavigate,
+  icon,
+  label,
+  description,
+}: {
+  page: Page
+  onNavigate: (page: Page) => void
+  icon: ReactNode
+  label: string
+  description: string
+}) {
+  return <a href={pageUrl(page)} onClick={(event) => { event.preventDefault(); onNavigate(page) }}><span>{icon}</span><span><strong>{label}</strong><small>{description}</small></span><ArrowRight size={15} aria-hidden="true" /></a>
 }
 
 function OperationFact({ label, values, value, error = false }: { label: string; values?: Record<string, number>; value?: number; error?: boolean }) {

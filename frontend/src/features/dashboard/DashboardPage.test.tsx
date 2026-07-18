@@ -39,7 +39,7 @@ describe('DashboardPage', () => {
       if (path === '/operations/summary') return Promise.resolve(summary())
       throw new Error(`Unexpected request: ${path}`)
     })
-    render(<DashboardPage client={apiClient(request)} />)
+    render(<DashboardPage client={apiClient(request)} onNavigate={vi.fn()} />)
 
     expect(await screen.findByText('설명 완성도 70%')).toBeInTheDocument()
     expect(screen.getAllByText('10')).toHaveLength(2)
@@ -61,8 +61,22 @@ describe('DashboardPage', () => {
       if (path === '/operations/summary') return Promise.resolve(summary({ catalog_schema_metrics_truncated: true }))
       throw new Error(`Unexpected request: ${path}`)
     })
-    render(<DashboardPage client={apiClient(request)} />)
+    render(<DashboardPage client={apiClient(request)} onNavigate={vi.fn()} />)
 
     expect(await screen.findByText(/안전한 화면 한도\(200개\)/)).toBeInTheDocument()
+  })
+
+  it('delegates Governance Center navigation to the SPA shell without a document navigation', async () => {
+    const request = vi.fn((path: string): Promise<unknown> => {
+      if (path === '/capabilities') return Promise.resolve({ items: [] })
+      if (path === '/operations/summary') return Promise.resolve(summary())
+      throw new Error(`Unexpected request: ${path}`)
+    })
+    const navigate = vi.fn()
+    render(<DashboardPage client={apiClient(request)} onNavigate={navigate} />)
+
+    fireEvent.click(await screen.findByRole('link', { name: /Change Management/i }))
+
+    expect(navigate).toHaveBeenCalledWith('change-management')
   })
 })

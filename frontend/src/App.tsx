@@ -192,7 +192,7 @@ export function App() {
       onSignOut={() => void auth.signOut()}
       onClearNotice={auth.clearNotice}
     >
-      {page === 'dashboard' && <DashboardPage client={client} />}
+      {page === 'dashboard' && <DashboardPage client={client} onNavigate={navigate} />}
       {page === 'catalog' && <CatalogPage client={client} initialQuery={catalogQuery} onQueryChange={searchCatalog} catalogExportWorkerEnabled={catalogExportWorkerEnabled} />}
       {page === 'registration' && <RegistrationPage client={client} />}
       {page === 'change-management' && <GovernancePage client={client} onStepUp={auth.beginStepUp} onPasswordReauth={auth.beginPasswordReauth} onEnroll={auth.beginWebAuthnEnrollment} />}

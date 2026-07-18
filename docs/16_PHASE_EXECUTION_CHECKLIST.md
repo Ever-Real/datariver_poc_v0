@@ -65,6 +65,32 @@ not a substitute for a release-environment ABAC or retention-policy decision.
 - [x] P3.5-04 Verify the ordinary-user viewport and administrator-menu concealment with a live OIDC
   sign-in; remove the temporary weak-password test identity immediately afterwards.
 
+## Phase 3.5 — parity detail restoration and integration correction
+
+The following items are the product-owner-directed continuation received on 2026-07-18.  They are
+kept separate from the earlier integration blocker record so that a visual restoration is not
+mistaken for an authorization or release approval.
+
+- [x] P3.5-05 Make Governance Center and dashboard shortcuts use the in-application history
+  transition, preserving the hydrated authentication state without a document reload.
+- [ ] P3.5-06 Complete the authorized Catalog result/detail presentation: typed table/view labels,
+  real projection hierarchy and owner/domain/term/tag fields, bounded server-filtered columns,
+  URN copy feedback, and the local authorization-pruned lineage graph as the primary graph action.
+- [ ] P3.5-07 Correct typed DataHub browse-container normalization so PostgreSQL and Oracle
+  database/schema paths both populate the cursor-paged Resource Tree and MANUAL selector.  Never
+  reconstruct a hierarchy from a provider URN in the browser.
+- [ ] P3.5-08 Restore the v0.3-equivalent visible catalog filters and managed CSV/XLSX export entry
+  points using the existing server-authorized export-job boundary; the quarantine-review scope must
+  not grant export.
+- [ ] P3.5-09 Restore registration MANUAL/BULK tab density, Korean hover help, and the controlled
+  MANUAL workbench layout while retaining typed preview/CR commands and no raw provider payloads.
+- [ ] P3.5-10 Restore change-management overview counts, status badges, complete list columns and
+  the `신규 CR 신청` entry point from the same authorization-filtered change-request read model.
+- [ ] P3.5-11 Assess and implement a simplified administrator role-access experience over governed
+  workspace membership requests.  RBAC templates may improve comprehension but must compile to
+  canonical ABAC membership/action/scope data through maker-checker approval; no browser or generic
+  DataHub Policy API mutation path is permitted.
+
 The complete item-by-item source inventory remains the controlled matrix in
 [`15_LEGACY_UX_PARITY_PLAN.md`](15_LEGACY_UX_PARITY_PLAN.md). This checklist tracks sequencing, not
 authorization: a checked UI item never substitutes for a server-side ABAC, retention or production
