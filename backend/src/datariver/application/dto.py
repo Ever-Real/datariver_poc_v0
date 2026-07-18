@@ -186,6 +186,16 @@ class CatalogSuggestions:
 
 
 @dataclass(frozen=True, slots=True)
+class CatalogVocabulary:
+    items: tuple[str, ...]
+    observed_at: datetime | None
+    projection_version: int = 0
+    policy_version: str = ""
+    classification_policy_version: int | None = None
+    authorization_generation: int | None = None
+
+
+@dataclass(frozen=True, slots=True)
 class CatalogTreeNode:
     node_id: UUID
     kind: str

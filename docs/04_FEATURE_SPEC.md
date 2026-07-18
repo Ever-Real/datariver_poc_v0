@@ -35,6 +35,17 @@ DB/S3 principal gate. The browser must not crawl result pages as a substitute.
 
 ## Registration management
 
+Manual metadata registration is a distinct workflow, not a Change Request.  After an authorized
+user selects one DataHub dataset, the browser receives current table and field metadata through the
+catalog detail facade and may edit Description, one Domain, Tags and Terms for the table and each
+field.  Controlled values accept comma/Enter/Tab creation and permission-pruned existing-vocabulary
+suggestions.  On Save, the server rechecks the active target, source version, schema field set and
+`catalog.read` plus `registration.create`, then records immutable typed intent and a server-written
+CSV receipt.  The browser receives only an opaque submission ID, status and serial; it never sees a
+MinIO object key, an Airflow endpoint or a DataHub credential.  The configured InfoSchema bucket is
+deployment-owned and has no source-code fallback.  A service-account Airflow apply/read-back
+contract remains a separate runtime gate; saving is never displayed as DataHub application.
+
 1. Request a multipart upload session after `registration.create` authorization.
 2. Browser uploads directly to a quarantine object key.
 3. Complete call supplies size, MIME and SHA-256; server verifies object metadata.

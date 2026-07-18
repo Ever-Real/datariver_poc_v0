@@ -107,6 +107,8 @@ Response carries `upserted,tombstoned,next_offset,total,observed_at`. A single a
 | `GET /uploads/{upload_id}/preparations/{preparation_id}` | `registration.read` | read one upload-scoped typed preparation with private no-store response |
 | `GET /uploads/{upload_id}/preparations/{preparation_id}/candidates?cursor=&limit=` | `registration.read` + `catalog.read` + `change.create` | page immutable V2 submitted evidence and separately authorized current ACTIVE DATASET targets; private no-store, opaque cursor, no total or provider/object coordinates |
 | `POST /uploads/{upload_id}/registration-proposals` | `registration.read` + `change.create` + `change.raw.create` | operator/recovery-only raw proposal from an `ACCEPTED` upload; not exposed in the ordinary UI and not accepted as typed-content binding |
+| `POST /registration/manual-submissions` | `catalog.read` + `registration.create` | typed table/field Description, Domain, Tag and Term submission for exactly one current dataset; requires `Idempotency-Key`, validates the current source/schema and creates immutable DB/CSV receipt without exposing storage coordinates |
+| `GET /catalog/vocabulary?kind=TAG|TERM|DOMAIN&q=&limit=` | `catalog.search` | bounded, authorization-pruned suggestions derived from the synchronized DataHub projection; new values are typed submission intent, not browser provider writes |
 
 Completion does not mean accepted. Durable states are `INITIATED → COMPLETION_QUEUED → COMPLETING → QUARANTINED → VALIDATING → ACCEPTED`, with terminal `REJECTED/ABORTED/EXPIRED`. Workers stream object bytes, compare declared size/SHA-256, apply bounded format rules, copy to the accepted bucket, commit canonical location, then best-effort clean quarantine.
 

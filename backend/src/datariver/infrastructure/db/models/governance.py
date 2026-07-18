@@ -178,6 +178,61 @@ class RegistrationContentBindingModel(Base, UuidPrimaryKeyMixin):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
 
+class ManualMetadataSubmissionModel(Base, UuidPrimaryKeyMixin, TimestampMixin, VersionMixin):
+    """Immutable manual-registration intent plus its private CSV receipt."""
+
+    __tablename__ = "manual_metadata_submissions"
+    __table_args__ = (
+        UniqueConstraint("workspace_id", "id"),
+        UniqueConstraint("workspace_id", "serial_number"),
+        UniqueConstraint("bucket", "object_key"),
+        Index(
+            "ix_manual_metadata_submissions_workspace_state",
+            "workspace_id",
+            "state",
+            "created_at",
+        ),
+        CheckConstraint("serial_number > 0", name="serial_number_positive"),
+        CheckConstraint("csv_sha256 ~ '^[0-9a-f]{64}$'", name="csv_sha256_valid"),
+        CheckConstraint("csv_size_bytes > 0", name="csv_size_bytes_positive"),
+        CheckConstraint("row_count > 0", name="row_count_positive"),
+        CheckConstraint(
+            "state IN ('QUEUED', 'APPLYING', 'APPLIED', 'FAILED')",
+            name="state_vocabulary",
+        ),
+        CheckConstraint("jsonb_typeof(payload) = 'object'", name="payload_object"),
+        ForeignKeyConstraint(
+            ("workspace_id", "asset_id"),
+            ("catalog.assets_projection.workspace_id", "catalog.assets_projection.id"),
+            name="fk_manual_metadata_submissions_asset",
+            ondelete="RESTRICT",
+        ),
+        ForeignKeyConstraint(
+            ("workspace_id", "requester_id"),
+            ("iam.workspace_memberships.workspace_id", "iam.workspace_memberships.subject_id"),
+            name="fk_manual_metadata_submissions_requester",
+            ondelete="RESTRICT",
+        ),
+        {"schema": "governance"},
+    )
+
+    workspace_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), nullable=False)
+    asset_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), nullable=False)
+    requester_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), nullable=False)
+    external_urn: Mapped[str] = mapped_column(Text, nullable=False)
+    source_version: Mapped[str] = mapped_column(String(255), nullable=False)
+    serial_number: Mapped[int] = mapped_column(nullable=False)
+    payload: Mapped[dict[str, Any]] = mapped_column(JSON_DOCUMENT, nullable=False)
+    bucket: Mapped[str] = mapped_column(String(255), nullable=False)
+    object_key: Mapped[str] = mapped_column(Text, nullable=False)
+    csv_sha256: Mapped[str] = mapped_column(String(64), nullable=False)
+    csv_size_bytes: Mapped[int] = mapped_column(nullable=False)
+    row_count: Mapped[int] = mapped_column(nullable=False)
+    state: Mapped[str] = mapped_column(String(32), nullable=False)
+    applied_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    last_error_code: Mapped[str | None] = mapped_column(String(100))
+
+
 class ApprovalModel(Base, UuidPrimaryKeyMixin):
     __tablename__ = "approvals"
     __table_args__ = (

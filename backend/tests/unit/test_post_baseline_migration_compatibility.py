@@ -26,6 +26,11 @@ MIGRATIONS: tuple[MigrationCase, ...] = (
     ),
     ("0019_catalog_display_metadata_projection.py", "add_column", None),
     ("0022_cr_schedule_and_system_master.py", "add_column", "_install_security_contract"),
+    (
+        "0023_manual_metadata_submissions.py",
+        "create_unique_constraint",
+        "_install_security_contract",
+    ),
 )
 
 

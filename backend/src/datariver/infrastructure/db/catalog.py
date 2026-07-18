@@ -28,6 +28,7 @@ from datariver.application.dto import (
     CatalogSuggestions,
     CatalogTreeNode,
     CatalogTreePage,
+    CatalogVocabulary,
     DataHubScanAsset,
 )
 from datariver.application.ports import CatalogIndexReader, CatalogProjectionWriter
@@ -531,6 +532,57 @@ class SqlCatalogIndexReader(CatalogIndexReader):
                 for row in rows
             ),
             observed_at=max((row.observed_at for row in rows), default=None),
+        )
+
+    async def vocabulary(
+        self,
+        *,
+        subject: SubjectAttributes,
+        access: ClassificationAccessSnapshot,
+        kind: str,
+        query: str,
+        limit: int,
+    ) -> CatalogVocabulary:
+        if kind not in {"TAG", "TERM", "DOMAIN"} or not 1 <= limit <= 50:
+            raise ValueError("Catalog vocabulary request is invalid.")
+        rows = list(
+            (
+                await self._session.execute(
+                    select(
+                        AssetProjectionModel.tags,
+                        AssetProjectionModel.glossary_terms,
+                        AssetProjectionModel.domain_ref,
+                        AssetProjectionModel.observed_at,
+                    )
+                    .where(and_(*self._scope_conditions(subject, access)))
+                    .order_by(AssetProjectionModel.observed_at.desc(), AssetProjectionModel.id)
+                    .limit(5_000)
+                )
+            ).all()
+        )
+        query_key = query.casefold().strip()
+        values: set[str] = set()
+        observed_at: datetime | None = None
+        for tags, terms, domain, observed in rows:
+            candidates: Sequence[object]
+            if kind == "TAG":
+                candidates = tags if isinstance(tags, list) else ()
+            elif kind == "TERM":
+                candidates = terms if isinstance(terms, list) else ()
+            else:
+                candidates = (domain,) if isinstance(domain, str) else ()
+            for candidate in candidates:
+                if (
+                    isinstance(candidate, str)
+                    and candidate
+                    and (not query_key or query_key in candidate.casefold())
+                ):
+                    values.add(candidate)
+            if isinstance(observed, datetime):
+                observed_at = max(observed_at, observed) if observed_at else observed
+        return CatalogVocabulary(
+            items=tuple(sorted(values, key=str.casefold)[:limit]),
+            observed_at=observed_at,
         )
 
     async def tree_nodes(

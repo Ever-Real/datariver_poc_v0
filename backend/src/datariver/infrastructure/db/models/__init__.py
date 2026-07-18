@@ -25,6 +25,7 @@ from datariver.infrastructure.db.models.governance import (
     ApprovalModel,
     ChangeItemModel,
     ChangeRequestModel,
+    ManualMetadataSubmissionModel,
     RegistrationContentBindingModel,
     StateTransitionModel,
 )
@@ -120,6 +121,7 @@ __all__ = [
     "JobModel",
     "LegalHoldEventModel",
     "LegalHoldModel",
+    "ManualMetadataSubmissionModel",
     "ObjectManifestModel",
     "OntologyVersionModel",
     "OutboxEventModel",

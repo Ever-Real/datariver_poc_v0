@@ -118,6 +118,11 @@ export interface CatalogSuggestions {
   meta: CatalogPolicyMeta
 }
 
+export interface CatalogVocabulary {
+  items: string[]
+  meta: CatalogPolicyMeta
+}
+
 export interface CatalogAssetDetail extends CatalogAsset {
   ownership: Array<Record<string, unknown>>
   glossary_terms: Array<Record<string, unknown>>
@@ -125,6 +130,23 @@ export interface CatalogAssetDetail extends CatalogAsset {
   schema_fields: Array<Record<string, unknown>>
   quality: Record<string, unknown>
   source_version: string
+}
+
+export interface ManualMetadataColumn {
+  field_path: string
+  description: string
+  tags: string[]
+  terms: string[]
+}
+
+export interface ManualMetadataSubmission {
+  id: string
+  state: 'QUEUED' | 'APPLYING' | 'APPLIED' | 'FAILED'
+  serial_number: number
+  row_count: number
+  source_version: string
+  created_at: string
+  version: number
 }
 
 export interface CatalogDescriptionPreview {

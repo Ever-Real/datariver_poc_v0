@@ -78,6 +78,7 @@ typed DataHub enrichment through the server anti-corruption layer.
 | `governance.change_requests` | `id`, `workspace_id + number UQ`, type/title/description/state/requester/classification, nullable requested due date/priority/urgency vocabulary, `version`, timestamps | change aggregate/state machine |
 | `governance.change_request_items` | `id`, `change_request_id + ordinal UQ`, typed provider target/aspect/operation, before/after hashes and document, nullable all-or-none server binding (`asset/type/system/domain/owner/classification/lifecycle/source/observed/hash`) | one immutable typed DataHub aspect plus creation-time target evidence; unbound legacy rows are quarantined |
 | `governance.registration_content_bindings` | candidate/hash UQ, change item UQ, request/item/creator composite workspace FKs, created time | append-only candidate-to-governed-item provenance; no ordinary update/delete grant |
+| `governance.manual_metadata_submissions` | workspace/asset/requester FKs, per-workspace serial UQ, immutable typed table/field payload, private bucket/key UQ, CSV SHA-256/size/row count, state/version/timestamps | independent MANUAL registration audit/CSV receipt; payload and receipt identity are immutable, while controlled worker state may advance |
 | `governance.approvals` | `id`, `change_request_id + stage + actor_id UQ`, decision/reason/actor/policy/time | append-only actor-separated decisions |
 | `governance.state_transitions` | `id`, request, from/to, actor, reason, policy decision, occurrence | append-only state history |
 

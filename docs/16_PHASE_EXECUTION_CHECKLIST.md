@@ -88,8 +88,9 @@ mistaken for an authorization or release approval.
   points using the existing server-authorized export-job boundary; the quarantine-review scope must
   not grant export.  Filters and the CSV job entry are present, but this local runtime deliberately
   has no isolated export worker and XLSX is not yet an approved export format; neither is simulated.
-- [x] P3.5-09 Restore registration MANUAL/BULK tab density, Korean hover help, and the controlled
-  MANUAL workbench layout while retaining typed preview/CR commands and no raw provider payloads.
+- [ ] P3.5-09 Restore registration MANUAL/BULK tab density, Korean hover help, and the v0.3
+  MANUAL workbench layout.  The CR-coupled body is now replaced by an independent typed submission
+  and immutable CSV-receipt stage; the Airflow-owned provider apply/read-back gate remains open.
 - [x] P3.5-10 Restore change-management overview counts, status badges, complete list columns and
   the `신규 CR 신청` entry point from the same authorization-filtered change-request read model.
 - [x] P3.5-11 Assess and implement a simplified administrator role-access experience over governed
@@ -108,8 +109,9 @@ number is independently committed only after its relevant checks pass.
 - [x] R1-01 Home/session: verified default Workspace hydration and dashboard CSR navigation.
 - [x] R1-02 Catalog: full authorized paging/tree/detail/filter/export presentation with the narrow
   administrator quarantine-review scope unchanged.
-- [x] R1-03 Registration: archive and replace the MANUAL body; compact tab parity and shared Oracle
-  selector behavior.
+- [ ] R1-03 Registration: archive and replace the MANUAL body; compact tab parity and shared Oracle
+  selector behavior are implemented.  The queued submission still requires Airflow apply/read-back
+  before this recovery item is complete.
 - [ ] R1-04 Change management: schema/system-assignee summary and complete typed list fields.
 - [ ] R1-05 Administration: user/system master parity and governed external-service profile master.
 
@@ -117,3 +119,34 @@ The complete item-by-item source inventory remains the controlled matrix in
 [`15_LEGACY_UX_PARITY_PLAN.md`](15_LEGACY_UX_PARITY_PLAN.md). This checklist tracks sequencing, not
 authorization: a checked UI item never substitutes for a server-side ABAC, retention or production
 release gate.
+
+## Resumed parity audit — 2026-07-18
+
+The following inventory was re-created from the v0.3 React pages and their API routers before
+continuing implementation.  It is a feature/contract checklist, not an archive of legacy source;
+replaced source is retained only under `.legacy_archive/`.
+
+- [x] RES-01 Audit workspace hydration (`v0.3 App`/auth) against v1 `/auth/me`, OIDC callback and
+  Dashboard navigation.  The v1 contract selects an active default membership only in server
+  response and holds it in React memory; authenticated browser verification remains a deployment
+  gate when no local session is available.
+- [x] RES-02 Audit Search (`SearchPage`, catalog router): suggestion preview, multi-keyword search,
+  safe match highlighting, advanced filters, Resource Tree, dense paged table, CSV/XLSX export,
+  details, bounded lineage and DataHub-lineage dialog.
+- [ ] RES-03 Verify the configured DataHub lineage embedding capability with an administrator SSO
+  session.  The application must not turn an upstream DataHub 403 into a generic administrator
+  bypass or send a provider token to the browser.
+- [x] RES-04 Audit Registration (`IngestionPage`, `MetadataEditTable`, `ColumnEditTable`,
+  `CreatableTagSelect`, ingestion router): selected table/column inputs, comma/Enter tag and term
+  selection, controlled vocabulary suggestions/creation, manual CSV evidence, bulk evidence, and
+  Airflow handoff.
+- [ ] RES-05 Replace the v1 CR-coupled MANUAL body after archiving it.  Implement a separate,
+  idempotent manual-submission aggregate, immutable audit/items, server-authored CSV receipt in
+  deployment-configured `datariver-infoschema`, and an Airflow-owned apply/read-back flow.
+- [ ] RES-06 Audit and restore Change Management (`ChangeManagementPage`, `CRListTable`,
+  `CRRegistrationModal`, CR router): schema/system/assignee overview, complete list fields, create
+  form and lifecycle, and private request/test attachment manifests.
+- [ ] RES-07 Audit and restore `/admin` (`UsersPage`, `SystemsManagementView`, `ConnectionsPage`,
+  user/system/config routers): subject/membership master, system/schema/assignee priority, and
+  redacted approved service-profile administration.  Password provisioning, arbitrary URLs,
+  raw YAML and browser-controlled connection tests remain out of scope by design.

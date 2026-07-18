@@ -6,13 +6,14 @@ from datetime import timedelta
 from types import TracebackType
 from uuid import UUID
 
-from sqlalchemy import select
+from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from datariver.application.dto import IdempotencyRecord
 from datariver.application.ports import (
     ChangeRequestRepository,
     GovernanceUnitOfWork,
+    ManualMetadataSubmissionRepository,
     OutboxWriter,
 )
 from datariver.domain.authz import Classification
@@ -27,10 +28,16 @@ from datariver.domain.governance import (
     ChangeUrgency,
     Transition,
 )
+from datariver.domain.manual_metadata import (
+    ManualColumnMetadata,
+    ManualMetadataSubmission,
+    ManualMetadataSubmissionState,
+)
 from datariver.infrastructure.db.models.governance import (
     ApprovalModel,
     ChangeItemModel,
     ChangeRequestModel,
+    ManualMetadataSubmissionModel,
     StateTransitionModel,
 )
 from datariver.infrastructure.db.models.integration import IdempotencyKeyModel, OutboxEventModel
@@ -367,6 +374,115 @@ class SqlIdempotencyStore:
         )
 
 
+class SqlManualMetadataSubmissionRepository(ManualMetadataSubmissionRepository):
+    def __init__(self, session: AsyncSession) -> None:
+        self._session = session
+
+    async def allocate_serial_number(self) -> int:
+        value = await self._session.scalar(
+            text("SELECT nextval('governance.manual_metadata_submission_serial_seq')")
+        )
+        if not isinstance(value, int) or value < 1:
+            raise RuntimeError("Manual metadata submission serial allocation failed.")
+        return value
+
+    async def add(self, submission: ManualMetadataSubmission) -> None:
+        self._session.add(
+            ManualMetadataSubmissionModel(
+                id=submission.submission_id,
+                workspace_id=submission.workspace_id,
+                asset_id=submission.asset_id,
+                requester_id=submission.requester_id,
+                external_urn=submission.external_urn,
+                source_version=submission.source_version,
+                serial_number=submission.serial_number,
+                payload=_submission_payload(submission),
+                bucket=submission.bucket,
+                object_key=submission.object_key,
+                csv_sha256=submission.csv_sha256,
+                csv_size_bytes=submission.csv_size_bytes,
+                row_count=submission.row_count,
+                state=submission.state.value,
+                created_at=submission.created_at,
+                updated_at=submission.updated_at,
+                version=submission.version,
+                applied_at=submission.applied_at,
+                last_error_code=submission.last_error_code,
+            )
+        )
+
+    async def get(
+        self, *, workspace_id: UUID, submission_id: UUID
+    ) -> ManualMetadataSubmission | None:
+        model = (
+            await self._session.scalars(
+                select(ManualMetadataSubmissionModel).where(
+                    ManualMetadataSubmissionModel.workspace_id == workspace_id,
+                    ManualMetadataSubmissionModel.id == submission_id,
+                )
+            )
+        ).one_or_none()
+        return _submission_from_model(model) if model is not None else None
+
+
+def _submission_payload(submission: ManualMetadataSubmission) -> dict[str, object]:
+    return {
+        "description": submission.description,
+        "domain": submission.domain,
+        "tags": list(submission.tags),
+        "terms": list(submission.terms),
+        "columns": [
+            {
+                "field_path": column.field_path,
+                "description": column.description,
+                "tags": list(column.tags),
+                "terms": list(column.terms),
+            }
+            for column in submission.columns
+        ],
+    }
+
+
+def _submission_from_model(model: ManualMetadataSubmissionModel) -> ManualMetadataSubmission:
+    payload = model.payload
+    raw_columns = payload.get("columns", [])
+    columns = tuple(
+        ManualColumnMetadata(
+            field_path=str(value["field_path"]),
+            description=str(value.get("description", "")),
+            tags=tuple(str(item) for item in value.get("tags", [])),
+            terms=tuple(str(item) for item in value.get("terms", [])),
+        )
+        for value in raw_columns
+        if isinstance(value, dict) and isinstance(value.get("field_path"), str)
+    )
+    return ManualMetadataSubmission(
+        submission_id=model.id,
+        workspace_id=model.workspace_id,
+        asset_id=model.asset_id,
+        external_urn=model.external_urn,
+        requester_id=model.requester_id,
+        source_version=model.source_version,
+        serial_number=model.serial_number,
+        description=str(payload.get("description", "")),
+        domain=str(payload["domain"]) if payload.get("domain") is not None else None,
+        tags=tuple(str(item) for item in payload.get("tags", [])),
+        terms=tuple(str(item) for item in payload.get("terms", [])),
+        columns=columns,
+        bucket=model.bucket,
+        object_key=model.object_key,
+        csv_sha256=model.csv_sha256,
+        csv_size_bytes=model.csv_size_bytes,
+        row_count=model.row_count,
+        state=ManualMetadataSubmissionState(model.state),
+        created_at=model.created_at,
+        updated_at=model.updated_at,
+        version=model.version,
+        applied_at=model.applied_at,
+        last_error_code=model.last_error_code,
+    )
+
+
 class SqlGovernanceUnitOfWork(GovernanceUnitOfWork):
     def __init__(
         self,
@@ -378,6 +494,7 @@ class SqlGovernanceUnitOfWork(GovernanceUnitOfWork):
         self._session: AsyncSession | None = session
         self._owns_session = session is None
         self.change_requests: SqlChangeRequestRepository
+        self.manual_metadata_submissions: SqlManualMetadataSubmissionRepository
         self.outbox: SqlOutboxWriter
         self.idempotency: SqlIdempotencyStore
         self._committed = False
@@ -386,6 +503,7 @@ class SqlGovernanceUnitOfWork(GovernanceUnitOfWork):
         if self._session is None:
             self._session = self._session_factory()
         self.change_requests = SqlChangeRequestRepository(self._session)
+        self.manual_metadata_submissions = SqlManualMetadataSubmissionRepository(self._session)
         self.outbox = SqlOutboxWriter(self._session)
         self.idempotency = SqlIdempotencyStore(self._session)
         return self

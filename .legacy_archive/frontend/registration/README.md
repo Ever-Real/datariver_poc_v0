@@ -5,3 +5,8 @@
 - Archived: 2026-07-18.
 - Replacement: `frontend/src/features/registration/RegistrationPage.tsx`.
 - The snapshot is excluded from TypeScript compilation and is not imported.
+
+Additional snapshots use a descriptive suffix.  In particular,
+`RegistrationManualWorkbench.cr-coupled.tsx` is the source removed during the
+resumed parity work because it opened Change Request proposal components from
+the registration page.

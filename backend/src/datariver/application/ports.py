@@ -26,6 +26,7 @@ from datariver.application.dto import (
     CatalogPage,
     CatalogSuggestions,
     CatalogTreePage,
+    CatalogVocabulary,
     ChangeRequestSchemaOverview,
     ChatDraft,
     ChatEvidence,
@@ -58,6 +59,7 @@ from datariver.domain.authz import Decision, SubjectAttributes
 from datariver.domain.common import DomainEvent
 from datariver.domain.governance import ChangeRequest
 from datariver.domain.knowledge import ChangeSetState, GraphChangeOperation, GraphSnapshot
+from datariver.domain.manual_metadata import ManualMetadataSubmission
 from datariver.domain.registration import CompletedUploadPart, UploadManifest, UploadPreparation
 from datariver.domain.retention import (
     ArchiveCapability,
@@ -188,6 +190,16 @@ class CatalogDiscoveryReader(Protocol):
         cursor: str | None,
         limit: int,
     ) -> CatalogTreePage: ...
+
+    async def vocabulary(
+        self,
+        *,
+        subject: SubjectAttributes,
+        access: ClassificationAccessSnapshot,
+        kind: str,
+        query: str,
+        limit: int,
+    ) -> CatalogVocabulary: ...
 
 
 class CatalogWatermarkReader(Protocol):
@@ -366,6 +378,7 @@ class OutboxWriter(Protocol):
 
 class GovernanceUnitOfWork(Protocol):
     change_requests: ChangeRequestRepository
+    manual_metadata_submissions: ManualMetadataSubmissionRepository
     outbox: OutboxWriter
     idempotency: IdempotencyStore
 
@@ -383,6 +396,16 @@ class GovernanceUnitOfWork(Protocol):
     async def rollback(self) -> None: ...
 
     async def set_security_context(self, *, workspace_id: UUID, subject_id: UUID) -> None: ...
+
+
+class ManualMetadataSubmissionRepository(Protocol):
+    async def allocate_serial_number(self) -> int: ...
+
+    async def add(self, submission: ManualMetadataSubmission) -> None: ...
+
+    async def get(
+        self, *, workspace_id: UUID, submission_id: UUID
+    ) -> ManualMetadataSubmission | None: ...
 
 
 class RetentionPolicyRepository(Protocol):

@@ -92,6 +92,11 @@ class CatalogSuggestionsResponse(BaseModel):
     meta: CatalogDiscoveryPolicyMeta
 
 
+class CatalogVocabularyResponse(BaseModel):
+    items: list[str]
+    meta: CatalogDiscoveryPolicyMeta
+
+
 class CatalogTreeNodeResponse(BaseModel):
     id: UUID
     kind: Literal["PLATFORM", "DATABASE", "SCHEMA", "ASSET"]
@@ -852,6 +857,55 @@ class UploadRegistrationProposal(BaseModel):
     after_document: dict[str, Any]
     title: str = Field(min_length=1, max_length=500)
     description: str = Field(default="", max_length=8000)
+
+
+class ManualMetadataColumnRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    field_path: str = Field(min_length=1, max_length=2_000)
+    description: str = Field(default="", max_length=10_000)
+    tags: list[str] = Field(default_factory=list, max_length=100)
+    terms: list[str] = Field(default_factory=list, max_length=100)
+
+    @field_validator("field_path", "description", "tags", "terms")
+    @classmethod
+    def reject_nul(cls, value: str | list[str]) -> str | list[str]:
+        values = (value,) if isinstance(value, str) else value
+        if any("\x00" in item for item in values):
+            raise ValueError("Manual metadata text must not contain NUL characters.")
+        return value
+
+
+class ManualMetadataSubmissionRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    asset_id: UUID
+    source_version: str = Field(min_length=1, max_length=255)
+    description: str = Field(default="", max_length=10_000)
+    domain: str | None = Field(default=None, max_length=1_000)
+    tags: list[str] = Field(default_factory=list, max_length=100)
+    terms: list[str] = Field(default_factory=list, max_length=100)
+    columns: list[ManualMetadataColumnRequest] = Field(min_length=1, max_length=2_000)
+
+    @field_validator("source_version", "description", "domain", "tags", "terms")
+    @classmethod
+    def reject_manual_submission_nul(cls, value: str | list[str] | None) -> str | list[str] | None:
+        if value is None:
+            return value
+        values = (value,) if isinstance(value, str) else value
+        if any("\x00" in item for item in values):
+            raise ValueError("Manual metadata text must not contain NUL characters.")
+        return value
+
+
+class ManualMetadataSubmissionResponse(BaseModel):
+    id: UUID
+    state: Literal["QUEUED", "APPLYING", "APPLIED", "FAILED"]
+    serial_number: int = Field(ge=1)
+    row_count: int = Field(ge=1)
+    source_version: str
+    created_at: datetime
+    version: int = Field(ge=1)
 
 
 class OntologyRequest(BaseModel):

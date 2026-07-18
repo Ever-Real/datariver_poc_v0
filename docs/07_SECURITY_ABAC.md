@@ -54,6 +54,13 @@ targets under the classification snapshot and applies grouped authorization. A m
 legacy or identity-drifted row fails the complete page through the same existence-hiding response;
 the API never reveals the failing ordinal or falls back to DataHub/object storage.
 
+Manual metadata submission requires fresh `catalog.read` and `registration.create` decisions on the
+selected current DATASET, then creates an append-only PostgreSQL record and a server-authored CSV
+receipt in the deployment-configured InfoSchema bucket.  The storage coordinate, Airflow service
+identity and DataHub service credential are never returned to the browser.  Vocabulary suggestions
+are catalog discovery reads under the same authorization scope; entering an absent Tag/Term/Domain
+only creates typed intent and never calls a provider from the browser.
+
 ## Mandatory policies
 
 - Workspace mismatch always denies.

@@ -34,6 +34,7 @@ from datariver.application.dto import (
     CatalogSuggestions,
     CatalogTreeNode,
     CatalogTreePage,
+    CatalogVocabulary,
     DataHubAssetEnrichment,
 )
 from datariver.application.errors import ExternalDependencyError
@@ -411,6 +412,39 @@ class CatalogService:
             else:
                 self._cache_access(cache="tree_write", outcome="success")
         return page
+
+    async def vocabulary(
+        self,
+        *,
+        subject: SubjectAttributes,
+        kind: str,
+        query: str,
+        limit: int,
+        environment: EnvironmentAttributes,
+        request_id: str,
+    ) -> CatalogVocabulary:
+        if kind not in {"TAG", "TERM", "DOMAIN"} or not 1 <= limit <= 50:
+            raise ValueError("Catalog vocabulary request is invalid.")
+        normalized_query, access, watermark = await self._prepare_discovery(
+            subject=subject,
+            query=query,
+            environment=environment,
+            request_id=request_id,
+        )
+        vocabulary = await self._discovery.vocabulary(
+            subject=subject,
+            access=access,
+            kind=kind,
+            query=normalized_query,
+            limit=limit,
+        )
+        return replace(
+            vocabulary,
+            projection_version=watermark,
+            policy_version=self._policy_version,
+            classification_policy_version=access.policy_version,
+            authorization_generation=access.authorization_generation,
+        )
 
     async def get_asset(
         self,

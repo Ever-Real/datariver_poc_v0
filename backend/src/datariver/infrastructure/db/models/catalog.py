@@ -32,6 +32,7 @@ from datariver.infrastructure.db.base import (
 class AssetProjectionModel(Base, UuidPrimaryKeyMixin, TimestampMixin):
     __tablename__ = "assets_projection"
     __table_args__ = (
+        UniqueConstraint("workspace_id", "id", name="uq_assets_projection_workspace_id"),
         UniqueConstraint("workspace_id", "urn_hash"),
         CheckConstraint("jsonb_typeof(tags) = 'array'", name="tags_array"),
         CheckConstraint("jsonb_typeof(glossary_terms) = 'array'", name="glossary_terms_array"),

@@ -93,7 +93,7 @@ describe('Registration workbench', () => {
     ))).toBe(true))
   })
 
-  it('uses the v0.3 property table and column grid without direct provider writes', () => {
+  it('uses the v0.3 property table and column grid with an independent manual submission', async () => {
     const asset: CatalogAssetDetail = {
       id: 'asset-1',
       external_urn: 'urn:li:dataset:(urn:li:dataPlatform:postgres,seed.wafer,DEV)',
@@ -116,8 +116,17 @@ describe('Registration workbench', () => {
       quality: {},
       source_version: 'source-1',
     }
+    const request = vi.fn((path: string, options?: RequestOptions) => {
+      if (path === '/registration/manual-submissions' && options?.method === 'POST') {
+        return Promise.resolve({
+          id: 'submission-1', state: 'QUEUED', serial_number: 3, row_count: 2,
+          source_version: 'source-1', created_at: '2026-01-01T00:00:00Z', version: 1,
+        })
+      }
+      return Promise.resolve({ items: [], meta: emptyTree.meta })
+    })
     render(<RegistrationManualWorkbench
-      client={clientWith(vi.fn())}
+      client={clientWith(request)}
       asset={asset}
       loading={false}
       onClose={vi.fn()}
@@ -126,9 +135,16 @@ describe('Registration workbench', () => {
     expect(screen.getByText('Table Properties')).toBeInTheDocument()
     expect(screen.getByText('Column Schema Specifications')).toBeInTheDocument()
     expect(screen.getByText('wafer_id')).toBeInTheDocument()
-    fireEvent.click(screen.getByRole('button', { name: '설명 변경' }))
-    expect(screen.getByText('설명 변경 제안')).toBeInTheDocument()
+    expect(screen.getByLabelText('테이블 Description')).toHaveValue('Wafer production records.')
+    expect(screen.getByLabelText('wafer_id Description')).toHaveValue('Identifier')
     expect(screen.queryByLabelText('Aspect JSON')).not.toBeInTheDocument()
+    fireEvent.change(screen.getByLabelText('테이블 Description'), { target: { value: 'Verified wafer records.' } })
+    fireEvent.click(screen.getByRole('button', { name: 'SAVE' }))
+    await waitFor(() => expect(request).toHaveBeenCalledWith(
+      '/registration/manual-submissions',
+      expect.objectContaining({ method: 'POST', idempotencyKey: expect.stringMatching(/^manual-metadata-/) }),
+    ))
+    expect(screen.getByText(/제출 #3이 2개 행으로 저장되었습니다/)).toBeInTheDocument()
   })
 
   it('loads upload history only after the bulk workbench is selected', async () => {

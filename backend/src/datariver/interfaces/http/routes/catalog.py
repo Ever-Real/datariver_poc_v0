@@ -64,6 +64,7 @@ from datariver.interfaces.http.schemas import (
     CatalogSyncResponse,
     CatalogTreeNodeResponse,
     CatalogTreeResponse,
+    CatalogVocabularyResponse,
     ChangeRequestResponse,
     PageMeta,
 )
@@ -481,6 +482,35 @@ async def catalog_suggestions(
             policy_version=suggestions.policy_version,
             classification_policy_version=suggestions.classification_policy_version,
             authorization_generation=suggestions.authorization_generation,
+        ),
+    )
+
+
+@router.get("/vocabulary", response_model=CatalogVocabularyResponse)
+async def catalog_vocabulary(
+    request: Request,
+    context: ContextDep,
+    session: SessionDep,
+    kind: Annotated[Literal["TAG", "TERM", "DOMAIN"], Query()],
+    q: Annotated[str, Query(max_length=500)] = "",
+    limit: Annotated[int, Query(ge=1, le=50)] = 20,
+) -> CatalogVocabularyResponse:
+    vocabulary = await _service(request, session).vocabulary(
+        subject=context.subject,
+        kind=kind,
+        query=q,
+        limit=limit,
+        environment=context.environment,
+        request_id=context.request_id,
+    )
+    return CatalogVocabularyResponse(
+        items=list(vocabulary.items),
+        meta=CatalogDiscoveryPolicyMeta(
+            observed_at=vocabulary.observed_at,
+            projection_version=vocabulary.projection_version,
+            policy_version=vocabulary.policy_version,
+            classification_policy_version=vocabulary.classification_policy_version,
+            authorization_generation=vocabulary.authorization_generation,
         ),
     )
 

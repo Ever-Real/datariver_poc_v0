@@ -106,6 +106,7 @@ def upgrade() -> None:
         sa.CheckConstraint("jsonb_typeof(glossary_terms) = 'array'", name=op.f('ck_assets_projection_glossary_terms_array')),
         sa.CheckConstraint("jsonb_typeof(tags) = 'array'", name=op.f('ck_assets_projection_tags_array')),
         sa.PrimaryKeyConstraint('id', name=op.f('pk_assets_projection')),
+        sa.UniqueConstraint('workspace_id', 'id', name='uq_assets_projection_workspace_id'),
         sa.UniqueConstraint('workspace_id', 'urn_hash', name=op.f('uq_assets_projection_workspace_id_urn_hash')),
         schema='catalog'
         )
@@ -690,6 +691,44 @@ def upgrade() -> None:
         op.execute('ALTER TABLE catalog.export_requests FORCE ROW LEVEL SECURITY')
         op.execute("CREATE POLICY workspace_isolation ON catalog.export_requests USING (workspace_id = NULLIF(current_setting('app.workspace_id', true), '')::uuid) WITH CHECK (workspace_id = NULLIF(current_setting('app.workspace_id', true), '')::uuid)")
         op.execute("CREATE POLICY catalog_export_owner_select ON catalog.export_requests AS RESTRICTIVE FOR SELECT USING (current_user <> 'datariver_app' OR requested_by = NULLIF(current_setting('app.subject_id', true), '')::uuid)")
+        op.create_table('manual_metadata_submissions',
+        sa.Column('workspace_id', sa.Uuid(), nullable=False),
+        sa.Column('asset_id', sa.Uuid(), nullable=False),
+        sa.Column('requester_id', sa.Uuid(), nullable=False),
+        sa.Column('external_urn', sa.Text(), nullable=False),
+        sa.Column('source_version', sa.String(length=255), nullable=False),
+        sa.Column('serial_number', sa.Integer(), nullable=False),
+        sa.Column('payload', sa.JSON().with_variant(postgresql.JSONB(none_as_null=True, astext_type=Text()), 'postgresql'), nullable=False),
+        sa.Column('bucket', sa.String(length=255), nullable=False),
+        sa.Column('object_key', sa.Text(), nullable=False),
+        sa.Column('csv_sha256', sa.String(length=64), nullable=False),
+        sa.Column('csv_size_bytes', sa.Integer(), nullable=False),
+        sa.Column('row_count', sa.Integer(), nullable=False),
+        sa.Column('state', sa.String(length=32), nullable=False),
+        sa.Column('applied_at', sa.DateTime(timezone=True), nullable=True),
+        sa.Column('last_error_code', sa.String(length=100), nullable=True),
+        sa.Column('id', sa.Uuid(), nullable=False),
+        sa.Column('created_at', sa.DateTime(timezone=True), server_default=sa.text('CURRENT_TIMESTAMP'), nullable=False),
+        sa.Column('updated_at', sa.DateTime(timezone=True), server_default=sa.text('CURRENT_TIMESTAMP'), nullable=False),
+        sa.Column('version', sa.Integer(), nullable=False),
+        sa.CheckConstraint("csv_sha256 ~ '^[0-9a-f]{64}$'", name=op.f('ck_manual_metadata_submissions_csv_sha256_valid')),
+        sa.CheckConstraint("jsonb_typeof(payload) = 'object'", name=op.f('ck_manual_metadata_submissions_payload_object')),
+        sa.CheckConstraint("state IN ('QUEUED', 'APPLYING', 'APPLIED', 'FAILED')", name=op.f('ck_manual_metadata_submissions_state_vocabulary')),
+        sa.CheckConstraint('csv_size_bytes > 0', name=op.f('ck_manual_metadata_submissions_csv_size_bytes_positive')),
+        sa.CheckConstraint('row_count > 0', name=op.f('ck_manual_metadata_submissions_row_count_positive')),
+        sa.CheckConstraint('serial_number > 0', name=op.f('ck_manual_metadata_submissions_serial_number_positive')),
+        sa.ForeignKeyConstraint(['workspace_id', 'asset_id'], ['catalog.assets_projection.workspace_id', 'catalog.assets_projection.id'], name='fk_manual_metadata_submissions_asset', ondelete='RESTRICT'),
+        sa.ForeignKeyConstraint(['workspace_id', 'requester_id'], ['iam.workspace_memberships.workspace_id', 'iam.workspace_memberships.subject_id'], name='fk_manual_metadata_submissions_requester', ondelete='RESTRICT'),
+        sa.PrimaryKeyConstraint('id', name=op.f('pk_manual_metadata_submissions')),
+        sa.UniqueConstraint('bucket', 'object_key', name=op.f('uq_manual_metadata_submissions_bucket_object_key')),
+        sa.UniqueConstraint('workspace_id', 'id', name=op.f('uq_manual_metadata_submissions_workspace_id_id')),
+        sa.UniqueConstraint('workspace_id', 'serial_number', name=op.f('uq_manual_metadata_submissions_workspace_id_serial_number')),
+        schema='governance'
+        )
+        op.create_index('ix_manual_metadata_submissions_workspace_state', 'manual_metadata_submissions', ['workspace_id', 'state', 'created_at'], unique=False, schema='governance')
+        op.execute('ALTER TABLE governance.manual_metadata_submissions ENABLE ROW LEVEL SECURITY')
+        op.execute('ALTER TABLE governance.manual_metadata_submissions FORCE ROW LEVEL SECURITY')
+        op.execute("CREATE POLICY workspace_isolation ON governance.manual_metadata_submissions USING (workspace_id = NULLIF(current_setting('app.workspace_id', true), '')::uuid) WITH CHECK (workspace_id = NULLIF(current_setting('app.workspace_id', true), '')::uuid)")
         op.create_table('admin_access_requests',
         sa.Column('workspace_id', sa.Uuid(), nullable=False),
         sa.Column('requester_id', sa.Uuid(), nullable=False),
@@ -1808,6 +1847,7 @@ def downgrade() -> None:
         op.drop_table('upload_preparation_jobs', schema='integration')
         op.drop_table('inference_provider_profile_versions', schema='integration')
         op.drop_table('admin_access_requests', schema='iam')
+        op.drop_table('manual_metadata_submissions', schema='governance')
         op.drop_table('export_requests', schema='catalog')
         op.drop_table('classification_access_policy_versions', schema='authz')
         op.drop_table('api_products', schema='sharing')
