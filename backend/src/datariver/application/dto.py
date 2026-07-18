@@ -400,6 +400,20 @@ class CatalogColumnDescriptionPreview:
 
 
 @dataclass(frozen=True, slots=True)
+class CatalogControlledMetadataPreview:
+    asset_id: UUID
+    target_ref: str
+    aspect_name: str
+    current_refs: tuple[str, ...]
+    proposed_refs: tuple[str, ...]
+    before_hash: str
+    after_hash: str
+    preview_etag: str
+    source_version: str
+    observed_at: datetime
+
+
+@dataclass(frozen=True, slots=True)
 class GovernanceApplyClaim:
     change_request: ChangeRequest
     job_id: UUID

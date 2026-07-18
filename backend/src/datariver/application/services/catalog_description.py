@@ -9,6 +9,7 @@ from datariver.application.classification_access import ClassificationAccessReso
 from datariver.application.dto import (
     CatalogAssetIndex,
     CatalogColumnDescriptionPreview,
+    CatalogControlledMetadataPreview,
     CatalogDescriptionPreview,
     DataHubAspectSnapshot,
 )
@@ -41,8 +42,15 @@ from datariver.domain.governance import (
 
 DATASET_PROPERTIES_ASPECT = "datasetProperties"
 SCHEMA_METADATA_ASPECT = "schemaMetadata"
+CONTROLLED_METADATA_ASPECTS = frozenset({"domains", "globalTags", "glossaryTerms"})
+CONTROLLED_METADATA_URN_PREFIXES = {
+    "domains": "urn:li:domain:",
+    "globalTags": "urn:li:tag:",
+    "glossaryTerms": "urn:li:glossaryTerm:",
+}
 MAXIMUM_DESCRIPTION_LENGTH = 10_000
 MAXIMUM_FIELD_PATH_LENGTH = 2_000
+MAXIMUM_CONTROLLED_METADATA_REFS = 100
 
 
 class GovernedChangeRequestCreator(Protocol):
@@ -299,6 +307,118 @@ class CatalogDescriptionService:
             require_raw_operator_gate=False,
         )
 
+    async def preview_controlled_metadata(
+        self,
+        *,
+        asset_id: UUID,
+        aspect_name: str,
+        refs: tuple[str, ...],
+        subject: SubjectAttributes,
+        environment: EnvironmentAttributes,
+        request_id: str,
+    ) -> CatalogControlledMetadataPreview:
+        self._validate_controlled_metadata(aspect_name=aspect_name, refs=refs)
+        asset, snapshot = await self._read_current(
+            asset_id=asset_id,
+            subject=subject,
+            environment=environment,
+            request_id=request_id,
+            aspect_name=aspect_name,
+        )
+        current_refs, proposed_document = self._proposed_controlled_metadata_document(
+            snapshot=snapshot,
+            aspect_name=aspect_name,
+            refs=refs,
+        )
+        return CatalogControlledMetadataPreview(
+            asset_id=asset.asset_id,
+            target_ref=asset.external_urn,
+            aspect_name=aspect_name,
+            current_refs=current_refs,
+            proposed_refs=refs,
+            before_hash=snapshot.content_hash,
+            after_hash=canonical_json_hash(proposed_document),
+            preview_etag=self._controlled_metadata_preview_etag(
+                asset=asset,
+                snapshot=snapshot,
+                aspect_name=aspect_name,
+            ),
+            source_version=snapshot.source_version,
+            observed_at=snapshot.observed_at,
+        )
+
+    async def create_controlled_metadata_change_request(
+        self,
+        *,
+        asset_id: UUID,
+        aspect_name: str,
+        refs: tuple[str, ...],
+        expected_preview_etag: str,
+        title: str,
+        change_description: str,
+        number: str,
+        subject: SubjectAttributes,
+        environment: EnvironmentAttributes,
+        request_id: str,
+        idempotency_key: str,
+        request_hash: str,
+    ) -> ChangeRequest:
+        self._validate_controlled_metadata(aspect_name=aspect_name, refs=refs)
+        asset, snapshot = await self._read_current(
+            asset_id=asset_id,
+            subject=subject,
+            environment=environment,
+            request_id=request_id,
+            aspect_name=aspect_name,
+        )
+        locked_asset = await self._lock_current_target(
+            expected=asset,
+            subject=subject,
+            environment=environment,
+        )
+        current_preview_etag = self._controlled_metadata_preview_etag(
+            asset=locked_asset,
+            snapshot=snapshot,
+            aspect_name=aspect_name,
+        )
+        if current_preview_etag != expected_preview_etag:
+            raise ConflictError(
+                "The controlled metadata preview is stale.",
+                details={"code": "PREVIEW_ETAG_MISMATCH"},
+            )
+        _, proposed_document = self._proposed_controlled_metadata_document(
+            snapshot=snapshot,
+            aspect_name=aspect_name,
+            refs=refs,
+        )
+        return await self._governance.create_change_request(
+            workspace_id=subject.workspace_id,
+            number=number,
+            request_type="CATALOG_CONTROLLED_METADATA",
+            title=title,
+            description=change_description,
+            requester_id=subject.subject_id,
+            items=[
+                ChangeItem(
+                    item_id=uuid7(),
+                    target_type="DATAHUB_ASPECT",
+                    target_ref=locked_asset.external_urn,
+                    operation="UPSERT",
+                    after_document=proposed_document,
+                    aspect_name=aspect_name,
+                    before_hash=snapshot.content_hash,
+                    after_hash=canonical_json_hash(proposed_document),
+                )
+            ],
+            subject=subject,
+            classification=locked_asset.classification,
+            environment=environment,
+            request_id=request_id,
+            idempotency_key=idempotency_key,
+            request_hash=request_hash,
+            require_raw_operator_gate=False,
+        )
+
     async def _read_current(
         self,
         *,
@@ -486,6 +606,52 @@ class CatalogDescriptionService:
             field["description"] = proposed_description
         return current, document
 
+    @classmethod
+    def _proposed_controlled_metadata_document(
+        cls,
+        *,
+        snapshot: DataHubAspectSnapshot,
+        aspect_name: str,
+        refs: tuple[str, ...],
+    ) -> tuple[tuple[str, ...], dict[str, Any]]:
+        cls._validate_controlled_metadata(aspect_name=aspect_name, refs=refs)
+        document = _mutable_json_object(snapshot.document)
+        current_refs = cls._controlled_metadata_refs(
+            document=document,
+            aspect_name=aspect_name,
+        )
+        if current_refs == refs:
+            raise ValidationError(
+                "The proposed controlled metadata does not change the current value.",
+                details={"code": "CONTROLLED_METADATA_UNCHANGED"},
+            )
+        if aspect_name == "domains":
+            document["domains"] = [{"urn": ref} for ref in refs]
+        elif aspect_name == "globalTags":
+            document["tags"] = [{"tag": ref} for ref in refs]
+        else:
+            document["terms"] = [{"term": ref} for ref in refs]
+        return current_refs, document
+
+    @staticmethod
+    def _controlled_metadata_refs(*, document: dict[str, Any], aspect_name: str) -> tuple[str, ...]:
+        field_name, nested_name = {
+            "domains": ("domains", "urn"),
+            "globalTags": ("tags", "tag"),
+            "glossaryTerms": ("terms", "term"),
+        }[aspect_name]
+        raw_values = document.get(field_name)
+        values: list[str] = []
+        for raw_value in raw_values if isinstance(raw_values, list) else []:
+            candidate: object = raw_value
+            if isinstance(raw_value, dict):
+                candidate = raw_value.get(nested_name, raw_value.get("urn"))
+            if isinstance(candidate, dict):
+                candidate = candidate.get("urn")
+            if isinstance(candidate, str):
+                values.append(candidate)
+        return tuple(sorted(set(values)))
+
     @staticmethod
     def _validate_snapshot(
         *,
@@ -565,6 +731,27 @@ class CatalogDescriptionService:
         )
         return f'"{composite_hash}"'
 
+    @classmethod
+    def _controlled_metadata_preview_etag(
+        cls,
+        *,
+        asset: CatalogAssetIndex,
+        snapshot: DataHubAspectSnapshot,
+        aspect_name: str,
+    ) -> str:
+        composite_hash = canonical_json_hash(
+            {
+                "contract": "catalog-controlled-metadata-preview-v1",
+                "workspace_id": str(asset.workspace_id),
+                "asset_id": str(asset.asset_id),
+                "target_binding_hash": cls._target_binding_hash(asset),
+                "aspect_name": aspect_name,
+                "aspect_hash": snapshot.content_hash,
+                "provider_source_version": snapshot.source_version,
+            }
+        )
+        return f'"{composite_hash}"'
+
     @staticmethod
     def _validate_description(value: str) -> None:
         if len(value) > MAXIMUM_DESCRIPTION_LENGTH or "\x00" in value:
@@ -574,6 +761,18 @@ class CatalogDescriptionService:
     def _validate_field_path(value: str) -> None:
         if not value.strip() or len(value) > MAXIMUM_FIELD_PATH_LENGTH or "\x00" in value:
             raise ValidationError("The requested schema field path is invalid.")
+
+    @staticmethod
+    def _validate_controlled_metadata(*, aspect_name: str, refs: tuple[str, ...]) -> None:
+        prefix = CONTROLLED_METADATA_URN_PREFIXES.get(aspect_name)
+        if prefix is None or aspect_name not in CONTROLLED_METADATA_ASPECTS:
+            raise ValidationError("The requested controlled metadata aspect is invalid.")
+        if len(refs) > MAXIMUM_CONTROLLED_METADATA_REFS or len(set(refs)) != len(refs):
+            raise ValidationError("Controlled metadata references are invalid.")
+        if aspect_name == "domains" and len(refs) > 1:
+            raise ValidationError("A dataset may have at most one controlled domain reference.")
+        if any(not ref.startswith(prefix) or len(ref) > 2_000 or "\x00" in ref for ref in refs):
+            raise ValidationError("A controlled metadata reference is invalid.")
 
     @staticmethod
     def _validate_description_request_time(environment: EnvironmentAttributes) -> None:

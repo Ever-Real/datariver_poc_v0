@@ -7,6 +7,7 @@ import { CatalogDetailPane } from '../catalog/CatalogDetailPane'
 import { CatalogResourceTree } from '../catalog/CatalogResourceTree'
 import { RegistrationBulkWorkbench } from './RegistrationBulkWorkbench'
 import { RegistrationColumnDescriptionEditor } from './RegistrationColumnDescriptionEditor'
+import { RegistrationControlledMetadataEditor } from './RegistrationControlledMetadataEditor'
 import { RegistrationDescriptionEditor } from './RegistrationDescriptionEditor'
 
 type RegistrationMode = 'MANUAL' | 'BULK'
@@ -90,6 +91,11 @@ export function RegistrationPage({ client }: { client: ApiClient }) {
                     />
                     <RegistrationColumnDescriptionEditor
                       key={`${selectedAssetDetail.id}:columns`}
+                      client={client}
+                      asset={selectedAssetDetail}
+                    />
+                    <RegistrationControlledMetadataEditor
+                      key={`${selectedAssetDetail.id}:controlled-metadata`}
                       client={client}
                       asset={selectedAssetDetail}
                     />

@@ -147,6 +147,21 @@ export interface CatalogColumnDescriptionPreview {
   observed_at: string
 }
 
+export type CatalogControlledMetadataAspect = 'domains' | 'globalTags' | 'glossaryTerms'
+
+export interface CatalogControlledMetadataPreview {
+  asset_id: string
+  target_ref: string
+  aspect_name: CatalogControlledMetadataAspect
+  current_refs: string[]
+  proposed_refs: string[]
+  before_hash: string
+  after_hash: string
+  preview_etag: string
+  source_version: string
+  observed_at: string
+}
+
 export interface CatalogTreeNode {
   id: string
   kind: 'PLATFORM' | 'DATABASE' | 'SCHEMA' | 'ASSET'

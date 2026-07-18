@@ -234,6 +234,45 @@ class CatalogColumnDescriptionPreviewResponse(BaseModel):
     observed_at: datetime
 
 
+class CatalogControlledMetadataPreviewRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    aspect_name: Literal["domains", "globalTags", "glossaryTerms"]
+    refs: list[str] = Field(max_length=100)
+
+    @field_validator("refs")
+    @classmethod
+    def require_unique_nonempty_refs(cls, value: list[str]) -> list[str]:
+        if len(set(value)) != len(value) or any(not item or "\x00" in item for item in value):
+            raise ValueError("Controlled metadata references must be unique non-empty text.")
+        return value
+
+
+class CatalogControlledMetadataChangeRequest(CatalogControlledMetadataPreviewRequest):
+    title: str = Field(min_length=1, max_length=500)
+    change_description: str = Field(min_length=1, max_length=10_000)
+
+    @field_validator("title", "change_description")
+    @classmethod
+    def require_controlled_metadata_auditable_text(cls, value: str) -> str:
+        if "\x00" in value or not value.strip():
+            raise ValueError("Title and change_description must contain visible text.")
+        return value
+
+
+class CatalogControlledMetadataPreviewResponse(BaseModel):
+    asset_id: UUID
+    target_ref: str
+    aspect_name: Literal["domains", "globalTags", "glossaryTerms"]
+    current_refs: list[str]
+    proposed_refs: list[str]
+    before_hash: str = Field(pattern="^[0-9a-f]{64}$")
+    after_hash: str = Field(pattern="^[0-9a-f]{64}$")
+    preview_etag: str = Field(pattern='^"[0-9a-f]{64}"$')
+    source_version: str
+    observed_at: datetime
+
+
 class CatalogSyncRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 

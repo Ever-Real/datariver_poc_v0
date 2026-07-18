@@ -153,6 +153,8 @@ def test_openapi_contains_all_required_product_modules() -> None:
         "/api/v1/catalog/export-capability",
         "/api/v1/catalog/assets/{asset_id}/description-previews",
         "/api/v1/catalog/assets/{asset_id}/description-change-requests",
+        "/api/v1/catalog/assets/{asset_id}/controlled-metadata-previews",
+        "/api/v1/catalog/assets/{asset_id}/controlled-metadata-change-requests",
         "/api/v1/uploads",
         "/api/v1/uploads/{upload_id}/preparations",
         "/api/v1/uploads/{upload_id}/preparations/{preparation_id}",

@@ -359,6 +359,92 @@ async def test_column_description_rejects_a_schema_field_that_drifted() -> None:
 
 
 @pytest.mark.asyncio
+async def test_controlled_metadata_preserves_provider_document_and_uses_one_governed_aspect() -> (
+    None
+):
+    service, index, datahub, governance, subject, environment, _ = _fixture()
+    tag_document = {
+        "tags": [{"tag": "urn:li:tag:legacy"}],
+        "auditStamp": {"actor": "urn:li:corpuser:ingestor"},
+    }
+    datahub.snapshot = replace(
+        datahub.snapshot,
+        aspect_name="globalTags",
+        document=MappingProxyType(tag_document),
+        content_hash=canonical_json_hash(tag_document),
+    )
+
+    preview = await service.preview_controlled_metadata(
+        asset_id=index.detail.index.asset_id,
+        aspect_name="globalTags",
+        refs=("urn:li:tag:governed",),
+        subject=subject,
+        environment=environment,
+        request_id="tags-preview",
+    )
+
+    assert preview.current_refs == ("urn:li:tag:legacy",)
+    assert preview.proposed_refs == ("urn:li:tag:governed",)
+    assert preview.before_hash == datahub.snapshot.content_hash
+    assert preview.after_hash == canonical_json_hash(
+        {
+            "tags": [{"tag": "urn:li:tag:governed"}],
+            "auditStamp": {"actor": "urn:li:corpuser:ingestor"},
+        }
+    )
+
+    await service.create_controlled_metadata_change_request(
+        asset_id=index.detail.index.asset_id,
+        aspect_name="globalTags",
+        refs=("urn:li:tag:governed",),
+        expected_preview_etag=preview.preview_etag,
+        title="Apply governed tag",
+        change_description="Replace the legacy tag after catalog review.",
+        number="CR-FAB-260718-9A3C",
+        subject=subject,
+        environment=environment,
+        request_id="tags-create",
+        idempotency_key="controlled-metadata-change-0001",
+        request_hash="c" * 64,
+    )
+
+    assert governance.arguments is not None
+    assert governance.arguments["require_raw_operator_gate"] is False
+    item = governance.arguments["items"][0]
+    assert item.aspect_name == "globalTags"
+    assert item.before_hash == preview.before_hash
+    assert item.after_hash == preview.after_hash
+    assert item.after_document == {
+        "tags": [{"tag": "urn:li:tag:governed"}],
+        "auditStamp": {"actor": "urn:li:corpuser:ingestor"},
+    }
+
+
+@pytest.mark.asyncio
+async def test_controlled_metadata_rejects_wrong_urn_family_and_multiple_domains() -> None:
+    service, index, _, _, subject, environment, _ = _fixture()
+
+    with pytest.raises(ValidationError, match="controlled metadata reference"):
+        await service.preview_controlled_metadata(
+            asset_id=index.detail.index.asset_id,
+            aspect_name="globalTags",
+            refs=("urn:li:glossaryTerm:not-a-tag",),
+            subject=subject,
+            environment=environment,
+            request_id="invalid-tag",
+        )
+    with pytest.raises(ValidationError, match="at most one controlled domain"):
+        await service.preview_controlled_metadata(
+            asset_id=index.detail.index.asset_id,
+            aspect_name="domains",
+            refs=("urn:li:domain:fab", "urn:li:domain:yield"),
+            subject=subject,
+            environment=environment,
+            request_id="invalid-domain",
+        )
+
+
+@pytest.mark.asyncio
 async def test_empty_description_removes_only_the_description_field() -> None:
     service, index, _, governance, subject, environment, _ = _fixture()
     preview = await service.preview(
