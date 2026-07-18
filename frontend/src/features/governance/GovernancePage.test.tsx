@@ -13,6 +13,10 @@ function changeRequest(overrides: Partial<ChangeRequestRecord> = {}): ChangeRequ
     description: '설명 변경을 검토합니다.',
     state: 'REGISTERED',
     requester_id: 'subject-1',
+    created_at: '2026-07-17T01:02:03Z',
+    requested_due_date: null,
+    priority: null,
+    urgency: null,
     classification: 'INTERNAL',
     version: 7,
     items: [{

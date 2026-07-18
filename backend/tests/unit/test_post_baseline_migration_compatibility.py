@@ -25,6 +25,7 @@ MIGRATIONS: tuple[MigrationCase, ...] = (
         "_assert_chat_retention_binding_contract",
     ),
     ("0019_catalog_display_metadata_projection.py", "add_column", None),
+    ("0022_cr_schedule_and_system_master.py", "add_column", "_install_security_contract"),
 )
 
 

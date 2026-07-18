@@ -213,9 +213,10 @@ focused tests and applicable browser/runtime evidence exist.
 ### 3. Registration workbench
 
 - [x] `PAR-REC-009` Archive the replaced v1 MANUAL body under `.legacy_archive/` before removal.
-- [x] `PAR-REC-010` Rebuild MANUAL as the v0.3 left Resource Tree plus selected-table properties and
-  column-grid workbench; apply the shared Oracle tree normalization and retain typed preview/CR
-  creation rather than direct provider writes.
+- [ ] `PAR-REC-010` Replace the current MANUAL body with the v0.3 left Resource Tree plus selected-table
+  properties and column-grid workbench. It must stage governed metadata evidence independently of
+  Change Requests, then hand off to the allowlisted object-store/Airflow path rather than writing a
+  provider directly.
 - [x] `PAR-REC-011` Match the compact angular MANUAL/BULK tab treatment and hover-only Korean help;
   retain actual upload/preparation state instead of the legacy simulated Airflow tracker.
 

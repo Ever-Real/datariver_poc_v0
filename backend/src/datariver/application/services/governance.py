@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Sequence
+from datetime import date
 from typing import Protocol
 from uuid import UUID
 
@@ -17,8 +18,10 @@ from datariver.domain.common import ConflictError, ForbiddenError, NotFoundError
 from datariver.domain.governance import (
     ApprovalDecision,
     ChangeItem,
+    ChangePriority,
     ChangeRequest,
     ChangeState,
+    ChangeUrgency,
 )
 
 
@@ -208,6 +211,9 @@ class GovernanceService:
         idempotency_key: str,
         request_hash: str,
         require_raw_operator_gate: bool = True,
+        requested_due_date: date | None = None,
+        priority: ChangePriority | None = None,
+        urgency: ChangeUrgency | None = None,
     ) -> ChangeRequest:
         if self._target_authorizer is None:
             raise RuntimeError("Change-request creation requires a target authorizer.")
@@ -292,6 +298,9 @@ class GovernanceService:
                 requester_id=requester_id,
                 items=list(bound_items),
                 classification=classification,
+                requested_due_date=requested_due_date,
+                priority=priority,
+                urgency=urgency,
             )
             await uow.change_requests.add(change_request)
             await uow.outbox.add_events(change_request.events)

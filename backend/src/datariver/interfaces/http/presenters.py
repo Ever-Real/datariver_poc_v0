@@ -4,6 +4,7 @@ from datariver.application.dto import (
     AdminReadContext,
     CatalogAssetDetail,
     CatalogAssetIndex,
+    ChangeRequestSchemaOverview,
     WorkspaceMembershipAccessRecord,
     WorkspaceMembershipSummary,
 )
@@ -17,7 +18,9 @@ from datariver.interfaces.http.schemas import (
     CatalogAssetResponse,
     CatalogAssetSummary,
     ChangeItemResponse,
+    ChangeRequestAssigneeResponse,
     ChangeRequestResponse,
+    ChangeRequestSchemaOverviewResponse,
     MembershipAccessCommandResponse,
     MembershipAccessDocumentRequest,
     MembershipAccessDocumentResponse,
@@ -167,6 +170,10 @@ def change_request_response(change_request: ChangeRequest) -> ChangeRequestRespo
         description=change_request.description,
         state=change_request.state.value,
         requester_id=change_request.requester_id,
+        created_at=change_request.created_at,
+        requested_due_date=change_request.requested_due_date,
+        priority=change_request.priority.value if change_request.priority is not None else None,
+        urgency=change_request.urgency.value if change_request.urgency is not None else None,
         classification=change_request.classification.name,
         version=change_request.version,
         items=[
@@ -217,4 +224,33 @@ def change_request_response(change_request: ChangeRequest) -> ChangeRequestRespo
             )
             for transition in change_request.transitions
         ],
+    )
+
+
+def change_request_schema_overview_response(
+    overview: ChangeRequestSchemaOverview,
+) -> ChangeRequestSchemaOverviewResponse:
+    return ChangeRequestSchemaOverviewResponse(
+        platform=overview.platform,
+        database_name=overview.database_name,
+        schema_name=overview.schema_name,
+        system_id=overview.system_id,
+        system_code=overview.system_code,
+        system_name=overview.system_name,
+        assignees=[
+            ChangeRequestAssigneeResponse(
+                subject_id=assignee.subject_id,
+                display_name=assignee.display_name,
+                responsibility=assignee.responsibility,
+                priority=assignee.priority,
+            )
+            for assignee in overview.assignees
+        ],
+        pending_count=overview.pending_count,
+        total_count=overview.total_count,
+        received_count=overview.received_count,
+        recheck_count=overview.recheck_count,
+        testing_count=overview.testing_count,
+        final_review_count=overview.final_review_count,
+        completed_count=overview.completed_count,
     )

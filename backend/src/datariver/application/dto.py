@@ -426,6 +426,32 @@ class CatalogControlledMetadataPreview:
 
 
 @dataclass(frozen=True, slots=True)
+class ChangeRequestAssigneeRecord:
+    subject_id: UUID
+    display_name: str
+    responsibility: str
+    priority: int
+
+
+@dataclass(frozen=True, slots=True)
+class ChangeRequestSchemaOverview:
+    platform: str
+    database_name: str
+    schema_name: str
+    system_id: UUID | None
+    system_code: str | None
+    system_name: str | None
+    assignees: tuple[ChangeRequestAssigneeRecord, ...]
+    pending_count: int
+    total_count: int
+    received_count: int
+    recheck_count: int
+    testing_count: int
+    final_review_count: int
+    completed_count: int
+
+
+@dataclass(frozen=True, slots=True)
 class GovernanceApplyClaim:
     change_request: ChangeRequest
     job_id: UUID

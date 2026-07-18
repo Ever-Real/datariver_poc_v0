@@ -361,6 +361,10 @@ export interface ChangeRequestRecord {
   description: string
   state: ChangeRequestState
   requester_id: string
+  created_at: string
+  requested_due_date: string | null
+  priority: 'LOW' | 'NORMAL' | 'HIGH' | 'CRITICAL' | null
+  urgency: 'NORMAL' | 'URGENT' | 'EMERGENCY' | null
   classification: string
   version: number
   items: Array<{
@@ -398,6 +402,28 @@ export interface ChangeRequestRecord {
     reason: string
     occurred_at: string
   }>
+}
+
+export interface ChangeRequestSchemaOverview {
+  platform: string
+  database_name: string
+  schema_name: string
+  system_id: string | null
+  system_code: string | null
+  system_name: string | null
+  assignees: Array<{
+    subject_id: string
+    display_name: string
+    responsibility: 'DEVELOPER' | 'DATA_STEWARD'
+    priority: number
+  }>
+  pending_count: number
+  total_count: number
+  received_count: number
+  recheck_count: number
+  testing_count: number
+  final_review_count: number
+  completed_count: number
 }
 
 export interface KnowledgeGraph {

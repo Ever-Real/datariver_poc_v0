@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import date, datetime
 from enum import StrEnum
 from typing import Any
 from uuid import UUID
@@ -76,6 +76,19 @@ ALLOWED_TRANSITIONS: dict[ChangeState, frozenset[ChangeState]] = {
 class ApprovalDecision(StrEnum):
     APPROVED = "APPROVED"
     REJECTED = "REJECTED"
+
+
+class ChangePriority(StrEnum):
+    LOW = "LOW"
+    NORMAL = "NORMAL"
+    HIGH = "HIGH"
+    CRITICAL = "CRITICAL"
+
+
+class ChangeUrgency(StrEnum):
+    NORMAL = "NORMAL"
+    URGENT = "URGENT"
+    EMERGENCY = "EMERGENCY"
 
 
 ALLOWED_DATAHUB_ASPECTS = frozenset(
@@ -205,6 +218,10 @@ class ChangeRequest:
     title: str
     description: str
     requester_id: UUID
+    created_at: datetime = field(default_factory=utc_now)
+    requested_due_date: date | None = None
+    priority: ChangePriority | None = None
+    urgency: ChangeUrgency | None = None
     classification: Classification = Classification.INTERNAL
     state: ChangeState = ChangeState.REGISTERED
     version: int = 1
@@ -225,6 +242,9 @@ class ChangeRequest:
         requester_id: UUID,
         items: list[ChangeItem],
         classification: Classification = Classification.INTERNAL,
+        requested_due_date: date | None = None,
+        priority: ChangePriority | None = None,
+        urgency: ChangeUrgency | None = None,
     ) -> ChangeRequest:
         if not title.strip():
             raise ValidationError("Change request title is required.")
@@ -275,6 +295,10 @@ class ChangeRequest:
             title=title.strip(),
             description=description.strip(),
             requester_id=requester_id,
+            created_at=utc_now(),
+            requested_due_date=requested_due_date,
+            priority=priority,
+            urgency=urgency,
             classification=classification,
             items=list(items),
         )

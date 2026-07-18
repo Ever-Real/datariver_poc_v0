@@ -11,7 +11,7 @@ const asset: CatalogAssetDetail = {
 }
 
 const proposal: ChangeRequestRecord = {
-  id: 'cr-1', number: 'CR-FAB-260718-9A3C', request_type: 'CATALOG_CONTROLLED_METADATA', title: 'wafer Tag 변경', description: 'Governed tag update', state: 'REGISTERED', requester_id: 'subject-1', classification: 'INTERNAL', version: 1, items: [], approvals: [], transitions: [],
+  id: 'cr-1', number: 'CR-FAB-260718-9A3C', request_type: 'CATALOG_CONTROLLED_METADATA', title: 'wafer Tag 변경', description: 'Governed tag update', state: 'REGISTERED', requester_id: 'subject-1', created_at: '2026-07-18T00:00:00Z', requested_due_date: null, priority: null, urgency: null, classification: 'INTERNAL', version: 1, items: [], approvals: [], transitions: [],
 }
 
 function clientWith(request: unknown): ApiClient {

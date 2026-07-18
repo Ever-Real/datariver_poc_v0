@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import date, datetime
 from typing import Any, Literal
 from uuid import UUID
 
@@ -368,6 +368,9 @@ class ChangeRequestCreate(BaseModel):
     classification: str = Field(
         default="INTERNAL", pattern="^(PUBLIC|INTERNAL|CONFIDENTIAL|RESTRICTED)$"
     )
+    requested_due_date: date | None = None
+    priority: Literal["LOW", "NORMAL", "HIGH", "CRITICAL"] | None = None
+    urgency: Literal["NORMAL", "URGENT", "EMERGENCY"] | None = None
     items: list[ChangeItemRequest] = Field(min_length=1, max_length=1)
 
 
@@ -432,6 +435,10 @@ class ChangeRequestResponse(BaseModel):
     description: str
     state: str
     requester_id: UUID
+    created_at: datetime
+    requested_due_date: date | None
+    priority: str | None
+    urgency: str | None
     classification: str
     version: int
     items: list[ChangeItemResponse]
@@ -439,8 +446,33 @@ class ChangeRequestResponse(BaseModel):
     transitions: list[TransitionResponse]
 
 
+class ChangeRequestAssigneeResponse(BaseModel):
+    subject_id: UUID
+    display_name: str
+    responsibility: Literal["DEVELOPER", "DATA_STEWARD"]
+    priority: int = Field(ge=1, le=999)
+
+
+class ChangeRequestSchemaOverviewResponse(BaseModel):
+    platform: str
+    database_name: str
+    schema_name: str
+    system_id: UUID | None
+    system_code: str | None
+    system_name: str | None
+    assignees: list[ChangeRequestAssigneeResponse]
+    pending_count: int = Field(ge=0)
+    total_count: int = Field(ge=0)
+    received_count: int = Field(ge=0)
+    recheck_count: int = Field(ge=0)
+    testing_count: int = Field(ge=0)
+    final_review_count: int = Field(ge=0)
+    completed_count: int = Field(ge=0)
+
+
 class ChangeRequestListResponse(BaseModel):
     items: list[ChangeRequestResponse]
+    overview: list[ChangeRequestSchemaOverviewResponse] = Field(default_factory=list)
 
 
 class CapabilityResponse(BaseModel):

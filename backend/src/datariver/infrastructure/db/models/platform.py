@@ -12,6 +12,7 @@ from sqlalchemy import (
     Index,
     Integer,
     String,
+    Text,
     UniqueConstraint,
     Uuid,
 )
@@ -71,6 +72,138 @@ class WorkspaceMembershipModel(Base, TimestampMixin, VersionMixin):
     clearance: Mapped[int] = mapped_column(default=0, nullable=False)
     attributes: Mapped[dict[str, Any]] = mapped_column(JSON_DOCUMENT, default=dict, nullable=False)
     active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+
+
+class DataSystemModel(Base, UuidPrimaryKeyMixin, TimestampMixin, VersionMixin):
+    """Canonical business-system master, scoped to exactly one workspace."""
+
+    __tablename__ = "data_systems"
+    __table_args__ = (
+        UniqueConstraint("workspace_id", "id"),
+        UniqueConstraint("workspace_id", "code"),
+        CheckConstraint("code ~ '^[A-Za-z][A-Za-z0-9_-]{1,99}$'", name="code_shape"),
+        Index("ix_data_systems_workspace_active_name", "workspace_id", "active", "name"),
+        {"schema": "platform"},
+    )
+
+    workspace_id: Mapped[UUID] = mapped_column(
+        Uuid(as_uuid=True),
+        ForeignKey("platform.workspaces.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    code: Mapped[str] = mapped_column(String(100), nullable=False)
+    name: Mapped[str] = mapped_column(String(255), nullable=False)
+    description: Mapped[str] = mapped_column(Text, default="", nullable=False)
+    active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+
+
+class SystemSchemaScopeModel(Base, UuidPrimaryKeyMixin, TimestampMixin, VersionMixin):
+    """An explicit DataHub platform/database/schema to business-system mapping."""
+
+    __tablename__ = "system_schema_scopes"
+    __table_args__ = (
+        UniqueConstraint("workspace_id", "id"),
+        UniqueConstraint("workspace_id", "platform", "database_name", "schema_name"),
+        ForeignKeyConstraint(
+            ("workspace_id", "system_id"),
+            ("platform.data_systems.workspace_id", "platform.data_systems.id"),
+            ondelete="CASCADE",
+            name="fk_system_schema_scopes_system",
+        ),
+        CheckConstraint("length(trim(platform)) > 0", name="platform_present"),
+        CheckConstraint("length(trim(database_name)) > 0", name="database_present"),
+        CheckConstraint("length(trim(schema_name)) > 0", name="schema_present"),
+        Index("ix_system_schema_scopes_workspace_system", "workspace_id", "system_id"),
+        {"schema": "platform"},
+    )
+
+    workspace_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), nullable=False)
+    system_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), nullable=False)
+    platform: Mapped[str] = mapped_column(String(100), nullable=False)
+    database_name: Mapped[str] = mapped_column(String(255), nullable=False)
+    schema_name: Mapped[str] = mapped_column(String(255), nullable=False)
+    active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+
+
+class SystemAssigneeModel(Base, UuidPrimaryKeyMixin, TimestampMixin, VersionMixin):
+    """A named human responsibility within a business-system master."""
+
+    __tablename__ = "system_assignees"
+    __table_args__ = (
+        UniqueConstraint("workspace_id", "id"),
+        UniqueConstraint("workspace_id", "system_id", "subject_id", "responsibility"),
+        ForeignKeyConstraint(
+            ("workspace_id", "system_id"),
+            ("platform.data_systems.workspace_id", "platform.data_systems.id"),
+            ondelete="CASCADE",
+            name="fk_system_assignees_system",
+        ),
+        ForeignKeyConstraint(
+            ("workspace_id", "subject_id"),
+            ("iam.workspace_memberships.workspace_id", "iam.workspace_memberships.subject_id"),
+            ondelete="RESTRICT",
+            name="fk_system_assignees_membership",
+        ),
+        CheckConstraint(
+            "responsibility IN ('DEVELOPER', 'DATA_STEWARD')",
+            name="responsibility_vocabulary",
+        ),
+        CheckConstraint("priority BETWEEN 1 AND 999", name="priority_range"),
+        Index(
+            "ix_system_assignees_workspace_system_priority",
+            "workspace_id",
+            "system_id",
+            "priority",
+        ),
+        {"schema": "platform"},
+    )
+
+    workspace_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), nullable=False)
+    system_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), nullable=False)
+    subject_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), nullable=False)
+    responsibility: Mapped[str] = mapped_column(String(32), nullable=False)
+    priority: Mapped[int] = mapped_column(Integer, nullable=False)
+    active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+
+
+class ExternalServiceProfileModel(Base, UuidPrimaryKeyMixin, TimestampMixin, VersionMixin):
+    """Redacted external-service connection intent; secret material is never persisted here."""
+
+    __tablename__ = "external_service_profiles"
+    __table_args__ = (
+        UniqueConstraint("workspace_id", "id"),
+        UniqueConstraint("workspace_id", "service_key"),
+        ForeignKeyConstraint(
+            ("workspace_id", "updated_by"),
+            ("iam.workspace_memberships.workspace_id", "iam.workspace_memberships.subject_id"),
+            ondelete="RESTRICT",
+            name="fk_external_service_profiles_updater",
+        ),
+        CheckConstraint(
+            "service_key IN ('DATAHUB', 'AIRFLOW', 'PROMETHEUS', 'NEO4J')",
+            name="service_key_vocabulary",
+        ),
+        CheckConstraint("endpoint_url ~ '^https?://'", name="endpoint_url_scheme"),
+        CheckConstraint(
+            "secret_reference IS NULL OR length(trim(secret_reference)) > 0",
+            name="secret_reference_present",
+        ),
+        Index("ix_external_service_profiles_workspace_active", "workspace_id", "active"),
+        {"schema": "platform"},
+    )
+
+    workspace_id: Mapped[UUID] = mapped_column(
+        Uuid(as_uuid=True),
+        ForeignKey("platform.workspaces.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    service_key: Mapped[str] = mapped_column(String(32), nullable=False)
+    display_name: Mapped[str] = mapped_column(String(255), nullable=False)
+    endpoint_url: Mapped[str] = mapped_column(String(2048), nullable=False)
+    auth_principal: Mapped[str | None] = mapped_column(String(255))
+    secret_reference: Mapped[str | None] = mapped_column(String(512))
+    active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    updated_by: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), nullable=False)
 
 
 class AdminAccessRequestModel(Base, UuidPrimaryKeyMixin, TimestampMixin, VersionMixin):

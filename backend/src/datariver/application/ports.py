@@ -26,6 +26,7 @@ from datariver.application.dto import (
     CatalogPage,
     CatalogSuggestions,
     CatalogTreePage,
+    ChangeRequestSchemaOverview,
     ChatDraft,
     ChatEvidence,
     ChatExchange,
@@ -347,6 +348,16 @@ class ChangeRequestRepository(Protocol):
     ) -> Sequence[ChangeRequest]: ...
 
     async def save(self, change_request: ChangeRequest) -> None: ...
+
+
+class ChangeRequestOverviewReader(Protocol):
+    async def list_schema_overview(
+        self,
+        *,
+        subject: SubjectAttributes,
+        access: ClassificationAccessSnapshot,
+        change_requests: Sequence[ChangeRequest],
+    ) -> Sequence[ChangeRequestSchemaOverview]: ...
 
 
 class OutboxWriter(Protocol):

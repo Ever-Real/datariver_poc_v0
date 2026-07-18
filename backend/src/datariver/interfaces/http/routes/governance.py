@@ -15,15 +15,25 @@ from datariver.application.services.change_targets import CatalogChangeTargetAut
 from datariver.application.services.governance import GovernanceService
 from datariver.domain.authz import Classification
 from datariver.domain.common import ValidationError, canonical_json_hash, uuid7
-from datariver.domain.governance import ApprovalDecision, ChangeItem, ChangeState
+from datariver.domain.governance import (
+    ApprovalDecision,
+    ChangeItem,
+    ChangePriority,
+    ChangeState,
+    ChangeUrgency,
+)
 from datariver.infrastructure.db.authz import SqlDecisionWriter
 from datariver.infrastructure.db.catalog import SqlCatalogIndexReader
+from datariver.infrastructure.db.change_request_overview import SqlChangeRequestOverviewReader
 from datariver.infrastructure.db.classification_access import (
     SqlClassificationAccessSnapshotReader,
 )
 from datariver.infrastructure.db.governance import SqlGovernanceUnitOfWork
 from datariver.interfaces.http.dependencies import ContextDep, SessionDep, get_container
-from datariver.interfaces.http.presenters import change_request_response
+from datariver.interfaces.http.presenters import (
+    change_request_response,
+    change_request_schema_overview_response,
+)
 from datariver.interfaces.http.schemas import (
     ApprovalRequest,
     ChangeRequestCreate,
@@ -87,7 +97,22 @@ async def list_change_requests(
         environment=context.environment,
         request_id=context.request_id,
     )
-    return ChangeRequestListResponse(items=[change_request_response(value) for value in values])
+    access = await ClassificationAccessResolver(
+        SqlClassificationAccessSnapshotReader(session)
+    ).resolve(
+        workspace_id=context.workspace_id,
+        subject_id=context.subject.subject_id,
+        now=context.environment.requested_at,
+    )
+    overview = await SqlChangeRequestOverviewReader(session).list_schema_overview(
+        subject=context.subject,
+        access=access,
+        change_requests=values,
+    )
+    return ChangeRequestListResponse(
+        items=[change_request_response(value) for value in values],
+        overview=[change_request_schema_overview_response(value) for value in overview],
+    )
 
 
 @router.get("/{change_request_id}", response_model=ChangeRequestResponse)
@@ -151,6 +176,9 @@ async def create_change_request(
         idempotency_key=idempotency_key,
         request_hash=request_hash,
         require_raw_operator_gate=True,
+        requested_due_date=payload.requested_due_date,
+        priority=ChangePriority(payload.priority) if payload.priority is not None else None,
+        urgency=ChangeUrgency(payload.urgency) if payload.urgency is not None else None,
     )
     return change_request_response(change_request)
 

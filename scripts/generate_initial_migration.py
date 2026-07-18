@@ -105,6 +105,8 @@ BEGIN
             governance.approvals, governance.state_transitions TO datariver_app;
         GRANT SELECT, INSERT ON governance.registration_content_bindings TO datariver_app;
         GRANT SELECT, INSERT, UPDATE ON governance.change_requests TO datariver_app;
+        GRANT SELECT, INSERT, UPDATE ON platform.data_systems, platform.system_schema_scopes,
+            platform.system_assignees, platform.external_service_profiles TO datariver_app;
         GRANT SELECT ON integration.jobs, integration.job_attempts TO datariver_app;
         GRANT INSERT ON integration.jobs TO datariver_app;
         GRANT SELECT, INSERT, UPDATE ON integration.object_manifests TO datariver_app;

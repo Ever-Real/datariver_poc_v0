@@ -1,8 +1,12 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type MouseEvent } from 'react'
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState, type MouseEvent } from 'react'
 import type { ColumnDef } from '@tanstack/react-table'
 import { Search } from 'lucide-react'
 import { ApiError, newIdempotencyKey, type ApiClient } from '../../api/client'
-import type { ChangeRequestRecord, ChangeRequestState } from '../../api/types'
+import type {
+  ChangeRequestRecord,
+  ChangeRequestSchemaOverview,
+  ChangeRequestState,
+} from '../../api/types'
 import { pageUrl, type Page } from '../../app/navigation'
 import { AssuranceNotice, type AssuranceActions } from '../../components/AssuranceNotice'
 import { ErrorNotice } from '../../components/ErrorNotice'
@@ -93,6 +97,34 @@ const columns: ColumnDef<ChangeRequestRecord>[] = [
     cell: ({ row }) => <TruncatedText value={row.original.requester_id} />,
   },
   {
+    accessorKey: 'created_at',
+    header: '요청일',
+    size: 138,
+    enableSorting: false,
+    cell: ({ row }) => new Date(row.original.created_at).toLocaleString('ko-KR'),
+  },
+  {
+    accessorKey: 'requested_due_date',
+    header: '요청 납기',
+    size: 105,
+    enableSorting: false,
+    cell: ({ row }) => row.original.requested_due_date ?? '—',
+  },
+  {
+    accessorKey: 'priority',
+    header: '중요도',
+    size: 80,
+    enableSorting: false,
+    cell: ({ row }) => row.original.priority ?? '—',
+  },
+  {
+    accessorKey: 'urgency',
+    header: '긴급도',
+    size: 80,
+    enableSorting: false,
+    cell: ({ row }) => row.original.urgency ?? '—',
+  },
+  {
     accessorKey: 'version',
     header: '버전',
     size: 70,
@@ -110,6 +142,8 @@ export function GovernancePage({
   const [stateFilter, setStateFilter] = useState<'' | ChangeRequestState>('')
   const [textFilter, setTextFilter] = useState('')
   const [requests, setRequests] = useState<ChangeRequestRecord[]>([])
+  const [overview, setOverview] = useState<ChangeRequestSchemaOverview[]>([])
+  const [expandedSchemas, setExpandedSchemas] = useState<Set<string>>(() => new Set())
   const [listLoading, setListLoading] = useState(true)
   const [listError, setListError] = useState<unknown>()
   const [selectedId, setSelectedId] = useState<string>()
@@ -142,11 +176,15 @@ export function GovernancePage({
     setListLoading(true)
     setListError(undefined)
     try {
-      const value = await client.request<{ items: ChangeRequestRecord[] }>(listPath, {
+      const value = await client.request<{
+        items: ChangeRequestRecord[]
+        overview?: ChangeRequestSchemaOverview[]
+      }>(listPath, {
         signal: controller.signal,
       })
       if (controller.signal.aborted || expectedGeneration !== generation.current || intent !== listIntent.current) return
       setRequests(value.items)
+      setOverview(value.overview ?? [])
     } catch (error) {
       if (!controller.signal.aborted && expectedGeneration === generation.current && intent === listIntent.current) {
         setListError(error)
@@ -166,6 +204,8 @@ export function GovernancePage({
     activeControllers.clear()
     detailController.current = undefined
     setRequests([])
+    setOverview([])
+    setExpandedSchemas(new Set())
     setListError(undefined)
     setListLoading(true)
     setSelectedId(undefined)
@@ -291,15 +331,6 @@ export function GovernancePage({
       ].some((value) => value.toLocaleLowerCase().includes(query))
     })
   }, [requests, stateFilter, textFilter])
-  const summary = useMemo(() => ({
-    pending: requests.filter((item) => item.state === 'REGISTERED').length,
-    total: requests.length,
-    received: requests.filter((item) => ['REGISTERED', 'IN_REVIEW'].includes(item.state)).length,
-    recheck: requests.filter((item) => ['CHANGES_REQUESTED', 'REJECTED'].includes(item.state)).length,
-    testing: requests.filter((item) => ['TESTING', 'APPLY_QUEUED', 'APPLYING', 'APPLY_FAILED'].includes(item.state)).length,
-    finalReview: requests.filter((item) => item.state === 'FINAL_REVIEW').length,
-    completed: requests.filter((item) => item.state === 'APPLIED').length,
-  }), [requests])
   const statusBadges: Array<{ label: string; state: '' | ChangeRequestState }> = [
     { label: '전체', state: '' },
     { label: '접수', state: 'REGISTERED' },
@@ -313,6 +344,16 @@ export function GovernancePage({
     if (!onNavigate) return
     event.preventDefault()
     onNavigate('registration')
+  }
+  const schemaKey = (row: ChangeRequestSchemaOverview) => `${row.platform}\u0000${row.database_name}\u0000${row.schema_name}`
+  const toggleSchema = (row: ChangeRequestSchemaOverview) => {
+    const key = schemaKey(row)
+    setExpandedSchemas((current) => {
+      const next = new Set(current)
+      if (next.has(key)) next.delete(key)
+      else next.add(key)
+      return next
+    })
   }
 
   return (
@@ -347,9 +388,22 @@ export function GovernancePage({
         </div>
       </div>
 
-      <section className="governance-status-overview" aria-label="현재 권한 창의 변경요청 현황">
-        <header><span className="governance-kicker">CR Status Overview</span><small>서버가 반환한 권한 범위에서 집계합니다.</small></header>
-        <div className="governance-status-scroll"><table><thead><tr><th>데이터셋별 미진행</th><th>CR 전체</th><th>접수완료</th><th>재검토</th><th>변경 / TEST</th><th>완료검토</th><th>완료</th></tr></thead><tbody><tr><td>{summary.pending.toLocaleString()}건</td><td>{summary.total.toLocaleString()}건</td><td>{summary.received.toLocaleString()}건</td><td>{summary.recheck.toLocaleString()}건</td><td>{summary.testing.toLocaleString()}건</td><td>{summary.finalReview.toLocaleString()}건</td><td>{summary.completed.toLocaleString()}건</td></tr></tbody></table></div>
+      <section className="governance-status-overview" aria-label="현재 권한 창의 스키마별 변경요청 현황">
+        <header><span className="governance-kicker">CR Status Overview</span><small>현재 권한으로 열람 가능한 DataHub 스키마와 같은 서버 읽기 창의 요청을 결합합니다. 행을 클릭하면 시스템 담당자를 표시합니다.</small></header>
+        <div className="governance-status-scroll"><table><thead><tr><th>스키마</th><th>시스템</th><th>담당자</th><th>데이터셋별 미진행</th><th>CR 전체</th><th>접수완료</th><th>재검토</th><th>변경 / TEST</th><th>완료검토</th><th>완료</th></tr></thead><tbody>
+          {overview.length === 0 ? <tr><td colSpan={10}>{listLoading ? '스키마별 현황을 확인하는 중' : '현재 권한 범위에서 표시할 DataHub 스키마가 없습니다.'}</td></tr> : overview.map((row) => {
+            const expanded = expandedSchemas.has(schemaKey(row))
+            return <Fragment key={schemaKey(row)}>
+              <tr className="governance-schema-summary-row">
+                <td><button type="button" className="governance-schema-toggle" aria-expanded={expanded} onClick={() => toggleSchema(row)}><strong>{row.schema_name}</strong><small>{row.platform} · {row.database_name}</small></button></td>
+                <td>{row.system_name ?? '시스템 미지정'}{row.system_code ? <small>{row.system_code}</small> : null}</td>
+                <td>{row.assignees.length ? `${row.assignees.length.toLocaleString()}명` : '미지정'}</td>
+                <td>{row.pending_count.toLocaleString()}건</td><td>{row.total_count.toLocaleString()}건</td><td>{row.received_count.toLocaleString()}건</td><td>{row.recheck_count.toLocaleString()}건</td><td>{row.testing_count.toLocaleString()}건</td><td>{row.final_review_count.toLocaleString()}건</td><td>{row.completed_count.toLocaleString()}건</td>
+              </tr>
+              {expanded && <tr className="governance-schema-assignees"><td colSpan={10}>{row.assignees.length ? <ul>{row.assignees.map((assignee) => <li key={`${assignee.subject_id}-${assignee.responsibility}`}><strong>{assignee.display_name}</strong> · {assignee.responsibility === 'DATA_STEWARD' ? 'Data Steward' : '개발자'} · 우선순위 {assignee.priority}</li>)}</ul> : '이 스키마에 활성 시스템 담당자가 아직 지정되지 않았습니다.'}</td></tr>}
+            </Fragment>
+          })}
+        </tbody></table></div>
       </section>
 
       <AssuranceNotice

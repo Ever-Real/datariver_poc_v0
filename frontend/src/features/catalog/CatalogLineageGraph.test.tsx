@@ -40,4 +40,19 @@ describe('CatalogLineageGraph', () => {
     expect(onSelectAsset).toHaveBeenCalledWith('center')
     expect(onSelectAsset).not.toHaveBeenCalledWith('urn:li:dataset:center')
   })
+
+  it('opens the server-authorized DataHub explorer when that action is available', () => {
+    const onOpenDataHubLineage = vi.fn()
+    render(
+      <CatalogLineageGraph
+        lineage={lineage}
+        onOpenDataHubLineage={onOpenDataHubLineage}
+        onSelectAsset={vi.fn()}
+      />,
+    )
+
+    fireEvent.click(screen.getByRole('button', { name: /center_table/i }))
+
+    expect(onOpenDataHubLineage).toHaveBeenCalledWith('center')
+  })
 })

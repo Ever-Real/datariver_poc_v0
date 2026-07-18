@@ -19,6 +19,10 @@ The SQLAlchemy metadata and generated `backend/alembic/versions/0001_initial_sch
 | Table | Key columns and constraints | Purpose |
 |---|---|---|
 | `platform.workspaces` | `id`, `slug UQ`, `name`, `status`, `settings`, `version`, timestamps | tenant boundary |
+| `platform.data_systems` | workspace-scoped code/name UQ, description, active flag, version/timestamps | canonical business-system master; not a DataHub provider connection |
+| `platform.system_schema_scopes` | workspace/platform/database/schema UQ, composite system FK, active flag | explicit DataHub projection scope to business-system assignment |
+| `platform.system_assignees` | system/subject/responsibility UQ, `DEVELOPER` or `DATA_STEWARD`, priority `1..999`, active flag | accountable human system assignments; never browser-derived |
+| `platform.external_service_profiles` | workspace/service-key UQ (`DATAHUB`, `AIRFLOW`, `PROMETHEUS`, `NEO4J`), endpoint, auth principal, opaque secret reference, updater/version | redacted infrastructure connection intent; plaintext secret and client-controlled connectivity tests are prohibited |
 | `iam.subjects` | `id`, `issuer + external_subject UQ`, `display_name`, `active`, timestamps | external IdP mapping; no credential |
 | `iam.workspace_memberships` | PK `workspace_id + subject_id`, `department_id`, `job_function`, `clearance`, `attributes`, `active`, `version` | versioned ABAC subject attributes/grants; an optional `attributes.default_workspace: true` chooses the user's hydration default, otherwise active Workspace slug order is deterministic |
 | `iam.admin_access_requests` | typed command/envelope, maker/target/checker, canonical hash, expiry/state/consume decision, `version`, timestamps | short-lived membership-access maker-checker aggregate; no arbitrary provider payload |
@@ -71,7 +75,7 @@ typed DataHub enrichment through the server anti-corruption layer.
 
 | Table | Key columns and constraints | Purpose |
 |---|---|---|
-| `governance.change_requests` | `id`, `workspace_id + number UQ`, type/title/description/state/requester/classification, `version`, timestamps | change aggregate/state machine |
+| `governance.change_requests` | `id`, `workspace_id + number UQ`, type/title/description/state/requester/classification, nullable requested due date/priority/urgency vocabulary, `version`, timestamps | change aggregate/state machine |
 | `governance.change_request_items` | `id`, `change_request_id + ordinal UQ`, typed provider target/aspect/operation, before/after hashes and document, nullable all-or-none server binding (`asset/type/system/domain/owner/classification/lifecycle/source/observed/hash`) | one immutable typed DataHub aspect plus creation-time target evidence; unbound legacy rows are quarantined |
 | `governance.registration_content_bindings` | candidate/hash UQ, change item UQ, request/item/creator composite workspace FKs, created time | append-only candidate-to-governed-item provenance; no ordinary update/delete grant |
 | `governance.approvals` | `id`, `change_request_id + stage + actor_id UQ`, decision/reason/actor/policy/time | append-only actor-separated decisions |

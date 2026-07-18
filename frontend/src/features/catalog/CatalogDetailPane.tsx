@@ -6,6 +6,7 @@ import { ErrorNotice } from '../../components/ErrorNotice'
 import { AccordionItem } from '../../components/common/Accordion'
 import { TruncatedText } from '../../components/common/TruncatedText'
 import { CatalogLineageGraph } from './CatalogLineageGraph'
+import { DataHubLineageDialog } from './DataHubLineageDialog'
 
 function valueOf(document: Record<string, unknown>, ...keys: string[]): string {
   for (const key of keys) {
@@ -67,6 +68,7 @@ export function CatalogDetailPane({
   const [error, setError] = useState<unknown>()
   const [lineageError, setLineageError] = useState<unknown>()
   const [copied, setCopied] = useState(false)
+  const [explorerAssetId, setExplorerAssetId] = useState<string>()
   const lineageController = useRef<AbortController | null>(null)
   const copyFeedbackTimer = useRef<number | undefined>(undefined)
 
@@ -74,7 +76,7 @@ export function CatalogDetailPane({
     const controller = new AbortController()
     lineageController.current?.abort()
     onDetailLoaded?.(undefined)
-    setLoading(true); setError(undefined); setDetail(undefined); setLineage(undefined)
+    setLoading(true); setError(undefined); setDetail(undefined); setLineage(undefined); setExplorerAssetId(undefined)
     void client.request<CatalogAssetDetail>(`/catalog/assets/${assetId}`, { signal: controller.signal })
       .then((value) => {
         if (!controller.signal.aborted) {
@@ -175,11 +177,16 @@ export function CatalogDetailPane({
         <ErrorNotice error={lineageError} />
         {lineage && <div className="catalog-lineage">
           <div className="catalog-lineage-summary"><Network size={15} /><span>{lineage.nodes.length} nodes · {lineage.edges.length} edges</span>{lineage.truncated && <b>일부 경로 생략</b>}</div>
-          <CatalogLineageGraph lineage={lineage} onSelectAsset={onSelectAsset ?? (() => undefined)} />
+          <CatalogLineageGraph
+            lineage={lineage}
+            onOpenDataHubLineage={setExplorerAssetId}
+            onSelectAsset={onSelectAsset ?? (() => undefined)}
+          />
           {lineage.edges.length === 0 && <div className="catalog-detail-state">표시 가능한 연결 관계가 없습니다.</div>}
         </div>}
       </AccordionItem>
     </div>}
     </aside>
+    <DataHubLineageDialog client={client} assetId={explorerAssetId} onClose={() => setExplorerAssetId(undefined)} />
   </>
 }

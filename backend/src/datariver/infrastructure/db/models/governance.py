@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import date, datetime
 from typing import Any
 from uuid import UUID
 
@@ -30,6 +30,14 @@ class ChangeRequestModel(Base, UuidPrimaryKeyMixin, TimestampMixin, VersionMixin
     __table_args__ = (
         UniqueConstraint("workspace_id", "number"),
         UniqueConstraint("workspace_id", "id"),
+        CheckConstraint(
+            "priority IS NULL OR priority IN ('LOW', 'NORMAL', 'HIGH', 'CRITICAL')",
+            name="priority_vocabulary",
+        ),
+        CheckConstraint(
+            "urgency IS NULL OR urgency IN ('NORMAL', 'URGENT', 'EMERGENCY')",
+            name="urgency_vocabulary",
+        ),
         Index("ix_change_requests_workspace_state", "workspace_id", "state", "created_at"),
         {"schema": "governance"},
     )
@@ -42,6 +50,9 @@ class ChangeRequestModel(Base, UuidPrimaryKeyMixin, TimestampMixin, VersionMixin
     state: Mapped[str] = mapped_column(String(32), nullable=False)
     requester_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), nullable=False)
     classification: Mapped[int] = mapped_column(default=0, nullable=False)
+    requested_due_date: Mapped[date | None]
+    priority: Mapped[str | None] = mapped_column(String(16))
+    urgency: Mapped[str | None] = mapped_column(String(16))
 
 
 class ChangeItemModel(Base, UuidPrimaryKeyMixin):

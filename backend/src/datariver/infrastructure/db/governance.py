@@ -21,8 +21,10 @@ from datariver.domain.governance import (
     Approval,
     ApprovalDecision,
     ChangeItem,
+    ChangePriority,
     ChangeRequest,
     ChangeState,
+    ChangeUrgency,
     Transition,
 )
 from datariver.infrastructure.db.models.governance import (
@@ -50,6 +52,12 @@ class SqlChangeRequestRepository(ChangeRequestRepository):
             description=change_request.description,
             state=change_request.state.value,
             requester_id=change_request.requester_id,
+            created_at=change_request.created_at,
+            requested_due_date=change_request.requested_due_date,
+            priority=(
+                change_request.priority.value if change_request.priority is not None else None
+            ),
+            urgency=(change_request.urgency.value if change_request.urgency is not None else None),
             version=change_request.version,
             classification=int(change_request.classification),
         )
@@ -139,6 +147,10 @@ class SqlChangeRequestRepository(ChangeRequestRepository):
             title=model.title,
             description=model.description,
             requester_id=model.requester_id,
+            created_at=model.created_at,
+            requested_due_date=model.requested_due_date,
+            priority=ChangePriority(model.priority) if model.priority is not None else None,
+            urgency=ChangeUrgency(model.urgency) if model.urgency is not None else None,
             classification=Classification(model.classification),
             state=ChangeState(model.state),
             version=model.version,
