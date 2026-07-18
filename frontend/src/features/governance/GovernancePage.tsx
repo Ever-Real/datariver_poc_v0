@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { ColumnDef } from '@tanstack/react-table'
+import { Search } from 'lucide-react'
 import { ApiError, newIdempotencyKey, type ApiClient } from '../../api/client'
 import type { ChangeRequestRecord, ChangeRequestState } from '../../api/types'
 import { pageUrl } from '../../app/navigation'
@@ -79,6 +80,7 @@ export function GovernancePage({
   onEnroll,
 }: { client: ApiClient } & AssuranceActions) {
   const [stateFilter, setStateFilter] = useState<'' | ChangeRequestState>('')
+  const [textFilter, setTextFilter] = useState('')
   const [requests, setRequests] = useState<ChangeRequestRecord[]>([])
   const [listLoading, setListLoading] = useState(true)
   const [listError, setListError] = useState<unknown>()
@@ -253,6 +255,19 @@ export function GovernancePage({
   }
 
   const fallback = selectedId ? requests.find((item) => item.id === selectedId) : undefined
+  const visibleRequests = useMemo(() => {
+    const query = textFilter.trim().toLocaleLowerCase()
+    if (!query) return requests
+    return requests.filter((request) => [
+      request.number, request.title, request.requester_id, request.items[0]?.aspect_name ?? '', request.classification,
+    ].some((value) => value.toLocaleLowerCase().includes(query)))
+  }, [requests, textFilter])
+  const summary = useMemo(() => [
+    { label: '전체', count: requests.length, state: '' as const },
+    { label: '검토 필요', count: requests.filter((item) => ['REGISTERED', 'IN_REVIEW', 'FINAL_REVIEW', 'CHANGES_REQUESTED'].includes(item.state)).length, state: 'IN_REVIEW' as const },
+    { label: '적용 중', count: requests.filter((item) => ['APPLY_QUEUED', 'APPLYING', 'APPLY_FAILED'].includes(item.state)).length, state: 'APPLYING' as const },
+    { label: '적용 완료', count: requests.filter((item) => item.state === 'APPLIED').length, state: 'APPLIED' as const },
+  ], [requests])
 
   return (
     <section className="governance-page">
@@ -276,11 +291,19 @@ export function GovernancePage({
             {changeStateOptions.map((option) => <option key={option.value || 'all'} value={option.value}>{option.label}</option>)}
           </select>
         </label>
+        <label className="governance-text-filter">
+          <span>요청 검색</span>
+          <div><Search size={13} aria-hidden="true" /><input value={textFilter} onChange={(event) => setTextFilter(event.target.value)} placeholder="CR 번호, 제목, 요청자" maxLength={300} /></div>
+        </label>
         <div className="governance-registration-link">
           <span>새 변경 요청은 서버 검증 미리보기에서 시작합니다.</span>
           <a className="button" href={pageUrl('registration')}>등록관리에서 설명 변경 제안</a>
         </div>
       </div>
+
+      <section className="governance-status-overview" aria-label="현재 조회 창의 변경요청 상태 요약">
+        {summary.map((item) => <button key={item.label} type="button" className={stateFilter === item.state ? 'active' : ''} onClick={() => setStateFilter(item.state)}><span>{item.label}</span><strong>{item.count.toLocaleString()}</strong><small>현재 권한 창</small></button>)}
+      </section>
 
       <AssuranceNotice
         error={listError}
@@ -296,15 +319,15 @@ export function GovernancePage({
             <span className="governance-kicker">Change requests</span>
             <h2 id="governance-list-heading">변경 요청 목록</h2>
           </div>
-          <p>행을 클릭하거나 Enter/Space로 열면 서버가 상세 권한을 다시 확인합니다.</p>
+          <p>행을 클릭하거나 Enter/Space로 열면 서버가 상세 권한을 다시 확인합니다. 검색은 현재 서버 권한 창 안에서만 필터링합니다.</p>
         </header>
         <DenseDataTable
           caption="현재 권한 범위의 변경 요청"
           columns={columns}
-          data={requests}
+          data={visibleRequests}
           getRowId={(item) => item.id}
           loading={listLoading}
-          emptyMessage={stateFilter ? '선택한 상태에서 조회 가능한 요청이 없습니다.' : '현재 권한 범위에서 조회 가능한 요청이 없습니다.'}
+          emptyMessage={textFilter ? '현재 권한 창에서 검색 조건에 맞는 요청이 없습니다.' : stateFilter ? '선택한 상태에서 조회 가능한 요청이 없습니다.' : '현재 권한 범위에서 조회 가능한 요청이 없습니다.'}
           selectedRowId={selectedId}
           onRowActivate={openDetail}
         />
