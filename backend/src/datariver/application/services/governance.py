@@ -149,6 +149,65 @@ class GovernanceService:
             await uow.commit()
             return change_request
 
+    async def authorize_attachment(
+        self,
+        *,
+        workspace_id: UUID,
+        change_request_id: UUID,
+        kind: str,
+        subject: SubjectAttributes,
+        environment: EnvironmentAttributes,
+        request_id: str,
+    ) -> ChangeRequest:
+        """Authorize an attachment against the current CR state and bound target."""
+
+        if kind not in {"REQUEST", "TEST"}:
+            raise ValidationError("The change-request attachment kind is invalid.")
+        async with self._uow_factory() as uow:
+            await uow.set_security_context(workspace_id=workspace_id, subject_id=subject.subject_id)
+            change_request = await uow.change_requests.get(
+                workspace_id=workspace_id,
+                change_request_id=change_request_id,
+            )
+            if change_request is None:
+                raise ChangeRequestNotFound("The change request does not exist.")
+            if kind == "TEST":
+                if change_request.state is not ChangeState.TESTING:
+                    raise ValidationError(
+                        "Test evidence can only be attached during the TESTING state."
+                    )
+                action = Action.CHANGE_REVIEW
+            else:
+                if change_request.state not in {
+                    ChangeState.REGISTERED,
+                    ChangeState.CHANGES_REQUESTED,
+                }:
+                    raise ValidationError(
+                        "Request attachments can only be changed before review or after a "
+                        "change request."
+                    )
+                action = Action.CHANGE_EDIT
+            await self._authorization.authorize(
+                subject=subject,
+                resource=self._resource(change_request),
+                action=action,
+                environment=environment,
+                request_id=request_id,
+            )
+            authorized = await self._authorize_current_targets(
+                change_requests=(change_request,),
+                workspace_id=workspace_id,
+                subject=subject,
+                action=action,
+                environment=environment,
+                request_id=request_id,
+                strict_binding=True,
+            )
+            if not authorized:
+                raise ForbiddenError("The change target is not available.")
+            await uow.commit()
+            return change_request
+
     async def list_change_requests(
         self,
         *,

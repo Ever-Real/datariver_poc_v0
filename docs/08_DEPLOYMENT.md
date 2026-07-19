@@ -62,6 +62,12 @@ Bootstrap is idempotent for infrastructure credentials: an existing non-empty se
 
 Set `DATAHUB_BASE_URL` and review origins/ports in `.env`. Optional `UI_DATAHUB_URL`, `UI_AIRFLOW_URL`, `UI_GRAFANA_URL`, `UI_PROMETHEUS_URL`, and `UI_GRAPH_URL` values populate the GNB auxiliary links through the authenticated capabilities response. They are not provider API endpoints or embed authorities: URLs with user information are rejected, missing values create no fallback link, and production requires HTTPS. The production validator rejects wildcard CORS, HTTP external URLs, password-bearing URLs and seed activation. Only `file:` secret references are implemented; a Vault/KMS adapter is a separate deployment integration.
 
+When the host-development overlay connects to a separately composed local DataHub stack, it uses
+the deployment-owned external `DATAHUB_DOCKER_NETWORK` (default `datahub_network`) and overrides
+container callers with `DATAHUB_CONTAINER_BASE_URL` (default `http://datahub-gms:8080`). This avoids
+depending on a host-gateway route from a container. Source processes run directly on the host keep
+using `DATAHUB_BASE_URL`; no browser receives the DataHub service token.
+
 `DATAHUB_EMBED_ENABLED` remains `false` by default. Set it to `true` together with an exact-origin
 `DATAHUB_EMBED_BASE_URL` only after DataHub's own browser identity mapping, object authorization,
 `frame-ancestors` policy and the DataRiver CSP configuration have been tested. The API authorizes the

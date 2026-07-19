@@ -21,6 +21,7 @@ from datariver.application.services.change_targets import CatalogChangeTargetAut
 from datariver.application.services.governance import GovernanceService
 from datariver.domain.authz import BuiltinPolicyEngine
 from datariver.domain.common import ValidationError
+from datariver.domain.governance import ChangePriority, ChangeUrgency
 from datariver.infrastructure.db.authz import SqlDecisionWriter
 from datariver.infrastructure.db.catalog import SqlCatalogIndexReader, SqlCatalogProjectionWriter
 from datariver.infrastructure.db.catalog_export import SqlCatalogExportStore
@@ -696,6 +697,9 @@ async def create_asset_description_change_request(
                 "description": payload.description,
                 "title": payload.title,
                 "change_description": payload.change_description,
+                "requested_due_date": payload.requested_due_date,
+                "priority": payload.priority,
+                "urgency": payload.urgency,
             },
             option=orjson.OPT_SORT_KEYS,
         )
@@ -732,6 +736,9 @@ async def create_asset_description_change_request(
         request_id=context.request_id,
         idempotency_key=idempotency_key,
         request_hash=request_hash,
+        requested_due_date=payload.requested_due_date,
+        priority=ChangePriority(payload.priority) if payload.priority is not None else None,
+        urgency=ChangeUrgency(payload.urgency) if payload.urgency is not None else None,
     )
     return change_request_response(change_request)
 

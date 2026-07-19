@@ -151,9 +151,12 @@ replaced source is retained only under `.legacy_archive/`.
   must still be verified together.
 - [ ] RES-06 Audit and restore Change Management (`ChangeManagementPage`, `CRListTable`,
   `CRRegistrationModal`, CR router): schema/system/assignee overview, complete list fields, create
-  form and lifecycle, and private request/test attachment manifests. The v1 attachment contract now
-  persists request/test metadata and server-generated `CR-code-KIND-original-serial` object keys in
-  deployment-configured `datariver-filefolder`; the v0.3-shaped create/edit UI remains open.
+  form and lifecycle, and private request/test attachment manifests. The v1 page now opens an
+  independent CR modal (never Registration), searches a real DataHub-backed target, creates a
+  version-fenced typed proposal with due-date/priority/urgency, and uploads/downloads private
+  request/test evidence through `datariver-filefolder`.  TEST evidence is accepted only in the
+  TESTING state after server-side `change.review` authorization.  The remaining parity gate is the
+  full legacy multi-target/re-edit form and authenticated role-journey evidence.
 - [ ] RES-07 Audit and restore `/admin` (`UsersPage`, `SystemsManagementView`, `ConnectionsPage`,
   user/system/config routers): subject/membership master, system/schema/assignee priority, and
   redacted approved service-profile administration.  Password provisioning, arbitrary URLs,

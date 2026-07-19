@@ -218,9 +218,10 @@ async def upload_change_request_attachment(
             "Change-request attachment storage is not configured.",
             details={"code": "FILEFOLDER_BUCKET_NOT_CONFIGURED"},
         )
-    change_request = await _service(request, session).get_change_request(
+    change_request = await _service(request, session).authorize_attachment(
         workspace_id=context.workspace_id,
         change_request_id=change_request_id,
+        kind=kind,
         subject=context.subject,
         environment=context.environment,
         request_id=context.request_id,

@@ -165,6 +165,9 @@ class CatalogDescriptionChangeRequest(BaseModel):
     description: str = Field(max_length=10_000)
     title: str = Field(min_length=1, max_length=500)
     change_description: str = Field(min_length=1, max_length=10_000)
+    requested_due_date: date | None = None
+    priority: Literal["LOW", "NORMAL", "HIGH", "CRITICAL"] | None = None
+    urgency: Literal["NORMAL", "URGENT", "EMERGENCY"] | None = None
 
     @field_validator("description", "title", "change_description")
     @classmethod

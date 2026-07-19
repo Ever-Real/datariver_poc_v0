@@ -426,6 +426,21 @@ export interface ChangeRequestRecord {
   }>
 }
 
+export interface ChangeRequestAttachment {
+  id: string
+  kind: 'REQUEST' | 'TEST'
+  original_name: string
+  serial_number: number
+  content_type: string
+  size_bytes: number
+  content_sha256: string
+  created_at: string
+}
+
+export interface ChangeRequestAttachmentList {
+  items: ChangeRequestAttachment[]
+}
+
 export interface ChangeRequestSchemaOverview {
   platform: string
   database_name: string

@@ -1,4 +1,43 @@
 services:
+  # The host development topology runs DataHub in a separate Compose project.
+  # Backend callers use the GMS service name on its dedicated Docker network;
+  # host.docker.internal is intentionally reserved for source processes run on the host.
+  api:
+    environment:
+      DATAHUB_BASE_URL: ${DATAHUB_CONTAINER_BASE_URL:-http://datahub-gms:8080}
+    networks:
+      - app
+      - data
+      - datahub
+
+  outbox-relay:
+    environment:
+      DATAHUB_BASE_URL: ${DATAHUB_CONTAINER_BASE_URL:-http://datahub-gms:8080}
+    networks:
+      - data
+      - datahub
+
+  upload-worker:
+    environment:
+      DATAHUB_BASE_URL: ${DATAHUB_CONTAINER_BASE_URL:-http://datahub-gms:8080}
+    networks:
+      - data
+      - datahub
+
+  upload-validation-worker:
+    environment:
+      DATAHUB_BASE_URL: ${DATAHUB_CONTAINER_BASE_URL:-http://datahub-gms:8080}
+    networks:
+      - data
+      - datahub
+
+  governance-apply-worker:
+    environment:
+      DATAHUB_BASE_URL: ${DATAHUB_CONTAINER_BASE_URL:-http://datahub-gms:8080}
+    networks:
+      - data
+      - datahub
+
   airflow-api-server:
     environment:
       DATARIVER_API_BASE_URL: ${DATARIVER_API_BASE_URL:-http://apisix:9080}
@@ -44,3 +83,6 @@ services:
 networks:
   host-dev:
     internal: false
+  datahub:
+    external: true
+    name: ${DATAHUB_DOCKER_NETWORK:-datahub_network}

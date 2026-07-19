@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import math
 from collections.abc import Mapping
+from datetime import date
 from typing import Any, Protocol
 from uuid import UUID
 
@@ -36,7 +37,9 @@ from datariver.domain.common import (
 )
 from datariver.domain.governance import (
     ChangeItem,
+    ChangePriority,
     ChangeRequest,
+    ChangeUrgency,
     change_target_binding_hash,
 )
 
@@ -71,6 +74,9 @@ class GovernedChangeRequestCreator(Protocol):
         idempotency_key: str,
         request_hash: str,
         require_raw_operator_gate: bool,
+        requested_due_date: date | None = None,
+        priority: ChangePriority | None = None,
+        urgency: ChangeUrgency | None = None,
     ) -> ChangeRequest: ...
 
 
@@ -184,6 +190,9 @@ class CatalogDescriptionService:
         request_id: str,
         idempotency_key: str,
         request_hash: str,
+        requested_due_date: date | None = None,
+        priority: ChangePriority | None = None,
+        urgency: ChangeUrgency | None = None,
     ) -> ChangeRequest:
         asset, snapshot = await self._read_current(
             asset_id=asset_id,
@@ -233,6 +242,9 @@ class CatalogDescriptionService:
             idempotency_key=idempotency_key,
             request_hash=request_hash,
             require_raw_operator_gate=False,
+            requested_due_date=requested_due_date,
+            priority=priority,
+            urgency=urgency,
         )
 
     async def create_column_description_change_request(

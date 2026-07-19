@@ -1,19 +1,22 @@
-import { Fragment, useCallback, useEffect, useMemo, useRef, useState, type MouseEvent } from 'react'
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { ColumnDef } from '@tanstack/react-table'
 import { Search } from 'lucide-react'
 import { ApiError, newIdempotencyKey, type ApiClient } from '../../api/client'
 import type {
   ChangeRequestRecord,
+  ChangeRequestAttachment,
+  ChangeRequestAttachmentList,
   ChangeRequestSchemaOverview,
   ChangeRequestState,
 } from '../../api/types'
-import { pageUrl, type Page } from '../../app/navigation'
+import type { Page } from '../../app/navigation'
 import { AssuranceNotice, type AssuranceActions } from '../../components/AssuranceNotice'
 import { ErrorNotice } from '../../components/ErrorNotice'
 import { DenseDataTable } from '../../components/common/DenseDataTable'
 import { TruncatedText } from '../../components/common/TruncatedText'
 import { PageTitle } from '../../components/layout/PageTitle'
 import { ChangeActionConfirmDialog } from './ChangeActionConfirmDialog'
+import { ChangeRequestCreateDialog } from './ChangeRequestCreateDialog'
 import { ChangeRequestDetailDialog } from './ChangeRequestDetailDialog'
 import {
   changeStateLabel,
@@ -137,7 +140,6 @@ export function GovernancePage({
   onStepUp,
   onPasswordReauth,
   onEnroll,
-  onNavigate,
 }: { client: ApiClient; onNavigate?: (page: Page) => void } & AssuranceActions) {
   const [stateFilter, setStateFilter] = useState<'' | ChangeRequestState>('')
   const [textFilter, setTextFilter] = useState('')
@@ -150,8 +152,13 @@ export function GovernancePage({
   const [detail, setDetail] = useState<ChangeRequestRecord>()
   const [detailLoading, setDetailLoading] = useState(false)
   const [detailError, setDetailError] = useState<unknown>()
+  const [attachments, setAttachments] = useState<ChangeRequestAttachment[]>([])
+  const [attachmentLoading, setAttachmentLoading] = useState(false)
+  const [attachmentBusy, setAttachmentBusy] = useState(false)
+  const [attachmentError, setAttachmentError] = useState<unknown>()
   const [actionError, setActionError] = useState<unknown>()
   const [pendingAction, setPendingAction] = useState<ChangeActionHint>()
+  const [createOpen, setCreateOpen] = useState(false)
   const [reason, setReason] = useState(DEFAULT_REASON)
   const [busy, setBusy] = useState(false)
   const generation = useRef(0)
@@ -211,6 +218,10 @@ export function GovernancePage({
     setSelectedId(undefined)
     setDetail(undefined)
     setDetailError(undefined)
+    setAttachments([])
+    setAttachmentLoading(false)
+    setAttachmentBusy(false)
+    setAttachmentError(undefined)
     setActionError(undefined)
     setPendingAction(undefined)
     setReason(DEFAULT_REASON)
@@ -235,6 +246,9 @@ export function GovernancePage({
     setDetail(undefined)
     setDetailLoading(true)
     setDetailError(undefined)
+    setAttachments([])
+    setAttachmentLoading(true)
+    setAttachmentError(undefined)
     try {
       const value = await client.request<ChangeRequestRecord>(`/change-requests/${changeRequestId}`, {
         signal: controller.signal,
@@ -242,6 +256,19 @@ export function GovernancePage({
       if (controller.signal.aborted || expectedGeneration !== generation.current || intent !== detailIntent.current) return
       setDetail(value)
       setRequests((current) => current.map((item) => item.id === value.id ? value : item))
+      try {
+        const attachmentList = await client.request<ChangeRequestAttachmentList>(
+          `/change-requests/${changeRequestId}/attachments`,
+          { signal: controller.signal },
+        )
+        if (!controller.signal.aborted && expectedGeneration === generation.current && intent === detailIntent.current) {
+          setAttachments(attachmentList.items)
+        }
+      } catch (error) {
+        if (!controller.signal.aborted && expectedGeneration === generation.current && intent === detailIntent.current) {
+          setAttachmentError(error)
+        }
+      }
     } catch (error) {
       if (!controller.signal.aborted && expectedGeneration === generation.current && intent === detailIntent.current) {
         setDetailError(error)
@@ -249,7 +276,10 @@ export function GovernancePage({
     } finally {
       controllers.current.delete(controller)
       if (detailController.current === controller) detailController.current = undefined
-      if (expectedGeneration === generation.current && intent === detailIntent.current) setDetailLoading(false)
+      if (expectedGeneration === generation.current && intent === detailIntent.current) {
+        setDetailLoading(false)
+        setAttachmentLoading(false)
+      }
     }
   }, [beginOperation, client])
 
@@ -267,6 +297,10 @@ export function GovernancePage({
     setDetail(undefined)
     setDetailLoading(false)
     setDetailError(undefined)
+    setAttachments([])
+    setAttachmentLoading(false)
+    setAttachmentBusy(false)
+    setAttachmentError(undefined)
     setActionError(undefined)
     setPendingAction(undefined)
     setReason(DEFAULT_REASON)
@@ -277,6 +311,44 @@ export function GovernancePage({
     setPendingAction(action)
   }, [])
   const cancelAction = useCallback(() => setPendingAction(undefined), [])
+
+  const downloadAttachment = useCallback(async (attachment: ChangeRequestAttachment) => {
+    const current = detail
+    if (!current) return
+    setAttachmentError(undefined)
+    try {
+      const value = await client.request<{ url: string }>(
+        `/change-requests/${current.id}/attachments/${attachment.id}/download`,
+      )
+      window.location.assign(value.url)
+    } catch (error) {
+      setAttachmentError(error)
+    }
+  }, [client, detail])
+
+  const uploadTestAttachments = useCallback(async (files: File[]) => {
+    const current = detail
+    if (!current || files.length === 0 || attachmentBusy) return
+    setAttachmentBusy(true)
+    setAttachmentError(undefined)
+    try {
+      for (const file of files) {
+        const body = new FormData()
+        body.set('kind', 'TEST')
+        body.set('file', file)
+        await client.request(`/change-requests/${current.id}/attachments`, { method: 'POST', body })
+      }
+      const value = await client.request<ChangeRequestAttachmentList>(
+        `/change-requests/${current.id}/attachments`,
+      )
+      setAttachments(value.items)
+    } catch (error) {
+      setAttachmentError(error)
+      throw error
+    } finally {
+      setAttachmentBusy(false)
+    }
+  }, [attachmentBusy, client, detail])
 
   const confirmAction = async () => {
     const action = pendingAction
@@ -340,11 +412,6 @@ export function GovernancePage({
     { label: '완료검토', state: 'FINAL_REVIEW' },
     { label: '완료', state: 'APPLIED' },
   ]
-  const navigateRegistration = (event: MouseEvent<HTMLAnchorElement>) => {
-    if (!onNavigate) return
-    event.preventDefault()
-    onNavigate('registration')
-  }
   const schemaKey = (row: ChangeRequestSchemaOverview) => `${row.platform}\u0000${row.database_name}\u0000${row.schema_name}`
   const toggleSchema = (row: ChangeRequestSchemaOverview) => {
     const key = schemaKey(row)
@@ -363,7 +430,7 @@ export function GovernancePage({
         eyebrow="Four-eyes Governance"
         title="변경 요청과 승인"
         description="타입이 지정된 변경을 검토하고 Maker-Checker 상태 전이와 적용 증거를 관리합니다."
-        actions={<div className="page-title-actions"><button type="button" className="button button-secondary" disabled={listLoading} onClick={() => void loadRequests()}>새로고침</button><a className="button" href={pageUrl('registration')} onClick={navigateRegistration}>신규 CR 신청</a></div>}
+        actions={<div className="page-title-actions"><button type="button" className="button button-secondary" disabled={listLoading} onClick={() => void loadRequests()}>새로고침</button><button type="button" className="button" onClick={() => setCreateOpen(true)}>신규 CR 신청</button></div>}
       />
 
       <div className="governance-toolbar panel">
@@ -383,8 +450,8 @@ export function GovernancePage({
           <div><Search size={13} aria-hidden="true" /><input value={textFilter} onChange={(event) => setTextFilter(event.target.value)} placeholder="CR 번호, 제목, 요청자" maxLength={300} /></div>
         </label>
         <div className="governance-registration-link">
-          <span>새 변경 요청은 서버 검증 미리보기에서 시작합니다.</span>
-          <a className="button button-secondary" href={pageUrl('registration')} onClick={navigateRegistration}>등록관리 열기</a>
+          <span>새 변경 요청은 독립된 CR 모달에서 DataHub 원본을 서버 검증한 뒤 생성됩니다.</span>
+          <button type="button" className="button button-secondary" onClick={() => setCreateOpen(true)}>신규 CR 신청</button>
         </div>
       </div>
 
@@ -445,12 +512,28 @@ export function GovernancePage({
         busy={busy}
         error={detailError}
         actionError={actionError}
+        attachments={attachments}
+        attachmentLoading={attachmentLoading}
+        attachmentBusy={attachmentBusy}
+        attachmentError={attachmentError}
         onClose={closeDetail}
         onRefresh={() => { if (selectedId) void loadDetail(selectedId) }}
         onAction={openAction}
+        onDownloadAttachment={(attachment) => { void downloadAttachment(attachment) }}
+        onUploadTestAttachments={uploadTestAttachments}
         onStepUp={onStepUp}
         onPasswordReauth={onPasswordReauth}
         onEnroll={onEnroll}
+      />
+      <ChangeRequestCreateDialog
+        open={createOpen}
+        client={client}
+        onClose={() => setCreateOpen(false)}
+        onCreated={(value) => {
+          setCreateOpen(false)
+          setRequests((current) => [value, ...current.filter((item) => item.id !== value.id)])
+          void loadRequests()
+        }}
       />
       <ChangeActionConfirmDialog
         action={pendingAction}

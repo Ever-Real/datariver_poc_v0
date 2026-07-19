@@ -116,7 +116,7 @@ describe('GovernancePage', () => {
     expect(screen.getByText('0건 표시')).toBeInTheDocument()
   })
 
-  it('renders the bounded dense list and routes typed creation to registration', async () => {
+  it('renders the bounded dense list and opens independent CR creation', async () => {
     const existing = changeRequest()
     const request = vi.fn((path: string, options?: RequestOptions): Promise<unknown> => {
       if (path === '/change-requests?limit=100') return Promise.resolve({ items: [existing] })
@@ -130,8 +130,9 @@ describe('GovernancePage', () => {
     expect(screen.getByText('1건 표시')).toBeInTheDocument()
     expect(screen.queryByLabelText('DataHub 대상 URN')).not.toBeInTheDocument()
     expect(screen.queryByLabelText('승인 대상 JSON')).not.toBeInTheDocument()
-    const link = screen.getByRole('link', { name: '신규 CR 신청' })
-    expect(link.getAttribute('href')).toContain('page=registration')
+    fireEvent.click(screen.getAllByRole('button', { name: '신규 CR 신청' })[0])
+    expect(await screen.findByRole('dialog', { name: '신규 CR 신청' })).toBeInTheDocument()
+    expect(screen.queryByRole('link', { name: '신규 CR 신청' })).not.toBeInTheDocument()
     const listOptions = request.mock.calls.find(([path]) => path === '/change-requests?limit=100')?.[1]
     expect(listOptions?.signal).toBeInstanceOf(AbortSignal)
   })

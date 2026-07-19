@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import type { ChangeRequestRecord } from '../../api/types'
+import type { ChangeRequestAttachment, ChangeRequestRecord } from '../../api/types'
 import { AssuranceNotice, type AssuranceActions } from '../../components/AssuranceNotice'
 import { ErrorNotice } from '../../components/ErrorNotice'
 import { AccordionItem } from '../../components/common/Accordion'
@@ -15,9 +15,15 @@ interface ChangeRequestDetailDialogProps extends AssuranceActions {
   busy: boolean
   error?: unknown
   actionError?: unknown
+  attachments: ChangeRequestAttachment[]
+  attachmentLoading: boolean
+  attachmentBusy: boolean
+  attachmentError?: unknown
   onClose: () => void
   onRefresh: () => void
   onAction: (action: ChangeActionHint) => void
+  onDownloadAttachment: (attachment: ChangeRequestAttachment) => void
+  onUploadTestAttachments: (files: File[]) => Promise<void>
 }
 
 function display(value: string | null | undefined): string {
@@ -37,14 +43,22 @@ export function ChangeRequestDetailDialog({
   busy,
   error,
   actionError,
+  attachments,
+  attachmentLoading,
+  attachmentBusy,
+  attachmentError,
   onClose,
   onRefresh,
   onAction,
+  onDownloadAttachment,
+  onUploadTestAttachments,
   onStepUp,
   onPasswordReauth,
   onEnroll,
 }: ChangeRequestDetailDialogProps) {
   const [expanded, setExpanded] = useState(() => new Set(['target', 'approvals', 'transitions']))
+  const [testFiles, setTestFiles] = useState<File[]>([])
+  const [testUploadError, setTestUploadError] = useState<unknown>()
   const current = value ?? fallback
   const visibleError = actionError ?? error
   const hints = useMemo(() => value ? changeActionHints(value) : [], [value])
@@ -55,7 +69,9 @@ export function ChangeRequestDetailDialog({
   }, [busy])
 
   useEffect(() => {
-    setExpanded(new Set(['target', 'approvals', 'transitions']))
+    setExpanded(new Set(['target', 'approvals', 'transitions', 'attachments']))
+    setTestFiles([])
+    setTestUploadError(undefined)
   }, [current?.id])
 
   const requestClose = useCallback(() => {
@@ -67,6 +83,16 @@ export function ChangeRequestDetailDialog({
     else next.add(key)
     return next
   })
+  const submitTestEvidence = async () => {
+    if (testFiles.length === 0 || attachmentBusy) return
+    setTestUploadError(undefined)
+    try {
+      await onUploadTestAttachments(testFiles)
+      setTestFiles([])
+    } catch (next) {
+      setTestUploadError(next)
+    }
+  }
 
   return (
     <Dialog
@@ -144,6 +170,41 @@ export function ChangeRequestDetailDialog({
                   </dl>
                 </article>
               ))}
+            </AccordionItem>
+
+            <AccordionItem
+              itemId="attachments"
+              title="첨부파일 및 테스트 증거"
+              summary={attachmentLoading ? '확인 중' : `${attachments.length}건`}
+              expanded={expanded.has('attachments')}
+              onToggle={() => toggle('attachments')}
+            >
+              {attachmentLoading ? <p className="muted">첨부파일 접근 권한을 확인하는 중입니다.</p> : attachments.length === 0
+                ? <p className="muted">등록된 요청 또는 테스트 첨부파일이 없습니다.</p>
+                : <ul className="governance-attachment-list">
+                  {attachments.map((attachment) => <li key={attachment.id}>
+                    <span className={`badge badge-soft governance-attachment-${attachment.kind.toLowerCase()}`}>{attachment.kind === 'REQUEST' ? '요청' : 'TEST'}</span>
+                    <strong>{attachment.original_name}</strong>
+                    <small>{Math.ceil(attachment.size_bytes / 1024).toLocaleString()} KiB · #{attachment.serial_number.toString().padStart(2, '0')} · {eventTime(attachment.created_at)}</small>
+                    <button type="button" className="button button-secondary" onClick={() => onDownloadAttachment(attachment)}>열기/다운로드</button>
+                  </li>)}
+                </ul>}
+              {value.state === 'TESTING' && <section className="governance-test-evidence" aria-label="테스트 결과 첨부">
+                <strong>테스트 결과 첨부</strong>
+                <p>개발자 권한을 서버가 재확인한 뒤 TEST 증거로 저장합니다. 파일당 최대 10 MiB입니다.</p>
+                <input type="file" multiple disabled={attachmentBusy} onChange={(event) => {
+                  const files = Array.from(event.target.files ?? [])
+                  if (files.some((file) => file.size > 10 * 1024 * 1024)) {
+                    setTestUploadError(new Error('첨부파일은 파일당 10 MiB 이하만 등록할 수 있습니다.'))
+                    event.target.value = ''
+                    return
+                  }
+                  setTestFiles(files)
+                  event.target.value = ''
+                }} />
+                {testFiles.length > 0 && <><small>{testFiles.map((file) => file.name).join(', ')}</small><button type="button" className="button" disabled={attachmentBusy} onClick={() => void submitTestEvidence()}>{attachmentBusy ? '저장 중…' : 'TEST 증거 저장'}</button></>}
+              </section>}
+              <ErrorNotice error={attachmentError ?? testUploadError} />
             </AccordionItem>
 
             <AccordionItem

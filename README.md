@@ -52,6 +52,9 @@ Linux/macOS/WSL:
 ```bash
 ./scripts/bootstrap.sh '<datahub-service-token>'
 # Set DATAHUB_BASE_URL in .env to the existing DataHub REST base URL.
+# With the host-development Compose profile, backend containers instead use
+# DATAHUB_CONTAINER_BASE_URL (default: http://datahub-gms:8080) through the
+# external DATAHUB_DOCKER_NETWORK (default: datahub_network).
 docker compose -f compose.yaml -f compose.identity.yaml config --quiet
 docker compose -f compose.yaml -f compose.identity.yaml up -d --build --wait
 docker compose --profile tools -f compose.yaml -f compose.identity.yaml \
