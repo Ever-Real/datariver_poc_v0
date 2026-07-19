@@ -143,8 +143,10 @@ do not expose raw proposal, candidate execution or DataHub update actions.
 | `GET /change-requests?state=&limit=` | `change.read` | clearance-filtered candidates followed by one grouped current-target authorization; hidden, deleted and legacy-unbound targets are omitted |
 | `GET /change-requests/{id}` | `change.read` | items, immutable server target binding, approvals and transition audit; current-target denial is existence-hiding 404 |
 | `POST /change-requests` | `change.raw.create` + `change.create` | hardware-human operator/recovery raw DataHub Aspect proposal; absent from the ordinary UI |
+| `POST /change-requests/intake` | `change.create` | ordinary v0.3-shaped CR registration: server re-reads authorized existing table/column identity, records typed multi-target intake evidence and server-mints any new-table proposal identifier; no provider mutation occurs |
 | `POST /change-requests/{id}/approvals` | `change.review` / `change.approve` | append immutable decision |
 | `POST /change-requests/{id}/transitions` | derived | legal user-controlled transition/retry |
+| `POST /change-requests/{id}/complete-intake` | `change.review` | after independent final approval, records an accountable `COMPLETED` result for a non-executable intake; cannot create `APPLIED` |
 
 At creation time, the service resolves every `target_ref` through the authorization-pruned local catalog projection in
 the request workspace, evaluates `change.create` against the target's actual system, domain and

@@ -352,6 +352,68 @@ async def test_catalog_detail_allows_typed_datahub_enrichment_for_review_scope()
 
 
 @pytest.mark.asyncio
+async def test_catalog_lineage_allows_the_same_audited_review_scope_as_detail() -> None:
+    now = datetime.now(UTC)
+    workspace_id, asset_id = uuid4(), uuid4()
+    asset = CatalogAssetIndex(
+        asset_id=asset_id,
+        workspace_id=workspace_id,
+        external_urn="urn:li:dataset:quarantined-lineage",
+        asset_type="DATASET",
+        name="unclassified_lineage_source",
+        description="Awaiting DataHub classification.",
+        platform="postgres",
+        domain_id=None,
+        system_id=None,
+        owner_department_id=None,
+        classification=Classification.RESTRICTED,
+        lifecycle="QUARANTINED",
+        source_version="projection-v1",
+        observed_at=now,
+    )
+    detail = CatalogAssetDetail(asset, (), (), (), (), {}, "projection-v1", now)
+    service = CatalogService(
+        index=cast(CatalogIndexReader, FakeIndex(detail)),
+        discovery=cast(CatalogDiscoveryReader, FakeIndex(detail)),
+        watermark=cast(CatalogWatermarkReader, FakeIndex(detail)),
+        datahub=cast(
+            DataHubGateway, FakeGateway(DataHubAssetEnrichment((), (), (), (), {}, "v1", now))
+        ),
+        cache=cast(Cache, FakeCache()),
+        authorization=cast(AuthorizationService, ReviewOnlyAuthorization()),
+        detail_cache_ttl_seconds=60,
+        stale_detail_ttl_seconds=900,
+        search_cache_ttl_seconds=30,
+        minimum_query_length=2,
+        policy_version=BuiltinPolicyEngine.policy_version,
+    )
+    subject = SubjectAttributes(
+        subject_id=uuid4(),
+        workspace_id=workspace_id,
+        active=True,
+        department_id=None,
+        groups=frozenset({"security-administrators"}),
+        job_function="SECURITY_ADMINISTRATOR",
+        clearance=Classification.RESTRICTED,
+        allowed_actions=frozenset(
+            {Action.CATALOG_SEARCH, Action.CATALOG_READ, Action.ADMIN_MANAGE}
+        ),
+    )
+
+    lineage = await service.lineage(
+        subject=subject,
+        asset_id=asset_id,
+        direction="BOTH",
+        depth=2,
+        environment=EnvironmentAttributes(requested_at=now),
+        request_id="admin-quarantine-lineage",
+    )
+
+    assert lineage is not None
+    assert lineage.center_asset_id == asset_id
+
+
+@pytest.mark.asyncio
 async def test_authorized_detail_enrichment_uses_scope_versioned_cache() -> None:
     now = datetime.now(UTC)
     workspace_id = uuid4()

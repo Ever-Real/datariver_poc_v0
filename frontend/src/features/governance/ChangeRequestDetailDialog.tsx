@@ -168,6 +168,7 @@ export function ChangeRequestDetailDialog({
                     <div className="wide"><dt>변경 전 / 변경 후 SHA-256</dt><dd><TruncatedText value={`${display(item.before_hash)} → ${display(item.after_hash)}`} /></dd></div>
                     <div className="wide"><dt>대상 binding SHA-256</dt><dd><TruncatedText value={display(item.target_binding_hash)} /></dd></div>
                   </dl>
+                  {item.after_document && <details className="governance-intake-document"><summary>요청된 테이블/컬럼 변경 내용</summary><pre>{JSON.stringify(item.after_document, null, 2)}</pre></details>}
                 </article>
               ))}
             </AccordionItem>

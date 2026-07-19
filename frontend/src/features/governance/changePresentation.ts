@@ -9,6 +9,7 @@ export const changeStateOptions: ReadonlyArray<{ value: '' | ChangeRequestState;
   { value: 'APPLY_QUEUED', label: '적용 대기' },
   { value: 'APPLYING', label: '적용 중' },
   { value: 'APPLIED', label: '적용 완료' },
+  { value: 'COMPLETED', label: '완료' },
   { value: 'APPLY_FAILED', label: '적용 실패' },
   { value: 'CHANGES_REQUESTED', label: '보완 요청' },
   { value: 'REJECTED', label: '반려' },
@@ -25,7 +26,7 @@ export function changeStateLabel(state: ChangeRequestState): string {
 
 export interface ChangeActionHint {
   id: string
-  kind: 'APPROVAL' | 'TRANSITION'
+  kind: 'APPROVAL' | 'TRANSITION' | 'INTAKE_COMPLETE'
   label: string
   stage?: 'REVIEW' | 'FINAL'
   decision?: 'APPROVED'
@@ -62,6 +63,13 @@ const finalApproval: ChangeActionHint = {
   tone: 'primary',
 }
 
+const intakeCompletion: ChangeActionHint = {
+  id: 'intake-complete',
+  kind: 'INTAKE_COMPLETE',
+  label: '수동 변경 완료 기록',
+  tone: 'primary',
+}
+
 /**
  * State-derived presentation hints only. The API remains authoritative for current target scope,
  * actor separation, assurance and approval prerequisites on every command.
@@ -93,7 +101,9 @@ export function changeActionHints(changeRequest: ChangeRequestRecord): ChangeAct
     case 'FINAL_REVIEW':
       return [
         finalApproval,
-        transition('APPLY_QUEUED', '적용 대기열 등록', 'primary'),
+        ...(changeRequest.request_type === 'CHANGE_INTAKE'
+          ? [intakeCompletion]
+          : [transition('APPLY_QUEUED', '적용 대기열 등록', 'primary')]),
         transition('CHANGES_REQUESTED', '보완 요청', 'danger'),
         transition('REJECTED', '반려', 'danger'),
         transition('CANCELLED', '요청 취소', 'danger'),

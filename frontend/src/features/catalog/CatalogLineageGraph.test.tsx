@@ -35,7 +35,7 @@ describe('CatalogLineageGraph', () => {
     const onSelectAsset = vi.fn()
     render(<CatalogLineageGraph lineage={lineage} onSelectAsset={onSelectAsset} />)
 
-    fireEvent.click(screen.getByRole('button', { name: /center_table/i }))
+    fireEvent.click(screen.getByRole('button', { name: 'center_table 선택' }))
 
     expect(onSelectAsset).toHaveBeenCalledWith('center')
     expect(onSelectAsset).not.toHaveBeenCalledWith('urn:li:dataset:center')
@@ -51,7 +51,7 @@ describe('CatalogLineageGraph', () => {
       />,
     )
 
-    fireEvent.click(screen.getByRole('button', { name: /center_table/i }))
+    fireEvent.click(screen.getByRole('button', { name: 'center_table 상세' }))
 
     expect(onOpenDataHubLineage).toHaveBeenCalledWith('center')
   })

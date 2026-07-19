@@ -130,7 +130,7 @@ describe('GovernancePage', () => {
     expect(screen.getByText('1건 표시')).toBeInTheDocument()
     expect(screen.queryByLabelText('DataHub 대상 URN')).not.toBeInTheDocument()
     expect(screen.queryByLabelText('승인 대상 JSON')).not.toBeInTheDocument()
-    fireEvent.click(screen.getAllByRole('button', { name: '신규 CR 신청' })[0])
+    fireEvent.click(screen.getByRole('button', { name: '신규 CR 신청' }))
     expect(await screen.findByRole('dialog', { name: '신규 CR 신청' })).toBeInTheDocument()
     expect(screen.queryByRole('link', { name: '신규 CR 신청' })).not.toBeInTheDocument()
     const listOptions = request.mock.calls.find(([path]) => path === '/change-requests?limit=100')?.[1]

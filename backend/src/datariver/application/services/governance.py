@@ -392,7 +392,12 @@ class GovernanceService:
         idempotency_key: str,
         request_hash: str,
     ) -> ChangeRequest:
-        if target in {ChangeState.APPLYING, ChangeState.APPLIED, ChangeState.APPLY_FAILED}:
+        if target in {
+            ChangeState.APPLYING,
+            ChangeState.APPLIED,
+            ChangeState.APPLY_FAILED,
+            ChangeState.COMPLETED,
+        }:
             raise ValidationError("The requested state is controlled by the application worker.")
         async with self._uow_factory() as uow:
             await uow.set_security_context(workspace_id=workspace_id, subject_id=subject.subject_id)
@@ -462,6 +467,89 @@ class GovernanceService:
                     "version": change_request.version,
                     "state": change_request.state.value,
                 },
+            )
+            await uow.commit()
+        change_request.events.clear()
+        return change_request
+
+    async def complete_intake(
+        self,
+        *,
+        workspace_id: UUID,
+        change_request_id: UUID,
+        actor_id: UUID,
+        reason: str,
+        expected_version: int,
+        subject: SubjectAttributes,
+        environment: EnvironmentAttributes,
+        request_id: str,
+        idempotency_key: str,
+        request_hash: str,
+    ) -> ChangeRequest:
+        """Complete a non-executable, human-verified intake after final review."""
+
+        async with self._uow_factory() as uow:
+            await uow.set_security_context(workspace_id=workspace_id, subject_id=subject.subject_id)
+            operation = f"change_request.complete_intake:{change_request_id}"
+            existing = await uow.idempotency.get_result(
+                workspace_id=workspace_id,
+                key=idempotency_key,
+                operation=operation,
+            )
+            if existing is not None:
+                if existing.request_hash != request_hash:
+                    raise ConflictError("The idempotency key was used with a different request.")
+                value = await uow.change_requests.get_for_update(
+                    workspace_id=workspace_id,
+                    change_request_id=change_request_id,
+                )
+                if value is None:
+                    raise ChangeRequestNotFound("The change request does not exist.")
+                return value
+            change_request = await uow.change_requests.get_for_update(
+                workspace_id=workspace_id,
+                change_request_id=change_request_id,
+            )
+            if change_request is None:
+                raise ChangeRequestNotFound("The change request does not exist.")
+            await self._authorization.authorize(
+                subject=subject,
+                resource=self._resource(change_request),
+                action=Action.CHANGE_REVIEW,
+                environment=environment,
+                request_id=request_id,
+            )
+            if not await self._authorize_current_targets(
+                change_requests=(change_request,),
+                workspace_id=workspace_id,
+                subject=subject,
+                action=Action.CHANGE_REVIEW,
+                environment=environment,
+                request_id=request_id,
+                strict_binding=True,
+            ):
+                raise ForbiddenError("The change target is not available.")
+            decision = await self._authorization.authorize(
+                subject=subject,
+                resource=self._resource(change_request),
+                action=Action.CHANGE_REVIEW,
+                environment=environment,
+                request_id=request_id,
+            )
+            change_request.complete_intake(
+                actor_id=actor_id,
+                reason=reason,
+                policy_decision_id=decision.decision_id,
+                expected_version=expected_version,
+            )
+            await uow.change_requests.save(change_request)
+            await uow.outbox.add_events(change_request.events)
+            await uow.idempotency.save_result(
+                workspace_id=workspace_id,
+                key=idempotency_key,
+                operation=operation,
+                request_hash=request_hash,
+                result={"change_request_id": str(change_request_id)},
             )
             await uow.commit()
         change_request.events.clear()

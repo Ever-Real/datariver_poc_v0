@@ -371,6 +371,7 @@ export type ChangeRequestState =
   | 'APPLYING'
   | 'APPLIED'
   | 'APPLY_FAILED'
+  | 'COMPLETED'
   | 'CHANGES_REQUESTED'
   | 'REJECTED'
   | 'CANCELLED'
@@ -397,6 +398,7 @@ export interface ChangeRequestRecord {
     operation: string
     before_hash?: string
     after_hash?: string
+    after_document?: Record<string, unknown>
     target_asset_id: string | null
     target_asset_type: string | null
     target_system_id: string | null

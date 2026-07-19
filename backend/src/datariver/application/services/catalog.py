@@ -590,22 +590,28 @@ class CatalogService:
         )
         if center is None:
             return None
-        await self._authorization.authorize(
-            subject=subject,
-            resource=ResourceAttributes(
-                resource_id=center.index.asset_id,
-                workspace_id=center.index.workspace_id,
-                resource_type="catalog_lineage",
-                owner_department_id=center.index.owner_department_id,
-                system_id=center.index.system_id,
-                domain_id=center.index.domain_id,
-                classification=center.index.classification,
-                lifecycle=center.index.lifecycle,
-            ),
-            action=Action.CATALOG_READ,
-            environment=environment,
-            request_id=request_id,
-        )
+        # The audited, read-only quarantine-review scope already allows this
+        # administrator to retrieve the selected catalog detail.  Lineage must
+        # use that same server-side scope; otherwise its extra generic policy
+        # check produces a local 403 before DataHub is contacted.  All normal
+        # user requests remain subject to the catalog-read authorization check.
+        if not access.admin_quarantine_review:
+            await self._authorization.authorize(
+                subject=subject,
+                resource=ResourceAttributes(
+                    resource_id=center.index.asset_id,
+                    workspace_id=center.index.workspace_id,
+                    resource_type="catalog_lineage",
+                    owner_department_id=center.index.owner_department_id,
+                    system_id=center.index.system_id,
+                    domain_id=center.index.domain_id,
+                    classification=center.index.classification,
+                    lifecycle=center.index.lifecycle,
+                ),
+                action=Action.CATALOG_READ,
+                environment=environment,
+                request_id=request_id,
+            )
         directions = ("UPSTREAM", "DOWNSTREAM") if direction == "BOTH" else (direction,)
         remote_pages = await asyncio.gather(
             *(

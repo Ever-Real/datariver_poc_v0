@@ -17,6 +17,8 @@ from datariver.domain.authz import (
 )
 from datariver.domain.common import ConflictError, ForbiddenError, ValidationError
 from datariver.domain.governance import (
+    DATAHUB_INTAKE_TARGET,
+    MANUAL_DATASET_INTAKE_TARGET,
     ChangeItem,
     ChangeRequest,
     change_target_binding_hash,
@@ -47,7 +49,18 @@ class CatalogChangeTargetAuthorizer:
         environment: EnvironmentAttributes,
         request_id: str,
     ) -> tuple[ChangeItem, ...]:
-        external_urns = tuple(dict.fromkeys(item.target_ref for item in items))
+        external_urns = tuple(
+            dict.fromkeys(
+                item.target_ref
+                for item in items
+                if item.target_type in {"DATAHUB_ASPECT", DATAHUB_INTAKE_TARGET}
+            )
+        )
+        manual_items = tuple(
+            item for item in items if item.target_type == MANUAL_DATASET_INTAKE_TARGET
+        )
+        if len(external_urns) + len(manual_items) != len(items):
+            raise ValidationError("A change item target type is not governed.")
         access = await self._classification_access.resolve(
             workspace_id=workspace_id,
             subject_id=subject.subject_id,
@@ -105,7 +118,14 @@ class CatalogChangeTargetAuthorizer:
         if len(authorized) != len(resources):
             raise ForbiddenError("One or more change targets are not available.")
         assets_by_urn = {asset.external_urn: asset for asset in assets}
-        return tuple(self._bind(item, assets_by_urn[item.target_ref]) for item in items)
+        return tuple(
+            (
+                self._bind(item, assets_by_urn[item.target_ref])
+                if item.target_type in {"DATAHUB_ASPECT", DATAHUB_INTAKE_TARGET}
+                else item
+            )
+            for item in items
+        )
 
     async def filter_authorized_change_requests(
         self,
@@ -125,6 +145,7 @@ class CatalogChangeTargetAuthorizer:
                 item.target_ref
                 for change_request in change_requests
                 for item in change_request.items
+                if item.target_type in {"DATAHUB_ASPECT", DATAHUB_INTAKE_TARGET}
             )
         )
         access = await self._classification_access.resolve(
@@ -146,6 +167,8 @@ class CatalogChangeTargetAuthorizer:
             resources: list[ResourceAttributes] = []
             drifted = False
             for item in change_request.items:
+                if item.target_type == MANUAL_DATASET_INTAKE_TARGET:
+                    continue
                 asset = assets_by_urn.get(item.target_ref)
                 if asset is None or not self._binding_is_current(
                     workspace_id=workspace_id,

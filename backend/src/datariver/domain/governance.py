@@ -26,6 +26,7 @@ class ChangeState(StrEnum):
     APPLYING = "APPLYING"
     APPLIED = "APPLIED"
     APPLY_FAILED = "APPLY_FAILED"
+    COMPLETED = "COMPLETED"
     CHANGES_REQUESTED = "CHANGES_REQUESTED"
     REJECTED = "REJECTED"
     CANCELLED = "CANCELLED"
@@ -56,6 +57,7 @@ ALLOWED_TRANSITIONS: dict[ChangeState, frozenset[ChangeState]] = {
     ChangeState.FINAL_REVIEW: frozenset(
         {
             ChangeState.APPLY_QUEUED,
+            ChangeState.COMPLETED,
             ChangeState.CHANGES_REQUESTED,
             ChangeState.REJECTED,
             ChangeState.CANCELLED,
@@ -66,6 +68,7 @@ ALLOWED_TRANSITIONS: dict[ChangeState, frozenset[ChangeState]] = {
     ),
     ChangeState.APPLYING: frozenset({ChangeState.APPLIED, ChangeState.APPLY_FAILED}),
     ChangeState.APPLY_FAILED: frozenset({ChangeState.APPLY_QUEUED, ChangeState.CANCELLED}),
+    ChangeState.COMPLETED: frozenset(),
     ChangeState.CHANGES_REQUESTED: frozenset({ChangeState.REGISTERED, ChangeState.CANCELLED}),
     ChangeState.APPLIED: frozenset(),
     ChangeState.REJECTED: frozenset(),
@@ -101,6 +104,10 @@ ALLOWED_DATAHUB_ASPECTS = frozenset(
         "schemaMetadata",
     }
 )
+
+CHANGE_INTAKE_ASPECT = "changeIntake"
+DATAHUB_INTAKE_TARGET = "DATAHUB_INTAKE"
+MANUAL_DATASET_INTAKE_TARGET = "MANUAL_DATASET_INTAKE"
 
 
 @dataclass(frozen=True, slots=True)
@@ -248,26 +255,42 @@ class ChangeRequest:
     ) -> ChangeRequest:
         if not title.strip():
             raise ValidationError("Change request title is required.")
-        if len(items) != 1:
+        if not 1 <= len(items) <= 200:
+            raise ValidationError("A change request must contain between one and 200 change items.")
+        if len(items) != 1 and any(item.target_type == "DATAHUB_ASPECT" for item in items):
             raise ValidationError(
-                "Exactly one change item is supported until durable item checkpoints exist."
+                "Exactly one change item is supported for executable DataHub changes until "
+                "durable item checkpoints exist."
             )
         for item in items:
-            if item.target_type != "DATAHUB_ASPECT":
-                raise ValidationError("Only typed DataHub aspect changes are currently executable.")
-            if item.operation != "UPSERT":
-                raise ValidationError(
-                    "Only idempotent DataHub UPSERT changes are currently executable."
-                )
-            if not item.target_ref.startswith("urn:li:"):
-                raise ValidationError("A DataHub target must be a valid urn:li: identifier.")
-            if not item.aspect_name.strip():
-                raise ValidationError("A DataHub aspect name is required.")
-            if item.aspect_name not in ALLOWED_DATAHUB_ASPECTS:
-                raise ValidationError("The DataHub aspect is not in the governed allowlist.")
+            if item.target_type == MANUAL_DATASET_INTAKE_TARGET:
+                if (
+                    item.operation != "CREATE"
+                    or item.aspect_name != CHANGE_INTAKE_ASPECT
+                    or not item.target_ref.startswith("urn:datariver:proposed-dataset:")
+                    or item.before_hash is not None
+                    or item.has_complete_target_binding
+                ):
+                    raise ValidationError("The manual dataset intake item is invalid.")
+                continue
+            if item.target_type not in {"DATAHUB_ASPECT", DATAHUB_INTAKE_TARGET}:
+                raise ValidationError("The change item target type is not governed.")
+            if item.target_type == "DATAHUB_ASPECT":
+                if item.operation != "UPSERT" or item.aspect_name not in ALLOWED_DATAHUB_ASPECTS:
+                    raise ValidationError(
+                        "The DataHub aspect change is outside the governed allowlist."
+                    )
+            elif item.operation != "REVIEW" or item.aspect_name != CHANGE_INTAKE_ASPECT:
+                raise ValidationError("The DataHub intake item is invalid.")
+            if not item.target_ref.startswith("urn:li:dataset:"):
+                raise ValidationError("A DataHub target must be a dataset URN.")
             if item.before_hash is None:
+                if item.target_type == "DATAHUB_ASPECT":
+                    raise ValidationError(
+                        "A current DataHub aspect hash is required for optimistic concurrency."
+                    )
                 raise ValidationError(
-                    "A current DataHub aspect hash is required for optimistic concurrency."
+                    "A current target hash is required for a DataHub-backed item."
                 )
             if not item.has_complete_target_binding:
                 raise ValidationError("A server-verified catalog target binding is required.")
@@ -375,8 +398,8 @@ class ChangeRequest:
         expected_version: int,
     ) -> None:
         self._check_version(expected_version)
-        if target is ChangeState.APPLIED:
-            raise ValidationError("APPLIED requires verified reconciliation.")
+        if target in {ChangeState.APPLIED, ChangeState.COMPLETED}:
+            raise ValidationError("Terminal completion requires its controlled service path.")
         self._assert_transition_allowed(target)
         if (
             self.state is ChangeState.CHANGES_REQUESTED
@@ -424,6 +447,36 @@ class ChangeRequest:
             "External state re-read and content hash reconciled.",
             policy_decision_id,
         )
+
+    def complete_intake(
+        self,
+        *,
+        actor_id: UUID,
+        reason: str,
+        policy_decision_id: UUID,
+        expected_version: int,
+    ) -> None:
+        """Record a human-verified completion for a non-executable CR intake.
+
+        Intake records deliberately do not claim a DataHub provider mutation.  Their
+        completion is the accountable developer/steward workflow result after the
+        requested change and TEST evidence have been reviewed.
+        """
+
+        self._check_version(expected_version)
+        if self.state is not ChangeState.FINAL_REVIEW:
+            raise ValidationError("Intake completion is only allowed during final review.")
+        if any(item.target_type == "DATAHUB_ASPECT" for item in self.items):
+            raise ValidationError("Executable DataHub changes require provider reconciliation.")
+        final_approvers = {
+            approval.actor_id
+            for approval in self.approvals
+            if approval.stage == "FINAL" and approval.decision is ApprovalDecision.APPROVED
+        }
+        required = 2 if self.classification >= Classification.CONFIDENTIAL else 1
+        if len(final_approvers) < required or self.requester_id in final_approvers:
+            raise ValidationError("Required independent final approval is missing.")
+        self._record_transition(ChangeState.COMPLETED, actor_id, reason, policy_decision_id)
 
     def _record_transition(
         self,

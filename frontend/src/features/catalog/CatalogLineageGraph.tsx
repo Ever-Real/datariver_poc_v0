@@ -109,21 +109,34 @@ export function CatalogLineageGraph({
           })}
         </svg>
         {layout.nodes.map((node) => (
-          <button
+          <article
             className={`catalog-lineage-node catalog-lineage-node-${node.role.toLowerCase()}`}
             key={node.asset.id}
-            onClick={() => {
-              if (onOpenDataHubLineage) onOpenDataHubLineage(node.asset.id)
-              else onSelectAsset(node.asset.id)
-            }}
             style={{ left: node.x, top: node.y, width: NODE_WIDTH, minHeight: NODE_HEIGHT }}
-            title={`${node.asset.name} — DataHub Lineage Explorer 열기`}
-            type="button"
           >
-            <span className="catalog-lineage-node-role">{node.role}</span>
-            <strong>{node.asset.name}</strong>
-            <small>{node.asset.platform ?? 'platform 미지정'} · {node.asset.schema_name ?? node.asset.asset_type}</small>
-          </button>
+            <button
+              aria-label={`${node.asset.name} 선택`}
+              className="catalog-lineage-node-select"
+              onClick={() => onSelectAsset(node.asset.id)}
+              title={`${node.asset.name} 상세 정보 열기`}
+              type="button"
+            >
+              <span className="catalog-lineage-node-role">{node.role}</span>
+              <strong>{node.asset.name}</strong>
+              <small>{node.asset.platform ?? 'platform 미지정'} · {node.asset.schema_name ?? node.asset.asset_type}</small>
+            </button>
+            {onOpenDataHubLineage ? (
+              <button
+                aria-label={`${node.asset.name} 상세`}
+                className="catalog-lineage-node-detail"
+                onClick={() => onOpenDataHubLineage(node.asset.id)}
+                title="DataHub Lineage 상세 보기"
+                type="button"
+              >
+                상세
+              </button>
+            ) : null}
+          </article>
         ))}
       </div>
     </div>

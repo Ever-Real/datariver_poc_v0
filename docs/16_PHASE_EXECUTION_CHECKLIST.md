@@ -113,7 +113,9 @@ number is independently committed only after its relevant checks pass.
 - [ ] R1-03 Registration: archive and replace the MANUAL body; compact tab parity and shared Oracle
   selector behavior are implemented.  The queued submission still requires Airflow apply/read-back
   before this recovery item is complete.
-- [ ] R1-04 Change management: schema/system-assignee summary and complete typed list fields.
+- [ ] R1-04 Change management: schema/system-assignee summary and complete typed list fields. The
+  duplicate CR entry point is removed; the remaining modal restores the v0.3 multi-target/manual
+  intake, private attachments and explicit non-provider `COMPLETED` workflow from ADR-0022.
 - [ ] R1-05 Administration: user/system master parity and governed external-service profile master.
 
 The complete item-by-item source inventory remains the controlled matrix in
@@ -151,12 +153,12 @@ replaced source is retained only under `.legacy_archive/`.
   must still be verified together.
 - [ ] RES-06 Audit and restore Change Management (`ChangeManagementPage`, `CRListTable`,
   `CRRegistrationModal`, CR router): schema/system/assignee overview, complete list fields, create
-  form and lifecycle, and private request/test attachment manifests. The v1 page now opens an
-  independent CR modal (never Registration), searches a real DataHub-backed target, creates a
-  version-fenced typed proposal with due-date/priority/urgency, and uploads/downloads private
-  request/test evidence through `datariver-filefolder`.  TEST evidence is accepted only in the
-  TESTING state after server-side `change.review` authorization.  The remaining parity gate is the
-  full legacy multi-target/re-edit form and authenticated role-journey evidence.
+  form and lifecycle, and private request/test attachment manifests. The v1 page now opens one
+  independent CR modal (never Registration), searches live DataHub-backed tables, restores
+  multi-target/column and manual-table inputs, uses live Term/Tag vocabulary suggestions, and
+  uploads/downloads private request/test evidence through `datariver-filefolder`. Existing targets
+  are re-read server-side; manual changes complete through ADR-0022's explicit accountable workflow.
+  Authenticated role-journey/browser acceptance remains.
 - [ ] RES-07 Audit and restore `/admin` (`UsersPage`, `SystemsManagementView`, `ConnectionsPage`,
   user/system/config routers): subject/membership master, system/schema/assignee priority, and
   redacted approved service-profile administration.  Password provisioning, arbitrary URLs,

@@ -360,10 +360,14 @@ export function GovernancePage({
     try {
       const path = action.kind === 'APPROVAL'
         ? `/change-requests/${current.id}/approvals`
-        : `/change-requests/${current.id}/transitions`
+        : action.kind === 'INTAKE_COMPLETE'
+          ? `/change-requests/${current.id}/complete-intake`
+          : `/change-requests/${current.id}/transitions`
       const body = action.kind === 'APPROVAL'
         ? { stage: action.stage, decision: action.decision, reason }
-        : { target_state: action.targetState, reason }
+        : action.kind === 'INTAKE_COMPLETE'
+          ? { reason }
+          : { target_state: action.targetState, reason }
       const next = await client.request<ChangeRequestRecord>(path, {
         method: 'POST',
         idempotencyKey: newIdempotencyKey('change-action'),
@@ -410,7 +414,8 @@ export function GovernancePage({
     { label: '재검토', state: 'CHANGES_REQUESTED' },
     { label: '변경/TEST', state: 'TESTING' },
     { label: '완료검토', state: 'FINAL_REVIEW' },
-    { label: '완료', state: 'APPLIED' },
+    { label: '적용 완료', state: 'APPLIED' },
+    { label: '수동 완료', state: 'COMPLETED' },
   ]
   const schemaKey = (row: ChangeRequestSchemaOverview) => `${row.platform}\u0000${row.database_name}\u0000${row.schema_name}`
   const toggleSchema = (row: ChangeRequestSchemaOverview) => {
@@ -451,7 +456,6 @@ export function GovernancePage({
         </label>
         <div className="governance-registration-link">
           <span>새 변경 요청은 독립된 CR 모달에서 DataHub 원본을 서버 검증한 뒤 생성됩니다.</span>
-          <button type="button" className="button button-secondary" onClick={() => setCreateOpen(true)}>신규 CR 신청</button>
         </div>
       </div>
 

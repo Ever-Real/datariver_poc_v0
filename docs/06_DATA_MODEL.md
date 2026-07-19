@@ -76,7 +76,7 @@ typed DataHub enrichment through the server anti-corruption layer.
 | Table | Key columns and constraints | Purpose |
 |---|---|---|
 | `governance.change_requests` | `id`, `workspace_id + number UQ`, type/title/description/state/requester/classification, nullable requested due date/priority/urgency vocabulary, `version`, timestamps | change aggregate/state machine |
-| `governance.change_request_items` | `id`, `change_request_id + ordinal UQ`, typed provider target/aspect/operation, before/after hashes and document, nullable all-or-none server binding (`asset/type/system/domain/owner/classification/lifecycle/source/observed/hash`) | one immutable typed DataHub aspect plus creation-time target evidence; unbound legacy rows are quarantined |
+| `governance.change_request_items` | `id`, `change_request_id + ordinal UQ`, typed provider or intake target/aspect/operation, before/after hashes and document, nullable all-or-none server binding (`asset/type/system/domain/owner/classification/lifecycle/source/observed/hash`) | immutable executable `DATAHUB_ASPECT` item (one per request) or typed multi-target CR intake evidence; a new-table intake has only a server-minted proposal identifier, never a client URN |
 | `governance.registration_content_bindings` | candidate/hash UQ, change item UQ, request/item/creator composite workspace FKs, created time | append-only candidate-to-governed-item provenance; no ordinary update/delete grant |
 | `governance.manual_metadata_submissions` | workspace/asset/requester FKs, per-workspace serial UQ, immutable typed table/field payload, private bucket/key UQ, CSV SHA-256/size/row count, state/attempt/lease/version/timestamps | independent MANUAL registration audit/CSV receipt; payload and receipt identity are immutable, while a leased Airflow-owned worker may advance controlled state after CSV and provider read-back verification |
 | `governance.approvals` | `id`, `change_request_id + stage + actor_id UQ`, decision/reason/actor/policy/time | append-only actor-separated decisions |
@@ -206,6 +206,8 @@ the canonical `0001` contract, upgrades install it atomically, and partial schem
 - Domain code owns legal change/upload/graph transitions and optimistic-version checks.
 - Confidential/restricted apply requires two distinct final approvers; requester final approval is denied.
 - `APPLIED` requires aggregate expected/observed hash equality after DataHub re-read.
+- `COMPLETED` is permitted only for a non-executable typed change intake after independent final
+  approval; it has no DataHub provider claim or reconciliation hash.
 - Graph release publication validates ontology, endpoints, classification and non-empty provenance before insert.
 - Object acceptance requires full streamed source SHA-256/size equality and format policy, an
   attempt-scoped destination, a full promoted-byte SHA-256/size read-back and a committed

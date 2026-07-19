@@ -6,6 +6,8 @@ import pytest
 from datariver.domain.authz import Classification
 from datariver.domain.common import ConflictError, ValidationError
 from datariver.domain.governance import (
+    CHANGE_INTAKE_ASPECT,
+    MANUAL_DATASET_INTAKE_TARGET,
     ApprovalDecision,
     ChangeItem,
     ChangeRequest,
@@ -187,6 +189,49 @@ def test_change_creation_rejects_multiple_items_until_checkpoints_exist() -> Non
             requester_id=uuid4(),
             items=[first, first],
         )
+
+
+def test_multi_target_manual_intake_completes_only_after_independent_final_approval() -> None:
+    requester = uuid4()
+    items = [
+        ChangeItem(
+            item_id=uuid4(),
+            target_type=MANUAL_DATASET_INTAKE_TARGET,
+            target_ref=f"urn:datariver:proposed-dataset:{uuid4()}",
+            operation="CREATE",
+            aspect_name=CHANGE_INTAKE_ASPECT,
+            after_document={"contract": "change-intake-v1", "table_name": table_name},
+        )
+        for table_name in ("wafer_forecast", "yield_forecast")
+    ]
+    request = ChangeRequest.create(
+        workspace_id=uuid4(),
+        number="CR-PLANNING-260719-ABCD",
+        request_type="CHANGE_INTAKE",
+        title="Forecast tables",
+        description="Register proposed tables for review.",
+        requester_id=requester,
+        items=items,
+    )
+    move_to_final_review(request)
+    final_approver = uuid4()
+    request.add_approval(
+        stage="FINAL",
+        decision=ApprovalDecision.APPROVED,
+        actor_id=final_approver,
+        reason="Manual change and TEST evidence reviewed.",
+        policy_decision_id=uuid4(),
+        expected_version=request.version,
+    )
+
+    request.complete_intake(
+        actor_id=uuid4(),
+        reason="Developer completed the approved manual change.",
+        policy_decision_id=uuid4(),
+        expected_version=request.version,
+    )
+
+    assert request.state is ChangeState.COMPLETED
 
 
 def test_stale_version_is_rejected() -> None:

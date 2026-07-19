@@ -185,6 +185,7 @@ def change_request_response(change_request: ChangeRequest) -> ChangeRequestRespo
                 operation=item.operation,
                 before_hash=item.before_hash,
                 after_hash=item.after_hash,
+                after_document=item.after_document,
                 target_asset_id=item.target_asset_id,
                 target_asset_type=item.target_asset_type,
                 target_system_id=item.target_system_id,

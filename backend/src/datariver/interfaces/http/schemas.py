@@ -382,6 +382,77 @@ class ChangeRequestCreate(BaseModel):
     items: list[ChangeItemRequest] = Field(min_length=1, max_length=1)
 
 
+class ChangeIntakeColumnRequest(BaseModel):
+    """A requested table-column change; source values are re-read on the server."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    field_path: str = Field(min_length=1, max_length=2_000)
+    data_type: str = Field(default="", max_length=1_000)
+    description: str = Field(default="", max_length=10_000)
+    tags: list[str] = Field(default_factory=list, max_length=100)
+    terms: list[str] = Field(default_factory=list, max_length=100)
+
+    @field_validator("field_path", "data_type", "description", "tags", "terms")
+    @classmethod
+    def reject_nul(cls, value: str | list[str]) -> str | list[str]:
+        values = (value,) if isinstance(value, str) else value
+        if any("\x00" in item for item in values):
+            raise ValueError("Change intake values cannot contain NUL bytes.")
+        return value
+
+
+class ChangeIntakeExistingTargetRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    kind: Literal["EXISTING"]
+    asset_id: UUID
+    description: str = Field(default="", max_length=10_000)
+    tags: list[str] = Field(default_factory=list, max_length=100)
+    terms: list[str] = Field(default_factory=list, max_length=100)
+    columns: list[ChangeIntakeColumnRequest] = Field(default_factory=list, max_length=2_000)
+
+
+class ChangeIntakeManualTargetRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    kind: Literal["MANUAL"]
+    database_name: str = Field(default="", max_length=255)
+    schema_name: str = Field(default="", max_length=255)
+    table_name: str = Field(min_length=1, max_length=500)
+    owner: str = Field(default="", max_length=1_000)
+    description: str = Field(default="", max_length=10_000)
+    tags: list[str] = Field(default_factory=list, max_length=100)
+    terms: list[str] = Field(default_factory=list, max_length=100)
+    columns: list[ChangeIntakeColumnRequest] = Field(default_factory=list, max_length=2_000)
+
+
+class ChangeRequestIntakeCreate(BaseModel):
+    """Legacy-shaped CR registration without browser-owned provider write authority."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    title: str = Field(min_length=1, max_length=500)
+    system_name: str = Field(min_length=1, max_length=100)
+    request_date: date | None = None
+    request_department: str = Field(default="", max_length=500)
+    request_reason: str = Field(min_length=1, max_length=10_000)
+    request_content: str = Field(default="", max_length=10_000)
+    requested_due_date: date | None = None
+    priority: Literal["LOW", "NORMAL", "HIGH", "CRITICAL"] = "NORMAL"
+    urgency: Literal["NORMAL", "URGENT", "EMERGENCY"] = "NORMAL"
+    security_level: Literal["PUBLIC", "INTERNAL", "CONFIDENTIAL", "RESTRICTED"] = "INTERNAL"
+    targets: list[ChangeIntakeExistingTargetRequest | ChangeIntakeManualTargetRequest] = Field(
+        min_length=1, max_length=200
+    )
+
+
+class IntakeCompletionRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    reason: str = Field(min_length=1, max_length=4_000)
+
+
 class TransitionRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -405,6 +476,7 @@ class ChangeItemResponse(BaseModel):
     operation: str
     before_hash: str | None
     after_hash: str | None
+    after_document: dict[str, Any]
     target_asset_id: UUID | None
     target_asset_type: str | None
     target_system_id: UUID | None

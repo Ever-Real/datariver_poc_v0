@@ -83,6 +83,7 @@ State machine:
 REGISTERED → IN_REVIEW → TESTING → FINAL_REVIEW → APPLY_QUEUED
 → APPLYING → APPLIED
                  └→ APPLY_FAILED → APPLY_QUEUED (authorized retry)
+REGISTERED → IN_REVIEW → TESTING → FINAL_REVIEW → COMPLETED (typed intake only)
 Any pre-apply review state → REJECTED or CANCELLED under policy
 ```
 
@@ -90,6 +91,10 @@ Any pre-apply review state → REJECTED or CANCELLED under policy
 - Requester cannot be final approver; high-classification changes require two distinct approvers and strong authentication.
 - Optimistic `version` prevents lost updates.
 - `APPLIED` requires target aspect re-read and content-hash match.
+- The v0.3-shaped multi-target CR intake re-reads each selected existing dataset on the server and
+  records requested table/column metadata as `DATAHUB_INTAKE`; new tables are server-minted manual
+  proposals. These non-executable records can become `COMPLETED` only after independent final
+  approval. `COMPLETED` is a human workflow outcome, not a DataHub mutation/read-back claim.
 - Every attachment download and transition receives a fresh ABAC decision and audit event.
 
 ## Monitoring and operations

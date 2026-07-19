@@ -218,7 +218,7 @@ class SqlChangeRequestOverviewReader(ChangeRequestOverviewReader):
                     bucket["testing"] += 1
                 elif change_request.state is ChangeState.FINAL_REVIEW:
                     bucket["final_review"] += 1
-                elif change_request.state is ChangeState.APPLIED:
+                elif change_request.state in {ChangeState.APPLIED, ChangeState.COMPLETED}:
                     bucket["completed"] += 1
 
         rows: list[ChangeRequestSchemaOverview] = []
