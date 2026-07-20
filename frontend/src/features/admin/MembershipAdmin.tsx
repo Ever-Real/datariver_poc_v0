@@ -124,14 +124,18 @@ export function MembershipAccessAdmin(props: AdminSectionProps) {
   return (
     <div className="admin-two-column">
       <section className="panel">
-        <div className="section-heading"><div><h3>{messages.members}</h3><p className="muted">OIDC 주체와 현재 Workspace 멤버십만 표시합니다.</p></div><button className="button button-secondary" onClick={() => void loadMembers()}>{messages.refresh}</button></div>
+        <div className="section-heading"><div><h3>User 관리</h3><p className="muted">OIDC 주체와 현재 Workspace 멤버십, 소유 테이블 및 CR 이력을 표시합니다.</p></div><div className="action-row"><button className="button button-secondary" disabled title="사용자 계정 생성과 비밀번호는 조직 OIDC/IdP에서 관리합니다.">신규 사용자 등록</button><button className="button button-secondary" onClick={() => void loadMembers()}>{messages.refresh}</button></div></div>
         <DenseDataTable
           caption="워크스페이스 사용자 목록"
           columns={[
-            { accessorKey: 'display_name', header: '사용자', size: 190, cell: ({ row }) => <strong>{row.original.display_name}</strong> },
+            { accessorKey: 'display_name', header: '사용자', size: 150, cell: ({ row }) => <strong>{row.original.display_name}</strong> },
+            { accessorKey: 'email', header: 'Email', size: 210, cell: ({ row }) => row.original.email ?? '—' },
             { accessorKey: 'job_function', header: '역할', size: 110, cell: ({ row }) => row.original.job_function ?? '—' },
             { accessorKey: 'department_id', header: '부서', size: 160, cell: ({ row }) => row.original.department_id ?? '미할당' },
             { accessorKey: 'clearance', header: '등급', size: 110, cell: ({ row }) => <span className="badge badge-soft">{row.original.clearance}</span> },
+            { accessorKey: 'owned_table_count', header: 'Owner 테이블', size: 105, cell: ({ row }) => row.original.owned_table_count },
+            { accessorKey: 'change_request_count', header: 'CR 이력', size: 82, cell: ({ row }) => <span className="badge badge-soft">{row.original.change_request_count}</span> },
+            { accessorKey: 'last_login_at', header: '최근 접속', size: 165, cell: ({ row }) => row.original.last_login_at ? <span title={row.original.last_login_ip ?? undefined}>{new Date(row.original.last_login_at).toLocaleString()}</span> : '—' },
             { accessorKey: 'membership_active', header: '멤버십', size: 92, cell: ({ row }) => row.original.membership_active ? '활성' : '비활성' },
             { accessorKey: 'membership_version', header: '버전', size: 72, cell: ({ row }) => `v${row.original.membership_version}` },
           ]}
@@ -141,7 +145,7 @@ export function MembershipAccessAdmin(props: AdminSectionProps) {
           selectedRowId={selectedId}
           onRowActivate={(member) => setSelectedId(member.subject_id)}
         />
-        <p className="callout">사용자 생성·이메일·비밀번호·최근 접속 정보는 DataRiver가 보관하거나 변경하지 않습니다. 해당 정보는 조직 OIDC/IdP와 별도 감사 read model의 책임입니다.</p>
+        <p className="callout">사용자 계정 생성과 비밀번호는 조직 OIDC/IdP의 책임입니다. 이 목록은 IdP 토큰에서 확인한 이메일과 최근 접속 정보만 기록하며, 비밀번호는 저장하거나 표시하지 않습니다.</p>
       </section>
       <section className="panel form-stack" aria-live="polite">
         <h3>{messages.accessDocument}</h3>

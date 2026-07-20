@@ -498,6 +498,11 @@ class WorkspaceMembershipSummary:
     job_function: str | None
     clearance: Classification
     membership_version: int
+    email: str | None = None
+    last_login_at: datetime | None = None
+    last_login_ip: str | None = None
+    owned_table_count: int = 0
+    change_request_count: int = 0
 
 
 @dataclass(frozen=True, slots=True)

@@ -47,6 +47,9 @@ class SubjectModel(Base, UuidPrimaryKeyMixin, TimestampMixin):
     issuer: Mapped[str] = mapped_column(String(500), nullable=False)
     external_subject: Mapped[str] = mapped_column(String(255), nullable=False)
     display_name: Mapped[str] = mapped_column(String(255), nullable=False)
+    email: Mapped[str | None] = mapped_column(String(320))
+    last_login_at: Mapped[datetime | None] = mapped_column()
+    last_login_ip: Mapped[str | None] = mapped_column(String(64))
     active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
 
 
@@ -167,7 +170,7 @@ class SystemAssigneeModel(Base, UuidPrimaryKeyMixin, TimestampMixin, VersionMixi
 
 
 class ExternalServiceProfileModel(Base, UuidPrimaryKeyMixin, TimestampMixin, VersionMixin):
-    """Redacted external-service connection intent; secret material is never persisted here."""
+    """Workspace-scoped external-service configuration with an explicit development boundary."""
 
     __tablename__ = "external_service_profiles"
     __table_args__ = (
@@ -180,7 +183,9 @@ class ExternalServiceProfileModel(Base, UuidPrimaryKeyMixin, TimestampMixin, Ver
             name="fk_external_service_profiles_updater",
         ),
         CheckConstraint(
-            "service_key IN ('DATAHUB', 'AIRFLOW', 'PROMETHEUS', 'NEO4J')",
+            "service_key IN ('DATAHUB', 'DATAHUB_FRONTEND', 'AIRFLOW', 'S3_STORAGE', "
+            "'LLM_CHAT_MODEL', 'LLM_EMBEDDING', 'LLM_RERANKER', 'NEO4J', 'PROMETHEUS', "
+            "'GRAFANA_DASHBOARD')",
             name="service_key_vocabulary",
         ),
         CheckConstraint("endpoint_url ~ '^https?://'", name="endpoint_url_scheme"),
@@ -199,9 +204,10 @@ class ExternalServiceProfileModel(Base, UuidPrimaryKeyMixin, TimestampMixin, Ver
     )
     service_key: Mapped[str] = mapped_column(String(32), nullable=False)
     display_name: Mapped[str] = mapped_column(String(255), nullable=False)
-    endpoint_url: Mapped[str] = mapped_column(String(2048), nullable=False)
+    endpoint_url: Mapped[str | None] = mapped_column(String(2048))
     auth_principal: Mapped[str | None] = mapped_column(String(255))
     secret_reference: Mapped[str | None] = mapped_column(String(512))
+    configuration_yaml: Mapped[str] = mapped_column(Text, default="", nullable=False)
     active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
     updated_by: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), nullable=False)
 

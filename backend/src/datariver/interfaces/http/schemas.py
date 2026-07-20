@@ -676,6 +676,11 @@ class MembershipAccessDocumentResponse(BaseModel):
 class WorkspaceMembershipSummaryResponse(BaseModel):
     subject_id: UUID
     display_name: str
+    email: str | None
+    last_login_at: datetime | None
+    last_login_ip: str | None
+    owned_table_count: int = Field(ge=0)
+    change_request_count: int = Field(ge=0)
     subject_active: bool
     membership_active: bool
     department_id: UUID | None
@@ -727,7 +732,7 @@ class SystemAssigneeUpdateResponse(BaseModel):
 
 
 class SystemConfigurationEntryResponse(BaseModel):
-    """Redacted deployment state for an administrator configuration inventory."""
+    """Administrator-visible configuration state; values are masked before return."""
 
     system_id: Literal[
         "DATAHUB_GMS",
@@ -743,13 +748,22 @@ class SystemConfigurationEntryResponse(BaseModel):
     ]
     label: str
     state: Literal["CONFIGURED", "NOT_CONFIGURED", "GOVERNED_PROFILE_REQUIRED"]
-    management_plane: Literal["DEPLOYMENT", "GOVERNED_PROVIDER_PROFILE"]
+    management_plane: Literal["DEVELOPMENT_DATABASE", "DEPLOYMENT", "GOVERNED_PROVIDER_PROFILE"]
     secret_reference_configured: bool
     embedding_state: Literal["NOT_APPLICABLE", "AVAILABLE", "DISABLED", "NOT_CONFIGURED"]
+    configuration_yaml: str = ""
+    version: int = Field(ge=0)
+    configured_at: datetime | None = None
 
 
 class SystemConfigurationListResponse(BaseModel):
     items: list[SystemConfigurationEntryResponse]
+
+
+class SystemConfigurationUpdateRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    configuration_yaml: str = Field(min_length=1, max_length=100_000)
 
 
 class WorkspaceMembershipAccessResponse(BaseModel):
@@ -778,6 +792,8 @@ class AdminReadContextResponse(BaseModel):
             "MEMBERSHIP_ACCESS_READ",
             "MEMBERSHIP_ACCESS_UPDATE",
             "SYSTEM_ASSIGNMENT_UPDATE",
+            "SYSTEM_CONFIGURATION_READ",
+            "SYSTEM_CONFIGURATION_UPDATE",
             "FALLBACK_REQUEST_READ",
             "FALLBACK_REQUEST_CREATE",
             "FALLBACK_REQUEST_DECIDE",

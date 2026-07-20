@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Iterable
+from datetime import UTC, datetime
 
 from fastapi import APIRouter, Request
 
@@ -30,10 +31,20 @@ async def get_authenticated_profile(
     email = claims.get("email")
     container = get_container(request)
     async with container.database.session_factory() as session:
-        default_workspace_id = await SqlSubjectReader(session).get_default_workspace_id(
+        reader = SqlSubjectReader(session)
+        default_workspace_id = await reader.get_default_workspace_id(
             issuer=identity.issuer,
             external_subject=identity.subject,
         )
+        source_ip = request.client.host if request.client else None
+        await reader.record_authenticated_profile(
+            issuer=identity.issuer,
+            external_subject=identity.subject,
+            email=str(email) if isinstance(email, str) else None,
+            source_ip=source_ip[:64] if source_ip else None,
+            observed_at=datetime.now(UTC),
+        )
+        await session.commit()
     return AuthMeResponse(
         subject=identity.subject,
         display_name=str(name),

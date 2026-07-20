@@ -118,7 +118,9 @@ Tag/Term/Domain only creates typed intent and never calls a provider from the br
 ## Secrets and encryption
 
 - Git contains `.env.example` names only. Bootstrap generates strong local secrets into ignored files.
-- Production uses secret mounts or a secret manager; DB stores `secret_ref` only.
+- Production uses secret mounts or a secret manager; DB stores `secret_ref` only. Development may
+  use the administrator's versioned, RLS-scoped system YAML record as an explicit local-only
+  exception. API responses mask sensitive keys and the update route is unavailable in production.
 - No zero/default encryption key fallback. Startup fails when required secret material is missing or weak.
 - TLS is mandatory outside a single-host private development network. PostgreSQL/object backups are encrypted and restoration is tested.
 - Logs redact Authorization, cookies, provider tokens, presigned URLs, connection strings, prompt content and personal data.

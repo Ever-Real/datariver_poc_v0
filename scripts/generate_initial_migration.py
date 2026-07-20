@@ -88,6 +88,7 @@ BEGIN
         GRANT USAGE ON SCHEMA public TO datariver_app;
         GRANT SELECT ON public.alembic_version TO datariver_app;
         GRANT SELECT ON platform.workspaces, iam.subjects TO datariver_app;
+        GRANT UPDATE (email, last_login_at, last_login_ip) ON iam.subjects TO datariver_app;
         GRANT SELECT ON iam.workspace_memberships TO datariver_app;
         GRANT EXECUTE ON FUNCTION iam.resolve_default_workspace(text, text) TO datariver_app;
         GRANT UPDATE (active, clearance, attributes, version, updated_at)

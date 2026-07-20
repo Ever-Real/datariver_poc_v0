@@ -5,7 +5,7 @@ from dataclasses import replace
 from datetime import datetime
 from uuid import UUID
 
-from sqlalchemy import select, text
+from sqlalchemy import select, text, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from datariver.application.dto import DecisionAuditItem
@@ -167,6 +167,25 @@ class SqlSubjectReader(SubjectReader):
             )
         ).scalar_one_or_none()
         return workspace_id if isinstance(workspace_id, UUID) else None
+
+    async def record_authenticated_profile(
+        self,
+        *,
+        issuer: str,
+        external_subject: str,
+        email: str | None,
+        source_ip: str | None,
+        observed_at: datetime,
+    ) -> None:
+        """Persist only token-sourced identity profile and ordinary access audit fields."""
+        await self._session.execute(
+            update(SubjectModel)
+            .where(
+                SubjectModel.issuer == issuer,
+                SubjectModel.external_subject == external_subject,
+            )
+            .values(email=email, last_login_at=observed_at, last_login_ip=source_ip)
+        )
 
 
 def subject_attributes_from_models(

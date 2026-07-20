@@ -22,7 +22,8 @@ describe('AdminPage mutation safety', () => {
       if (url.endsWith('/admin/workspace-memberships?limit=100')) return Promise.resolve(json({ items: [{
         subject_id: 'target-one', display_name: 'Target User', subject_active: true,
         membership_active: true, department_id: null, job_function: 'ENGINEER',
-        clearance: 'INTERNAL', membership_version: 1,
+        clearance: 'INTERNAL', membership_version: 1, email: null, last_login_at: null,
+        last_login_ip: null, owned_table_count: 0, change_request_count: 0,
       }] }))
       if (url.endsWith('/admin/systems?limit=100')) return Promise.resolve(json({ items: [{
         system_id: 'system-one', code: 'FAB', name: 'Fabrication', description: 'Fab data', active: true, version: 1,
@@ -43,7 +44,8 @@ describe('AdminPage mutation safety', () => {
       }
       if (url.endsWith('/admin/workspace-memberships/target-one/access')) return Promise.resolve(json({
         subject_id: 'target-one', display_name: 'Target User', subject_active: true,
-        department_id: null, job_function: 'ENGINEER', membership_version: 1,
+        department_id: null, job_function: 'ENGINEER', membership_version: 1, email: null,
+        last_login_at: null, last_login_ip: null, owned_table_count: 0, change_request_count: 0,
         access: { active: true, clearance: 'INTERNAL', groups: ['engineers'], allowed_actions: ['catalog.read'], denied_actions: [], allowed_system_ids: [], allowed_domain_ids: [] },
       }, 200, { ETag: '"1"' }))
       throw new Error(`unexpected request: ${url}`)

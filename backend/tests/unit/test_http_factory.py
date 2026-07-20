@@ -505,6 +505,8 @@ def test_openapi_exposes_bounded_typed_administrator_read_contracts() -> None:
         "MEMBERSHIP_ACCESS_READ",
         "MEMBERSHIP_ACCESS_UPDATE",
         "SYSTEM_ASSIGNMENT_UPDATE",
+        "SYSTEM_CONFIGURATION_READ",
+        "SYSTEM_CONFIGURATION_UPDATE",
         "FALLBACK_REQUEST_READ",
         "FALLBACK_REQUEST_CREATE",
         "FALLBACK_REQUEST_DECIDE",

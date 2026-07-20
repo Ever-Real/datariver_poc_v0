@@ -46,11 +46,13 @@ class AdminAccessService:
         *,
         fallback_enabled: bool,
         fallback_ttl_seconds: int,
+        development_system_configuration_enabled: bool = False,
     ) -> None:
         self._uow_factory = uow_factory
         self._authorization = authorization
         self._fallback_enabled = fallback_enabled
         self._fallback_ttl = timedelta(seconds=fallback_ttl_seconds)
+        self._development_system_configuration_enabled = development_system_configuration_enabled
 
     async def list_workspace_memberships(
         self,
@@ -157,6 +159,13 @@ class AdminAccessService:
             AdminOperation.INFERENCE_PROVIDER_PROFILE_READ,
             AdminOperation.RESTRICTED_SEARCH_GRANT_READ,
         ]
+        if self._development_system_configuration_enabled:
+            operations.extend(
+                [
+                    AdminOperation.SYSTEM_CONFIGURATION_READ,
+                    AdminOperation.SYSTEM_CONFIGURATION_UPDATE,
+                ]
+            )
         if (
             Action.RETENTION_READ in subject.allowed_actions
             and Action.RETENTION_READ not in subject.denied_actions

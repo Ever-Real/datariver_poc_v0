@@ -1,9 +1,13 @@
 from __future__ import annotations
 
-from typing import Annotated
+import re
+from collections.abc import Mapping
+from typing import Annotated, Any
 from uuid import UUID
 
+import yaml  # type: ignore[import-untyped]
 from fastapi import APIRouter, Header, Query, Request, Response
+from sqlalchemy import select
 
 from datariver.application.services.admin_access import AdminAccessService
 from datariver.application.services.authorization import AuthorizationService
@@ -16,9 +20,16 @@ from datariver.domain.admin_access import (
     SystemAssigneeUpdateCommand,
 )
 from datariver.domain.authz import Action, Classification
-from datariver.domain.common import ValidationError, canonical_json_hash
+from datariver.domain.common import (
+    ConflictError,
+    ForbiddenError,
+    ValidationError,
+    canonical_json_hash,
+)
 from datariver.infrastructure.db.admin_access import SqlAdminAccessUnitOfWork
 from datariver.infrastructure.db.authz import SqlDecisionWriter
+from datariver.infrastructure.db.models.platform import ExternalServiceProfileModel
+from datariver.infrastructure.db.rls import set_security_context
 from datariver.interfaces.http.dependencies import ContextDep, get_container
 from datariver.interfaces.http.presenters import (
     admin_access_request_response,
@@ -40,6 +51,7 @@ from datariver.interfaces.http.schemas import (
     SystemAssigneeUpdateResponse,
     SystemConfigurationEntryResponse,
     SystemConfigurationListResponse,
+    SystemConfigurationUpdateRequest,
     SystemDirectoryEntryResponse,
     SystemDirectoryListResponse,
     WorkspaceMembershipAccessResponse,
@@ -49,100 +61,159 @@ from datariver.interfaces.http.schemas import (
 router = APIRouter(prefix="/admin", tags=["administration"])
 
 
-def _system_configuration_entries(settings: Settings) -> list[SystemConfigurationEntryResponse]:
-    """Expose only source/availability flags, never target URLs or secret references."""
+_SYSTEM_CONFIGURATION = (
+    ("DATAHUB_GMS", "DATAHUB", "DataHub GMS"),
+    ("DATAHUB_FRONTEND", "DATAHUB_FRONTEND", "DataHub Frontend"),
+    ("AIRFLOW", "AIRFLOW", "Airflow"),
+    ("S3_STORAGE", "S3_STORAGE", "S3 Storage"),
+    ("LLM_CHAT_MODEL", "LLM_CHAT_MODEL", "LLM · Chat model"),
+    ("LLM_EMBEDDING", "LLM_EMBEDDING", "LLM · Embedding"),
+    ("LLM_RERANKER", "LLM_RERANKER", "LLM · Reranker"),
+    ("NEO4J", "NEO4J", "Neo4j"),
+    ("PROMETHEUS", "PROMETHEUS", "Prometheus"),
+    ("GRAFANA_DASHBOARD", "GRAFANA_DASHBOARD", "Grafana Dashboard"),
+)
+_CONFIGURATION_BY_ID = {
+    system_id: (service_key, label)
+    for system_id, service_key, label in _SYSTEM_CONFIGURATION
+}
+_SENSITIVE_CONFIGURATION_KEY = re.compile(
+    r"(?:password|secret|token|api[_-]?key|private[_-]?key)", re.IGNORECASE
+)
+_MASKED_VALUE = "********"
 
-    grafana_embed_state = (
-        "AVAILABLE"
-        if settings.grafana_embed_url() is not None
-        else "NOT_CONFIGURED"
-        if settings.ui_grafana_url is None
-        else "DISABLED"
+
+def _yaml_document(value: str) -> dict[str, Any]:
+    try:
+        document = yaml.safe_load(value)
+    except yaml.YAMLError as error:
+        raise ValidationError("System configuration must be valid YAML.") from error
+    if not isinstance(document, dict):
+        raise ValidationError("System configuration YAML must contain one mapping document.")
+    return dict(document)
+
+
+def _mask_configuration(value: object, *, key: str = "") -> object:
+    if _SENSITIVE_CONFIGURATION_KEY.search(key):
+        return _MASKED_VALUE
+    if isinstance(value, Mapping):
+        return {
+            str(item_key): _mask_configuration(item_value, key=str(item_key))
+            for item_key, item_value in value.items()
+        }
+    if isinstance(value, list):
+        return [_mask_configuration(item, key=key) for item in value]
+    return value
+
+
+def _merge_masked_configuration(incoming: object, current: object, *, key: str = "") -> object:
+    if _SENSITIVE_CONFIGURATION_KEY.search(key) and incoming == _MASKED_VALUE:
+        return current
+    if isinstance(incoming, Mapping):
+        previous = current if isinstance(current, Mapping) else {}
+        return {
+            str(item_key): _merge_masked_configuration(
+                item_value, previous.get(item_key), key=str(item_key)
+            )
+            for item_key, item_value in incoming.items()
+        }
+    if isinstance(incoming, list):
+        previous_items = current if isinstance(current, list) else []
+        return [
+            _merge_masked_configuration(
+                item,
+                previous_items[index] if index < len(previous_items) else None,
+                key=key,
+            )
+            for index, item in enumerate(incoming)
+        ]
+    return incoming
+
+
+def _render_yaml(document: object) -> str:
+    return str(
+        yaml.safe_dump(
+            document,
+            allow_unicode=True,
+            default_flow_style=False,
+            sort_keys=True,
+        )
     )
-    return [
-        SystemConfigurationEntryResponse(
-            system_id="DATAHUB_GMS",
-            label="DataHub GMS",
-            state="CONFIGURED",
-            management_plane="DEPLOYMENT",
-            secret_reference_configured=bool(settings.datahub_secret_ref),
-            embedding_state="NOT_APPLICABLE",
-        ),
-        SystemConfigurationEntryResponse(
-            system_id="DATAHUB_FRONTEND",
-            label="DataHub Frontend",
-            state="CONFIGURED" if settings.ui_datahub_url is not None else "NOT_CONFIGURED",
-            management_plane="DEPLOYMENT",
-            secret_reference_configured=False,
-            embedding_state="NOT_APPLICABLE",
-        ),
-        SystemConfigurationEntryResponse(
-            system_id="AIRFLOW",
-            label="Airflow",
-            state="CONFIGURED" if settings.ui_airflow_url is not None else "NOT_CONFIGURED",
-            management_plane="DEPLOYMENT",
-            secret_reference_configured=False,
-            embedding_state="NOT_APPLICABLE",
-        ),
-        SystemConfigurationEntryResponse(
-            system_id="S3_STORAGE",
-            label="S3 Storage",
-            state="CONFIGURED",
-            management_plane="DEPLOYMENT",
-            secret_reference_configured=bool(
-                settings.s3_access_key_file and settings.s3_secret_key_file
-            ),
-            embedding_state="NOT_APPLICABLE",
-        ),
-        SystemConfigurationEntryResponse(
-            system_id="LLM_CHAT_MODEL",
-            label="LLM · Chat model",
-            state="GOVERNED_PROFILE_REQUIRED",
-            management_plane="GOVERNED_PROVIDER_PROFILE",
-            secret_reference_configured=False,
-            embedding_state="NOT_APPLICABLE",
-        ),
-        SystemConfigurationEntryResponse(
-            system_id="LLM_EMBEDDING",
-            label="LLM · Embedding",
-            state="GOVERNED_PROFILE_REQUIRED",
-            management_plane="GOVERNED_PROVIDER_PROFILE",
-            secret_reference_configured=False,
-            embedding_state="NOT_APPLICABLE",
-        ),
-        SystemConfigurationEntryResponse(
-            system_id="LLM_RERANKER",
-            label="LLM · Reranker",
-            state="GOVERNED_PROFILE_REQUIRED",
-            management_plane="GOVERNED_PROVIDER_PROFILE",
-            secret_reference_configured=False,
-            embedding_state="NOT_APPLICABLE",
-        ),
-        SystemConfigurationEntryResponse(
-            system_id="NEO4J",
-            label="Neo4j",
-            state="NOT_CONFIGURED",
-            management_plane="DEPLOYMENT",
-            secret_reference_configured=False,
-            embedding_state="NOT_APPLICABLE",
-        ),
-        SystemConfigurationEntryResponse(
-            system_id="PROMETHEUS",
-            label="Prometheus",
-            state="CONFIGURED" if settings.ui_prometheus_url is not None else "NOT_CONFIGURED",
-            management_plane="DEPLOYMENT",
-            secret_reference_configured=False,
-            embedding_state="NOT_APPLICABLE",
-        ),
-        SystemConfigurationEntryResponse(
-            system_id="GRAFANA_DASHBOARD",
-            label="Grafana Dashboard",
-            state="CONFIGURED" if settings.ui_grafana_url is not None else "NOT_CONFIGURED",
-            management_plane="DEPLOYMENT",
-            secret_reference_configured=False,
-            embedding_state=grafana_embed_state,
-        ),
-    ]
+
+
+def _configuration_endpoint(document: Mapping[str, Any]) -> str | None:
+    for key in ("url", "endpoint", "base_url"):
+        value = document.get(key)
+        if isinstance(value, str) and value.strip():
+            if not value.strip().startswith(("http://", "https://")):
+                raise ValidationError("System configuration URL values must use HTTP or HTTPS.")
+            return value.strip()
+    return None
+
+
+def _system_configuration_entries(
+    settings: Settings, profiles: Mapping[str, ExternalServiceProfileModel] = {}
+) -> list[SystemConfigurationEntryResponse]:
+    development = settings.app_env == "development"
+    entries: list[SystemConfigurationEntryResponse] = []
+    for system_id, service_key, label in _SYSTEM_CONFIGURATION:
+        profile = profiles.get(service_key)
+        configured = profile is not None and profile.active
+        if development:
+            state = "CONFIGURED" if configured else "NOT_CONFIGURED"
+            if system_id == "GRAFANA_DASHBOARD":
+                embedding_state = "AVAILABLE" if configured else "NOT_CONFIGURED"
+            else:
+                embedding_state = "NOT_APPLICABLE"
+            management_plane = "DEVELOPMENT_DATABASE"
+        else:
+            static_configured = {
+                "DATAHUB_GMS": True,
+                "DATAHUB_FRONTEND": settings.ui_datahub_url is not None,
+                "AIRFLOW": settings.ui_airflow_url is not None,
+                "S3_STORAGE": True,
+                "PROMETHEUS": settings.ui_prometheus_url is not None,
+                "GRAFANA_DASHBOARD": settings.ui_grafana_url is not None,
+            }.get(system_id, False)
+            if static_configured:
+                state = "CONFIGURED"
+            elif system_id.startswith("LLM_"):
+                state = "GOVERNED_PROFILE_REQUIRED"
+            else:
+                state = "NOT_CONFIGURED"
+            if system_id == "GRAFANA_DASHBOARD":
+                embedding_state = (
+                    "AVAILABLE"
+                    if settings.grafana_embed_url() is not None
+                    else "NOT_CONFIGURED"
+                )
+            else:
+                embedding_state = "NOT_APPLICABLE"
+            management_plane = (
+                "GOVERNED_PROVIDER_PROFILE" if system_id.startswith("LLM_") else "DEPLOYMENT"
+            )
+        configuration_yaml = ""
+        if development and profile and profile.configuration_yaml:
+            configuration_yaml = _render_yaml(
+                _mask_configuration(_yaml_document(profile.configuration_yaml))
+            )
+        secret_reference_configured = (
+            bool(profile and profile.secret_reference)
+            if development
+            else system_id == "DATAHUB_GMS" and bool(settings.datahub_secret_ref)
+        )
+        entries.append(SystemConfigurationEntryResponse(
+            system_id=system_id,
+            label=label,
+            state=state,
+            management_plane=management_plane,
+            secret_reference_configured=secret_reference_configured,
+            embedding_state=embedding_state,
+            configuration_yaml=configuration_yaml,
+            version=profile.version if profile else 0,
+            configured_at=profile.updated_at if profile else None,
+        ))
+    return entries
 
 
 def _service(request: Request) -> AdminAccessService:
@@ -155,6 +226,7 @@ def _service(request: Request) -> AdminAccessService:
         authorization,
         fallback_enabled=container.settings.admin_password_fallback_enabled,
         fallback_ttl_seconds=container.settings.admin_password_fallback_ttl_seconds,
+        development_system_configuration_enabled=container.settings.app_env == "development",
     )
 
 
@@ -162,6 +234,13 @@ def _expected_version(if_match: str) -> int:
     value = if_match.strip().strip('"')
     if not value.isdigit() or int(value) < 1:
         raise ValidationError("If-Match must contain a quoted positive version.")
+    return int(value)
+
+
+def _expected_configuration_version(if_match: str) -> int:
+    value = if_match.strip().strip('"')
+    if not value.isdigit():
+        raise ValidationError("If-Match must contain a non-negative configuration version.")
     return int(value)
 
 
@@ -337,17 +416,145 @@ async def list_system_configuration(
     request: Request,
     context: ContextDep,
 ) -> SystemConfigurationListResponse:
-    # Reuse the same eligible-human-admin read gate as member/system inventory.
-    # Configuration values, endpoints and secret references are intentionally
-    # absent from the response; the operator plane owns them.
-    await _service(request).get_admin_read_context(
+    admin_context = await _service(request).get_admin_read_context(
         workspace_id=context.workspace_id,
         subject=context.subject,
         environment=context.environment,
         request_id=context.request_id,
     )
+    if "SYSTEM_CONFIGURATION_READ" not in admin_context.allowed_operations:
+        raise ForbiddenError("System configuration access is not available for this administrator.")
+    container = get_container(request)
+    profiles: dict[str, ExternalServiceProfileModel] = {}
+    if container.settings.app_env == "development":
+        async with container.database.session_factory() as session:
+            async with session.begin():
+                await set_security_context(
+                    session,
+                    workspace_id=context.workspace_id,
+                    subject_id=context.subject.subject_id,
+                )
+                profiles = {
+                    profile.service_key: profile
+                    for profile in (
+                        await session.scalars(
+                            select(ExternalServiceProfileModel).where(
+                                ExternalServiceProfileModel.workspace_id == context.workspace_id
+                            )
+                        )
+                    ).all()
+                }
     return SystemConfigurationListResponse(
-        items=_system_configuration_entries(get_container(request).settings)
+        items=_system_configuration_entries(container.settings, profiles)
+    )
+
+
+@router.put(
+    "/system-configuration/{system_id}",
+    response_model=SystemConfigurationEntryResponse,
+    responses={
+        200: {
+            "headers": {
+                "ETag": {
+                    "description": "Quoted configuration version after the update.",
+                    "schema": {"type": "string"},
+                }
+            }
+        }
+    },
+)
+async def update_system_configuration(
+    system_id: str,
+    payload: SystemConfigurationUpdateRequest,
+    request: Request,
+    response: Response,
+    context: ContextDep,
+    if_match: Annotated[str, Header(alias="If-Match", max_length=100)],
+) -> SystemConfigurationEntryResponse:
+    container = get_container(request)
+    if container.settings.app_env != "development":
+        raise ForbiddenError(
+            "Database-backed system configuration is available only in development."
+        )
+    expected_version = _expected_configuration_version(if_match)
+    if system_id not in _CONFIGURATION_BY_ID:
+        raise ValidationError("The system configuration identifier is invalid.")
+    admin_context = await _service(request).get_admin_read_context(
+        workspace_id=context.workspace_id,
+        subject=context.subject,
+        environment=context.environment,
+        request_id=context.request_id,
+    )
+    if "SYSTEM_CONFIGURATION_UPDATE" not in admin_context.allowed_operations:
+        raise ForbiddenError("System configuration update is not available for this administrator.")
+    service_key, label = _CONFIGURATION_BY_ID[system_id]
+    submitted = _yaml_document(payload.configuration_yaml)
+    profile: ExternalServiceProfileModel | None
+    async with container.database.session_factory() as session:
+        async with session.begin():
+            await set_security_context(
+                session, workspace_id=context.workspace_id, subject_id=context.subject.subject_id
+            )
+            profile = (
+                await session.scalars(
+                    select(ExternalServiceProfileModel)
+                    .where(
+                        ExternalServiceProfileModel.workspace_id == context.workspace_id,
+                        ExternalServiceProfileModel.service_key == service_key,
+                    )
+                    .with_for_update()
+                )
+            ).one_or_none()
+            current = (
+                _yaml_document(profile.configuration_yaml)
+                if profile and profile.configuration_yaml
+                else {}
+            )
+            merged = _merge_masked_configuration(submitted, current)
+            if not isinstance(merged, Mapping):
+                raise ValidationError(
+                    "System configuration YAML must contain one mapping document."
+                )
+            endpoint = _configuration_endpoint(merged)
+            if profile is None:
+                if expected_version != 0:
+                    raise ConflictError("The system configuration was created by another request.")
+                profile = ExternalServiceProfileModel(
+                    workspace_id=context.workspace_id,
+                    service_key=service_key,
+                    display_name=label,
+                    endpoint_url=endpoint,
+                    auth_principal=None,
+                    secret_reference=None,
+                    configuration_yaml=_render_yaml(merged),
+                    active=True,
+                    updated_by=context.subject.subject_id,
+                )
+                session.add(profile)
+            else:
+                if profile.version != expected_version:
+                    raise ConflictError("The system configuration was modified by another request.")
+                profile.endpoint_url = endpoint
+                profile.configuration_yaml = _render_yaml(merged)
+                profile.active = True
+                profile.updated_by = context.subject.subject_id
+                profile.version += 1
+            await session.flush()
+            assert profile is not None
+            saved_version = profile.version
+            saved_at = profile.updated_at
+            saved_yaml = _render_yaml(_mask_configuration(merged))
+    response.headers["ETag"] = f'"{saved_version}"'
+    return SystemConfigurationEntryResponse(
+        system_id=system_id,
+        label=label,
+        state="CONFIGURED",
+        management_plane="DEVELOPMENT_DATABASE",
+        secret_reference_configured=False,
+        embedding_state="AVAILABLE" if system_id == "GRAFANA_DASHBOARD" else "NOT_APPLICABLE",
+        configuration_yaml=saved_yaml,
+        version=saved_version,
+        configured_at=saved_at,
     )
 
 

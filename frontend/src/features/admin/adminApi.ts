@@ -80,6 +80,17 @@ export class AdminApi {
     return (await this.client.request<{ items: SystemConfigurationEntry[] }>('/admin/system-configuration')).items
   }
 
+  updateSystemConfiguration(systemId: string, configurationYaml: string, version: number) {
+    return this.client.request<SystemConfigurationEntry>(
+      `/admin/system-configuration/${encodeURIComponent(systemId)}`,
+      {
+        method: 'PUT',
+        ifMatch: quotedVersion(version),
+        body: JSON.stringify({ configuration_yaml: configurationYaml }),
+      },
+    )
+  }
+
   async getMembershipAccess(subjectId: string): Promise<VersionedMembershipAccess> {
     const response = await this.client.requestWithMeta<WorkspaceMembershipAccess>(
       `/admin/workspace-memberships/${encodeURIComponent(subjectId)}/access`,

@@ -75,6 +75,11 @@ def workspace_membership_summary_response(
     return WorkspaceMembershipSummaryResponse(
         subject_id=membership.subject_id,
         display_name=membership.display_name,
+        email=membership.email,
+        last_login_at=membership.last_login_at,
+        last_login_ip=membership.last_login_ip,
+        owned_table_count=membership.owned_table_count,
+        change_request_count=membership.change_request_count,
         subject_active=membership.subject_active,
         membership_active=membership.membership_active,
         department_id=membership.department_id,

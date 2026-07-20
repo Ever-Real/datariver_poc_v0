@@ -365,6 +365,7 @@ class HttpDataHubGateway:
         expected_version: str | None = None,
         allowed_versions: tuple[str, ...] = (),
         version_enforcement: Literal["report", "enforce"] = "report",
+        development_version_bypass: bool = False,
         version_probe_ttl_seconds: int = 300,
         maximum_concurrency: int = 20,
         queue_timeout_seconds: float = 2.0,
@@ -386,6 +387,7 @@ class HttpDataHubGateway:
             version for version in (expected_version, *allowed_versions) if version is not None
         )
         self._version_enforcement = version_enforcement
+        self._development_version_bypass = development_version_bypass
         self._version_probe_ttl_seconds = version_probe_ttl_seconds
         self._version_lock = asyncio.Lock()
         self._version_checked_at = 0.0
@@ -853,39 +855,47 @@ class HttpDataHubGateway:
         if kind not in {"TAG", "TERM"} or not query.strip() or not 1 <= limit <= 50:
             raise ValueError("DataHub vocabulary search request is invalid.")
         entity_type = "TAG" if kind == "TAG" else "GLOSSARY_TERM"
-        data = await self._graphql(
-            VOCABULARY_SEARCH_QUERY,
-            {
-                "input": {
-                    "types": [entity_type],
-                    "query": query.strip(),
-                    "start": 0,
-                    "count": limit,
-                }
-            },
-        )
-        result = data.get("searchAcrossEntities")
-        raw_results = result.get("searchResults") if isinstance(result, dict) else None
-        if not isinstance(raw_results, list):
-            raise ExternalDependencyError(
-                "DataHub returned an invalid vocabulary search result.",
-                dependency="datahub",
-                retryable=False,
-                provider_code="INVALID_RESPONSE",
-            )
+        # Result ordering is provider-defined.  Inspect a bounded discovery
+        # window before the catalog service applies its presentation limit so
+        # controlled tags and terms do not vanish after a short first page.
+        page_size = 50
+        maximum_results = min(250, max(page_size, limit * 8))
         values: set[str] = set()
-        for raw in raw_results:
-            entity = raw.get("entity") if isinstance(raw, dict) else None
-            if not isinstance(entity, dict):
-                continue
-            if kind == "TAG":
-                name = entity.get("name")
-            else:
-                properties = entity.get("properties")
-                name = properties.get("name") if isinstance(properties, dict) else None
-            if isinstance(name, str) and (normalized_name := name.strip()):
-                values.add(normalized_name[:500])
-        return tuple(sorted(values, key=str.casefold)[:limit])
+        for start in range(0, maximum_results, page_size):
+            data = await self._graphql(
+                VOCABULARY_SEARCH_QUERY,
+                {
+                    "input": {
+                        "types": [entity_type],
+                        "query": query.strip(),
+                        "start": start,
+                        "count": page_size,
+                    }
+                },
+            )
+            result = data.get("searchAcrossEntities")
+            raw_results = result.get("searchResults") if isinstance(result, dict) else None
+            if not isinstance(raw_results, list):
+                raise ExternalDependencyError(
+                    "DataHub returned an invalid vocabulary search result.",
+                    dependency="datahub",
+                    retryable=False,
+                    provider_code="INVALID_RESPONSE",
+                )
+            for raw in raw_results:
+                entity = raw.get("entity") if isinstance(raw, dict) else None
+                if not isinstance(entity, dict):
+                    continue
+                if kind == "TAG":
+                    name = entity.get("name")
+                else:
+                    properties = entity.get("properties")
+                    name = properties.get("name") if isinstance(properties, dict) else None
+                if isinstance(name, str) and (normalized_name := name.strip()):
+                    values.add(normalized_name[:500])
+            if len(raw_results) < page_size:
+                break
+        return tuple(sorted(values, key=str.casefold))
 
     async def apply_change(
         self,
@@ -1045,7 +1055,11 @@ class HttpDataHubGateway:
         detail_code = None
         try:
             observed = await self._reported_version(force=True)
-            if self._expected_version is not None and observed not in self._accepted_versions:
+            if (
+                self._expected_version is not None
+                and observed not in self._accepted_versions
+                and not self._development_version_bypass
+            ):
                 state = "degraded"
                 detail_code = "VERSION_MISMATCH"
         except ExternalDependencyError as error:

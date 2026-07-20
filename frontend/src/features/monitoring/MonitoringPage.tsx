@@ -57,7 +57,7 @@ export function MonitoringPage({ client }: { client: ApiClient }) {
           <div className="monitoring-approved-embed">
             <div className="monitoring-embed-notice">
               <span><Monitor size={20} aria-hidden="true" /></span>
-              <p>서버가 승인한 Grafana origin과 배포 증거가 확인되어, 이 세션에서는 sandboxed dashboard를 표시합니다.</p>
+              <p>서버가 현재 환경의 Grafana 주소를 확인하여, 이 세션에서는 sandboxed dashboard를 표시합니다.</p>
               {grafana && <a className="button button-secondary" href={grafana.url} target="_blank" rel="noopener noreferrer"><ExternalLink size={14} />새 창으로 열기</a>}
             </div>
             <iframe className="monitoring-grafana-frame" loading="lazy" referrerPolicy="no-referrer" sandbox="allow-forms allow-same-origin allow-scripts" src={embeddedGrafanaUrl} title="Grafana Dashboard" />
@@ -68,14 +68,14 @@ export function MonitoringPage({ client }: { client: ApiClient }) {
             <div>
               <p className="eyebrow">Approved external observability</p>
               <h2>{grafana.label}</h2>
-              <p>이 링크는 서버 allowlist 검증을 거친 외부 관측성 화면입니다. 현재 배포에는 Grafana SSO·CSP sandbox 배포 증거가 등록되지 않아 iframe은 비활성입니다. 세션/프레임 경계를 우회하지 않고 새 창에서 엽니다.</p>
+              <p>이 링크는 서버가 제공한 외부 관측성 화면입니다. iframe을 사용할 수 없는 환경에서는 세션/프레임 경계를 우회하지 않고 새 창에서 엽니다.</p>
               <a className="button" href={grafana.url} target="_blank" rel="noopener noreferrer"><ExternalLink size={14} />{grafana.label} 열기</a>
             </div>
           </div>
         ) : (
           <div className="monitoring-frame-state">
             <Monitor size={38} aria-hidden="true" />
-            <div><h2>승인된 Grafana 링크가 없습니다.</h2><p>운영자가 서버의 `UI_GRAFANA_URL`을 허용된 HTTPS 주소로 구성하면 이 화면에 검증된 직접 링크가 나타납니다. 브라우저에서 임의 주소를 입력하거나 iframe을 생성하지 않습니다.</p></div>
+            <div><h2>Grafana 링크가 없습니다.</h2><p>관리자가 시스템 설정에서 Grafana URL을 저장하거나 배포 설정을 제공하면 이 화면에 서버가 제공한 링크가 나타납니다.</p></div>
           </div>
         )}
       </div>

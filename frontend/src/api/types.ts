@@ -649,6 +649,8 @@ export type AdminOperation =
   | 'MEMBERSHIP_ACCESS_READ'
   | 'MEMBERSHIP_ACCESS_UPDATE'
   | 'SYSTEM_ASSIGNMENT_UPDATE'
+  | 'SYSTEM_CONFIGURATION_READ'
+  | 'SYSTEM_CONFIGURATION_UPDATE'
   | 'FALLBACK_REQUEST_READ'
   | 'FALLBACK_REQUEST_CREATE'
   | 'FALLBACK_REQUEST_DECIDE'
@@ -685,6 +687,11 @@ export interface MembershipAccessDocument {
 export interface WorkspaceMembershipSummary {
   subject_id: string
   display_name: string
+  email: string | null
+  last_login_at: string | null
+  last_login_ip: string | null
+  owned_table_count: number
+  change_request_count: number
   subject_active: boolean
   membership_active: boolean
   department_id: string | null
@@ -735,9 +742,12 @@ export interface SystemConfigurationEntry {
   system_id: 'DATAHUB_GMS' | 'DATAHUB_FRONTEND' | 'AIRFLOW' | 'S3_STORAGE' | 'LLM_CHAT_MODEL' | 'LLM_EMBEDDING' | 'LLM_RERANKER' | 'NEO4J' | 'PROMETHEUS' | 'GRAFANA_DASHBOARD'
   label: string
   state: 'CONFIGURED' | 'NOT_CONFIGURED' | 'GOVERNED_PROFILE_REQUIRED'
-  management_plane: 'DEPLOYMENT' | 'GOVERNED_PROVIDER_PROFILE'
+  management_plane: 'DEVELOPMENT_DATABASE' | 'DEPLOYMENT' | 'GOVERNED_PROVIDER_PROFILE'
   secret_reference_configured: boolean
   embedding_state: 'NOT_APPLICABLE' | 'AVAILABLE' | 'DISABLED' | 'NOT_CONFIGURED'
+  configuration_yaml: string
+  version: number
+  configured_at: string | null
 }
 
 export interface AdminReadContext {

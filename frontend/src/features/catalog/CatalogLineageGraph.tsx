@@ -18,11 +18,9 @@ const MAXIMUM_SCALE = 2.25
 export function CatalogLineageGraph({
   lineage,
   onSelectAsset,
-  onOpenLineageDetail,
 }: {
   lineage: CatalogLineage
   onSelectAsset: (assetId: string) => void
-  onOpenLineageDetail?: (assetId: string) => void
 }) {
   const layout = useMemo(() => layoutLineage(lineage), [lineage])
   const viewportRef = useRef<HTMLDivElement>(null)
@@ -124,7 +122,6 @@ export function CatalogLineageGraph({
   }
 
   const startNodeDrag = (event: React.PointerEvent<HTMLElement>, nodeId: string) => {
-    if ((event.target as HTMLElement).closest('.catalog-lineage-node-detail')) return
     event.currentTarget.setPointerCapture?.(event.pointerId)
     interactionRef.current = {
       kind: 'NODE', pointerId: event.pointerId, nodeId, element: event.currentTarget,
@@ -206,7 +203,7 @@ export function CatalogLineageGraph({
                 className={`catalog-lineage-node catalog-lineage-node-${node.role.toLowerCase()}`}
                 key={node.asset.id}
                 onPointerDown={(event) => {
-                  if ((event.target as HTMLElement).closest('.catalog-lineage-node-select, .catalog-lineage-node-detail')) return
+                  if ((event.target as HTMLElement).closest('.catalog-lineage-node-select')) return
                   startNodeDrag(event, node.asset.id)
                 }}
                 style={{ left: node.x, top: node.y, width: LINEAGE_NODE_WIDTH, minHeight: LINEAGE_NODE_HEIGHT }}
@@ -225,17 +222,6 @@ export function CatalogLineageGraph({
                   <strong>{node.asset.name}</strong>
                   <small>{node.asset.platform ?? 'platform 미지정'} · {node.asset.schema_name ?? node.asset.asset_type}</small>
                 </button>
-                {onOpenLineageDetail ? (
-                  <button
-                    aria-label={`${node.asset.name} 상세`}
-                    className="catalog-lineage-node-detail"
-                    onClick={() => onOpenLineageDetail(node.asset.id)}
-                    title="DataHub Lineage 상세 보기"
-                    type="button"
-                  >
-                    상세
-                  </button>
-                ) : null}
               </article>
             ))}
           </div>

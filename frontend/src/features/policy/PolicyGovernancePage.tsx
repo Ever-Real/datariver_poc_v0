@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from 'react'
 import { BookOpen, CheckCircle2, Eye, FileText, RefreshCw, Shield, Workflow } from 'lucide-react'
 import type { ApiClient } from '../../api/client'
-import type { ClassificationAccessPolicy, LegalHold, RetentionPolicy } from '../../api/types'
+import type { AdminOperation, ClassificationAccessPolicy, LegalHold, RetentionPolicy } from '../../api/types'
 import { ErrorNotice } from '../../components/ErrorNotice'
 import { PageTitle } from '../../components/layout/PageTitle'
 
@@ -22,7 +22,7 @@ interface PolicyData {
   readAllowed: boolean
 }
 
-export function PolicyGovernancePage({ client, mayReadPolicies = false }: { client: ApiClient; mayReadPolicies?: boolean }) {
+export function PolicyGovernancePage({ client, mayReadPolicies = false, allowedOperations }: { client: ApiClient; mayReadPolicies?: boolean; allowedOperations?: readonly AdminOperation[] }) {
   const [active, setActive] = useState<DocumentId>('CLASSIFICATION')
   const [viewMode, setViewMode] = useState<ViewMode>('TEXT')
   const [data, setData] = useState<PolicyData>({ classification: null, retention: null, holds: [], readAllowed: false })
@@ -36,10 +36,14 @@ export function PolicyGovernancePage({ client, mayReadPolicies = false }: { clie
       setLoading(false)
       return
     }
+    const allowed = new Set(allowedOperations)
+    const canReadClassification = allowedOperations === undefined || allowed.has('CLASSIFICATION_POLICY_READ')
+    const canReadRetention = allowedOperations === undefined || allowed.has('RETENTION_POLICY_READ')
+    const canReadHolds = allowedOperations === undefined || allowed.has('LEGAL_HOLD_READ')
     const [classification, retention, holds] = await Promise.allSettled([
-      client.request<ClassificationAccessPolicy | null>('/admin/classification-access/policies/current'),
-      client.request<RetentionPolicy | null>('/admin/retention/policies/current'),
-      client.request<{ items: LegalHold[] }>('/admin/retention/legal-holds?limit=20'),
+      canReadClassification ? client.request<ClassificationAccessPolicy | null>('/admin/classification-access/policies/current') : Promise.resolve(null),
+      canReadRetention ? client.request<RetentionPolicy | null>('/admin/retention/policies/current') : Promise.resolve(null),
+      canReadHolds ? client.request<{ items: LegalHold[] }>('/admin/retention/legal-holds?limit=20') : Promise.resolve({ items: [] }),
     ])
     const failure = [classification, retention, holds].find((result) => result.status === 'rejected')
     if (failure?.status === 'rejected') setError(failure.reason)
@@ -50,7 +54,7 @@ export function PolicyGovernancePage({ client, mayReadPolicies = false }: { clie
       readAllowed: true,
     })
     setLoading(false)
-  }, [client, mayReadPolicies])
+  }, [allowedOperations, client, mayReadPolicies])
 
   useEffect(() => { void refresh() }, [refresh])
   const document = documents.find((item) => item.id === active) ?? defaultDocument

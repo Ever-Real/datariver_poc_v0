@@ -95,21 +95,6 @@ describe('CatalogLineageGraph', () => {
     expect(screen.getByText('D·2')).toHaveClass('catalog-lineage-node-role')
   })
 
-  it('opens the server-authorized DataHub lineage dialog when that action is available', () => {
-    const onOpenLineageDetail = vi.fn()
-    render(
-      <CatalogLineageGraph
-        lineage={lineage}
-        onOpenLineageDetail={onOpenLineageDetail}
-        onSelectAsset={vi.fn()}
-      />,
-    )
-
-    fireEvent.click(screen.getByRole('button', { name: 'center_table 상세' }))
-
-    expect(onOpenLineageDetail).toHaveBeenCalledWith('center')
-  })
-
   it('supports canvas panning, zoom controls, and individual node movement', () => {
     render(<CatalogLineageGraph lineage={lineage} onSelectAsset={vi.fn()} />)
 

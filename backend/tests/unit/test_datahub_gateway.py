@@ -25,7 +25,7 @@ async def test_vocabulary_search_uses_the_fixed_tag_contract() -> None:
         body = json.loads(request.content)
         assert body["query"] == VOCABULARY_SEARCH_QUERY
         assert body["variables"] == {
-            "input": {"types": ["TAG"], "query": "cal", "start": 0, "count": 12}
+            "input": {"types": ["TAG"], "query": "cal", "start": 0, "count": 50}
         }
         return httpx.Response(
             200,
@@ -93,7 +93,7 @@ async def test_vocabulary_search_accepts_the_bounded_wildcard_browse_query() -> 
     async def handler(request: httpx.Request) -> httpx.Response:
         body = json.loads(request.content)
         assert body["variables"] == {
-            "input": {"types": ["TAG"], "query": "*", "start": 0, "count": 12}
+            "input": {"types": ["TAG"], "query": "*", "start": 0, "count": 50}
         }
         return httpx.Response(
             200,
@@ -118,6 +118,38 @@ async def test_vocabulary_search_accepts_the_bounded_wildcard_browse_query() -> 
     values = await gateway.search_vocabulary(kind="TAG", query="*", limit=12)
 
     assert values == ("Quality",)
+    await client.aclose()
+
+
+async def test_vocabulary_search_reads_later_bounded_pages_before_returning_matches() -> None:
+    calls: list[int] = []
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content)
+        start = body["variables"]["input"]["start"]
+        calls.append(start)
+        results = [
+            {"entity": {"urn": f"urn:li:tag:value-{index}", "name": f"Value {index}"}}
+            for index in range(start, start + 50)
+        ]
+        if start == 50:
+            results = [{"entity": {"urn": "urn:li:tag:later", "name": "Later match"}}]
+        return httpx.Response(
+            200,
+            json={"data": {"searchAcrossEntities": {"searchResults": results}}},
+        )
+
+    client = httpx.AsyncClient(
+        base_url="https://datahub.example", transport=httpx.MockTransport(handler)
+    )
+    gateway = HttpDataHubGateway(
+        base_url="https://datahub.example", token="unused", timeout_seconds=1, client=client
+    )
+
+    values = await gateway.search_vocabulary(kind="TAG", query="value", limit=12)
+
+    assert calls == [0, 50]
+    assert "Later match" in values
     await client.aclose()
 
 
@@ -559,6 +591,33 @@ async def test_capability_reports_a_datahub_release_mismatch_as_degraded() -> No
 
     assert capability.state == "degraded"
     assert capability.detail_code == "VERSION_MISMATCH"
+    await client.aclose()
+
+
+async def test_development_capability_bypass_accepts_release_candidate() -> None:
+    client = httpx.AsyncClient(
+        base_url="https://datahub.example",
+        transport=httpx.MockTransport(
+            lambda request: httpx.Response(
+                200,
+                json={"versions": {"acryldata/datahub": {"version": "v1.6.0rc1"}}},
+            )
+        ),
+    )
+    gateway = HttpDataHubGateway(
+        base_url="https://datahub.example",
+        token="unused",
+        timeout_seconds=1,
+        expected_version="v1.6.0",
+        version_enforcement="report",
+        development_version_bypass=True,
+        client=client,
+    )
+
+    capability = await gateway.capability()
+
+    assert capability.state == "healthy"
+    assert capability.detail_code is None
     await client.aclose()
 
 

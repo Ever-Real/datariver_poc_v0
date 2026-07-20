@@ -238,6 +238,87 @@ async def test_create_is_idempotent_and_writes_one_outbox_event() -> None:
 
 
 @pytest.mark.asyncio
+async def test_status_workflow_allows_ordinary_authenticated_development_actors() -> None:
+    workspace_id = uuid4()
+    requester = replace(
+        subject(workspace_id),
+        authentication_assurance=AuthenticationAssurance.PASSWORD,
+    )
+    reviewer = replace(
+        subject(workspace_id),
+        allowed_actions=frozenset({Action.CHANGE_REVIEW}),
+        authentication_assurance=AuthenticationAssurance.PASSWORD,
+    )
+    state: dict[str, object] = {"requests": {}, "outbox": [], "idempotency": {}}
+    writer = MemoryDecisionWriter()
+    service = GovernanceService(
+        cast(Callable[[], GovernanceUnitOfWork], lambda: MemoryUnitOfWork(state)),
+        AuthorizationService(decision_writer=writer),
+        target_authorizer=MemoryTargetAuthorizer(),
+    )
+    change_request = await service.create_change_request(
+        workspace_id=workspace_id,
+        number="CR-DEV-1",
+        request_type="CATALOG_METADATA",
+        title="Development workflow",
+        description="Validate registered-to-review status transitions.",
+        requester_id=requester.subject_id,
+        items=[
+            ChangeItem(
+                uuid4(),
+                "DATAHUB_ASPECT",
+                "urn:li:dataset:development-workflow",
+                "UPSERT",
+                {"description": "test"},
+                "datasetProperties",
+                "b" * 64,
+            )
+        ],
+        subject=requester,
+        classification=Classification.INTERNAL,
+        environment=EnvironmentAttributes(requested_at=datetime.now(UTC)),
+        request_id="development-create",
+        idempotency_key="development-create-0001",
+        request_hash="a" * 64,
+        require_raw_operator_gate=False,
+    )
+
+    in_review = await service.transition(
+        workspace_id=workspace_id,
+        change_request_id=change_request.change_request_id,
+        target=ChangeState.IN_REVIEW,
+        actor_id=reviewer.subject_id,
+        reason="Ordinary authenticated review.",
+        expected_version=change_request.version,
+        subject=reviewer,
+        environment=EnvironmentAttributes(requested_at=datetime.now(UTC)),
+        request_id="development-review",
+        idempotency_key="development-review-0001",
+        request_hash="b" * 64,
+    )
+    final_review = await service.transition(
+        workspace_id=workspace_id,
+        change_request_id=change_request.change_request_id,
+        target=ChangeState.FINAL_REVIEW,
+        actor_id=reviewer.subject_id,
+        reason="Status workflow verified.",
+        expected_version=in_review.version,
+        subject=reviewer,
+        environment=EnvironmentAttributes(requested_at=datetime.now(UTC)),
+        request_id="development-final-review",
+        idempotency_key="development-final-review-0001",
+        request_hash="c" * 64,
+    )
+
+    assert final_review.state is ChangeState.FINAL_REVIEW
+    assert writer.actions == [
+        Action.CHANGE_CREATE.value,
+        Action.CHANGE_REVIEW.value,
+        Action.CHANGE_REVIEW.value,
+    ]
+
+
+@pytest.mark.asyncio
 async def test_raw_creation_requires_explicit_hardware_human_operator_before_target_access() -> (
     None
 ):

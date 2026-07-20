@@ -46,9 +46,14 @@ def test_system_master_models_have_workspace_scoped_integrity_and_no_secret_colu
     assert {"workspace_id", "system_id", "subject_id", "responsibility", "priority"} <= set(
         assignee.c.keys()
     )
-    assert {"workspace_id", "service_key", "endpoint_url", "secret_reference", "updated_by"} <= set(
-        profile.c.keys()
-    )
+    assert {
+        "workspace_id",
+        "service_key",
+        "endpoint_url",
+        "secret_reference",
+        "configuration_yaml",
+        "updated_by",
+    } <= set(profile.c.keys())
     assert "secret" not in set(profile.c.keys())
     assert "password" not in set(profile.c.keys())
     assert {
@@ -76,7 +81,7 @@ def test_system_master_migration_is_forced_rls_and_uses_redacted_connection_prof
         encoding="utf-8"
     )
 
-    assert REQUIRED_DATABASE_REVISION == "0027"
+    assert REQUIRED_DATABASE_REVISION == "0029"
     assert "FORCE ROW LEVEL SECURITY" in migration
     assert "GRANT SELECT, INSERT, UPDATE ON platform.data_systems" in migration
     assert "secret_reference" in migration

@@ -159,7 +159,8 @@ describe('RestrictedSearchGrantAdmin', () => {
       listMemberships: vi.fn(() => Promise.resolve([{
         subject_id: 'subject-one', display_name: 'Engineer', subject_active: true,
         membership_active: true, department_id: null, job_function: 'ENGINEER',
-        clearance: 'RESTRICTED', membership_version: 1,
+        clearance: 'RESTRICTED', membership_version: 1, email: null, last_login_at: null,
+        last_login_ip: null, owned_table_count: 0, change_request_count: 0,
       } satisfies WorkspaceMembershipSummary])),
       getCurrentClassificationAccessPolicy: vi.fn(() => Promise.resolve(policy())),
     }

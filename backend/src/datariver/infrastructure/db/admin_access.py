@@ -30,6 +30,8 @@ from datariver.domain.admin_access import (
 from datariver.domain.authz import Action, Classification
 from datariver.domain.common import ConflictError, ForbiddenError, NotFoundError, ValidationError
 from datariver.infrastructure.db.governance import SqlIdempotencyStore, SqlOutboxWriter
+from datariver.infrastructure.db.models.catalog import AssetProjectionModel
+from datariver.infrastructure.db.models.governance import ChangeRequestModel
 from datariver.infrastructure.db.models.platform import (
     AdminAccessApprovalModel,
     AdminAccessRequestModel,
@@ -237,7 +239,48 @@ class SqlMembershipAccessRepository(MembershipAccessRepository):
                 .limit(limit)
             )
         ).all()
-        return tuple(_membership_summary(subject, membership) for subject, membership in rows)
+        if not rows:
+            return ()
+        subject_ids = [subject.id for subject, _ in rows]
+        change_request_counts: dict[UUID, int] = {}
+        for subject_id, count in (
+            await self._session.execute(
+                select(ChangeRequestModel.requester_id, func.count())
+                .where(
+                    ChangeRequestModel.workspace_id == workspace_id,
+                    ChangeRequestModel.requester_id.in_(subject_ids),
+                )
+                .group_by(ChangeRequestModel.requester_id)
+            )
+        ).all():
+            change_request_counts[subject_id] = int(count)
+        owner_subjects = {
+            f"urn:li:corpuser:{subject.external_subject}": subject.id for subject, _ in rows
+        }
+        owned_table_counts = {subject_id: 0 for subject_id in subject_ids}
+        if owner_subjects:
+            for owner_ref, count in (
+                await self._session.execute(
+                    select(AssetProjectionModel.owner_ref, func.count())
+                    .where(
+                        AssetProjectionModel.workspace_id == workspace_id,
+                        AssetProjectionModel.owner_ref.in_(owner_subjects),
+                        AssetProjectionModel.asset_type == "TABLE",
+                    )
+                    .group_by(AssetProjectionModel.owner_ref)
+                )
+            ).all():
+                if owner_ref in owner_subjects:
+                    owned_table_counts[owner_subjects[owner_ref]] = int(count)
+        return tuple(
+            _membership_summary(
+                subject,
+                membership,
+                owned_table_count=owned_table_counts[subject.id],
+                change_request_count=int(change_request_counts.get(subject.id, 0)),
+            )
+            for subject, membership in rows
+        )
 
     async def get_access(
         self, *, workspace_id: UUID, subject_id: UUID
@@ -588,7 +631,11 @@ def _string_set(document: object, key: str) -> set[str] | None:
 
 
 def _membership_summary(
-    subject: SubjectModel, membership: WorkspaceMembershipModel
+    subject: SubjectModel,
+    membership: WorkspaceMembershipModel,
+    *,
+    owned_table_count: int = 0,
+    change_request_count: int = 0,
 ) -> WorkspaceMembershipSummary:
     try:
         clearance = Classification(membership.clearance)
@@ -599,6 +646,11 @@ def _membership_summary(
     return WorkspaceMembershipSummary(
         subject_id=subject.id,
         display_name=subject.display_name,
+        email=subject.email,
+        last_login_at=subject.last_login_at,
+        last_login_ip=subject.last_login_ip,
+        owned_table_count=owned_table_count,
+        change_request_count=change_request_count,
         subject_active=subject.active,
         membership_active=membership.active,
         department_id=membership.department_id,

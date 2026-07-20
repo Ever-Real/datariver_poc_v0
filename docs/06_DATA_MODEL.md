@@ -9,7 +9,9 @@ The SQLAlchemy metadata and generated `backend/alembic/versions/0001_initial_sch
 - PostgreSQL RLS is enabled and forced on every workspace table. API sets `app.workspace_id` and `app.subject_id` per transaction. Relay, upload and governance BYPASSRLS identities are separate and receive only the tables needed by their background responsibility.
 - Every parent/child relationship between tenant tables carries `workspace_id` in a composite foreign key; application filtering is not the only tenant-integrity guard.
 - Security selectors such as classification/system/domain/owner are typed columns. JSONB stores non-security documents/extensions.
-- Passwords/tokens never have application columns; connections use mounted secret references.
+- Production passwords and tokens never have application columns; connections use mounted secret
+  references. The development-only external-service YAML profile is the documented exception: it
+  is workspace-scoped, response-masked, versioned and disabled outside development.
 - Outbox, approvals, transitions, decisions, releases and citations are append-only to ordinary application roles.
 
 ## Implemented schemas and tables
@@ -22,8 +24,8 @@ The SQLAlchemy metadata and generated `backend/alembic/versions/0001_initial_sch
 | `platform.data_systems` | workspace-scoped code/name UQ, description, active flag, version/timestamps | canonical business-system master; not a DataHub provider connection |
 | `platform.system_schema_scopes` | workspace/platform/database/schema UQ, composite system FK, active flag | explicit DataHub projection scope to business-system assignment |
 | `platform.system_assignees` | system/subject/responsibility UQ, `DEVELOPER` or `DATA_STEWARD`, priority `1..999`, active flag | accountable human system assignments; never browser-derived |
-| `platform.external_service_profiles` | workspace/service-key UQ (`DATAHUB`, `AIRFLOW`, `PROMETHEUS`, `NEO4J`), endpoint, auth principal, opaque secret reference, updater/version | redacted infrastructure connection intent; plaintext secret and client-controlled connectivity tests are prohibited |
-| `iam.subjects` | `id`, `issuer + external_subject UQ`, `display_name`, `active`, timestamps | external IdP mapping; no credential |
+| `platform.external_service_profiles` | workspace/service-key UQ for DataHub, Airflow, storage, LLM, Neo4j, Prometheus and Grafana; optional endpoint, development YAML, opaque secret reference, updater/version | deployment intent in production. Development-only administrator configuration may incrementally store YAML; sensitive keys are masked before every API response and the table remains RLS-scoped. |
+| `iam.subjects` | `id`, `issuer + external_subject UQ`, `display_name`, IdP email, ordinary last-login timestamp/IP, `active`, timestamps | external IdP mapping and profile audit; no credential or password |
 | `iam.workspace_memberships` | PK `workspace_id + subject_id`, `department_id`, `job_function`, `clearance`, `attributes`, `active`, `version` | versioned ABAC subject attributes/grants; an optional `attributes.default_workspace: true` chooses the user's hydration default, otherwise active Workspace slug order is deterministic |
 | `iam.admin_access_requests` | typed command/envelope, maker/target/checker, canonical hash, expiry/state/consume decision, `version`, timestamps | short-lived membership-access maker-checker aggregate; no arbitrary provider payload |
 | `iam.admin_access_approvals` | request/actor, approve/reject, reason, policy decision, payload hash and request version | append-only independent checker evidence |
