@@ -12,9 +12,15 @@ export interface ExternalSystemLink {
   url: string
 }
 
+export interface GrafanaEmbed {
+  state: 'AVAILABLE' | 'DISABLED' | 'NOT_CONFIGURED'
+  url?: string
+}
+
 export interface CapabilitiesResponse {
   items: Capability[]
   external_system_links: ExternalSystemLink[]
+  grafana_embed: GrafanaEmbed
   deployment_tier: 'SINGLE_NODE_PILOT' | 'HA_CANDIDATE' | 'HA_ACCEPTED'
 }
 
@@ -103,6 +109,10 @@ export interface CatalogFacets {
   asset_types: Array<{ value?: string; count: number }>
   platforms: Array<{ value?: string; count: number }>
   classifications: Array<{ value?: string; count: number }>
+  databases: Array<{ value?: string; count: number }>
+  schemas: Array<{ value?: string; count: number }>
+  domains: Array<{ value?: string; count: number }>
+  lifecycles: Array<{ value?: string; count: number }>
   meta: CatalogPolicyMeta
 }
 
@@ -530,6 +540,16 @@ export interface KnowledgeValidation {
   validator_version: string
 }
 
+export interface KnowledgeChangeOperationCreate {
+  sequence: number
+  operation: 'UPSERT' | 'DELETE'
+  entity_kind: 'NODE' | 'EDGE'
+  stable_entity_id: string
+  document: Record<string, unknown>
+  provenance: KnowledgeProvenance[]
+  confidence: number
+}
+
 export interface KnowledgeChangeSet {
   id: string
   graph_id: string
@@ -544,15 +564,8 @@ export interface KnowledgeChangeSet {
   version: number
   created_at: string
   updated_at: string
-  operations: Array<{
+  operations: Array<KnowledgeChangeOperationCreate & {
     id: string
-    sequence: number
-    operation: string
-    entity_kind: string
-    stable_entity_id: string
-    document: Record<string, unknown>
-    provenance: KnowledgeProvenance[]
-    confidence: number
   }>
   validations: KnowledgeValidation[]
 }
@@ -635,6 +648,7 @@ export type Classification = 'PUBLIC' | 'INTERNAL' | 'CONFIDENTIAL' | 'RESTRICTE
 export type AdminOperation =
   | 'MEMBERSHIP_ACCESS_READ'
   | 'MEMBERSHIP_ACCESS_UPDATE'
+  | 'SYSTEM_ASSIGNMENT_UPDATE'
   | 'FALLBACK_REQUEST_READ'
   | 'FALLBACK_REQUEST_CREATE'
   | 'FALLBACK_REQUEST_DECIDE'
@@ -687,6 +701,43 @@ export interface WorkspaceMembershipAccess {
   job_function: string | null
   membership_version: number
   access: MembershipAccessDocument
+}
+
+export interface SystemDirectoryEntry {
+  system_id: string
+  code: string
+  name: string
+  description: string
+  active: boolean
+  version: number
+  assignees: Array<{
+    subject_id: string
+    display_name: string
+    responsibility: 'DEVELOPER' | 'DATA_STEWARD'
+    priority: number
+    active: boolean
+  }>
+}
+
+export interface SystemAssigneeUpdate {
+  subject_id: string
+  responsibility: 'DEVELOPER' | 'DATA_STEWARD'
+  priority: number
+}
+
+export interface SystemAssigneeUpdateResult {
+  system_id: string
+  system_version: number
+  payload_hash: string
+}
+
+export interface SystemConfigurationEntry {
+  system_id: 'DATAHUB_GMS' | 'DATAHUB_FRONTEND' | 'AIRFLOW' | 'S3_STORAGE' | 'LLM_CHAT_MODEL' | 'LLM_EMBEDDING' | 'LLM_RERANKER' | 'NEO4J' | 'PROMETHEUS' | 'GRAFANA_DASHBOARD'
+  label: string
+  state: 'CONFIGURED' | 'NOT_CONFIGURED' | 'GOVERNED_PROFILE_REQUIRED'
+  management_plane: 'DEPLOYMENT' | 'GOVERNED_PROVIDER_PROFILE'
+  secret_reference_configured: boolean
+  embedding_state: 'NOT_APPLICABLE' | 'AVAILABLE' | 'DISABLED' | 'NOT_CONFIGURED'
 }
 
 export interface AdminReadContext {

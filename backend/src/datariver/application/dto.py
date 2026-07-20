@@ -165,6 +165,10 @@ class CatalogFacets:
     policy_version: str = ""
     classification_policy_version: int | None = None
     authorization_generation: int | None = None
+    databases: tuple[CatalogFacetBucket, ...] = ()
+    schemas: tuple[CatalogFacetBucket, ...] = ()
+    domains: tuple[CatalogFacetBucket, ...] = ()
+    lifecycles: tuple[CatalogFacetBucket, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -504,6 +508,26 @@ class WorkspaceMembershipAccessRecord:
     denied_actions: frozenset[Action]
     allowed_system_ids: frozenset[UUID]
     allowed_domain_ids: frozenset[UUID]
+
+
+@dataclass(frozen=True, slots=True)
+class SystemDirectoryAssignee:
+    subject_id: UUID
+    display_name: str
+    responsibility: str
+    priority: int
+    active: bool
+
+
+@dataclass(frozen=True, slots=True)
+class SystemDirectoryEntry:
+    system_id: UUID
+    code: str
+    name: str
+    description: str
+    active: bool
+    version: int
+    assignees: tuple[SystemDirectoryAssignee, ...]
 
 
 @dataclass(frozen=True, slots=True)

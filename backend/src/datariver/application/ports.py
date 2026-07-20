@@ -49,12 +49,17 @@ from datariver.application.dto import (
     KnowledgeReleaseRecord,
     MultipartUpload,
     ObjectMetadata,
+    SystemDirectoryEntry,
     UploadPreparationReceiptEvidence,
     UploadRegistrationCandidateEvidence,
     WorkspaceMembershipAccessRecord,
     WorkspaceMembershipSummary,
 )
-from datariver.domain.admin_access import AdminAccessRequest, MembershipAccessUpdate
+from datariver.domain.admin_access import (
+    AdminAccessRequest,
+    MembershipAccessUpdate,
+    SystemAssigneeUpdateCommand,
+)
 from datariver.domain.authz import Decision, SubjectAttributes
 from datariver.domain.common import DomainEvent
 from datariver.domain.governance import ChangeRequest
@@ -315,6 +320,8 @@ class DataHubGateway(Protocol):
 
     async def scan_assets(self, *, offset: int, limit: int) -> DataHubScanPage: ...
 
+    async def search_vocabulary(self, *, kind: str, query: str, limit: int) -> tuple[str, ...]: ...
+
 
 class CatalogProjectionWriter(Protocol):
     async def upsert_scan(
@@ -557,9 +564,16 @@ class MembershipAccessRepository(Protocol):
     ) -> None: ...
 
 
+class SystemDirectoryRepository(Protocol):
+    async def list(self, *, workspace_id: UUID, limit: int) -> Sequence[SystemDirectoryEntry]: ...
+
+    async def replace_assignees(self, command: SystemAssigneeUpdateCommand) -> int: ...
+
+
 class AdminAccessUnitOfWork(Protocol):
     requests: AdminAccessRequestRepository
     memberships: MembershipAccessRepository
+    systems: SystemDirectoryRepository
     outbox: OutboxWriter
     idempotency: IdempotencyStore
 

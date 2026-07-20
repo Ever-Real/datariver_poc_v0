@@ -77,6 +77,10 @@ class CatalogFacetsResponse(BaseModel):
     asset_types: list[CatalogFacetBucketResponse]
     platforms: list[CatalogFacetBucketResponse]
     classifications: list[CatalogFacetBucketResponse]
+    databases: list[CatalogFacetBucketResponse]
+    schemas: list[CatalogFacetBucketResponse]
+    domains: list[CatalogFacetBucketResponse]
+    lifecycles: list[CatalogFacetBucketResponse]
     meta: CatalogDiscoveryPolicyMeta
 
 
@@ -390,10 +394,11 @@ class ChangeIntakeColumnRequest(BaseModel):
     field_path: str = Field(min_length=1, max_length=2_000)
     data_type: str = Field(default="", max_length=1_000)
     description: str = Field(default="", max_length=10_000)
+    requested_change: str = Field(default="", max_length=10_000)
     tags: list[str] = Field(default_factory=list, max_length=100)
     terms: list[str] = Field(default_factory=list, max_length=100)
 
-    @field_validator("field_path", "data_type", "description", "tags", "terms")
+    @field_validator("field_path", "data_type", "description", "requested_change", "tags", "terms")
     @classmethod
     def reject_nul(cls, value: str | list[str]) -> str | list[str]:
         values = (value,) if isinstance(value, str) else value
@@ -408,9 +413,18 @@ class ChangeIntakeExistingTargetRequest(BaseModel):
     kind: Literal["EXISTING"]
     asset_id: UUID
     description: str = Field(default="", max_length=10_000)
+    requested_change: str = Field(default="", max_length=10_000)
     tags: list[str] = Field(default_factory=list, max_length=100)
     terms: list[str] = Field(default_factory=list, max_length=100)
     columns: list[ChangeIntakeColumnRequest] = Field(default_factory=list, max_length=2_000)
+
+    @field_validator("description", "requested_change", "tags", "terms")
+    @classmethod
+    def reject_nul(cls, value: str | list[str]) -> str | list[str]:
+        values = (value,) if isinstance(value, str) else value
+        if any("\x00" in item for item in values):
+            raise ValueError("Change intake values cannot contain NUL bytes.")
+        return value
 
 
 class ChangeIntakeManualTargetRequest(BaseModel):
@@ -422,9 +436,27 @@ class ChangeIntakeManualTargetRequest(BaseModel):
     table_name: str = Field(min_length=1, max_length=500)
     owner: str = Field(default="", max_length=1_000)
     description: str = Field(default="", max_length=10_000)
+    requested_change: str = Field(default="", max_length=10_000)
     tags: list[str] = Field(default_factory=list, max_length=100)
     terms: list[str] = Field(default_factory=list, max_length=100)
     columns: list[ChangeIntakeColumnRequest] = Field(default_factory=list, max_length=2_000)
+
+    @field_validator(
+        "database_name",
+        "schema_name",
+        "table_name",
+        "owner",
+        "description",
+        "requested_change",
+        "tags",
+        "terms",
+    )
+    @classmethod
+    def reject_nul(cls, value: str | list[str]) -> str | list[str]:
+        values = (value,) if isinstance(value, str) else value
+        if any("\x00" in item for item in values):
+            raise ValueError("Change intake values cannot contain NUL bytes.")
+        return value
 
 
 class ChangeRequestIntakeCreate(BaseModel):
@@ -584,9 +616,17 @@ class ExternalSystemLinkResponse(BaseModel):
     url: HttpUrl
 
 
+class GrafanaEmbedResponse(BaseModel):
+    """A server-owned descriptor; the browser never submits an iframe URL."""
+
+    state: Literal["AVAILABLE", "DISABLED", "NOT_CONFIGURED"]
+    url: HttpUrl | None = None
+
+
 class CapabilitiesResponse(BaseModel):
     items: list[CapabilityResponse]
     external_system_links: list[ExternalSystemLinkResponse] = Field(default_factory=list)
+    grafana_embed: GrafanaEmbedResponse
     deployment_tier: Literal["SINGLE_NODE_PILOT", "HA_CANDIDATE", "HA_ACCEPTED"]
 
 
@@ -648,6 +688,70 @@ class WorkspaceMembershipListResponse(BaseModel):
     items: list[WorkspaceMembershipSummaryResponse]
 
 
+class SystemDirectoryAssigneeResponse(BaseModel):
+    subject_id: UUID
+    display_name: str
+    responsibility: Literal["DEVELOPER", "DATA_STEWARD"]
+    priority: int = Field(ge=1, le=999)
+    active: bool
+
+
+class SystemDirectoryEntryResponse(BaseModel):
+    system_id: UUID
+    code: str
+    name: str
+    description: str
+    active: bool
+    version: int = Field(ge=1)
+    assignees: list[SystemDirectoryAssigneeResponse]
+
+
+class SystemDirectoryListResponse(BaseModel):
+    items: list[SystemDirectoryEntryResponse]
+
+
+class SystemAssigneeUpdateRequest(BaseModel):
+    subject_id: UUID
+    responsibility: Literal["DEVELOPER", "DATA_STEWARD"]
+    priority: int = Field(ge=1, le=999)
+
+
+class SystemAssigneeUpdateListRequest(BaseModel):
+    assignees: list[SystemAssigneeUpdateRequest] = Field(min_length=2, max_length=500)
+
+
+class SystemAssigneeUpdateResponse(BaseModel):
+    system_id: UUID
+    system_version: int = Field(ge=1)
+    payload_hash: str = Field(pattern=r"^[0-9a-f]{64}$")
+
+
+class SystemConfigurationEntryResponse(BaseModel):
+    """Redacted deployment state for an administrator configuration inventory."""
+
+    system_id: Literal[
+        "DATAHUB_GMS",
+        "DATAHUB_FRONTEND",
+        "AIRFLOW",
+        "S3_STORAGE",
+        "LLM_CHAT_MODEL",
+        "LLM_EMBEDDING",
+        "LLM_RERANKER",
+        "NEO4J",
+        "PROMETHEUS",
+        "GRAFANA_DASHBOARD",
+    ]
+    label: str
+    state: Literal["CONFIGURED", "NOT_CONFIGURED", "GOVERNED_PROFILE_REQUIRED"]
+    management_plane: Literal["DEPLOYMENT", "GOVERNED_PROVIDER_PROFILE"]
+    secret_reference_configured: bool
+    embedding_state: Literal["NOT_APPLICABLE", "AVAILABLE", "DISABLED", "NOT_CONFIGURED"]
+
+
+class SystemConfigurationListResponse(BaseModel):
+    items: list[SystemConfigurationEntryResponse]
+
+
 class WorkspaceMembershipAccessResponse(BaseModel):
     subject_id: UUID
     display_name: str
@@ -673,6 +777,7 @@ class AdminReadContextResponse(BaseModel):
         Literal[
             "MEMBERSHIP_ACCESS_READ",
             "MEMBERSHIP_ACCESS_UPDATE",
+            "SYSTEM_ASSIGNMENT_UPDATE",
             "FALLBACK_REQUEST_READ",
             "FALLBACK_REQUEST_CREATE",
             "FALLBACK_REQUEST_DECIDE",
