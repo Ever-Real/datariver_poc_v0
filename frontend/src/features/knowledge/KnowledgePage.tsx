@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useState, type FormEvent } from 'react
 import { BookOpen, CheckCircle2, CircleDot, GitBranch, Network, Plus, RefreshCw, Workflow } from 'lucide-react'
 import { newIdempotencyKey, type ApiClient } from '../../api/client'
 import type {
+  KnowledgeChangeOperationCreate,
   KnowledgeChangeSet,
   KnowledgeChangeSetPublish,
   KnowledgeGraph,
@@ -20,6 +21,13 @@ const tabs: Array<{ id: KnowledgeTab; label: string; description: string; icon: 
   { id: 'STUDIO', label: '변경 스튜디오', description: '검증 가능한 changeset 검토', icon: Workflow },
   { id: 'GRAPH', label: '그래프 탐색', description: '권한 범위의 bounded snapshot', icon: Network },
 ]
+
+const graphTypes = ['CATALOG_MIRROR', 'CURATED_KNOWLEDGE', 'ANALYTIC_PRODUCT'] as const
+const graphClassifications = ['PUBLIC', 'INTERNAL', 'CONFIDENTIAL', 'RESTRICTED'] as const
+
+function delimitedValues(value: string): string[] {
+  return [...new Set(value.split(',').map((item) => item.trim()).filter(Boolean))]
+}
 
 function stateClass(value: string) {
   return value.toLowerCase().replaceAll('_', '-')
@@ -60,13 +68,17 @@ function GraphCanvas({ snapshot }: { snapshot?: KnowledgeSnapshot }) {
   </div>
 }
 
-export function KnowledgePage({ client }: { client: ApiClient }) {
+export function KnowledgePage({ client, onNavigate }: { client: ApiClient; onNavigate: (page: 'chat') => void }) {
   const [graphs, setGraphs] = useState<KnowledgeGraph[]>([])
   const [tab, setTab] = useState<KnowledgeTab>('REGISTRY')
   const [selectedGraphId, setSelectedGraphId] = useState<string>()
   const [selectedReleaseId, setSelectedReleaseId] = useState<string>()
   const [name, setName] = useState('')
   const [slug, setSlug] = useState('')
+  const [graphType, setGraphType] = useState<(typeof graphTypes)[number]>('CURATED_KNOWLEDGE')
+  const [graphClassification, setGraphClassification] = useState<(typeof graphClassifications)[number]>('INTERNAL')
+  const [entityTypes, setEntityTypes] = useState('')
+  const [edgeTypes, setEdgeTypes] = useState('')
   const [changeTitle, setChangeTitle] = useState('')
   const [changesets, setChangesets] = useState<KnowledgeChangeSet[]>([])
   const [releases, setReleases] = useState<KnowledgeRelease[]>([])
@@ -122,18 +134,24 @@ export function KnowledgePage({ client }: { client: ApiClient }) {
 
   const submit = async (event: FormEvent) => {
     event.preventDefault(); setError(undefined)
+    const nextEntityTypes = delimitedValues(entityTypes)
+    const nextEdgeTypes = delimitedValues(edgeTypes)
+    if (!nextEntityTypes.length || !nextEdgeTypes.length) {
+      setError(new Error('엔터티 유형과 관계 유형을 각각 하나 이상 입력하세요.'))
+      return
+    }
     try {
       await client.request<KnowledgeGraph>('/knowledge/graphs', {
         method: 'POST', idempotencyKey: newIdempotencyKey('graph-create'),
         body: JSON.stringify({
-          slug, name, graph_type: 'CURATED_KNOWLEDGE', classification: 'INTERNAL',
+          slug, name, graph_type: graphType, classification: graphClassification,
           ontology: {
-            entity_types: ['Company', 'Facility', 'Material', 'Process', 'Product', 'Technology'],
-            edge_types: ['SUPPLIES', 'LOCATED_IN', 'USES', 'PRODUCES', 'DEPENDS_ON'],
+            entity_types: nextEntityTypes,
+            edge_types: nextEdgeTypes,
           },
         }),
       })
-      setName(''); setSlug(''); await refresh(); setTab('REGISTRY')
+      setName(''); setSlug(''); setEntityTypes(''); setEdgeTypes(''); await refresh(); setTab('REGISTRY')
     } catch (next) { setError(next) }
   }
 
@@ -146,6 +164,25 @@ export function KnowledgePage({ client }: { client: ApiClient }) {
         method: 'POST', idempotencyKey: newIdempotencyKey('knowledge-changeset'), body: JSON.stringify({ title: changeTitle.trim() }),
       })
       setChangeTitle(''); await refreshGraphDetail(selectedGraphId)
+    } catch (next) { setError(next) } finally { setBusy(false) }
+  }
+
+  const appendChangeOperation = async (
+    changeset: KnowledgeChangeSet,
+    operation: KnowledgeChangeOperationCreate,
+  ) => {
+    if (!selectedGraphId) return
+    setBusy(true); setError(undefined)
+    try {
+      await client.request<KnowledgeChangeSet>(
+        `/knowledge/graphs/${selectedGraphId}/changesets/${changeset.id}/operations`,
+        {
+          method: 'POST',
+          ifMatch: `"${changeset.version}"`,
+          body: JSON.stringify(operation),
+        },
+      )
+      await refreshGraphDetail(selectedGraphId)
     } catch (next) { setError(next) } finally { setBusy(false) }
   }
 
@@ -188,6 +225,7 @@ export function KnowledgePage({ client }: { client: ApiClient }) {
           <span className="eyebrow">Knowledge menu</span>
           <div role="tablist" aria-label="지식관리 작업 영역" className="knowledge-tabs">
             {tabs.map(({ id, label, description, icon: Icon }) => <button key={id} type="button" role="tab" aria-selected={tab === id} className={tab === id ? 'active' : ''} onClick={() => setTab(id)}><Icon size={15} /><span><b>{label}</b><small>{description}</small></span></button>)}
+            <button type="button" onClick={() => onNavigate('chat')}><BookOpen size={15} /><span><b>지식 챗</b><small>권한·근거 기반 GraphRAG 질의</small></span></button>
           </div>
           <label className="knowledge-graph-select"><span>대상 그래프</span><select value={selectedGraphId ?? ''} onChange={(event) => setSelectedGraphId(event.target.value || undefined)} disabled={loading || graphs.length === 0}><option value="">그래프 선택</option>{graphs.map((graph) => <option key={graph.id} value={graph.id}>{graph.name} · v{graph.version}</option>)}</select></label>
           {selectedGraph && <dl className="knowledge-graph-facts"><div><dt>상태</dt><dd><span className={`badge knowledge-state-${stateClass(selectedGraph.status)}`}>{selectedGraph.status}</span></dd></div><div><dt>분류</dt><dd>{selectedGraph.classification}</dd></div><div><dt>활성 릴리스</dt><dd><code>{selectedGraph.active_release_id ?? '미발행'}</code></dd></div></dl>}
@@ -199,6 +237,10 @@ export function KnowledgePage({ client }: { client: ApiClient }) {
             <form className="knowledge-create-form" onSubmit={(event) => void submit(event)}>
               <label>그래프 이름<input value={name} onChange={(event) => setName(event.target.value)} required maxLength={255} /></label>
               <label>Slug<input value={slug} onChange={(event) => setSlug(event.target.value.toLowerCase())} pattern="[a-z][a-z0-9-]{2,99}" required /></label>
+              <label>그래프 유형<select value={graphType} onChange={(event) => setGraphType(event.target.value as typeof graphType)}>{graphTypes.map((value) => <option key={value} value={value}>{value}</option>)}</select></label>
+              <label>분류<select value={graphClassification} onChange={(event) => setGraphClassification(event.target.value as typeof graphClassification)}>{graphClassifications.map((value) => <option key={value} value={value}>{value}</option>)}</select></label>
+              <label>엔터티 유형<input onChange={(event) => setEntityTypes(event.target.value)} placeholder="쉼표로 구분" required value={entityTypes} /></label>
+              <label>관계 유형<input onChange={(event) => setEdgeTypes(event.target.value)} placeholder="쉼표로 구분" required value={edgeTypes} /></label>
               <button className="button" disabled={busy}><Plus size={13} />그래프 생성</button>
             </form>
             <DenseDataTable caption="지식 그래프 레지스트리" columns={[
@@ -214,7 +256,7 @@ export function KnowledgePage({ client }: { client: ApiClient }) {
             <header className="knowledge-panel-header"><div><span className="eyebrow">T-Box / A-Box studio</span><h2>{selectedGraph ? `${selectedGraph.name} 변경 스튜디오` : '그래프를 선택하세요'}</h2></div><span>{detailLoading ? '동기화 중' : `${changesets.length} changesets`}</span></header>
             {!selectedGraph ? <EmptyKnowledgeState icon={<GitBranch size={29} />} text="왼쪽에서 변경할 지식 그래프를 선택하세요." /> : <>
               <form className="knowledge-create-form knowledge-changeset-form" onSubmit={(event) => void createChangeset(event)}><label>변경 제목<input value={changeTitle} onChange={(event) => setChangeTitle(event.target.value)} placeholder="예: 공급업체 관계 검토" required maxLength={500} /></label><button className="button" disabled={busy}><Plus size={13} />Changeset 생성</button></form>
-              <div className="knowledge-changesets">{changesets.length === 0 && <EmptyKnowledgeState icon={<Workflow size={29} />} text="작성된 changeset이 없습니다. 검토 가능한 변경 단위를 먼저 생성하세요." />}{changesets.map((changeset) => <ChangeSetCard key={changeset.id} changeset={changeset} busy={busy} onTransition={transitionChangeset} />)}</div>
+              <div className="knowledge-changesets">{changesets.length === 0 && <EmptyKnowledgeState icon={<Workflow size={29} />} text="작성된 changeset이 없습니다. 검토 가능한 변경 단위를 먼저 생성하세요." />}{changesets.map((changeset) => <ChangeSetCard key={changeset.id} changeset={changeset} busy={busy} onAppendOperation={appendChangeOperation} onTransition={transitionChangeset} />)}</div>
             </>}
           </>}
           {tab === 'GRAPH' && <>
@@ -235,8 +277,35 @@ function EmptyKnowledgeState({ icon, text }: { icon: React.ReactNode; text: stri
   return <div className="knowledge-empty-state">{icon}<p>{text}</p></div>
 }
 
-function ChangeSetCard({ changeset, busy, onTransition }: { changeset: KnowledgeChangeSet; busy: boolean; onTransition: (changeset: KnowledgeChangeSet, operation: 'submit' | 'approve' | 'reject' | 'publish') => Promise<void> }) {
+function ChangeSetCard({
+  changeset,
+  busy,
+  onAppendOperation,
+  onTransition,
+}: {
+  changeset: KnowledgeChangeSet
+  busy: boolean
+  onAppendOperation: (
+    changeset: KnowledgeChangeSet,
+    operation: KnowledgeChangeOperationCreate,
+  ) => Promise<void>
+  onTransition: (changeset: KnowledgeChangeSet, operation: 'submit' | 'approve' | 'reject' | 'publish') => Promise<void>
+}) {
   const [expanded, setExpanded] = useState(false)
+  const [operation, setOperation] = useState<'UPSERT' | 'DELETE'>('UPSERT')
+  const [entityKind, setEntityKind] = useState<'NODE' | 'EDGE'>('NODE')
+  const [stableEntityId, setStableEntityId] = useState('')
+  const [entityType, setEntityType] = useState('')
+  const [edgeType, setEdgeType] = useState('')
+  const [sourceId, setSourceId] = useState('')
+  const [targetId, setTargetId] = useState('')
+  const [name, setName] = useState('')
+  const [classification, setClassification] = useState('1')
+  const [sourceRef, setSourceRef] = useState('')
+  const [sourceLocator, setSourceLocator] = useState('')
+  const [sourceVersion, setSourceVersion] = useState('')
+  const [method, setMethod] = useState('')
+  const [confidence, setConfidence] = useState('1')
   const actions = changeset.state === 'DRAFT'
     ? [{ id: 'submit' as const, label: '검증 제출' }]
     : changeset.state === 'SUBMITTED' || changeset.state === 'IN_REVIEW'
@@ -244,5 +313,22 @@ function ChangeSetCard({ changeset, busy, onTransition }: { changeset: Knowledge
       : changeset.state === 'APPROVED'
         ? [{ id: 'publish' as const, label: '릴리스 발행' }]
         : []
-  return <article className="knowledge-changeset-card"><header><div><span className={`badge knowledge-state-${stateClass(changeset.state)}`}>{changeset.state}</span><h3>{changeset.title}</h3><small>v{changeset.version} · {new Date(changeset.updated_at).toLocaleString()}</small></div><div className="knowledge-card-actions">{actions.map((action) => <button key={action.id} className={action.id === 'reject' ? 'button button-secondary' : 'button'} type="button" disabled={busy} onClick={() => void onTransition(changeset, action.id)}>{action.label}</button>)}</div></header><button type="button" className="knowledge-detail-toggle" aria-expanded={expanded} onClick={() => setExpanded((value) => !value)}>{expanded ? '세부 접기' : '작업·검증 세부 보기'}</button>{expanded && <dl className="knowledge-changeset-detail"><div><dt>작업</dt><dd>{changeset.operations.length}건</dd></div><div><dt>검증</dt><dd>{changeset.validations.length}건</dd></div><div><dt>기준 릴리스</dt><dd><code>{changeset.base_release_id ?? 'none'}</code></dd></div>{changeset.validations.map((validation) => <div className="knowledge-validation" key={validation.id}><dt>{validation.severity} · {validation.code}</dt><dd>{validation.message}</dd></div>)}</dl>}</article>
+  const append = (event: FormEvent) => {
+    event.preventDefault()
+    const document = operation === 'DELETE'
+      ? {}
+      : entityKind === 'NODE'
+        ? { entity_type: entityType, properties: { name }, classification: Number(classification) }
+        : { source_id: sourceId, target_id: targetId, edge_type: edgeType, properties: { name }, classification: Number(classification) }
+    void onAppendOperation(changeset, {
+      sequence: Math.max(0, ...changeset.operations.map((item) => item.sequence)) + 1,
+      operation,
+      entity_kind: entityKind,
+      stable_entity_id: stableEntityId,
+      document,
+      provenance: [{ source_ref: sourceRef, source_locator: sourceLocator, source_version: sourceVersion, method, confidence: Number(confidence) }],
+      confidence: Number(confidence),
+    })
+  }
+  return <article className="knowledge-changeset-card"><header><div><span className={`badge knowledge-state-${stateClass(changeset.state)}`}>{changeset.state}</span><h3>{changeset.title}</h3><small>v{changeset.version} · {new Date(changeset.updated_at).toLocaleString()}</small></div><div className="knowledge-card-actions">{actions.map((action) => <button key={action.id} className={action.id === 'reject' ? 'button button-secondary' : 'button'} type="button" disabled={busy} onClick={() => void onTransition(changeset, action.id)}>{action.label}</button>)}</div></header>{changeset.state === 'DRAFT' && <form className="knowledge-operation-form" onSubmit={append}><div className="knowledge-operation-heading"><strong>Typed 변경 작업</strong><small>raw JSON/Cypher 없이 증거가 있는 Node/Edge 변경만 추가합니다.</small></div><label>작업<select value={operation} onChange={(event) => setOperation(event.target.value as 'UPSERT' | 'DELETE')}><option value="UPSERT">UPSERT</option><option value="DELETE">DELETE</option></select></label><label>대상<select value={entityKind} onChange={(event) => setEntityKind(event.target.value as 'NODE' | 'EDGE')}><option value="NODE">NODE</option><option value="EDGE">EDGE</option></select></label><label>Stable UUID<input value={stableEntityId} onChange={(event) => setStableEntityId(event.target.value)} required /></label>{operation === 'UPSERT' && <>{entityKind === 'NODE' ? <label>Entity type<input value={entityType} onChange={(event) => setEntityType(event.target.value)} required /></label> : <><label>Source UUID<input value={sourceId} onChange={(event) => setSourceId(event.target.value)} required /></label><label>Target UUID<input value={targetId} onChange={(event) => setTargetId(event.target.value)} required /></label><label>Edge type<input value={edgeType} onChange={(event) => setEdgeType(event.target.value)} required /></label></>}<label>표시 이름<input value={name} onChange={(event) => setName(event.target.value)} required /></label><label>분류<select value={classification} onChange={(event) => setClassification(event.target.value)}><option value="0">PUBLIC</option><option value="1">INTERNAL</option><option value="2">CONFIDENTIAL</option><option value="3">RESTRICTED</option></select></label></>}<label>Source ref<input value={sourceRef} onChange={(event) => setSourceRef(event.target.value)} required /></label><label>Source locator<input value={sourceLocator} onChange={(event) => setSourceLocator(event.target.value)} required /></label><label>Source version<input value={sourceVersion} onChange={(event) => setSourceVersion(event.target.value)} required /></label><label>방법<input value={method} onChange={(event) => setMethod(event.target.value)} required /></label><label>신뢰도<input value={confidence} onChange={(event) => setConfidence(event.target.value)} min="0" max="1" step="0.01" type="number" required /></label><button className="button button-secondary" disabled={busy} type="submit">변경 작업 추가</button></form>}<button type="button" className="knowledge-detail-toggle" aria-expanded={expanded} onClick={() => setExpanded((value) => !value)}>{expanded ? '세부 접기' : '작업·검증 세부 보기'}</button>{expanded && <dl className="knowledge-changeset-detail"><div><dt>작업</dt><dd>{changeset.operations.length}건</dd></div><div><dt>검증</dt><dd>{changeset.validations.length}건</dd></div><div><dt>기준 릴리스</dt><dd><code>{changeset.base_release_id ?? 'none'}</code></dd></div>{changeset.validations.map((validation) => <div className="knowledge-validation" key={validation.id}><dt>{validation.severity} · {validation.code}</dt><dd>{validation.message}</dd></div>)}</dl>}</article>
 }
