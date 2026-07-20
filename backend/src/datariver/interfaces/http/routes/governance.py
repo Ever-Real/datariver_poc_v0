@@ -457,6 +457,7 @@ async def create_change_request_intake(
                 "table_name": target.table_name.strip(),
                 "owner": target.owner.strip(),
                 "description": target.description.strip(),
+                "requested_change": target.requested_change.strip(),
                 "tags": _unique_values(target.tags),
                 "terms": _unique_values(target.terms),
                 "columns": [
@@ -464,6 +465,7 @@ async def create_change_request_intake(
                         "field_path": column.field_path.strip(),
                         "data_type": column.data_type.strip(),
                         "description": column.description.strip(),
+                        "requested_change": column.requested_change.strip(),
                         "tags": _unique_values(column.tags),
                         "terms": _unique_values(column.terms),
                     }
@@ -529,6 +531,7 @@ async def create_change_request_intake(
                     "requested": {
                         "data_type": column.data_type.strip(),
                         "description": column.description.strip(),
+                        "requested_change": column.requested_change.strip(),
                         "tags": _unique_values(column.tags),
                         "terms": _unique_values(column.terms),
                     },
@@ -553,6 +556,7 @@ async def create_change_request_intake(
             "source": source_document,
             "requested": {
                 "description": target.description.strip(),
+                "requested_change": target.requested_change.strip(),
                 "tags": _unique_values(target.tags),
                 "terms": _unique_values(target.terms),
                 "columns": requested_columns,

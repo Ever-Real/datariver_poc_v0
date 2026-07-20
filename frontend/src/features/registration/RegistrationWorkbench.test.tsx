@@ -112,12 +112,19 @@ describe('Registration workbench', () => {
       matches: [],
       ownership: [],
       glossary_terms: [],
-      schema_fields: [{ fieldPath: 'wafer_id', nativeDataType: 'uuid', description: 'Identifier' }],
+      schema_fields: [{
+        fieldPath: 'wafer_id', nativeDataType: 'uuid', description: 'Identifier',
+        globalTags: { tags: [{ tag: { name: 'field:identifier' } }] },
+        glossaryTerms: { terms: [{ term: { name: 'record_identifier' } }] },
+      }],
       quality: {},
       source_version: 'source-1',
     }
     const submissions: RequestOptions[] = []
     const request = vi.fn((path: string, options?: RequestOptions) => {
+      if (path.startsWith('/catalog/vocabulary?kind=TAG') && path.includes('q=silver')) {
+        return Promise.resolve({ items: ['tier:silver'] })
+      }
       if (path === '/registration/manual-submissions' && options?.method === 'POST') {
         submissions.push(options)
         return Promise.resolve({
@@ -139,7 +146,27 @@ describe('Registration workbench', () => {
     expect(screen.getByText('wafer_id')).toBeInTheDocument()
     expect(screen.getByLabelText('테이블 Description')).toHaveValue('Wafer production records.')
     expect(screen.getByLabelText('wafer_id Description')).toHaveValue('Identifier')
+    expect(screen.getByText('tier:gold')).toBeInTheDocument()
+    expect(screen.getByText('field:identifier')).toBeInTheDocument()
+    expect(screen.getByText('record_identifier')).toBeInTheDocument()
     expect(screen.queryByLabelText('Aspect JSON')).not.toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: '테이블 Tags 추가' }))
+    fireEvent.change(screen.getByLabelText('테이블 Tags'), { target: { value: 'silver' } })
+    fireEvent.click(await screen.findByRole('option', { name: 'tier:silver' }))
+    expect(screen.getByText('tier:silver')).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: '테이블 Tags 추가' }))
+    fireEvent.change(screen.getByLabelText('테이블 Tags'), { target: { value: 'proposed-tag' } })
+    expect(await screen.findByText('등록된 Tag이 없습니다.')).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('option', { name: 'proposed-tag 신규 제안값으로 추가' }))
+    expect(screen.getByText('proposed-tag')).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: '테이블 Tags 선택된 값 이전 항목' })).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: '테이블 Tags 이전 항목' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: '테이블 Tags 다음 항목' })).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: '테이블 Tags 추가' }))
+    expect(document.querySelector('.controlled-vocabulary-menu')).toHaveClass('controlled-vocabulary-menu')
+    fireEvent.change(screen.getByLabelText('테이블 Tags'), { target: { value: 'manual-one,manual-two,' } })
+    expect(screen.getByText('manual-one')).toBeInTheDocument()
+    expect(screen.getByText('manual-two')).toBeInTheDocument()
     fireEvent.change(screen.getByLabelText('테이블 Description'), { target: { value: 'Verified wafer records.' } })
     fireEvent.click(screen.getByRole('button', { name: 'SAVE' }))
     await waitFor(() => expect(submissions).toHaveLength(1))

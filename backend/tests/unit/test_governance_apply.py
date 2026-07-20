@@ -111,6 +111,9 @@ class MemoryDataHub:
     async def scan_assets(self, *, offset: int, limit: int) -> DataHubScanPage:
         raise NotImplementedError(offset, limit)
 
+    async def search_vocabulary(self, *, kind: str, query: str, limit: int) -> tuple[str, ...]:
+        raise NotImplementedError(kind, query, limit)
+
 
 def make_claim() -> tuple[GovernanceApplyClaim, str]:
     document = {"description": "governed"}

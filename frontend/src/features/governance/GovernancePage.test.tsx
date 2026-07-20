@@ -1,7 +1,7 @@
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { describe, expect, it, vi } from 'vitest'
 import { ApiError, type ApiClient, type RequestOptions } from '../../api/client'
-import type { ChangeRequestRecord } from '../../api/types'
+import type { CatalogAsset, ChangeRequestRecord } from '../../api/types'
 import { GovernancePage } from './GovernancePage'
 
 function changeRequest(overrides: Partial<ChangeRequestRecord> = {}): ChangeRequestRecord {
@@ -60,6 +60,22 @@ function changeRequest(overrides: Partial<ChangeRequestRecord> = {}): ChangeRequ
 
 function apiClient(request: (path: string, options?: RequestOptions) => Promise<unknown>): ApiClient {
   return { request } as unknown as ApiClient
+}
+
+const governedCatalogAsset: CatalogAsset = {
+  id: 'catalog-asset-1',
+  external_urn: 'urn:li:dataset:(urn:li:dataPlatform:postgres,manufacturing.wafer_events,PROD)',
+  asset_type: 'DATASET',
+  name: 'wafer_events',
+  platform: 'postgres',
+  database_name: 'manufacturing',
+  schema_name: 'quality',
+  classification: 'INTERNAL',
+  lifecycle: 'ACTIVE',
+  observed_at: '2026-07-17T01:02:03Z',
+  matches: [],
+  tags: ['tier:silver'],
+  terms: ['yield'],
 }
 
 function problem(status: number, detail: string, remediation?: 'FIDO2_REQUIRED'): ApiError {
@@ -132,9 +148,71 @@ describe('GovernancePage', () => {
     expect(screen.queryByLabelText('승인 대상 JSON')).not.toBeInTheDocument()
     fireEvent.click(screen.getByRole('button', { name: '신규 CR 신청' }))
     expect(await screen.findByRole('dialog', { name: '신규 CR 신청' })).toBeInTheDocument()
+    expect(screen.getByLabelText('요청 사유 / 요청 내용')).toBeInTheDocument()
+    expect(screen.queryByLabelText('요청 내용')).not.toBeInTheDocument()
+    const titleInput = screen.getByLabelText('CR명')
+    titleInput.focus()
+    fireEvent.change(titleInput, { target: { value: 'Lineage metadata remediation' } })
+    expect(titleInput).toHaveFocus()
+    expect(titleInput).toHaveValue('Lineage metadata remediation')
     expect(screen.queryByRole('link', { name: '신규 CR 신청' })).not.toBeInTheDocument()
     const listOptions = request.mock.calls.find(([path]) => path === '/change-requests?limit=100')?.[1]
     expect(listOptions?.signal).toBeInstanceOf(AbortSignal)
+  })
+
+  it('renders related columns as compact table children and keeps Tag/Term entry in one control', async () => {
+    const existing = changeRequest()
+    const request = vi.fn((path: string): Promise<unknown> => {
+      if (path === '/change-requests?limit=100') return Promise.resolve({ items: [existing] })
+      if (path.startsWith('/catalog/assets?q=wafer')) return Promise.resolve({ items: [governedCatalogAsset] })
+      if (path === `/catalog/assets/${governedCatalogAsset.id}`) return Promise.resolve({
+        ...governedCatalogAsset,
+        description: 'Current wafer event table',
+        ownership: [], glossary_terms: [], quality: {}, source_version: 'source-v1',
+        schema_fields: [{
+          fieldPath: 'wafer_id', nativeDataType: 'uuid', description: 'Wafer identifier',
+          globalTags: { tags: [{ tag: { name: 'field:identifier' } }] },
+          glossaryTerms: { terms: [{ term: { name: 'record_identifier' } }] },
+        }],
+      })
+      if (path === '/catalog/vocabulary?kind=TAG&limit=12') return Promise.resolve({ items: ['tier:bronze'] })
+      if (path.startsWith('/catalog/vocabulary?kind=TAG&q=gold')) return Promise.resolve({ items: ['tier:gold'] })
+      return Promise.reject(new Error(`Unexpected request: ${path}`))
+    })
+    renderPage(apiClient(request))
+
+    fireEvent.click(await screen.findByRole('button', { name: '신규 CR 신청' }))
+    fireEvent.change(screen.getByLabelText('기존 테이블 검색'), { target: { value: 'wafer' } })
+    fireEvent.click(await screen.findByRole('button', { name: /wafer_events/ }))
+    expect(await screen.findByDisplayValue('Current wafer event table')).toBeInTheDocument()
+    expect(screen.getByText('테이블')).toBeInTheDocument()
+    expect(screen.getByText('기존')).toBeInTheDocument()
+    expect(screen.queryByText('테이블(기존)')).not.toBeInTheDocument()
+    expect(screen.queryByLabelText('Platform')).not.toBeInTheDocument()
+    expect(screen.queryByLabelText('Database')).not.toBeInTheDocument()
+    expect(screen.getAllByText('요청/변경내용')).toHaveLength(1)
+
+    fireEvent.change(screen.getByLabelText('wafer_events 컬럼 추가'), { target: { value: 'wafer_id' } })
+    expect(await screen.findByText('변경')).toBeInTheDocument()
+    expect(screen.getAllByText('컬럼').length).toBeGreaterThan(0)
+    expect(screen.queryByText('컬럼(변경)')).not.toBeInTheDocument()
+    expect(document.querySelector('.governance-column-branch')).toBeInTheDocument()
+    expect(screen.getAllByText('요청/변경내용')).toHaveLength(2)
+    const columnTable = document.querySelector('.governance-intake-columns-table')
+    expect(columnTable?.querySelectorAll('thead th')).toHaveLength(8)
+    expect(Array.from(columnTable?.querySelectorAll('thead th') ?? []).slice(1).map((header) => header.textContent)).toEqual([
+      '항목', 'Type', 'Description', 'Term', 'Tag', '요청/변경내용', '관리',
+    ])
+
+    fireEvent.click(screen.getByRole('button', { name: 'wafer_events Tags 추가' }))
+    const tags = screen.getByLabelText('wafer_events Tags')
+    expect(document.querySelector('.controlled-vocabulary-row')?.querySelector('.badge-scroller-arrow')).toBeNull()
+    expect(screen.getByRole('button', { name: 'wafer_events Tags 이전 항목' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'wafer_events Tags 다음 항목' })).toBeInTheDocument()
+    expect(await screen.findByRole('option', { name: 'tier:bronze' })).toBeInTheDocument()
+    fireEvent.change(tags, { target: { value: 'gold' } })
+    fireEvent.click(await screen.findByRole('option', { name: 'tier:gold' }))
+    expect(screen.getByText('tier:gold')).toBeInTheDocument()
   })
 
   it('filters with the exact server state contract', async () => {

@@ -17,7 +17,7 @@ The shared shell follows the controlled v0.3 parity contract: 56-pixel navy GNB;
   scope does not include export, Chat, attachment, arbitrary provider or mutation access; the
   existing typed DataHub metadata enrichment for catalog detail remains available.
 - The Resource Tree lazily pages canonical `platform -> database -> schema -> asset` branches. Hierarchy is projected only from typed source containers and is never inferred by splitting an external URN.
-- Detail includes canonical URN, description, schema, ownership, glossary, quality, freshness, lineage and explicit `observed_at`/`stale_at`. Current detail exposes the fixed-contract schema/ownership/glossary/quality fields returned by DataHub and bounded depth-1..3 lineage.
+- Detail includes canonical URN, description, schema, ownership, glossary, quality, freshness, lineage and explicit `observed_at`/`stale_at`. Type and classification badges, URN and copy action share one compact line. Top-level `Table Details` and `Lineage` tabs separate the metadata accordions from the lazy bounded depth-1..3 graph; column metadata is an accordion within `Table Details`. The table detail summary presents platform/database/schema/domain then owner/rows/size/created date in four-column rows, followed by full-width description and side-by-side terms/tags, without exposing source version as a display field. The catalog renders authorized lineage top-to-bottom (`upstream 2 → upstream 1 → current → downstream 1 → downstream 2`) on a pale grid canvas whose viewport is strictly constrained to the current detail-pane width and initially fits its content. The fixed-coordinate canvas is isolated from its ancestors' inline-size calculation, so changing tabs cannot widen the URN, tabs, accordion, or page and cannot create a horizontal scrollbar; widening the pane only gives its contents more available width. A stage retains every node, placing at most three columns on each row before continuing on the next row. Users may pan the canvas, reposition a node from its border or fixed-width stage badge, and zoom with controls or Ctrl-wheel; clicking the table/view name always opens its authorized local detail. A node's `상세` action opens the actual DataHub Lineage page only through a server-built, deployment-allowlisted URL; the sandboxed frame relies on DataHub's own SSO/guest session and never receives a DataRiver credential or DataHub service token.
 - Lineage candidate nodes and every intermediary are set-filtered through the same workspace/classification/scope authorization. A hidden intermediary truncates the path; visible endpoints are never reconnected across it.
 - Saved filters are per subject/workspace; export requires separate `catalog.export` permission. The
   managed CSV job binds the normalized query/filter/sort, subject permission scope,
@@ -38,8 +38,11 @@ DB/S3 principal gate. The browser must not crawl result pages as a substitute.
 Manual metadata registration is a distinct workflow, not a Change Request.  After an authorized
 user selects one DataHub dataset, the browser receives current table and field metadata through the
 catalog detail facade and may edit Description, one Domain, Tags and Terms for the table and each
-field.  Controlled values accept comma/Enter/Tab creation and permission-pruned existing-vocabulary
-suggestions.  On Save, the server rechecks the active target, source version, schema field set and
+field. Existing controlled values remain on one horizontally scrollable badge line with thin
+previous/next controls. A compact far-right `+` opens a small floating search/input surface directly
+below that same input. A user may select a permission-pruned existing-vocabulary suggestion first,
+or add a comma/Enter/Tab-delimited new Tag/Term as governed proposal intent when no suitable value
+exists. A badge exposes its remove action only on hover or keyboard focus. On Save, the server rechecks the active target, source version, schema field set and
 `catalog.read` plus `registration.create`, then records immutable typed intent and a server-written
 CSV receipt.  The browser receives only an opaque submission ID, status and serial; it never sees a
 MinIO object key, an Airflow endpoint or a DataHub credential.  The configured InfoSchema bucket is
@@ -77,6 +80,20 @@ change-request or DataHub mutation action is exposed until the governed command 
 
 ## Change management
 
+The new-CR related-table editor keeps table and selected-column evidence in one compact hierarchy:
+each column is visually a child of its table with a `컬럼` badge and a small `기존`/`신규` or
+`변경` state marker. All table-input controls, including Tag/Term controls, have the same 29-pixel
+height. Existing table intake omits the redundant Platform/Database display; a typed
+`requested_change` text field sits between Tags and column addition at table and column level and is
+preserved in immutable intake evidence without replacing metadata Description. Tag/Term follows the same
+single-line scrollable badges, nearby floating input, vocabulary-first and comma-aware proposal
+interaction as Registration: opening `+` unions an authorized bounded projection vocabulary with a
+fixed, bounded DataHub `*` controlled-vocabulary browse; a typed keyword narrows that same adapter
+query before a new proposal is offered. Provider failure retains the projection-only result. The column row uses the same eight-track grid as its table row: its
+hierarchy spacer occupies the Schema track, then column item/Type/Description/Term/Tag/requested-change/
+management align with table/Table/Owner/description/Terms/Tags/requested-change/column-addition.
+This is presentation only and does not alter the typed target or approval contract.
+
 State machine:
 
 ```text
@@ -101,7 +118,7 @@ Any pre-apply review state → REJECTED or CANCELLED under policy
 
 - Capability cards for API, PostgreSQL, DataHub, cache, queue, object storage, graph, LLM, Airflow and policy.
 - The dashboard's legacy asset card layout is backed by the current typed DataHub projection: total non-deleted assets and non-blank description coverage, plus a bounded platform/database/schema breakdown. Tags, glossary mappings, quality scores, time-window history and audit rows are not manufactured when their governed read model is absent; their visible cards state that the metric is not collected under the current contract.
-- Monitoring restores the legacy full-height observability panel and refresh control using the authenticated capabilities response. A configured server-validated Grafana link opens as an external page; iframe embedding remains disabled until the deployment supplies approved origin, SSO and CSP/sandbox evidence.
+- Monitoring restores the legacy full-height observability panel and refresh control using the authenticated capabilities response. A configured server-validated Grafana link opens as an external page by default. A sandboxed no-referrer iframe appears only when the server reports an available descriptor derived from deployment-owned `UI_GRAFANA_URL`, matching exact-origin `GRAFANA_EMBED_BASE_URL`, explicit enablement and a non-empty SSO/frame-policy evidence reference; the same origin must be present in web CSP `frame-src`. The browser never creates a frame from an entered URL.
 - Health is `healthy`, `degraded`, `unavailable`, or `unknown`; an unrelated unavailable capability does not blank the whole UI.
 - Job explorer shows attempts, retry class, correlation, external response hash and DLQ status without secret payloads.
 - Operator replay is an audited command that creates a new attempt; it does not rewrite history.
@@ -136,7 +153,9 @@ Any pre-apply review state → REJECTED or CANCELLED under policy
 
 ## Administration
 
-- Manage workspace, membership reference and subject/resource attributes.
+- The administrator user list is a dense, server-backed view of verified OIDC subjects and their current Workspace memberships (display name, job function, department reference, clearance, active state and document version). Membership access changes remain ETag-, assurance- and audit-protected. Identity creation, email/password lifecycle and recent-login telemetry remain the responsibility of the organization IdP and separately authorized audit read model.
+- The adjacent administrator System tab reads the canonical workspace System master and its current Developer/Data Steward assignments in priority order. An eligible human security administrator with recent hardware WebAuthn may replace the complete assignment set through a confirmation-gated, ETag version-fenced and idempotent command. Each responsibility retains at least one active human Workspace member; role-local priorities are unique and start at one. The command emits immutable outbox audit evidence. The browser may select only server-returned Workspace members and never invents systems or assignees.
+- The administrator System settings tab is a server-backed, redacted configuration inventory for DataHub GMS/Frontend, Airflow, S3, LLM chat/embedding/reranker, Neo4j, Prometheus and Grafana. It shows only configuration state, management plane, whether a secret reference exists, and Grafana embedding state; it never returns endpoints, YAML, credential values or secret-reference paths. Deployment infrastructure remains operator-managed, while LLM routing is governed through the existing provider-profile workflow.
 - Policy changes are versioned, linted, tested against fixtures, approved and atomically activated.
 - Connection configuration stores endpoints/capabilities and `secret_ref`, not plaintext credentials.
 - Audit search/export is separately authorized and immutable to normal admins.

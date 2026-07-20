@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import cast
 
 from sqlalchemy import CheckConstraint, Table
 
@@ -18,12 +19,12 @@ def _check_names(table: Table) -> set[str]:
     return {
         constraint.name
         for constraint in table.constraints
-        if isinstance(constraint, CheckConstraint) and constraint.name is not None
+        if isinstance(constraint, CheckConstraint) and isinstance(constraint.name, str)
     }
 
 
 def test_change_request_schedule_fields_are_typed_and_vocabulary_constrained() -> None:
-    table = ChangeRequestModel.__table__
+    table = cast(Table, ChangeRequestModel.__table__)
 
     assert {"requested_due_date", "priority", "urgency"} <= set(table.c.keys())
     assert {
@@ -33,10 +34,10 @@ def test_change_request_schedule_fields_are_typed_and_vocabulary_constrained() -
 
 
 def test_system_master_models_have_workspace_scoped_integrity_and_no_secret_column() -> None:
-    system = DataSystemModel.__table__
-    scope = SystemSchemaScopeModel.__table__
-    assignee = SystemAssigneeModel.__table__
-    profile = ExternalServiceProfileModel.__table__
+    system = cast(Table, DataSystemModel.__table__)
+    scope = cast(Table, SystemSchemaScopeModel.__table__)
+    assignee = cast(Table, SystemAssigneeModel.__table__)
+    profile = cast(Table, ExternalServiceProfileModel.__table__)
 
     assert {"workspace_id", "code", "name", "active", "version"} <= set(system.c.keys())
     assert {"workspace_id", "system_id", "platform", "database_name", "schema_name"} <= set(
