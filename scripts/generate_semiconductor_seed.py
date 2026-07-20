@@ -18,7 +18,7 @@ import json
 import os
 import sys
 import uuid
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import asdict, dataclass
 from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
@@ -26,11 +26,12 @@ from pathlib import Path
 from typing import Any, Literal
 from urllib.parse import quote
 
-import asyncpg
+import asyncpg  # type: ignore[import-untyped]
 import httpx
 
 SCHEMA_NAME = "semiconductor_seed"
 ENVIRONMENT = "DEV"
+DATAHUB_SYSTEM_ACTOR = "urn:li:corpuser:__datahub_system"
 DEFAULT_ROWS_PER_TABLE = 20
 DEFAULT_BATCH_SIZE = 25
 # A local GMS + Elasticsearch stack is typically CPU-bound during index updates.
@@ -84,6 +85,50 @@ class EntitySpec:
             f"urn:li:dataset:(urn:li:dataPlatform:{self.platform},"
             f"{self.qualified_name},{ENVIRONMENT})"
         )
+
+
+@dataclass(frozen=True)
+class GlossaryNodeSpec:
+    node_id: str
+    name: str
+    definition: str
+    parent_node_id: str | None = None
+
+    @property
+    def urn(self) -> str:
+        return f"urn:li:glossaryNode:{self.node_id}"
+
+
+@dataclass(frozen=True)
+class GlossaryTermSpec:
+    term_id: str
+    name: str
+    definition: str
+    parent_node_id: str
+
+    @property
+    def urn(self) -> str:
+        return f"urn:li:glossaryTerm:{self.term_id}"
+
+
+@dataclass(frozen=True)
+class TagSpec:
+    tag_id: str
+    name: str
+    description: str
+
+    @property
+    def urn(self) -> str:
+        return f"urn:li:tag:{self.tag_id}"
+
+
+@dataclass(frozen=True)
+class DataHubGovernanceTaxonomy:
+    """Controlled semiconductor vocabulary owned by this deterministic seed."""
+
+    nodes: tuple[GlossaryNodeSpec, ...]
+    terms: tuple[GlossaryTermSpec, ...]
+    tags: tuple[TagSpec, ...]
 
 
 FAMILIES: tuple[Family, ...] = (
@@ -235,6 +280,364 @@ SCENARIOS: tuple[str, ...] = (
     "test_osat",
     "global_logistics",
 )
+
+
+# The glossary follows business meaning, rather than mirroring physical table
+# names.  Every generated dataset has one family term and a scenario term;
+# PostgreSQL table fields additionally receive the common-record semantics
+# below.  Tag identifiers are deliberately ASCII-safe DataHub URN fragments
+# while their names remain human-readable in the UI.
+GLOSSARY_ROOT = "datariver_semiconductor"
+GLOSSARY_NODES: tuple[GlossaryNodeSpec, ...] = (
+    GlossaryNodeSpec(
+        GLOSSARY_ROOT,
+        "Semiconductor data",
+        "Controlled vocabulary for the deterministic semiconductor value-chain seed.",
+    ),
+    GlossaryNodeSpec(
+        "datariver_semiconductor_business_foundation",
+        "Business foundation",
+        "Reference entities that define enterprise, facility, technology, and product scope.",
+        GLOSSARY_ROOT,
+    ),
+    GlossaryNodeSpec(
+        "datariver_semiconductor_supply",
+        "Supply and procurement",
+        "Supplier qualification, sourcing, contracting, purchasing, and material semantics.",
+        GLOSSARY_ROOT,
+    ),
+    GlossaryNodeSpec(
+        "datariver_semiconductor_logistics",
+        "Logistics and inventory",
+        "Physical movement, receiving, transfer, and inventory traceability semantics.",
+        GLOSSARY_ROOT,
+    ),
+    GlossaryNodeSpec(
+        "datariver_semiconductor_manufacturing",
+        "Manufacturing operations",
+        "Equipment, routing, operation, and in-process semiconductor production semantics.",
+        GLOSSARY_ROOT,
+    ),
+    GlossaryNodeSpec(
+        "datariver_semiconductor_quality",
+        "Quality and yield",
+        "Measurement, defect, reliability, binning, and yield semantics.",
+        GLOSSARY_ROOT,
+    ),
+    GlossaryNodeSpec(
+        "datariver_semiconductor_finance",
+        "Finance and capital",
+        "Cost allocation, capacity investment, and technology-program semantics.",
+        GLOSSARY_ROOT,
+    ),
+    GlossaryNodeSpec(
+        "datariver_semiconductor_intelligence",
+        "Research and market intelligence",
+        "Curated research, patent, analyst, news, and market-observation semantics.",
+        GLOSSARY_ROOT,
+    ),
+    GlossaryNodeSpec(
+        "datariver_semiconductor_cross_cutting",
+        "Cross-cutting record semantics",
+        "Identifier, lifecycle, geography, measure, date, and audit semantics shared by all seed tables.",
+        GLOSSARY_ROOT,
+    ),
+)
+
+STAGE_FOR_FAMILY: dict[str, tuple[str, str, str]] = {
+    "reference_legal_entity": (
+        "datariver_semiconductor_business_foundation",
+        "business_foundation",
+        "Business foundation",
+    ),
+    "reference_facility": (
+        "datariver_semiconductor_business_foundation",
+        "business_foundation",
+        "Business foundation",
+    ),
+    "technology_node": (
+        "datariver_semiconductor_business_foundation",
+        "business_foundation",
+        "Business foundation",
+    ),
+    "product_master": (
+        "datariver_semiconductor_business_foundation",
+        "business_foundation",
+        "Business foundation",
+    ),
+    "supplier_master": ("datariver_semiconductor_supply", "supply", "Supply and procurement"),
+    "supplier_qualification": (
+        "datariver_semiconductor_supply",
+        "supply",
+        "Supply and procurement",
+    ),
+    "procurement_contract": (
+        "datariver_semiconductor_supply",
+        "supply",
+        "Supply and procurement",
+    ),
+    "purchase_order": ("datariver_semiconductor_supply", "supply", "Supply and procurement"),
+    "material_specification": (
+        "datariver_semiconductor_supply",
+        "supply",
+        "Supply and procurement",
+    ),
+    "logistics_shipment": (
+        "datariver_semiconductor_logistics",
+        "logistics",
+        "Logistics and inventory",
+    ),
+    "inventory_lot": (
+        "datariver_semiconductor_logistics",
+        "logistics",
+        "Logistics and inventory",
+    ),
+    "equipment_asset": (
+        "datariver_semiconductor_manufacturing",
+        "manufacturing",
+        "Manufacturing operations",
+    ),
+    "manufacturing_route": (
+        "datariver_semiconductor_manufacturing",
+        "manufacturing",
+        "Manufacturing operations",
+    ),
+    "manufacturing_operation": (
+        "datariver_semiconductor_manufacturing",
+        "manufacturing",
+        "Manufacturing operations",
+    ),
+    "manufacturing_lot": (
+        "datariver_semiconductor_manufacturing",
+        "manufacturing",
+        "Manufacturing operations",
+    ),
+    "quality_measurement": (
+        "datariver_semiconductor_quality",
+        "quality",
+        "Quality and yield",
+    ),
+    "yield_summary": (
+        "datariver_semiconductor_quality",
+        "quality",
+        "Quality and yield",
+    ),
+    "cost_ledger": (
+        "datariver_semiconductor_finance",
+        "finance",
+        "Finance and capital",
+    ),
+    "capital_project": (
+        "datariver_semiconductor_finance",
+        "finance",
+        "Finance and capital",
+    ),
+    "research_market_signal": (
+        "datariver_semiconductor_intelligence",
+        "intelligence",
+        "Research and market intelligence",
+    ),
+}
+
+FIELD_TERMS: tuple[GlossaryTermSpec, ...] = (
+    GlossaryTermSpec(
+        "record_identifier",
+        "Record identifier",
+        "Stable synthetic record identifier.",
+        "datariver_semiconductor_cross_cutting",
+    ),
+    GlossaryTermSpec(
+        "semiconductor_scenario",
+        "Semiconductor scenario",
+        "Technology, product, or value-chain scenario used to partition the synthetic reference set.",
+        "datariver_semiconductor_cross_cutting",
+    ),
+    GlossaryTermSpec(
+        "business_key",
+        "Business key",
+        "Human-readable unique key for a business record.",
+        "datariver_semiconductor_cross_cutting",
+    ),
+    GlossaryTermSpec(
+        "record_name",
+        "Record name",
+        "Display name of the modeled business record.",
+        "datariver_semiconductor_cross_cutting",
+    ),
+    GlossaryTermSpec(
+        "lifecycle_status",
+        "Lifecycle status",
+        "Qualification, release, active, or review state of a business record.",
+        "datariver_semiconductor_cross_cutting",
+    ),
+    GlossaryTermSpec(
+        "operational_region",
+        "Operational region",
+        "Operational geography associated with the record.",
+        "datariver_semiconductor_cross_cutting",
+    ),
+    GlossaryTermSpec(
+        "annual_volume",
+        "Annual volume",
+        "Annualized synthetic quantity for capacity, demand, supply, or activity analysis.",
+        "datariver_semiconductor_cross_cutting",
+    ),
+    GlossaryTermSpec(
+        "unit_cost",
+        "Unit cost",
+        "Synthetic unit cost used only for local scenario analysis.",
+        "datariver_semiconductor_cross_cutting",
+    ),
+    GlossaryTermSpec(
+        "effective_date",
+        "Effective date",
+        "Date from which the record values are effective.",
+        "datariver_semiconductor_cross_cutting",
+    ),
+    GlossaryTermSpec(
+        "active_indicator",
+        "Active indicator",
+        "Boolean indicating whether the modeled record is active.",
+        "datariver_semiconductor_cross_cutting",
+    ),
+    GlossaryTermSpec(
+        "created_timestamp",
+        "Created timestamp",
+        "Timestamp at which the synthetic record was created.",
+        "datariver_semiconductor_cross_cutting",
+    ),
+    GlossaryTermSpec(
+        "updated_timestamp",
+        "Updated timestamp",
+        "Timestamp at which the synthetic record was last updated.",
+        "datariver_semiconductor_cross_cutting",
+    ),
+    GlossaryTermSpec(
+        "referenced_record",
+        "Referenced record",
+        "Display value resolved through a modeled parent-record relationship.",
+        "datariver_semiconductor_cross_cutting",
+    ),
+)
+
+FIELD_SEMANTICS: dict[str, tuple[str, str]] = {
+    "id": ("record_identifier", "identifier"),
+    "scenario_code": ("semiconductor_scenario", "scenario"),
+    "business_key": ("business_key", "business_key"),
+    "record_name": ("record_name", "business_attribute"),
+    "lifecycle_status": ("lifecycle_status", "lifecycle"),
+    "operational_region": ("operational_region", "geography"),
+    "annual_volume": ("annual_volume", "measure_volume"),
+    "unit_cost": ("unit_cost", "measure_cost"),
+    "effective_date": ("effective_date", "effective_date"),
+    "is_active": ("active_indicator", "lifecycle"),
+    "created_at": ("created_timestamp", "audit_timestamp"),
+    "updated_at": ("updated_timestamp", "audit_timestamp"),
+}
+
+
+def datahub_governance_taxonomy() -> DataHubGovernanceTaxonomy:
+    """Return the fixed vocabulary and tags expected by the seed workflow."""
+    family_terms = tuple(
+        GlossaryTermSpec(
+            family.slug,
+            family.title,
+            family.description,
+            STAGE_FOR_FAMILY[family.slug][0],
+        )
+        for family in FAMILIES
+    )
+    stage_tags = tuple(
+        TagSpec(
+            f"datariver_value_chain_{stage_id}",
+            f"Value chain · {label}",
+            f"Synthetic semiconductor asset in the {label.casefold()} value-chain stage.",
+        )
+        for _, stage_id, label in sorted(set(STAGE_FOR_FAMILY.values()), key=lambda value: value[1])
+    )
+    static_tags = (
+        TagSpec(
+            "datariver_semiconductor",
+            "Semiconductor",
+            "Semiconductor-domain synthetic reference metadata.",
+        ),
+        TagSpec(
+            "datariver_seed", "DataRiver seed", "DataRiver-controlled deterministic seed metadata."
+        ),
+        TagSpec(
+            "datariver_synthetic",
+            "Synthetic",
+            "Synthetic data; never an externally verified business fact.",
+        ),
+        TagSpec("datariver_object_table", "Dataset · table", "Physical modeled table."),
+        TagSpec("datariver_object_view", "Dataset · view", "Derived modeled view."),
+        TagSpec(
+            "datariver_execution_applied",
+            "Execution · applied",
+            "Metadata for a real local PostgreSQL seed object.",
+        ),
+        TagSpec(
+            "datariver_execution_mock",
+            "Execution · mock",
+            "Metadata for an explicitly labelled Oracle mock object.",
+        ),
+        TagSpec(
+            "datariver_platform_postgres",
+            "Platform · PostgreSQL",
+            "PostgreSQL synthetic seed metadata.",
+        ),
+        TagSpec(
+            "datariver_platform_oracle", "Platform · Oracle", "Oracle mock synthetic seed metadata."
+        ),
+        TagSpec(
+            "datariver_field_identifier", "Field · identifier", "Identifier or primary-key field."
+        ),
+        TagSpec("datariver_field_scenario", "Field · scenario", "Semiconductor scenario field."),
+        TagSpec("datariver_field_business_key", "Field · business key", "Business-key field."),
+        TagSpec(
+            "datariver_field_business_attribute",
+            "Field · business attribute",
+            "Business display or descriptive attribute.",
+        ),
+        TagSpec(
+            "datariver_field_lifecycle", "Field · lifecycle", "Lifecycle or active-status field."
+        ),
+        TagSpec("datariver_field_geography", "Field · geography", "Operational-geography field."),
+        TagSpec(
+            "datariver_field_measure_volume",
+            "Field · volume measure",
+            "Annualized quantity measure.",
+        ),
+        TagSpec(
+            "datariver_field_measure_cost", "Field · cost measure", "Synthetic unit-cost measure."
+        ),
+        TagSpec(
+            "datariver_field_effective_date", "Field · effective date", "Effective-date field."
+        ),
+        TagSpec(
+            "datariver_field_audit_timestamp",
+            "Field · audit timestamp",
+            "Created or updated audit timestamp.",
+        ),
+        TagSpec(
+            "datariver_field_reference",
+            "Field · relationship reference",
+            "Parent-record reference or joined reference field.",
+        ),
+    )
+    scenario_tags = tuple(
+        TagSpec(
+            f"datariver_scenario_{scenario}",
+            f"Scenario · {scenario.replace('_', ' ')}",
+            "Synthetic semiconductor scenario used by this dataset.",
+        )
+        for scenario in SCENARIOS
+    )
+    return DataHubGovernanceTaxonomy(
+        nodes=GLOSSARY_NODES,
+        terms=tuple(sorted((*family_terms, *FIELD_TERMS), key=lambda term: term.term_id)),
+        tags=tuple(sorted((*static_tags, *stage_tags, *scenario_tags), key=lambda tag: tag.tag_id)),
+    )
 
 
 def quote_identifier(value: str) -> str:
@@ -656,7 +1059,70 @@ async def apply_postgres(
         await connection.close()
 
 
+def entity_family_and_scenario(entity: EntitySpec) -> tuple[Family, str]:
+    """Resolve deterministic family/scenario without trusting a provider URN."""
+    object_name = entity.name.removeprefix("vw_")
+    for family in FAMILIES:
+        prefix = f"{family.slug}_"
+        if not object_name.startswith(prefix):
+            continue
+        scenario = object_name.removeprefix(prefix)
+        if scenario in SCENARIOS:
+            return family, scenario
+    raise AssertionError(f"Generated entity has no semiconductor taxonomy mapping: {entity.name}")
+
+
+def datahub_entity_governance(entity: EntitySpec) -> tuple[tuple[str, ...], tuple[str, ...]]:
+    """Return deterministic dataset-level (term URNs, tag URNs)."""
+    family, scenario = entity_family_and_scenario(entity)
+    _, stage_id, _ = STAGE_FOR_FAMILY[family.slug]
+    term_urns = (
+        f"urn:li:glossaryTerm:{family.slug}",
+        "urn:li:glossaryTerm:semiconductor_scenario",
+    )
+    tag_ids = (
+        "datariver_semiconductor",
+        "datariver_seed",
+        "datariver_synthetic",
+        f"datariver_value_chain_{stage_id}",
+        f"datariver_object_{entity.kind}",
+        f"datariver_execution_{entity.execution_mode.casefold()}",
+        f"datariver_platform_{entity.platform}",
+        f"datariver_scenario_{scenario}",
+    )
+    return term_urns, tuple(f"urn:li:tag:{tag_id}" for tag_id in tag_ids)
+
+
+def datahub_field_governance(field_path: str) -> tuple[tuple[str, ...], tuple[str, ...]]:
+    """Return controlled field semantics for the common deterministic schema."""
+    semantic = FIELD_SEMANTICS.get(field_path)
+    if semantic is not None:
+        term_id, tag_suffix = semantic
+        return (f"urn:li:glossaryTerm:{term_id}",), (f"urn:li:tag:datariver_field_{tag_suffix}",)
+    if field_path.startswith("parent_") and field_path.endswith("_name"):
+        return ("urn:li:glossaryTerm:referenced_record",), ("urn:li:tag:datariver_field_reference",)
+    if field_path.endswith("_id"):
+        parent_name = field_path.removesuffix("_id")
+        for family in FAMILIES:
+            if parent_name.startswith(f"{family.slug}_"):
+                return (f"urn:li:glossaryTerm:{family.slug}",), (
+                    "urn:li:tag:datariver_field_reference",
+                )
+    # This assertion turns an unclassified newly added field into a deliberate
+    # taxonomy update, rather than silently emitting an ungoverned column.
+    raise AssertionError(f"Generated field has no semiconductor taxonomy mapping: {field_path}")
+
+
+def datahub_glossary_terms_document(terms: Sequence[str]) -> dict[str, Any]:
+    """Build the REST-aspect shape (not the GraphQL ``term`` presentation)."""
+    return {
+        "terms": [{"urn": term} for term in terms],
+        "auditStamp": {"time": 0, "actor": DATAHUB_SYSTEM_ACTOR},
+    }
+
+
 def datahub_schema_fields(spec: EntitySpec) -> list[dict[str, Any]]:
+    field_names: tuple[tuple[str, str, bool], ...]
     if spec.kind == "view":
         field_names = (
             ("id", "uuid", False),
@@ -687,17 +1153,22 @@ def datahub_schema_fields(spec: EntitySpec) -> list[dict[str, Any]]:
         "date": "com.linkedin.schema.StringType",
         "timestamptz": "com.linkedin.schema.StringType",
     }
-    return [
-        {
-            "fieldPath": name,
-            "type": {"type": {type_map[data_type]: {}}},
-            "nativeDataType": data_type,
-            "description": f"Synthetic {name.replace('_', ' ')} field for local lineage testing.",
-            "nullable": not not_null,
-            "isPartOfKey": name == "id",
-        }
-        for name, data_type, not_null in field_names
-    ]
+    fields: list[dict[str, Any]] = []
+    for name, data_type, not_null in field_names:
+        terms, tags = datahub_field_governance(name)
+        fields.append(
+            {
+                "fieldPath": name,
+                "type": {"type": {type_map[data_type]: {}}},
+                "nativeDataType": data_type,
+                "description": f"Synthetic {name.replace('_', ' ')} field for local lineage testing.",
+                "nullable": not not_null,
+                "isPartOfKey": name == "id",
+                "globalTags": {"tags": [{"tag": tag} for tag in tags]},
+                "glossaryTerms": datahub_glossary_terms_document(terms),
+            }
+        )
+    return fields
 
 
 def canonical_hash(document: dict[str, Any]) -> str:
@@ -710,6 +1181,7 @@ def canonical_hash(document: dict[str, Any]) -> str:
 def aspect_documents(entity: EntitySpec, run_id: str) -> tuple[tuple[str, dict[str, Any]], ...]:
     platform_urn = f"urn:li:dataPlatform:{entity.platform}"
     schema_fields = datahub_schema_fields(entity)
+    glossary_terms, tags = datahub_entity_governance(entity)
     schema_document = {
         "schemaName": entity.qualified_name,
         "platform": platform_urn,
@@ -739,31 +1211,41 @@ def aspect_documents(entity: EntitySpec, run_id: str) -> tuple[tuple[str, dict[s
         for upstream in entity.upstream_qualified_names
     ]
     lineage_document = {"upstreams": upstreams, "fineGrainedLineages": []}
-    documents: list[tuple[str, dict[str, Any]]] = [("datasetProperties", properties_document)]
-    # PostgreSQL tables are the real profiled source.  Views and Oracle MOCK
-    # entities retain their explicit lineage and the generated DDL manifest,
-    # without multiplying local GMS schema-index work unnecessarily.
-    if entity.platform == "postgres" and entity.kind == "table":
-        documents.append(("schemaMetadata", schema_document))
+    documents: list[tuple[str, dict[str, Any]]] = [
+        ("datasetProperties", properties_document),
+        ("globalTags", {"tags": [{"tag": tag} for tag in tags]}),
+        ("glossaryTerms", datahub_glossary_terms_document(glossary_terms)),
+    ]
+    # Every generated dataset carries the same explicit field contract.  Oracle
+    # is still clearly labelled MOCK, but omitting its schema aspect made its
+    # column descriptions, Tag and Term semantics disappear in DataHub-backed
+    # catalog, registration and change-management views.
+    documents.append(("schemaMetadata", schema_document))
     documents.append(("upstreamLineage", lineage_document))
     return tuple(documents)
 
 
-async def post_aspect(
+async def post_metadata_aspect(
     client: httpx.AsyncClient,
     *,
-    entity: EntitySpec,
+    entity_type: str,
+    entity_urn: str,
+    entity_label: str,
     aspect_name: str,
     document: dict[str, Any],
 ) -> None:
     proposal = {
         "proposal": {
-            "entityType": "dataset",
-            "entityUrn": entity.urn,
+            "entityType": entity_type,
+            "entityUrn": entity_urn,
             "changeType": "UPSERT",
             "aspectName": aspect_name,
             "aspect": {
-                "value": json.dumps(document, ensure_ascii=False, separators=(",", ":")),
+                # DataHub's REST proposal wrapper does not consistently honour
+                # a UTF-8 charset for the embedded JSON string.  Escaping
+                # non-ASCII keeps Korean/typographic glossary and tag labels
+                # lossless across the v1.6 endpoint.
+                "value": json.dumps(document, ensure_ascii=True, separators=(",", ":")),
                 "contentType": "application/json",
             },
         }
@@ -778,7 +1260,7 @@ async def post_aspect(
         except httpx.TransportError as error:
             if attempt == 5:
                 raise RuntimeError(
-                    f"DataHub transport failure for {entity.qualified_name} {aspect_name}: "
+                    f"DataHub transport failure for {entity_label} {aspect_name}: "
                     f"{type(error).__name__}."
                 ) from error
             await asyncio.sleep(float(attempt))
@@ -788,14 +1270,191 @@ async def post_aspect(
         if response.status_code not in {429, 500, 502, 503, 504} or attempt == 5:
             detail = response.text.replace("\n", " ")[:500]
             raise RuntimeError(
-                f"DataHub rejected {entity.qualified_name} {aspect_name}: "
+                f"DataHub rejected {entity_label} {aspect_name}: "
                 f"HTTP {response.status_code}; {detail}"
             )
         await asyncio.sleep(float(attempt))
 
 
+async def post_aspect(
+    client: httpx.AsyncClient,
+    *,
+    entity: EntitySpec,
+    aspect_name: str,
+    document: dict[str, Any],
+) -> None:
+    await post_metadata_aspect(
+        client,
+        entity_type="dataset",
+        entity_urn=entity.urn,
+        entity_label=entity.qualified_name,
+        aspect_name=aspect_name,
+        document=document,
+    )
+
+
+def governance_aspect_documents(
+    taxonomy: DataHubGovernanceTaxonomy,
+) -> tuple[tuple[str, str, str, str, dict[str, Any]], ...]:
+    """Return typed DataHub vocabulary aspects in parent-before-child order."""
+    documents: list[tuple[str, str, str, str, dict[str, Any]]] = []
+    for node in taxonomy.nodes:
+        document: dict[str, Any] = {"name": node.name, "definition": node.definition}
+        if node.parent_node_id is not None:
+            document["parentNode"] = f"urn:li:glossaryNode:{node.parent_node_id}"
+        documents.append(("glossaryNode", node.urn, node.name, "glossaryNodeInfo", document))
+    for term in taxonomy.terms:
+        documents.append(
+            (
+                "glossaryTerm",
+                term.urn,
+                term.name,
+                "glossaryTermInfo",
+                {
+                    "name": term.name,
+                    "definition": term.definition,
+                    "termSource": "INTERNAL",
+                    "parentNode": f"urn:li:glossaryNode:{term.parent_node_id}",
+                },
+            )
+        )
+    for tag in taxonomy.tags:
+        documents.append(
+            (
+                "tag",
+                tag.urn,
+                tag.name,
+                "tagProperties",
+                {"name": tag.name, "description": tag.description},
+            )
+        )
+    return tuple(documents)
+
+
+async def seed_datahub_governance(
+    client: httpx.AsyncClient, *, taxonomy: DataHubGovernanceTaxonomy
+) -> None:
+    documents = governance_aspect_documents(taxonomy)
+    for position, (entity_type, entity_urn, label, aspect_name, document) in enumerate(
+        documents, start=1
+    ):
+        await post_metadata_aspect(
+            client,
+            entity_type=entity_type,
+            entity_urn=entity_urn,
+            entity_label=label,
+            aspect_name=aspect_name,
+            document=document,
+        )
+        print(f"Progress: {position}/{len(documents)} DataHub governance entities seeded")
+
+
+async def seed_and_verify_datahub_governance(*, datahub_url: str, token: str) -> dict[str, int]:
+    headers = {"Authorization": f"Bearer {token}"} if token else {}
+    taxonomy = datahub_governance_taxonomy()
+    async with httpx.AsyncClient(
+        base_url=datahub_url.rstrip("/"), headers=headers, timeout=httpx.Timeout(90.0)
+    ) as client:
+        config_response = await client.get("/config")
+        config_response.raise_for_status()
+        await seed_datahub_governance(client, taxonomy=taxonomy)
+        return await verify_datahub_governance(client, taxonomy=taxonomy)
+
+
+def _aspect_document(payload: object) -> dict[str, Any]:
+    envelope = payload.get("aspect", payload) if isinstance(payload, dict) else payload
+    value = envelope.get("value", envelope) if isinstance(envelope, dict) else envelope
+    # The reviewed DataHub REST endpoint may return either an Aspect envelope
+    # with ``value`` or the legacy fully-qualified aspect-name wrapper.
+    if isinstance(value, dict) and len(value) == 1 and isinstance(next(iter(value.values())), dict):
+        value = next(iter(value.values()))
+    if isinstance(value, str):
+        try:
+            value = json.loads(value)
+        except ValueError as error:
+            raise RuntimeError("DataHub returned an invalid aspect JSON envelope.") from error
+    if not isinstance(value, dict):
+        raise RuntimeError("DataHub returned an invalid aspect envelope.")
+    return value
+
+
+async def read_datahub_aspect(
+    client: httpx.AsyncClient, *, entity_urn: str, aspect_name: str
+) -> dict[str, Any]:
+    response = await client.get(
+        f"/aspects/{quote(entity_urn, safe='')}",
+        params={"aspect": aspect_name, "version": "0"},
+    )
+    if response.status_code >= 400:
+        detail = response.text.replace("\n", " ")[:500]
+        raise RuntimeError(
+            f"DataHub verification read failed for {entity_urn} {aspect_name}: "
+            f"HTTP {response.status_code}; {detail}"
+        )
+    try:
+        return _aspect_document(response.json())
+    except ValueError as error:
+        raise RuntimeError(
+            f"DataHub returned invalid JSON while verifying {entity_urn} {aspect_name}."
+        ) from error
+
+
+def _aspect_references(document: dict[str, Any], *, field: str, nested: str) -> set[str]:
+    references: set[str] = set()
+    raw_items = document.get(field)
+    for item in raw_items if isinstance(raw_items, list) else []:
+        value = item.get(nested) if isinstance(item, dict) else None
+        if value is None and nested == "urn" and isinstance(item, dict):
+            # GraphQL enrichment represents a term as ``term`` while the
+            # REST aspect requires ``urn``. Accept both only for read-back.
+            value = item.get("term")
+        if isinstance(value, dict):
+            value = value.get("urn")
+        if isinstance(value, str):
+            references.add(value)
+    return references
+
+
+async def verify_datahub_governance(
+    client: httpx.AsyncClient, *, taxonomy: DataHubGovernanceTaxonomy
+) -> dict[str, int]:
+    for node in taxonomy.nodes:
+        document = await read_datahub_aspect(
+            client, entity_urn=node.urn, aspect_name="glossaryNodeInfo"
+        )
+        if document.get("name") != node.name:
+            raise RuntimeError(f"DataHub glossary node verification failed: {node.urn}")
+        expected_parent = (
+            None if node.parent_node_id is None else f"urn:li:glossaryNode:{node.parent_node_id}"
+        )
+        if document.get("parentNode") != expected_parent:
+            raise RuntimeError(f"DataHub glossary node parent verification failed: {node.urn}")
+    for term in taxonomy.terms:
+        document = await read_datahub_aspect(
+            client, entity_urn=term.urn, aspect_name="glossaryTermInfo"
+        )
+        if (
+            document.get("name") != term.name
+            or document.get("parentNode") != f"urn:li:glossaryNode:{term.parent_node_id}"
+        ):
+            raise RuntimeError(f"DataHub glossary term verification failed: {term.urn}")
+    for tag in taxonomy.tags:
+        document = await read_datahub_aspect(
+            client, entity_urn=tag.urn, aspect_name="tagProperties"
+        )
+        if document.get("name") != tag.name:
+            raise RuntimeError(f"DataHub tag verification failed: {tag.urn}")
+    return {"nodes": len(taxonomy.nodes), "terms": len(taxonomy.terms), "tags": len(taxonomy.tags)}
+
+
 async def ingest_datahub(
-    *, entities: Sequence[EntitySpec], datahub_url: str, token: str, batch_size: int, run_id: str
+    *,
+    entities: Sequence[EntitySpec],
+    datahub_url: str,
+    token: str,
+    batch_size: int,
+    run_id: str,
+    on_progress: Callable[[int], None] | None = None,
 ) -> None:
     headers = {"Authorization": f"Bearer {token}"} if token else {}
     async with httpx.AsyncClient(
@@ -803,6 +1462,7 @@ async def ingest_datahub(
     ) as client:
         config_response = await client.get("/config")
         config_response.raise_for_status()
+        await seed_datahub_governance(client, taxonomy=datahub_governance_taxonomy())
         for offset in range(0, len(entities), batch_size):
             batch = entities[offset : offset + batch_size]
 
@@ -819,30 +1479,81 @@ async def ingest_datahub(
             print(
                 f"Progress: {min(offset + len(batch), len(entities))}/{len(entities)} DataHub entities ingested"
             )
+            if on_progress is not None:
+                on_progress(min(offset + len(batch), len(entities)))
 
 
 async def verify_datahub_entities(
-    *, entities: Sequence[EntitySpec], datahub_url: str, token: str, batch_size: int
+    *,
+    entities: Sequence[EntitySpec],
+    datahub_url: str,
+    token: str,
+    batch_size: int,
+    on_progress: Callable[[int], None] | None = None,
 ) -> int:
     headers = {"Authorization": f"Bearer {token}"} if token else {}
     found = 0
     async with httpx.AsyncClient(
         base_url=datahub_url.rstrip("/"), headers=headers, timeout=httpx.Timeout(30.0)
     ) as client:
+        await verify_datahub_governance(client, taxonomy=datahub_governance_taxonomy())
         for offset in range(0, len(entities), batch_size):
             batch = entities[offset : offset + batch_size]
 
             async def verify(entity: EntitySpec) -> bool:
-                response = await client.get(
-                    f"/aspects/{quote(entity.urn, safe='')}",
-                    params={"aspect": "datasetProperties", "version": "0"},
+                properties = await read_datahub_aspect(
+                    client, entity_urn=entity.urn, aspect_name="datasetProperties"
                 )
-                return response.status_code < 400
+                if not isinstance(properties.get("name"), str):
+                    return False
+                expected_terms, expected_tags = datahub_entity_governance(entity)
+                tags = await read_datahub_aspect(
+                    client, entity_urn=entity.urn, aspect_name="globalTags"
+                )
+                terms = await read_datahub_aspect(
+                    client, entity_urn=entity.urn, aspect_name="glossaryTerms"
+                )
+                if not set(expected_tags).issubset(
+                    _aspect_references(tags, field="tags", nested="tag")
+                ) or not set(expected_terms).issubset(
+                    _aspect_references(terms, field="terms", nested="urn")
+                ):
+                    return False
+                schema = await read_datahub_aspect(
+                    client, entity_urn=entity.urn, aspect_name="schemaMetadata"
+                )
+                fields = schema.get("fields")
+                if not isinstance(fields, list):
+                    return False
+                by_path = {
+                    item.get("fieldPath"): item
+                    for item in fields
+                    if isinstance(item, dict) and isinstance(item.get("fieldPath"), str)
+                }
+                for field_path in datahub_schema_fields(entity):
+                    name = field_path["fieldPath"]
+                    actual = by_path.get(name)
+                    if not isinstance(actual, dict):
+                        return False
+                    field_terms, field_tags = datahub_field_governance(name)
+                    global_tags = actual.get("globalTags")
+                    glossary_terms = actual.get("glossaryTerms")
+                    if not isinstance(global_tags, dict) or not isinstance(glossary_terms, dict):
+                        return False
+                    if not set(field_tags).issubset(
+                        _aspect_references(global_tags, field="tags", nested="tag")
+                    ) or not set(field_terms).issubset(
+                        _aspect_references(glossary_terms, field="terms", nested="urn")
+                    ):
+                        return False
+                return True
 
             found += sum(await asyncio.gather(*(verify(entity) for entity in batch)))
             print(
                 f"Progress: {min(offset + len(batch), len(entities))}/{len(entities)} DataHub entities verified"
             )
+            if on_progress is not None:
+                on_progress(min(offset + len(batch), len(entities)))
     if found != len(entities):
         raise RuntimeError(
             f"DataHub verification found {found}/{len(entities)} generated entities."
@@ -903,7 +1614,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--ingest-datahub",
         action="store_true",
-        help="Emit generated metadata and lineage to DataHub.",
+        help="Seed controlled vocabulary, enrich generated metadata, and emit lineage to DataHub.",
+    )
+    parser.add_argument(
+        "--seed-governance",
+        action="store_true",
+        help="Seed and verify only the controlled semiconductor glossary and tag vocabulary.",
     )
     parser.add_argument(
         "--verify-datahub",
@@ -1011,8 +1727,16 @@ async def async_main(arguments: argparse.Namespace) -> int:
         "oracle": {"tables": len(table_specs), "views": len(table_specs), "execution_mode": "MOCK"},
         "datahub": {
             "entities_requested": len(selected_entities),
+            "entities_ingested": 0,
             "entities_verified": 0,
             "start_index": arguments.datahub_start_index,
+            "phase": "PLANNED",
+            "governance": {
+                "nodes_expected": len(datahub_governance_taxonomy().nodes),
+                "terms_expected": len(datahub_governance_taxonomy().terms),
+                "tags_expected": len(datahub_governance_taxonomy().tags),
+                "verified": False,
+            },
         },
     }
     write_json(manifest_path, manifest)
@@ -1036,28 +1760,69 @@ async def async_main(arguments: argparse.Namespace) -> int:
         write_json(manifest_path, manifest)
     if arguments.ingest_datahub:
         token = read_secret(arguments.datahub_token_file)
+
+        def record_ingest_progress(completed: int) -> None:
+            manifest["datahub"]["phase"] = "INGESTING"
+            manifest["datahub"]["entities_ingested"] = completed
+            write_json(manifest_path, manifest)
+
         await ingest_datahub(
             entities=selected_entities,
             datahub_url=arguments.datahub_url,
             token=token,
             batch_size=arguments.datahub_batch_size,
             run_id=run_id,
+            on_progress=record_ingest_progress,
         )
+
+        def record_verify_progress(completed: int) -> None:
+            manifest["datahub"]["phase"] = "VERIFYING"
+            manifest["datahub"]["entities_verified"] = completed
+            write_json(manifest_path, manifest)
+
         manifest["datahub"]["entities_verified"] = await verify_datahub_entities(
             entities=selected_entities,
             datahub_url=arguments.datahub_url,
             token=token,
             batch_size=arguments.datahub_batch_size,
+            on_progress=record_verify_progress,
         )
+        manifest["datahub"]["governance"]["verified"] = True
+        manifest["datahub"]["phase"] = "COMPLETE"
+        write_json(manifest_path, manifest)
+    elif arguments.seed_governance:
+        token = read_secret(arguments.datahub_token_file)
+        verified_governance = await seed_and_verify_datahub_governance(
+            datahub_url=arguments.datahub_url,
+            token=token,
+        )
+        manifest["datahub"]["governance"] = {
+            "nodes_expected": len(datahub_governance_taxonomy().nodes),
+            "terms_expected": len(datahub_governance_taxonomy().terms),
+            "tags_expected": len(datahub_governance_taxonomy().tags),
+            "nodes_verified": verified_governance["nodes"],
+            "terms_verified": verified_governance["terms"],
+            "tags_verified": verified_governance["tags"],
+            "verified": True,
+        }
         write_json(manifest_path, manifest)
     elif arguments.verify_datahub:
         token = read_secret(arguments.datahub_token_file)
+
+        def record_verify_progress(completed: int) -> None:
+            manifest["datahub"]["phase"] = "VERIFYING"
+            manifest["datahub"]["entities_verified"] = completed
+            write_json(manifest_path, manifest)
+
         manifest["datahub"]["entities_verified"] = await verify_datahub_entities(
             entities=selected_entities,
             datahub_url=arguments.datahub_url,
             token=token,
             batch_size=arguments.datahub_batch_size,
+            on_progress=record_verify_progress,
         )
+        manifest["datahub"]["governance"]["verified"] = True
+        manifest["datahub"]["phase"] = "COMPLETE"
         write_json(manifest_path, manifest)
     print(f"Manifest: {manifest_path}")
     return 0

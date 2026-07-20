@@ -46,8 +46,11 @@ property `datariver.seed.execution_mode=MOCK`.
   `runtime/semiconductor-seed/`. No real credentials, rows, or DataHub token are written there.
 - DataHub messages are fixed, typed dataset-aspect UPSERTs with deterministic idempotency keys.
   Every entity gets `datasetProperties` and `upstreamLineage`; real PostgreSQL tables also get
-  `schemaMetadata` for profiling. Views and Oracle MOCK entities retain their DDL artifact and
-  explicit lineage without multiplying local GMS schema-index work. The browser is not involved.
+  `schemaMetadata` for profiling. The controlled glossary/tag vocabulary is seeded before any
+  dataset, and every dataset receives family/scenario/provenance tags and terms. Every generated
+  PostgreSQL, view and clearly labelled Oracle MOCK field receives cross-cutting semantic
+  tags/terms in `schemaMetadata`, so the catalog, registration and change-management screens show
+  the same controlled metadata. The browser is not involved.
   Transient `429`/`5xx` calls retry at most four times; a hard failure stops the run for a safe rerun.
 
 ## Local execution and evidence
@@ -66,9 +69,11 @@ database, role, or secret-file paths with named flags or `SEMICONDUCTOR_POSTGRES
 `DATAHUB_*` environment variables. Do not put secret values in an argument, recipe, log, or Git.
 
 On success, inspect `runtime/semiconductor-seed/manifest.json`. It records the intended physical
-counts and the result of a direct read-back of `datasetProperties` for each generated dataset URN.
-The successful direct read-back count is the reportable DataHub entity count; a submitted HTTP
-proposal alone is not acceptance evidence.
+counts, controlled vocabulary expected/verified counts, and typed read-back for each generated
+dataset URN, tag/term association, and enriched PostgreSQL table field. The successful direct
+read-back count is the reportable DataHub entity count; a submitted HTTP proposal alone is not
+acceptance evidence. The detailed controlled vocabulary and standalone/restartable verification
+commands are in [the semiconductor governance taxonomy](18_SEMICONDUCTOR_GOVERNANCE_TAXONOMY.md).
 
 For a source-native rescan rather than deterministic metadata emission, provide secrets only via
 the execution environment and run the reviewed DataHub CLI installation with
