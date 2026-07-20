@@ -19,17 +19,23 @@ interface PolicyData {
   classification: ClassificationAccessPolicy | null
   retention: RetentionPolicy | null
   holds: LegalHold[]
+  readAllowed: boolean
 }
 
-export function PolicyGovernancePage({ client }: { client: ApiClient }) {
+export function PolicyGovernancePage({ client, mayReadPolicies = false }: { client: ApiClient; mayReadPolicies?: boolean }) {
   const [active, setActive] = useState<DocumentId>('CLASSIFICATION')
   const [viewMode, setViewMode] = useState<ViewMode>('TEXT')
-  const [data, setData] = useState<PolicyData>({ classification: null, retention: null, holds: [] })
+  const [data, setData] = useState<PolicyData>({ classification: null, retention: null, holds: [], readAllowed: false })
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<unknown>()
 
   const refresh = useCallback(async () => {
     setLoading(true); setError(undefined)
+    if (!mayReadPolicies) {
+      setData({ classification: null, retention: null, holds: [], readAllowed: false })
+      setLoading(false)
+      return
+    }
     const [classification, retention, holds] = await Promise.allSettled([
       client.request<ClassificationAccessPolicy | null>('/admin/classification-access/policies/current'),
       client.request<RetentionPolicy | null>('/admin/retention/policies/current'),
@@ -41,9 +47,10 @@ export function PolicyGovernancePage({ client }: { client: ApiClient }) {
       classification: classification.status === 'fulfilled' ? classification.value : null,
       retention: retention.status === 'fulfilled' ? retention.value : null,
       holds: holds.status === 'fulfilled' ? holds.value.items : [],
+      readAllowed: true,
     })
     setLoading(false)
-  }, [client])
+  }, [client, mayReadPolicies])
 
   useEffect(() => { void refresh() }, [refresh])
   const document = documents.find((item) => item.id === active) ?? defaultDocument
@@ -69,7 +76,7 @@ function PolicyDocumentView({ document, data, loading }: { document: { id: Docum
   return <article className="policy-document-view">
     <section className="policy-document-meta"><div><dt>문서</dt><dd>{document.title}</dd></div><div><dt>조회 시각</dt><dd>{new Date().toLocaleString()}</dd></div><div><dt>소유 범위</dt><dd>현재 Workspace</dd></div><div><dt>상태</dt><dd><span className="badge">{loading ? 'LOADING' : 'LIVE READ'}</span></dd></div></section>
     <header><span className="eyebrow">{document.description}</span><h1>{document.title}</h1></header>
-    {loading ? <PolicyEmpty text="서버 정책 read model을 불러오는 중입니다." /> : document.id === 'CLASSIFICATION' ? <ClassificationDocument policy={data.classification} /> : document.id === 'RETENTION' ? <RetentionDocument policy={data.retention} /> : <LegalHoldDocument holds={data.holds} />}
+    {loading ? <PolicyEmpty text="서버 정책 read model을 불러오는 중입니다." /> : !data.readAllowed ? <PolicyEmpty text="이 정책 read model은 보안 관리자 권한이 있는 사용자에게만 표시됩니다." /> : document.id === 'CLASSIFICATION' ? <ClassificationDocument policy={data.classification} /> : document.id === 'RETENTION' ? <RetentionDocument policy={data.retention} /> : <LegalHoldDocument holds={data.holds} />}
   </article>
 }
 

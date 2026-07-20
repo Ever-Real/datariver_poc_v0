@@ -1,5 +1,5 @@
 export type AdminMessageKey =
-  | 'eyebrow' | 'title' | 'refresh' | 'memberships' | 'roles' | 'fallback' | 'retention' | 'holds' | 'erasure'
+  | 'eyebrow' | 'title' | 'refresh' | 'memberships' | 'systems' | 'systemSettings' | 'roles' | 'fallback' | 'retention' | 'holds' | 'erasure'
   | 'classification' | 'providers' | 'restrictedGrants'
   | 'adminContext' | 'currentAssurance' | 'fallbackState' | 'enabled' | 'disabled'
   | 'members' | 'selectMember' | 'accessDocument' | 'active' | 'clearance' | 'groups'
@@ -25,7 +25,7 @@ export type AdminMessages = Record<AdminMessageKey, string>
 
 const ko: AdminMessages = {
   eyebrow: 'Governed administration', title: '관리자 및 데이터 거버넌스', refresh: '새로고침',
-  memberships: '계정·권한', roles: '간편 권한 관리', fallback: 'Maker-Checker', retention: '보존정책', holds: 'Legal Hold', erasure: '파기 검토',
+  memberships: '계정·권한', systems: '시스템', systemSettings: '시스템 설정', roles: '간편 권한 관리', fallback: 'Maker-Checker', retention: '보존정책', holds: 'Legal Hold', erasure: '파기 검토',
   classification: '분류정책', providers: 'LLM Provider', restrictedGrants: 'RESTRICTED 검색권한',
   adminContext: '현재 관리자 컨텍스트', currentAssurance: '인증 보증', fallbackState: '비밀번호 예외 경로',
   enabled: '활성', disabled: '비활성', members: '워크스페이스 멤버', selectMember: '편집할 멤버를 선택하세요.',
@@ -67,7 +67,7 @@ const ko: AdminMessages = {
 
 const en: AdminMessages = {
   eyebrow: 'Governed administration', title: 'Administration and data governance', refresh: 'Refresh',
-  memberships: 'Accounts & access', roles: 'Role access', fallback: 'Maker-Checker', retention: 'Retention policies', holds: 'Legal Hold', erasure: 'Erasure review',
+  memberships: 'Accounts & access', systems: 'Systems', systemSettings: 'System settings', roles: 'Role access', fallback: 'Maker-Checker', retention: 'Retention policies', holds: 'Legal Hold', erasure: 'Erasure review',
   classification: 'Classification policy', providers: 'LLM providers', restrictedGrants: 'RESTRICTED Search access',
   adminContext: 'Current administrator context', currentAssurance: 'Authentication assurance',
   fallbackState: 'Password fallback', enabled: 'Enabled', disabled: 'Disabled', members: 'Workspace members',

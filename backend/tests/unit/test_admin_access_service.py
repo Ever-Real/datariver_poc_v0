@@ -12,6 +12,8 @@ import pytest
 
 from datariver.application.dto import (
     IdempotencyRecord,
+    SystemDirectoryAssignee,
+    SystemDirectoryEntry,
     WorkspaceMembershipAccessRecord,
     WorkspaceMembershipSummary,
 )
@@ -24,6 +26,8 @@ from datariver.domain.admin_access import (
     AdminAccessRequestState,
     AdminOperation,
     MembershipAccessUpdate,
+    SystemAssigneeUpdate,
+    SystemAssigneeUpdateCommand,
 )
 from datariver.domain.authz import (
     Action,
@@ -33,7 +37,13 @@ from datariver.domain.authz import (
     EnvironmentAttributes,
     SubjectAttributes,
 )
-from datariver.domain.common import ConflictError, DomainEvent, ForbiddenError, NotFoundError
+from datariver.domain.common import (
+    ConflictError,
+    DomainEvent,
+    ForbiddenError,
+    NotFoundError,
+    ValidationError,
+)
 
 
 class MemoryDecisionWriter:
@@ -143,6 +153,49 @@ class MemoryOutbox:
         self.values.extend(events)
 
 
+class MemorySystems:
+    def __init__(self, state: dict[str, object]) -> None:
+        self.state = state
+
+    async def list(self, *, workspace_id: UUID, limit: int) -> Sequence[SystemDirectoryEntry]:
+        assert workspace_id == self.state["workspace_id"]
+        return tuple(cast(list[SystemDirectoryEntry], self.state["systems"]))[:limit]
+
+    async def replace_assignees(self, command: SystemAssigneeUpdateCommand) -> int:
+        systems = cast(list[SystemDirectoryEntry], self.state["systems"])
+        index = next(
+            (
+                position
+                for position, system in enumerate(systems)
+                if system.system_id == command.system_id
+            ),
+            None,
+        )
+        if index is None:
+            raise NotFoundError("data system missing")
+        system = systems[index]
+        if system.version != command.expected_system_version:
+            raise ConflictError("system version mismatch")
+        assignable = cast(set[UUID], self.state["assignable_subjects"])
+        if not {item.subject_id for item in command.assignees}.issubset(assignable):
+            raise ForbiddenError("assigned member is inactive")
+        systems[index] = replace(
+            system,
+            version=system.version + 1,
+            assignees=tuple(
+                SystemDirectoryAssignee(
+                    subject_id=item.subject_id,
+                    display_name=f"User {item.subject_id}",
+                    responsibility=item.responsibility,
+                    priority=item.priority,
+                    active=True,
+                )
+                for item in command.assignees
+            ),
+        )
+        return systems[index].version
+
+
 class MemoryIdempotency:
     def __init__(self, values: dict[tuple[UUID, str, str], IdempotencyRecord]) -> None:
         self.values = values
@@ -171,6 +224,7 @@ class MemoryAdminAccessUnitOfWork:
         self.state = state
         self.requests = MemoryRequests(cast(dict[UUID, AdminAccessRequest], state["requests"]))
         self.memberships = MemoryMemberships(state)
+        self.systems = MemorySystems(state)
         self.outbox = MemoryOutbox(cast(list[DomainEvent], state["outbox"]))
         self.idempotency = MemoryIdempotency(
             cast(dict[tuple[UUID, str, str], IdempotencyRecord], state["idempotency"])
@@ -243,6 +297,31 @@ def _command(workspace_id: UUID, target_id: UUID) -> MembershipAccessUpdate:
     )
 
 
+def _system_command(
+    workspace_id: UUID,
+    system_id: UUID,
+    developer_id: UUID,
+    steward_id: UUID,
+) -> SystemAssigneeUpdateCommand:
+    return SystemAssigneeUpdateCommand(
+        workspace_id=workspace_id,
+        system_id=system_id,
+        expected_system_version=1,
+        assignees=(
+            SystemAssigneeUpdate(
+                subject_id=developer_id,
+                responsibility="DEVELOPER",
+                priority=1,
+            ),
+            SystemAssigneeUpdate(
+                subject_id=steward_id,
+                responsibility="DATA_STEWARD",
+                priority=1,
+            ),
+        ),
+    )
+
+
 def _state(
     workspace_id: UUID, target_id: UUID, maker_id: UUID, checker_id: UUID
 ) -> dict[str, object]:
@@ -254,6 +333,8 @@ def _state(
         "membership_versions": {target_id: 1},
         "membership_records": {},
         "membership_read_count": 0,
+        "systems": [],
+        "assignable_subjects": {target_id, maker_id, checker_id},
         "eligible_administrators": {maker_id, checker_id},
         "remaining_admin_count": 2,
         "lock_count": 0,
@@ -387,6 +468,117 @@ async def test_membership_reads_reuse_admin_read_assurance_when_fallback_is_disa
 
 
 @pytest.mark.asyncio
+async def test_system_directory_read_requires_an_eligible_workspace_administrator() -> None:
+    workspace_id, target_id, administrator_id, other_admin_id = (uuid4() for _ in range(4))
+    now = datetime.now(UTC)
+    state = _state(workspace_id, target_id, administrator_id, other_admin_id)
+    state["membership_records"] = {
+        administrator_id: _membership_record(administrator_id, "Administrator")
+    }
+    system_id = uuid4()
+    state["systems"] = [
+        SystemDirectoryEntry(
+            system_id=system_id,
+            code="FAB",
+            name="Fabrication",
+            description="Fab data",
+            active=True,
+            version=1,
+            assignees=(),
+        )
+    ]
+
+    items = await _service(state, enabled=False).list_systems(
+        workspace_id=workspace_id,
+        limit=100,
+        subject=_administrator(
+            workspace_id,
+            administrator_id,
+            assurance=AuthenticationAssurance.HARDWARE_WEBAUTHN,
+            now=now,
+        ),
+        environment=EnvironmentAttributes(requested_at=now),
+        request_id="system-directory",
+    )
+
+    assert [(item.system_id, item.code) for item in items] == [(system_id, "FAB")]
+
+
+@pytest.mark.asyncio
+async def test_system_assignment_requires_hardware_and_writes_versioned_audit_evidence() -> None:
+    workspace_id, developer_id, administrator_id, steward_id = (uuid4() for _ in range(4))
+    now = datetime.now(UTC)
+    state = _state(workspace_id, developer_id, administrator_id, steward_id)
+    system_id = uuid4()
+    state["systems"] = [
+        SystemDirectoryEntry(
+            system_id=system_id,
+            code="FAB",
+            name="Fabrication",
+            description="Fab data",
+            active=True,
+            version=1,
+            assignees=(),
+        )
+    ]
+    command = _system_command(workspace_id, system_id, developer_id, steward_id)
+    service = _service(state, enabled=False)
+    subject = _administrator(
+        workspace_id,
+        administrator_id,
+        assurance=AuthenticationAssurance.HARDWARE_WEBAUTHN,
+        now=now,
+    )
+    environment = EnvironmentAttributes(requested_at=now)
+
+    version = await service.update_system_assignees_with_hardware_key(
+        command=command,
+        subject=subject,
+        environment=environment,
+        request_id="system-assignment",
+        idempotency_key="system-assignment-idempotency-key",
+        request_hash=command.payload_hash,
+    )
+    repeated = await service.update_system_assignees_with_hardware_key(
+        command=command,
+        subject=subject,
+        environment=environment,
+        request_id="system-assignment-repeat",
+        idempotency_key="system-assignment-idempotency-key",
+        request_hash=command.payload_hash,
+    )
+
+    updated = cast(list[SystemDirectoryEntry], state["systems"])[0]
+    assert (version, repeated, updated.version) == (2, 2, 2)
+    assert [(item.responsibility, item.priority) for item in updated.assignees] == [
+        ("DEVELOPER", 1),
+        ("DATA_STEWARD", 1),
+    ]
+    outbox = cast(list[DomainEvent], state["outbox"])
+    assert len(outbox) == 1
+    assert outbox[0].event_type == "platform.data_system.assignees_updated.v1"
+    assert outbox[0].payload["payload_hash"] == command.payload_hash
+
+
+def test_system_assignment_requires_one_ranked_developer_and_steward() -> None:
+    workspace_id, system_id, subject_id = uuid4(), uuid4(), uuid4()
+
+    with pytest.raises(ValidationError, match="one Developer and one Data Steward"):
+        SystemAssigneeUpdateCommand(
+            workspace_id=workspace_id,
+            system_id=system_id,
+            expected_system_version=1,
+            assignees=(
+                SystemAssigneeUpdate(
+                    subject_id=subject_id,
+                    responsibility="DEVELOPER",
+                    priority=1,
+                ),
+            ),
+        )
+
+
+@pytest.mark.asyncio
 async def test_membership_detail_hides_unknown_or_other_workspace_subject() -> None:
     workspace_id, target_id, administrator_id, other_admin_id = (uuid4() for _ in range(4))
     now = datetime.now(UTC)
@@ -453,6 +645,7 @@ async def test_membership_detail_hides_unknown_or_other_workspace_subject() -> N
             {
                 AdminOperation.MEMBERSHIP_ACCESS_READ,
                 AdminOperation.MEMBERSHIP_ACCESS_UPDATE,
+                AdminOperation.SYSTEM_ASSIGNMENT_UPDATE,
                 AdminOperation.CLASSIFICATION_POLICY_READ,
                 AdminOperation.CLASSIFICATION_POLICY_PROPOSE,
                 AdminOperation.CLASSIFICATION_POLICY_DECIDE,

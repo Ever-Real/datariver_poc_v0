@@ -3,10 +3,12 @@ from __future__ import annotations
 from types import TracebackType
 from uuid import UUID
 
-from sqlalchemy import func, or_, select, text
+from sqlalchemy import and_, delete, func, or_, select, text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from datariver.application.dto import (
+    SystemDirectoryAssignee,
+    SystemDirectoryEntry,
     WorkspaceMembershipAccessRecord,
     WorkspaceMembershipSummary,
 )
@@ -14,6 +16,7 @@ from datariver.application.ports import (
     AdminAccessRequestRepository,
     AdminAccessUnitOfWork,
     MembershipAccessRepository,
+    SystemDirectoryRepository,
 )
 from datariver.domain.admin_access import (
     MEMBERSHIP_ACCESS_COMMAND,
@@ -22,6 +25,7 @@ from datariver.domain.admin_access import (
     AdminAccessRequest,
     AdminAccessRequestState,
     MembershipAccessUpdate,
+    SystemAssigneeUpdateCommand,
 )
 from datariver.domain.authz import Action, Classification
 from datariver.domain.common import ConflictError, ForbiddenError, NotFoundError, ValidationError
@@ -29,7 +33,9 @@ from datariver.infrastructure.db.governance import SqlIdempotencyStore, SqlOutbo
 from datariver.infrastructure.db.models.platform import (
     AdminAccessApprovalModel,
     AdminAccessRequestModel,
+    DataSystemModel,
     SubjectModel,
+    SystemAssigneeModel,
     WorkspaceMembershipModel,
 )
 from datariver.infrastructure.db.rls import set_security_context
@@ -376,12 +382,135 @@ class SqlMembershipAccessRepository(MembershipAccessRepository):
                 raise ForbiddenError("An administrator is no longer eligible for this workflow.")
 
 
+class SqlSystemDirectoryRepository(SystemDirectoryRepository):
+    def __init__(self, session: AsyncSession) -> None:
+        self._session = session
+
+    async def list(self, *, workspace_id: UUID, limit: int) -> tuple[SystemDirectoryEntry, ...]:
+        systems = (
+            await self._session.scalars(
+                select(DataSystemModel)
+                .where(DataSystemModel.workspace_id == workspace_id)
+                .order_by(func.lower(DataSystemModel.name), DataSystemModel.id)
+                .limit(limit)
+            )
+        ).all()
+        if not systems:
+            return ()
+        rows = (
+            await self._session.execute(
+                select(SystemAssigneeModel, SubjectModel, WorkspaceMembershipModel)
+                .join(SubjectModel, SubjectModel.id == SystemAssigneeModel.subject_id)
+                .join(
+                    WorkspaceMembershipModel,
+                    and_(
+                        WorkspaceMembershipModel.workspace_id == SystemAssigneeModel.workspace_id,
+                        WorkspaceMembershipModel.subject_id == SystemAssigneeModel.subject_id,
+                    ),
+                )
+                .where(
+                    SystemAssigneeModel.workspace_id == workspace_id,
+                    SystemAssigneeModel.system_id.in_([system.id for system in systems]),
+                )
+                .order_by(
+                    SystemAssigneeModel.system_id,
+                    SystemAssigneeModel.responsibility,
+                    SystemAssigneeModel.priority,
+                    func.lower(SubjectModel.display_name),
+                )
+            )
+        ).all()
+        assignees: dict[UUID, list[SystemDirectoryAssignee]] = {system.id: [] for system in systems}
+        for assignment, subject, membership in rows:
+            assignees.setdefault(assignment.system_id, []).append(
+                SystemDirectoryAssignee(
+                    subject_id=subject.id,
+                    display_name=subject.display_name,
+                    responsibility=assignment.responsibility,
+                    priority=assignment.priority,
+                    active=assignment.active and subject.active and membership.active,
+                )
+            )
+        return tuple(
+            SystemDirectoryEntry(
+                system_id=system.id,
+                code=system.code,
+                name=system.name,
+                description=system.description,
+                active=system.active,
+                version=system.version,
+                assignees=tuple(assignees.get(system.id, ())),
+            )
+            for system in systems
+        )
+
+    async def replace_assignees(self, command: SystemAssigneeUpdateCommand) -> int:
+        system = (
+            await self._session.scalars(
+                select(DataSystemModel)
+                .where(
+                    DataSystemModel.workspace_id == command.workspace_id,
+                    DataSystemModel.id == command.system_id,
+                )
+                .with_for_update()
+            )
+        ).one_or_none()
+        if system is None:
+            raise NotFoundError("The data system does not exist.")
+        if system.version != command.expected_system_version:
+            raise ConflictError("The data system was modified by another operation.")
+        subject_ids = frozenset(item.subject_id for item in command.assignees)
+        active_subject_ids = set(
+            (
+                await self._session.scalars(
+                    select(WorkspaceMembershipModel.subject_id)
+                    .join(SubjectModel, SubjectModel.id == WorkspaceMembershipModel.subject_id)
+                    .where(
+                        WorkspaceMembershipModel.workspace_id == command.workspace_id,
+                        WorkspaceMembershipModel.subject_id.in_(subject_ids),
+                        WorkspaceMembershipModel.active.is_(True),
+                        SubjectModel.active.is_(True),
+                        or_(
+                            WorkspaceMembershipModel.job_function.is_(None),
+                            WorkspaceMembershipModel.job_function != "SERVICE_ACCOUNT",
+                        ),
+                    )
+                )
+            ).all()
+        )
+        if active_subject_ids != subject_ids:
+            raise ValidationError("Every system assignee must be an active human workspace member.")
+        await self._session.execute(
+            delete(SystemAssigneeModel).where(
+                SystemAssigneeModel.workspace_id == command.workspace_id,
+                SystemAssigneeModel.system_id == command.system_id,
+            )
+        )
+        self._session.add_all(
+            [
+                SystemAssigneeModel(
+                    workspace_id=command.workspace_id,
+                    system_id=command.system_id,
+                    subject_id=item.subject_id,
+                    responsibility=item.responsibility,
+                    priority=item.priority,
+                    active=True,
+                )
+                for item in command.assignees
+            ]
+        )
+        system.version += 1
+        await self._session.flush()
+        return system.version
+
+
 class SqlAdminAccessUnitOfWork(AdminAccessUnitOfWork):
     def __init__(self, session_factory: async_sessionmaker[AsyncSession]) -> None:
         self._session_factory = session_factory
         self._session: AsyncSession | None = None
         self.requests: SqlAdminAccessRequestRepository
         self.memberships: SqlMembershipAccessRepository
+        self.systems: SqlSystemDirectoryRepository
         self.outbox: SqlOutboxWriter
         self.idempotency: SqlIdempotencyStore
         self._committed = False
@@ -390,6 +519,7 @@ class SqlAdminAccessUnitOfWork(AdminAccessUnitOfWork):
         self._session = self._session_factory()
         self.requests = SqlAdminAccessRequestRepository(self._session)
         self.memberships = SqlMembershipAccessRepository(self._session)
+        self.systems = SqlSystemDirectoryRepository(self._session)
         self.outbox = SqlOutboxWriter(self._session)
         self.idempotency = SqlIdempotencyStore(self._session)
         return self

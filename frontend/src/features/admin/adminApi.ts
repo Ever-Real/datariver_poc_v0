@@ -25,6 +25,10 @@ import type {
   RestrictedSearchGrantState,
   WorkspaceMembershipAccess,
   WorkspaceMembershipSummary,
+  SystemDirectoryEntry,
+  SystemAssigneeUpdate,
+  SystemAssigneeUpdateResult,
+  SystemConfigurationEntry,
 } from '../../api/types'
 
 type AdminApiClient = Pick<ApiClient, 'request' | 'requestWithMeta'>
@@ -49,6 +53,31 @@ export class AdminApi {
     return (await this.client.request<{ items: WorkspaceMembershipSummary[] }>(
       '/admin/workspace-memberships?limit=100',
     )).items
+  }
+
+  async listSystems() {
+    return (await this.client.request<{ items: SystemDirectoryEntry[] }>('/admin/systems?limit=100')).items
+  }
+
+  updateSystemAssignees(
+    systemId: string,
+    assignees: SystemAssigneeUpdate[],
+    version: number,
+    idempotencyKey: string,
+  ) {
+    return this.client.request<SystemAssigneeUpdateResult>(
+      `/admin/systems/${encodeURIComponent(systemId)}/assignees`,
+      {
+        method: 'PUT',
+        ifMatch: quotedVersion(version),
+        idempotencyKey,
+        body: JSON.stringify({ assignees }),
+      },
+    )
+  }
+
+  async listSystemConfiguration() {
+    return (await this.client.request<{ items: SystemConfigurationEntry[] }>('/admin/system-configuration')).items
   }
 
   async getMembershipAccess(subjectId: string): Promise<VersionedMembershipAccess> {

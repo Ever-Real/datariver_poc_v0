@@ -6,6 +6,7 @@ from uuid import UUID
 
 from datariver.application.dto import (
     AdminReadContext,
+    SystemDirectoryEntry,
     WorkspaceMembershipAccessRecord,
     WorkspaceMembershipSummary,
 )
@@ -18,6 +19,7 @@ from datariver.domain.admin_access import (
     AdminFallbackStage,
     AdminOperation,
     MembershipAccessUpdate,
+    SystemAssigneeUpdateCommand,
 )
 from datariver.domain.authz import (
     Action,
@@ -72,6 +74,29 @@ class AdminAccessService:
                 workspace_id=workspace_id, subject_ids=frozenset({subject.subject_id})
             )
             return await uow.memberships.list(workspace_id=workspace_id, limit=limit)
+
+    async def list_systems(
+        self,
+        *,
+        workspace_id: UUID,
+        limit: int,
+        subject: SubjectAttributes,
+        environment: EnvironmentAttributes,
+        request_id: str,
+    ) -> Sequence[SystemDirectoryEntry]:
+        await self._authorize_read(
+            workspace_id=workspace_id,
+            resource_id=workspace_id,
+            subject=subject,
+            environment=environment,
+            request_id=request_id,
+        )
+        async with self._uow_factory() as uow:
+            await uow.set_security_context(workspace_id=workspace_id, subject_id=subject.subject_id)
+            await uow.memberships.assert_eligible_human_administrators(
+                workspace_id=workspace_id, subject_ids=frozenset({subject.subject_id})
+            )
+            return await uow.systems.list(workspace_id=workspace_id, limit=limit)
 
     async def get_workspace_membership_access(
         self,
@@ -147,6 +172,7 @@ class AdminAccessService:
             operations.extend(
                 [
                     AdminOperation.MEMBERSHIP_ACCESS_UPDATE,
+                    AdminOperation.SYSTEM_ASSIGNMENT_UPDATE,
                     AdminOperation.CLASSIFICATION_POLICY_PROPOSE,
                     AdminOperation.CLASSIFICATION_POLICY_DECIDE,
                     AdminOperation.INFERENCE_PROVIDER_PROFILE_DECIDE,
@@ -261,6 +287,77 @@ class AdminAccessService:
             )
             await uow.commit()
             return membership_version
+
+    async def update_system_assignees_with_hardware_key(
+        self,
+        *,
+        command: SystemAssigneeUpdateCommand,
+        subject: SubjectAttributes,
+        environment: EnvironmentAttributes,
+        request_id: str,
+        idempotency_key: str,
+        request_hash: str,
+    ) -> int:
+        decision = await self._authorization.authorize(
+            subject=subject,
+            resource=self._resource(command.workspace_id, command.system_id),
+            action=Action.ADMIN_MANAGE,
+            environment=environment,
+            request_id=request_id,
+        )
+        operation = f"admin.system.assignees.update:{command.system_id}"
+        async with self._uow_factory() as uow:
+            await uow.set_security_context(
+                workspace_id=command.workspace_id, subject_id=subject.subject_id
+            )
+            await uow.lock_workspace_access(workspace_id=command.workspace_id)
+            await uow.memberships.assert_eligible_human_administrators(
+                workspace_id=command.workspace_id,
+                subject_ids=frozenset({subject.subject_id}),
+            )
+            existing = await uow.idempotency.get_result(
+                workspace_id=command.workspace_id,
+                key=idempotency_key,
+                operation=operation,
+            )
+            if existing is not None:
+                _verify_idempotency(
+                    existing.request_hash,
+                    request_hash,
+                    existing.result.get("actor_id"),
+                    subject.subject_id,
+                )
+                return int(existing.result["system_version"])
+            system_version = await uow.systems.replace_assignees(command)
+            await uow.outbox.add_events(
+                [
+                    DomainEvent.create(
+                        event_type="platform.data_system.assignees_updated.v1",
+                        aggregate_type="data_system",
+                        aggregate_id=command.system_id,
+                        workspace_id=command.workspace_id,
+                        payload={
+                            "actor_id": str(subject.subject_id),
+                            "payload_hash": command.payload_hash,
+                            "system_version": system_version,
+                            "policy_decision_id": str(decision.decision_id),
+                            "assurance": "HARDWARE_WEBAUTHN",
+                        },
+                    )
+                ]
+            )
+            await uow.idempotency.save_result(
+                workspace_id=command.workspace_id,
+                key=idempotency_key,
+                operation=operation,
+                request_hash=request_hash,
+                result={
+                    "actor_id": str(subject.subject_id),
+                    "system_version": system_version,
+                },
+            )
+            await uow.commit()
+            return system_version
 
     async def create_fallback_request(
         self,

@@ -16,6 +16,7 @@ from datariver.domain.common import (
 )
 
 MEMBERSHIP_ACCESS_COMMAND = "WORKSPACE_MEMBERSHIP_ACCESS_UPDATE_V1"
+SYSTEM_ASSIGNMENT_UPDATE_COMMAND = "SYSTEM_ASSIGNMENT_UPDATE_V1"
 MAXIMUM_FALLBACK_LIFETIME = timedelta(minutes=5)
 _GROUP_PATTERN = re.compile(r"^[a-z][a-z0-9-]{1,99}$")
 _COMMAND_KEYS = {
@@ -53,6 +54,7 @@ class AdminFallbackStage(StrEnum):
 class AdminOperation(StrEnum):
     MEMBERSHIP_ACCESS_READ = "MEMBERSHIP_ACCESS_READ"
     MEMBERSHIP_ACCESS_UPDATE = "MEMBERSHIP_ACCESS_UPDATE"
+    SYSTEM_ASSIGNMENT_UPDATE = "SYSTEM_ASSIGNMENT_UPDATE"
     FALLBACK_REQUEST_READ = "FALLBACK_REQUEST_READ"
     FALLBACK_REQUEST_CREATE = "FALLBACK_REQUEST_CREATE"
     FALLBACK_REQUEST_DECIDE = "FALLBACK_REQUEST_DECIDE"
@@ -166,6 +168,74 @@ class MembershipAccessUpdate:
             )
         except (KeyError, TypeError, ValueError) as error:
             raise ValidationError("The admin access command document is invalid.") from error
+
+
+@dataclass(frozen=True, slots=True)
+class SystemAssigneeUpdate:
+    subject_id: UUID
+    responsibility: str
+    priority: int
+
+    def __post_init__(self) -> None:
+        if self.responsibility not in {"DEVELOPER", "DATA_STEWARD"}:
+            raise ValidationError("The system-assignee responsibility is invalid.")
+        if not 1 <= self.priority <= 999:
+            raise ValidationError("The system-assignee priority must be between 1 and 999.")
+
+    def document(self) -> dict[str, object]:
+        return {
+            "subject_id": str(self.subject_id),
+            "responsibility": self.responsibility,
+            "priority": self.priority,
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class SystemAssigneeUpdateCommand:
+    workspace_id: UUID
+    system_id: UUID
+    expected_system_version: int
+    assignees: tuple[SystemAssigneeUpdate, ...]
+
+    def __post_init__(self) -> None:
+        if self.expected_system_version < 1:
+            raise ValidationError("The expected system version must be positive.")
+        if not self.assignees or len(self.assignees) > 500:
+            raise ValidationError("System assignees must contain between one and 500 entries.")
+        keys = {(item.subject_id, item.responsibility) for item in self.assignees}
+        if len(keys) != len(self.assignees):
+            raise ValidationError("A system responsibility can be assigned to a subject only once.")
+        for responsibility in ("DEVELOPER", "DATA_STEWARD"):
+            priorities = [
+                item.priority for item in self.assignees if item.responsibility == responsibility
+            ]
+            if not priorities:
+                raise ValidationError(
+                    "Every system must retain at least one Developer and one Data Steward."
+                )
+            if min(priorities) != 1 or len(priorities) != len(set(priorities)):
+                raise ValidationError(
+                    "System-assignee priorities must be unique and start with priority 1."
+                )
+
+    def command_document(self) -> dict[str, object]:
+        return {
+            "command_type": SYSTEM_ASSIGNMENT_UPDATE_COMMAND,
+            "workspace_id": str(self.workspace_id),
+            "system_id": str(self.system_id),
+            "expected_system_version": self.expected_system_version,
+            "assignees": [
+                item.document()
+                for item in sorted(
+                    self.assignees,
+                    key=lambda item: (item.responsibility, item.priority, str(item.subject_id)),
+                )
+            ],
+        }
+
+    @property
+    def payload_hash(self) -> str:
+        return canonical_json_hash(self.command_document())
 
 
 @dataclass(frozen=True, slots=True)

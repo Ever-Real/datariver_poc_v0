@@ -16,13 +16,24 @@ describe('AdminPage mutation safety', () => {
       if (url.endsWith('/admin/me')) return Promise.resolve(json({
         subject_id: 'admin-one', workspace_id: 'workspace-one', display_name: 'Administrator',
         authentication_assurance: 'HARDWARE_WEBAUTHN', fallback_enabled: false,
-        allowed_operations: ['MEMBERSHIP_ACCESS_READ', 'MEMBERSHIP_ACCESS_UPDATE'],
+        allowed_operations: ['MEMBERSHIP_ACCESS_READ', 'MEMBERSHIP_ACCESS_UPDATE', 'SYSTEM_ASSIGNMENT_UPDATE'],
         action_vocabulary: ['admin.manage', 'catalog.read'],
       }))
       if (url.endsWith('/admin/workspace-memberships?limit=100')) return Promise.resolve(json({ items: [{
         subject_id: 'target-one', display_name: 'Target User', subject_active: true,
         membership_active: true, department_id: null, job_function: 'ENGINEER',
         clearance: 'INTERNAL', membership_version: 1,
+      }] }))
+      if (url.endsWith('/admin/systems?limit=100')) return Promise.resolve(json({ items: [{
+        system_id: 'system-one', code: 'FAB', name: 'Fabrication', description: 'Fab data', active: true, version: 1,
+        assignees: [
+          { subject_id: 'target-one', display_name: 'Target User', responsibility: 'DEVELOPER', priority: 1, active: true },
+          { subject_id: 'target-one', display_name: 'Target User', responsibility: 'DATA_STEWARD', priority: 1, active: true },
+        ],
+      }] }))
+      if (url.endsWith('/admin/system-configuration')) return Promise.resolve(json({ items: [{
+        system_id: 'GRAFANA_DASHBOARD', label: 'Grafana Dashboard', state: 'CONFIGURED', management_plane: 'DEPLOYMENT',
+        secret_reference_configured: false, embedding_state: 'DISABLED',
       }] }))
       if (url.endsWith('/admin/workspace-memberships/target-one/access') && init?.method === 'PUT') {
         return Promise.resolve(json({
@@ -46,6 +57,24 @@ describe('AdminPage mutation safety', () => {
       onEnroll={vi.fn(() => Promise.resolve())}
     />)
 
+    expect(await screen.findByText('Target User')).toBeInTheDocument()
+    expect(screen.getByRole('table', { name: '워크스페이스 사용자 목록' })).toBeInTheDocument()
+    expect(screen.getByText(/OIDC 주체와 현재 Workspace 멤버십만 표시합니다/)).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: /시스템|Systems/ }))
+    await screen.findByText('Fabrication')
+    expect(screen.getAllByText('1. Target User')).toHaveLength(2)
+    expect(screen.getByRole('table', { name: '워크스페이스 시스템 목록' })).toBeInTheDocument()
+    const updateAssignments = await screen.findByRole('button', { name: '보안키로 담당자 변경' })
+    await waitFor(() => expect(updateAssignments).toBeEnabled())
+    fireEvent.click(updateAssignments)
+    expect(await screen.findByText('시스템 담당자 배정 변경')).toBeInTheDocument()
+    expect(fetchMock.mock.calls.filter(([, init]) => init?.method === 'PUT')).toHaveLength(0)
+    fireEvent.click(screen.getByRole('button', { name: /취소|Cancel/ }))
+    fireEvent.click(screen.getByRole('button', { name: /시스템 설정|System settings/ }))
+    expect(await screen.findByRole('heading', { name: 'Grafana Dashboard' })).toBeInTheDocument()
+    expect(screen.getByText('운영 배포 설정')).toBeInTheDocument()
+    expect(screen.getByText(/YAML·endpoint·password를 편집하거나 연결을 시험하지 않습니다/)).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: /계정·권한|Accounts & access/ }))
     const update = await screen.findByRole('button', { name: /보안키로 직접 변경|Update with security key/ })
     expect(screen.queryByRole('button', { name: /보존정책|Retention policies/ })).not.toBeInTheDocument()
     fireEvent.click(update)

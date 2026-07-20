@@ -3,7 +3,7 @@ import { fireEvent, render, screen, waitFor, within } from '@testing-library/rea
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { AdminReadContext } from '../../api/types'
 import type { ApiClient } from '../../api/client'
-import { allowedAdminSections } from '../../features/admin/AdminPage'
+import { allowedAdminSections } from '../../features/admin/adminSections'
 import { CatalogPage } from '../../features/catalog/CatalogPage'
 import { AppShell } from './AppShell'
 import { GlobalCatalogSearch } from './GlobalCatalogSearch'

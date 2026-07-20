@@ -6,6 +6,7 @@ import type {
   WorkspaceMembershipSummary,
 } from '../../api/types'
 import type { AssuranceActions } from '../../components/AssuranceNotice'
+import { DenseDataTable } from '../../components/common/DenseDataTable'
 import type { AdminApi } from './adminApi'
 import type { PendingAdminMutation } from './AdminMutationConfirmDialog'
 import type { AdminMessages } from './messages'
@@ -123,16 +124,24 @@ export function MembershipAccessAdmin(props: AdminSectionProps) {
   return (
     <div className="admin-two-column">
       <section className="panel">
-        <div className="section-heading"><h3>{messages.members}</h3><button className="button button-secondary" onClick={() => void loadMembers()}>{messages.refresh}</button></div>
-        <div className="compact-list" aria-label={messages.members}>
-          {members.map((member) => (
-            <button className={selectedId === member.subject_id ? 'selected' : ''} key={member.subject_id} onClick={() => setSelectedId(member.subject_id)}>
-              <span><strong>{member.display_name}</strong><small>{member.job_function ?? '—'} · {member.clearance}</small></span>
-              <span className="badge badge-soft">v{member.membership_version}</span>
-            </button>
-          ))}
-          {!members.length && <p className="muted">{messages.empty}</p>}
-        </div>
+        <div className="section-heading"><div><h3>{messages.members}</h3><p className="muted">OIDC 주체와 현재 Workspace 멤버십만 표시합니다.</p></div><button className="button button-secondary" onClick={() => void loadMembers()}>{messages.refresh}</button></div>
+        <DenseDataTable
+          caption="워크스페이스 사용자 목록"
+          columns={[
+            { accessorKey: 'display_name', header: '사용자', size: 190, cell: ({ row }) => <strong>{row.original.display_name}</strong> },
+            { accessorKey: 'job_function', header: '역할', size: 110, cell: ({ row }) => row.original.job_function ?? '—' },
+            { accessorKey: 'department_id', header: '부서', size: 160, cell: ({ row }) => row.original.department_id ?? '미할당' },
+            { accessorKey: 'clearance', header: '등급', size: 110, cell: ({ row }) => <span className="badge badge-soft">{row.original.clearance}</span> },
+            { accessorKey: 'membership_active', header: '멤버십', size: 92, cell: ({ row }) => row.original.membership_active ? '활성' : '비활성' },
+            { accessorKey: 'membership_version', header: '버전', size: 72, cell: ({ row }) => `v${row.original.membership_version}` },
+          ]}
+          data={members}
+          emptyMessage={messages.empty}
+          getRowId={(member) => member.subject_id}
+          selectedRowId={selectedId}
+          onRowActivate={(member) => setSelectedId(member.subject_id)}
+        />
+        <p className="callout">사용자 생성·이메일·비밀번호·최근 접속 정보는 DataRiver가 보관하거나 변경하지 않습니다. 해당 정보는 조직 OIDC/IdP와 별도 감사 read model의 책임입니다.</p>
       </section>
       <section className="panel form-stack" aria-live="polite">
         <h3>{messages.accessDocument}</h3>

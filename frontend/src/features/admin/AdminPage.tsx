@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { newIdempotencyKey, type ApiClient } from '../../api/client'
-import type { AdminOperation, AdminReadContext } from '../../api/types'
+import type { AdminReadContext } from '../../api/types'
 import { AssuranceNotice, type AssuranceActions } from '../../components/AssuranceNotice'
 import { ErrorNotice } from '../../components/ErrorNotice'
 import { PageTitle } from '../../components/layout/PageTitle'
@@ -14,39 +14,11 @@ import {
 import { ErasureAdmin } from './ErasureAdmin'
 import { FallbackQueueAdmin, MembershipAccessAdmin } from './MembershipAdmin'
 import { RoleAccessAdmin } from './RoleAccessAdmin'
+import { SystemDirectoryAdmin } from './SystemDirectoryAdmin'
+import { SystemConfigurationAdmin } from './SystemConfigurationAdmin'
 import { LegalHoldAdmin, RetentionPolicyAdmin } from './RetentionAdmin'
 import { getAdminMessages } from './messages'
-
-const sections = [
-  'memberships', 'roles', 'fallback', 'classification', 'providers', 'restrictedGrants',
-  'retention', 'holds', 'erasure',
-] as const
-export type AdminSection = typeof sections[number]
-
-const sectionOperations: Record<AdminSection, readonly AdminOperation[]> = {
-  memberships: ['MEMBERSHIP_ACCESS_READ', 'MEMBERSHIP_ACCESS_UPDATE'],
-  roles: ['MEMBERSHIP_ACCESS_READ', 'MEMBERSHIP_ACCESS_UPDATE'],
-  fallback: ['FALLBACK_REQUEST_READ', 'FALLBACK_REQUEST_CREATE', 'FALLBACK_REQUEST_DECIDE', 'FALLBACK_REQUEST_CONSUME'],
-  classification: ['CLASSIFICATION_POLICY_READ', 'CLASSIFICATION_POLICY_PROPOSE', 'CLASSIFICATION_POLICY_DECIDE'],
-  providers: ['INFERENCE_PROVIDER_PROFILE_READ', 'INFERENCE_PROVIDER_PROFILE_DECIDE', 'INFERENCE_PROVIDER_PROFILE_REVOKE'],
-  restrictedGrants: ['RESTRICTED_SEARCH_GRANT_READ', 'RESTRICTED_SEARCH_GRANT_PROPOSE', 'RESTRICTED_SEARCH_GRANT_DECIDE', 'RESTRICTED_SEARCH_GRANT_REVOKE'],
-  retention: ['RETENTION_POLICY_READ', 'RETENTION_POLICY_MANAGE'],
-  holds: ['LEGAL_HOLD_READ', 'LEGAL_HOLD_PLACE', 'LEGAL_HOLD_RELEASE'],
-  erasure: ['ERASURE_READ', 'ERASURE_REQUEST', 'ERASURE_APPROVE'],
-}
-
-export function allowedAdminSections(context: AdminReadContext): AdminSection[] {
-  const allowed = new Set(context.allowed_operations)
-  return sections.filter((section) => {
-    const readOperation = sectionOperations[section][0]
-    return readOperation ? allowed.has(readOperation) : false
-  })
-}
-
-function sectionFromLocation(): AdminSection {
-  const value = new URL(window.location.href).searchParams.get('adminSection')
-  return sections.includes(value as AdminSection) ? value as AdminSection : 'memberships'
-}
+import { adminSectionFromLocation, allowedAdminSections, type AdminSection } from './adminSections'
 
 export function AdminPage({
   client,
@@ -55,7 +27,7 @@ export function AdminPage({
 }: { client: ApiClient; initialContext?: AdminReadContext } & AssuranceActions) {
   const api = useMemo(() => new AdminApi(client), [client])
   const messages = useMemo(() => getAdminMessages(), [])
-  const [section, setSection] = useState<AdminSection>(sectionFromLocation)
+  const [section, setSection] = useState<AdminSection>(adminSectionFromLocation)
   const [context, setContext] = useState<AdminReadContext | undefined>(initialContext)
   const [error, setError] = useState<unknown>()
   const [mutation, setMutation] = useState<PendingAdminMutation>()
@@ -69,7 +41,7 @@ export function AdminPage({
   useEffect(() => { if (!initialContext) void loadContext() }, [initialContext, loadContext])
   useEffect(() => { if (initialContext) setContext(initialContext) }, [initialContext])
   useEffect(() => {
-    const restore = () => setSection(sectionFromLocation())
+    const restore = () => setSection(adminSectionFromLocation())
     window.addEventListener('popstate', restore)
     return () => window.removeEventListener('popstate', restore)
   }, [])
@@ -129,6 +101,8 @@ export function AdminPage({
     <AssuranceNotice error={error} requiredAssurance={assuranceType} {...assurance} />
     <ErrorNotice error={error} />
     {activeSection === 'memberships' && <MembershipAccessAdmin {...shared} />}
+    {activeSection === 'systems' && <SystemDirectoryAdmin {...shared} />}
+    {activeSection === 'systemSettings' && <SystemConfigurationAdmin {...shared} />}
     {activeSection === 'roles' && <RoleAccessAdmin {...shared} />}
     {activeSection === 'fallback' && <FallbackQueueAdmin {...shared} />}
     {activeSection === 'classification' && <ClassificationPolicyAdmin {...shared} />}

@@ -1,13 +1,14 @@
 import { useEffect, useMemo, useState } from 'react'
 import { ArrowRight, ShieldCheck } from 'lucide-react'
 import { ApiClient, remediationKind } from './api/client'
-import type { AdminReadContext, CapabilitiesResponse, ExternalSystemLink } from './api/types'
+import type { AdminOperation, AdminReadContext, CapabilitiesResponse, ExternalSystemLink } from './api/types'
 import { pageFromLocation, pageUrl, type Page } from './app/navigation'
 import { defaultWorkspaceSelection, workspaceFromLocation } from './app/workspace'
 import { useAuth } from './auth/AuthProvider'
 import { AppShell } from './components/layout/AppShell'
 import { PageTitle } from './components/layout/PageTitle'
-import { AdminPage, allowedAdminSections } from './features/admin/AdminPage'
+import { AdminPage } from './features/admin/AdminPage'
+import { allowedAdminSections } from './features/admin/adminSections'
 import { getAdminMessages } from './features/admin/messages'
 import { CatalogPage } from './features/catalog/CatalogPage'
 import { catalogExportCapabilityEnabled } from './features/catalog/catalogExportApi'
@@ -175,6 +176,11 @@ export function App() {
     ? adminAccess.context
     : undefined
   const currentAdminStatus = adminAccess.workspace === workspace ? adminAccess.status : 'checking'
+  const policyReadOperations: AdminOperation[] = [
+    'CLASSIFICATION_POLICY_READ', 'RETENTION_POLICY_READ', 'LEGAL_HOLD_READ',
+  ]
+  const mayReadPolicyGovernance = Boolean(currentAdminContext && policyReadOperations
+    .every((operation) => currentAdminContext.allowed_operations.includes(operation)))
   const adminMessages = getAdminMessages()
   const adminMenuItems = currentAdminContext
     ? allowedAdminSections(currentAdminContext).map((id) => ({ id, label: adminMessages[id] }))
@@ -206,9 +212,9 @@ export function App() {
       {page === 'registration' && <RegistrationPage client={client} />}
       {page === 'change-management' && <GovernancePage client={client} onNavigate={navigate} onStepUp={auth.beginStepUp} onPasswordReauth={auth.beginPasswordReauth} onEnroll={auth.beginWebAuthnEnrollment} />}
       {page === 'quality' && <QualityPage />}
-      {page === 'knowledge' && <KnowledgePage client={client} />}
+      {page === 'knowledge' && <KnowledgePage client={client} onNavigate={navigate} />}
       {page === 'monitoring' && <MonitoringPage client={client} />}
-      {page === 'governance' && <PolicyGovernancePage client={client} />}
+      {page === 'governance' && <PolicyGovernancePage client={client} mayReadPolicies={mayReadPolicyGovernance} />}
       {page === 'sharing' && <SharingPage client={client} onStepUp={auth.beginStepUp} onPasswordReauth={auth.beginPasswordReauth} onEnroll={auth.beginWebAuthnEnrollment} />}
       {page === 'chat' && <ChatPage client={client} />}
       {page === 'admin' && currentAdminContext && <AdminPage client={client} initialContext={currentAdminContext} onStepUp={auth.beginStepUp} onPasswordReauth={auth.beginPasswordReauth} onEnroll={auth.beginWebAuthnEnrollment} />}

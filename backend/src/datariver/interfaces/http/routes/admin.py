@@ -7,10 +7,13 @@ from fastapi import APIRouter, Header, Query, Request, Response
 
 from datariver.application.services.admin_access import AdminAccessService
 from datariver.application.services.authorization import AuthorizationService
+from datariver.config import Settings
 from datariver.domain.admin_access import (
     AdminAccessDecision,
     AdminAccessRequestState,
     MembershipAccessUpdate,
+    SystemAssigneeUpdate,
+    SystemAssigneeUpdateCommand,
 )
 from datariver.domain.authz import Action, Classification
 from datariver.domain.common import ValidationError, canonical_json_hash
@@ -33,11 +36,113 @@ from datariver.interfaces.http.schemas import (
     AdminReadContextResponse,
     MembershipAccessDocumentRequest,
     MembershipAccessUpdateResponse,
+    SystemAssigneeUpdateListRequest,
+    SystemAssigneeUpdateResponse,
+    SystemConfigurationEntryResponse,
+    SystemConfigurationListResponse,
+    SystemDirectoryEntryResponse,
+    SystemDirectoryListResponse,
     WorkspaceMembershipAccessResponse,
     WorkspaceMembershipListResponse,
 )
 
 router = APIRouter(prefix="/admin", tags=["administration"])
+
+
+def _system_configuration_entries(settings: Settings) -> list[SystemConfigurationEntryResponse]:
+    """Expose only source/availability flags, never target URLs or secret references."""
+
+    grafana_embed_state = (
+        "AVAILABLE"
+        if settings.grafana_embed_url() is not None
+        else "NOT_CONFIGURED"
+        if settings.ui_grafana_url is None
+        else "DISABLED"
+    )
+    return [
+        SystemConfigurationEntryResponse(
+            system_id="DATAHUB_GMS",
+            label="DataHub GMS",
+            state="CONFIGURED",
+            management_plane="DEPLOYMENT",
+            secret_reference_configured=bool(settings.datahub_secret_ref),
+            embedding_state="NOT_APPLICABLE",
+        ),
+        SystemConfigurationEntryResponse(
+            system_id="DATAHUB_FRONTEND",
+            label="DataHub Frontend",
+            state="CONFIGURED" if settings.ui_datahub_url is not None else "NOT_CONFIGURED",
+            management_plane="DEPLOYMENT",
+            secret_reference_configured=False,
+            embedding_state="NOT_APPLICABLE",
+        ),
+        SystemConfigurationEntryResponse(
+            system_id="AIRFLOW",
+            label="Airflow",
+            state="CONFIGURED" if settings.ui_airflow_url is not None else "NOT_CONFIGURED",
+            management_plane="DEPLOYMENT",
+            secret_reference_configured=False,
+            embedding_state="NOT_APPLICABLE",
+        ),
+        SystemConfigurationEntryResponse(
+            system_id="S3_STORAGE",
+            label="S3 Storage",
+            state="CONFIGURED",
+            management_plane="DEPLOYMENT",
+            secret_reference_configured=bool(
+                settings.s3_access_key_file and settings.s3_secret_key_file
+            ),
+            embedding_state="NOT_APPLICABLE",
+        ),
+        SystemConfigurationEntryResponse(
+            system_id="LLM_CHAT_MODEL",
+            label="LLM · Chat model",
+            state="GOVERNED_PROFILE_REQUIRED",
+            management_plane="GOVERNED_PROVIDER_PROFILE",
+            secret_reference_configured=False,
+            embedding_state="NOT_APPLICABLE",
+        ),
+        SystemConfigurationEntryResponse(
+            system_id="LLM_EMBEDDING",
+            label="LLM · Embedding",
+            state="GOVERNED_PROFILE_REQUIRED",
+            management_plane="GOVERNED_PROVIDER_PROFILE",
+            secret_reference_configured=False,
+            embedding_state="NOT_APPLICABLE",
+        ),
+        SystemConfigurationEntryResponse(
+            system_id="LLM_RERANKER",
+            label="LLM · Reranker",
+            state="GOVERNED_PROFILE_REQUIRED",
+            management_plane="GOVERNED_PROVIDER_PROFILE",
+            secret_reference_configured=False,
+            embedding_state="NOT_APPLICABLE",
+        ),
+        SystemConfigurationEntryResponse(
+            system_id="NEO4J",
+            label="Neo4j",
+            state="NOT_CONFIGURED",
+            management_plane="DEPLOYMENT",
+            secret_reference_configured=False,
+            embedding_state="NOT_APPLICABLE",
+        ),
+        SystemConfigurationEntryResponse(
+            system_id="PROMETHEUS",
+            label="Prometheus",
+            state="CONFIGURED" if settings.ui_prometheus_url is not None else "NOT_CONFIGURED",
+            management_plane="DEPLOYMENT",
+            secret_reference_configured=False,
+            embedding_state="NOT_APPLICABLE",
+        ),
+        SystemConfigurationEntryResponse(
+            system_id="GRAFANA_DASHBOARD",
+            label="Grafana Dashboard",
+            state="CONFIGURED" if settings.ui_grafana_url is not None else "NOT_CONFIGURED",
+            management_plane="DEPLOYMENT",
+            secret_reference_configured=False,
+            embedding_state=grafana_embed_state,
+        ),
+    ]
 
 
 def _service(request: Request) -> AdminAccessService:
@@ -84,6 +189,31 @@ def _membership_command(
         raise ValidationError("The membership access document is invalid.") from error
 
 
+def _system_assignee_command(
+    *,
+    workspace_id: UUID,
+    system_id: UUID,
+    expected_system_version: int,
+    payload: SystemAssigneeUpdateListRequest,
+) -> SystemAssigneeUpdateCommand:
+    try:
+        return SystemAssigneeUpdateCommand(
+            workspace_id=workspace_id,
+            system_id=system_id,
+            expected_system_version=expected_system_version,
+            assignees=tuple(
+                SystemAssigneeUpdate(
+                    subject_id=item.subject_id,
+                    responsibility=item.responsibility,
+                    priority=item.priority,
+                )
+                for item in payload.assignees
+            ),
+        )
+    except (TypeError, ValueError) as error:
+        raise ValidationError("The system-assignee document is invalid.") from error
+
+
 @router.get("/me", response_model=AdminReadContextResponse)
 async def get_admin_context(
     request: Request,
@@ -113,6 +243,111 @@ async def list_workspace_memberships(
     )
     return WorkspaceMembershipListResponse(
         items=[workspace_membership_summary_response(value) for value in values]
+    )
+
+
+@router.get("/systems", response_model=SystemDirectoryListResponse)
+async def list_systems(
+    request: Request,
+    context: ContextDep,
+    limit: Annotated[int, Query(ge=1, le=100)] = 100,
+) -> SystemDirectoryListResponse:
+    values = await _service(request).list_systems(
+        workspace_id=context.workspace_id,
+        limit=limit,
+        subject=context.subject,
+        environment=context.environment,
+        request_id=context.request_id,
+    )
+    return SystemDirectoryListResponse(
+        items=[
+            SystemDirectoryEntryResponse(
+                system_id=value.system_id,
+                code=value.code,
+                name=value.name,
+                description=value.description,
+                active=value.active,
+                version=value.version,
+                assignees=[
+                    {
+                        "subject_id": assignee.subject_id,
+                        "display_name": assignee.display_name,
+                        "responsibility": assignee.responsibility,
+                        "priority": assignee.priority,
+                        "active": assignee.active,
+                    }
+                    for assignee in value.assignees
+                ],
+            )
+            for value in values
+        ]
+    )
+
+
+@router.put(
+    "/systems/{system_id}/assignees",
+    response_model=SystemAssigneeUpdateResponse,
+    responses={
+        200: {
+            "headers": {
+                "ETag": {
+                    "description": "Current system version after the assignment update.",
+                    "schema": {"type": "string"},
+                }
+            }
+        }
+    },
+)
+async def update_system_assignees(
+    system_id: UUID,
+    payload: SystemAssigneeUpdateListRequest,
+    request: Request,
+    response: Response,
+    context: ContextDep,
+    if_match: Annotated[str, Header(alias="If-Match", max_length=100)],
+    idempotency_key: Annotated[str, Header(alias="Idempotency-Key", min_length=16, max_length=200)],
+) -> SystemAssigneeUpdateResponse:
+    command = _system_assignee_command(
+        workspace_id=context.workspace_id,
+        system_id=system_id,
+        expected_system_version=_expected_version(if_match),
+        payload=payload,
+    )
+    request_hash = canonical_json_hash(
+        {"operation": "admin.system.assignees.update", "command": command.command_document()}
+    )
+    system_version = await _service(request).update_system_assignees_with_hardware_key(
+        command=command,
+        subject=context.subject,
+        environment=context.environment,
+        request_id=context.request_id,
+        idempotency_key=idempotency_key,
+        request_hash=request_hash,
+    )
+    response.headers["ETag"] = f'"{system_version}"'
+    return SystemAssigneeUpdateResponse(
+        system_id=system_id,
+        system_version=system_version,
+        payload_hash=command.payload_hash,
+    )
+
+
+@router.get("/system-configuration", response_model=SystemConfigurationListResponse)
+async def list_system_configuration(
+    request: Request,
+    context: ContextDep,
+) -> SystemConfigurationListResponse:
+    # Reuse the same eligible-human-admin read gate as member/system inventory.
+    # Configuration values, endpoints and secret references are intentionally
+    # absent from the response; the operator plane owns them.
+    await _service(request).get_admin_read_context(
+        workspace_id=context.workspace_id,
+        subject=context.subject,
+        environment=context.environment,
+        request_id=context.request_id,
+    )
+    return SystemConfigurationListResponse(
+        items=_system_configuration_entries(get_container(request).settings)
     )
 
 
