@@ -25,6 +25,7 @@ def settings(**overrides: object) -> Settings:
         "datahub_secret_ref": "file:/run/secrets/datahub_token",
         "datahub_expected_version": "v1.6.0",
         "datahub_allowed_versions": (),
+        "datahub_embed_enabled": False,
         "valkey_cache_url": "redis://cache:6379/0",
         "valkey_queue_url": "redis://queue:6379/0",
         "valkey_cache_secret_ref": "file:/run/secrets/valkey_cache_password",
@@ -35,9 +36,10 @@ def settings(**overrides: object) -> Settings:
         "s3_bucket_accepted": "accepted",
         "s3_access_key_file": "/run/secrets/s3_access_key",
         "s3_secret_key_file": "/run/secrets/s3_secret_key",
+        "catalog_export_worker_enabled": False,
     }
     values.update(overrides)
-    return Settings(**values)  # type: ignore[arg-type]
+    return Settings(_env_file=None, **values)  # type: ignore[arg-type]
 
 
 def test_rejects_shared_cache_and_queue_endpoint() -> None:
@@ -101,6 +103,28 @@ def test_datahub_embed_is_disabled_first_and_uses_one_exact_origin() -> None:
     assert configured.datahub_lineage_embed_url("urn:li:dataset:(a,b,c)") == (
         "https://datahub.example.com/dataset/urn%3Ali%3Adataset%3A%28a%2Cb%2Cc%29/Lineage"
     )
+
+
+def test_grafana_embed_is_disabled_first_and_requires_deployment_evidence() -> None:
+    assert settings().grafana_embed_url() is None
+    with pytest.raises(ValidationError, match="requires a configured Grafana page"):
+        settings(grafana_embed_enabled=True)
+    with pytest.raises(ValidationError, match="exact origin"):
+        settings(grafana_embed_base_url="https://grafana.example.com/d/overview")
+    with pytest.raises(ValidationError, match="same scheme and host"):
+        settings(
+            ui_grafana_url="https://grafana.example.com/d/overview",
+            grafana_embed_base_url="https://other-grafana.example.com",
+        )
+
+    configured = settings(
+        ui_grafana_url="https://grafana.example.com/d/overview",
+        grafana_embed_base_url="https://grafana.example.com",
+        grafana_embed_enabled=True,
+        grafana_embed_evidence_reference="SEC-REVIEW-1234",
+    )
+
+    assert configured.grafana_embed_url() == "https://grafana.example.com/d/overview"
 
 
 def test_production_external_ui_links_require_tls() -> None:

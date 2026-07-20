@@ -17,6 +17,7 @@ function response(overrides: Partial<CapabilitiesResponse> = {}): CapabilitiesRe
       label: 'Grafana',
       url: 'https://grafana.example/dashboard',
     }],
+    grafana_embed: { state: 'DISABLED' },
     deployment_tier: 'SINGLE_NODE_PILOT',
     ...overrides,
   }
@@ -53,5 +54,20 @@ describe('MonitoringPage', () => {
 
     expect(await screen.findByText('승인된 Grafana 링크가 없습니다.')).toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'Grafana 링크 없음' })).toBeDisabled()
+  })
+
+  it('frames Grafana only for an available server-owned embed descriptor', async () => {
+    const request = vi.fn((path: string): Promise<unknown> => {
+      if (path === '/capabilities') return Promise.resolve(response({
+        grafana_embed: { state: 'AVAILABLE', url: 'https://grafana.example/dashboard' },
+      }))
+      throw new Error(`Unexpected request: ${path}`)
+    })
+    render(<MonitoringPage client={apiClient(request)} />)
+
+    const frame = await screen.findByTitle('Grafana Dashboard')
+    expect(frame).toHaveAttribute('src', 'https://grafana.example/dashboard')
+    expect(frame).toHaveAttribute('sandbox', 'allow-forms allow-same-origin allow-scripts')
+    expect(frame).toHaveAttribute('referrerpolicy', 'no-referrer')
   })
 })

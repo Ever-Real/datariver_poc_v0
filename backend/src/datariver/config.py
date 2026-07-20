@@ -96,6 +96,12 @@ class Settings(BaseSettings):
     ui_graph_url: HttpUrl | None = None
     datahub_embed_base_url: HttpUrl | None = None
     datahub_embed_enabled: bool = False
+    # Grafana embedding is disabled by default.  It is a deployment-owned
+    # assertion that Grafana SSO and frame policy were reviewed; a browser
+    # never supplies this URL or flips this capability on.
+    grafana_embed_base_url: HttpUrl | None = None
+    grafana_embed_enabled: bool = False
+    grafana_embed_evidence_reference: str | None = Field(default=None, max_length=500)
 
     valkey_cache_url: str
     valkey_queue_url: str
@@ -194,6 +200,7 @@ class Settings(BaseSettings):
         "ui_prometheus_url",
         "ui_graph_url",
         "datahub_embed_base_url",
+        "grafana_embed_base_url",
     )
     @classmethod
     def reject_ui_link_credentials(cls, value: HttpUrl | None) -> HttpUrl | None:
@@ -217,6 +224,12 @@ class Settings(BaseSettings):
                 "",
             )
         )
+
+    def grafana_embed_url(self) -> str | None:
+        """Return the one server-configured Grafana page only when approved."""
+        if not self.grafana_embed_enabled or self.ui_grafana_url is None:
+            return None
+        return str(self.ui_grafana_url)
 
     @model_validator(mode="after")
     def validate_security_posture(self) -> Self:
@@ -253,6 +266,35 @@ class Settings(BaseSettings):
                 raise ValueError(
                     "The DataHub embed URL must be one exact origin without a path or query."
                 )
+        if self.grafana_embed_enabled and (
+            self.ui_grafana_url is None
+            or self.grafana_embed_base_url is None
+            or not self.grafana_embed_evidence_reference
+        ):
+            raise ValueError(
+                "Enabled Grafana embedding requires a configured Grafana page, exact origin and "
+                "deployment evidence reference."
+            )
+        if self.grafana_embed_base_url is not None:
+            parsed_grafana_embed_url = urlsplit(str(self.grafana_embed_base_url))
+            if (
+                parsed_grafana_embed_url.path not in ("", "/")
+                or parsed_grafana_embed_url.query
+                or parsed_grafana_embed_url.fragment
+            ):
+                raise ValueError(
+                    "The Grafana embed URL must be one exact origin without a path or query."
+                )
+            if self.ui_grafana_url is not None:
+                parsed_grafana_url = urlsplit(str(self.ui_grafana_url))
+                if (
+                    parsed_grafana_url.scheme != parsed_grafana_embed_url.scheme
+                    or parsed_grafana_url.netloc != parsed_grafana_embed_url.netloc
+                ):
+                    raise ValueError(
+                        "The Grafana page and Grafana embed origin must have the same "
+                        "scheme and host."
+                    )
         assurance_sets = {
             "hardware ACR": set(self.oidc_hardware_acr_values),
             "hardware AMR": set(self.oidc_hardware_amr_values),
@@ -381,6 +423,7 @@ class Settings(BaseSettings):
                         "ui_prometheus_url": self.ui_prometheus_url,
                         "ui_graph_url": self.ui_graph_url,
                         "datahub_embed_base_url": self.datahub_embed_base_url,
+                        "grafana_embed_base_url": self.grafana_embed_base_url,
                     }.items()
                     if url is not None
                 },

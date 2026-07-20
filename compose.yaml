@@ -342,6 +342,7 @@ services:
       S3_PUBLIC_ORIGIN: ${S3_PUBLIC_ORIGIN:-http://localhost:8333}
       OIDC_PUBLIC_ORIGIN: ${OIDC_PUBLIC_ORIGIN:-http://localhost:8081}
       DATAHUB_EMBED_BASE_URL: ${DATAHUB_EMBED_BASE_URL:-}
+      GRAFANA_EMBED_BASE_URL: ${GRAFANA_EMBED_BASE_URL:-}
     depends_on:
       api:
         condition: service_healthy

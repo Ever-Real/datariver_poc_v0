@@ -1,13 +1,14 @@
 import { useCallback, useEffect, useState } from 'react'
 import { Activity, ExternalLink, Monitor, RefreshCw, ShieldCheck } from 'lucide-react'
 import type { ApiClient } from '../../api/client'
-import type { CapabilitiesResponse, Capability, ExternalSystemLink } from '../../api/types'
+import type { CapabilitiesResponse, Capability, ExternalSystemLink, GrafanaEmbed } from '../../api/types'
 import { ErrorNotice } from '../../components/ErrorNotice'
 import { PageTitle } from '../../components/layout/PageTitle'
 
 export function MonitoringPage({ client }: { client: ApiClient }) {
   const [capabilities, setCapabilities] = useState<Capability[]>([])
   const [links, setLinks] = useState<ExternalSystemLink[]>([])
+  const [grafanaEmbed, setGrafanaEmbed] = useState<GrafanaEmbed>({ state: 'NOT_CONFIGURED' })
   const [error, setError] = useState<unknown>()
   const [loading, setLoading] = useState(true)
 
@@ -18,6 +19,7 @@ export function MonitoringPage({ client }: { client: ApiClient }) {
       const response = await client.request<CapabilitiesResponse>('/capabilities')
       setCapabilities(response.items)
       setLinks(response.external_system_links)
+      setGrafanaEmbed(response.grafana_embed)
     } catch (next) {
       setError(next)
     } finally {
@@ -28,6 +30,7 @@ export function MonitoringPage({ client }: { client: ApiClient }) {
   useEffect(() => { void refresh() }, [refresh])
 
   const grafana = links.find((link) => link.system_id === 'grafana')
+  const embeddedGrafanaUrl = grafanaEmbed.state === 'AVAILABLE' ? grafanaEmbed.url : undefined
   return (
     <section className="monitoring-page">
       <PageTitle
@@ -50,13 +53,22 @@ export function MonitoringPage({ client }: { client: ApiClient }) {
       <div className="monitoring-frame" aria-busy={loading}>
         {loading ? (
           <div className="monitoring-frame-state"><span className="loader" /><p>플랫폼 상태를 조회하고 있습니다.</p></div>
+        ) : embeddedGrafanaUrl ? (
+          <div className="monitoring-approved-embed">
+            <div className="monitoring-embed-notice">
+              <span><Monitor size={20} aria-hidden="true" /></span>
+              <p>서버가 승인한 Grafana origin과 배포 증거가 확인되어, 이 세션에서는 sandboxed dashboard를 표시합니다.</p>
+              {grafana && <a className="button button-secondary" href={grafana.url} target="_blank" rel="noopener noreferrer"><ExternalLink size={14} />새 창으로 열기</a>}
+            </div>
+            <iframe className="monitoring-grafana-frame" loading="lazy" referrerPolicy="no-referrer" sandbox="allow-forms allow-same-origin allow-scripts" src={embeddedGrafanaUrl} title="Grafana Dashboard" />
+          </div>
         ) : grafana ? (
           <div className="monitoring-approved-link">
             <span><Monitor size={35} aria-hidden="true" /></span>
             <div>
               <p className="eyebrow">Approved external observability</p>
               <h2>{grafana.label}</h2>
-              <p>이 링크는 서버 allowlist 검증을 거친 외부 관측성 화면입니다. 현재 배포에는 Grafana SSO·CSP sandbox 증거가 없으므로, 세션/프레임 경계를 우회하는 iframe 대신 새 창에서 엽니다.</p>
+              <p>이 링크는 서버 allowlist 검증을 거친 외부 관측성 화면입니다. 현재 배포에는 Grafana SSO·CSP sandbox 배포 증거가 등록되지 않아 iframe은 비활성입니다. 세션/프레임 경계를 우회하지 않고 새 창에서 엽니다.</p>
               <a className="button" href={grafana.url} target="_blank" rel="noopener noreferrer"><ExternalLink size={14} />{grafana.label} 열기</a>
             </div>
           </div>

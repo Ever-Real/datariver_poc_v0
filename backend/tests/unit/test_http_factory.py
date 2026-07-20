@@ -13,6 +13,7 @@ from datariver.infrastructure.db.session import DatabaseReadiness
 from datariver.infrastructure.observability.metrics import HttpMetrics
 from datariver.interfaces.http.container import AppContainer
 from datariver.interfaces.http.factory import create_app
+from datariver.interfaces.http.routes.admin import _system_configuration_entries
 from datariver.interfaces.http.routes.registration import _expected_version
 
 
@@ -187,6 +188,9 @@ def test_openapi_contains_all_required_product_modules() -> None:
         "/api/v1/api-products/{product_id}/invoke/chat",
         "/api/v1/admin/workspace-memberships/{target_subject_id}/access",
         "/api/v1/admin/workspace-memberships",
+        "/api/v1/admin/systems",
+        "/api/v1/admin/systems/{system_id}/assignees",
+        "/api/v1/admin/system-configuration",
         "/api/v1/admin/me",
         "/api/v1/admin/fallback/workspace-membership-access-requests",
         "/api/v1/admin/fallback/workspace-membership-access-requests/{access_request_id}/decisions",
@@ -201,6 +205,41 @@ def test_openapi_contains_all_required_product_modules() -> None:
         "/api/v1/admin/inference/provider-profiles/{profile_version_id}/decisions",
         "/api/v1/admin/inference/provider-profiles/{profile_version_id}/revocations",
     }.issubset(document["paths"])
+
+
+def test_system_configuration_inventory_is_server_owned_and_redacted() -> None:
+    configured = Settings(
+        **(
+            settings().model_dump()
+            | {
+                "ui_grafana_url": "https://grafana.example.internal/d/overview",
+                "grafana_embed_base_url": "https://grafana.example.internal",
+                "grafana_embed_enabled": True,
+                "grafana_embed_evidence_reference": "SEC-REVIEW-1234",
+            }
+        )
+    )
+
+    entries = _system_configuration_entries(configured)
+    by_id = {entry.system_id: entry for entry in entries}
+
+    assert list(by_id) == [
+        "DATAHUB_GMS",
+        "DATAHUB_FRONTEND",
+        "AIRFLOW",
+        "S3_STORAGE",
+        "LLM_CHAT_MODEL",
+        "LLM_EMBEDDING",
+        "LLM_RERANKER",
+        "NEO4J",
+        "PROMETHEUS",
+        "GRAFANA_DASHBOARD",
+    ]
+    assert by_id["DATAHUB_GMS"].secret_reference_configured is True
+    assert by_id["LLM_CHAT_MODEL"].state == "GOVERNED_PROFILE_REQUIRED"
+    assert by_id["GRAFANA_DASHBOARD"].embedding_state == "AVAILABLE"
+    assert all("url" not in entry.model_dump() for entry in entries)
+    assert all("secret_reference" not in entry.model_dump() for entry in entries)
 
 
 def test_upload_preparation_openapi_is_typed_and_server_managed() -> None:
@@ -312,6 +351,9 @@ def test_catalog_description_openapi_is_typed_and_server_binds_the_target() -> N
         "description",
         "title",
         "change_description",
+        "requested_due_date",
+        "priority",
+        "urgency",
     }
     assert {"target_ref", "aspect_name", "classification", "after_document"}.isdisjoint(
         change_request["properties"]
@@ -462,6 +504,7 @@ def test_openapi_exposes_bounded_typed_administrator_read_contracts() -> None:
     assert set(context_schema["properties"]["allowed_operations"]["items"]["enum"]) == {
         "MEMBERSHIP_ACCESS_READ",
         "MEMBERSHIP_ACCESS_UPDATE",
+        "SYSTEM_ASSIGNMENT_UPDATE",
         "FALLBACK_REQUEST_READ",
         "FALLBACK_REQUEST_CREATE",
         "FALLBACK_REQUEST_DECIDE",
@@ -485,6 +528,13 @@ def test_openapi_exposes_bounded_typed_administrator_read_contracts() -> None:
         "ERASURE_REQUEST",
         "ERASURE_APPROVE",
     }
+    system_assignment = document["paths"]["/api/v1/admin/systems/{system_id}/assignees"]["put"]
+    assignment_headers = {
+        parameter["name"]: parameter for parameter in system_assignment["parameters"]
+    }
+    assert assignment_headers["If-Match"]["required"] is True
+    assert assignment_headers["Idempotency-Key"]["required"] is True
+    assert system_assignment["responses"]["200"]["headers"]["ETag"]["schema"] == {"type": "string"}
     assert context_schema["properties"]["action_vocabulary"]["items"] == {
         "$ref": "#/components/schemas/Action"
     }

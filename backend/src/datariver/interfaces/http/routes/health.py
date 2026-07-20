@@ -16,6 +16,7 @@ from datariver.interfaces.http.schemas import (
     CapabilitiesResponse,
     CapabilityResponse,
     ExternalSystemLinkResponse,
+    GrafanaEmbedResponse,
 )
 
 router = APIRouter(tags=["platform"])
@@ -104,6 +105,14 @@ async def capabilities(request: Request, context: ContextDep) -> CapabilitiesRes
         valkey_status("valkey-cache", container.cache.ping()),
         container.datahub.capability(),
     )
+    grafana_embed_url = container.settings.grafana_embed_url()
+    grafana_embed_state = (
+        "AVAILABLE"
+        if grafana_embed_url is not None
+        else "NOT_CONFIGURED"
+        if container.settings.ui_grafana_url is None
+        else "DISABLED"
+    )
     return CapabilitiesResponse(
         items=[
             database,
@@ -127,5 +136,9 @@ async def capabilities(request: Request, context: ContextDep) -> CapabilitiesRes
             )
             if url is not None
         ],
+        grafana_embed=GrafanaEmbedResponse(
+            state=grafana_embed_state,
+            url=grafana_embed_url,
+        ),
         deployment_tier=container.settings.deployment_tier,
     )
