@@ -211,9 +211,25 @@ try {
     Start-HostProcess "governance-apply-worker" $python @(
         "-m", "datariver.workers.governance_apply"
     ) $root
-    Start-HostProcess "vite" $npmCommand @(
+    $viteWorkingDirectory = Join-Path $root "frontend"
+    $viteFilePath = $npmCommand
+    $viteArguments = @(
         "run", "dev", "--", "--host", "127.0.0.1", "--port", "$WebPort", "--strictPort"
-    ) (Join-Path $root "frontend")
+    )
+    # npm.cmd launches through cmd.exe, which cannot use a UNC directory as
+    # its working directory. A checkout entered from WSL reaches PowerShell as
+    # \\wsl.localhost\..., so let cmd's built-in pushd map that one process to a
+    # temporary drive rather than falling back to C:\\Windows and reading an
+    # unrelated package.json. Python processes keep their original directory.
+    if ($viteWorkingDirectory.StartsWith("\\")) {
+        $viteFilePath = Join-Path $env:SystemRoot "System32/cmd.exe"
+        $viteArguments = @(
+            "/d", "/s", "/c",
+            "pushd `"$viteWorkingDirectory`" && call `"$npmCommand`" run dev -- --host 127.0.0.1 --port $WebPort --strictPort"
+        )
+        $viteWorkingDirectory = $env:SystemRoot
+    }
+    Start-HostProcess "vite" $viteFilePath $viteArguments $viteWorkingDirectory
     $records | ConvertTo-Json -Depth 3 | Set-Content -Encoding utf8 -LiteralPath $stateFile
     Start-Sleep -Seconds 3
     $failed = @(
