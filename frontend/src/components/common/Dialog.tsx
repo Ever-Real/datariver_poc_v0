@@ -28,8 +28,16 @@ export function Dialog({
   onRequestClose,
 }: DialogProps) {
   const dialogRef = useRef<HTMLDialogElement>(null)
+  const onRequestCloseRef = useRef(onRequestClose)
   const titleId = useId()
   const descriptionId = useId()
+
+  // Consumers often create their close handler inline.  Keep the current
+  // handler without tearing down and reopening a modal on every keystroke.
+  // Reopening would restore focus and then move it to the first control.
+  useEffect(() => {
+    onRequestCloseRef.current = onRequestClose
+  }, [onRequestClose])
 
   useEffect(() => {
     if (!open) return
@@ -45,7 +53,7 @@ export function Dialog({
     const handleKeyDown = (event: KeyboardEvent) => {
       if (event.key === 'Escape') {
         event.preventDefault()
-        onRequestClose('CANCEL')
+        onRequestCloseRef.current('CANCEL')
         return
       }
       if (event.key !== 'Tab') return
@@ -71,7 +79,7 @@ export function Dialog({
       else dialog.removeAttribute('open')
       previousFocus?.focus()
     }
-  }, [onRequestClose, open])
+  }, [open])
 
   if (!open) return null
   return createPortal(
@@ -82,8 +90,8 @@ export function Dialog({
       aria-labelledby={titleId}
       aria-describedby={description ? descriptionId : undefined}
       tabIndex={-1}
-      onCancel={(event) => { event.preventDefault(); onRequestClose('CANCEL') }}
-      onClick={(event) => { if (event.target === event.currentTarget) onRequestClose('BACKDROP') }}
+      onCancel={(event) => { event.preventDefault(); onRequestCloseRef.current('CANCEL') }}
+      onClick={(event) => { if (event.target === event.currentTarget) onRequestCloseRef.current('BACKDROP') }}
     >
       <section className="app-dialog-surface">
         <header className="app-dialog-header">
@@ -91,7 +99,7 @@ export function Dialog({
             <h2 id={titleId}>{title}</h2>
             {description && <p id={descriptionId}>{description}</p>}
           </div>
-          <button type="button" className="app-dialog-close" aria-label={`${title} 닫기`} onClick={() => onRequestClose('CLOSE_BUTTON')}>×</button>
+          <button type="button" className="app-dialog-close" aria-label={`${title} 닫기`} onClick={() => onRequestCloseRef.current('CLOSE_BUTTON')}>×</button>
         </header>
         <div className="app-dialog-body">{children}</div>
         {footer && <footer className="app-dialog-footer">{footer}</footer>}

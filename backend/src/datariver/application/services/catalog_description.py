@@ -642,7 +642,7 @@ class CatalogDescriptionService:
         elif aspect_name == "globalTags":
             document["tags"] = [{"tag": ref} for ref in refs]
         else:
-            document["terms"] = [{"term": ref} for ref in refs]
+            document["terms"] = [{"urn": ref} for ref in refs]
         return current_refs, document
 
     @staticmethod
@@ -650,7 +650,7 @@ class CatalogDescriptionService:
         field_name, nested_name = {
             "domains": ("domains", "urn"),
             "globalTags": ("tags", "tag"),
-            "glossaryTerms": ("terms", "term"),
+            "glossaryTerms": ("terms", "urn"),
         }[aspect_name]
         raw_values = document.get(field_name)
         values: list[str] = []

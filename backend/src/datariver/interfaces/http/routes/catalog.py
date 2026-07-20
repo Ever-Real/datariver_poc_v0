@@ -442,6 +442,22 @@ async def catalog_facets(
             CatalogFacetBucketResponse(value=item.value, count=item.count)
             for item in facets.classifications
         ],
+        databases=[
+            CatalogFacetBucketResponse(value=item.value, count=item.count)
+            for item in facets.databases
+        ],
+        schemas=[
+            CatalogFacetBucketResponse(value=item.value, count=item.count)
+            for item in facets.schemas
+        ],
+        domains=[
+            CatalogFacetBucketResponse(value=item.value, count=item.count)
+            for item in facets.domains
+        ],
+        lifecycles=[
+            CatalogFacetBucketResponse(value=item.value, count=item.count)
+            for item in facets.lifecycles
+        ],
         meta=CatalogDiscoveryPolicyMeta(
             observed_at=facets.observed_at,
             projection_version=facets.projection_version,

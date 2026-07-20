@@ -430,6 +430,7 @@ class CatalogService:
             query=query,
             environment=environment,
             request_id=request_id,
+            minimum_query_length=1,
         )
         vocabulary = await self._discovery.vocabulary(
             subject=subject,
@@ -438,8 +439,28 @@ class CatalogService:
             query=normalized_query,
             limit=limit,
         )
+        items = set(vocabulary.items)
+        if kind in {"TAG", "TERM"}:
+            try:
+                # DataHub's fixed search contract accepts ``*`` as a bounded
+                # browse query.  This lets the initial Tag/Term picker show
+                # currently registered controlled values even when the local
+                # projection only contains values already selected on the
+                # current asset.  Typed input still narrows the same query.
+                items.update(
+                    await self._datahub.search_vocabulary(
+                        kind=kind,
+                        query=normalized_query or "*",
+                        limit=limit,
+                    )
+                )
+            except ExternalDependencyError:
+                # Retain the authorization-scoped projection when this optional
+                # controlled-vocabulary enrichment cannot reach DataHub.
+                pass
         return replace(
             vocabulary,
+            items=tuple(sorted(items, key=str.casefold)[:limit]),
             projection_version=watermark,
             policy_version=self._policy_version,
             classification_policy_version=access.policy_version,
@@ -840,14 +861,20 @@ class CatalogService:
         environment: EnvironmentAttributes,
         request_id: str,
         require_query: bool = False,
+        minimum_query_length: int | None = None,
     ) -> tuple[str, ClassificationAccessSnapshot, int]:
         normalized_query = unicodedata.normalize("NFKC", query).strip()
         if require_query and not normalized_query:
             raise ValidationError("The catalog query is required.")
-        if normalized_query and len(normalized_query) < self._minimum_query_length:
+        required_length = (
+            self._minimum_query_length if minimum_query_length is None else minimum_query_length
+        )
+        if required_length < 1:
+            raise ValueError("The catalog query minimum must be positive.")
+        if normalized_query and len(normalized_query) < required_length:
             raise ValidationError(
                 "The catalog query is shorter than the configured minimum.",
-                details={"minimum_query_length": self._minimum_query_length},
+                details={"minimum_query_length": required_length},
             )
         await self._authorization.authorize(
             subject=subject,
@@ -1170,13 +1197,19 @@ class CatalogService:
     @staticmethod
     def _facets_document(facets: CatalogFacets) -> dict[str, Any]:
         return {
-            "schema": 1,
+            "schema": 2,
             "asset_types": [
                 {"value": item.value, "count": item.count} for item in facets.asset_types
             ],
             "platforms": [{"value": item.value, "count": item.count} for item in facets.platforms],
             "classifications": [
                 {"value": item.value, "count": item.count} for item in facets.classifications
+            ],
+            "databases": [{"value": item.value, "count": item.count} for item in facets.databases],
+            "schemas": [{"value": item.value, "count": item.count} for item in facets.schemas],
+            "domains": [{"value": item.value, "count": item.count} for item in facets.domains],
+            "lifecycles": [
+                {"value": item.value, "count": item.count} for item in facets.lifecycles
             ],
             "observed_at": facets.observed_at.isoformat() if facets.observed_at else None,
             "projection_version": facets.projection_version,
@@ -1187,7 +1220,7 @@ class CatalogService:
 
     @staticmethod
     def _cached_facets(value: object) -> CatalogFacets | None:
-        if not isinstance(value, dict) or value.get("schema") != 1:
+        if not isinstance(value, dict) or value.get("schema") != 2:
             return None
         try:
             return CatalogFacets(
@@ -1211,6 +1244,34 @@ class CatalogService:
                         count=int(item["count"]),
                     )
                     for item in value["classifications"]
+                ),
+                databases=tuple(
+                    CatalogFacetBucket(
+                        value=str(item["value"]) if item.get("value") is not None else None,
+                        count=int(item["count"]),
+                    )
+                    for item in value["databases"]
+                ),
+                schemas=tuple(
+                    CatalogFacetBucket(
+                        value=str(item["value"]) if item.get("value") is not None else None,
+                        count=int(item["count"]),
+                    )
+                    for item in value["schemas"]
+                ),
+                domains=tuple(
+                    CatalogFacetBucket(
+                        value=str(item["value"]) if item.get("value") is not None else None,
+                        count=int(item["count"]),
+                    )
+                    for item in value["domains"]
+                ),
+                lifecycles=tuple(
+                    CatalogFacetBucket(
+                        value=str(item["value"]) if item.get("value") is not None else None,
+                        count=int(item["count"]),
+                    )
+                    for item in value["lifecycles"]
                 ),
                 observed_at=(
                     datetime.fromisoformat(str(value["observed_at"]))

@@ -287,7 +287,7 @@ class ManualMetadataApplyService:
             mutate=lambda document: self._set_controlled_refs(
                 document,
                 field="terms",
-                nested="term",
+                nested="urn",
                 refs=submission.terms,
             ),
         )
@@ -375,7 +375,7 @@ class ManualMetadataApplyService:
             else:
                 field.pop("description", None)
             field["globalTags"] = {"tags": [{"tag": ref} for ref in column.tags]}
-            field["glossaryTerms"] = {"terms": [{"term": ref} for ref in column.terms]}
+            field["glossaryTerms"] = {"terms": [{"urn": ref} for ref in column.terms]}
 
     @staticmethod
     def _mutable_document(value: Mapping[str, Any]) -> dict[str, Any]:

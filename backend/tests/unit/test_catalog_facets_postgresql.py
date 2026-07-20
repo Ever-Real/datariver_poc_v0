@@ -64,8 +64,32 @@ async def test_facets_normalizes_classification_for_postgresql_union() -> None:
                 "observed_at": observed_at,
             },
             {
+                "facet": "database",
+                "value": "manufacturing",
+                "count": 2,
+                "observed_at": observed_at,
+            },
+            {
+                "facet": "schema",
+                "value": "yield",
+                "count": 2,
+                "observed_at": observed_at,
+            },
+            {
+                "facet": "domain",
+                "value": "urn:li:domain:semiconductor",
+                "count": 2,
+                "observed_at": observed_at,
+            },
+            {
                 "facet": "classification",
                 "value": str(int(Classification.INTERNAL)),
+                "count": 2,
+                "observed_at": observed_at,
+            },
+            {
+                "facet": "lifecycle",
+                "value": "ACTIVE",
                 "count": 2,
                 "observed_at": observed_at,
             },
@@ -95,8 +119,15 @@ async def test_facets_normalizes_classification_for_postgresql_union() -> None:
     assert "UNION ALL" in sql
     assert "CAST(catalog.assets_projection.asset_type AS VARCHAR) AS value" in sql
     assert "CAST(catalog.assets_projection.platform AS VARCHAR) AS value" in sql
+    assert "CAST(catalog.assets_projection.database_name AS VARCHAR) AS value" in sql
+    assert "CAST(catalog.assets_projection.schema_name AS VARCHAR) AS value" in sql
+    assert "CAST(catalog.assets_projection.domain_ref AS VARCHAR) AS value" in sql
     assert "CAST(catalog.assets_projection.classification AS VARCHAR) AS value" in sql
     assert facets.classifications[0].value == "INTERNAL"
+    assert facets.databases[0].value == "manufacturing"
+    assert facets.schemas[0].value == "yield"
+    assert facets.domains[0].value == "urn:li:domain:semiconductor"
+    assert facets.lifecycles[0].value == "ACTIVE"
 
 
 def test_quarantine_review_scope_keeps_workspace_and_tombstone_boundaries() -> None:

@@ -1,15 +1,16 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import cast
 
-from sqlalchemy import CheckConstraint
+from sqlalchemy import CheckConstraint, Table
 
 from datariver.infrastructure.db.models.governance import ManualMetadataSubmissionModel
 from datariver.infrastructure.db.revision import REQUIRED_DATABASE_REVISION
 
 
 def test_manual_metadata_submission_is_workspace_scoped_immutable_receipt_metadata() -> None:
-    table = ManualMetadataSubmissionModel.__table__
+    table = cast(Table, ManualMetadataSubmissionModel.__table__)
     assert {
         "workspace_id",
         "asset_id",

@@ -133,6 +133,21 @@ query DataRiverCatalogScan($input: SearchAcrossEntitiesInput!) {
 }
 """
 
+VOCABULARY_SEARCH_QUERY = """
+query DataRiverVocabularySearch($input: SearchAcrossEntitiesInput!) {
+  searchAcrossEntities(input: $input) {
+    searchResults {
+      entity {
+        urn
+        type
+        ... on Tag { name }
+        ... on GlossaryTerm { properties { name } }
+      }
+    }
+  }
+}
+"""
+
 
 def _classification_from_tags(tags: object) -> Classification | None:
     values: set[Classification] = set()
@@ -633,6 +648,13 @@ class HttpDataHubGateway:
     ) -> DataHubLineagePage:
         if direction not in {"UPSTREAM", "DOWNSTREAM"} or not 1 <= depth <= 3:
             raise ValueError("Lineage direction or depth is invalid.")
+        # ``ScrollAcrossLineageInput`` has no ``maxDegree`` input in the
+        # reviewed DataHub v1.6 contract.  Depth is instead a facet value;
+        # ``3+`` is needed to include the third hop and is bounded again below
+        # because it can also represent results deeper than three hops.
+        degree_values = [str(value) for value in range(1, depth + 1)]
+        if depth == 3:
+            degree_values[-1] = "3+"
         data = await self._graphql(
             LINEAGE_QUERY,
             {
@@ -641,7 +663,18 @@ class HttpDataHubGateway:
                     "direction": direction,
                     "query": "*",
                     "count": 100,
-                    "maxDegree": depth,
+                    "orFilters": [
+                        {
+                            "and": [
+                                {
+                                    "condition": "EQUAL",
+                                    "negated": False,
+                                    "field": "degree",
+                                    "values": degree_values,
+                                }
+                            ]
+                        }
+                    ],
                 }
             },
         )
@@ -655,6 +688,7 @@ class HttpDataHubGateway:
                 provider_code="INVALID_RESPONSE",
             )
         items: list[DataHubLineageNode] = []
+        excluded_deeper_result = False
         for raw in raw_items:
             entity = raw.get("entity") if isinstance(raw, dict) else None
             raw_paths = raw.get("paths") if isinstance(raw, dict) else None
@@ -671,6 +705,12 @@ class HttpDataHubGateway:
                     retryable=False,
                     provider_code="INVALID_RESPONSE",
                 )
+            if int(raw["degree"]) > depth:
+                # DataHub represents a depth of three as the ``3+`` facet.
+                # Never let an over-depth path escape the facade's fixed
+                # 1..3-hop contract.
+                excluded_deeper_result = True
+                continue
             paths: list[tuple[str, ...]] = []
             for raw_path in raw_paths:
                 raw_entities = raw_path.get("path") if isinstance(raw_path, dict) else None
@@ -703,7 +743,7 @@ class HttpDataHubGateway:
         return DataHubLineagePage(
             items=tuple(items),
             total=total,
-            partial=bool(result.get("isPartial", False)),
+            partial=bool(result.get("isPartial", False)) or excluded_deeper_result,
         )
 
     async def scan_assets(self, *, offset: int, limit: int) -> DataHubScanPage:
@@ -808,6 +848,44 @@ class HttpDataHubGateway:
             total=total,
             observed_at=datetime.now(UTC),
         )
+
+    async def search_vocabulary(self, *, kind: str, query: str, limit: int) -> tuple[str, ...]:
+        if kind not in {"TAG", "TERM"} or not query.strip() or not 1 <= limit <= 50:
+            raise ValueError("DataHub vocabulary search request is invalid.")
+        entity_type = "TAG" if kind == "TAG" else "GLOSSARY_TERM"
+        data = await self._graphql(
+            VOCABULARY_SEARCH_QUERY,
+            {
+                "input": {
+                    "types": [entity_type],
+                    "query": query.strip(),
+                    "start": 0,
+                    "count": limit,
+                }
+            },
+        )
+        result = data.get("searchAcrossEntities")
+        raw_results = result.get("searchResults") if isinstance(result, dict) else None
+        if not isinstance(raw_results, list):
+            raise ExternalDependencyError(
+                "DataHub returned an invalid vocabulary search result.",
+                dependency="datahub",
+                retryable=False,
+                provider_code="INVALID_RESPONSE",
+            )
+        values: set[str] = set()
+        for raw in raw_results:
+            entity = raw.get("entity") if isinstance(raw, dict) else None
+            if not isinstance(entity, dict):
+                continue
+            if kind == "TAG":
+                name = entity.get("name")
+            else:
+                properties = entity.get("properties")
+                name = properties.get("name") if isinstance(properties, dict) else None
+            if isinstance(name, str) and (normalized_name := name.strip()):
+                values.add(normalized_name[:500])
+        return tuple(sorted(values, key=str.casefold)[:limit])
 
     async def apply_change(
         self,

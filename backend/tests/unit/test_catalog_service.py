@@ -22,6 +22,7 @@ from datariver.application.dto import (
     CatalogSuggestions,
     CatalogTreeNode,
     CatalogTreePage,
+    CatalogVocabulary,
     DataHubAssetEnrichment,
     DataHubLineageNode,
     DataHubLineagePage,
@@ -60,6 +61,7 @@ class FakeIndex:
         self.search_calls = 0
         self.facet_calls = 0
         self.suggestion_calls = 0
+        self.vocabulary_calls = 0
         self.tree_calls = 0
         self.last_search_access: ClassificationAccessSnapshot | None = None
         self.projection_version = 1
@@ -90,6 +92,10 @@ class FakeIndex:
             platforms=(CatalogFacetBucket("snowflake", 1),),
             classifications=(CatalogFacetBucket("PUBLIC", 1),),
             observed_at=self.detail.observed_at,
+            databases=(CatalogFacetBucket("manufacturing", 1),),
+            schemas=(CatalogFacetBucket("yield", 1),),
+            domains=(CatalogFacetBucket("urn:li:domain:semiconductor", 1),),
+            lifecycles=(CatalogFacetBucket("ACTIVE", 1),),
         )
 
     async def suggestions(self, **_: object) -> CatalogSuggestions:
@@ -105,6 +111,10 @@ class FakeIndex:
             ),
             observed_at=self.detail.observed_at,
         )
+
+    async def vocabulary(self, **_: object) -> CatalogVocabulary:
+        self.vocabulary_calls += 1
+        return CatalogVocabulary(items=("Calibration",), observed_at=self.detail.observed_at)
 
     async def tree_nodes(self, **_: object) -> CatalogTreePage:
         self.tree_calls += 1
@@ -136,6 +146,9 @@ class FakeGateway:
         self.calls = 0
         self.fail = False
         self.lineage_page = DataHubLineagePage(items=(), total=0, partial=False)
+        self.vocabulary_items: tuple[str, ...] = ()
+        self.vocabulary_failure = False
+        self.vocabulary_queries: list[dict[str, object]] = []
 
     async def get_asset(self, external_urn: str) -> DataHubAssetEnrichment:
         self.calls += 1
@@ -150,6 +163,17 @@ class FakeGateway:
 
     async def get_lineage(self, **_: object) -> DataHubLineagePage:
         return self.lineage_page
+
+    async def search_vocabulary(self, **values: object) -> tuple[str, ...]:
+        self.vocabulary_queries.append(values)
+        if self.vocabulary_failure:
+            raise ExternalDependencyError(
+                "DataHub unavailable.",
+                dependency="datahub",
+                retryable=True,
+                provider_code="NETWORK",
+            )
+        return self.vocabulary_items
 
 
 class FakeCache:
@@ -213,6 +237,186 @@ def test_search_cache_ttl_never_crosses_policy_or_grant_boundary() -> None:
         )
         == 0
     )
+
+
+@pytest.mark.asyncio
+async def test_catalog_vocabulary_allows_a_single_character_query() -> None:
+    now = datetime.now(UTC)
+    workspace_id, asset_id = uuid4(), uuid4()
+    asset = CatalogAssetIndex(
+        asset_id=asset_id,
+        workspace_id=workspace_id,
+        external_urn="urn:li:dataset:vocabulary",
+        asset_type="DATASET",
+        name="vocabulary_source",
+        description=None,
+        platform="postgres",
+        domain_id=None,
+        system_id=None,
+        owner_department_id=None,
+        classification=Classification.INTERNAL,
+        lifecycle="ACTIVE",
+        source_version="projection-v1",
+        observed_at=now,
+    )
+    index_reader = FakeIndex(CatalogAssetDetail(asset, (), (), (), (), {}, "projection-v1", now))
+    gateway = FakeGateway(DataHubAssetEnrichment((), (), (), (), {}, "v1", now))
+    gateway.vocabulary_items = ("Calibration policy", "Capacity")
+    service = CatalogService(
+        index=cast(CatalogIndexReader, index_reader),
+        discovery=cast(CatalogDiscoveryReader, index_reader),
+        watermark=cast(CatalogWatermarkReader, index_reader),
+        datahub=cast(DataHubGateway, gateway),
+        cache=cast(Cache, FakeCache()),
+        authorization=cast(AuthorizationService, AllowAuthorization()),
+        detail_cache_ttl_seconds=60,
+        stale_detail_ttl_seconds=900,
+        search_cache_ttl_seconds=30,
+        minimum_query_length=2,
+        policy_version=BuiltinPolicyEngine.policy_version,
+    )
+    subject = SubjectAttributes(
+        subject_id=uuid4(),
+        workspace_id=workspace_id,
+        active=True,
+        department_id=None,
+        groups=frozenset(),
+        job_function="USER",
+        clearance=Classification.INTERNAL,
+        allowed_actions=frozenset({Action.CATALOG_SEARCH}),
+    )
+
+    vocabulary = await service.vocabulary(
+        subject=subject,
+        kind="TERM",
+        query="c",
+        limit=12,
+        environment=EnvironmentAttributes(requested_at=now),
+        request_id="single-character-vocabulary",
+    )
+
+    assert vocabulary.items == ("Calibration", "Calibration policy", "Capacity")
+    assert index_reader.vocabulary_calls == 1
+    assert gateway.vocabulary_queries == [{"kind": "TERM", "query": "c", "limit": 12}]
+
+
+@pytest.mark.asyncio
+async def test_catalog_vocabulary_browses_datahub_controlled_values_on_initial_open() -> None:
+    now = datetime.now(UTC)
+    workspace_id, asset_id = uuid4(), uuid4()
+    asset = CatalogAssetIndex(
+        asset_id=asset_id,
+        workspace_id=workspace_id,
+        external_urn="urn:li:dataset:vocabulary-browse",
+        asset_type="DATASET",
+        name="vocabulary_source",
+        description=None,
+        platform="postgres",
+        domain_id=None,
+        system_id=None,
+        owner_department_id=None,
+        classification=Classification.INTERNAL,
+        lifecycle="ACTIVE",
+        source_version="projection-v1",
+        observed_at=now,
+    )
+    index_reader = FakeIndex(CatalogAssetDetail(asset, (), (), (), (), {}, "projection-v1", now))
+    gateway = FakeGateway(DataHubAssetEnrichment((), (), (), (), {}, "v1", now))
+    gateway.vocabulary_items = ("Business Critical", "Customer")
+    service = CatalogService(
+        index=cast(CatalogIndexReader, index_reader),
+        discovery=cast(CatalogDiscoveryReader, index_reader),
+        watermark=cast(CatalogWatermarkReader, index_reader),
+        datahub=cast(DataHubGateway, gateway),
+        cache=cast(Cache, FakeCache()),
+        authorization=cast(AuthorizationService, AllowAuthorization()),
+        detail_cache_ttl_seconds=60,
+        stale_detail_ttl_seconds=900,
+        search_cache_ttl_seconds=30,
+        minimum_query_length=2,
+        policy_version=BuiltinPolicyEngine.policy_version,
+    )
+    subject = SubjectAttributes(
+        subject_id=uuid4(),
+        workspace_id=workspace_id,
+        active=True,
+        department_id=None,
+        groups=frozenset(),
+        job_function="USER",
+        clearance=Classification.INTERNAL,
+        allowed_actions=frozenset({Action.CATALOG_SEARCH}),
+    )
+
+    vocabulary = await service.vocabulary(
+        subject=subject,
+        kind="TAG",
+        query="",
+        limit=12,
+        environment=EnvironmentAttributes(requested_at=now),
+        request_id="initial-vocabulary-browse",
+    )
+
+    assert vocabulary.items == ("Business Critical", "Calibration", "Customer")
+    assert gateway.vocabulary_queries == [{"kind": "TAG", "query": "*", "limit": 12}]
+
+
+@pytest.mark.asyncio
+async def test_catalog_vocabulary_keeps_projection_when_datahub_unavailable() -> None:
+    now = datetime.now(UTC)
+    workspace_id, asset_id = uuid4(), uuid4()
+    asset = CatalogAssetIndex(
+        asset_id=asset_id,
+        workspace_id=workspace_id,
+        external_urn="urn:li:dataset:vocabulary-fallback",
+        asset_type="DATASET",
+        name="vocabulary_source",
+        description=None,
+        platform="postgres",
+        domain_id=None,
+        system_id=None,
+        owner_department_id=None,
+        classification=Classification.INTERNAL,
+        lifecycle="ACTIVE",
+        source_version="projection-v1",
+        observed_at=now,
+    )
+    index_reader = FakeIndex(CatalogAssetDetail(asset, (), (), (), (), {}, "projection-v1", now))
+    gateway = FakeGateway(DataHubAssetEnrichment((), (), (), (), {}, "v1", now))
+    gateway.vocabulary_failure = True
+    service = CatalogService(
+        index=cast(CatalogIndexReader, index_reader),
+        discovery=cast(CatalogDiscoveryReader, index_reader),
+        watermark=cast(CatalogWatermarkReader, index_reader),
+        datahub=cast(DataHubGateway, gateway),
+        cache=cast(Cache, FakeCache()),
+        authorization=cast(AuthorizationService, AllowAuthorization()),
+        detail_cache_ttl_seconds=60,
+        stale_detail_ttl_seconds=900,
+        search_cache_ttl_seconds=30,
+        minimum_query_length=2,
+        policy_version=BuiltinPolicyEngine.policy_version,
+    )
+    subject = SubjectAttributes(
+        subject_id=uuid4(),
+        workspace_id=workspace_id,
+        active=True,
+        department_id=None,
+        groups=frozenset(),
+        job_function="USER",
+        clearance=Classification.INTERNAL,
+        allowed_actions=frozenset({Action.CATALOG_SEARCH}),
+    )
+
+    vocabulary = await service.vocabulary(
+        subject=subject,
+        kind="TAG",
+        query="c",
+        limit=12,
+        environment=EnvironmentAttributes(requested_at=now),
+        request_id="vocabulary-datahub-fallback",
+    )
+
+    assert vocabulary.items == ("Calibration",)
 
 
 @pytest.mark.asyncio
@@ -547,6 +751,10 @@ async def test_authorized_detail_enrichment_uses_scope_versioned_cache() -> None
     assert first_facets == second_facets
     assert first_facets.projection_version == 2
     assert first_facets.authorization_generation is None
+    assert first_facets.databases == (CatalogFacetBucket("manufacturing", 1),)
+    assert first_facets.schemas == (CatalogFacetBucket("yield", 1),)
+    assert first_facets.domains == (CatalogFacetBucket("urn:li:domain:semiconductor", 1),)
+    assert first_facets.lifecycles == (CatalogFacetBucket("ACTIVE", 1),)
     assert index_reader.facet_calls == 1
 
     first_suggestions = await service.suggestions(

@@ -10,12 +10,115 @@ from datariver.application.errors import ExternalDependencyError
 from datariver.domain.authz import Classification
 from datariver.domain.common import canonical_json_hash
 from datariver.infrastructure.datahub.http import (
+    VOCABULARY_SEARCH_QUERY,
     HttpDataHubGateway,
     _catalog_hierarchy_from_browse_path,
 )
 from datariver.infrastructure.observability.metrics import HttpMetrics
 
 DATAHUB_V160_CONFIG = {"versions": {"acryldata/datahub": {"version": "v1.6.0"}}}
+
+
+async def test_vocabulary_search_uses_the_fixed_tag_contract() -> None:
+    async def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.path == "/api/graphql"
+        body = json.loads(request.content)
+        assert body["query"] == VOCABULARY_SEARCH_QUERY
+        assert body["variables"] == {
+            "input": {"types": ["TAG"], "query": "cal", "start": 0, "count": 12}
+        }
+        return httpx.Response(
+            200,
+            json={
+                "data": {
+                    "searchAcrossEntities": {
+                        "searchResults": [
+                            {"entity": {"urn": "urn:li:tag:calibration", "name": "Calibration"}},
+                            {"entity": {"urn": "urn:li:tag:empty", "name": "  "}},
+                        ]
+                    }
+                }
+            },
+        )
+
+    client = httpx.AsyncClient(
+        base_url="https://datahub.example", transport=httpx.MockTransport(handler)
+    )
+    gateway = HttpDataHubGateway(
+        base_url="https://datahub.example", token="unused", timeout_seconds=1, client=client
+    )
+
+    values = await gateway.search_vocabulary(kind="TAG", query="cal", limit=12)
+
+    assert values == ("Calibration",)
+    await client.aclose()
+
+
+async def test_vocabulary_search_reads_glossary_term_properties_name() -> None:
+    async def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content)
+        assert body["variables"]["input"]["types"] == ["GLOSSARY_TERM"]
+        return httpx.Response(
+            200,
+            json={
+                "data": {
+                    "searchAcrossEntities": {
+                        "searchResults": [
+                            {
+                                "entity": {
+                                    "urn": "urn:li:glossaryTerm:EUV",
+                                    "properties": {"name": "EUV"},
+                                }
+                            }
+                        ]
+                    }
+                }
+            },
+        )
+
+    client = httpx.AsyncClient(
+        base_url="https://datahub.example", transport=httpx.MockTransport(handler)
+    )
+    gateway = HttpDataHubGateway(
+        base_url="https://datahub.example", token="unused", timeout_seconds=1, client=client
+    )
+
+    values = await gateway.search_vocabulary(kind="TERM", query="eu", limit=12)
+
+    assert values == ("EUV",)
+    await client.aclose()
+
+
+async def test_vocabulary_search_accepts_the_bounded_wildcard_browse_query() -> None:
+    async def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content)
+        assert body["variables"] == {
+            "input": {"types": ["TAG"], "query": "*", "start": 0, "count": 12}
+        }
+        return httpx.Response(
+            200,
+            json={
+                "data": {
+                    "searchAcrossEntities": {
+                        "searchResults": [
+                            {"entity": {"urn": "urn:li:tag:quality", "name": "Quality"}},
+                        ]
+                    }
+                }
+            },
+        )
+
+    client = httpx.AsyncClient(
+        base_url="https://datahub.example", transport=httpx.MockTransport(handler)
+    )
+    gateway = HttpDataHubGateway(
+        base_url="https://datahub.example", token="unused", timeout_seconds=1, client=client
+    )
+
+    values = await gateway.search_vocabulary(kind="TAG", query="*", limit=12)
+
+    assert values == ("Quality",)
+    await client.aclose()
 
 
 async def test_asset_contract_uses_fixed_graphql_and_service_identity() -> None:
@@ -257,7 +360,18 @@ async def test_lineage_contract_returns_only_typed_bounded_paths() -> None:
     async def handler(request: httpx.Request) -> httpx.Response:
         body = json.loads(request.content)
         assert "paths { path { urn type } }" in body["query"]
-        assert body["variables"]["input"]["maxDegree"] == 2
+        assert body["variables"]["input"]["orFilters"] == [
+            {
+                "and": [
+                    {
+                        "condition": "EQUAL",
+                        "negated": False,
+                        "field": "degree",
+                        "values": ["1", "2"],
+                    }
+                ]
+            }
+        ]
         return httpx.Response(
             200,
             json={

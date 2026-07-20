@@ -442,7 +442,11 @@ class SqlCatalogIndexReader(CatalogIndexReader):
         facet_columns = {
             "asset_type": AssetProjectionModel.asset_type,
             "platform": AssetProjectionModel.platform,
+            "database": AssetProjectionModel.database_name,
+            "schema": AssetProjectionModel.schema_name,
+            "domain": AssetProjectionModel.domain_ref,
             "classification": AssetProjectionModel.classification,
+            "lifecycle": AssetProjectionModel.lifecycle,
         }
         statements = []
         for facet, column in facet_columns.items():
@@ -485,6 +489,10 @@ class SqlCatalogIndexReader(CatalogIndexReader):
             platforms=tuple(buckets["platform"]),
             classifications=tuple(buckets["classification"]),
             observed_at=max(observed_values) if observed_values else None,
+            databases=tuple(buckets["database"]),
+            schemas=tuple(buckets["schema"]),
+            domains=tuple(buckets["domain"]),
+            lifecycles=tuple(buckets["lifecycle"]),
         )
 
     async def suggestions(

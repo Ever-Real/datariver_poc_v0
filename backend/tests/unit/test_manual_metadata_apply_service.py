@@ -3,6 +3,7 @@ from __future__ import annotations
 import csv
 import hashlib
 import io
+from collections.abc import AsyncIterator
 from datetime import UTC, datetime
 from types import MappingProxyType
 from typing import Any, cast
@@ -21,7 +22,7 @@ class _ObjectStore:
     def __init__(self, document: bytes) -> None:
         self.document = document
 
-    async def iter_object_chunks(self, **_: object):
+    async def iter_object_chunks(self, **_: object) -> AsyncIterator[bytes]:
         yield self.document
 
 

@@ -1,6 +1,6 @@
-import { useEffect, useMemo, useRef, useState, type FormEvent, type KeyboardEvent } from 'react'
+import { useEffect, useMemo, useRef, useState, type CSSProperties, type FormEvent, type KeyboardEvent } from 'react'
 import type { ColumnDef } from '@tanstack/react-table'
-import { Filter, Search } from 'lucide-react'
+import { Filter, RotateCcw, Search } from 'lucide-react'
 import type { ApiClient } from '../../api/client'
 import type {
   CatalogAsset,
@@ -12,6 +12,7 @@ import type {
 } from '../../api/types'
 import { ErrorNotice } from '../../components/ErrorNotice'
 import { CursorPagination } from '../../components/common/CursorPagination'
+import { BadgeScroller } from '../../components/common/ControlledVocabularyInput'
 import { DenseDataTable } from '../../components/common/DenseDataTable'
 import { TruncatedText } from '../../components/common/TruncatedText'
 import { PageTitle } from '../../components/layout/PageTitle'
@@ -32,6 +33,7 @@ interface Filters {
   schemaName: string
   domain: string
   classification: string
+  lifecycle: string
   searchFields: SearchField[]
 }
 
@@ -43,7 +45,7 @@ const searchFieldLabels: Record<SearchField, string> = {
 }
 
 const emptyFilters: Filters = {
-  assetType: '', platform: '', databaseName: '', schemaName: '', domain: '', classification: '', searchFields: allSearchFields,
+  assetType: '', platform: '', databaseName: '', schemaName: '', domain: '', classification: '', lifecycle: '', searchFields: allSearchFields,
 }
 
 function searchPath(query: string, filters: Filters, cursor: string | undefined, limit: number) {
@@ -54,6 +56,7 @@ function searchPath(query: string, filters: Filters, cursor: string | undefined,
   if (filters.schemaName) parameters.set('schema', filters.schemaName)
   if (filters.domain) parameters.set('domain', filters.domain)
   if (filters.classification) parameters.set('classification', filters.classification)
+  if (filters.lifecycle) parameters.set('lifecycle', filters.lifecycle)
   parameters.set('search_fields', filters.searchFields.join(','))
   if (cursor) parameters.set('cursor', cursor)
   return parameters
@@ -77,13 +80,17 @@ export function CatalogPage({
   const [facets, setFacets] = useState<CatalogFacets>()
   const [suggestions, setSuggestions] = useState<CatalogSuggestion[]>([])
   const [suggestionIndex, setSuggestionIndex] = useState(-1)
+  const [filtersOpen, setFiltersOpen] = useState(false)
   const [selectedAssetId, setSelectedAssetId] = useState<string>()
+  const [detailWidth, setDetailWidth] = useState(550)
   const [cursors, setCursors] = useState<Array<string | undefined>>([undefined])
   const [pageIndex, setPageIndex] = useState(0)
   const [pageSize, setPageSize] = useState(50)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<unknown>()
   const suggestionRoot = useRef<HTMLDivElement>(null)
+  const filterRoot = useRef<HTMLDivElement>(null)
+  const workspaceRef = useRef<HTMLDivElement>(null)
   const initialQueryRef = useRef(initialQuery)
 
   useEffect(() => {
@@ -126,6 +133,14 @@ export function CatalogPage({
     return () => document.removeEventListener('mousedown', close)
   }, [])
 
+  useEffect(() => {
+    const close = (event: MouseEvent) => {
+      if (!filterRoot.current?.contains(event.target as Node)) setFiltersOpen(false)
+    }
+    document.addEventListener('mousedown', close)
+    return () => document.removeEventListener('mousedown', close)
+  }, [])
+
   const commitQuery = (value: string) => {
     const normalized = value.trim()
     if (!validCatalogQuery(normalized)) { setError(new Error('검색어는 비워 두거나 2자 이상 입력하세요.')); return }
@@ -155,8 +170,8 @@ export function CatalogPage({
     { accessorKey: 'name', header: 'Table / Asset', size: 210, enableSorting: false, cell: ({ row }) => <TruncatedText value={row.original.name} className="catalog-asset-name" /> },
     { accessorKey: 'owner', header: 'Owner', size: 140, enableSorting: false, cell: ({ row }) => <TruncatedText value={row.original.owner ?? '—'} /> },
     { accessorKey: 'domain', header: 'Domain', size: 130, enableSorting: false, cell: ({ row }) => <TruncatedText value={row.original.domain ?? '—'} /> },
-    { accessorKey: 'terms', header: 'Terms', size: 170, enableSorting: false, cell: ({ row }) => <TruncatedText value={row.original.terms?.join(', ') || '—'} /> },
-    { accessorKey: 'tags', header: 'Tags', size: 170, enableSorting: false, cell: ({ row }) => <TruncatedText value={row.original.tags?.join(', ') || '—'} /> },
+    { accessorKey: 'terms', header: 'Terms', size: 170, enableSorting: false, cell: ({ row }) => <BadgeScroller label={`${row.original.name} Terms`} values={row.original.terms ?? []} /> },
+    { accessorKey: 'tags', header: 'Tags', size: 170, enableSorting: false, cell: ({ row }) => <BadgeScroller label={`${row.original.name} Tags`} values={row.original.tags ?? []} /> },
     { accessorKey: 'classification', header: 'Class', size: 100, enableSorting: false, cell: ({ row }) => <span className="badge badge-soft">{row.original.classification}</span> },
     { accessorKey: 'description', header: 'Description', size: 260, enableSorting: false, cell: ({ row }) => <TruncatedText value={row.original.description ?? '설명 없음'} /> },
     { id: 'matches', header: 'Matches', size: 300, enableSorting: false, cell: ({ row }) => <CatalogMatchPreview fragments={row.original.matches} /> },
@@ -178,9 +193,38 @@ export function CatalogPage({
     setCursors([undefined]); setPageIndex(0)
   }
 
+  const setAllSearchFields = (checked: boolean) => {
+    setFilters((current) => ({ ...current, searchFields: checked ? allSearchFields : [allSearchFields[0]!] }))
+    setCursors([undefined]); setPageIndex(0)
+  }
+
+  const resetFilters = () => {
+    setFilters(emptyFilters)
+    setCursors([undefined])
+    setPageIndex(0)
+  }
+
   const selectTreeScope = (scope: Pick<Filters, 'platform' | 'databaseName' | 'schemaName'>) => {
     setFilters((current) => ({ ...current, ...scope })); setCursors([undefined]); setPageIndex(0)
   }
+
+  const resizeDetail = (requestedWidth: number) => {
+    const measuredWorkspaceWidth = workspaceRef.current?.clientWidth ?? 0
+    const workspaceWidth = measuredWorkspaceWidth || window.innerWidth
+    // Keep the resource tree fixed and leave Search Results at least 560px wide.
+    const maximumWidth = Math.max(420, workspaceWidth - 300 - 16 - 560)
+    setDetailWidth(Math.max(420, Math.min(Math.round(requestedWidth), maximumWidth)))
+  }
+
+  const activeFilterCount = [
+    filters.assetType,
+    filters.platform,
+    filters.databaseName,
+    filters.schemaName,
+    filters.domain,
+    filters.classification,
+    filters.lifecycle,
+  ].filter(Boolean).length + (filters.searchFields.length === allSearchFields.length ? 0 : 1)
 
   return <section className="catalog-page">
     <PageTitle icon="SR" eyebrow="DataHub Wrapper" title="데이터 카탈로그 검색" description="Workspace·분류정책·권한 범위 안의 로컬 projection을 검색합니다." />
@@ -196,15 +240,22 @@ export function CatalogPage({
         </div>
         <button className="button" disabled={loading}><Search size={13} />{loading ? '검색 중…' : '검색'}</button>
       </form>
-      <div className="catalog-filters" aria-label="검색 필터"><Filter size={14} aria-hidden="true" />
-        <fieldset className="catalog-search-targets"><legend>Search in</legend>{allSearchFields.map((field) => <label key={field}><input type="checkbox" checked={filters.searchFields.includes(field)} onChange={() => toggleSearchField(field)} />{searchFieldLabels[field]}</label>)}</fieldset>
-        <label>Type<select value={filters.assetType} onChange={(event) => updateFilter('assetType', event.target.value)}><option value="">전체</option>{facets?.asset_types.map((item) => item.value && <option key={item.value} value={item.value}>{item.value} ({item.count})</option>)}</select></label>
-        <label>Platform<select value={filters.platform} onChange={(event) => updateFilter('platform', event.target.value)}><option value="">전체</option>{facets?.platforms.map((item) => item.value && <option key={item.value} value={item.value}>{item.value} ({item.count})</option>)}</select></label>
-        <label>Database<input value={filters.databaseName} onChange={(event) => updateFilter('databaseName', event.target.value)} placeholder="Tree에서 선택" /></label>
-        <label>Schema<input value={filters.schemaName} onChange={(event) => updateFilter('schemaName', event.target.value)} placeholder="Tree에서 선택" /></label>
-        <label>Domain<input value={filters.domain} onChange={(event) => updateFilter('domain', event.target.value)} placeholder="DataHub domain" /></label>
-        <label>Classification<select value={filters.classification} onChange={(event) => updateFilter('classification', event.target.value)}><option value="">전체</option>{facets?.classifications.map((item) => item.value && <option key={item.value} value={item.value}>{item.value} ({item.count})</option>)}</select></label>
-        <button type="button" className="button button-secondary" onClick={() => { setFilters(emptyFilters); setCursors([undefined]); setPageIndex(0) }}>필터 초기화</button>
+      <div className="catalog-filter-root" ref={filterRoot}>
+        <button aria-controls="catalog-filter-popover" aria-expanded={filtersOpen} className="button button-secondary catalog-filter-trigger" onClick={() => setFiltersOpen((current) => !current)} type="button"><Filter size={14} />필터{activeFilterCount > 0 && <span className="catalog-filter-count">{activeFilterCount}</span>}</button>
+        {filtersOpen && <div className="catalog-filter-popover" id="catalog-filter-popover" role="dialog" aria-label="상세 검색 필터">
+          <header><div><span className="eyebrow">Advanced search</span><strong>검색 필터</strong></div><button className="button button-secondary" onClick={resetFilters} type="button"><RotateCcw size={12} />초기화</button></header>
+          <fieldset className="catalog-search-targets"><legend>Search in</legend><label><input aria-label="Search in 전체" checked={filters.searchFields.length === allSearchFields.length} onChange={(event) => setAllSearchFields(event.target.checked)} type="checkbox" />전체</label>{allSearchFields.map((field) => <label key={field}><input checked={filters.searchFields.includes(field)} onChange={() => toggleSearchField(field)} type="checkbox" />{searchFieldLabels[field]}</label>)}</fieldset>
+          <div className="catalog-filter-fields">
+            <FacetSelect label="Type" value={filters.assetType} onChange={(value) => updateFilter('assetType', value)} options={facets?.asset_types ?? []} />
+            <FacetSelect label="Platform" value={filters.platform} onChange={(value) => updateFilter('platform', value)} options={facets?.platforms ?? []} />
+            <FacetSelect label="Database" value={filters.databaseName} onChange={(value) => updateFilter('databaseName', value)} options={facets?.databases ?? []} />
+            <FacetSelect label="Schema" value={filters.schemaName} onChange={(value) => updateFilter('schemaName', value)} options={facets?.schemas ?? []} />
+            <FacetSelect label="Domain" value={filters.domain} onChange={(value) => updateFilter('domain', value)} options={facets?.domains ?? []} />
+            <FacetSelect label="Classification" value={filters.classification} onChange={(value) => updateFilter('classification', value)} options={facets?.classifications ?? []} />
+            <FacetSelect label="Lifecycle" value={filters.lifecycle} onChange={(value) => updateFilter('lifecycle', value)} options={facets?.lifecycles ?? []} />
+          </div>
+          <footer><button className="button" onClick={() => setFiltersOpen(false)} type="button">필터 적용</button></footer>
+        </div>}
       </div>
       <CatalogExportControl
         client={client}
@@ -217,10 +268,11 @@ export function CatalogPage({
         domain={filters.domain || undefined}
         searchFields={filters.searchFields}
         classification={classificationValue(filters.classification)}
+        lifecycle={filters.lifecycle === 'ACTIVE' ? 'ACTIVE' : undefined}
       />
     </div>
     <ErrorNotice error={error} />
-    <div className={`catalog-workspace ${selectedAssetId ? 'with-detail' : ''}`}>
+    <div className={`catalog-workspace ${selectedAssetId ? 'with-detail' : ''}`} ref={workspaceRef} style={selectedAssetId ? { '--catalog-detail-width': `${detailWidth}px` } as CSSProperties : undefined}>
       <CatalogResourceTree client={client} query={query} selectedAssetId={selectedAssetId} onSelectAsset={setSelectedAssetId} onSelectScope={selectTreeScope} />
       <section className="catalog-results" aria-label="카탈로그 검색 결과">
         <header><div><span className="eyebrow">Permission scoped</span><h2>Search Results</h2></div><span>{result ? `${result.items.length} / ${(result.total ?? result.items.length).toLocaleString()} items` : '0 items'} · ALL keywords</span></header>
@@ -228,7 +280,7 @@ export function CatalogPage({
         <CursorPagination page={pageIndex + 1} pageSize={pageSize} canPrevious={pageIndex > 0} canNext={Boolean(result?.page.next_cursor)} itemCount={result?.items.length} onPrevious={() => setPageIndex((current) => Math.max(0, current - 1))} onNext={() => { if (!result?.page.next_cursor) return; setCursors((current) => [...current.slice(0, pageIndex + 1), result.page.next_cursor]); setPageIndex((current) => current + 1) }} onPageSizeChange={(value) => { setPageSize(value); setCursors([undefined]); setPageIndex(0) }} />
         {result && <footer className="catalog-result-meta"><span>projection v{result.meta.projection_version}</span><span>policy {result.meta.policy_version}</span><time dateTime={result.meta.observed_at}>{result.meta.observed_at ? new Date(result.meta.observed_at).toLocaleString() : '관측 시각 없음'}</time></footer>}
       </section>
-      {selectedAssetId && <CatalogDetailPane key={selectedAssetId} client={client} assetId={selectedAssetId} onClose={() => setSelectedAssetId(undefined)} onSelectAsset={setSelectedAssetId} />}
+      {selectedAssetId && <CatalogDetailPane key={selectedAssetId} client={client} assetId={selectedAssetId} onClose={() => setSelectedAssetId(undefined)} onResizeWidth={resizeDetail} onSelectAsset={setSelectedAssetId} width={detailWidth} />}
     </div>
   </section>
 }
@@ -238,4 +290,20 @@ function classificationValue(value: string): Classification | undefined {
     return value
   }
   return undefined
+}
+
+function FacetSelect({
+  label,
+  value,
+  onChange,
+  options,
+}: {
+  label: string
+  value: string
+  onChange: (value: string) => void
+  options: Array<{ value?: string; count: number }>
+}) {
+  const available = options.filter((item): item is { value: string; count: number } => Boolean(item.value))
+  const selectedMissing = value && !available.some((item) => item.value === value)
+  return <label>{label}<select onChange={(event) => onChange(event.target.value)} value={value}><option value="">전체</option>{selectedMissing && <option value={value}>{value}</option>}{available.map((item) => <option key={item.value} value={item.value}>{item.value} ({item.count})</option>)}</select></label>
 }

@@ -34,6 +34,7 @@ interface CatalogExportControlProps {
   domain?: string
   searchFields?: string[]
   classification?: Classification
+  lifecycle?: 'ACTIVE'
   navigate?: (url: string) => void
   pollMilliseconds?: number
 }
@@ -49,6 +50,7 @@ export function CatalogExportControl({
   domain,
   searchFields,
   classification,
+  lifecycle,
   navigate = (url) => window.location.assign(url),
   pollMilliseconds = 1_500,
 }: CatalogExportControlProps) {
@@ -70,7 +72,7 @@ export function CatalogExportControl({
     setCreating(false)
     setDownloading(false)
     setError(undefined)
-  }, [assetType, classification, client, databaseName, domain, platform, query, schemaName, searchFields, workerEnabled])
+  }, [assetType, classification, client, databaseName, domain, lifecycle, platform, query, schemaName, searchFields, workerEnabled])
 
   useEffect(() => {
     if (!workerEnabled || !record || !pendingStates.has(record.state)) return
@@ -98,6 +100,7 @@ export function CatalogExportControl({
       ...(domain ? { domain } : {}),
       ...(searchFields?.length ? { search_fields: searchFields.join(',') } : {}),
       ...(classification ? { classification } : {}),
+      ...(lifecycle ? { lifecycle } : {}),
       sort: 'NAME_ASC',
       format: exportFormat,
     }
