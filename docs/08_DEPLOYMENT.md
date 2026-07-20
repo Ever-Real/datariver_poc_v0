@@ -76,10 +76,27 @@ asset ID and never constructs an external URL. The frame is sandboxed, no-referr
 new-tab fallback. A failed provider framing policy remains an unavailable capability, never a
 localhost fallback.
 
-For a local DataHub UI whose framing response headers have been checked, use
 `scripts/bootstrap.ps1 -DataHubEmbedOrigin '<exact-origin>'` (or the matching shell bootstrap
-option). The value is deployment configuration rather than a provider token, and only enables the
-server-authorized lineage descriptor; it never relaxes DataHub asset authorization.
+option) enables the catalog node-detail modal to frame the actual deployment-owned DataHub Lineage
+page. The in-app Lineage tab remains a separately authorization-pruned typed graph. The API first
+authorizes the opaque local asset ID and constructs the provider path itself; it never bridges a
+DataRiver login or DataHub service token into the frame. DataHub must independently provide the
+browser SSO/guest/session and `frame-ancestors` policy. The value is deployment configuration,
+not a provider token, and never relaxes DataHub asset authorization.
+
+A default viewer username/password must not be added to DataRiver source, environment-visible
+browser configuration or an iframe URL. If anonymous read access is appropriate, the DataHub
+operator configures its own least-privilege guest identity and browser entry policy; otherwise the
+viewer signs in through DataHub's own SSO session. Both options require an operator-owned DataHub
+authorization and framing acceptance test.
+
+Grafana is a direct server-validated link by default. To embed it, set the full approved dashboard
+page in `UI_GRAFANA_URL`, set `GRAFANA_EMBED_BASE_URL` to that URL's exact scheme/host/port origin,
+then set `GRAFANA_EMBED_ENABLED=true` and record the SSO, `frame-ancestors` and CSP review in
+`GRAFANA_EMBED_EVIDENCE_REFERENCE`. The web Compose service feeds the same origin to CSP
+`frame-src`; configuration validation rejects missing evidence, a path/query on the origin, or an
+origin mismatch. The resulting frame is sandboxed and no-referrer. There is no browser endpoint to
+save, test or override either URL, so an unreviewed dashboard remains a new-window link.
 
 Static validation and start:
 
@@ -178,9 +195,11 @@ All included DAGs are paused at creation. `datariver_catalog_probe` performs a r
 The last DAG has neither a DataHub nor an object-store credential: DataRiver streams/hash-checks the
 private receipt and owns typed provider read–merge–read-back. The semiconductor ingestion DAG runs
 the same bounded reconciliation after its DataHub emission. `DATARIVER_API_BASE_URL` is
-deployment-owned: the container topology uses `http://api:8000`, while the host-development overlay
-uses `http://apisix:9080` so Airflow shares the gateway's dynamically discovered WSL-to-host API
-route. Bootstrap creates the confidential `datariver-airflow` Keycloak client and its mounted client
+deployment-owned: the container topology uses `http://api:8000`, while the optional
+`compose.airflow.host-dev.yaml` overlay uses `http://apisix:9080` so Airflow shares the gateway's
+dynamically discovered WSL-to-host API route. Keep this overlay separate from
+`compose.host-dev.yaml`, which must remain valid without Airflow. Bootstrap creates the confidential
+`datariver-airflow` Keycloak client and its mounted client
 secret. Tasks obtain and refresh short-lived `client_credentials` tokens; no long-lived bearer token
 is stored. The application membership grants only `catalog.search`, `catalog.read` and `catalog.sync`
 for the selected workspace.

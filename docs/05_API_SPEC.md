@@ -40,7 +40,7 @@ Generated OpenAPI at `/api/v1/openapi.json` is authoritative for implemented pay
 |---|---|---|
 | `GET /health/live` | public | process liveness only |
 | `GET /health/ready` | dependency probe | canonical readiness |
-| `GET /capabilities` | `operations.read` | sanitized capability states plus optional server-validated external UI links; no credential-bearing or client-supplied URL |
+| `GET /capabilities` | `operations.read` | sanitized capability states plus optional server-validated external UI links and a disabled-first Grafana embed descriptor; no credential-bearing or client-supplied URL |
 | `GET /operations/summary` | `operations.read` | current workspace counts for jobs, uploads, changes, outbox lag and non-deleted typed DataHub projections; the bounded (200 branches + explicit truncation) platform/database/schema coverage reports only asset and non-blank-description counts, never catalog rows, classification, tags, glossary terms or provider documents; includes the fail-closed retention-automation state |
 | `GET /operations/metrics` | `operations.read` | bounded-label Prometheus HTTP metrics |
 
@@ -49,10 +49,11 @@ Generated OpenAPI at `/api/v1/openapi.json` is authoritative for implemented pay
 | Method/path | Action | Purpose |
 |---|---|---|
 | `GET /catalog/assets?q=&search_fields=&asset_type=&platform=&database=&schema=&domain=&classification=&lifecycle=&cursor=&limit=` | `catalog.search` | ABAC-prefiltered ALL-term local projection search with plain-text match fragments and a bounded `total`; `search_fields` is the fixed `SCHEMA,TABLE,COLUMN,TAG,TERM,DESCRIPTION` vocabulary, and non-empty `q` minimum defaults to 2; cursor is bound to the exact permission/policy/projection/request snapshot |
-| `GET /catalog/facets?q=&search_fields=&asset_type=&platform=&database=&schema=&domain=&classification=&lifecycle=&limit=` | `catalog.search` | permission-prefiltered asset type, platform and classification buckets; null platform remains an explicit null bucket |
+| `GET /catalog/facets?q=&search_fields=&asset_type=&platform=&database=&schema=&domain=&classification=&lifecycle=&limit=` | `catalog.search` | permission-prefiltered asset type, platform, database, schema, domain, classification and lifecycle buckets; null source values remain explicit null buckets |
 | `GET /catalog/suggestions?q=&limit=` | `catalog.search` | permission-prefiltered name autocomplete, maximum 20; two-character requests use the bounded prefix path and longer requests may use trigram similarity |
 | `GET /catalog/tree/nodes?q=&parent_kind=ROOT\|PLATFORM\|DATABASE\|SCHEMA&platform=&database=&schema=&cursor=&limit=` | `catalog.search` | lazy canonical Resource Tree branch; authorization-pruned child counts, branch cursor and cache context are bound to the request security/projection snapshot |
 | `GET /catalog/assets/{asset_id}` | `catalog.read` | authorized local base detail plus typed DataHub enrichment; optional `stale_at` marks bounded fallback |
+| `GET /catalog/assets/{asset_id}/datahub-lineage-embed` | `catalog.read` | after local authorization, return only the server-built exact configured DataHub `/dataset/{encoded-URN}/Lineage` URL or an explicit disabled/not-configured state; never returns a provider token or accepts a browser URL |
 | `POST /catalog/assets/{asset_id}/description-previews` | `catalog.read` + `change.create` | read live `datasetProperties`, preserve every provider field, and return only the typed description diff, source/hash evidence and opaque quoted preview ETag; `Cache-Control: no-store, private` |
 | `POST /catalog/assets/{asset_id}/description-change-requests` | `catalog.read` + `change.create` | require the exact preview `If-Match`, re-read DataHub, share-lock/revalidate the path asset and create one server-classified governed request |
 | `GET /catalog/assets/{asset_id}/lineage?direction=UPSTREAM\|DOWNSTREAM\|BOTH&depth=1..3` | `catalog.read` | bounded typed DataHub lineage with set-based local authorization; a hidden intermediate truncates rather than bridges a path |
@@ -73,7 +74,8 @@ is not available to a service identity.
 Search, facet and suggestion metadata identifies the built-in policy version, governed classification
 policy version, authorization generation and committed local `projection_version`. The latter is not a
 DataHub source cursor or proof that a full reconciliation completed. Facet values are textual at the
-HTTP boundary: `classification` uses its enum name, as do `asset_type` and `platform` values. This
+HTTP boundary: `classification` uses its enum name, as do `asset_type`, `platform`, database,
+schema, domain and lifecycle values. This
 also keeps PostgreSQL `UNION ALL` aggregation type-consistent. Facet/suggestion `observed_at` is
 nullable when no authorized row contributes a source observation.
 
@@ -109,7 +111,7 @@ Response carries `upserted,tombstoned,next_offset,total,observed_at`. A single a
 | `POST /uploads/{upload_id}/registration-proposals` | `registration.read` + `change.create` + `change.raw.create` | operator/recovery-only raw proposal from an `ACCEPTED` upload; not exposed in the ordinary UI and not accepted as typed-content binding |
 | `POST /registration/manual-submissions` | `catalog.read` + `registration.create` | typed table/field Description, Domain, Tag and Term submission for exactly one current dataset; requires `Idempotency-Key`, validates the current source/schema and creates immutable DB/CSV receipt without exposing storage coordinates |
 | `POST /registration/manual-submissions/apply` | `catalog.sync` service account only | claim at most one durable MANUAL receipt, verify its private CSV hash/shape, typed DataHub apply/read-back and report only opaque processing state; scheduled only by the paused Airflow DAG |
-| `GET /catalog/vocabulary?kind=TAG|TERM|DOMAIN&q=&limit=` | `catalog.search` | bounded, authorization-pruned suggestions derived from the synchronized DataHub projection; new values are typed submission intent, not browser provider writes |
+| `GET /catalog/vocabulary?kind=TAG|TERM|DOMAIN&q=&limit=` | `catalog.search` | bounded suggestions begin with the authorization-pruned synchronized projection; Tag/Term picker opening additionally unions a fixed-contract DataHub `*` browse (at the request limit), while a typed keyword narrows the provider search so unattached and column-only values remain discoverable. An entered query may be one normalized character (unlike general catalog search's two-character minimum); a DataHub failure degrades to the local projection, and new values are typed submission intent, not browser provider writes. |
 
 Completion does not mean accepted. Durable states are `INITIATED → COMPLETION_QUEUED → COMPLETING → QUARANTINED → VALIDATING → ACCEPTED`, with terminal `REJECTED/ABORTED/EXPIRED`. Workers stream object bytes, compare declared size/SHA-256, apply bounded format rules, copy to the accepted bucket, commit canonical location, then best-effort clean quarantine.
 
@@ -143,7 +145,7 @@ do not expose raw proposal, candidate execution or DataHub update actions.
 | `GET /change-requests?state=&limit=` | `change.read` | clearance-filtered candidates followed by one grouped current-target authorization; hidden, deleted and legacy-unbound targets are omitted |
 | `GET /change-requests/{id}` | `change.read` | items, immutable server target binding, approvals and transition audit; current-target denial is existence-hiding 404 |
 | `POST /change-requests` | `change.raw.create` + `change.create` | hardware-human operator/recovery raw DataHub Aspect proposal; absent from the ordinary UI |
-| `POST /change-requests/intake` | `change.create` | ordinary v0.3-shaped CR registration: server re-reads authorized existing table/column identity, records typed multi-target intake evidence and server-mints any new-table proposal identifier; no provider mutation occurs |
+| `POST /change-requests/intake` | `change.create` | ordinary v0.3-shaped CR registration: server re-reads authorized existing table/column identity, records typed multi-target intake evidence including a separate bounded `requested_change` note at table/column level, and server-mints any new-table proposal identifier; no provider mutation occurs |
 | `POST /change-requests/{id}/approvals` | `change.review` / `change.approve` | append immutable decision |
 | `POST /change-requests/{id}/transitions` | derived | legal user-controlled transition/retry |
 | `POST /change-requests/{id}/complete-intake` | `change.review` | after independent final approval, records an accountable `COMPLETED` result for a non-executable intake; cannot create `APPLIED` |
@@ -247,6 +249,9 @@ message, citation or retention binding and production configuration rejects the 
 |---|---|---|
 | `GET /admin/me` | eligible human security administrator with a valid current OIDC identity | internal subject identity, current-assurance operations, fallback availability and the supported action vocabulary; read discovery never grants mutation authority |
 | `GET /admin/workspace-memberships?limit=` | eligible human security administrator with a valid current OIDC identity | bounded workspace membership display/version summaries, maximum 100 |
+| `GET /admin/systems?limit=` | eligible human security administrator with a valid current OIDC identity | bounded canonical System master list with current Developer/Data Steward names, active state, priority and system version |
+| `PUT /admin/systems/{system_id}/assignees` | `admin.manage` + recent hardware WebAuthn | complete Developer/Data Steward assignment replacement; requires `If-Match` and `Idempotency-Key`, preserves at least one active human Workspace member for each responsibility with unique role-local priorities starting at one, emits audit evidence and returns the new system version/`ETag` |
+| `GET /admin/system-configuration` | eligible human security administrator with a valid current OIDC identity | fixed server-owned integration inventory with redacted configuration state, management plane, secret-reference presence and Grafana embed state; no endpoint, YAML, credential or mutable browser configuration |
 | `GET /admin/workspace-memberships/{subject_id}/access` | eligible human security administrator with a valid current OIDC identity | exact typed full access document plus display metadata, membership version and matching `ETag` |
 | `PUT /admin/workspace-memberships/{subject_id}/access` | `admin.manage` + recent hardware WebAuthn | exact full access-document replacement for another subject |
 | `GET /admin/fallback/workspace-membership-access-requests?state=&limit=` | eligible human security administrator with a valid current OIDC identity | bounded workspace fallback queue |

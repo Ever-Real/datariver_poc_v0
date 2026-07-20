@@ -74,10 +74,15 @@ docker compose --profile tools -f compose.yaml -f compose.identity.yaml `
   run --rm local-bootstrap
 ```
 
-To enable the authorized DataHub lineage frame and isolated catalog-export worker locally, make
-the enablement explicit at bootstrap. `DataHubEmbedOrigin` must be the exact credential-free
-DataHub UI origin; the export worker is an opt-in Compose profile with its own database and S3
-credentials.
+The catalog renders the bounded, authorization-pruned lineage graph itself. A graph-node `상세`
+action opens the actual DataHub Lineage page only when `DataHubEmbedOrigin` is explicitly enabled
+for the deployment. The API authorizes the selected opaque asset ID and builds the exact
+DataHub lineage URL; it never sends a DataHub service token, a DataRiver credential or a
+browser-supplied provider URL. DataHub's own SSO/guest/session and framing policy must therefore
+be configured by the DataHub operator. A default viewer username/password is never embedded in
+DataRiver or sent to the browser; anonymous access, if accepted, must be a least-privilege
+DataHub guest policy owned and verified by that operator. The export worker is an opt-in Compose profile with its
+own database and S3 credentials.
 
 ```powershell
 ./scripts/bootstrap.ps1 -DataHubToken '<datahub-service-token>' `
@@ -118,7 +123,7 @@ failover/restore evidence; replica settings alone are not an HA claim (ADR-0013)
 
 The v1 repository still does not own DataHub. The example below reuses a DataHub GMS already exposed on host port `8080`; replace both URLs and the scoped token when the external service is elsewhere.
 
-Browser-visible auxiliary links are optional and independent of backend provider endpoints. Configure only the links that the deployment wants to expose with `UI_DATAHUB_URL`, `UI_AIRFLOW_URL`, `UI_GRAFANA_URL`, `UI_PROMETHEUS_URL`, and `UI_GRAPH_URL`. The API validates and publishes them through the authenticated capabilities response; it does not invent localhost defaults or return credentials. Production accepts HTTPS links only.
+Browser-visible auxiliary links are optional and independent of backend provider endpoints. Configure only the links that the deployment wants to expose with `UI_DATAHUB_URL`, `UI_AIRFLOW_URL`, `UI_GRAFANA_URL`, `UI_PROMETHEUS_URL`, and `UI_GRAPH_URL`. The API validates and publishes them through the authenticated capabilities response; it does not invent localhost defaults or return credentials. Production accepts HTTPS links only. Grafana remains a new-window link unless the deployment separately supplies matching exact-origin `GRAFANA_EMBED_BASE_URL`, explicitly enables `GRAFANA_EMBED_ENABLED`, records `GRAFANA_EMBED_EVIDENCE_REFERENCE`, and passes the same origin into the web CSP; the browser cannot enable embedding or provide a frame URL.
 
 For a native Windows checkout, bootstrap from PowerShell. First use includes `-DataHubToken '<scoped-token>'`; later runs preserve the existing token when omitted.
 
@@ -160,10 +165,25 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 `
 When the same checkout is also tested from WSL, keep its interpreter separate so it cannot replace
 the native Windows host runtime: `UV_PROJECT_ENVIRONMENT=.venv-wsl uv sync --frozen --all-extras`.
 
+The launcher also supports this command when the checkout is reached through a WSL UNC path: it
+maps only the Vite `npm.cmd` child to a temporary drive, because `cmd.exe` cannot use a UNC working
+directory. Backend source processes keep their original checked-out path.
+
 Start the gateway from WSL only after the Windows host API is live. The script discovers the current WSL-to-Windows gateway address:
 
 ```bash
 ./scripts/start_gateway_host_dev.sh
+```
+
+If the optional Airflow stack is running with host source processes, recreate its four long-running
+services with the dedicated overlay after the gateway is ready. This keeps ordinary host-dev Compose
+validation independent of Airflow while routing DAG calls through APISIX:
+
+```bash
+docker compose -f compose.yaml -f compose.identity.yaml -f compose.airflow.yaml \
+  -f compose.host-dev.yaml -f compose.airflow.host-dev.yaml \
+  up -d --force-recreate airflow-api-server airflow-scheduler \
+  airflow-dag-processor airflow-triggerer
 ```
 
 Open Vite at `http://localhost:5173`, API docs at `http://localhost:8000/api/docs`, Keycloak at `http://localhost:18081`, and APISIX at `http://localhost:9080`. Vite proxies `/api` through APISIX. Inspect or stop host processes with `./scripts/dev.ps1 status` and `./scripts/dev.ps1 stop`. Runtime PIDs and logs are written only below the ignored `runtime/host-dev/` directory.
@@ -235,9 +255,9 @@ An OIDC issuer is an identity, not merely a port mapping. For browser sign-in on
 
 ## Main functional flows
 
-- Catalog: an authorized local projection serves cursor-bound ALL-term search, facets, autocomplete and a lazy `platform -> database -> schema -> asset` Resource Tree before selected details are enriched through a fixed DataHub adapter. Database/schema hierarchy comes only from typed DataHub browse containers, including provider aliases such as Oracle container types; the platform never invents it by splitting URNs. The projection retains only a bounded non-authoritative display summary (owner/domain references, tags, terms and source-created time) so the dense result table does not make provider calls per row. Bounded lineage is filtered through the same set-based authorization scope, rendered as a deterministic React graph and never reconnects visible endpoints across a hidden intermediary. Selecting a graph node opens that node's authorized local detail; the separately server-built, exact-origin, sandboxed DataHub Lineage descriptor remains disabled until DataHub SSO/framing evidence passes. A `sync_id`-bound full reconciliation is sequential, single-writer and tombstones missing DataHub-owned assets without touching seed-owned rows. Airflow obtains short-lived Keycloak service tokens automatically. Governed CSV export is a server-managed, owner-scoped job bound to the exact query/filter, permission/classification-policy snapshot and projection watermark. It excludes RESTRICTED assets unconditionally, neutralizes spreadsheet formula injection, reauthorizes every download, and issues only a 60-second URL after object metadata reconciliation. The browser never crawls cursor pages to manufacture an export. Export creation stays disabled until a separately credentialed DB/S3 worker is explicitly provisioned.
-- Registration: browser multipart upload goes directly to quarantine storage. Workers complete the object, stream SHA-256/size/format checks with bounded memory, copy to a validation-attempt-scoped accepted key, fully re-read the promoted bytes and delete quarantine only after the version-fenced database acceptance commits. The MANUAL workbench creates a dataset-description proposal only after a live DataHub preview, an opaque target/source-bound `If-Match`, server-side classification and a same-transaction target share lock. The BULK workbench explicitly separates format-only uploads from the bounded `DATASET_DESCRIPTION_CSV_V1` profile, can queue/read a server-configured preparation only from exact `ACCEPTED` byte evidence and renders real preparation state in the v0.3-style status tracker. A source-only bounded parser contract exists, but the isolated parser worker, candidate read/preview and proposal creation remain disabled, so READY preparation evidence is not presented as a change request or DataHub update and the browser exposes no raw proposal form.
-- Change management: typed DataHub aspect UPSERT requests are server-bound to an authorized local dataset identity and scope, then move through legal transitions and distinct final approval. Reads use the current authorized target; approval and forward transitions reject identity or authorization-scope drift. Confidential/restricted changes need two final approvers. Generic raw Aspect creation and the legacy upload-derived raw proposal API additionally require the deny-by-default, hardware-human-only `change.raw.create` action and are not exposed in the ordinary UI. A leased worker applies each aspect idempotently and only marks `APPLIED` after re-read hash equality. Apply-time requester/policy reauthorization, DataRiver target serialization and external provider CAS remain explicit production gates.
+- Catalog: an authorized local projection serves cursor-bound ALL-term search, facets, autocomplete and a lazy `platform -> database -> schema -> asset` Resource Tree before selected details are enriched through a fixed DataHub adapter. Database/schema hierarchy comes only from typed DataHub browse containers, including provider aliases such as Oracle container types; the platform never invents it by splitting URNs. The projection retains only a bounded non-authoritative display summary (owner/domain references, tags, terms and source-created time) so the dense result table does not make provider calls per row. Tag/Term entry suggestions preserve that projection, then use a fixed DataHub controlled-vocabulary query: first opening a picker performs a bounded `*` browse (12 items) and typed input narrows it, so registered values attached only to columns or not yet attached to a dataset remain selectable; provider failure safely falls back to the projection. Authorized detail keeps Type/classification badges, URN and copy action on one line, then uses two top-level tabs: `Table Details` and `Lineage`. `Table Details` contains column metadata and presents platform/database/schema/domain then owner/rows/size/created date in two four-column rows, a full-width description, and terms/tags side by side; source version is retained as evidence, not shown there. Bounded lineage is filtered through the same set-based authorization scope, rendered top-to-bottom with fixed `U·2/U·1/D·1/D·2` stage badges. Its fixed-height grid viewport is constrained to the current detail-panel width, initially fits its content, and wraps each stage after three columns without omitting nodes; canvas pan, border/stage-badge node repositioning and `+`/`−`/Ctrl-wheel zoom remain available. Clicking a table/view name opens its authorized local detail. It never reconnects visible endpoints across a hidden intermediary. Its `상세` action opens the real DataHub Lineage page only through the server-built, deployment-allowlisted frame URL and DataHub's own session; no DataRiver or DataHub service credential is forwarded. A `sync_id`-bound full reconciliation is sequential, single-writer and tombstones missing DataHub-owned assets without touching seed-owned rows. Airflow obtains short-lived Keycloak service tokens automatically. Governed CSV export is a server-managed, owner-scoped job bound to the exact query/filter, permission/classification-policy snapshot and projection watermark. It excludes RESTRICTED assets unconditionally, neutralizes spreadsheet formula injection, reauthorizes every download, and issues only a 60-second URL after object metadata reconciliation. The browser never crawls cursor pages to manufacture an export. Export creation stays disabled until a separately credentialed DB/S3 worker is explicitly provisioned.
+- Registration: browser multipart upload goes directly to quarantine storage. Table/column Tag and Term values remain on a one-line scrollable badge control with thin previous/next buttons; the compact `+` opens its vocabulary/new-proposal input directly below that control. Workers complete the object, stream SHA-256/size/format checks with bounded memory, copy to a validation-attempt-scoped accepted key, fully re-read the promoted bytes and delete quarantine only after the version-fenced database acceptance commits. The MANUAL workbench creates a dataset-description proposal only after a live DataHub preview, an opaque target/source-bound `If-Match`, server-side classification and a same-transaction target share lock. The BULK workbench explicitly separates format-only uploads from the bounded `DATASET_DESCRIPTION_CSV_V1` profile, can queue/read a server-configured preparation only from exact `ACCEPTED` byte evidence and renders real preparation state in the v0.3-style status tracker. A source-only bounded parser contract exists, but the isolated parser worker, candidate read/preview and proposal creation remain disabled, so READY preparation evidence is not presented as a change request or DataHub update and the browser exposes no raw proposal form.
+- Change management: typed DataHub aspect UPSERT requests are server-bound to an authorized local dataset identity and scope, then move through legal transitions and distinct final approval. In new-CR intake, each Tag/Term `+` unions the bounded authorized projection with the fixed, bounded DataHub `*` controlled-vocabulary browse; keyword input narrows that same adapter query before a comma-aware new proposal is offered. Column input reserves the table Schema track, so column item/Type/Description/Term/Tag/requested-change/management align with Table/Owner/description/Terms/Tags/requested-change/column-addition above it. Reads use the current authorized target; approval and forward transitions reject identity or authorization-scope drift. Confidential/restricted changes need two final approvers. Generic raw Aspect creation and the legacy upload-derived raw proposal API additionally require the deny-by-default, hardware-human-only `change.raw.create` action and are not exposed in the ordinary UI. A leased worker applies each aspect idempotently and only marks `APPLIED` after re-read hash equality. Apply-time requester/policy reauthorization, DataRiver target serialization and external provider CAS remain explicit production gates.
 - Classification access administration: eligible human security administrators can review and independently approve versioned four-class Search/Chat policies, review or revoke immutable inference-provider profile versions, and govern policy-bound RESTRICTED Search grants. ADR-0020 additionally permits an audited, read-only same-workspace catalog review of non-deleted quarantined DataHub projections for classification remediation, including the fixed typed DataHub metadata detail; it never enables export, Chat, arbitrary provider access or mutation. The Admin UI never accepts provider endpoints or credentials, and RESTRICTED evidence is never eligible for Chat.
 - Knowledge graph: create a graph/ontology, author typed node/edge changesets, validate, independently review, publish or roll back immutable releases, export governed views and call bounded analysis. Raw SQL/Cypher is never accepted.
 - API sharing: create a release-pinned contract version, publish it with recent strong authentication, grant an OIDC `client_id` explicit scopes/classification/validity and quotas, revoke it, and invoke bounded neighbor analysis through an atomic grant-and-usage check.
@@ -285,9 +305,21 @@ remove unexpected objects.
   --apply --confirm-reset --ingest-datahub --entity-scope dual
 ```
 
+`--ingest-datahub`는 controlled semiconductor Glossary·Tag를 먼저 UPSERT하고 테이블 및
+실제 PostgreSQL 컬럼의 Term/Tag를 함께 적용한 뒤 read-back 검증합니다. 물리 데이터 생성
+없이 vocabulary만 먼저 초기화·검증하려면 다음을 실행합니다.
+
+```powershell
+.\.venv\Scripts\python.exe .\scripts\generate_semiconductor_seed.py --seed-governance
+```
+
 The command reads the local PostgreSQL owner password and DataHub token only from ignored secret
 files, writes its evidence only below ignored `runtime/semiconductor-seed/`, and verifies the exact
-generated DataHub entity count through the typed aspect-read endpoint. It never prints a secret.
+generated DataHub entity count through the typed aspect-read endpoint. It also provisions a
+controlled semiconductor glossary/tag hierarchy and applies family, scenario, provenance, stage,
+execution, and platform metadata to every generated dataset plus field semantics to PostgreSQL,
+view and clearly labelled Oracle MOCK fields. It never prints a secret. The vocabulary-only initialization and read-only verification
+commands are in [the semiconductor governance taxonomy](docs/18_SEMICONDUCTOR_GOVERNANCE_TAXONOMY.md).
 Use the paused-on-creation `datariver_semiconductor_seed_ingestion` Airflow DAG for repeatable
 manual runs; see the workflow document for its bounded resource settings and trigger procedure.
 `infra/datahub/recipes/semiconductor_postgres.yml` is the separate native DataHub CLI recipe for a
