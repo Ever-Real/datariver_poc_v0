@@ -645,7 +645,7 @@ def _install_security_contract() -> None:
 
     op.execute(
         """
-        CREATE FUNCTION authz.validate_classification_policy_activation()
+        CREATE OR REPLACE FUNCTION authz.validate_classification_policy_activation()
         RETURNS trigger
         LANGUAGE plpgsql
         AS $datariver$
@@ -699,6 +699,10 @@ def _install_security_contract() -> None:
         """
     )
     op.execute(
+        "DROP TRIGGER IF EXISTS validate_classification_policy_activation "
+        "ON authz.classification_access_policy_versions"
+    )
+    op.execute(
         """
         CREATE TRIGGER validate_classification_policy_activation
         BEFORE UPDATE OF state
@@ -709,7 +713,7 @@ def _install_security_contract() -> None:
     )
     op.execute(
         """
-        CREATE FUNCTION authz.validate_restricted_search_grant()
+        CREATE OR REPLACE FUNCTION authz.validate_restricted_search_grant()
         RETURNS trigger
         LANGUAGE plpgsql
         AS $datariver$
@@ -742,6 +746,10 @@ def _install_security_contract() -> None:
         """
     )
     op.execute(
+        "DROP TRIGGER IF EXISTS validate_restricted_search_grant "
+        "ON authz.restricted_search_grants"
+    )
+    op.execute(
         """
         CREATE TRIGGER validate_restricted_search_grant
         BEFORE INSERT OR UPDATE OF state, valid_from, expires_at,
@@ -753,7 +761,7 @@ def _install_security_contract() -> None:
     )
     op.execute(
         """
-        CREATE FUNCTION integration.validate_inference_provider_approval()
+        CREATE OR REPLACE FUNCTION integration.validate_inference_provider_approval()
         RETURNS trigger
         LANGUAGE plpgsql
         AS $datariver$
@@ -772,6 +780,10 @@ def _install_security_contract() -> None:
         """
     )
     op.execute(
+        "DROP TRIGGER IF EXISTS validate_inference_provider_approval "
+        "ON integration.inference_provider_profile_versions"
+    )
+    op.execute(
         """
         CREATE TRIGGER validate_inference_provider_approval
         BEFORE UPDATE OF state
@@ -782,7 +794,7 @@ def _install_security_contract() -> None:
     )
     op.execute(
         """
-        CREATE FUNCTION authz.bump_classification_access_generation()
+        CREATE OR REPLACE FUNCTION authz.bump_classification_access_generation()
         RETURNS trigger
         LANGUAGE plpgsql
         AS $datariver$
@@ -802,6 +814,7 @@ def _install_security_contract() -> None:
         """
     )
     for table in ("classification_access_policy_versions", "restricted_search_grants"):
+        op.execute(f"DROP TRIGGER IF EXISTS bump_classification_access_generation ON authz.{table}")
         op.execute(
             f"""
             CREATE TRIGGER bump_classification_access_generation
@@ -812,7 +825,7 @@ def _install_security_contract() -> None:
         )
     op.execute(
         """
-        CREATE FUNCTION integration.bump_inference_provider_generation()
+        CREATE OR REPLACE FUNCTION integration.bump_inference_provider_generation()
         RETURNS trigger
         LANGUAGE plpgsql
         AS $datariver$
@@ -830,6 +843,10 @@ def _install_security_contract() -> None:
         END
         $datariver$
         """
+    )
+    op.execute(
+        "DROP TRIGGER IF EXISTS bump_inference_provider_generation "
+        "ON integration.inference_provider_profile_versions"
     )
     op.execute(
         """

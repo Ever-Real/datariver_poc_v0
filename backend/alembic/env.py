@@ -12,6 +12,7 @@ from sqlalchemy.ext.asyncio import async_engine_from_config
 from datariver.config import get_settings
 from datariver.infrastructure.db import models  # noqa: F401
 from datariver.infrastructure.db.base import Base
+from datariver.infrastructure.db.migration_scope import include_managed_database_name
 from datariver.infrastructure.secrets import SecretResolver
 
 config = context.config
@@ -42,6 +43,7 @@ def run_migrations_offline() -> None:
         include_schemas=True,
         compare_type=True,
         compare_server_default=True,
+        include_name=include_managed_database_name,
     )
     with context.begin_transaction():
         context.run_migrations()
@@ -54,6 +56,7 @@ def do_run_migrations(connection: Connection) -> None:
         include_schemas=True,
         compare_type=True,
         compare_server_default=True,
+        include_name=include_managed_database_name,
     )
     with context.begin_transaction():
         context.run_migrations()

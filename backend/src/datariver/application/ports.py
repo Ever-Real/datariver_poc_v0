@@ -47,6 +47,7 @@ from datariver.application.dto import (
     KnowledgeEvidenceCandidate,
     KnowledgeGraphRecord,
     KnowledgeReleaseRecord,
+    MembershipRenewalRecord,
     MultipartUpload,
     ObjectMetadata,
     SystemDirectoryEntry,
@@ -62,9 +63,10 @@ from datariver.domain.admin_access import (
 )
 from datariver.domain.authz import Decision, SubjectAttributes
 from datariver.domain.common import DomainEvent
-from datariver.domain.governance import ChangeRequest
+from datariver.domain.governance import ApprovalAuthority, ChangeRequest
 from datariver.domain.knowledge import ChangeSetState, GraphChangeOperation, GraphSnapshot
 from datariver.domain.manual_metadata import ManualMetadataSubmission
+from datariver.domain.membership_renewal import MembershipRenewalRequest
 from datariver.domain.registration import CompletedUploadPart, UploadManifest, UploadPreparation
 from datariver.domain.retention import (
     ArchiveCapability,
@@ -380,12 +382,23 @@ class ChangeRequestOverviewReader(Protocol):
     ) -> Sequence[ChangeRequestSchemaOverview]: ...
 
 
+class ChangeWorkflowAuthorityReader(Protocol):
+    async def get_authorities(
+        self,
+        *,
+        workspace_id: UUID,
+        subject_id: UUID,
+        system_ids: frozenset[UUID],
+    ) -> tuple[ApprovalAuthority, ...]: ...
+
+
 class OutboxWriter(Protocol):
     async def add_events(self, events: Sequence[DomainEvent]) -> None: ...
 
 
 class GovernanceUnitOfWork(Protocol):
     change_requests: ChangeRequestRepository
+    workflow_authorities: ChangeWorkflowAuthorityReader
     manual_metadata_submissions: ManualMetadataSubmissionRepository
     outbox: OutboxWriter
     idempotency: IdempotencyStore
@@ -563,6 +576,33 @@ class MembershipAccessRepository(Protocol):
         self, *, workspace_id: UUID, subject_ids: frozenset[UUID]
     ) -> None: ...
 
+    async def get_expiration_for_update(
+        self, *, workspace_id: UUID, subject_id: UUID
+    ) -> datetime: ...
+
+    async def extend_expiration(
+        self, *, workspace_id: UUID, subject_id: UUID, expected: datetime, extended: datetime
+    ) -> int: ...
+
+
+class MembershipRenewalRepository(Protocol):
+    async def add(self, request: MembershipRenewalRequest) -> None: ...
+
+    async def get_for_update(
+        self, *, workspace_id: UUID, renewal_request_id: UUID
+    ) -> MembershipRenewalRequest | None: ...
+
+    async def list_records(
+        self,
+        *,
+        workspace_id: UUID,
+        subject_id: UUID | None,
+        state: str | None,
+        limit: int,
+    ) -> Sequence[MembershipRenewalRecord]: ...
+
+    async def save(self, request: MembershipRenewalRequest) -> None: ...
+
 
 class SystemDirectoryRepository(Protocol):
     async def list(self, *, workspace_id: UUID, limit: int) -> Sequence[SystemDirectoryEntry]: ...
@@ -573,6 +613,7 @@ class SystemDirectoryRepository(Protocol):
 class AdminAccessUnitOfWork(Protocol):
     requests: AdminAccessRequestRepository
     memberships: MembershipAccessRepository
+    renewals: MembershipRenewalRepository
     systems: SystemDirectoryRepository
     outbox: OutboxWriter
     idempotency: IdempotencyStore
@@ -845,6 +886,7 @@ class UploadValidationStore(Protocol):
         manifest: UploadManifest,
         accepted_bucket: str,
         accepted_object_key: str,
+        validated_sha256: str,
         validation_summary: dict[str, object],
     ) -> bool: ...
 

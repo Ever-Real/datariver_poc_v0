@@ -6,6 +6,7 @@ from datariver.config import Settings
 from datariver.infrastructure.cache.valkey import ValkeyCache
 from datariver.infrastructure.datahub.http import HttpDataHubGateway
 from datariver.infrastructure.db.session import Database
+from datariver.infrastructure.knowledge.neo4j import BoltNeo4jQueryExecutor
 from datariver.infrastructure.object_store.s3 import S3ObjectStore
 from datariver.infrastructure.observability.metrics import HttpMetrics
 from datariver.infrastructure.secrets import SecretResolver
@@ -21,11 +22,14 @@ class AppContainer:
     oidc: OidcTokenVerifier
     object_store: S3ObjectStore
     metrics: HttpMetrics
+    knowledge_neo4j: BoltNeo4jQueryExecutor | None = None
 
     async def close(self) -> None:
         await self.datahub.close()
         await self.cache.close()
         await self.database.close()
+        if self.knowledge_neo4j is not None:
+            await self.knowledge_neo4j.close()
 
 
 def build_container(settings: Settings) -> AppContainer:
@@ -36,6 +40,22 @@ def build_container(settings: Settings) -> AppContainer:
     s3_access_key = SecretResolver().resolve(f"file:{settings.s3_access_key_file}")
     s3_secret_key = SecretResolver().resolve(f"file:{settings.s3_secret_key_file}")
     metrics = HttpMetrics()
+    knowledge_neo4j: BoltNeo4jQueryExecutor | None = None
+    if settings.neo4j_projection_enabled:
+        if settings.neo4j_uri is None or settings.neo4j_auth_secret_ref is None:
+            raise ValueError("Enabled Neo4j projection has incomplete settings.")
+        credential = secret_resolver.resolve(settings.neo4j_auth_secret_ref).strip()
+        username, separator, password = credential.partition("/")
+        if not separator or not username or not password:
+            raise ValueError("The Neo4j secret must use the username/password format.")
+        knowledge_neo4j = BoltNeo4jQueryExecutor(
+            uri=settings.neo4j_uri,
+            username=username,
+            password=password,
+            database=settings.neo4j_database,
+            connection_timeout_seconds=settings.neo4j_connection_timeout_seconds,
+            maximum_connection_pool_size=settings.neo4j_maximum_connection_pool_size,
+        )
     return AppContainer(
         settings=settings,
         database=Database(
@@ -72,6 +92,7 @@ def build_container(settings: Settings) -> AppContainer:
             allowed_algorithms=settings.oidc_allowed_algorithms,
             hardware_acr_values=settings.oidc_hardware_acr_values,
             hardware_amr_values=settings.oidc_hardware_amr_values,
+            hardware_webauthn_enabled=settings.oidc_hardware_webauthn_enabled,
             password_reauth_acr_values=settings.oidc_password_reauth_acr_values,
             password_amr_values=settings.oidc_password_amr_values,
         ),
@@ -83,4 +104,5 @@ def build_container(settings: Settings) -> AppContainer:
             secret_key=s3_secret_key,
         ),
         metrics=metrics,
+        knowledge_neo4j=knowledge_neo4j,
     )

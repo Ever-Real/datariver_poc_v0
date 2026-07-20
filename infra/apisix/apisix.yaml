@@ -24,8 +24,8 @@ routes:
     upstream:
       type: roundrobin
       scheme: http
-      nodes:
-        "__DATARIVER_API_UPSTREAM__": 1
+      discovery_type: dns
+      service_name: "__DATARIVER_API_UPSTREAM__"
       timeout:
         connect: 3
         send: 30
@@ -65,8 +65,8 @@ routes:
     upstream:
       type: roundrobin
       scheme: http
-      nodes:
-        "__DATARIVER_API_UPSTREAM__": 1
+      discovery_type: dns
+      service_name: "__DATARIVER_API_UPSTREAM__"
       timeout:
         connect: 3
         send: 30

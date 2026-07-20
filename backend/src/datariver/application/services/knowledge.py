@@ -442,6 +442,69 @@ class KnowledgeService:
             maximum_nodes=maximum_nodes,
         )
 
+    async def authorize_source_analysis(
+        self,
+        *,
+        workspace_id: UUID,
+        graph: KnowledgeGraphRecord,
+        subject: SubjectAttributes,
+        environment: EnvironmentAttributes,
+        request_id: str,
+    ) -> None:
+        await self._authorize_graph(
+            graph=graph,
+            workspace_id=workspace_id,
+            subject=subject,
+            environment=environment,
+            request_id=request_id,
+            action=Action.KG_EDIT,
+        )
+
+    async def authorize_projection(
+        self,
+        *,
+        workspace_id: UUID,
+        graph: KnowledgeGraphRecord,
+        subject: SubjectAttributes,
+        environment: EnvironmentAttributes,
+        request_id: str,
+    ) -> None:
+        await self._authorize_graph(
+            graph=graph,
+            workspace_id=workspace_id,
+            subject=subject,
+            environment=environment,
+            request_id=request_id,
+            action=Action.KG_PUBLISH,
+        )
+
+    async def get_release_for_graphrag(
+        self,
+        *,
+        workspace_id: UUID,
+        graph: KnowledgeGraphRecord,
+        release_id: UUID,
+        subject: SubjectAttributes,
+        environment: EnvironmentAttributes,
+        request_id: str,
+        maximum_nodes: int,
+    ) -> tuple[KnowledgeReleaseRecord, GraphSnapshot] | None:
+        await self._authorize_graph(
+            graph=graph,
+            workspace_id=workspace_id,
+            subject=subject,
+            environment=environment,
+            request_id=request_id,
+            action=Action.CHAT_QUERY,
+        )
+        return await self._store.get_release_snapshot(
+            workspace_id=workspace_id,
+            graph_id=graph.graph_id,
+            release_id=release_id,
+            clearance=int(subject.clearance),
+            maximum_nodes=maximum_nodes,
+        )
+
     async def _authorize_graph(
         self,
         *,

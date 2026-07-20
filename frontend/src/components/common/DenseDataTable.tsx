@@ -52,8 +52,8 @@ export function DenseDataTable<T>({
   }
 
   return (
-    <div className="dense-table-frame" aria-busy={loading}>
-      <table className="dense-data-table">
+    <div className="dense-table-frame" aria-busy={loading} aria-label={`${caption} 스크롤 영역`} tabIndex={0}>
+      <table className="dense-data-table" style={{ width: table.getTotalSize() }}>
         <caption className="sr-only">{caption}</caption>
         <thead>
           {table.getHeaderGroups().map((headerGroup) => (
@@ -61,6 +61,19 @@ export function DenseDataTable<T>({
               {headerGroup.headers.map((header) => {
                 const sorted = header.column.getIsSorted()
                 const canSort = header.column.getCanSort()
+                const label = typeof header.column.columnDef.header === 'string'
+                  ? header.column.columnDef.header
+                  : header.column.id
+                const sortingLabel = sorted === 'asc' ? '오름차순' : sorted === 'desc' ? '내림차순' : '없음'
+                const cycleSorting = () => {
+                  if (sorted === false) {
+                    header.column.toggleSorting(false)
+                  } else if (sorted === 'asc') {
+                    header.column.toggleSorting(true)
+                  } else {
+                    header.column.clearSorting()
+                  }
+                }
                 return (
                   <th
                     key={header.id}
@@ -69,7 +82,12 @@ export function DenseDataTable<T>({
                     aria-sort={sorted === 'asc' ? 'ascending' : sorted === 'desc' ? 'descending' : 'none'}
                   >
                     {header.isPlaceholder ? null : canSort ? (
-                      <button type="button" onClick={header.column.getToggleSortingHandler()}>
+                      <button
+                        type="button"
+                        aria-label={`${label} 정렬: ${sortingLabel}`}
+                        onClick={cycleSorting}
+                        title={`${label} 정렬: ${sortingLabel}`}
+                      >
                         {flexRender(header.column.columnDef.header, header.getContext())}
                         <span aria-hidden="true">{sorted === 'asc' ? ' ▲' : sorted === 'desc' ? ' ▼' : ' ↕'}</span>
                       </button>

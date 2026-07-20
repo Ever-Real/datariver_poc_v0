@@ -267,7 +267,7 @@ class ManualMetadataApplyService:
             mutate=lambda document: self._set_controlled_refs(
                 document,
                 field="domains",
-                nested="urn",
+                nested=None,
                 refs=(() if submission.domain is None else (submission.domain,)),
             ),
         )
@@ -313,14 +313,25 @@ class ManualMetadataApplyService:
         expected_hash = canonical_json_hash(document)
         if current.content_hash == expected_hash:
             return
-        await self._datahub.apply_change(
-            external_urn=submission.external_urn,
-            aspect_name=aspect_name,
-            document=document,
-            idempotency_key=(
-                f"manual-metadata:{submission.submission_id}:{aspect_name}:{expected_hash}"[:200]
-            ),
-        )
+        try:
+            await self._datahub.apply_change(
+                external_urn=submission.external_urn,
+                aspect_name=aspect_name,
+                document=document,
+                idempotency_key=(
+                    f"manual-metadata:{submission.submission_id}:{aspect_name}:{expected_hash}"[
+                        :200
+                    ]
+                ),
+            )
+        except ExternalDependencyError as error:
+            provider_code = str(error.details.get("provider_code") or "UNKNOWN")
+            raise ExternalDependencyError(
+                "DataHub rejected a typed manual metadata aspect.",
+                dependency="datahub",
+                retryable=bool(error.details.get("retryable")),
+                provider_code=f"{aspect_name.upper()}_{provider_code}"[:100],
+            ) from error
         observed = await self._datahub.read_aspect(
             external_urn=submission.external_urn,
             aspect_name=aspect_name,
@@ -340,9 +351,13 @@ class ManualMetadataApplyService:
 
     @staticmethod
     def _set_controlled_refs(
-        document: dict[str, Any], *, field: str, nested: str, refs: tuple[str, ...]
+        document: dict[str, Any], *, field: str, nested: str | None, refs: tuple[str, ...]
     ) -> None:
-        document[field] = [{nested: ref} for ref in refs]
+        if not refs:
+            if field in document:
+                document[field] = []
+            return
+        document[field] = list(refs) if nested is None else [{nested: ref} for ref in refs]
 
     @staticmethod
     def _set_schema_metadata(
@@ -374,8 +389,36 @@ class ManualMetadataApplyService:
                 field["description"] = column.description
             else:
                 field.pop("description", None)
-            field["globalTags"] = {"tags": [{"tag": ref} for ref in column.tags]}
-            field["glossaryTerms"] = {"terms": [{"urn": ref} for ref in column.terms]}
+            ManualMetadataApplyService._set_nested_controlled_refs(
+                field,
+                container="globalTags",
+                field="tags",
+                nested="tag",
+                refs=column.tags,
+            )
+            ManualMetadataApplyService._set_nested_controlled_refs(
+                field,
+                container="glossaryTerms",
+                field="terms",
+                nested="urn",
+                refs=column.terms,
+            )
+
+    @staticmethod
+    def _set_nested_controlled_refs(
+        document: dict[str, Any],
+        *,
+        container: str,
+        field: str,
+        nested: str,
+        refs: tuple[str, ...],
+    ) -> None:
+        existing = document.get(container)
+        if existing is None and not refs:
+            return
+        value = existing if isinstance(existing, dict) else {}
+        value[field] = [{nested: ref} for ref in refs]
+        document[container] = value
 
     @staticmethod
     def _mutable_document(value: Mapping[str, Any]) -> dict[str, Any]:

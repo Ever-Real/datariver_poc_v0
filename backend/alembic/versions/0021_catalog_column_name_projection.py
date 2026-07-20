@@ -16,8 +16,38 @@ down_revision: str | Sequence[str] | None = "0020"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 
+EXPECTED_OBJECT_COUNT = 2
+
+
+def _existing_object_count() -> int:
+    return int(
+        op.get_bind()
+        .execute(
+            sa.text(
+                """
+                SELECT
+                    (SELECT count(*)
+                     FROM information_schema.columns
+                     WHERE table_schema = 'catalog'
+                       AND table_name = 'assets_projection'
+                       AND column_name = 'column_names')
+                    + (SELECT count(*)
+                       FROM pg_constraint
+                       WHERE conrelid = 'catalog.assets_projection'::regclass
+                         AND conname = 'ck_assets_projection_column_names_array')
+                """
+            )
+        )
+        .scalar_one()
+    )
+
 
 def upgrade() -> None:
+    existing_objects = _existing_object_count()
+    if existing_objects:
+        if existing_objects != EXPECTED_OBJECT_COUNT:
+            raise RuntimeError("The catalog column-name projection is only partially present.")
+        return
     op.add_column(
         "assets_projection",
         sa.Column(
@@ -38,10 +68,5 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
-    op.drop_constraint(
-        "ck_assets_projection_column_names_array",
-        "assets_projection",
-        schema="catalog",
-        type_="check",
-    )
-    op.drop_column("assets_projection", "column_names", schema="catalog")
+    # Compatibility bridge: regenerated 0001 owns the canonical projection shape.
+    pass

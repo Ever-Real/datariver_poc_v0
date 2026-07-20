@@ -216,6 +216,16 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, [hydrate, manager, renewAccessToken])
 
   const beginRedirect = useCallback(async (intent: AuthIntent) => {
+    if (
+      (intent === 'STEP_UP' || intent === 'WEBAUTHN_ENROLLMENT')
+      && profile?.hardware_webauthn_enabled === false
+    ) {
+      setNotice({
+        kind: 'ERROR',
+        message: '이 환경에서는 WebAuthn이 비활성화되어 있습니다. WebAuthn 보증이 필요한 고위험 작업은 실행할 수 없습니다.',
+      })
+      return
+    }
     // An explicit user action must visibly leave the custom login surface at
     // once.  The browser navigation is performed by oidc-client-ts; if it
     // rejects synchronously, restore the same custom surface with guidance.
@@ -235,7 +245,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         message: error instanceof Error ? error.message : '인증 요청을 시작하지 못했습니다.',
       })
     }
-  }, [manager])
+  }, [manager, profile?.hardware_webauthn_enabled])
 
   const value = useMemo<AuthValue>(() => ({
     user,

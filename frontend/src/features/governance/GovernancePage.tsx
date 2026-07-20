@@ -137,10 +137,12 @@ const columns: ColumnDef<ChangeRequestRecord>[] = [
 
 export function GovernancePage({
   client,
+  requesterName,
+  requesterEmail,
   onStepUp,
   onPasswordReauth,
   onEnroll,
-}: { client: ApiClient; onNavigate?: (page: Page) => void } & AssuranceActions) {
+}: { client: ApiClient; requesterName: string; requesterEmail?: string; onNavigate?: (page: Page) => void } & AssuranceActions) {
   const [stateFilter, setStateFilter] = useState<'' | ChangeRequestState>('')
   const [textFilter, setTextFilter] = useState('')
   const [requests, setRequests] = useState<ChangeRequestRecord[]>([])
@@ -306,8 +308,9 @@ export function GovernancePage({
     setReason(DEFAULT_REASON)
   }, [])
 
-  const openAction = useCallback((action: ChangeActionHint) => {
+  const openAction = useCallback((action: ChangeActionHint, actionReason?: string) => {
     setActionError(undefined)
+    if (actionReason?.trim()) setReason(actionReason.trim())
     setPendingAction(action)
   }, [])
   const cancelAction = useCallback(() => setPendingAction(undefined), [])
@@ -326,7 +329,7 @@ export function GovernancePage({
     }
   }, [client, detail])
 
-  const uploadTestAttachments = useCallback(async (files: File[]) => {
+  const uploadAttachments = useCallback(async (kind: ChangeRequestAttachment['kind'], files: File[]) => {
     const current = detail
     if (!current || files.length === 0 || attachmentBusy) return
     setAttachmentBusy(true)
@@ -334,7 +337,7 @@ export function GovernancePage({
     try {
       for (const file of files) {
         const body = new FormData()
-        body.set('kind', 'TEST')
+        body.set('kind', kind)
         body.set('file', file)
         await client.request(`/change-requests/${current.id}/attachments`, { method: 'POST', body })
       }
@@ -510,6 +513,7 @@ export function GovernancePage({
 
       <ChangeRequestDetailDialog
         open={Boolean(selectedId)}
+        client={client}
         fallback={fallback}
         value={detail}
         loading={detailLoading}
@@ -524,7 +528,7 @@ export function GovernancePage({
         onRefresh={() => { if (selectedId) void loadDetail(selectedId) }}
         onAction={openAction}
         onDownloadAttachment={(attachment) => { void downloadAttachment(attachment) }}
-        onUploadTestAttachments={uploadTestAttachments}
+        onUploadAttachments={uploadAttachments}
         onStepUp={onStepUp}
         onPasswordReauth={onPasswordReauth}
         onEnroll={onEnroll}
@@ -532,6 +536,8 @@ export function GovernancePage({
       <ChangeRequestCreateDialog
         open={createOpen}
         client={client}
+        requesterName={requesterName}
+        requesterEmail={requesterEmail}
         onClose={() => setCreateOpen(false)}
         onCreated={(value) => {
           setCreateOpen(false)

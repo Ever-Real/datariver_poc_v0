@@ -14,13 +14,16 @@ from datariver.interfaces.http.schemas import (
     AdminAccessApprovalResponse,
     AdminAccessRequestResponse,
     AdminReadContextResponse,
+    ApprovalAuthorityResponse,
     ApprovalResponse,
     CatalogAssetResponse,
     CatalogAssetSummary,
     ChangeItemResponse,
     ChangeRequestAssigneeResponse,
     ChangeRequestResponse,
+    ChangeRequestRoundResponse,
     ChangeRequestSchemaOverviewResponse,
+    ChangeTestRunResponse,
     MembershipAccessCommandResponse,
     MembershipAccessDocumentRequest,
     MembershipAccessDocumentResponse,
@@ -80,6 +83,12 @@ def workspace_membership_summary_response(
         last_login_ip=membership.last_login_ip,
         owned_table_count=membership.owned_table_count,
         change_request_count=membership.change_request_count,
+        joined_at=membership.joined_at,
+        access_expires_at=membership.access_expires_at,
+        renewal_eligible_at=membership.renewal_eligible_at,
+        access_expired=membership.access_expired,
+        renewal_request_eligible=membership.renewal_request_eligible,
+        pending_renewal_request_id=membership.pending_renewal_request_id,
         subject_active=membership.subject_active,
         membership_active=membership.membership_active,
         department_id=membership.department_id,
@@ -161,6 +170,7 @@ def catalog_detail(asset: CatalogAssetDetail) -> CatalogAssetResponse:
         glossary_terms=list(asset.glossary_terms),
         schema_fields=list(asset.schema_fields),
         quality=asset.quality,
+        projection_source_version=asset.index.source_version,
         source_version=asset.raw_version,
         stale_at=asset.stale_at,
     )
@@ -175,6 +185,9 @@ def change_request_response(change_request: ChangeRequest) -> ChangeRequestRespo
         description=change_request.description,
         state=change_request.state.value,
         requester_id=change_request.requester_id,
+        requester_department_id=change_request.requester_department_id,
+        current_round_id=change_request.current_round_id,
+        current_round_number=change_request.current_round_number,
         created_at=change_request.created_at,
         requested_due_date=change_request.requested_due_date,
         priority=change_request.priority.value if change_request.priority is not None else None,
@@ -205,6 +218,7 @@ def change_request_response(change_request: ChangeRequest) -> ChangeRequestRespo
                 target_source_version=item.target_source_version,
                 target_observed_at=item.target_observed_at,
                 target_binding_hash=item.target_binding_hash,
+                routing_system_id=item.routing_system_id,
             )
             for item in change_request.items
         ],
@@ -216,6 +230,14 @@ def change_request_response(change_request: ChangeRequest) -> ChangeRequestRespo
                 actor_id=approval.actor_id,
                 reason=approval.reason,
                 occurred_at=approval.occurred_at,
+                round_id=approval.round_id,
+                authorities=[
+                    ApprovalAuthorityResponse(
+                        kind=authority.kind.value,
+                        system_id=authority.system_id,
+                    )
+                    for authority in approval.authorities
+                ],
             )
             for approval in change_request.approvals
         ],
@@ -227,8 +249,35 @@ def change_request_response(change_request: ChangeRequest) -> ChangeRequestRespo
                 actor_id=transition.actor_id,
                 reason=transition.reason,
                 occurred_at=transition.occurred_at,
+                round_id=transition.round_id,
             )
             for transition in change_request.transitions
+        ],
+        rounds=[
+            ChangeRequestRoundResponse(
+                id=round_value.round_id,
+                round_number=round_value.round_number,
+                submitted_by=round_value.submitted_by,
+                submitted_at=round_value.submitted_at,
+                closed_at=round_value.closed_at,
+                evidence_hash=round_value.evidence_hash,
+            )
+            for round_value in change_request.rounds
+        ],
+        test_runs=[
+            ChangeTestRunResponse(
+                id=test_run.test_run_id,
+                round_id=test_run.round_id,
+                system_id=test_run.system_id,
+                attachment_id=test_run.attachment_id,
+                state=test_run.state.value,
+                plan_hash=test_run.plan_hash,
+                result_hash=test_run.result_hash,
+                bounded_summary=test_run.bounded_summary,
+                recorded_by=test_run.recorded_by,
+                occurred_at=test_run.occurred_at,
+            )
+            for test_run in change_request.test_runs
         ],
     )
 

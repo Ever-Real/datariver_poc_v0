@@ -1,4 +1,5 @@
 import react from '@vitejs/plugin-react'
+import tailwindcss from '@tailwindcss/vite'
 import { defineConfig, loadEnv } from 'vite'
 
 export default defineConfig(({ mode }) => {
@@ -15,7 +16,7 @@ export default defineConfig(({ mode }) => {
   const publicOrigin = value('VITE_OIDC_REDIRECT_URI') || value('APP_PUBLIC_ORIGIN')
   return {
     envDir: repositoryRoot,
-    plugins: [react()],
+    plugins: [react(), tailwindcss()],
     // Backend bootstrap owns these public OIDC values. Vite exposes only the
     // browser-safe subset instead of requiring a second, drifting .env file.
     define: {

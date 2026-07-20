@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import datetime, timedelta
 from types import TracebackType
 from uuid import UUID
 
@@ -7,6 +8,7 @@ from sqlalchemy import and_, delete, func, or_, select, text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from datariver.application.dto import (
+    MembershipRenewalRecord,
     SystemDirectoryAssignee,
     SystemDirectoryEntry,
     WorkspaceMembershipAccessRecord,
@@ -16,6 +18,7 @@ from datariver.application.ports import (
     AdminAccessRequestRepository,
     AdminAccessUnitOfWork,
     MembershipAccessRepository,
+    MembershipRenewalRepository,
     SystemDirectoryRepository,
 )
 from datariver.domain.admin_access import (
@@ -28,7 +31,14 @@ from datariver.domain.admin_access import (
     SystemAssigneeUpdateCommand,
 )
 from datariver.domain.authz import Action, Classification
-from datariver.domain.common import ConflictError, ForbiddenError, NotFoundError, ValidationError
+from datariver.domain.common import (
+    ConflictError,
+    ForbiddenError,
+    NotFoundError,
+    ValidationError,
+    utc_now,
+)
+from datariver.domain.membership_renewal import MembershipRenewalRequest, MembershipRenewalState
 from datariver.infrastructure.db.governance import SqlIdempotencyStore, SqlOutboxWriter
 from datariver.infrastructure.db.models.catalog import AssetProjectionModel
 from datariver.infrastructure.db.models.governance import ChangeRequestModel
@@ -36,6 +46,7 @@ from datariver.infrastructure.db.models.platform import (
     AdminAccessApprovalModel,
     AdminAccessRequestModel,
     DataSystemModel,
+    MembershipRenewalRequestModel,
     SubjectModel,
     SystemAssigneeModel,
     WorkspaceMembershipModel,
@@ -220,6 +231,136 @@ class SqlAdminAccessRequestRepository(AdminAccessRequestRepository):
         )
 
 
+class SqlMembershipRenewalRepository(MembershipRenewalRepository):
+    def __init__(self, session: AsyncSession) -> None:
+        self._session = session
+
+    async def add(self, request: MembershipRenewalRequest) -> None:
+        self._session.add(
+            MembershipRenewalRequestModel(
+                id=request.renewal_request_id,
+                workspace_id=request.workspace_id,
+                target_subject_id=request.target_subject_id,
+                requester_id=request.requester_id,
+                reason=request.reason,
+                current_expires_at=request.current_expires_at,
+                requested_expires_at=request.requested_expires_at,
+                state=request.state.value,
+                checker_id=request.checker_id,
+                decision_reason=request.decision_reason,
+                decision_policy_decision_id=request.decision_policy_decision_id,
+                decided_at=request.decided_at,
+                created_at=request.created_at,
+                version=request.version,
+            )
+        )
+
+    async def get_for_update(
+        self, *, workspace_id: UUID, renewal_request_id: UUID
+    ) -> MembershipRenewalRequest | None:
+        model = (
+            await self._session.scalars(
+                select(MembershipRenewalRequestModel)
+                .where(
+                    MembershipRenewalRequestModel.workspace_id == workspace_id,
+                    MembershipRenewalRequestModel.id == renewal_request_id,
+                )
+                .with_for_update()
+            )
+        ).one_or_none()
+        return _membership_renewal(model) if model is not None else None
+
+    async def list_records(
+        self,
+        *,
+        workspace_id: UUID,
+        subject_id: UUID | None,
+        state: str | None,
+        limit: int,
+    ) -> tuple[MembershipRenewalRecord, ...]:
+        statement = (
+            select(MembershipRenewalRequestModel)
+            .where(MembershipRenewalRequestModel.workspace_id == workspace_id)
+            .order_by(MembershipRenewalRequestModel.created_at.desc())
+            .limit(limit)
+        )
+        if subject_id is not None:
+            statement = statement.where(
+                MembershipRenewalRequestModel.target_subject_id == subject_id
+            )
+        if state is not None:
+            statement = statement.where(MembershipRenewalRequestModel.state == state)
+        models = (await self._session.scalars(statement)).all()
+        if not models:
+            return ()
+        subject_ids = {
+            value
+            for model in models
+            for value in (model.requester_id, model.checker_id)
+            if value is not None
+        }
+        names: dict[UUID, str] = {
+            subject_id: display_name
+            for subject_id, display_name in (
+                await self._session.execute(
+                    select(SubjectModel.id, SubjectModel.display_name).where(
+                        SubjectModel.id.in_(subject_ids)
+                    )
+                )
+            ).all()
+        }
+        return tuple(
+            MembershipRenewalRecord(
+                renewal_request_id=model.id,
+                workspace_id=model.workspace_id,
+                target_subject_id=model.target_subject_id,
+                requester_id=model.requester_id,
+                requester_display_name=names.get(model.requester_id, str(model.requester_id)),
+                reason=model.reason,
+                current_expires_at=model.current_expires_at,
+                requested_expires_at=model.requested_expires_at,
+                state=model.state,
+                version=model.version,
+                created_at=model.created_at,
+                checker_id=model.checker_id,
+                checker_display_name=(names.get(model.checker_id) if model.checker_id else None),
+                decision_reason=model.decision_reason,
+                decided_at=model.decided_at,
+            )
+            for model in models
+        )
+
+    async def save(self, request: MembershipRenewalRequest) -> None:
+        model = await self._session.get(MembershipRenewalRequestModel, request.renewal_request_id)
+        if model is None or model.workspace_id != request.workspace_id:
+            raise NotFoundError("The membership renewal request does not exist.")
+        model.state = request.state.value
+        model.checker_id = request.checker_id
+        model.decision_reason = request.decision_reason
+        model.decision_policy_decision_id = request.decision_policy_decision_id
+        model.decided_at = request.decided_at
+        model.version = request.version
+
+
+def _membership_renewal(model: MembershipRenewalRequestModel) -> MembershipRenewalRequest:
+    return MembershipRenewalRequest(
+        renewal_request_id=model.id,
+        workspace_id=model.workspace_id,
+        target_subject_id=model.target_subject_id,
+        requester_id=model.requester_id,
+        reason=model.reason,
+        current_expires_at=model.current_expires_at,
+        requested_expires_at=model.requested_expires_at,
+        state=MembershipRenewalState(model.state),
+        version=model.version,
+        created_at=model.created_at,
+        checker_id=model.checker_id,
+        decision_reason=model.decision_reason,
+        decision_policy_decision_id=model.decision_policy_decision_id,
+        decided_at=model.decided_at,
+    )
+
+
 class SqlMembershipAccessRepository(MembershipAccessRepository):
     def __init__(self, session: AsyncSession) -> None:
         self._session = session
@@ -242,6 +383,21 @@ class SqlMembershipAccessRepository(MembershipAccessRepository):
         if not rows:
             return ()
         subject_ids = [subject.id for subject, _ in rows]
+        pending_renewals: dict[UUID, UUID] = {
+            subject_id: renewal_request_id
+            for subject_id, renewal_request_id in (
+                await self._session.execute(
+                    select(
+                        MembershipRenewalRequestModel.target_subject_id,
+                        MembershipRenewalRequestModel.id,
+                    ).where(
+                        MembershipRenewalRequestModel.workspace_id == workspace_id,
+                        MembershipRenewalRequestModel.target_subject_id.in_(subject_ids),
+                        MembershipRenewalRequestModel.state == MembershipRenewalState.PENDING.value,
+                    )
+                )
+            ).all()
+        }
         change_request_counts: dict[UUID, int] = {}
         for subject_id, count in (
             await self._session.execute(
@@ -278,6 +434,7 @@ class SqlMembershipAccessRepository(MembershipAccessRepository):
                 membership,
                 owned_table_count=owned_table_counts[subject.id],
                 change_request_count=int(change_request_counts.get(subject.id, 0)),
+                pending_renewal_request_id=pending_renewals.get(subject.id),
             )
             for subject, membership in rows
         )
@@ -326,6 +483,10 @@ class SqlMembershipAccessRepository(MembershipAccessRepository):
                 SubjectModel.active.is_(True),
                 WorkspaceMembershipModel.active.is_(True),
                 or_(
+                    WorkspaceMembershipModel.access_expires_at.is_(None),
+                    WorkspaceMembershipModel.access_expires_at > func.now(),
+                ),
+                or_(
                     WorkspaceMembershipModel.job_function.is_(None),
                     WorkspaceMembershipModel.job_function != "SERVICE_ACCOUNT",
                 ),
@@ -356,6 +517,45 @@ class SqlMembershipAccessRepository(MembershipAccessRepository):
 
     async def assert_current_version(self, command: MembershipAccessUpdate) -> None:
         await self._membership_for_update(command)
+
+    async def get_expiration_for_update(self, *, workspace_id: UUID, subject_id: UUID) -> datetime:
+        membership = (
+            await self._session.scalars(
+                select(WorkspaceMembershipModel)
+                .where(
+                    WorkspaceMembershipModel.workspace_id == workspace_id,
+                    WorkspaceMembershipModel.subject_id == subject_id,
+                    WorkspaceMembershipModel.active.is_(True),
+                    WorkspaceMembershipModel.job_function != "SERVICE_ACCOUNT",
+                )
+                .with_for_update()
+            )
+        ).one_or_none()
+        if membership is None or membership.access_expires_at is None:
+            raise ForbiddenError("A renewable human workspace membership is not available.")
+        return membership.access_expires_at
+
+    async def extend_expiration(
+        self, *, workspace_id: UUID, subject_id: UUID, expected: datetime, extended: datetime
+    ) -> int:
+        membership = (
+            await self._session.scalars(
+                select(WorkspaceMembershipModel)
+                .where(
+                    WorkspaceMembershipModel.workspace_id == workspace_id,
+                    WorkspaceMembershipModel.subject_id == subject_id,
+                )
+                .with_for_update()
+            )
+        ).one_or_none()
+        if membership is None or membership.access_expires_at != expected:
+            raise ConflictError("The workspace membership expiration changed.")
+        if extended <= expected:
+            raise ValidationError("The renewed membership expiration must increase.")
+        membership.access_expires_at = extended
+        membership.version += 1
+        await self._session.flush()
+        return membership.version
 
     async def _membership_for_update(
         self, command: MembershipAccessUpdate
@@ -415,6 +615,10 @@ class SqlMembershipAccessRepository(MembershipAccessRepository):
                 or denied is None
                 or not subject.active
                 or not membership.active
+                or (
+                    membership.access_expires_at is not None
+                    and membership.access_expires_at <= utc_now()
+                )
                 or membership.job_function == "SERVICE_ACCOUNT"
                 or "service-accounts" in groups
                 or "security-administrators" not in groups
@@ -471,7 +675,15 @@ class SqlSystemDirectoryRepository(SystemDirectoryRepository):
                     display_name=subject.display_name,
                     responsibility=assignment.responsibility,
                     priority=assignment.priority,
-                    active=assignment.active and subject.active and membership.active,
+                    active=(
+                        assignment.active
+                        and subject.active
+                        and membership.active
+                        and (
+                            membership.access_expires_at is None
+                            or membership.access_expires_at > utc_now()
+                        )
+                    ),
                 )
             )
         return tuple(
@@ -514,6 +726,10 @@ class SqlSystemDirectoryRepository(SystemDirectoryRepository):
                         WorkspaceMembershipModel.active.is_(True),
                         SubjectModel.active.is_(True),
                         or_(
+                            WorkspaceMembershipModel.access_expires_at.is_(None),
+                            WorkspaceMembershipModel.access_expires_at > func.now(),
+                        ),
+                        or_(
                             WorkspaceMembershipModel.job_function.is_(None),
                             WorkspaceMembershipModel.job_function != "SERVICE_ACCOUNT",
                         ),
@@ -552,6 +768,7 @@ class SqlAdminAccessUnitOfWork(AdminAccessUnitOfWork):
         self._session_factory = session_factory
         self._session: AsyncSession | None = None
         self.requests: SqlAdminAccessRequestRepository
+        self.renewals: SqlMembershipRenewalRepository
         self.memberships: SqlMembershipAccessRepository
         self.systems: SqlSystemDirectoryRepository
         self.outbox: SqlOutboxWriter
@@ -561,6 +778,7 @@ class SqlAdminAccessUnitOfWork(AdminAccessUnitOfWork):
     async def __aenter__(self) -> SqlAdminAccessUnitOfWork:
         self._session = self._session_factory()
         self.requests = SqlAdminAccessRequestRepository(self._session)
+        self.renewals = SqlMembershipRenewalRepository(self._session)
         self.memberships = SqlMembershipAccessRepository(self._session)
         self.systems = SqlSystemDirectoryRepository(self._session)
         self.outbox = SqlOutboxWriter(self._session)
@@ -636,6 +854,7 @@ def _membership_summary(
     *,
     owned_table_count: int = 0,
     change_request_count: int = 0,
+    pending_renewal_request_id: UUID | None = None,
 ) -> WorkspaceMembershipSummary:
     try:
         clearance = Classification(membership.clearance)
@@ -643,6 +862,8 @@ def _membership_summary(
         raise ConflictError("The stored workspace membership access is invalid.") from error
     if membership.version < 1:
         raise ConflictError("The stored workspace membership version is invalid.")
+    now = utc_now()
+    access_expires_at = membership.access_expires_at
     return WorkspaceMembershipSummary(
         subject_id=subject.id,
         display_name=subject.display_name,
@@ -651,6 +872,19 @@ def _membership_summary(
         last_login_ip=subject.last_login_ip,
         owned_table_count=owned_table_count,
         change_request_count=change_request_count,
+        joined_at=membership.created_at,
+        access_expires_at=access_expires_at,
+        renewal_eligible_at=(
+            access_expires_at - timedelta(days=30) if access_expires_at is not None else None
+        ),
+        access_expired=access_expires_at is not None and access_expires_at <= now,
+        renewal_request_eligible=(
+            access_expires_at is not None
+            and access_expires_at > now
+            and now >= access_expires_at - timedelta(days=30)
+            and pending_renewal_request_id is None
+        ),
+        pending_renewal_request_id=pending_renewal_request_id,
         subject_active=subject.active,
         membership_active=membership.active,
         department_id=membership.department_id,

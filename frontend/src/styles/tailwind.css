@@ -1,0 +1,11 @@
+@import "tailwindcss";
+@import "@xyflow/react/dist/style.css";
+
+@theme {
+  --color-navy-950: #071426;
+  --color-navy-900: #0a192f;
+  --color-navy-800: #112a46;
+  --color-enterprise-blue: #004b87;
+  --color-enterprise-cream: #fbfaf6;
+  --radius-enterprise: 2px;
+}

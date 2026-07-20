@@ -44,4 +44,6 @@ def apply_manual_metadata_receipts(
         if not isinstance(state, str):
             raise RuntimeError("DataRiver returned an invalid manual metadata apply state.")
         states[state] = states.get(state, 0) + 1
+    if states.get("FAILED", 0) > 0:
+        raise RuntimeError("One or more MANUAL metadata submissions reached FAILED state.")
     return {"processed": processed, "states": states}

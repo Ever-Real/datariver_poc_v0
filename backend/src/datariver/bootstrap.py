@@ -9,6 +9,8 @@ from sqlalchemy import select
 
 from datariver.config import get_settings
 from datariver.domain.authz import Action, Classification
+from datariver.domain.common import utc_now
+from datariver.domain.membership_renewal import add_calendar_months
 from datariver.infrastructure.db.models.platform import (
     SubjectModel,
     WorkspaceMembershipModel,
@@ -113,6 +115,7 @@ async def bootstrap_local_identity() -> dict[str, object]:
                         clearance=int(Classification.RESTRICTED),
                         attributes=attributes,
                         active=True,
+                        access_expires_at=add_calendar_months(utc_now(), 6),
                     )
                 )
             else:
@@ -174,6 +177,7 @@ async def bootstrap_local_identity() -> dict[str, object]:
                         clearance=int(Classification.RESTRICTED),
                         attributes=airflow_attributes,
                         active=True,
+                        access_expires_at=None,
                     )
                 )
             else:

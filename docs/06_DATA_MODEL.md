@@ -9,9 +9,9 @@ The SQLAlchemy metadata and generated `backend/alembic/versions/0001_initial_sch
 - PostgreSQL RLS is enabled and forced on every workspace table. API sets `app.workspace_id` and `app.subject_id` per transaction. Relay, upload and governance BYPASSRLS identities are separate and receive only the tables needed by their background responsibility.
 - Every parent/child relationship between tenant tables carries `workspace_id` in a composite foreign key; application filtering is not the only tenant-integrity guard.
 - Security selectors such as classification/system/domain/owner are typed columns. JSONB stores non-security documents/extensions.
-- Production passwords and tokens never have application columns; connections use mounted secret
-  references. The development-only external-service YAML profile is the documented exception: it
-  is workspace-scoped, response-masked, versioned and disabled outside development.
+- Passwords and tokens never have application columns. Development System Settings store only
+  validated non-secret YAML and `file:/run/secrets/<name>` reference names; exact revision,
+  TEST and activation evidence is workspace-scoped and disabled outside development.
 - Outbox, approvals, transitions, decisions, releases and citations are append-only to ordinary application roles.
 
 ## Implemented schemas and tables
@@ -24,9 +24,12 @@ The SQLAlchemy metadata and generated `backend/alembic/versions/0001_initial_sch
 | `platform.data_systems` | workspace-scoped code/name UQ, description, active flag, version/timestamps | canonical business-system master; not a DataHub provider connection |
 | `platform.system_schema_scopes` | workspace/platform/database/schema UQ, composite system FK, active flag | explicit DataHub projection scope to business-system assignment |
 | `platform.system_assignees` | system/subject/responsibility UQ, `DEVELOPER` or `DATA_STEWARD`, priority `1..999`, active flag | accountable human system assignments; never browser-derived |
-| `platform.external_service_profiles` | workspace/service-key UQ for DataHub, Airflow, storage, LLM, Neo4j, Prometheus and Grafana; optional endpoint, development YAML, opaque secret reference, updater/version | deployment intent in production. Development-only administrator configuration may incrementally store YAML; sensitive keys are masked before every API response and the table remains RLS-scoped. |
+| `platform.external_service_profiles` | workspace/service-key UQ, current YAML/version, nullable activated version, updater and bounded service vocabulary | development-only current draft and pointer to the revision selected for next startup; production runtime settings remain deployment/provider controlled |
+| `platform.external_service_profile_versions` | workspace/profile/configuration-version UQ, SHA-256 document hash, immutable YAML/endpoint, creator, TEST status/scope/latency/actor/time and activation actor/time | exact SAVE → TEST → ACTIVATE evidence; RLS-scoped reads are granted to each consuming process's existing least-privilege DB role |
 | `iam.subjects` | `id`, `issuer + external_subject UQ`, `display_name`, IdP email, ordinary last-login timestamp/IP, `active`, timestamps | external IdP mapping and profile audit; no credential or password |
-| `iam.workspace_memberships` | PK `workspace_id + subject_id`, `department_id`, `job_function`, `clearance`, `attributes`, `active`, `version` | versioned ABAC subject attributes/grants; an optional `attributes.default_workspace: true` chooses the user's hydration default, otherwise active Workspace slug order is deterministic |
+| `iam.workspace_memberships` | PK `workspace_id + subject_id`, `department_id`, `job_function`, `clearance`, `attributes`, `active`, nullable `access_expires_at`, `version` | versioned ABAC attributes/grants; human expiry is authorization-bearing, service-account expiry is operator-managed `NULL`, and the optional default marker only chooses among active unexpired memberships |
+| `iam.membership_renewal_requests` | workspace/target pending partial UQ, observed/requested expiries, requester/checker, reason/decision/policy/time and optimistic version | self-requested six-calendar-month extension with independent global-Admin decision and no self approval |
+| `iam.access_roles` | workspace/key UQ, name/description, clearance, typed group/action/System/Domain scope documents, active flag, updater/version | reusable administrator-managed RBAC template; assignment materializes the existing membership ABAC document and the role marker is not independent authority |
 | `iam.admin_access_requests` | typed command/envelope, maker/target/checker, canonical hash, expiry/state/consume decision, `version`, timestamps | short-lived membership-access maker-checker aggregate; no arbitrary provider payload |
 | `iam.admin_access_approvals` | request/actor, approve/reject, reason, policy decision, payload hash and request version | append-only independent checker evidence |
 
@@ -78,10 +81,10 @@ typed DataHub enrichment through the server anti-corruption layer.
 | Table | Key columns and constraints | Purpose |
 |---|---|---|
 | `governance.change_requests` | `id`, `workspace_id + number UQ`, type/title/description/state/requester/classification, nullable requested due date/priority/urgency vocabulary, `version`, timestamps | change aggregate/state machine |
-| `governance.change_request_items` | `id`, `change_request_id + ordinal UQ`, typed provider or intake target/aspect/operation, before/after hashes and document, nullable all-or-none server binding (`asset/type/system/domain/owner/classification/lifecycle/source/observed/hash`) | immutable executable `DATAHUB_ASPECT` item (one per request) or typed multi-target CR intake evidence; a new-table intake has only a server-minted proposal identifier, never a client URN |
+| `governance.change_request_items` | `id`, `change_request_id + ordinal UQ`, typed provider or intake target/aspect/operation, before/after hashes/document, nullable historical target binding and canonical `routing_system_id` | immutable executable item or typed multi-target intake evidence; every new item routes workflow authority through an active canonical System |
 | `governance.registration_content_bindings` | candidate/hash UQ, change item UQ, request/item/creator composite workspace FKs, created time | append-only candidate-to-governed-item provenance; no ordinary update/delete grant |
 | `governance.manual_metadata_submissions` | workspace/asset/requester FKs, per-workspace serial UQ, immutable typed table/field payload, private bucket/key UQ, CSV SHA-256/size/row count, state/attempt/lease/version/timestamps | independent MANUAL registration audit/CSV receipt; payload and receipt identity are immutable, while a leased Airflow-owned worker may advance controlled state after CSV and provider read-back verification |
-| `governance.approvals` | `id`, `change_request_id + stage + actor_id UQ`, decision/reason/actor/policy/time | append-only actor-separated decisions |
+| `governance.approvals` | `id`, `change_request_id + stage + actor_id UQ`, REVIEW/TEST/FINAL decision/reason/actor/policy/time and JSON authority snapshot | append-only decision plus immutable System Developer/Data Steward/global Admin authority evidence used by stage-completeness checks |
 | `governance.state_transitions` | `id`, request, from/to, actor, reason, policy decision, occurrence | append-only state history |
 
 ### Integration, jobs and objects
@@ -126,14 +129,28 @@ destructive completion tables remain unimplemented.
 | `knowledge.graphs` | `id`, `workspace + slug UQ`, name/type/status/classification/active release, `version`, timestamps | graph aggregate and active pointer |
 | `knowledge.ontology_versions` | `id`, graph/version/schema/checksum/status, timestamps | typed ontology versions |
 | `knowledge.changesets` | `id`, graph/base release/ontology/title/state/author/reviewer/published release, `version`, timestamps | incremental author/review/publish aggregate |
-| `knowledge.change_operations` | `id`, `changeset_id + sequence UQ`, operation/kind/stable ID/document/provenance/confidence | ordered typed node/edge edits |
+| `knowledge.change_operations` | `id`, `changeset_id + sequence UQ`, operation/kind/stable ID/document/provenance/confidence | ordered typed node/edge edits; model-proposed provenance includes verified excerpt/excerpt hash/page hash |
 | `knowledge.validation_results` | `id`, changeset/validator/version/severity/code/location/message/time | persisted submission validation evidence |
 | `knowledge.releases` | `id`, `graph_id + release_no UQ`, ontology/content hash/counts/publisher/time | immutable release manifest |
 | `knowledge.release_nodes` | composite release/entity identity, type/properties/classification/provenance | immutable assertion snapshot |
 | `knowledge.release_edges` | composite release/edge identity, endpoints/type/properties/classification/provenance | immutable relationship snapshot |
-| `knowledge.projection_deployments` | `id`, release/adapter/target/state/hash/counts/timestamps | optional projection deployment evidence (DDL present) |
+| `knowledge.projection_deployments` | `id`, graph/release/job, adapter/target/state/content and verification hashes/counts/verified time/error | Neo4j shadow read-back evidence; `SHADOW_VERIFIED` requires reconstructed canonical content-hash equality |
+| `knowledge.source_snapshots` | graph/upload UQ, private object coordinate/version, PDF media/size/hash/classification/state/creator | immutable integrity-verified source binding; never an external URL |
+| `knowledge.source_pages` | source/page PK, page content hash and parsed text | reviewer-visible page-aware grounding source |
+| `knowledge.source_page_embeddings` | source/page/provider/model, dimension/vector and page hash | release-scoped semantic seed evidence for the exact parsed page |
+| `knowledge.extraction_runs` | source/changeset, parser hash, embedding/extraction bindings, input/output hashes/state/error | reproducible typed extraction execution and activated configuration revision evidence |
+| `knowledge.graphrag_audits` | graph/release/request UQ, actor, question hash, retrieved/cited IDs, model/prompt/tool and configuration source/version/hash, token counts | immutable citation-bounded inference audit without storing the raw question |
 
-The API supports both complete snapshot publication and changeset author/submit/independent-review/publish. Automated source extraction and projection deployment workers remain extension work.
+The API supports complete snapshot publication, changeset author/submit/independent-review/publish,
+PDF source extraction into a DRAFT changeset, canonical Neo4j shadow verification and citation-bound
+GraphRAG. PostgreSQL releases remain canonical; Neo4j can be deleted and rebuilt. The current Mac
+developer extraction call is synchronous and bounded. A leased durable inference worker remains a
+production promotion gate rather than an implemented production claim.
+
+Model-authored evidence text is never canonical input. The server whitespace-normalizes each parsed
+page into stable bounded evidence units, supplies only their opaque IDs to the model and resolves a
+selected ID back to the server-owned excerpt/page/hash. Unknown IDs are rejected and edges whose
+endpoints are absent from the same typed response are discarded before domain validation.
 
 ### API sharing
 
@@ -223,7 +240,7 @@ the canonical `0001` contract, upgrades install it atomically, and partial schem
 ## Backlog schema (not implemented)
 
 Versioned general ABAC policies/bindings, catalog relationships/normalized hierarchy, connection registry,
-governance attachments/general audit export, graph sources/extraction runs, saved-query templates
+general audit export, durable production inference jobs, saved-query templates
 beyond the built-in surfaces and embedding partitions remain target tables. Governed retention
 policy versions, Legal Hold history, typed Maker-Checker erasure requests/decisions and immutable
 archive capability/receipt evidence are implemented. Erasure execution claims/attempts and archive
@@ -231,6 +248,13 @@ export attempts remain target tables.
 These future records remain PostgreSQL canonical state; object-store metadata is not a policy, hold
 or deletion authority. They require a later Alembic revision and updated API/retention/security
 tests; their mention in PRD/architecture is not permission to create ad-hoc columns.
+
+Alembic `0035` adds CR revision rounds and immutable TEST attachment/hash evidence. `0036` adds the
+typed XLSX profile and fenced Bulk publication grants. `0037` adds the Knowledge PDF source/page/
+embedding/extraction, projection verification and GraphRAG audit tables. `0038` expands persisted
+connection-test scopes to actual model execution/authenticated Neo4j query evidence and records the
+non-secret System Configuration/deployment binding on GraphRAG audits. SQLAlchemy metadata, the
+regenerated `0001` baseline and these incremental migrations must remain deterministic equivalents.
 
 `EVENT_RETENTION_DAYS` is a target online-retention input, not a deletion switch. Automatic event deletion remains disabled until immutable export has been written and read back from a verified Object-Lock store, Legal Hold precedence and Maker-Checker erasure approval are implemented, and a dedicated least-privilege retention worker is introduced.
 

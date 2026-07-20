@@ -24,6 +24,7 @@ class UploadState(StrEnum):
 class UploadContentProfile(StrEnum):
     FORMAT_ONLY_V1 = "FORMAT_ONLY_V1"
     DATASET_DESCRIPTION_CSV_V1 = "DATASET_DESCRIPTION_CSV_V1"
+    DATASET_DESCRIPTION_XLSX_V1 = "DATASET_DESCRIPTION_XLSX_V1"
 
 
 class UploadPreparationState(StrEnum):
@@ -75,6 +76,12 @@ class UploadManifest:
             and self.declared_mime != "text/csv"
         ):
             raise ValidationError("The dataset-description profile requires a CSV upload.")
+        if (
+            self.content_profile is UploadContentProfile.DATASET_DESCRIPTION_XLSX_V1
+            and self.declared_mime
+            != "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        ):
+            raise ValidationError("The dataset-description XLSX profile requires an XLSX upload.")
 
     def queue_completion(self, *, parts: list[CompletedUploadPart], expected_version: int) -> None:
         self._check_version(expected_version)
@@ -169,6 +176,7 @@ class UploadManifest:
         *,
         accepted_bucket: str,
         accepted_object_key: str,
+        validated_sha256: str,
         validation_summary: dict[str, object],
         expected_version: int,
     ) -> None:
@@ -177,8 +185,11 @@ class UploadManifest:
             raise ValidationError("Only a validated upload can be accepted.")
         if not accepted_bucket or not accepted_object_key:
             raise ValidationError("Accepted object location is required.")
+        if validated_sha256 != self.declared_sha256:
+            raise ValidationError("Validated object checksum does not match the declaration.")
         self.bucket = accepted_bucket
         self.object_key = accepted_object_key
+        self.actual_sha256 = validated_sha256
         self.validation_summary = dict(validation_summary)
         self.state = UploadState.ACCEPTED
         self.version += 1
@@ -273,7 +284,10 @@ class UploadPreparation:
         source_sha256: str,
         configuration_hash: str,
     ) -> UploadPreparation:
-        if content_profile is not UploadContentProfile.DATASET_DESCRIPTION_CSV_V1:
+        if content_profile not in {
+            UploadContentProfile.DATASET_DESCRIPTION_CSV_V1,
+            UploadContentProfile.DATASET_DESCRIPTION_XLSX_V1,
+        }:
             raise ValidationError("The upload profile has no typed preparation workflow.")
         if source_manifest_version < 1:
             raise ValidationError("The source manifest version is invalid.")

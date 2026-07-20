@@ -19,7 +19,10 @@ branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 
 RLS_SETTING = "NULLIF(current_setting('app.workspace_id', true), '')::uuid"
-EXPECTED_OBJECT_COUNT = 16
+# The generated initial schema owns the table, constraints, index and RLS policy.
+# The per-workspace serial sequence is installed by this bridge so it is also
+# available on a clean database created from regenerated ``0001``.
+EXPECTED_OBJECT_COUNT = 15
 
 
 def _existing_object_count() -> int:
@@ -29,11 +32,8 @@ def _existing_object_count() -> int:
             sa.text(
                 """
                 SELECT
-                    (SELECT count(*) FROM (VALUES
-                        ('governance.manual_metadata_submissions'),
-                        ('governance.manual_metadata_submission_serial_seq')
-                    ) AS expected(relation_name)
-                    WHERE to_regclass(relation_name) IS NOT NULL)
+                    CASE WHEN to_regclass('governance.manual_metadata_submissions') IS NOT NULL
+                        THEN 1 ELSE 0 END
                     + (SELECT count(*) FROM pg_constraint
                        WHERE conname IN (
                            'uq_assets_projection_workspace_id',

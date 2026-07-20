@@ -1,0 +1,451 @@
+from __future__ import annotations
+
+import json
+from collections.abc import Mapping, Sequence
+from typing import Any, Protocol
+from urllib.parse import urlsplit
+
+import httpx
+from pydantic import BaseModel, ConfigDict, Field
+from pydantic import ValidationError as PydanticValidationError
+
+from datariver.application.errors import ExternalDependencyError
+from datariver.application.knowledge_pipeline_ports import (
+    KnowledgeAnswerComposer,
+    KnowledgeEmbeddingProvider,
+    TypedKnowledgeExtractor,
+)
+from datariver.domain.common import ValidationError
+from datariver.domain.knowledge import normalize_evidence_excerpt
+from datariver.domain.knowledge_pipeline import (
+    EmbeddingBatch,
+    ExtractedEdgeDraft,
+    ExtractedNodeDraft,
+    ExtractionDraft,
+    GraphRagCompletion,
+    GraphRagEvidence,
+    ModelBinding,
+    PageEmbedding,
+    PdfPage,
+)
+
+MAX_EXTRACTION_NODES_PER_BATCH = 4
+MAX_EXTRACTION_EDGES_PER_BATCH = 2
+MAX_EXTRACTION_OUTPUT_TOKENS = 2_048
+MAX_GRAPHRAG_OUTPUT_TOKENS = 2_048
+MAX_EVIDENCE_UNIT_CHARACTERS = 240
+
+
+class OpenAIJsonTransport(Protocol):
+    async def post_json(
+        self, *, path: str, document: Mapping[str, object]
+    ) -> Mapping[str, Any]: ...
+
+
+class HttpxOpenAIJsonTransport:
+    """Server-configured OpenAI-compatible transport with an explicit host allowlist."""
+
+    def __init__(
+        self,
+        *,
+        base_url: str,
+        allowed_hosts: frozenset[str],
+        api_key: str | None,
+        timeout_seconds: float,
+        transport: httpx.AsyncBaseTransport | None = None,
+    ) -> None:
+        parsed = urlsplit(base_url)
+        if (
+            parsed.scheme not in {"http", "https"}
+            or parsed.hostname not in allowed_hosts
+            or parsed.username is not None
+            or parsed.password is not None
+            or parsed.query
+            or parsed.fragment
+        ):
+            raise ValueError("The inference endpoint is outside the server allowlist.")
+        if not 1 <= timeout_seconds <= 120:
+            raise ValueError("The inference timeout is outside the governed limit.")
+        self._base_url = base_url.rstrip("/")
+        self._headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}
+        self._timeout = timeout_seconds
+        self._transport = transport
+
+    async def post_json(self, *, path: str, document: Mapping[str, object]) -> Mapping[str, Any]:
+        if not path.startswith("/") or ".." in path:
+            raise ValueError("Inference transport paths must be fixed absolute API paths.")
+        try:
+            async with httpx.AsyncClient(
+                base_url=self._base_url,
+                headers=self._headers,
+                timeout=self._timeout,
+                follow_redirects=False,
+                transport=self._transport,
+            ) as client:
+                response = await client.post(path, json=document)
+                response.raise_for_status()
+        except httpx.TimeoutException as error:
+            raise ExternalDependencyError(
+                "The configured inference provider timed out.",
+                dependency="knowledge_inference",
+                retryable=True,
+                provider_code="TIMEOUT",
+            ) from error
+        except httpx.HTTPStatusError as error:
+            status_code = error.response.status_code
+            retryable = status_code in {408, 425, 429} or status_code >= 500
+            raise ExternalDependencyError(
+                "The configured inference provider rejected the request.",
+                dependency="knowledge_inference",
+                retryable=retryable,
+                provider_code=f"HTTP_{status_code}",
+            ) from error
+        except httpx.HTTPError as error:
+            raise ExternalDependencyError(
+                "The configured inference provider is unavailable.",
+                dependency="knowledge_inference",
+                retryable=True,
+                provider_code="NETWORK",
+            ) from error
+        try:
+            value = response.json()
+        except ValueError as error:
+            raise ValidationError(
+                "The inference provider response must be a valid JSON object."
+            ) from error
+        if not isinstance(value, dict):
+            raise ValidationError("The inference provider response must be a JSON object.")
+        return value
+
+
+class _StrictModel(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+
+class _ExtractedNodeProposal(_StrictModel):
+    local_key: str = Field(min_length=1, max_length=128)
+    entity_type: str = Field(min_length=1, max_length=128)
+    properties: dict[str, str | int | float | bool | None] = Field(max_length=8)
+    classification: int = Field(ge=0, le=3)
+    evidence_id: str = Field(min_length=1, max_length=64)
+    confidence: float = Field(ge=0, le=1)
+
+
+class _ExtractedEdgeProposal(_StrictModel):
+    local_key: str = Field(min_length=1, max_length=128)
+    source_key: str = Field(min_length=1, max_length=128)
+    target_key: str = Field(min_length=1, max_length=128)
+    edge_type: str = Field(min_length=1, max_length=128)
+    properties: dict[str, str | int | float | bool | None] = Field(max_length=8)
+    classification: int = Field(ge=0, le=3)
+    evidence_id: str = Field(min_length=1, max_length=64)
+    confidence: float = Field(ge=0, le=1)
+
+
+class _ExtractionResponse(_StrictModel):
+    nodes: list[_ExtractedNodeProposal] = Field(max_length=MAX_EXTRACTION_NODES_PER_BATCH)
+    edges: list[_ExtractedEdgeProposal] = Field(max_length=MAX_EXTRACTION_EDGES_PER_BATCH)
+
+
+class _GraphRagResponse(_StrictModel):
+    # Ollama 0.32.1 cannot compile root string minLength/maxLength JSON grammar.
+    # The same bounds are enforced immediately after parsing below.
+    answer: str
+    cited_evidence_ids: list[str] = Field(min_length=1, max_length=100)
+
+
+class _EvidenceUnit(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    evidence_id: str
+    page_number: int
+    text: str
+
+
+def _evidence_units(pages: Sequence[PdfPage]) -> tuple[_EvidenceUnit, ...]:
+    """Create stable exact excerpts for model selection without model-authored evidence."""
+
+    units: list[_EvidenceUnit] = []
+    for page in pages:
+        text = normalize_evidence_excerpt(page.text)
+        start = 0
+        sequence = 1
+        while start < len(text):
+            stop = min(start + MAX_EVIDENCE_UNIT_CHARACTERS, len(text))
+            if stop < len(text):
+                boundary = text.rfind(" ", start + (MAX_EVIDENCE_UNIT_CHARACTERS // 2), stop)
+                if boundary > start:
+                    stop = boundary
+            excerpt = text[start:stop].strip()
+            if excerpt:
+                units.append(
+                    _EvidenceUnit(
+                        evidence_id=f"p{page.page_number:05d}_u{sequence:04d}",
+                        page_number=page.page_number,
+                        text=excerpt,
+                    )
+                )
+                sequence += 1
+            start = stop
+            while start < len(text) and text[start].isspace():
+                start += 1
+    if not units:
+        raise ValidationError("PDF extraction requires non-empty page evidence.")
+    return tuple(units)
+
+
+def _choice_content(document: Mapping[str, Any]) -> str:
+    try:
+        choices = document["choices"]
+        if not isinstance(choices, list) or len(choices) != 1:
+            raise TypeError
+        choice = choices[0]
+        if not isinstance(choice, dict):
+            raise TypeError
+        message = choice["message"]
+        if not isinstance(message, dict) or not isinstance(message["content"], str):
+            raise TypeError
+        return message["content"]
+    except (KeyError, TypeError) as error:
+        raise ValidationError(
+            "The inference provider returned an invalid completion shape."
+        ) from error
+
+
+def _usage(document: Mapping[str, Any]) -> tuple[int | None, int | None]:
+    value = document.get("usage")
+    if not isinstance(value, dict):
+        return None, None
+    prompt = value.get("prompt_tokens")
+    completion = value.get("completion_tokens")
+    return (
+        prompt if isinstance(prompt, int) and prompt >= 0 else None,
+        completion if isinstance(completion, int) and completion >= 0 else None,
+    )
+
+
+def _json_schema(model: type[BaseModel], *, name: str) -> dict[str, object]:
+    return {
+        "type": "json_schema",
+        "json_schema": {"name": name, "strict": True, "schema": model.model_json_schema()},
+    }
+
+
+class OpenAICompatibleEmbeddingProvider(KnowledgeEmbeddingProvider):
+    def __init__(self, *, transport: OpenAIJsonTransport) -> None:
+        self._transport = transport
+
+    async def embed_pages(
+        self, *, pages: Sequence[PdfPage], binding: ModelBinding
+    ) -> EmbeddingBatch:
+        result = await self._transport.post_json(
+            path="/embeddings",
+            document={"model": binding.model, "input": [page.text for page in pages]},
+        )
+        values = result.get("data")
+        if not isinstance(values, list) or len(values) != len(pages):
+            raise ValidationError("Embedding provider output does not match the PDF pages.")
+        indexed: dict[int, tuple[float, ...]] = {}
+        for item in values:
+            if not isinstance(item, dict):
+                raise ValidationError("Embedding provider returned an invalid vector item.")
+            index = item.get("index")
+            vector = item.get("embedding")
+            if not isinstance(index, int) or not isinstance(vector, list):
+                raise ValidationError("Embedding provider returned an invalid vector shape.")
+            invalid_value = any(
+                not isinstance(value, int | float) or isinstance(value, bool) for value in vector
+            )
+            if invalid_value:
+                raise ValidationError("Embedding provider returned a non-numeric vector.")
+            indexed[index] = tuple(float(value) for value in vector)
+        if set(indexed) != set(range(len(pages))):
+            raise ValidationError("Embedding provider indices are incomplete or duplicated.")
+        usage = result.get("usage")
+        prompt_tokens = usage.get("prompt_tokens") if isinstance(usage, dict) else None
+        return EmbeddingBatch(
+            binding=binding,
+            embeddings=tuple(
+                PageEmbedding(page_number=page.page_number, vector=indexed[index])
+                for index, page in enumerate(pages)
+            ),
+            input_tokens=(
+                prompt_tokens if isinstance(prompt_tokens, int) and prompt_tokens >= 0 else None
+            ),
+        )
+
+
+class OpenAICompatibleTypedKnowledgeExtractor(TypedKnowledgeExtractor):
+    def __init__(self, *, transport: OpenAIJsonTransport) -> None:
+        self._transport = transport
+
+    async def propose(
+        self,
+        *,
+        pages: Sequence[PdfPage],
+        entity_types: frozenset[str],
+        edge_types: frozenset[str],
+        binding: ModelBinding,
+    ) -> ExtractionDraft:
+        if sum(len(page.text) for page in pages) > 160_000:
+            raise ValidationError("PDF extraction must be dispatched in bounded page batches.")
+        evidence_units = _evidence_units(pages)
+        evidence_by_id = {unit.evidence_id: unit for unit in evidence_units}
+        evidence_document = [unit.model_dump() for unit in evidence_units]
+        result = await self._transport.post_json(
+            path="/chat/completions",
+            document={
+                "model": binding.model,
+                "temperature": 0,
+                "max_tokens": MAX_EXTRACTION_OUTPUT_TOKENS,
+                "messages": [
+                    {
+                        "role": "system",
+                        "content": (
+                            "Extract only assertions explicitly supported by the supplied pages. "
+                            "Use only the approved entity and edge types. local_key values must "
+                            "use letters, numbers, and underscores and must be unique within the "
+                            "complete response. For every node and edge, reference exactly one "
+                            "evidence_id from the supplied evidence_units; never invent or rewrite "
+                            "evidence. Every edge endpoint must reference a node in the same "
+                            "response; omit an edge when either endpoint is absent. Omit "
+                            "any item without a supporting evidence_id. Return "
+                            f"at most {MAX_EXTRACTION_NODES_PER_BATCH} nodes and "
+                            f"{MAX_EXTRACTION_EDGES_PER_BATCH} edges. Keep properties to at most "
+                            "four short scalar values."
+                        ),
+                    },
+                    {
+                        "role": "user",
+                        "content": json.dumps(
+                            {
+                                "entity_types": sorted(entity_types),
+                                "edge_types": sorted(edge_types),
+                                "evidence_units": evidence_document,
+                            },
+                            ensure_ascii=False,
+                            sort_keys=True,
+                            separators=(",", ":"),
+                        ),
+                    },
+                ],
+                "response_format": _json_schema(
+                    _ExtractionResponse, name="knowledge_extraction_v1"
+                ),
+            },
+        )
+        try:
+            parsed = _ExtractionResponse.model_validate_json(_choice_content(result))
+        except PydanticValidationError as error:
+            raise ValidationError(
+                "The LLM extraction proposal violates the typed schema."
+            ) from error
+        try:
+            nodes = tuple(
+                ExtractedNodeDraft(
+                    **node.model_dump(exclude={"evidence_id"}),
+                    page_number=evidence_by_id[node.evidence_id].page_number,
+                    evidence_text=evidence_by_id[node.evidence_id].text,
+                )
+                for node in parsed.nodes
+            )
+            node_keys = {node.local_key for node in nodes}
+            edges = tuple(
+                ExtractedEdgeDraft(
+                    **edge.model_dump(exclude={"evidence_id"}),
+                    page_number=evidence_by_id[edge.evidence_id].page_number,
+                    evidence_text=evidence_by_id[edge.evidence_id].text,
+                )
+                for edge in parsed.edges
+                if edge.source_key in node_keys and edge.target_key in node_keys
+            )
+        except KeyError as error:
+            raise ValidationError(
+                "The LLM extraction proposal references unknown page evidence."
+            ) from error
+        input_tokens, output_tokens = _usage(result)
+        return ExtractionDraft(
+            binding=binding,
+            nodes=nodes,
+            edges=edges,
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
+        )
+
+
+class OpenAICompatibleKnowledgeAnswerComposer(KnowledgeAnswerComposer):
+    def __init__(self, *, transport: OpenAIJsonTransport) -> None:
+        self._transport = transport
+
+    async def compose(
+        self,
+        *,
+        question: str,
+        evidence: Sequence[GraphRagEvidence],
+        binding: ModelBinding,
+    ) -> GraphRagCompletion:
+        evidence_document = [
+            {
+                "evidence_id": item.evidence_id,
+                "entity_kind": item.entity_kind,
+                "entity_id": str(item.entity_id),
+                "entity_type": item.entity_type,
+                "properties": item.properties,
+                "source_entity_id": (
+                    str(item.source_entity_id) if item.source_entity_id is not None else None
+                ),
+                "target_entity_id": (
+                    str(item.target_entity_id) if item.target_entity_id is not None else None
+                ),
+                "edge_type": item.edge_type,
+                "source_locator": item.source_locator,
+                "source_version": item.source_version,
+                "page_number": item.page_number,
+                "evidence_excerpt": item.evidence_excerpt,
+                "evidence_sha256": item.evidence_sha256,
+                "source_page_sha256": item.source_page_sha256,
+            }
+            for item in evidence
+        ]
+        result = await self._transport.post_json(
+            path="/chat/completions",
+            document={
+                "model": binding.model,
+                "temperature": 0,
+                "max_tokens": MAX_GRAPHRAG_OUTPUT_TOKENS,
+                "messages": [
+                    {
+                        "role": "system",
+                        "content": (
+                            "Answer only from the authorized evidence JSON. If it is insufficient, "
+                            "say so. Every factual answer must cite one or more exact evidence_id "
+                            "values."
+                        ),
+                    },
+                    {
+                        "role": "user",
+                        "content": json.dumps(
+                            {"question": question, "evidence": evidence_document},
+                            ensure_ascii=False,
+                            sort_keys=True,
+                            separators=(",", ":"),
+                        ),
+                    },
+                ],
+                "response_format": _json_schema(_GraphRagResponse, name="knowledge_graphrag_v1"),
+            },
+        )
+        try:
+            parsed = _GraphRagResponse.model_validate_json(_choice_content(result))
+        except PydanticValidationError as error:
+            raise ValidationError("The LLM GraphRAG answer violates the typed schema.") from error
+        if not parsed.answer.strip() or len(parsed.answer) > 20_000:
+            raise ValidationError("The LLM GraphRAG answer violates the typed schema.")
+        input_tokens, output_tokens = _usage(result)
+        return GraphRagCompletion(
+            answer=parsed.answer,
+            cited_evidence_ids=tuple(parsed.cited_evidence_ids),
+            binding=binding,
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
+        )

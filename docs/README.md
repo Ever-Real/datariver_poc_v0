@@ -22,12 +22,19 @@
 | 17 | [Semiconductor seed workflow](17_SEMICONDUCTOR_SEED_WORKFLOW.md) | restartable external schema, DataHub lineage and Airflow operation | Implemented baseline |
 | 18 | [Semiconductor governance taxonomy](18_SEMICONDUCTOR_GOVERNANCE_TAXONOMY.md) | DataHub glossary/tag hierarchy and deterministic enrichment workflow | Implemented baseline |
 | 19 | [Two-person CR browser acceptance](19_CR_E2E_ACCEPTANCE.md) | target-environment OIDC/WebAuthn intake, independent review and completion evidence | Active acceptance gate |
+| 20 | [Enterprise UI completion PRD](20_ENTERPRISE_UI_COMPLETION_PRD.md) | CR, Knowledge Studio, profile and administrator screen requirements with governed substitutions | Implemented; API gates open |
+| 21 | [Enterprise UI completion checklist](21_ENTERPRISE_UI_COMPLETION_CHECKLIST.md) | requirement-to-component/API/test traceability for the current UI completion work | Implemented; external gates open |
+| 22 | [Four-menu use cases and architecture review](usecases.md) | Search, Registration, CR and Knowledge use cases, integration gates and proposed ERDs | Step 1 design baseline |
 
 Independent review records: [Data Architect](reviews/2026-07-14_DATA_ARCHITECT_REVIEW.md) and [Data Engineer/SRE](reviews/2026-07-14_DATA_ENGINEER_REVIEW.md).
 
 Architecture decisions are immutable records under `adr/`. Superseded artifacts remain in Git and link to their replacement; they are not silently overwritten.
 
 Current retention decisions: [governed retention and immutable archive](adr/0010-governed-retention-and-immutable-archive.md), [maintained S3 and archive promotion](adr/0012-maintained-s3-and-immutable-archive-promotion.md), and [Chat active-policy binding](adr/0018-chat-retention-policy-binding.md).
+
+Current administrator decisions: [hardware WebAuthn and governed password fallback](adr/0009-hardware-webauthn-and-governed-password-fallback.md), [workspace access roles and development connection probes](adr/0024-workspace-access-roles-and-development-connection-probes.md), and [operator security modes and stable authentication renewal](adr/0025-operator-security-modes-and-stable-auth-renewal.md).
+
+Current account/workflow/runtime decisions: [expiring membership renewal](adr/0026-expiring-human-membership-renewal.md), [CR System-role authority](adr/0027-change-request-system-role-authority.md), and [development System Settings startup activation](adr/0028-development-system-configuration-startup-activation.md).
 
 ## Change control
 

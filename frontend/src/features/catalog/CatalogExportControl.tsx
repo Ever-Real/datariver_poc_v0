@@ -35,6 +35,7 @@ interface CatalogExportControlProps {
   searchFields?: string[]
   classification?: Classification
   lifecycle?: 'ACTIVE'
+  compact?: boolean
   navigate?: (url: string) => void
   pollMilliseconds?: number
 }
@@ -51,6 +52,7 @@ export function CatalogExportControl({
   searchFields,
   classification,
   lifecycle,
+  compact = false,
   navigate = (url) => window.location.assign(url),
   pollMilliseconds = 1_500,
 }: CatalogExportControlProps) {
@@ -85,12 +87,12 @@ export function CatalogExportControl({
     return () => { active = false; window.clearTimeout(timer) }
   }, [api, pollMilliseconds, record, workerEnabled])
 
-  const create = async () => {
+  const create = async (requestedFormat = exportFormat) => {
     if (!workerEnabled || restricted || creating || pending) return
+    setExportFormat(requestedFormat)
     setCreating(true)
     setError(undefined)
     const generation = boundaryGeneration.current
-    const requestedFormat = exportFormat
     const payload: CatalogExportCreateRequest = {
       q: query,
       ...(assetType ? { asset_type: assetType } : {}),
@@ -102,7 +104,7 @@ export function CatalogExportControl({
       ...(classification ? { classification } : {}),
       ...(lifecycle ? { lifecycle } : {}),
       sort: 'NAME_ASC',
-      format: exportFormat,
+      format: requestedFormat,
     }
     try {
       const created = await api.create(payload, newIdempotencyKey('catalog-export'))
@@ -139,6 +141,17 @@ export function CatalogExportControl({
     : restricted
       ? 'RESTRICTED 자산은 Search 명시 권한과 무관하게 CSV 내보내기와 XLSX 내보내기가 금지됩니다.'
       : '현재 검색 조건과 권한 스냅샷을 서버에서 검증한 뒤 CSV 또는 XLSX를 생성합니다.'
+
+  if (compact) return <section className="catalog-export-control catalog-export-control-compact" aria-label="카탈로그 내보내기">
+    <p className="sr-only" id="catalog-export-description">{disabledReason}</p>
+    <div className="catalog-export-actions">
+      <button type="button" className="button button-secondary" title={disabledReason} aria-describedby="catalog-export-description" disabled={!workerEnabled || restricted || creating || pending} onClick={() => void create('CSV')}><Download size={13} aria-hidden="true" />{creating && exportFormat === 'CSV' ? '요청 중…' : 'CSV 저장'}</button>
+      <button type="button" className="button button-secondary" title={disabledReason} aria-describedby="catalog-export-description" disabled={!workerEnabled || restricted || creating || pending} onClick={() => void create('XLSX')}><Download size={13} aria-hidden="true" />{creating && exportFormat === 'XLSX' ? '요청 중…' : 'Excel 저장'}</button>
+      {workerEnabled && record?.state === 'COMPLETED' && <button type="button" className="button" disabled={downloading} onClick={() => void download()}><Download size={13} aria-hidden="true" />{downloading ? 'URL 확인 중…' : `${artifactFormat} 다운로드`}</button>}
+    </div>
+    {workerEnabled && record && <div className="catalog-export-status" role="status" aria-live="polite"><span className={`badge badge-soft export-state-${record.state.toLowerCase()}`}>{stateLabels[record.state] ?? record.state}</span></div>}
+    <ErrorNotice error={error} />
+  </section>
 
   return <section className="catalog-export-control" aria-label="카탈로그 내보내기">
     <div>

@@ -40,6 +40,7 @@ from datariver.domain.authz import (
     ResourceAttributes,
     SubjectAttributes,
 )
+from datariver.domain.catalog import is_dataset_asset_type
 from datariver.domain.common import (
     ConflictError,
     NotFoundError,
@@ -47,6 +48,7 @@ from datariver.domain.common import (
     canonical_json_hash,
 )
 from datariver.domain.registration import (
+    UploadContentProfile,
     UploadManifest,
     UploadPreparation,
     UploadPreparationState,
@@ -295,6 +297,10 @@ class RegistrationCandidateQueryService:
         after_ordinal: int,
         maximum_items: int,
     ) -> bool:
+        try:
+            definition = typed_profile_definition(UploadContentProfile(receipt.content_profile))
+        except (ValueError, ValidationError):
+            return False
         if len(candidates) > maximum_items or (
             not candidates and after_ordinal < receipt.item_count
         ):
@@ -342,6 +348,7 @@ class RegistrationCandidateQueryService:
                 target_asset_id=candidate.target_asset_id,
                 proposed_description=candidate.proposed_description,
                 submitted_identity_hash=expected_identity_hash,
+                definition=definition,
             ):
                 return False
             previous = candidate.ordinal
@@ -358,7 +365,7 @@ class RegistrationCandidateQueryService:
         return (
             target.workspace_id == candidate.workspace_id
             and target.asset_id == candidate.target_asset_id
-            and target.asset_type == "DATASET"
+            and is_dataset_asset_type(target.asset_type)
             and target.lifecycle == "ACTIVE"
             and target.platform == candidate.submitted_platform
             and target.database_name == candidate.submitted_database_name

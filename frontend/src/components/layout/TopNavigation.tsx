@@ -13,6 +13,8 @@ interface TopNavigationProps {
   page: Page
   client?: ApiClient
   workspace: string
+  workspaceSelectionEnabled?: boolean
+  hardwareWebauthnEnabled?: boolean
   deploymentTier: 'SINGLE_NODE_PILOT' | 'HA_CANDIDATE' | 'HA_ACCEPTED'
   displayName: string
   email?: string
@@ -21,6 +23,7 @@ interface TopNavigationProps {
   externalSystemLinks: ExternalSystemLink[]
   onNavigate: (page: Page) => void
   onNavigateAdmin: (section: string) => void
+  onProfile?: () => void
   onSearch: (query: string) => void
   onWorkspaceChange: (workspace: string) => void
   onPasswordReauth?: () => void
@@ -32,6 +35,8 @@ export function TopNavigation({
   page,
   client,
   workspace,
+  workspaceSelectionEnabled = true,
+  hardwareWebauthnEnabled = true,
   deploymentTier,
   displayName,
   email,
@@ -40,6 +45,7 @@ export function TopNavigation({
   externalSystemLinks,
   onNavigate,
   onNavigateAdmin,
+  onProfile,
   onSearch,
   onWorkspaceChange,
   onPasswordReauth,
@@ -77,11 +83,14 @@ export function TopNavigation({
       <ProfileMenu
         displayName={displayName}
         workspace={workspace}
+        workspaceSelectionEnabled={workspaceSelectionEnabled}
+        hardwareWebauthnEnabled={hardwareWebauthnEnabled}
         deploymentTier={deploymentTier}
         adminMenuItems={adminMenuItems}
         email={email}
         adminContextStatus={adminContextStatus}
         onAdmin={onNavigateAdmin}
+        onProfile={onProfile}
         onWorkspaceChange={onWorkspaceChange}
         onPasswordReauth={onPasswordReauth}
         onEnrollSecurityKey={onEnrollSecurityKey}

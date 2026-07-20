@@ -2,6 +2,53 @@
 
 ## Latest executed baseline
 
+### 2026-07-20 account/CR/System Settings policy verification
+
+The approved account renewal, System-routed CR authority and development System Settings activation
+contracts passed repository-wide Ruff format/lint, strict mypy over `233` source/test files,
+`639` backend tests and `scripts/verify_static.py`. The frontend passed TypeScript, zero-warning
+ESLint, `36` files / `148` Vitest tests and the production build. The build emitted the existing
+main-chunk warning at `838.50 kB` (`241.83 kB` gzip); this remains a performance backlog, not a
+correctness exception.
+
+The generated canonical `0001` produced SHA-256
+`e4e8630af3604e4c3dfb676b1dddc0f91ddd4a9035cc50406a02201f90881159` on two consecutive runs.
+Compatibility tests now cover absent, complete and partial canonical state plus non-destructive
+downgrade for revisions `0031` through `0034`; `71` focused migration/domain tests passed. The live
+Mac database upgraded `0031 -> 0034`, and a separate empty temporary database migrated from
+`0001` through `0034` before being removed. Read-back verified the new renewal and configuration-version
+tables, application update rights only on the required membership expiry columns, and SELECT-only
+profile-version access for the upload/governance/export startup readers.
+
+Rebuilt API, Web and affected workers started successfully. Direct API, Web and APISIX readiness
+returned HTTP 200; host Ollama reported `0.32.1`, and local DataHub and Neo4j returned HTTP 200.
+An API replacement exposed APISIX's former startup-pinned address, so the gateway was changed to
+APISIX DNS discovery through Docker's embedded resolver and a subsequent API-only replacement
+returned through the untouched gateway. The in-app browser rendered a stable unauthenticated login
+screen with no console errors; authenticated Admin UI acceptance remains open because that browser
+had no user session and no credential was substituted.
+
+### 2026-07-20 enterprise UI completion verification
+
+The Change Management, Knowledge Management, Profile and administrator completion added a shared
+four-stage Stepper, non-zero React Flow canvas, Tailwind Vite integration, real registry/releases,
+typed visual ontology changesets, a separate release-pinned Knowledge Chat route and server-derived
+administrator profile routes. No mock API, raw SQL/Cypher pass-through, local-storage role or direct
+DataHub/IdP mutation was added. Component coverage includes future-stage blocking, labelled empty
+graph rendering, bounded neighbor request shape and absence of general Chat calls, verified profile
+facts and administrator-menu filtering.
+
+After implementation, strict TypeScript, zero-warning ESLint, the full Vitest run (`31` files /
+`134` tests), the production Vite build and `scripts/verify_static.py` passed. The build emitted a
+non-fatal main-chunk warning at `792.04 kB` (`230.77 kB` gzip), retained as a separate performance
+backlog rather than hidden by raising the limit. The rebuilt web container served the matching
+`main-CVV_dwJf.js` asset and an authenticated administrator SSO session rendered the CR intake,
+Knowledge Registry/ingestion/separate Chat, Profile, USERS/SYSTEMS, user inspector, metadata/security
+logs and real vocabulary projection with zero browser warnings or errors. The safe Cypher editor
+parsed the local Product/Material relationship into a normalized preview without a server request.
+A separate ordinary-user live session and a populated four-stage CR remain environment gates; no
+password, browser storage, service account, direct grant or fabricated record was substituted.
+
 The current development/integration baseline passes 495 backend tests, strict mypy over 199 source/test files, Ruff formatting/lint, TypeScript/ESLint/build, deterministic migration generation and static architecture/Compose/role/readiness checks. Post-baseline migration tests cover absent, complete and partial canonical states plus non-destructive compatibility downgrade for `0013` through `0018`. A completely empty temporary database migrated through the sole head, and a separate canonical-`0001` database advanced through every compatibility revision; both reached `0018`. The last complete frontend baseline remains 18 files/75 tests; the two registration test files pass 17/17 tests and the governed change-workbench file passes 9/9 tests, while both ordinary and single-worker whole-suite runs on the Windows WSL network drive reached a five-minute bound without assertion output. The frontend build emits JS 503.11 kB (gzip 143.36 kB) and CSS 46.70 kB (gzip 9.12 kB), with the documented post-minification chunk-size warning still open. The live hybrid-development baseline also passed PostgreSQL RLS, Keycloak service-token OIDC, schema-aware API/APISIX readiness, Vite-to-APISIX proxying, DataHub GraphQL authentication and semiconductor seed verification. The current source additionally serves immutable server-owned governance target bindings and a typed MANUAL dataset-description preview/create contract through APISIX; raw Aspect entry points require a separately granted hardware-human action and have no ordinary browser form. BULK upload/validation uses attempt-scoped promotion, full promoted-byte SHA-256 read-back and a commit receipt before source cleanup. Migration `0016` installs forced-RLS preparation job/receipt/candidate/binding evidence, `0017` preserves legacy candidates honestly and requires submitted hierarchy plus V2 hashes, and `0018` binds new Chat sessions to the exact active governed retention policy and policy-derived deadline. A non-default 37-day policy passed live insert, while legacy insert, deadline mutation and superseded-policy append were denied. The API and v0.3-style BULK workbench select a bounded typed profile and queue/read exact accepted-evidence preparation state without exposing a raw proposal path. The source-only bounded parser enforces the unchanged V1 CSV byte shape and the V2 submitted-identity/hash evidence contract; its read-only candidate page revalidates receipt/hash evidence and current set-based authorization without provider/object calls, while the runtime worker and typed proposal execution remain disabled. The governed change workbench now provides a bounded authorized list, fresh detail authorization, immutable target/approval/transition evidence and explicit version-fenced commands; denied commands are never replayed automatically. The assistant-inference contract now binds monthly workspace/user token accounting, explicit pre-execution internal budget fallback, exact provider identity/region and independently verified URN grounding; its provider and verifier adapters remain disabled. The earlier container baseline additionally passed Airflow DAG imports, optional seed remove and repository/IaC Trivy scanning. Exact commands and the distinction between current source and earlier evidence are in [the acceptance report](12_ACCEPTANCE_REPORT.md).
 
 ### 2026-07-19 catalog/governance corrective verification
@@ -137,6 +184,35 @@ membership was restored. This is development evidence, not the required target-l
 already-open Chat/SSE gate.
 
 The strategy below remains the production release matrix. Target DataHub/object storage, backup/restore, browser PKCE/hardware-WebAuthn and governed password fallback, load/soak, queue saturation, worker crash-at-each-boundary and promoted-image scans are still environment gates rather than silently assumed passes.
+
+Administrator Role and System Settings changes add the following focused gates:
+
+- access-role metadata and migration checks prove workspace RLS, bounded application grants, no
+  credential columns and no delete grant; deterministic initial-migration regeneration must produce
+  an identical file;
+- Role component tests load definitions from the server and prove assignment uses the governed
+  membership-role endpoint rather than a client template;
+- an in-use Role must reject security-bearing edits/deactivation, a subject cannot change its own
+  Role, and assignment must retain membership version, idempotency, hardware assurance and ABAC
+  validation;
+- System Settings validation rejects unknown top-level keys, embedded credentials, malformed model
+  identities and missing required storage fields; new secret values never cross the browser API;
+- connection tests accept only a known system identifier and an already-saved profile. Probe tests
+  cover fixed paths, authentication-required status, unavailable targets, and blocked
+  link-local/multicast/unspecified/reserved addresses;
+- backend test Settings explicitly disable the optional local Ollama path unless a test is about
+  that adapter. A developer `.env` must not change unit-test expectations.
+- OIDC verifier tests prove that disabling WebAuthn refuses hardware assurance even for matching
+  ACR/AMR/authentication-time claims; profile-menu tests remove enrollment and Workspace switching;
+  high-risk authorization continues to fail closed rather than accepting password assurance;
+- the stable API-client hook test proves a token/Workspace update retains client object identity
+  while the next request receives the latest Authorization and Workspace headers. This guards the
+  periodic token-renewal flicker regression without suppressing a real Workspace remount.
+
+Audit/Log component tests verify the internal tab switch and zero fabricated rows while the typed
+audit read/export APIs remain absent. Retention UI tests and source review must preserve the policy
+→ expiry candidate → Legal Hold precedence → erasure-review order and the invariant that APPROVED
+does not execute deletion. Target-provider deletion remains an unimplemented release gate.
 
 ## Test pyramid and gates
 

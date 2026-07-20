@@ -16,8 +16,13 @@ from datariver.application.dto import (
 )
 from datariver.application.services.authorization import AuthorizationService
 from datariver.application.services.knowledge import KnowledgeService
+from datariver.application.services.knowledge_pipeline import (
+    KnowledgeGraphRagService,
+    KnowledgeSourcePipeline,
+    VerifiedProjectionService,
+)
 from datariver.domain.authz import Action, Classification
-from datariver.domain.common import ValidationError
+from datariver.domain.common import ConflictError, ValidationError
 from datariver.domain.knowledge import (
     ChangeOperationType,
     ChangeSetState,
@@ -28,8 +33,25 @@ from datariver.domain.knowledge import (
     GraphSnapshot,
     Provenance,
 )
+from datariver.domain.knowledge_pipeline import ModelBinding
 from datariver.infrastructure.db.authz import SqlDecisionWriter
 from datariver.infrastructure.db.knowledge import SqlKnowledgeStore
+from datariver.infrastructure.db.knowledge_pipeline import (
+    SqlKnowledgePipelineRepository,
+    SqlSemanticSeedSelector,
+)
+from datariver.infrastructure.knowledge.neo4j import (
+    Neo4jKnowledgeProjectionAdapter,
+    Neo4jScopedEvidenceRetriever,
+)
+from datariver.infrastructure.knowledge.object_store import ObjectStoreKnowledgeSourceReader
+from datariver.infrastructure.knowledge.openai_compatible import (
+    HttpxOpenAIJsonTransport,
+    OpenAICompatibleEmbeddingProvider,
+    OpenAICompatibleKnowledgeAnswerComposer,
+    OpenAICompatibleTypedKnowledgeExtractor,
+)
+from datariver.infrastructure.knowledge.pdf import PypdfPageAwareParser
 from datariver.interfaces.http.dependencies import ContextDep, SessionDep, get_container
 from datariver.interfaces.http.schemas import (
     GraphEdgeResponse,
@@ -41,10 +63,17 @@ from datariver.interfaces.http.schemas import (
     KnowledgeChangeSetResponse,
     KnowledgeChangeSetReview,
     KnowledgeGraphCreate,
+    KnowledgeGraphRagCitationResponse,
+    KnowledgeGraphRagRequest,
+    KnowledgeGraphRagResponse,
     KnowledgeGraphResponse,
+    KnowledgeModelAuditResponse,
+    KnowledgeProjectionResponse,
     KnowledgeReleasePublish,
     KnowledgeReleaseResponse,
     KnowledgeSnapshotResponse,
+    KnowledgeSourceAnalyzeRequest,
+    KnowledgeSourceAnalyzeResponse,
     KnowledgeValidationResponse,
     NeighborAnalysisRequest,
     NeighborAnalysisResponse,
@@ -52,6 +81,110 @@ from datariver.interfaces.http.schemas import (
 )
 
 router = APIRouter(prefix="/knowledge/graphs", tags=["knowledge"])
+
+_KNOWLEDGE_PROVIDER = "ollama-openai-compatible"
+_EXTRACTION_PROMPT_VERSION = "knowledge-pdf-extraction-v1"
+_EXTRACTION_SCHEMA_VERSION = "knowledge-extraction-schema-v1"
+_GRAPHRAG_PROMPT_VERSION = "knowledge-graphrag-v1"
+_GRAPHRAG_SCHEMA_VERSION = "knowledge-graphrag-schema-v1"
+_EMBEDDING_ADAPTER_CONTRACT = "openai-compatible-embeddings-v1"
+_CHAT_JSON_SCHEMA_ADAPTER_CONTRACT = "openai-compatible-chat-json-schema-v1"
+
+
+def _activated_model_binding(
+    *,
+    settings: object,
+    system_id: str,
+    model: str,
+    prompt_version: str,
+    tool_schema_version: str,
+    adapter_contract: str,
+) -> ModelBinding:
+    versions = getattr(settings, "system_configuration_runtime_versions", {})
+    hashes = getattr(settings, "system_configuration_runtime_hashes", {})
+    version = versions.get(system_id)
+    configuration_hash = hashes.get(system_id)
+    if version is not None and configuration_hash is None:
+        raise ConflictError(
+            "The activated model configuration is missing its immutable revision hash."
+        )
+    return ModelBinding.activated(
+        provider=_KNOWLEDGE_PROVIDER,
+        model=model,
+        prompt_version=prompt_version,
+        tool_schema_version=tool_schema_version,
+        configuration_version=version,
+        configuration_hash=configuration_hash,
+        adapter_contract=adapter_contract,
+    )
+
+
+def _knowledge_adapters(
+    request: Request,
+) -> tuple[
+    OpenAICompatibleEmbeddingProvider,
+    OpenAICompatibleTypedKnowledgeExtractor,
+    OpenAICompatibleKnowledgeAnswerComposer,
+    ModelBinding,
+    ModelBinding,
+    ModelBinding,
+]:
+    settings = get_container(request).settings
+    if not settings.knowledge_pipeline_enabled:
+        raise ConflictError(
+            "The Knowledge pipeline requires activated Chat, embedding, and Neo4j settings."
+        )
+    if (
+        settings.local_ollama_chat_base_url is None
+        or settings.local_ollama_chat_model is None
+        or settings.local_ollama_embedding_base_url is None
+        or settings.local_ollama_embedding_model is None
+    ):
+        raise ConflictError("The activated Knowledge model bindings are incomplete.")
+    embedding_transport = HttpxOpenAIJsonTransport(
+        base_url=str(settings.local_ollama_embedding_base_url),
+        allowed_hosts=frozenset({"host.docker.internal"}),
+        api_key=None,
+        timeout_seconds=settings.local_ollama_embedding_timeout_seconds,
+    )
+    chat_transport = HttpxOpenAIJsonTransport(
+        base_url=str(settings.local_ollama_chat_base_url),
+        allowed_hosts=frozenset({"host.docker.internal"}),
+        api_key=None,
+        timeout_seconds=settings.local_ollama_chat_timeout_seconds,
+    )
+    embedding_binding = _activated_model_binding(
+        settings=settings,
+        system_id="LLM_EMBEDDING",
+        model=settings.local_ollama_embedding_model,
+        prompt_version="embedding-v1",
+        tool_schema_version="openai-embeddings-v1",
+        adapter_contract=_EMBEDDING_ADAPTER_CONTRACT,
+    )
+    extraction_binding = _activated_model_binding(
+        settings=settings,
+        system_id="LLM_CHAT_MODEL",
+        model=settings.local_ollama_chat_model,
+        prompt_version=_EXTRACTION_PROMPT_VERSION,
+        tool_schema_version=_EXTRACTION_SCHEMA_VERSION,
+        adapter_contract=_CHAT_JSON_SCHEMA_ADAPTER_CONTRACT,
+    )
+    graphrag_binding = _activated_model_binding(
+        settings=settings,
+        system_id="LLM_CHAT_MODEL",
+        model=settings.local_ollama_chat_model,
+        prompt_version=_GRAPHRAG_PROMPT_VERSION,
+        tool_schema_version=_GRAPHRAG_SCHEMA_VERSION,
+        adapter_contract=_CHAT_JSON_SCHEMA_ADAPTER_CONTRACT,
+    )
+    return (
+        OpenAICompatibleEmbeddingProvider(transport=embedding_transport),
+        OpenAICompatibleTypedKnowledgeExtractor(transport=chat_transport),
+        OpenAICompatibleKnowledgeAnswerComposer(transport=chat_transport),
+        embedding_binding,
+        extraction_binding,
+        graphrag_binding,
+    )
 
 
 def _service(request: Request, session: SessionDep) -> KnowledgeService:
@@ -155,6 +288,9 @@ def _provenance_response(item: Provenance) -> ProvenanceRequest:
         source_version=item.source_version,
         method=item.method,
         confidence=item.confidence,
+        evidence_excerpt=item.evidence_excerpt,
+        evidence_sha256=item.evidence_sha256,
+        source_page_sha256=item.source_page_sha256,
     )
 
 
@@ -789,4 +925,272 @@ async def analyze_neighbors(
         nodes=[_node_response(node) for node in view.nodes.values()],
         edges=[_edge_response(edge) for edge in view.edges.values()],
         truncated=truncated,
+    )
+
+
+@router.post(
+    "/{graph_id}/sources/{upload_id}/analyze",
+    status_code=201,
+    response_model=KnowledgeSourceAnalyzeResponse,
+)
+async def analyze_knowledge_pdf_source(
+    graph_id: UUID,
+    upload_id: UUID,
+    payload: KnowledgeSourceAnalyzeRequest,
+    request: Request,
+    context: ContextDep,
+    session: SessionDep,
+) -> KnowledgeSourceAnalyzeResponse | JSONResponse:
+    service = _service(request, session)
+    graph = await service.get_graph(
+        workspace_id=context.workspace_id,
+        graph_id=graph_id,
+        subject=context.subject,
+        environment=context.environment,
+        request_id=context.request_id,
+    )
+    if graph is None:
+        return _not_found(request, context.request_id)
+    await service.authorize_source_analysis(
+        workspace_id=context.workspace_id,
+        graph=graph,
+        subject=context.subject,
+        environment=context.environment,
+        request_id=context.request_id,
+    )
+    embedding, extractor, _, embedding_binding, extraction_binding, _ = _knowledge_adapters(request)
+    repository = SqlKnowledgePipelineRepository(session)
+    source, entity_types, edge_types = await repository.prepare_source(
+        workspace_id=context.workspace_id,
+        graph_id=graph_id,
+        upload_id=upload_id,
+        actor_id=context.subject.subject_id,
+    )
+    pipeline = KnowledgeSourcePipeline(
+        reader=ObjectStoreKnowledgeSourceReader(object_store=get_container(request).object_store),
+        parser=PypdfPageAwareParser(),
+        embedding=embedding,
+        extractor=extractor,
+    )
+    analysis = await pipeline.analyze_pdf(
+        source=source,
+        entity_types=entity_types,
+        edge_types=edge_types,
+        embedding_binding=embedding_binding,
+        extraction_binding=extraction_binding,
+    )
+    changeset_id = await repository.persist_analysis_as_draft(
+        analysis=analysis,
+        title=payload.title,
+        actor_id=context.subject.subject_id,
+    )
+    return KnowledgeSourceAnalyzeResponse(
+        source_snapshot_id=source.snapshot_id,
+        changeset_id=changeset_id,
+        page_count=len(analysis.pages),
+        proposed_node_count=len(analysis.extraction.nodes),
+        proposed_edge_count=len(analysis.extraction.edges),
+        evidence_hash=analysis.evidence_hash(),
+        embedding_model=embedding_binding.model,
+        extraction_model=extraction_binding.model,
+    )
+
+
+@router.post(
+    "/{graph_id}/releases/{release_id}/project",
+    status_code=201,
+    response_model=KnowledgeProjectionResponse,
+)
+async def project_knowledge_release(
+    graph_id: UUID,
+    release_id: UUID,
+    request: Request,
+    context: ContextDep,
+    session: SessionDep,
+) -> KnowledgeProjectionResponse | JSONResponse:
+    container = get_container(request)
+    if not container.settings.knowledge_pipeline_enabled or container.knowledge_neo4j is None:
+        raise ConflictError("The activated Neo4j projection adapter is unavailable.")
+    service = _service(request, session)
+    graph = await service.get_graph(
+        workspace_id=context.workspace_id,
+        graph_id=graph_id,
+        subject=context.subject,
+        environment=context.environment,
+        request_id=context.request_id,
+    )
+    if graph is None:
+        return _not_found(request, context.request_id)
+    await service.authorize_projection(
+        workspace_id=context.workspace_id,
+        graph=graph,
+        subject=context.subject,
+        environment=context.environment,
+        request_id=context.request_id,
+    )
+    release_snapshot = await SqlKnowledgeStore(session).get_release_snapshot(
+        workspace_id=context.workspace_id,
+        graph_id=graph_id,
+        release_id=release_id,
+        clearance=int(Classification.RESTRICTED),
+        maximum_nodes=5_000,
+    )
+    if release_snapshot is None:
+        return _not_found(request, context.request_id)
+    release, snapshot = release_snapshot
+    receipt = await VerifiedProjectionService(
+        writer=Neo4jKnowledgeProjectionAdapter(executor=container.knowledge_neo4j)
+    ).project_shadow_release(
+        workspace_id=context.workspace_id,
+        graph_id=graph_id,
+        release_id=release_id,
+        release_hash=release.content_hash,
+        snapshot=snapshot,
+    )
+    await SqlKnowledgePipelineRepository(session).record_projection(receipt=receipt)
+    return KnowledgeProjectionResponse(
+        deployment_id=receipt.deployment_id,
+        release_id=receipt.release_id,
+        release_hash=receipt.release_hash,
+        node_count=receipt.node_count,
+        edge_count=receipt.edge_count,
+        state="SHADOW_VERIFIED",
+    )
+
+
+@router.post(
+    "/{graph_id}/releases/{release_id}/graphrag",
+    response_model=KnowledgeGraphRagResponse,
+)
+async def query_knowledge_release(
+    graph_id: UUID,
+    release_id: UUID,
+    payload: KnowledgeGraphRagRequest,
+    request: Request,
+    context: ContextDep,
+    session: SessionDep,
+) -> KnowledgeGraphRagResponse | JSONResponse:
+    container = get_container(request)
+    if container.knowledge_neo4j is None:
+        raise ConflictError("The activated Neo4j query adapter is unavailable.")
+    service = _service(request, session)
+    graph = await service.get_graph(
+        workspace_id=context.workspace_id,
+        graph_id=graph_id,
+        subject=context.subject,
+        environment=context.environment,
+        request_id=context.request_id,
+    )
+    if graph is None:
+        return _not_found(request, context.request_id)
+    release_result = await service.get_release_for_graphrag(
+        workspace_id=context.workspace_id,
+        graph=graph,
+        release_id=release_id,
+        subject=context.subject,
+        environment=context.environment,
+        request_id=context.request_id,
+        maximum_nodes=2_000,
+    )
+    if release_result is None:
+        return _not_found(request, context.request_id)
+    release, snapshot = release_result
+    repository = SqlKnowledgePipelineRepository(session)
+    await repository.require_verified_projection(
+        workspace_id=context.workspace_id,
+        graph_id=graph_id,
+        release_id=release_id,
+        release_hash=release.content_hash,
+    )
+    embedding, _, composer, embedding_binding, _, graphrag_binding = _knowledge_adapters(request)
+    selector = SqlSemanticSeedSelector(
+        session=session,
+        embedding=embedding,
+        binding=embedding_binding,
+    )
+    answer = await KnowledgeGraphRagService(
+        retriever=Neo4jScopedEvidenceRetriever(
+            executor=container.knowledge_neo4j,
+            semantic_selector=selector,
+        ),
+        composer=composer,
+        audit_writer=repository,
+    ).answer(
+        request_id=context.request_id,
+        workspace_id=context.workspace_id,
+        graph_id=graph_id,
+        release_id=release_id,
+        actor_id=context.subject.subject_id,
+        question=payload.question,
+        start_node_id=payload.start_node_id,
+        direction=payload.direction,
+        edge_types=frozenset(payload.edge_types),
+        maximum_classification=int(context.subject.clearance),
+        maximum_hops=payload.maximum_hops,
+        maximum_nodes=payload.maximum_nodes,
+        binding=graphrag_binding,
+    )
+    cited_node_ids = {
+        citation.entity_id for citation in answer.citations if citation.entity_kind == "NODE"
+    }
+    cited_edge_ids = {
+        citation.entity_id for citation in answer.citations if citation.entity_kind == "EDGE"
+    }
+    edge_endpoint_ids = {
+        entity_id
+        for citation in answer.citations
+        if citation.entity_kind == "EDGE"
+        for entity_id in (citation.source_entity_id, citation.target_entity_id)
+        if entity_id is not None
+    }
+    visible_node_ids = cited_node_ids | edge_endpoint_ids
+    visible_nodes = {
+        entity_id: node
+        for entity_id, node in snapshot.nodes.items()
+        if entity_id in visible_node_ids
+    }
+    visible_edges = {
+        edge_id: edge
+        for edge_id, edge in snapshot.edges.items()
+        if (
+            edge_id in cited_edge_ids
+            or (edge.source_entity_id in cited_node_ids and edge.target_entity_id in cited_node_ids)
+        )
+        and edge.source_entity_id in visible_nodes
+        and edge.target_entity_id in visible_nodes
+    }
+    visible_snapshot = GraphSnapshot(nodes=visible_nodes, edges=visible_edges)
+    visible_release = _scoped_release(release, visible_snapshot)
+    return KnowledgeGraphRagResponse(
+        release=_release_response(visible_release),
+        nodes=[_node_response(node) for node in visible_nodes.values()],
+        edges=[_edge_response(edge) for edge in visible_edges.values()],
+        truncated=len(visible_nodes) != len(snapshot.nodes),
+        answer=answer.answer,
+        citations=[
+            KnowledgeGraphRagCitationResponse(
+                evidence_id=value.evidence_id,
+                source_locator=value.source_locator,
+                source_version=value.source_version,
+                page_number=value.page_number,
+                entity_kind=value.entity_kind,
+                entity_id=value.entity_id,
+                source_entity_id=value.source_entity_id,
+                target_entity_id=value.target_entity_id,
+                edge_type=value.edge_type,
+                evidence_excerpt=value.evidence_excerpt,
+                evidence_sha256=value.evidence_sha256,
+                source_page_sha256=value.source_page_sha256,
+            )
+            for value in answer.citations
+        ],
+        model_audit=KnowledgeModelAuditResponse(
+            provider=answer.binding.provider,
+            model=answer.binding.model,
+            prompt_version=answer.binding.prompt_version,
+            tool_schema_version=answer.binding.tool_schema_version,
+            configuration_source=answer.binding.configuration_source,
+            configuration_version=answer.binding.configuration_version,
+            configuration_hash=answer.binding.configuration_hash,
+        ),
     )

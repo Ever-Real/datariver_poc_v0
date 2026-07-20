@@ -5,7 +5,7 @@ from dataclasses import replace
 from datetime import datetime
 from uuid import UUID
 
-from sqlalchemy import select, text, update
+from sqlalchemy import func, or_, select, text, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from datariver.application.dto import DecisionAuditItem
@@ -17,7 +17,7 @@ from datariver.domain.authz import (
     Decision,
     SubjectAttributes,
 )
-from datariver.domain.common import ForbiddenError
+from datariver.domain.common import ForbiddenError, utc_now
 from datariver.infrastructure.db.models.authz import PolicyDecisionModel
 from datariver.infrastructure.db.models.platform import SubjectModel, WorkspaceMembershipModel
 from datariver.infrastructure.db.rls import set_security_context
@@ -143,6 +143,10 @@ class SqlSubjectReader(SubjectReader):
                 SubjectModel.active.is_(True),
                 WorkspaceMembershipModel.workspace_id == workspace_id,
                 WorkspaceMembershipModel.active.is_(True),
+                or_(
+                    WorkspaceMembershipModel.access_expires_at.is_(None),
+                    WorkspaceMembershipModel.access_expires_at > func.now(),
+                ),
             )
         )
         row = (await self._session.execute(statement)).one_or_none()
@@ -210,7 +214,11 @@ def subject_attributes_from_models(
     return SubjectAttributes(
         subject_id=subject.id,
         workspace_id=membership.workspace_id,
-        active=subject.active and membership.active,
+        active=(
+            subject.active
+            and membership.active
+            and (membership.access_expires_at is None or membership.access_expires_at > utc_now())
+        ),
         department_id=membership.department_id,
         groups=groups,
         job_function=membership.job_function,

@@ -87,6 +87,7 @@ class UploadValidationWorker:
                 manifest=manifest,
                 accepted_bucket=self._accepted_bucket,
                 accepted_object_key=destination_key,
+                validated_sha256=inspection.sha256,
                 validation_summary=summary,
             )
             if not accepted:
@@ -183,6 +184,7 @@ class UploadValidationWorker:
         suffix = PurePath(manifest.display_name).suffix.lower()
         mime = manifest.declared_mime
         expected_suffixes = {
+            "application/pdf": {".pdf"},
             "text/csv": {".csv"},
             "application/json": {".json"},
             "application/yaml": {".yaml", ".yml"},
@@ -197,11 +199,21 @@ class UploadValidationWorker:
                 details={"code": "EXTENSION_MISMATCH"},
             )
         base: dict[str, object] = {
-            "validator_version": "integrity-format-v1",
+            "validator_version": (
+                "integrity-xlsx-v1"
+                if mime == "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                else "integrity-format-v1"
+            ),
             "size_bytes": inspection.size_bytes,
             "sha256": inspection.sha256,
             "content_type": mime,
         }
+        if mime == "application/pdf":
+            if not inspection.prefix.startswith(b"%PDF-") or b"%%EOF" not in inspection.tail:
+                raise ValidationError(
+                    "PDF signature is invalid.", details={"code": "PDF_SIGNATURE"}
+                )
+            return {**base, "coverage": "FULL_SIGNATURE"}
         if mime == "text/csv":
             return {**base, **UploadValidationWorker._validate_csv(inspection)}
         if mime == "application/json":

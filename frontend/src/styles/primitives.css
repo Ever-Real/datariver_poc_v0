@@ -19,11 +19,20 @@
 .app-dialog-close { flex: 0 0 30px; height: 30px; border: 1px solid var(--line-300); border-radius: var(--radius); color: var(--text-600); font-size: 20px; line-height: 1; background: white; }
 .app-dialog-body { min-height: 0; overflow: auto; padding: 14px; }
 .app-dialog-footer { display: flex; justify-content: flex-end; gap: 7px; border-top: 1px solid var(--line-300); padding: 10px 14px; background: #f4f5f3; }
-.dense-table-frame { width: 100%; min-width: 0; overflow: auto; border: 1px solid var(--line-300); border-radius: var(--radius); background: white; }
+.dense-table-frame { width: 100%; min-width: 0; overflow: auto; border: 1px solid var(--line-300); border-radius: var(--radius); background: white; scrollbar-gutter: stable; }
 .dense-data-table { width: 100%; min-width: 840px; border-collapse: collapse; table-layout: fixed; color: var(--text-900); font-size: 12px; }
 .dense-data-table th { position: sticky; z-index: 2; top: 0; height: 30px; border-right: 1px solid #d9dde1; border-bottom: 1px solid #aeb7c0; padding: 0 7px; color: #405268; text-align: left; font-size: 10px; font-weight: 900; letter-spacing: .025em; text-transform: uppercase; background: #edf0f2; }
+.dense-data-table th.dense-column-menu-open { z-index: 14; }
 .dense-data-table th:last-child, .dense-data-table td:last-child { border-right: 0; }
 .dense-data-table th > button { width: 100%; height: 29px; border: 0; padding: 0; color: inherit; text-align: left; font: inherit; background: transparent; }
+.dense-column-menu-root { position: relative; min-width: 0; }
+.dense-column-menu-root > button { width: 100%; height: 29px; display: flex; align-items: center; justify-content: space-between; gap: 4px; border: 0; padding: 0; color: inherit; text-align: left; font: inherit; background: transparent; }
+.dense-column-menu { position: absolute; z-index: 12; top: calc(100% + 1px); left: -7px; min-width: 180px; display: grid; gap: 2px; border: 1px solid #8f9cab; padding: 5px; color: var(--text-700); text-align: left; text-transform: none; background: white; box-shadow: 0 10px 24px rgba(10, 25, 47, .2); }
+.dense-column-menu > button { min-height: 27px; border: 0; padding: 4px 7px; color: var(--text-700); text-align: left; background: transparent; font-size: 10px; font-weight: 800; }
+.dense-column-menu > button:hover:not(:disabled), .dense-column-menu > button:focus-visible { color: var(--blue-700); background: var(--blue-100); }
+.dense-column-menu > button:disabled { color: #9aa3aa; }
+.dense-column-filter { display: grid; gap: 3px; border-top: 1px solid var(--line-200); margin-top: 2px; padding: 6px 3px 3px; color: var(--text-500); font-size: 9px; font-weight: 900; }
+.dense-column-filter input { width: 100%; min-width: 0; height: 28px; box-sizing: border-box; border: 1px solid var(--line-300); padding: 4px 6px; color: var(--text-900); text-transform: none; background: white; font-size: 10px; font-weight: 500; }
 .dense-data-table td { height: 29px; overflow: hidden; border-right: 1px solid #e4e7e9; border-bottom: 1px solid #e4e7e9; padding: 4px 7px; text-overflow: ellipsis; white-space: nowrap; }
 .dense-data-table tbody tr.interactive { cursor: pointer; }
 .dense-data-table tbody tr.interactive:hover, .dense-data-table tbody tr.interactive:focus-visible { outline: none; background: #eef6fb; }

@@ -22,20 +22,11 @@ x-airflow-common: &airflow-common
     DATARIVER_OIDC_TOKEN_URL: http://keycloak:8080/realms/datariver/protocol/openid-connect/token
     DATARIVER_OIDC_CLIENT_ID: datariver-airflow
     DATARIVER_OIDC_CLIENT_SECRET_FILE: /run/secrets/airflow_client_secret
-    SEMICONDUCTOR_POSTGRES_HOST: postgres
-    SEMICONDUCTOR_POSTGRES_PORT: "5432"
-    SEMICONDUCTOR_POSTGRES_DATABASE: ${POSTGRES_DB:-datariver}
-    SEMICONDUCTOR_POSTGRES_USER: ${POSTGRES_USER:-datariver_owner}
-    SEMICONDUCTOR_POSTGRES_PASSWORD_FILE: /run/secrets/postgres_password
-    DATAHUB_BASE_URL: ${DATAHUB_BASE_URL:-http://host.docker.internal:8080}
-    DATAHUB_TOKEN_FILE: /run/secrets/datahub_token
   secrets:
     - airflow_db_password
     - airflow_client_secret
     - airflow_api_secret
     - airflow_admin_password
-    - postgres_password
-    - datahub_token
   volumes:
     - ./infra/airflow/entrypoint.sh:/opt/datariver/airflow-entrypoint.sh:ro
     - ./infra/airflow/dags:/opt/airflow/dags:ro
@@ -116,7 +107,9 @@ services:
       airflow-init:
         condition: service_completed_successfully
     restart: unless-stopped
-    mem_limit: 384m
+    # Airflow 3.3 triggerer settles around 360-370 MiB with the local provider set.
+    # Keep development headroom without increasing the Docker Desktop VM limit.
+    mem_limit: 512m
     cpus: 0.5
 
 volumes:

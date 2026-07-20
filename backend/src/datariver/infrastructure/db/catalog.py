@@ -33,6 +33,7 @@ from datariver.application.dto import (
 )
 from datariver.application.ports import CatalogIndexReader, CatalogProjectionWriter
 from datariver.domain.authz import Classification, SubjectAttributes
+from datariver.domain.catalog import DATASET_ASSET_TYPES
 from datariver.domain.classification_access import SearchMode
 from datariver.domain.common import ConflictError, ValidationError, utc_now, uuid7
 from datariver.infrastructure.db.governance import SqlIdempotencyStore
@@ -917,7 +918,7 @@ class SqlCatalogIndexReader(CatalogIndexReader):
             return ()
         statement = select(AssetProjectionModel).where(
             AssetProjectionModel.id.in_(unique_ids),
-            AssetProjectionModel.asset_type == "DATASET",
+            AssetProjectionModel.asset_type.in_(tuple(sorted(DATASET_ASSET_TYPES))),
             and_(*self._scope_conditions(subject, access)),
         )
         return tuple(_to_index(model) for model in (await self._session.scalars(statement)).all())

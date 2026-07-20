@@ -63,6 +63,26 @@ the repository root, run:
   --apply --confirm-reset --ingest-datahub --entity-scope dual
 ```
 
+For the validated Mac Compose topology, use its already-started Airflow service to run the same
+manual-only workflow. The explicit wrapper is required because `docker compose exec` bypasses a
+service's configured entrypoint and Airflow obtains its database/API secrets there.
+
+```bash
+docker compose -f compose.yaml -f compose.identity.yaml -f compose.airflow.yaml \
+  -f compose.gateway.yaml -f aux-compose.yml -f compose.graph.yaml \
+  exec airflow-api-server /bin/bash /opt/datariver/airflow-entrypoint.sh \
+  dags unpause datariver_semiconductor_seed_ingestion
+docker compose -f compose.yaml -f compose.identity.yaml -f compose.airflow.yaml \
+  -f compose.gateway.yaml -f aux-compose.yml -f compose.graph.yaml \
+  exec airflow-api-server /bin/bash /opt/datariver/airflow-entrypoint.sh \
+  dags trigger datariver_semiconductor_seed_ingestion
+# After the run is SUCCESS, return the manual-only DAG to its default pause state.
+docker compose -f compose.yaml -f compose.identity.yaml -f compose.airflow.yaml \
+  -f compose.gateway.yaml -f aux-compose.yml -f compose.graph.yaml \
+  exec airflow-api-server /bin/bash /opt/datariver/airflow-entrypoint.sh \
+  dags pause datariver_semiconductor_seed_ingestion
+```
+
 The defaults resolve only the following local secret files: `secrets/postgres_password` for the
 `datariver_owner` PostgreSQL role and `secrets/datahub_token` for DataHub. Override endpoint,
 database, role, or secret-file paths with named flags or `SEMICONDUCTOR_POSTGRES_*` /

@@ -1,0 +1,43 @@
+services:
+  datahub-actions:
+    image: acryldata/datahub-actions:v1.6.0-slim@sha256:873b99fe6c9390c33b1a9271a57e50bd6115ec012b613068f6221bbf32443ce1
+
+  datahub-frontend-react:
+    image: acryldata/datahub-frontend-react:v1.6.0@sha256:dc8264712e80a06fda79b593801c2a0eee7ff594e6d907006d016783a46d21db
+    ports: !override
+      - "127.0.0.1:19002:9002"
+
+  datahub-gms:
+    image: acryldata/datahub-gms:v1.6.0@sha256:672bceed7f36f751ab3302c30826c6ba124d1c0fd8d24c3724e725078b864018
+    environment:
+      DATAHUB_TELEMETRY_ENABLED: "false"
+      DATAHUB_TOKEN_SERVICE_SIGNING_KEY: ${DATAHUB_TOKEN_SERVICE_SIGNING_KEY:?required}
+      DATAHUB_TOKEN_SERVICE_SALT: ${DATAHUB_TOKEN_SERVICE_SALT:?required}
+    ports: !override
+      - "127.0.0.1:8080:8080"
+
+  datahub-upgrade:
+    image: acryldata/datahub-upgrade:v1.6.0@sha256:6e6b9f09165007004c20e9387e6ca1a171d1425fd76ae807b217c5dc7883ff02
+    environment:
+      DATAHUB_TOKEN_SERVICE_SIGNING_KEY: ${DATAHUB_TOKEN_SERVICE_SIGNING_KEY:?required}
+      DATAHUB_TOKEN_SERVICE_SALT: ${DATAHUB_TOKEN_SERVICE_SALT:?required}
+
+  broker:
+    ports: !override
+      - "127.0.0.1:19092:9092"
+
+  elasticsearch:
+    ports: !override
+      - "127.0.0.1:19200:9200"
+
+  mysql:
+    ports: !override
+      - "127.0.0.1:13306:3306"
+
+  schema-registry:
+    ports: !override
+      - "127.0.0.1:18082:8081"
+
+  zookeeper:
+    ports: !override
+      - "127.0.0.1:12181:2181"

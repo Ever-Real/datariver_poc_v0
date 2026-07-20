@@ -12,6 +12,8 @@ from datariver.infrastructure.db.classification_access import (
     SqlClassificationAccessSnapshotReader,
 )
 from datariver.infrastructure.db.knowledge_evidence import SqlKnowledgeEvidenceReader
+from datariver.infrastructure.llm.ollama import LocalOllamaChatComposer
+from datariver.interfaces.http.container import AppContainer
 from datariver.interfaces.http.dependencies import ContextDep, SessionDep, get_container
 from datariver.interfaces.http.schemas import (
     ChatEvidenceResponse,
@@ -20,6 +22,20 @@ from datariver.interfaces.http.schemas import (
 )
 
 router = APIRouter(prefix="/chat", tags=["assistant"])
+
+
+def _development_composer(container: AppContainer) -> LocalOllamaChatComposer | None:
+    settings = container.settings
+    if not settings.local_ollama_chat_enabled:
+        return None
+    assert settings.local_ollama_chat_base_url is not None
+    assert settings.local_ollama_chat_model is not None
+    return LocalOllamaChatComposer(
+        base_url=str(settings.local_ollama_chat_base_url),
+        model=settings.local_ollama_chat_model,
+        timeout_seconds=settings.local_ollama_chat_timeout_seconds,
+        context_tokens=settings.local_ollama_chat_context_tokens,
+    )
 
 
 @router.post("/query", response_model=ChatQueryResponse)
@@ -40,6 +56,7 @@ async def query(
         classification_access=ClassificationAccessResolver(
             SqlClassificationAccessSnapshotReader(session)
         ),
+        composer=_development_composer(container),
         allow_ephemeral_without_retention=(
             container.settings.chat_ephemeral_admin_without_retention_enabled
             and container.settings.app_env == "development"

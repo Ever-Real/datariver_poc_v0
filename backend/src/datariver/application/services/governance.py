@@ -16,11 +16,14 @@ from datariver.domain.authz import (
 )
 from datariver.domain.common import ConflictError, ForbiddenError, NotFoundError, ValidationError
 from datariver.domain.governance import (
+    ApprovalAuthority,
+    ApprovalAuthorityKind,
     ApprovalDecision,
     ChangeItem,
     ChangePriority,
     ChangeRequest,
     ChangeState,
+    ChangeTestRunState,
     ChangeUrgency,
 )
 
@@ -79,12 +82,48 @@ class GovernanceService:
             workspace_id=change_request.workspace_id,
             resource_type="change_request",
             owner_department_id=item.target_owner_department_id if item is not None else None,
-            system_id=item.target_system_id if item is not None else None,
+            system_id=(
+                item.routing_system_id or item.target_system_id if item is not None else None
+            ),
             domain_id=item.target_domain_id if item is not None else None,
             classification=max(change_request.classification, target_classification),
             lifecycle=change_request.state.value,
             requester_id=change_request.requester_id,
         )
+
+    @staticmethod
+    async def _workflow_authorities(
+        uow: GovernanceUnitOfWork,
+        *,
+        change_request: ChangeRequest,
+        subject_id: UUID,
+    ) -> tuple[ApprovalAuthority, ...]:
+        return await uow.workflow_authorities.get_authorities(
+            workspace_id=change_request.workspace_id,
+            subject_id=subject_id,
+            system_ids=change_request.required_system_ids(),
+        )
+
+    @classmethod
+    async def _require_developer_for_target_system(
+        cls,
+        uow: GovernanceUnitOfWork,
+        *,
+        change_request: ChangeRequest,
+        subject_id: UUID,
+    ) -> tuple[ApprovalAuthority, ...]:
+        authorities = await cls._workflow_authorities(
+            uow, change_request=change_request, subject_id=subject_id
+        )
+        relevant = {
+            ApprovalAuthority(ApprovalAuthorityKind.SYSTEM_DEVELOPER, system_id)
+            for system_id in change_request.required_system_ids()
+        }
+        if not relevant & set(authorities):
+            raise ForbiddenError(
+                "Developer assignment is required for a target system in this stage."
+            )
+        return authorities
 
     async def _authorize_current_targets(
         self,
@@ -177,6 +216,11 @@ class GovernanceService:
                         "Test evidence can only be attached during the TESTING state."
                     )
                 action = Action.CHANGE_REVIEW
+                await self._require_developer_for_target_system(
+                    uow,
+                    change_request=change_request,
+                    subject_id=subject.subject_id,
+                )
             else:
                 if change_request.state not in {
                     ChangeState.REGISTERED,
@@ -356,6 +400,7 @@ class GovernanceService:
                 description=description,
                 requester_id=requester_id,
                 items=list(bound_items),
+                requester_department_id=subject.department_id,
                 classification=classification,
                 requested_due_date=requested_due_date,
                 priority=priority,
@@ -441,6 +486,14 @@ class GovernanceService:
                 strict_binding=True,
             ):
                 raise ForbiddenError("The change target is not available.")
+            if (
+                change_request.state is ChangeState.REGISTERED and target is ChangeState.IN_REVIEW
+            ) or change_request.state in {ChangeState.IN_REVIEW, ChangeState.TESTING}:
+                await self._require_developer_for_target_system(
+                    uow,
+                    change_request=change_request,
+                    subject_id=subject.subject_id,
+                )
             if existing is not None:
                 if existing.request_hash != request_hash:
                     raise ConflictError("The idempotency key was used with a different request.")
@@ -529,6 +582,11 @@ class GovernanceService:
                 strict_binding=True,
             ):
                 raise ForbiddenError("The change target is not available.")
+            await self._require_developer_for_target_system(
+                uow,
+                change_request=change_request,
+                subject_id=subject.subject_id,
+            )
             decision = await self._authorization.authorize(
                 subject=subject,
                 resource=self._resource(change_request),
@@ -550,6 +608,98 @@ class GovernanceService:
                 operation=operation,
                 request_hash=request_hash,
                 result={"change_request_id": str(change_request_id)},
+            )
+            await uow.commit()
+        change_request.events.clear()
+        return change_request
+
+    async def record_test_run(
+        self,
+        *,
+        workspace_id: UUID,
+        change_request_id: UUID,
+        system_id: UUID,
+        attachment_id: UUID,
+        state: ChangeTestRunState,
+        plan_hash: str,
+        result_hash: str,
+        bounded_summary: dict[str, object],
+        expected_version: int,
+        subject: SubjectAttributes,
+        environment: EnvironmentAttributes,
+        request_id: str,
+        idempotency_key: str,
+        request_hash: str,
+    ) -> ChangeRequest:
+        async with self._uow_factory() as uow:
+            await uow.set_security_context(workspace_id=workspace_id, subject_id=subject.subject_id)
+            operation = f"change_request.test_run:{change_request_id}"
+            existing = await uow.idempotency.get_result(
+                workspace_id=workspace_id,
+                key=idempotency_key,
+                operation=operation,
+            )
+            change_request = await uow.change_requests.get_for_update(
+                workspace_id=workspace_id,
+                change_request_id=change_request_id,
+            )
+            if change_request is None:
+                raise ChangeRequestNotFound("The change request does not exist.")
+            decision = await self._authorization.authorize(
+                subject=subject,
+                resource=self._resource(change_request),
+                action=Action.CHANGE_REVIEW,
+                environment=environment,
+                request_id=request_id,
+            )
+            if not await self._authorize_current_targets(
+                change_requests=(change_request,),
+                workspace_id=workspace_id,
+                subject=subject,
+                action=Action.CHANGE_REVIEW,
+                environment=environment,
+                request_id=request_id,
+                strict_binding=True,
+            ):
+                raise ForbiddenError("The change target is not available.")
+            authorities = await self._require_developer_for_target_system(
+                uow,
+                change_request=change_request,
+                subject_id=subject.subject_id,
+            )
+            required = ApprovalAuthority(ApprovalAuthorityKind.SYSTEM_DEVELOPER, system_id)
+            if required not in authorities:
+                raise ForbiddenError("Developer assignment is required for the test system.")
+            if existing is not None:
+                if existing.request_hash != request_hash:
+                    raise ConflictError("The idempotency key was used with a different request.")
+                if existing.result.get("actor_id") != str(subject.subject_id):
+                    raise ConflictError("The idempotency key belongs to another subject.")
+                return change_request
+            change_request.record_test_run(
+                system_id=system_id,
+                attachment_id=attachment_id,
+                state=state,
+                plan_hash=plan_hash,
+                result_hash=result_hash,
+                bounded_summary=bounded_summary,
+                actor_id=subject.subject_id,
+                expected_version=expected_version,
+            )
+            await uow.change_requests.save(change_request)
+            await uow.outbox.add_events(change_request.events)
+            await uow.idempotency.save_result(
+                workspace_id=workspace_id,
+                key=idempotency_key,
+                operation=operation,
+                request_hash=request_hash,
+                result={
+                    "change_request_id": str(change_request_id),
+                    "actor_id": str(subject.subject_id),
+                    "system_id": str(system_id),
+                    "version": change_request.version,
+                    "policy_decision_id": str(decision.decision_id),
+                },
             )
             await uow.commit()
         change_request.events.clear()
@@ -599,6 +749,17 @@ class GovernanceService:
                 strict_binding=True,
             ):
                 raise ForbiddenError("The change target is not available.")
+            authorities = await self._workflow_authorities(
+                uow,
+                change_request=change_request,
+                subject_id=subject.subject_id,
+            )
+            if stage in {"REVIEW", "TEST"}:
+                await self._require_developer_for_target_system(
+                    uow,
+                    change_request=change_request,
+                    subject_id=subject.subject_id,
+                )
             if existing is not None:
                 if existing.request_hash != request_hash:
                     raise ConflictError("The idempotency key was used with a different request.")
@@ -612,6 +773,7 @@ class GovernanceService:
                 reason=reason,
                 policy_decision_id=decision.decision_id,
                 expected_version=expected_version,
+                authorities=authorities,
             )
             await uow.change_requests.save(change_request)
             await uow.outbox.add_events(change_request.events)

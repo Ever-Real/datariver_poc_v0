@@ -24,12 +24,14 @@ export function CursorPagination({
   return (
     <nav className="cursor-pagination" aria-label="페이지 탐색">
       <span className="cursor-pagination-summary">
-        {itemCount === undefined ? `${page} 페이지` : `${page} 페이지 · 현재 ${itemCount.toLocaleString()}건`}
+        {pageSize === 0
+          ? `전체 · 현재 ${(itemCount ?? 0).toLocaleString()}건`
+          : itemCount === undefined ? `${page} 페이지` : `${page} 페이지 · 현재 ${itemCount.toLocaleString()}건`}
       </span>
       <label>
         <span>페이지 크기</span>
         <select aria-label="페이지 크기" value={pageSize} onChange={(event) => onPageSizeChange(Number(event.target.value))}>
-          {pageSizeOptions.map((option) => <option key={option} value={option}>{option}</option>)}
+          {pageSizeOptions.map((option) => <option key={option} value={option}>{option === 0 ? '전체' : option}</option>)}
         </select>
       </label>
       <button type="button" disabled={!canPrevious} onClick={onPrevious}>이전</button>

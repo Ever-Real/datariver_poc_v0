@@ -1,0 +1,57 @@
+services:
+  api:
+    secrets:
+      - neo4j_auth
+    depends_on:
+      neo4j:
+        condition: service_healthy
+
+  neo4j:
+    # Development graph projection only. PostgreSQL knowledge releases remain
+    # canonical, so this independently rebuildable volume must never be used
+    # as the source of approval, provenance, or authorization state.
+    image: neo4j:2026.06.0
+    environment:
+      NEO4J_AUTH_FILE: /run/secrets/neo4j_auth
+      NEO4J_server_memory_heap_initial__size: 512M
+      NEO4J_server_memory_heap_max__size: 768M
+      NEO4J_server_memory_pagecache_size: 512M
+      NEO4J_dbms_usage__report_enabled: "false"
+    secrets:
+      - neo4j_auth
+    volumes:
+      - neo4j-projection-data:/data
+      - neo4j-projection-logs:/logs
+    networks:
+      - data
+      # Docker Desktop cannot publish a host port from an internal-only
+      # network. This network has no other members; the data network remains
+      # the only path from DataRiver services to the projection.
+      - graph-access
+    ports:
+      - "127.0.0.1:${NEO4J_HTTP_PORT:-17474}:7474"
+      - "127.0.0.1:${NEO4J_BOLT_PORT:-17687}:7687"
+    healthcheck:
+      test:
+        ["CMD-SHELL", "cypher-shell -u neo4j -p \"$$(cut -d/ -f2- /run/secrets/neo4j_auth)\" 'RETURN 1' >/dev/null 2>&1"]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+      start_period: 30s
+    restart: unless-stopped
+    mem_limit: 1536m
+    cpus: 0.75
+    security_opt:
+      - no-new-privileges:true
+
+secrets:
+  neo4j_auth:
+    file: ./secrets/neo4j_auth
+
+volumes:
+  neo4j-projection-data:
+  neo4j-projection-logs:
+
+networks:
+  graph-access:
+    internal: false

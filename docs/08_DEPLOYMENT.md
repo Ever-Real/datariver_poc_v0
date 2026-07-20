@@ -14,10 +14,15 @@ evidence.
 | `compose.identity.yaml` | Keycloak 26.7 and isolated Keycloak database/credentials | local identity only |
 | `compose.airflow.yaml` | Airflow 3.3 API server, scheduler, DAG processor, triggerer and init using LocalExecutor/isolated DB role | scheduled scan/probe only |
 | `compose.gateway.yaml` | APISIX 3.17 standalone configuration | local gateway/rate limit/health-check profile |
+| `compose.graph.yaml` | Neo4j Community projection sandbox | local only; PostgreSQL KG releases remain canonical |
 | `aux-compose.yml` + `observability` profile | OTel Collector, Prometheus, Grafana, Alertmanager, Tempo and Loki | optional Single-node Pilot telemetry backend; not an HA or production evidence claim |
 | `semiconductor-seed` profile | deterministic one-shot seed command | explicit non-production data |
 
-No Compose file starts DataHub. OPA and a separate graph database remain documented extension seams.
+Production and shared environments do not start DataHub from this repository. For the validated Mac
+development PC only, `scripts/start_datahub_mac_dev.sh` starts the official DataHub v1.6.0
+Apple-Silicon `without-neo4j` composition from the ignored `runtime/datahub-v1.6.0` source checkout.
+It is isolated from the DataRiver Compose project and uses its own volumes and generated token
+service secrets. DataHub lineage never uses the separate `compose.graph.yaml` Neo4j service.
 
 The current example DataHub provider contract is stable `v1.6.0`. Each deployment provides its own
 exact stable `DATAHUB_EXPECTED_VERSION` and reviewed component OCI index digest contract (the current
@@ -62,7 +67,50 @@ Bootstrap requires a DataHub token and generates ignored, permission-restricted 
 
 Bootstrap is idempotent for infrastructure credentials: an existing non-empty secret is preserved, while the supplied DataHub token and derived SeaweedFS/Keycloak files are refreshed. Deliberate credential rotation follows the runbook and is not coupled to ordinary bootstrap.
 
+### Mac development topology
+
+Use `./scripts/bootstrap.sh --mac-development` only for the local Mac developer PC. It configures
+loopback ports that avoid common local conflicts, points container-to-DataHub traffic to
+`host.docker.internal:8080`, enables the native macOS Ollama bridge at its exact local OpenAI
+compatible endpoint, and generates a secret-backed Neo4j password. If no DataHub credential exists,
+the mode creates an ignored random placeholder because the bundled local DataHub composition has
+authentication disabled; it is never valid for an external DataHub.
+
+Docker Desktop is budgeted at 20 GiB/6 CPUs. Ollama stays native on the Mac host, so the selected
+`datariver-gemma4-dev:0.1` model is outside Docker's memory limit. It reuses the
+`gemma4:e2b-it-qat` weights but fixes its active context at 8,192 tokens through the checked-in
+Modelfile. The full normal stack, DataHub and Neo4j fit this budget; do not run a duplicate Ollama
+container. `compose.graph.yaml` attaches Neo4j
+to the private `data` network for internal access and to an otherwise empty non-internal bridge
+solely because Docker Desktop cannot publish loopback ports from an `internal: true` network. Its
+HTTP/Bolt bindings remain `127.0.0.1:17474` and `127.0.0.1:17687`.
+
+The local Ollama adapter is development-only and is enabled only for
+`http://host.docker.internal:11434/v1`, `datariver-gemma4-dev:0.1`, a fixed 8,192-token context
+and a 60-second timeout. `scripts/prepare_ollama_mac_dev.sh` creates that local derivative from
+the checked-in Modelfile. It submits only a fixed non-executable answer/citation function and
+validates its output as untrusted evidence. It does not make the model a production provider.
+Neo4j is a rebuildable projection sandbox until a future verified release-projection adapter
+exists; do not write DataRiver canonical state to it. The full decision and promotion limits are
+in [ADR-0023](adr/0023-mac-development-local-inference-and-graph-projection.md).
+
 Set `DATAHUB_BASE_URL` and review origins/ports in `.env`. Optional `UI_DATAHUB_URL`, `UI_AIRFLOW_URL`, `UI_GRAFANA_URL`, `UI_PROMETHEUS_URL`, and `UI_GRAPH_URL` values populate the GNB auxiliary links through the authenticated capabilities response. They are not provider API endpoints or embed authorities: URLs with user information are rejected, missing values create no fallback link, and production requires HTTPS. The production validator rejects wildcard CORS, HTTP external URLs, password-bearing URLs and seed activation. Only `file:` secret references are implemented; a Vault/KMS adapter is a separate deployment integration.
+
+`WORKSPACE_SELECTION_ENABLED=false` selects the server-verified default Workspace and hides manual
+switching; it never disables Workspace request scope, ABAC or RLS. The default must exist or the UI
+fails closed. `OIDC_HARDWARE_WEBAUTHN_ENABLED=false` removes DataRiver enrollment/step-up entry
+points and makes the API verifier refuse `HARDWARE_WEBAUTHN` assurance. It does not enable a
+password downgrade, so direct high-risk mutations remain unavailable. These are operator-owned
+process settings, not browser-editable administrator records. Recreate the API container after a
+change so `/auth/me` and token verification share the same configuration.
+
+`SYSTEM_CONFIGURATION_RUNTIME_ACTIVATION_ENABLED=true` plus an explicit
+`SYSTEM_CONFIGURATION_RUNTIME_WORKSPACE_ID` enables ADR-0028 only in development. SAVE and TEST do
+not alter runtime clients. ACTIVATE records the selected exact revision, and API/relevant workers
+load it once on restart using their own existing RLS-scoped database role. The selected secret
+references must name files actually mounted into every consuming process. The API-loaded version is
+observable in Admin; worker restart success must be checked from the worker process/health evidence
+and is never inferred from the API. Do not enable this resolver in production.
 
 When the host-development overlay connects to a separately composed local DataHub stack, it uses
 the deployment-owned external `DATAHUB_DOCKER_NETWORK` (default `datahub_network`) and overrides
@@ -172,7 +220,7 @@ has passed. Local bootstrap intentionally does not manufacture a second administ
 - PostgreSQL, Valkey and object-service internals stay on the private `data` network and have no host bind in the core file.
 - API has an RLS-constrained database role; migration owns DDL. Relay, upload, governance and bootstrap have distinct least-privilege database identities and service-specific secret mounts. Airflow and Keycloak have distinct databases/roles.
 - APISIX standalone mode has no administration/control port and does not replace application ABAC.
-- APISIX and web run non-root with read-only root filesystems. APISIX renders configuration and request temp files only into bounded, non-executable tmpfs; its health check executes a real proxied HTTP request rather than trusting a process-only command.
+- APISIX and web run non-root with read-only root filesystems. APISIX renders configuration and request temp files only into bounded, non-executable tmpfs; its health check executes a real proxied HTTP request rather than trusting a process-only command. Its declarative upstream uses APISIX DNS discovery through Docker's embedded resolver, so replacement of the API container does not pin a stale startup address.
 - Web Nginx uses Docker's embedded DNS resolver for the API upstream. API container replacement therefore does not require web restart and must be included in recovery acceptance.
 - Production exposes only a TLS edge. Direct local API/identity ports must be removed or firewalled by the environment override.
 
@@ -210,18 +258,20 @@ The Compose overlay intentionally uses Airflow `SimpleAuthManager` only for loop
 
 ## Database and object operations
 
-- Alembic has one head at `0029`: the generated current initial schema plus conditional compatibility bridges for local databases that applied earlier revisions. Deployment runs migration before API/workers. The API role can only read `public.alembic_version` for readiness; migration ownership remains separate. Clean-install bridges validate complete canonical objects, execute only when the feature contract is absent, and reject partially present schemas.
+- Alembic has one head at `0034`: the generated current initial schema plus conditional compatibility bridges for local databases that applied earlier revisions. Deployment runs migration before API/workers. The API role can only read `public.alembic_version` for readiness; migration ownership remains separate. Clean-install bridges validate complete canonical objects, execute only when the feature contract is absent, and reject partially present schemas.
 - PostgreSQL pool size/overflow/lease timeout, statement timeout, idle-transaction timeout and application names are explicit. Budget `API replicas × (API pool + overflow) + long-running workers × (worker pool + overflow) + one-shot/IdP/Airflow/admin reserve`; current one-API/four-worker defaults have a ceiling of 60 before reserve.
-- Liveness is process-only. Readiness leases the API pool and requires exactly packaged Alembic head `0029`; Compose and APISIX use readiness for upstream health.
+- Liveness is process-only. Readiness leases the API pool and requires exactly packaged Alembic head `0034`; Compose and APISIX use readiness for upstream health.
 - `scripts/probe_pgbouncer_rls.py` and its unit contract implement the pre-adoption transaction-pool leakage gate. No Compose profile currently deploys PgBouncer and no live pooler pass has been recorded; direct PostgreSQL remains the supported path until the isolated two-workspace probe succeeds.
 - Back up PostgreSQL and SeaweedFS as a consistency set or record a watermark; restore into isolation and follow the drill in [operations runbook](13_OPERATIONS_RUNBOOK.md) before traffic.
 - Accepted-object retention/lifecycle is environment policy. Quarantine receives a shorter cleanup policy, but never delete an object whose manifest is actively leased.
 - Initial recovery targets (RPO <= 5 minutes, RTO <= 60 minutes) are objectives until an environment drill records measured evidence.
 
-The assistant inference module is not a deployed runtime component. It has a disabled adapter and a
-typed pre-authorized input/output contract only; Compose mounts no provider endpoint or inference
-secret and creates no inference queue/job. Provider integration, durable dispatch, SSE, pre/post-call
-live policy/profile revalidation and operational metrics remain promotion gates.
+The assistant inference module is not a production runtime component. It has a disabled adapter and
+a typed pre-authorized input/output contract only; Compose mounts no provider endpoint or inference
+secret and creates no inference queue/job. The explicit Mac-development exception in ADR-0023 calls
+only a native loopback Ollama through Docker Desktop's fixed host gateway and accepts one
+non-executable cited-answer function payload. Provider integration, durable dispatch, SSE,
+pre/post-call live policy/profile revalidation and operational metrics remain promotion gates.
 
 ## Release gates
 

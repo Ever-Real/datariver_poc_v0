@@ -32,6 +32,8 @@ export interface AuthenticatedProfile {
   authentication_assurance: 'UNKNOWN' | 'PASSWORD' | 'PASSWORD_REAUTH' | 'OTHER_MFA' | 'HARDWARE_WEBAUTHN'
   authentication_time?: string
   default_workspace_id?: string
+  workspace_selection_enabled?: boolean
+  hardware_webauthn_enabled?: boolean
 }
 
 export interface CatalogExportCapability {
@@ -139,6 +141,7 @@ export interface CatalogAssetDetail extends CatalogAsset {
   tags: string[]
   schema_fields: Array<Record<string, unknown>>
   quality: Record<string, unknown>
+  projection_source_version: string
   source_version: string
 }
 
@@ -274,7 +277,10 @@ export interface CatalogExportDownload {
   expires_seconds: number
 }
 
-export type UploadContentProfile = 'FORMAT_ONLY_V1' | 'DATASET_DESCRIPTION_CSV_V1'
+export type UploadContentProfile =
+  | 'FORMAT_ONLY_V1'
+  | 'DATASET_DESCRIPTION_CSV_V1'
+  | 'DATASET_DESCRIPTION_XLSX_V1'
 
 export type UploadPreparationState =
   | 'QUEUED'
@@ -303,7 +309,7 @@ export interface UploadRecord {
 export interface UploadPreparation {
   id: string
   upload_id: string
-  content_profile: 'DATASET_DESCRIPTION_CSV_V1'
+  content_profile: 'DATASET_DESCRIPTION_CSV_V1' | 'DATASET_DESCRIPTION_XLSX_V1'
   source_manifest_version: number
   source_sha256: string
   configuration_hash: string
@@ -354,7 +360,7 @@ export interface UploadRegistrationCandidatePage {
     preparation_id: string
     manifest_version: number
     source_sha256: string
-    content_profile: 'DATASET_DESCRIPTION_CSV_V1'
+    content_profile: 'DATASET_DESCRIPTION_CSV_V1' | 'DATASET_DESCRIPTION_XLSX_V1'
     parser_version: string
     scanner_version: string
     schema_version: string
@@ -394,6 +400,9 @@ export interface ChangeRequestRecord {
   description: string
   state: ChangeRequestState
   requester_id: string
+  requester_department_id: string | null
+  current_round_id: string
+  current_round_number: number
   created_at: string
   requested_due_date: string | null
   priority: 'LOW' | 'NORMAL' | 'HIGH' | 'CRITICAL' | null
@@ -419,6 +428,7 @@ export interface ChangeRequestRecord {
     target_source_version: string | null
     target_observed_at: string | null
     target_binding_hash: string | null
+    routing_system_id: string | null
   }>
   approvals: Array<{
     id: string
@@ -427,6 +437,11 @@ export interface ChangeRequestRecord {
     actor_id: string
     reason: string
     occurred_at: string
+    round_id: string
+    authorities: Array<{
+      kind: 'SYSTEM_DEVELOPER' | 'SYSTEM_DATA_STEWARD' | 'GLOBAL_ADMIN'
+      system_id: string | null
+    }>
   }>
   transitions: Array<{
     id: string
@@ -435,12 +450,34 @@ export interface ChangeRequestRecord {
     actor_id: string
     reason: string
     occurred_at: string
+    round_id: string
+  }>
+  rounds: Array<{
+    id: string
+    round_number: number
+    submitted_by: string
+    submitted_at: string
+    closed_at: string | null
+    evidence_hash: string
+  }>
+  test_runs: Array<{
+    id: string
+    round_id: string
+    system_id: string
+    attachment_id: string
+    state: 'PASSED' | 'FAILED'
+    plan_hash: string
+    result_hash: string
+    bounded_summary: Record<string, unknown>
+    recorded_by: string
+    occurred_at: string
   }>
 }
 
 export interface ChangeRequestAttachment {
   id: string
   kind: 'REQUEST' | 'TEST'
+  round_id: string
   original_name: string
   serial_number: number
   content_type: string
@@ -530,6 +567,13 @@ export interface KnowledgeSnapshot {
   filtered: boolean
 }
 
+export interface KnowledgeNeighborAnalysis {
+  release: KnowledgeRelease
+  nodes: KnowledgeGraphNode[]
+  edges: KnowledgeGraphEdge[]
+  truncated: boolean
+}
+
 export interface KnowledgeValidation {
   id: string
   severity: string
@@ -573,6 +617,26 @@ export interface KnowledgeChangeSet {
 export interface KnowledgeChangeSetPublish {
   changeset: KnowledgeChangeSet
   release: KnowledgeRelease
+}
+
+export interface KnowledgeSourceAnalyzeResult {
+  source_snapshot_id: string
+  changeset_id: string
+  page_count: number
+  proposed_node_count: number
+  proposed_edge_count: number
+  evidence_hash: string
+  embedding_model: string
+  extraction_model: string
+}
+
+export interface KnowledgeProjectionReceipt {
+  deployment_id: string
+  release_id: string
+  release_hash: string
+  node_count: number
+  edge_count: number
+  state: 'SHADOW_VERIFIED'
 }
 
 export interface ChatResponse {
@@ -648,9 +712,12 @@ export type Classification = 'PUBLIC' | 'INTERNAL' | 'CONFIDENTIAL' | 'RESTRICTE
 export type AdminOperation =
   | 'MEMBERSHIP_ACCESS_READ'
   | 'MEMBERSHIP_ACCESS_UPDATE'
+  | 'MEMBERSHIP_RENEWAL_READ'
+  | 'MEMBERSHIP_RENEWAL_DECIDE'
   | 'SYSTEM_ASSIGNMENT_UPDATE'
   | 'SYSTEM_CONFIGURATION_READ'
   | 'SYSTEM_CONFIGURATION_UPDATE'
+  | 'SYSTEM_CONFIGURATION_ACTIVATE'
   | 'FALLBACK_REQUEST_READ'
   | 'FALLBACK_REQUEST_CREATE'
   | 'FALLBACK_REQUEST_DECIDE'
@@ -692,12 +759,37 @@ export interface WorkspaceMembershipSummary {
   last_login_ip: string | null
   owned_table_count: number
   change_request_count: number
+  joined_at?: string | null
+  access_expires_at: string | null
+  renewal_eligible_at: string | null
+  access_expired: boolean
+  renewal_request_eligible: boolean
+  pending_renewal_request_id: string | null
   subject_active: boolean
   membership_active: boolean
   department_id: string | null
   job_function: string | null
   clearance: Classification
   membership_version: number
+}
+
+export interface MembershipRenewalRequest {
+  id: string
+  workspace_id: string
+  target_subject_id: string
+  requester_id: string
+  requester_display_name: string
+  reason: string
+  current_expires_at: string
+  requested_expires_at: string
+  state: 'PENDING' | 'APPROVED' | 'REJECTED'
+  version: number
+  created_at: string
+  checker_id: string | null
+  checker_display_name: string | null
+  decision_reason: string | null
+  decided_at: string | null
+  membership_version: number | null
 }
 
 export interface WorkspaceMembershipAccess {
@@ -708,6 +800,44 @@ export interface WorkspaceMembershipAccess {
   job_function: string | null
   membership_version: number
   access: MembershipAccessDocument
+}
+
+export interface AccessRole {
+  id: string
+  role_key: string
+  name: string
+  description: string
+  clearance: Classification
+  groups: string[]
+  allowed_actions: string[]
+  denied_actions: string[]
+  allowed_system_ids: string[]
+  allowed_domain_ids: string[]
+  active: boolean
+  assigned_count: number
+  version: number
+  created_at: string
+  updated_at: string
+}
+
+export interface AccessRoleWrite {
+  role_key: string
+  name: string
+  description: string
+  clearance: Classification
+  groups: string[]
+  allowed_actions: string[]
+  denied_actions: string[]
+  allowed_system_ids: string[]
+  allowed_domain_ids: string[]
+  active: boolean
+}
+
+export interface MembershipRoleAssignmentResult {
+  subject_id: string
+  role_id: string | null
+  membership_version: number
+  payload_hash: string
 }
 
 export interface SystemDirectoryEntry {
@@ -746,8 +876,29 @@ export interface SystemConfigurationEntry {
   secret_reference_configured: boolean
   embedding_state: 'NOT_APPLICABLE' | 'AVAILABLE' | 'DISABLED' | 'NOT_CONFIGURED'
   configuration_yaml: string
+  template_yaml: string
+  display_yaml: string
   version: number
   configured_at: string | null
+  runtime_supported: boolean
+  restart_scope: 'API_ONLY' | 'API_AND_WORKERS' | 'NOT_IMPLEMENTED'
+  activation_state: 'NOT_CONFIGURED' | 'SAVED_UNTESTED' | 'TEST_NOT_AVAILABLE' | 'TESTED' | 'ACTIVATED_RESTART_REQUIRED' | 'APPLIED_TO_API_PROCESS' | 'RUNTIME_NOT_IMPLEMENTED'
+  tested_version: number | null
+  test_status: 'AVAILABLE' | 'AUTHENTICATION_REQUIRED' | 'UNAVAILABLE' | null
+  tested_at: string | null
+  activated_version: number | null
+  activated_at: string | null
+  applied_version: number | null
+}
+
+export interface SystemConfigurationTestResult {
+  system_id: SystemConfigurationEntry['system_id']
+  status: 'AVAILABLE' | 'AUTHENTICATION_REQUIRED' | 'UNAVAILABLE'
+  scope: 'HTTP_HEALTH' | 'MODEL_DISCOVERY' | 'MODEL_INFERENCE' | 'EMBEDDING_INFERENCE' | 'AUTHENTICATED_QUERY'
+  latency_ms: number
+  detail: string
+  configuration_version: number
+  tested_at: string
 }
 
 export interface AdminReadContext {

@@ -30,7 +30,7 @@ scripts/          bootstrap, migration generation and reference-snapshot tools
 ## Prerequisites
 
 - Git, Docker Engine/Desktop with Compose v2, at least 8 GiB free memory for core + local identity, and about 12 GiB when Airflow is also enabled.
-- An existing DataHub endpoint and a scoped service token. DataRiver does not start, migrate or delete DataHub.
+- Production and shared environments require an externally operated DataHub endpoint and scoped service token. The supported Mac development topology below starts an isolated local DataHub v1.6.0 instead.
 - `DATAHUB_EXPECTED_VERSION` is a required deployment setting and must be an exact stable release;
   the current example is `v1.6.0`. The external deployment pins each component using its reviewed
   contract (the current example is `infra/contracts/datahub-v1.6.0-images.json`) and proves its
@@ -42,6 +42,50 @@ No real `.env`, secret, uploaded object, database volume or generated Keycloak r
 ## Git and clean-clone portability
 
 Commit only the repository sources. A second PC clones the same tree, runs the matching bootstrap command below, sets its own DataHub URL/origins, and starts the desired overlays. Do not copy `.env`, `secrets/`, `runtime/`, volumes or uploaded objects through Git. The frozen Python and npm locks plus CI define the reproducible toolchain; production promotes digest-pinned images built from the reviewed commit.
+
+## Validated Mac development PC
+
+This is a single-developer topology, not a production deployment. On a 32 GiB Mac, set Docker Desktop to **16 GiB memory and 6 CPUs** by default, or at most **18 GiB** for a bounded large import; Ollama runs natively on macOS outside that limit. The selected `datariver-gemma4-dev:0.1` model reuses Gemma4 E2B QAT weights with an 8,192-token context ceiling. Do not run a second Ollama container.
+
+The first bootstrap generates a private local DataHub placeholder token, all DataRiver/Neo4j secrets and the Keycloak realm. It does not copy another machine's `.env`, volumes or credentials. The separate DataHub wrapper obtains the official `v1.6.0` source checkout under ignored `runtime/` and starts its official Apple-Silicon `without-neo4j` topology. `without-neo4j` is intentional: DataHub lineage remains in DataHub; the separate Neo4j service below is a rebuildable **DataRiver knowledge-graph projection sandbox**, never a DataHub database.
+
+```bash
+# Native macOS Ollama must already be running. This reuses the Gemma4 E2B QAT
+# weights and creates a local 8,192-token development derivative.
+./scripts/prepare_ollama_mac_dev.sh
+
+./scripts/bootstrap.sh --mac-development
+./scripts/start_datahub_mac_dev.sh start
+
+docker compose --profile observability \
+  -f compose.yaml -f compose.identity.yaml -f compose.airflow.yaml \
+  -f compose.gateway.yaml -f aux-compose.yml -f compose.graph.yaml config --quiet
+docker compose --profile observability \
+  -f compose.yaml -f compose.identity.yaml -f compose.airflow.yaml \
+  -f compose.gateway.yaml -f aux-compose.yml -f compose.graph.yaml \
+  up -d --build --wait
+docker compose --profile tools -f compose.yaml -f compose.identity.yaml \
+  -f compose.airflow.yaml -f compose.gateway.yaml -f aux-compose.yml \
+  -f compose.graph.yaml run --rm local-bootstrap
+
+# Optional but recommended: deterministic catalog/KG test data.
+docker compose --profile semiconductor-seed -f compose.yaml -f compose.identity.yaml \
+  -f compose.airflow.yaml -f compose.gateway.yaml -f aux-compose.yml \
+  -f compose.graph.yaml run --rm semiconductor-seed
+docker compose --profile semiconductor-seed -f compose.yaml -f compose.identity.yaml \
+  -f compose.airflow.yaml -f compose.gateway.yaml -f aux-compose.yml \
+  -f compose.graph.yaml run --rm semiconductor-seed \
+  /app/.venv/bin/python -m datariver.seed verify
+```
+
+Use DataRiver at `http://localhost:18080`, its gateway at `http://localhost:19080`, local DataHub GMS at `http://localhost:8080`, DataHub UI at `http://localhost:19002`, Neo4j Browser at `http://localhost:17474`, and Neo4j Bolt at `bolt://localhost:17687`. The local model is reached only by backend containers through `host.docker.internal:11434`; it receives fixed, non-executable typed extraction/citation contracts and cannot execute SQL, Cypher, HTTP requests, files, or DataRiver mutations. The Neo4j volume may be deleted and rebuilt, but PostgreSQL knowledge releases remain canonical. See [ADR-0023](docs/adr/0023-mac-development-local-inference-and-graph-projection.md) for the canonical ownership and development-only security boundary.
+
+On the 32 GiB Mac development host, keep Docker Desktop at `16 GiB` by default and use `18 GiB` only
+for bounded large imports rather than raising it to `24 GiB`: the full DataRiver + DataHub stack
+uses substantial memory, while the host Ollama
+`gemma4` derivative needs separate unified-memory headroom when loaded. Recheck `docker stats` and
+`ollama ps` during GraphRAG tests; sustained swap or memory pressure means stop optional services,
+not enlarge both Docker and model budgets past physical memory.
 
 ## Initialization and verification checklist
 
@@ -56,11 +100,12 @@ environment's secrets or volumes.
 2. Bootstrap `.env` and ignored secret files with `scripts/bootstrap.sh` or
    `scripts/bootstrap.ps1`. Set the external DataHub base URL, service token, OIDC origins and any
    optional UI links before starting services. `DATAHUB_EXPECTED_VERSION` remains a stable release
-   contract. Development accepts the externally approved `v1.6.0rc1` capability without reporting
-   `VERSION_MISMATCH`; production keeps the exact/allowlisted release contract.
+   contract. The bundled Mac launcher checks out the exact stable `v1.6.0` commit and uses the
+   digest-pinned `v1.6.0` component images; do not add an RC compatibility exception for this local
+   topology.
 3. Validate the selected Compose overlay with `docker compose ... config --quiet`, then bring up
    PostgreSQL, Valkey, object storage, Keycloak and APISIX. Apply `alembic upgrade head` through the
-   migration service before API/workers; readiness requires revision `0029`.
+   migration service before API/workers; readiness requires revision `0038`.
 4. Start the API, relay, workers and web service using either the container profile or the
    host-development commands below. Check `/api/v1/health/live`, `/api/v1/health/ready`,
    `/api/v1/capabilities` and the APISIX/Vite proxy before using application workflows.
@@ -72,14 +117,108 @@ environment's secrets or volumes.
 
 ### Administrator system configuration
 
+The profile menu presents grouped, server-authorized administration entries. **Accounts & access**
+contains Users, Systems, server-managed Role definitions/assignment and the applicable
+security/exception workflows;
+**Retention & erasure governance** contains policy, Legal Hold and erasure review. Provider
+eligibility remains a nested policy approval because it is distinct from connection configuration.
+
 In development, an eligible administrator can open **Profile → System settings** and select a
-badge for DataHub, Airflow, S3, LLM, Neo4j, Prometheus or Grafana. Each entry stores a YAML mapping
-incrementally in PostgreSQL with an optimistic version. Keys containing `password`, `secret`,
-`token`, `api_key` or `private_key` are returned as `********`; leave that value unchanged when
-saving unrelated edits to retain the stored value. Use `url`, `endpoint` or `base_url` for an HTTP(S)
+badge for DataHub, Airflow, S3, the grouped Chat/Embedding/Reranker LLM models, Neo4j, Prometheus or
+Grafana. Unconfigured entries start from a
+server-owned sample YAML containing no credential values. Each SAVE creates a versioned YAML
+revision in PostgreSQL. The browser may save addresses, model identifiers, non-sensitive options
+and strict `file:/run/secrets/<name>` references; a literal `password`, `secret`, `token`, `api_key`
+or `private_key` value is rejected. Actual values remain in ignored local secret files/Docker
+secrets, and `.env` contains only deployment switches or reference paths. Use
+`url`, `endpoint` or `base_url` for an HTTP(S)
 endpoint. A saved Grafana URL is supplied by the server to the Monitoring page and rendered in its
 sandboxed iframe. Production keeps configuration in deployment/approved-provider controls and does
 not expose this write API.
+
+**SAVE** validates and versions the YAML. **TEST** runs one fixed server-side probe against that
+exact saved revision and never accepts a request URL. **ACTIVATE** is available only for a current
+AVAILABLE revision, an implemented runtime consumer and a recent hardware-WebAuthn administrator.
+It selects the version for the next process startup; it never hot-reloads or restarts a client.
+DataHub GMS and S3 changes require API plus relevant worker restart, while local Ollama Chat and
+external UI-link changes require API restart. Embedding, reranker and Neo4j remain honest
+storable/testable inventory until their typed runtime adapters exist; their ACTIVATE control stays
+disabled. The API can report only the version it loaded itself and does not infer worker success.
+
+For the Mac development topology, bootstrap enables the startup resolver for Workspace
+`00000000-0000-4000-8000-000000000100`. After ACTIVATE, recreate the API and relevant workers:
+
+```bash
+docker compose -f compose.yaml -f compose.identity.yaml -f compose.airflow.yaml \
+  -f compose.gateway.yaml -f aux-compose.yml -f compose.graph.yaml \
+  up -d --force-recreate api governance-apply-worker upload-worker upload-validation-worker
+```
+
+APISIX uses DNS discovery through Docker's embedded resolver, so replacing the API container does
+not require restarting the gateway or leave it pinned to the old container address.
+
+The exact state and security boundary are controlled by [ADR-0028](docs/adr/0028-development-system-configuration-startup-activation.md).
+
+### Membership renewal and CR responsibility routing
+
+Human Workspace memberships expire after six calendar months; service accounts remain
+operator-managed. A user can request the next six-month term during the final 30 days. Every
+eligible global Admin sees the same pending queue, but the requester cannot approve their own
+extension and approval requires the existing recent WebAuthn assurance. Existing overdue users get
+a 30-day migration transition window. Operate at least two eligible global Admin accounts before a
+renewal window opens; browser time is never used as access authority.
+
+Every new CR target now binds to a canonical System. REVIEW and TEST each require Developer
+approval evidence for every target System before the next stage. FINAL requires Developer and Data
+Steward approval for every target System plus one role-separated global Admin approval. A person
+assigned the same responsibility to several Systems may cover those Systems, but one actor cannot
+satisfy two FINAL role classes. See [ADR-0026](docs/adr/0026-expiring-human-membership-renewal.md)
+and [ADR-0027](docs/adr/0027-change-request-system-role-authority.md).
+
+The administrator navigation contains one **Audit/Log 조회** entry with Metadata Change Log and
+System Security Log tabs. Their read/export controls remain unavailable until a workspace-scoped,
+masked audit API exists; the UI does not manufacture log rows. Retention policy, Legal Hold and
+erasure review are three stages in one lifecycle: default duration, exceptional hold precedence,
+and independent deletion-intent review. Approval still does not execute deletion, and the workflow
+is provider-neutral even though PostgreSQL stores its canonical policy/evidence.
+
+WebAuthn enrollment is labelled without a USB assumption. It is the accepted recent-hardware gate
+for high-risk direct mutations, not a removable cosmetic menu item. An intranet operator may set
+`OIDC_HARDWARE_WEBAUTHN_ENABLED=false`; DataRiver then hides enrollment/step-up and refuses hardware
+assurance, so protected mutations stay unavailable rather than falling back to an ordinary password.
+Replacing that lost functionality still requires a reviewed assurance alternative that preserves
+self-change denial and the two-human administrator invariant.
+
+### Enterprise UI completion scope
+
+The Change Management, Knowledge Management, My Profile and administrator surfaces are controlled
+by [the enterprise UI PRD](docs/20_ENTERPRISE_UI_COMPLETION_PRD.md) and its
+[completion checklist](docs/21_ENTERPRISE_UI_COMPLETION_CHECKLIST.md). The implementation uses the
+current React application, TanStack tables, Tailwind CSS and React Flow; `datariver_v0` is a
+read-only interaction reference and is never imported into the v1 runtime.
+
+- Change requests use the existing typed intake, private attachment, approval and transition APIs.
+  Their detail dialog has a four-stage Stepper and loads only authorized catalog lineage. Existing
+  request-item edits and generated SQL result presentation remain disabled until version-fenced
+  server contracts exist. System selection and Developer/Data Steward/global Admin approval lanes
+  come from canonical server routing and immutable authority snapshots, never UI fixtures.
+- Knowledge Registry and releases use the canonical graph APIs. The visual ontology editor and its
+  local `CREATE (alias:Label)`/relationship subset produce typed provenance-bearing changeset
+  operations; arbitrary Cypher is rejected and no Cypher string is sent to the server. Integrity-
+  verified PDF uploads can enter the governed typed extraction flow; model-selected evidence IDs
+  resolve to server-owned page excerpts before a DRAFT changeset is created. DB-schema source
+  extraction remains unavailable until its governed proposal/job contract exists.
+- Knowledge Chat is a distinct route from general Chat and calls only release-pinned, bounded
+  Neo4j evidence retrieval and the graph-specific OpenAI-compatible synthesis contract. An answer
+  is accepted only when every cited ID belongs to the authorized evidence bundle and the exact
+  model/configuration/prompt/tool versions are audited.
+- Profile administrator entries are rendered only from the `/admin/me` operation context. Missing
+  audit/security-log exports, IdP user creation, system CRUD and dictionary mutation are shown as
+  unavailable instead of using browser mocks or direct provider writes.
+
+This is a development UI, but the same authorization and canonical-ownership boundaries apply.
+An empty graph canvas contains a labelled placeholder node so the layout never collapses; it is not
+mock domain evidence.
 
 ## Local quick start with bundled Keycloak
 
@@ -122,25 +261,50 @@ docker compose --profile catalog-export -f compose.yaml -f compose.identity.yaml
   up -d --build catalog-export-worker
 ```
 
-Open `http://localhost:8080`, sign in as `datariver-admin`, and read the generated temporary password from `secrets/keycloak_demo_password`. The first sign-in requires a new password but does not request a mobile OTP. The local realm keeps ordinary login at LoA 1 and reserves its user-verifying cross-platform WebAuthn key for an explicitly requested LoA 2 step-up. High-risk operations remain fail-closed until the user enrolls a key, completes step-up, and the resulting token satisfies the configured ACR, AMR and `auth_time` contract. Enter workspace ID:
+Open `http://localhost:8080`, sign in as `datariver-admin`, and read the generated temporary password from `secrets/keycloak_demo_password`. The first sign-in requires a new password but does not request a mobile OTP. The local realm keeps ordinary login at LoA 1 and reserves its user-verifying cross-platform WebAuthn key for an explicitly requested LoA 2 step-up. High-risk operations remain fail-closed until the user enrolls a key, completes step-up, and the resulting token satisfies the configured ACR, AMR and `auth_time` contract. Bootstrap assigns this active default Workspace, so a verified user does not need to type it after login:
 
 ```text
 00000000-0000-4000-8000-000000000100
 ```
 
-The Workspace selector is retained as a validated URL selection, not browser-stored authority, so a
-reload or new tab keeps the requested workspace/page while every API request rechecks membership,
-RLS and ABAC on the server. OIDC user/profile/role state remains in React memory only: startup uses
+Workspace is not an Admin-only screen option: it is the tenant/security scope for every user,
+membership, RLS, ABAC and cache entry. With `WORKSPACE_SELECTION_ENABLED=true`, the selector is a
+validated URL convenience, not browser-stored authority, and every API request rechecks membership.
+Set it to `false` for a single-Workspace UI; the selector disappears and DataRiver always uses the
+server-verified default while preserving the same internal security boundary. A missing default
+fails closed. OIDC user/profile/role state remains in React memory only: startup uses
 the Keycloak SSO session for a silent authorization-code + PKCE round-trip, then hydrates the
 verified profile from `GET /auth/me`. The local administrator is a `security-administrators` member
 and can read its server-derived administrator menu without reauthentication. Password reauth or
 hardware WebAuthn is requested only by the corresponding sensitive mutation; no operation is
 automatically replayed after that redirect.
 
-Use **USB 보안키 등록** in the signed-in profile area to enroll a FIDO2 security key. A denied
+Use **WebAuthn 보안키 등록** in the signed-in profile area to enroll an authenticator allowed by the
+organization IdP policy. The UI does not require one specific USB form factor. A denied
 high-risk action shows **보안키로 인증** and returns to the same `?page=...` view after Keycloak
 step-up. DataRiver never replays the approval or publish request automatically; review it and click
 the operation again. The local identity profile has no mobile-OTP setup step.
+
+The two presentation/security switches are deployment settings, meaning values loaded by the API
+process from this machine's ignored `.env` (or a production orchestrator/secret policy), not fields
+that a signed-in browser administrator can lower during the protected action:
+
+```dotenv
+# Single-Workspace presentation; Workspace ABAC/RLS remains active.
+WORKSPACE_SELECTION_ENABLED=false
+# Optional. Disables DataRiver WebAuthn use and leaves WebAuthn-gated writes denied.
+OIDC_HARDWARE_WEBAUTHN_ENABLED=false
+```
+
+After changing either value, recreate the API process so it reloads configuration:
+
+```bash
+docker compose -f compose.yaml up -d --force-recreate api
+```
+
+Silent access-token renewal keeps one API client and swaps only its request-time token. It no
+longer recreates every feature client or causes a periodic screen-wide data reload; a failed
+renewal still returns to explicit Sign In.
 
 The `local-identity` bootstrap is rejected when `APP_ENV=production`. With an enterprise IdP, provision `(issuer, sub)` and a workspace membership through the controlled environment onboarding process; do not reuse local identities.
 
@@ -286,13 +450,13 @@ An OIDC issuer is an identity, not merely a port mapping. For browser sign-in on
 
 ## Main functional flows
 
-- Catalog: an authorized local projection serves cursor-bound ALL-term search, facets, autocomplete and a lazy `platform -> database -> schema -> asset` Resource Tree before selected details are enriched through a fixed DataHub adapter. Database/schema hierarchy comes only from typed DataHub browse containers; the platform never invents it by splitting URNs. Tag/Term entry suggestions merge the authorized projection with a bounded, paged DataHub controlled-vocabulary search before applying the picker limit, so values outside a provider's first short page remain selectable. Provider failure safely falls back to the projection. Authorized detail keeps `Table Details` and a fixed-height, authorization-pruned local `Lineage` graph. The graph fits its detail-panel viewport, wraps each stage after three nodes without omitting nodes, and supports pan, node positioning and zoom. Selecting a node opens its authorized local detail; the external DataHub Lineage iframe is not invoked by this UI. A `sync_id`-bound full reconciliation is sequential, single-writer and tombstones missing DataHub-owned assets without touching seed-owned rows. Governed CSV export is a server-managed, owner-scoped job bound to the exact query/filter, permission/classification-policy snapshot and projection watermark. It excludes RESTRICTED assets unconditionally, neutralizes spreadsheet formula injection, reauthorizes every download, and issues only a 60-second URL after object metadata reconciliation.
+- Catalog: an authorized local projection serves cursor-bound ALL-term search, facets, autocomplete and a lazy `platform -> database -> schema -> asset` Resource Tree before selected details are enriched through a fixed DataHub adapter. The result table shows source-backed Terms and Tags beside the asset identity, exposes a horizontal scroll region, and offers per-column ascending/descending sorting and text filtering over the currently loaded logical page. Logical page sizes 50/100/200/500/1000/All are composed by following the existing authorization- and policy-bound cursor in server batches of at most 100; this does not expand the API's bounded page contract. Database/schema hierarchy comes only from typed DataHub browse containers; the platform never invents it by splitting URNs. Tag/Term entry suggestions merge the authorized projection with a bounded, paged DataHub controlled-vocabulary search before applying the picker limit, so values outside a provider's first short page remain selectable. Provider failure safely falls back to the projection. Authorized detail keeps `Table Details` and a fixed-height, authorization-pruned local `Lineage` graph. The graph fits its detail-panel viewport, wraps each stage after three nodes without omitting nodes, and supports pan, node positioning and zoom. Selecting a node opens its authorized local detail; the external DataHub Lineage iframe is not invoked by this UI. A `sync_id`-bound full reconciliation is sequential, single-writer and tombstones missing DataHub-owned assets without touching seed-owned rows. Governed CSV/XLSX export is a server-managed, owner-scoped job bound to the exact query/filter, permission/classification-policy snapshot and projection watermark; toolbar buttons never synthesize a browser-side file. Export excludes RESTRICTED assets unconditionally, neutralizes spreadsheet formula injection, reauthorizes every download, and issues only a 60-second URL after object metadata reconciliation.
 - Registration: browser multipart upload goes directly to quarantine storage. Table/column Tag and Term values remain on a one-line scrollable badge control with thin previous/next buttons; the compact `+` opens its vocabulary/new-proposal input directly below that control. Workers complete the object, stream SHA-256/size/format checks with bounded memory, copy to a validation-attempt-scoped accepted key, fully re-read the promoted bytes and delete quarantine only after the version-fenced database acceptance commits. The MANUAL workbench creates a dataset-description proposal only after a live DataHub preview, an opaque target/source-bound `If-Match`, server-side classification and a same-transaction target share lock. The BULK workbench explicitly separates format-only uploads from the bounded `DATASET_DESCRIPTION_CSV_V1` profile, can queue/read a server-configured preparation only from exact `ACCEPTED` byte evidence and renders real preparation state in the v0.3-style status tracker. A source-only bounded parser contract exists, but the isolated parser worker, candidate read/preview and proposal creation remain disabled, so READY preparation evidence is not presented as a change request or DataHub update and the browser exposes no raw proposal form.
 - Change management: typed DataHub aspect UPSERT requests are server-bound to an authorized local dataset identity and scope, then move through legal transitions and distinct final approval. In new-CR intake, each Tag/Term `+` unions the bounded authorized projection with the fixed, bounded DataHub `*` controlled-vocabulary browse; keyword input narrows that same adapter query before a comma-aware new proposal is offered. Column input reserves the table Schema track, so column item/Type/Description/Term/Tag/requested-change/management align with Table/Owner/description/Terms/Tags/requested-change/column-addition above it. Reads use the current authorized target; approval and forward transitions reject identity or authorization-scope drift. Confidential/restricted changes need two final approvers. Generic raw Aspect creation and the legacy upload-derived raw proposal API additionally require the deny-by-default, hardware-human-only `change.raw.create` action and are not exposed in the ordinary UI. A leased worker applies each aspect idempotently and only marks `APPLIED` after re-read hash equality. Apply-time requester/policy reauthorization, DataRiver target serialization and external provider CAS remain explicit production gates.
 - Classification access administration: eligible human security administrators can review and independently approve versioned four-class Search/Chat policies, review or revoke immutable inference-provider profile versions, and govern policy-bound RESTRICTED Search grants. ADR-0020 additionally permits an audited, read-only same-workspace catalog review of non-deleted quarantined DataHub projections for classification remediation, including the fixed typed DataHub metadata detail; it never enables export, Chat, arbitrary provider access or mutation. The Admin UI never accepts provider endpoints or credentials, and RESTRICTED evidence is never eligible for Chat.
 - Knowledge graph: create a graph/ontology, author typed node/edge changesets, validate, independently review, publish or roll back immutable releases, export governed views and call bounded analysis. Raw SQL/Cypher is never accepted.
 - API sharing: create a release-pinned contract version, publish it with recent strong authentication, grant an OIDC `client_id` explicit scopes/classification/validity and quotas, revoke it, and invoke bounded neighbor analysis through an atomic grant-and-usage check.
-- Chat: deterministic baseline answers only from catalog or active-release knowledge evidence that passed prefiltering and per-item authorization. Immutable chunks bind workspace, classification, typed scope, source/version/effective time and content hash; only validated cited chunk IDs are persisted, otherwise the answer is `검증 불가`. Persistence additionally requires the workspace's independently approved ACTIVE retention policy: each new session binds its exact policy ID/hash and database-time deadline, and a superseded, expired or legacy-unbound session is append-closed. There is no duration fallback. A disabled-first typed inference worker contract rejects SQL, Cypher, arbitrary HTTP, tools and mutation fields and validates cited output, but no provider adapter, endpoint, secret, durable job or external call is wired. External inference remains disabled until live revalidation, delivery/streaming, metrics and scaled red-team gates are accepted.
+- Chat: deterministic baseline answers only from catalog or active-release knowledge evidence that passed prefiltering and per-item authorization. Immutable chunks bind workspace, classification, typed scope, source/version/effective time and content hash; only validated cited chunk IDs are persisted, otherwise the answer is `검증 불가`. Persistence additionally requires the workspace's independently approved ACTIVE retention policy: each new session binds its exact policy ID/hash and database-time deadline, and a superseded, expired or legacy-unbound session is append-closed. There is no duration fallback. The default inference-worker contract rejects SQL, Cypher, arbitrary HTTP, tools and mutation fields. The sole exception is the explicit Mac-development adapter in [ADR-0023](docs/adr/0023-mac-development-local-inference-and-graph-projection.md): native Ollama receives a fixed non-executable answer/citation function and its untrusted result remains subject to the existing validation. External inference remains disabled until live revalidation, delivery/streaming, metrics and scaled red-team gates are accepted.
 - Monitoring: liveness, readiness, dependency capabilities, workspace counts, outbox dead letters and ABAC-protected Prometheus HTTP metrics remain independent so one degraded optional dependency does not hide core state. Database-pool metrics expose only bounded connection states and configured limits, never workspace, subject or query labels.
 
 SeaweedFS is the local/Pilot upload store, not accepted WORM storage. The immutable-archive port is
@@ -329,6 +493,27 @@ The local command creates 500 PostgreSQL tables, 500 PostgreSQL views, 20 determ
 table by default, a labelled Oracle **MOCK** DDL artifact, and 2,000 DataHub dataset entities when
 the `dual` scope is selected. The schema is reset only after explicit confirmation and refuses to
 remove unexpected objects.
+
+On the validated Mac Compose topology, trigger the same bounded workflow through Airflow after the
+core stack is healthy. It is manual-only and has no schedule. `docker compose exec` does not invoke
+the service entrypoint automatically, so retain the wrapper below: it loads the Airflow database
+and API secrets from their mounted files without exposing them in the command or shell history.
+
+```bash
+docker compose -f compose.yaml -f compose.identity.yaml -f compose.airflow.yaml \
+  -f compose.gateway.yaml -f aux-compose.yml -f compose.graph.yaml \
+  exec airflow-api-server /bin/bash /opt/datariver/airflow-entrypoint.sh \
+  dags unpause datariver_semiconductor_seed_ingestion
+docker compose -f compose.yaml -f compose.identity.yaml -f compose.airflow.yaml \
+  -f compose.gateway.yaml -f aux-compose.yml -f compose.graph.yaml \
+  exec airflow-api-server /bin/bash /opt/datariver/airflow-entrypoint.sh \
+  dags trigger datariver_semiconductor_seed_ingestion
+# After the run is SUCCESS, return the manual-only DAG to its default pause state.
+docker compose -f compose.yaml -f compose.identity.yaml -f compose.airflow.yaml \
+  -f compose.gateway.yaml -f aux-compose.yml -f compose.graph.yaml \
+  exec airflow-api-server /bin/bash /opt/datariver/airflow-entrypoint.sh \
+  dags pause datariver_semiconductor_seed_ingestion
+```
 
 ```powershell
 # Run from the repository root after the host-development dependencies are healthy.

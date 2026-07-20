@@ -316,6 +316,10 @@ def _aspect_document(envelope: Any) -> dict[str, Any]:
                 retryable=False,
                 provider_code="INVALID_RESPONSE",
             ) from error
+    if isinstance(candidate, dict) and len(candidate) == 1:
+        type_name, typed_value = next(iter(candidate.items()))
+        if type_name.startswith("com.linkedin.") and isinstance(typed_value, dict):
+            candidate = typed_value
     if not isinstance(candidate, dict):
         raise ExternalDependencyError(
             "DataHub returned an invalid aspect envelope.",
@@ -956,6 +960,15 @@ class HttpDataHubGateway:
             f"/aspects/{encoded_urn}",
             params={"aspect": aspect_name, "version": 0},
         )
+        if response.status_code == 404:
+            return DataHubAspectSnapshot(
+                urn=external_urn,
+                aspect_name=aspect_name,
+                content_hash=canonical_json_hash({}),
+                source_version="absent",
+                observed_at=datetime.now(UTC),
+                document=MappingProxyType({}),
+            )
         if response.status_code >= 400:
             raise ExternalDependencyError(
                 "DataHub aspect reconciliation failed.",

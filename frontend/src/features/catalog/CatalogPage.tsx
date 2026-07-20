@@ -62,6 +62,54 @@ function searchPath(query: string, filters: Filters, cursor: string | undefined,
   return parameters
 }
 
+const catalogServerPageLimit = 100
+
+async function loadCatalogWindow(
+  client: ApiClient,
+  query: string,
+  filters: Filters,
+  cursor: string | undefined,
+  requestedSize: number,
+  signal: AbortSignal,
+): Promise<CatalogSearch> {
+  const loadAll = requestedSize === 0
+  const targetSize = loadAll ? Number.POSITIVE_INFINITY : requestedSize
+  const items: CatalogAsset[] = []
+  const visitedCursors = new Set<string>()
+  if (cursor) visitedCursors.add(cursor)
+  let nextCursor = cursor
+  let windowNextCursor: string | undefined
+  let first: CatalogSearch | undefined
+
+  while (items.length < targetSize) {
+    const remaining = loadAll ? catalogServerPageLimit : targetSize - items.length
+    const batchLimit = Math.min(catalogServerPageLimit, remaining)
+    const response = await client.request<CatalogSearch>(
+      `/catalog/assets?${searchPath(query, filters, nextCursor, batchLimit)}`,
+      { signal },
+    )
+    first ??= response
+    items.push(...response.items)
+    windowNextCursor = response.page.next_cursor
+    if (!windowNextCursor || items.length >= targetSize || items.length >= response.total) break
+    if (visitedCursors.has(windowNextCursor)) {
+      throw new Error('검색 커서가 반복되어 결과 로딩을 중단했습니다. 검색 조건을 다시 적용하세요.')
+    }
+    visitedCursors.add(windowNextCursor)
+    nextCursor = windowNextCursor
+  }
+
+  if (!first) throw new Error('검색 결과 응답을 확인하지 못했습니다.')
+  return {
+    ...first,
+    items: loadAll ? items : items.slice(0, requestedSize),
+    page: {
+      limit: loadAll ? items.length : requestedSize,
+      ...(loadAll || !windowNextCursor ? {} : { next_cursor: windowNextCursor }),
+    },
+  }
+}
+
 export function CatalogPage({
   client,
   initialQuery = '',
@@ -102,9 +150,8 @@ export function CatalogPage({
   useEffect(() => {
     const controller = new AbortController()
     setLoading(true); setError(undefined); setSelectedAssetId(undefined)
-    const parameters = searchPath(query, filters, cursors[pageIndex], pageSize)
     void Promise.all([
-      client.request<CatalogSearch>(`/catalog/assets?${parameters}`, { signal: controller.signal }),
+      loadCatalogWindow(client, query, filters, cursors[pageIndex], pageSize, controller.signal),
       client.request<CatalogFacets>(`/catalog/facets?${searchPath(query, filters, undefined, 30)}`, { signal: controller.signal }),
     ]).then(([nextResult, nextFacets]) => {
       if (!controller.signal.aborted) { setResult(nextResult); setFacets(nextFacets) }
@@ -163,18 +210,18 @@ export function CatalogPage({
 
   const columns = useMemo<ColumnDef<CatalogAsset>[]>(() => [
     { id: 'number', header: 'No', size: 56, enableSorting: false, cell: ({ row }) => <span>{pageIndex * pageSize + row.index + 1}</span> },
-    { accessorKey: 'asset_type', header: 'Type', size: 76, enableSorting: false, cell: ({ row }) => <span className={`badge catalog-asset-type-${row.original.asset_type.toLowerCase()}`}>{row.original.asset_type}</span> },
-    { accessorKey: 'platform', header: 'Platform', size: 96, enableSorting: false, cell: ({ row }) => <TruncatedText value={row.original.platform ?? '—'} /> },
-    { accessorKey: 'database_name', header: 'Database', size: 110, enableSorting: false, cell: ({ row }) => <TruncatedText value={row.original.database_name ?? '—'} /> },
-    { accessorKey: 'schema_name', header: 'Schema', size: 110, enableSorting: false, cell: ({ row }) => <TruncatedText value={row.original.schema_name ?? '—'} /> },
-    { accessorKey: 'name', header: 'Table / Asset', size: 210, enableSorting: false, cell: ({ row }) => <TruncatedText value={row.original.name} className="catalog-asset-name" /> },
-    { accessorKey: 'owner', header: 'Owner', size: 140, enableSorting: false, cell: ({ row }) => <TruncatedText value={row.original.owner ?? '—'} /> },
-    { accessorKey: 'domain', header: 'Domain', size: 130, enableSorting: false, cell: ({ row }) => <TruncatedText value={row.original.domain ?? '—'} /> },
-    { accessorKey: 'terms', header: 'Terms', size: 170, enableSorting: false, cell: ({ row }) => <BadgeScroller label={`${row.original.name} Terms`} values={row.original.terms ?? []} /> },
-    { accessorKey: 'tags', header: 'Tags', size: 170, enableSorting: false, cell: ({ row }) => <BadgeScroller label={`${row.original.name} Tags`} values={row.original.tags ?? []} /> },
-    { accessorKey: 'classification', header: 'Class', size: 100, enableSorting: false, cell: ({ row }) => <span className="badge badge-soft">{row.original.classification}</span> },
-    { accessorKey: 'description', header: 'Description', size: 260, enableSorting: false, cell: ({ row }) => <TruncatedText value={row.original.description ?? '설명 없음'} /> },
-    { id: 'matches', header: 'Matches', size: 300, enableSorting: false, cell: ({ row }) => <CatalogMatchPreview fragments={row.original.matches} /> },
+    { accessorKey: 'asset_type', header: 'Type', size: 76, cell: ({ row }) => <span className={`badge catalog-asset-type-${row.original.asset_type.toLowerCase()}`}>{row.original.asset_type}</span> },
+    { accessorKey: 'platform', header: 'Platform', size: 96, cell: ({ row }) => <TruncatedText value={row.original.platform ?? '—'} /> },
+    { accessorKey: 'database_name', header: 'Database', size: 110, cell: ({ row }) => <TruncatedText value={row.original.database_name ?? '—'} /> },
+    { accessorKey: 'schema_name', header: 'Schema', size: 110, cell: ({ row }) => <TruncatedText value={row.original.schema_name ?? '—'} /> },
+    { accessorKey: 'name', header: 'Table / Asset', size: 210, cell: ({ row }) => <TruncatedText value={row.original.name} className="catalog-asset-name" /> },
+    { id: 'terms', accessorFn: (row) => (row.terms ?? []).join(' '), header: 'Terms', size: 170, cell: ({ row }) => <BadgeScroller label={`${row.original.name} Terms`} values={row.original.terms ?? []} /> },
+    { id: 'tags', accessorFn: (row) => (row.tags ?? []).join(' '), header: 'Tags', size: 170, cell: ({ row }) => <BadgeScroller label={`${row.original.name} Tags`} values={row.original.tags ?? []} /> },
+    { accessorKey: 'owner', header: 'Owner', size: 140, cell: ({ row }) => <TruncatedText value={row.original.owner ?? '—'} /> },
+    { accessorKey: 'domain', header: 'Domain', size: 130, cell: ({ row }) => <TruncatedText value={row.original.domain ?? '—'} /> },
+    { accessorKey: 'classification', header: 'Class', size: 100, cell: ({ row }) => <span className="badge badge-soft">{row.original.classification}</span> },
+    { accessorKey: 'description', header: 'Description', size: 260, cell: ({ row }) => <TruncatedText value={row.original.description ?? '설명 없음'} /> },
+    { id: 'matches', accessorFn: (row) => row.matches.map((match) => match.text).join(' '), header: 'Matches', size: 300, cell: ({ row }) => <CatalogMatchPreview fragments={row.original.matches} /> },
   ], [pageIndex, pageSize])
 
   const updateFilter = (name: keyof Filters, value: string) => {
@@ -229,55 +276,59 @@ export function CatalogPage({
   return <section className="catalog-page">
     <PageTitle icon="SR" eyebrow="DataHub Wrapper" title="데이터 카탈로그 검색" description="Workspace·분류정책·권한 범위 안의 로컬 projection을 검색합니다." />
     <div className="catalog-search-panel panel">
-      <form className="catalog-search-form" role="search" aria-label="카탈로그 상세 검색" onSubmit={submit}>
-        <div className="catalog-query-control" ref={suggestionRoot}>
-          <Search size={16} aria-hidden="true" />
-          <label className="sr-only" htmlFor="catalog-query">데이터셋 이름이나 설명 검색</label>
-          <input id="catalog-query" value={draftQuery} onChange={(event) => setDraftQuery(event.target.value)} onKeyDown={navigateSuggestions} placeholder="데이터셋 이름이나 설명 검색 (2자 이상)" maxLength={500} autoComplete="off" aria-controls={suggestions.length ? 'catalog-suggestions' : undefined} aria-expanded={suggestions.length > 0} />
-          {suggestions.length > 0 && <ul id="catalog-suggestions" className="catalog-suggestions" role="listbox">
-            {suggestions.map((suggestion, index) => <li key={suggestion.id} role="option" aria-selected={index === suggestionIndex}><button type="button" onMouseDown={(event) => event.preventDefault()} onClick={() => commitQuery(suggestion.name)}><span><b>{suggestion.name}</b><small>{suggestion.asset_type} · {suggestion.platform ?? 'platform 미지정'}</small></span></button></li>)}
-          </ul>}
-        </div>
-        <button className="button" disabled={loading}><Search size={13} />{loading ? '검색 중…' : '검색'}</button>
-      </form>
-      <div className="catalog-filter-root" ref={filterRoot}>
-        <button aria-controls="catalog-filter-popover" aria-expanded={filtersOpen} className="button button-secondary catalog-filter-trigger" onClick={() => setFiltersOpen((current) => !current)} type="button"><Filter size={14} />필터{activeFilterCount > 0 && <span className="catalog-filter-count">{activeFilterCount}</span>}</button>
-        {filtersOpen && <div className="catalog-filter-popover" id="catalog-filter-popover" role="dialog" aria-label="상세 검색 필터">
-          <header><div><span className="eyebrow">Advanced search</span><strong>검색 필터</strong></div><button className="button button-secondary" onClick={resetFilters} type="button"><RotateCcw size={12} />초기화</button></header>
-          <fieldset className="catalog-search-targets"><legend>Search in</legend><label><input aria-label="Search in 전체" checked={filters.searchFields.length === allSearchFields.length} onChange={(event) => setAllSearchFields(event.target.checked)} type="checkbox" />전체</label>{allSearchFields.map((field) => <label key={field}><input checked={filters.searchFields.includes(field)} onChange={() => toggleSearchField(field)} type="checkbox" />{searchFieldLabels[field]}</label>)}</fieldset>
-          <div className="catalog-filter-fields">
-            <FacetSelect label="Type" value={filters.assetType} onChange={(value) => updateFilter('assetType', value)} options={facets?.asset_types ?? []} />
-            <FacetSelect label="Platform" value={filters.platform} onChange={(value) => updateFilter('platform', value)} options={facets?.platforms ?? []} />
-            <FacetSelect label="Database" value={filters.databaseName} onChange={(value) => updateFilter('databaseName', value)} options={facets?.databases ?? []} />
-            <FacetSelect label="Schema" value={filters.schemaName} onChange={(value) => updateFilter('schemaName', value)} options={facets?.schemas ?? []} />
-            <FacetSelect label="Domain" value={filters.domain} onChange={(value) => updateFilter('domain', value)} options={facets?.domains ?? []} />
-            <FacetSelect label="Classification" value={filters.classification} onChange={(value) => updateFilter('classification', value)} options={facets?.classifications ?? []} />
-            <FacetSelect label="Lifecycle" value={filters.lifecycle} onChange={(value) => updateFilter('lifecycle', value)} options={facets?.lifecycles ?? []} />
+      <div className="catalog-search-toolbar">
+        <form className="catalog-search-form" role="search" aria-label="카탈로그 상세 검색" onSubmit={submit}>
+          <div className="catalog-query-control" ref={suggestionRoot}>
+            <Search size={16} aria-hidden="true" />
+            <label className="sr-only" htmlFor="catalog-query">데이터셋 이름이나 설명 검색</label>
+            <input id="catalog-query" value={draftQuery} onChange={(event) => setDraftQuery(event.target.value)} onKeyDown={navigateSuggestions} placeholder="데이터셋 이름이나 설명 검색 (2자 이상)" maxLength={500} autoComplete="off" aria-controls={suggestions.length ? 'catalog-suggestions' : undefined} aria-expanded={suggestions.length > 0} />
+            {suggestions.length > 0 && <ul id="catalog-suggestions" className="catalog-suggestions" role="listbox">
+              {suggestions.map((suggestion, index) => <li key={suggestion.id} role="option" aria-selected={index === suggestionIndex}><button type="button" onMouseDown={(event) => event.preventDefault()} onClick={() => commitQuery(suggestion.name)}><span><b>{suggestion.name}</b><small>{suggestion.asset_type} · {suggestion.platform ?? 'platform 미지정'}</small></span></button></li>)}
+            </ul>}
           </div>
-          <footer><button className="button" onClick={() => setFiltersOpen(false)} type="button">필터 적용</button></footer>
-        </div>}
+          <button className="button" disabled={loading}><Search size={13} />{loading ? '검색 중…' : '검색'}</button>
+        </form>
+        <div className="catalog-filter-root" ref={filterRoot}>
+          <button aria-controls="catalog-filter-popover" aria-expanded={filtersOpen} className="button button-secondary catalog-filter-trigger" onClick={() => setFiltersOpen((current) => !current)} type="button"><Filter size={14} />필터{activeFilterCount > 0 && <span className="catalog-filter-count">{activeFilterCount}</span>}</button>
+          {filtersOpen && <div className="catalog-filter-popover" id="catalog-filter-popover" role="dialog" aria-label="상세 검색 필터">
+            <header><div><span className="eyebrow">Advanced search</span><strong>검색 필터</strong></div><button className="button button-secondary" onClick={resetFilters} type="button"><RotateCcw size={12} />초기화</button></header>
+            <fieldset className="catalog-search-targets"><legend>Search in</legend><label><input aria-label="Search in 전체" checked={filters.searchFields.length === allSearchFields.length} onChange={(event) => setAllSearchFields(event.target.checked)} type="checkbox" />전체</label>{allSearchFields.map((field) => <label key={field}><input checked={filters.searchFields.includes(field)} onChange={() => toggleSearchField(field)} type="checkbox" />{searchFieldLabels[field]}</label>)}</fieldset>
+            <div className="catalog-filter-fields">
+              <FacetSelect label="Type" value={filters.assetType} onChange={(value) => updateFilter('assetType', value)} options={facets?.asset_types ?? []} />
+              <FacetSelect label="Platform" value={filters.platform} onChange={(value) => updateFilter('platform', value)} options={facets?.platforms ?? []} />
+              <FacetSelect label="Database" value={filters.databaseName} onChange={(value) => updateFilter('databaseName', value)} options={facets?.databases ?? []} />
+              <FacetSelect label="Schema" value={filters.schemaName} onChange={(value) => updateFilter('schemaName', value)} options={facets?.schemas ?? []} />
+              <FacetSelect label="Domain" value={filters.domain} onChange={(value) => updateFilter('domain', value)} options={facets?.domains ?? []} />
+              <FacetSelect label="Classification" value={filters.classification} onChange={(value) => updateFilter('classification', value)} options={facets?.classifications ?? []} />
+              <FacetSelect label="Lifecycle" value={filters.lifecycle} onChange={(value) => updateFilter('lifecycle', value)} options={facets?.lifecycles ?? []} />
+            </div>
+            <footer><button className="button" onClick={() => setFiltersOpen(false)} type="button">필터 적용</button></footer>
+          </div>}
+        </div>
+        <CatalogExportControl
+          client={client}
+          compact
+          workerEnabled={catalogExportWorkerEnabled}
+          query={query}
+          assetType={filters.assetType || undefined}
+          platform={filters.platform || undefined}
+          databaseName={filters.databaseName || undefined}
+          schemaName={filters.schemaName || undefined}
+          domain={filters.domain || undefined}
+          searchFields={filters.searchFields}
+          classification={classificationValue(filters.classification)}
+          lifecycle={filters.lifecycle === 'ACTIVE' ? 'ACTIVE' : undefined}
+        />
       </div>
-      <CatalogExportControl
-        client={client}
-        workerEnabled={catalogExportWorkerEnabled}
-        query={query}
-        assetType={filters.assetType || undefined}
-        platform={filters.platform || undefined}
-        databaseName={filters.databaseName || undefined}
-        schemaName={filters.schemaName || undefined}
-        domain={filters.domain || undefined}
-        searchFields={filters.searchFields}
-        classification={classificationValue(filters.classification)}
-        lifecycle={filters.lifecycle === 'ACTIVE' ? 'ACTIVE' : undefined}
-      />
     </div>
     <ErrorNotice error={error} />
     <div className={`catalog-workspace ${selectedAssetId ? 'with-detail' : ''}`} ref={workspaceRef} style={selectedAssetId ? { '--catalog-detail-width': `${detailWidth}px` } as CSSProperties : undefined}>
       <CatalogResourceTree client={client} query={query} selectedAssetId={selectedAssetId} onSelectAsset={setSelectedAssetId} onSelectScope={selectTreeScope} />
       <section className="catalog-results" aria-label="카탈로그 검색 결과">
-        <header><div><span className="eyebrow">Permission scoped</span><h2>Search Results</h2></div><span>{result ? `${result.items.length} / ${(result.total ?? result.items.length).toLocaleString()} items` : '0 items'} · ALL keywords</span></header>
+        <header><div><span className="eyebrow">Permission scoped</span><h2>Search Results</h2></div><span>{result ? `${result.items.length} / ${(result.total ?? result.items.length).toLocaleString()} items` : '0 items'} · ALL keywords · ↔ 좌우 스크롤</span></header>
         <DenseDataTable caption="카탈로그 검색 결과" columns={columns} data={result?.items ?? []} getRowId={(item) => item.id} loading={loading} emptyMessage={query ? '검색 조건에 맞는 허용 자산이 없습니다.' : '현재 권한 범위에서 표시할 자산이 없습니다.'} selectedRowId={selectedAssetId} onRowActivate={(item) => setSelectedAssetId(item.id)} />
-        <CursorPagination page={pageIndex + 1} pageSize={pageSize} canPrevious={pageIndex > 0} canNext={Boolean(result?.page.next_cursor)} itemCount={result?.items.length} onPrevious={() => setPageIndex((current) => Math.max(0, current - 1))} onNext={() => { if (!result?.page.next_cursor) return; setCursors((current) => [...current.slice(0, pageIndex + 1), result.page.next_cursor]); setPageIndex((current) => current + 1) }} onPageSizeChange={(value) => { setPageSize(value); setCursors([undefined]); setPageIndex(0) }} />
+        <p className="catalog-local-table-note">열 정렬은 현재 로드된 {result?.items.length.toLocaleString() ?? 0}건에 적용됩니다.</p>
+        <CursorPagination page={pageIndex + 1} pageSize={pageSize} pageSizeOptions={[50, 100, 200, 500, 1000, 0]} canPrevious={pageSize !== 0 && pageIndex > 0} canNext={pageSize !== 0 && Boolean(result?.page.next_cursor)} itemCount={result?.items.length} onPrevious={() => setPageIndex((current) => Math.max(0, current - 1))} onNext={() => { if (!result?.page.next_cursor) return; setCursors((current) => [...current.slice(0, pageIndex + 1), result.page.next_cursor]); setPageIndex((current) => current + 1) }} onPageSizeChange={(value) => { setPageSize(value); setCursors([undefined]); setPageIndex(0) }} />
         {result && <footer className="catalog-result-meta"><span>projection v{result.meta.projection_version}</span><span>policy {result.meta.policy_version}</span><time dateTime={result.meta.observed_at}>{result.meta.observed_at ? new Date(result.meta.observed_at).toLocaleString() : '관측 시각 없음'}</time></footer>}
       </section>
       {selectedAssetId && <CatalogDetailPane key={selectedAssetId} client={client} assetId={selectedAssetId} onClose={() => setSelectedAssetId(undefined)} onResizeWidth={resizeDetail} onSelectAsset={setSelectedAssetId} width={detailWidth} />}

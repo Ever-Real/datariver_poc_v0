@@ -9,6 +9,9 @@ from datariver.application.services.catalog_export_worker import CatalogExportWo
 from datariver.config import get_settings
 from datariver.infrastructure.db.catalog_export import SqlCatalogExportWorkerStore
 from datariver.infrastructure.db.outbox import SqlInboxStore
+from datariver.infrastructure.system_configuration_runtime import (
+    resolve_activated_system_configuration,
+)
 from datariver.workers.container import build_catalog_export_container
 from datariver.workers.event_signal import EventSignalConsumer
 
@@ -16,7 +19,7 @@ LOGGER = structlog.get_logger()
 
 
 async def run() -> None:
-    settings = get_settings()
+    settings = await resolve_activated_system_configuration(get_settings(), database_role="export")
     container = build_catalog_export_container(settings)
     consumer_name = f"catalog-export:{socket.gethostname()}"
     worker = CatalogExportWorker(

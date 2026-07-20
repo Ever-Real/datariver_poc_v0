@@ -3,6 +3,9 @@ import type {
   AdminAccessRequest,
   AdminAccessRequestState,
   AdminReadContext,
+  AccessRole,
+  AccessRoleWrite,
+  CatalogSearch,
   ClassificationAccessPolicy,
   ClassificationAccessPolicyProposal,
   ClassificationAccessPolicyState,
@@ -16,6 +19,8 @@ import type {
   InferenceProviderProfileState,
   MembershipAccessDocument,
   MembershipAccessUpdateResult,
+  MembershipRenewalRequest,
+  MembershipRoleAssignmentResult,
   RetentionDataClass,
   RetentionPolicy,
   RetentionPolicyState,
@@ -29,6 +34,7 @@ import type {
   SystemAssigneeUpdate,
   SystemAssigneeUpdateResult,
   SystemConfigurationEntry,
+  SystemConfigurationTestResult,
 } from '../../api/types'
 
 type AdminApiClient = Pick<ApiClient, 'request' | 'requestWithMeta'>
@@ -55,8 +61,91 @@ export class AdminApi {
     )).items
   }
 
+  async listMembershipRenewals(state?: MembershipRenewalRequest['state']) {
+    const query = state ? `?state=${state}&limit=100` : '?limit=100'
+    return (await this.client.request<{ items: MembershipRenewalRequest[] }>(
+      `/admin/membership-renewals${query}`,
+    )).items
+  }
+
+  decideMembershipRenewal(
+    renewal: MembershipRenewalRequest,
+    decision: GovernanceDecision,
+    reason: string,
+    idempotencyKey: string,
+  ) {
+    return this.client.request<MembershipRenewalRequest>(
+      `/admin/membership-renewals/${encodeURIComponent(renewal.id)}/decisions`,
+      {
+        method: 'POST',
+        ifMatch: quotedVersion(renewal.version),
+        idempotencyKey,
+        body: JSON.stringify({ decision, reason }),
+      },
+    )
+  }
+
+  requestOwnMembershipRenewal(reason: string, idempotencyKey: string) {
+    return this.client.request<MembershipRenewalRequest>('/admin/membership-renewals/me', {
+      method: 'POST', idempotencyKey, body: JSON.stringify({ reason }),
+    })
+  }
+
+  async listOwnMembershipRenewals() {
+    return (await this.client.request<{ items: MembershipRenewalRequest[] }>(
+      '/admin/membership-renewals/me?limit=100',
+    )).items
+  }
+
+  async listAccessRoles() {
+    return (await this.client.request<{ items: AccessRole[] }>('/admin/access-roles')).items
+  }
+
+  createAccessRole(payload: AccessRoleWrite) {
+    return this.client.request<AccessRole>('/admin/access-roles', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    })
+  }
+
+  updateAccessRole(role: AccessRole, payload: AccessRoleWrite) {
+    return this.client.request<AccessRole>(`/admin/access-roles/${encodeURIComponent(role.id)}`, {
+      method: 'PUT',
+      ifMatch: quotedVersion(role.version),
+      body: JSON.stringify(payload),
+    })
+  }
+
+  deactivateAccessRole(role: AccessRole) {
+    return this.client.request<AccessRole>(`/admin/access-roles/${encodeURIComponent(role.id)}`, {
+      method: 'DELETE',
+      ifMatch: quotedVersion(role.version),
+    })
+  }
+
+  assignMembershipRole(
+    subjectId: string,
+    roleId: string | null,
+    etag: string,
+    idempotencyKey: string,
+  ) {
+    return this.client.request<MembershipRoleAssignmentResult>(
+      `/admin/workspace-memberships/${encodeURIComponent(subjectId)}/role`,
+      {
+        method: 'PUT', ifMatch: etag, idempotencyKey,
+        body: JSON.stringify({ role_id: roleId }),
+      },
+    )
+  }
+
   async listSystems() {
     return (await this.client.request<{ items: SystemDirectoryEntry[] }>('/admin/systems?limit=100')).items
+  }
+
+  async searchRestrictedGrantTargets(query: string) {
+    return (await this.client.request<CatalogSearch>(
+      `/catalog/assets?q=${encodeURIComponent(query)}&limit=20`,
+    )).items
   }
 
   updateSystemAssignees(
@@ -85,9 +174,23 @@ export class AdminApi {
       `/admin/system-configuration/${encodeURIComponent(systemId)}`,
       {
         method: 'PUT',
-        ifMatch: quotedVersion(version),
+        ifMatch: quotedConfigurationVersion(version),
         body: JSON.stringify({ configuration_yaml: configurationYaml }),
       },
+    )
+  }
+
+  testSystemConfiguration(systemId: string) {
+    return this.client.request<SystemConfigurationTestResult>(
+      `/admin/system-configuration/${encodeURIComponent(systemId)}/test`,
+      { method: 'POST' },
+    )
+  }
+
+  activateSystemConfiguration(systemId: string, version: number) {
+    return this.client.request<SystemConfigurationEntry>(
+      `/admin/system-configuration/${encodeURIComponent(systemId)}/activate`,
+      { method: 'POST', ifMatch: quotedConfigurationVersion(version) },
     )
   }
 
@@ -459,6 +562,11 @@ export class AdminApi {
 
 export function quotedVersion(version: number): string {
   if (!Number.isInteger(version) || version < 1) throw new Error('유효한 버전이 필요합니다.')
+  return `"${version}"`
+}
+
+function quotedConfigurationVersion(version: number): string {
+  if (!Number.isInteger(version) || version < 0) throw new Error('유효한 설정 버전이 필요합니다.')
   return `"${version}"`
 }
 

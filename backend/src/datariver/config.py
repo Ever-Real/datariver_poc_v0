@@ -62,6 +62,13 @@ class Settings(BaseSettings):
     oidc_hardware_acr_values: tuple[str, ...] = ("2",)
     oidc_step_up_acr: str = "2"
     oidc_hardware_amr_values: tuple[str, ...] = ("webauthn", "hwk")
+    # Operator-owned capability switches. Disabling WebAuthn never downgrades
+    # a high-risk operation to password-only access; those operations remain
+    # unavailable unless a separately governed fallback permits them.
+    oidc_hardware_webauthn_enabled: bool = True
+    # This controls only the manual workspace selector. The verified default
+    # workspace, workspace-scoped ABAC and PostgreSQL RLS always remain active.
+    workspace_selection_enabled: bool = True
     oidc_password_reauth_acr_values: tuple[str, ...] = ("1",)
     oidc_password_amr_values: tuple[str, ...] = ("pwd",)
     high_risk_auth_max_age_seconds: int = Field(default=300, ge=60, le=900)
@@ -71,6 +78,38 @@ class Settings(BaseSettings):
     # a security administrator is exercising the local UI before retention
     # policy governance is configured. This never permits durable Chat writes.
     chat_ephemeral_admin_without_retention_enabled: bool = False
+    # Opt-in experimental developer adapter.  This is deliberately constrained
+    # to Docker Desktop's native-host gateway; it is not a provider registry or
+    # a production inference configuration.
+    local_ollama_chat_enabled: bool = False
+    local_ollama_chat_base_url: HttpUrl | None = None
+    local_ollama_chat_model: str | None = Field(default=None, max_length=128)
+    local_ollama_chat_timeout_seconds: float = Field(default=60.0, ge=1.0, le=120.0)
+    local_ollama_chat_context_tokens: int = Field(default=8192, ge=2048, le=8192)
+    local_ollama_embedding_enabled: bool = False
+    local_ollama_embedding_base_url: HttpUrl | None = None
+    local_ollama_embedding_model: str | None = Field(default=None, max_length=128)
+    local_ollama_embedding_timeout_seconds: float = Field(default=60.0, ge=1.0, le=120.0)
+    neo4j_projection_enabled: bool = False
+    neo4j_uri: str | None = Field(default=None, max_length=2048)
+    neo4j_database: str = Field(default="neo4j", min_length=1, max_length=128)
+    neo4j_auth_secret_ref: str | None = Field(default=None, max_length=512)
+    neo4j_connection_timeout_seconds: float = Field(default=30.0, ge=1.0, le=60.0)
+    neo4j_maximum_connection_pool_size: int = Field(default=20, ge=1, le=100)
+    knowledge_pipeline_enabled: bool = False
+    # Development-only startup activation. The database stores versioned, non-secret
+    # documents and file-mounted secret reference names; processes read the selected
+    # activated versions once at startup, so applying a change always requires restart.
+    system_configuration_runtime_activation_enabled: bool = False
+    system_configuration_runtime_workspace_id: UUID | None = None
+    system_configuration_runtime_versions: dict[str, int] = Field(
+        default_factory=dict,
+        exclude=True,
+    )
+    system_configuration_runtime_hashes: dict[str, str] = Field(
+        default_factory=dict,
+        exclude=True,
+    )
 
     datahub_base_url: str
     datahub_secret_ref: str
@@ -136,6 +175,8 @@ class Settings(BaseSettings):
     upload_maximum_attempts: int = Field(default=8, ge=1, le=20)
     upload_validation_lease_seconds: int = Field(default=300, ge=30, le=3600)
     upload_validation_maximum_attempts: int = Field(default=4, ge=1, le=20)
+    bulk_preparation_lease_seconds: int = Field(default=900, ge=30, le=3600)
+    bulk_preparation_maximum_attempts: int = Field(default=4, ge=1, le=20)
     governance_apply_lease_seconds: int = Field(default=120, ge=30, le=900)
     governance_apply_maximum_attempts: int = Field(default=8, ge=1, le=20)
     governance_worker_subject_id: UUID = UUID("00000000-0000-7000-8000-000000000001")
@@ -402,6 +443,96 @@ class Settings(BaseSettings):
             }:
                 raise ValueError(
                     "Catalog export worker S3 credentials must use separate secret files."
+                )
+        if self.local_ollama_chat_enabled:
+            if self.app_env != "development":
+                raise ValueError("Local Ollama Chat is available only in development.")
+            if self.local_ollama_chat_base_url is None or self.local_ollama_chat_model is None:
+                raise ValueError(
+                    "Enabled local Ollama Chat requires a base URL and model identity."
+                )
+            model = self.local_ollama_chat_model.strip()
+            if re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:/-]{0,127}", model) is None:
+                raise ValueError("Local Ollama model identity is invalid.")
+            parsed_ollama_url = urlsplit(str(self.local_ollama_chat_base_url))
+            if (
+                parsed_ollama_url.scheme != "http"
+                or parsed_ollama_url.hostname != "host.docker.internal"
+                or parsed_ollama_url.port != 11434
+                or parsed_ollama_url.path.rstrip("/") != "/v1"
+                or parsed_ollama_url.query
+                or parsed_ollama_url.fragment
+                or parsed_ollama_url.username is not None
+                or parsed_ollama_url.password is not None
+            ):
+                raise ValueError("Local Ollama Chat must use http://host.docker.internal:11434/v1.")
+        if self.local_ollama_embedding_enabled:
+            if self.app_env != "development":
+                raise ValueError("Local Ollama embeddings are available only in development.")
+            if (
+                self.local_ollama_embedding_base_url is None
+                or self.local_ollama_embedding_model is None
+            ):
+                raise ValueError(
+                    "Enabled local Ollama embeddings require a base URL and model identity."
+                )
+            if (
+                re.fullmatch(
+                    r"[A-Za-z0-9][A-Za-z0-9._:/-]{0,127}",
+                    self.local_ollama_embedding_model.strip(),
+                )
+                is None
+            ):
+                raise ValueError("Local Ollama embedding model identity is invalid.")
+            parsed_embedding_url = urlsplit(str(self.local_ollama_embedding_base_url))
+            if (
+                parsed_embedding_url.scheme != "http"
+                or parsed_embedding_url.hostname != "host.docker.internal"
+                or parsed_embedding_url.port != 11434
+                or parsed_embedding_url.path.rstrip("/") != "/v1"
+                or parsed_embedding_url.query
+                or parsed_embedding_url.fragment
+                or parsed_embedding_url.username is not None
+                or parsed_embedding_url.password is not None
+            ):
+                raise ValueError(
+                    "Local Ollama embeddings must use http://host.docker.internal:11434/v1."
+                )
+        if self.neo4j_projection_enabled:
+            if self.app_env != "development":
+                raise ValueError("Neo4j projection is available only in development.")
+            if self.neo4j_uri is None or self.neo4j_auth_secret_ref is None:
+                raise ValueError("Enabled Neo4j projection requires URI and secret reference.")
+            parsed_neo4j_uri = urlsplit(self.neo4j_uri)
+            if (
+                parsed_neo4j_uri.scheme != "bolt"
+                or parsed_neo4j_uri.hostname != "neo4j"
+                or parsed_neo4j_uri.port != 7687
+                or parsed_neo4j_uri.path not in {"", "/"}
+                or parsed_neo4j_uri.query
+                or parsed_neo4j_uri.fragment
+                or parsed_neo4j_uri.username is not None
+                or parsed_neo4j_uri.password is not None
+            ):
+                raise ValueError("Local Neo4j projection must use bolt://neo4j:7687.")
+            if not self.neo4j_auth_secret_ref.startswith("file:/run/secrets/"):
+                raise ValueError("Neo4j credentials must use a mounted file secret reference.")
+        if self.knowledge_pipeline_enabled and not (
+            self.local_ollama_chat_enabled
+            and self.local_ollama_embedding_enabled
+            and self.neo4j_projection_enabled
+        ):
+            raise ValueError(
+                "The knowledge pipeline requires activated Chat, embedding, and Neo4j adapters."
+            )
+        if self.system_configuration_runtime_activation_enabled:
+            if self.app_env != "development":
+                raise ValueError(
+                    "Database-activated system configuration is available only in development."
+                )
+            if self.system_configuration_runtime_workspace_id is None:
+                raise ValueError(
+                    "Runtime system configuration requires one explicit Workspace identifier."
                 )
         if self.app_env == "production":
             if self.chat_ephemeral_admin_without_retention_enabled:

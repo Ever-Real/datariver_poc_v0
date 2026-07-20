@@ -53,4 +53,6 @@ async def get_authenticated_profile(
         authentication_assurance=identity.authentication_assurance.value,
         authentication_time=identity.authentication_time,
         default_workspace_id=default_workspace_id,
+        workspace_selection_enabled=container.settings.workspace_selection_enabled,
+        hardware_webauthn_enabled=container.settings.oidc_hardware_webauthn_enabled,
     )

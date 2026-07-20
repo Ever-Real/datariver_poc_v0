@@ -27,7 +27,14 @@ import { ErrorNotice } from '../../components/ErrorNotice'
 
 const HASH_CHUNK_SIZE = 4 * 1024 * 1024
 const TERMINAL_STATES = new Set(['ACCEPTED', 'REJECTED', 'ABORTED', 'EXPIRED'])
-const TYPED_DESCRIPTION_PROFILE = 'DATASET_DESCRIPTION_CSV_V1'
+const TYPED_DESCRIPTION_PROFILES = new Set<UploadContentProfile>([
+  'DATASET_DESCRIPTION_CSV_V1',
+  'DATASET_DESCRIPTION_XLSX_V1',
+])
+
+function isTypedDescriptionProfile(profile: UploadContentProfile): boolean {
+  return TYPED_DESCRIPTION_PROFILES.has(profile)
+}
 
 export function RegistrationBulkWorkbench({ client }: { client: ApiClient }) {
   const inputId = useId()
@@ -73,7 +80,14 @@ export function RegistrationBulkWorkbench({ client }: { client: ApiClient }) {
       if (
         expectedGeneration === generation.current
         && expectedLoadIntent === loadIntent.current
-      ) setRecords(value.items)
+      ) {
+        setRecords(value.items)
+        setRecord((current) => (
+          current
+            ? value.items.find((item) => item.id === current.id) ?? current
+            : current
+        ))
+      }
     } catch (next) {
       if (!controller.signal.aborted && expectedGeneration === generation.current) setError(next)
     } finally {
@@ -89,7 +103,7 @@ export function RegistrationBulkWorkbench({ client }: { client: ApiClient }) {
     setCandidatePage(undefined)
     setCandidatesBusy(false)
     candidateIntent.current += 1
-    if (upload.state !== 'ACCEPTED' || upload.content_profile !== TYPED_DESCRIPTION_PROFILE) {
+    if (upload.state !== 'ACCEPTED' || !isTypedDescriptionProfile(upload.content_profile)) {
       setPreparationBusy(false)
       return
     }
@@ -246,10 +260,14 @@ export function RegistrationBulkWorkbench({ client }: { client: ApiClient }) {
     if (busy) return
     setContentProfile(next)
     setError(undefined)
-    if (next === TYPED_DESCRIPTION_PROFILE && file && !isTypedDescriptionCsv(file)) {
-      setFile(undefined)
-      setProgress(0)
-      setStatus('Dataset 설명 프로파일은 CSV 파일만 선택할 수 있습니다.')
+    if (file) {
+      try {
+        validateProfileFile(file, next)
+      } catch (nextError) {
+        setFile(undefined)
+        setProgress(0)
+        setStatus(nextError instanceof Error ? nextError.message : '프로파일과 파일이 맞지 않습니다.')
+      }
     }
   }
 
@@ -302,7 +320,7 @@ export function RegistrationBulkWorkbench({ client }: { client: ApiClient }) {
     if (
       !record
       || record.state !== 'ACCEPTED'
-      || record.content_profile !== TYPED_DESCRIPTION_PROFILE
+      || !isTypedDescriptionProfile(record.content_profile)
       || !preparationLoaded
     ) return
     const expectedIntent = preparationIntent.current + 1
@@ -356,20 +374,22 @@ export function RegistrationBulkWorkbench({ client }: { client: ApiClient }) {
           >
             <FileUp size={25} aria-hidden="true" />
             <strong>{file?.name ?? '파일을 놓거나 선택하세요'}</strong>
-            <span>CSV · JSON · Parquet · YAML · XLSX</span>
+            <span>PDF · CSV · JSON · Parquet · YAML · XLSX</span>
           </label>
           <input
             className="sr-only"
             id={inputId}
             type="file"
             disabled={busy}
-            accept={contentProfile === TYPED_DESCRIPTION_PROFILE
+            accept={contentProfile === 'DATASET_DESCRIPTION_CSV_V1'
               ? '.csv,text/csv'
-              : '.csv,.json,.parquet,.yaml,.yml,.xlsx'}
+              : contentProfile === 'DATASET_DESCRIPTION_XLSX_V1'
+                ? '.xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+              : '.pdf,.csv,.json,.parquet,.yaml,.yml,.xlsx'}
             onChange={(event) => selectFile(event.target.files?.[0])}
           />
-          <label>등록 프로파일<select aria-describedby={contentProfile === TYPED_DESCRIPTION_PROFILE ? profileHintId : undefined} disabled={busy} value={contentProfile} onChange={(event) => selectProfile(event.target.value as UploadContentProfile)}><option value="FORMAT_ONLY_V1">형식 검증만</option><option value="DATASET_DESCRIPTION_CSV_V1">Dataset 설명 CSV</option></select></label>
-          {contentProfile === TYPED_DESCRIPTION_PROFILE && (
+          <label>등록 프로파일<select aria-describedby={isTypedDescriptionProfile(contentProfile) ? profileHintId : undefined} disabled={busy} value={contentProfile} onChange={(event) => selectProfile(event.target.value as UploadContentProfile)}><option value="FORMAT_ONLY_V1">형식 검증만</option><option value="DATASET_DESCRIPTION_CSV_V1">Dataset 설명 CSV</option><option value="DATASET_DESCRIPTION_XLSX_V1">Dataset 설명 Excel (.xlsx)</option></select></label>
+          {isTypedDescriptionProfile(contentProfile) && (
             <p className="registration-profile-hint" id={profileHintId}>
               기존 ACTIVE Dataset 설명 변경 준비 전용 · 고정 헤더: asset_id, platform,
               database_name, schema_name, table_name, description · 업로드/준비는 변경 요청이나
@@ -420,11 +440,11 @@ export function RegistrationBulkWorkbench({ client }: { client: ApiClient }) {
             <strong>이 업로드는 형식 검증 전용입니다.</strong>
             <span>
               accepted content로 변경 요청을 만들지 않습니다. Dataset 설명을 변경하려면 새 업로드에서
-              Dataset 설명 CSV 프로파일을 명시적으로 선택하세요.
+              Dataset 설명 CSV 또는 Excel 프로파일을 명시적으로 선택하세요.
             </span>
           </section>
         )}
-        {record?.state === 'ACCEPTED' && record.content_profile === TYPED_DESCRIPTION_PROFILE && (
+        {record?.state === 'ACCEPTED' && isTypedDescriptionProfile(record.content_profile) && (
           <PreparationPanel
             preparation={preparation}
             loaded={preparationLoaded}
@@ -436,7 +456,7 @@ export function RegistrationBulkWorkbench({ client }: { client: ApiClient }) {
             onLoadCandidates={() => void loadCandidates()}
           />
         )}
-        {record?.state === 'ACCEPTED' && record.content_profile === TYPED_DESCRIPTION_PROFILE && (
+        {record?.state === 'ACCEPTED' && isTypedDescriptionProfile(record.content_profile) && (
           <PreparationStatusBar
             preparation={preparation}
             loaded={preparationLoaded}
@@ -680,7 +700,7 @@ function preparationWorkflowStatus(
   if (
     !record
     || record.state !== 'ACCEPTED'
-    || record.content_profile !== TYPED_DESCRIPTION_PROFILE
+    || !isTypedDescriptionProfile(record.content_profile)
   ) return 'idle'
   if (!loaded) return busy ? 'pending' : 'idle'
   if (!preparation) return 'available'
@@ -721,19 +741,30 @@ function preparationStatusLabel(
 }
 
 function profileLabel(profile: UploadContentProfile): string {
-  return profile === TYPED_DESCRIPTION_PROFILE ? 'Dataset 설명 CSV' : '형식 검증만'
+  if (profile === 'DATASET_DESCRIPTION_CSV_V1') return 'Dataset 설명 CSV'
+  if (profile === 'DATASET_DESCRIPTION_XLSX_V1') return 'Dataset 설명 Excel (.xlsx)'
+  return '형식 검증만'
 }
 
 function isTypedDescriptionCsv(file: Pick<File, 'name' | 'type'>): boolean {
   return file.name.toLowerCase().endsWith('.csv') && supportedContentType(file) === 'text/csv'
 }
 
+function isTypedDescriptionXlsx(file: Pick<File, 'name' | 'type'>): boolean {
+  return file.name.toLowerCase().endsWith('.xlsx')
+    && supportedContentType(file)
+      === 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+}
+
 export function validateProfileFile(
   file: Pick<File, 'name' | 'type'>,
   profile: UploadContentProfile,
 ): void {
-  if (profile === TYPED_DESCRIPTION_PROFILE && !isTypedDescriptionCsv(file)) {
-    throw new Error('Dataset 설명 프로파일은 CSV 파일만 등록할 수 있습니다.')
+  if (profile === 'DATASET_DESCRIPTION_CSV_V1' && !isTypedDescriptionCsv(file)) {
+    throw new Error('Dataset 설명 CSV 프로파일은 CSV 파일만 등록할 수 있습니다.')
+  }
+  if (profile === 'DATASET_DESCRIPTION_XLSX_V1' && !isTypedDescriptionXlsx(file)) {
+    throw new Error('Dataset 설명 Excel 프로파일은 .xlsx 파일만 등록할 수 있습니다.')
   }
 }
 
@@ -782,6 +813,7 @@ async function digestFile(
 export function supportedContentType(file: Pick<File, 'name' | 'type'>): string {
   const extension = file.name.toLowerCase().split('.').pop()
   const byExtension: Record<string, string> = {
+    pdf: 'application/pdf',
     csv: 'text/csv',
     json: 'application/json',
     parquet: 'application/x-parquet',
@@ -790,7 +822,7 @@ export function supportedContentType(file: Pick<File, 'name' | 'type'>): string 
     xlsx: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
   }
   const value = extension ? byExtension[extension] : undefined
-  if (!value) throw new Error('CSV, JSON, Parquet, YAML 또는 XLSX 파일만 등록할 수 있습니다.')
+  if (!value) throw new Error('PDF, CSV, JSON, Parquet, YAML 또는 XLSX 파일만 등록할 수 있습니다.')
   return value
 }
 

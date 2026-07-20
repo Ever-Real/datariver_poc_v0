@@ -99,7 +99,7 @@ export function RegistrationManualWorkbench({ client, asset, loading, onClose }:
         idempotencyKey: newIdempotencyKey('manual-metadata'),
         body: JSON.stringify({
           asset_id: asset.id,
-          source_version: asset.source_version,
+          source_version: asset.projection_source_version,
           description,
           domain: domain[0] ?? null,
           tags,

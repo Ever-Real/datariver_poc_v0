@@ -12,6 +12,7 @@ from datariver.config import Settings, get_settings
 from datariver.domain.authz import Action, Classification
 from datariver.domain.common import DomainEvent, utc_now
 from datariver.domain.knowledge import GraphRelease, Ontology, Provenance
+from datariver.domain.membership_renewal import add_calendar_months
 from datariver.infrastructure.db.catalog import advance_catalog_projection_version
 from datariver.infrastructure.db.models.catalog import AssetProjectionModel
 from datariver.infrastructure.db.models.integration import OutboxEventModel, SeedRunModel
@@ -354,6 +355,7 @@ async def _ensure_identity(session: AsyncSession, *, settings: Settings) -> None
                 clearance=int(Classification.RESTRICTED),
                 attributes=administrator_attributes,
                 active=True,
+                access_expires_at=add_calendar_months(utc_now(), 6),
             )
         )
     else:
@@ -403,6 +405,7 @@ async def _ensure_identity(session: AsyncSession, *, settings: Settings) -> None
                 clearance=int(Classification.RESTRICTED),
                 attributes=airflow_attributes,
                 active=True,
+                access_expires_at=None,
             )
         )
     else:

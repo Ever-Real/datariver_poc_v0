@@ -10,13 +10,15 @@ export const primaryNavigation = [
 ] as const
 
 export type PrimaryPage = typeof primaryNavigation[number]['id']
-export type Page = PrimaryPage | 'dashboard' | 'sharing' | 'admin'
+export type Page = PrimaryPage | 'dashboard' | 'sharing' | 'admin' | 'knowledge-chat' | 'profile'
 
 const pageIds = new Set<Page>([
   ...primaryNavigation.map(({ id }) => id),
   'dashboard',
   'sharing',
   'admin',
+  'knowledge-chat',
+  'profile',
 ])
 
 export function pageFromLocation(href = window.location.href): Page {

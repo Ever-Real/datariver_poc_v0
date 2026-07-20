@@ -9,11 +9,13 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from datariver.application.classification_access import ClassificationAccessResolver
 from datariver.application.services.authorization import AuthorizationService
+from datariver.application.services.bulk_registration import BulkRegistrationPreparationService
 from datariver.application.services.manual_metadata import ManualMetadataSubmissionService
 from datariver.application.services.manual_metadata_apply import ManualMetadataApplyService
 from datariver.domain.authz import Action, Classification, ResourceAttributes
 from datariver.domain.manual_metadata import ManualColumnMetadata, ManualMetadataSubmission
 from datariver.infrastructure.db.authz import SqlDecisionWriter
+from datariver.infrastructure.db.bulk_registration import SqlBulkPreparationExecutionStore
 from datariver.infrastructure.db.catalog import SqlCatalogIndexReader
 from datariver.infrastructure.db.classification_access import (
     SqlClassificationAccessSnapshotReader,
@@ -21,6 +23,7 @@ from datariver.infrastructure.db.classification_access import (
 from datariver.infrastructure.db.governance import SqlGovernanceUnitOfWork
 from datariver.interfaces.http.dependencies import ContextDep, SessionDep, get_container
 from datariver.interfaces.http.schemas import (
+    BulkPreparationExecuteResponse,
     ManualMetadataApplyResponse,
     ManualMetadataSubmissionRequest,
     ManualMetadataSubmissionResponse,
@@ -54,6 +57,16 @@ def _apply_service(request: Request) -> ManualMetadataApplyService:
         uow_factory=lambda: SqlGovernanceUnitOfWork(container.database.session_factory),
         lease_seconds=container.settings.governance_apply_lease_seconds,
         maximum_attempts=container.settings.governance_apply_maximum_attempts,
+    )
+
+
+def _bulk_preparation_service(request: Request) -> BulkRegistrationPreparationService:
+    container = get_container(request)
+    return BulkRegistrationPreparationService(
+        store=SqlBulkPreparationExecutionStore(container.database.session_factory),
+        object_store=container.object_store,
+        lease_seconds=container.settings.bulk_preparation_lease_seconds,
+        maximum_attempts=container.settings.bulk_preparation_maximum_attempts,
     )
 
 
@@ -158,4 +171,44 @@ async def apply_one_manual_metadata_submission(
         submission_id=result.submission_id,
         serial_number=result.serial_number,
         state=result.state,
+    )
+
+
+@router.post(
+    "/bulk-preparations/execute",
+    response_model=BulkPreparationExecuteResponse,
+)
+async def execute_one_bulk_preparation(
+    request: Request,
+    context: ContextDep,
+) -> BulkPreparationExecuteResponse:
+    """Airflow-only preparation boundary; no provider or object-store secret leaves DataRiver."""
+    container = get_container(request)
+    await AuthorizationService(
+        decision_writer=SqlDecisionWriter(container.database.session_factory)
+    ).authorize(
+        subject=context.subject,
+        resource=ResourceAttributes(
+            resource_id=context.workspace_id,
+            workspace_id=context.workspace_id,
+            resource_type="bulk_registration_preparation",
+            owner_department_id=None,
+            system_id=None,
+            domain_id=None,
+            classification=Classification.RESTRICTED,
+            lifecycle="ACTIVE",
+        ),
+        action=Action.CATALOG_SYNC,
+        environment=context.environment,
+        request_id=context.request_id,
+    )
+    result = await _bulk_preparation_service(request).run_once(
+        workspace_id=context.workspace_id,
+        worker_subject_id=context.subject.subject_id,
+    )
+    return BulkPreparationExecuteResponse(
+        processed=result.processed,
+        preparation_id=result.preparation_id,
+        state=result.state,
+        item_count=result.item_count,
     )

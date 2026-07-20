@@ -10,19 +10,9 @@ from sqlalchemy import ForeignKeyConstraint
 
 from datariver.infrastructure.db import models  # noqa: F401
 from datariver.infrastructure.db.base import Base
+from datariver.infrastructure.db.migration_scope import MANAGED_DATABASE_SCHEMAS
 
-SCHEMAS = (
-    "platform",
-    "iam",
-    "authz",
-    "catalog",
-    "governance",
-    "integration",
-    "knowledge",
-    "assistant",
-    "sharing",
-    "retention",
-)
+SCHEMAS = MANAGED_DATABASE_SCHEMAS
 RLS_SETTING = "NULLIF(current_setting('app.workspace_id', true), '')::uuid"
 RUNTIME_SCHEMAS = ", ".join(SCHEMAS)
 
@@ -88,10 +78,15 @@ BEGIN
         GRANT USAGE ON SCHEMA public TO datariver_app;
         GRANT SELECT ON public.alembic_version TO datariver_app;
         GRANT SELECT ON platform.workspaces, iam.subjects TO datariver_app;
-        GRANT UPDATE (email, last_login_at, last_login_ip) ON iam.subjects TO datariver_app;
+        GRANT UPDATE (email, last_login_at, last_login_ip, updated_at)
+            ON iam.subjects TO datariver_app;
         GRANT SELECT ON iam.workspace_memberships TO datariver_app;
+        GRANT SELECT, INSERT, UPDATE ON iam.membership_renewal_requests TO datariver_app;
+        GRANT SELECT, INSERT, UPDATE ON iam.access_roles TO datariver_app;
         GRANT EXECUTE ON FUNCTION iam.resolve_default_workspace(text, text) TO datariver_app;
         GRANT UPDATE (active, clearance, attributes, version, updated_at)
+            ON iam.workspace_memberships TO datariver_app;
+        GRANT UPDATE (access_expires_at, version, updated_at)
             ON iam.workspace_memberships TO datariver_app;
         GRANT SELECT, INSERT ON iam.admin_access_requests TO datariver_app;
         GRANT UPDATE (state, checker_id, consumed_by, consumed_at,
@@ -105,28 +100,43 @@ BEGIN
         GRANT SELECT, INSERT ON governance.change_request_items,
             governance.approvals, governance.state_transitions TO datariver_app;
         GRANT SELECT, INSERT ON governance.change_request_attachments TO datariver_app;
+        GRANT SELECT, INSERT, UPDATE ON governance.change_request_rounds TO datariver_app;
+        GRANT SELECT, INSERT ON governance.change_test_runs TO datariver_app;
         GRANT SELECT, INSERT ON governance.registration_content_bindings TO datariver_app;
         GRANT SELECT, INSERT, UPDATE ON governance.change_requests TO datariver_app;
         GRANT SELECT, INSERT, UPDATE ON platform.data_systems, platform.system_schema_scopes,
             platform.system_assignees, platform.external_service_profiles TO datariver_app;
+        GRANT SELECT, INSERT, UPDATE ON platform.external_service_profile_versions
+            TO datariver_app;
         GRANT SELECT ON integration.jobs, integration.job_attempts TO datariver_app;
         GRANT INSERT ON integration.jobs TO datariver_app;
         GRANT SELECT, INSERT, UPDATE ON integration.object_manifests TO datariver_app;
         GRANT SELECT, INSERT ON integration.upload_preparation_jobs TO datariver_app;
+        GRANT UPDATE (state, lease_token, lease_until, attempts, rows_processed,
+            total_rows, last_error_code, version, updated_at)
+            ON integration.upload_preparation_jobs TO datariver_app;
         GRANT SELECT ON integration.upload_preparation_receipts,
+            integration.upload_registration_candidates TO datariver_app;
+        GRANT INSERT ON integration.upload_preparation_receipts,
             integration.upload_registration_candidates TO datariver_app;
         GRANT SELECT, INSERT ON integration.idempotency_keys,
             integration.outbox_events TO datariver_app;
         GRANT SELECT ON knowledge.graphs, knowledge.ontology_versions,
             knowledge.releases, knowledge.release_nodes, knowledge.release_edges,
             knowledge.changesets, knowledge.change_operations,
-            knowledge.validation_results, knowledge.projection_deployments TO datariver_app;
+            knowledge.validation_results, knowledge.projection_deployments,
+            knowledge.source_snapshots, knowledge.source_pages,
+            knowledge.source_page_embeddings, knowledge.extraction_runs,
+            knowledge.graphrag_audits TO datariver_app;
         GRANT INSERT ON knowledge.graphs, knowledge.ontology_versions,
             knowledge.releases, knowledge.release_nodes, knowledge.release_edges,
             knowledge.changesets, knowledge.change_operations,
-            knowledge.validation_results, knowledge.projection_deployments TO datariver_app;
+            knowledge.validation_results, knowledge.projection_deployments,
+            knowledge.source_snapshots, knowledge.source_pages,
+            knowledge.source_page_embeddings, knowledge.extraction_runs,
+            knowledge.graphrag_audits TO datariver_app;
         GRANT UPDATE ON knowledge.graphs, knowledge.changesets,
-            knowledge.projection_deployments TO datariver_app;
+            knowledge.projection_deployments, knowledge.source_snapshots TO datariver_app;
         GRANT DELETE ON knowledge.validation_results TO datariver_app;
         GRANT SELECT, INSERT ON assistant.chat_sessions, assistant.chat_messages,
             assistant.assistant_runs, assistant.evidence_citations TO datariver_app;
@@ -162,14 +172,18 @@ BEGIN
     END IF;
 
     IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'datariver_upload') THEN
-        GRANT USAGE ON SCHEMA integration TO datariver_upload;
+        GRANT USAGE ON SCHEMA platform, integration TO datariver_upload;
+        GRANT SELECT ON platform.external_service_profiles,
+            platform.external_service_profile_versions TO datariver_upload;
         GRANT SELECT, UPDATE ON integration.object_manifests TO datariver_upload;
         GRANT SELECT, INSERT ON integration.outbox_events TO datariver_upload;
         GRANT SELECT, INSERT, UPDATE ON integration.inbox_messages TO datariver_upload;
     END IF;
 
     IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'datariver_governance') THEN
-        GRANT USAGE ON SCHEMA authz, governance, integration TO datariver_governance;
+        GRANT USAGE ON SCHEMA platform, authz, governance, integration TO datariver_governance;
+        GRANT SELECT ON platform.external_service_profiles,
+            platform.external_service_profile_versions TO datariver_governance;
         GRANT SELECT, INSERT ON authz.policy_decisions TO datariver_governance;
         GRANT SELECT, UPDATE ON governance.change_requests TO datariver_governance;
         GRANT SELECT ON governance.change_request_items, governance.approvals,
@@ -184,6 +198,8 @@ BEGIN
         GRANT USAGE ON SCHEMA platform, iam, authz, catalog, integration TO datariver_export;
         GRANT SELECT ON platform.workspaces, iam.subjects,
             iam.workspace_memberships TO datariver_export;
+        GRANT SELECT ON platform.external_service_profiles,
+            platform.external_service_profile_versions TO datariver_export;
         GRANT SELECT ON authz.classification_access_policy_versions,
             authz.classification_access_policy_rules, authz.classification_access_generations,
             authz.restricted_search_grants TO datariver_export;
@@ -438,6 +454,10 @@ def _default_workspace_lookup_sql() -> tuple[str, ...]:
               AND subject.external_subject = p_external_subject
               AND subject.active IS TRUE
               AND membership.active IS TRUE
+              AND (
+                  membership.access_expires_at IS NULL
+                  OR membership.access_expires_at > CURRENT_TIMESTAMP
+              )
               AND workspace.status = 'ACTIVE'
             ORDER BY
               CASE WHEN membership.attributes ->> 'default_workspace' = 'true'

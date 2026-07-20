@@ -38,6 +38,7 @@ class TypedUploadParseFailureCode(StrEnum):
     TOO_MANY_ROWS = "TOO_MANY_ROWS"
     EMPTY_DATASET = "EMPTY_DATASET"
     SOURCE_HASH_MISMATCH = "SOURCE_HASH_MISMATCH"
+    INVALID_XLSX_PACKAGE = "INVALID_XLSX_PACKAGE"
 
 
 class _CsvScanState(StrEnum):
@@ -137,7 +138,7 @@ async def parse_dataset_description_csv(
     header_seen = False
     item_count = 0
     seen_assets: set[UUID] = set()
-    candidate_root = hashlib.sha256(_CANDIDATE_ROOT_CONTRACT).digest()
+    candidate_root = dataset_description_candidate_root_seed()
 
     async for record_number, record in _iter_logical_records(
         observed_chunks(),
@@ -160,10 +161,10 @@ async def parse_dataset_description_csv(
                 "The typed upload exceeds its bounded row limit.",
                 ordinal=item_count,
             )
-        candidate = _candidate_from_fields(
+        candidate = dataset_description_candidate_from_values(
             workspace_id=workspace_id,
             ordinal=item_count,
-            fields=fields,
+            values=fields,
             definition=definition,
         )
         if candidate.target_asset_id in seen_assets:
@@ -173,7 +174,7 @@ async def parse_dataset_description_csv(
                 ordinal=item_count,
             )
         seen_assets.add(candidate.target_asset_id)
-        candidate_root = _advance_candidate_root(
+        candidate_root = advance_dataset_description_candidate_root(
             current=candidate_root,
             ordinal=item_count,
             candidate_hash=candidate.candidate_hash,
@@ -349,20 +350,22 @@ def _parse_record(record: bytes, *, record_number: int) -> list[str]:
     return rows[0]
 
 
-def _candidate_from_fields(
+def dataset_description_candidate_from_values(
     *,
     workspace_id: UUID,
     ordinal: int,
-    fields: list[str],
+    values: list[str],
     definition: TypedUploadProfileDefinition,
 ) -> DatasetDescriptionCandidateDraft:
-    if len(fields) != len(definition.headers):
+    """Build the shared typed candidate from one server-parsed tabular row."""
+
+    if len(values) != len(definition.headers):
         raise TypedUploadParseError(
             TypedUploadParseFailureCode.INVALID_COLUMN_COUNT,
             "The typed upload row has an invalid column count.",
             ordinal=ordinal,
         )
-    asset_id_text, platform, database_name, schema_name, table_name, description = fields
+    asset_id_text, platform, database_name, schema_name, table_name, description = values
     try:
         target_asset_id = UUID(asset_id_text)
     except ValueError as error:
@@ -483,7 +486,17 @@ def dataset_description_candidate_hash(
     )
 
 
-def _advance_candidate_root(*, current: bytes, ordinal: int, candidate_hash: str) -> bytes:
+def dataset_description_candidate_root_seed() -> bytes:
+    """Return the frozen V2 ordered-result seed shared by every tabular encoding."""
+
+    return hashlib.sha256(_CANDIDATE_ROOT_CONTRACT).digest()
+
+
+def advance_dataset_description_candidate_root(
+    *, current: bytes, ordinal: int, candidate_hash: str
+) -> bytes:
+    """Advance the frozen V2 ordered-result chain for one validated candidate."""
+
     return hashlib.sha256(
         _CANDIDATE_ROOT_CONTRACT
         + current

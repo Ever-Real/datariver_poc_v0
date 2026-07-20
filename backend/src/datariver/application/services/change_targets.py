@@ -15,6 +15,7 @@ from datariver.domain.authz import (
     ResourceAttributes,
     SubjectAttributes,
 )
+from datariver.domain.catalog import is_dataset_asset_type
 from datariver.domain.common import ConflictError, ForbiddenError, ValidationError
 from datariver.domain.governance import (
     DATAHUB_INTAKE_TARGET,
@@ -79,7 +80,7 @@ class CatalogChangeTargetAuthorizer:
             len(assets) != len(external_urns)
             or set(assets_by_urn) != set(external_urns)
             or any(asset.workspace_id != workspace_id for asset in assets)
-            or any(asset.asset_type != "DATASET" for asset in assets)
+            or any(not is_dataset_asset_type(asset.asset_type) for asset in assets)
             or any(not asset.external_urn.startswith("urn:li:dataset:") for asset in assets)
         ):
             raise ForbiddenError("One or more change targets are not available.")
@@ -118,7 +119,7 @@ class CatalogChangeTargetAuthorizer:
         if len(authorized) != len(resources):
             raise ForbiddenError("One or more change targets are not available.")
         assets_by_urn = {asset.external_urn: asset for asset in assets}
-        return tuple(
+        bound = tuple(
             (
                 self._bind(item, assets_by_urn[item.target_ref])
                 if item.target_type in {"DATAHUB_ASPECT", DATAHUB_INTAKE_TARGET}
@@ -126,6 +127,11 @@ class CatalogChangeTargetAuthorizer:
             )
             for item in items
         )
+        if any(item.routing_system_id is None for item in bound):
+            raise ValidationError(
+                "Every change target must resolve to a canonical active data system."
+            )
+        return bound
 
     async def filter_authorized_change_requests(
         self,
@@ -168,6 +174,22 @@ class CatalogChangeTargetAuthorizer:
             drifted = False
             for item in change_request.items:
                 if item.target_type == MANUAL_DATASET_INTAKE_TARGET:
+                    if item.routing_system_id is None:
+                        drifted = True
+                        break
+                    resources.append(
+                        ResourceAttributes(
+                            resource_id=item.item_id,
+                            workspace_id=workspace_id,
+                            resource_type="manual_change_target",
+                            owner_department_id=None,
+                            system_id=item.routing_system_id,
+                            domain_id=None,
+                            classification=change_request.classification,
+                            lifecycle=change_request.state.value,
+                            requester_id=change_request.requester_id,
+                        )
+                    )
                     continue
                 asset = assets_by_urn.get(item.target_ref)
                 if asset is None or not self._binding_is_current(
@@ -243,6 +265,7 @@ class CatalogChangeTargetAuthorizer:
             target_source_version=asset.source_version,
             target_observed_at=asset.observed_at,
             target_binding_hash=binding_hash,
+            routing_system_id=asset.system_id,
         )
 
     @staticmethod
@@ -254,7 +277,7 @@ class CatalogChangeTargetAuthorizer:
             or item.expected_target_binding_hash() != item.target_binding_hash
             or asset.workspace_id != workspace_id
             or asset.asset_id != item.target_asset_id
-            or asset.asset_type != "DATASET"
+            or not is_dataset_asset_type(asset.asset_type)
             or asset.external_urn != item.target_ref
             or asset.lifecycle != "ACTIVE"
         ):

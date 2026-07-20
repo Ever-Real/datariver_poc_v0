@@ -16,7 +16,7 @@ interface AssignmentDraft extends SystemAssigneeUpdate {
 
 const responsibilities: Array<{ id: Responsibility; label: string }> = [
   { id: 'DEVELOPER', label: 'Developer' },
-  { id: 'DATA_STEWARD', label: 'Steward' },
+  { id: 'DATA_STEWARD', label: 'Data Steward' },
 ]
 
 function assigneesFor(system: SystemDirectoryEntry, responsibility: Responsibility) {
@@ -120,7 +120,7 @@ export function SystemDirectoryAdmin(props: AdminSectionProps) {
       summary: [
         `${selected.name} (${selected.code})`,
         `ETag ${selected.version}`,
-        `Developer ${assignees.filter((item) => item.responsibility === 'DEVELOPER').length}명 · Steward ${assignees.filter((item) => item.responsibility === 'DATA_STEWARD').length}명`,
+        `Developer ${assignees.filter((item) => item.responsibility === 'DEVELOPER').length}명 · Data Steward ${assignees.filter((item) => item.responsibility === 'DATA_STEWARD').length}명`,
       ],
       execute: async () => {
         await api.updateSystemAssignees(
@@ -136,14 +136,15 @@ export function SystemDirectoryAdmin(props: AdminSectionProps) {
   }
 
   return <section className="panel admin-system-directory">
-    <div className="section-heading"><div><h3>시스템</h3><p className="muted">정본 시스템의 Developer·Steward 우선순위를 표시하고, 보안키 인증을 거쳐 변경합니다.</p></div><button className="button button-secondary" onClick={() => void load()} type="button">새로고침</button></div>
+    <div className="section-heading"><div><h3>시스템 권한 매핑</h3><p className="muted">정본 시스템의 Developer·Data Steward 우선순위를 표시하고, WebAuthn 인증을 거쳐 변경합니다.</p></div><div className="action-row"><button className="button" disabled title="시스템 정본 생성 API가 아직 없습니다." type="button">신규 시스템 추가</button><button className="button button-secondary" onClick={() => void load()} type="button">새로고침</button></div></div>
     <DenseDataTable
       caption="워크스페이스 시스템 목록"
       columns={[
         { accessorKey: 'code', header: '코드', size: 125 },
         { accessorKey: 'name', header: '시스템', size: 190, cell: ({ row }) => <><strong>{row.original.name}</strong><small>{row.original.description || '설명 없음'}</small></> },
+        { id: 'schemas', header: 'Target Schemas', size: 160, cell: () => <button type="button" className="button button-secondary" disabled title="시스템-스키마 매핑 조회 API가 아직 없습니다.">스키마 조회</button> },
         { id: 'developers', header: 'Developer', size: 260, cell: ({ row }) => assigneesFor(row.original, 'DEVELOPER') },
-        { id: 'stewards', header: 'Steward', size: 260, cell: ({ row }) => assigneesFor(row.original, 'DATA_STEWARD') },
+        { id: 'stewards', header: 'Data Steward', size: 260, cell: ({ row }) => assigneesFor(row.original, 'DATA_STEWARD') },
         { id: 'state', header: '상태', size: 76, cell: ({ row }) => <span className="badge">{row.original.active ? 'ACTIVE' : 'INACTIVE'}</span> },
       ]}
       data={systems}
@@ -176,7 +177,7 @@ export function SystemDirectoryAdmin(props: AdminSectionProps) {
           </fieldset>
         })}
       </div>
-      {canUpdate ? <div className="action-row"><button className="button" disabled={!valid} onClick={save} type="button">보안키로 담당자 변경</button>{!valid && <small className="muted">두 역할에 각각 활성 담당자와 유효한 우선순위가 필요합니다.</small>}</div> : <p className="callout">담당자 변경은 보안키 인증(HARDWARE_WEBAUTHN) 후에만 활성화됩니다.</p>}
+      {canUpdate ? <div className="action-row"><button className="button" disabled={!valid} onClick={save} type="button">설정 저장</button><button className="button button-danger" disabled title="시스템 정본 삭제 API와 참조 무결성 검토 계약이 아직 없습니다." type="button">시스템 삭제</button>{!valid && <small className="muted">두 역할에 각각 활성 담당자와 유효한 우선순위가 필요합니다.</small>}</div> : <p className="callout">담당자 변경은 보안키 인증(HARDWARE_WEBAUTHN) 후에만 활성화됩니다.</p>}
     </section>}
     <ErrorNotice error={error} />
   </section>

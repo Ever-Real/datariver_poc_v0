@@ -607,6 +607,7 @@ class SqlUploadValidationStore(UploadValidationStore):
         manifest: UploadManifest,
         accepted_bucket: str,
         accepted_object_key: str,
+        validated_sha256: str,
         validation_summary: dict[str, object],
     ) -> bool:
         async with self._session_factory() as session, session.begin():
@@ -617,6 +618,7 @@ class SqlUploadValidationStore(UploadValidationStore):
             current.mark_accepted(
                 accepted_bucket=accepted_bucket,
                 accepted_object_key=accepted_object_key,
+                validated_sha256=validated_sha256,
                 validation_summary=validation_summary,
                 expected_version=current.version,
             )

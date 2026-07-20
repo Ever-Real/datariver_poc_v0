@@ -1,6 +1,7 @@
 export type AdminMessageKey =
   | 'eyebrow' | 'title' | 'refresh' | 'memberships' | 'systems' | 'systemSettings' | 'roles' | 'fallback' | 'retention' | 'holds' | 'erasure'
   | 'classification' | 'providers' | 'restrictedGrants'
+  | 'auditLogs' | 'metadataLogs' | 'securityLogs' | 'dictionary'
   | 'adminContext' | 'currentAssurance' | 'fallbackState' | 'enabled' | 'disabled'
   | 'members' | 'selectMember' | 'accessDocument' | 'active' | 'clearance' | 'groups'
   | 'allowedActions' | 'deniedActions' | 'systemScopes' | 'domainScopes' | 'directUpdate'
@@ -25,11 +26,12 @@ export type AdminMessages = Record<AdminMessageKey, string>
 
 const ko: AdminMessages = {
   eyebrow: 'Governed administration', title: '관리자 및 데이터 거버넌스', refresh: '새로고침',
-  memberships: '계정·권한', systems: '시스템', systemSettings: '시스템 설정', roles: '간편 권한 관리', fallback: 'Maker-Checker', retention: '보존정책', holds: 'Legal Hold', erasure: '파기 검토',
-  classification: '분류정책', providers: 'LLM Provider', restrictedGrants: 'RESTRICTED 검색권한',
+  memberships: '계정/권한', systems: 'SYSTEMS · 시스템', systemSettings: '시스템 설정', roles: '간편 Role', fallback: '비밀번호 예외 승인', retention: '보존·파기 거버넌스', holds: 'Legal Hold', erasure: '파기 검토',
+  classification: '데이터 분류 접근', providers: 'AI Provider 승인', restrictedGrants: 'RESTRICTED 예외 승인',
+  auditLogs: 'Audit/Log 조회', metadataLogs: '메타데이터 변경 로그', securityLogs: '시스템 보안 로그', dictionary: '용어사전',
   adminContext: '현재 관리자 컨텍스트', currentAssurance: '인증 보증', fallbackState: '비밀번호 예외 경로',
   enabled: '활성', disabled: '비활성', members: '워크스페이스 멤버', selectMember: '편집할 멤버를 선택하세요.',
-  accessDocument: '전체 Access 문서', active: '멤버십 활성', clearance: '허용 등급', groups: '그룹',
+  accessDocument: '세부 Access 문서 (고급)', active: '멤버십 활성', clearance: '허용 등급', groups: '그룹',
   allowedActions: '허용 Action', deniedActions: '거부 Action', systemScopes: '허용 System UUID',
   domainScopes: '허용 Domain UUID', directUpdate: '보안키로 직접 변경', fallbackRequest: '비밀번호 Maker 요청',
   reason: '사유', hardwareAuth: '보안키로 인증', passwordReauth: '비밀번호로 재인증',
@@ -67,11 +69,12 @@ const ko: AdminMessages = {
 
 const en: AdminMessages = {
   eyebrow: 'Governed administration', title: 'Administration and data governance', refresh: 'Refresh',
-  memberships: 'Accounts & access', systems: 'Systems', systemSettings: 'System settings', roles: 'Role access', fallback: 'Maker-Checker', retention: 'Retention policies', holds: 'Legal Hold', erasure: 'Erasure review',
-  classification: 'Classification policy', providers: 'LLM providers', restrictedGrants: 'RESTRICTED Search access',
+  memberships: 'Accounts & access', systems: 'Systems', systemSettings: 'System settings', roles: 'Quick roles', fallback: 'Password exception approvals', retention: 'Retention & erasure governance', holds: 'Legal Hold', erasure: 'Erasure review',
+  classification: 'Data classification access', providers: 'AI provider approvals', restrictedGrants: 'RESTRICTED exception approvals',
+  auditLogs: 'Audit/Log review', metadataLogs: 'Metadata change log', securityLogs: 'System security log', dictionary: 'Terminology dictionary',
   adminContext: 'Current administrator context', currentAssurance: 'Authentication assurance',
   fallbackState: 'Password fallback', enabled: 'Enabled', disabled: 'Disabled', members: 'Workspace members',
-  selectMember: 'Select a member to edit.', accessDocument: 'Complete access document', active: 'Membership active',
+  selectMember: 'Select a member to edit.', accessDocument: 'Detailed access document (advanced)', active: 'Membership active',
   clearance: 'Clearance', groups: 'Groups', allowedActions: 'Allowed actions', deniedActions: 'Denied actions',
   systemScopes: 'Allowed system UUIDs', domainScopes: 'Allowed domain UUIDs', directUpdate: 'Update with security key',
   fallbackRequest: 'Create password maker request', reason: 'Reason', hardwareAuth: 'Authenticate with security key',

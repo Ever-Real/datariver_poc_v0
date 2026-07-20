@@ -28,6 +28,7 @@ from datariver.domain.governance import (
     ChangeItem,
     ChangePriority,
     ChangeState,
+    ChangeTestRunState,
     ChangeUrgency,
 )
 from datariver.infrastructure.db.authz import SqlDecisionWriter
@@ -41,6 +42,8 @@ from datariver.infrastructure.db.models.governance import (
     ChangeRequestAttachmentModel,
     ChangeRequestModel,
 )
+from datariver.infrastructure.db.models.platform import DataSystemModel
+from datariver.infrastructure.db.rls import set_security_context
 from datariver.interfaces.http.dependencies import ContextDep, SessionDep, get_container
 from datariver.interfaces.http.presenters import (
     change_request_response,
@@ -54,6 +57,9 @@ from datariver.interfaces.http.schemas import (
     ChangeRequestIntakeCreate,
     ChangeRequestListResponse,
     ChangeRequestResponse,
+    ChangeRequestSystemListResponse,
+    ChangeRequestSystemResponse,
+    ChangeTestRunRequest,
     IntakeCompletionRequest,
     TransitionRequest,
 )
@@ -159,6 +165,13 @@ async def list_change_requests(
         environment=context.environment,
         request_id=context.request_id,
     )
+    # The shared governance UoW commits after authorization, which clears PostgreSQL
+    # SET LOCAL values. Re-establish the request scope before route-level RLS reads.
+    await set_security_context(
+        session,
+        workspace_id=context.workspace_id,
+        subject_id=context.subject.subject_id,
+    )
     access = await ClassificationAccessResolver(
         SqlClassificationAccessSnapshotReader(session)
     ).resolve(
@@ -174,6 +187,28 @@ async def list_change_requests(
     return ChangeRequestListResponse(
         items=[change_request_response(value) for value in values],
         overview=[change_request_schema_overview_response(value) for value in overview],
+    )
+
+
+@router.get("/systems", response_model=ChangeRequestSystemListResponse)
+async def list_change_request_systems(
+    context: ContextDep,
+    session: SessionDep,
+) -> ChangeRequestSystemListResponse:
+    statement = select(DataSystemModel).where(
+        DataSystemModel.workspace_id == context.workspace_id,
+        DataSystemModel.active.is_(True),
+    )
+    if context.subject.allowed_system_ids:
+        statement = statement.where(DataSystemModel.id.in_(context.subject.allowed_system_ids))
+    values = (
+        await session.scalars(statement.order_by(DataSystemModel.name, DataSystemModel.id))
+    ).all()
+    return ChangeRequestSystemListResponse(
+        items=[
+            ChangeRequestSystemResponse(id=value.id, code=value.code, name=value.name)
+            for value in values
+        ]
     )
 
 
@@ -198,6 +233,7 @@ def _attachment_response(value: ChangeRequestAttachmentModel) -> ChangeRequestAt
     return ChangeRequestAttachmentResponse(
         id=value.id,
         kind=value.kind,
+        round_id=value.round_id,
         original_name=value.original_name,
         serial_number=value.serial_number,
         content_type=value.content_type,
@@ -235,6 +271,11 @@ async def list_change_request_attachments(
         subject=context.subject,
         environment=context.environment,
         request_id=context.request_id,
+    )
+    await set_security_context(
+        session,
+        workspace_id=context.workspace_id,
+        subject_id=context.subject.subject_id,
     )
     rows = list(
         (
@@ -274,6 +315,11 @@ async def upload_change_request_attachment(
         subject=context.subject,
         environment=context.environment,
         request_id=context.request_id,
+    )
+    await set_security_context(
+        session,
+        workspace_id=context.workspace_id,
+        subject_id=context.subject.subject_id,
     )
     original_name, stem, suffix = _safe_attachment_name(file.filename)
     locked = (
@@ -323,6 +369,7 @@ async def upload_change_request_attachment(
             id=uuid7(),
             workspace_id=context.workspace_id,
             change_request_id=change_request_id,
+            round_id=change_request.current_round_id,
             kind=kind,
             original_name=original_name,
             serial_number=serial,
@@ -356,6 +403,11 @@ async def download_change_request_attachment(
         subject=context.subject,
         environment=context.environment,
         request_id=context.request_id,
+    )
+    await set_security_context(
+        session,
+        workspace_id=context.workspace_id,
+        subject_id=context.subject.subject_id,
     )
     row = (
         await session.scalars(
@@ -445,6 +497,17 @@ async def create_change_request_intake(
     DataHub target or to submit provider credentials/documents.
     """
 
+    system = (
+        await session.scalars(
+            select(DataSystemModel).where(
+                DataSystemModel.workspace_id == context.workspace_id,
+                DataSystemModel.id == payload.system_id,
+                DataSystemModel.active.is_(True),
+            )
+        )
+    ).one_or_none()
+    if system is None:
+        raise ValidationError("The selected canonical data system is not active.")
     catalog = _catalog_service(request, session)
     items: list[ChangeItem] = []
     for target in payload.targets:
@@ -482,6 +545,7 @@ async def create_change_request_intake(
                     aspect_name=CHANGE_INTAKE_ASPECT,
                     after_document=manual_after_document,
                     after_hash=canonical_json_hash(manual_after_document),
+                    routing_system_id=system.id,
                 )
             )
             continue
@@ -580,7 +644,7 @@ async def create_change_request_intake(
     ).hexdigest()
     change_request = await _service(request, session).create_change_request(
         workspace_id=context.workspace_id,
-        number=change_request_number(payload.system_name),
+        number=change_request_number(system.code),
         request_type="CHANGE_INTAKE",
         title=payload.title,
         description="\n\n".join(
@@ -666,6 +730,87 @@ async def add_approval(
         stage=payload.stage,
         approval_decision=decision,
         reason=payload.reason,
+        expected_version=expected_version,
+        subject=context.subject,
+        environment=context.environment,
+        request_id=context.request_id,
+        idempotency_key=idempotency_key,
+        request_hash=request_hash,
+    )
+    return change_request_response(change_request)
+
+
+@router.post("/{change_request_id}/test-runs", response_model=ChangeRequestResponse)
+async def record_change_request_test_run(
+    change_request_id: UUID,
+    payload: ChangeTestRunRequest,
+    request: Request,
+    context: ContextDep,
+    session: SessionDep,
+    if_match: Annotated[str, Header(alias="If-Match", max_length=100)],
+    idempotency_key: Annotated[str, Header(alias="Idempotency-Key", min_length=16, max_length=200)],
+) -> ChangeRequestResponse:
+    expected_version = _expected_version(if_match)
+    state = ChangeTestRunState(payload.state)
+    attachment = (
+        await session.scalars(
+            select(ChangeRequestAttachmentModel)
+            .join(
+                ChangeRequestModel,
+                (ChangeRequestModel.workspace_id == ChangeRequestAttachmentModel.workspace_id)
+                & (ChangeRequestModel.id == ChangeRequestAttachmentModel.change_request_id),
+            )
+            .where(
+                ChangeRequestAttachmentModel.workspace_id == context.workspace_id,
+                ChangeRequestAttachmentModel.change_request_id == change_request_id,
+                ChangeRequestAttachmentModel.id == payload.attachment_id,
+                ChangeRequestAttachmentModel.kind == "TEST",
+                ChangeRequestAttachmentModel.round_id == ChangeRequestModel.current_round_id,
+            )
+        )
+    ).one_or_none()
+    if attachment is None:
+        raise ValidationError("A TEST attachment from the current round is required.")
+    plan_hash = canonical_json_hash(
+        {
+            "contract": "CR_TEST_ATTACHMENT_V1",
+            "change_request_id": str(change_request_id),
+            "round_id": str(attachment.round_id),
+            "system_id": str(payload.system_id),
+            "attachment_id": str(attachment.id),
+        }
+    )
+    result_hash = attachment.content_sha256
+    bounded_summary: dict[str, Any] = {
+        "contract": "CR_TEST_ATTACHMENT_V1",
+        "attachment_id": str(attachment.id),
+        "attachment_name": attachment.original_name,
+        "operator_summary": payload.bounded_summary,
+    }
+    request_hash = hashlib.sha256(
+        orjson.dumps(
+            {
+                "change_request_id": str(change_request_id),
+                "system_id": str(payload.system_id),
+                "attachment_id": str(payload.attachment_id),
+                "state": state.value,
+                "plan_hash": plan_hash,
+                "result_hash": result_hash,
+                "bounded_summary": bounded_summary,
+                "expected_version": expected_version,
+            },
+            option=orjson.OPT_SORT_KEYS,
+        )
+    ).hexdigest()
+    change_request = await _service(request, session).record_test_run(
+        workspace_id=context.workspace_id,
+        change_request_id=change_request_id,
+        system_id=payload.system_id,
+        attachment_id=attachment.id,
+        state=state,
+        plan_hash=plan_hash,
+        result_hash=result_hash,
+        bounded_summary=bounded_summary,
         expected_version=expected_version,
         subject=context.subject,
         environment=context.environment,

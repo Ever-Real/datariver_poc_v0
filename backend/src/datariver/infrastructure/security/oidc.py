@@ -34,6 +34,7 @@ class OidcTokenVerifier:
         allowed_algorithms: tuple[str, ...],
         hardware_acr_values: tuple[str, ...] = ("2",),
         hardware_amr_values: tuple[str, ...] = ("webauthn", "hwk"),
+        hardware_webauthn_enabled: bool = True,
         password_reauth_acr_values: tuple[str, ...] = ("1",),
         password_amr_values: tuple[str, ...] = ("pwd",),
     ) -> None:
@@ -42,6 +43,7 @@ class OidcTokenVerifier:
         self._allowed_algorithms = allowed_algorithms
         self._hardware_acr_values = frozenset(hardware_acr_values)
         self._hardware_amr_values = frozenset(item.lower() for item in hardware_amr_values)
+        self._hardware_webauthn_enabled = hardware_webauthn_enabled
         self._password_reauth_acr_values = frozenset(password_reauth_acr_values)
         self._password_amr_values = frozenset(item.lower() for item in password_amr_values)
         self._jwks_client = PyJWKClient(jwks_url, cache_keys=True, lifespan=300)
@@ -92,7 +94,8 @@ class OidcTokenVerifier:
         )
         acr = str(claims.get("acr", ""))
         if (
-            authentication_time is not None
+            self._hardware_webauthn_enabled
+            and authentication_time is not None
             and acr in self._hardware_acr_values
             and bool(amr & self._hardware_amr_values)
         ):

@@ -10,6 +10,8 @@ interface AppShellProps {
   page: Page
   client?: ApiClient
   workspace: string
+  workspaceSelectionEnabled?: boolean
+  hardwareWebauthnEnabled?: boolean
   deploymentTier?: 'SINGLE_NODE_PILOT' | 'HA_CANDIDATE' | 'HA_ACCEPTED'
   displayName: string
   email?: string
@@ -20,6 +22,7 @@ interface AppShellProps {
   children: ReactNode
   onNavigate: (page: Page) => void
   onNavigateAdmin: (section: string) => void
+  onProfile?: () => void
   onSearch: (query: string) => void
   onWorkspaceChange: (workspace: string) => void
   onPasswordReauth?: () => void
@@ -32,6 +35,8 @@ export function AppShell({
   page,
   client,
   workspace,
+  workspaceSelectionEnabled = true,
+  hardwareWebauthnEnabled = true,
   deploymentTier = 'SINGLE_NODE_PILOT',
   displayName,
   email,
@@ -42,6 +47,7 @@ export function AppShell({
   children,
   onNavigate,
   onNavigateAdmin,
+  onProfile,
   onSearch,
   onWorkspaceChange,
   onPasswordReauth,
@@ -56,6 +62,8 @@ export function AppShell({
         page={page}
         client={client}
         workspace={workspace}
+        workspaceSelectionEnabled={workspaceSelectionEnabled}
+        hardwareWebauthnEnabled={hardwareWebauthnEnabled}
         deploymentTier={deploymentTier}
         displayName={displayName}
         email={email}
@@ -64,6 +72,7 @@ export function AppShell({
         externalSystemLinks={externalSystemLinks}
         onNavigate={onNavigate}
         onNavigateAdmin={onNavigateAdmin}
+        onProfile={onProfile}
         onSearch={onSearch}
         onWorkspaceChange={onWorkspaceChange}
         onPasswordReauth={onPasswordReauth}

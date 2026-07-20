@@ -39,6 +39,18 @@ class ChangeRequestModel(Base, UuidPrimaryKeyMixin, TimestampMixin, VersionMixin
             name="urgency_vocabulary",
         ),
         Index("ix_change_requests_workspace_state", "workspace_id", "state", "created_at"),
+        ForeignKeyConstraint(
+            ("workspace_id", "id", "current_round_id"),
+            (
+                "governance.change_request_rounds.workspace_id",
+                "governance.change_request_rounds.change_request_id",
+                "governance.change_request_rounds.id",
+            ),
+            name="fk_change_requests_current_round",
+            use_alter=True,
+            deferrable=True,
+            initially="DEFERRED",
+        ),
         {"schema": "governance"},
     )
 
@@ -49,10 +61,39 @@ class ChangeRequestModel(Base, UuidPrimaryKeyMixin, TimestampMixin, VersionMixin
     description: Mapped[str] = mapped_column(Text, default="", nullable=False)
     state: Mapped[str] = mapped_column(String(32), nullable=False)
     requester_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), nullable=False)
+    requester_department_id: Mapped[UUID | None] = mapped_column(Uuid(as_uuid=True))
+    current_round_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), nullable=False)
+    current_round_number: Mapped[int] = mapped_column(default=1, nullable=False)
     classification: Mapped[int] = mapped_column(default=0, nullable=False)
     requested_due_date: Mapped[date | None]
     priority: Mapped[str | None] = mapped_column(String(16))
     urgency: Mapped[str | None] = mapped_column(String(16))
+
+
+class ChangeRequestRoundModel(Base, UuidPrimaryKeyMixin):
+    __tablename__ = "change_request_rounds"
+    __table_args__ = (
+        UniqueConstraint("workspace_id", "change_request_id", "round_number"),
+        UniqueConstraint("workspace_id", "change_request_id", "id"),
+        CheckConstraint("round_number > 0", name="round_number_positive"),
+        CheckConstraint("evidence_hash ~ '^[0-9a-f]{64}$'", name="evidence_hash_valid"),
+        ForeignKeyConstraint(
+            ("workspace_id", "change_request_id"),
+            ("governance.change_requests.workspace_id", "governance.change_requests.id"),
+            ondelete="CASCADE",
+            name="fk_change_request_rounds_request",
+        ),
+        Index("ix_change_request_rounds_request", "workspace_id", "change_request_id"),
+        {"schema": "governance"},
+    )
+
+    workspace_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), nullable=False)
+    change_request_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), nullable=False)
+    round_number: Mapped[int] = mapped_column(nullable=False)
+    submitted_by: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), nullable=False)
+    submitted_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    closed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    evidence_hash: Mapped[str] = mapped_column(String(64), nullable=False)
 
 
 class ChangeItemModel(Base, UuidPrimaryKeyMixin):
@@ -99,6 +140,12 @@ class ChangeItemModel(Base, UuidPrimaryKeyMixin):
             ("governance.change_requests.workspace_id", "governance.change_requests.id"),
             ondelete="CASCADE",
         ),
+        ForeignKeyConstraint(
+            ("workspace_id", "routing_system_id"),
+            ("platform.data_systems.workspace_id", "platform.data_systems.id"),
+            ondelete="RESTRICT",
+            name="fk_change_items_routing_system",
+        ),
         {"schema": "governance"},
     )
 
@@ -122,6 +169,7 @@ class ChangeItemModel(Base, UuidPrimaryKeyMixin):
     target_source_version: Mapped[str | None] = mapped_column(String(255))
     target_observed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     target_binding_hash: Mapped[str | None] = mapped_column(String(64))
+    routing_system_id: Mapped[UUID | None] = mapped_column(Uuid(as_uuid=True))
 
 
 class ChangeRequestAttachmentModel(Base, UuidPrimaryKeyMixin, TimestampMixin):
@@ -130,6 +178,13 @@ class ChangeRequestAttachmentModel(Base, UuidPrimaryKeyMixin, TimestampMixin):
     __tablename__ = "change_request_attachments"
     __table_args__ = (
         UniqueConstraint("workspace_id", "id"),
+        UniqueConstraint(
+            "workspace_id",
+            "change_request_id",
+            "round_id",
+            "id",
+            name="uq_change_request_attachment_round_identity",
+        ),
         UniqueConstraint(
             "workspace_id",
             "change_request_id",
@@ -144,6 +199,16 @@ class ChangeRequestAttachmentModel(Base, UuidPrimaryKeyMixin, TimestampMixin):
             ondelete="CASCADE",
             name="fk_change_request_attachments_request",
         ),
+        ForeignKeyConstraint(
+            ("workspace_id", "change_request_id", "round_id"),
+            (
+                "governance.change_request_rounds.workspace_id",
+                "governance.change_request_rounds.change_request_id",
+                "governance.change_request_rounds.id",
+            ),
+            ondelete="RESTRICT",
+            name="fk_change_request_attachments_round",
+        ),
         CheckConstraint("kind IN ('REQUEST', 'TEST')", name="kind_vocabulary"),
         CheckConstraint("serial_number BETWEEN 1 AND 999999", name="serial_number_range"),
         CheckConstraint("size_bytes BETWEEN 1 AND 10485760", name="size_bytes_range"),
@@ -154,6 +219,7 @@ class ChangeRequestAttachmentModel(Base, UuidPrimaryKeyMixin, TimestampMixin):
 
     workspace_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), nullable=False)
     change_request_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), nullable=False)
+    round_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), nullable=False)
     kind: Mapped[str] = mapped_column(String(16), nullable=False)
     original_name: Mapped[str] = mapped_column(String(500), nullable=False)
     serial_number: Mapped[int] = mapped_column(nullable=False)
@@ -280,23 +346,38 @@ class ManualMetadataSubmissionModel(Base, UuidPrimaryKeyMixin, TimestampMixin, V
 class ApprovalModel(Base, UuidPrimaryKeyMixin):
     __tablename__ = "approvals"
     __table_args__ = (
-        UniqueConstraint("change_request_id", "stage", "actor_id"),
+        UniqueConstraint("change_request_id", "round_id", "stage", "actor_id"),
         ForeignKeyConstraint(
             ("workspace_id", "change_request_id"),
             ("governance.change_requests.workspace_id", "governance.change_requests.id"),
             ondelete="CASCADE",
         ),
+        ForeignKeyConstraint(
+            ("workspace_id", "change_request_id", "round_id"),
+            (
+                "governance.change_request_rounds.workspace_id",
+                "governance.change_request_rounds.change_request_id",
+                "governance.change_request_rounds.id",
+            ),
+            ondelete="RESTRICT",
+            name="fk_approvals_round",
+        ),
+        CheckConstraint("jsonb_typeof(authority_snapshot) = 'array'", name="authority_array"),
         {"schema": "governance"},
     )
 
     workspace_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), nullable=False)
     change_request_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), nullable=False)
+    round_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), nullable=False)
     stage: Mapped[str] = mapped_column(String(50), nullable=False)
     decision: Mapped[str] = mapped_column(String(20), nullable=False)
     actor_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), nullable=False)
     reason: Mapped[str] = mapped_column(Text, nullable=False)
     policy_decision_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), nullable=False)
     occurred_at: Mapped[datetime] = mapped_column(nullable=False)
+    authority_snapshot: Mapped[list[dict[str, Any]]] = mapped_column(
+        JSON_DOCUMENT, default=list, nullable=False
+    )
 
 
 class StateTransitionModel(Base, UuidPrimaryKeyMixin):
@@ -308,14 +389,83 @@ class StateTransitionModel(Base, UuidPrimaryKeyMixin):
             ("governance.change_requests.workspace_id", "governance.change_requests.id"),
             ondelete="CASCADE",
         ),
+        ForeignKeyConstraint(
+            ("workspace_id", "change_request_id", "round_id"),
+            (
+                "governance.change_request_rounds.workspace_id",
+                "governance.change_request_rounds.change_request_id",
+                "governance.change_request_rounds.id",
+            ),
+            ondelete="RESTRICT",
+            name="fk_state_transitions_round",
+        ),
         {"schema": "governance"},
     )
 
     workspace_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), nullable=False)
     change_request_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), nullable=False)
+    round_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), nullable=False)
     from_state: Mapped[str] = mapped_column(String(32), nullable=False)
     to_state: Mapped[str] = mapped_column(String(32), nullable=False)
     actor_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), nullable=False)
     reason: Mapped[str] = mapped_column(Text, nullable=False)
     policy_decision_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), nullable=False)
     occurred_at: Mapped[datetime] = mapped_column(nullable=False)
+
+
+class ChangeTestRunModel(Base, UuidPrimaryKeyMixin):
+    __tablename__ = "change_test_runs"
+    __table_args__ = (
+        UniqueConstraint("workspace_id", "change_request_id", "round_id", "id"),
+        CheckConstraint("state IN ('PASSED', 'FAILED')", name="state_vocabulary"),
+        CheckConstraint("plan_hash ~ '^[0-9a-f]{64}$'", name="plan_hash_valid"),
+        CheckConstraint("result_hash ~ '^[0-9a-f]{64}$'", name="result_hash_valid"),
+        CheckConstraint("jsonb_typeof(bounded_summary) = 'object'", name="summary_object"),
+        ForeignKeyConstraint(
+            ("workspace_id", "change_request_id", "round_id"),
+            (
+                "governance.change_request_rounds.workspace_id",
+                "governance.change_request_rounds.change_request_id",
+                "governance.change_request_rounds.id",
+            ),
+            ondelete="RESTRICT",
+            name="fk_change_test_runs_round",
+        ),
+        ForeignKeyConstraint(
+            ("workspace_id", "system_id"),
+            ("platform.data_systems.workspace_id", "platform.data_systems.id"),
+            ondelete="RESTRICT",
+            name="fk_change_test_runs_system",
+        ),
+        ForeignKeyConstraint(
+            ("workspace_id", "change_request_id", "round_id", "attachment_id"),
+            (
+                "governance.change_request_attachments.workspace_id",
+                "governance.change_request_attachments.change_request_id",
+                "governance.change_request_attachments.round_id",
+                "governance.change_request_attachments.id",
+            ),
+            ondelete="RESTRICT",
+            name="fk_change_test_runs_attachment",
+        ),
+        Index(
+            "ix_change_test_runs_round_system",
+            "workspace_id",
+            "change_request_id",
+            "round_id",
+            "system_id",
+        ),
+        {"schema": "governance"},
+    )
+
+    workspace_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), nullable=False)
+    change_request_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), nullable=False)
+    round_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), nullable=False)
+    system_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), nullable=False)
+    attachment_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), nullable=False)
+    state: Mapped[str] = mapped_column(String(16), nullable=False)
+    plan_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    result_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    bounded_summary: Mapped[dict[str, Any]] = mapped_column(JSON_DOCUMENT, nullable=False)
+    recorded_by: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), nullable=False)
+    occurred_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)

@@ -5,19 +5,12 @@ import { AssuranceNotice, type AssuranceActions } from '../../components/Assuran
 import { ErrorNotice } from '../../components/ErrorNotice'
 import { PageTitle } from '../../components/layout/PageTitle'
 import { AdminApi } from './adminApi'
+import { AccountAccessAdmin } from './AccountAccessAdmin'
 import { AdminMutationConfirmDialog, type PendingAdminMutation } from './AdminMutationConfirmDialog'
-import {
-  ClassificationPolicyAdmin,
-  InferenceProviderProfileAdmin,
-  RestrictedSearchGrantAdmin,
-} from './ClassificationAccessAdmin'
-import { ErasureAdmin } from './ErasureAdmin'
-import { FallbackQueueAdmin, MembershipAccessAdmin } from './MembershipAdmin'
-import { RoleAccessAdmin } from './RoleAccessAdmin'
-import { SystemDirectoryAdmin } from './SystemDirectoryAdmin'
+import { RetentionGovernanceAdmin } from './RetentionGovernanceAdmin'
 import { SystemConfigurationAdmin } from './SystemConfigurationAdmin'
-import { LegalHoldAdmin, RetentionPolicyAdmin } from './RetentionAdmin'
 import { getAdminMessages } from './messages'
+import { AuditLogsAdmin, DictionaryAdmin } from './AdminReadOnlySurfaces'
 import { adminSectionFromLocation, allowedAdminSections, type AdminSection } from './adminSections'
 
 export function AdminPage({
@@ -82,7 +75,11 @@ export function AdminPage({
     api, context, messages, requestConfirmation: setMutation, keyFor, clearKey, reportError,
     ...assurance,
   }
-  const assuranceType = activeSection === 'fallback' ? 'PASSWORD' as const : 'HARDWARE' as const
+  const locationParameters = new URL(window.location.href).searchParams
+  const assuranceType = (
+    locationParameters.get('adminView') === 'recovery'
+    || locationParameters.get('adminSection') === 'fallback'
+  ) ? 'PASSWORD' as const : 'HARDWARE' as const
 
   return <section>
     <PageTitle
@@ -92,7 +89,7 @@ export function AdminPage({
       description="서버가 허용한 관리 기능만 노출하며 고위험 변경은 보안키 인증과 독립 승인을 요구합니다."
       actions={<button className="button button-secondary" onClick={() => void loadContext()}>{messages.refresh}</button>}
     />
-    <nav className="admin-tabs" aria-label={messages.title}>{visibleSections.map((id) => <button key={id} className={activeSection === id ? 'active' : ''} aria-current={activeSection === id ? 'page' : undefined} onClick={() => navigate(id)}>{messages[id]}</button>)}</nav>
+    <div className="admin-tabs" role="tablist" aria-label={messages.title}>{visibleSections.map((id) => <button key={id} id={`admin-tab-${id}`} role="tab" type="button" className={activeSection === id ? 'active' : ''} aria-selected={activeSection === id} aria-controls={`admin-panel-${id}`} onClick={() => navigate(id)}>{messages[id]}</button>)}</div>
     {context && <section className="panel admin-context" aria-label={messages.adminContext}>
       <div><strong>{context.display_name}</strong><code>{context.subject_id}</code></div>
       <div><small>{messages.currentAssurance}</small><span className="badge">{context.authentication_assurance}</span></div>
@@ -100,17 +97,13 @@ export function AdminPage({
     </section>}
     <AssuranceNotice error={error} requiredAssurance={assuranceType} {...assurance} />
     <ErrorNotice error={error} />
-    {activeSection === 'memberships' && <MembershipAccessAdmin {...shared} />}
-    {activeSection === 'systems' && <SystemDirectoryAdmin {...shared} />}
-    {activeSection === 'systemSettings' && <SystemConfigurationAdmin {...shared} />}
-    {activeSection === 'roles' && <RoleAccessAdmin {...shared} />}
-    {activeSection === 'fallback' && <FallbackQueueAdmin {...shared} />}
-    {activeSection === 'classification' && <ClassificationPolicyAdmin {...shared} />}
-    {activeSection === 'providers' && <InferenceProviderProfileAdmin {...shared} />}
-    {activeSection === 'restrictedGrants' && <RestrictedSearchGrantAdmin {...shared} />}
-    {activeSection === 'retention' && <RetentionPolicyAdmin {...shared} />}
-    {activeSection === 'holds' && <LegalHoldAdmin {...shared} />}
-    {activeSection === 'erasure' && <ErasureAdmin {...shared} />}
+    {activeSection && <div role="tabpanel" id={`admin-panel-${activeSection}`} aria-labelledby={`admin-tab-${activeSection}`}>
+      {activeSection === 'memberships' && <AccountAccessAdmin {...shared} />}
+      {activeSection === 'systemSettings' && <SystemConfigurationAdmin {...shared} />}
+      {activeSection === 'retention' && <RetentionGovernanceAdmin {...shared} />}
+      {activeSection === 'auditLogs' && <AuditLogsAdmin />}
+      {activeSection === 'dictionary' && <DictionaryAdmin client={client} />}
+    </div>}
     <AdminMutationConfirmDialog mutation={mutation} busy={busy} messages={messages} onCancel={() => setMutation(undefined)} onConfirm={() => void confirmMutation()} />
   </section>
 }

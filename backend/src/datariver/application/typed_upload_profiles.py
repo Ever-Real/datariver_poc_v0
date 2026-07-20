@@ -78,12 +78,34 @@ DATASET_DESCRIPTION_CSV_V1 = TypedUploadProfileDefinition(
     schema_version="dataset-description-csv-schema-v1",
 )
 
+DATASET_DESCRIPTION_XLSX_V1 = TypedUploadProfileDefinition(
+    content_profile=UploadContentProfile.DATASET_DESCRIPTION_XLSX_V1,
+    content_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    filename_suffix=".xlsx",
+    encoding="opc-xml-utf8",
+    delimiter="",
+    headers=DATASET_DESCRIPTION_CSV_V1.headers,
+    maximum_file_bytes=512 * 1024 * 1024,
+    maximum_rows=50_000,
+    maximum_row_bytes=64 * 1024,
+    maximum_platform_characters=100,
+    maximum_database_name_characters=255,
+    maximum_schema_name_characters=255,
+    maximum_table_name_characters=500,
+    maximum_description_characters=10_000,
+    acceptance_validator_version="integrity-xlsx-v1",
+    parser_version="dataset-description-xlsx-parser-v1",
+    schema_version="dataset-description-xlsx-schema-v1",
+)
+
 
 def typed_profile_definition(
     content_profile: UploadContentProfile,
 ) -> TypedUploadProfileDefinition:
     if content_profile is UploadContentProfile.DATASET_DESCRIPTION_CSV_V1:
         return DATASET_DESCRIPTION_CSV_V1
+    if content_profile is UploadContentProfile.DATASET_DESCRIPTION_XLSX_V1:
+        return DATASET_DESCRIPTION_XLSX_V1
     raise ValidationError("The upload profile has no typed preparation workflow.")
 
 
@@ -98,8 +120,10 @@ def validate_upload_profile(
         return
     definition = typed_profile_definition(content_profile)
     if content_type != definition.content_type:
-        raise ValidationError("The selected content profile requires text/csv.")
+        raise ValidationError("The selected content profile has an invalid content type.")
     if not display_name.lower().endswith(definition.filename_suffix):
-        raise ValidationError("The selected content profile requires a .csv filename.")
+        raise ValidationError(
+            f"The selected content profile requires a {definition.filename_suffix} filename."
+        )
     if size_bytes > definition.maximum_file_bytes:
         raise ValidationError("The selected content profile exceeds its bounded file-size limit.")

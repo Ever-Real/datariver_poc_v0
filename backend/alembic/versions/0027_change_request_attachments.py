@@ -16,7 +16,66 @@ branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 
 
+EXPECTED_OBJECT_COUNT = 3
+
+
+def _existing_object_count() -> int:
+    return int(
+        op.get_bind()
+        .execute(
+            sa.text(
+                """
+                SELECT
+                    CASE WHEN to_regclass('governance.change_request_attachments') IS NOT NULL
+                        THEN 1 ELSE 0 END
+                    + CASE WHEN to_regclass(
+                        'governance.ix_change_request_attachments_request'
+                      ) IS NOT NULL THEN 1 ELSE 0 END
+                    + (SELECT count(*)
+                       FROM pg_policies
+                       WHERE schemaname = 'governance'
+                         AND tablename = 'change_request_attachments'
+                         AND policyname = 'workspace_isolation')
+                """
+            )
+        )
+        .scalar_one()
+    )
+
+
+def _install_security_contract() -> None:
+    op.execute("ALTER TABLE governance.change_request_attachments ENABLE ROW LEVEL SECURITY")
+    op.execute("ALTER TABLE governance.change_request_attachments FORCE ROW LEVEL SECURITY")
+    op.execute(
+        """
+        DO $datariver$
+        BEGIN
+            IF NOT EXISTS (
+                SELECT 1 FROM pg_policies
+                WHERE schemaname = 'governance'
+                  AND tablename = 'change_request_attachments'
+                  AND policyname = 'workspace_isolation'
+            ) THEN
+                CREATE POLICY workspace_isolation ON governance.change_request_attachments
+                USING (workspace_id = NULLIF(current_setting('app.workspace_id', true), '')::uuid)
+                WITH CHECK (
+                    workspace_id = NULLIF(current_setting('app.workspace_id', true), '')::uuid
+                );
+            END IF;
+        END
+        $datariver$
+        """
+    )
+    op.execute("GRANT SELECT, INSERT ON governance.change_request_attachments TO datariver_app")
+
+
 def upgrade() -> None:
+    existing_objects = _existing_object_count()
+    if existing_objects:
+        if existing_objects != EXPECTED_OBJECT_COUNT:
+            raise RuntimeError("The change-request attachment schema is only partially present.")
+        _install_security_contract()
+        return
     op.create_table(
         "change_request_attachments",
         sa.Column("workspace_id", sa.Uuid(), nullable=False),
@@ -61,15 +120,9 @@ def upgrade() -> None:
         ("workspace_id", "change_request_id"),
         schema="governance",
     )
-    op.execute("ALTER TABLE governance.change_request_attachments ENABLE ROW LEVEL SECURITY")
-    op.execute("ALTER TABLE governance.change_request_attachments FORCE ROW LEVEL SECURITY")
-    op.execute(
-        "CREATE POLICY workspace_isolation ON governance.change_request_attachments "
-        "USING (workspace_id = NULLIF(current_setting('app.workspace_id', true), '')::uuid) "
-        "WITH CHECK (workspace_id = NULLIF(current_setting('app.workspace_id', true), '')::uuid)"
-    )
-    op.execute("GRANT SELECT, INSERT ON governance.change_request_attachments TO datariver_app")
+    _install_security_contract()
 
 
 def downgrade() -> None:
-    op.drop_table("change_request_attachments", schema="governance")
+    # Compatibility migrations are intentionally forward-only.
+    pass

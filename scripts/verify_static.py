@@ -408,6 +408,14 @@ def verify_readiness_contract() -> None:
     apisix = (ROOT / "infra" / "apisix" / "apisix.yaml").read_text(encoding="utf-8")
     if apisix.count("http_path: /api/v1/health/ready") != 2:
         raise AssertionError("both APISIX upstreams must use readiness")
+    if (
+        apisix.count("discovery_type: dns") != 2
+        or apisix.count('service_name: "__DATARIVER_API_UPSTREAM__"') != 2
+    ):
+        raise AssertionError("APISIX upstreams must re-resolve a replaced API container")
+    apisix_config = (ROOT / "infra" / "apisix" / "config.yaml").read_text(encoding="utf-8")
+    if '"127.0.0.11:53"' not in apisix_config:
+        raise AssertionError("APISIX DNS discovery must use Docker's embedded resolver")
     if "http_path: /api/v1/health/live" in apisix:
         raise AssertionError("APISIX cannot route using process-only liveness")
     gateway_health = (ROOT / "infra" / "apisix" / "healthcheck.sh").read_text(encoding="utf-8")

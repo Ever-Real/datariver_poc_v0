@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from datetime import date, datetime
 from typing import Any, Literal
 from uuid import UUID
@@ -140,6 +141,7 @@ class CatalogAssetResponse(CatalogAssetSummary):
     tags: list[str]
     schema_fields: list[dict[str, Any]]
     quality: dict[str, Any]
+    projection_source_version: str
     source_version: str
     stale_at: datetime | None = None
 
@@ -465,7 +467,7 @@ class ChangeRequestIntakeCreate(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     title: str = Field(min_length=1, max_length=500)
-    system_name: str = Field(min_length=1, max_length=100)
+    system_id: UUID
     request_date: date | None = None
     request_department: str = Field(default="", max_length=500)
     request_reason: str = Field(min_length=1, max_length=10_000)
@@ -495,9 +497,18 @@ class TransitionRequest(BaseModel):
 class ApprovalRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    stage: str = Field(pattern="^(REVIEW|FINAL)$")
+    stage: str = Field(pattern="^(REVIEW|TEST|FINAL)$")
     decision: str = Field(pattern="^(APPROVED|REJECTED)$")
     reason: str = Field(min_length=1, max_length=4000)
+
+
+class ChangeTestRunRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    system_id: UUID
+    attachment_id: UUID
+    state: Literal["PASSED", "FAILED"]
+    bounded_summary: dict[str, Any]
 
 
 class ChangeItemResponse(BaseModel):
@@ -519,6 +530,12 @@ class ChangeItemResponse(BaseModel):
     target_source_version: str | None
     target_observed_at: datetime | None
     target_binding_hash: str | None
+    routing_system_id: UUID | None
+
+
+class ApprovalAuthorityResponse(BaseModel):
+    kind: Literal["SYSTEM_DEVELOPER", "SYSTEM_DATA_STEWARD", "GLOBAL_ADMIN"]
+    system_id: UUID | None
 
 
 class ApprovalResponse(BaseModel):
@@ -528,6 +545,8 @@ class ApprovalResponse(BaseModel):
     actor_id: UUID
     reason: str
     occurred_at: datetime
+    round_id: UUID
+    authorities: list[ApprovalAuthorityResponse]
 
 
 class TransitionResponse(BaseModel):
@@ -536,6 +555,29 @@ class TransitionResponse(BaseModel):
     to_state: str
     actor_id: UUID
     reason: str
+    occurred_at: datetime
+    round_id: UUID
+
+
+class ChangeRequestRoundResponse(BaseModel):
+    id: UUID
+    round_number: int = Field(ge=1)
+    submitted_by: UUID
+    submitted_at: datetime
+    closed_at: datetime | None
+    evidence_hash: str
+
+
+class ChangeTestRunResponse(BaseModel):
+    id: UUID
+    round_id: UUID
+    system_id: UUID
+    attachment_id: UUID
+    state: Literal["PASSED", "FAILED"]
+    plan_hash: str
+    result_hash: str
+    bounded_summary: dict[str, Any]
+    recorded_by: UUID
     occurred_at: datetime
 
 
@@ -547,6 +589,9 @@ class ChangeRequestResponse(BaseModel):
     description: str
     state: str
     requester_id: UUID
+    requester_department_id: UUID | None
+    current_round_id: UUID
+    current_round_number: int = Field(ge=1)
     created_at: datetime
     requested_due_date: date | None
     priority: str | None
@@ -556,11 +601,14 @@ class ChangeRequestResponse(BaseModel):
     items: list[ChangeItemResponse]
     approvals: list[ApprovalResponse]
     transitions: list[TransitionResponse]
+    rounds: list[ChangeRequestRoundResponse]
+    test_runs: list[ChangeTestRunResponse]
 
 
 class ChangeRequestAttachmentResponse(BaseModel):
     id: UUID
     kind: Literal["REQUEST", "TEST"]
+    round_id: UUID
     original_name: str
     serial_number: int
     content_type: str
@@ -602,6 +650,16 @@ class ChangeRequestListResponse(BaseModel):
     overview: list[ChangeRequestSchemaOverviewResponse] = Field(default_factory=list)
 
 
+class ChangeRequestSystemResponse(BaseModel):
+    id: UUID
+    code: str
+    name: str
+
+
+class ChangeRequestSystemListResponse(BaseModel):
+    items: list[ChangeRequestSystemResponse]
+
+
 class CapabilityResponse(BaseModel):
     name: str
     state: str
@@ -638,6 +696,8 @@ class AuthMeResponse(BaseModel):
     authentication_assurance: str
     authentication_time: datetime | None
     default_workspace_id: UUID | None = None
+    workspace_selection_enabled: bool = True
+    hardware_webauthn_enabled: bool = True
 
 
 class ProblemDetails(BaseModel):
@@ -681,6 +741,12 @@ class WorkspaceMembershipSummaryResponse(BaseModel):
     last_login_ip: str | None
     owned_table_count: int = Field(ge=0)
     change_request_count: int = Field(ge=0)
+    joined_at: datetime | None
+    access_expires_at: datetime | None
+    renewal_eligible_at: datetime | None
+    access_expired: bool
+    renewal_request_eligible: bool
+    pending_renewal_request_id: UUID | None
     subject_active: bool
     membership_active: bool
     department_id: UUID | None
@@ -691,6 +757,112 @@ class WorkspaceMembershipSummaryResponse(BaseModel):
 
 class WorkspaceMembershipListResponse(BaseModel):
     items: list[WorkspaceMembershipSummaryResponse]
+
+
+class MembershipRenewalCreateRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    reason: str = Field(min_length=1, max_length=4000)
+
+
+class MembershipRenewalDecisionRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    decision: Literal["APPROVED", "REJECTED"]
+    reason: str = Field(min_length=1, max_length=4000)
+
+
+class MembershipRenewalResponse(BaseModel):
+    id: UUID
+    workspace_id: UUID
+    target_subject_id: UUID
+    requester_id: UUID
+    requester_display_name: str
+    reason: str
+    current_expires_at: datetime
+    requested_expires_at: datetime
+    state: Literal["PENDING", "APPROVED", "REJECTED"]
+    version: int = Field(ge=1)
+    created_at: datetime
+    checker_id: UUID | None
+    checker_display_name: str | None
+    decision_reason: str | None
+    decided_at: datetime | None
+    membership_version: int | None = Field(default=None, ge=1)
+
+
+class MembershipRenewalListResponse(BaseModel):
+    items: list[MembershipRenewalResponse]
+
+
+class AccessRoleWriteRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    role_key: str = Field(pattern=r"^[a-z][a-z0-9-]{1,79}$")
+    name: str = Field(min_length=1, max_length=255)
+    description: str = Field(default="", max_length=4000)
+    clearance: Literal["PUBLIC", "INTERNAL", "CONFIDENTIAL", "RESTRICTED"]
+    groups: list[str] = Field(default_factory=list, max_length=100)
+    allowed_actions: list[Action] = Field(max_length=100)
+    denied_actions: list[Action] = Field(default_factory=list, max_length=100)
+    allowed_system_ids: list[UUID] = Field(default_factory=list, max_length=1000)
+    allowed_domain_ids: list[UUID] = Field(default_factory=list, max_length=1000)
+    active: bool = True
+
+    @model_validator(mode="after")
+    def validate_access_document(self) -> AccessRoleWriteRequest:
+        if len(self.groups) != len(set(self.groups)) or any(
+            re.fullmatch(r"[a-z][a-z0-9-]{1,99}", group) is None for group in self.groups
+        ):
+            raise ValueError("Role groups must be unique bounded lowercase identifiers.")
+        if any(group.startswith("datariver-role-") for group in self.groups):
+            raise ValueError("Role groups cannot contain a reserved role marker.")
+        if len(self.allowed_actions) != len(set(self.allowed_actions)) or len(
+            self.denied_actions
+        ) != len(set(self.denied_actions)):
+            raise ValueError("Role actions must be unique.")
+        if set(self.allowed_actions) & set(self.denied_actions):
+            raise ValueError("A role action cannot be both allowed and denied.")
+        if len(self.allowed_system_ids) != len(set(self.allowed_system_ids)) or len(
+            self.allowed_domain_ids
+        ) != len(set(self.allowed_domain_ids)):
+            raise ValueError("Role resource scopes must be unique.")
+        return self
+
+
+class AccessRoleResponse(BaseModel):
+    id: UUID
+    role_key: str
+    name: str
+    description: str
+    clearance: Literal["PUBLIC", "INTERNAL", "CONFIDENTIAL", "RESTRICTED"]
+    groups: list[str]
+    allowed_actions: list[Action]
+    denied_actions: list[Action]
+    allowed_system_ids: list[UUID]
+    allowed_domain_ids: list[UUID]
+    active: bool
+    assigned_count: int = Field(ge=0)
+    version: int = Field(ge=1)
+    created_at: datetime
+    updated_at: datetime
+
+
+class AccessRoleListResponse(BaseModel):
+    items: list[AccessRoleResponse]
+
+
+class MembershipRoleAssignmentRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    role_id: UUID | None
+
+
+class MembershipRoleAssignmentResponse(BaseModel):
+    subject_id: UUID
+    role_id: UUID | None
+    membership_version: int = Field(ge=1)
+    payload_hash: str = Field(pattern=r"^[0-9a-f]{64}$")
 
 
 class SystemDirectoryAssigneeResponse(BaseModel):
@@ -731,33 +903,71 @@ class SystemAssigneeUpdateResponse(BaseModel):
     payload_hash: str = Field(pattern=r"^[0-9a-f]{64}$")
 
 
+SystemConfigurationId = Literal[
+    "DATAHUB_GMS",
+    "DATAHUB_FRONTEND",
+    "AIRFLOW",
+    "S3_STORAGE",
+    "LLM_CHAT_MODEL",
+    "LLM_EMBEDDING",
+    "LLM_RERANKER",
+    "NEO4J",
+    "PROMETHEUS",
+    "GRAFANA_DASHBOARD",
+]
+
+
 class SystemConfigurationEntryResponse(BaseModel):
     """Administrator-visible configuration state; values are masked before return."""
 
-    system_id: Literal[
-        "DATAHUB_GMS",
-        "DATAHUB_FRONTEND",
-        "AIRFLOW",
-        "S3_STORAGE",
-        "LLM_CHAT_MODEL",
-        "LLM_EMBEDDING",
-        "LLM_RERANKER",
-        "NEO4J",
-        "PROMETHEUS",
-        "GRAFANA_DASHBOARD",
-    ]
+    system_id: SystemConfigurationId
     label: str
     state: Literal["CONFIGURED", "NOT_CONFIGURED", "GOVERNED_PROFILE_REQUIRED"]
     management_plane: Literal["DEVELOPMENT_DATABASE", "DEPLOYMENT", "GOVERNED_PROVIDER_PROFILE"]
     secret_reference_configured: bool
     embedding_state: Literal["NOT_APPLICABLE", "AVAILABLE", "DISABLED", "NOT_CONFIGURED"]
     configuration_yaml: str = ""
+    template_yaml: str = ""
+    display_yaml: str = ""
     version: int = Field(ge=0)
     configured_at: datetime | None = None
+    runtime_supported: bool = False
+    restart_scope: Literal["API_ONLY", "API_AND_WORKERS", "NOT_IMPLEMENTED"] = "NOT_IMPLEMENTED"
+    activation_state: Literal[
+        "NOT_CONFIGURED",
+        "SAVED_UNTESTED",
+        "TEST_NOT_AVAILABLE",
+        "TESTED",
+        "ACTIVATED_RESTART_REQUIRED",
+        "APPLIED_TO_API_PROCESS",
+        "RUNTIME_NOT_IMPLEMENTED",
+    ] = "NOT_CONFIGURED"
+    tested_version: int | None = Field(default=None, ge=1)
+    test_status: Literal["AVAILABLE", "AUTHENTICATION_REQUIRED", "UNAVAILABLE"] | None = None
+    tested_at: datetime | None = None
+    activated_version: int | None = Field(default=None, ge=1)
+    activated_at: datetime | None = None
+    applied_version: int | None = Field(default=None, ge=1)
 
 
 class SystemConfigurationListResponse(BaseModel):
     items: list[SystemConfigurationEntryResponse]
+
+
+class SystemConfigurationTestResponse(BaseModel):
+    system_id: SystemConfigurationId
+    status: Literal["AVAILABLE", "AUTHENTICATION_REQUIRED", "UNAVAILABLE"]
+    scope: Literal[
+        "HTTP_HEALTH",
+        "MODEL_DISCOVERY",
+        "MODEL_INFERENCE",
+        "EMBEDDING_INFERENCE",
+        "AUTHENTICATED_QUERY",
+    ]
+    latency_ms: int = Field(ge=0)
+    detail: str
+    configuration_version: int = Field(ge=1)
+    tested_at: datetime
 
 
 class SystemConfigurationUpdateRequest(BaseModel):
@@ -791,9 +1001,12 @@ class AdminReadContextResponse(BaseModel):
         Literal[
             "MEMBERSHIP_ACCESS_READ",
             "MEMBERSHIP_ACCESS_UPDATE",
+            "MEMBERSHIP_RENEWAL_READ",
+            "MEMBERSHIP_RENEWAL_DECIDE",
             "SYSTEM_ASSIGNMENT_UPDATE",
             "SYSTEM_CONFIGURATION_READ",
             "SYSTEM_CONFIGURATION_UPDATE",
+            "SYSTEM_CONFIGURATION_ACTIVATE",
             "FALLBACK_REQUEST_READ",
             "FALLBACK_REQUEST_CREATE",
             "FALLBACK_REQUEST_DECIDE",
@@ -901,7 +1114,7 @@ class UploadInitiateRequest(BaseModel):
     size_bytes: int = Field(ge=1, le=5 * 1024 * 1024 * 1024)
     content_type: str = Field(
         pattern=(
-            "^(text/csv|application/json|application/x-parquet|"
+            "^(application/pdf|text/csv|application/json|application/x-parquet|"
             "application/vnd.apache.parquet|application/yaml|text/yaml|"
             "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet)$"
         )
@@ -910,7 +1123,11 @@ class UploadInitiateRequest(BaseModel):
     classification: str = Field(
         default="INTERNAL", pattern="^(PUBLIC|INTERNAL|CONFIDENTIAL|RESTRICTED)$"
     )
-    content_profile: Literal["FORMAT_ONLY_V1", "DATASET_DESCRIPTION_CSV_V1"] = "FORMAT_ONLY_V1"
+    content_profile: Literal[
+        "FORMAT_ONLY_V1",
+        "DATASET_DESCRIPTION_CSV_V1",
+        "DATASET_DESCRIPTION_XLSX_V1",
+    ] = "FORMAT_ONLY_V1"
 
     @field_validator("display_name")
     @classmethod
@@ -929,7 +1146,11 @@ class UploadResponse(BaseModel):
     content_type: str
     sha256: str
     classification: str
-    content_profile: Literal["FORMAT_ONLY_V1", "DATASET_DESCRIPTION_CSV_V1"]
+    content_profile: Literal[
+        "FORMAT_ONLY_V1",
+        "DATASET_DESCRIPTION_CSV_V1",
+        "DATASET_DESCRIPTION_XLSX_V1",
+    ]
     expires_at: datetime
     version: int
     validation_summary: dict[str, object]
@@ -944,7 +1165,7 @@ class UploadListResponse(BaseModel):
 class UploadPreparationResponse(BaseModel):
     id: UUID
     upload_id: UUID
-    content_profile: Literal["DATASET_DESCRIPTION_CSV_V1"]
+    content_profile: Literal["DATASET_DESCRIPTION_CSV_V1", "DATASET_DESCRIPTION_XLSX_V1"]
     source_manifest_version: int = Field(ge=1)
     source_sha256: str = Field(pattern="^[0-9a-f]{64}$")
     configuration_hash: str = Field(pattern="^[0-9a-f]{64}$")
@@ -1000,7 +1221,7 @@ class UploadCandidateReceiptResponse(BaseModel):
     preparation_id: UUID
     manifest_version: int = Field(ge=1)
     source_sha256: str = Field(pattern="^[0-9a-f]{64}$")
-    content_profile: Literal["DATASET_DESCRIPTION_CSV_V1"]
+    content_profile: Literal["DATASET_DESCRIPTION_CSV_V1", "DATASET_DESCRIPTION_XLSX_V1"]
     parser_version: str
     scanner_version: str
     schema_version: str
@@ -1126,6 +1347,13 @@ class ManualMetadataApplyResponse(BaseModel):
     state: Literal["QUEUED", "FAILED", "APPLIED"] | None = None
 
 
+class BulkPreparationExecuteResponse(BaseModel):
+    processed: bool
+    preparation_id: UUID | None = None
+    state: Literal["READY", "QUEUED", "FAILED", "SUPERSEDED"] | None = None
+    item_count: int | None = Field(default=None, ge=1)
+
+
 class OntologyRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -1164,6 +1392,9 @@ class ProvenanceRequest(BaseModel):
     source_version: str = Field(min_length=1, max_length=500)
     method: str = Field(min_length=1, max_length=100)
     confidence: float = Field(ge=0, le=1)
+    evidence_excerpt: str | None = Field(default=None, min_length=1, max_length=1000)
+    evidence_sha256: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
+    source_page_sha256: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
 
 
 class GraphNodeRequest(BaseModel):
@@ -1305,6 +1536,74 @@ class NeighborAnalysisResponse(BaseModel):
     nodes: list[GraphNodeResponse]
     edges: list[GraphEdgeResponse]
     truncated: bool
+
+
+class KnowledgeSourceAnalyzeRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    title: str = Field(min_length=1, max_length=500)
+
+
+class KnowledgeSourceAnalyzeResponse(BaseModel):
+    source_snapshot_id: UUID
+    changeset_id: UUID
+    page_count: int = Field(ge=1)
+    proposed_node_count: int = Field(ge=0)
+    proposed_edge_count: int = Field(ge=0)
+    evidence_hash: str = Field(pattern="^[0-9a-f]{64}$")
+    embedding_model: str
+    extraction_model: str
+
+
+class KnowledgeProjectionResponse(BaseModel):
+    deployment_id: UUID
+    release_id: UUID
+    release_hash: str = Field(pattern="^[0-9a-f]{64}$")
+    node_count: int = Field(ge=0)
+    edge_count: int = Field(ge=0)
+    state: Literal["SHADOW_VERIFIED"]
+
+
+class KnowledgeGraphRagRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    question: str = Field(min_length=2, max_length=4000)
+    start_node_id: UUID | None = None
+    direction: Literal["IN", "OUT", "BOTH"] = "BOTH"
+    edge_types: set[str] = Field(default_factory=set, max_length=50)
+    maximum_hops: int = Field(default=1, ge=1, le=3)
+    maximum_nodes: int = Field(default=100, ge=1, le=100)
+
+
+class KnowledgeGraphRagCitationResponse(BaseModel):
+    evidence_id: str
+    source_locator: str
+    source_version: str
+    page_number: int | None
+    entity_kind: Literal["NODE", "EDGE"] | None = None
+    entity_id: UUID | None = None
+    source_entity_id: UUID | None = None
+    target_entity_id: UUID | None = None
+    edge_type: str | None = None
+    evidence_excerpt: str | None = None
+    evidence_sha256: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
+    source_page_sha256: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
+
+
+class KnowledgeModelAuditResponse(BaseModel):
+    provider: str
+    model: str
+    prompt_version: str
+    tool_schema_version: str
+    configuration_source: Literal["DEPLOYMENT", "SYSTEM_CONFIGURATION"] | None = None
+    configuration_version: int | None = Field(default=None, ge=1)
+    configuration_hash: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
+
+
+class KnowledgeGraphRagResponse(NeighborAnalysisResponse):
+    answer: str
+    citations: list[KnowledgeGraphRagCitationResponse]
+    model_audit: KnowledgeModelAuditResponse
 
 
 class ChatQueryRequest(BaseModel):

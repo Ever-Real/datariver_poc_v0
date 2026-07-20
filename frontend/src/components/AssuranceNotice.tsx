@@ -22,7 +22,7 @@ export function AssuranceNotice({
     return (
       <div className="notice notice-error" role="alert">
         <strong>관리자 비밀번호 예외 경로를 사용할 수 없습니다.</strong>
-        <span>이 작업은 USB 보안키로 인증해야 합니다. 비밀번호 예외 경로는 두 명의 적격 관리자와 Maker-Checker 절차가 운영 검증된 환경에서만 별도로 제공됩니다.</span>
+        <span>이 작업은 조직 IdP가 허용한 WebAuthn 보안키로 인증해야 합니다. 특정 USB 장치만을 전제로 하지 않으며, 비밀번호 예외 경로는 두 명의 적격 관리자와 Maker-Checker 절차가 운영 검증된 환경에서만 별도로 제공됩니다.</span>
         <div className="action-row">
           <button className="button" onClick={() => void onStepUp()}>보안키로 인증</button>
         </div>
@@ -35,7 +35,7 @@ export function AssuranceNotice({
   return (
     <div className="notice notice-error" role="alert">
       <strong>{remediation === 'FIDO2_REQUIRED'
-        ? 'USB 보안키 인증이 필요합니다.'
+        ? 'WebAuthn 보안키 인증이 필요합니다.'
         : passwordReauth
           ? '비밀번호 재인증이 필요합니다.'
           : '보안키 재인증이 필요합니다.'}</strong>

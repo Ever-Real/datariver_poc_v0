@@ -31,7 +31,7 @@ Generated OpenAPI at `/api/v1/openapi.json` is authoritative for implemented pay
 
 | Method/path | Authorization | Purpose |
 |---|---|---|
-| `GET /auth/me` | verified bearer identity; no Workspace header | sanitized subject, display name, email, realm roles, normalized assurance/authentication time and one server-selected active `default_workspace_id` for React in-memory hydration after an OIDC callback or silent SSO round-trip. The selection is not authority; every later request still verifies the requested Workspace membership. |
+| `GET /auth/me` | verified bearer identity; no Workspace header | sanitized subject, display name, email, realm roles, normalized assurance/authentication time, one server-selected active `default_workspace_id`, and operator-owned `workspace_selection_enabled` / `hardware_webauthn_enabled` capability flags for React in-memory hydration after an OIDC callback or silent SSO round-trip. The default/flags are not browser authority; every later request still verifies Workspace membership and the API independently verifies assurance. |
 | `GET /admin/me` | read-only workspace administrator context | reports the current verified assurance (including ordinary `PASSWORD`/`OTHER_MFA`) and server-authorized administrator operations without triggering FIDO2/password reauthentication; each sensitive mutation applies its own assurance check |
 
 ### Health and operations
@@ -206,8 +206,18 @@ cannot re-enter the ordinary workflow.
 | `GET /knowledge/graphs/{graph_id}/releases/{release_id}/snapshot?maximum_nodes=` | `kg.read` | ABAC-filtered release view |
 | `GET .../{release_id}/export?format=json-ld|edge-list` | `kg.export` | release-pinned governed export |
 | `POST .../{release_id}/analysis/neighbors` | `sharing.invoke` | typed bounded neighbor traversal |
+| `POST .../sources/{upload_id}/analyze` | `kg.edit` | integrity-verified PDF parsing, page embedding and source-grounded typed DRAFT changeset proposal |
+| `POST .../releases/{release_id}/project` | `kg.publish` | rebuild a release-scoped Neo4j shadow and verify its canonical read-back hash before recording `SHADOW_VERIFIED` |
+| `POST .../releases/{release_id}/graphrag` | `kg.read` + `chat.query` | bounded node/relationship evidence retrieval and citation-constrained local model answer |
 
 Neighbor request accepts only `node_id`, `direction=IN|OUT|BOTH`, an edge-type allowlist, `maximum_hops<=3` and `maximum_nodes<=500`. It cannot contain SQL, Cypher, labels or clauses. Every published node/edge requires ontology membership, valid endpoints, classification and provenance.
+
+PDF analysis accepts only an `ACCEPTED` `application/pdf` upload owned by the current actor, with
+declared and observed SHA-256/size equality. Model-proposed evidence must be an exact normalized
+substring of the referenced parsed page; the excerpt/hash/page hash survive review and release.
+Projection and changeset publication are high-risk and retain the recent hardware-WebAuthn gate.
+GraphRAG requires a DB projection receipt whose release hash matches the immutable release and
+rejects citations outside the authorized node/relationship evidence package.
 
 ### API products and consumer grants
 
@@ -249,10 +259,22 @@ message, citation or retention binding and production configuration rejects the 
 |---|---|---|
 | `GET /admin/me` | eligible human security administrator with a valid current OIDC identity | internal subject identity, current-assurance operations, fallback availability and the supported action vocabulary; read discovery never grants mutation authority |
 | `GET /admin/workspace-memberships?limit=` | eligible human security administrator with a valid current OIDC identity | bounded workspace membership display/version summaries, maximum 100 |
+| `GET /admin/workspace-memberships/me/summary` | current active member | server-calculated membership expiry, renewal opening and pending-request facts; browser time is not authorization input |
+| `POST /admin/membership-renewals/me` | current member during the final 30 days + `Idempotency-Key` | request exactly six calendar months beyond the observed current expiry; one pending request per member |
+| `GET /admin/membership-renewals/me?limit=` | current member | bounded own renewal history |
+| `GET /admin/membership-renewals?state=&subject_id=&limit=` | eligible global administrator | shared pending/history queue for all eligible administrators |
+| `POST /admin/membership-renewals/{request_id}/decisions` | independent eligible global administrator + recent hardware WebAuthn + `If-Match`/`Idempotency-Key` | approve/reject; approval atomically verifies and extends the membership expiry |
+| `GET /admin/access-roles` | eligible human security administrator with membership-read capability | bounded workspace Role definitions and their current assignment counts |
+| `POST /admin/access-roles` | `admin.manage` + recent hardware WebAuthn | create one workspace Role from the typed action vocabulary and bounded System/Domain UUID scopes; credentials and arbitrary policy expressions are not accepted |
+| `PUT /admin/access-roles/{role_id}` | `admin.manage` + recent hardware WebAuthn + quoted `If-Match` | update display metadata or an unused Role's security definition; the Role key is immutable and security changes fail while assigned |
+| `DELETE /admin/access-roles/{role_id}` | `admin.manage` + recent hardware WebAuthn + quoted `If-Match` | deactivate an unassigned Role; no row or audit evidence is deleted |
+| `PUT /admin/workspace-memberships/{subject_id}/role` | `admin.manage` + recent hardware WebAuthn | assign one active Role, or remove it, by materializing the governed membership access document; requires `If-Match` and `Idempotency-Key` and prohibits self-change |
 | `GET /admin/systems?limit=` | eligible human security administrator with a valid current OIDC identity | bounded canonical System master list with current Developer/Data Steward names, active state, priority and system version |
 | `PUT /admin/systems/{system_id}/assignees` | `admin.manage` + recent hardware WebAuthn | complete Developer/Data Steward assignment replacement; requires `If-Match` and `Idempotency-Key`, preserves at least one active human Workspace member for each responsibility with unique role-local priorities starting at one, emits audit evidence and returns the new system version/`ETag` |
-| `GET /admin/system-configuration` | eligible human security administrator with a valid current OIDC identity | fixed server-owned integration inventory. In development it includes masked YAML and a version; production returns deployment/provider-profile state only. |
-| `PUT /admin/system-configuration/{system_id}` | eligible human security administrator in development, `SYSTEM_CONFIGURATION_UPDATE`, quoted `If-Match` | incrementally saves one approved system YAML document. Sensitive keys are masked on every response; submitting `********` preserves the stored value. This route is unavailable outside development. |
+| `GET /admin/system-configuration` | eligible human security administrator with a valid current OIDC identity | fixed server-owned integration inventory, exact saved/TEST/activated/API-loaded versions and restart scope. Development templates contain only non-secret values and strict mounted-secret reference names. |
+| `PUT /admin/system-configuration/{system_id}` | eligible human security administrator in development, `SYSTEM_CONFIGURATION_UPDATE`, quoted `If-Match` | save a new immutable YAML revision. Literal sensitive values are rejected; only `file:/run/secrets/<name>` references are accepted. This route is unavailable outside development. |
+| `POST /admin/system-configuration/{system_id}/test` | eligible human security administrator in development, `SYSTEM_CONFIGURATION_UPDATE` | test the exact saved current revision through one server-owned fixed connector probe and persist bounded evidence. The request cannot supply a URL. Availability is not activation or process readiness. |
+| `POST /admin/system-configuration/{system_id}/activate` | eligible human administrator in development, recent hardware WebAuthn, `SYSTEM_CONFIGURATION_ACTIVATE`, quoted `If-Match` | select the current AVAILABLE revision for next startup. Fails when no typed runtime consumer exists; never hot-reloads or restarts API/workers. |
 | `GET /admin/workspace-memberships/{subject_id}/access` | eligible human security administrator with a valid current OIDC identity | exact typed full access document plus display metadata, membership version and matching `ETag` |
 | `PUT /admin/workspace-memberships/{subject_id}/access` | `admin.manage` + recent hardware WebAuthn | exact full access-document replacement for another subject |
 | `GET /admin/fallback/workspace-membership-access-requests?state=&limit=` | eligible human security administrator with a valid current OIDC identity | bounded workspace fallback queue |
@@ -260,7 +282,10 @@ message, citation or retention binding and production configuration rejects the 
 | `POST .../{request_id}/decisions` | independent eligible human checker + recent password reauth or hardware WebAuthn | append approve/reject evidence |
 | `POST .../{request_id}/consume` | original maker + recent password reauth | atomically apply the approved command once |
 
-All mutations require `Idempotency-Key` and a quoted positive `If-Match`. The create request's
+Membership assignment and fallback mutations require `Idempotency-Key`; every replacement or
+decision requires a quoted positive `If-Match`. Role-definition creation is bounded by the
+workspace/key uniqueness contract; Role update/deactivation uses optimistic `If-Match` and appends
+outbox audit evidence. The fallback create request's
 version is the target membership version; decision and consume versions are the fallback aggregate
 version. The only command is `WORKSPACE_MEMBERSHIP_ACCESS_UPDATE_V1` with `active`, `clearance`,
 groups, allowed/denied actions and bounded system/domain UUID scopes. Unknown fields and unknown

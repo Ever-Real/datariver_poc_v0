@@ -219,7 +219,7 @@ def _candidate_list_response(
             preparation_id=receipt.preparation_id,
             manifest_version=receipt.manifest_version,
             source_sha256=receipt.source_sha256,
-            content_profile="DATASET_DESCRIPTION_CSV_V1",
+            content_profile=receipt.content_profile,
             parser_version=receipt.parser_version,
             scanner_version=receipt.scanner_version,
             schema_version=receipt.schema_version,

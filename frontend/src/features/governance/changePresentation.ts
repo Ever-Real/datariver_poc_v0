@@ -28,7 +28,7 @@ export interface ChangeActionHint {
   id: string
   kind: 'APPROVAL' | 'TRANSITION' | 'INTAKE_COMPLETE'
   label: string
-  stage?: 'REVIEW' | 'FINAL'
+  stage?: 'REVIEW' | 'TEST' | 'FINAL'
   decision?: 'APPROVED'
   targetState?: ChangeRequestState
   tone?: 'primary' | 'danger' | 'neutral'
@@ -51,6 +51,14 @@ const reviewApproval: ChangeActionHint = {
   kind: 'APPROVAL',
   label: '검토 승인 기록',
   stage: 'REVIEW',
+  decision: 'APPROVED',
+}
+
+const testApproval: ChangeActionHint = {
+  id: 'approval-test',
+  kind: 'APPROVAL',
+  label: '테스트 승인 기록',
+  stage: 'TEST',
   decision: 'APPROVED',
 }
 
@@ -85,13 +93,13 @@ export function changeActionHints(changeRequest: ChangeRequestRecord): ChangeAct
       return [
         reviewApproval,
         transition('TESTING', '변경 / 테스트로 이동', 'primary'),
-        transition('FINAL_REVIEW', '최종 검토로 이동'),
         transition('CHANGES_REQUESTED', '보완 요청', 'danger'),
         transition('REJECTED', '반려', 'danger'),
         transition('CANCELLED', '요청 취소', 'danger'),
       ]
     case 'TESTING':
       return [
+        testApproval,
         transition('IN_REVIEW', '검토로 되돌리기'),
         transition('FINAL_REVIEW', '최종 검토 요청', 'primary'),
         transition('CHANGES_REQUESTED', '보완 요청', 'danger'),

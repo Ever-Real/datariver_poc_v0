@@ -898,26 +898,11 @@ class SqlKnowledgeStore(KnowledgeStore):
 
 
 def _provenance_document(item: Provenance) -> dict[str, object]:
-    return {
-        "source_ref": item.source_ref,
-        "source_locator": item.source_locator,
-        "source_version": item.source_version,
-        "method": item.method,
-        "confidence": item.confidence,
-    }
+    return item.to_document()
 
 
 def _provenance(items: list[dict[str, Any]]) -> tuple[Provenance, ...]:
-    return tuple(
-        Provenance(
-            source_ref=str(item["source_ref"]),
-            source_locator=str(item["source_locator"]),
-            source_version=str(item["source_version"]),
-            method=str(item["method"]),
-            confidence=float(item["confidence"]),
-        )
-        for item in items
-    )
+    return tuple(Provenance.from_document(item) for item in items)
 
 
 def _node(model: ReleaseNodeModel) -> GraphNode:

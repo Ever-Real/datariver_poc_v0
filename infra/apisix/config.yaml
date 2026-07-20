@@ -5,6 +5,14 @@ apisix:
   enable_control: false
   show_upstream_status_in_response_header: false
 
+discovery:
+  dns:
+    # Docker's embedded resolver tracks service-container replacement. Literal
+    # host-development IPs are accepted by the same APISIX DNS client path.
+    servers:
+      - "127.0.0.11:53"
+    order: [last, A, AAAA, CNAME]
+
 deployment:
   role: data_plane
   role_data_plane:

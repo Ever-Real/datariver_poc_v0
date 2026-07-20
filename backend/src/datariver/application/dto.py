@@ -503,6 +503,31 @@ class WorkspaceMembershipSummary:
     last_login_ip: str | None = None
     owned_table_count: int = 0
     change_request_count: int = 0
+    joined_at: datetime | None = None
+    access_expires_at: datetime | None = None
+    renewal_eligible_at: datetime | None = None
+    access_expired: bool = False
+    renewal_request_eligible: bool = False
+    pending_renewal_request_id: UUID | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class MembershipRenewalRecord:
+    renewal_request_id: UUID
+    workspace_id: UUID
+    target_subject_id: UUID
+    requester_id: UUID
+    requester_display_name: str
+    reason: str
+    current_expires_at: datetime
+    requested_expires_at: datetime
+    state: str
+    version: int
+    created_at: datetime
+    checker_id: UUID | None = None
+    checker_display_name: str | None = None
+    decision_reason: str | None = None
+    decided_at: datetime | None = None
 
 
 @dataclass(frozen=True, slots=True)

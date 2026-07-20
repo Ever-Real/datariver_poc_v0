@@ -124,7 +124,8 @@ class ObjectManifestModel(Base, UuidPrimaryKeyMixin, TimestampMixin, VersionMixi
         UniqueConstraint("workspace_id", "id"),
         Index("ix_object_manifests_workspace_state", "workspace_id", "state"),
         CheckConstraint(
-            "content_profile IN ('FORMAT_ONLY_V1', 'DATASET_DESCRIPTION_CSV_V1')",
+            "content_profile IN ('FORMAT_ONLY_V1', 'DATASET_DESCRIPTION_CSV_V1', "
+            "'DATASET_DESCRIPTION_XLSX_V1')",
             name="content_profile_allowlist",
         ),
         {"schema": "integration"},
@@ -193,7 +194,7 @@ class UploadPreparationJobModel(Base, UuidPrimaryKeyMixin, TimestampMixin, Versi
             "created_at",
         ),
         CheckConstraint(
-            "content_profile = 'DATASET_DESCRIPTION_CSV_V1'",
+            "content_profile IN ('DATASET_DESCRIPTION_CSV_V1', 'DATASET_DESCRIPTION_XLSX_V1')",
             name="typed_profile_allowlist",
         ),
         CheckConstraint(
@@ -281,7 +282,7 @@ class UploadPreparationReceiptModel(Base, UuidPrimaryKeyMixin):
             name="row_counts_nonnegative",
         ),
         CheckConstraint(
-            "content_profile = 'DATASET_DESCRIPTION_CSV_V1'",
+            "content_profile IN ('DATASET_DESCRIPTION_CSV_V1', 'DATASET_DESCRIPTION_XLSX_V1')",
             name="typed_profile_allowlist",
         ),
         ForeignKeyConstraint(

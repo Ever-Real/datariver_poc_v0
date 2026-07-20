@@ -6,6 +6,7 @@ from uuid import UUID
 
 from datariver.application.dto import (
     AdminReadContext,
+    MembershipRenewalRecord,
     SystemDirectoryEntry,
     WorkspaceMembershipAccessRecord,
     WorkspaceMembershipSummary,
@@ -35,6 +36,11 @@ from datariver.domain.common import (
     ForbiddenError,
     NotFoundError,
     ValidationError,
+)
+from datariver.domain.membership_renewal import (
+    MembershipRenewalDecision,
+    MembershipRenewalRequest,
+    MembershipRenewalState,
 )
 
 
@@ -128,6 +134,21 @@ class AdminAccessService:
                 raise NotFoundError("The target workspace membership does not exist.")
             return membership
 
+    async def get_own_workspace_membership(
+        self,
+        *,
+        workspace_id: UUID,
+        subject: SubjectAttributes,
+    ) -> WorkspaceMembershipSummary:
+        async with self._uow_factory() as uow:
+            await uow.set_security_context(workspace_id=workspace_id, subject_id=subject.subject_id)
+            membership = await uow.memberships.get_access(
+                workspace_id=workspace_id, subject_id=subject.subject_id
+            )
+            if membership is None:
+                raise NotFoundError("The current workspace membership does not exist.")
+            return membership.summary
+
     async def get_admin_read_context(
         self,
         *,
@@ -155,6 +176,7 @@ class AdminAccessService:
                 raise NotFoundError("The administrator workspace membership does not exist.")
         operations = [
             AdminOperation.MEMBERSHIP_ACCESS_READ,
+            AdminOperation.MEMBERSHIP_RENEWAL_READ,
             AdminOperation.CLASSIFICATION_POLICY_READ,
             AdminOperation.INFERENCE_PROVIDER_PROFILE_READ,
             AdminOperation.RESTRICTED_SEARCH_GRANT_READ,
@@ -181,6 +203,7 @@ class AdminAccessService:
             operations.extend(
                 [
                     AdminOperation.MEMBERSHIP_ACCESS_UPDATE,
+                    AdminOperation.MEMBERSHIP_RENEWAL_DECIDE,
                     AdminOperation.SYSTEM_ASSIGNMENT_UPDATE,
                     AdminOperation.CLASSIFICATION_POLICY_PROPOSE,
                     AdminOperation.CLASSIFICATION_POLICY_DECIDE,
@@ -203,6 +226,8 @@ class AdminAccessService:
                 for action, operation in governed_operations
                 if action in subject.allowed_actions and action not in subject.denied_actions
             )
+            if self._development_system_configuration_enabled:
+                operations.append(AdminOperation.SYSTEM_CONFIGURATION_ACTIVATE)
         if self._fallback_enabled:
             operations.extend(
                 [AdminOperation.FALLBACK_REQUEST_READ, AdminOperation.FALLBACK_REQUEST_DECIDE]
@@ -221,6 +246,218 @@ class AdminAccessService:
             allowed_operations=tuple(operations),
             action_vocabulary=tuple(sorted(Action, key=lambda action: action.value)),
             fallback_enabled=self._fallback_enabled,
+        )
+
+    async def request_membership_renewal(
+        self,
+        *,
+        workspace_id: UUID,
+        reason: str,
+        subject: SubjectAttributes,
+        environment: EnvironmentAttributes,
+        idempotency_key: str,
+        request_hash: str,
+    ) -> MembershipRenewalRecord:
+        operation = f"membership.renewal.request:{subject.subject_id}"
+        async with self._uow_factory() as uow:
+            await uow.set_security_context(workspace_id=workspace_id, subject_id=subject.subject_id)
+            await uow.lock_workspace_access(workspace_id=workspace_id)
+            existing = await uow.idempotency.get_result(
+                workspace_id=workspace_id, key=idempotency_key, operation=operation
+            )
+            if existing is not None:
+                _verify_idempotency(
+                    existing.request_hash,
+                    request_hash,
+                    existing.result.get("actor_id"),
+                    subject.subject_id,
+                )
+                records = await uow.renewals.list_records(
+                    workspace_id=workspace_id,
+                    subject_id=subject.subject_id,
+                    state=None,
+                    limit=100,
+                )
+                renewal_id = UUID(str(existing.result["renewal_request_id"]))
+                for record in records:
+                    if record.renewal_request_id == renewal_id:
+                        return record
+                raise ConflictError("The idempotent membership renewal result is unavailable.")
+            current_expires_at = await uow.memberships.get_expiration_for_update(
+                workspace_id=workspace_id, subject_id=subject.subject_id
+            )
+            renewal = MembershipRenewalRequest.create(
+                workspace_id=workspace_id,
+                subject_id=subject.subject_id,
+                reason=reason,
+                current_expires_at=current_expires_at,
+                requested_at=environment.requested_at,
+            )
+            await uow.renewals.add(renewal)
+            await uow.outbox.add_events(renewal.events)
+            await uow.idempotency.save_result(
+                workspace_id=workspace_id,
+                key=idempotency_key,
+                operation=operation,
+                request_hash=request_hash,
+                result={
+                    "actor_id": str(subject.subject_id),
+                    "renewal_request_id": str(renewal.renewal_request_id),
+                },
+            )
+            await uow.commit()
+        renewal.events.clear()
+        records = await self.list_membership_renewals(
+            workspace_id=workspace_id,
+            subject_id=subject.subject_id,
+            state=None,
+            limit=100,
+            subject=subject,
+            environment=environment,
+            request_id="membership-renewal-self-read",
+            administrator=False,
+        )
+        return next(
+            record for record in records if record.renewal_request_id == renewal.renewal_request_id
+        )
+
+    async def list_membership_renewals(
+        self,
+        *,
+        workspace_id: UUID,
+        subject_id: UUID | None,
+        state: MembershipRenewalState | None,
+        limit: int,
+        subject: SubjectAttributes,
+        environment: EnvironmentAttributes,
+        request_id: str,
+        administrator: bool,
+    ) -> Sequence[MembershipRenewalRecord]:
+        target_subject_id = subject_id
+        if administrator:
+            await self._authorize_read(
+                workspace_id=workspace_id,
+                resource_id=workspace_id,
+                subject=subject,
+                environment=environment,
+                request_id=request_id,
+            )
+        else:
+            if subject_id not in {None, subject.subject_id}:
+                raise ForbiddenError("A member can read only their own renewal requests.")
+            target_subject_id = subject.subject_id
+        async with self._uow_factory() as uow:
+            await uow.set_security_context(workspace_id=workspace_id, subject_id=subject.subject_id)
+            if administrator:
+                await uow.memberships.assert_eligible_human_administrators(
+                    workspace_id=workspace_id, subject_ids=frozenset({subject.subject_id})
+                )
+            return await uow.renewals.list_records(
+                workspace_id=workspace_id,
+                subject_id=target_subject_id,
+                state=state.value if state is not None else None,
+                limit=limit,
+            )
+
+    async def decide_membership_renewal(
+        self,
+        *,
+        workspace_id: UUID,
+        renewal_request_id: UUID,
+        decision_value: MembershipRenewalDecision,
+        reason: str,
+        expected_version: int,
+        subject: SubjectAttributes,
+        environment: EnvironmentAttributes,
+        request_id: str,
+        idempotency_key: str,
+        request_hash: str,
+    ) -> tuple[MembershipRenewalRecord, int | None]:
+        decision = await self._authorization.authorize(
+            subject=subject,
+            resource=self._resource(workspace_id, renewal_request_id),
+            action=Action.ADMIN_MANAGE,
+            environment=environment,
+            request_id=request_id,
+        )
+        operation = f"membership.renewal.decide:{renewal_request_id}"
+        membership_version: int | None = None
+        async with self._uow_factory() as uow:
+            await uow.set_security_context(workspace_id=workspace_id, subject_id=subject.subject_id)
+            await uow.lock_workspace_access(workspace_id=workspace_id)
+            await uow.memberships.assert_eligible_human_administrators(
+                workspace_id=workspace_id, subject_ids=frozenset({subject.subject_id})
+            )
+            renewal = await uow.renewals.get_for_update(
+                workspace_id=workspace_id, renewal_request_id=renewal_request_id
+            )
+            if renewal is None:
+                raise NotFoundError("The membership renewal request does not exist.")
+            existing = await uow.idempotency.get_result(
+                workspace_id=workspace_id, key=idempotency_key, operation=operation
+            )
+            if existing is not None:
+                _verify_idempotency(
+                    existing.request_hash,
+                    request_hash,
+                    existing.result.get("actor_id"),
+                    subject.subject_id,
+                )
+                records = await uow.renewals.list_records(
+                    workspace_id=workspace_id, subject_id=None, state=None, limit=100
+                )
+                for record in records:
+                    if record.renewal_request_id == renewal_request_id:
+                        stored_version = existing.result.get("membership_version")
+                        return record, int(stored_version) if stored_version is not None else None
+                raise ConflictError("The idempotent membership renewal result is unavailable.")
+            current_expires_at = await uow.memberships.get_expiration_for_update(
+                workspace_id=workspace_id, subject_id=renewal.target_subject_id
+            )
+            renewal.decide(
+                decision=decision_value,
+                checker_id=subject.subject_id,
+                reason=reason,
+                policy_decision_id=decision.decision_id,
+                decided_at=environment.requested_at,
+                expected_version=expected_version,
+                observed_membership_expires_at=current_expires_at,
+            )
+            if decision_value is MembershipRenewalDecision.APPROVED:
+                membership_version = await uow.memberships.extend_expiration(
+                    workspace_id=workspace_id,
+                    subject_id=renewal.target_subject_id,
+                    expected=current_expires_at,
+                    extended=renewal.requested_expires_at,
+                )
+            await uow.renewals.save(renewal)
+            await uow.outbox.add_events(renewal.events)
+            await uow.idempotency.save_result(
+                workspace_id=workspace_id,
+                key=idempotency_key,
+                operation=operation,
+                request_hash=request_hash,
+                result={
+                    "actor_id": str(subject.subject_id),
+                    "renewal_request_id": str(renewal_request_id),
+                    "membership_version": membership_version,
+                },
+            )
+            await uow.commit()
+        renewal.events.clear()
+        records = await self.list_membership_renewals(
+            workspace_id=workspace_id,
+            subject_id=None,
+            state=None,
+            limit=100,
+            subject=subject,
+            environment=environment,
+            request_id=f"{request_id}:read-result",
+            administrator=True,
+        )
+        return (
+            next(record for record in records if record.renewal_request_id == renewal_request_id),
+            membership_version,
         )
 
     async def update_membership_with_hardware_key(

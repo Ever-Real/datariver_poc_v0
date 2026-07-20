@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import Any
@@ -41,12 +42,90 @@ class Provenance:
     source_version: str
     method: str
     confidence: float
+    evidence_excerpt: str | None = None
+    evidence_sha256: str | None = None
+    source_page_sha256: str | None = None
 
     def validate(self) -> None:
         if not self.source_ref or not self.source_locator or not self.source_version:
             raise ValidationError("Every graph assertion requires source provenance.")
         if not 0 <= self.confidence <= 1:
             raise ValidationError("Provenance confidence must be between 0 and 1.")
+        evidence = (
+            self.evidence_excerpt,
+            self.evidence_sha256,
+            self.source_page_sha256,
+        )
+        if any(value is not None for value in evidence) and not all(
+            value is not None for value in evidence
+        ):
+            raise ValidationError(
+                "Evidence excerpt, excerpt hash, and source-page hash must be supplied together."
+            )
+        if self.evidence_excerpt is None:
+            return
+        normalized = normalize_evidence_excerpt(self.evidence_excerpt)
+        if not normalized or len(normalized) > 1_000 or normalized != self.evidence_excerpt:
+            raise ValidationError(
+                "The evidence excerpt must be whitespace-normalized and at most 1,000 characters."
+            )
+        if self.evidence_sha256 != hashlib.sha256(normalized.encode()).hexdigest():
+            raise ValidationError("The evidence excerpt hash does not match its normalized text.")
+        if not _is_sha256(self.source_page_sha256):
+            raise ValidationError("The source-page evidence hash is invalid.")
+
+    def to_document(self) -> dict[str, object]:
+        document: dict[str, object] = {
+            "source_ref": self.source_ref,
+            "source_locator": self.source_locator,
+            "source_version": self.source_version,
+            "method": self.method,
+            "confidence": self.confidence,
+        }
+        if self.evidence_excerpt is not None:
+            document.update(
+                {
+                    "evidence_excerpt": self.evidence_excerpt,
+                    "evidence_sha256": self.evidence_sha256,
+                    "source_page_sha256": self.source_page_sha256,
+                }
+            )
+        return document
+
+    @classmethod
+    def from_document(cls, document: Mapping[str, object]) -> Provenance:
+        return cls(
+            source_ref=str(document["source_ref"]),
+            source_locator=str(document["source_locator"]),
+            source_version=str(document["source_version"]),
+            method=str(document["method"]),
+            confidence=_confidence(document["confidence"]),
+            evidence_excerpt=_optional_string(document.get("evidence_excerpt")),
+            evidence_sha256=_optional_string(document.get("evidence_sha256")),
+            source_page_sha256=_optional_string(document.get("source_page_sha256")),
+        )
+
+
+def normalize_evidence_excerpt(value: str) -> str:
+    return " ".join(value.split())
+
+
+def _optional_string(value: object) -> str | None:
+    return None if value is None else str(value)
+
+
+def _confidence(value: object) -> float:
+    if not isinstance(value, int | float) or isinstance(value, bool):
+        raise ValidationError("The provenance confidence is not numeric.")
+    return float(value)
+
+
+def _is_sha256(value: str | None) -> bool:
+    return (
+        value is not None
+        and len(value) == 64
+        and all(character in "0123456789abcdef" for character in value)
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -291,16 +370,7 @@ class GraphSnapshot:
                     "type": node.entity_type,
                     "properties": node.properties,
                     "classification": node.classification,
-                    "provenance": [
-                        {
-                            "source_ref": item.source_ref,
-                            "source_locator": item.source_locator,
-                            "source_version": item.source_version,
-                            "method": item.method,
-                            "confidence": item.confidence,
-                        }
-                        for item in node.provenance
-                    ],
+                    "provenance": [item.to_document() for item in node.provenance],
                 }
                 for node in sorted(self.nodes.values(), key=lambda item: item.entity_id.int)
             ],
@@ -312,16 +382,7 @@ class GraphSnapshot:
                     "type": edge.edge_type,
                     "properties": edge.properties,
                     "classification": edge.classification,
-                    "provenance": [
-                        {
-                            "source_ref": item.source_ref,
-                            "source_locator": item.source_locator,
-                            "source_version": item.source_version,
-                            "method": item.method,
-                            "confidence": item.confidence,
-                        }
-                        for item in edge.provenance
-                    ],
+                    "provenance": [item.to_document() for item in edge.provenance],
                 }
                 for edge in sorted(self.edges.values(), key=lambda item: item.edge_id.int)
             ],

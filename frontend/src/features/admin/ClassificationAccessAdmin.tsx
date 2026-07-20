@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useMemo, useState, type FormEvent } from 'react'
+import type { ColumnDef } from '@tanstack/react-table'
 import type {
   AdminReadContext,
+  CatalogAsset,
   Classification,
   ClassificationAccessPolicy,
   ClassificationAccessRule,
@@ -10,9 +12,11 @@ import type {
   RestrictedSearchGrant,
   RestrictedSearchGrantProposal,
   RestrictedSearchScope,
+  SystemDirectoryEntry,
   WorkspaceMembershipSummary,
 } from '../../api/types'
 import type { AssuranceActions } from '../../components/AssuranceNotice'
+import { DenseDataTable } from '../../components/common/DenseDataTable'
 import type { AdminApi } from './adminApi'
 import type { PendingAdminMutation } from './AdminMutationConfirmDialog'
 import type { AdminMessages } from './messages'
@@ -40,6 +44,19 @@ const classificationRank: Record<Classification, number> = {
   INTERNAL: 1,
   CONFIDENTIAL: 2,
   RESTRICTED: 3,
+}
+
+const classificationDescriptions: Record<Classification, string> = {
+  PUBLIC: '고정 보안 계약에 남아 있는 공개 등급입니다. 현재 운영 프로파일의 주 사용 등급은 아닙니다.',
+  INTERNAL: '고정 보안 계약에 남아 있는 내부 등급입니다. 현재 운영 프로파일의 주 사용 등급은 아닙니다.',
+  CONFIDENTIAL: '대외비 데이터입니다. 승인된 내부 Provider와 ABAC 범위를 함께 요구할 수 있습니다.',
+  RESTRICTED: '극비 데이터입니다. Search는 기간·대상 범위가 지정된 예외 승인만 가능하고 Chat은 항상 차단됩니다.',
+}
+
+function classificationLabel(classification: Classification) {
+  if (classification === 'CONFIDENTIAL') return 'CONFIDENTIAL · 대외비'
+  if (classification === 'RESTRICTED') return 'RESTRICTED · 극비'
+  return classification
 }
 
 function emptyPolicyRules(): RuleDraft[] {
@@ -99,6 +116,52 @@ export function ClassificationPolicyAdmin(props: Props) {
     && (rule.classification !== 'CONFIDENTIAL' || profile.kind === 'INTERNAL')
     && attestationsAreCurrent(profile)
   ))
+  const ruleColumns: ColumnDef<RuleDraft>[] = [
+    {
+      accessorKey: 'classification', header: '등급명', size: 180,
+      cell: ({ row }) => <strong>{classificationLabel(row.original.classification)}</strong>,
+    },
+    {
+      accessorKey: 'search_mode', header: messages.searchMode, size: 180,
+      cell: ({ row }) => <select
+        aria-label={`${row.original.classification} ${messages.searchMode}`}
+        value={row.original.search_mode}
+        onChange={(event) => changeRule(row.original.classification, { search_mode: event.target.value as ClassificationSearchMode })}
+      >
+        {row.original.classification === 'RESTRICTED'
+          ? <><option value="DENY">DENY</option><option value="EXPLICIT_GRANT_ONLY">EXPLICIT_GRANT_ONLY</option></>
+          : <><option value="DENY">DENY</option><option value="ABAC">ABAC</option></>}
+      </select>,
+    },
+    {
+      accessorKey: 'chat_mode', header: messages.chatMode, size: 300,
+      cell: ({ row }) => {
+        const rule = row.original
+        const candidates = eligibleProfiles(rule)
+        return <div className="grid min-w-64 gap-1">
+          {rule.classification === 'RESTRICTED'
+            ? <><input aria-label={`RESTRICTED ${messages.chatMode}`} value="DENY" readOnly /><small>RESTRICTED Chat은 정책상 항상 차단됩니다.</small></>
+            : <select aria-label={`${rule.classification} ${messages.chatMode}`} value={rule.chat_mode} onChange={(event) => changeChatMode(rule.classification, event.target.value as ClassificationChatMode)}>
+              <option value="DENY">DENY</option>
+              <option value="INTERNAL_APPROVED_ONLY">INTERNAL_APPROVED_ONLY</option>
+              {rule.classification !== 'CONFIDENTIAL' && <option value="APPROVED_PROVIDER_ONLY">APPROVED_PROVIDER_ONLY</option>}
+            </select>}
+          {rule.chat_mode !== 'DENY' && <><select aria-label={`${rule.classification} ${messages.providerProfile}`} value={rule.provider_profile_version_id} onChange={(event) => changeRule(rule.classification, { provider_profile_version_id: event.target.value })} required>
+            <option value="">{messages.chooseProvider}</option>
+            {candidates.map((profile) => <option key={profile.provider_profile_version_id} value={profile.provider_profile_version_id}>{profile.profile_key} v{profile.profile_version} · {profile.kind} · {profile.region}</option>)}
+          </select>{candidates.length === 0 && <small>{messages.noEligibleProvider}</small>}</>}
+        </div>
+      },
+    },
+    {
+      id: 'description', header: '설명', size: 360,
+      cell: ({ row }) => <span className="text-xs leading-5 text-slate-600">{classificationDescriptions[row.original.classification]}</span>,
+    },
+    {
+      id: 'manage', header: '관리', size: 140, enableSorting: false,
+      cell: () => <div className="flex gap-1"><span className="badge badge-soft">편집 중</span><button type="button" className="button button-secondary" disabled title="네 등급은 서버 보안 계약의 고정 vocabulary이므로 개별 삭제할 수 없습니다.">삭제</button></div>,
+    },
+  ]
 
   const propose = (event: FormEvent) => {
     event.preventDefault()
@@ -182,6 +245,7 @@ export function ClassificationPolicyAdmin(props: Props) {
     <div className="admin-two-column">
       <form className="panel form-stack" onSubmit={propose}>
         <h3>{messages.classificationPolicyProposal}</h3>
+        <p className="callout">네 등급의 계약은 유지하며, 현재 운영 프로파일은 CONFIDENTIAL(대외비)과 RESTRICTED(극비)를 중심으로 사용합니다. PUBLIC·INTERNAL을 삭제하거나 다른 등급으로 자동 변환하지 않습니다.</p>
         <label>{messages.jurisdiction}
           <input
             value={requiredJurisdiction}
@@ -194,52 +258,10 @@ export function ClassificationPolicyAdmin(props: Props) {
         <label>{messages.grantMaximumDays}
           <input type="number" min={1} max={365} value={grantMaximumDays} onChange={(event) => setGrantMaximumDays(event.target.value)} required />
         </label>
-        <fieldset className="action-matrix">
-          <legend>{messages.classificationMatrix}</legend>
-          {rules.map((rule) => {
-            const candidates = eligibleProfiles(rule)
-            return <section key={rule.classification} className="panel form-stack" aria-label={rule.classification}>
-              <strong>{rule.classification}</strong>
-              <label>{messages.searchMode}
-                <select
-                  aria-label={`${rule.classification} ${messages.searchMode}`}
-                  value={rule.search_mode}
-                  onChange={(event) => changeRule(rule.classification, { search_mode: event.target.value as ClassificationSearchMode })}
-                >
-                  {rule.classification === 'RESTRICTED'
-                    ? <><option value="DENY">DENY</option><option value="EXPLICIT_GRANT_ONLY">EXPLICIT_GRANT_ONLY</option></>
-                    : <><option value="DENY">DENY</option><option value="ABAC">ABAC</option></>}
-                </select>
-              </label>
-              <label>{messages.chatMode}
-                {rule.classification === 'RESTRICTED'
-                  ? <><input aria-label={`RESTRICTED ${messages.chatMode}`} value="DENY" readOnly /><small>RESTRICTED Chat is always denied.</small></>
-                  : <select
-                    aria-label={`${rule.classification} ${messages.chatMode}`}
-                    value={rule.chat_mode}
-                    onChange={(event) => changeChatMode(rule.classification, event.target.value as ClassificationChatMode)}
-                  >
-                    <option value="DENY">DENY</option>
-                    <option value="INTERNAL_APPROVED_ONLY">INTERNAL_APPROVED_ONLY</option>
-                    {rule.classification !== 'CONFIDENTIAL' && <option value="APPROVED_PROVIDER_ONLY">APPROVED_PROVIDER_ONLY</option>}
-                  </select>}
-              </label>
-              {rule.chat_mode !== 'DENY' && <label>{messages.providerProfile}
-                <select
-                  aria-label={`${rule.classification} ${messages.providerProfile}`}
-                  value={rule.provider_profile_version_id}
-                  onChange={(event) => changeRule(rule.classification, { provider_profile_version_id: event.target.value })}
-                  required
-                >
-                  <option value="">{messages.chooseProvider}</option>
-                  {candidates.map((profile) => <option key={profile.provider_profile_version_id} value={profile.provider_profile_version_id}>
-                    {profile.profile_key} v{profile.profile_version} · {profile.kind} · {profile.region} · {profile.jurisdiction}
-                  </option>)}
-                </select>
-                {candidates.length === 0 && <small>{messages.noEligibleProvider}</small>}
-              </label>}
-            </section>
-          })}
+        <fieldset className="grid gap-2">
+          <legend className="mb-2 text-xs font-black text-navy-900">{messages.classificationMatrix}</legend>
+          <DenseDataTable caption="데이터 분류 접근 정책" columns={ruleColumns} data={rules} getRowId={(rule) => rule.classification} emptyMessage="분류 정책 행이 없습니다." />
+          <small>등급 행 삭제 대신 Search/Chat 모드를 DENY로 설정합니다. 네 등급과 RESTRICTED Chat 차단은 서버 보안 계약이며 정책 제안·독립 승인 후에만 활성화됩니다.</small>
         </fieldset>
         <label>{messages.reason}<textarea value={proposalReason} onChange={(event) => setProposalReason(event.target.value)} maxLength={4000} required /></label>
         <button className="button">{messages.propose}</button>
@@ -359,11 +381,15 @@ export function RestrictedSearchGrantAdmin(props: Props) {
   const { api, context, messages, requestConfirmation, keyFor, clearKey, reportError } = props
   const [grants, setGrants] = useState<RestrictedSearchGrant[]>([])
   const [members, setMembers] = useState<WorkspaceMembershipSummary[]>([])
+  const [systems, setSystems] = useState<SystemDirectoryEntry[]>([])
   const [currentPolicy, setCurrentPolicy] = useState<ClassificationAccessPolicy | null>(null)
   const [selectedId, setSelectedId] = useState('')
   const [subjectId, setSubjectId] = useState('')
   const [scope, setScope] = useState<RestrictedSearchScope | ''>('')
   const [scopeId, setScopeId] = useState('')
+  const [targetQuery, setTargetQuery] = useState('')
+  const [targetResults, setTargetResults] = useState<CatalogAsset[]>([])
+  const [targetSearching, setTargetSearching] = useState(false)
   const [purpose, setPurpose] = useState('')
   const [validFrom, setValidFrom] = useState('')
   const [expiresAt, setExpiresAt] = useState('')
@@ -374,20 +400,35 @@ export function RestrictedSearchGrantAdmin(props: Props) {
 
   const load = useCallback(async () => {
     try {
-      const [nextGrants, nextMembers, nextPolicy] = await Promise.all([
+      const [nextGrants, nextMembers, nextSystems, nextPolicy] = await Promise.all([
         api.listRestrictedSearchGrants(),
         api.listMemberships(),
+        api.listSystems(),
         api.getCurrentClassificationAccessPolicy(),
       ])
-      setGrants(nextGrants); setMembers(nextMembers); setCurrentPolicy(nextPolicy)
+      setGrants(nextGrants); setMembers(nextMembers); setSystems(nextSystems); setCurrentPolicy(nextPolicy)
       setSelectedId((current) => current || nextGrants[0]?.grant_id || '')
     } catch (error) { reportError(error) }
   }, [api, reportError])
   useEffect(() => { void load() }, [load])
-
   const restrictedRule = currentPolicy?.rules.find((rule) => rule.classification === 'RESTRICTED')
   const grantEnabled = currentPolicy?.state === 'ACTIVE'
     && restrictedRule?.search_mode === 'EXPLICIT_GRANT_ONLY'
+  useEffect(() => {
+    const normalized = targetQuery.trim()
+    if (scope !== 'RESOURCE' || normalized.length < 2 || !grantEnabled) {
+      setTargetResults([]); setTargetSearching(false); return
+    }
+    let active = true
+    const timer = window.setTimeout(() => {
+      setTargetSearching(true)
+      void api.searchRestrictedGrantTargets(normalized)
+        .then((items) => { if (active) setTargetResults(items) })
+        .catch((error) => { if (active) reportError(error) })
+        .finally(() => { if (active) setTargetSearching(false) })
+    }, 220)
+    return () => { active = false; window.clearTimeout(timer) }
+  }, [api, grantEnabled, reportError, scope, targetQuery])
   const propose = (event: FormEvent) => {
     event.preventDefault()
     if (!currentPolicy || !grantEnabled || !subjectId || !scope || !scopeId.trim()
@@ -418,7 +459,7 @@ export function RestrictedSearchGrantAdmin(props: Props) {
           payload,
           keyFor(intent, 'restricted-search-grant-propose'),
         )
-        clearKey(intent); setSubjectId(''); setScope(''); setScopeId(''); setPurpose('')
+        clearKey(intent); setSubjectId(''); setScope(''); setScopeId(''); setTargetQuery(''); setTargetResults([]); setPurpose('')
         setValidFrom(''); setExpiresAt(''); setProposalReason('')
         setGrants((current) => [next, ...current]); setSelectedId(next.grant_id)
       },
@@ -474,10 +515,12 @@ export function RestrictedSearchGrantAdmin(props: Props) {
           <option value="">{messages.select}</option>
           {members.filter((member) => member.subject_active && member.membership_active).map((member) => <option key={member.subject_id} value={member.subject_id}>{member.display_name} · {member.subject_id}</option>)}
         </select></label>
-        <label>{messages.scope}<select value={scope} onChange={(event) => setScope(event.target.value as RestrictedSearchScope | '')} required disabled={!grantEnabled}>
+        <label>{messages.scope}<select value={scope} onChange={(event) => { setScope(event.target.value as RestrictedSearchScope | ''); setScopeId(''); setTargetQuery(''); setTargetResults([]) }} required disabled={!grantEnabled}>
           <option value="">{messages.select}</option><option value="RESOURCE">RESOURCE</option><option value="SYSTEM">SYSTEM</option><option value="DOMAIN">DOMAIN</option>
         </select></label>
-        <label>{messages.scopeId}<input value={scopeId} onChange={(event) => setScopeId(event.target.value)} required pattern="[0-9a-fA-F-]{36}" disabled={!grantEnabled} /></label>
+        {scope === 'RESOURCE' ? <div className="grid gap-2"><label>스키마·테이블 검색<input type="search" value={targetQuery} onChange={(event) => { setTargetQuery(event.target.value); setScopeId('') }} placeholder="플랫폼, 스키마 또는 테이블명" disabled={!grantEnabled} /></label>{targetSearching && <small>권한 범위의 카탈로그를 검색하는 중입니다.</small>}<div className="compact-list" aria-label="극비 접근 대상 검색 결과">{targetResults.map((asset) => <button type="button" key={asset.id} className={scopeId === asset.id ? 'selected' : ''} onClick={() => { setScopeId(asset.id); setTargetQuery(`${asset.platform ?? '—'} · ${asset.schema_name ?? '—'} · ${asset.name}`); setTargetResults([]) }}><span><strong>{asset.name}</strong><small>{asset.platform ?? '—'} · {asset.database_name ?? '—'} · {asset.schema_name ?? '—'} · {asset.asset_type}</small></span><span className="badge badge-soft">{asset.classification}</span></button>)}</div>{targetQuery.trim().length >= 2 && !targetSearching && targetResults.length === 0 && !scopeId && <small>현재 권한 범위에 일치하는 스키마·테이블이 없습니다.</small>}<input type="hidden" name="restricted-resource-id" value={scopeId} required /></div>
+          : scope === 'SYSTEM' ? <label>{messages.scopeId}<select value={scopeId} onChange={(event) => setScopeId(event.target.value)} required disabled={!grantEnabled}><option value="">시스템 선택</option>{systems.filter((system) => system.active).map((system) => <option key={system.system_id} value={system.system_id}>{system.name} · {system.code}</option>)}</select></label>
+            : <label>{messages.scopeId}<input value={scopeId} onChange={(event) => setScopeId(event.target.value)} required pattern="[0-9a-fA-F-]{36}" disabled={!grantEnabled} /><small>DOMAIN 정본 ID 조회 UI는 아직 제공되지 않습니다. UUID를 임의 생성하지 마세요.</small></label>}
         <label>{messages.purpose}<textarea value={purpose} onChange={(event) => setPurpose(event.target.value)} maxLength={4000} required disabled={!grantEnabled} /></label>
         <label>{messages.validFrom}<input type="datetime-local" value={validFrom} onChange={(event) => setValidFrom(event.target.value)} required disabled={!grantEnabled} /></label>
         <label>{messages.expiresAt}<input type="datetime-local" value={expiresAt} onChange={(event) => setExpiresAt(event.target.value)} required disabled={!grantEnabled} /></label>

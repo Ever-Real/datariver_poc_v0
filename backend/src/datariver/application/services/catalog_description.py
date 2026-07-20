@@ -28,6 +28,7 @@ from datariver.domain.authz import (
     ResourceAttributes,
     SubjectAttributes,
 )
+from datariver.domain.catalog import is_dataset_asset_type
 from datariver.domain.common import (
     ConflictError,
     NotFoundError,
@@ -456,7 +457,7 @@ class CatalogDescriptionService:
         asset = detail.index
         if (
             asset.workspace_id != subject.workspace_id
-            or asset.asset_type != "DATASET"
+            or not is_dataset_asset_type(asset.asset_type)
             or asset.lifecycle != "ACTIVE"
             or not asset.external_urn.startswith("urn:li:dataset:")
         ):
@@ -524,7 +525,7 @@ class CatalogDescriptionService:
             current.asset_id != expected.asset_id
             or current.workspace_id != subject.workspace_id
             or current.external_urn != expected.external_urn
-            or current.asset_type != "DATASET"
+            or not is_dataset_asset_type(current.asset_type)
             or current.lifecycle != "ACTIVE"
             or self._target_binding_hash(current) != self._target_binding_hash(expected)
         ):

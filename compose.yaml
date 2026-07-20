@@ -116,8 +116,12 @@ services:
     command:
       - server
       - -dir=/data
+      - -ip=seaweedfs
+      - -ip.bind=0.0.0.0
       - -s3
       - -s3.port=8333
+      - -s3.ip.bind=0.0.0.0
+      - -s3.allowedOrigins=${APP_PUBLIC_ORIGIN:-http://localhost:8080}
       - -s3.config=/run/secrets/seaweed_s3_config
       - -master.volumeSizeLimitMB=1024
     secrets:
@@ -129,7 +133,11 @@ services:
     ports:
       - "127.0.0.1:${S3_PORT:-8333}:8333"
     healthcheck:
-      test: ["CMD", "wget", "-q", "-O", "-", "http://127.0.0.1:9333/cluster/status"]
+      test:
+        [
+          "CMD-SHELL",
+          "wget -q -O /dev/null http://127.0.0.1:9333/cluster/status && nc -z 127.0.0.1 8333",
+        ]
       interval: 5s
       timeout: 3s
       retries: 30
@@ -343,6 +351,7 @@ services:
       OIDC_PUBLIC_ORIGIN: ${OIDC_PUBLIC_ORIGIN:-http://localhost:8081}
       DATAHUB_EMBED_BASE_URL: ${DATAHUB_EMBED_BASE_URL:-}
       GRAFANA_EMBED_BASE_URL: ${GRAFANA_EMBED_BASE_URL:-}
+      API_PROXY_READ_TIMEOUT_SECONDS: ${API_PROXY_READ_TIMEOUT_SECONDS:-30}
     depends_on:
       api:
         condition: service_healthy

@@ -7,6 +7,7 @@ from typing import Any
 from uuid import UUID
 
 from datariver.domain.authz import Classification
+from datariver.domain.catalog import is_dataset_asset_type
 from datariver.domain.common import (
     ConflictError,
     DomainEvent,
@@ -39,7 +40,6 @@ ALLOWED_TRANSITIONS: dict[ChangeState, frozenset[ChangeState]] = {
     ChangeState.IN_REVIEW: frozenset(
         {
             ChangeState.TESTING,
-            ChangeState.FINAL_REVIEW,
             ChangeState.CHANGES_REQUESTED,
             ChangeState.REJECTED,
             ChangeState.CANCELLED,
@@ -79,6 +79,17 @@ ALLOWED_TRANSITIONS: dict[ChangeState, frozenset[ChangeState]] = {
 class ApprovalDecision(StrEnum):
     APPROVED = "APPROVED"
     REJECTED = "REJECTED"
+
+
+class ApprovalAuthorityKind(StrEnum):
+    SYSTEM_DEVELOPER = "SYSTEM_DEVELOPER"
+    SYSTEM_DATA_STEWARD = "SYSTEM_DATA_STEWARD"
+    GLOBAL_ADMIN = "GLOBAL_ADMIN"
+
+
+class ChangeTestRunState(StrEnum):
+    PASSED = "PASSED"
+    FAILED = "FAILED"
 
 
 class ChangePriority(StrEnum):
@@ -130,6 +141,7 @@ class ChangeItem:
     target_source_version: str | None = None
     target_observed_at: datetime | None = None
     target_binding_hash: str | None = None
+    routing_system_id: UUID | None = None
 
     @property
     def has_complete_target_binding(self) -> bool:
@@ -203,6 +215,20 @@ class Approval:
     reason: str
     policy_decision_id: UUID
     occurred_at: datetime
+    round_id: UUID
+    authorities: tuple[ApprovalAuthority, ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
+class ApprovalAuthority:
+    kind: ApprovalAuthorityKind
+    system_id: UUID | None = None
+
+    def __post_init__(self) -> None:
+        if self.kind is ApprovalAuthorityKind.GLOBAL_ADMIN and self.system_id is not None:
+            raise ValidationError("Global administrator approval cannot carry a system scope.")
+        if self.kind is not ApprovalAuthorityKind.GLOBAL_ADMIN and self.system_id is None:
+            raise ValidationError("System approval authority requires a system scope.")
 
 
 @dataclass(frozen=True, slots=True)
@@ -213,6 +239,31 @@ class Transition:
     actor_id: UUID
     reason: str
     policy_decision_id: UUID
+    occurred_at: datetime
+    round_id: UUID
+
+
+@dataclass(slots=True)
+class ChangeRequestRound:
+    round_id: UUID
+    round_number: int
+    submitted_by: UUID
+    submitted_at: datetime
+    evidence_hash: str
+    closed_at: datetime | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class ChangeTestRun:
+    test_run_id: UUID
+    round_id: UUID
+    system_id: UUID
+    attachment_id: UUID
+    state: ChangeTestRunState
+    plan_hash: str
+    result_hash: str
+    bounded_summary: dict[str, Any]
+    recorded_by: UUID
     occurred_at: datetime
 
 
@@ -225,6 +276,9 @@ class ChangeRequest:
     title: str
     description: str
     requester_id: UUID
+    requester_department_id: UUID | None
+    current_round_id: UUID
+    current_round_number: int
     created_at: datetime = field(default_factory=utc_now)
     requested_due_date: date | None = None
     priority: ChangePriority | None = None
@@ -235,6 +289,8 @@ class ChangeRequest:
     items: list[ChangeItem] = field(default_factory=list)
     approvals: list[Approval] = field(default_factory=list)
     transitions: list[Transition] = field(default_factory=list)
+    rounds: list[ChangeRequestRound] = field(default_factory=list)
+    test_runs: list[ChangeTestRun] = field(default_factory=list)
     events: list[DomainEvent] = field(default_factory=list)
 
     @classmethod
@@ -248,6 +304,7 @@ class ChangeRequest:
         description: str,
         requester_id: UUID,
         items: list[ChangeItem],
+        requester_department_id: UUID | None = None,
         classification: Classification = Classification.INTERNAL,
         requested_due_date: date | None = None,
         priority: ChangePriority | None = None,
@@ -294,7 +351,10 @@ class ChangeRequest:
                 )
             if not item.has_complete_target_binding:
                 raise ValidationError("A server-verified catalog target binding is required.")
-            if item.target_asset_type != "DATASET" or item.target_lifecycle != "ACTIVE":
+            if (
+                not is_dataset_asset_type(item.target_asset_type)
+                or item.target_lifecycle != "ACTIVE"
+            ):
                 raise ValidationError("The catalog target binding is not an active dataset.")
             if item.target_classification is None or classification < item.target_classification:
                 raise ValidationError(
@@ -310,20 +370,43 @@ class ChangeRequest:
                 raise ValidationError("The catalog target observation time must be timezone-aware.")
             if item.expected_target_binding_hash() != item.target_binding_hash:
                 raise ValidationError("The catalog target binding is invalid.")
+        change_request_id = uuid7()
+        current_round_id = uuid7()
+        created_at = utc_now()
         request = cls(
-            change_request_id=uuid7(),
+            change_request_id=change_request_id,
             workspace_id=workspace_id,
             number=number,
             request_type=request_type,
             title=title.strip(),
             description=description.strip(),
             requester_id=requester_id,
-            created_at=utc_now(),
+            requester_department_id=requester_department_id,
+            current_round_id=current_round_id,
+            current_round_number=1,
+            created_at=created_at,
             requested_due_date=requested_due_date,
             priority=priority,
             urgency=urgency,
             classification=classification,
             items=list(items),
+            rounds=[
+                ChangeRequestRound(
+                    round_id=current_round_id,
+                    round_number=1,
+                    submitted_by=requester_id,
+                    submitted_at=created_at,
+                    evidence_hash=canonical_json_hash(
+                        {
+                            "change_request_id": str(change_request_id),
+                            "round_number": 1,
+                            "title": title.strip(),
+                            "description": description.strip(),
+                            "item_ids": [str(item.item_id) for item in items],
+                        }
+                    ),
+                )
+            ],
         )
         request.events.append(
             DomainEvent.create(
@@ -345,21 +428,48 @@ class ChangeRequest:
         reason: str,
         policy_decision_id: UUID,
         expected_version: int,
+        authorities: tuple[ApprovalAuthority, ...],
     ) -> None:
         self._check_version(expected_version)
-        if stage not in {"REVIEW", "FINAL"}:
-            raise ValidationError("Approval stage must be REVIEW or FINAL.")
+        if stage not in {"REVIEW", "TEST", "FINAL"}:
+            raise ValidationError("Approval stage must be REVIEW, TEST or FINAL.")
         if stage == "FINAL" and self.state is not ChangeState.FINAL_REVIEW:
             raise ValidationError("Final approval is only allowed during final review.")
-        if stage == "REVIEW" and self.state not in {
-            ChangeState.IN_REVIEW,
-            ChangeState.TESTING,
-            ChangeState.FINAL_REVIEW,
-        }:
+        if stage == "REVIEW" and self.state is not ChangeState.IN_REVIEW:
             raise ValidationError("Review approval is not allowed in the current state.")
+        if stage == "TEST" and self.state is not ChangeState.TESTING:
+            raise ValidationError("Test approval is not allowed in the current state.")
         if actor_id == self.requester_id and stage == "FINAL":
             raise ValidationError("The requester cannot provide final approval.")
-        if any(a.stage == stage and a.actor_id == actor_id for a in self.approvals):
+        required_system_ids = self.required_system_ids()
+        authority_set = set(authorities)
+        if stage in {"REVIEW", "TEST"}:
+            relevant_developer_authorities = {
+                ApprovalAuthority(ApprovalAuthorityKind.SYSTEM_DEVELOPER, system_id)
+                for system_id in required_system_ids
+            }
+            if not authority_set & relevant_developer_authorities:
+                raise ValidationError(
+                    "Review and test decisions require Developer assignment for a target system."
+                )
+        else:
+            relevant = (
+                {
+                    ApprovalAuthority(ApprovalAuthorityKind.SYSTEM_DEVELOPER, system_id)
+                    for system_id in required_system_ids
+                }
+                | {
+                    ApprovalAuthority(ApprovalAuthorityKind.SYSTEM_DATA_STEWARD, system_id)
+                    for system_id in required_system_ids
+                }
+                | {ApprovalAuthority(ApprovalAuthorityKind.GLOBAL_ADMIN)}
+            )
+            if not authority_set & relevant:
+                raise ValidationError("The actor has no final-approval authority for this request.")
+        if any(
+            a.round_id == self.current_round_id and a.stage == stage and a.actor_id == actor_id
+            for a in self.approvals
+        ):
             raise ConflictError("The actor already decided this approval stage.")
         self.approvals.append(
             Approval(
@@ -370,6 +480,10 @@ class ChangeRequest:
                 reason=reason.strip(),
                 policy_decision_id=policy_decision_id,
                 occurred_at=utc_now(),
+                round_id=self.current_round_id,
+                authorities=tuple(
+                    sorted(authority_set, key=lambda item: (item.kind.value, str(item.system_id)))
+                ),
             )
         )
         self.version += 1
@@ -383,10 +497,28 @@ class ChangeRequest:
                     "stage": stage,
                     "decision": decision.value,
                     "actor_id": str(actor_id),
+                    "authorities": [
+                        {
+                            "kind": authority.kind.value,
+                            "system_id": (
+                                str(authority.system_id)
+                                if authority.system_id is not None
+                                else None
+                            ),
+                        }
+                        for authority in authorities
+                    ],
                     "version": self.version,
                 },
             )
         )
+        if stage == "FINAL" and decision is ApprovalDecision.REJECTED:
+            self._record_transition(
+                ChangeState.REJECTED,
+                actor_id,
+                reason,
+                policy_decision_id,
+            )
 
     def transition(
         self,
@@ -400,6 +532,8 @@ class ChangeRequest:
         self._check_version(expected_version)
         if target in {ChangeState.APPLIED, ChangeState.COMPLETED}:
             raise ValidationError("Terminal completion requires its controlled service path.")
+        if self.state is ChangeState.FINAL_REVIEW and target is ChangeState.REJECTED:
+            raise ValidationError("Final rejection requires a typed FINAL approval decision.")
         self._assert_transition_allowed(target)
         if (
             self.state is ChangeState.CHANGES_REQUESTED
@@ -411,21 +545,97 @@ class ChangeRequest:
             if any(
                 approval.stage == "FINAL" and approval.decision is ApprovalDecision.REJECTED
                 for approval in self.approvals
+                if approval.round_id == self.current_round_id
             ):
                 raise ValidationError("A final rejection prevents application.")
-            final_approvers = {
-                approval.actor_id
-                for approval in self.approvals
-                if approval.stage == "FINAL" and approval.decision is ApprovalDecision.APPROVED
-            }
-            required = 2 if self.classification >= Classification.CONFIDENTIAL else 1
-            if len(final_approvers) < required:
-                raise ValidationError(
-                    f"{required} distinct final approval(s) are required before application."
-                )
-            if self.requester_id in final_approvers:
-                raise ValidationError("Requester final approval is invalid.")
+            self._assert_complete_final_authority()
+        if target is ChangeState.TESTING:
+            self._assert_complete_system_developer_approval("REVIEW")
+        if target is ChangeState.FINAL_REVIEW:
+            self._assert_complete_system_developer_approval("TEST")
+            self._assert_complete_test_evidence()
+        resubmitting = (
+            self.state is ChangeState.CHANGES_REQUESTED and target is ChangeState.REGISTERED
+        )
         self._record_transition(target, actor_id, reason, policy_decision_id)
+        if resubmitting:
+            now = utc_now()
+            current_round = self._current_round()
+            if current_round.closed_at is None:
+                current_round.closed_at = now
+            self.current_round_number += 1
+            self.current_round_id = uuid7()
+            self.rounds.append(
+                ChangeRequestRound(
+                    round_id=self.current_round_id,
+                    round_number=self.current_round_number,
+                    submitted_by=actor_id,
+                    submitted_at=now,
+                    evidence_hash=canonical_json_hash(
+                        {
+                            "change_request_id": str(self.change_request_id),
+                            "round_number": self.current_round_number,
+                            "prior_version": self.version,
+                            "item_ids": [str(item.item_id) for item in self.items],
+                        }
+                    ),
+                )
+            )
+
+    def record_test_run(
+        self,
+        *,
+        system_id: UUID,
+        attachment_id: UUID,
+        state: ChangeTestRunState,
+        plan_hash: str,
+        result_hash: str,
+        bounded_summary: dict[str, Any],
+        actor_id: UUID,
+        expected_version: int,
+    ) -> None:
+        self._check_version(expected_version)
+        if self.state is not ChangeState.TESTING:
+            raise ValidationError("Test evidence is only accepted during TESTING.")
+        if system_id not in self.required_system_ids():
+            raise ValidationError("Test evidence must be scoped to a routed target system.")
+        for name, value in (("plan_hash", plan_hash), ("result_hash", result_hash)):
+            if len(value) != 64 or any(character not in "0123456789abcdef" for character in value):
+                raise ValidationError(f"{name} must be a lowercase SHA-256 value.")
+        if not isinstance(bounded_summary, dict) or len(str(bounded_summary)) > 8_000:
+            raise ValidationError("Test evidence summary is invalid or too large.")
+        self.test_runs.append(
+            ChangeTestRun(
+                test_run_id=uuid7(),
+                round_id=self.current_round_id,
+                system_id=system_id,
+                attachment_id=attachment_id,
+                state=state,
+                plan_hash=plan_hash,
+                result_hash=result_hash,
+                bounded_summary=dict(bounded_summary),
+                recorded_by=actor_id,
+                occurred_at=utc_now(),
+            )
+        )
+        self.version += 1
+        self.events.append(
+            DomainEvent.create(
+                event_type="governance.change_request.test_evidence_recorded.v1",
+                aggregate_type="change_request",
+                aggregate_id=self.change_request_id,
+                workspace_id=self.workspace_id,
+                payload={
+                    "round_id": str(self.current_round_id),
+                    "system_id": str(system_id),
+                    "attachment_id": str(attachment_id),
+                    "state": state.value,
+                    "plan_hash": plan_hash,
+                    "result_hash": result_hash,
+                    "version": self.version,
+                },
+            )
+        )
 
     def mark_applied(
         self,
@@ -468,15 +678,103 @@ class ChangeRequest:
             raise ValidationError("Intake completion is only allowed during final review.")
         if any(item.target_type == "DATAHUB_ASPECT" for item in self.items):
             raise ValidationError("Executable DataHub changes require provider reconciliation.")
-        final_approvers = {
-            approval.actor_id
-            for approval in self.approvals
-            if approval.stage == "FINAL" and approval.decision is ApprovalDecision.APPROVED
-        }
-        required = 2 if self.classification >= Classification.CONFIDENTIAL else 1
-        if len(final_approvers) < required or self.requester_id in final_approvers:
-            raise ValidationError("Required independent final approval is missing.")
+        self._assert_complete_final_authority()
         self._record_transition(ChangeState.COMPLETED, actor_id, reason, policy_decision_id)
+
+    def required_system_ids(self) -> frozenset[UUID]:
+        values = {item.routing_system_id or item.target_system_id for item in self.items}
+        if None in values or not values:
+            raise ValidationError(
+                "Every change target requires a canonical system before workflow review."
+            )
+        return frozenset(value for value in values if value is not None)
+
+    def _assert_complete_final_authority(self) -> None:
+        if any(
+            approval.stage == "FINAL" and approval.decision is ApprovalDecision.REJECTED
+            for approval in self.approvals
+            if approval.round_id == self.current_round_id
+        ):
+            raise ValidationError("A final rejection prevents completion.")
+        requirements = {
+            ApprovalAuthority(kind, system_id)
+            for system_id in self.required_system_ids()
+            for kind in (
+                ApprovalAuthorityKind.SYSTEM_DEVELOPER,
+                ApprovalAuthorityKind.SYSTEM_DATA_STEWARD,
+            )
+        }
+        requirements.add(ApprovalAuthority(ApprovalAuthorityKind.GLOBAL_ADMIN))
+        approved = [
+            approval
+            for approval in self.approvals
+            if approval.round_id == self.current_round_id
+            and approval.stage == "FINAL"
+            and approval.decision is ApprovalDecision.APPROVED
+            and approval.actor_id != self.requester_id
+        ]
+
+        def has_separated_role_assignment(
+            remaining: frozenset[ApprovalAuthority],
+            actor_roles: tuple[tuple[UUID, ApprovalAuthorityKind], ...],
+        ) -> bool:
+            if not remaining:
+                return True
+            requirement = min(
+                remaining,
+                key=lambda item: (item.kind.value, str(item.system_id)),
+            )
+            assigned_roles = dict(actor_roles)
+            return any(
+                (
+                    approval.actor_id not in assigned_roles
+                    or assigned_roles[approval.actor_id] is requirement.kind
+                )
+                and requirement in approval.authorities
+                and has_separated_role_assignment(
+                    remaining - {requirement},
+                    tuple(
+                        sorted(
+                            {
+                                **assigned_roles,
+                                approval.actor_id: requirement.kind,
+                            }.items(),
+                            key=lambda item: str(item[0]),
+                        )
+                    ),
+                )
+                for approval in approved
+            )
+
+        if not has_separated_role_assignment(frozenset(requirements), ()):
+            raise ValidationError(
+                "Final approval requires role-separated Developer and Data Steward evidence for "
+                "every target system plus one separate global administrator."
+            )
+
+    def _assert_complete_system_developer_approval(self, stage: str) -> None:
+        if any(
+            approval.stage == stage and approval.decision is ApprovalDecision.REJECTED
+            for approval in self.approvals
+            if approval.round_id == self.current_round_id
+        ):
+            raise ValidationError(f"A {stage.lower()} rejection prevents the next stage.")
+        approved_authorities = {
+            authority
+            for approval in self.approvals
+            if approval.round_id == self.current_round_id
+            and approval.stage == stage
+            and approval.decision is ApprovalDecision.APPROVED
+            for authority in approval.authorities
+        }
+        required = {
+            ApprovalAuthority(ApprovalAuthorityKind.SYSTEM_DEVELOPER, system_id)
+            for system_id in self.required_system_ids()
+        }
+        if not required.issubset(approved_authorities):
+            raise ValidationError(
+                f"{stage.title()} approval requires Developer evidence for every target system."
+            )
 
     def _record_transition(
         self,
@@ -497,6 +795,7 @@ class ChangeRequest:
                 reason=reason.strip(),
                 policy_decision_id=policy_decision_id,
                 occurred_at=utc_now(),
+                round_id=self.current_round_id,
             )
         )
         self.events.append(
@@ -505,9 +804,32 @@ class ChangeRequest:
                 aggregate_type="change_request",
                 aggregate_id=self.change_request_id,
                 workspace_id=self.workspace_id,
-                payload={"from": previous.value, "to": target.value, "version": self.version},
+                payload={
+                    "from": previous.value,
+                    "to": target.value,
+                    "round_id": str(self.current_round_id),
+                    "version": self.version,
+                },
             )
         )
+
+    def _assert_complete_test_evidence(self) -> None:
+        passed_system_ids = {
+            test_run.system_id
+            for test_run in self.test_runs
+            if test_run.round_id == self.current_round_id
+            and test_run.state is ChangeTestRunState.PASSED
+        }
+        if not self.required_system_ids().issubset(passed_system_ids):
+            raise ValidationError(
+                "A passed typed test result is required for every target system in this round."
+            )
+
+    def _current_round(self) -> ChangeRequestRound:
+        for round_value in self.rounds:
+            if round_value.round_id == self.current_round_id:
+                return round_value
+        raise ValidationError("The current change-request round is unavailable.")
 
     def _assert_transition_allowed(self, target: ChangeState) -> None:
         if target not in ALLOWED_TRANSITIONS[self.state]:

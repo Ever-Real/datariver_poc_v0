@@ -24,6 +24,7 @@ from datariver.domain.authz import (
     ResourceAttributes,
     SubjectAttributes,
 )
+from datariver.domain.catalog import is_dataset_asset_type
 from datariver.domain.common import ConflictError, ValidationError
 from datariver.domain.manual_metadata import (
     ManualColumnMetadata,
@@ -111,7 +112,7 @@ class ManualMetadataSubmissionService:
             access=access,
             asset_id=asset_id,
         )
-        if detail is None or detail.index.asset_type != "DATASET":
+        if detail is None or not is_dataset_asset_type(detail.index.asset_type):
             raise ValidationError(
                 "The selected catalog asset is not available for manual registration."
             )

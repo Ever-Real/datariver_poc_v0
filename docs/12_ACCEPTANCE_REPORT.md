@@ -10,6 +10,26 @@ This report supersedes the source-only report and the runtime-open statements in
 
 P0–P3 foundation addendum, updated 2026-07-16: current source checks additionally include the stable DataHub v1.6.0 release contract and typed OIDC assurance. Hardware WebAuthn requires an exact approved ACR+AMR combination and `auth_time`; OTP, generic MFA and refreshed-token `iat` cannot satisfy high-risk authorization. Browser remediation is bounded to typed authentication actions, rejects unsafe return locations, and never automatically replays a denied mutation after an authentication redirect. Compatibility migrations and the current hybrid runtime have separate live evidence below.
 
+## Mac development policy addendum — 2026-07-20
+
+This addendum supersedes the older source counts and migration head below without converting the
+historical Windows/WSL evidence into a Mac claim.
+
+| Gate | Result | Current executed evidence |
+|---|---|---|
+| Account renewal | PASS | six-calendar-month human expiry, final-30-day server eligibility, one pending self-request, independent global-Admin decision and expired-membership denial; the live migration backfilled two human memberships with an expiry and preserved two service accounts without one |
+| CR System authority | PASS | REVIEW and TEST require Developer evidence for every routed System; FINAL requires Developer and Data Steward for every routed System plus one role-separated global Admin; immutable authority snapshots and negative transition cases are covered |
+| System Settings | PASS | SAVE creates an immutable non-secret revision, TEST records exact revision evidence, ACTIVATE selects only a current AVAILABLE implemented consumer, and API/relevant workers load it only on explicit restart through their existing RLS-scoped roles; secret values remain Docker secret files |
+| Python gates | PASS | Ruff format/lint, strict mypy over `233` source/test files, `639` pytest tests and static architecture verification |
+| Frontend gates | PASS WITH WARNING | TypeScript, zero-warning ESLint, `36` files / `148` Vitest tests and production build passed; JS `838.50 kB` / gzip `241.83 kB`, CSS `151.97 kB` / gzip `26.47 kB`; the existing chunk warning remains open |
+| Migration | PASS | canonical `0001` SHA-256 `e4e8630af3604e4c3dfb676b1dddc0f91ddd4a9035cc50406a02201f90881159` was identical across consecutive generation; `71` focused compatibility/domain tests passed; the live Mac DB upgraded `0031 -> 0034`, an empty temporary DB migrated `0001 -> 0034` and was removed, and schema/grant read-back passed |
+| Local runtime | PASS | rebuilt API, Web and affected workers started; direct API, Web and APISIX readiness returned 200; Ollama `0.32.1`, DataHub and Neo4j endpoints responded; APISIX now uses Docker DNS discovery and returned 200 after an API-only replacement |
+| Browser | PARTIAL | a fresh in-app browser showed a stable Sign In screen for five seconds with no console errors; it had no authenticated user session, so current Admin-menu and mutation acceptance remains an explicit user-session gate |
+
+This is development evidence only. No production hot-reload, automatic process restart, worker
+success inference, notification delivery or unsupported Neo4j/Embedding/Reranker activation is
+claimed.
+
 ## Source and build evidence
 
 | Gate | Result | Executed evidence |

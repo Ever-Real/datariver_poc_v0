@@ -6,25 +6,31 @@ from datetime import datetime, timedelta
 from types import TracebackType
 from uuid import UUID
 
-from sqlalchemy import and_, or_, select, text
+from sqlalchemy import and_, func, or_, select, text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from datariver.application.dto import IdempotencyRecord
 from datariver.application.ports import (
     ChangeRequestRepository,
+    ChangeWorkflowAuthorityReader,
     GovernanceUnitOfWork,
     ManualMetadataSubmissionRepository,
     OutboxWriter,
 )
 from datariver.domain.authz import Classification
-from datariver.domain.common import DomainEvent, utc_now
+from datariver.domain.common import ConflictError, DomainEvent, utc_now
 from datariver.domain.governance import (
     Approval,
+    ApprovalAuthority,
+    ApprovalAuthorityKind,
     ApprovalDecision,
     ChangeItem,
     ChangePriority,
     ChangeRequest,
+    ChangeRequestRound,
     ChangeState,
+    ChangeTestRun,
+    ChangeTestRunState,
     ChangeUrgency,
     Transition,
 )
@@ -37,11 +43,41 @@ from datariver.infrastructure.db.models.governance import (
     ApprovalModel,
     ChangeItemModel,
     ChangeRequestModel,
+    ChangeRequestRoundModel,
+    ChangeTestRunModel,
     ManualMetadataSubmissionModel,
     StateTransitionModel,
 )
 from datariver.infrastructure.db.models.integration import IdempotencyKeyModel, OutboxEventModel
+from datariver.infrastructure.db.models.platform import (
+    DataSystemModel,
+    SubjectModel,
+    SystemAssigneeModel,
+    WorkspaceMembershipModel,
+)
 from datariver.infrastructure.db.rls import set_security_context
+
+
+def _approval_authorities(document: object) -> tuple[ApprovalAuthority, ...]:
+    if not isinstance(document, list):
+        raise ConflictError("The stored change approval authority evidence is invalid.")
+    values: list[ApprovalAuthority] = []
+    try:
+        for item in document:
+            if not isinstance(item, dict) or set(item) != {"kind", "system_id"}:
+                raise ValueError
+            system_value = item["system_id"]
+            values.append(
+                ApprovalAuthority(
+                    kind=ApprovalAuthorityKind(str(item["kind"])),
+                    system_id=UUID(str(system_value)) if system_value is not None else None,
+                )
+            )
+    except (TypeError, ValueError) as error:
+        raise ConflictError("The stored change approval authority evidence is invalid.") from error
+    if len(values) != len(set(values)):
+        raise ConflictError("The stored change approval authority evidence is duplicated.")
+    return tuple(values)
 
 
 class SqlChangeRequestRepository(ChangeRequestRepository):
@@ -59,6 +95,9 @@ class SqlChangeRequestRepository(ChangeRequestRepository):
             description=change_request.description,
             state=change_request.state.value,
             requester_id=change_request.requester_id,
+            requester_department_id=change_request.requester_department_id,
+            current_round_id=change_request.current_round_id,
+            current_round_number=change_request.current_round_number,
             created_at=change_request.created_at,
             requested_due_date=change_request.requested_due_date,
             priority=(
@@ -69,6 +108,25 @@ class SqlChangeRequestRepository(ChangeRequestRepository):
             classification=int(change_request.classification),
         )
         self._session.add(model)
+        # The aggregate has a deferred circular FK to its current round. Flush the parent
+        # explicitly so SQLAlchemy cannot schedule child items before change_requests when
+        # the round and items are attached as independent ORM models.
+        await self._session.flush([model])
+        self._session.add_all(
+            [
+                ChangeRequestRoundModel(
+                    id=round_value.round_id,
+                    workspace_id=change_request.workspace_id,
+                    change_request_id=change_request.change_request_id,
+                    round_number=round_value.round_number,
+                    submitted_by=round_value.submitted_by,
+                    submitted_at=round_value.submitted_at,
+                    closed_at=round_value.closed_at,
+                    evidence_hash=round_value.evidence_hash,
+                )
+                for round_value in change_request.rounds
+            ]
+        )
         self._session.add_all(
             [
                 ChangeItemModel(
@@ -97,6 +155,7 @@ class SqlChangeRequestRepository(ChangeRequestRepository):
                     target_source_version=item.target_source_version,
                     target_observed_at=item.target_observed_at,
                     target_binding_hash=item.target_binding_hash,
+                    routing_system_id=item.routing_system_id,
                 )
                 for ordinal, item in enumerate(change_request.items)
             ]
@@ -145,6 +204,24 @@ class SqlChangeRequestRepository(ChangeRequestRepository):
                 )
             ).all()
         )
+        rounds = list(
+            (
+                await self._session.scalars(
+                    select(ChangeRequestRoundModel)
+                    .where(ChangeRequestRoundModel.change_request_id == change_request_id)
+                    .order_by(ChangeRequestRoundModel.round_number)
+                )
+            ).all()
+        )
+        test_runs = list(
+            (
+                await self._session.scalars(
+                    select(ChangeTestRunModel)
+                    .where(ChangeTestRunModel.change_request_id == change_request_id)
+                    .order_by(ChangeTestRunModel.occurred_at, ChangeTestRunModel.id)
+                )
+            ).all()
+        )
         self._tracked[change_request_id] = model
         return ChangeRequest(
             change_request_id=model.id,
@@ -154,6 +231,9 @@ class SqlChangeRequestRepository(ChangeRequestRepository):
             title=model.title,
             description=model.description,
             requester_id=model.requester_id,
+            requester_department_id=model.requester_department_id,
+            current_round_id=model.current_round_id,
+            current_round_number=model.current_round_number,
             created_at=model.created_at,
             requested_due_date=model.requested_due_date,
             priority=ChangePriority(model.priority) if model.priority is not None else None,
@@ -185,6 +265,7 @@ class SqlChangeRequestRepository(ChangeRequestRepository):
                     target_source_version=item.target_source_version,
                     target_observed_at=item.target_observed_at,
                     target_binding_hash=item.target_binding_hash,
+                    routing_system_id=item.routing_system_id,
                 )
                 for item in items
             ],
@@ -197,6 +278,8 @@ class SqlChangeRequestRepository(ChangeRequestRepository):
                     reason=approval.reason,
                     policy_decision_id=approval.policy_decision_id,
                     occurred_at=approval.occurred_at,
+                    round_id=approval.round_id,
+                    authorities=_approval_authorities(approval.authority_snapshot),
                 )
                 for approval in approvals
             ],
@@ -209,8 +292,35 @@ class SqlChangeRequestRepository(ChangeRequestRepository):
                     reason=transition.reason,
                     policy_decision_id=transition.policy_decision_id,
                     occurred_at=transition.occurred_at,
+                    round_id=transition.round_id,
                 )
                 for transition in transitions
+            ],
+            rounds=[
+                ChangeRequestRound(
+                    round_id=round_value.id,
+                    round_number=round_value.round_number,
+                    submitted_by=round_value.submitted_by,
+                    submitted_at=round_value.submitted_at,
+                    closed_at=round_value.closed_at,
+                    evidence_hash=round_value.evidence_hash,
+                )
+                for round_value in rounds
+            ],
+            test_runs=[
+                ChangeTestRun(
+                    test_run_id=test_run.id,
+                    round_id=test_run.round_id,
+                    system_id=test_run.system_id,
+                    attachment_id=test_run.attachment_id,
+                    state=ChangeTestRunState(test_run.state),
+                    plan_hash=test_run.plan_hash,
+                    result_hash=test_run.result_hash,
+                    bounded_summary=test_run.bounded_summary,
+                    recorded_by=test_run.recorded_by,
+                    occurred_at=test_run.occurred_at,
+                )
+                for test_run in test_runs
             ],
         )
 
@@ -255,6 +365,15 @@ class SqlChangeRequestRepository(ChangeRequestRepository):
         model = self._tracked[change_request.change_request_id]
         model.state = change_request.state.value
         model.version = change_request.version
+        model.current_round_id = change_request.current_round_id
+        model.current_round_number = change_request.current_round_number
+        stored_round_ids = set(
+            await self._session.scalars(
+                select(ChangeRequestRoundModel.id).where(
+                    ChangeRequestRoundModel.change_request_id == change_request.change_request_id
+                )
+            )
+        )
         stored_approval_ids = set(
             await self._session.scalars(
                 select(ApprovalModel.id).where(
@@ -269,18 +388,57 @@ class SqlChangeRequestRepository(ChangeRequestRepository):
                 )
             )
         )
+        stored_test_run_ids = set(
+            await self._session.scalars(
+                select(ChangeTestRunModel.id).where(
+                    ChangeTestRunModel.change_request_id == change_request.change_request_id
+                )
+            )
+        )
+        for round_value in change_request.rounds:
+            if round_value.round_id in stored_round_ids:
+                stored_round = await self._session.get(
+                    ChangeRequestRoundModel, round_value.round_id
+                )
+                if stored_round is not None:
+                    stored_round.closed_at = round_value.closed_at
+                continue
+            self._session.add(
+                ChangeRequestRoundModel(
+                    id=round_value.round_id,
+                    workspace_id=change_request.workspace_id,
+                    change_request_id=change_request.change_request_id,
+                    round_number=round_value.round_number,
+                    submitted_by=round_value.submitted_by,
+                    submitted_at=round_value.submitted_at,
+                    closed_at=round_value.closed_at,
+                    evidence_hash=round_value.evidence_hash,
+                )
+            )
         self._session.add_all(
             [
                 ApprovalModel(
                     id=item.approval_id,
                     workspace_id=change_request.workspace_id,
                     change_request_id=change_request.change_request_id,
+                    round_id=item.round_id,
                     stage=item.stage,
                     decision=item.decision.value,
                     actor_id=item.actor_id,
                     reason=item.reason,
                     policy_decision_id=item.policy_decision_id,
                     occurred_at=item.occurred_at,
+                    authority_snapshot=[
+                        {
+                            "kind": authority.kind.value,
+                            "system_id": (
+                                str(authority.system_id)
+                                if authority.system_id is not None
+                                else None
+                            ),
+                        }
+                        for authority in item.authorities
+                    ],
                 )
                 for item in change_request.approvals
                 if item.approval_id not in stored_approval_ids
@@ -292,6 +450,7 @@ class SqlChangeRequestRepository(ChangeRequestRepository):
                     id=item.transition_id,
                     workspace_id=change_request.workspace_id,
                     change_request_id=change_request.change_request_id,
+                    round_id=item.round_id,
                     from_state=item.from_state.value,
                     to_state=item.to_state.value,
                     actor_id=item.actor_id,
@@ -303,6 +462,120 @@ class SqlChangeRequestRepository(ChangeRequestRepository):
                 if item.transition_id not in stored_transition_ids
             ]
         )
+        self._session.add_all(
+            [
+                ChangeTestRunModel(
+                    id=item.test_run_id,
+                    workspace_id=change_request.workspace_id,
+                    change_request_id=change_request.change_request_id,
+                    round_id=item.round_id,
+                    system_id=item.system_id,
+                    attachment_id=item.attachment_id,
+                    state=item.state.value,
+                    plan_hash=item.plan_hash,
+                    result_hash=item.result_hash,
+                    bounded_summary=item.bounded_summary,
+                    recorded_by=item.recorded_by,
+                    occurred_at=item.occurred_at,
+                )
+                for item in change_request.test_runs
+                if item.test_run_id not in stored_test_run_ids
+            ]
+        )
+
+
+class SqlChangeWorkflowAuthorityReader(ChangeWorkflowAuthorityReader):
+    def __init__(self, session: AsyncSession) -> None:
+        self._session = session
+
+    async def get_authorities(
+        self,
+        *,
+        workspace_id: UUID,
+        subject_id: UUID,
+        system_ids: frozenset[UUID],
+    ) -> tuple[ApprovalAuthority, ...]:
+        if not system_ids:
+            return ()
+        rows = (
+            await self._session.scalars(
+                select(SystemAssigneeModel)
+                .join(
+                    DataSystemModel,
+                    and_(
+                        DataSystemModel.workspace_id == SystemAssigneeModel.workspace_id,
+                        DataSystemModel.id == SystemAssigneeModel.system_id,
+                    ),
+                )
+                .join(
+                    WorkspaceMembershipModel,
+                    and_(
+                        WorkspaceMembershipModel.workspace_id == SystemAssigneeModel.workspace_id,
+                        WorkspaceMembershipModel.subject_id == SystemAssigneeModel.subject_id,
+                    ),
+                )
+                .join(SubjectModel, SubjectModel.id == SystemAssigneeModel.subject_id)
+                .where(
+                    SystemAssigneeModel.workspace_id == workspace_id,
+                    SystemAssigneeModel.subject_id == subject_id,
+                    SystemAssigneeModel.system_id.in_(system_ids),
+                    SystemAssigneeModel.active.is_(True),
+                    DataSystemModel.active.is_(True),
+                    SubjectModel.active.is_(True),
+                    WorkspaceMembershipModel.active.is_(True),
+                    or_(
+                        WorkspaceMembershipModel.access_expires_at.is_(None),
+                        WorkspaceMembershipModel.access_expires_at > func.now(),
+                    ),
+                )
+            )
+        ).all()
+        authorities = {
+            ApprovalAuthority(
+                ApprovalAuthorityKind.SYSTEM_DEVELOPER
+                if row.responsibility == "DEVELOPER"
+                else ApprovalAuthorityKind.SYSTEM_DATA_STEWARD,
+                row.system_id,
+            )
+            for row in rows
+        }
+        admin_row = (
+            await self._session.execute(
+                select(SubjectModel, WorkspaceMembershipModel)
+                .join(
+                    WorkspaceMembershipModel,
+                    WorkspaceMembershipModel.subject_id == SubjectModel.id,
+                )
+                .where(
+                    SubjectModel.id == subject_id,
+                    SubjectModel.active.is_(True),
+                    WorkspaceMembershipModel.workspace_id == workspace_id,
+                    WorkspaceMembershipModel.active.is_(True),
+                    or_(
+                        WorkspaceMembershipModel.access_expires_at.is_(None),
+                        WorkspaceMembershipModel.access_expires_at > func.now(),
+                    ),
+                )
+            )
+        ).one_or_none()
+        if admin_row is not None:
+            _, membership = admin_row
+            attributes = membership.attributes
+            groups = attributes.get("groups") if isinstance(attributes, dict) else None
+            allowed = attributes.get("allowed_actions") if isinstance(attributes, dict) else None
+            denied = attributes.get("denied_actions") if isinstance(attributes, dict) else None
+            if (
+                isinstance(groups, list)
+                and isinstance(allowed, list)
+                and isinstance(denied, list)
+                and "security-administrators" in groups
+                and "admin.manage" in allowed
+                and "admin.manage" not in denied
+                and membership.clearance >= int(Classification.RESTRICTED)
+                and membership.job_function != "SERVICE_ACCOUNT"
+            ):
+                authorities.add(ApprovalAuthority(ApprovalAuthorityKind.GLOBAL_ADMIN))
+        return tuple(sorted(authorities, key=lambda item: (item.kind.value, str(item.system_id))))
 
 
 class SqlOutboxWriter(OutboxWriter):
@@ -557,6 +830,7 @@ class SqlGovernanceUnitOfWork(GovernanceUnitOfWork):
         self._session: AsyncSession | None = session
         self._owns_session = session is None
         self.change_requests: SqlChangeRequestRepository
+        self.workflow_authorities: SqlChangeWorkflowAuthorityReader
         self.manual_metadata_submissions: SqlManualMetadataSubmissionRepository
         self.outbox: SqlOutboxWriter
         self.idempotency: SqlIdempotencyStore
@@ -566,6 +840,7 @@ class SqlGovernanceUnitOfWork(GovernanceUnitOfWork):
         if self._session is None:
             self._session = self._session_factory()
         self.change_requests = SqlChangeRequestRepository(self._session)
+        self.workflow_authorities = SqlChangeWorkflowAuthorityReader(self._session)
         self.manual_metadata_submissions = SqlManualMetadataSubmissionRepository(self._session)
         self.outbox = SqlOutboxWriter(self._session)
         self.idempotency = SqlIdempotencyStore(self._session)

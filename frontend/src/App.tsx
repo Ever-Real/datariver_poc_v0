@@ -1,7 +1,8 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useState } from 'react'
 import { ArrowRight, ShieldCheck } from 'lucide-react'
-import { ApiClient, remediationKind } from './api/client'
+import { remediationKind } from './api/client'
 import type { AdminOperation, AdminReadContext, CapabilitiesResponse, ExternalSystemLink } from './api/types'
+import { useStableApiClient } from './api/useStableApiClient'
 import { pageFromLocation, pageUrl, type Page } from './app/navigation'
 import { defaultWorkspaceSelection, workspaceFromLocation } from './app/workspace'
 import { useAuth } from './auth/AuthProvider'
@@ -16,8 +17,10 @@ import { ChatPage } from './features/chat/ChatPage'
 import { DashboardPage } from './features/dashboard/DashboardPage'
 import { GovernancePage } from './features/governance/GovernancePage'
 import { KnowledgePage } from './features/knowledge/KnowledgePage'
+import { KnowledgeChatPage } from './features/knowledge/KnowledgeChatPage'
 import { MonitoringPage } from './features/monitoring/MonitoringPage'
 import { PolicyGovernancePage } from './features/policy/PolicyGovernancePage'
+import { ProfilePage } from './features/profile/ProfilePage'
 import { QualityPage } from './features/quality/QualityPage'
 import { RegistrationPage } from './features/registration/RegistrationPage'
 import { SharingPage } from './features/sharing/SharingPage'
@@ -30,6 +33,7 @@ export function App() {
   // authorization; every request still binds it to server-side membership/RLS.
   const [workspace, setWorkspace] = useState(workspaceFromLocation)
   const [externalSystemLinks, setExternalSystemLinks] = useState<ExternalSystemLink[]>([])
+  const [capabilities, setCapabilities] = useState<CapabilitiesResponse['items']>([])
   const [deploymentTier, setDeploymentTier] = useState<CapabilitiesResponse['deployment_tier']>('SINGLE_NODE_PILOT')
   const [catalogExportWorkerEnabled, setCatalogExportWorkerEnabled] = useState(false)
   const [adminAccess, setAdminAccess] = useState<{
@@ -37,12 +41,16 @@ export function App() {
     status: 'checking' | 'allowed' | 'denied' | 'reauth_required'
     context?: AdminReadContext
   }>({ workspace: '', status: 'checking' })
-  const client = useMemo(() => new ApiClient(
+  const workspaceSelectionEnabled = auth.profile?.workspace_selection_enabled !== false
+  const activeWorkspace = workspaceSelectionEnabled
+    ? workspace
+    : auth.profile?.default_workspace_id ?? ''
+  const client = useStableApiClient(
     String(import.meta.env.VITE_API_BASE_URL || '/api/v1'),
-    () => auth.user?.access_token,
-    () => workspace,
+    auth.user?.access_token,
+    activeWorkspace,
     auth.renewAccessToken,
-  ), [auth.renewAccessToken, auth.user?.access_token, workspace])
+  )
 
   useEffect(() => {
     const restore = () => {
@@ -58,28 +66,28 @@ export function App() {
     // The URL selection is only a convenience value; it never grants a
     // workspace.  When there is no such value, hydrate the verified server
     // default into React state immediately after the OIDC profile arrives.
-    const defaultWorkspace = defaultWorkspaceSelection(
-      workspace,
-      auth.profile?.default_workspace_id,
-    )
-    if (!defaultWorkspace || defaultWorkspace === workspace) return
+    const defaultWorkspace = workspaceSelectionEnabled
+      ? defaultWorkspaceSelection(workspace, auth.profile?.default_workspace_id)
+      : auth.profile?.default_workspace_id ?? ''
+    if (defaultWorkspace === workspace) return
     const url = new URL(window.location.href)
-    url.searchParams.set('workspace', defaultWorkspace)
+    if (defaultWorkspace) url.searchParams.set('workspace', defaultWorkspace)
+    else url.searchParams.delete('workspace')
     window.history.replaceState({}, '', `${url.pathname}${url.search}${url.hash}`)
     setWorkspace(defaultWorkspace)
-  }, [auth.profile?.default_workspace_id, workspace])
+  }, [auth.profile?.default_workspace_id, workspace, workspaceSelectionEnabled])
 
   useEffect(() => {
     let active = true
-    if (!workspace) {
-      setAdminAccess({ workspace, status: 'denied' })
+    if (!activeWorkspace) {
+      setAdminAccess({ workspace: activeWorkspace, status: 'denied' })
       return () => { active = false }
     }
-    setAdminAccess({ workspace, status: 'checking' })
+    setAdminAccess({ workspace: activeWorkspace, status: 'checking' })
     void client.request<AdminReadContext>('/admin/me')
       .then((context) => {
         if (active) setAdminAccess({
-          workspace,
+          workspace: activeWorkspace,
           status: context.allowed_operations.length > 0 ? 'allowed' : 'denied',
           context,
         })
@@ -87,17 +95,18 @@ export function App() {
       .catch((error: unknown) => {
         if (!active) return
         setAdminAccess({
-          workspace,
+          workspace: activeWorkspace,
           status: remediationKind(error) === 'REAUTH_REQUIRED' ? 'reauth_required' : 'denied',
         })
       })
     return () => { active = false }
-  }, [client, workspace])
+  }, [activeWorkspace, client])
 
   useEffect(() => {
     let active = true
-    if (!workspace) {
+    if (!activeWorkspace) {
       setExternalSystemLinks([])
+      setCapabilities([])
       setDeploymentTier('SINGLE_NODE_PILOT')
       return () => { active = false }
     }
@@ -105,24 +114,26 @@ export function App() {
       .then((response) => {
         if (!active) return
         setExternalSystemLinks(response.external_system_links)
+        setCapabilities(response.items)
         setDeploymentTier(response.deployment_tier)
       })
       .catch(() => {
         if (!active) return
         setExternalSystemLinks([])
+        setCapabilities([])
         setDeploymentTier('SINGLE_NODE_PILOT')
       })
     return () => { active = false }
-  }, [client, workspace])
+  }, [activeWorkspace, client])
 
   useEffect(() => {
     let active = true
     setCatalogExportWorkerEnabled(false)
-    if (!workspace) return () => { active = false }
+    if (!activeWorkspace) return () => { active = false }
     void catalogExportCapabilityEnabled(client)
       .then((enabled) => { if (active) setCatalogExportWorkerEnabled(enabled) })
     return () => { active = false }
-  }, [client, workspace])
+  }, [activeWorkspace, client])
 
   const navigate = (next: Page) => {
     window.history.pushState({}, '', pageUrl(next))
@@ -163,7 +174,18 @@ export function App() {
     </main>
   )
 
+  if (auth.profile?.workspace_selection_enabled === false && !auth.profile.default_workspace_id) {
+    return (
+      <main className="centered">
+        <h1>기본 Workspace가 필요합니다.</h1>
+        <p>단일 Workspace 모드에서는 서버가 검증한 기본 Workspace가 지정되어야 합니다. 운영 관리자에게 멤버십 기본값을 요청하세요.</p>
+        <button className="button" type="button" onClick={() => void auth.signOut()}>나가기</button>
+      </main>
+    )
+  }
+
   const saveWorkspace = (value: string) => {
+    if (!workspaceSelectionEnabled) return
     const normalized = value.trim()
     const url = new URL(window.location.href)
     if (normalized) url.searchParams.set('workspace', normalized)
@@ -172,10 +194,10 @@ export function App() {
     setWorkspace(normalized)
   }
 
-  const currentAdminContext = adminAccess.workspace === workspace && adminAccess.status === 'allowed'
+  const currentAdminContext = adminAccess.workspace === activeWorkspace && adminAccess.status === 'allowed'
     ? adminAccess.context
     : undefined
-  const currentAdminStatus = adminAccess.workspace === workspace ? adminAccess.status : 'checking'
+  const currentAdminStatus = adminAccess.workspace === activeWorkspace ? adminAccess.status : 'checking'
   const policyReadOperations: AdminOperation[] = [
     'CLASSIFICATION_POLICY_READ', 'RETENTION_POLICY_READ', 'LEGAL_HOLD_READ',
   ]
@@ -190,7 +212,9 @@ export function App() {
     <AppShell
       page={page}
       client={client}
-      workspace={workspace}
+      workspace={activeWorkspace}
+      workspaceSelectionEnabled={workspaceSelectionEnabled}
+      hardwareWebauthnEnabled={auth.profile?.hardware_webauthn_enabled !== false}
       deploymentTier={deploymentTier}
       displayName={auth.profile?.display_name ?? auth.user.profile.name ?? auth.user.profile.sub}
       email={auth.profile?.email}
@@ -200,6 +224,7 @@ export function App() {
       notice={auth.notice}
       onNavigate={navigate}
       onNavigateAdmin={navigateAdmin}
+      onProfile={() => navigate('profile')}
       onSearch={searchCatalog}
       onWorkspaceChange={saveWorkspace}
       onPasswordReauth={() => void auth.beginPasswordReauth()}
@@ -210,13 +235,16 @@ export function App() {
       {page === 'dashboard' && <DashboardPage client={client} onNavigate={navigate} />}
       {page === 'catalog' && <CatalogPage client={client} initialQuery={catalogQuery} onQueryChange={searchCatalog} catalogExportWorkerEnabled={catalogExportWorkerEnabled} />}
       {page === 'registration' && <RegistrationPage client={client} />}
-      {page === 'change-management' && <GovernancePage client={client} onNavigate={navigate} onStepUp={auth.beginStepUp} onPasswordReauth={auth.beginPasswordReauth} onEnroll={auth.beginWebAuthnEnrollment} />}
+      {page === 'change-management' && <GovernancePage client={client} requesterName={auth.profile?.display_name ?? auth.user.profile.name ?? auth.user.profile.sub} requesterEmail={auth.profile?.email} onNavigate={navigate} onStepUp={auth.beginStepUp} onPasswordReauth={auth.beginPasswordReauth} onEnroll={auth.beginWebAuthnEnrollment} />}
       {page === 'quality' && <QualityPage />}
       {page === 'knowledge' && <KnowledgePage client={client} onNavigate={navigate} />}
+      {page === 'knowledge-chat' && <KnowledgeChatPage client={client} onNavigate={navigate} />}
       {page === 'monitoring' && <MonitoringPage client={client} />}
       {page === 'governance' && <PolicyGovernancePage client={client} mayReadPolicies={mayReadPolicyGovernance} allowedOperations={currentAdminContext?.allowed_operations} />}
       {page === 'sharing' && <SharingPage client={client} onStepUp={auth.beginStepUp} onPasswordReauth={auth.beginPasswordReauth} onEnroll={auth.beginWebAuthnEnrollment} />}
       {page === 'chat' && <ChatPage client={client} />}
+      {page === 'profile' && auth.profile && <ProfilePage client={client} profile={auth.profile} workspace={activeWorkspace} capabilities={capabilities} externalSystemLinks={externalSystemLinks} onPasswordReauth={() => void auth.beginPasswordReauth()} />}
+      {page === 'profile' && !auth.profile && <PageTitle icon="ME" eyebrow="Verified identity profile" title="내 프로필" description="서버에서 검증된 프로필을 불러오지 못했습니다." />}
       {page === 'admin' && currentAdminContext && <AdminPage client={client} initialContext={currentAdminContext} onStepUp={auth.beginStepUp} onPasswordReauth={auth.beginPasswordReauth} onEnroll={auth.beginWebAuthnEnrollment} />}
       {page === 'admin' && !currentAdminContext && (
         <PageTitle

@@ -1,8 +1,8 @@
-import { useEffect, useMemo, useRef, useState, type ChangeEvent, type FormEvent } from 'react'
+import { Plus, Trash2, X } from 'lucide-react'
+import { Fragment, useEffect, useMemo, useRef, useState, type ChangeEvent, type FormEvent } from 'react'
 import { ApiError, newIdempotencyKey, type ApiClient } from '../../api/client'
 import type { CatalogAsset, CatalogAssetDetail, CatalogSearch, ChangeRequestRecord } from '../../api/types'
 import { ErrorNotice } from '../../components/ErrorNotice'
-import { ControlledVocabularyInput } from '../../components/common/ControlledVocabularyInput'
 import { Dialog } from '../../components/common/Dialog'
 import { schemaDescriptionFields } from '../registration/RegistrationColumnDescriptionEditor'
 
@@ -85,11 +85,15 @@ function termValues(asset: CatalogAssetDetail): string[] {
 export function ChangeRequestCreateDialog({
   open,
   client,
+  requesterName,
+  requesterEmail,
   onClose,
   onCreated,
 }: {
   open: boolean
   client: ApiClient
+  requesterName: string
+  requesterEmail?: string
   onClose: () => void
   onCreated: (changeRequest: ChangeRequestRecord) => void
 }) {
@@ -98,10 +102,12 @@ export function ChangeRequestCreateDialog({
   const [searching, setSearching] = useState(false)
   const [targets, setTargets] = useState<TargetDraft[]>([])
   const [title, setTitle] = useState('')
-  const [systemName, setSystemName] = useState('')
+  const [systemId, setSystemId] = useState('')
+  const [systems, setSystems] = useState<Array<{ id: string; code: string; name: string }>>([])
   const [requestDate, setRequestDate] = useState(today)
   const [department, setDepartment] = useState('')
   const [requestSummary, setRequestSummary] = useState('')
+  const [requestContent, setRequestContent] = useState('')
   const [dueDate, setDueDate] = useState(defaultDueDate)
   const [priority, setPriority] = useState<'LOW' | 'NORMAL' | 'HIGH' | 'CRITICAL'>('NORMAL')
   const [urgency, setUrgency] = useState<'NORMAL' | 'URGENT' | 'EMERGENCY'>('NORMAL')
@@ -112,6 +118,19 @@ export function ChangeRequestCreateDialog({
   const [error, setError] = useState<unknown>()
   const searchController = useRef<AbortController | undefined>(undefined)
   const submitController = useRef<AbortController | undefined>(undefined)
+
+  useEffect(() => {
+    if (!open) return
+    const controller = new AbortController()
+    void client.request<{ items: Array<{ id: string; code: string; name: string }> }>(
+      '/change-requests/systems', { signal: controller.signal },
+    ).then((value) => {
+      if (controller.signal.aborted) return
+      setSystems(value.items)
+      setSystemId((current) => current || value.items[0]?.id || '')
+    }).catch((next) => { if (!controller.signal.aborted) setError(next) })
+    return () => controller.abort()
+  }, [client, open])
 
   useEffect(() => {
     if (!open || query.trim().length < 2) {
@@ -147,10 +166,12 @@ export function ChangeRequestCreateDialog({
     setResults([])
     setTargets([])
     setTitle('')
-    setSystemName('')
+    setSystemId('')
+    setSystems([])
     setRequestDate(today())
     setDepartment('')
     setRequestSummary('')
+    setRequestContent('')
     setDueDate(defaultDueDate())
     setPriority('NORMAL')
     setUrgency('NORMAL')
@@ -188,7 +209,6 @@ export function ChangeRequestCreateDialog({
         }])
         setQuery('')
         setResults([])
-        if (!systemName.trim() && asset.platform) setSystemName(asset.platform)
       })
       .catch((next) => { if (!controller.signal.aborted) setError(next) })
   }
@@ -246,7 +266,7 @@ export function ChangeRequestCreateDialog({
     setFiles((current) => [...current, ...next])
     event.target.value = ''
   }
-  const canSubmit = title.trim() && systemName.trim() && requestSummary.trim() && targets.length > 0
+  const canSubmit = title.trim() && systemId && requestSummary.trim() && targets.length > 0
     && targets.every((target) => target.kind === 'EXISTING' || target.table_name.trim())
   const targetPayload = (target: TargetDraft) => target.kind === 'EXISTING'
     ? { kind: 'EXISTING', asset_id: target.asset.id, description: target.description, requested_change: target.requested_change, tags: target.tags, terms: target.terms, columns: target.columns }
@@ -265,8 +285,8 @@ export function ChangeRequestCreateDialog({
         signal: controller.signal,
         idempotencyKey: newIdempotencyKey('change-request-intake'),
         body: JSON.stringify({
-          title: title.trim(), system_name: systemName.trim(), request_date: requestDate || null,
-          request_department: department.trim(), request_reason: requestSummary.trim(), request_content: '',
+          title: title.trim(), system_id: systemId, request_date: requestDate || null,
+          request_department: department.trim(), request_reason: requestSummary.trim(), request_content: requestContent.trim(),
           requested_due_date: dueDate || null, priority, urgency, security_level: security,
           targets: targets.map(targetPayload),
         }),
@@ -294,10 +314,23 @@ export function ChangeRequestCreateDialog({
     }
   }
   const selectedFieldOptions = useMemo(() => targets.map((target) => target.kind === 'EXISTING' ? fieldOptions(target) : []), [targets])
+  const downloadTemplate = () => {
+    const template = [
+      'record_type,table_name,column_name,schema_name,logical_name,remarks,data_type',
+      'TABLE,,,,,,',
+      'COLUMN,,,,,,',
+    ].join('\n')
+    const url = URL.createObjectURL(new Blob([template], { type: 'text/csv;charset=utf-8' }))
+    const anchor = document.createElement('a')
+    anchor.href = url
+    anchor.download = 'change-request-target-template.csv'
+    anchor.click()
+    URL.revokeObjectURL(url)
+  }
 
   return <Dialog
     description="기존 테이블은 서버가 현재 DataHub 원본을 재검증하고, 신규 테이블은 감사 가능한 제안으로 기록합니다."
-    footer={<><button className="button button-secondary" disabled={submitting} onClick={requestClose} type="button">닫기</button>{!created && <button className="button" disabled={submitting || !canSubmit} form="change-request-create-form" type="submit">{submitting ? '등록 중…' : '신규 CR 등록'}</button>}</>}
+    footer={<><button className="button button-secondary" disabled={submitting} onClick={requestClose} type="button">취소</button>{!created && <button className="button" disabled={submitting || !canSubmit} form="change-request-create-form" type="submit">{submitting ? '제출 중…' : 'CR 제출'}</button>}</>}
     onRequestClose={requestClose}
     open={open}
     size="workspace"
@@ -308,56 +341,58 @@ export function ChangeRequestCreateDialog({
         <fieldset>
           <legend>CR 기본 정보</legend>
           <div className="governance-create-grid">
-            <label className="wide">CR명<input maxLength={500} onChange={(event) => setTitle(event.target.value)} required value={title} /></label>
-            <label>관련 시스템명<input maxLength={100} onChange={(event) => setSystemName(event.target.value)} required value={systemName} /></label>
+            <label className="wide">변경요청 제목<input maxLength={500} onChange={(event) => setTitle(event.target.value)} placeholder="예: A 테이블 컬럼 추가 및 용어 표준화" required value={title} /></label>
+            <label>요청자<input readOnly title={requesterEmail ?? requesterName} value={requesterEmail ? `${requesterName} · ${requesterEmail}` : requesterName} /></label>
+            <label>관련 시스템<select onChange={(event) => setSystemId(event.target.value)} required value={systemId}><option value="">시스템 선택</option>{systems.map((system) => <option key={system.id} value={system.id}>{system.name} · {system.code}</option>)}</select></label>
             <label>요청일자<input onChange={(event) => setRequestDate(event.target.value)} type="date" value={requestDate} /></label>
-            <label>요청부서<input maxLength={500} onChange={(event) => setDepartment(event.target.value)} value={department} /></label>
+            <label>요청부서<input maxLength={500} onChange={(event) => setDepartment(event.target.value)} placeholder="IdP 프로필에 부서 정보가 없어 직접 입력" value={department} /></label>
             <label>요청 납기<input onChange={(event) => setDueDate(event.target.value)} type="date" value={dueDate} /></label>
             <label>중요도<select onChange={(event) => setPriority(event.target.value as typeof priority)} value={priority}><option value="LOW">낮음</option><option value="NORMAL">보통</option><option value="HIGH">높음</option><option value="CRITICAL">최우선</option></select></label>
             <label>긴급도<select onChange={(event) => setUrgency(event.target.value as typeof urgency)} value={urgency}><option value="NORMAL">일반</option><option value="URGENT">긴급</option><option value="EMERGENCY">비상</option></select></label>
             <label>보안등급<select onChange={(event) => setSecurity(event.target.value as typeof security)} value={security}><option value="PUBLIC">Public</option><option value="INTERNAL">Internal</option><option value="CONFIDENTIAL">Confidential</option><option value="RESTRICTED">Restricted</option></select></label>
-            <label className="wide">요청 사유 / 요청 내용<textarea maxLength={10_000} onChange={(event) => setRequestSummary(event.target.value)} required value={requestSummary} /></label>
+            <label className="wide">요청내용<textarea className="min-h-24 resize-y" maxLength={10_000} onChange={(event) => setRequestContent(event.target.value)} value={requestContent} /></label>
+            <label className="wide">요청사유<textarea className="governance-request-reason" maxLength={10_000} onChange={(event) => setRequestSummary(event.target.value)} placeholder="예: B 데이터 연동을 위한 스키마 확장" required rows={1} value={requestSummary} /></label>
           </div>
         </fieldset>
         <fieldset>
-          <legend>관련 테이블</legend>
-          <div className="governance-intake-search"><label>기존 테이블 검색<input minLength={2} onChange={(event) => setQuery(event.target.value)} placeholder="테이블명, 스키마 또는 설명을 두 글자 이상 입력" value={query} /></label><button className="button button-secondary" onClick={addManual} type="button">신규 테이블 추가</button></div>
+          <legend>TARGET SELECTION</legend>
+          <div className="mb-2 flex justify-end gap-2"><button className="button button-secondary" type="button" onClick={downloadTemplate}>양식 다운로드</button><button className="button button-secondary" type="button" disabled title="서버 검증형 CR 엑셀 파서 API가 아직 없습니다.">엑셀 업로드</button></div>
+          <div className="governance-intake-search"><label>변경 대상 검색<input minLength={2} onChange={(event) => setQuery(event.target.value)} placeholder="변경할 테이블을 검색하거나 수동으로 추가하세요." value={query} /></label></div>
           {searching && <p className="muted">실데이터를 검색하는 중입니다.</p>}
           {results.length > 0 && <ul className="governance-create-search-results">{results.map((result) => <li key={result.id}><button onClick={() => addExisting(result)} type="button"><strong>{result.name}</strong><span>{assetLabel(result)}</span></button></li>)}</ul>}
-          <div className="governance-intake-targets">
-            {targets.map((target, targetIndex) => <section className="governance-intake-target" key={target.kind === 'EXISTING' ? target.asset.id : `manual-${targetIndex}`}>
-              <header className="governance-intake-target-header"><div className="governance-intake-identity"><span className="badge">테이블</span><strong title={target.kind === 'EXISTING' ? target.asset.name : target.table_name}>{target.kind === 'EXISTING' ? target.asset.name : target.table_name || '테이블명 입력'}</strong><small>{target.kind === 'EXISTING' ? '기존' : '신규'}</small></div><button className="button button-secondary" onClick={() => setTargets((current) => current.filter((_, index) => index !== targetIndex))} type="button">삭제</button></header>
-              {target.kind === 'EXISTING' ? <div className="governance-intake-grid">
-                <label>Schema<input readOnly title={target.asset.schema_name ?? ''} value={target.asset.schema_name ?? ''} /></label><label>Table<input readOnly title={target.asset.name} value={target.asset.name} /></label><label>Owner<input readOnly title={target.asset.owner ?? ''} value={target.asset.owner ?? ''} /></label>
-                <label>테이블 설명<input className="governance-intake-text-input" onChange={(event) => updateTarget(targetIndex, { description: event.target.value })} title={target.description} value={target.description} /></label>
-                <label>Terms<ControlledVocabularyInput client={client} kind="TERM" label={`${target.asset.name} Terms`} onChange={(values) => updateTarget(targetIndex, { terms: values })} values={target.terms} /></label>
-                <label>Tags<ControlledVocabularyInput client={client} kind="TAG" label={`${target.asset.name} Tags`} onChange={(values) => updateTarget(targetIndex, { tags: values })} values={target.tags} /></label>
-                <label>요청/변경내용<input className="governance-intake-text-input" onChange={(event) => updateTarget(targetIndex, { requested_change: event.target.value })} title={target.requested_change} value={target.requested_change} /></label>
-                <label className="governance-intake-column-add">+ 컬럼 추가<select aria-label={`${target.asset.name} 컬럼 추가`} onChange={(event) => addExistingColumn(targetIndex, event.target.value)} value=""><option value="">컬럼 선택</option>{(selectedFieldOptions[targetIndex] ?? []).map((field) => <option key={field.fieldPath} value={field.fieldPath}>{field.fieldPath} · {field.dataType ?? ''}</option>)}</select></label>
-              </div> : <div className="governance-intake-grid">
-                <label>Schema<input onChange={(event) => updateTarget(targetIndex, { schema_name: event.target.value })} title={target.schema_name} value={target.schema_name} /></label><label>테이블명<input onChange={(event) => updateTarget(targetIndex, { table_name: event.target.value })} required title={target.table_name} value={target.table_name} /></label><label>Owner<input onChange={(event) => updateTarget(targetIndex, { owner: event.target.value })} title={target.owner} value={target.owner} /></label>
-                <label>테이블 설명<input className="governance-intake-text-input" onChange={(event) => updateTarget(targetIndex, { description: event.target.value })} title={target.description} value={target.description} /></label>
-                <label>Terms<ControlledVocabularyInput client={client} kind="TERM" label={`신규 ${targetIndex + 1} Terms`} onChange={(values) => updateTarget(targetIndex, { terms: values })} values={target.terms} /></label>
-                <label>Tags<ControlledVocabularyInput client={client} kind="TAG" label={`신규 ${targetIndex + 1} Tags`} onChange={(values) => updateTarget(targetIndex, { tags: values })} values={target.tags} /></label>
-                <label>요청/변경내용<input className="governance-intake-text-input" onChange={(event) => updateTarget(targetIndex, { requested_change: event.target.value })} title={target.requested_change} value={target.requested_change} /></label>
-                <div className="governance-intake-column-add"><span>+ 컬럼 추가</span><button className="button button-secondary" onClick={() => addManualColumn(targetIndex)} type="button">추가</button></div>
-              </div>}
-              <div className="governance-intake-columns">
-                {target.columns.length > 0 && <div className="dense-table-frame governance-intake-columns-frame"><table className="dense-table governance-intake-columns-table"><thead><tr><th aria-hidden="true" className="governance-column-spacer" /><th>항목</th><th>Type</th><th>Description</th><th>Term</th><th>Tag</th><th>요청/변경내용</th><th>관리</th></tr></thead><tbody>{target.columns.map((column, columnIndex) => <tr key={`${column.field_path}-${columnIndex}`}>
-                  <td aria-hidden="true" className="governance-column-spacer" /><td className="governance-column-name-cell"><span aria-hidden="true" className="governance-column-branch" /><div className="governance-column-identity"><span className="badge">컬럼</span>{target.kind === 'EXISTING' ? <code title={column.field_path}>{column.field_path}</code> : <input className="governance-intake-text-input" onChange={(event) => updateColumn(targetIndex, columnIndex, { field_path: event.target.value })} title={column.field_path} value={column.field_path} />}<small>{target.kind === 'EXISTING' ? '변경' : '신규'}</small></div></td>
-                  <td>{target.kind === 'EXISTING' ? <span title={column.data_type || '—'}>{column.data_type || '—'}</span> : <input className="governance-intake-text-input" onChange={(event) => updateColumn(targetIndex, columnIndex, { data_type: event.target.value })} title={column.data_type} value={column.data_type} />}</td>
-                  <td><input className="governance-intake-text-input" onChange={(event) => updateColumn(targetIndex, columnIndex, { description: event.target.value })} title={column.description} value={column.description} /></td>
-                  <td><ControlledVocabularyInput client={client} kind="TERM" label={`${column.field_path || '신규'} Terms`} onChange={(values) => updateColumn(targetIndex, columnIndex, { terms: values })} values={column.terms} /></td>
-                  <td><ControlledVocabularyInput client={client} kind="TAG" label={`${column.field_path || '신규'} Tags`} onChange={(values) => updateColumn(targetIndex, columnIndex, { tags: values })} values={column.tags} /></td>
-                  <td><input className="governance-intake-text-input" onChange={(event) => updateColumn(targetIndex, columnIndex, { requested_change: event.target.value })} title={column.requested_change} value={column.requested_change} /></td>
-                  <td><button className="button button-secondary" onClick={() => removeColumn(targetIndex, columnIndex)} type="button">삭제</button></td>
-                </tr>)}</tbody></table></div>}
-              </div>
-            </section>)}
-          </div>
+          {targets.length > 0 && <div className="governance-target-table-frame">
+            <table aria-label="변경 대상 테이블 및 컬럼" className="governance-target-table">
+              <colgroup><col className="governance-target-name-column" /><col className="governance-target-schema-column" /><col className="governance-target-description-column" /><col className="governance-target-remarks-column" /><col className="governance-target-action-column" /></colgroup>
+              <thead><tr><th>TABLE / COLUMN NAME</th><th>SCHEMA</th><th>DESC (LOGICAL NAME)</th><th>비고 (REMARKS)</th><th><span className="sr-only">관리</span></th></tr></thead>
+              <tbody>{targets.map((target, targetIndex) => {
+                const tableName = target.kind === 'EXISTING' ? target.asset.name : target.table_name
+                const schemaName = target.kind === 'EXISTING' ? target.asset.schema_name ?? '' : target.schema_name
+                return <Fragment key={target.kind === 'EXISTING' ? target.asset.id : `manual-${targetIndex}`}>
+                  <tr className="governance-target-table-row">
+                    <td className="governance-target-name-cell"><div className="governance-target-name-control">
+                      {target.kind === 'EXISTING' ? <select aria-label={`${target.asset.name} 컬럼 추가`} className="governance-target-column-picker" onChange={(event) => addExistingColumn(targetIndex, event.target.value)} title="컬럼 추가" value=""><option value="">＋</option>{(selectedFieldOptions[targetIndex] ?? []).map((field) => <option key={field.fieldPath} value={field.fieldPath}>{field.fieldPath} · {field.dataType ?? ''}</option>)}</select> : <button aria-label={`${tableName || `신규 테이블 ${targetIndex + 1}`} 컬럼 추가`} className="governance-target-add-column" onClick={() => addManualColumn(targetIndex)} title="컬럼 추가" type="button"><Plus size={14} /></button>}
+                      {target.kind === 'EXISTING' ? <strong title={tableName}>{tableName}</strong> : <input aria-label={`신규 테이블 ${targetIndex + 1} 테이블명`} onChange={(event) => updateTarget(targetIndex, { table_name: event.target.value })} placeholder="Table Name" required title={target.table_name} value={target.table_name} />}
+                    </div></td>
+                    <td>{target.kind === 'EXISTING' ? <span title={schemaName}>{schemaName || '—'}</span> : <input aria-label={`신규 테이블 ${targetIndex + 1} 스키마`} onChange={(event) => updateTarget(targetIndex, { schema_name: event.target.value })} placeholder="Schema" title={target.schema_name} value={target.schema_name} />}</td>
+                    <td><input aria-label={`${tableName || `신규 테이블 ${targetIndex + 1}`} 설명`} onChange={(event) => updateTarget(targetIndex, { description: event.target.value })} placeholder="테이블 설명" title={target.description} value={target.description} /></td>
+                    <td><input aria-label={`${tableName || `신규 테이블 ${targetIndex + 1}`} 비고`} onChange={(event) => updateTarget(targetIndex, { requested_change: event.target.value })} placeholder="테이블 작업 내용 (예: 신규 생성)" title={target.requested_change} value={target.requested_change} /></td>
+                    <td className="governance-target-action-cell"><button aria-label={`${tableName || `신규 테이블 ${targetIndex + 1}`} 삭제`} className="governance-target-remove" onClick={() => setTargets((current) => current.filter((_, index) => index !== targetIndex))} title="테이블 삭제" type="button"><Trash2 size={15} /></button></td>
+                  </tr>
+                  {target.columns.map((column, columnIndex) => <tr className="governance-target-column-row" key={`${column.field_path}-${columnIndex}`}>
+                    <td className="governance-target-column-name-cell"><span aria-hidden="true" className="governance-target-column-branch" />{target.kind === 'EXISTING' ? <code title={column.field_path}>{column.field_path}</code> : <input aria-label={`${tableName || `신규 테이블 ${targetIndex + 1}`} 컬럼 ${columnIndex + 1} 이름`} onChange={(event) => updateColumn(targetIndex, columnIndex, { field_path: event.target.value })} placeholder="Column Name" title={column.field_path} value={column.field_path} />}</td>
+                    <td aria-label="컬럼 스키마 공란" />
+                    <td><input aria-label={`${column.field_path || `컬럼 ${columnIndex + 1}`} 설명`} onChange={(event) => updateColumn(targetIndex, columnIndex, { description: event.target.value })} placeholder="컬럼 설명" title={column.description} value={column.description} /></td>
+                    <td><input aria-label={`${column.field_path || `컬럼 ${columnIndex + 1}`} 비고`} onChange={(event) => updateColumn(targetIndex, columnIndex, { requested_change: event.target.value })} placeholder="비고 (예: 컬럼 타입 변경)" title={column.requested_change} value={column.requested_change} /></td>
+                    <td className="governance-target-action-cell"><button aria-label={`${column.field_path || `컬럼 ${columnIndex + 1}`} 삭제`} className="governance-target-remove" onClick={() => removeColumn(targetIndex, columnIndex)} title="컬럼 삭제" type="button"><X size={14} /></button></td>
+                  </tr>)}
+                </Fragment>
+              })}</tbody>
+            </table>
+          </div>}
           {!targets.length && <p className="muted">기존 테이블을 검색해 선택하거나 신규 테이블을 추가하세요.</p>}
+          <button className="governance-target-add-manual" onClick={addManual} type="button"><Plus size={14} /> ADD NEW TABLE MANUALLY</button>
         </fieldset>
-        <fieldset><legend>요청 첨부파일</legend><label className="governance-create-file">복수 파일 첨부 (파일당 최대 10 MiB)<input multiple onChange={addFiles} type="file" /></label>{files.length > 0 && <ul className="governance-create-files">{files.map((file, index) => <li key={`${file.name}-${file.lastModified}-${index}`}><span>{file.name} · {Math.ceil(file.size / 1024).toLocaleString()} KiB</span><button className="button button-secondary" onClick={() => setFiles((current) => current.filter((_, itemIndex) => itemIndex !== index))} type="button">제거</button></li>)}</ul>}</fieldset>
+        <fieldset><legend>Attachments · 증빙 자료</legend><label className="governance-create-file">클릭하거나 파일을 드래그하세요. (파일당 최대 10 MiB)<input multiple onChange={addFiles} type="file" /></label>{files.length > 0 && <ul className="governance-create-files">{files.map((file, index) => <li key={`${file.name}-${file.lastModified}-${index}`}><span>{file.name} · {Math.ceil(file.size / 1024).toLocaleString()} KiB</span><button className="button button-secondary" onClick={() => setFiles((current) => current.filter((_, itemIndex) => itemIndex !== index))} type="button">제거</button></li>)}</ul>}</fieldset>
       </>}
       <ErrorNotice error={error} />
     </form>

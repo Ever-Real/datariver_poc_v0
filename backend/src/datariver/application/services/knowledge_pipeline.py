@@ -1,0 +1,461 @@
+from __future__ import annotations
+
+import hashlib
+from uuid import UUID, uuid5
+
+from datariver.application.knowledge_pipeline_ports import (
+    KnowledgeAnswerComposer,
+    KnowledgeEmbeddingProvider,
+    KnowledgeInferenceAuditWriter,
+    KnowledgeSourceReader,
+    PageAwarePdfParser,
+    ScopedGraphEvidenceRetriever,
+    TypedKnowledgeExtractor,
+    VerifiedKnowledgeProjectionWriter,
+)
+from datariver.domain.common import ValidationError, uuid7
+from datariver.domain.knowledge import (
+    ChangeOperationType,
+    GraphChangeOperation,
+    GraphEntityKind,
+    GraphSnapshot,
+    Provenance,
+    normalize_evidence_excerpt,
+)
+from datariver.domain.knowledge_pipeline import (
+    MAX_PDF_PAGES,
+    MAX_QUESTION_CHARACTERS,
+    CitedGraphRagAnswer,
+    EmbeddingBatch,
+    ExtractedEdgeDraft,
+    ExtractedNodeDraft,
+    ExtractionDraft,
+    GraphRagAuditRecord,
+    KnowledgeSourceAnalysis,
+    KnowledgeSourceSnapshot,
+    ModelBinding,
+    PdfPage,
+    ProjectionReceipt,
+)
+
+MAX_EXTRACTION_BATCH_PAGES = 6
+MAX_EXTRACTION_BATCH_CHARACTERS = 40_000
+
+
+class KnowledgeSourcePipeline:
+    def __init__(
+        self,
+        *,
+        reader: KnowledgeSourceReader,
+        parser: PageAwarePdfParser,
+        embedding: KnowledgeEmbeddingProvider,
+        extractor: TypedKnowledgeExtractor,
+    ) -> None:
+        self._reader = reader
+        self._parser = parser
+        self._embedding = embedding
+        self._extractor = extractor
+
+    async def analyze_pdf(
+        self,
+        *,
+        source: KnowledgeSourceSnapshot,
+        entity_types: frozenset[str],
+        edge_types: frozenset[str],
+        embedding_binding: ModelBinding,
+        extraction_binding: ModelBinding,
+    ) -> KnowledgeSourceAnalysis:
+        if not entity_types:
+            raise ValidationError("A knowledge extraction requires an approved entity ontology.")
+        embedding_binding.validate()
+        extraction_binding.validate()
+        payload = await self._reader.read_snapshot(source=source)
+        source.verify(payload)
+        pages = self._parser.parse(payload)
+        if not pages or len(pages) > MAX_PDF_PAGES:
+            raise ValidationError("The PDF has no extractable pages or exceeds the page limit.")
+        numbers = [page.page_number for page in pages]
+        if len(numbers) != len(set(numbers)) or numbers != sorted(numbers):
+            raise ValidationError("PDF parser output must contain unique ordered page numbers.")
+
+        embeddings = await self._embedding.embed_pages(
+            pages=pages,
+            binding=embedding_binding,
+        )
+        self._validate_embeddings(pages=pages, batch=embeddings, expected=embedding_binding)
+        extraction = await self._extract_bounded_batches(
+            pages=pages,
+            entity_types=entity_types,
+            edge_types=edge_types,
+            binding=extraction_binding,
+        )
+        extraction.validate(
+            entity_types=entity_types,
+            edge_types=edge_types,
+            page_numbers=frozenset(numbers),
+        )
+        self._verify_extraction_evidence(pages=pages, extraction=extraction)
+        return KnowledgeSourceAnalysis(
+            source=source,
+            pages=pages,
+            embeddings=embeddings,
+            extraction=extraction,
+        )
+
+    async def _extract_bounded_batches(
+        self,
+        *,
+        pages: tuple[PdfPage, ...],
+        entity_types: frozenset[str],
+        edge_types: frozenset[str],
+        binding: ModelBinding,
+    ) -> ExtractionDraft:
+        batches: list[tuple[PdfPage, ...]] = []
+        current: list[PdfPage] = []
+        characters = 0
+        for page in pages:
+            if current and (
+                len(current) >= MAX_EXTRACTION_BATCH_PAGES
+                or characters + len(page.text) > MAX_EXTRACTION_BATCH_CHARACTERS
+            ):
+                batches.append(tuple(current))
+                current = []
+                characters = 0
+            current.append(page)
+            characters += len(page.text)
+        if current:
+            batches.append(tuple(current))
+
+        drafts: list[ExtractionDraft] = []
+        for batch in batches:
+            draft = await self._extractor.propose(
+                pages=batch,
+                entity_types=entity_types,
+                edge_types=edge_types,
+                binding=binding,
+            )
+            self._assert_binding(actual=draft.binding, expected=binding)
+            draft.validate(
+                entity_types=entity_types,
+                edge_types=edge_types,
+                page_numbers=frozenset(page.page_number for page in batch),
+            )
+            drafts.append(draft)
+        nodes: dict[str, ExtractedNodeDraft] = {}
+        edges: dict[str, ExtractedEdgeDraft] = {}
+        for draft in drafts:
+            for node in draft.nodes:
+                previous = nodes.get(node.local_key)
+                if previous is not None and previous.entity_type != node.entity_type:
+                    raise ValidationError(
+                        "Extraction batches assigned conflicting types to one node key."
+                    )
+                if previous is None or node.confidence > previous.confidence:
+                    nodes[node.local_key] = node
+            for edge in draft.edges:
+                previous_edge = edges.get(edge.local_key)
+                if previous_edge is not None and (
+                    previous_edge.source_key,
+                    previous_edge.target_key,
+                    previous_edge.edge_type,
+                ) != (edge.source_key, edge.target_key, edge.edge_type):
+                    raise ValidationError(
+                        "Extraction batches assigned conflicting endpoints to one edge key."
+                    )
+                if previous_edge is None or edge.confidence > previous_edge.confidence:
+                    edges[edge.local_key] = edge
+
+        def summed(values: list[int | None]) -> int | None:
+            return (
+                sum(value for value in values if value is not None)
+                if all(value is not None for value in values)
+                else None
+            )
+
+        return ExtractionDraft(
+            binding=binding,
+            nodes=tuple(nodes.values()),
+            edges=tuple(edges.values()),
+            input_tokens=summed([draft.input_tokens for draft in drafts]),
+            output_tokens=summed([draft.output_tokens for draft in drafts]),
+        )
+
+    @staticmethod
+    def to_typed_operations(analysis: KnowledgeSourceAnalysis) -> tuple[GraphChangeOperation, ...]:
+        pages_by_number = {page.page_number: page for page in analysis.pages}
+        node_ids = {
+            node.local_key: uuid5(analysis.source.snapshot_id, f"node:{node.local_key}")
+            for node in analysis.extraction.nodes
+        }
+        operations: list[GraphChangeOperation] = []
+        sequence = 0
+        for node in analysis.extraction.nodes:
+            sequence += 1
+            operations.append(
+                GraphChangeOperation(
+                    sequence=sequence,
+                    operation=ChangeOperationType.UPSERT,
+                    entity_kind=GraphEntityKind.NODE,
+                    stable_entity_id=node_ids[node.local_key],
+                    document={
+                        "entity_type": node.entity_type,
+                        "properties": node.properties,
+                        "classification": node.classification,
+                    },
+                    provenance=(
+                        KnowledgeSourcePipeline._provenance(
+                            analysis,
+                            page=pages_by_number[node.page_number],
+                            evidence_text=node.evidence_text,
+                            confidence=node.confidence,
+                        ),
+                    ),
+                    confidence=node.confidence,
+                )
+            )
+        for edge in analysis.extraction.edges:
+            sequence += 1
+            operations.append(
+                GraphChangeOperation(
+                    sequence=sequence,
+                    operation=ChangeOperationType.UPSERT,
+                    entity_kind=GraphEntityKind.EDGE,
+                    stable_entity_id=uuid5(analysis.source.snapshot_id, f"edge:{edge.local_key}"),
+                    document={
+                        "source_id": str(node_ids[edge.source_key]),
+                        "target_id": str(node_ids[edge.target_key]),
+                        "edge_type": edge.edge_type,
+                        "properties": edge.properties,
+                        "classification": edge.classification,
+                    },
+                    provenance=(
+                        KnowledgeSourcePipeline._provenance(
+                            analysis,
+                            page=pages_by_number[edge.page_number],
+                            evidence_text=edge.evidence_text,
+                            confidence=edge.confidence,
+                        ),
+                    ),
+                    confidence=edge.confidence,
+                )
+            )
+        for operation in operations:
+            operation.validate()
+        return tuple(operations)
+
+    @staticmethod
+    def _provenance(
+        analysis: KnowledgeSourceAnalysis,
+        *,
+        page: PdfPage,
+        evidence_text: str,
+        confidence: float,
+    ) -> Provenance:
+        excerpt = normalize_evidence_excerpt(evidence_text)
+        return Provenance(
+            source_ref=f"knowledge-source:{analysis.source.snapshot_id}",
+            source_locator=f"{analysis.source.object_key}#page={page.page_number}",
+            source_version=analysis.source.content_sha256,
+            method=(
+                f"typed_pdf_extraction:{analysis.extraction.binding.provider}:"
+                f"{analysis.extraction.binding.model}:{analysis.extraction.binding.prompt_version}"
+            ),
+            confidence=confidence,
+            evidence_excerpt=excerpt,
+            evidence_sha256=hashlib.sha256(excerpt.encode()).hexdigest(),
+            source_page_sha256=page.content_sha256,
+        )
+
+    @staticmethod
+    def _verify_extraction_evidence(
+        *, pages: tuple[PdfPage, ...], extraction: ExtractionDraft
+    ) -> None:
+        normalized_pages = {
+            page.page_number: normalize_evidence_excerpt(page.text) for page in pages
+        }
+        items: tuple[ExtractedNodeDraft | ExtractedEdgeDraft, ...] = (
+            *extraction.nodes,
+            *extraction.edges,
+        )
+        for item in items:
+            excerpt = normalize_evidence_excerpt(item.evidence_text)
+            page_text = normalized_pages.get(item.page_number, "")
+            if not excerpt or excerpt not in page_text:
+                raise ValidationError(
+                    "LLM evidence must be an exact whitespace-normalized source-page excerpt."
+                )
+
+    @staticmethod
+    def _validate_embeddings(
+        *, pages: tuple[PdfPage, ...], batch: EmbeddingBatch, expected: ModelBinding
+    ) -> None:
+        KnowledgeSourcePipeline._assert_binding(actual=batch.binding, expected=expected)
+        if len(batch.embeddings) != len(pages):
+            raise ValidationError("Embedding output must match the page count exactly.")
+        page_numbers = tuple(page.page_number for page in pages)
+        if tuple(item.page_number for item in batch.embeddings) != page_numbers:
+            raise ValidationError("Embedding output must preserve PDF page order.")
+        dimensions: int | None = None
+        for embedding in batch.embeddings:
+            embedding.validate(dimensions=dimensions)
+            dimensions = len(embedding.vector)
+        if dimensions is None:
+            raise ValidationError("Embedding output is empty.")
+
+    @staticmethod
+    def _assert_binding(*, actual: ModelBinding, expected: ModelBinding) -> None:
+        actual.validate()
+        if actual != expected:
+            raise ValidationError("The model execution did not use the activated provider binding.")
+
+
+class VerifiedProjectionService:
+    def __init__(self, *, writer: VerifiedKnowledgeProjectionWriter) -> None:
+        self._writer = writer
+
+    async def project_shadow_release(
+        self,
+        *,
+        workspace_id: UUID,
+        graph_id: UUID,
+        release_id: UUID,
+        release_hash: str,
+        snapshot: GraphSnapshot,
+    ) -> ProjectionReceipt:
+        if snapshot.content_hash() != release_hash:
+            raise ValidationError(
+                "Projection input does not match the canonical PostgreSQL release."
+            )
+        deployment_id = uuid7()
+        receipt = await self._writer.replace_shadow_release(
+            deployment_id=deployment_id,
+            workspace_id=workspace_id,
+            graph_id=graph_id,
+            release_id=release_id,
+            release_hash=release_hash,
+            snapshot=snapshot,
+        )
+        expected = (
+            deployment_id,
+            workspace_id,
+            graph_id,
+            release_id,
+            release_hash,
+            len(snapshot.nodes),
+            len(snapshot.edges),
+            True,
+        )
+        actual = (
+            receipt.deployment_id,
+            receipt.workspace_id,
+            receipt.graph_id,
+            receipt.release_id,
+            receipt.release_hash,
+            receipt.node_count,
+            receipt.edge_count,
+            receipt.verified,
+        )
+        if actual != expected:
+            raise ValidationError("Neo4j shadow projection verification failed.")
+        return receipt
+
+
+class KnowledgeGraphRagService:
+    def __init__(
+        self,
+        *,
+        retriever: ScopedGraphEvidenceRetriever,
+        composer: KnowledgeAnswerComposer,
+        audit_writer: KnowledgeInferenceAuditWriter,
+    ) -> None:
+        self._retriever = retriever
+        self._composer = composer
+        self._audit_writer = audit_writer
+
+    async def answer(
+        self,
+        *,
+        request_id: str,
+        workspace_id: UUID,
+        graph_id: UUID,
+        release_id: UUID,
+        actor_id: UUID,
+        question: str,
+        start_node_id: UUID | None,
+        direction: str,
+        edge_types: frozenset[str],
+        maximum_classification: int,
+        maximum_hops: int,
+        maximum_nodes: int,
+        binding: ModelBinding,
+    ) -> CitedGraphRagAnswer:
+        normalized_question = " ".join(question.split())
+        if not 2 <= len(normalized_question) <= MAX_QUESTION_CHARACTERS:
+            raise ValidationError("GraphRAG questions must contain between 2 and 4,000 characters.")
+        if not 0 <= maximum_classification <= 3:
+            raise ValidationError("GraphRAG clearance is invalid.")
+        if direction not in {"IN", "OUT", "BOTH"}:
+            raise ValidationError("GraphRAG traversal direction is invalid.")
+        if len(edge_types) > 50:
+            raise ValidationError("GraphRAG edge type filter is too large.")
+        for edge_type in edge_types:
+            invalid_edge_type = (
+                not edge_type or len(edge_type) > 128 or not edge_type.replace("_", "a").isalnum()
+            )
+            if invalid_edge_type:
+                raise ValidationError("GraphRAG edge type filter is invalid.")
+        if not 1 <= maximum_hops <= 3 or not 1 <= maximum_nodes <= 100:
+            raise ValidationError("GraphRAG traversal bounds are invalid.")
+        binding.validate()
+        evidence = await self._retriever.retrieve(
+            workspace_id=workspace_id,
+            graph_id=graph_id,
+            release_id=release_id,
+            question=normalized_question,
+            start_node_id=start_node_id,
+            direction=direction,
+            edge_types=edge_types,
+            maximum_classification=maximum_classification,
+            maximum_hops=maximum_hops,
+            maximum_nodes=maximum_nodes,
+        )
+        if not evidence:
+            raise ValidationError("No authorized evidence is available for this knowledge release.")
+        evidence_by_id = {item.evidence_id: item for item in evidence}
+        if len(evidence_by_id) != len(evidence):
+            raise ValidationError("GraphRAG evidence identifiers must be unique.")
+        for item in evidence:
+            item.validate(maximum_classification=maximum_classification)
+        completion = await self._composer.compose(
+            question=normalized_question,
+            evidence=evidence,
+            binding=binding,
+        )
+        KnowledgeSourcePipeline._assert_binding(actual=completion.binding, expected=binding)
+        cited_ids = tuple(dict.fromkeys(completion.cited_evidence_ids))
+        if not completion.answer.strip() or not cited_ids:
+            raise ValidationError("A GraphRAG answer must contain text and at least one citation.")
+        if any(evidence_id not in evidence_by_id for evidence_id in cited_ids):
+            raise ValidationError(
+                "The model cited evidence outside the authorized retrieval package."
+            )
+        await self._audit_writer.record_success(
+            record=GraphRagAuditRecord(
+                request_id=request_id,
+                workspace_id=workspace_id,
+                graph_id=graph_id,
+                release_id=release_id,
+                actor_id=actor_id,
+                question_sha256=hashlib.sha256(normalized_question.encode()).hexdigest(),
+                evidence_ids=tuple(evidence_by_id),
+                cited_evidence_ids=cited_ids,
+                binding=completion.binding,
+                input_tokens=completion.input_tokens,
+                output_tokens=completion.output_tokens,
+            )
+        )
+        return CitedGraphRagAnswer(
+            answer=completion.answer.strip(),
+            citations=tuple(evidence_by_id[evidence_id] for evidence_id in cited_ids),
+            binding=completion.binding,
+        )

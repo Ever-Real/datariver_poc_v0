@@ -18,7 +18,7 @@ depends_on: str | Sequence[str] | None = None
 def upgrade() -> None:
     op.execute(
         """
-        CREATE FUNCTION iam.resolve_default_workspace(
+        CREATE OR REPLACE FUNCTION iam.resolve_default_workspace(
             p_issuer text,
             p_external_subject text
         )

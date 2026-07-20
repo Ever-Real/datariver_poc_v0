@@ -15,6 +15,7 @@ from sqlalchemy import (
     Text,
     UniqueConstraint,
     Uuid,
+    text,
 )
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -55,10 +56,7 @@ class SubjectModel(Base, UuidPrimaryKeyMixin, TimestampMixin):
 
 class WorkspaceMembershipModel(Base, TimestampMixin, VersionMixin):
     __tablename__ = "workspace_memberships"
-    __table_args__ = (
-        UniqueConstraint("workspace_id", "subject_id"),
-        {"schema": "iam"},
-    )
+    __table_args__ = ({"schema": "iam"},)
 
     workspace_id: Mapped[UUID] = mapped_column(
         Uuid(as_uuid=True),
@@ -75,6 +73,122 @@ class WorkspaceMembershipModel(Base, TimestampMixin, VersionMixin):
     clearance: Mapped[int] = mapped_column(default=0, nullable=False)
     attributes: Mapped[dict[str, Any]] = mapped_column(JSON_DOCUMENT, default=dict, nullable=False)
     active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    # Human memberships expire and are renewed; service accounts use an operator-managed
+    # lifecycle and therefore retain a NULL expiry rather than a fabricated far-future date.
+    access_expires_at: Mapped[datetime | None]
+
+
+class MembershipRenewalRequestModel(Base, UuidPrimaryKeyMixin, TimestampMixin, VersionMixin):
+    """A self-requested, independently approved six-month membership extension."""
+
+    __tablename__ = "membership_renewal_requests"
+    __table_args__ = (
+        UniqueConstraint("workspace_id", "id"),
+        ForeignKeyConstraint(
+            ("workspace_id", "target_subject_id"),
+            ("iam.workspace_memberships.workspace_id", "iam.workspace_memberships.subject_id"),
+            ondelete="RESTRICT",
+            name="fk_membership_renewals_target_membership",
+        ),
+        ForeignKeyConstraint(
+            ("workspace_id", "requester_id"),
+            ("iam.workspace_memberships.workspace_id", "iam.workspace_memberships.subject_id"),
+            ondelete="RESTRICT",
+            name="fk_membership_renewals_requester_membership",
+        ),
+        ForeignKeyConstraint(
+            ("workspace_id", "checker_id"),
+            ("iam.workspace_memberships.workspace_id", "iam.workspace_memberships.subject_id"),
+            ondelete="RESTRICT",
+            name="fk_membership_renewals_checker_membership",
+        ),
+        CheckConstraint("requester_id = target_subject_id", name="self_request"),
+        CheckConstraint("state IN ('PENDING', 'APPROVED', 'REJECTED')", name="state"),
+        CheckConstraint("requested_expires_at > current_expires_at", name="extension_positive"),
+        CheckConstraint(
+            "checker_id IS NULL OR checker_id <> target_subject_id",
+            name="independent_checker",
+        ),
+        CheckConstraint(
+            "(state = 'PENDING' AND checker_id IS NULL AND decision_reason IS NULL "
+            "AND decision_policy_decision_id IS NULL AND decided_at IS NULL) OR "
+            "(state IN ('APPROVED', 'REJECTED') AND checker_id IS NOT NULL "
+            "AND decision_reason IS NOT NULL AND decision_policy_decision_id IS NOT NULL "
+            "AND decided_at IS NOT NULL)",
+            name="state_shape",
+        ),
+        Index(
+            "ix_membership_renewals_workspace_state_created",
+            "workspace_id",
+            "state",
+            "created_at",
+        ),
+        Index(
+            "uq_membership_renewals_pending_subject",
+            "workspace_id",
+            "target_subject_id",
+            unique=True,
+            postgresql_where=text("state = 'PENDING'"),
+        ),
+        {"schema": "iam"},
+    )
+
+    workspace_id: Mapped[UUID] = mapped_column(
+        Uuid(as_uuid=True),
+        ForeignKey("platform.workspaces.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    target_subject_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), nullable=False)
+    requester_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), nullable=False)
+    reason: Mapped[str] = mapped_column(String(4000), nullable=False)
+    current_expires_at: Mapped[datetime] = mapped_column(nullable=False)
+    requested_expires_at: Mapped[datetime] = mapped_column(nullable=False)
+    state: Mapped[str] = mapped_column(String(20), nullable=False)
+    checker_id: Mapped[UUID | None] = mapped_column(Uuid(as_uuid=True))
+    decision_reason: Mapped[str | None] = mapped_column(String(4000))
+    decision_policy_decision_id: Mapped[UUID | None] = mapped_column(Uuid(as_uuid=True))
+    decided_at: Mapped[datetime | None]
+
+
+class AccessRoleModel(Base, UuidPrimaryKeyMixin, TimestampMixin, VersionMixin):
+    """Workspace-owned RBAC template materialized through governed membership updates."""
+
+    __tablename__ = "access_roles"
+    __table_args__ = (
+        UniqueConstraint("workspace_id", "id"),
+        UniqueConstraint("workspace_id", "role_key"),
+        ForeignKeyConstraint(
+            ("workspace_id", "updated_by"),
+            ("iam.workspace_memberships.workspace_id", "iam.workspace_memberships.subject_id"),
+            ondelete="RESTRICT",
+            name="fk_access_roles_updater",
+        ),
+        CheckConstraint("role_key ~ '^[a-z][a-z0-9-]{1,79}$'", name="role_key_shape"),
+        CheckConstraint("clearance BETWEEN 0 AND 3", name="clearance_range"),
+        Index("ix_access_roles_workspace_active_name", "workspace_id", "active", "name"),
+        {"schema": "iam"},
+    )
+
+    workspace_id: Mapped[UUID] = mapped_column(
+        Uuid(as_uuid=True),
+        ForeignKey("platform.workspaces.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    role_key: Mapped[str] = mapped_column(String(80), nullable=False)
+    name: Mapped[str] = mapped_column(String(255), nullable=False)
+    description: Mapped[str] = mapped_column(Text, default="", nullable=False)
+    clearance: Mapped[int] = mapped_column(Integer, nullable=False)
+    groups: Mapped[list[str]] = mapped_column(JSON_DOCUMENT, default=list, nullable=False)
+    allowed_actions: Mapped[list[str]] = mapped_column(JSON_DOCUMENT, default=list, nullable=False)
+    denied_actions: Mapped[list[str]] = mapped_column(JSON_DOCUMENT, default=list, nullable=False)
+    allowed_system_ids: Mapped[list[str]] = mapped_column(
+        JSON_DOCUMENT, default=list, nullable=False
+    )
+    allowed_domain_ids: Mapped[list[str]] = mapped_column(
+        JSON_DOCUMENT, default=list, nullable=False
+    )
+    active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    updated_by: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), nullable=False)
 
 
 class DataSystemModel(Base, UuidPrimaryKeyMixin, TimestampMixin, VersionMixin):
@@ -193,6 +307,10 @@ class ExternalServiceProfileModel(Base, UuidPrimaryKeyMixin, TimestampMixin, Ver
             "secret_reference IS NULL OR length(trim(secret_reference)) > 0",
             name="secret_reference_present",
         ),
+        CheckConstraint(
+            "activated_version IS NULL OR (activated_version > 0 AND activated_version <= version)",
+            name="activated_version_range",
+        ),
         Index("ix_external_service_profiles_workspace_active", "workspace_id", "active"),
         {"schema": "platform"},
     )
@@ -209,7 +327,99 @@ class ExternalServiceProfileModel(Base, UuidPrimaryKeyMixin, TimestampMixin, Ver
     secret_reference: Mapped[str | None] = mapped_column(String(512))
     configuration_yaml: Mapped[str] = mapped_column(Text, default="", nullable=False)
     active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    activated_version: Mapped[int | None] = mapped_column(Integer)
     updated_by: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), nullable=False)
+
+
+class ExternalServiceProfileVersionModel(Base, UuidPrimaryKeyMixin, TimestampMixin):
+    """Immutable configuration revision plus TEST and activation evidence."""
+
+    __tablename__ = "external_service_profile_versions"
+    __table_args__ = (
+        UniqueConstraint("workspace_id", "id"),
+        UniqueConstraint("workspace_id", "profile_id", "configuration_version"),
+        ForeignKeyConstraint(
+            ("workspace_id", "profile_id"),
+            (
+                "platform.external_service_profiles.workspace_id",
+                "platform.external_service_profiles.id",
+            ),
+            ondelete="CASCADE",
+            name="fk_external_service_profile_versions_profile",
+        ),
+        ForeignKeyConstraint(
+            ("workspace_id", "created_by"),
+            ("iam.workspace_memberships.workspace_id", "iam.workspace_memberships.subject_id"),
+            ondelete="RESTRICT",
+            name="fk_external_service_profile_versions_creator",
+        ),
+        ForeignKeyConstraint(
+            ("workspace_id", "tested_by"),
+            ("iam.workspace_memberships.workspace_id", "iam.workspace_memberships.subject_id"),
+            ondelete="RESTRICT",
+            name="fk_external_service_profile_versions_tester",
+        ),
+        ForeignKeyConstraint(
+            ("workspace_id", "activated_by"),
+            ("iam.workspace_memberships.workspace_id", "iam.workspace_memberships.subject_id"),
+            ondelete="RESTRICT",
+            name="fk_external_service_profile_versions_activator",
+        ),
+        CheckConstraint("configuration_version > 0", name="configuration_version_positive"),
+        CheckConstraint("configuration_hash ~ '^[0-9a-f]{64}$'", name="configuration_hash_sha256"),
+        CheckConstraint(
+            "test_status IS NULL OR test_status IN "
+            "('AVAILABLE', 'AUTHENTICATION_REQUIRED', 'UNAVAILABLE')",
+            name="test_status_vocabulary",
+        ),
+        CheckConstraint(
+            "test_scope IS NULL OR test_scope IN "
+            "('HTTP_HEALTH', 'MODEL_DISCOVERY', 'MODEL_INFERENCE', "
+            "'EMBEDDING_INFERENCE', 'AUTHENTICATED_QUERY')",
+            name="test_scope_vocabulary",
+        ),
+        CheckConstraint(
+            "test_latency_ms IS NULL OR test_latency_ms >= 0", name="latency_non_negative"
+        ),
+        CheckConstraint(
+            "(test_status IS NULL AND test_scope IS NULL AND test_latency_ms IS NULL "
+            "AND tested_at IS NULL AND tested_by IS NULL) OR "
+            "(test_status IS NOT NULL AND test_scope IS NOT NULL AND test_latency_ms IS NOT NULL "
+            "AND tested_at IS NOT NULL AND tested_by IS NOT NULL)",
+            name="test_evidence_shape",
+        ),
+        CheckConstraint(
+            "(activated_at IS NULL AND activated_by IS NULL) OR "
+            "(activated_at IS NOT NULL AND activated_by IS NOT NULL AND test_status = 'AVAILABLE')",
+            name="activation_evidence_shape",
+        ),
+        Index(
+            "ix_external_service_profile_versions_workspace_profile",
+            "workspace_id",
+            "profile_id",
+            "configuration_version",
+        ),
+        {"schema": "platform"},
+    )
+
+    workspace_id: Mapped[UUID] = mapped_column(
+        Uuid(as_uuid=True),
+        ForeignKey("platform.workspaces.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    profile_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), nullable=False)
+    configuration_version: Mapped[int] = mapped_column(Integer, nullable=False)
+    configuration_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    configuration_yaml: Mapped[str] = mapped_column(Text, nullable=False)
+    endpoint_url: Mapped[str | None] = mapped_column(String(2048))
+    created_by: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), nullable=False)
+    test_status: Mapped[str | None] = mapped_column(String(32))
+    test_scope: Mapped[str | None] = mapped_column(String(32))
+    test_latency_ms: Mapped[int | None] = mapped_column(Integer)
+    tested_at: Mapped[datetime | None]
+    tested_by: Mapped[UUID | None] = mapped_column(Uuid(as_uuid=True))
+    activated_at: Mapped[datetime | None]
+    activated_by: Mapped[UUID | None] = mapped_column(Uuid(as_uuid=True))
 
 
 class AdminAccessRequestModel(Base, UuidPrimaryKeyMixin, TimestampMixin, VersionMixin):
