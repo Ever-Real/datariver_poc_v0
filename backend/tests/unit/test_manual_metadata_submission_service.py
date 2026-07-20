@@ -165,6 +165,8 @@ class _Uow:
 
 def _fixture(
     denied: Action | None = None,
+    *,
+    asset_type: str = "DATASET",
 ) -> tuple[
     ManualMetadataSubmissionService,
     _Store,
@@ -180,7 +182,7 @@ def _fixture(
         asset_id=uuid4(),
         workspace_id=workspace_id,
         external_urn="urn:li:dataset:(urn:li:dataPlatform:postgres,wafer,PROD)",
-        asset_type="DATASET",
+        asset_type=asset_type,
         name="wafer",
         description="Current wafer metadata",
         platform="postgres",
@@ -220,8 +222,11 @@ def _fixture(
 
 
 @pytest.mark.asyncio
-async def test_manual_submission_writes_server_owned_csv_and_queues_an_independent_event() -> None:
-    service, store, uow, subject, environment, actions, asset_id = _fixture()
+@pytest.mark.parametrize("asset_type", ["DATASET", "TABLE", "VIEW"])
+async def test_manual_submission_writes_server_owned_csv_and_queues_an_independent_event(
+    asset_type: str,
+) -> None:
+    service, store, uow, subject, environment, actions, asset_id = _fixture(asset_type=asset_type)
 
     submission = await service.submit(
         asset_id=asset_id,

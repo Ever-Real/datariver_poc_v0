@@ -131,12 +131,14 @@ async def test_mark_accepted_returns_true_only_after_transaction_commit(
         manifest=manifest,
         accepted_bucket="accepted",
         accepted_object_key="accepted-object",
+        validated_sha256=manifest.declared_sha256,
         validation_summary={"sha256": manifest.declared_sha256},
     )
 
     assert committed is True
     assert session.events == ["session-enter", "transaction-enter", "commit", "session-exit"]
     assert model.state == UploadState.ACCEPTED.value
+    assert model.actual_sha256 == manifest.declared_sha256
     assert model.version == manifest.version + 1
     assert len(session.outbox_events) == 1
 
@@ -162,6 +164,7 @@ async def test_mark_accepted_returns_false_for_stale_or_missing_manifest(
         manifest=manifest,
         accepted_bucket="accepted",
         accepted_object_key="accepted-object",
+        validated_sha256=manifest.declared_sha256,
         validation_summary={"sha256": manifest.declared_sha256},
     )
 

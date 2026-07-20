@@ -1,0 +1,427 @@
+from __future__ import annotations
+
+import hashlib
+import json
+from collections.abc import Mapping
+from typing import Any
+from uuid import uuid4
+
+import httpx
+import pytest
+
+from datariver.application.errors import ExternalDependencyError
+from datariver.domain.common import ValidationError
+from datariver.domain.knowledge_pipeline import GraphRagEvidence, ModelBinding, PdfPage
+from datariver.infrastructure.knowledge.openai_compatible import (
+    HttpxOpenAIJsonTransport,
+    OpenAICompatibleEmbeddingProvider,
+    OpenAICompatibleKnowledgeAnswerComposer,
+    OpenAICompatibleTypedKnowledgeExtractor,
+)
+
+
+class _Transport:
+    def __init__(self, response: Mapping[str, Any]) -> None:
+        self.response = response
+        self.calls: list[tuple[str, Mapping[str, object]]] = []
+
+    async def post_json(self, *, path: str, document: Mapping[str, object]) -> Mapping[str, Any]:
+        self.calls.append((path, document))
+        return self.response
+
+
+def _binding(model: str) -> ModelBinding:
+    return ModelBinding("ollama", model, "knowledge-v1", "knowledge-schema-v1")
+
+
+def test_model_binding_records_deployment_or_activated_configuration_revision() -> None:
+    deployment = ModelBinding.activated(
+        provider="ollama",
+        model="gemma4:latest",
+        prompt_version="knowledge-v1",
+        tool_schema_version="knowledge-schema-v1",
+        configuration_version=None,
+        configuration_hash=None,
+        adapter_contract="openai-compatible-chat-json-schema-v1",
+    )
+    activated = ModelBinding.activated(
+        provider="ollama",
+        model="gemma4:latest",
+        prompt_version="knowledge-v1",
+        tool_schema_version="knowledge-schema-v1",
+        configuration_version=7,
+        configuration_hash="c" * 64,
+        adapter_contract="openai-compatible-chat-json-schema-v1",
+    )
+
+    assert deployment.configuration_source == "DEPLOYMENT"
+    assert deployment.configuration_version is None
+    assert deployment.configuration_hash is not None
+    assert len(deployment.configuration_hash) == 64
+    assert activated.configuration_source == "SYSTEM_CONFIGURATION"
+    assert activated.configuration_version == 7
+    assert activated.configuration_hash == "c" * 64
+
+
+@pytest.mark.asyncio
+async def test_embedding_provider_preserves_page_order_and_actual_binding() -> None:
+    transport = _Transport(
+        {
+            "data": [
+                {"index": 1, "embedding": [0.3, 0.4]},
+                {"index": 0, "embedding": [0.1, 0.2]},
+            ],
+            "usage": {"prompt_tokens": 9},
+        }
+    )
+    binding = _binding("bge-m3:latest")
+
+    result = await OpenAICompatibleEmbeddingProvider(transport=transport).embed_pages(
+        pages=(
+            PdfPage.create(page_number=1, text="one"),
+            PdfPage.create(page_number=2, text="two"),
+        ),
+        binding=binding,
+    )
+
+    assert result.binding == binding
+    assert [item.vector for item in result.embeddings] == [(0.1, 0.2), (0.3, 0.4)]
+    assert transport.calls[0][0] == "/embeddings"
+
+
+@pytest.mark.asyncio
+async def test_extractor_uses_fixed_json_schema_and_typed_page_evidence() -> None:
+    content = json.dumps(
+        {
+            "nodes": [
+                {
+                    "local_key": "WaferFab",
+                    "entity_type": "Facility",
+                    "properties": {"name": "Wafer fab"},
+                    "classification": 2,
+                    "evidence_id": "p00001_u0001",
+                    "confidence": 0.9,
+                },
+                {
+                    "local_key": "LithographyTool",
+                    "entity_type": "Tool",
+                    "properties": {"name": "Lithography tool"},
+                    "classification": 2,
+                    "evidence_id": "p00001_u0001",
+                    "confidence": 0.9,
+                },
+            ],
+            "edges": [
+                {
+                    "local_key": "FabUsesTool",
+                    "source_key": "WaferFab",
+                    "target_key": "LithographyTool",
+                    "edge_type": "USES",
+                    "properties": {},
+                    "classification": 2,
+                    "evidence_id": "p00001_u0001",
+                    "confidence": 0.88,
+                }
+            ],
+        }
+    )
+    transport = _Transport(
+        {
+            "choices": [{"message": {"content": content}}],
+            "usage": {"prompt_tokens": 30, "completion_tokens": 20},
+        }
+    )
+
+    result = await OpenAICompatibleTypedKnowledgeExtractor(transport=transport).propose(
+        pages=(PdfPage.create(page_number=1, text="Wafer fab uses a lithography tool"),),
+        entity_types=frozenset({"Facility", "Tool"}),
+        edge_types=frozenset({"USES"}),
+        binding=_binding("gemma4:latest"),
+    )
+
+    request = transport.calls[0][1]
+    response_format = request["response_format"]
+    assert isinstance(response_format, dict)
+    assert response_format["type"] == "json_schema"
+    json_schema = response_format["json_schema"]
+    assert isinstance(json_schema, dict)
+    assert request["max_tokens"] == 2_048
+    schema = json_schema["schema"]
+    assert isinstance(schema, dict)
+    properties = schema["properties"]
+    assert isinstance(properties, dict)
+    nodes_schema = properties["nodes"]
+    edges_schema = properties["edges"]
+    assert isinstance(nodes_schema, dict)
+    assert isinstance(edges_schema, dict)
+    assert nodes_schema["maxItems"] == 4
+    assert edges_schema["maxItems"] == 2
+    messages = request["messages"]
+    assert isinstance(messages, list)
+    system_message = messages[0]
+    assert isinstance(system_message, dict)
+    assert "reference exactly one evidence_id" in system_message["content"]
+    assert "must be unique" in system_message["content"]
+    user_document = json.loads(messages[1]["content"])
+    assert user_document["evidence_units"] == [
+        {
+            "evidence_id": "p00001_u0001",
+            "page_number": 1,
+            "text": "Wafer fab uses a lithography tool",
+        }
+    ]
+    assert result.edges[0].source_key == "WaferFab"
+    assert result.edges[0].page_number == 1
+    assert result.edges[0].evidence_text == "Wafer fab uses a lithography tool"
+    assert result.input_tokens == 30
+
+
+@pytest.mark.asyncio
+async def test_extractor_rejects_evidence_ids_not_owned_by_the_server() -> None:
+    transport = _Transport(
+        {
+            "choices": [
+                {
+                    "message": {
+                        "content": json.dumps(
+                            {
+                                "nodes": [
+                                    {
+                                        "local_key": "Fabricated",
+                                        "entity_type": "Facility",
+                                        "properties": {},
+                                        "classification": 2,
+                                        "evidence_id": "invented",
+                                        "confidence": 0.9,
+                                    }
+                                ],
+                                "edges": [],
+                            }
+                        )
+                    }
+                }
+            ]
+        }
+    )
+
+    with pytest.raises(ValidationError, match="unknown page evidence"):
+        await OpenAICompatibleTypedKnowledgeExtractor(transport=transport).propose(
+            pages=(PdfPage.create(page_number=1, text="Grounded source evidence"),),
+            entity_types=frozenset({"Facility"}),
+            edge_types=frozenset(),
+            binding=_binding("gemma4:latest"),
+        )
+
+
+@pytest.mark.asyncio
+async def test_extractor_drops_edges_with_model_invented_endpoints() -> None:
+    transport = _Transport(
+        {
+            "choices": [
+                {
+                    "message": {
+                        "content": json.dumps(
+                            {
+                                "nodes": [
+                                    {
+                                        "local_key": "KnownNode",
+                                        "entity_type": "Facility",
+                                        "properties": {},
+                                        "classification": 2,
+                                        "evidence_id": "p00001_u0001",
+                                        "confidence": 0.9,
+                                    }
+                                ],
+                                "edges": [
+                                    {
+                                        "local_key": "InvalidEdge",
+                                        "source_key": "KnownNode",
+                                        "target_key": "InventedNode",
+                                        "edge_type": "USES",
+                                        "properties": {},
+                                        "classification": 2,
+                                        "evidence_id": "p00001_u0001",
+                                        "confidence": 0.7,
+                                    }
+                                ],
+                            }
+                        )
+                    }
+                }
+            ]
+        }
+    )
+
+    result = await OpenAICompatibleTypedKnowledgeExtractor(transport=transport).propose(
+        pages=(PdfPage.create(page_number=1, text="Grounded source evidence"),),
+        entity_types=frozenset({"Facility"}),
+        edge_types=frozenset({"USES"}),
+        binding=_binding("gemma4:latest"),
+    )
+
+    assert [node.local_key for node in result.nodes] == ["KnownNode"]
+    assert result.edges == ()
+
+
+@pytest.mark.asyncio
+async def test_answer_composer_returns_only_typed_citation_ids() -> None:
+    transport = _Transport(
+        {
+            "choices": [
+                {
+                    "message": {
+                        "content": json.dumps(
+                            {"answer": "근거 기반 답변", "cited_evidence_ids": ["kg:r:n"]}
+                        )
+                    }
+                }
+            ],
+            "usage": {"prompt_tokens": 12, "completion_tokens": 4},
+        }
+    )
+    source_id = uuid4()
+    target_id = uuid4()
+    excerpt = "Wafer fab uses a lithography tool"
+    evidence = GraphRagEvidence(
+        "kg:r:n",
+        uuid4(),
+        "USES",
+        {"criticality": "high"},
+        "private/report.pdf#page=1",
+        "a" * 64,
+        1,
+        2,
+        entity_kind="EDGE",
+        source_entity_id=source_id,
+        target_entity_id=target_id,
+        edge_type="USES",
+        evidence_excerpt=excerpt,
+        evidence_sha256=hashlib.sha256(excerpt.encode()).hexdigest(),
+        source_page_sha256="b" * 64,
+    )
+
+    result = await OpenAICompatibleKnowledgeAnswerComposer(transport=transport).compose(
+        question="Fab은 무엇인가?",
+        evidence=(evidence,),
+        binding=_binding("gemma4:latest"),
+    )
+
+    assert result.cited_evidence_ids == ("kg:r:n",)
+    assert result.binding.model == "gemma4:latest"
+    messages = transport.calls[0][1]["messages"]
+    assert isinstance(messages, list)
+    user_document = json.loads(messages[1]["content"])
+    edge_document = user_document["evidence"][0]
+    assert edge_document["entity_kind"] == "EDGE"
+    assert edge_document["source_entity_id"] == str(source_id)
+    assert edge_document["target_entity_id"] == str(target_id)
+    assert edge_document["edge_type"] == "USES"
+    assert edge_document["evidence_excerpt"] == excerpt
+    assert transport.calls[0][1]["max_tokens"] == 2_048
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("answer", ["   ", "x" * 20_001])
+async def test_answer_composer_enforces_string_bounds_after_provider_parsing(answer: str) -> None:
+    transport = _Transport(
+        {
+            "choices": [
+                {
+                    "message": {
+                        "content": json.dumps(
+                            {"answer": answer, "cited_evidence_ids": ["kg:release:node"]}
+                        )
+                    }
+                }
+            ]
+        }
+    )
+
+    with pytest.raises(ValidationError, match="typed schema"):
+        await OpenAICompatibleKnowledgeAnswerComposer(transport=transport).compose(
+            question="bounded answer",
+            evidence=(),
+            binding=_binding("gemma4:latest"),
+        )
+
+
+def test_http_transport_rejects_endpoints_outside_server_allowlist() -> None:
+    with pytest.raises(ValueError, match="allowlist"):
+        HttpxOpenAIJsonTransport(
+            base_url="http://metadata.internal/v1",
+            allowed_hosts=frozenset({"host.docker.internal"}),
+            api_key=None,
+            timeout_seconds=60,
+        )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("error_type", "provider_code"),
+    [(httpx.ReadTimeout, "TIMEOUT"), (httpx.ConnectError, "NETWORK")],
+)
+async def test_http_transport_maps_retryable_network_failures_without_leaking_details(
+    error_type: type[httpx.RequestError], provider_code: str
+) -> None:
+    async def fail(request: httpx.Request) -> httpx.Response:
+        raise error_type("secret-bearing-provider-detail", request=request)
+
+    transport = HttpxOpenAIJsonTransport(
+        base_url="http://host.docker.internal/v1",
+        allowed_hosts=frozenset({"host.docker.internal"}),
+        api_key="secret-api-key",
+        timeout_seconds=60,
+        transport=httpx.MockTransport(fail),
+    )
+
+    with pytest.raises(ExternalDependencyError) as caught:
+        await transport.post_json(path="/embeddings", document={"input": ["one"]})
+
+    assert caught.value.details["retryable"] is True
+    assert caught.value.details["provider_code"] == provider_code
+    assert "secret" not in caught.value.message
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("status_code", "retryable"), [(503, True), (400, False)])
+async def test_http_transport_classifies_provider_status_without_returning_body(
+    status_code: int, retryable: bool
+) -> None:
+    async def respond(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            status_code,
+            text="secret-bearing-response-body",
+            request=request,
+        )
+
+    transport = HttpxOpenAIJsonTransport(
+        base_url="http://host.docker.internal/v1",
+        allowed_hosts=frozenset({"host.docker.internal"}),
+        api_key=None,
+        timeout_seconds=60,
+        transport=httpx.MockTransport(respond),
+    )
+
+    with pytest.raises(ExternalDependencyError) as caught:
+        await transport.post_json(path="/chat/completions", document={"messages": []})
+
+    assert caught.value.details["retryable"] is retryable
+    assert caught.value.details["provider_code"] == f"HTTP_{status_code}"
+    assert "secret-bearing" not in caught.value.message
+
+
+@pytest.mark.asyncio
+async def test_http_transport_treats_invalid_success_json_as_contract_validation() -> None:
+    async def respond(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, text="not-json", request=request)
+
+    transport = HttpxOpenAIJsonTransport(
+        base_url="http://host.docker.internal/v1",
+        allowed_hosts=frozenset({"host.docker.internal"}),
+        api_key=None,
+        timeout_seconds=60,
+        transport=httpx.MockTransport(respond),
+    )
+
+    with pytest.raises(ValidationError, match="valid JSON object"):
+        await transport.post_json(path="/embeddings", document={"input": ["one"]})

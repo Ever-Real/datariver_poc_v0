@@ -39,7 +39,13 @@ class _DataHub:
                         "fieldPath": "wafer_id",
                         "description": "legacy identifier",
                         "globalTags": {"tags": []},
-                        "glossaryTerms": {"terms": []},
+                        "glossaryTerms": {
+                            "auditStamp": {
+                                "actor": "urn:li:corpuser:__datahub_system",
+                                "time": 0,
+                            },
+                            "terms": [],
+                        },
                     },
                     {
                         "fieldPath": "measured_at",
@@ -234,13 +240,44 @@ async def test_airflow_apply_verifies_csv_then_merges_all_typed_aspects() -> Non
         "schemaMetadata",
     ]
     assert datahub.documents["datasetProperties"]["description"] == "Verified wafer measurements."
+    assert datahub.documents["domains"]["domains"] == ["urn:li:domain:manufacturing"]
     assert datahub.documents["globalTags"]["tags"] == [{"tag": "urn:li:tag:tier%3Agold"}]
     wafer_id = datahub.documents["schemaMetadata"]["fields"][0]
     assert wafer_id["description"] == "Business identifier."
     assert wafer_id["globalTags"]["tags"] == [{"tag": "urn:li:tag:identifier"}]
+    assert wafer_id["glossaryTerms"]["auditStamp"] == {
+        "actor": "urn:li:corpuser:__datahub_system",
+        "time": 0,
+    }
     assert [event.event_type for event in uow.outbox.events] == [
         "registration.manual_metadata.applied.v1"
     ]
+
+
+def test_empty_controlled_refs_preserve_an_absent_optional_aspect() -> None:
+    document: dict[str, Any] = {}
+
+    ManualMetadataApplyService._set_controlled_refs(
+        document,
+        field="domains",
+        nested=None,
+        refs=(),
+    )
+
+    assert document == {}
+
+
+def test_empty_controlled_refs_preserve_provider_empty_list_shape() -> None:
+    document: dict[str, Any] = {"domains": []}
+
+    ManualMetadataApplyService._set_controlled_refs(
+        document,
+        field="domains",
+        nested=None,
+        refs=(),
+    )
+
+    assert document == {"domains": []}
 
 
 @pytest.mark.asyncio

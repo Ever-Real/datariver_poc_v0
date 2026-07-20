@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { ApiClient } from '../../api/client'
 import { AdminPage } from './AdminPage'
@@ -16,7 +16,7 @@ describe('AdminPage mutation safety', () => {
       if (url.endsWith('/admin/me')) return Promise.resolve(json({
         subject_id: 'admin-one', workspace_id: 'workspace-one', display_name: 'Administrator',
         authentication_assurance: 'HARDWARE_WEBAUTHN', fallback_enabled: false,
-        allowed_operations: ['MEMBERSHIP_ACCESS_READ', 'MEMBERSHIP_ACCESS_UPDATE', 'SYSTEM_ASSIGNMENT_UPDATE'],
+        allowed_operations: ['MEMBERSHIP_ACCESS_READ', 'MEMBERSHIP_ACCESS_UPDATE', 'SYSTEM_ASSIGNMENT_UPDATE', 'SYSTEM_CONFIGURATION_READ'],
         action_vocabulary: ['admin.manage', 'catalog.read'],
       }))
       if (url.endsWith('/admin/workspace-memberships?limit=100')) return Promise.resolve(json({ items: [{
@@ -34,7 +34,8 @@ describe('AdminPage mutation safety', () => {
       }] }))
       if (url.endsWith('/admin/system-configuration')) return Promise.resolve(json({ items: [{
         system_id: 'GRAFANA_DASHBOARD', label: 'Grafana Dashboard', state: 'CONFIGURED', management_plane: 'DEPLOYMENT',
-        secret_reference_configured: false, embedding_state: 'DISABLED',
+        secret_reference_configured: false, embedding_state: 'DISABLED', configuration_yaml: '',
+        template_yaml: '', display_yaml: '', version: 0, configured_at: null,
       }] }))
       if (url.endsWith('/admin/workspace-memberships/target-one/access') && init?.method === 'PUT') {
         return Promise.resolve(json({
@@ -61,29 +62,37 @@ describe('AdminPage mutation safety', () => {
 
     expect(await screen.findByText('Target User')).toBeInTheDocument()
     expect(screen.getByRole('table', { name: '워크스페이스 사용자 목록' })).toBeInTheDocument()
-    expect(screen.getByText(/OIDC 주체와 현재 Workspace 멤버십만 표시합니다/)).toBeInTheDocument()
-    fireEvent.click(screen.getByRole('button', { name: /시스템|Systems/ }))
+    expect(screen.getByText(/OIDC 주체와 현재 Workspace 멤버십, 소유 테이블 및 CR 이력을 표시합니다/)).toBeInTheDocument()
+    fireEvent.change(screen.getByRole('searchbox', { name: '사용자 검색' }), { target: { value: 'missing' } })
+    expect(screen.getByText(/조회 가능한 항목이 없습니다|No authorized items are available/)).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: '필터 초기화' }))
+    expect(screen.getAllByText('Target User')).toHaveLength(2)
+    const accountTabs = screen.getByRole('tablist', { name: '계정/권한 관리 영역' })
+    expect(within(accountTabs).getByRole('tab', { name: 'USERS' })).toBeInTheDocument()
+    expect(screen.getByRole('tab', { name: 'Role 정의·할당' })).toBeInTheDocument()
+    fireEvent.click(within(accountTabs).getByRole('tab', { name: 'SYSTEMS' }))
     await screen.findByText('Fabrication')
     expect(screen.getAllByText('1. Target User')).toHaveLength(2)
     expect(screen.getByRole('table', { name: '워크스페이스 시스템 목록' })).toBeInTheDocument()
-    const updateAssignments = await screen.findByRole('button', { name: '보안키로 담당자 변경' })
+    const updateAssignments = await screen.findByRole('button', { name: '설정 저장' })
     await waitFor(() => expect(updateAssignments).toBeEnabled())
     fireEvent.click(updateAssignments)
     expect(await screen.findByText('시스템 담당자 배정 변경')).toBeInTheDocument()
     expect(fetchMock.mock.calls.filter(([, init]) => init?.method === 'PUT')).toHaveLength(0)
     fireEvent.click(screen.getByRole('button', { name: /취소|Cancel/ }))
-    fireEvent.click(screen.getByRole('button', { name: /시스템 설정|System settings/ }))
+    fireEvent.click(screen.getByRole('tab', { name: /시스템 설정|System settings/ }))
     expect(await screen.findByRole('heading', { name: 'Grafana Dashboard' })).toBeInTheDocument()
-    expect(screen.getByText('운영 배포 설정')).toBeInTheDocument()
-    expect(screen.getByText(/YAML·endpoint·password를 편집하거나 연결을 시험하지 않습니다/)).toBeInTheDocument()
-    fireEvent.click(screen.getByRole('button', { name: /계정·권한|Accounts & access/ }))
+    expect(screen.getByText('배포 설정')).toBeInTheDocument()
+    expect(screen.getByText(/이 환경에서는 설정 YAML을 편집할 수 없습니다/)).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('tab', { name: /계정\/권한|Accounts & access/ }))
+    fireEvent.click(within(screen.getByRole('tablist', { name: '계정/권한 관리 영역' })).getByRole('tab', { name: 'USERS' }))
     const update = await screen.findByRole('button', { name: /보안키로 직접 변경|Update with security key/ })
     expect(screen.queryByRole('button', { name: /보존정책|Retention policies/ })).not.toBeInTheDocument()
     fireEvent.click(update)
     expect(fetchMock.mock.calls.filter(([, init]) => init?.method === 'PUT')).toHaveLength(0)
 
     fireEvent.click(screen.getByRole('button', { name: /확인 후 실행|Review and execute/ }))
-    await screen.findByText('USB 보안키 인증이 필요합니다.')
+    await screen.findByText('WebAuthn 보안키 인증이 필요합니다.')
     expect(fetchMock.mock.calls.filter(([, init]) => init?.method === 'PUT')).toHaveLength(1)
 
     fireEvent.click(screen.getByRole('button', { name: '보안키로 인증' }))

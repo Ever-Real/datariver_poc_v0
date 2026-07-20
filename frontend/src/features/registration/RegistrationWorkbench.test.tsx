@@ -8,6 +8,7 @@ import type {
   UploadRecord,
 } from '../../api/types'
 import { RegistrationPage } from './RegistrationPage'
+import { supportedContentType } from './RegistrationBulkWorkbench'
 import { RegistrationManualWorkbench } from './RegistrationManualWorkbench'
 
 const emptyTree = {
@@ -74,6 +75,11 @@ afterEach(() => {
 })
 
 describe('Registration workbench', () => {
+  it('accepts PDF as a format-only Knowledge source media type', () => {
+    expect(supportedContentType({ name: 'semiconductor-outlook.pdf', type: '' }))
+      .toBe('application/pdf')
+  })
+
   it('opens in a governed manual catalog workbench', async () => {
     const request = vi.fn((path: string, options?: RequestOptions) => {
       void path
@@ -118,6 +124,7 @@ describe('Registration workbench', () => {
         glossaryTerms: { terms: [{ term: { name: 'record_identifier' } }] },
       }],
       quality: {},
+      projection_source_version: 'projection-1',
       source_version: 'source-1',
     }
     const submissions: RequestOptions[] = []
@@ -172,6 +179,13 @@ describe('Registration workbench', () => {
     await waitFor(() => expect(submissions).toHaveLength(1))
     expect(submissions[0]?.method).toBe('POST')
     expect(submissions[0]?.idempotencyKey).toMatch(/^manual-metadata-/)
+    const submittedBody = submissions[0]?.body
+    expect(typeof submittedBody).toBe('string')
+    if (typeof submittedBody !== 'string') throw new Error('Expected a serialized request body.')
+    expect(JSON.parse(submittedBody)).toMatchObject({
+      asset_id: 'asset-1',
+      source_version: 'projection-1',
+    })
     expect(screen.getByText(/제출 #3이 2개 행으로 저장되었습니다/)).toBeInTheDocument()
   })
 
@@ -365,6 +379,37 @@ describe('Registration workbench', () => {
     expect(bindingStage).not.toBeNull()
     expect(within(bindingStage as HTMLElement).getByText('진행 중')).toBeInTheDocument()
     expect(request.mock.calls.some(([path]) => path.includes('/registration-proposals'))).toBe(false)
+  })
+
+  it('refreshes the selected upload detail with the latest server state', async () => {
+    const queued = uploadRecord(
+      'COMPLETION_QUEUED',
+      'dataset-description.xlsx',
+      'DATASET_DESCRIPTION_XLSX_V1',
+    )
+    const accepted = { ...queued, state: 'ACCEPTED', version: 6 }
+    let loadCount = 0
+    const request = vi.fn((path: string) => {
+      if (path.startsWith('/catalog/tree')) return Promise.resolve(emptyTree)
+      if (path === '/uploads?limit=50') {
+        loadCount += 1
+        return Promise.resolve({ items: [loadCount === 1 ? queued : accepted] })
+      }
+      if (path === '/uploads/upload-1/preparations?limit=20') {
+        return Promise.resolve({ items: [] })
+      }
+      throw new Error(`unexpected request: ${path}`)
+    })
+
+    render(<RegistrationPage client={clientWith(request)} />)
+    fireEvent.click(screen.getByRole('tab', { name: /BULK/ }))
+    fireEvent.click(await screen.findByRole('button', { name: /dataset-description.xlsx/ }))
+    expect(screen.getByText('Version').nextElementSibling).toHaveTextContent('3')
+
+    fireEvent.click(screen.getByRole('button', { name: '목록 새로고침' }))
+
+    await waitFor(() => expect(screen.getByText('Version').nextElementSibling).toHaveTextContent('6'))
+    expect(screen.getAllByText('ACCEPTED').length).toBeGreaterThan(0)
   })
 
   it('renders determinate server progress without inventing completion', async () => {

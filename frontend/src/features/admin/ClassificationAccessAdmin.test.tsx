@@ -95,8 +95,9 @@ describe('ClassificationPolicyAdmin', () => {
     await waitFor(() => expect(api.listClassificationAccessPolicies).toHaveBeenCalledOnce())
     expect(screen.getByLabelText('승인 관할')).toHaveValue('')
     expect(screen.getByLabelText('RESTRICTED Grant 최대 일수')).toHaveValue(null)
+    expect(screen.getByRole('table', { name: '데이터 분류 접근 정책' })).toBeInTheDocument()
     for (const classification of ['PUBLIC', 'INTERNAL', 'CONFIDENTIAL', 'RESTRICTED']) {
-      expect(screen.getByRole('region', { name: classification })).toBeInTheDocument()
+      expect(screen.getByRole('row', { name: new RegExp(`^${classification}`) })).toBeInTheDocument()
       expect(screen.getByLabelText(`${classification} Search 모드`)).toBeInTheDocument()
       expect(screen.getByLabelText(`${classification} Chat 모드`)).toBeInTheDocument()
     }
@@ -161,7 +162,12 @@ describe('RestrictedSearchGrantAdmin', () => {
         membership_active: true, department_id: null, job_function: 'ENGINEER',
         clearance: 'RESTRICTED', membership_version: 1, email: null, last_login_at: null,
         last_login_ip: null, owned_table_count: 0, change_request_count: 0,
+        access_expires_at: '2027-01-20T00:00:00Z',
+        renewal_eligible_at: '2026-12-21T00:00:00Z', access_expired: false,
+        renewal_request_eligible: false,
+        pending_renewal_request_id: null,
       } satisfies WorkspaceMembershipSummary])),
+      listSystems: vi.fn(() => Promise.resolve([])),
       getCurrentClassificationAccessPolicy: vi.fn(() => Promise.resolve(policy())),
     }
     render(<RestrictedSearchGrantAdmin {...props(api)} />)

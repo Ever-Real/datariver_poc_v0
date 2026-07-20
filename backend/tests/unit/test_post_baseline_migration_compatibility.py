@@ -25,6 +25,7 @@ MIGRATIONS: tuple[MigrationCase, ...] = (
         "_assert_chat_retention_binding_contract",
     ),
     ("0019_catalog_display_metadata_projection.py", "add_column", None),
+    ("0021_catalog_column_name_projection.py", "add_column", None),
     ("0022_cr_schedule_and_system_master.py", "add_column", "_install_security_contract"),
     (
         "0023_manual_metadata_submissions.py",
@@ -32,6 +33,38 @@ MIGRATIONS: tuple[MigrationCase, ...] = (
         "_install_security_contract",
     ),
     ("0024_manual_metadata_apply_leases.py", "add_column", None),
+    (
+        "0027_change_request_attachments.py",
+        "create_table",
+        "_install_security_contract",
+    ),
+    ("0031_workspace_access_roles.py", "create_table", None),
+    (
+        "0032_membership_renewal_workflow.py",
+        "add_column",
+        "_install_security_contract",
+    ),
+    ("0033_change_workflow_role_evidence.py", "add_column", None),
+    (
+        "0034_system_configuration_activation.py",
+        "add_column",
+        "_install_security_contract",
+    ),
+    (
+        "0035_change_request_rounds_and_test_evidence.py",
+        "create_table",
+        "_install_security_contract",
+    ),
+    (
+        "0036_typed_xlsx_bulk_registration.py",
+        "drop_constraint",
+        "_install_security_contract",
+    ),
+    (
+        "0037_knowledge_source_graphrag_projection.py",
+        "add_column",
+        "_install_security_contract",
+    ),
 )
 
 

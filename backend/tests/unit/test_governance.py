@@ -8,16 +8,20 @@ from datariver.domain.common import ConflictError, ValidationError
 from datariver.domain.governance import (
     CHANGE_INTAKE_ASPECT,
     MANUAL_DATASET_INTAKE_TARGET,
+    ApprovalAuthority,
+    ApprovalAuthorityKind,
     ApprovalDecision,
     ChangeItem,
     ChangeRequest,
     ChangeState,
+    ChangeTestRunState,
     change_target_binding_hash,
 )
 
 
 def make_request() -> ChangeRequest:
     asset_id = uuid4()
+    system_id = uuid4()
     target_ref = "urn:li:dataset:test"
     return ChangeRequest.create(
         workspace_id=uuid4(),
@@ -37,6 +41,7 @@ def make_request() -> ChangeRequest:
                 before_hash="b" * 64,
                 target_asset_id=asset_id,
                 target_asset_type="DATASET",
+                target_system_id=system_id,
                 target_classification=Classification.INTERNAL,
                 target_lifecycle="ACTIVE",
                 target_source_version="1",
@@ -45,12 +50,13 @@ def make_request() -> ChangeRequest:
                     target_ref=target_ref,
                     asset_id=asset_id,
                     asset_type="DATASET",
-                    system_id=None,
+                    system_id=system_id,
                     domain_id=None,
                     owner_department_id=None,
                     classification=Classification.INTERNAL,
                     lifecycle="ACTIVE",
                 ),
+                routing_system_id=system_id,
             )
         ],
     )
@@ -66,6 +72,46 @@ def move_to_final_review(request: ChangeRequest) -> None:
         policy_decision_id=decision,
         expected_version=request.version,
     )
+    developer_authorities = tuple(
+        ApprovalAuthority(ApprovalAuthorityKind.SYSTEM_DEVELOPER, system_id)
+        for system_id in request.required_system_ids()
+    )
+    request.add_approval(
+        stage="REVIEW",
+        decision=ApprovalDecision.APPROVED,
+        actor_id=actor,
+        reason="All target systems reviewed.",
+        policy_decision_id=decision,
+        expected_version=request.version,
+        authorities=developer_authorities,
+    )
+    request.transition(
+        target=ChangeState.TESTING,
+        actor_id=actor,
+        reason="Review approvals complete.",
+        policy_decision_id=decision,
+        expected_version=request.version,
+    )
+    for system_id in request.required_system_ids():
+        request.record_test_run(
+            system_id=system_id,
+            attachment_id=uuid4(),
+            state=ChangeTestRunState.PASSED,
+            plan_hash="c" * 64,
+            result_hash="d" * 64,
+            bounded_summary={"contract": "CR_TEST_ATTACHMENT_V1"},
+            actor_id=actor,
+            expected_version=request.version,
+        )
+    request.add_approval(
+        stage="TEST",
+        decision=ApprovalDecision.APPROVED,
+        actor_id=actor,
+        reason="All target system tests approved.",
+        policy_decision_id=decision,
+        expected_version=request.version,
+        authorities=developer_authorities,
+    )
     request.transition(
         target=ChangeState.FINAL_REVIEW,
         actor_id=actor,
@@ -73,6 +119,35 @@ def move_to_final_review(request: ChangeRequest) -> None:
         policy_decision_id=decision,
         expected_version=request.version,
     )
+
+
+def add_required_final_approvals(request: ChangeRequest) -> None:
+    developer_authorities = tuple(
+        ApprovalAuthority(ApprovalAuthorityKind.SYSTEM_DEVELOPER, system_id)
+        for system_id in request.required_system_ids()
+    )
+    steward_authorities = tuple(
+        ApprovalAuthority(ApprovalAuthorityKind.SYSTEM_DATA_STEWARD, system_id)
+        for system_id in request.required_system_ids()
+    )
+    for actor_id, authorities, reason in (
+        (uuid4(), developer_authorities, "Developer final approval."),
+        (uuid4(), steward_authorities, "Data Steward final approval."),
+        (
+            uuid4(),
+            (ApprovalAuthority(ApprovalAuthorityKind.GLOBAL_ADMIN),),
+            "Global administrator final approval.",
+        ),
+    ):
+        request.add_approval(
+            stage="FINAL",
+            decision=ApprovalDecision.APPROVED,
+            actor_id=actor_id,
+            reason=reason,
+            policy_decision_id=uuid4(),
+            expected_version=request.version,
+            authorities=authorities,
+        )
 
 
 def test_undeclared_transition_is_rejected() -> None:
@@ -97,6 +172,16 @@ def test_changes_requested_requires_an_explicit_resubmission_before_review_resta
         reason="Review started",
         policy_decision_id=uuid4(),
         expected_version=request.version,
+    )
+    system_id = next(iter(request.required_system_ids()))
+    request.add_approval(
+        stage="REVIEW",
+        decision=ApprovalDecision.APPROVED,
+        actor_id=actor,
+        reason="First-round review evidence.",
+        policy_decision_id=uuid4(),
+        expected_version=request.version,
+        authorities=(ApprovalAuthority(ApprovalAuthorityKind.SYSTEM_DEVELOPER, system_id),),
     )
     request.transition(
         target=ChangeState.CHANGES_REQUESTED,
@@ -129,6 +214,25 @@ def test_changes_requested_requires_an_explicit_resubmission_before_review_resta
         expected_version=request.version,
     )
     assert request.state is ChangeState.REGISTERED
+    assert request.current_round_number == 2
+    assert request.approvals[0].round_id != request.current_round_id
+    request.transition(
+        target=ChangeState.IN_REVIEW,
+        actor_id=actor,
+        reason="Second-round review started.",
+        policy_decision_id=uuid4(),
+        expected_version=request.version,
+    )
+    request.add_approval(
+        stage="REVIEW",
+        decision=ApprovalDecision.APPROVED,
+        actor_id=actor,
+        reason="Second-round review evidence.",
+        policy_decision_id=uuid4(),
+        expected_version=request.version,
+        authorities=(ApprovalAuthority(ApprovalAuthorityKind.SYSTEM_DEVELOPER, system_id),),
+    )
+    assert request.approvals[-1].round_id == request.current_round_id
 
 
 def test_change_creation_requires_source_hash() -> None:
@@ -193,6 +297,7 @@ def test_change_creation_rejects_multiple_items_until_checkpoints_exist() -> Non
 
 def test_multi_target_manual_intake_completes_only_after_independent_final_approval() -> None:
     requester = uuid4()
+    system_ids = (uuid4(), uuid4())
     items = [
         ChangeItem(
             item_id=uuid4(),
@@ -201,8 +306,11 @@ def test_multi_target_manual_intake_completes_only_after_independent_final_appro
             operation="CREATE",
             aspect_name=CHANGE_INTAKE_ASPECT,
             after_document={"contract": "change-intake-v1", "table_name": table_name},
+            routing_system_id=system_id,
         )
-        for table_name in ("wafer_forecast", "yield_forecast")
+        for table_name, system_id in zip(
+            ("wafer_forecast", "yield_forecast"), system_ids, strict=True
+        )
     ]
     request = ChangeRequest.create(
         workspace_id=uuid4(),
@@ -214,15 +322,7 @@ def test_multi_target_manual_intake_completes_only_after_independent_final_appro
         items=items,
     )
     move_to_final_review(request)
-    final_approver = uuid4()
-    request.add_approval(
-        stage="FINAL",
-        decision=ApprovalDecision.APPROVED,
-        actor_id=final_approver,
-        reason="Manual change and TEST evidence reviewed.",
-        policy_decision_id=uuid4(),
-        expected_version=request.version,
-    )
+    add_required_final_approvals(request)
 
     request.complete_intake(
         actor_id=uuid4(),
@@ -259,6 +359,7 @@ def test_requester_cannot_final_approve() -> None:
             reason="Self approval",
             policy_decision_id=uuid4(),
             expected_version=request.version,
+            authorities=(ApprovalAuthority(ApprovalAuthorityKind.GLOBAL_ADMIN),),
         )
 
 
@@ -279,6 +380,7 @@ def test_application_requires_final_approval() -> None:
 def test_final_rejection_prevents_application_even_after_an_approval() -> None:
     request = make_request()
     move_to_final_review(request)
+    add_required_final_approvals(request)
     request.add_approval(
         stage="FINAL",
         decision=ApprovalDecision.APPROVED,
@@ -286,6 +388,11 @@ def test_final_rejection_prevents_application_even_after_an_approval() -> None:
         reason="Approved",
         policy_decision_id=uuid4(),
         expected_version=request.version,
+        authorities=(
+            ApprovalAuthority(
+                ApprovalAuthorityKind.SYSTEM_DEVELOPER, next(iter(request.required_system_ids()))
+            ),
+        ),
     )
     request.add_approval(
         stage="FINAL",
@@ -294,9 +401,16 @@ def test_final_rejection_prevents_application_even_after_an_approval() -> None:
         reason="Rejected",
         policy_decision_id=uuid4(),
         expected_version=request.version,
+        authorities=(
+            ApprovalAuthority(
+                ApprovalAuthorityKind.SYSTEM_DATA_STEWARD, next(iter(request.required_system_ids()))
+            ),
+        ),
     )
 
-    with pytest.raises(ValidationError, match="final rejection"):
+    assert request.state is ChangeState.REJECTED
+    assert request.transitions[-1].to_state is ChangeState.REJECTED
+    with pytest.raises(ValidationError, match="not allowed"):
         request.transition(
             target=ChangeState.APPLY_QUEUED,
             actor_id=uuid4(),
@@ -309,15 +423,8 @@ def test_final_rejection_prevents_application_even_after_an_approval() -> None:
 def test_applied_requires_reconciled_equal_hash() -> None:
     request = make_request()
     move_to_final_review(request)
-    approver = uuid4()
-    request.add_approval(
-        stage="FINAL",
-        decision=ApprovalDecision.APPROVED,
-        actor_id=approver,
-        reason="Approved",
-        policy_decision_id=uuid4(),
-        expected_version=request.version,
-    )
+    add_required_final_approvals(request)
+    approver = request.approvals[-1].actor_id
     request.transition(
         target=ChangeState.APPLY_QUEUED,
         actor_id=approver,
@@ -355,7 +462,7 @@ def test_applied_requires_reconciled_equal_hash() -> None:
     assert request.state is ChangeState.APPLIED
 
 
-def test_confidential_application_requires_two_distinct_final_approvers() -> None:
+def test_final_application_requires_role_separated_system_and_admin_approvers() -> None:
     request = make_request()
     request.classification = Classification.CONFIDENTIAL
     move_to_final_review(request)
@@ -367,6 +474,11 @@ def test_confidential_application_requires_two_distinct_final_approvers() -> Non
         reason="First approval",
         policy_decision_id=uuid4(),
         expected_version=request.version,
+        authorities=(
+            ApprovalAuthority(
+                ApprovalAuthorityKind.SYSTEM_DEVELOPER, next(iter(request.required_system_ids()))
+            ),
+        ),
     )
     with pytest.raises(ValidationError):
         request.transition(
@@ -384,10 +496,33 @@ def test_confidential_application_requires_two_distinct_final_approvers() -> Non
         reason="Second approval",
         policy_decision_id=uuid4(),
         expected_version=request.version,
+        authorities=(
+            ApprovalAuthority(
+                ApprovalAuthorityKind.SYSTEM_DATA_STEWARD, next(iter(request.required_system_ids()))
+            ),
+        ),
+    )
+    with pytest.raises(ValidationError):
+        request.transition(
+            target=ChangeState.APPLY_QUEUED,
+            actor_id=second,
+            reason="Global administrator still missing",
+            policy_decision_id=uuid4(),
+            expected_version=request.version,
+        )
+    administrator = uuid4()
+    request.add_approval(
+        stage="FINAL",
+        decision=ApprovalDecision.APPROVED,
+        actor_id=administrator,
+        reason="Global approval",
+        policy_decision_id=uuid4(),
+        expected_version=request.version,
+        authorities=(ApprovalAuthority(ApprovalAuthorityKind.GLOBAL_ADMIN),),
     )
     request.transition(
         target=ChangeState.APPLY_QUEUED,
-        actor_id=second,
+        actor_id=administrator,
         reason="Approved",
         policy_decision_id=uuid4(),
         expected_version=request.version,

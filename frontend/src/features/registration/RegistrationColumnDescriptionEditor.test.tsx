@@ -33,7 +33,8 @@ function asset(): CatalogAssetDetail {
       { fieldPath: 'event_time', description: 'Event time', nativeDataType: 'TIMESTAMP' },
     ],
     quality: {},
-    source_version: 'projection-v1',
+    projection_source_version: 'projection-v1',
+    source_version: 'provider-v1',
   }
 }
 
@@ -62,6 +63,9 @@ function changeRequest(): ChangeRequestRecord {
     description: 'Clarify the identifier.',
     state: 'REGISTERED',
     requester_id: 'subject-1',
+    requester_department_id: null,
+    current_round_id: 'round-1',
+    current_round_number: 1,
     created_at: '2026-07-17T01:02:03Z',
     requested_due_date: null,
     priority: null,
@@ -71,6 +75,8 @@ function changeRequest(): ChangeRequestRecord {
     items: [],
     approvals: [],
     transitions: [],
+    rounds: [{ id: 'round-1', round_number: 1, submitted_by: 'subject-1', submitted_at: '2026-07-17T01:02:03Z', closed_at: null, evidence_hash: 'a'.repeat(64) }],
+    test_runs: [],
   }
 }
 

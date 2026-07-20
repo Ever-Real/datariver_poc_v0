@@ -7,11 +7,11 @@ import { RegistrationControlledMetadataEditor } from './RegistrationControlledMe
 const asset: CatalogAssetDetail = {
   id: 'asset-1', external_urn: 'urn:li:dataset:(urn:li:dataPlatform:postgres,wafer,PROD)', asset_type: 'DATASET',
   name: 'wafer', platform: 'postgres', database_name: 'fab', schema_name: 'yield', classification: 'INTERNAL', lifecycle: 'ACTIVE', observed_at: '2026-07-18T00:00:00Z',
-  ownership: [], glossary_terms: [], tags: ['PII'], schema_fields: [], quality: {}, source_version: 'source-v1', matches: [],
+  ownership: [], glossary_terms: [], tags: ['PII'], schema_fields: [], quality: {}, projection_source_version: 'projection-v1', source_version: 'source-v1', matches: [],
 }
 
 const proposal: ChangeRequestRecord = {
-  id: 'cr-1', number: 'CR-FAB-260718-9A3C', request_type: 'CATALOG_CONTROLLED_METADATA', title: 'wafer Tag 변경', description: 'Governed tag update', state: 'REGISTERED', requester_id: 'subject-1', created_at: '2026-07-18T00:00:00Z', requested_due_date: null, priority: null, urgency: null, classification: 'INTERNAL', version: 1, items: [], approvals: [], transitions: [],
+  id: 'cr-1', number: 'CR-FAB-260718-9A3C', request_type: 'CATALOG_CONTROLLED_METADATA', title: 'wafer Tag 변경', description: 'Governed tag update', state: 'REGISTERED', requester_id: 'subject-1', requester_department_id: null, current_round_id: 'round-1', current_round_number: 1, created_at: '2026-07-18T00:00:00Z', requested_due_date: null, priority: null, urgency: null, classification: 'INTERNAL', version: 1, items: [], approvals: [], transitions: [], rounds: [{ id: 'round-1', round_number: 1, submitted_by: 'subject-1', submitted_at: '2026-07-18T00:00:00Z', closed_at: null, evidence_hash: 'a'.repeat(64) }], test_runs: [],
 }
 
 function clientWith(request: unknown): ApiClient {

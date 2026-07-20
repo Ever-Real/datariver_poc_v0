@@ -13,7 +13,12 @@ from datariver.infrastructure.db.session import DatabaseReadiness
 from datariver.infrastructure.observability.metrics import HttpMetrics
 from datariver.interfaces.http.container import AppContainer
 from datariver.interfaces.http.factory import create_app
-from datariver.interfaces.http.routes.admin import _system_configuration_entries
+from datariver.interfaces.http.routes.admin import (
+    _display_configuration,
+    _system_configuration_entries,
+    _validate_configuration_submission,
+    _validate_system_configuration,
+)
 from datariver.interfaces.http.routes.registration import _expected_version
 
 
@@ -58,6 +63,11 @@ def settings() -> Settings:
         datahub_base_url="http://datahub",
         datahub_secret_ref="file:/tmp/token",
         datahub_expected_version="v1.6.0",
+        local_ollama_chat_enabled=False,
+        local_ollama_embedding_enabled=False,
+        neo4j_projection_enabled=False,
+        knowledge_pipeline_enabled=False,
+        system_configuration_runtime_activation_enabled=False,
         valkey_cache_url="redis://cache:6379/0",
         valkey_queue_url="redis://queue:6379/0",
         valkey_cache_secret_ref="file:/run/secrets/valkey_cache_password",
@@ -187,10 +197,15 @@ def test_openapi_contains_all_required_product_modules() -> None:
         "/api/v1/api-products/{product_id}/invoke/snapshot",
         "/api/v1/api-products/{product_id}/invoke/chat",
         "/api/v1/admin/workspace-memberships/{target_subject_id}/access",
+        "/api/v1/admin/workspace-memberships/{target_subject_id}/role",
         "/api/v1/admin/workspace-memberships",
+        "/api/v1/admin/access-roles",
+        "/api/v1/admin/access-roles/{role_id}",
         "/api/v1/admin/systems",
         "/api/v1/admin/systems/{system_id}/assignees",
         "/api/v1/admin/system-configuration",
+        "/api/v1/admin/system-configuration/{system_id}",
+        "/api/v1/admin/system-configuration/{system_id}/test",
         "/api/v1/admin/me",
         "/api/v1/admin/fallback/workspace-membership-access-requests",
         "/api/v1/admin/fallback/workspace-membership-access-requests/{access_request_id}/decisions",
@@ -238,8 +253,81 @@ def test_system_configuration_inventory_is_server_owned_and_redacted() -> None:
     assert by_id["DATAHUB_GMS"].secret_reference_configured is True
     assert by_id["LLM_CHAT_MODEL"].state == "GOVERNED_PROFILE_REQUIRED"
     assert by_id["GRAFANA_DASHBOARD"].embedding_state == "AVAILABLE"
+    assert all(entry.template_yaml == "" for entry in entries)
+    assert all(entry.display_yaml == "" for entry in entries)
     assert all("url" not in entry.model_dump() for entry in entries)
     assert all("secret_reference" not in entry.model_dump() for entry in entries)
+
+    development = Settings(**(configured.model_dump() | {"app_env": "development"}))
+    development_entries = _system_configuration_entries(development)
+    assert all(entry.template_yaml for entry in development_entries)
+    assert all("password" not in entry.template_yaml.lower() for entry in development_entries)
+    assert any("file:/run/secrets/" in entry.template_yaml for entry in development_entries)
+    assert all("auth_token" not in entry.template_yaml.lower() for entry in development_entries)
+    assert all("api_token" not in entry.template_yaml.lower() for entry in development_entries)
+
+
+def test_system_configuration_display_removes_nested_secrets_and_submission_rejects_them() -> None:
+    stored = {
+        "base_url": "http://service.internal",
+        "auth": {"username": "developer", "password": "stored-secret"},
+        "headers": [{"api_token": "stored-token", "accept": "application/json"}],
+        "options": {"context_tokens": 8192, "max_completion_tokens": 4096},
+    }
+
+    assert _display_configuration(stored) == {
+        "base_url": "http://service.internal",
+        "auth": {"username": "developer"},
+        "headers": [{"accept": "application/json"}],
+        "options": {"context_tokens": 8192, "max_completion_tokens": 4096},
+    }
+    with pytest.raises(ValidationError, match="operator-managed secret"):
+        _validate_configuration_submission(
+            {"auth": {"password": "new-secret"}},
+            stored,
+        )
+    _validate_configuration_submission(
+        {
+            "auth": {"password": "********"},
+            "headers": [{"api_token": "********"}],
+        },
+        stored,
+    )
+    with pytest.raises(ValidationError, match="operator-managed secret"):
+        _validate_configuration_submission({"api_key": "********"}, {})
+    _validate_configuration_submission(
+        {"secret_references": {"token": "file:/run/secrets/datahub_token"}},
+        {},
+    )
+    with pytest.raises(ValidationError, match="Secret references must use"):
+        _validate_configuration_submission(
+            {"secret_references": {"token": "literal-secret-value"}},
+            {},
+        )
+
+
+def test_system_configuration_contract_rejects_credentials_and_incomplete_profiles() -> None:
+    with pytest.raises(ValidationError, match="must not be embedded"):
+        _validate_system_configuration(
+            "DATAHUB_GMS",
+            {"base_url": "http://admin:password@datahub:8080", "options": {}},
+        )
+    with pytest.raises(ValidationError, match="non-empty model"):
+        _validate_system_configuration(
+            "LLM_CHAT_MODEL",
+            {"base_url": "http://host.docker.internal:11434/v1", "model": "", "options": {}},
+        )
+    with pytest.raises(ValidationError, match="accepted"):
+        _validate_system_configuration(
+            "S3_STORAGE",
+            {
+                "endpoint": "http://object-store:9000",
+                "public_endpoint": "http://localhost:8333",
+                "region": "ap-northeast-2",
+                "buckets": {"accepted": "", "exports": "exports", "quarantine": "q"},
+                "options": {},
+            },
+        )
 
 
 def test_upload_preparation_openapi_is_typed_and_server_managed() -> None:
@@ -249,7 +337,11 @@ def test_upload_preparation_openapi_is_typed_and_server_managed() -> None:
     initiate = document["components"]["schemas"]["UploadInitiateRequest"]
     profile = initiate["properties"]["content_profile"]
     assert profile["default"] == "FORMAT_ONLY_V1"
-    assert profile["enum"] == ["FORMAT_ONLY_V1", "DATASET_DESCRIPTION_CSV_V1"]
+    assert profile["enum"] == [
+        "FORMAT_ONLY_V1",
+        "DATASET_DESCRIPTION_CSV_V1",
+        "DATASET_DESCRIPTION_XLSX_V1",
+    ]
 
     create = document["paths"]["/api/v1/uploads/{upload_id}/preparations"]["post"]
     assert "requestBody" not in create
@@ -504,9 +596,12 @@ def test_openapi_exposes_bounded_typed_administrator_read_contracts() -> None:
     assert set(context_schema["properties"]["allowed_operations"]["items"]["enum"]) == {
         "MEMBERSHIP_ACCESS_READ",
         "MEMBERSHIP_ACCESS_UPDATE",
+        "MEMBERSHIP_RENEWAL_READ",
+        "MEMBERSHIP_RENEWAL_DECIDE",
         "SYSTEM_ASSIGNMENT_UPDATE",
         "SYSTEM_CONFIGURATION_READ",
         "SYSTEM_CONFIGURATION_UPDATE",
+        "SYSTEM_CONFIGURATION_ACTIVATE",
         "FALLBACK_REQUEST_READ",
         "FALLBACK_REQUEST_CREATE",
         "FALLBACK_REQUEST_DECIDE",

@@ -122,12 +122,14 @@ def test_validation_acceptance_promotes_location_and_records_summary() -> None:
     upload.mark_accepted(
         accepted_bucket="accepted",
         accepted_object_key=f"accepted/{upload.upload_id}",
+        validated_sha256=upload.declared_sha256,
         validation_summary={"coverage": "FULL", "sha256": upload.declared_sha256},
         expected_version=upload.version,
     )
 
     assert upload.state is UploadState.ACCEPTED
     assert upload.bucket == "accepted"
+    assert upload.actual_sha256 == upload.declared_sha256
     assert upload.validation_summary["coverage"] == "FULL"
 
 

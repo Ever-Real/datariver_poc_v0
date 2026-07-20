@@ -52,7 +52,7 @@ describe('MonitoringPage', () => {
     })
     render(<MonitoringPage client={apiClient(request)} />)
 
-    expect(await screen.findByText('승인된 Grafana 링크가 없습니다.')).toBeInTheDocument()
+    expect(await screen.findByText('Grafana 링크가 없습니다.')).toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'Grafana 링크 없음' })).toBeDisabled()
   })
 

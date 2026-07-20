@@ -18,6 +18,24 @@ const completed = {
 }
 
 describe('CatalogExportControl', () => {
+  it('places separate compact CSV and Excel actions in the search toolbar', async () => {
+    const request = vi.fn().mockResolvedValue({
+      export_id: completed.export_id, job_id: completed.job_id, state: 'QUEUED',
+    })
+    render(<CatalogExportControl
+      client={{ request } as unknown as ApiClient}
+      compact
+      workerEnabled
+      query="wafer"
+    />)
+
+    expect(screen.getByRole('button', { name: 'CSV 저장' })).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Excel 저장' }))
+    await waitFor(() => expect(request).toHaveBeenCalled())
+    const [, options] = request.mock.calls[0] as [string, { body: string }]
+    expect(JSON.parse(options.body)).toMatchObject({ format: 'XLSX' })
+  })
+
   it('fails closed with an explicit operator explanation when the worker is disabled', () => {
     const request = vi.fn()
     render(<CatalogExportControl

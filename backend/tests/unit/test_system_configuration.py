@@ -10,9 +10,7 @@ from datariver.interfaces.http.routes.admin import (
 
 
 def test_masked_yaml_preserves_existing_sensitive_values_on_incremental_save() -> None:
-    stored = _yaml_document(
-        "url: http://grafana.local:3000\nauth:\n  password: original-secret\n"
-    )
+    stored = _yaml_document("url: http://grafana.local:3000\nauth:\n  password: original-secret\n")
     browser_document = _mask_configuration(stored)
 
     assert browser_document == {

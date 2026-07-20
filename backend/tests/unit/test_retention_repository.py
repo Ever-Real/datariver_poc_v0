@@ -222,6 +222,7 @@ async def test_erasure_target_snapshots_use_canonical_versions_and_fail_closed()
         clearance=3,
         attributes={},
         active=True,
+        access_expires_at=None,
         version=7,
     )
     subject_reader = SqlErasureTargetReader(cast(AsyncSession, _ReaderSession(membership)))

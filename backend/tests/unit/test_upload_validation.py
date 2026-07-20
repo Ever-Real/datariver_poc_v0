@@ -11,9 +11,9 @@ import pytest
 from datariver.application.dto import ObjectMetadata
 from datariver.application.errors import ExternalDependencyError
 from datariver.application.ports import ObjectStore, UploadValidationStore
-from datariver.application.services.upload_validation import UploadValidationWorker
+from datariver.application.services.upload_validation import Inspection, UploadValidationWorker
 from datariver.domain.authz import Classification
-from datariver.domain.registration import UploadManifest, UploadState
+from datariver.domain.registration import UploadContentProfile, UploadManifest, UploadState
 
 
 class MemoryValidationStore:
@@ -44,9 +44,11 @@ class MemoryValidationStore:
         manifest: UploadManifest,
         accepted_bucket: str,
         accepted_object_key: str,
+        validated_sha256: str,
         validation_summary: dict[str, object],
     ) -> bool:
         del manifest, accepted_bucket
+        assert validated_sha256 == validation_summary["sha256"]
         self.accepted_object_key = accepted_object_key
         if self.accept_error is not None:
             raise self.accept_error
@@ -197,6 +199,26 @@ async def test_streaming_csv_integrity_validation_promotes_then_cleans_quarantin
     ]
     assert (upload.bucket, upload.object_key) not in objects.objects
     assert ("accepted", destination_key) in objects.objects
+
+
+def test_xlsx_validation_emits_the_registered_profile_validator_version() -> None:
+    content = b"PK\x03\x04safe-xlsx-package"
+    upload = manifest(content)
+    upload.display_name = "assets.xlsx"
+    upload.declared_mime = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    upload.content_profile = UploadContentProfile.DATASET_DESCRIPTION_XLSX_V1
+    summary = UploadValidationWorker._validate_format(
+        upload,
+        Inspection(
+            size_bytes=len(content),
+            sha256=hashlib.sha256(content).hexdigest(),
+            prefix=content,
+            tail=content[-8:],
+            contains_vba=False,
+        ),
+    )
+
+    assert summary["validator_version"] == "integrity-xlsx-v1"
 
 
 @pytest.mark.asyncio

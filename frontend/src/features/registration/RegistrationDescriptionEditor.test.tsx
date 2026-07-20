@@ -27,6 +27,7 @@ function asset(overrides: Partial<CatalogAssetDetail> = {}): CatalogAssetDetail 
     tags: [],
     schema_fields: [],
     quality: {},
+    projection_source_version: 'projection-v1',
     source_version: 'source-v1',
     ...overrides,
   }
@@ -57,6 +58,9 @@ function changeRequest(): ChangeRequestRecord {
     description: '용어를 명확히 합니다.',
     state: 'REGISTERED',
     requester_id: 'subject-1',
+    requester_department_id: null,
+    current_round_id: 'round-1',
+    current_round_number: 1,
     created_at: '2026-07-17T01:02:03Z',
     requested_due_date: null,
     priority: null,
@@ -66,6 +70,8 @@ function changeRequest(): ChangeRequestRecord {
     items: [],
     approvals: [],
     transitions: [],
+    rounds: [{ id: 'round-1', round_number: 1, submitted_by: 'subject-1', submitted_at: '2026-07-17T01:02:03Z', closed_at: null, evidence_hash: 'a'.repeat(64) }],
+    test_runs: [],
   }
 }
 

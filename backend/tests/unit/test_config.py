@@ -88,6 +88,17 @@ def test_external_ui_links_are_optional_and_cannot_embed_credentials() -> None:
         settings(ui_grafana_url="https://admin:secret@observe.example.com")
 
 
+def test_platform_security_switches_are_explicit_and_fail_closed_by_default() -> None:
+    configured = settings(
+        oidc_hardware_webauthn_enabled=False,
+        workspace_selection_enabled=False,
+    )
+
+    assert configured.oidc_hardware_webauthn_enabled is False
+    assert configured.workspace_selection_enabled is False
+    assert configured.admin_password_fallback_enabled is False
+
+
 def test_datahub_embed_is_disabled_first_and_uses_one_exact_origin() -> None:
     assert settings().datahub_lineage_embed_url("urn:li:dataset:(a,b,c)") is None
     with pytest.raises(ValidationError, match="requires one configured"):
@@ -159,6 +170,36 @@ def test_production_rejects_development_only_ephemeral_chat() -> None:
             datahub_version_enforcement="enforce",
             s3_public_endpoint_url="https://objects.example.com",
             chat_ephemeral_admin_without_retention_enabled=True,
+        )
+
+
+def test_local_ollama_chat_is_development_only_and_host_gateway_bound() -> None:
+    configured = settings(
+        local_ollama_chat_enabled=True,
+        local_ollama_chat_base_url="http://host.docker.internal:11434/v1",
+        local_ollama_chat_model="datariver-gemma4-dev:0.1",
+    )
+
+    assert configured.local_ollama_chat_context_tokens == 8192
+    with pytest.raises(ValidationError, match=r"host\.docker\.internal"):
+        settings(
+            local_ollama_chat_enabled=True,
+            local_ollama_chat_base_url="http://example.test:11434/v1",
+            local_ollama_chat_model="datariver-gemma4-dev:0.1",
+        )
+    with pytest.raises(ValidationError, match="only in development"):
+        settings(
+            app_env="production",
+            app_public_origin="https://catalog.example.com",
+            app_cors_origins=("https://catalog.example.com",),
+            oidc_issuer="https://idp.example.com/realms/data",
+            oidc_jwks_url="https://idp.example.com/realms/data/certs",
+            datahub_base_url="https://datahub.example.com",
+            datahub_version_enforcement="enforce",
+            s3_public_endpoint_url="https://objects.example.com",
+            local_ollama_chat_enabled=True,
+            local_ollama_chat_base_url="http://host.docker.internal:11434/v1",
+            local_ollama_chat_model="datariver-gemma4-dev:0.1",
         )
 
 

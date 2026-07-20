@@ -54,6 +54,8 @@ function Harness() {
       {auth.profile && <span>{auth.profile.display_name}:{auth.profile.roles.join(',')}</span>}
       <button onClick={() => void auth.signIn()}>sign in</button>
       <button onClick={() => void auth.beginPasswordReauth()}>password reauth</button>
+      <button onClick={() => void auth.beginWebAuthnEnrollment()}>enroll WebAuthn</button>
+      <button onClick={() => void auth.beginStepUp()}>step up WebAuthn</button>
       <button onClick={() => void auth.renewAccessToken()}>renew access token</button>
     </div>
   )
@@ -79,6 +81,7 @@ describe('AuthProvider password reauthentication', () => {
       json: () => Promise.resolve({
         subject: 'subject-one', display_name: 'DataRiver Admin', email: 'admin@example.test',
         roles: ['administrator'], authentication_assurance: 'PASSWORD', authentication_time: '2026-07-17T00:00:00Z',
+        workspace_selection_enabled: true, hardware_webauthn_enabled: true,
       }),
     }))
   })
@@ -203,6 +206,27 @@ describe('AuthProvider password reauthentication', () => {
     fireEvent.click(await screen.findByRole('button', { name: 'renew access token' }))
 
     expect(await screen.findByText(/인증 세션을 갱신하지 못했습니다/)).toBeInTheDocument()
+    expect(oidc.signinRedirect).not.toHaveBeenCalled()
+  })
+
+  it('does not start enrollment or step-up when the server disables WebAuthn', async () => {
+    oidc.getUser.mockResolvedValue({
+      access_token: 'token', expired: false, profile: { sub: 'subject-one' },
+    })
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
+      ok: true,
+      json: () => Promise.resolve({
+        subject: 'subject-one', display_name: 'DataRiver Admin',
+        roles: ['administrator'], authentication_assurance: 'PASSWORD',
+        workspace_selection_enabled: false, hardware_webauthn_enabled: false,
+      }),
+    }))
+    render(<AuthProvider><Harness /></AuthProvider>)
+
+    await screen.findByText('DataRiver Admin:administrator')
+    fireEvent.click(screen.getByRole('button', { name: 'enroll WebAuthn' }))
+    expect(await screen.findByText(/WebAuthn이 비활성화/)).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'step up WebAuthn' }))
     expect(oidc.signinRedirect).not.toHaveBeenCalled()
   })
 })

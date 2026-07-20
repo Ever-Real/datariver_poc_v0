@@ -108,7 +108,7 @@ async def test_authorizes_local_target_with_actual_asset_scope() -> None:
     workspace_id = uuid4()
     system_id = uuid4()
 
-    target = asset(workspace_id=workspace_id, system_id=system_id)
+    target = asset(workspace_id=workspace_id, system_id=system_id, asset_type="VIEW")
     bound = await authorizer((target,)).authorize_targets(
         workspace_id=workspace_id,
         subject=subject(workspace_id=workspace_id, system_id=system_id),

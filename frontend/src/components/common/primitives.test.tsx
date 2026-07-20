@@ -39,6 +39,33 @@ describe('enterprise UI primitives', () => {
     expect(onActivate).toHaveBeenCalledWith({ id: 'a', name: 'Alpha', count: 1 })
   })
 
+  it('cycles a sortable header directly through ascending, descending, and none', () => {
+    render(
+      <DenseDataTable
+        caption="필터 목록"
+        columns={columns}
+        data={[{ id: 'b', name: 'Beta', count: 2 }, { id: 'a', name: 'Alpha', count: 1 }]}
+        getRowId={(row) => row.id}
+      />,
+    )
+    const table = screen.getByRole('table', { name: '필터 목록' })
+    const header = within(table).getByRole('columnheader', { name: /이름/ })
+    expect(header).toHaveAttribute('aria-sort', 'none')
+    expect(screen.queryByRole('menu')).not.toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('button', { name: '이름 정렬: 없음' }))
+    expect(header).toHaveAttribute('aria-sort', 'ascending')
+    expect(within(table).getAllByRole('row')[1]).toHaveTextContent('Alpha')
+
+    fireEvent.click(screen.getByRole('button', { name: '이름 정렬: 오름차순' }))
+    expect(header).toHaveAttribute('aria-sort', 'descending')
+    expect(within(table).getAllByRole('row')[1]).toHaveTextContent('Beta')
+
+    fireEvent.click(screen.getByRole('button', { name: '이름 정렬: 내림차순' }))
+    expect(header).toHaveAttribute('aria-sort', 'none')
+    expect(within(table).getAllByRole('row')[1]).toHaveTextContent('Beta')
+  })
+
   it('exposes honest loading and empty table states', () => {
     const view = render(<DenseDataTable caption="목록" columns={columns} data={[]} getRowId={(row) => row.id} loading />)
     expect(screen.getByText('데이터를 불러오는 중입니다.')).toBeInTheDocument()

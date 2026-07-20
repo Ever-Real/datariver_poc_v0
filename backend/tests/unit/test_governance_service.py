@@ -23,9 +23,13 @@ from datariver.domain.authz import (
 )
 from datariver.domain.common import DomainEvent, ForbiddenError
 from datariver.domain.governance import (
+    ApprovalAuthority,
+    ApprovalAuthorityKind,
+    ApprovalDecision,
     ChangeItem,
     ChangeRequest,
     ChangeState,
+    ChangeTestRunState,
     change_target_binding_hash,
 )
 
@@ -33,6 +37,7 @@ from datariver.domain.governance import (
 class MemoryTargetAuthorizer:
     def __init__(self) -> None:
         self.calls = 0
+        self.system_id = uuid4()
 
     async def authorize_targets(
         self,
@@ -52,6 +57,7 @@ class MemoryTargetAuthorizer:
                 item,
                 target_asset_id=asset_id,
                 target_asset_type="DATASET",
+                target_system_id=self.system_id,
                 target_classification=request_classification,
                 target_lifecycle="ACTIVE",
                 target_source_version="1",
@@ -60,12 +66,13 @@ class MemoryTargetAuthorizer:
                     target_ref=item.target_ref,
                     asset_id=asset_id,
                     asset_type="DATASET",
-                    system_id=None,
+                    system_id=self.system_id,
                     domain_id=None,
                     owner_department_id=None,
                     classification=request_classification,
                     lifecycle="ACTIVE",
                 ),
+                routing_system_id=self.system_id,
             )
             for item in items
         )
@@ -144,11 +151,27 @@ class MemoryIdempotency:
         )
 
 
+class MemoryWorkflowAuthorities:
+    async def get_authorities(
+        self,
+        *,
+        workspace_id: UUID,
+        subject_id: UUID,
+        system_ids: frozenset[UUID],
+    ) -> tuple[ApprovalAuthority, ...]:
+        del workspace_id, subject_id
+        return tuple(
+            ApprovalAuthority(ApprovalAuthorityKind.SYSTEM_DEVELOPER, system_id)
+            for system_id in system_ids
+        )
+
+
 class MemoryUnitOfWork:
     def __init__(self, state: dict[str, object]) -> None:
         self.change_requests = MemoryChangeRequests(state["requests"])  # type: ignore[arg-type]
         self.outbox = MemoryOutbox(state["outbox"])  # type: ignore[arg-type]
         self.idempotency = MemoryIdempotency(state["idempotency"])  # type: ignore[arg-type]
+        self.workflow_authorities = MemoryWorkflowAuthorities()
         self.committed = False
 
     async def __aenter__(self) -> Self:
@@ -240,6 +263,7 @@ async def test_create_is_idempotent_and_writes_one_outbox_event() -> None:
 @pytest.mark.asyncio
 async def test_status_workflow_allows_ordinary_authenticated_development_actors() -> None:
     workspace_id = uuid4()
+    target_authorizer = MemoryTargetAuthorizer()
     requester = replace(
         subject(workspace_id),
         authentication_assurance=AuthenticationAssurance.PASSWORD,
@@ -247,6 +271,7 @@ async def test_status_workflow_allows_ordinary_authenticated_development_actors(
     reviewer = replace(
         subject(workspace_id),
         allowed_actions=frozenset({Action.CHANGE_REVIEW}),
+        allowed_system_ids=frozenset({target_authorizer.system_id}),
         authentication_assurance=AuthenticationAssurance.PASSWORD,
     )
     state: dict[str, object] = {"requests": {}, "outbox": [], "idempotency": {}}
@@ -254,7 +279,7 @@ async def test_status_workflow_allows_ordinary_authenticated_development_actors(
     service = GovernanceService(
         cast(Callable[[], GovernanceUnitOfWork], lambda: MemoryUnitOfWork(state)),
         AuthorizationService(decision_writer=writer),
-        target_authorizer=MemoryTargetAuthorizer(),
+        target_authorizer=target_authorizer,
     )
     change_request = await service.create_change_request(
         workspace_id=workspace_id,
@@ -296,23 +321,82 @@ async def test_status_workflow_allows_ordinary_authenticated_development_actors(
         idempotency_key="development-review-0001",
         request_hash="b" * 64,
     )
+    reviewed = await service.add_approval(
+        workspace_id=workspace_id,
+        change_request_id=change_request.change_request_id,
+        stage="REVIEW",
+        approval_decision=ApprovalDecision.APPROVED,
+        reason="Target-system review approved.",
+        expected_version=in_review.version,
+        subject=reviewer,
+        environment=EnvironmentAttributes(requested_at=datetime.now(UTC)),
+        request_id="development-review-approval",
+        idempotency_key="development-review-approval-0001",
+        request_hash="c" * 64,
+    )
+    testing = await service.transition(
+        workspace_id=workspace_id,
+        change_request_id=change_request.change_request_id,
+        target=ChangeState.TESTING,
+        actor_id=reviewer.subject_id,
+        reason="Review approvals completed.",
+        expected_version=reviewed.version,
+        subject=reviewer,
+        environment=EnvironmentAttributes(requested_at=datetime.now(UTC)),
+        request_id="development-testing",
+        idempotency_key="development-testing-0001",
+        request_hash="d" * 64,
+    )
+    test_evidence = await service.record_test_run(
+        workspace_id=workspace_id,
+        change_request_id=change_request.change_request_id,
+        system_id=target_authorizer.system_id,
+        attachment_id=uuid4(),
+        state=ChangeTestRunState.PASSED,
+        plan_hash="1" * 64,
+        result_hash="2" * 64,
+        bounded_summary={"contract": "CR_TEST_ATTACHMENT_V1"},
+        expected_version=testing.version,
+        subject=reviewer,
+        environment=EnvironmentAttributes(requested_at=datetime.now(UTC)),
+        request_id="development-test-evidence",
+        idempotency_key="development-test-evidence-0001",
+        request_hash="e" * 64,
+    )
+    tested = await service.add_approval(
+        workspace_id=workspace_id,
+        change_request_id=change_request.change_request_id,
+        stage="TEST",
+        approval_decision=ApprovalDecision.APPROVED,
+        reason="Target-system test approved.",
+        expected_version=test_evidence.version,
+        subject=reviewer,
+        environment=EnvironmentAttributes(requested_at=datetime.now(UTC)),
+        request_id="development-test-approval",
+        idempotency_key="development-test-approval-0001",
+        request_hash="e" * 64,
+    )
     final_review = await service.transition(
         workspace_id=workspace_id,
         change_request_id=change_request.change_request_id,
         target=ChangeState.FINAL_REVIEW,
         actor_id=reviewer.subject_id,
         reason="Status workflow verified.",
-        expected_version=in_review.version,
+        expected_version=tested.version,
         subject=reviewer,
         environment=EnvironmentAttributes(requested_at=datetime.now(UTC)),
         request_id="development-final-review",
         idempotency_key="development-final-review-0001",
-        request_hash="c" * 64,
+        request_hash="f" * 64,
     )
 
     assert final_review.state is ChangeState.FINAL_REVIEW
     assert writer.actions == [
         Action.CHANGE_CREATE.value,
+        Action.CHANGE_REVIEW.value,
+        Action.CHANGE_REVIEW.value,
+        Action.CHANGE_REVIEW.value,
+        Action.CHANGE_REVIEW.value,
         Action.CHANGE_REVIEW.value,
         Action.CHANGE_REVIEW.value,
     ]
@@ -409,6 +493,10 @@ async def test_resubmission_requires_the_requester_and_uses_change_edit_authoriz
     workspace_id = uuid4()
     requester = replace(subject(workspace_id), allowed_actions=frozenset({Action.CHANGE_EDIT}))
     target_authorizer = MemoryTargetAuthorizer()
+    requester = replace(
+        requester,
+        allowed_system_ids=frozenset({target_authorizer.system_id}),
+    )
     items = await target_authorizer.authorize_targets(
         workspace_id=workspace_id,
         subject=requester,

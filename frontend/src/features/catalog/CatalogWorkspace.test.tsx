@@ -72,7 +72,77 @@ describe('catalog workspace', () => {
     expect(screen.getAllByText('tier:gold').length).toBeGreaterThan(0)
     expect(screen.getByLabelText('wafer_events Terms')).toHaveTextContent('urn:li:glossaryTerm:wafer')
     expect(screen.getByLabelText('wafer_events Tags')).toHaveTextContent('tier:gold')
+    const table = screen.getByRole('table', { name: '카탈로그 검색 결과' })
+    const headings = within(table).getAllByRole('columnheader').map((heading) => heading.textContent)
+    expect(headings.indexOf('Terms ↕')).toBeLessThan(headings.indexOf('Owner ↕'))
+    expect(headings.indexOf('Tags ↕')).toBeLessThan(headings.indexOf('Owner ↕'))
+    expect(table.closest('.dense-table-frame')).toHaveAttribute('aria-label', '카탈로그 검색 결과 스크롤 영역')
+    expect(Number.parseFloat(table.style.width)).toBeGreaterThan(840)
+    const toolbar = document.querySelector('.catalog-search-toolbar')
+    expect(toolbar).not.toBeNull()
+    expect(within(toolbar as HTMLElement).getAllByRole('button').map((button) => button.textContent)).toEqual([
+      '검색', '필터', 'CSV 저장', 'Excel 저장',
+    ])
+    expect(within(toolbar as HTMLElement).getByRole('button', { name: '필터' })).toBeInTheDocument()
+    expect(within(toolbar as HTMLElement).getByRole('button', { name: 'CSV 저장' })).toBeDisabled()
+    expect(within(toolbar as HTMLElement).getByRole('button', { name: 'Excel 저장' })).toBeDisabled()
+    expect(within(screen.getByRole('combobox', { name: '페이지 크기' })).getByRole('option', { name: '전체' })).toBeInTheDocument()
     expect(request.mock.calls.some(([path]) => String(path).includes('10000'))).toBe(false)
+  })
+
+  it('builds 200, 500, 1000, and all logical pages from the bounded 100-row server cursor', async () => {
+    const assets = Array.from({ length: 120 }, (_, index): CatalogAsset => ({
+      ...asset,
+      id: `asset-${index}`,
+      name: `asset_${String(index).padStart(3, '0')}`,
+      terms: index === 0 ? ['term:first'] : [],
+      tags: index === 0 ? ['tag:first'] : [],
+    }))
+    const request = vi.fn((path: string, options?: RequestOptions): Promise<unknown> => {
+      void options
+      if (path.startsWith('/catalog/assets?')) {
+        const parameters = new URL(path, 'http://catalog.test').searchParams
+        const limit = Number(parameters.get('limit'))
+        const offset = Number(parameters.get('cursor')?.replace('offset-', '') ?? 0)
+        const items = assets.slice(offset, offset + limit)
+        const nextOffset = offset + items.length
+        return Promise.resolve({
+          items,
+          page: { limit, ...(nextOffset < assets.length ? { next_cursor: `offset-${nextOffset}` } : {}) },
+          total: assets.length,
+          meta,
+          match_mode: 'ALL',
+        })
+      }
+      return defaultRequest(path)
+    })
+    render(<CatalogPage client={clientWith(request)} />)
+    await screen.findByText('asset_049')
+    request.mockClear()
+
+    fireEvent.change(screen.getByRole('combobox', { name: '페이지 크기' }), { target: { value: '200' } })
+    expect(await screen.findByText('asset_119')).toBeInTheDocument()
+    await waitFor(() => {
+      const assetCalls = request.mock.calls.filter(([path]) => String(path).startsWith('/catalog/assets?'))
+      expect(assetCalls).toHaveLength(2)
+      expect(assetCalls.every(([path]) => Number(new URL(String(path), 'http://catalog.test').searchParams.get('limit')) <= 100)).toBe(true)
+    })
+
+    for (const logicalSize of ['500', '1000']) {
+      request.mockClear()
+      fireEvent.change(screen.getByRole('combobox', { name: '페이지 크기' }), { target: { value: logicalSize } })
+      await waitFor(() => {
+        const assetCalls = request.mock.calls.filter(([path]) => String(path).startsWith('/catalog/assets?'))
+        expect(assetCalls).toHaveLength(2)
+        expect(assetCalls.every(([path]) => Number(new URL(String(path), 'http://catalog.test').searchParams.get('limit')) <= 100)).toBe(true)
+      })
+    }
+
+    request.mockClear()
+    fireEvent.change(screen.getByRole('combobox', { name: '페이지 크기' }), { target: { value: '0' } })
+    expect(await screen.findByText('전체 · 현재 120건')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: '다음' })).toBeDisabled()
+    await waitFor(() => expect(request.mock.calls.filter(([path]) => String(path).startsWith('/catalog/assets?'))).toHaveLength(2))
   })
 
   it('loads canonical tree branches only when a parent is expanded', async () => {
@@ -152,8 +222,7 @@ describe('catalog workspace', () => {
     await waitFor(() => expect(request.mock.calls.some(([path, options]) => (
       path.includes('/lineage?direction=BOTH&depth=2') && options?.signal instanceof AbortSignal
     ))).toBe(true))
-    fireEvent.click(screen.getByRole('button', { name: 'wafer_events 상세' }))
-    expect(await screen.findByRole('dialog', { name: 'DataHub System Lineage' })).toBeInTheDocument()
-    expect(screen.getByTitle('DataHub System Lineage')).toHaveAttribute('src', 'https://datahub.example.test/dataset/wafer-events/Lineage')
+    expect(screen.getByRole('button', { name: 'wafer_events 선택' })).toHaveAttribute('title', 'wafer_events 상세 정보 열기')
+    expect(screen.getByRole('complementary', { name: '카탈로그 상세' })).toHaveTextContent('wafer_events')
   })
 })

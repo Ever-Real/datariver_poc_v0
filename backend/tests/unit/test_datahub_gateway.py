@@ -247,6 +247,51 @@ async def test_aspect_reread_hashes_only_the_typed_value() -> None:
     await client.aclose()
 
 
+async def test_aspect_reread_unwraps_datahub_restli_typed_envelope() -> None:
+    document = {"description": "governed", "customProperties": {"tier": "gold"}}
+    client = httpx.AsyncClient(
+        base_url="https://datahub.example",
+        transport=httpx.MockTransport(
+            lambda _: httpx.Response(
+                200,
+                json={
+                    "aspect": {"com.linkedin.dataset.DatasetProperties": document},
+                    "version": 0,
+                },
+                headers={"etag": "version-3"},
+            )
+        ),
+    )
+    gateway = HttpDataHubGateway(
+        base_url="https://datahub.example", token="unused", timeout_seconds=1, client=client
+    )
+
+    snapshot = await gateway.read_aspect(
+        external_urn="urn:li:dataset:test", aspect_name="datasetProperties"
+    )
+
+    assert snapshot.content_hash == canonical_json_hash(document)
+    assert dict(snapshot.document) == document
+    await client.aclose()
+
+
+async def test_aspect_reread_maps_missing_optional_aspect_to_empty_snapshot() -> None:
+    client = httpx.AsyncClient(
+        base_url="https://datahub.example",
+        transport=httpx.MockTransport(lambda _: httpx.Response(404)),
+    )
+    gateway = HttpDataHubGateway(
+        base_url="https://datahub.example", token="unused", timeout_seconds=1, client=client
+    )
+
+    snapshot = await gateway.read_aspect(external_urn="urn:li:dataset:test", aspect_name="domains")
+
+    assert snapshot.content_hash == canonical_json_hash({})
+    assert snapshot.source_version == "absent"
+    assert dict(snapshot.document) == {}
+    await client.aclose()
+
+
 async def test_catalog_scan_maps_a_fixed_datahub_contract_and_paginates() -> None:
     async def handler(request: httpx.Request) -> httpx.Response:
         body = json.loads(request.content)
@@ -311,7 +356,14 @@ async def test_catalog_scan_maps_a_fixed_datahub_contract_and_paginates() -> Non
                                         ]
                                     },
                                     "glossaryTerms": {
-                                        "terms": [{"term": {"urn": "urn:li:glossaryTerm:wafer"}}]
+                                        "terms": [
+                                            {
+                                                "term": {
+                                                    "urn": "urn:li:glossaryTerm:wafer",
+                                                    "name": "Wafer",
+                                                }
+                                            }
+                                        ]
                                     },
                                     "schemaMetadata": {
                                         "fields": [
@@ -344,7 +396,7 @@ async def test_catalog_scan_maps_a_fixed_datahub_contract_and_paginates() -> Non
     assert page.items[0].system_ref == "urn:li:dataPlatform:snowflake"
     assert page.items[0].asset_type == "TABLE"
     assert page.items[0].tags == ("classification:confidential", "tier:gold")
-    assert page.items[0].glossary_terms == ("urn:li:glossaryTerm:wafer",)
+    assert page.items[0].glossary_terms == ("Wafer",)
     assert page.items[0].column_names == ("wafer_id", "yield_pct")
     assert page.items[0].created_at is not None
     assert page.items[0].classification is Classification.CONFIDENTIAL

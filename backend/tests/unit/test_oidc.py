@@ -21,7 +21,7 @@ class StaticSigningKeyClient:
         return SimpleNamespace(key=SECRET)
 
 
-def verifier() -> OidcTokenVerifier:
+def verifier(*, hardware_webauthn_enabled: bool = True) -> OidcTokenVerifier:
     instance = OidcTokenVerifier(
         issuer=ISSUER,
         audience=AUDIENCE,
@@ -29,6 +29,7 @@ def verifier() -> OidcTokenVerifier:
         allowed_algorithms=("HS256",),
         hardware_acr_values=("hardware",),
         hardware_amr_values=("webauthn", "hwk"),
+        hardware_webauthn_enabled=hardware_webauthn_enabled,
         password_reauth_acr_values=("password-reauth",),
         password_amr_values=("pwd",),
     )
@@ -86,6 +87,24 @@ async def test_recent_iat_never_replaces_missing_authentication_time() -> None:
 
     assert identity.authentication_time is None
     assert identity.authentication_assurance is AuthenticationAssurance.OTHER_MFA
+
+
+@pytest.mark.parametrize(
+    ("amr", "expected"),
+    [
+        (["pwd", "webauthn"], AuthenticationAssurance.PASSWORD),
+        (["webauthn"], AuthenticationAssurance.OTHER_MFA),
+    ],
+)
+async def test_disabled_hardware_webauthn_is_not_recognized_as_hardware_assurance(
+    amr: list[str],
+    expected: AuthenticationAssurance,
+) -> None:
+    identity = await verifier(hardware_webauthn_enabled=False).verify(
+        token(acr="hardware", amr=amr)
+    )
+
+    assert identity.authentication_assurance is expected
 
 
 async def test_invalid_authentication_time_is_rejected() -> None:

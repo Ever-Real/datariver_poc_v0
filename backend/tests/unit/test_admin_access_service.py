@@ -610,6 +610,7 @@ async def test_membership_detail_hides_unknown_or_other_workspace_subject() -> N
             AuthenticationAssurance.PASSWORD,
             {
                 AdminOperation.MEMBERSHIP_ACCESS_READ,
+                AdminOperation.MEMBERSHIP_RENEWAL_READ,
                 AdminOperation.CLASSIFICATION_POLICY_READ,
                 AdminOperation.INFERENCE_PROVIDER_PROFILE_READ,
                 AdminOperation.RESTRICTED_SEARCH_GRANT_READ,
@@ -620,6 +621,7 @@ async def test_membership_detail_hides_unknown_or_other_workspace_subject() -> N
             AuthenticationAssurance.PASSWORD_REAUTH,
             {
                 AdminOperation.MEMBERSHIP_ACCESS_READ,
+                AdminOperation.MEMBERSHIP_RENEWAL_READ,
                 AdminOperation.CLASSIFICATION_POLICY_READ,
                 AdminOperation.INFERENCE_PROVIDER_PROFILE_READ,
                 AdminOperation.RESTRICTED_SEARCH_GRANT_READ,
@@ -630,6 +632,7 @@ async def test_membership_detail_hides_unknown_or_other_workspace_subject() -> N
             AuthenticationAssurance.PASSWORD_REAUTH,
             {
                 AdminOperation.MEMBERSHIP_ACCESS_READ,
+                AdminOperation.MEMBERSHIP_RENEWAL_READ,
                 AdminOperation.CLASSIFICATION_POLICY_READ,
                 AdminOperation.INFERENCE_PROVIDER_PROFILE_READ,
                 AdminOperation.RESTRICTED_SEARCH_GRANT_READ,
@@ -645,6 +648,8 @@ async def test_membership_detail_hides_unknown_or_other_workspace_subject() -> N
             {
                 AdminOperation.MEMBERSHIP_ACCESS_READ,
                 AdminOperation.MEMBERSHIP_ACCESS_UPDATE,
+                AdminOperation.MEMBERSHIP_RENEWAL_READ,
+                AdminOperation.MEMBERSHIP_RENEWAL_DECIDE,
                 AdminOperation.SYSTEM_ASSIGNMENT_UPDATE,
                 AdminOperation.CLASSIFICATION_POLICY_READ,
                 AdminOperation.CLASSIFICATION_POLICY_PROPOSE,

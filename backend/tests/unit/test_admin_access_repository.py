@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from uuid import uuid4
 
 import pytest
@@ -34,6 +35,7 @@ def _stored_membership() -> tuple[SubjectModel, WorkspaceMembershipModel]:
             "managed_by": "WORKSPACE_MEMBERSHIP_ACCESS_UPDATE_V1",
         },
         active=True,
+        access_expires_at=datetime(2027, 1, 1, tzinfo=UTC),
         version=7,
     )
     return subject, membership

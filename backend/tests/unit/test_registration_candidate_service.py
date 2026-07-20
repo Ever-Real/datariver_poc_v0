@@ -36,7 +36,10 @@ from datariver.application.typed_upload_parser import (
     dataset_description_candidate_hash,
     dataset_description_submitted_identity_hash,
 )
-from datariver.application.typed_upload_profiles import DATASET_DESCRIPTION_CSV_V1
+from datariver.application.typed_upload_profiles import (
+    DATASET_DESCRIPTION_CSV_V1,
+    DATASET_DESCRIPTION_XLSX_V1,
+)
 from datariver.domain.authz import (
     Action,
     Classification,
@@ -370,6 +373,61 @@ async def test_candidate_page_reauthorizes_in_sets_and_uses_bound_cursor() -> No
     )
     assert [item.evidence.ordinal for item in second.items] == [2]
     assert second.next_cursor is None
+
+
+@pytest.mark.asyncio
+async def test_xlsx_candidate_hash_is_verified_with_its_registered_profile() -> None:
+    (
+        service,
+        manifest,
+        preparation,
+        receipt,
+        candidates,
+        reader,
+        _,
+        _,
+        subject,
+        environment,
+    ) = _fixture()
+    manifest.display_name = "dataset-descriptions.xlsx"
+    manifest.declared_mime = DATASET_DESCRIPTION_XLSX_V1.content_type
+    manifest.actual_mime = DATASET_DESCRIPTION_XLSX_V1.content_type
+    manifest.content_profile = UploadContentProfile.DATASET_DESCRIPTION_XLSX_V1
+    preparation.content_profile = UploadContentProfile.DATASET_DESCRIPTION_XLSX_V1
+    preparation.configuration_hash = DATASET_DESCRIPTION_XLSX_V1.configuration_hash
+    reader.receipt = replace(
+        receipt,
+        content_profile=DATASET_DESCRIPTION_XLSX_V1.content_profile.value,
+        parser_version=DATASET_DESCRIPTION_XLSX_V1.parser_version,
+        schema_version=DATASET_DESCRIPTION_XLSX_V1.schema_version,
+        configuration_hash=DATASET_DESCRIPTION_XLSX_V1.configuration_hash,
+    )
+    reader.candidates = tuple(
+        replace(
+            candidate,
+            candidate_hash=dataset_description_candidate_hash(
+                workspace_id=candidate.workspace_id,
+                target_asset_id=candidate.target_asset_id,
+                proposed_description=candidate.proposed_description,
+                submitted_identity_hash=cast(str, candidate.submitted_identity_hash),
+                definition=DATASET_DESCRIPTION_XLSX_V1,
+            ),
+        )
+        for candidate in candidates
+    )
+
+    page = await service.list_candidates(
+        workspace_id=manifest.workspace_id,
+        upload_id=manifest.upload_id,
+        preparation_id=preparation.preparation_id,
+        subject=subject,
+        environment=environment,
+        request_id="candidate-xlsx",
+        cursor=None,
+        limit=20,
+    )
+
+    assert len(page.items) == 2
 
 
 @pytest.mark.asyncio

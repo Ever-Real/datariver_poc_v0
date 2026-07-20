@@ -13,6 +13,9 @@ function changeRequest(overrides: Partial<ChangeRequestRecord> = {}): ChangeRequ
     description: '설명 변경을 검토합니다.',
     state: 'REGISTERED',
     requester_id: 'subject-1',
+    requester_department_id: null,
+    current_round_id: 'round-1',
+    current_round_number: 1,
     created_at: '2026-07-17T01:02:03Z',
     requested_due_date: null,
     priority: null,
@@ -37,6 +40,7 @@ function changeRequest(overrides: Partial<ChangeRequestRecord> = {}): ChangeRequ
       target_source_version: 'source-v3',
       target_observed_at: '2026-07-17T01:02:03Z',
       target_binding_hash: 'binding-hash',
+      routing_system_id: 'system-1',
     }],
     approvals: [{
       id: 'approval-1',
@@ -45,6 +49,8 @@ function changeRequest(overrides: Partial<ChangeRequestRecord> = {}): ChangeRequ
       actor_id: 'reviewer-1',
       reason: '검토 근거가 일치합니다.',
       occurred_at: '2026-07-17T02:03:04Z',
+      round_id: 'round-1',
+      authorities: [{ kind: 'SYSTEM_DEVELOPER', system_id: 'system-1' }],
     }],
     transitions: [{
       id: 'transition-1',
@@ -53,7 +59,10 @@ function changeRequest(overrides: Partial<ChangeRequestRecord> = {}): ChangeRequ
       actor_id: 'reviewer-1',
       reason: '검토를 시작합니다.',
       occurred_at: '2026-07-17T02:04:05Z',
+      round_id: 'round-1',
     }],
+    rounds: [{ id: 'round-1', round_number: 1, submitted_by: 'subject-1', submitted_at: '2026-07-17T01:02:03Z', closed_at: null, evidence_hash: 'a'.repeat(64) }],
+    test_runs: [],
     ...overrides,
   }
 }
@@ -103,6 +112,7 @@ function deferred<T>() {
 function renderPage(client: ApiClient, onStepUp = vi.fn(() => Promise.resolve())) {
   return render(<GovernancePage
     client={client}
+    requesterName="Test Requester"
     onStepUp={onStepUp}
     onPasswordReauth={vi.fn(() => Promise.resolve())}
     onEnroll={vi.fn(() => Promise.resolve())}
@@ -136,6 +146,9 @@ describe('GovernancePage', () => {
     const existing = changeRequest()
     const request = vi.fn((path: string, options?: RequestOptions): Promise<unknown> => {
       if (path === '/change-requests?limit=100') return Promise.resolve({ items: [existing] })
+      if (path === '/change-requests/systems') return Promise.resolve({
+        items: [{ id: 'system-1', code: 'FAB', name: 'Fabrication' }],
+      })
       throw new Error(`Unexpected request: ${path} ${options?.method ?? 'GET'}`)
     })
     renderPage(apiClient(request))
@@ -148,9 +161,11 @@ describe('GovernancePage', () => {
     expect(screen.queryByLabelText('승인 대상 JSON')).not.toBeInTheDocument()
     fireEvent.click(screen.getByRole('button', { name: '신규 CR 신청' }))
     expect(await screen.findByRole('dialog', { name: '신규 CR 신청' })).toBeInTheDocument()
-    expect(screen.getByLabelText('요청 사유 / 요청 내용')).toBeInTheDocument()
-    expect(screen.queryByLabelText('요청 내용')).not.toBeInTheDocument()
-    const titleInput = screen.getByLabelText('CR명')
+    expect(screen.getByLabelText('요청내용')).toBeInTheDocument()
+    expect(screen.getByLabelText('요청사유')).toHaveAttribute('rows', '1')
+    expect(screen.getByLabelText('요청사유')).toHaveClass('governance-request-reason')
+    expect(screen.getByLabelText('요청자')).toHaveValue('Test Requester')
+    const titleInput = screen.getByLabelText('변경요청 제목')
     titleInput.focus()
     fireEvent.change(titleInput, { target: { value: 'Lineage metadata remediation' } })
     expect(titleInput).toHaveFocus()
@@ -160,7 +175,7 @@ describe('GovernancePage', () => {
     expect(listOptions?.signal).toBeInstanceOf(AbortSignal)
   })
 
-  it('renders related columns as compact table children and keeps Tag/Term entry in one control', async () => {
+  it('renders every selected table and column under one shared hierarchical target table', async () => {
     const existing = changeRequest()
     const request = vi.fn((path: string): Promise<unknown> => {
       if (path === '/change-requests?limit=100') return Promise.resolve({ items: [existing] })
@@ -168,51 +183,44 @@ describe('GovernancePage', () => {
       if (path === `/catalog/assets/${governedCatalogAsset.id}`) return Promise.resolve({
         ...governedCatalogAsset,
         description: 'Current wafer event table',
-        ownership: [], glossary_terms: [], quality: {}, source_version: 'source-v1',
+        ownership: [], glossary_terms: [], quality: {}, projection_source_version: 'projection-v1', source_version: 'source-v1',
         schema_fields: [{
           fieldPath: 'wafer_id', nativeDataType: 'uuid', description: 'Wafer identifier',
           globalTags: { tags: [{ tag: { name: 'field:identifier' } }] },
           glossaryTerms: { terms: [{ term: { name: 'record_identifier' } }] },
         }],
       })
-      if (path === '/catalog/vocabulary?kind=TAG&limit=12') return Promise.resolve({ items: ['tier:bronze'] })
-      if (path.startsWith('/catalog/vocabulary?kind=TAG&q=gold')) return Promise.resolve({ items: ['tier:gold'] })
       return Promise.reject(new Error(`Unexpected request: ${path}`))
     })
     renderPage(apiClient(request))
 
     fireEvent.click(await screen.findByRole('button', { name: '신규 CR 신청' }))
-    fireEvent.change(screen.getByLabelText('기존 테이블 검색'), { target: { value: 'wafer' } })
+    fireEvent.change(screen.getByLabelText('변경 대상 검색'), { target: { value: 'wafer' } })
     fireEvent.click(await screen.findByRole('button', { name: /wafer_events/ }))
     expect(await screen.findByDisplayValue('Current wafer event table')).toBeInTheDocument()
-    expect(screen.getByText('테이블')).toBeInTheDocument()
-    expect(screen.getByText('기존')).toBeInTheDocument()
-    expect(screen.queryByText('테이블(기존)')).not.toBeInTheDocument()
-    expect(screen.queryByLabelText('Platform')).not.toBeInTheDocument()
-    expect(screen.queryByLabelText('Database')).not.toBeInTheDocument()
-    expect(screen.getAllByText('요청/변경내용')).toHaveLength(1)
+    const targetTable = screen.getByRole('table', { name: '변경 대상 테이블 및 컬럼' })
+    expect(within(targetTable).getAllByRole('columnheader').map((header) => header.textContent?.trim())).toEqual([
+      'TABLE / COLUMN NAME', 'SCHEMA', 'DESC (LOGICAL NAME)', '비고 (REMARKS)', '관리',
+    ])
+    expect(screen.getAllByRole('table', { name: '변경 대상 테이블 및 컬럼' })).toHaveLength(1)
+    const addManualButton = screen.getByRole('button', { name: /ADD NEW TABLE MANUALLY/ })
+    expect(targetTable.compareDocumentPosition(addManualButton) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
 
     fireEvent.change(screen.getByLabelText('wafer_events 컬럼 추가'), { target: { value: 'wafer_id' } })
-    expect(await screen.findByText('변경')).toBeInTheDocument()
-    expect(screen.getAllByText('컬럼').length).toBeGreaterThan(0)
-    expect(screen.queryByText('컬럼(변경)')).not.toBeInTheDocument()
-    expect(document.querySelector('.governance-column-branch')).toBeInTheDocument()
-    expect(screen.getAllByText('요청/변경내용')).toHaveLength(2)
-    const columnTable = document.querySelector('.governance-intake-columns-table')
-    expect(columnTable?.querySelectorAll('thead th')).toHaveLength(8)
-    expect(Array.from(columnTable?.querySelectorAll('thead th') ?? []).slice(1).map((header) => header.textContent)).toEqual([
-      '항목', 'Type', 'Description', 'Term', 'Tag', '요청/변경내용', '관리',
-    ])
+    expect(await screen.findByDisplayValue('Wafer identifier')).toBeInTheDocument()
+    expect(targetTable.querySelectorAll('.governance-target-column-branch')).toHaveLength(1)
+    expect(within(targetTable).getAllByRole('row')).toHaveLength(3)
 
-    fireEvent.click(screen.getByRole('button', { name: 'wafer_events Tags 추가' }))
-    const tags = screen.getByLabelText('wafer_events Tags')
-    expect(document.querySelector('.controlled-vocabulary-row')?.querySelector('.badge-scroller-arrow')).toBeNull()
-    expect(screen.getByRole('button', { name: 'wafer_events Tags 이전 항목' })).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: 'wafer_events Tags 다음 항목' })).toBeInTheDocument()
-    expect(await screen.findByRole('option', { name: 'tier:bronze' })).toBeInTheDocument()
-    fireEvent.change(tags, { target: { value: 'gold' } })
-    fireEvent.click(await screen.findByRole('option', { name: 'tier:gold' }))
-    expect(screen.getByText('tier:gold')).toBeInTheDocument()
+    fireEvent.click(addManualButton)
+    fireEvent.change(screen.getByLabelText('신규 테이블 2 테이블명'), { target: { value: 'wafer_summary' } })
+    fireEvent.change(screen.getByLabelText('신규 테이블 2 스키마'), { target: { value: 'quality' } })
+    fireEvent.click(screen.getByRole('button', { name: 'wafer_summary 컬럼 추가' }))
+    fireEvent.change(screen.getByLabelText('wafer_summary 컬럼 1 이름'), { target: { value: 'wafer_id' } })
+
+    expect(screen.getAllByRole('table', { name: '변경 대상 테이블 및 컬럼' })).toHaveLength(1)
+    expect(within(targetTable).getAllByRole('columnheader', { name: 'TABLE / COLUMN NAME' })).toHaveLength(1)
+    expect(within(targetTable).getAllByRole('row')).toHaveLength(5)
+    expect(targetTable.querySelectorAll('.governance-target-column-branch')).toHaveLength(2)
   })
 
   it('filters with the exact server state contract', async () => {
@@ -242,10 +250,10 @@ describe('GovernancePage', () => {
     renderPage(apiClient(request))
     const dialog = await openDetail(existing)
 
-    expect(await within(dialog).findByText('대상 및 원본 증거')).toBeInTheDocument()
-    expect(within(dialog).getByLabelText(existing.items[0]!.target_ref)).toHaveAttribute('tabindex', '0')
-    expect(within(dialog).getByText('검토 근거가 일치합니다.')).toBeInTheDocument()
-    expect(within(dialog).getByText('검토를 시작합니다.')).toBeInTheDocument()
+    expect(await within(dialog).findByText('REQUEST REASON')).toBeInTheDocument()
+    expect(within(dialog).getByRole('table', { name: 'CR 변경 대상' })).toBeInTheDocument()
+    expect(within(dialog).getByLabelText(`${existing.items[0]!.target_ref} 비고`)).toHaveAttribute('readonly')
+    expect(within(dialog).getByText(/등록 후 대상 편집 미지원/)).toBeInTheDocument()
     expect(within(dialog).getByText('화면의 명령은 현재 상태를 기준으로 한 힌트입니다.')).toBeInTheDocument()
     expect(screen.queryByLabelText('DataHub 대상 URN')).not.toBeInTheDocument()
     expect(screen.queryByLabelText('승인 대상 JSON')).not.toBeInTheDocument()
@@ -265,6 +273,7 @@ describe('GovernancePage', () => {
       if (path === '/change-requests?limit=100') return Promise.resolve({ items: [existing] })
       if (path === `/change-requests/${existing.id}`) return Promise.resolve(existing)
       if (path === `/change-requests/${existing.id}/transitions` && options?.method === 'POST') return Promise.resolve(updated)
+      if (path.includes(`/catalog/assets/${existing.items[0]!.target_asset_id}/lineage`)) return Promise.resolve({ center_asset_id: 'asset-1', nodes: [], edges: [], direction: 'BOTH', depth: 2, truncated: false, meta: { projection_version: 1, policy_version: 'test' } })
       throw new Error(`Unexpected request: ${path} ${options?.method ?? 'GET'}`)
     })
     renderPage(apiClient(request))
@@ -305,7 +314,7 @@ describe('GovernancePage', () => {
     fireEvent.click(await within(detailDialog).findByRole('button', { name: '검토 시작' }))
     fireEvent.click(within(screen.getByRole('dialog', { name: '변경관리 명령 확인' })).getByRole('button', { name: '확인 후 제출' }))
 
-    expect(await within(detailDialog).findByText('USB 보안키 인증이 필요합니다.')).toBeInTheDocument()
+    expect(await within(detailDialog).findByText('WebAuthn 보안키 인증이 필요합니다.')).toBeInTheDocument()
     fireEvent.click(within(detailDialog).getByRole('button', { name: '보안키로 인증' }))
     await waitFor(() => expect(onStepUp).toHaveBeenCalledOnce())
     expect(request.mock.calls.filter(([path]) => path.endsWith('/transitions'))).toHaveLength(1)
@@ -328,6 +337,7 @@ describe('GovernancePage', () => {
         mutations += 1
         return mutations === 1 ? Promise.reject(problem(409, 'version conflict')) : Promise.resolve(completed)
       }
+      if (path.includes(`/catalog/assets/${existing.items[0]!.target_asset_id}/lineage`)) return Promise.resolve({ center_asset_id: 'asset-1', nodes: [], edges: [], direction: 'BOTH', depth: 2, truncated: false, meta: { projection_version: 1, policy_version: 'test' } })
       throw new Error(`Unexpected request: ${path}`)
     })
     renderPage(apiClient(request))
@@ -374,10 +384,10 @@ describe('GovernancePage', () => {
       onPasswordReauth: vi.fn(() => Promise.resolve()),
       onEnroll: vi.fn(() => Promise.resolve()),
     }
-    const view = render(<GovernancePage client={firstClient} {...actions} />)
+    const view = render(<GovernancePage client={firstClient} requesterName="Test Requester" {...actions} />)
     await openDetail(first)
 
-    view.rerender(<GovernancePage client={secondClient} {...actions} />)
+    view.rerender(<GovernancePage client={secondClient} requesterName="Test Requester" {...actions} />)
     expect(await screen.findByText(second.number)).toBeInTheDocument()
     expect(firstDetailSignal?.aborted).toBe(true)
     expect(screen.queryByRole('dialog', { name: `${first.number} · ${first.title}` })).not.toBeInTheDocument()
@@ -397,5 +407,24 @@ describe('GovernancePage', () => {
     expect(await within(dialog).findByRole('button', { name: '적용 대기열 등록' })).toBeEnabled()
     expect(within(dialog).getByText(/서버가 클릭할 때마다 현재 대상 권한/)).toBeInTheDocument()
     expect(within(dialog).queryByRole('button', { name: /APPLYING|APPLIED|APPLY_FAILED/ })).not.toBeInTheDocument()
+  })
+
+  it('derives final authority slots from server system routing and approval evidence', async () => {
+    const finalReview = changeRequest({ state: 'FINAL_REVIEW' })
+    const request = vi.fn((path: string): Promise<unknown> => {
+      if (path === '/change-requests?limit=100') return Promise.resolve({ items: [finalReview] })
+      if (path === `/change-requests/${finalReview.id}`) return Promise.resolve(finalReview)
+      throw new Error(`Unexpected request: ${path}`)
+    })
+    renderPage(apiClient(request))
+    const dialog = await openDetail(finalReview)
+
+    expect(within(dialog).getByText('Developer · system-1')).toBeInTheDocument()
+    expect(within(dialog).getByText('Data Steward · system-1')).toBeInTheDocument()
+    expect(within(dialog).getByText('전역 Admin')).toBeInTheDocument()
+    expect(within(dialog).getAllByText('승인 대기 중')).toHaveLength(3)
+    expect(within(dialog).getByText('REVIEW · APPROVED')).toBeInTheDocument()
+    expect(within(dialog).getByText('reviewer-1')).toBeInTheDocument()
+    expect(within(dialog).queryByText('역할별 승인자 계약 미제공')).not.toBeInTheDocument()
   })
 })
