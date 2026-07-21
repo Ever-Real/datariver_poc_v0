@@ -123,6 +123,22 @@ def verify_compose() -> None:
                         f"expected={sorted(expected)}, actual={sorted(names)}"
                     )
 
+    source_host = documents[ROOT / "compose.source-host.yaml"]
+    source_access = source_host.get("networks", {}).get("source-access", {})
+    if source_access.get("internal") is not False:
+        raise AssertionError(
+            "compose.source-host.yaml:source-access must remain non-internal for "
+            "loopback port publication"
+        )
+    source_host_services = source_host["services"]
+    for name in ("postgres", "valkey-cache", "valkey-queue", "seaweedfs"):
+        networks = set(source_host_services[name].get("networks", []))
+        if networks != {"data", "source-access"}:
+            raise AssertionError(
+                f"compose.source-host.yaml:{name} must keep private data access and the "
+                "dedicated source-access publication bridge"
+            )
+
 
 def verify_observability_contract() -> None:
     auxiliary = _yaml(AUX_COMPOSE_FILE)

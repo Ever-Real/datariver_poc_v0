@@ -12,7 +12,7 @@ evidence.
 |---|---|---|
 | `compose.yaml` | PostgreSQL 17.10, two Valkey 9.1 instances, SeaweedFS 4.39, migration/storage init, API, UI, outbox relay, upload completion/validation and governance apply workers | portable core |
 | `compose.identity.yaml` | Keycloak 26.7 and isolated Keycloak database/credentials | local identity only |
-| `compose.source-host.yaml` | loopback host ports for PostgreSQL and the two Valkey instances | source-host development; does not assume a DataHub Docker network |
+| `compose.source-host.yaml` | loopback host ports and a dedicated publication bridge for PostgreSQL, the two Valkey instances and SeaweedFS | source-host development; does not assume a DataHub Docker network |
 | `compose.airflow.yaml` | Airflow 3.3 API server, scheduler, DAG processor, triggerer and init using LocalExecutor/isolated DB role | scheduled scan/probe only |
 | `compose.gateway.yaml` | APISIX 3.17 standalone configuration | local gateway/rate limit/health-check profile |
 | `compose.graph.yaml` | Neo4j Community projection sandbox | local only; PostgreSQL KG releases remain canonical |
@@ -85,6 +85,12 @@ container. `compose.graph.yaml` attaches Neo4j
 to the private `data` network for internal access and to an otherwise empty non-internal bridge
 solely because Docker Desktop cannot publish loopback ports from an `internal: true` network. Its
 HTTP/Bolt bindings remain `127.0.0.1:17474` and `127.0.0.1:17687`.
+
+The source-host overlay applies the same boundary to PostgreSQL, both Valkey instances and
+SeaweedFS: their canonical container path remains the internal `data` network, while an otherwise
+empty non-internal `source-access` bridge permits only the explicitly declared `127.0.0.1` port
+bindings. The bridge is not a provider or application service network and must not gain unrelated
+members.
 
 The local Ollama adapter is development-only and is enabled only for
 `http://host.docker.internal:11434/v1`, `datariver-gemma4-dev:0.1`, a fixed 8,192-token context

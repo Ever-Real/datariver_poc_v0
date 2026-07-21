@@ -246,6 +246,12 @@ docker compose --profile tools -f compose.yaml -f compose.identity.yaml \
   -f compose.source-host.yaml run --rm local-bootstrap
 ```
 
+`compose.source-host.yaml`은 PostgreSQL, 두 Valkey와 SeaweedFS를 내부 `data` network와 전용
+`source-access` bridge에 함께 연결한다. 후자는 host source process가 사용하는 명시적
+`127.0.0.1` binding만 게시하며 다른 application service를 수용하지 않는다. `docker ps`의
+PostgreSQL ports가 `5432/tcp`로만 보이고 `127.0.0.1:5432->5432/tcp`가 없다면 오래된 overlay로
+생성된 container이므로, 최신 overlay를 받은 뒤 같은 세 Compose 파일로 다시 생성한다.
+
 `manifest.tsv.sha256`은 manifest 파일의 무결성을 확인한다. manifest 내용의 image ID와
 repository digest를 승인 목록과 비교한다. `docker load`가 외부 registry 접속을 유발해서는
 안 되며, 이후 Compose에도 `--pull never --no-build`를 유지한다.

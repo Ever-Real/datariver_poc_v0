@@ -4,13 +4,35 @@ services:
   # API receives its approved DataHub URL directly and an existing external
   # DataHub may be local, remote, or independently orchestrated.
   postgres:
+    networks:
+      - data
+      - source-access
     ports:
       - "127.0.0.1:${POSTGRES_PORT:-5432}:5432"
 
   valkey-cache:
+    networks:
+      - data
+      - source-access
     ports:
       - "127.0.0.1:${VALKEY_CACHE_PORT:-6379}:6379"
 
   valkey-queue:
+    networks:
+      - data
+      - source-access
     ports:
       - "127.0.0.1:${VALKEY_QUEUE_PORT:-6380}:6379"
+
+  seaweedfs:
+    networks:
+      - data
+      - source-access
+
+networks:
+  # Docker cannot publish loopback ports for services attached only to the
+  # internal data network. This bridge has no application peers; it exists
+  # solely for source processes on the host to reach explicitly published
+  # loopback ports while the data network remains the canonical service path.
+  source-access:
+    internal: false
