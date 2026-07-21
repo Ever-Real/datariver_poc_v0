@@ -119,7 +119,7 @@ def parse_args() -> argparse.Namespace:
         )
     )
     parser.add_argument("--confirm-local-e2e", action="store_true")
-    parser.add_argument("--api-base-url", default="http://localhost:18000/api/v1")
+    parser.add_argument("--api-base-url", default="http://localhost:38101/api/v1")
     parser.add_argument("--keycloak-base-url", default="http://localhost:18081")
     parser.add_argument("--keycloak-admin-username", default="datariver-bootstrap")
     parser.add_argument("--database-host", default="127.0.0.1")

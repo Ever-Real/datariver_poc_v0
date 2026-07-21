@@ -121,7 +121,7 @@ web_public_origin=http://localhost:8080
 if [ "$host_development" = true ]; then
   web_public_origin=http://localhost:38102
 elif [ "$mac_development" = true ]; then
-  web_public_origin=http://localhost:18080
+  web_public_origin=http://localhost:38102
 fi
 escaped_web_public_origin=$(printf '%s' "$web_public_origin" | sed 's/[\/&]/\\&/g')
 sed -e "s/__DEMO_PASSWORD__/$escaped_demo_password/g" \
@@ -163,8 +163,9 @@ if [ "$mac_development" = true ]; then
   # host, while containers reach it through Docker Desktop's host gateway.
   set_env_value APP_PUBLIC_ORIGIN "$web_public_origin"
   set_env_value APP_CORS_ORIGINS "$web_public_origin"
-  set_env_value WEB_PORT 18080
-  set_env_value API_PORT 18000
+  set_env_value WEB_PORT 38102
+  set_env_value API_PORT 38101
+  set_env_value POSTGRES_PORT 15432
   set_env_value KEYCLOAK_PORT 18081
   set_env_value APISIX_PORT 19080
   set_env_value OIDC_ISSUER http://localhost:18081/realms/datariver

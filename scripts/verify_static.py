@@ -457,6 +457,20 @@ def verify_host_development_ports() -> None:
     if "${DATARIVER_API_UPSTREAM:-host.docker.internal:38101}" not in gateway_host_dev:
         raise AssertionError("host-development APISIX must default to the source API on 38101")
 
+    bootstrap = (ROOT / "scripts" / "bootstrap.sh").read_text(encoding="utf-8")
+    mac_block = bootstrap.rsplit('if [ "$mac_development" = true ]; then', 1)[1].split(
+        "\nfi\n", 1
+    )[0]
+    for fragment in (
+        "set_env_value WEB_PORT 38102",
+        "set_env_value API_PORT 38101",
+        "set_env_value POSTGRES_PORT 15432",
+    ):
+        if fragment not in mac_block:
+            raise AssertionError(
+                "Mac development must use the same 38101/38102 developer port contract"
+            )
+
     core = _yaml(ROOT / "compose.yaml")
     if "127.0.0.1:${API_PORT:-8000}:8000" not in core["services"]["api"].get("ports", []):
         raise AssertionError(

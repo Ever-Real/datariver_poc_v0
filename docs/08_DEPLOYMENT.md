@@ -71,7 +71,9 @@ Bootstrap is idempotent for infrastructure credentials: an existing non-empty se
 ### Mac development topology
 
 Use `./scripts/bootstrap.sh --mac-development` only for the local Mac developer PC. It configures
-loopback ports that avoid common local conflicts, points container-to-DataHub traffic to
+the same developer-facing web `38102` and API `38101` port contract as source-host development,
+keeps the host PostgreSQL binding on conflict-resistant `15432`, and points
+container-to-DataHub traffic to
 `host.docker.internal:8080`, enables the native macOS Ollama bridge at its exact local OpenAI
 compatible endpoint, and generates a secret-backed Neo4j password. If no DataHub credential exists,
 the mode creates an ignored random placeholder because the bundled local DataHub composition has
