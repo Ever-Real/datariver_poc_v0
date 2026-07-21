@@ -20,8 +20,8 @@ postgres_port=$(env_file_value POSTGRES_PORT 5432)
 valkey_cache_port=$(env_file_value VALKEY_CACHE_PORT 6379)
 valkey_queue_port=$(env_file_value VALKEY_QUEUE_PORT 6380)
 keycloak_port=$(env_file_value KEYCLOAK_PORT 18081)
-api_port=8000
-web_port=5173
+api_port=$(env_file_value API_PORT 38101)
+web_port=$(env_file_value WEB_PORT 38102)
 enable_local_ollama=false
 enable_neo4j=false
 
@@ -43,8 +43,8 @@ Options:
   --valkey-cache-port PORT Host cache Valkey port (default: 6379).
   --valkey-queue-port PORT Host queue Valkey port (default: 6380).
   --keycloak-port PORT     Host Keycloak port (default: 18081).
-  --api-port PORT          Host Uvicorn port (default: 8000).
-  --web-port PORT          Host Vite port (default: 5173).
+  --api-port PORT          Host Uvicorn port (default: .env API_PORT or 38101).
+  --web-port PORT          Host Vite port (default: .env WEB_PORT or 38102).
   --enable-local-ollama    Use native Ollama on 127.0.0.1:11434 for Mac development.
   --enable-neo4j           Use the local Neo4j projection on 127.0.0.1:17687.
 EOF
@@ -200,6 +200,27 @@ for process in api outbox-relay upload-worker upload-validation-worker governanc
     exit 2
   fi
 done
+
+require_available_port() {
+  local label=$1
+  local port=$2
+  if ! "$python" -c '
+import socket
+import sys
+
+with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
+    probe.bind(("127.0.0.1", int(sys.argv[1])))
+' "$port" 2>/dev/null; then
+    echo "$label port 127.0.0.1:$port is already in use." >&2
+    echo "Inspect it with: sudo ss -ltnp \"sport = :$port\"" >&2
+    exit 2
+  fi
+}
+
+if [ "$action" = start ]; then
+  require_available_port API "$api_port"
+  require_available_port Vite "$web_port"
+fi
 
 secret_ref() {
   printf 'file:%s/secrets/%s' "$root" "$1"

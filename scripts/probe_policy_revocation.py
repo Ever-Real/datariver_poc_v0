@@ -52,7 +52,7 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Measure local ABAC revocation reflection with one unchanged OIDC token."
     )
-    parser.add_argument("--api-base-url", default="http://127.0.0.1:8000/api/v1")
+    parser.add_argument("--api-base-url", default="http://127.0.0.1:38101/api/v1")
     parser.add_argument(
         "--token-url",
         default="http://127.0.0.1:18081/realms/datariver/protocol/openid-connect/token",

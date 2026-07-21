@@ -14,6 +14,8 @@ export default defineConfig(({ mode }) => {
     .process?.env ?? {}
   const value = (name: string) => processEnv[name] || env[name] || ''
   const publicOrigin = value('VITE_OIDC_REDIRECT_URI') || value('APP_PUBLIC_ORIGIN')
+  const apiPort = value('API_PORT') || '38101'
+  const webPort = Number(value('WEB_PORT') || '38102')
   return {
     envDir: repositoryRoot,
     plugins: [react(), tailwindcss()],
@@ -28,14 +30,14 @@ export default defineConfig(({ mode }) => {
     },
     server: {
       host: '127.0.0.1',
-      port: 5173,
+      port: webPort,
       strictPort: true,
       watch: value('VITE_USE_POLLING') === 'true'
         ? { usePolling: true, interval: 250 }
         : undefined,
       proxy: {
         '/api': {
-          target: value('VITE_API_PROXY_TARGET') || 'http://localhost:8000',
+          target: value('VITE_API_PROXY_TARGET') || `http://localhost:${apiPort}`,
           changeOrigin: false,
         },
       },

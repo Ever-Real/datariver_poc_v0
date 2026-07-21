@@ -231,7 +231,7 @@ has passed. Local bootstrap intentionally does not manufacture a second administ
 
 ## Network and identity rules
 
-- Loopback development ports: web `8080`, API `8000`, Keycloak `8081`, APISIX `9080`, Airflow `8082` when their overlays are enabled.
+- Core container defaults remain web `8080`, API `8000` and Keycloak `8081`. Host-development uses Vite `38102`, source API `38101`, Keycloak `18081`, APISIX `9080` and Airflow `8082` when their overlays are enabled.
 - PostgreSQL, Valkey and object-service internals stay on the private `data` network and have no host bind in the core file.
 - API has an RLS-constrained database role; migration owns DDL. Relay, upload, governance and bootstrap have distinct least-privilege database identities and service-specific secret mounts. Airflow and Keycloak have distinct databases/roles.
 - APISIX standalone mode has no administration/control port and does not replace application ABAC.

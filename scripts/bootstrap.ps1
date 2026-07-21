@@ -138,10 +138,12 @@ if ($PSBoundParameters.ContainsKey("DataHubToken") -and $DataHubToken.Length -gt
 
 if ($HostDevelopment) {
     if (-not $PSBoundParameters.ContainsKey("WebPublicOrigin")) {
-        $WebPublicOrigin = "http://localhost:5173"
+        $WebPublicOrigin = "http://localhost:38102"
     }
     Set-EnvValue "APP_PUBLIC_ORIGIN" $WebPublicOrigin
     Set-EnvValue "APP_CORS_ORIGINS" $WebPublicOrigin
+    Set-EnvValue "API_PORT" "38101"
+    Set-EnvValue "WEB_PORT" "38102"
     Set-EnvValue "POSTGRES_PORT" "5432"
     Set-EnvValue "VALKEY_CACHE_PORT" "6379"
     Set-EnvValue "VALKEY_QUEUE_PORT" "6380"

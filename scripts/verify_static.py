@@ -420,6 +420,50 @@ def verify_runtime_hardening() -> None:
         raise AssertionError("web CSP must receive the same DataHub embed origin as the API")
 
 
+def verify_host_development_ports() -> None:
+    required_fragments = {
+        ROOT / "scripts" / "dev_host.sh": {
+            "api_port=$(env_file_value API_PORT 38101)",
+            "web_port=$(env_file_value WEB_PORT 38102)",
+            'VITE_API_PROXY_TARGET="http://127.0.0.1:$api_port"',
+        },
+        ROOT / "scripts" / "bootstrap.sh": {
+            "web_public_origin=http://localhost:38102",
+            "set_env_value API_PORT 38101",
+            "set_env_value WEB_PORT 38102",
+        },
+        ROOT / "scripts" / "configure_keycloak_host_dev.sh": {
+            "web_origin=${web_origin:-http://localhost:38102}",
+        },
+        ROOT / "scripts" / "start_gateway_host_dev.sh": {
+            "api_port=${api_port:-38101}",
+            '"$host_gateway:$api_port"',
+        },
+        ROOT / "frontend" / "vite.config.ts": {
+            "value('API_PORT') || '38101'",
+            "value('WEB_PORT') || '38102'",
+        },
+    }
+    for path, fragments in required_fragments.items():
+        content = path.read_text(encoding="utf-8")
+        missing = fragments - {fragment for fragment in fragments if fragment in content}
+        if missing:
+            raise AssertionError(
+                f"{path.relative_to(ROOT)} has drifted from the host-development port contract: "
+                f"{sorted(missing)}"
+            )
+
+    gateway_host_dev = (ROOT / "compose.gateway.host-dev.yaml").read_text(encoding="utf-8")
+    if "${DATARIVER_API_UPSTREAM:-host.docker.internal:38101}" not in gateway_host_dev:
+        raise AssertionError("host-development APISIX must default to the source API on 38101")
+
+    core = _yaml(ROOT / "compose.yaml")
+    if "127.0.0.1:${API_PORT:-8000}:8000" not in core["services"]["api"].get("ports", []):
+        raise AssertionError(
+            "host-development ports must not change the container API port contract"
+        )
+
+
 def verify_readiness_contract() -> None:
     base = _yaml(ROOT / "compose.yaml")
     api_healthcheck = json.dumps(base["services"]["api"]["healthcheck"]["test"])
@@ -680,6 +724,7 @@ def main() -> None:
     verify_datahub_release_contract()
     verify_identity_assurance_contract()
     verify_runtime_hardening()
+    verify_host_development_ports()
     verify_readiness_contract()
     verify_browser_storage_boundary()
     verify_ci_supply_chain()

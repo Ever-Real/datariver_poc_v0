@@ -868,7 +868,7 @@ def _parser() -> argparse.ArgumentParser:
             "then remove it."
         ),
     )
-    parser.add_argument("--probe-redirect-uri", default="http://localhost:5173/")
+    parser.add_argument("--probe-redirect-uri", default="http://localhost:38102/")
     return parser
 
 

@@ -119,7 +119,7 @@ escaped_demo_password=$(printf '%s' "$demo_password" | sed 's/[\/&]/\\&/g')
 escaped_airflow_client_secret=$(printf '%s' "$airflow_client_secret" | sed 's/[\/&]/\\&/g')
 web_public_origin=http://localhost:8080
 if [ "$host_development" = true ]; then
-  web_public_origin=http://localhost:5173
+  web_public_origin=http://localhost:38102
 elif [ "$mac_development" = true ]; then
   web_public_origin=http://localhost:18080
 fi
@@ -146,6 +146,8 @@ set_env_value() {
 if [ "$host_development" = true ]; then
   set_env_value APP_PUBLIC_ORIGIN "$web_public_origin"
   set_env_value APP_CORS_ORIGINS "$web_public_origin"
+  set_env_value API_PORT 38101
+  set_env_value WEB_PORT 38102
   set_env_value POSTGRES_PORT 5432
   set_env_value VALKEY_CACHE_PORT 6379
   set_env_value VALKEY_QUEUE_PORT 6380

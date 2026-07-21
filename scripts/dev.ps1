@@ -7,8 +7,8 @@ param(
     [int]$ValkeyCachePort = 6379,
     [int]$ValkeyQueuePort = 6380,
     [int]$KeycloakPort = 18081,
-    [int]$ApiPort = 8000,
-    [int]$WebPort = 5173,
+    [int]$ApiPort = 38101,
+    [int]$WebPort = 38102,
     [int]$GatewayPort = 9080,
     [bool]$EnableEphemeralAdminChat = $true
 )

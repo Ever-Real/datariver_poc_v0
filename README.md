@@ -267,8 +267,25 @@ uv sync --frozen --all-extras --offline
 ./scripts/dev_host.sh start \
   --datahub-base-url https://datahub.example.internal
 ./scripts/dev_host.sh status
-curl --fail --silent --show-error http://127.0.0.1:8000/api/v1/health/ready
+curl --fail --silent --show-error http://127.0.0.1:38101/api/v1/health/ready
 ```
+
+`--host-development` bootstrap은 source API `38101`, Vite `38102`를 `.env`에 기록하며
+`dev_host.sh`와 Keycloak redirect configurator는 같은 값을 읽는다. 시작 전에 포트가 이미
+점유되어 있으면 launcher는 임의로 프로세스를 종료하지 않고 검사 명령과 함께 실패한다.
+
+기존 source-host를 이 포트 계약으로 전환할 때는 volume이나 infra container를 지우지 않는다.
+먼저 `./scripts/dev_host.sh stop`을 실행하고 `sudo ss -ltnp "sport = :38101"` 및
+`sudo ss -ltnp "sport = :38102"`로 남은 listener의 PID를 확인한다. PID가 DataRiver의 이전
+Uvicorn/Vite process임을 `ps -fp <PID>`로 확인한 경우에만 `kill -TERM <PID>`로 종료한다.
+Docker가 점유한 경우에는 `docker ps --filter publish=38101 --filter publish=38102`로 정확한
+container를 찾고, 이전 DataRiver API/web container임을 확인한 뒤 해당 compose project에서만
+중지한다. WSL의 `ss`에 PID가 보이지 않으면 Windows 측도
+`powershell.exe -NoProfile -Command "Get-NetTCPConnection -State Listen -LocalPort 38101,38102"`로
+확인한다. 그 밖의 process이면 임의 종료하지 않고 운영자가 충돌을 해소한다. 이후 token 인자 없이 같은
+`bootstrap.sh --host-development --datahub-base-url ...`을 다시 실행하고
+`configure_keycloak_host_dev.sh`로 단일 허용 redirect origin을 `38102`에 맞춘 뒤 source-host를
+재시작한다.
 
 이 개발 PC는 이후 Git으로 소스를 갱신할 수 있다. 다만 source checkout과 offline bundle의
 backend image는 서로 다른 버전일 수 있으므로, 새 Alembic revision이 포함된 pull 뒤에는
@@ -298,7 +315,7 @@ TLS 검증을 끄지 않는다. Airflow까지 테스트할
 때는 Mac Docker Desktop의 host gateway를 명시해, Airflow가 source API를 호출하게 한다.
 
 ```bash
-DATARIVER_API_BASE_URL=http://host.docker.internal:8000 \
+DATARIVER_API_BASE_URL=http://host.docker.internal:38101 \
   docker compose -f compose.yaml -f compose.identity.yaml -f compose.source-host.yaml \
   -f compose.airflow.yaml up -d --pull never --no-build --wait \
   airflow-api-server airflow-scheduler airflow-dag-processor airflow-triggerer
@@ -785,7 +802,7 @@ docker compose -f compose.yaml -f compose.identity.yaml -f compose.airflow.yaml 
   airflow-dag-processor airflow-triggerer
 ```
 
-Open Vite at `http://localhost:5173`, API docs at `http://localhost:8000/api/docs`, Keycloak at `http://localhost:18081`, and APISIX at `http://localhost:9080`. Vite proxies `/api` through APISIX. Inspect or stop host processes with `./scripts/dev.ps1 status` and `./scripts/dev.ps1 stop`. Runtime PIDs and logs are written only below the ignored `runtime/host-dev/` directory.
+Open Vite at `http://localhost:38102`, API docs at `http://localhost:38101/api/docs`, Keycloak at `http://localhost:18081`, and APISIX at `http://localhost:9080`. Vite proxies `/api` through APISIX. Inspect or stop host processes with `./scripts/dev.ps1 status` and `./scripts/dev.ps1 stop`. Runtime PIDs and logs are written only below the ignored `runtime/host-dev/` directory.
 
 The host process manager starts Uvicorn first and requires `/api/v1/health/ready` before starting
 workers or Vite. It forces the Uvicorn file watcher to poll so a Windows host process reliably
@@ -793,7 +810,7 @@ reloads backend sources stored in the WSL filesystem before APISIX serves them. 
 only that the process is running; readiness also leases an API database connection and requires the packaged sole Alembic head. If readiness reports
 `SCHEMA_REVISION_MISMATCH`, run the documented migration command before restarting host processes.
 
-The host-development port map is: PostgreSQL `5432`, cache Valkey `6379`, queue Valkey `6380`, SeaweedFS S3 `8333`, Uvicorn `8000`, APISIX `9080`, Keycloak `18081`, and Vite `5173`. Do not run a bare `docker compose up` for this topology because that would also start the containerized API, workers and web service.
+The host-development port map is: PostgreSQL `5432`, cache Valkey `6379`, queue Valkey `6380`, SeaweedFS S3 `8333`, Uvicorn `38101`, APISIX `9080`, Keycloak `18081`, and Vite `38102`. Do not run a bare `docker compose up` for this topology because that would also start the containerized API, workers and web service.
 
 Database connection ceilings are explicit settings. Budget the server for
 `API replicas × (DATABASE_POOL_SIZE + DATABASE_POOL_MAX_OVERFLOW) + long-running workers ×
@@ -981,7 +998,7 @@ see ADR-0012 for the governed legacy exception and provider-neutral alternative.
 
 The bundled Airflow password file and `SimpleAuthManager` are strictly loopback local-development conveniences. Before any non-local Airflow exposure, use the deployment's supported enterprise/FAB SSO integration; the included DAG service account already uses short-lived Keycloak client credentials for DataRiver API calls.
 
-OpenAPI is available at `http://localhost:8000/api/docs` outside production, or through the web proxy at `/api/docs` when enabled.
+OpenAPI is available at `http://localhost:38101/api/docs` in source-host development, at the deployment-selected API port in other non-production topologies, or through the web proxy at `/api/docs` when enabled. The container API continues to listen on its internal port `8000`.
 
 ## Optional semiconductor seed
 

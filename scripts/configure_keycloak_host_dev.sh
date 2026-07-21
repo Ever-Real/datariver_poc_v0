@@ -1,8 +1,13 @@
 #!/usr/bin/env sh
 set -eu
 
+root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 container=${DATARIVER_KEYCLOAK_CONTAINER:-datariver-next-keycloak-1}
-web_origin=${DATARIVER_WEB_ORIGIN:-http://localhost:5173}
+web_origin=${DATARIVER_WEB_ORIGIN:-}
+if [ -z "$web_origin" ] && [ -f "$root/.env" ]; then
+  web_origin=$(sed -n 's/^APP_PUBLIC_ORIGIN=//p' "$root/.env" | tail -n 1)
+fi
+web_origin=${web_origin:-http://localhost:38102}
 
 case "$web_origin" in
   http://localhost:[0-9]*) ;;
