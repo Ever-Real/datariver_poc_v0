@@ -175,6 +175,30 @@ assigned the same responsibility to several Systems may cover those Systems, but
 satisfy two FINAL role classes. See [ADR-0026](docs/adr/0026-expiring-human-membership-renewal.md)
 and [ADR-0027](docs/adr/0027-change-request-system-role-authority.md).
 
+#### CR workflow and FINAL security boundary
+
+The canonical CR path is `REGISTERED -> IN_REVIEW -> TESTING -> FINAL_REVIEW`. A multi-target,
+non-executable `CHANGE_INTAKE` completes after FINAL approval; a single governed DataHub aspect
+moves through `APPLY_QUEUED -> APPLYING -> APPLIED|APPLY_FAILED`. A resubmission creates a new
+current revision, so an approval or test result from an older revision can never satisfy the new
+round. Every state command is version-fenced and idempotent. TEST evidence is a typed run bound to
+private attachment bytes and their content hash; the platform does not accept browser-supplied raw
+SQL as proof.
+
+Both FINAL approval and FINAL rejection use the typed FINAL decision API. An ordinary transition
+cannot bypass that boundary. FINAL approval requires all target Systems' Developer and Data
+Steward lanes plus one global Admin lane, with a different actor for each responsibility class.
+These sensitive writes additionally require a recent hardware-WebAuthn/LoA-2 session whose
+`acr`, `amr` and `auth_time` satisfy the server policy. Password/direct-grant tokens and service
+tokens fail closed with `401` or `403`; there is no password downgrade. Immutable policy-decision
+evidence remains in `authz.policy_decisions`.
+
+The workflow, negative cases and executed local evidence are recorded in
+[the use-case catalogue](docs/usecases.md), [the test checklist](docs/test_checklist.md) and
+[ADR-0027](docs/adr/0027-change-request-system-role-authority.md). A successful password-token
+denial proves the security gate, not a successful human FINAL approval; production promotion still
+requires a real browser and approved hardware authenticator journey.
+
 The administrator navigation contains one **Audit/Log 조회** entry with Metadata Change Log and
 System Security Log tabs. Their read/export controls remain unavailable until a workspace-scoped,
 masked audit API exists; the UI does not manufacture log rows. Retention policy, Legal Hold and
@@ -448,11 +472,122 @@ WEB_PORT=18080 KEYCLOAK_PORT=18081 APISIX_PORT=19080 \
 
 An OIDC issuer is an identity, not merely a port mapping. For browser sign-in on alternate ports, also change `APP_PUBLIC_ORIGIN`, `OIDC_PUBLIC_ORIGIN`, `OIDC_PUBLIC_AUTHORITY` and `OIDC_ISSUER` consistently in `.env`, then rebuild web/API/Keycloak. Never accept tokens from two issuer strings for convenience.
 
+## 운영 환경 업데이트 가이드
+
+이 절차는 승인된 릴리스 커밋을 운영 PC의 기존 배포에 반영하기 위한 순서이다. 저장소의
+기본 Compose는 **Single-node Pilot** 토폴로지이며 HA 운영 배포본이 아니다. 실제 운영은
+[배포 운영 문서](docs/08_DEPLOYMENT.md)의 외부 OIDC, 별도 운영 DataHub, 백업·복구,
+TLS, 이미지 digest 고정 및 승격 게이트를 먼저 충족해야 한다. `compose.identity.yaml`,
+`compose.graph.yaml`, 관측성 Pilot 및 합성 시드는 로컬 전용이므로 운영 명령에 추가하지
+않는다. 조직이 검토한 운영 overlay가 있다면 아래 모든 Compose 명령에 동일한 `-f` 목록을
+일관되게 적용한다.
+
+### 1. 변경 전 확인 및 코드 갱신
+
+DB와 오브젝트 스토리지의 복구 지점을 생성하고 복구 가능성을 확인한 후 작업한다. `.env`,
+`secrets/`, 런타임 볼륨은 배포 환경 소유이며 Git에서 복사하거나 덮어쓰지 않는다. 다음
+`git status --short` 출력이 비어 있지 않으면 중단하고 운영 PC의 로컬 변경부터 보존한다.
+
+```bash
+cd /path/to/datariver_v1
+git status --short
+git fetch --prune origin
+git switch main
+git pull --ff-only origin main
+git rev-parse --verify HEAD
+```
+
+승인된 릴리스 SHA와 마지막 출력이 같은지 확인한다. 운영 설정은 최소한
+`APP_ENV=production`, HTTPS 외부 URL과 정확한 CORS origin,
+`DATAHUB_VERSION_ENFORCEMENT=enforce`, 운영용 secret 파일 참조를 사용해야 한다.
+고위험 CR/관리자 작업에는 `OIDC_HARDWARE_WEBAUTHN_ENABLED=true`를 유지하고, 별도의
+Maker-Checker 승격을 완료하지 않았다면 `ADMIN_PASSWORD_FALLBACK_ENABLED=false`로 둔다.
+브라우저의 시스템 설정을 런타임에 바로 반영하는
+`SYSTEM_CONFIGURATION_RUNTIME_ACTIVATION_ENABLED`도 운영에서는 활성화하지 않는다.
+
+```bash
+docker compose -f compose.yaml config --quiet
+```
+
+### 2. 이미지 준비와 DB 마이그레이션
+
+정식 운영 배포는 CI에서 검증한 digest 고정 이미지를 받아야 한다. 현재 저장소를 직접
+빌드하는 Single-node 운영 PC라면 다음 명령으로 동일 소스의 이미지를 먼저 준비한다.
+
+```bash
+docker compose -f compose.yaml build --pull
+```
+
+애플리케이션을 올리기 전에 권한이 분리된 `migrate` 서비스로 Alembic을 실행한다. 이
+릴리스의 필수 revision은 `0038`이다. 호스트의 임의 DB 계정으로 `alembic`을 직접 실행하지
+않는다.
+
+```bash
+docker compose -f compose.yaml run --rm migrate
+docker compose -f compose.yaml run --rm migrate \
+  /app/.venv/bin/alembic -c backend/alembic.ini current
+```
+
+두 번째 명령의 현재 revision이 `0038 (head)`인지 확인한다. 마이그레이션 실패 시 서비스를
+재기동하거나 downgrade를 추측 실행하지 말고, 로그와 DB 상태를 보존한 채 배포를 중단한다.
+
+### 3. API·Worker·Web 재기동과 상태 확인
+
+마이그레이션이 성공한 뒤 기본 서비스를 재생성한다. Compose의 의존성도 `migrate` 성공을
+요구하므로 이미 최신인 DB에서는 이 단계가 안전하게 재확인된다.
+
+```bash
+docker compose -f compose.yaml up -d --wait
+docker compose -f compose.yaml ps
+docker compose -f compose.yaml logs --since=10m \
+  api outbox-relay upload-worker upload-validation-worker governance-apply-worker
+```
+
+운영 URL로 liveness와 readiness를 각각 확인한다. 아래 호스트명은 실제 TLS origin으로
+바꾼다. liveness `200`만으로는 배포 성공이 아니며 readiness도 `200`이어야 한다.
+
+```bash
+curl --fail --silent --show-error \
+  https://datariver.example.internal/api/v1/health/live
+curl --fail --silent --show-error \
+  https://datariver.example.internal/api/v1/health/ready
+```
+
+### 4. FIDO2/Keycloak 보증 계약 확인
+
+대상 IdP가 운영자가 관리하는 Keycloak일 때만, 승인된 bootstrap 관리자 secret을 파일로
+마운트한 관리 단말에서 다음 migration을 실행한다. 다른 IdP는 동일한 `acr`/`amr`/
+`auth_time` 보증을 제공하는 공급자별 절차가 필요하다.
+
+```bash
+uv run python scripts/configure_keycloak_assurance.py \
+  --base-url https://identity.example.internal \
+  --admin-username '<bootstrap-admin>' \
+  --admin-password-file /run/secrets/keycloak_admin_password \
+  --username '<managed-security-admin>' \
+  --configure-step-up \
+  --revoke-user-sessions \
+  --apply
+```
+
+같은 명령에서 `--apply`만 제거해 read-only drift 검사를 다시 수행한다. 그 후 서로 다른
+실사용 Developer, Data Steward, 전역 Admin으로 시스템 담당자를 확인하고, 브라우저에서
+승인된 하드웨어 인증기를 사용한 FINAL step-up을 검증한다. 일반 password/direct-grant 및
+service token의 FINAL 호출은 `401` 또는 `403`으로 차단되어야 한다. 로컬 전용
+`scripts/e2e/run_cr_workflow.py`는 운영에서 실행하지 않는다.
+
+### 5. 실패 시 처리
+
+무조건적인 `alembic downgrade`나 볼륨 삭제는 금지한다. readiness 또는 핵심 워크플로우가
+실패하면 신규 트래픽 승격을 중단하고 위 로그, 릴리스 SHA, migration revision을 보존한다.
+이전 이미지로 되돌릴 수 있는지는 새 스키마와의 호환성을 먼저 확인해야 하며, 호환되지
+않으면 승인된 복구 절차로 DB·오브젝트 저장소의 일관된 복구 지점을 사용한다.
+
 ## Main functional flows
 
 - Catalog: an authorized local projection serves cursor-bound ALL-term search, facets, autocomplete and a lazy `platform -> database -> schema -> asset` Resource Tree before selected details are enriched through a fixed DataHub adapter. The result table shows source-backed Terms and Tags beside the asset identity, exposes a horizontal scroll region, and offers per-column ascending/descending sorting and text filtering over the currently loaded logical page. Logical page sizes 50/100/200/500/1000/All are composed by following the existing authorization- and policy-bound cursor in server batches of at most 100; this does not expand the API's bounded page contract. Database/schema hierarchy comes only from typed DataHub browse containers; the platform never invents it by splitting URNs. Tag/Term entry suggestions merge the authorized projection with a bounded, paged DataHub controlled-vocabulary search before applying the picker limit, so values outside a provider's first short page remain selectable. Provider failure safely falls back to the projection. Authorized detail keeps `Table Details` and a fixed-height, authorization-pruned local `Lineage` graph. The graph fits its detail-panel viewport, wraps each stage after three nodes without omitting nodes, and supports pan, node positioning and zoom. Selecting a node opens its authorized local detail; the external DataHub Lineage iframe is not invoked by this UI. A `sync_id`-bound full reconciliation is sequential, single-writer and tombstones missing DataHub-owned assets without touching seed-owned rows. Governed CSV/XLSX export is a server-managed, owner-scoped job bound to the exact query/filter, permission/classification-policy snapshot and projection watermark; toolbar buttons never synthesize a browser-side file. Export excludes RESTRICTED assets unconditionally, neutralizes spreadsheet formula injection, reauthorizes every download, and issues only a 60-second URL after object metadata reconciliation.
 - Registration: browser multipart upload goes directly to quarantine storage. Table/column Tag and Term values remain on a one-line scrollable badge control with thin previous/next buttons; the compact `+` opens its vocabulary/new-proposal input directly below that control. Workers complete the object, stream SHA-256/size/format checks with bounded memory, copy to a validation-attempt-scoped accepted key, fully re-read the promoted bytes and delete quarantine only after the version-fenced database acceptance commits. The MANUAL workbench creates a dataset-description proposal only after a live DataHub preview, an opaque target/source-bound `If-Match`, server-side classification and a same-transaction target share lock. The BULK workbench explicitly separates format-only uploads from the bounded `DATASET_DESCRIPTION_CSV_V1` profile, can queue/read a server-configured preparation only from exact `ACCEPTED` byte evidence and renders real preparation state in the v0.3-style status tracker. A source-only bounded parser contract exists, but the isolated parser worker, candidate read/preview and proposal creation remain disabled, so READY preparation evidence is not presented as a change request or DataHub update and the browser exposes no raw proposal form.
-- Change management: typed DataHub aspect UPSERT requests are server-bound to an authorized local dataset identity and scope, then move through legal transitions and distinct final approval. In new-CR intake, each Tag/Term `+` unions the bounded authorized projection with the fixed, bounded DataHub `*` controlled-vocabulary browse; keyword input narrows that same adapter query before a comma-aware new proposal is offered. Column input reserves the table Schema track, so column item/Type/Description/Term/Tag/requested-change/management align with Table/Owner/description/Terms/Tags/requested-change/column-addition above it. Reads use the current authorized target; approval and forward transitions reject identity or authorization-scope drift. Confidential/restricted changes need two final approvers. Generic raw Aspect creation and the legacy upload-derived raw proposal API additionally require the deny-by-default, hardware-human-only `change.raw.create` action and are not exposed in the ordinary UI. A leased worker applies each aspect idempotently and only marks `APPLIED` after re-read hash equality. Apply-time requester/policy reauthorization, DataRiver target serialization and external provider CAS remain explicit production gates.
+- Change management: typed DataHub aspect UPSERT requests are server-bound to an authorized local dataset identity and scope, then move through legal transitions and distinct final approval. In new-CR intake, each Tag/Term `+` unions the bounded authorized projection with the fixed, bounded DataHub `*` controlled-vocabulary browse; keyword input narrows that same adapter query before a comma-aware new proposal is offered. Column input reserves the table Schema track, so column item/Type/Description/Term/Tag/requested-change/management align with Table/Owner/description/Terms/Tags/requested-change/column-addition above it. Reads use the current authorized target; approval and forward transitions reject identity, revision or authorization-scope drift. REVIEW and TEST require every routed System's Developer evidence, while FINAL requires every routed System's Developer and Data Steward plus one role-separated global Admin. Every FINAL decision also requires recent hardware-WebAuthn assurance. Generic raw Aspect creation and the legacy upload-derived raw proposal API additionally require the deny-by-default, hardware-human-only `change.raw.create` action and are not exposed in the ordinary UI. A leased worker applies each aspect idempotently and only marks `APPLIED` after re-read hash equality. Apply-time requester/policy reauthorization, DataRiver target serialization and external provider CAS remain explicit production gates.
 - Classification access administration: eligible human security administrators can review and independently approve versioned four-class Search/Chat policies, review or revoke immutable inference-provider profile versions, and govern policy-bound RESTRICTED Search grants. ADR-0020 additionally permits an audited, read-only same-workspace catalog review of non-deleted quarantined DataHub projections for classification remediation, including the fixed typed DataHub metadata detail; it never enables export, Chat, arbitrary provider access or mutation. The Admin UI never accepts provider endpoints or credentials, and RESTRICTED evidence is never eligible for Chat.
 - Knowledge graph: create a graph/ontology, author typed node/edge changesets, validate, independently review, publish or roll back immutable releases, export governed views and call bounded analysis. Raw SQL/Cypher is never accepted.
 - API sharing: create a release-pinned contract version, publish it with recent strong authentication, grant an OIDC `client_id` explicit scopes/classification/validity and quotas, revoke it, and invoke bounded neighbor analysis through an atomic grant-and-usage check.
