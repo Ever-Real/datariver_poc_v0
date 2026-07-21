@@ -76,6 +76,11 @@ ensure_random_secret keycloak_admin_password 24
 ensure_random_secret grafana_admin_password 24
 ensure_random_secret valkey_cache_password 32
 ensure_random_secret valkey_queue_password 32
+# These files are inert unless a development administrator explicitly activates
+# an intranet OpenAI-compatible LLM profile. Operators replace them through the
+# approved secret channel; bootstrap never enables the provider on their behalf.
+ensure_random_secret intranet_llm_chat_api_key 32
+ensure_random_secret intranet_llm_embedding_api_key 32
 if ! grep -Eq '^neo4j/[0-9a-f]{64}$' "$secrets_dir/neo4j_auth" 2>/dev/null; then
   # Neo4j parses NEO4J_AUTH as username/password, so use a delimiter-safe
   # hexadecimal password rather than generic base64 output.

@@ -52,6 +52,7 @@ from datariver.infrastructure.knowledge.openai_compatible import (
     OpenAICompatibleTypedKnowledgeExtractor,
 )
 from datariver.infrastructure.knowledge.pdf import PypdfPageAwareParser
+from datariver.infrastructure.secrets import SecretResolver
 from datariver.interfaces.http.dependencies import ContextDep, SessionDep, get_container
 from datariver.interfaces.http.schemas import (
     GraphEdgeResponse,
@@ -82,7 +83,8 @@ from datariver.interfaces.http.schemas import (
 
 router = APIRouter(prefix="/knowledge/graphs", tags=["knowledge"])
 
-_KNOWLEDGE_PROVIDER = "ollama-openai-compatible"
+_LOCAL_OLLAMA_PROVIDER = "ollama-openai-compatible"
+_INTRANET_OPENAI_COMPATIBLE_PROVIDER = "intranet-openai-compatible"
 _EXTRACTION_PROMPT_VERSION = "knowledge-pdf-extraction-v1"
 _EXTRACTION_SCHEMA_VERSION = "knowledge-extraction-schema-v1"
 _GRAPHRAG_PROMPT_VERSION = "knowledge-graphrag-v1"
@@ -95,6 +97,7 @@ def _activated_model_binding(
     *,
     settings: object,
     system_id: str,
+    provider: str,
     model: str,
     prompt_version: str,
     tool_schema_version: str,
@@ -109,7 +112,7 @@ def _activated_model_binding(
             "The activated model configuration is missing its immutable revision hash."
         )
     return ModelBinding.activated(
-        provider=_KNOWLEDGE_PROVIDER,
+        provider=provider,
         model=model,
         prompt_version=prompt_version,
         tool_schema_version=tool_schema_version,
@@ -134,29 +137,69 @@ def _knowledge_adapters(
         raise ConflictError(
             "The Knowledge pipeline requires activated Chat, embedding, and Neo4j settings."
         )
-    if (
-        settings.local_ollama_chat_base_url is None
-        or settings.local_ollama_chat_model is None
-        or settings.local_ollama_embedding_base_url is None
-        or settings.local_ollama_embedding_model is None
+    if settings.local_ollama_chat_enabled and settings.local_ollama_embedding_enabled:
+        if (
+            settings.local_ollama_chat_base_url is None
+            or settings.local_ollama_chat_model is None
+            or settings.local_ollama_embedding_base_url is None
+            or settings.local_ollama_embedding_model is None
+        ):
+            raise ConflictError("The activated local Knowledge model bindings are incomplete.")
+        provider = _LOCAL_OLLAMA_PROVIDER
+        allowed_hosts = frozenset({"host.docker.internal"})
+        chat_base_url = str(settings.local_ollama_chat_base_url)
+        chat_model = settings.local_ollama_chat_model
+        chat_api_key = None
+        chat_timeout_seconds = settings.local_ollama_chat_timeout_seconds
+        embedding_base_url = str(settings.local_ollama_embedding_base_url)
+        embedding_model = settings.local_ollama_embedding_model
+        embedding_api_key = None
+        embedding_timeout_seconds = settings.local_ollama_embedding_timeout_seconds
+    elif (
+        settings.intranet_openai_compatible_chat_enabled
+        and settings.intranet_openai_compatible_embedding_enabled
     ):
+        if (
+            settings.intranet_openai_compatible_chat_base_url is None
+            or settings.intranet_openai_compatible_chat_model is None
+            or settings.intranet_openai_compatible_chat_api_key_secret_ref is None
+            or settings.intranet_openai_compatible_embedding_base_url is None
+            or settings.intranet_openai_compatible_embedding_model is None
+            or settings.intranet_openai_compatible_embedding_api_key_secret_ref is None
+        ):
+            raise ConflictError("The activated intranet Knowledge model bindings are incomplete.")
+        provider = _INTRANET_OPENAI_COMPATIBLE_PROVIDER
+        allowed_hosts = frozenset(settings.intranet_openai_compatible_allowed_hosts)
+        resolver = SecretResolver(virtual_secret_root=settings.system_configuration_secret_root)
+        chat_base_url = str(settings.intranet_openai_compatible_chat_base_url)
+        chat_model = settings.intranet_openai_compatible_chat_model
+        chat_api_key = resolver.resolve(settings.intranet_openai_compatible_chat_api_key_secret_ref)
+        chat_timeout_seconds = settings.intranet_openai_compatible_chat_timeout_seconds
+        embedding_base_url = str(settings.intranet_openai_compatible_embedding_base_url)
+        embedding_model = settings.intranet_openai_compatible_embedding_model
+        embedding_api_key = resolver.resolve(
+            settings.intranet_openai_compatible_embedding_api_key_secret_ref
+        )
+        embedding_timeout_seconds = settings.intranet_openai_compatible_embedding_timeout_seconds
+    else:
         raise ConflictError("The activated Knowledge model bindings are incomplete.")
     embedding_transport = HttpxOpenAIJsonTransport(
-        base_url=str(settings.local_ollama_embedding_base_url),
-        allowed_hosts=frozenset({"host.docker.internal"}),
-        api_key=None,
-        timeout_seconds=settings.local_ollama_embedding_timeout_seconds,
+        base_url=embedding_base_url,
+        allowed_hosts=allowed_hosts,
+        api_key=embedding_api_key,
+        timeout_seconds=embedding_timeout_seconds,
     )
     chat_transport = HttpxOpenAIJsonTransport(
-        base_url=str(settings.local_ollama_chat_base_url),
-        allowed_hosts=frozenset({"host.docker.internal"}),
-        api_key=None,
-        timeout_seconds=settings.local_ollama_chat_timeout_seconds,
+        base_url=chat_base_url,
+        allowed_hosts=allowed_hosts,
+        api_key=chat_api_key,
+        timeout_seconds=chat_timeout_seconds,
     )
     embedding_binding = _activated_model_binding(
         settings=settings,
         system_id="LLM_EMBEDDING",
-        model=settings.local_ollama_embedding_model,
+        provider=provider,
+        model=embedding_model,
         prompt_version="embedding-v1",
         tool_schema_version="openai-embeddings-v1",
         adapter_contract=_EMBEDDING_ADAPTER_CONTRACT,
@@ -164,7 +207,8 @@ def _knowledge_adapters(
     extraction_binding = _activated_model_binding(
         settings=settings,
         system_id="LLM_CHAT_MODEL",
-        model=settings.local_ollama_chat_model,
+        provider=provider,
+        model=chat_model,
         prompt_version=_EXTRACTION_PROMPT_VERSION,
         tool_schema_version=_EXTRACTION_SCHEMA_VERSION,
         adapter_contract=_CHAT_JSON_SCHEMA_ADAPTER_CONTRACT,
@@ -172,7 +216,8 @@ def _knowledge_adapters(
     graphrag_binding = _activated_model_binding(
         settings=settings,
         system_id="LLM_CHAT_MODEL",
-        model=settings.local_ollama_chat_model,
+        provider=provider,
+        model=chat_model,
         prompt_version=_GRAPHRAG_PROMPT_VERSION,
         tool_schema_version=_GRAPHRAG_SCHEMA_VERSION,
         adapter_contract=_CHAT_JSON_SCHEMA_ADAPTER_CONTRACT,

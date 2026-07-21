@@ -203,6 +203,48 @@ def test_local_ollama_chat_is_development_only_and_host_gateway_bound() -> None:
         )
 
 
+def test_intranet_openai_compatible_inference_is_development_private_tls_only() -> None:
+    configured = settings(
+        intranet_openai_compatible_allowed_hosts=("10.42.0.15",),
+        intranet_openai_compatible_chat_enabled=True,
+        intranet_openai_compatible_chat_base_url="https://10.42.0.15/v1",
+        intranet_openai_compatible_chat_model="gemma4:latest",
+        intranet_openai_compatible_chat_api_key_secret_ref=(
+            "file:/run/secrets/intranet_llm_chat_api_key"
+        ),
+    )
+
+    assert configured.intranet_openai_compatible_chat_enabled is True
+    with pytest.raises(ValidationError, match="HTTPS origins"):
+        settings(
+            intranet_openai_compatible_allowed_hosts=("10.42.0.15",),
+            intranet_openai_compatible_chat_enabled=True,
+            intranet_openai_compatible_chat_base_url="http://10.42.0.15/v1",
+            intranet_openai_compatible_chat_model="gemma4:latest",
+            intranet_openai_compatible_chat_api_key_secret_ref=(
+                "file:/run/secrets/intranet_llm_chat_api_key"
+            ),
+        )
+    with pytest.raises(ValidationError, match="only in development"):
+        settings(
+            app_env="production",
+            app_public_origin="https://catalog.example.com",
+            app_cors_origins=("https://catalog.example.com",),
+            oidc_issuer="https://idp.example.com/realms/data",
+            oidc_jwks_url="https://idp.example.com/realms/data/certs",
+            datahub_base_url="https://datahub.example.com",
+            datahub_version_enforcement="enforce",
+            s3_public_endpoint_url="https://objects.example.com",
+            intranet_openai_compatible_allowed_hosts=("10.42.0.15",),
+            intranet_openai_compatible_chat_enabled=True,
+            intranet_openai_compatible_chat_base_url="https://10.42.0.15/v1",
+            intranet_openai_compatible_chat_model="gemma4:latest",
+            intranet_openai_compatible_chat_api_key_secret_ref=(
+                "file:/run/secrets/intranet_llm_chat_api_key"
+            ),
+        )
+
+
 def test_accepts_secure_production_configuration() -> None:
     configured = settings(
         app_env="production",

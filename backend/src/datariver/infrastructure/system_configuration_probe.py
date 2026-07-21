@@ -89,6 +89,23 @@ async def _reject_unsafe_destination(host: str, port: int) -> None:
             raise ValidationError("The saved system host resolves to a forbidden network range.")
 
 
+async def _require_private_intranet_destination(host: str, port: int) -> None:
+    """Require an operator-selected LLM endpoint to stay inside the private network."""
+
+    try:
+        addresses = await asyncio.get_running_loop().getaddrinfo(host, port, type=0)
+    except OSError as error:
+        raise ValidationError("The intranet LLM host could not be resolved.") from error
+    if not addresses:
+        raise ValidationError("The intranet LLM host could not be resolved.")
+    for address in addresses:
+        value = ipaddress.ip_address(address[4][0])
+        if not value.is_private or value.is_loopback or value.is_link_local:
+            raise ValidationError(
+                "The intranet LLM host must resolve only to private non-loopback addresses."
+            )
+
+
 def _probe_url(endpoint: str, path: str) -> str:
     parsed = urlsplit(endpoint)
     base_path = parsed.path.rstrip("/")
@@ -105,6 +122,17 @@ def _configured_model(document: Mapping[str, Any]) -> str | None:
         if isinstance(model_name, str) and model_name.strip():
             return model_name.strip()
     return None
+
+
+def _llm_connection_mode(
+    document: Mapping[str, Any],
+) -> Literal["LOCAL_OLLAMA", "INTRANET_OPENAI_COMPATIBLE"]:
+    value = document.get("connection_mode", "LOCAL_OLLAMA")
+    if value == "LOCAL_OLLAMA":
+        return "LOCAL_OLLAMA"
+    if value == "INTRANET_OPENAI_COMPATIBLE":
+        return "INTRANET_OPENAI_COMPATIBLE"
+    raise ValidationError("The saved LLM connection mode is invalid.")
 
 
 def _available_model_ids(payload: object) -> set[str]:
@@ -271,6 +299,18 @@ async def probe_system_configuration(
     path, scope = path_and_scope
     _, host, port = _validated_url(endpoint, schemes={"http", "https"})
     await _reject_unsafe_destination(host, port)
+    connection_mode = _llm_connection_mode(document) if inference_probe else "LOCAL_OLLAMA"
+    api_key: str | None = None
+    if connection_mode == "INTRANET_OPENAI_COMPATIBLE":
+        parsed_endpoint = urlsplit(endpoint)
+        if parsed_endpoint.scheme != "https" or parsed_endpoint.path.rstrip("/") != "/v1":
+            raise ValidationError(
+                "Intranet OpenAI-compatible probes require an HTTPS endpoint ending in /v1."
+            )
+        await _require_private_intranet_destination(host, port)
+        api_key = (secret_resolver or SecretResolver()).resolve(
+            _secret_reference(document, "api_key")
+        )
     request_url = _probe_url(endpoint, path)
     owns_client = client is None
     options = document.get("options")
@@ -292,6 +332,7 @@ async def probe_system_configuration(
         if system_id == "LLM_CHAT_MODEL":
             response = await active_client.post(
                 request_url,
+                headers={"Authorization": f"Bearer {api_key}"} if api_key else None,
                 json={
                     "model": model,
                     "temperature": 0,
@@ -320,6 +361,7 @@ async def probe_system_configuration(
         elif system_id == "LLM_EMBEDDING":
             response = await active_client.post(
                 request_url,
+                headers={"Authorization": f"Bearer {api_key}"} if api_key else None,
                 json={"model": model, "input": ["DataRiver connectivity probe"]},
             )
         else:
@@ -331,6 +373,13 @@ async def probe_system_configuration(
             await active_client.aclose()
     latency_ms = max(0, round((time.monotonic() - started) * 1000))
     if response.status_code in {401, 403}:
+        if api_key is not None:
+            return SystemConfigurationProbeResult(
+                status="UNAVAILABLE",
+                scope=scope,
+                latency_ms=latency_ms,
+                detail="The configured intranet LLM credential was rejected by the fixed probe.",
+            )
         return SystemConfigurationProbeResult(
             status="AUTHENTICATION_REQUIRED",
             scope=scope,

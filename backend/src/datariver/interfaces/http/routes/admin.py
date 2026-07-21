@@ -45,6 +45,7 @@ from datariver.infrastructure.db.models.platform import (
     WorkspaceMembershipModel,
 )
 from datariver.infrastructure.db.rls import set_security_context
+from datariver.infrastructure.secrets import SecretResolver
 from datariver.infrastructure.system_configuration_probe import probe_system_configuration
 from datariver.interfaces.http.dependencies import ContextDep, get_container
 from datariver.interfaces.http.presenters import (
@@ -181,6 +182,7 @@ _SYSTEM_CONFIGURATION_TEMPLATES: dict[str, dict[str, Any]] = {
         },
     },
     "LLM_CHAT_MODEL": {
+        "connection_mode": "LOCAL_OLLAMA",
         "base_url": "",
         "model": "",
         "secret_references": {},
@@ -191,6 +193,7 @@ _SYSTEM_CONFIGURATION_TEMPLATES: dict[str, dict[str, Any]] = {
         },
     },
     "LLM_EMBEDDING": {
+        "connection_mode": "LOCAL_OLLAMA",
         "base_url": "",
         "model": "",
         "secret_references": {},
@@ -404,6 +407,30 @@ def _validate_system_configuration(system_id: str, document: Mapping[str, Any]) 
         model = _require_non_empty_string(document, "model")
         if len(model) > 128 or re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:/-]{0,127}", model) is None:
             raise ValidationError("The LLM model identity is invalid.")
+    if system_id in {"LLM_CHAT_MODEL", "LLM_EMBEDDING"}:
+        connection_mode = document.get("connection_mode", "LOCAL_OLLAMA")
+        if connection_mode not in {"LOCAL_OLLAMA", "INTRANET_OPENAI_COMPATIBLE"}:
+            raise ValidationError("The LLM connection mode is invalid.")
+        secret_references = _secret_references(document.get("secret_references", {}))
+        if connection_mode == "LOCAL_OLLAMA" and secret_references:
+            raise ValidationError("Local Ollama does not accept an API-key secret reference.")
+        if connection_mode == "INTRANET_OPENAI_COMPATIBLE":
+            parsed = urlsplit(endpoint)
+            if parsed.scheme != "https" or parsed.path.rstrip("/") != "/v1":
+                raise ValidationError(
+                    "Intranet OpenAI-compatible LLM configuration requires an HTTPS /v1 endpoint."
+                )
+            if set(secret_references) != {"api_key"}:
+                raise ValidationError(
+                    "Intranet OpenAI-compatible LLM configuration requires exactly one "
+                    "api_key secret reference."
+                )
+            options_api_style = options.get("api_style")
+            if options_api_style != "openai_compatible":
+                raise ValidationError(
+                    "Intranet OpenAI-compatible LLM configuration requires "
+                    "api_style=openai_compatible."
+                )
     if system_id == "S3_STORAGE":
         _require_non_empty_string(document, "region")
         buckets = document.get("buckets")
@@ -1358,6 +1385,9 @@ async def test_system_configuration(
     result = await probe_system_configuration(
         system_id=system_id,
         document=_yaml_document(tested_yaml),
+        secret_resolver=SecretResolver(
+            virtual_secret_root=container.settings.system_configuration_secret_root
+        ),
     )
     tested_at = utc_now()
     async with container.database.session_factory() as session:

@@ -80,6 +80,7 @@ class HttpxOpenAIJsonTransport:
                 headers=self._headers,
                 timeout=self._timeout,
                 follow_redirects=False,
+                trust_env=False,
                 transport=self._transport,
             ) as client:
                 response = await client.post(path, json=document)

@@ -5,6 +5,7 @@
 !.env.example
 secrets
 runtime
+docker_imgs
 .venv
 .venv-wsl
 .pytest_cache

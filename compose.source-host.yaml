@@ -1,0 +1,16 @@
+services:
+  # This overlay is for a checked-out source process on the Docker host. It
+  # deliberately does not join DataRiver to a DataHub Docker network: the host
+  # API receives its approved DataHub URL directly and an existing external
+  # DataHub may be local, remote, or independently orchestrated.
+  postgres:
+    ports:
+      - "127.0.0.1:${POSTGRES_PORT:-5432}:5432"
+
+  valkey-cache:
+    ports:
+      - "127.0.0.1:${VALKEY_CACHE_PORT:-6379}:6379"
+
+  valkey-queue:
+    ports:
+      - "127.0.0.1:${VALKEY_QUEUE_PORT:-6380}:6379"

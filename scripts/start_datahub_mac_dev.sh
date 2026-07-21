@@ -62,6 +62,12 @@ case "${1:-start}" in
     "${compose[@]}" pull --quiet
     "${compose[@]}" up -d --pull never --wait
     ;;
+  start-offline)
+    # The image tar bundle has already been loaded on an air-gapped Mac. Do
+    # not let Compose contact a registry: a missing image is a preparation
+    # failure, not a reason to fall back to a mutable pull.
+    "${compose[@]}" up -d --pull never --wait
+    ;;
   stop)
     "${compose[@]}" stop
     ;;
@@ -69,7 +75,7 @@ case "${1:-start}" in
     "${compose[@]}" ps --all
     ;;
   *)
-    echo "Usage: $0 [config|start|stop|status]" >&2
+    echo "Usage: $0 [config|start|start-offline|stop|status]" >&2
     exit 2
     ;;
 esac

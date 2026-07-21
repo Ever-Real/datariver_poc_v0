@@ -43,6 +43,318 @@ No real `.env`, secret, uploaded object, database volume or generated Keycloak r
 
 Commit only the repository sources. A second PC clones the same tree, runs the matching bootstrap command below, sets its own DataHub URL/origins, and starts the desired overlays. Do not copy `.env`, `secrets/`, `runtime/`, volumes or uploaded objects through Git. The frozen Python and npm locks plus CI define the reproducible toolchain; production promotes digest-pinned images built from the reviewed commit.
 
+## 폐쇄망 개발 PC 이관과 초기화
+
+`docker_imgs/`는 Git에서 무시되는 반입 산출물 디렉터리다. 여기에는 Linux OCI 이미지 tar,
+SHA-256 검증 파일과 이미지 ID/digest manifest만 둔다. `.env`, `secrets/`, DB·SeaweedFS
+볼륨, 업로드 파일, DataHub 데이터 및 Ollama 모델은 포함하지 않는다. 반입 PC의 Docker
+아키텍처가 같아야 한다. 이 Mac 구성의 bundle은 `linux/arm64`이며, `linux/amd64` 서버에는
+별도의 amd64 bundle을 연결망 빌드 환경에서 만들어야 한다.
+
+### 연결망 준비 PC: 이미지 반출
+
+현재 소스 revision으로 내부 이미지를 다시 빌드한 뒤 tar를 만든다. 기본 bundle에는 즉시
+실행하지 않는 API/Web container 이미지도 포함한다. 따라서 개발 중에는 호스트 소스를
+실행하더라도 이후 container 실행으로 전환할 수 있다. 기존 DataHub가 있는 이관에는 첫
+bundle만 필요하다.
+
+```bash
+chmod +x scripts/export_offline_images.sh scripts/dev_host.sh
+./scripts/export_offline_images.sh --build-datariver --include-observability
+```
+
+관측성 profile을 사용하지 않는 대상은 `--include-observability`를 생략해도 된다. 반대로 이
+Mac에서 현재처럼 Grafana/Prometheus/OTel/Tempo/Loki/Alertmanager를 함께 사용할 경우
+`datariver-observability-pilot-arm64.tar`도 같은 방식으로 반입한다. 이 bundle은
+Single-node Pilot 관측성용이며, 기업 운영 telemetry backend를 대체하지 않는다.
+
+DataHub가 전혀 없는 Apple-Silicon 개발 PC까지 준비하려면, 공식 DataHub `v1.6.0` checkout과
+이미지를 먼저 연결망에서 준비한 후 별도 bundle도 만든다.
+
+```bash
+./scripts/start_datahub_mac_dev.sh start
+./scripts/export_offline_images.sh --include-datahub-mac-dev
+```
+
+두 번째 명령은 `datahub-v1.6.0-mac-dev-arm64.tar`와
+`datahub-v1.6.0-source.bundle`을 만든다. 이 DataHub quickstart는 Mac 개발용이며 운영
+DataHub 배포본이 아니다. 특히 upstream quickstart가 참조하는
+`acryldata/datahub-kafka-setup:head`는 bundle manifest에 실제 관측 digest를 기록한다. 이를
+일반 운영 환경의 mutable tag 허용 근거로 사용하면 안 된다. 운영 DataHub는 별도 소유자가
+모든 component digest와 보안 설정을 확정해야 한다.
+
+반입 전 각 `*.sha256`을 확인하고, 외장 매체 또는 승인된 내부 artifact 저장소로
+`docker_imgs/`를 전달한다. 내부 Registry가 있으면 tar 대신 해당 Registry로 digest 고정
+이미지를 승격하는 방식을 우선한다.
+
+### 폐쇄망 공통 사전조건
+
+1. Git mirror 또는 승인된 source bundle에서 이 repository의 동일 commit을 checkout한다.
+2. Docker Engine/Desktop와 Compose v2, Python 3.12, `uv 0.9.17`, Node.js 22.19/npm 10을
+   대상 Mac에 설치한다. 호스트 소스 실행은 Git만으로 완료되지 않는다. 연결망 준비 PC에서
+   uv cache 또는 사내 PyPI mirror, npm cache 또는 사내 npm mirror도 함께 준비해야 한다.
+   폐쇄망에서는 `uv sync --offline` 및 `npm ci --offline`이 필요한 패키지를 찾지 못하면
+   의도적으로 실패한다.
+3. 승인된 환경 설정과 비밀정보를 별도 보안 채널로 배포한다. 개발 PC의 비밀정보를 Git이나
+   이미지 tar에 넣지 않는다. 새 환경에서는 최소한 DataHub service token, DB 역할별
+   password, Valkey password, S3 credential, OIDC client/issuer와 TLS·CA 신뢰 구성을
+   대상 환경 값으로 발급한다.
+4. DataHub, OIDC, S3, Airflow, 외부 DB/Oracle 및 LLM은 DataRiver Compose가 자동 설치하는
+   외부 시스템이 아니다. Compose는 DataRiver의 PostgreSQL·Valkey·SeaweedFS와 선택적 로컬
+   Keycloak/Airflow/APISIX/Neo4j만 제공한다. DataHub는 외부 catalog provider이며, 실제
+   Postgres/Oracle source system도 해당 시스템 또는 DataHub ingestion이 별도로 운영한다.
+
+`System settings` 화면은 접속 주소, 모델 ID, 비밀 **참조명**과 비민감 옵션을 관리한다.
+비밀번호·token을 화면에 저장하거나 browser로 보내지 않는다. 개발 PC에서 TEST/SAVE 후
+명시적으로 ACTIVATE하고 API/관련 Worker를 재시작해야 적용된다. 운영에서는 이 runtime
+activation을 활성화하지 않고 배포 설정과 secret mount를 사용한다.
+
+### 원격 DataHub v1.6의 Token authentication 활성화
+
+원격 DataHub 화면에서 `Token based authentication is currently disabled`가 보이면 DataRiver가
+아닌 **원격 DataHub GMS 인증**이 비활성화된 상태다. 원격 서버의 실제 Compose checkout에서
+처리한다. 이 변경 뒤에는 모든 프로그램 API 요청이 Bearer token을 요구하므로, 연결된 ingestion과
+자동화에도 같은 유지보수 창과 token 배포가 필요하다.
+
+1. 현재 DataHub Compose 파일·`.env`·metadata DB를 백업하고 `docker compose config --services`로
+   실제 GMS/Frontend service 이름을 확인한다. 볼륨이나 metadata DB를 지우지 않는다.
+2. Git 밖의 `0600` 파일에 signing key와 salt를 한 번 생성해 계속 보관한다. 이 두 값을 변경하면
+   access token과 session이 무효화된다.
+
+   ```bash
+   umask 077
+   mkdir -p secrets
+   {
+     printf '%s\n' 'METADATA_SERVICE_AUTH_ENABLED=true'
+     printf 'DATAHUB_TOKEN_SERVICE_SIGNING_KEY='; openssl rand -hex 32
+     printf 'DATAHUB_TOKEN_SERVICE_SALT='; openssl rand -hex 32
+   } > secrets/datahub-token-auth.env
+   chmod 600 secrets/datahub-token-auth.env
+   ```
+
+3. 현재 v1.6 Compose에 `datahub-gms`의 `METADATA_SERVICE_AUTH_ENABLED=true` 및
+   `DATAHUB_TOKEN_SERVICE_SIGNING_KEY`/`DATAHUB_TOKEN_SERVICE_SALT`를 추가한다. Frontend에도
+   `METADATA_SERVICE_AUTH_ENABLED=true`를 전달하고, `datahub-upgrade`에는 같은 key/salt를
+   전달한다. 표준 `without-neo4j` Compose라면 아래 override를 기존 파일에 더한다. service 이름은
+   실제 배포의 `config --services` 출력에 맞춘다.
+
+   ```yaml
+   services:
+     datahub-gms:
+       environment:
+         METADATA_SERVICE_AUTH_ENABLED: "true"
+         DATAHUB_TOKEN_SERVICE_SIGNING_KEY: ${DATAHUB_TOKEN_SERVICE_SIGNING_KEY}
+         DATAHUB_TOKEN_SERVICE_SALT: ${DATAHUB_TOKEN_SERVICE_SALT}
+     datahub-frontend-react:
+       environment:
+         METADATA_SERVICE_AUTH_ENABLED: "true"
+     datahub-upgrade:
+       environment:
+         DATAHUB_TOKEN_SERVICE_SIGNING_KEY: ${DATAHUB_TOKEN_SERVICE_SIGNING_KEY}
+         DATAHUB_TOKEN_SERVICE_SALT: ${DATAHUB_TOKEN_SERVICE_SALT}
+   ```
+
+4. 기존 Compose 파일 조합 그대로 검증한 뒤 GMS/Frontend만 재생성한다. quickstart, PostgreSQL,
+   without-neo4j 등의 다른 topology 파일을 임의로 섞지 않는다.
+
+   ```bash
+   docker compose --env-file .env --env-file secrets/datahub-token-auth.env \
+     -f <current-datahub-compose>.yaml -f compose.token-auth.override.yaml config --quiet
+   docker compose --env-file .env --env-file secrets/datahub-token-auth.env \
+     -f <current-datahub-compose>.yaml -f compose.token-auth.override.yaml \
+     up -d --no-deps --force-recreate datahub-gms datahub-frontend-react
+   ```
+
+5. 다시 로그인해 **Settings → Users & Groups → Service Accounts**에서 DataRiver 전용 service
+   account를 만들고, **Settings → Access Tokens**에서 token을 발급한다. token 원문은 한 번만
+   표시되므로 대상 PC의 `secrets/datahub_token`에 보안 채널로 배치한다. 역할은 DataRiver가 실제로
+   조회·변경할 Dataset/Tag/Term/Domain 범위로 최소화한다.
+
+인증 문제가 있으면 `METADATA_SERVICE_AUTH_ENABLED=false`로 되돌리고 **같은** signing key/salt를
+유지한 채 GMS/Frontend를 재생성한다. 이 rollback은 metadata를 삭제하지 않는다. 변수와 token
+전제조건은 [동봉된 DataHub v1.6 authentication 문서](runtime/datahub-v1.6.0/docs/authentication/README.md)와
+[personal access token 문서](runtime/datahub-v1.6.0/docs/authentication/personal-access-tokens.md)를 따른다.
+
+### Case 1 — 기존 DataHub가 이미 운영 중인 경우 (현재 권장 경로)
+
+아래는 기존 DataHub GMS가 같은 Mac의 `8080` 또는 승인된 원격 URL에서 정상 운영 중이고,
+DataRiver의 변경 중인 API·Worker·UI는 container가 아닌 checkout source에서 실행하는 절차다.
+DataHub가 같은 Mac Docker Desktop에 있다면 Docker process에는
+`host.docker.internal:8080`, host source process에는 `127.0.0.1:8080`을 사용한다.
+
+```bash
+# 1. 반입한 platform image 검증 및 적재
+cd docker_imgs
+shasum -a 256 -c datariver-platform-arm64.tar.sha256
+shasum -a 256 -c datariver-platform-arm64.manifest.tsv.sha256
+docker load -i datariver-platform-arm64.tar
+# 현재처럼 local observability profile도 사용할 때만 추가로 적재한다.
+shasum -a 256 -c datariver-observability-pilot-arm64.tar.sha256
+docker load -i datariver-observability-pilot-arm64.tar
+cd ..
+
+# 2. 원격 DataHub service-account token은 보안 반입 위치에서 secret file로 배치한다.
+#    토큰 원문을 명령 인자, shell history, Git에 넣지 않는다.
+install -d -m 700 secrets
+install -m 600 /approved-secure-transfer/datahub_token secrets/datahub_token
+```
+
+별도 보안 반입 파일이 없고 DataHub 화면에서 token 원문만 복사한 경우에는, 위의 두 `install`
+명령 대신 같은 위치에서 아래를 한 줄씩 실행한다. 세 번째 명령을 실행한 뒤 token을 붙여넣고
+Enter를 한 번 더 누른다. 입력 내용은 터미널에 표시되지 않는다. `echo <token>` 또는
+`bootstrap.sh <token>`처럼 token을 명령행에 넣지 않는다.
+
+```bash
+install -d -m 700 secrets
+printf 'Paste DataHub token, then press Enter: '
+read -r -s datariver_datahub_token
+printf '\n'
+printf '%s' "$datariver_datahub_token" > secrets/datahub_token
+unset datariver_datahub_token
+chmod 600 secrets/datahub_token
+```
+
+bootstrap은 이미 존재하는 `secrets/datahub_token`을 보존하므로, 다음 명령에는 token 인자를
+넣지 않는다.
+
+```bash
+
+# 3. DataRiver 환경 초기화. 원격 DataHub URL은 container/host 모두 같은 HTTPS origin을 쓴다.
+./scripts/bootstrap.sh --host-development \
+  --datahub-base-url https://datahub.example.internal
+
+# 4. 상태 저장소와 로컬 identity만 container로 시작한다.
+docker compose -f compose.yaml -f compose.identity.yaml -f compose.source-host.yaml \
+  config --quiet
+docker compose -f compose.yaml -f compose.identity.yaml -f compose.source-host.yaml \
+  up -d --pull never --no-build --wait \
+  postgres valkey-cache valkey-queue seaweedfs keycloak
+./scripts/configure_keycloak_host_dev.sh
+docker compose -f compose.yaml -f compose.identity.yaml -f compose.source-host.yaml \
+  run --rm migrate
+docker compose -f compose.yaml -f compose.identity.yaml -f compose.source-host.yaml \
+  run --rm storage-init
+docker compose --profile tools -f compose.yaml -f compose.identity.yaml \
+  -f compose.source-host.yaml run --rm local-bootstrap
+```
+
+`manifest.tsv.sha256`은 manifest 파일의 무결성을 확인한다. manifest 내용의 image ID와
+repository digest를 승인 목록과 비교한다. `docker load`가 외부 registry 접속을 유발해서는
+안 되며, 이후 Compose에도 `--pull never --no-build`를 유지한다.
+
+호스트 소스 의존성은 반입한 cache/mirror로 설치한다. 이미 준비된 `.venv`와 npm cache가
+없다면 이 단계에서 멈추고 package artifact를 먼저 반입한다.
+
+```bash
+uv sync --frozen --all-extras --offline
+(cd frontend && npm ci --offline --no-audit --no-fund)
+
+# API, relay, upload worker, validation worker, governance worker, Vite를 source에서 실행한다.
+./scripts/dev_host.sh start \
+  --datahub-base-url https://datahub.example.internal
+./scripts/dev_host.sh status
+curl --fail --silent --show-error http://127.0.0.1:8000/api/v1/health/ready
+```
+
+이 개발 PC는 이후 Git으로 소스를 갱신할 수 있다. 다만 source checkout과 offline bundle의
+backend image는 서로 다른 버전일 수 있으므로, 새 Alembic revision이 포함된 pull 뒤에는
+bundle의 오래된 `migrate` container를 실행하지 말고 아래처럼 source 기준으로 적용한다.
+Dockerfile·Compose·기반 image가 바뀐 commit은 Git만으로 반영되지 않으므로, 연결된 build PC에서
+새 bundle을 만들어 반입·검증·`docker load`해야 한다.
+
+```bash
+git pull --ff-only
+uv sync --frozen --all-extras --offline
+(cd frontend && npm ci --offline --no-audit --no-fund)
+
+# 새 migration이 있는 경우에만 실행한다. API/worker는 먼저 중지한다.
+./scripts/dev_host.sh stop
+./scripts/dev_host.sh migrate
+./scripts/dev_host.sh start --datahub-base-url https://datahub.example.internal
+./scripts/dev_host.sh status
+```
+
+`secrets/`·`.env`의 변경도 Git pull 대상이 아니다. 승인된 별도 보안 채널로 배포한 뒤,
+관련 source process만 재시작한다.
+
+외부 DataHub가 원격 HTTPS 주소라면 `bootstrap.sh`와 `dev_host.sh`의 두 DataHub URL을 모두
+그 정확한 HTTPS origin으로 바꾼다. API가 아닌 browser에는 DataHub service token을 주지 않는다.
+사설 CA를 쓰는 경우 macOS의 시스템 신뢰 저장소와 host Python이 그 CA를 신뢰하게 사전 배포하며,
+TLS 검증을 끄지 않는다. Airflow까지 테스트할
+때는 Mac Docker Desktop의 host gateway를 명시해, Airflow가 source API를 호출하게 한다.
+
+```bash
+DATARIVER_API_BASE_URL=http://host.docker.internal:8000 \
+  docker compose -f compose.yaml -f compose.identity.yaml -f compose.source-host.yaml \
+  -f compose.airflow.yaml up -d --pull never --no-build --wait \
+  airflow-api-server airflow-scheduler airflow-dag-processor airflow-triggerer
+```
+
+포함된 Airflow UI 인증은 loopback 개발용이다. 공유/운영 Airflow는 조직의 SSO 구성을 별도로
+적용해야 한다.
+
+GraphRAG 개발 검증에는 Neo4j projection과 native Ollama model artifact도 별도 반입한다.
+Ollama는 Docker image가 아니라 호스트 프로세스이므로 engine과
+`gemma4:e2b-it-qat`, `bge-m3:latest` model blobs를 연결망에서 미리 준비한다.
+
+```bash
+ollama show gemma4:e2b-it-qat
+ollama show bge-m3:latest
+./scripts/prepare_ollama_mac_dev.sh
+docker compose -f compose.yaml -f compose.graph.yaml \
+  up -d --pull never --no-build --wait neo4j
+./scripts/dev_host.sh stop
+./scripts/dev_host.sh start \
+  --datahub-base-url https://datahub.example.internal \
+  --enable-local-ollama --enable-neo4j
+```
+
+`--enable-local-ollama`과 `--enable-neo4j`는 Mac 개발 adapter만 활성화한다. 각 Asset/LLM
+system setting은 실제 비밀정보가 아닌 이미 mount된 참조명을 사용해 TEST/SAVE/ACTIVATE하고,
+ACTIVATE 후 이 source-host 프로세스를 재시작한다.
+
+사내 OpenAI-compatible LLM을 사용할 때는 위 두 flag를 함께 쓰지 않는다. 먼저 Neo4j container를
+기동하고 Chat·Embedding·Neo4j System Settings revision을 각각 TEST/SAVE/ACTIVATE한다. 이후에는
+System Settings startup resolver가 세 profile을 함께 읽으므로 flag 없이 source-host process만
+재시작한다.
+
+```bash
+docker compose -f compose.yaml -f compose.graph.yaml \
+  up -d --pull never --no-build --wait neo4j
+./scripts/dev_host.sh stop
+./scripts/dev_host.sh start --datahub-base-url https://datahub.example.internal
+```
+
+### Case 2 — DataHub도 아직 없는 경우
+
+이 경우는 **Mac 개발 PC**에 한해 제공되는 local DataHub `v1.6.0` quickstart 절차다. 실제
+운영 DataHub를 대신하지 않는다. 먼저 Case 1의 platform bundle에 더해
+`datahub-v1.6.0-mac-dev-arm64.tar`와 source bundle을 적재한다.
+
+```bash
+cd docker_imgs
+shasum -a 256 -c datahub-v1.6.0-mac-dev-arm64.tar.sha256
+shasum -a 256 -c datahub-v1.6.0-source.bundle.sha256
+docker load -i datahub-v1.6.0-mac-dev-arm64.tar
+cd ..
+
+mkdir -p runtime
+git clone docker_imgs/datahub-v1.6.0-source.bundle runtime/datahub-v1.6.0
+git -C runtime/datahub-v1.6.0 checkout 059a36c0b035a6057de00114ccac0ea9003d6bc2
+
+# Local DataHub quickstart has no external service token; the non-empty value
+# satisfies DataRiver's private file contract and is never sent to a browser.
+./scripts/bootstrap.sh '<local-datahub-placeholder>' \
+  --host-development \
+  --datahub-base-url http://host.docker.internal:8080
+./scripts/start_datahub_mac_dev.sh start-offline
+```
+
+이후 Case 1의 3단계부터 이어서 DataRiver infra container와 source-host process를 시작한다.
+DataHub를 실제 운영에 새로 설치해야 한다면 이 quickstart가 아니라 별도 DataHub 운영
+repository, 고정 component digest, 인증·백업·Kafka/DB/검색 cluster 설계와
+`verify_datahub_image_inventory.py`/`verify_datahub_contract.py` 검증을 사용한다.
+
 ## Validated Mac development PC
 
 This is a single-developer topology, not a production deployment. On a 32 GiB Mac, set Docker Desktop to **16 GiB memory and 6 CPUs** by default, or at most **18 GiB** for a bounded large import; Ollama runs natively on macOS outside that limit. The selected `datariver-gemma4-dev:0.1` model reuses Gemma4 E2B QAT weights with an 8,192-token context ceiling. Do not run a second Ollama container.
@@ -140,10 +452,10 @@ not expose this write API.
 exact saved revision and never accepts a request URL. **ACTIVATE** is available only for a current
 AVAILABLE revision, an implemented runtime consumer and a recent hardware-WebAuthn administrator.
 It selects the version for the next process startup; it never hot-reloads or restarts a client.
-DataHub GMS and S3 changes require API plus relevant worker restart, while local Ollama Chat and
-external UI-link changes require API restart. Embedding, reranker and Neo4j remain honest
-storable/testable inventory until their typed runtime adapters exist; their ACTIVATE control stays
-disabled. The API can report only the version it loaded itself and does not infer worker success.
+DataHub GMS and S3 changes require API plus relevant worker restart. Local Ollama or the development
+intranet OpenAI-compatible Chat/Embedding adapters together with Neo4j require an API restart;
+the Reranker remains storable/testable inventory and has no runtime activation. The API can report
+only the version it loaded itself and does not infer worker success.
 
 For the Mac development topology, bootstrap enables the startup resolver for Workspace
 `00000000-0000-4000-8000-000000000100`. After ACTIVATE, recreate the API and relevant workers:
@@ -156,6 +468,60 @@ docker compose -f compose.yaml -f compose.identity.yaml -f compose.airflow.yaml 
 
 APISIX uses DNS discovery through Docker's embedded resolver, so replacing the API container does
 not require restarting the gateway or leave it pinned to the old container address.
+
+### 사내 OpenAI-compatible LLM (개발 전용)
+
+상용·공용 LLM API는 계속 차단된다. 반면 사내에서 직접 운영하는 OpenAI-compatible model gateway는
+development 환경에서만 `INTRANET_OPENAI_COMPATIBLE` connection mode로 연결할 수 있다. 이 mode는
+`https://<private-host>/v1`만 허용하고, host는 deployment의
+`INTRANET_OPENAI_COMPATIBLE_ALLOWED_HOSTS`에 정확히 등록되며 private non-loopback 주소로만
+해결되어야 한다. URL에 credential·query·fragment를 넣거나 HTTP/TLS 우회를 사용하면 거부된다.
+
+먼저 해당 source-host/Compose 환경에서 operator allowlist와 실제 API key를 별도 보안 채널로
+준비한다. Chat과 Embedding key는 분리되어 있으며, bootstrap이 만든 random placeholder는 model API
+key가 아니다.
+
+```bash
+# .env — operator-managed allowlist. 실제 사내 host는 Git에 넣지 않는다.
+INTRANET_OPENAI_COMPATIBLE_ALLOWED_HOSTS=llm-gateway.corp.example
+
+# secure transfer로 실제 key를 배치한다. browser나 YAML에는 key 원문을 넣지 않는다.
+chmod 600 secrets/intranet_llm_chat_api_key secrets/intranet_llm_embedding_api_key
+```
+
+Admin → System settings → LLM Models에서 Chat Model과 Embedding을 각각 저장한다.
+`gemma4` chat endpoint만으로는 GraphRAG pipeline을 완성할 수 없으므로, `/v1/embeddings`를 구현한
+사내 embedding model(예: 승인된 BGE deployment)도 별도 설정한다.
+
+```yaml
+# Chat Model
+connection_mode: INTRANET_OPENAI_COMPATIBLE
+base_url: https://llm-gateway.corp.example/v1
+model: gemma4:latest
+secret_references:
+  api_key: file:/run/secrets/intranet_llm_chat_api_key
+options:
+  api_style: openai_compatible
+  context_tokens: 8192
+  timeout_seconds: 60
+```
+
+```yaml
+# Embedding
+connection_mode: INTRANET_OPENAI_COMPATIBLE
+base_url: https://llm-gateway.corp.example/v1
+model: bge-m3:latest
+secret_references:
+  api_key: file:/run/secrets/intranet_llm_embedding_api_key
+options:
+  api_style: openai_compatible
+  timeout_seconds: 60
+```
+
+각 revision은 **SAVE → TEST → ACTIVATE** 순서로 처리한 뒤 API를 재시작한다. source-host launcher는
+portable `/run/secrets` reference를 ignored `secrets/` directory로만 매핑하며, Compose는 API
+container에만 두 key를 mount한다. 사내 endpoint는 fixed strict-JSON Chat probe와 one-vector
+Embedding probe를 통과해야 한다. key를 보낸 뒤 `401`/`403`을 받으면 `UNAVAILABLE`이며 성공이 아니다.
 
 The exact state and security boundary are controlled by [ADR-0028](docs/adr/0028-development-system-configuration-startup-activation.md).
 
@@ -591,7 +957,7 @@ service token의 FINAL 호출은 `401` 또는 `403`으로 차단되어야 한다
 - Classification access administration: eligible human security administrators can review and independently approve versioned four-class Search/Chat policies, review or revoke immutable inference-provider profile versions, and govern policy-bound RESTRICTED Search grants. ADR-0020 additionally permits an audited, read-only same-workspace catalog review of non-deleted quarantined DataHub projections for classification remediation, including the fixed typed DataHub metadata detail; it never enables export, Chat, arbitrary provider access or mutation. The Admin UI never accepts provider endpoints or credentials, and RESTRICTED evidence is never eligible for Chat.
 - Knowledge graph: create a graph/ontology, author typed node/edge changesets, validate, independently review, publish or roll back immutable releases, export governed views and call bounded analysis. Raw SQL/Cypher is never accepted.
 - API sharing: create a release-pinned contract version, publish it with recent strong authentication, grant an OIDC `client_id` explicit scopes/classification/validity and quotas, revoke it, and invoke bounded neighbor analysis through an atomic grant-and-usage check.
-- Chat: deterministic baseline answers only from catalog or active-release knowledge evidence that passed prefiltering and per-item authorization. Immutable chunks bind workspace, classification, typed scope, source/version/effective time and content hash; only validated cited chunk IDs are persisted, otherwise the answer is `검증 불가`. Persistence additionally requires the workspace's independently approved ACTIVE retention policy: each new session binds its exact policy ID/hash and database-time deadline, and a superseded, expired or legacy-unbound session is append-closed. There is no duration fallback. The default inference-worker contract rejects SQL, Cypher, arbitrary HTTP, tools and mutation fields. The sole exception is the explicit Mac-development adapter in [ADR-0023](docs/adr/0023-mac-development-local-inference-and-graph-projection.md): native Ollama receives a fixed non-executable answer/citation function and its untrusted result remains subject to the existing validation. External inference remains disabled until live revalidation, delivery/streaming, metrics and scaled red-team gates are accepted.
+- Chat: deterministic baseline answers only from catalog or active-release knowledge evidence that passed prefiltering and per-item authorization. Immutable chunks bind workspace, classification, typed scope, source/version/effective time and content hash; only validated cited chunk IDs are persisted, otherwise the answer is `검증 불가`. Persistence additionally requires the workspace's independently approved ACTIVE retention policy: each new session binds its exact policy ID/hash and database-time deadline, and a superseded, expired or legacy-unbound session is append-closed. There is no duration fallback. The default inference-worker contract rejects SQL, Cypher, arbitrary HTTP, tools and mutation fields. Development Knowledge processing may use either the fixed loopback Ollama adapter in [ADR-0023](docs/adr/0023-mac-development-local-inference-and-graph-projection.md) or the private-network OpenAI-compatible adapter in [ADR-0030](docs/adr/0030-development-intranet-openai-compatible-adapter.md); both retain a fixed non-executable response contract and server-side validation. Commercial/public external inference remains disabled until live revalidation, delivery/streaming, metrics and scaled red-team gates are accepted.
 - Monitoring: liveness, readiness, dependency capabilities, workspace counts, outbox dead letters and ABAC-protected Prometheus HTTP metrics remain independent so one degraded optional dependency does not hide core state. Database-pool metrics expose only bounded connection states and configured limits, never workspace, subject or query labels.
 
 SeaweedFS is the local/Pilot upload store, not accepted WORM storage. The immutable-archive port is

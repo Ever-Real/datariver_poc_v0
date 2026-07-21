@@ -27,6 +27,7 @@ test-results/
 .vscode/
 volumes/
 runtime/
+docker_imgs/
 uploads/
 *.log
 docs/generated/

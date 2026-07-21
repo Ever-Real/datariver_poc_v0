@@ -124,3 +124,14 @@
 | PASS | `scripts/verify_static.py` |
 | PASS | deterministic `0001` 2회 SHA-256 `3a95be49ae372038826f4f8b4a28cd77b666bd8fee12ea4aa71a21d8283a4d1d`; live `0038` + no metadata drift |
 | PASS | `git diff --check`; 기존 사용자 변경을 보존한 채 이번 구현 범위의 source/docs/runtime evidence를 검토 |
+
+## 10. 2026-07-21 intranet LLM / remote DataHub follow-up
+
+| 상태 | 항목 | 증거 |
+|---|---|---|
+| PASS | private OpenAI-compatible adapter contract | development only, operator exact-host allowlist, HTTPS `/v1`, private non-loopback DNS resolution, fixed Chat/Embedding requests, no redirect/proxy environment, separate mounted Chat/Embedding API-key references를 unit contract로 검증 |
+| PASS | unsafe configuration rejection | public/HTTP/non-`/v1` intranet profile, URL credential/query/fragment, missing API-key reference 및 production activation을 fail-closed로 검증 |
+| PASS | source-host secret portability | portable `file:/run/secrets/<name>` reference가 source-host의 ignored `secrets/` directory에 단일 파일명으로만 매핑되고 path traversal을 거부함을 검증 |
+| PASS | focused code verification | Ruff, strict mypy (`160` source files), related pytest `83 passed`, `scripts/verify_static.py`, source-host/graph Compose `config --quiet`, frontend lint/typecheck/System Configuration test (`3 passed`)/production build 통과 |
+| OPEN | authenticated intranet model live TEST | 실제 private hostname, approved CA와 Chat·Embedding API key가 제공되지 않아 실행하지 않음. Admin System settings에서 SAVE → TEST → ACTIVATE 후 API 재시작으로 별도 검증 필요 |
+| OPEN | remote DataHub token-auth live enablement | 원격 DataHub Compose owner의 maintenance window와 signing key/salt 보관이 필요하므로 이 checkout에서 변경하지 않음. README 절차 후 service-account token으로 DataHub TEST 필요 |

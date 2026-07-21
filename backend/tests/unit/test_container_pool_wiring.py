@@ -56,6 +56,9 @@ def settings() -> Settings:
 
 
 class Resolver:
+    def __init__(self, **_: object) -> None:
+        pass
+
     def resolve(self, _: str) -> str:
         return "resolved-secret"
 

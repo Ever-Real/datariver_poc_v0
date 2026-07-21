@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import ipaddress
 import re
+import socket
 from functools import lru_cache
+from pathlib import PurePosixPath
 from typing import Literal, Self
 from urllib.parse import quote, urlsplit, urlunsplit
 from uuid import UUID
@@ -90,6 +93,29 @@ class Settings(BaseSettings):
     local_ollama_embedding_base_url: HttpUrl | None = None
     local_ollama_embedding_model: str | None = Field(default=None, max_length=128)
     local_ollama_embedding_timeout_seconds: float = Field(default=60.0, ge=1.0, le=120.0)
+    # Development-only bridge for an operator-approved model server that is
+    # hosted inside the organisation's private network. This intentionally is
+    # not an external commercial-provider route and cannot be enabled in
+    # production. Every configured hostname must be deployment allowlisted and
+    # resolve only to private network addresses.
+    intranet_openai_compatible_allowed_hosts: tuple[str, ...] = ()
+    intranet_openai_compatible_chat_enabled: bool = False
+    intranet_openai_compatible_chat_base_url: HttpUrl | None = None
+    intranet_openai_compatible_chat_model: str | None = Field(default=None, max_length=128)
+    intranet_openai_compatible_chat_api_key_secret_ref: str | None = Field(
+        default=None, max_length=512
+    )
+    intranet_openai_compatible_chat_timeout_seconds: float = Field(default=60.0, ge=1.0, le=120.0)
+    intranet_openai_compatible_chat_context_tokens: int = Field(default=8192, ge=2048, le=8192)
+    intranet_openai_compatible_embedding_enabled: bool = False
+    intranet_openai_compatible_embedding_base_url: HttpUrl | None = None
+    intranet_openai_compatible_embedding_model: str | None = Field(default=None, max_length=128)
+    intranet_openai_compatible_embedding_api_key_secret_ref: str | None = Field(
+        default=None, max_length=512
+    )
+    intranet_openai_compatible_embedding_timeout_seconds: float = Field(
+        default=60.0, ge=1.0, le=120.0
+    )
     neo4j_projection_enabled: bool = False
     neo4j_uri: str | None = Field(default=None, max_length=2048)
     neo4j_database: str = Field(default="neo4j", min_length=1, max_length=128)
@@ -102,6 +128,10 @@ class Settings(BaseSettings):
     # activated versions once at startup, so applying a change always requires restart.
     system_configuration_runtime_activation_enabled: bool = False
     system_configuration_runtime_workspace_id: UUID | None = None
+    # System configuration YAML always stores a portable Docker-secret
+    # reference. Source-host development maps that virtual root to its private
+    # checkout secrets directory; the mapping itself remains operator-owned.
+    system_configuration_secret_root: str = "/run/secrets"  # noqa: S105
     system_configuration_runtime_versions: dict[str, int] = Field(
         default_factory=dict,
         exclude=True,
@@ -208,6 +238,7 @@ class Settings(BaseSettings):
         "oidc_password_reauth_acr_values",
         "oidc_password_amr_values",
         "datahub_allowed_versions",
+        "intranet_openai_compatible_allowed_hosts",
         mode="before",
     )
     @classmethod
@@ -215,6 +246,32 @@ class Settings(BaseSettings):
         if isinstance(value, str):
             return tuple(part.strip() for part in value.split(",") if part.strip())
         return value
+
+    @field_validator("intranet_openai_compatible_allowed_hosts")
+    @classmethod
+    def normalize_intranet_openai_compatible_allowed_hosts(
+        cls, values: tuple[str, ...]
+    ) -> tuple[str, ...]:
+        normalized = tuple(value.strip().rstrip(".").lower() for value in values)
+        if len(normalized) > 32:
+            raise ValueError("At most 32 intranet inference hosts may be allowlisted.")
+        if any(
+            not value or re.fullmatch(r"[a-z0-9](?:[a-z0-9.-]{0,251}[a-z0-9])?", value) is None
+            for value in normalized
+        ):
+            raise ValueError("Intranet inference host allowlist values are invalid.")
+        if len(set(normalized)) != len(normalized):
+            raise ValueError("Intranet inference host allowlist values must be unique.")
+        return normalized
+
+    @field_validator("system_configuration_secret_root")
+    @classmethod
+    def validate_system_configuration_secret_root(cls, value: str) -> str:
+        normalized = value.strip()
+        path = PurePosixPath(normalized)
+        if not normalized or not path.is_absolute() or ".." in path.parts:
+            raise ValueError("System configuration secret root must be one absolute safe path.")
+        return str(path)
 
     @field_validator("datahub_expected_version")
     @classmethod
@@ -498,28 +555,64 @@ class Settings(BaseSettings):
                 raise ValueError(
                     "Local Ollama embeddings must use http://host.docker.internal:11434/v1."
                 )
+        intranet_chat_enabled = self.intranet_openai_compatible_chat_enabled
+        intranet_embedding_enabled = self.intranet_openai_compatible_embedding_enabled
+        if (self.local_ollama_chat_enabled or self.local_ollama_embedding_enabled) and (
+            intranet_chat_enabled or intranet_embedding_enabled
+        ):
+            raise ValueError(
+                "Local Ollama and intranet OpenAI-compatible inference cannot be enabled together."
+            )
+        if intranet_chat_enabled:
+            self._validate_intranet_openai_compatible_binding(
+                label="Chat",
+                base_url=self.intranet_openai_compatible_chat_base_url,
+                model=self.intranet_openai_compatible_chat_model,
+                secret_ref=self.intranet_openai_compatible_chat_api_key_secret_ref,
+            )
+        if intranet_embedding_enabled:
+            self._validate_intranet_openai_compatible_binding(
+                label="embedding",
+                base_url=self.intranet_openai_compatible_embedding_base_url,
+                model=self.intranet_openai_compatible_embedding_model,
+                secret_ref=self.intranet_openai_compatible_embedding_api_key_secret_ref,
+            )
         if self.neo4j_projection_enabled:
             if self.app_env != "development":
                 raise ValueError("Neo4j projection is available only in development.")
             if self.neo4j_uri is None or self.neo4j_auth_secret_ref is None:
                 raise ValueError("Enabled Neo4j projection requires URI and secret reference.")
             parsed_neo4j_uri = urlsplit(self.neo4j_uri)
+            compose_neo4j = parsed_neo4j_uri.hostname == "neo4j" and parsed_neo4j_uri.port == 7687
+            source_host_neo4j = (
+                parsed_neo4j_uri.hostname == "127.0.0.1" and parsed_neo4j_uri.port == 17687
+            )
             if (
                 parsed_neo4j_uri.scheme != "bolt"
-                or parsed_neo4j_uri.hostname != "neo4j"
-                or parsed_neo4j_uri.port != 7687
+                or not (compose_neo4j or source_host_neo4j)
                 or parsed_neo4j_uri.path not in {"", "/"}
                 or parsed_neo4j_uri.query
                 or parsed_neo4j_uri.fragment
                 or parsed_neo4j_uri.username is not None
                 or parsed_neo4j_uri.password is not None
             ):
-                raise ValueError("Local Neo4j projection must use bolt://neo4j:7687.")
-            if not self.neo4j_auth_secret_ref.startswith("file:/run/secrets/"):
+                raise ValueError(
+                    "Local Neo4j projection must use bolt://neo4j:7687 or the source-host "
+                    "bolt://127.0.0.1:17687 endpoint."
+                )
+            if source_host_neo4j:
+                if not self.neo4j_auth_secret_ref.startswith("file:"):
+                    raise ValueError(
+                        "Source-host Neo4j credentials must use a file secret reference."
+                    )
+            elif not self.neo4j_auth_secret_ref.startswith("file:/run/secrets/"):
                 raise ValueError("Neo4j credentials must use a mounted file secret reference.")
+        local_ollama_pipeline_ready = (
+            self.local_ollama_chat_enabled and self.local_ollama_embedding_enabled
+        )
+        intranet_openai_pipeline_ready = intranet_chat_enabled and intranet_embedding_enabled
         if self.knowledge_pipeline_enabled and not (
-            self.local_ollama_chat_enabled
-            and self.local_ollama_embedding_enabled
+            (local_ollama_pipeline_ready or intranet_openai_pipeline_ready)
             and self.neo4j_projection_enabled
         ):
             raise ValueError(
@@ -571,6 +664,62 @@ class Settings(BaseSettings):
         if self.deployment_tier == "HA_ACCEPTED" and not self.deployment_evidence_reference:
             raise ValueError("HA_ACCEPTED requires an accepted deployment evidence reference.")
         return self
+
+    def _validate_intranet_openai_compatible_binding(
+        self,
+        *,
+        label: str,
+        base_url: HttpUrl | None,
+        model: str | None,
+        secret_ref: str | None,
+    ) -> None:
+        if self.app_env != "development":
+            raise ValueError(
+                "Intranet OpenAI-compatible inference is available only in development."
+            )
+        if base_url is None or model is None or secret_ref is None:
+            raise ValueError(
+                f"Enabled intranet OpenAI-compatible {label} requires URL, model and "
+                "API-key secret."
+            )
+        if not self.intranet_openai_compatible_allowed_hosts:
+            raise ValueError(
+                "Intranet OpenAI-compatible inference requires an operator host allowlist."
+            )
+        if re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:/-]{0,127}", model.strip()) is None:
+            raise ValueError("Intranet OpenAI-compatible model identity is invalid.")
+        if not secret_ref.startswith("file:"):
+            raise ValueError(
+                "Intranet OpenAI-compatible API keys must use a file secret reference."
+            )
+        parsed = urlsplit(str(base_url))
+        host = (parsed.hostname or "").rstrip(".").lower()
+        if (
+            parsed.scheme != "https"
+            or host not in self.intranet_openai_compatible_allowed_hosts
+            or parsed.path.rstrip("/") != "/v1"
+            or parsed.query
+            or parsed.fragment
+            or parsed.username is not None
+            or parsed.password is not None
+        ):
+            raise ValueError(
+                "Intranet OpenAI-compatible endpoints must use allowlisted HTTPS origins "
+                "ending in /v1."
+            )
+        try:
+            addresses = socket.getaddrinfo(host, parsed.port or 443, type=socket.SOCK_STREAM)
+        except OSError as error:
+            raise ValueError("Intranet OpenAI-compatible host could not be resolved.") from error
+        if not addresses:
+            raise ValueError("Intranet OpenAI-compatible host could not be resolved.")
+        for address in addresses:
+            value = ipaddress.ip_address(address[4][0])
+            if not value.is_private or value.is_loopback or value.is_link_local:
+                raise ValueError(
+                    "Intranet OpenAI-compatible host must resolve only to private "
+                    "non-loopback addresses."
+                )
 
 
 @lru_cache(maxsize=1)

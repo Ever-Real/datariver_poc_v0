@@ -15,6 +15,7 @@ ROOT = Path(__file__).resolve().parents[1]
 COMPOSE_FILES = (
     ROOT / "compose.yaml",
     ROOT / "compose.identity.yaml",
+    ROOT / "compose.source-host.yaml",
     ROOT / "compose.airflow.yaml",
     ROOT / "compose.gateway.yaml",
 )
@@ -24,6 +25,7 @@ REQUIRED_DOCKERIGNORE_ENTRIES = {
     ".env.*",
     "secrets",
     "runtime",
+    "docker_imgs",
     ".venv",
     ".venv-wsl",
     "frontend/node_modules",
@@ -37,6 +39,8 @@ EXPECTED_SERVICE_SECRETS = {
         "postgres_app_password",
         "valkey_cache_password",
         "datahub_token",
+        "intranet_llm_chat_api_key",
+        "intranet_llm_embedding_api_key",
         "s3_access_key",
         "s3_secret_key",
     },

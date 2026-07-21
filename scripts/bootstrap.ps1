@@ -107,6 +107,8 @@ $keycloakAdminPassword = Get-OrCreateSecret "keycloak_admin_password" 24
 $grafanaAdminPassword = Get-OrCreateSecret "grafana_admin_password" 24
 $cachePassword = Get-OrCreateSecret "valkey_cache_password"
 $queuePassword = Get-OrCreateSecret "valkey_queue_password"
+$intranetLlmChatApiKey = Get-OrCreateSecret "intranet_llm_chat_api_key"
+$intranetLlmEmbeddingApiKey = Get-OrCreateSecret "intranet_llm_embedding_api_key"
 $s3AccessKeyPath = Join-Path $secretsDirectory "s3_access_key"
 if ((Test-Path -LiteralPath $s3AccessKeyPath) -and
     (Get-Item -LiteralPath $s3AccessKeyPath).Length -gt 0) {

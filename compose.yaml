@@ -207,6 +207,8 @@ services:
       - postgres_app_password
       - valkey_cache_password
       - datahub_token
+      - intranet_llm_chat_api_key
+      - intranet_llm_embedding_api_key
       - s3_access_key
       - s3_secret_key
     depends_on:
@@ -417,6 +419,10 @@ secrets:
     file: ./secrets/valkey_queue_password
   datahub_token:
     file: ./secrets/datahub_token
+  intranet_llm_chat_api_key:
+    file: ./secrets/intranet_llm_chat_api_key
+  intranet_llm_embedding_api_key:
+    file: ./secrets/intranet_llm_embedding_api_key
   s3_access_key:
     file: ./secrets/s3_access_key
   s3_secret_key:

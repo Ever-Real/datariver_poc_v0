@@ -12,6 +12,7 @@ evidence.
 |---|---|---|
 | `compose.yaml` | PostgreSQL 17.10, two Valkey 9.1 instances, SeaweedFS 4.39, migration/storage init, API, UI, outbox relay, upload completion/validation and governance apply workers | portable core |
 | `compose.identity.yaml` | Keycloak 26.7 and isolated Keycloak database/credentials | local identity only |
+| `compose.source-host.yaml` | loopback host ports for PostgreSQL and the two Valkey instances | source-host development; does not assume a DataHub Docker network |
 | `compose.airflow.yaml` | Airflow 3.3 API server, scheduler, DAG processor, triggerer and init using LocalExecutor/isolated DB role | scheduled scan/probe only |
 | `compose.gateway.yaml` | APISIX 3.17 standalone configuration | local gateway/rate limit/health-check profile |
 | `compose.graph.yaml` | Neo4j Community projection sandbox | local only; PostgreSQL KG releases remain canonical |
@@ -93,6 +94,14 @@ validates its output as untrusted evidence. It does not make the model a product
 Neo4j is a rebuildable projection sandbox until a future verified release-projection adapter
 exists; do not write DataRiver canonical state to it. The full decision and promotion limits are
 in [ADR-0023](adr/0023-mac-development-local-inference-and-graph-projection.md).
+
+ADR-0030 adds a separate development-only bridge for an authenticated model server operated on the
+private corporate network. It is not an external commercial-provider route: the endpoint must be
+HTTPS `/v1`, match the operator's exact host allowlist, resolve only to private non-loopback
+addresses and use a mounted API-key secret. Chat and Embedding profiles are activated separately;
+both are required with Neo4j for the Knowledge pipeline. Compose mounts the two optional API-key
+secrets into the API process only. Production keeps this bridge disabled, and no provider endpoint,
+credential or allowlist is browser-controlled.
 
 Set `DATAHUB_BASE_URL` and review origins/ports in `.env`. Optional `UI_DATAHUB_URL`, `UI_AIRFLOW_URL`, `UI_GRAFANA_URL`, `UI_PROMETHEUS_URL`, and `UI_GRAPH_URL` values populate the GNB auxiliary links through the authenticated capabilities response. They are not provider API endpoints or embed authorities: URLs with user information are rejected, missing values create no fallback link, and production requires HTTPS. The production validator rejects wildcard CORS, HTTP external URLs, password-bearing URLs and seed activation. Only `file:` secret references are implemented; a Vault/KMS adapter is a separate deployment integration.
 
@@ -267,11 +276,10 @@ The Compose overlay intentionally uses Airflow `SimpleAuthManager` only for loop
 - Initial recovery targets (RPO <= 5 minutes, RTO <= 60 minutes) are objectives until an environment drill records measured evidence.
 
 The assistant inference module is not a production runtime component. It has a disabled adapter and
-a typed pre-authorized input/output contract only; Compose mounts no provider endpoint or inference
-secret and creates no inference queue/job. The explicit Mac-development exception in ADR-0023 calls
-only a native loopback Ollama through Docker Desktop's fixed host gateway and accepts one
-non-executable cited-answer function payload. Provider integration, durable dispatch, SSE,
-pre/post-call live policy/profile revalidation and operational metrics remain promotion gates.
+a typed pre-authorized input/output contract only; Compose creates no inference queue/job. The
+development-only exceptions in ADR-0023 and ADR-0030 use a fixed non-executable cited-answer
+contract, not a Chat production route. Provider integration, durable dispatch, SSE, pre/post-call
+live policy/profile revalidation and operational metrics remain promotion gates.
 
 ## Release gates
 

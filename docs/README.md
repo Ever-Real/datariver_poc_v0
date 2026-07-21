@@ -36,6 +36,8 @@ Current administrator decisions: [hardware WebAuthn and governed password fallba
 
 Current account/workflow/runtime decisions: [expiring membership renewal](adr/0026-expiring-human-membership-renewal.md), [CR System-role authority](adr/0027-change-request-system-role-authority.md), and [development System Settings startup activation](adr/0028-development-system-configuration-startup-activation.md).
 
+Current development knowledge-integration decision: [intranet OpenAI-compatible adapter](adr/0030-development-intranet-openai-compatible-adapter.md).
+
 ## Change control
 
 - Requirements use stable IDs (`FR-*`, `NFR-*`, `SEC-*`).

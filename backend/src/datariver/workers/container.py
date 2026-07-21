@@ -40,7 +40,7 @@ class CatalogExportWorkerContainer(RelayWorkerContainer):
 
 
 def _database(settings: Settings, *, role: str) -> Database:
-    resolver = SecretResolver()
+    resolver = SecretResolver(virtual_secret_root=settings.system_configuration_secret_root)
     url = getattr(settings, f"{role}_database_url")
     secret_ref = getattr(settings, f"{role}_database_secret_ref")
     if not isinstance(url, str) or not isinstance(secret_ref, str):
@@ -63,7 +63,7 @@ def _delivery(settings: Settings, resolver: SecretResolver) -> ValkeyEventDelive
 
 
 def build_relay_container(settings: Settings) -> RelayWorkerContainer:
-    resolver = SecretResolver()
+    resolver = SecretResolver(virtual_secret_root=settings.system_configuration_secret_root)
     return RelayWorkerContainer(
         database=_database(settings, role="relay"),
         event_delivery=_delivery(settings, resolver),
@@ -71,7 +71,7 @@ def build_relay_container(settings: Settings) -> RelayWorkerContainer:
 
 
 def build_upload_container(settings: Settings) -> UploadWorkerContainer:
-    resolver = SecretResolver()
+    resolver = SecretResolver(virtual_secret_root=settings.system_configuration_secret_root)
     return UploadWorkerContainer(
         database=_database(settings, role="upload"),
         event_delivery=_delivery(settings, resolver),
@@ -86,7 +86,7 @@ def build_upload_container(settings: Settings) -> UploadWorkerContainer:
 
 
 def build_governance_container(settings: Settings) -> GovernanceWorkerContainer:
-    resolver = SecretResolver()
+    resolver = SecretResolver(virtual_secret_root=settings.system_configuration_secret_root)
     return GovernanceWorkerContainer(
         database=_database(settings, role="governance"),
         event_delivery=_delivery(settings, resolver),
@@ -118,7 +118,7 @@ def build_catalog_export_container(settings: Settings) -> CatalogExportWorkerCon
         raise RuntimeError(
             "Catalog export worker requires explicit enablement and separate DB/S3 credentials."
         )
-    resolver = SecretResolver()
+    resolver = SecretResolver(virtual_secret_root=settings.system_configuration_secret_root)
     return CatalogExportWorkerContainer(
         database=_database(settings, role="export"),
         event_delivery=_delivery(settings, resolver),

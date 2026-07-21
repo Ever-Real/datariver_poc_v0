@@ -147,6 +147,7 @@ export function SystemConfigurationAdmin(props: AdminSectionProps) {
           {llmSelected && <div className="admin-system-llm-tabs" role="tablist" aria-label="LLM 모델 설정">
             {llmItems.map((item) => <button key={item.system_id} type="button" role="tab" aria-selected={selected.system_id === item.system_id} className={`button ${selected.system_id === item.system_id ? '' : 'button-secondary'}`} onClick={() => setSelectedId(item.system_id)}>{llmTabLabel(item.system_id)}</button>)}
           </div>}
+          {(selected.system_id === 'LLM_CHAT_MODEL' || selected.system_id === 'LLM_EMBEDDING') && <p className="muted">개발 환경에서는 <code>connection_mode: LOCAL_OLLAMA</code> 또는 사내 HTTPS 모델 서버용 <code>INTRANET_OPENAI_COMPATIBLE</code>을 선택할 수 있습니다. 후자는 운영자 allowlist와 <code>file:/run/secrets/...</code> API-key 참조가 모두 필요하며, 상용 외부 API는 지원하지 않습니다.</p>}
           <dl className="summary-list">
             <div><dt>구성 상태</dt><dd><span className="badge">{stateLabel(selected.state)}</span></dd></div>
             <div><dt>관리 경로</dt><dd>{selected.management_plane === 'DEVELOPMENT_DATABASE' ? '개발 DB 설정' : selected.management_plane === 'DEPLOYMENT' ? '배포 설정' : '승인 Provider profile'}</dd></div>

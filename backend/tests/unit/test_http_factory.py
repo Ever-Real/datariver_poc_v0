@@ -317,6 +317,17 @@ def test_system_configuration_contract_rejects_credentials_and_incomplete_profil
             "LLM_CHAT_MODEL",
             {"base_url": "http://host.docker.internal:11434/v1", "model": "", "options": {}},
         )
+    with pytest.raises(ValidationError, match="HTTPS /v1"):
+        _validate_system_configuration(
+            "LLM_CHAT_MODEL",
+            {
+                "connection_mode": "INTRANET_OPENAI_COMPATIBLE",
+                "base_url": "http://10.42.0.15/v1",
+                "model": "gemma4:latest",
+                "secret_references": {"api_key": "file:/run/secrets/intranet_llm_chat_api_key"},
+                "options": {"api_style": "openai_compatible"},
+            },
+        )
     with pytest.raises(ValidationError, match="accepted"):
         _validate_system_configuration(
             "S3_STORAGE",

@@ -100,31 +100,66 @@ def _runtime_updates(
             "presigned_url_ttl_seconds": options.get("presigned_url_ttl_seconds"),
         }
     if service_key == "LLM_CHAT_MODEL":
+        connection_mode = document.get("connection_mode", "LOCAL_OLLAMA")
+        if not isinstance(connection_mode, str):
+            raise ValueError("The LLM connection mode must be one string.")
         if options.get("api_style") != "openai_compatible":
-            raise ValueError("The local Ollama adapter requires OpenAI-compatible API style.")
-        if _mapping(document, "secret_references"):
-            raise ValueError(
-                "The current local Ollama adapter does not consume an API-key reference."
-            )
+            raise ValueError("The LLM adapter requires OpenAI-compatible API style.")
+        if connection_mode == "LOCAL_OLLAMA":
+            if _mapping(document, "secret_references"):
+                raise ValueError(
+                    "The current local Ollama adapter does not consume an API-key reference."
+                )
+            return {
+                "local_ollama_chat_enabled": True,
+                "local_ollama_chat_base_url": _string(document, "base_url"),
+                "local_ollama_chat_model": _string(document, "model"),
+                "local_ollama_chat_timeout_seconds": options.get("timeout_seconds"),
+                "local_ollama_chat_context_tokens": options.get("context_tokens"),
+                "intranet_openai_compatible_chat_enabled": False,
+            }
+        if connection_mode != "INTRANET_OPENAI_COMPATIBLE":
+            raise ValueError("The LLM connection mode is not supported.")
         return {
-            "local_ollama_chat_enabled": True,
-            "local_ollama_chat_base_url": _string(document, "base_url"),
-            "local_ollama_chat_model": _string(document, "model"),
-            "local_ollama_chat_timeout_seconds": options.get("timeout_seconds"),
-            "local_ollama_chat_context_tokens": options.get("context_tokens"),
+            "local_ollama_chat_enabled": False,
+            "intranet_openai_compatible_chat_enabled": True,
+            "intranet_openai_compatible_chat_base_url": _string(document, "base_url"),
+            "intranet_openai_compatible_chat_model": _string(document, "model"),
+            "intranet_openai_compatible_chat_api_key_secret_ref": _secret_reference(
+                document, "api_key"
+            ),
+            "intranet_openai_compatible_chat_timeout_seconds": options.get("timeout_seconds"),
+            "intranet_openai_compatible_chat_context_tokens": options.get("context_tokens"),
         }
     if service_key == "LLM_EMBEDDING":
+        connection_mode = document.get("connection_mode", "LOCAL_OLLAMA")
+        if not isinstance(connection_mode, str):
+            raise ValueError("The LLM connection mode must be one string.")
         if options.get("api_style") != "openai_compatible":
-            raise ValueError("The local embedding adapter requires OpenAI-compatible API style.")
-        if _mapping(document, "secret_references"):
-            raise ValueError(
-                "The current local embedding adapter does not consume an API-key reference."
-            )
+            raise ValueError("The embedding adapter requires OpenAI-compatible API style.")
+        if connection_mode == "LOCAL_OLLAMA":
+            if _mapping(document, "secret_references"):
+                raise ValueError(
+                    "The current local embedding adapter does not consume an API-key reference."
+                )
+            return {
+                "local_ollama_embedding_enabled": True,
+                "local_ollama_embedding_base_url": _string(document, "base_url"),
+                "local_ollama_embedding_model": _string(document, "model"),
+                "local_ollama_embedding_timeout_seconds": options.get("timeout_seconds"),
+                "intranet_openai_compatible_embedding_enabled": False,
+            }
+        if connection_mode != "INTRANET_OPENAI_COMPATIBLE":
+            raise ValueError("The LLM connection mode is not supported.")
         return {
-            "local_ollama_embedding_enabled": True,
-            "local_ollama_embedding_base_url": _string(document, "base_url"),
-            "local_ollama_embedding_model": _string(document, "model"),
-            "local_ollama_embedding_timeout_seconds": options.get("timeout_seconds"),
+            "local_ollama_embedding_enabled": False,
+            "intranet_openai_compatible_embedding_enabled": True,
+            "intranet_openai_compatible_embedding_base_url": _string(document, "base_url"),
+            "intranet_openai_compatible_embedding_model": _string(document, "model"),
+            "intranet_openai_compatible_embedding_api_key_secret_ref": _secret_reference(
+                document, "api_key"
+            ),
+            "intranet_openai_compatible_embedding_timeout_seconds": options.get("timeout_seconds"),
         }
     if service_key == "NEO4J":
         return {
@@ -172,7 +207,9 @@ async def resolve_activated_system_configuration(
     secret_reference = getattr(settings, f"{role_prefix}database_secret_ref")
     if not isinstance(database_url, str) or not isinstance(secret_reference, str):
         raise ValueError(f"Runtime configuration role {database_role} is not configured.")
-    password = SecretResolver().resolve(secret_reference)
+    password = SecretResolver(
+        virtual_secret_root=settings.system_configuration_secret_root
+    ).resolve(secret_reference)
     database = Database(
         database_url,
         password=password,

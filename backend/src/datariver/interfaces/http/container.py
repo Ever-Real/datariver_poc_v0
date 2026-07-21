@@ -33,12 +33,12 @@ class AppContainer:
 
 
 def build_container(settings: Settings) -> AppContainer:
-    secret_resolver = SecretResolver()
+    secret_resolver = SecretResolver(virtual_secret_root=settings.system_configuration_secret_root)
     database_password = secret_resolver.resolve(settings.database_secret_ref)
     datahub_token = secret_resolver.resolve(settings.datahub_secret_ref)
     cache_password = secret_resolver.resolve(settings.valkey_cache_secret_ref)
-    s3_access_key = SecretResolver().resolve(f"file:{settings.s3_access_key_file}")
-    s3_secret_key = SecretResolver().resolve(f"file:{settings.s3_secret_key_file}")
+    s3_access_key = secret_resolver.resolve(f"file:{settings.s3_access_key_file}")
+    s3_secret_key = secret_resolver.resolve(f"file:{settings.s3_secret_key_file}")
     metrics = HttpMetrics()
     knowledge_neo4j: BoltNeo4jQueryExecutor | None = None
     if settings.neo4j_projection_enabled:

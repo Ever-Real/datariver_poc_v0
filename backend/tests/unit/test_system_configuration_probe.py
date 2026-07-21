@@ -89,6 +89,49 @@ class _SecretResolver:
         return "neo4j/secret-from-file"
 
 
+class _IntranetLlmSecretResolver:
+    def resolve(self, reference: str) -> str:
+        assert reference == "file:/run/secrets/intranet_llm_chat_api_key"
+        return "intranet-api-key"
+
+
+@pytest.mark.asyncio
+async def test_intranet_llm_probe_uses_the_operator_secret_and_rejects_bad_credentials() -> None:
+    def accepted_handler(request: httpx.Request) -> httpx.Response:
+        assert request.headers["Authorization"] == "Bearer intranet-api-key"
+        return httpx.Response(
+            200,
+            request=request,
+            json={"choices": [{"message": {"content": '{"status":"ok"}'}}]},
+        )
+
+    document = {
+        "connection_mode": "INTRANET_OPENAI_COMPATIBLE",
+        "base_url": "https://10.42.0.15/v1",
+        "model": "gemma4:latest",
+        "secret_references": {"api_key": "file:/run/secrets/intranet_llm_chat_api_key"},
+    }
+    async with httpx.AsyncClient(transport=httpx.MockTransport(accepted_handler)) as client:
+        accepted = await probe_system_configuration(
+            system_id="LLM_CHAT_MODEL",
+            document=document,
+            client=client,
+            secret_resolver=_IntranetLlmSecretResolver(),  # type: ignore[arg-type]
+        )
+    assert accepted.status == "AVAILABLE"
+
+    async with httpx.AsyncClient(
+        transport=httpx.MockTransport(lambda request: httpx.Response(401, request=request))
+    ) as client:
+        rejected = await probe_system_configuration(
+            system_id="LLM_CHAT_MODEL",
+            document=document,
+            client=client,
+            secret_resolver=_IntranetLlmSecretResolver(),  # type: ignore[arg-type]
+        )
+    assert rejected.status == "UNAVAILABLE"
+
+
 @pytest.mark.asyncio
 async def test_neo4j_probe_authenticates_and_executes_fixed_query() -> None:
     calls: list[tuple[Any, ...]] = []

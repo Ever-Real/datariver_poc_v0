@@ -64,6 +64,26 @@ def test_model_binding_records_deployment_or_activated_configuration_revision() 
 
 
 @pytest.mark.asyncio
+async def test_openai_transport_sends_an_operator_secret_only_to_the_allowlisted_origin() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url == httpx.URL("https://10.42.0.15/v1/embeddings")
+        assert request.headers["Authorization"] == "Bearer intranet-api-key"
+        return httpx.Response(200, request=request, json={"data": []})
+
+    transport = HttpxOpenAIJsonTransport(
+        base_url="https://10.42.0.15/v1",
+        allowed_hosts=frozenset({"10.42.0.15"}),
+        api_key="intranet-api-key",
+        timeout_seconds=30,
+        transport=httpx.MockTransport(handler),
+    )
+
+    assert await transport.post_json(path="/embeddings", document={"input": ["probe"]}) == {
+        "data": []
+    }
+
+
+@pytest.mark.asyncio
 async def test_embedding_provider_preserves_page_order_and_actual_binding() -> None:
     transport = _Transport(
         {
