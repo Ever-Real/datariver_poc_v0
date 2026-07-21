@@ -48,8 +48,12 @@ Commit only the repository sources. A second PC clones the same tree, runs the m
 `docker_imgs/`는 Git에서 무시되는 반입 산출물 디렉터리다. 여기에는 Linux OCI 이미지 tar,
 SHA-256 검증 파일과 이미지 ID/digest manifest만 둔다. `.env`, `secrets/`, DB·SeaweedFS
 볼륨, 업로드 파일, DataHub 데이터 및 Ollama 모델은 포함하지 않는다. 반입 PC의 Docker
-아키텍처가 같아야 한다. 이 Mac 구성의 bundle은 `linux/arm64`이며, `linux/amd64` 서버에는
-별도의 amd64 bundle을 연결망 빌드 환경에서 만들어야 한다.
+아키텍처가 같아야 한다. 이 Mac 구성의 bundle은 기본적으로 `linux/arm64`이며,
+`linux/amd64` 서버에는 별도의 amd64 bundle을 연결망 빌드 환경에서 만들어야 한다.
+Apple Silicon Docker Desktop은 Buildx가 활성화되어 있으면 아래처럼 `linux/amd64`를 반출할
+수 있다. 이 경우 기존 ARM64 tag는 임시 백업 후 즉시 복원하므로 실행 중인 ARM64 container의
+image ID는 바뀌지 않는다. 단, cross-platform build와 tar 생성에는 Docker Desktop 데이터
+디스크에 충분한 여유 공간(권장 30 GiB 이상)이 필요하다.
 
 ### 연결망 준비 PC: 이미지 반출
 
@@ -61,6 +65,10 @@ bundle만 필요하다.
 ```bash
 chmod +x scripts/export_offline_images.sh scripts/dev_host.sh
 ./scripts/export_offline_images.sh --build-datariver --include-observability
+
+# Linux x86_64/amd64 운영 PC용 (DataHub를 별도 운영하는 현재 경로)
+./scripts/export_offline_images.sh --platform linux/amd64 \
+  --build-datariver --include-observability
 ```
 
 관측성 profile을 사용하지 않는 대상은 `--include-observability`를 생략해도 된다. 반대로 이
