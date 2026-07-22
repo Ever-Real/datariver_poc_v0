@@ -90,7 +90,16 @@ BEGIN
             ON iam.subjects TO datariver_app;
         GRANT SELECT ON iam.workspace_memberships TO datariver_app;
         GRANT SELECT, INSERT, UPDATE ON iam.membership_renewal_requests TO datariver_app;
-        GRANT SELECT, INSERT, UPDATE ON iam.access_roles TO datariver_app;
+        GRANT SELECT, INSERT ON iam.access_roles TO datariver_app;
+        GRANT UPDATE (name, description, clearance, groups, allowed_actions, denied_actions,
+            allowed_system_ids, allowed_domain_ids, active, updated_by, version, updated_at)
+            ON iam.access_roles TO datariver_app;
+        GRANT SELECT, INSERT ON iam.access_role_data_rules,
+            iam.access_role_assignment_events TO datariver_app;
+        GRANT SELECT, INSERT ON iam.access_role_assignments TO datariver_app;
+        GRANT UPDATE (role_id, role_version, membership_version, access_payload_hash,
+            assigned_by, active, version, updated_at)
+            ON iam.access_role_assignments TO datariver_app;
         GRANT EXECUTE ON FUNCTION iam.resolve_default_workspace(text, text) TO datariver_app;
         GRANT EXECUTE ON FUNCTION {IDENTITY_PROVISIONING_SIGNATURE} TO datariver_app;
         GRANT UPDATE (active, clearance, attributes, version, updated_at)

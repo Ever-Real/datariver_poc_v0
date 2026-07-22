@@ -191,6 +191,218 @@ class AccessRoleModel(Base, UuidPrimaryKeyMixin, TimestampMixin, VersionMixin):
     updated_by: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), nullable=False)
 
 
+class AccessRoleDataRuleModel(Base, UuidPrimaryKeyMixin, TimestampMixin):
+    """Immutable policy-book rule bound to one exact access-role version."""
+
+    __tablename__ = "access_role_data_rules"
+    __table_args__ = (
+        UniqueConstraint("workspace_id", "id"),
+        UniqueConstraint("workspace_id", "role_id", "role_version", "classification"),
+        ForeignKeyConstraint(
+            ("workspace_id", "role_id"),
+            ("iam.access_roles.workspace_id", "iam.access_roles.id"),
+            ondelete="RESTRICT",
+            name="fk_access_role_data_rules_role",
+        ),
+        ForeignKeyConstraint(
+            ("workspace_id", "created_by"),
+            ("iam.workspace_memberships.workspace_id", "iam.workspace_memberships.subject_id"),
+            ondelete="RESTRICT",
+            name="fk_access_role_data_rules_creator",
+        ),
+        CheckConstraint("role_version > 0", name="role_version_positive"),
+        CheckConstraint("classification BETWEEN 0 AND 3", name="classification_range"),
+        CheckConstraint(
+            "access_level IN ('NO_ACCESS', 'PARTIAL_ACCESS', 'FULL_ACCESS')",
+            name="access_level_vocabulary",
+        ),
+        CheckConstraint(
+            "partial_treatment IS NULL OR partial_treatment IN ('MASK', 'REDACT', 'TOKENIZE')",
+            name="partial_treatment_vocabulary",
+        ),
+        CheckConstraint(
+            "(access_level = 'PARTIAL_ACCESS' AND partial_treatment IS NOT NULL) OR "
+            "(access_level <> 'PARTIAL_ACCESS' AND partial_treatment IS NULL)",
+            name="access_treatment_shape",
+        ),
+        CheckConstraint(
+            "jsonb_typeof(allowed_residency_regions) = 'array' AND "
+            "jsonb_typeof(allowed_processing_purposes) = 'array'",
+            name="scope_arrays",
+        ),
+        CheckConstraint(
+            "(access_level = 'NO_ACCESS' AND "
+            "jsonb_array_length(allowed_residency_regions) = 0 AND "
+            "jsonb_array_length(allowed_processing_purposes) = 0) OR "
+            "(access_level <> 'NO_ACCESS' AND "
+            "jsonb_array_length(allowed_residency_regions) > 0 AND "
+            "jsonb_array_length(allowed_processing_purposes) > 0)",
+            name="access_scope_shape",
+        ),
+        CheckConstraint(
+            "jsonb_array_length(jsonb_path_query_array(allowed_residency_regions, "
+            '\'$[*] ? (@.type() == "string" && '
+            '@ like_regex "^[A-Z0-9][A-Z0-9._:-]{0,63}$")\')) = '
+            "jsonb_array_length(allowed_residency_regions) AND "
+            "allowed_processing_purposes <@ "
+            '\'["METADATA_READ", "DATA_READ", "EXPORT", "ANALYTICS", '
+            '"MODEL_TRAINING"]\'::jsonb',
+            name="scope_item_vocabulary",
+        ),
+        CheckConstraint("payload_hash ~ '^[0-9a-f]{64}$'", name="payload_hash_sha256"),
+        Index(
+            "ix_access_role_data_rules_workspace_role_version",
+            "workspace_id",
+            "role_id",
+            "role_version",
+        ),
+        {"schema": "iam"},
+    )
+
+    workspace_id: Mapped[UUID] = mapped_column(
+        Uuid(as_uuid=True),
+        ForeignKey("platform.workspaces.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    role_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), nullable=False)
+    role_version: Mapped[int] = mapped_column(Integer, nullable=False)
+    classification: Mapped[int] = mapped_column(Integer, nullable=False)
+    access_level: Mapped[str] = mapped_column(String(24), nullable=False)
+    partial_treatment: Mapped[str | None] = mapped_column(String(24))
+    allowed_residency_regions: Mapped[list[str]] = mapped_column(
+        JSON_DOCUMENT, default=list, nullable=False
+    )
+    allowed_processing_purposes: Mapped[list[str]] = mapped_column(
+        JSON_DOCUMENT, default=list, nullable=False
+    )
+    payload_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    created_by: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), nullable=False)
+
+
+class AccessRoleAssignmentModel(Base, UuidPrimaryKeyMixin, TimestampMixin, VersionMixin):
+    """Current normalized role assignment; membership ABAC remains runtime authority."""
+
+    __tablename__ = "access_role_assignments"
+    __table_args__ = (
+        UniqueConstraint("workspace_id", "id"),
+        UniqueConstraint("workspace_id", "subject_id"),
+        ForeignKeyConstraint(
+            ("workspace_id", "subject_id"),
+            ("iam.workspace_memberships.workspace_id", "iam.workspace_memberships.subject_id"),
+            ondelete="RESTRICT",
+            name="fk_access_role_assignments_membership",
+        ),
+        ForeignKeyConstraint(
+            ("workspace_id", "role_id"),
+            ("iam.access_roles.workspace_id", "iam.access_roles.id"),
+            ondelete="RESTRICT",
+            name="fk_access_role_assignments_role",
+        ),
+        ForeignKeyConstraint(
+            ("workspace_id", "assigned_by"),
+            ("iam.workspace_memberships.workspace_id", "iam.workspace_memberships.subject_id"),
+            ondelete="RESTRICT",
+            name="fk_access_role_assignments_actor",
+        ),
+        CheckConstraint("role_version > 0", name="role_version_positive"),
+        CheckConstraint("membership_version > 0", name="membership_version_positive"),
+        CheckConstraint("access_payload_hash ~ '^[0-9a-f]{64}$'", name="payload_hash_sha256"),
+        Index("ix_access_role_assignments_workspace_role", "workspace_id", "role_id", "active"),
+        {"schema": "iam"},
+    )
+
+    workspace_id: Mapped[UUID] = mapped_column(
+        Uuid(as_uuid=True),
+        ForeignKey("platform.workspaces.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    subject_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), nullable=False)
+    role_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), nullable=False)
+    role_version: Mapped[int] = mapped_column(Integer, nullable=False)
+    membership_version: Mapped[int] = mapped_column(Integer, nullable=False)
+    access_payload_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    assigned_by: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), nullable=False)
+    active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+
+
+class AccessRoleAssignmentEventModel(Base, UuidPrimaryKeyMixin):
+    """Append-only evidence for assignment, reassignment, and removal."""
+
+    __tablename__ = "access_role_assignment_events"
+    __table_args__ = (
+        UniqueConstraint("workspace_id", "id"),
+        ForeignKeyConstraint(
+            ("workspace_id", "subject_id"),
+            ("iam.workspace_memberships.workspace_id", "iam.workspace_memberships.subject_id"),
+            ondelete="RESTRICT",
+            name="fk_access_role_assignment_events_membership",
+        ),
+        ForeignKeyConstraint(
+            ("workspace_id", "actor_id"),
+            ("iam.workspace_memberships.workspace_id", "iam.workspace_memberships.subject_id"),
+            ondelete="RESTRICT",
+            name="fk_access_role_assignment_events_actor",
+        ),
+        ForeignKeyConstraint(
+            ("workspace_id", "previous_role_id"),
+            ("iam.access_roles.workspace_id", "iam.access_roles.id"),
+            ondelete="RESTRICT",
+            name="fk_access_role_assignment_events_previous_role",
+        ),
+        ForeignKeyConstraint(
+            ("workspace_id", "role_id"),
+            ("iam.access_roles.workspace_id", "iam.access_roles.id"),
+            ondelete="RESTRICT",
+            name="fk_access_role_assignment_events_role",
+        ),
+        CheckConstraint("event_type IN ('ASSIGNED', 'REASSIGNED', 'REMOVED')", name="event_type"),
+        CheckConstraint(
+            "(event_type = 'ASSIGNED' AND previous_role_id IS NULL "
+            "AND previous_role_version IS NULL AND role_id IS NOT NULL "
+            "AND role_version IS NOT NULL) OR "
+            "(event_type = 'REASSIGNED' AND previous_role_id IS NOT NULL "
+            "AND previous_role_version IS NOT NULL AND role_id IS NOT NULL "
+            "AND role_version IS NOT NULL) OR "
+            "(event_type = 'REMOVED' AND previous_role_id IS NOT NULL "
+            "AND previous_role_version IS NOT NULL AND role_id IS NULL "
+            "AND role_version IS NULL)",
+            name="state_shape",
+        ),
+        CheckConstraint("membership_version > 0", name="membership_version_positive"),
+        CheckConstraint(
+            "(previous_role_version IS NULL OR previous_role_version > 0) AND "
+            "(role_version IS NULL OR role_version > 0)",
+            name="role_versions_positive",
+        ),
+        CheckConstraint("access_payload_hash ~ '^[0-9a-f]{64}$'", name="payload_hash_sha256"),
+        Index(
+            "ix_access_role_assignment_events_workspace_subject_occurred",
+            "workspace_id",
+            "subject_id",
+            "occurred_at",
+        ),
+        {"schema": "iam"},
+    )
+
+    workspace_id: Mapped[UUID] = mapped_column(
+        Uuid(as_uuid=True),
+        ForeignKey("platform.workspaces.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    subject_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), nullable=False)
+    event_type: Mapped[str] = mapped_column(String(20), nullable=False)
+    previous_role_id: Mapped[UUID | None] = mapped_column(Uuid(as_uuid=True))
+    previous_role_version: Mapped[int | None] = mapped_column(Integer)
+    role_id: Mapped[UUID | None] = mapped_column(Uuid(as_uuid=True))
+    role_version: Mapped[int | None] = mapped_column(Integer)
+    membership_version: Mapped[int] = mapped_column(Integer, nullable=False)
+    access_payload_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    actor_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), nullable=False)
+    occurred_at: Mapped[datetime] = mapped_column(
+        server_default=text("CURRENT_TIMESTAMP"), nullable=False
+    )
+
+
 class DataSystemModel(Base, UuidPrimaryKeyMixin, TimestampMixin, VersionMixin):
     """Canonical business-system master, scoped to exactly one workspace."""
 

@@ -36,6 +36,7 @@ from datariver.domain.common import (
     ForbiddenError,
     NotFoundError,
     ValidationError,
+    canonical_json_hash,
 )
 from datariver.domain.membership_renewal import (
     MembershipRenewalDecision,
@@ -201,7 +202,10 @@ class AdminAccessService:
                     AdminOperation.ERASURE_READ,
                 ]
             )
-        if subject.authentication_assurance is AuthenticationAssurance.HARDWARE_WEBAUTHN:
+        if (
+            subject.authentication_assurance is AuthenticationAssurance.HARDWARE_WEBAUTHN
+            and _authentication_is_fresh(subject=subject, environment=environment)
+        ):
             operations.extend(
                 [
                     AdminOperation.MEMBERSHIP_ACCESS_UPDATE,
@@ -251,6 +255,32 @@ class AdminAccessService:
             action_vocabulary=tuple(sorted(Action, key=lambda action: action.value)),
             fallback_enabled=self._fallback_enabled,
         )
+
+    async def authorize_access_role_mutation(
+        self,
+        *,
+        workspace_id: UUID,
+        role_id: UUID,
+        subject: SubjectAttributes,
+        environment: EnvironmentAttributes,
+        request_id: str,
+    ) -> UUID:
+        """Require a fresh high-risk decision and current human-admin membership."""
+
+        decision = await self._authorization.authorize(
+            subject=subject,
+            resource=self._resource(workspace_id, role_id),
+            action=Action.ADMIN_MANAGE,
+            environment=environment,
+            request_id=request_id,
+        )
+        async with self._uow_factory() as uow:
+            await uow.set_security_context(workspace_id=workspace_id, subject_id=subject.subject_id)
+            await uow.memberships.assert_eligible_human_administrators(
+                workspace_id=workspace_id,
+                subject_ids=frozenset({subject.subject_id}),
+            )
+        return decision.decision_id
 
     async def request_membership_renewal(
         self,
@@ -473,7 +503,10 @@ class AdminAccessService:
         request_id: str,
         idempotency_key: str,
         request_hash: str,
+        role_id: UUID | None = None,
+        role_version: int | None = None,
     ) -> int:
+        role_marker = _assert_role_marker_binding(command=command, role_id=role_id)
         if subject.subject_id == command.target_subject_id:
             raise ValidationError("An administrator cannot change their own access.")
         decision = await self._authorization.authorize(
@@ -508,6 +541,16 @@ class AdminAccessService:
                 return int(existing.result["membership_version"])
             await uow.memberships.assert_current_version(command)
             membership_version = await uow.memberships.apply(command)
+            await uow.memberships.record_role_assignment(
+                workspace_id=command.workspace_id,
+                subject_id=command.target_subject_id,
+                role_id=role_id,
+                role_version=role_version,
+                role_marker=role_marker,
+                membership_version=membership_version,
+                access_payload_hash=canonical_json_hash(command.access_document()),
+                actor_id=subject.subject_id,
+            )
             await uow.outbox.add_events(
                 [
                     DomainEvent.create(
@@ -621,6 +664,7 @@ class AdminAccessService:
         request_hash: str,
     ) -> AdminAccessRequest:
         self._require_fallback_enabled()
+        _assert_role_marker_binding(command=command, role_id=None)
         decision = await self._authorization.authorize_admin_fallback(
             subject=subject,
             resource=self._resource(command.workspace_id, command.target_subject_id),
@@ -829,11 +873,22 @@ class AdminAccessService:
                 raise ConflictError("The confirmed payload hash does not match the approval.")
             if request.checker_id is None:
                 raise ConflictError("The fallback request has no independent checker.")
+            _assert_role_marker_binding(command=request.command, role_id=None)
             await uow.memberships.assert_eligible_human_administrators(
                 workspace_id=workspace_id,
                 subject_ids=frozenset({subject.subject_id, request.checker_id}),
             )
             membership_version = await uow.memberships.apply(request.command)
+            await uow.memberships.record_role_assignment(
+                workspace_id=request.command.workspace_id,
+                subject_id=request.command.target_subject_id,
+                role_id=None,
+                role_version=None,
+                role_marker=None,
+                membership_version=membership_version,
+                access_payload_hash=canonical_json_hash(request.command.access_document()),
+                actor_id=subject.subject_id,
+            )
             request.consume(
                 actor_id=subject.subject_id,
                 policy_decision_id=decision.decision_id,
@@ -925,3 +980,27 @@ def _verify_idempotency(
         raise ConflictError("The idempotency key was used with a different request.")
     if stored_actor != str(actor_id):
         raise ConflictError("The idempotency key belongs to another subject.")
+
+
+def _assert_role_marker_binding(
+    *, command: MembershipAccessUpdate, role_id: UUID | None
+) -> str | None:
+    markers = tuple(group for group in command.groups if group.startswith("datariver-role-"))
+    if role_id is None and markers:
+        raise ValidationError(
+            "Manual membership access cannot contain a reserved role marker; use Role assignment."
+        )
+    if role_id is not None and len(markers) != 1:
+        raise ValidationError("A Role assignment requires exactly one server-managed role marker.")
+    return markers[0] if markers else None
+
+
+def _authentication_is_fresh(
+    *, subject: SubjectAttributes, environment: EnvironmentAttributes
+) -> bool:
+    authenticated_at = subject.authentication_time
+    if authenticated_at is None:
+        return False
+    if authenticated_at > environment.requested_at + environment.maximum_clock_skew:
+        return False
+    return environment.requested_at - authenticated_at <= environment.maximum_authentication_age

@@ -255,6 +255,17 @@ message, citation or retention binding and production configuration rejects the 
 
 ### Administrator membership access
 
+Access Role write documents accept optional `data_access_rules`, with no more than one rule for each
+classification. A granted rule requires non-empty residency and processing-purpose scope; Partial
+requires exactly one MASK/REDACT/TOKENIZE treatment; No Access accepts neither treatment nor scope.
+Responses return the exact current Role-version rules. Omitting a classification is a fail-closed
+missing rule, not inheritance. For compatibility until the Phase 3 editor is deployed, omitting the
+entire `data_access_rules` field on Role update preserves the exact current rules; an explicit empty
+array creates a new Role version with no rules and therefore default denial. Explicit `null` is
+rejected. Rule arrays are normalized before both storage and canonical hashing, so semantically
+identical region/purpose permutations produce identical evidence. Existing catalog authorization remains the intersection of ABAC,
+classification policy and RLS; this contract does not expose source-row data or a masking bypass.
+
 | Method/path | Assurance/authorization | Purpose |
 |---|---|---|
 | `GET /admin/me` | eligible human security administrator with a valid current OIDC identity | internal subject identity, current-assurance operations, fallback availability and the supported action vocabulary; read discovery never grants mutation authority |
@@ -290,8 +301,17 @@ workspace/key uniqueness contract; Role update/deactivation uses optimistic `If-
 outbox audit evidence. The fallback create request's
 version is the target membership version; decision and consume versions are the fallback aggregate
 version. The only command is `WORKSPACE_MEMBERSHIP_ACCESS_UPDATE_V1` with `active`, `clearance`,
-groups, allowed/denied actions and bounded system/domain UUID scopes. Unknown fields and unknown
-actions are rejected. Maker, checker and target must be distinct; self-access mutation is forbidden.
+groups, allowed/denied actions and bounded system/domain UUID scopes. Manual/fallback documents
+reject every `datariver-role-*` group; only the dedicated Role-assignment route may create or remove
+that server-managed compatibility marker together with normalized assignment evidence. The marker
+must match the locked Role row; an exact same Role/version/canonical-access request is rejected as a
+no-op rather than recorded as `REASSIGNED`. The assignment access hash is
+the canonical materialized access document and deliberately excludes the optimistic
+`expected_membership_version`; changing only the expected version cannot manufacture a new Role
+assignment. Until the Phase 3 editor guard is approved, a generic manual or fallback edit of a
+Role-bound member fails closed and the Role must be removed through the dedicated route first.
+Unknown fields and unknown actions are rejected. Maker, checker and target must be
+distinct; self-access mutation is forbidden.
 The server rechecks both human administrators, the unchanged target version and at least two
 remaining eligible human security administrators in the mutation transaction. Fallback is disabled
 unless `ADMIN_PASSWORD_FALLBACK_ENABLED=true`; disabled requests return only the bounded
@@ -306,7 +326,11 @@ a command automatically after return.
 The list returns summaries only; a client must fetch the detail immediately before editing and use
 its quoted version for `If-Match`. Unknown stored action/scope values fail closed instead of being
 silently omitted. `allowed_operations` in `/admin/me` reflects the current token assurance, fallback
-feature flag and effective retention/Legal-Hold/erasure action grants and denies. Clients use it to
+feature flag and effective retention/Legal-Hold/erasure action grants and denies. Hardware mutation
+operations are advertised only while `authentication_time` is present, not future-dated and within
+the deployed high-risk age. Role create/update/deactivate independently re-authorize `admin.manage`,
+lock and recheck the current human administrator membership, and bind the decision ID and assurance
+to their outbox event. Clients use it to
 avoid exposing or preloading unrelated administration surfaces; every mutation still performs its
 operation-specific authorization and maker/checker/target validation.
 

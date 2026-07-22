@@ -2,6 +2,42 @@
 
 ## Latest executed baseline
 
+### 2026-07-23 Policy Book RBAC Phase 1 verification
+
+The approval-gated Phase 1 passed Ruff formatting/lint over `286` files, strict mypy over `279`
+source files, `804` backend tests with one environment-gated PostgreSQL test skipped, and static
+verification. That PostgreSQL test separately passed in an isolated real database. The unchanged
+frontend passed `39` files / `170` tests,
+zero-warning lint and production build. Canonical `0001` regeneration was byte-identical at
+SHA-256 `3d0b199681d72965e191f044e36c648c34a725adbe03a8420be03afcc6f3f1b4`. An
+isolated empty database migrated `0001 -> 0041` and was removed; the populated Mac database upgraded
+`0040 -> 0041` and passed the non-destructive compatibility replay. Read-back verified the sole head,
+three forced-RLS tables, append-only/bounded app grants and the additional scope/state/composite-FK
+constraints. The final arm64 API was healthy/schema-ready, and a cache-only `linux/amd64` Docker build
+passed from the same source. A second isolated database with all three table names but a missing
+required constraint was rejected by the `0041` complete-schema fingerprint. A same-name
+`CHECK(TRUE)` plus `USING(TRUE)` RLS-policy mutation was also rejected; the fingerprint compares
+column length/timezone/default, CHECK SQL, FK columns/targets/delete actions, index columns and RLS
+mode/predicate rather than object names alone. Direct `datariver_app`
+probes confirmed workspace-empty reads plus denial of protected Role/rule columns and event deletion.
+The real PostgreSQL service/UoW test self-provisioned and removed its workspace, subjects, Roles and
+failure trigger. It covered `ASSIGNED -> REASSIGNED -> REMOVED`, rejected a semantically identical
+Role reaffirmation even though its optimistic expected version changed, rejected a stale Role version,
+and reached a forced evidence insert identified by the exact `P0001` SQLSTATE and constraint name.
+A non-transactional sequence marker proves the event insert was attempted; subject-scoped snapshots
+prove membership/current/event/outbox/idempotency state is unchanged after every rejected command.
+The test also exposed and closed an asyncpg JSONPath bind-type defect in the administrator cardinality
+query.
+
+The PostgreSQL test must only target an operator-confirmed disposable database. An operator first
+creates and migrates that database, supplies separate least-privilege app and migration-owner URLs in
+`DATARIVER_POLICY_TEST_DATABASE_URL` and `DATARIVER_POLICY_TEST_ADMIN_DATABASE_URL`, supplies their
+secret references, and explicitly sets `DATARIVER_POLICY_TEST_CONFIRM_ISOLATED=1`. Without all three
+conditions the default suite skips the test. The test owns fixture setup/cleanup inside that confirmed
+database; database creation and final database removal remain explicit operator actions.
+Windows/WSL runtime acceptance remains open. Exact scope and residual
+Admin/retention gates are in [the Phase checklist](28_POLICY_BOOK_EXECUTION_CHECKLIST.md).
+
 ### 2026-07-22 low-resource multi-architecture and external-connector verification
 
 The Redis/MinIO external-connector, bounded catalog state, OpenAI-compatible Chat and offline-release

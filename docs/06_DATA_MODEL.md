@@ -30,8 +30,18 @@ The SQLAlchemy metadata and generated `backend/alembic/versions/0001_initial_sch
 | `iam.workspace_memberships` | PK `workspace_id + subject_id`, `department_id`, `job_function`, `clearance`, `attributes`, `active`, nullable `access_expires_at`, `version` | versioned ABAC attributes/grants; human expiry is authorization-bearing, service-account expiry is operator-managed `NULL`, and the optional default marker only chooses among active unexpired memberships |
 | `iam.membership_renewal_requests` | workspace/target pending partial UQ, observed/requested expiries, requester/checker, reason/decision/policy/time and optimistic version | self-requested six-calendar-month extension with independent global-Admin decision and no self approval |
 | `iam.access_roles` | workspace/key UQ, name/description, clearance, typed group/action/System/Domain scope documents, active flag, updater/version | reusable administrator-managed RBAC template; assignment materializes the existing membership ABAC document and the role marker is not independent authority |
+| `iam.access_role_data_rules` | Role/version/classification UQ, No/Partial/Full level, nullable typed treatment, residency/purpose JSON, SHA-256 payload hash, creator/time | immutable secret-free Policy Book rule; a missing classification rule denies |
+| `iam.access_role_assignments` | workspace/subject UQ, exact Role/version, membership version, access payload hash, actor, active/version/time | normalized current Role evidence; bounded updates, no application delete |
+| `iam.access_role_assignment_events` | subject, assigned/reassigned/removed, before/after Role versions, membership version, payload hash, actor/time | append-only Role-assignment history |
 | `iam.admin_access_requests` | typed command/envelope, maker/target/checker, canonical hash, expiry/state/consume decision, `version`, timestamps | short-lived membership-access maker-checker aggregate; no arbitrary provider payload |
 | `iam.admin_access_approvals` | request/actor, approve/reject, reason, policy decision, payload hash and request version | append-only independent checker evidence |
+| `authz.resources` | `workspace_id + resource_type + resource_key UQ`, scope/classification/lifecycle columns, `attributes`, `version` | durable resource attribute registry |
+| `authz.policy_decisions` | `id`, `workspace_id`, `subject_id`, `resource_id`, `action`, `effect`, reason/policy JSON, grouped `evaluation_context`, `request_id`, `decided_at` | immutable allow/deny/system-worker or bounded resource-set evidence |
+| `authz.classification_access_policy_versions` | workspace/policy number UQ, required jurisdiction, grant maximum, payload hash, maker/checker/supersede state and optimistic version | independently approved four-class Search/Chat policy |
+| `authz.classification_access_policy_rules` | workspace/policy/classification UQ, policy hash, typed Search/Chat modes and optional immutable provider-profile version FK | exactly one immutable rule for each of the four classifications |
+| `authz.restricted_search_grants` | active policy ID/hash, subject, typed resource/system/domain scope, validity, payload hash, maker/checker/revocation and optimistic version | explicit policy-bound RESTRICTED Search entitlement |
+| `authz.restricted_search_grant_events` | grant/version UQ, action/actor/reason/policy decision/time/payload hash | append-only grant history |
+| `authz.classification_access_generations` | workspace PK, monotonic generation and update time | transactional authorization/cache invalidation generation |
 
 `iam.resolve_default_workspace(issuer, external_subject)` is a narrowly scoped database function,
 not an IAM list API.  It may return only one active Workspace UUID for the already verified OIDC
@@ -43,16 +53,15 @@ no attributes, memberships, roles or cross-workspace data; normal IAM reads rema
 is `SECURITY DEFINER`, has no dynamic SQL and independently requires matching transaction-local
 Workspace/subject context plus an active, unexpired human `security-administrators` membership with
 RESTRICTED clearance and `admin.manage`. It reads an optional active `iam.access_roles` row and
-atomically inserts exactly one OIDC subject and six-month membership. The application role has
-execute-only access and still has no direct `INSERT` grant on either IAM table. No password or
-provider client credential is a function argument or database column.
-| `authz.resources` | `workspace_id + resource_type + resource_key UQ`, scope/classification/lifecycle columns, `attributes`, `version` | durable resource attribute registry |
-| `authz.policy_decisions` | `id`, `workspace_id`, `subject_id`, `resource_id`, `action`, `effect`, reason/policy JSON, grouped `evaluation_context`, `request_id`, `decided_at` | immutable allow/deny/system-worker or bounded resource-set evidence |
-| `authz.classification_access_policy_versions` | workspace/policy number UQ, required jurisdiction, grant maximum, payload hash, maker/checker/supersede state and optimistic version | independently approved four-class Search/Chat policy |
-| `authz.classification_access_policy_rules` | workspace/policy/classification UQ, policy hash, typed Search/Chat modes and optional immutable provider-profile version FK | exactly one immutable rule for each of the four classifications |
-| `authz.restricted_search_grants` | active policy ID/hash, subject, typed resource/system/domain scope, validity, payload hash, maker/checker/revocation and optimistic version | explicit policy-bound RESTRICTED Search entitlement |
-| `authz.restricted_search_grant_events` | grant/version UQ, action/actor/reason/policy decision/time/payload hash | append-only grant history |
-| `authz.classification_access_generations` | workspace PK, monotonic generation and update time | transactional authorization/cache invalidation generation |
+atomically inserts exactly one OIDC subject and six-month membership. When a Role is selected, the
+repository also records the normalized assignment and event in the same transaction. The
+application role has execute-only access and still has no direct `INSERT` grant on either IAM table.
+No password or provider client credential is a function argument or database column.
+
+The three policy-book tables use forced workspace RLS. The application may insert immutable Role
+rules/events and may update only the current assignment's bounded state/version columns. There is no
+application `DELETE` grant. Existing `datariver-role-*` membership markers are compatibility hints;
+they are not backfilled with invented actor/hash evidence and require explicit reassignment.
 
 The general ABAC decision engine remains code-versioned (`builtin-abac-v2`); generic database-authored
 OPA policy/binding tables remain backlog. The narrower classification-access policy above is
@@ -270,6 +279,11 @@ Alembic `0040` extends only the bounded external-service and probe vocabularies 
 cache/delivery profiles, `redis://`/`rediss://` endpoints and authenticated `REDIS_PING` evidence. It
 adds no credential column: profiles continue to persist only mounted-secret references and immutable
 version/test/activation history.
+
+Alembic `0041` adds the three workspace-scoped Policy Book Role rule/assignment/evidence tables,
+forced RLS, append-only rule/event grants, bounded current-assignment and Role-column updates, and a
+post-repair schema fingerprint. Its downgrade is intentionally non-destructive; rollback of
+application code does not erase access-policy evidence.
 
 `EVENT_RETENTION_DAYS` is a target online-retention input, not a deletion switch. Automatic event deletion remains disabled until immutable export has been written and read back from a verified Object-Lock store, Legal Hold precedence and Maker-Checker erasure approval are implemented, and a dedicated least-privilege retention worker is introduced.
 

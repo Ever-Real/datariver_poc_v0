@@ -4,7 +4,8 @@ from datetime import datetime, timedelta
 from types import TracebackType
 from uuid import UUID
 
-from sqlalchemy import and_, delete, func, or_, select, text
+from sqlalchemy import and_, cast, delete, func, or_, select, text
+from sqlalchemy.dialects import postgresql
 from sqlalchemy.exc import DBAPIError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
@@ -38,6 +39,7 @@ from datariver.domain.common import (
     ForbiddenError,
     NotFoundError,
     ValidationError,
+    canonical_json_hash,
     utc_now,
 )
 from datariver.domain.membership_renewal import MembershipRenewalRequest, MembershipRenewalState
@@ -45,6 +47,9 @@ from datariver.infrastructure.db.governance import SqlIdempotencyStore, SqlOutbo
 from datariver.infrastructure.db.models.catalog import AssetProjectionModel
 from datariver.infrastructure.db.models.governance import ChangeRequestModel
 from datariver.infrastructure.db.models.platform import (
+    AccessRoleAssignmentEventModel,
+    AccessRoleAssignmentModel,
+    AccessRoleModel,
     AdminAccessApprovalModel,
     AdminAccessRequestModel,
     DataSystemModel,
@@ -518,6 +523,45 @@ class SqlMembershipAccessRepository(MembershipAccessRepository):
             raise
         if stored_subject_id != subject_id:
             raise ConflictError("The provisioned identity does not match the requested subject.")
+        if role_id is not None:
+            role = (
+                await self._session.scalars(
+                    select(AccessRoleModel).where(
+                        AccessRoleModel.workspace_id == workspace_id,
+                        AccessRoleModel.id == role_id,
+                        AccessRoleModel.active.is_(True),
+                    )
+                )
+            ).one_or_none()
+            membership = (
+                await self._session.scalars(
+                    select(WorkspaceMembershipModel).where(
+                        WorkspaceMembershipModel.workspace_id == workspace_id,
+                        WorkspaceMembershipModel.subject_id == subject_id,
+                    )
+                )
+            ).one_or_none()
+            actor_id = await self._session.scalar(
+                text("SELECT NULLIF(current_setting('app.subject_id', true), '')::uuid")
+            )
+            if role is None or membership is None or not isinstance(actor_id, UUID):
+                raise ConflictError("The provisioned role-assignment evidence is incomplete.")
+            membership_groups = _string_set(membership.attributes, "groups")
+            if membership_groups is None:
+                raise ConflictError("The provisioned role-assignment evidence is incomplete.")
+            role_markers = tuple(
+                group for group in membership_groups if group.startswith("datariver-role-")
+            )
+            await self.record_role_assignment(
+                workspace_id=workspace_id,
+                subject_id=subject_id,
+                role_id=role.id,
+                role_version=role.version,
+                role_marker=role_markers[0] if len(role_markers) == 1 else None,
+                membership_version=membership.version,
+                access_payload_hash=_membership_access_payload_hash(membership),
+                actor_id=actor_id,
+            )
         return ProvisionedWorkspaceUser(
             subject_id=subject_id,
             external_subject=external_subject,
@@ -562,19 +606,28 @@ class SqlMembershipAccessRepository(MembershipAccessRepository):
                 WorkspaceMembershipModel.clearance >= int(Classification.RESTRICTED),
                 func.jsonb_path_exists(
                     WorkspaceMembershipModel.attributes,
-                    '$.groups[*] ? (@ == "security-administrators")',
+                    cast(
+                        '$.groups[*] ? (@ == "security-administrators")',
+                        postgresql.JSONPATH,
+                    ),
                 ),
                 ~func.jsonb_path_exists(
                     WorkspaceMembershipModel.attributes,
-                    '$.groups[*] ? (@ == "service-accounts")',
+                    cast('$.groups[*] ? (@ == "service-accounts")', postgresql.JSONPATH),
                 ),
                 func.jsonb_path_exists(
                     WorkspaceMembershipModel.attributes,
-                    '$.allowed_actions[*] ? (@ == "admin.manage")',
+                    cast(
+                        '$.allowed_actions[*] ? (@ == "admin.manage")',
+                        postgresql.JSONPATH,
+                    ),
                 ),
                 ~func.jsonb_path_exists(
                     WorkspaceMembershipModel.attributes,
-                    '$.denied_actions[*] ? (@ == "admin.manage")',
+                    cast(
+                        '$.denied_actions[*] ? (@ == "admin.manage")',
+                        postgresql.JSONPATH,
+                    ),
                 ),
             )
         )
@@ -583,6 +636,107 @@ class SqlMembershipAccessRepository(MembershipAccessRepository):
                 "At least two active security administrators must remain in the workspace."
             )
         return membership.version
+
+    async def record_role_assignment(
+        self,
+        *,
+        workspace_id: UUID,
+        subject_id: UUID,
+        role_id: UUID | None,
+        role_version: int | None,
+        role_marker: str | None,
+        membership_version: int,
+        access_payload_hash: str,
+        actor_id: UUID,
+    ) -> None:
+        current = (
+            await self._session.scalars(
+                select(AccessRoleAssignmentModel)
+                .where(
+                    AccessRoleAssignmentModel.workspace_id == workspace_id,
+                    AccessRoleAssignmentModel.subject_id == subject_id,
+                )
+                .with_for_update()
+            )
+        ).one_or_none()
+        previous_role_id = current.role_id if current is not None and current.active else None
+        previous_role_version = (
+            current.role_version if current is not None and current.active else None
+        )
+        if role_id is None:
+            if role_marker is not None:
+                raise ValidationError("A Role removal cannot retain a reserved role marker.")
+            if current is None or not current.active:
+                return
+            current.active = False
+            current.membership_version = membership_version
+            current.access_payload_hash = access_payload_hash
+            current.assigned_by = actor_id
+            current.version += 1
+            event_type = "REMOVED"
+        else:
+            if role_version is None:
+                raise ValidationError("A role assignment requires an exact role version.")
+            role = (
+                await self._session.scalars(
+                    select(AccessRoleModel)
+                    .where(
+                        AccessRoleModel.workspace_id == workspace_id,
+                        AccessRoleModel.id == role_id,
+                        AccessRoleModel.version == role_version,
+                        AccessRoleModel.active.is_(True),
+                    )
+                    .with_for_update()
+                )
+            ).one_or_none()
+            if role is None:
+                raise ConflictError("The selected access role changed before assignment.")
+            if role_marker != f"datariver-role-{role.role_key}":
+                raise ConflictError("The membership role marker does not match the selected role.")
+            if (
+                current is not None
+                and current.active
+                and current.role_id == role_id
+                and current.role_version == role_version
+                and current.access_payload_hash == access_payload_hash
+            ):
+                raise ConflictError("The membership already has this exact access role.")
+            event_type = "REASSIGNED" if previous_role_id is not None else "ASSIGNED"
+            if current is None:
+                current = AccessRoleAssignmentModel(
+                    workspace_id=workspace_id,
+                    subject_id=subject_id,
+                    role_id=role_id,
+                    role_version=role_version,
+                    membership_version=membership_version,
+                    access_payload_hash=access_payload_hash,
+                    assigned_by=actor_id,
+                    active=True,
+                )
+                self._session.add(current)
+            else:
+                current.role_id = role_id
+                current.role_version = role_version
+                current.membership_version = membership_version
+                current.access_payload_hash = access_payload_hash
+                current.assigned_by = actor_id
+                current.active = True
+                current.version += 1
+        self._session.add(
+            AccessRoleAssignmentEventModel(
+                workspace_id=workspace_id,
+                subject_id=subject_id,
+                event_type=event_type,
+                previous_role_id=previous_role_id,
+                previous_role_version=previous_role_version,
+                role_id=role_id,
+                role_version=role_version,
+                membership_version=membership_version,
+                access_payload_hash=access_payload_hash,
+                actor_id=actor_id,
+            )
+        )
+        await self._session.flush()
 
     async def assert_current_version(self, command: MembershipAccessUpdate) -> None:
         await self._membership_for_update(command)
@@ -915,6 +1069,35 @@ def _string_set(document: object, key: str) -> set[str] | None:
     if not isinstance(value, list) or any(not isinstance(item, str) for item in value):
         return None
     return set(value)
+
+
+def _membership_access_payload_hash(membership: WorkspaceMembershipModel) -> str:
+    groups = _string_set(membership.attributes, "groups")
+    allowed = _string_set(membership.attributes, "allowed_actions")
+    denied = _string_set(membership.attributes, "denied_actions")
+    system_ids = _string_set(membership.attributes, "allowed_system_ids")
+    domain_ids = _string_set(membership.attributes, "allowed_domain_ids")
+    if (
+        groups is None
+        or allowed is None
+        or denied is None
+        or system_ids is None
+        or domain_ids is None
+    ):
+        raise ConflictError("The stored workspace membership access is invalid.")
+    try:
+        document: dict[str, object] = {
+            "active": membership.active,
+            "clearance": Classification(membership.clearance).name,
+            "groups": sorted(groups),
+            "allowed_actions": sorted(Action(value).value for value in allowed),
+            "denied_actions": sorted(Action(value).value for value in denied),
+            "allowed_system_ids": sorted(str(UUID(value)) for value in system_ids),
+            "allowed_domain_ids": sorted(str(UUID(value)) for value in domain_ids),
+        }
+    except (TypeError, ValueError) as error:
+        raise ConflictError("The stored workspace membership access is invalid.") from error
+    return canonical_json_hash(document)
 
 
 def _membership_summary(

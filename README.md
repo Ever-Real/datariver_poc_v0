@@ -557,7 +557,7 @@ environment's secrets or volumes.
 3. Validate the selected Compose overlay with `docker compose ... config --quiet`, then bring up
    the external Redis and S3 connectors, then PostgreSQL and the selected local Keycloak/APISIX
    overlays. Apply `alembic upgrade head` through the migration service before API/workers;
-   readiness requires revision `0040`.
+   readiness requires revision `0041`.
 4. Start the API, relay, workers and web service using either the container profile or the
    host-development commands below. Check `/api/v1/health/live`, `/api/v1/health/ready`,
    `/api/v1/capabilities` and the APISIX/Vite proxy before using application workflows.
@@ -568,6 +568,22 @@ environment's secrets or volumes.
    hardware-key enforcement remains a production-sensitive-operation gate.
 
 ### Administrator system configuration
+
+Policy Book/RBAC, retention execution and Admin UI completion use three explicit approval gates.
+The current Phase 1 adds Role-version No/Partial/Full data rules plus normalized assignment evidence;
+it does not start the retention executor or silently enable unfinished Admin controls. See the
+[Policy Book PRD](docs/27_POLICY_BOOK_ADMIN_GOVERNANCE_PRD.md),
+[execution checklist](docs/28_POLICY_BOOK_EXECUTION_CHECKLIST.md) and
+[ADR-0036](docs/adr/0036-policy-book-rbac-and-admin-approval-gates.md). On a new or upgraded database,
+run `alembic upgrade head` and verify `/api/v1/health/ready` reports required/current revision
+`0041`. Legacy Role markers remain usable by the existing ABAC document but are not normalized audit
+evidence until an Admin explicitly reassigns the Role. Manual/fallback edits cannot submit a
+`datariver-role-*` marker; the dedicated assignment path matches it to the locked Role row and
+rejects exact same Role/version/canonical-access no-ops even when only the optimistic expected version
+changes. Until the Phase 3 editor guard is approved, remove a
+Role through that dedicated path before making a generic access-document edit. Migration `0041`
+also fails closed when a same-name CHECK/FK/index or forced-RLS policy has a non-canonical
+definition; the executed evidence and the remaining Windows/WSL gate are recorded in the checklist.
 
 The profile menu presents grouped, server-authorized administration entries. **Accounts & access**
 contains Users, Systems, server-managed Role definitions/assignment and the applicable
@@ -1057,7 +1073,7 @@ docker compose -f compose.yaml build --pull
 ```
 
 애플리케이션을 올리기 전에 권한이 분리된 `migrate` 서비스로 Alembic을 실행한다. 이
-릴리스의 필수 revision은 `0040`이다. 호스트의 임의 DB 계정으로 `alembic`을 직접 실행하지
+릴리스의 필수 revision은 `0041`이다. 호스트의 임의 DB 계정으로 `alembic`을 직접 실행하지
 않는다.
 
 ```bash
@@ -1066,7 +1082,7 @@ docker compose -f compose.yaml run --rm migrate \
   /app/.venv/bin/alembic -c backend/alembic.ini current
 ```
 
-두 번째 명령의 현재 revision이 `0040 (head)`인지 확인한다. 마이그레이션 실패 시 서비스를
+두 번째 명령의 현재 revision이 `0041 (head)`인지 확인한다. 마이그레이션 실패 시 서비스를
 재기동하거나 downgrade를 추측 실행하지 말고, 로그와 DB 상태를 보존한 채 배포를 중단한다.
 
 ### 3. API·Worker·Web 재기동과 상태 확인

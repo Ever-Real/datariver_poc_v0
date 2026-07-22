@@ -92,6 +92,23 @@ Tag/Term/Domain only creates typed intent and never calls a provider from the br
   never deletion authority. Automatic deletion and partition detach/drop remain disabled until the
   governed retention gates in ADR-0010 are implemented and verified.
 
+## Policy Book Role rules
+
+- Role-version data rules express No/Partial/Full access, typed partial treatment, residency and
+  processing-purpose allowlists. Missing, inconsistent or unavailable-treatment state denies.
+- The policy-book result can only add a deny to existing workspace/action/clearance/System/Domain,
+  classification-policy and RLS decisions. A Role marker in membership JSON is not authority.
+- Current assignment and append-only event evidence bind subject, positive Role/version, membership
+  version, canonical access hash and administrator actor. Rule scope arrays are normalized before
+  hashing and DB constraints restrict item shape/vocabulary. The app cannot delete rule or event rows.
+- Reserved `datariver-role-*` membership markers are accepted only from the server-owned Role
+  assignment path. Manual and fallback access documents reject them so marker display state cannot
+  diverge from normalized assignment/removal evidence. The repository compares the marker with the
+  locked Role row, and exact same Role/version/hash reassignment is rejected instead of producing
+  false `REASSIGNED` evidence.
+- No endpoint currently treats a Role rule as permission to fetch arbitrary source-system values.
+  A future Partial path must use an attested adapter and prove that plaintext is not returned.
+
 ## Query and LLM safety
 
 - LLM output is parsed into strict versioned proposal schemas with size/depth limits.

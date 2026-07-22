@@ -65,6 +65,9 @@ from datariver.infrastructure.db.models.knowledge import (
     ValidationResultModel,
 )
 from datariver.infrastructure.db.models.platform import (
+    AccessRoleAssignmentEventModel,
+    AccessRoleAssignmentModel,
+    AccessRoleDataRuleModel,
     AccessRoleModel,
     AdminAccessApprovalModel,
     AdminAccessRequestModel,
@@ -95,6 +98,9 @@ from datariver.infrastructure.db.models.sharing import (
 )
 
 __all__ = [
+    "AccessRoleAssignmentEventModel",
+    "AccessRoleAssignmentModel",
+    "AccessRoleDataRuleModel",
     "AccessRoleModel",
     "AdminAccessApprovalModel",
     "AdminAccessRequestModel",

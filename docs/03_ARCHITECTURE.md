@@ -55,8 +55,8 @@ an environment may claim HA.
 
 | Context | Responsibility | Canonical data |
 |---|---|---|
-| Platform & Identity | workspaces and external IdP-subject mapping | workspace, subject reference, membership |
-| Authorization | ABAC resources, policies, bindings and decision evidence | policy and decision log |
+| Platform & Identity | workspaces, external IdP-subject mapping and normalized Role assignment evidence | workspace, subject reference, membership, Role assignment/event |
+| Authorization | ABAC resources, Role-version Policy Book rules, policies, bindings and decision evidence | Role data rule, policy and decision log |
 | Catalog Facade | authorized index plus DataHub search/detail/lineage projection and snapshot-bound managed export | projection/cursor/export receipt; applied metadata remains in DataHub |
 | Governance | registration and change-request aggregate/state machine | requests, approvals, transitions, audit |
 | Integration | connections, job intents, outbox/inbox, retry/DLQ/reconcile | durable job and delivery state |
@@ -79,6 +79,8 @@ The API gateway is a deployment boundary, not an authorization context. It valid
   and archive verification receipts. Archive objects are evidence bytes referenced by those
   receipts; provider metadata does not activate deletion.
 - External identifiers such as DataHub URNs map to internal UUIDs and are never primary keys.
+- Policy Book Role rules add deny-capable No/Partial/Full, residency and purpose checks. They never
+  replace membership ABAC or RLS; missing rules and unavailable partial-treatment adapters deny.
 
 ## Retention, Legal Hold and immutable archive boundary
 

@@ -29,6 +29,8 @@
 | 24 | [Low-resource multi-architecture deployment PRD](24_LOW_RESOURCE_MULTIARCH_DEPLOYMENT_PRD.md) | arm64/amd64 parity, dependency placement, configuration and migration acceptance | Active |
 | 25 | [Low-resource multi-architecture execution checklist](25_LOW_RESOURCE_MULTIARCH_EXECUTION_CHECKLIST.md) | phased implementation and target-environment evidence | Active |
 | 26 | [Mac arm64 to WSL amd64 migration runbook](26_MAC_TO_WSL_MIGRATION_RUNBOOK.md) | exact-source/image transfer, object reconciliation, logical restore and rollback | Active target gate |
+| 27 | [Policy Book and Admin governance PRD](27_POLICY_BOOK_ADMIN_GOVERNANCE_PRD.md) | access levels, assignment evidence, retention and approval-gated Admin completion | Active; Phase 1 |
+| 28 | [Policy Book execution checklist](28_POLICY_BOOK_EXECUTION_CHECKLIST.md) | phase gates and exhaustive Admin function inventory | Active; Phase 1 |
 
 Independent review records: [Data Architect](reviews/2026-07-14_DATA_ARCHITECT_REVIEW.md) and [Data Engineer/SRE](reviews/2026-07-14_DATA_ENGINEER_REVIEW.md).
 
@@ -51,6 +53,8 @@ Current external infrastructure connector decision: [external Redis and S3 conne
 Current multi-architecture release decision: [runtime configuration and release bundles](adr/0034-multi-architecture-runtime-configuration-and-release-bundles.md).
 
 Current low-resource client and preparation Chat decision: [bounded client state and preparation Chat provider](adr/0035-bounded-client-state-and-preparation-chat-provider.md).
+
+Current Policy Book decision: [normalized RBAC rules and Admin approval gates](adr/0036-policy-book-rbac-and-admin-approval-gates.md).
 
 ## Change control
 

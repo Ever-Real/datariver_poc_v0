@@ -786,6 +786,12 @@ class MembershipAccessDocumentRequest(BaseModel):
     allowed_system_ids: list[UUID] = Field(default_factory=list, max_length=1000)
     allowed_domain_ids: list[UUID] = Field(default_factory=list, max_length=1000)
 
+    @model_validator(mode="after")
+    def reject_server_managed_role_markers(self) -> MembershipAccessDocumentRequest:
+        if any(group.startswith("datariver-role-") for group in self.groups):
+            raise ValueError("Manual access documents cannot contain a reserved role marker.")
+        return self
+
 
 class MembershipAccessDocumentResponse(BaseModel):
     active: bool
@@ -859,6 +865,38 @@ class MembershipRenewalListResponse(BaseModel):
     items: list[MembershipRenewalResponse]
 
 
+class AccessRoleDataRuleRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    classification: Literal["PUBLIC", "INTERNAL", "CONFIDENTIAL", "RESTRICTED"]
+    access_level: Literal["NO_ACCESS", "PARTIAL_ACCESS", "FULL_ACCESS"]
+    partial_treatment: Literal["MASK", "REDACT", "TOKENIZE"] | None = None
+    allowed_residency_regions: list[str] = Field(default_factory=list, max_length=50)
+    allowed_processing_purposes: list[
+        Literal["METADATA_READ", "DATA_READ", "EXPORT", "ANALYTICS", "MODEL_TRAINING"]
+    ] = Field(default_factory=list, max_length=20)
+
+    @model_validator(mode="after")
+    def validate_rule_shape(self) -> AccessRoleDataRuleRequest:
+        regions = [region.strip().upper() for region in self.allowed_residency_regions]
+        if len(regions) != len(set(regions)) or any(
+            re.fullmatch(r"[A-Z0-9][A-Z0-9._:-]{0,63}", region) is None for region in regions
+        ):
+            raise ValueError("Residency regions must be unique bounded uppercase identifiers.")
+        if len(self.allowed_processing_purposes) != len(set(self.allowed_processing_purposes)):
+            raise ValueError("Processing purposes must be unique.")
+        if self.access_level == "NO_ACCESS":
+            if self.partial_treatment is not None or regions or self.allowed_processing_purposes:
+                raise ValueError("No-access rules cannot declare treatment or processing scope.")
+        else:
+            if not regions or not self.allowed_processing_purposes:
+                raise ValueError("Granted rules require residency and processing scope.")
+            if (self.access_level == "PARTIAL_ACCESS") != (self.partial_treatment is not None):
+                raise ValueError("Exactly partial access requires a treatment.")
+        self.allowed_residency_regions = regions
+        return self
+
+
 class AccessRoleWriteRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -871,7 +909,15 @@ class AccessRoleWriteRequest(BaseModel):
     denied_actions: list[Action] = Field(default_factory=list, max_length=100)
     allowed_system_ids: list[UUID] = Field(default_factory=list, max_length=1000)
     allowed_domain_ids: list[UUID] = Field(default_factory=list, max_length=1000)
+    data_access_rules: list[AccessRoleDataRuleRequest] = Field(default_factory=list, max_length=4)
     active: bool = True
+
+    @field_validator("data_access_rules", mode="before")
+    @classmethod
+    def reject_null_data_access_rules(cls, value: object) -> object:
+        if value is None:
+            raise ValueError("data_access_rules must be omitted or supplied as an array.")
+        return value
 
     @model_validator(mode="after")
     def validate_access_document(self) -> AccessRoleWriteRequest:
@@ -891,6 +937,9 @@ class AccessRoleWriteRequest(BaseModel):
             self.allowed_domain_ids
         ) != len(set(self.allowed_domain_ids)):
             raise ValueError("Role resource scopes must be unique.")
+        classifications = [rule.classification for rule in self.data_access_rules]
+        if len(classifications) != len(set(classifications)):
+            raise ValueError("A role can contain only one data rule per classification.")
         return self
 
 
@@ -905,6 +954,7 @@ class AccessRoleResponse(BaseModel):
     denied_actions: list[Action]
     allowed_system_ids: list[UUID]
     allowed_domain_ids: list[UUID]
+    data_access_rules: list[AccessRoleDataRuleRequest]
     active: bool
     assigned_count: int = Field(ge=0)
     version: int = Field(ge=1)

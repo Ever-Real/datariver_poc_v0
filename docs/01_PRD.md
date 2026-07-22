@@ -26,6 +26,10 @@ DataRiver gives data consumers, stewards, engineers, and governance operators on
 - `FR-KG-001`: define versioned ontology, import/extract proposals, edit changesets, validate, review, publish immutable releases, rebuild projections, compare, deprecate, and rollback active pointers.
 - `FR-SHR-001`: publish release-pinned JSON-LD/edge-list exports and typed analysis-query templates as API products with grants and quotas.
 - `FR-ADM-001`: manage workspaces, subject attributes, resource attributes, policies, connections by secret reference, retention, and audit export.
+- `FR-ADM-002`: let only eligible human security administrators govern versioned Role data-access
+  levels, partial treatments, residency and processing-purpose scope with exact assignment evidence.
+- `FR-RET-002`: execute retention only through an approval-gated, least-privilege, hold-aware,
+  archive-read-back workflow; policy approval alone never authorizes deletion.
 - `FR-SEED-001`: install or remove a deterministic deep semiconductor value-chain pack only by explicit opt-in.
 
 ## Non-functional requirements

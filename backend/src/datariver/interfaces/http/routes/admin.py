@@ -8,7 +8,7 @@ from uuid import UUID
 
 import yaml  # type: ignore[import-untyped]
 from fastapi import APIRouter, Header, Query, Request, Response
-from sqlalchemy import func, select
+from sqlalchemy import func, select, text, tuple_
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from datariver.application.dto import MembershipRenewalRecord
@@ -33,14 +33,25 @@ from datariver.domain.common import (
     canonical_json_hash,
     utc_now,
 )
+from datariver.domain.data_access import (
+    DataAccessLevel,
+    DataProcessingPurpose,
+    PartialAccessTreatment,
+    RoleDataAccessRule,
+)
 from datariver.domain.membership_renewal import (
     MembershipRenewalDecision,
     MembershipRenewalState,
 )
-from datariver.infrastructure.db.admin_access import SqlAdminAccessUnitOfWork
+from datariver.infrastructure.db.admin_access import (
+    SqlAdminAccessUnitOfWork,
+    SqlMembershipAccessRepository,
+)
 from datariver.infrastructure.db.authz import SqlDecisionWriter
 from datariver.infrastructure.db.governance import SqlOutboxWriter
 from datariver.infrastructure.db.models.platform import (
+    AccessRoleAssignmentModel,
+    AccessRoleDataRuleModel,
     AccessRoleModel,
     ExternalServiceProfileModel,
     ExternalServiceProfileVersionModel,
@@ -57,6 +68,7 @@ from datariver.interfaces.http.presenters import (
     workspace_membership_summary_response,
 )
 from datariver.interfaces.http.schemas import (
+    AccessRoleDataRuleRequest,
     AccessRoleListResponse,
     AccessRoleResponse,
     AccessRoleWriteRequest,
@@ -604,7 +616,47 @@ def _role_marker(role_key: str) -> str:
     return f"datariver-role-{role_key}"
 
 
-def _role_document(payload: AccessRoleWriteRequest) -> dict[str, object]:
+def _role_mutation_event(
+    *,
+    event_type: str,
+    role: AccessRoleModel,
+    actor_id: UUID,
+    policy_decision_id: UUID,
+    payload_hash: str | None = None,
+) -> DomainEvent:
+    payload: dict[str, object] = {
+        "actor_id": str(actor_id),
+        "policy_decision_id": str(policy_decision_id),
+        "assurance": "HARDWARE_WEBAUTHN",
+        "role_key": role.role_key,
+        "version": role.version,
+    }
+    if payload_hash is not None:
+        payload["payload_hash"] = payload_hash
+    return DomainEvent.create(
+        event_type=event_type,
+        aggregate_type="access_role",
+        aggregate_id=role.id,
+        workspace_id=role.workspace_id,
+        payload=payload,
+    )
+
+
+def _effective_role_data_rules(
+    payload: AccessRoleWriteRequest,
+    *,
+    current: tuple[AccessRoleDataRuleRequest, ...],
+) -> tuple[AccessRoleDataRuleRequest, ...]:
+    if "data_access_rules" not in payload.model_fields_set:
+        return current
+    return tuple(payload.data_access_rules)
+
+
+def _role_document(
+    payload: AccessRoleWriteRequest,
+    *,
+    data_access_rules: tuple[AccessRoleDataRuleRequest, ...],
+) -> dict[str, object]:
     return {
         "role_key": payload.role_key,
         "name": payload.name.strip(),
@@ -615,11 +667,17 @@ def _role_document(payload: AccessRoleWriteRequest) -> dict[str, object]:
         "denied_actions": sorted(action.value for action in payload.denied_actions),
         "allowed_system_ids": sorted(str(value) for value in payload.allowed_system_ids),
         "allowed_domain_ids": sorted(str(value) for value in payload.allowed_domain_ids),
+        "data_access_rules": sorted(
+            (_canonical_data_rule_document(rule) for rule in data_access_rules),
+            key=lambda rule: str(rule["classification"]),
+        ),
         "active": payload.active,
     }
 
 
-def _stored_role_document(role: AccessRoleModel) -> dict[str, object]:
+def _stored_role_document(
+    role: AccessRoleModel, rules: tuple[AccessRoleDataRuleModel, ...] = ()
+) -> dict[str, object]:
     return {
         "role_key": role.role_key,
         "name": role.name,
@@ -630,6 +688,10 @@ def _stored_role_document(role: AccessRoleModel) -> dict[str, object]:
         "denied_actions": sorted(role.denied_actions),
         "allowed_system_ids": sorted(role.allowed_system_ids),
         "allowed_domain_ids": sorted(role.allowed_domain_ids),
+        "data_access_rules": sorted(
+            (_stored_data_rule_document(rule) for rule in rules),
+            key=lambda rule: str(rule["classification"]),
+        ),
         "active": role.active,
     }
 
@@ -638,21 +700,120 @@ async def _role_assigned_count(
     session: AsyncSession,
     *,
     workspace_id: UUID,
+    role_id: UUID,
     role_key: str,
 ) -> int:
     marker = _role_marker(role_key)
-    count = await session.scalar(
-        select(func.count())
-        .select_from(WorkspaceMembershipModel)
+    assigned_subjects = (
+        select(WorkspaceMembershipModel.subject_id)
         .where(
             WorkspaceMembershipModel.workspace_id == workspace_id,
             WorkspaceMembershipModel.attributes["groups"].contains([marker]),
         )
+        .union(
+            select(AccessRoleAssignmentModel.subject_id).where(
+                AccessRoleAssignmentModel.workspace_id == workspace_id,
+                AccessRoleAssignmentModel.role_id == role_id,
+                AccessRoleAssignmentModel.active.is_(True),
+            )
+        )
     )
+    count = await session.scalar(select(func.count()).select_from(assigned_subjects.subquery()))
     return int(count or 0)
 
 
-def _role_response(role: AccessRoleModel, *, assigned_count: int) -> AccessRoleResponse:
+async def _role_assigned_counts(session: AsyncSession, *, workspace_id: UUID) -> dict[str, int]:
+    rows = (
+        await session.execute(
+            text(
+                """
+                WITH assigned AS (
+                    SELECT substring(marker.value FROM 16) AS role_key,
+                        membership.subject_id
+                    FROM iam.workspace_memberships AS membership
+                    CROSS JOIN LATERAL jsonb_array_elements_text(
+                        COALESCE(membership.attributes -> 'groups', '[]'::jsonb)
+                    ) AS marker(value)
+                    WHERE membership.workspace_id = :workspace_id
+                      AND marker.value LIKE 'datariver-role-%'
+                    UNION
+                    SELECT role.role_key, assignment.subject_id
+                    FROM iam.access_role_assignments AS assignment
+                    JOIN iam.access_roles AS role
+                      ON role.workspace_id = assignment.workspace_id
+                     AND role.id = assignment.role_id
+                    WHERE assignment.workspace_id = :workspace_id
+                      AND assignment.active IS TRUE
+                )
+                SELECT role_key, count(*) AS assigned_count
+                FROM assigned
+                GROUP BY role_key
+                """
+            ),
+            {"workspace_id": workspace_id},
+        )
+    ).all()
+    return {str(role_key): int(count) for role_key, count in rows}
+
+
+def _stored_data_rule_document(rule: AccessRoleDataRuleModel) -> dict[str, object]:
+    return {
+        "classification": Classification(rule.classification).name,
+        "access_level": rule.access_level,
+        "partial_treatment": rule.partial_treatment,
+        "allowed_residency_regions": sorted(rule.allowed_residency_regions),
+        "allowed_processing_purposes": sorted(rule.allowed_processing_purposes),
+    }
+
+
+def _canonical_data_rule_document(rule: AccessRoleDataRuleRequest) -> dict[str, object]:
+    return RoleDataAccessRule(
+        classification=Classification[rule.classification],
+        access_level=DataAccessLevel(rule.access_level),
+        partial_treatment=(
+            PartialAccessTreatment(rule.partial_treatment)
+            if rule.partial_treatment is not None
+            else None
+        ),
+        allowed_residency_regions=tuple(rule.allowed_residency_regions),
+        allowed_processing_purposes=frozenset(
+            DataProcessingPurpose(value) for value in rule.allowed_processing_purposes
+        ),
+    ).payload_document()
+
+
+def _data_rule_models(
+    *,
+    role: AccessRoleModel,
+    rules: tuple[AccessRoleDataRuleRequest, ...],
+    created_by: UUID,
+) -> list[AccessRoleDataRuleModel]:
+    models: list[AccessRoleDataRuleModel] = []
+    for rule in rules:
+        document = _canonical_data_rule_document(rule)
+        models.append(
+            AccessRoleDataRuleModel(
+                workspace_id=role.workspace_id,
+                role_id=role.id,
+                role_version=role.version,
+                classification=int(Classification[rule.classification]),
+                access_level=rule.access_level,
+                partial_treatment=rule.partial_treatment,
+                allowed_residency_regions=sorted(rule.allowed_residency_regions),
+                allowed_processing_purposes=sorted(rule.allowed_processing_purposes),
+                payload_hash=canonical_json_hash(document),
+                created_by=created_by,
+            )
+        )
+    return models
+
+
+def _role_response(
+    role: AccessRoleModel,
+    *,
+    assigned_count: int,
+    rules: tuple[AccessRoleDataRuleModel, ...] = (),
+) -> AccessRoleResponse:
     try:
         return AccessRoleResponse(
             id=role.id,
@@ -665,6 +826,10 @@ def _role_response(role: AccessRoleModel, *, assigned_count: int) -> AccessRoleR
             denied_actions=[Action(value) for value in role.denied_actions],
             allowed_system_ids=[UUID(value) for value in role.allowed_system_ids],
             allowed_domain_ids=[UUID(value) for value in role.allowed_domain_ids],
+            data_access_rules=[
+                AccessRoleDataRuleRequest.model_validate(_stored_data_rule_document(rule))
+                for rule in sorted(rules, key=lambda value: value.classification)
+            ],
             active=role.active,
             assigned_count=assigned_count,
             version=role.version,
@@ -1074,14 +1239,34 @@ async def list_access_roles(
                     .limit(100)
                 )
             ).all()
+            role_ids = [role.id for role in roles]
+            current_role_versions = [(role.id, role.version) for role in roles]
+            stored_rules = (
+                (
+                    await session.scalars(
+                        select(AccessRoleDataRuleModel).where(
+                            AccessRoleDataRuleModel.workspace_id == context.workspace_id,
+                            tuple_(
+                                AccessRoleDataRuleModel.role_id,
+                                AccessRoleDataRuleModel.role_version,
+                            ).in_(current_role_versions),
+                        )
+                    )
+                ).all()
+                if role_ids
+                else []
+            )
+            rules_by_role_version: dict[tuple[UUID, int], list[AccessRoleDataRuleModel]] = {}
+            for rule in stored_rules:
+                rules_by_role_version.setdefault((rule.role_id, rule.role_version), []).append(rule)
+            assigned_counts = await _role_assigned_counts(
+                session, workspace_id=context.workspace_id
+            )
             items = [
                 _role_response(
                     role,
-                    assigned_count=await _role_assigned_count(
-                        session,
-                        workspace_id=context.workspace_id,
-                        role_key=role.role_key,
-                    ),
+                    assigned_count=assigned_counts.get(role.role_key, 0),
+                    rules=tuple(rules_by_role_version.get((role.id, role.version), [])),
                 )
                 for role in roles
             ]
@@ -1094,16 +1279,16 @@ async def create_access_role(
     request: Request,
     context: ContextDep,
 ) -> AccessRoleResponse:
-    admin_context = await _service(request).get_admin_read_context(
+    policy_decision_id = await _service(request).authorize_access_role_mutation(
         workspace_id=context.workspace_id,
+        role_id=context.workspace_id,
         subject=context.subject,
         environment=context.environment,
         request_id=context.request_id,
     )
-    if "MEMBERSHIP_ACCESS_UPDATE" not in admin_context.allowed_operations:
-        raise ForbiddenError("Access-role creation requires current hardware assurance.")
     if not payload.name.strip():
         raise ValidationError("Access-role name must not be blank.")
+    requested_rules = _effective_role_data_rules(payload, current=())
     container = get_container(request)
     async with container.database.session_factory() as session:
         async with session.begin():
@@ -1111,6 +1296,10 @@ async def create_access_role(
                 session,
                 workspace_id=context.workspace_id,
                 subject_id=context.subject.subject_id,
+            )
+            await SqlMembershipAccessRepository(session).assert_eligible_human_administrators(
+                workspace_id=context.workspace_id,
+                subject_ids=frozenset({context.subject.subject_id}),
             )
             count = await session.scalar(
                 select(func.count())
@@ -1145,23 +1334,39 @@ async def create_access_role(
             )
             session.add(role)
             await session.flush()
+            session.add_all(
+                _data_rule_models(
+                    role=role,
+                    rules=requested_rules,
+                    created_by=context.subject.subject_id,
+                )
+            )
             await SqlOutboxWriter(session).add_events(
                 [
-                    DomainEvent.create(
+                    _role_mutation_event(
                         event_type="iam.access_role.created.v1",
-                        aggregate_type="access_role",
-                        aggregate_id=role.id,
-                        workspace_id=context.workspace_id,
-                        payload={
-                            "actor_id": str(context.subject.subject_id),
-                            "payload_hash": canonical_json_hash(_role_document(payload)),
-                            "role_key": role.role_key,
-                            "version": role.version,
-                        },
+                        role=role,
+                        actor_id=context.subject.subject_id,
+                        policy_decision_id=policy_decision_id,
+                        payload_hash=canonical_json_hash(
+                            _role_document(payload, data_access_rules=requested_rules)
+                        ),
                     )
                 ]
             )
-            result = _role_response(role, assigned_count=0)
+            await session.flush()
+            rules = tuple(
+                (
+                    await session.scalars(
+                        select(AccessRoleDataRuleModel).where(
+                            AccessRoleDataRuleModel.workspace_id == context.workspace_id,
+                            AccessRoleDataRuleModel.role_id == role.id,
+                            AccessRoleDataRuleModel.role_version == role.version,
+                        )
+                    )
+                ).all()
+            )
+            result = _role_response(role, assigned_count=0, rules=rules)
     return result
 
 
@@ -1174,14 +1379,13 @@ async def update_access_role(
     context: ContextDep,
     if_match: Annotated[str, Header(alias="If-Match", max_length=100)],
 ) -> AccessRoleResponse:
-    admin_context = await _service(request).get_admin_read_context(
+    policy_decision_id = await _service(request).authorize_access_role_mutation(
         workspace_id=context.workspace_id,
+        role_id=role_id,
         subject=context.subject,
         environment=context.environment,
         request_id=context.request_id,
     )
-    if "MEMBERSHIP_ACCESS_UPDATE" not in admin_context.allowed_operations:
-        raise ForbiddenError("Access-role updates require current hardware assurance.")
     if not payload.name.strip():
         raise ValidationError("Access-role name must not be blank.")
     expected_version = _expected_version(if_match)
@@ -1192,6 +1396,10 @@ async def update_access_role(
                 session,
                 workspace_id=context.workspace_id,
                 subject_id=context.subject.subject_id,
+            )
+            await SqlMembershipAccessRepository(session).assert_eligible_human_administrators(
+                workspace_id=context.workspace_id,
+                subject_ids=frozenset({context.subject.subject_id}),
             )
             role = (
                 await session.scalars(
@@ -1212,7 +1420,27 @@ async def update_access_role(
             assigned_count = await _role_assigned_count(
                 session,
                 workspace_id=context.workspace_id,
+                role_id=role.id,
                 role_key=role.role_key,
+            )
+            current_rules = tuple(
+                (
+                    await session.scalars(
+                        select(AccessRoleDataRuleModel).where(
+                            AccessRoleDataRuleModel.workspace_id == context.workspace_id,
+                            AccessRoleDataRuleModel.role_id == role.id,
+                            AccessRoleDataRuleModel.role_version == role.version,
+                        )
+                    )
+                ).all()
+            )
+            current_rule_requests = tuple(
+                AccessRoleDataRuleRequest.model_validate(_stored_data_rule_document(rule))
+                for rule in sorted(current_rules, key=lambda value: value.classification)
+            )
+            effective_rules = _effective_role_data_rules(
+                payload,
+                current=current_rule_requests,
             )
             security_keys = {
                 "clearance",
@@ -1222,9 +1450,10 @@ async def update_access_role(
                 "allowed_system_ids",
                 "allowed_domain_ids",
                 "active",
+                "data_access_rules",
             }
-            current_document = _stored_role_document(role)
-            next_document = _role_document(payload)
+            current_document = _stored_role_document(role, current_rules)
+            next_document = _role_document(payload, data_access_rules=effective_rules)
             if assigned_count and any(
                 current_document[key] != next_document[key] for key in security_keys
             ):
@@ -1234,23 +1463,24 @@ async def update_access_role(
             _apply_role_payload(role, payload=payload, updated_by=context.subject.subject_id)
             role.version += 1
             await session.flush()
+            next_rules = _data_rule_models(
+                role=role,
+                rules=effective_rules,
+                created_by=context.subject.subject_id,
+            )
+            session.add_all(next_rules)
             await SqlOutboxWriter(session).add_events(
                 [
-                    DomainEvent.create(
+                    _role_mutation_event(
                         event_type="iam.access_role.updated.v1",
-                        aggregate_type="access_role",
-                        aggregate_id=role.id,
-                        workspace_id=context.workspace_id,
-                        payload={
-                            "actor_id": str(context.subject.subject_id),
-                            "payload_hash": canonical_json_hash(next_document),
-                            "role_key": role.role_key,
-                            "version": role.version,
-                        },
+                        role=role,
+                        actor_id=context.subject.subject_id,
+                        policy_decision_id=policy_decision_id,
+                        payload_hash=canonical_json_hash(next_document),
                     )
                 ]
             )
-            result = _role_response(role, assigned_count=assigned_count)
+            result = _role_response(role, assigned_count=assigned_count, rules=tuple(next_rules))
     response.headers["ETag"] = f'"{result.version}"'
     return result
 
@@ -1263,14 +1493,13 @@ async def deactivate_access_role(
     context: ContextDep,
     if_match: Annotated[str, Header(alias="If-Match", max_length=100)],
 ) -> AccessRoleResponse:
-    admin_context = await _service(request).get_admin_read_context(
+    policy_decision_id = await _service(request).authorize_access_role_mutation(
         workspace_id=context.workspace_id,
+        role_id=role_id,
         subject=context.subject,
         environment=context.environment,
         request_id=context.request_id,
     )
-    if "MEMBERSHIP_ACCESS_UPDATE" not in admin_context.allowed_operations:
-        raise ForbiddenError("Access-role deactivation requires current hardware assurance.")
     expected_version = _expected_version(if_match)
     container = get_container(request)
     async with container.database.session_factory() as session:
@@ -1279,6 +1508,10 @@ async def deactivate_access_role(
                 session,
                 workspace_id=context.workspace_id,
                 subject_id=context.subject.subject_id,
+            )
+            await SqlMembershipAccessRepository(session).assert_eligible_human_administrators(
+                workspace_id=context.workspace_id,
+                subject_ids=frozenset({context.subject.subject_id}),
             )
             role = (
                 await session.scalars(
@@ -1297,6 +1530,7 @@ async def deactivate_access_role(
             assigned_count = await _role_assigned_count(
                 session,
                 workspace_id=context.workspace_id,
+                role_id=role.id,
                 role_key=role.role_key,
             )
             if assigned_count:
@@ -1305,22 +1539,44 @@ async def deactivate_access_role(
             role.updated_by = context.subject.subject_id
             role.version += 1
             await session.flush()
+            previous_rules = tuple(
+                (
+                    await session.scalars(
+                        select(AccessRoleDataRuleModel).where(
+                            AccessRoleDataRuleModel.workspace_id == context.workspace_id,
+                            AccessRoleDataRuleModel.role_id == role.id,
+                            AccessRoleDataRuleModel.role_version == role.version - 1,
+                        )
+                    )
+                ).all()
+            )
+            copied_rules = [
+                AccessRoleDataRuleModel(
+                    workspace_id=rule.workspace_id,
+                    role_id=rule.role_id,
+                    role_version=role.version,
+                    classification=rule.classification,
+                    access_level=rule.access_level,
+                    partial_treatment=rule.partial_treatment,
+                    allowed_residency_regions=rule.allowed_residency_regions,
+                    allowed_processing_purposes=rule.allowed_processing_purposes,
+                    payload_hash=rule.payload_hash,
+                    created_by=context.subject.subject_id,
+                )
+                for rule in previous_rules
+            ]
+            session.add_all(copied_rules)
             await SqlOutboxWriter(session).add_events(
                 [
-                    DomainEvent.create(
+                    _role_mutation_event(
                         event_type="iam.access_role.deactivated.v1",
-                        aggregate_type="access_role",
-                        aggregate_id=role.id,
-                        workspace_id=context.workspace_id,
-                        payload={
-                            "actor_id": str(context.subject.subject_id),
-                            "role_key": role.role_key,
-                            "version": role.version,
-                        },
+                        role=role,
+                        actor_id=context.subject.subject_id,
+                        policy_decision_id=policy_decision_id,
                     )
                 ]
             )
-            result = _role_response(role, assigned_count=0)
+            result = _role_response(role, assigned_count=0, rules=tuple(copied_rules))
     response.headers["ETag"] = f'"{result.version}"'
     return result
 
@@ -2130,6 +2386,7 @@ async def assign_membership_role(
     )
     if current.summary.membership_version != expected_version:
         raise ConflictError("The workspace membership was modified by another request.")
+    assigned_role_version: int | None = None
     if payload.role_id is None:
         command = MembershipAccessUpdate(
             workspace_id=context.workspace_id,
@@ -2163,6 +2420,7 @@ async def assign_membership_role(
                 ).one_or_none()
         if role is None:
             raise ValidationError("The active access role does not exist in this workspace.")
+        assigned_role_version = role.version
         try:
             command = MembershipAccessUpdate(
                 workspace_id=context.workspace_id,
@@ -2192,6 +2450,8 @@ async def assign_membership_role(
         request_id=context.request_id,
         idempotency_key=idempotency_key,
         request_hash=request_hash,
+        role_id=payload.role_id,
+        role_version=assigned_role_version,
     )
     response.headers["ETag"] = f'"{membership_version}"'
     return MembershipRoleAssignmentResponse(

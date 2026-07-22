@@ -571,6 +571,19 @@ class MembershipAccessRepository(Protocol):
 
     async def apply(self, command: MembershipAccessUpdate) -> int: ...
 
+    async def record_role_assignment(
+        self,
+        *,
+        workspace_id: UUID,
+        subject_id: UUID,
+        role_id: UUID | None,
+        role_version: int | None,
+        role_marker: str | None,
+        membership_version: int,
+        access_payload_hash: str,
+        actor_id: UUID,
+    ) -> None: ...
+
     async def assert_current_version(self, command: MembershipAccessUpdate) -> None: ...
 
     async def assert_eligible_human_administrators(

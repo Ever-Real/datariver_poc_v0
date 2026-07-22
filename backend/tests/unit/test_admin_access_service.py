@@ -43,6 +43,7 @@ from datariver.domain.common import (
     ForbiddenError,
     NotFoundError,
     ValidationError,
+    canonical_json_hash,
 )
 
 
@@ -130,6 +131,34 @@ class MemoryMemberships:
             raise ConflictError("two administrators must remain")
         versions[command.target_subject_id] = actual + 1
         return actual + 1
+
+    async def record_role_assignment(
+        self,
+        *,
+        workspace_id: UUID,
+        subject_id: UUID,
+        role_id: UUID | None,
+        role_version: int | None,
+        role_marker: str | None,
+        membership_version: int,
+        access_payload_hash: str,
+        actor_id: UUID,
+    ) -> None:
+        if cast(bool, self.state["role_assignment_failure"]):
+            raise ConflictError("role assignment evidence write failed")
+        records = cast(list[dict[str, object]], self.state["role_assignment_records"])
+        records.append(
+            {
+                "workspace_id": workspace_id,
+                "subject_id": subject_id,
+                "role_id": role_id,
+                "role_version": role_version,
+                "role_marker": role_marker,
+                "membership_version": membership_version,
+                "access_payload_hash": access_payload_hash,
+                "actor_id": actor_id,
+            }
+        )
 
     async def assert_current_version(self, command: MembershipAccessUpdate) -> None:
         versions = cast(dict[UUID, int], self.state["membership_versions"])
@@ -337,6 +366,8 @@ def _state(
         "assignable_subjects": {target_id, maker_id, checker_id},
         "eligible_administrators": {maker_id, checker_id},
         "remaining_admin_count": 2,
+        "role_assignment_records": [],
+        "role_assignment_failure": False,
         "lock_count": 0,
     }
 
@@ -696,6 +727,35 @@ async def test_admin_read_context_exposes_only_current_assurance_operations(
 
 
 @pytest.mark.asyncio
+async def test_admin_read_context_does_not_advertise_mutations_for_stale_hardware_auth() -> None:
+    workspace_id, target_id, administrator_id, other_admin_id = (uuid4() for _ in range(4))
+    now = datetime.now(UTC)
+    state = _state(workspace_id, target_id, administrator_id, other_admin_id)
+    cast(dict[UUID, WorkspaceMembershipAccessRecord], state["membership_records"])[
+        administrator_id
+    ] = _membership_record(administrator_id, "Administrator")
+    subject = replace(
+        _administrator(
+            workspace_id,
+            administrator_id,
+            assurance=AuthenticationAssurance.HARDWARE_WEBAUTHN,
+            now=now,
+        ),
+        authentication_time=now - timedelta(hours=1),
+    )
+
+    context = await _service(state).get_admin_read_context(
+        workspace_id=workspace_id,
+        subject=subject,
+        environment=EnvironmentAttributes(requested_at=now),
+        request_id="admin-me-stale-hardware",
+    )
+
+    assert AdminOperation.MEMBERSHIP_ACCESS_READ in context.allowed_operations
+    assert AdminOperation.MEMBERSHIP_ACCESS_UPDATE not in context.allowed_operations
+
+
+@pytest.mark.asyncio
 async def test_admin_read_context_exposes_only_granted_governance_surfaces() -> None:
     workspace_id, target_id, administrator_id, other_admin_id = (uuid4() for _ in range(4))
     now = datetime.now(UTC)
@@ -740,6 +800,211 @@ async def test_admin_read_context_exposes_only_granted_governance_surfaces() -> 
         AdminOperation.ERASURE_APPROVE,
     } <= operations
     assert AdminOperation.LEGAL_HOLD_RELEASE not in operations
+
+
+@pytest.mark.asyncio
+async def test_direct_role_assignment_records_exact_role_and_membership_versions() -> None:
+    workspace_id, target_id, administrator_id, other_admin_id, role_id = (uuid4() for _ in range(5))
+    now = datetime.now(UTC)
+    state = _state(workspace_id, target_id, administrator_id, other_admin_id)
+    command = replace(
+        _command(workspace_id, target_id),
+        groups=frozenset({"engineers", "datariver-role-data-steward"}),
+    )
+
+    membership_version = await _service(state).update_membership_with_hardware_key(
+        command=command,
+        subject=_administrator(
+            workspace_id,
+            administrator_id,
+            assurance=AuthenticationAssurance.HARDWARE_WEBAUTHN,
+            now=now,
+        ),
+        environment=EnvironmentAttributes(requested_at=now),
+        request_id="role-assignment",
+        idempotency_key="role-assignment-0001",
+        request_hash="a" * 64,
+        role_id=role_id,
+        role_version=7,
+    )
+    replayed_version = await _service(state).update_membership_with_hardware_key(
+        command=command,
+        subject=_administrator(
+            workspace_id,
+            administrator_id,
+            assurance=AuthenticationAssurance.HARDWARE_WEBAUTHN,
+            now=now,
+        ),
+        environment=EnvironmentAttributes(requested_at=now),
+        request_id="role-assignment-replay",
+        idempotency_key="role-assignment-0001",
+        request_hash="a" * 64,
+        role_id=role_id,
+        role_version=7,
+    )
+
+    assert membership_version == replayed_version == 2
+    records = cast(list[dict[str, object]], state["role_assignment_records"])
+    assert records == [
+        {
+            "workspace_id": workspace_id,
+            "subject_id": target_id,
+            "role_id": role_id,
+            "role_version": 7,
+            "role_marker": "datariver-role-data-steward",
+            "membership_version": 2,
+            "access_payload_hash": canonical_json_hash(command.access_document()),
+            "actor_id": administrator_id,
+        }
+    ]
+    assert len(cast(list[DomainEvent], state["outbox"])) == 1
+
+
+@pytest.mark.asyncio
+async def test_role_assignment_evidence_failure_rolls_back_membership_and_side_effects() -> None:
+    workspace_id, target_id, administrator_id, other_admin_id, role_id = (uuid4() for _ in range(5))
+    now = datetime.now(UTC)
+    state = _state(workspace_id, target_id, administrator_id, other_admin_id)
+    state["role_assignment_failure"] = True
+    command = replace(
+        _command(workspace_id, target_id),
+        groups=frozenset({"engineers", "datariver-role-data-steward"}),
+    )
+
+    with pytest.raises(ConflictError, match="evidence write failed"):
+        await _service(state).update_membership_with_hardware_key(
+            command=command,
+            subject=_administrator(
+                workspace_id,
+                administrator_id,
+                assurance=AuthenticationAssurance.HARDWARE_WEBAUTHN,
+                now=now,
+            ),
+            environment=EnvironmentAttributes(requested_at=now),
+            request_id="role-assignment-rollback",
+            idempotency_key="role-assignment-rollback-0001",
+            request_hash="e" * 64,
+            role_id=role_id,
+            role_version=7,
+        )
+
+    assert cast(dict[UUID, int], state["membership_versions"])[target_id] == 1
+    assert cast(list[dict[str, object]], state["role_assignment_records"]) == []
+    assert cast(list[DomainEvent], state["outbox"]) == []
+    assert cast(dict[tuple[UUID, str, str], IdempotencyRecord], state["idempotency"]) == {}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "authentication_time",
+    [None, datetime(2020, 1, 1, tzinfo=UTC), datetime(2100, 1, 1, tzinfo=UTC)],
+)
+async def test_access_role_mutation_rejects_missing_stale_or_future_hardware_authentication(
+    authentication_time: datetime | None,
+) -> None:
+    workspace_id, administrator_id, other_admin_id = uuid4(), uuid4(), uuid4()
+    now = datetime.now(UTC)
+    state = _state(workspace_id, uuid4(), administrator_id, other_admin_id)
+    writer = MemoryDecisionWriter()
+    service = AdminAccessService(
+        cast(
+            Callable[[], AdminAccessUnitOfWork],
+            lambda: MemoryAdminAccessUnitOfWork(state),
+        ),
+        AuthorizationService(decision_writer=writer),
+        fallback_enabled=True,
+        fallback_ttl_seconds=300,
+    )
+    administrator = replace(
+        _administrator(
+            workspace_id,
+            administrator_id,
+            assurance=AuthenticationAssurance.HARDWARE_WEBAUTHN,
+            now=now,
+        ),
+        authentication_time=authentication_time,
+    )
+
+    with pytest.raises(ForbiddenError):
+        await service.authorize_access_role_mutation(
+            workspace_id=workspace_id,
+            role_id=uuid4(),
+            subject=administrator,
+            environment=EnvironmentAttributes(requested_at=now),
+            request_id="role-mutation-stale-auth",
+        )
+
+    assert writer.decisions[-1][0] == Action.ADMIN_MANAGE.value
+    assert writer.decisions[-1][1].allowed is False
+
+
+@pytest.mark.asyncio
+async def test_access_role_mutation_accepts_fresh_hardware_and_audits_decision() -> None:
+    workspace_id, administrator_id, other_admin_id, role_id = (
+        uuid4(),
+        uuid4(),
+        uuid4(),
+        uuid4(),
+    )
+    now = datetime.now(UTC)
+    state = _state(workspace_id, uuid4(), administrator_id, other_admin_id)
+    writer = MemoryDecisionWriter()
+    service = AdminAccessService(
+        cast(
+            Callable[[], AdminAccessUnitOfWork],
+            lambda: MemoryAdminAccessUnitOfWork(state),
+        ),
+        AuthorizationService(decision_writer=writer),
+        fallback_enabled=True,
+        fallback_ttl_seconds=300,
+    )
+
+    decision_id = await service.authorize_access_role_mutation(
+        workspace_id=workspace_id,
+        role_id=role_id,
+        subject=_administrator(
+            workspace_id,
+            administrator_id,
+            assurance=AuthenticationAssurance.HARDWARE_WEBAUTHN,
+            now=now,
+        ),
+        environment=EnvironmentAttributes(requested_at=now),
+        request_id="role-mutation-fresh-auth",
+    )
+
+    action, decision = writer.decisions[-1]
+    assert action == Action.ADMIN_MANAGE.value
+    assert decision.allowed is True
+    assert decision_id == decision.decision_id
+
+
+@pytest.mark.asyncio
+async def test_unbound_manual_membership_update_rejects_reserved_role_marker() -> None:
+    workspace_id, target_id, administrator_id, other_admin_id = (uuid4() for _ in range(4))
+    now = datetime.now(UTC)
+    state = _state(workspace_id, target_id, administrator_id, other_admin_id)
+    command = replace(
+        _command(workspace_id, target_id),
+        groups=frozenset({"datariver-role-reader"}),
+    )
+
+    with pytest.raises(ValidationError, match="reserved role marker"):
+        await _service(state).update_membership_with_hardware_key(
+            command=command,
+            subject=_administrator(
+                workspace_id,
+                administrator_id,
+                assurance=AuthenticationAssurance.HARDWARE_WEBAUTHN,
+                now=now,
+            ),
+            environment=EnvironmentAttributes(requested_at=now),
+            request_id="manual-marker-rejection",
+            idempotency_key="manual-marker-rejection-0001",
+            request_hash="d" * 64,
+        )
+
+    assert cast(dict[UUID, int], state["membership_versions"])[target_id] == 1
+    assert cast(list[dict[str, object]], state["role_assignment_records"]) == []
 
 
 @pytest.mark.asyncio
@@ -839,6 +1104,19 @@ async def test_fallback_full_flow_is_two_person_one_time_and_data_minimized() ->
     assert replayed.state is AdminAccessRequestState.CONSUMED
     assert membership_version == replayed_version == 2
     assert cast(dict[UUID, int], state["membership_versions"])[target_id] == 2
+    assignment_records = cast(list[dict[str, object]], state["role_assignment_records"])
+    assert assignment_records == [
+        {
+            "workspace_id": workspace_id,
+            "subject_id": target_id,
+            "role_id": None,
+            "role_version": None,
+            "role_marker": None,
+            "membership_version": 2,
+            "access_payload_hash": canonical_json_hash(request.command.access_document()),
+            "actor_id": maker_id,
+        }
+    ]
     events = cast(list[DomainEvent], state["outbox"])
     assert [event.event_type for event in events] == [
         "iam.admin_access_request.created.v1",

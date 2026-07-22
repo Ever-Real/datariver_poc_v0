@@ -45,7 +45,7 @@ DataRiver는 DataHub, Redis, MinIO/S3, 그래프 엔진, Airflow와 LLM을 생�
 2. bootstrap 스크립트로 `.env`와 로컬 비밀 파일을 생성합니다. 다른 환경의 `.env`, volume,
    secret 파일을 복사하지 않습니다.
 3. 사용할 Compose overlay의 정합성을 검사합니다.
-4. 인프라를 기동하고 migration 서비스로 DB를 `0040` 헤드까지 올립니다.
+4. 인프라를 기동하고 migration 서비스로 DB를 `0041` 헤드까지 올립니다.
 5. API/worker/UI를 시작한 뒤 health, gateway, OIDC, DataHub capability를 확인합니다.
 6. 필요할 때만 합성 반도체 시드를 적용하고 검증합니다.
 
@@ -144,6 +144,15 @@ Airflow, S3, LLM, Neo4j, Prometheus, Grafana의 연결 정보를 버전 관리�
 사용자 목록은 OIDC 토큰에서 확인한 이메일, 부서/권한/역할, 소유 테이블 수, CR 이력 수와 최근
 접속 정보를 표시합니다. 사용자 생성과 비밀번호는 DataRiver가 아닌 조직 OIDC/IdP에서 관리합니다.
 
+Policy Book 작업은 1) RBAC DB/백엔드, 2) 수명관리 실행기, 3) Admin UI의 승인 게이트로
+분리됩니다. 현재 1단계는 Role 버전별 No/Partial/Full 규칙과 정규화된 할당 증적을 추가하지만
+2단계 실행기나 3단계 UI를 활성화하지 않습니다. `datariver-role-*` 마커는 전용 Role 할당
+경로만 변경할 수 있고, 낙관적 잠금의 예상 버전만 달라진 같은 Role/버전/정규 접근문서의
+재할당도 거부됩니다. 3단계 승인 전에는 Role이 할당된 사용자의 일반 접근문서 편집이 안전하게
+거부되므로 전용 경로에서 Role을 먼저
+해제해야 합니다. 상세 범위와 준비PC의 미검증 항목은
+[실행 체크리스트](docs/28_POLICY_BOOK_EXECUTION_CHECKLIST.md)를 따릅니다.
+
 ## DB migration 및 시드
 
 Compose의 `migrate` 서비스가 표준 경로입니다. 소스 실행 환경에서 명시적으로 수행하려면
@@ -174,7 +183,7 @@ curl -fsS http://127.0.0.1:8080/
 ```
 
 - `/health/live`는 프로세스 실행 여부만 확인합니다.
-- `/health/ready`는 DB 연결과 Alembic `0029` 헤드를 확인합니다.
+- `/health/ready`는 DB 연결과 Alembic `0041` 헤드를 확인합니다.
 - 브라우저에서는 `http://localhost:5173`(호스트 개발) 또는 `http://localhost:8080`을 열고,
   로그인 후 workspace를 선택합니다.
 - Catalog에서 Tag/Term `+`를 열어 DataHub vocabulary가 표시되는지, 변경관리에서 일반 OIDC

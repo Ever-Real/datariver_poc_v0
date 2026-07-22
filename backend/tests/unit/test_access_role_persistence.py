@@ -1,12 +1,135 @@
 from __future__ import annotations
 
+import runpy
+from collections.abc import Callable
 from pathlib import Path
-from typing import cast
+from typing import Any, cast
 
-from sqlalchemy import CheckConstraint, Table
+import pytest
+from sqlalchemy import CheckConstraint, ForeignKeyConstraint, Table, UniqueConstraint
+from sqlalchemy.dialects import postgresql
+from sqlalchemy.engine import Dialect
 
-from datariver.infrastructure.db.models.platform import AccessRoleModel
+from datariver.infrastructure.db.models.platform import (
+    AccessRoleAssignmentEventModel,
+    AccessRoleAssignmentModel,
+    AccessRoleDataRuleModel,
+    AccessRoleModel,
+)
 from datariver.infrastructure.db.revision import REQUIRED_DATABASE_REVISION
+
+POSTGRES_DIALECT = cast(Callable[[], Dialect], postgresql.dialect)()
+
+
+class MetadataInspector:
+    def __init__(
+        self,
+        *,
+        check_contract: dict[str, dict[str, str]],
+        foreign_key_contract: dict[str, dict[str, tuple[object, ...]]],
+        index_contract: dict[str, dict[str, tuple[tuple[str, ...], bool]]],
+        mutate_check: bool = False,
+        mutate_foreign_key: bool = False,
+        mutate_index: bool = False,
+        mutate_column: bool = False,
+    ) -> None:
+        self._check_contract = check_contract
+        self._foreign_key_contract = foreign_key_contract
+        self._index_contract = index_contract
+        self._mutate_check = mutate_check
+        self._mutate_foreign_key = mutate_foreign_key
+        self._mutate_index = mutate_index
+        self._mutate_column = mutate_column
+        self._tables = {
+            "access_role_data_rules": cast(Table, AccessRoleDataRuleModel.__table__),
+            "access_role_assignments": cast(Table, AccessRoleAssignmentModel.__table__),
+            "access_role_assignment_events": cast(Table, AccessRoleAssignmentEventModel.__table__),
+        }
+
+    def get_columns(self, table_name: str, *, schema: str) -> list[dict[str, object]]:
+        assert schema == "iam"
+        columns: list[dict[str, object]] = [
+            {
+                "name": column.name,
+                "type": column.type.dialect_impl(POSTGRES_DIALECT),
+                "nullable": column.nullable,
+                "default": (
+                    str(getattr(column.server_default, "arg", column.server_default))
+                    if column.server_default is not None
+                    else None
+                ),
+            }
+            for column in self._tables[table_name].columns
+        ]
+        if self._mutate_column and table_name == "access_role_data_rules":
+            next(column for column in columns if column["name"] == "payload_hash")["type"] = (
+                postgresql.VARCHAR(length=32)
+            )
+        return columns
+
+    def get_pk_constraint(self, table_name: str, *, schema: str) -> dict[str, object]:
+        assert schema == "iam"
+        return {
+            "constrained_columns": [
+                column.name for column in self._tables[table_name].primary_key.columns
+            ]
+        }
+
+    def get_check_constraints(self, table_name: str, *, schema: str) -> list[dict[str, object]]:
+        assert schema == "iam"
+        definitions = dict(self._check_contract[table_name])
+        if self._mutate_check and table_name == "access_role_assignment_events":
+            definitions["ck_access_role_assignment_events_role_versions_positive"] = "TRUE"
+        return [{"name": name, "sqltext": sqltext} for name, sqltext in definitions.items()]
+
+    def get_foreign_keys(self, table_name: str, *, schema: str) -> list[dict[str, object]]:
+        assert schema == "iam"
+        definitions = dict(self._foreign_key_contract[table_name])
+        if self._mutate_foreign_key and table_name == "access_role_assignments":
+            name = "fk_access_role_assignments_role"
+            constrained, referred_schema, referred_table, referred, _ = definitions[name]
+            definitions[name] = (
+                constrained,
+                referred_schema,
+                referred_table,
+                referred,
+                "CASCADE",
+            )
+        return [
+            {
+                "name": name,
+                "constrained_columns": list(cast(tuple[str, ...], definition[0])),
+                "referred_schema": definition[1],
+                "referred_table": definition[2],
+                "referred_columns": list(cast(tuple[str, ...], definition[3])),
+                "options": {"ondelete": definition[4]},
+            }
+            for name, definition in definitions.items()
+        ]
+
+    def get_unique_constraints(self, table_name: str, *, schema: str) -> list[dict[str, object]]:
+        assert schema == "iam"
+        return [
+            {
+                "name": constraint.name,
+                "column_names": [column.name for column in constraint.columns],
+            }
+            for constraint in self._tables[table_name].constraints
+            if isinstance(constraint, UniqueConstraint)
+        ]
+
+    def get_indexes(self, table_name: str, *, schema: str) -> list[dict[str, object]]:
+        assert schema == "iam"
+        definitions = dict(self._index_contract[table_name])
+        if self._mutate_index and table_name == "access_role_assignments":
+            definitions["ix_access_role_assignments_workspace_role"] = (
+                ("workspace_id", "active", "role_id"),
+                False,
+            )
+        return [
+            {"name": name, "column_names": list(columns), "unique": unique}
+            for name, (columns, unique) in definitions.items()
+        ]
 
 
 def test_access_role_model_is_workspace_scoped_and_contains_no_credential_fields() -> None:
@@ -41,13 +164,136 @@ def test_access_role_model_is_workspace_scoped_and_contains_no_credential_fields
 
 def test_access_role_migration_installs_rls_and_bounded_app_privileges() -> None:
     root = Path(__file__).resolve().parents[3]
-    migration = (root / "backend/alembic/versions/0031_workspace_access_roles.py").read_text(
+    migration = (root / "backend/alembic/versions/0041_policy_book_rbac.py").read_text(
         encoding="utf-8"
     )
     initial = (root / "backend/alembic/versions/0001_initial_schema.py").read_text(encoding="utf-8")
 
-    assert REQUIRED_DATABASE_REVISION == "0040"
-    assert "ALTER TABLE iam.access_roles FORCE ROW LEVEL SECURITY" in migration
-    assert "GRANT SELECT, INSERT, UPDATE ON iam.access_roles" in migration
-    assert "GRANT DELETE ON iam.access_roles" not in migration
-    assert "access_roles" in initial
+    assert REQUIRED_DATABASE_REVISION == "0041"
+    for table_name in (
+        "access_role_data_rules",
+        "access_role_assignments",
+        "access_role_assignment_events",
+    ):
+        assert f"ALTER TABLE iam.{table_name} FORCE ROW LEVEL SECURITY" in migration
+        assert table_name in initial
+    assert "GRANT DELETE" not in migration
+    assert "ROLE_DATA_RULE_MISSING" in migration
+    assert "REVOKE UPDATE ON iam.access_roles FROM datariver_app" in migration
+    assert "GRANT UPDATE (name, description, clearance, groups" in migration
+    assert "GRANT SELECT, INSERT, UPDATE ON iam.access_roles TO datariver_app" not in initial
+
+
+def test_policy_book_rbac_models_are_tenant_scoped_and_secret_free() -> None:
+    for model in (
+        AccessRoleDataRuleModel,
+        AccessRoleAssignmentModel,
+        AccessRoleAssignmentEventModel,
+    ):
+        table = cast(Table, model.__table__)
+        assert "workspace_id" in table.c
+        assert {"password", "secret", "token"}.isdisjoint(table.c.keys())
+
+    rules = cast(Table, AccessRoleDataRuleModel.__table__)
+    assert {
+        "role_id",
+        "role_version",
+        "classification",
+        "access_level",
+        "partial_treatment",
+        "allowed_residency_regions",
+        "allowed_processing_purposes",
+        "payload_hash",
+    } <= set(rules.c.keys())
+    assignments = cast(Table, AccessRoleAssignmentModel.__table__)
+    assert {
+        "subject_id",
+        "role_id",
+        "role_version",
+        "membership_version",
+        "access_payload_hash",
+        "active",
+    } <= set(assignments.c.keys())
+
+    rule_checks = {
+        constraint.name
+        for constraint in rules.constraints
+        if isinstance(constraint, CheckConstraint)
+    }
+    assert {
+        "ck_access_role_data_rules_scope_arrays",
+        "ck_access_role_data_rules_access_scope_shape",
+        "ck_access_role_data_rules_scope_item_vocabulary",
+    } <= rule_checks
+
+    events = cast(Table, AccessRoleAssignmentEventModel.__table__)
+    event_checks = {
+        constraint.name
+        for constraint in events.constraints
+        if isinstance(constraint, CheckConstraint)
+    }
+    event_foreign_keys = {
+        constraint.name
+        for constraint in events.constraints
+        if isinstance(constraint, ForeignKeyConstraint)
+    }
+    assert "ck_access_role_assignment_events_state_shape" in event_checks
+    assert "ck_access_role_assignment_events_role_versions_positive" in event_checks
+    assert {
+        "fk_access_role_assignment_events_previous_role",
+        "fk_access_role_assignment_events_role",
+    } <= event_foreign_keys
+
+
+def test_0041_schema_fingerprint_accepts_metadata_and_rejects_all_table_partial_state() -> None:
+    root = Path(__file__).resolve().parents[3]
+    migration = runpy.run_path(str(root / "backend/alembic/versions/0041_policy_book_rbac.py"))
+    validator = cast(
+        Callable[[Any, list[dict[str, object]]], None],
+        migration["_assert_existing_schema_complete"],
+    )
+    checks = cast(dict[str, dict[str, str]], migration["_EXPECTED_CHECK_SQL"])
+    foreign_keys = cast(
+        dict[str, dict[str, tuple[object, ...]]], migration["_EXPECTED_FOREIGN_KEYS"]
+    )
+    indexes = cast(
+        dict[str, dict[str, tuple[tuple[str, ...], bool]]], migration["_EXPECTED_INDEXES"]
+    )
+    tables = cast(set[str], migration["_TABLES"])
+    predicate = cast(str, migration["_EXPECTED_RLS_PREDICATE"])
+
+    def inspector(**mutations: bool) -> MetadataInspector:
+        return MetadataInspector(
+            check_contract=checks,
+            foreign_key_contract=foreign_keys,
+            index_contract=indexes,
+            **mutations,
+        )
+
+    def rls_contract(*, mutate: bool = False) -> list[dict[str, object]]:
+        return [
+            {
+                "table_name": table_name,
+                "rls_enabled": True,
+                "rls_forced": True,
+                "policyname": "workspace_isolation",
+                "permissive": "PERMISSIVE",
+                "roles": "public",
+                "cmd": "ALL",
+                "qual": "TRUE" if mutate and index == 0 else predicate,
+                "with_check": predicate,
+            }
+            for index, table_name in enumerate(sorted(tables))
+        ]
+
+    validator(inspector(), rls_contract())
+    for mutation in (
+        {"mutate_check": True},
+        {"mutate_foreign_key": True},
+        {"mutate_index": True},
+        {"mutate_column": True},
+    ):
+        with pytest.raises(RuntimeError, match="Incomplete policy-book RBAC schema"):
+            validator(inspector(**mutation), rls_contract())
+    with pytest.raises(RuntimeError, match="Incomplete policy-book RBAC schema"):
+        validator(inspector(), rls_contract(mutate=True))
