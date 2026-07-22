@@ -462,9 +462,9 @@ write_manifest() {
         --format '{{join .RepoDigests ","}}' "$image" | awk -F ',' '
           {
             separator = ""
-            for (index = 1; index <= NF; index += 1) {
-              if ($index !~ /^datariver-offline-export-backup@/) {
-                printf "%s%s", separator, $index
+            for (field_index = 1; field_index <= NF; field_index += 1) {
+              if ($field_index !~ /^datariver-offline-export-backup@/) {
+                printf "%s%s", separator, $field_index
                 separator = ","
               }
             }
