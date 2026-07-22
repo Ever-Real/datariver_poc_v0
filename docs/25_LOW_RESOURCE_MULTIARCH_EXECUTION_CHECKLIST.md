@@ -46,7 +46,9 @@ This checklist is evidence-driven. `[x]` means the named repository evidence was
 - [ ] import verifier rejects checksum, platform, commit and image-inventory mismatches. The first
   real arm64 bundle exposed and fixed a relative source-bundle path defect; regenerate from the
   corrected commit before accepting this gate. Preflight also replaced cross-platform wrapper
-  builds with exact-digest platform pulls so external image identity is preserved.
+  builds with exact-digest platform pulls so external image identity is preserved. The first amd64
+  attempt stopped before build on a Bash 3.2 empty-array incompatibility; the optional-image loop
+  now has an explicit cardinality guard and must be rerun from the corrected commit.
 - [ ] core, PostgreSQL, Redis, MinIO and Neo4j OCI indexes are digest-pinned. Redis/MinIO
   redistribution and target vulnerability/license acceptance remain operator gates; the
   nonexistent MinIO `2025-10-15` image tag was replaced by the available `2025-09-07` image.

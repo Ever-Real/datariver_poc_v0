@@ -281,9 +281,11 @@ if [ "$cross_platform" = true ]; then
   for image in "${core_images[@]}"; do
     backup_existing_tag "$image"
   done
-  for image in "${optional_images[@]}"; do
-    backup_existing_tag "$image"
-  done
+  if [ "${#optional_images[@]}" -gt 0 ]; then
+    for image in "${optional_images[@]}"; do
+      backup_existing_tag "$image"
+    done
+  fi
   if [ "$include_local_connectors" = true ]; then
     for image in "${local_connector_images[@]}"; do
       backup_existing_tag "$image"
