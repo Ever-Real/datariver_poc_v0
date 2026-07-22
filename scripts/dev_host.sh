@@ -3,13 +3,27 @@ set -euo pipefail
 
 root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 runtime_dir="$root/runtime/source-host"
+env_file_argument=${DATARIVER_ENV_FILE:-.env}
+
+arguments=("$@")
+for ((index = 0; index < ${#arguments[@]}; index++)); do
+  if [ "${arguments[$index]}" = --env-file ]; then
+    next_index=$((index + 1))
+    [ "$next_index" -lt "${#arguments[@]}" ] || { echo "--env-file requires a path" >&2; exit 2; }
+    env_file_argument=${arguments[$next_index]}
+  fi
+done
+case "$env_file_argument" in
+  /*) env_file=$env_file_argument ;;
+  *) env_file="$root/$env_file_argument" ;;
+esac
 
 env_file_value() {
   local key=$1
   local fallback=$2
   local value=
-  if [ -f "$root/.env" ]; then
-    value=$(sed -n "s/^${key}=//p" "$root/.env" | tail -n 1)
+  if [ -f "$env_file" ]; then
+    value=$(sed -n "s/^${key}=//p" "$env_file" | tail -n 1)
   fi
   printf '%s' "${value:-$fallback}"
 }
@@ -44,6 +58,7 @@ contains a database migration; it does not use the immutable migration image
 from an offline bundle.
 
 Options:
+  --env-file FILE          Ignored deployment environment file (default: DATARIVER_ENV_FILE or .env).
   --datahub-base-url URL   Approved DataHub GMS URL (default: .env DATAHUB_BASE_URL).
   --postgres-port PORT     Host PostgreSQL port (default: 5432).
   --redis-cache-url URL     External Redis cache URL (default: .env REDIS_CACHE_URL).
@@ -66,6 +81,10 @@ while [ "$#" -gt 0 ]; do
   case "$1" in
     start|stop|status|migrate)
       action=$1
+      ;;
+    --env-file)
+      shift
+      env_file_argument=${1:?--env-file requires a path}
       ;;
     --datahub-base-url)
       shift
@@ -261,6 +280,26 @@ for required in "${required_secrets[@]}"; do
     exit 2
   fi
 done
+
+load_env_file() {
+  local line key value
+  [ -f "$env_file" ] || { echo "Missing deployment environment file: $env_file" >&2; exit 2; }
+  while IFS= read -r line || [ -n "$line" ]; do
+    case "$line" in ''|'#'*) continue ;; esac
+    key=${line%%=*}
+    value=${line#*=}
+    [[ "$key" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] || {
+      echo "Invalid environment key in $env_file: $key" >&2
+      exit 2
+    }
+    if [[ "$value" == \"*\" ]] && [ "${#value}" -ge 2 ]; then
+      value=${value:1:${#value}-2}
+    fi
+    export "$key=$value"
+  done < "$env_file"
+}
+
+load_env_file
 if [ "$enable_neo4j" = true ] && [ ! -s "$root/secrets/neo4j_auth" ]; then
   echo "Missing required secret file: $root/secrets/neo4j_auth" >&2
   exit 2
@@ -337,8 +376,7 @@ export DATAHUB_BASE_URL="$datahub_base_url"
 export DATAHUB_SECRET_REF="$(secret_ref datahub_token)"
 export SEED_PROFILE=none
 export WATCHFILES_FORCE_POLLING=true
-export SYSTEM_CONFIGURATION_RUNTIME_ACTIVATION_ENABLED=true
-export SYSTEM_CONFIGURATION_RUNTIME_WORKSPACE_ID=00000000-0000-4000-8000-000000000100
+export SYSTEM_CONFIGURATION_RUNTIME_ACTIVATION_ENABLED=false
 export SYSTEM_CONFIGURATION_SECRET_ROOT="$root/secrets"
 export VITE_API_BASE_URL=/api/v1
 export VITE_API_PROXY_TARGET="http://127.0.0.1:$api_port"

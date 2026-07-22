@@ -8,6 +8,7 @@ import { defaultWorkspaceSelection, workspaceFromLocation } from './app/workspac
 import { useAuth } from './auth/AuthProvider'
 import { AppShell } from './components/layout/AppShell'
 import { PageTitle } from './components/layout/PageTitle'
+import { publicRuntimeConfig } from './runtimeConfig'
 import { allowedAdminSections } from './features/admin/adminSections'
 import { getAdminMessages } from './features/admin/messages'
 import { catalogExportCapabilityEnabled } from './features/catalog/catalogExportApi'
@@ -28,6 +29,7 @@ const SharingPage = lazy(() => import('./features/sharing/SharingPage').then((mo
 
 export function App() {
   const auth = useAuth()
+  const runtimeConfig = publicRuntimeConfig()
   const [page, setPage] = useState<Page>(pageFromLocation)
   const [catalogQuery, setCatalogQuery] = useState(() => new URL(window.location.href).searchParams.get('q') ?? '')
   // The URL keeps the selected tenant across reloads without trusting it for
@@ -47,7 +49,7 @@ export function App() {
     ? workspace
     : auth.profile?.default_workspace_id ?? ''
   const client = useStableApiClient(
-    String(import.meta.env.VITE_API_BASE_URL || '/api/v1'),
+    runtimeConfig.apiBaseUrl,
     auth.user?.access_token,
     activeWorkspace,
     auth.renewAccessToken,

@@ -183,26 +183,6 @@ if [ "$cross_platform" = true ]; then
   fi
 fi
 
-read_dotenv_value() {
-  local key=$1
-  local fallback=$2
-  local value=${!key:-}
-  if [ -z "$value" ] && [ -f "$root/.env" ]; then
-    value=$(awk -F= -v requested_key="$key" '
-      $1 == requested_key {
-        value = substr($0, length(requested_key) + 2)
-        gsub(/^"|"$/, "", value)
-        print value
-        exit
-      }
-    ' "$root/.env")
-  fi
-  if [ -z "$value" ]; then
-    value=$fallback
-  fi
-  printf '%s' "$value"
-}
-
 build_cross_platform_images() {
   local backend_image
   docker buildx build \
@@ -229,12 +209,6 @@ build_cross_platform_images() {
     --load \
     --file "$root/frontend/Dockerfile" \
     --tag datariver-next-web:latest \
-    --build-arg VITE_API_BASE_URL=/api/v1 \
-    --build-arg "VITE_OIDC_AUTHORITY=$(read_dotenv_value OIDC_PUBLIC_AUTHORITY http://localhost:8081/realms/datariver)" \
-    --build-arg "VITE_OIDC_CLIENT_ID=$(read_dotenv_value OIDC_CLIENT_ID datariver-web)" \
-    --build-arg "VITE_OIDC_REDIRECT_URI=$(read_dotenv_value APP_PUBLIC_ORIGIN http://localhost:8080)" \
-    --build-arg "VITE_OIDC_HIGH_ASSURANCE_ACR=$(read_dotenv_value OIDC_STEP_UP_ACR 2)" \
-    --build-arg "VITE_OIDC_PASSWORD_REAUTH_ACR=$(read_dotenv_value OIDC_PASSWORD_REAUTH_ACR 1)" \
     "$root"
 
   docker buildx build \

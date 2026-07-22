@@ -97,23 +97,40 @@ class _IntranetLlmSecretResolver:
 
 class _RedisSecretResolver:
     def resolve(self, reference: str) -> str:
-        assert reference == "file:/run/secrets/redis_cache_password"
+        assert reference in {
+            "file:/run/secrets/redis_cache_password",
+            "file:/run/secrets/redis_delivery_password",
+        }
         return "redis-password"
 
 
+class _S3SecretResolver:
+    def resolve(self, reference: str) -> str:
+        values = {
+            "file:/run/secrets/s3_access_key": "access-key",
+            "file:/run/secrets/s3_secret_key": "secret-key",
+        }
+        return values[reference]
+
+
 class _RedisClient:
-    def __init__(self) -> None:
+    def __init__(self, *, policy: str = "allkeys-lfu", appendonly: str = "no") -> None:
         self.closed = False
+        self.policy = policy
+        self.appendonly = appendonly
 
     async def ping(self) -> bool:
         return True
+
+    async def config_get(self, key: str) -> dict[str, str]:
+        return {key: self.policy if key == "maxmemory-policy" else self.appendonly}
 
     async def aclose(self) -> None:
         self.closed = True
 
 
 @pytest.mark.asyncio
-async def test_redis_probe_uses_mounted_credential_and_ping_only() -> None:
+async def test_redis_cache_probe_uses_mounted_credential_and_role_policy() -> None:
     client = _RedisClient()
     calls: list[tuple[str, dict[str, object]]] = []
 
@@ -125,17 +142,78 @@ async def test_redis_probe_uses_mounted_credential_and_ping_only() -> None:
         system_id="REDIS_CACHE",
         document={
             "url": "redis://127.0.0.1:6379/0",
-            "secret_references": {"password": "file:/run/secrets/redis_cache_password"},
+            "secret_references": {"password": "file:/run/secrets/redis_delivery_password"},
         },
         secret_resolver=_RedisSecretResolver(),  # type: ignore[arg-type]
         redis_factory=redis_factory,  # type: ignore[arg-type]
     )
 
     assert result.status == "AVAILABLE"
-    assert result.scope == "REDIS_PING"
+    assert result.scope == "REDIS_POLICY"
     assert calls[0][0] == "redis://127.0.0.1:6379/0"
     assert calls[0][1]["password"] == "redis-password"
     assert client.closed is True
+
+
+@pytest.mark.asyncio
+async def test_redis_delivery_probe_requires_noeviction_and_aof() -> None:
+    client = _RedisClient(policy="noeviction", appendonly="yes")
+
+    result = await probe_system_configuration(
+        system_id="REDIS_DELIVERY",
+        document={
+            "url": "redis://127.0.0.1:6380/0",
+            "secret_references": {"password": "file:/run/secrets/redis_cache_password"},
+        },
+        secret_resolver=_RedisSecretResolver(),  # type: ignore[arg-type]
+        redis_factory=lambda *_args, **_kwargs: client,  # type: ignore[arg-type]
+    )
+
+    assert result.status == "AVAILABLE"
+    assert result.scope == "REDIS_POLICY"
+    assert client.closed is True
+
+
+@pytest.mark.asyncio
+async def test_s3_probe_authenticates_against_one_fixed_bucket() -> None:
+    calls: list[tuple[object, ...]] = []
+
+    async def head_bucket(*arguments: object) -> None:
+        calls.append(arguments)
+
+    result = await probe_system_configuration(
+        system_id="S3_STORAGE",
+        document={
+            "endpoint": "http://127.0.0.1:9000",
+            "public_endpoint": "http://localhost:9000",
+            "region": "us-east-1",
+            "buckets": {
+                "accepted": "datariver-accepted",
+                "exports": "datariver-exports",
+                "quarantine": "datariver-quarantine",
+            },
+            "secret_references": {
+                "access_key": "file:/run/secrets/s3_access_key",
+                "secret_key": "file:/run/secrets/s3_secret_key",
+            },
+            "options": {"timeout_seconds": 3},
+        },
+        secret_resolver=_S3SecretResolver(),  # type: ignore[arg-type]
+        s3_head_bucket=head_bucket,
+    )
+
+    assert result.status == "AVAILABLE"
+    assert result.scope == "S3_HEAD_BUCKET"
+    assert calls == [
+        (
+            "http://127.0.0.1:9000",
+            "us-east-1",
+            "access-key",
+            "secret-key",
+            "datariver-quarantine",
+            3.0,
+        )
+    ]
 
 
 @pytest.mark.asyncio

@@ -10,6 +10,7 @@ import {
 } from 'react'
 import { InMemoryWebStorage, UserManager, WebStorageStateStore, type User } from 'oidc-client-ts'
 import type { AuthenticatedProfile } from '../api/types'
+import { publicRuntimeConfig } from '../runtimeConfig'
 import {
   callbackReturnTo,
   readRedirectState,
@@ -41,10 +42,11 @@ interface AuthValue {
 const AuthContext = createContext<AuthValue | undefined>(undefined)
 
 function createManager(): UserManager {
-  const authority = String(import.meta.env.VITE_OIDC_AUTHORITY || '').trim()
-  const clientId = String(import.meta.env.VITE_OIDC_CLIENT_ID || '').trim()
+  const config = publicRuntimeConfig()
+  const authority = config.oidcAuthority
+  const clientId = config.oidcClientId
   if (!authority || !clientId) throw new Error('인증 공개 설정이 누락되었습니다.')
-  const configuredRedirectUri = String(import.meta.env.VITE_OIDC_REDIRECT_URI || window.location.origin)
+  const configuredRedirectUri = config.oidcRedirectUri
   const configuredOrigin = new URL(configuredRedirectUri).origin
   // Keycloak has an exact browser-origin redirect allowlist. Keep that origin,
   // but bind the redirect path/query to the safe current return path so a
@@ -87,7 +89,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   const hydrate = useCallback(async (next: User): Promise<boolean> => {
     if (!next.access_token || next.expired) return false
-    const response = await fetch(`${String(import.meta.env.VITE_API_BASE_URL || '/api/v1')}/auth/me`, {
+    const response = await fetch(`${publicRuntimeConfig().apiBaseUrl}/auth/me`, {
       headers: { Authorization: `Bearer ${next.access_token}`, Accept: 'application/json' },
     })
     if (!response.ok) throw new Error('서버가 현재 인증 세션을 확인하지 못했습니다.')
@@ -243,8 +245,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     setLoading(true)
     setNotice(undefined)
     try {
-      const highAssuranceAcr = String(import.meta.env.VITE_OIDC_HIGH_ASSURANCE_ACR || '')
-      const passwordReauthAcr = String(import.meta.env.VITE_OIDC_PASSWORD_REAUTH_ACR || '')
+      const config = publicRuntimeConfig()
+      const highAssuranceAcr = config.oidcHighAssuranceAcr
+      const passwordReauthAcr = config.oidcPasswordReauthAcr
       await manager.signinRedirect(signinRedirectArgs(intent, {
         highAssuranceAcr,
         passwordReauthAcr,

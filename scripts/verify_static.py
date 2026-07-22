@@ -41,6 +41,7 @@ EXPECTED_SERVICE_SECRETS = {
         "datahub_token",
         "intranet_llm_chat_api_key",
         "intranet_llm_embedding_api_key",
+        "neo4j_auth",
         "keycloak_identity_admin_client_secret",
         "s3_access_key",
         "s3_secret_key",
@@ -150,8 +151,11 @@ def verify_compose() -> None:
                 "dedicated source-access publication bridge"
             )
     base = documents[ROOT / "compose.yaml"]
-    if base.get("networks", {}).get("connectors", {}).get("internal") is not False:
-        raise AssertionError("compose.yaml:connectors must provide explicit external egress")
+    connectors = base.get("networks", {}).get("connectors", {})
+    if connectors.get("external") is not True:
+        raise AssertionError("compose.yaml:connectors must be a shared external network")
+    if connectors.get("name") != "${DATARIVER_CONNECTOR_NETWORK:-datariver-connectors}":
+        raise AssertionError("compose.yaml:connectors must have a stable deployment-owned name")
     for name in (
         "api",
         "storage-init",
@@ -353,16 +357,23 @@ def verify_identity_assurance_contract() -> None:
         raise AssertionError("Keycloak WebAuthn execution must emit an AMR reference")
 
     compose = _yaml(ROOT / "compose.yaml")
-    web_args = compose["services"]["web"]["build"].get("args", {})
-    if web_args.get("VITE_OIDC_HIGH_ASSURANCE_ACR") != "${OIDC_STEP_UP_ACR:-2}":
-        raise AssertionError("web step-up ACR must be a deployment setting")
-    if web_args.get("VITE_OIDC_PASSWORD_REAUTH_ACR") != ("${OIDC_PASSWORD_REAUTH_REQUEST_ACR:-1}"):
-        raise AssertionError("web password reauthentication ACR must be a deployment setting")
+    web_environment = compose["services"]["web"].get("environment", {})
+    if web_environment.get("BROWSER_OIDC_HIGH_ASSURANCE_ACR") != "${OIDC_STEP_UP_ACR:-2}":
+        raise AssertionError("web runtime step-up ACR must be a deployment setting")
+    if web_environment.get("BROWSER_OIDC_PASSWORD_REAUTH_ACR") != (
+        "${OIDC_PASSWORD_REAUTH_REQUEST_ACR:-1}"
+    ):
+        raise AssertionError(
+            "web runtime password reauthentication ACR must be a deployment setting"
+        )
     dockerfile = (ROOT / "frontend" / "Dockerfile").read_text(encoding="utf-8")
-    if "ARG VITE_OIDC_HIGH_ASSURANCE_ACR" not in dockerfile:
-        raise AssertionError("web image must receive the deployment step-up ACR")
-    if "ARG VITE_OIDC_PASSWORD_REAUTH_ACR" not in dockerfile:
-        raise AssertionError("web image must receive the password reauthentication ACR")
+    if "ARG VITE_OIDC" in dockerfile:
+        raise AssertionError("web OIDC configuration must not be embedded at image build time")
+    entrypoint = (ROOT / "frontend" / "docker-entrypoint.sh").read_text(encoding="utf-8")
+    if "BROWSER_OIDC_HIGH_ASSURANCE_ACR" not in entrypoint:
+        raise AssertionError("web image must generate the runtime step-up ACR")
+    if "BROWSER_OIDC_PASSWORD_REAUTH_ACR" not in entrypoint:
+        raise AssertionError("web image must generate the runtime password reauthentication ACR")
     frontend_auth = (ROOT / "frontend" / "src" / "auth" / "redirectState.ts").read_text(
         encoding="utf-8"
     )
@@ -372,7 +383,7 @@ def verify_identity_assurance_contract() -> None:
         encoding="utf-8"
     )
     if (
-        "VITE_OIDC_PASSWORD_REAUTH_ACR" not in frontend_provider
+        "oidcPasswordReauthAcr" not in frontend_provider
         or "beginPasswordReauth" not in frontend_provider
         or "PASSWORD_REAUTH" not in frontend_auth
     ):

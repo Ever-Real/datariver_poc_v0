@@ -1,7 +1,7 @@
 import { InMemoryWebStorage, UserManager, WebStorageStateStore } from 'oidc-client-ts'
+import { publicRuntimeConfig } from '../runtimeConfig'
 
-const authority = String(import.meta.env.VITE_OIDC_AUTHORITY || '').trim()
-const clientId = String(import.meta.env.VITE_OIDC_CLIENT_ID || '').trim()
+const { oidcAuthority: authority, oidcClientId: clientId } = publicRuntimeConfig()
 
 if (authority && clientId) {
   const manager = new UserManager({

@@ -18,10 +18,10 @@ This checklist is evidence-driven. `[x]` means the named repository evidence was
 
 - [x] ADR-0034 and deployment PRD define alias normalization, per-architecture artifacts, runtime
   web configuration, single environment source and truthful Single-node Pilot labeling.
-- [ ] selected env-file support is implemented in Compose/bootstrap/source-host tooling.
-- [ ] Mac and WSL example files contain no literal credentials and pass validation.
-- [ ] named external connector network and WSL host-gateway fallback render correctly.
-- [ ] System Settings startup activation is disabled in both selected deployment profiles.
+- [x] selected env-file support is implemented in Compose/bootstrap/source-host tooling.
+- [x] the canonical example and generated Mac/WSL profile workflow contain no literal credentials.
+- [x] named external connector network and WSL host-gateway fallback render correctly.
+- [x] System Settings startup activation is disabled in both selected deployment profiles.
 
 ## Phase 2 — low-resource product correction
 
@@ -37,14 +37,17 @@ This checklist is evidence-driven. `[x]` means the named repository evidence was
 
 - [ ] exporter accepts Docker aliases and emits only normalized `arm64`/`amd64` names.
 - [ ] exporter refuses a dirty tree and records exact commit/toolchain provenance.
-- [ ] web configuration is runtime-bound; one image passes two-origin verification.
+- [x] web configuration is runtime-bound in a generated no-store script. One arm64 image ID
+  `sha256:7f474774499c…` was started with both Mac `18081/38102` and WSL `8081/8080` origins and
+  generated the correct configuration without rebuild.
 - [ ] source bundle, platform bundle, optional bundle and release index checksums are generated.
 - [ ] import verifier rejects checksum, platform, commit and image-inventory mismatches.
 - [ ] base images and external Redis/MinIO distributions have approved exact tags/digests/licenses.
 
 ## Phase 4 — Mac `linux/arm64` development PC
 
-- [ ] Docker daemon platform and available CPU/RAM/disk captured.
+- [x] Docker daemon reports `linux/arm64`, 6 CPUs and 20,942,880,768 bytes memory; Buildx advertises
+  both `linux/arm64` and `linux/amd64`. Disk headroom remains an export-time gate.
 - [ ] external Redis cache/delivery endpoints pass distinct policy/authentication probes.
 - [ ] external MinIO/S3 buckets pass authenticated bucket, multipart, copy, checksum, CORS and
   presign probes; anonymous access is denied.

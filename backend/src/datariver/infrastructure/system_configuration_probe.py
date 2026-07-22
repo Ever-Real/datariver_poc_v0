@@ -9,7 +9,10 @@ from dataclasses import dataclass
 from typing import Any, Literal
 from urllib.parse import urlsplit, urlunsplit
 
+import boto3
 import httpx
+from botocore.config import Config
+from botocore.exceptions import BotoCoreError, ClientError
 from neo4j import AsyncGraphDatabase
 from redis.asyncio import Redis
 
@@ -23,7 +26,8 @@ ProbeScope = Literal[
     "MODEL_INFERENCE",
     "EMBEDDING_INFERENCE",
     "AUTHENTICATED_QUERY",
-    "REDIS_PING",
+    "REDIS_POLICY",
+    "S3_HEAD_BUCKET",
 ]
 
 
@@ -39,7 +43,6 @@ _HTTP_PROBE_PATHS: dict[str, tuple[str, ProbeScope]] = {
     "DATAHUB_GMS": ("/health", "HTTP_HEALTH"),
     "DATAHUB_FRONTEND": ("/", "HTTP_HEALTH"),
     "AIRFLOW": ("/api/v2/monitor/health", "HTTP_HEALTH"),
-    "S3_STORAGE": ("/", "HTTP_HEALTH"),
     "LLM_RERANKER": ("/models", "MODEL_DISCOVERY"),
     "PROMETHEUS": ("/-/healthy", "HTTP_HEALTH"),
     "GRAFANA_DASHBOARD": ("/api/health", "HTTP_HEALTH"),
@@ -169,6 +172,14 @@ def _neo4j_credentials(raw: str) -> tuple[str, str]:
     return username, password
 
 
+def _redis_config_value(document: Mapping[object, object], key: str) -> str:
+    for raw_key, raw_value in document.items():
+        normalized_key = raw_key.decode() if isinstance(raw_key, bytes) else str(raw_key)
+        if normalized_key == key:
+            return raw_value.decode() if isinstance(raw_value, bytes) else str(raw_value)
+    return ""
+
+
 def _validated_embedding(payload: object) -> bool:
     if not isinstance(payload, Mapping):
         return False
@@ -230,6 +241,34 @@ async def _authenticated_neo4j_probe(
         await driver.close()
 
 
+async def _authenticated_s3_head_bucket(
+    endpoint: str,
+    region: str,
+    access_key: str,
+    secret_key: str,
+    bucket: str,
+    timeout_seconds: float,
+) -> None:
+    client = boto3.client(
+        "s3",
+        endpoint_url=endpoint,
+        region_name=region,
+        aws_access_key_id=access_key,
+        aws_secret_access_key=secret_key,
+        config=Config(
+            signature_version="s3v4",
+            connect_timeout=timeout_seconds,
+            read_timeout=timeout_seconds,
+            retries={"max_attempts": 1, "mode": "standard"},
+            s3={"addressing_style": "path"},
+        ),
+    )
+    try:
+        await asyncio.to_thread(client.head_bucket, Bucket=bucket)
+    finally:
+        client.close()
+
+
 async def probe_system_configuration(
     *,
     system_id: str,
@@ -240,6 +279,9 @@ async def probe_system_configuration(
         _authenticated_neo4j_probe
     ),
     redis_factory: Callable[..., Redis] = Redis.from_url,
+    s3_head_bucket: Callable[[str, str, str, str, str, float], Awaitable[None]] = (
+        _authenticated_s3_head_bucket
+    ),
 ) -> SystemConfigurationProbeResult:
     """Probe one saved, allowlisted development profile without accepting a request URL.
 
@@ -266,6 +308,17 @@ async def probe_system_configuration(
         try:
             if not await redis_client.ping():
                 raise ValidationError("The saved Redis endpoint did not return PONG.")
+            policy_document = await redis_client.config_get("maxmemory-policy")
+            policy = _redis_config_value(policy_document, "maxmemory-policy")
+            expected_policy = "allkeys-lfu" if system_id == "REDIS_CACHE" else "noeviction"
+            if policy != expected_policy:
+                raise ValidationError(
+                    f"The saved Redis endpoint requires maxmemory-policy={expected_policy}."
+                )
+            if system_id == "REDIS_DELIVERY":
+                appendonly_document = await redis_client.config_get("appendonly")
+                if _redis_config_value(appendonly_document, "appendonly") != "yes":
+                    raise ValidationError("The delivery Redis endpoint requires appendonly=yes.")
         except ValidationError:
             raise
         except Exception as error:
@@ -276,9 +329,54 @@ async def probe_system_configuration(
             await redis_client.aclose()
         return SystemConfigurationProbeResult(
             status="AVAILABLE",
-            scope="REDIS_PING",
+            scope="REDIS_POLICY",
             latency_ms=max(0, round((time.monotonic() - started) * 1000)),
-            detail="Redis accepted the mounted credential and returned PONG.",
+            detail="Redis accepted the credential and passed its fixed role-policy probe.",
+        )
+    if system_id == "S3_STORAGE":
+        _, host, port = _validated_url(endpoint, schemes={"http", "https"})
+        await _reject_unsafe_destination(host, port)
+        region = document.get("region")
+        buckets = document.get("buckets")
+        if not isinstance(region, str) or not region.strip():
+            raise ValidationError("The saved S3 configuration has no region.")
+        if not isinstance(buckets, Mapping):
+            raise ValidationError("The saved S3 configuration has no buckets mapping.")
+        bucket = buckets.get("quarantine")
+        if not isinstance(bucket, str) or not bucket.strip():
+            raise ValidationError("The saved S3 configuration has no quarantine bucket.")
+        resolver = secret_resolver or SecretResolver()
+        access_key = resolver.resolve(_secret_reference(document, "access_key"))
+        secret_key = resolver.resolve(_secret_reference(document, "secret_key"))
+        options = document.get("options")
+        configured_timeout = (
+            options.get("timeout_seconds") if isinstance(options, Mapping) else None
+        )
+        timeout = (
+            min(max(float(configured_timeout), 1.0), 15.0)
+            if isinstance(configured_timeout, int | float)
+            else 5.0
+        )
+        try:
+            await s3_head_bucket(
+                endpoint,
+                region.strip(),
+                access_key,
+                secret_key,
+                bucket.strip(),
+                timeout,
+            )
+        except ValidationError:
+            raise
+        except (BotoCoreError, ClientError, OSError) as error:
+            raise ValidationError(
+                "The saved S3 bucket or mounted credentials are unavailable."
+            ) from error
+        return SystemConfigurationProbeResult(
+            status="AVAILABLE",
+            scope="S3_HEAD_BUCKET",
+            latency_ms=max(0, round((time.monotonic() - started) * 1000)),
+            detail="S3 accepted the mounted credential for the fixed quarantine bucket probe.",
         )
     if system_id == "NEO4J":
         _, host, port = _validated_url(endpoint, schemes={"bolt", "neo4j"})

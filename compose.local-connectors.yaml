@@ -1,0 +1,135 @@
+name: datariver-local-connectors
+
+# Operator-owned Single-node Pilot references. These services are deliberately
+# separate from compose.yaml; review distribution licenses and pin approved
+# registry digests before copying their images into an offline bundle.
+services:
+  redis-cache:
+    image: ${REDIS_IMAGE:-redis:8.2.6-bookworm}
+    entrypoint: ["/bin/sh", "-ec"]
+    command:
+      - >-
+        exec redis-server
+        --requirepass "$$(cat /run/secrets/redis_cache_password)"
+        --maxmemory 192mb
+        --maxmemory-policy allkeys-lfu
+        --save ""
+        --appendonly no
+    secrets:
+      - redis_cache_password
+    networks:
+      - connectors
+    ports:
+      - "127.0.0.1:${REDIS_CACHE_PORT:-6379}:6379"
+    healthcheck:
+      test: ["CMD-SHELL", "redis-cli -a \"$$(cat /run/secrets/redis_cache_password)\" --no-auth-warning ping | grep -qx PONG"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    restart: unless-stopped
+    mem_limit: 256m
+    cpus: 0.25
+    security_opt:
+      - no-new-privileges:true
+
+  redis-delivery:
+    image: ${REDIS_IMAGE:-redis:8.2.6-bookworm}
+    entrypoint: ["/bin/sh", "-ec"]
+    command:
+      - >-
+        exec redis-server
+        --requirepass "$$(cat /run/secrets/redis_delivery_password)"
+        --maxmemory 256mb
+        --maxmemory-policy noeviction
+        --appendonly yes
+        --appendfsync everysec
+        --save "900 1 300 10 60 10000"
+    secrets:
+      - redis_delivery_password
+    volumes:
+      - redis-delivery-data:/data
+    networks:
+      - connectors
+    ports:
+      - "127.0.0.1:${REDIS_DELIVERY_PORT:-6380}:6379"
+    healthcheck:
+      test: ["CMD-SHELL", "redis-cli -a \"$$(cat /run/secrets/redis_delivery_password)\" --no-auth-warning ping | grep -qx PONG"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    restart: unless-stopped
+    mem_limit: 384m
+    cpus: 0.25
+    security_opt:
+      - no-new-privileges:true
+
+  minio:
+    profiles: ["object-storage"]
+    image: ${MINIO_IMAGE:-quay.io/minio/minio:RELEASE.2025-10-15T17-29-55Z}
+    command: ["server", "/data", "--console-address", ":9001"]
+    environment:
+      MINIO_ROOT_USER_FILE: /run/secrets/s3_access_key
+      MINIO_ROOT_PASSWORD_FILE: /run/secrets/s3_secret_key
+    secrets:
+      - s3_access_key
+      - s3_secret_key
+    volumes:
+      - minio-data:/data
+    networks:
+      - connectors
+    ports:
+      - "127.0.0.1:${MINIO_API_PORT:-9000}:9000"
+      - "127.0.0.1:${MINIO_CONSOLE_PORT:-9001}:9001"
+    restart: unless-stopped
+    mem_limit: 512m
+    cpus: 0.5
+    security_opt:
+      - no-new-privileges:true
+
+  neo4j:
+    profiles: ["graph"]
+    image: ${NEO4J_IMAGE:-neo4j:2026.06.0}
+    environment:
+      NEO4J_AUTH_FILE: /run/secrets/neo4j_auth
+      NEO4J_server_memory_heap_initial__size: 384M
+      NEO4J_server_memory_heap_max__size: 512M
+      NEO4J_server_memory_pagecache_size: 384M
+      NEO4J_dbms_usage__report_enabled: "false"
+    secrets:
+      - neo4j_auth
+    volumes:
+      - neo4j-data:/data
+      - neo4j-logs:/logs
+    networks:
+      - connectors
+    ports:
+      - "127.0.0.1:${NEO4J_HTTP_PORT:-17474}:7474"
+      - "127.0.0.1:${NEO4J_BOLT_PORT:-17687}:7687"
+    restart: unless-stopped
+    mem_limit: 1280m
+    cpus: 0.75
+    security_opt:
+      - no-new-privileges:true
+
+networks:
+  connectors:
+    name: ${DATARIVER_CONNECTOR_NETWORK:-datariver-connectors}
+    internal: false
+
+volumes:
+  redis-delivery-data:
+  minio-data:
+  neo4j-data:
+  neo4j-logs:
+
+secrets:
+  redis_cache_password:
+    file: ./secrets/redis_cache_password
+  redis_delivery_password:
+    file: ./secrets/redis_delivery_password
+  s3_access_key:
+    file: ./secrets/s3_access_key
+  s3_secret_key:
+    file: ./secrets/s3_secret_key
+  neo4j_auth:
+    file: ./secrets/neo4j_auth

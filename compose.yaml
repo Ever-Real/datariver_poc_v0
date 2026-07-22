@@ -5,7 +5,9 @@ x-backend: &backend
     context: .
     dockerfile: backend/Dockerfile
   env_file:
-    - .env
+    - ${DATARIVER_ENV_FILE:-.env}
+  extra_hosts:
+    - "host.docker.internal:host-gateway"
   networks:
     - app
     - data
@@ -111,6 +113,7 @@ services:
       - datahub_token
       - intranet_llm_chat_api_key
       - intranet_llm_embedding_api_key
+      - neo4j_auth
       - keycloak_identity_admin_client_secret
       - s3_access_key
       - s3_secret_key
@@ -245,14 +248,13 @@ services:
     build:
       context: .
       dockerfile: frontend/Dockerfile
-      args:
-        VITE_API_BASE_URL: /api/v1
-        VITE_OIDC_AUTHORITY: ${OIDC_PUBLIC_AUTHORITY:-http://localhost:8081/realms/datariver}
-        VITE_OIDC_CLIENT_ID: ${OIDC_CLIENT_ID:-datariver-web}
-        VITE_OIDC_REDIRECT_URI: ${APP_PUBLIC_ORIGIN:-http://localhost:8080}
-        VITE_OIDC_HIGH_ASSURANCE_ACR: ${OIDC_STEP_UP_ACR:-2}
-        VITE_OIDC_PASSWORD_REAUTH_ACR: ${OIDC_PASSWORD_REAUTH_REQUEST_ACR:-1}
     environment:
+      BROWSER_API_BASE_URL: /api/v1
+      BROWSER_OIDC_AUTHORITY: ${OIDC_PUBLIC_AUTHORITY:-http://localhost:8081/realms/datariver}
+      BROWSER_OIDC_CLIENT_ID: ${OIDC_CLIENT_ID:-datariver-web}
+      BROWSER_OIDC_REDIRECT_URI: ${APP_PUBLIC_ORIGIN:-http://localhost:8080}
+      BROWSER_OIDC_HIGH_ASSURANCE_ACR: ${OIDC_STEP_UP_ACR:-2}
+      BROWSER_OIDC_PASSWORD_REAUTH_ACR: ${OIDC_PASSWORD_REAUTH_REQUEST_ACR:-1}
       S3_PUBLIC_ORIGIN: ${S3_PUBLIC_ORIGIN:-http://localhost:9000}
       OIDC_PUBLIC_ORIGIN: ${OIDC_PUBLIC_ORIGIN:-http://localhost:8081}
       DATAHUB_EMBED_BASE_URL: ${DATAHUB_EMBED_BASE_URL:-}
@@ -285,7 +287,8 @@ networks:
   data:
     internal: true
   connectors:
-    internal: false
+    external: true
+    name: ${DATARIVER_CONNECTOR_NETWORK:-datariver-connectors}
 
 volumes:
   postgres-data:
@@ -329,6 +332,8 @@ secrets:
     file: ./secrets/intranet_llm_chat_api_key
   intranet_llm_embedding_api_key:
     file: ./secrets/intranet_llm_embedding_api_key
+  neo4j_auth:
+    file: ./secrets/neo4j_auth
   s3_access_key:
     file: ./secrets/s3_access_key
   s3_secret_key:

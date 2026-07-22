@@ -5,14 +5,24 @@ datahub_token=
 datahub_base_url=
 host_development=false
 mac_development=false
+wsl_preparation=false
 source_host_airflow_bridge=false
+env_file_argument=.env
 while [ "$#" -gt 0 ]; do
   case "$1" in
+    --env-file)
+      shift
+      [ "$#" -gt 0 ] || { echo "--env-file requires a path" >&2; exit 2; }
+      env_file_argument=$1
+      ;;
     --host-development)
       host_development=true
       ;;
     --mac-development)
       mac_development=true
+      ;;
+    --wsl-preparation)
+      wsl_preparation=true
       ;;
     --source-host-airflow-bridge)
       source_host_airflow_bridge=true
@@ -30,8 +40,12 @@ while [ "$#" -gt 0 ]; do
   shift
 done
 
-if [ "$host_development" = true ] && [ "$mac_development" = true ]; then
-  echo "--host-development and --mac-development cannot be used together" >&2
+selected_profiles=0
+[ "$host_development" = true ] && selected_profiles=$((selected_profiles + 1))
+[ "$mac_development" = true ] && selected_profiles=$((selected_profiles + 1))
+[ "$wsl_preparation" = true ] && selected_profiles=$((selected_profiles + 1))
+if [ "$selected_profiles" -gt 1 ]; then
+  echo "--host-development, --mac-development and --wsl-preparation are mutually exclusive" >&2
   exit 2
 fi
 if [ "$source_host_airflow_bridge" = true ] && [ "$host_development" != true ]; then
@@ -44,6 +58,10 @@ if [ "$source_host_airflow_bridge" = true ] && [ "$(uname -s)" != Linux ]; then
 fi
 
 root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+case "$env_file_argument" in
+  /*) env_file=$env_file_argument ;;
+  *) env_file="$root/$env_file_argument" ;;
+esac
 secrets_dir="$root/secrets"
 keycloak_runtime_dir="$root/runtime/keycloak"
 mkdir -p "$secrets_dir"
@@ -69,7 +87,7 @@ ensure_random_secret() {
   fi
 }
 
-[ -f "$root/.env" ] || cp "$root/.env.example" "$root/.env"
+[ -f "$env_file" ] || cp "$root/.env.example" "$env_file"
 
 ensure_random_secret postgres_password 32
 ensure_random_secret postgres_app_password 32
@@ -149,15 +167,18 @@ sed -e "s/__DEMO_PASSWORD__/$escaped_demo_password/g" \
 set_env_value() {
   name=$1
   value=$2
-  temp_file="$root/.env.tmp.$$"
-  if grep -q "^${name}=" "$root/.env"; then
-    sed "s|^${name}=.*|${name}=${value}|" "$root/.env" > "$temp_file"
+  temp_file="$env_file.tmp.$$"
+  if grep -q "^${name}=" "$env_file"; then
+    sed "s|^${name}=.*|${name}=${value}|" "$env_file" > "$temp_file"
   else
-    cp "$root/.env" "$temp_file"
+    cp "$env_file" "$temp_file"
     printf '%s=%s\n' "$name" "$value" >> "$temp_file"
   fi
-  mv "$temp_file" "$root/.env"
+  mv "$temp_file" "$env_file"
 }
+
+set_env_value DATARIVER_ENV_FILE "$env_file_argument"
+set_env_value DATARIVER_CONNECTOR_NETWORK datariver-connectors
 
 if [ "$host_development" = true ]; then
   set_env_value APP_PUBLIC_ORIGIN "$web_public_origin"
@@ -217,10 +238,37 @@ if [ "$mac_development" = true ]; then
   set_env_value LOCAL_OLLAMA_CHAT_MODEL datariver-gemma4-dev:0.1
   set_env_value LOCAL_OLLAMA_CHAT_TIMEOUT_SECONDS 60
   set_env_value LOCAL_OLLAMA_CHAT_CONTEXT_TOKENS 8192
-  set_env_value SYSTEM_CONFIGURATION_RUNTIME_ACTIVATION_ENABLED true
-  set_env_value SYSTEM_CONFIGURATION_RUNTIME_WORKSPACE_ID 00000000-0000-4000-8000-000000000100
+  set_env_value SYSTEM_CONFIGURATION_RUNTIME_ACTIVATION_ENABLED false
   set_env_value CHAT_EPHEMERAL_ADMIN_WITHOUT_RETENTION_ENABLED true
   set_env_value UI_GRAPH_URL http://localhost:17474
+fi
+if [ "$wsl_preparation" = true ]; then
+  # This is a containerized, non-HA preparation profile. External DataHub,
+  # MinIO, Airflow, telemetry and LLM endpoints remain operator inputs.
+  set_env_value APP_ENV development
+  set_env_value APP_PUBLIC_ORIGIN http://localhost:8080
+  set_env_value APP_CORS_ORIGINS http://localhost:8080
+  set_env_value WEB_PORT 8080
+  set_env_value API_PORT 8000
+  set_env_value POSTGRES_PORT 5432
+  set_env_value KEYCLOAK_PORT 8081
+  set_env_value OIDC_ISSUER http://keycloak:8080/realms/datariver
+  set_env_value OIDC_JWKS_URL http://keycloak:8080/realms/datariver/protocol/openid-connect/certs
+  set_env_value OIDC_PUBLIC_AUTHORITY http://localhost:8081/realms/datariver
+  set_env_value OIDC_PUBLIC_ORIGIN http://localhost:8081
+  set_env_value REDIS_CACHE_URL redis://redis-cache:6379/0
+  set_env_value REDIS_DELIVERY_URL redis://redis-delivery:6379/0
+  set_env_value DATABASE_POOL_SIZE 4
+  set_env_value DATABASE_POOL_MAX_OVERFLOW 0
+  set_env_value WORKER_DATABASE_POOL_SIZE 1
+  set_env_value WORKER_DATABASE_POOL_MAX_OVERFLOW 0
+  set_env_value DATAHUB_MAX_CONCURRENCY 8
+  set_env_value NEO4J_MAXIMUM_CONNECTION_POOL_SIZE 4
+  set_env_value SYSTEM_CONFIGURATION_RUNTIME_ACTIVATION_ENABLED false
+  set_env_value LOCAL_OLLAMA_CHAT_ENABLED false
+  set_env_value LOCAL_OLLAMA_EMBEDDING_ENABLED false
+  set_env_value NEO4J_PROJECTION_ENABLED false
+  set_env_value KNOWLEDGE_PIPELINE_ENABLED false
 fi
 if [ -n "$datahub_base_url" ]; then
   set_env_value DATAHUB_BASE_URL "$datahub_base_url"
@@ -231,4 +279,4 @@ fi
 chmod 0700 "$secrets_dir" "$keycloak_runtime_dir"
 chmod 0444 "$secrets_dir"/* "$keycloak_runtime_dir/datariver-realm.json"
 
-echo "Bootstrap files created. Keep the secrets directory private and out of Git."
+echo "Bootstrap files created in $env_file. Keep the environment and secrets directory private and out of Git."

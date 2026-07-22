@@ -18,6 +18,12 @@ server {
         return 200 "healthy\n";
     }
 
+    location = /runtime-config.js {
+        alias /tmp/datariver/runtime-config.js;
+        default_type application/javascript;
+        add_header Cache-Control "no-store" always;
+    }
+
     location /api/ {
         # A variable-backed upstream is resolved at request time, so replacing
         # the API container does not leave this long-lived proxy on a stale IP.

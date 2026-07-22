@@ -1,7 +1,5 @@
 services:
   api:
-    secrets:
-      - neo4j_auth
     depends_on:
       neo4j:
         condition: service_healthy
@@ -43,10 +41,6 @@ services:
     cpus: 0.75
     security_opt:
       - no-new-privileges:true
-
-secrets:
-  neo4j_auth:
-    file: ./secrets/neo4j_auth
 
 volumes:
   neo4j-projection-data:
