@@ -12,7 +12,10 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 
 COPY --from=uv /uv /uvx /usr/local/bin/
 
-RUN groupadd --system --gid 10001 datariver \
+RUN apt-get update \
+    && apt-get upgrade --yes \
+    && rm -rf /var/lib/apt/lists/* \
+    && groupadd --system --gid 10001 datariver \
     && useradd --system --uid 10001 --gid datariver --home-dir /app datariver
 
 WORKDIR /app
