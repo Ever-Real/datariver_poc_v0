@@ -5,6 +5,7 @@ datahub_token=
 datahub_base_url=
 host_development=false
 mac_development=false
+source_host_airflow_bridge=false
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --host-development)
@@ -12,6 +13,9 @@ while [ "$#" -gt 0 ]; do
       ;;
     --mac-development)
       mac_development=true
+      ;;
+    --source-host-airflow-bridge)
+      source_host_airflow_bridge=true
       ;;
     --datahub-base-url)
       shift
@@ -28,6 +32,14 @@ done
 
 if [ "$host_development" = true ] && [ "$mac_development" = true ]; then
   echo "--host-development and --mac-development cannot be used together" >&2
+  exit 2
+fi
+if [ "$source_host_airflow_bridge" = true ] && [ "$host_development" != true ]; then
+  echo "--source-host-airflow-bridge requires --host-development" >&2
+  exit 2
+fi
+if [ "$source_host_airflow_bridge" = true ] && [ "$(uname -s)" != Linux ]; then
+  echo "--source-host-airflow-bridge is supported only on Linux/WSL source hosts" >&2
   exit 2
 fi
 
@@ -158,10 +170,16 @@ if [ "$host_development" = true ]; then
   set_env_value KEYCLOAK_PORT 18081
   set_env_value APISIX_PORT 9080
   # Airflow remains containerized while API/workers run from the source host.
-  # Persist the bridged origin so a later `docker compose ... -f
-  # compose.airflow.yaml up` cannot silently fall back to the nonexistent
-  # container-only `http://api:8000` upstream.
-  set_env_value DATARIVER_API_BASE_URL http://host.docker.internal:38101
+  # A WSL/Linux checkout may still run its mutable source API on Windows.
+  # Enable the bridge only when the API itself runs in this Linux host.
+  if [ "$source_host_airflow_bridge" = true ]; then
+    set_env_value AIRFLOW_SOURCE_API_BRIDGE_ENABLED true
+    set_env_value AIRFLOW_SOURCE_API_BRIDGE_PORT 38103
+    set_env_value DATARIVER_API_BASE_URL http://host.docker.internal:38103
+  else
+    set_env_value AIRFLOW_SOURCE_API_BRIDGE_ENABLED false
+    set_env_value DATARIVER_API_BASE_URL http://host.docker.internal:38101
+  fi
   set_env_value OIDC_ISSUER http://localhost:18081/realms/datariver
   set_env_value OIDC_PUBLIC_AUTHORITY http://localhost:18081/realms/datariver
   set_env_value OIDC_PUBLIC_ORIGIN http://localhost:18081
@@ -181,9 +199,10 @@ if [ "$mac_development" = true ]; then
   set_env_value POSTGRES_PORT 15432
   set_env_value KEYCLOAK_PORT 18081
   set_env_value APISIX_PORT 19080
-  # See the host-development equivalent above. Docker Desktop resolves this
-  # gateway to the native source API without giving Airflow a DataHub token.
+  # Docker Desktop resolves this gateway to the native source API without
+  # giving Airflow a DataHub token.
   set_env_value DATARIVER_API_BASE_URL http://host.docker.internal:38101
+  set_env_value AIRFLOW_SOURCE_API_BRIDGE_ENABLED false
   set_env_value OIDC_ISSUER http://localhost:18081/realms/datariver
   set_env_value OIDC_PUBLIC_AUTHORITY http://localhost:18081/realms/datariver
   set_env_value OIDC_PUBLIC_ORIGIN http://localhost:18081

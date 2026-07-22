@@ -22,8 +22,11 @@ valkey_queue_port=$(env_file_value VALKEY_QUEUE_PORT 6380)
 keycloak_port=$(env_file_value KEYCLOAK_PORT 18081)
 api_port=$(env_file_value API_PORT 38101)
 web_port=$(env_file_value WEB_PORT 38102)
+airflow_source_api_bridge_enabled=$(env_file_value AIRFLOW_SOURCE_API_BRIDGE_ENABLED false)
+airflow_source_api_bridge_port=$(env_file_value AIRFLOW_SOURCE_API_BRIDGE_PORT 38103)
 enable_local_ollama=false
 enable_neo4j=false
+enable_airflow_source_bridge=$airflow_source_api_bridge_enabled
 
 usage() {
   cat <<'EOF'
@@ -45,6 +48,9 @@ Options:
   --keycloak-port PORT     Host Keycloak port (default: 18081).
   --api-port PORT          Host Uvicorn port (default: .env API_PORT or 38101).
   --web-port PORT          Host Vite port (default: .env WEB_PORT or 38102).
+  --enable-airflow-source-bridge
+                      Forward a private Docker bridge listener to the loopback
+                      source API. Required only for Linux/WSL Airflow.
   --enable-local-ollama    Use native Ollama on 127.0.0.1:11434 for Mac development.
   --enable-neo4j           Use the local Neo4j projection on 127.0.0.1:17687.
 EOF
@@ -88,6 +94,9 @@ while [ "$#" -gt 0 ]; do
       ;;
     --enable-neo4j)
       enable_neo4j=true
+      ;;
+    --enable-airflow-source-bridge)
+      enable_airflow_source_bridge=true
       ;;
     --help|-h)
       usage
@@ -137,7 +146,7 @@ stop_process() {
 
 show_status() {
   local name
-  for name in api outbox-relay upload-worker upload-validation-worker governance-apply-worker vite; do
+  for name in api airflow-api-bridge outbox-relay upload-worker upload-validation-worker governance-apply-worker vite; do
     if is_running "$name"; then
       printf '%-25s running (pid %s)\n' "$name" "$(cat "$(pid_file "$name")")"
     else
@@ -152,7 +161,7 @@ case "$action" in
     exit 0
     ;;
   stop)
-    for process in vite governance-apply-worker upload-validation-worker upload-worker outbox-relay api; do
+    for process in vite governance-apply-worker upload-validation-worker upload-worker outbox-relay airflow-api-bridge api; do
       stop_process "$process"
     done
     echo "DataRiver source-host processes stopped."
@@ -167,6 +176,14 @@ if [ ! -x "$python" ]; then
 fi
 if [ "$action" = start ] && ! command -v npm >/dev/null 2>&1; then
   echo "npm is required. Install the approved Node.js toolchain first." >&2
+  exit 2
+fi
+if [ "$action" = start ] && [ "$enable_airflow_source_bridge" = true ] && [ "$(uname -s)" != Linux ]; then
+  echo "--enable-airflow-source-bridge is supported only on Linux/WSL source hosts." >&2
+  exit 2
+fi
+if [ "$action" = start ] && [ "$enable_airflow_source_bridge" = true ] && ! command -v docker >/dev/null 2>&1; then
+  echo "Docker is required to discover the private Airflow source-host bridge address." >&2
   exit 2
 fi
 
@@ -195,7 +212,7 @@ if [ "$enable_neo4j" = true ] && [ "$enable_local_ollama" != true ]; then
 fi
 
 mkdir -p "$runtime_dir"
-for process in api outbox-relay upload-worker upload-validation-worker governance-apply-worker vite; do
+for process in api airflow-api-bridge outbox-relay upload-worker upload-validation-worker governance-apply-worker vite; do
   if is_running "$process"; then
     echo "DataRiver source-host process is already running: $process" >&2
     exit 2
@@ -313,7 +330,7 @@ cleanup_needed=true
 cleanup_on_error() {
   local status=$?
   if [ "$cleanup_needed" = true ] && [ "$status" -ne 0 ]; then
-    for process in vite governance-apply-worker upload-validation-worker upload-worker outbox-relay api; do
+    for process in vite governance-apply-worker upload-validation-worker upload-worker outbox-relay airflow-api-bridge api; do
       stop_process "$process"
     done
   fi
@@ -341,6 +358,47 @@ if [ "$api_ready" != true ]; then
   exit 1
 fi
 
+docker_bridge_gateway() {
+  local gateway
+  gateway=$(docker network inspect bridge --format '{{range .IPAM.Config}}{{.Gateway}}{{end}}' 2>/dev/null || true)
+  "$python" - "$gateway" <<'PY'
+import ipaddress
+import sys
+
+try:
+    address = ipaddress.ip_address(sys.argv[1])
+except ValueError:
+    raise SystemExit(1)
+networks = (
+    ipaddress.ip_network("10.0.0.0/8"),
+    ipaddress.ip_network("172.16.0.0/12"),
+    ipaddress.ip_network("192.168.0.0/16"),
+)
+if not isinstance(address, ipaddress.IPv4Address) or not any(address in network for network in networks):
+    raise SystemExit(1)
+print(address)
+PY
+}
+
+if [ "$enable_airflow_source_bridge" = true ]; then
+  bridge_gateway=$(docker_bridge_gateway) || {
+    stop_process api
+    echo "Could not determine a private Docker bridge gateway for Airflow source-host access." >&2
+    echo "Verify 'docker network inspect bridge' and keep the source API loopback-only." >&2
+    exit 2
+  }
+  start_process airflow-api-bridge "$root" "$python" "$root/scripts/source_api_bridge.py" \
+    --listen-host "$bridge_gateway" \
+    --listen-port "$airflow_source_api_bridge_port" \
+    --target-port "$api_port"
+  sleep 0.5
+  if ! is_running airflow-api-bridge; then
+    stop_process api
+    echo "Airflow source API bridge failed. Read $runtime_dir/airflow-api-bridge.err.log" >&2
+    exit 1
+  fi
+fi
+
 start_process outbox-relay "$root" "$python" -m datariver.workers.outbox_relay
 start_process upload-worker "$root" "$python" -m datariver.workers.upload_worker
 start_process upload-validation-worker "$root" "$python" -m datariver.workers.upload_validation
@@ -348,7 +406,7 @@ start_process governance-apply-worker "$root" "$python" -m datariver.workers.gov
 start_process vite "$root/frontend" npm run dev -- --host 127.0.0.1 --port "$web_port" --strictPort
 
 sleep 2
-for process in api outbox-relay upload-worker upload-validation-worker governance-apply-worker vite; do
+for process in api airflow-api-bridge outbox-relay upload-worker upload-validation-worker governance-apply-worker vite; do
   if ! is_running "$process"; then
     echo "Source-host process failed during startup: $process. Read $runtime_dir/$process.err.log" >&2
     exit 1

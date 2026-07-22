@@ -273,14 +273,19 @@ for the selected workspace.
 
 The Compose overlay intentionally uses Airflow `SimpleAuthManager` only for loopback development and pre-creates its password file from a secret. Any shared or production deployment must replace it with an environment-supported enterprise/FAB SSO configuration and retest authorization; the DataRiver service-token flow is independent of that human UI login choice.
 
-For source-host development, `bootstrap.sh --host-development` persists
-`DATARIVER_API_BASE_URL=http://host.docker.internal:38101` in ignored `.env`. Airflow otherwise
-defaults to the container topology's `http://api:8000`; that name is deliberately absent when API
-and workers run from a checkout, so every task would fail before reaching DataHub. Recreate all
-four Airflow services after changing this value. Its `NO_PROXY`/`no_proxy` list explicitly covers
-only local Compose and source-host names, preventing a workstation proxy from intercepting Keycloak
-client-credentials or internal API calls. It does not grant Airflow DataHub egress or a DataHub
-credential.
+For source-host development, `bootstrap.sh --host-development` persists a deployment-owned Airflow
+API origin in ignored `.env`. macOS and Windows-host source use `host.docker.internal:38101`. When
+the source API itself runs on Linux/WSL, the operator explicitly adds
+`--source-host-airflow-bridge`; it selects `host.docker.internal:38103` and `dev_host.sh` starts a
+standard-library bridge only on Docker's validated private default-bridge gateway. It forwards
+solely to the still-loopback-only source API.
+Airflow otherwise defaults to the container topology's `http://api:8000`; that name is deliberately
+absent when API and workers run from a checkout, so every task would fail before reaching DataHub.
+Recreate all four Airflow services after changing this value. Its `NO_PROXY`/`no_proxy` list
+explicitly covers only local Compose and source-host names, preventing a workstation proxy from
+intercepting Keycloak client-credentials or internal API calls. It does not grant Airflow DataHub
+egress or a DataHub credential. The complete Linux/WSL boundary is
+[ADR-0032](adr/0032-linux-source-host-airflow-loopback-bridge.md).
 
 ## Database and object operations
 

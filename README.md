@@ -323,14 +323,29 @@ docker compose -f compose.yaml -f compose.identity.yaml -f compose.source-host.y
 외부 DataHub가 원격 HTTPS 주소라면 `bootstrap.sh`와 `dev_host.sh`의 두 DataHub URL을 모두
 그 정확한 HTTPS origin으로 바꾼다. API가 아닌 browser에는 DataHub service token을 주지 않는다.
 사설 CA를 쓰는 경우 macOS의 시스템 신뢰 저장소와 host Python이 그 CA를 신뢰하게 사전 배포하며,
-TLS 검증을 끄지 않는다. Airflow까지 테스트할
-때는 Mac Docker Desktop의 host gateway를 명시해, Airflow가 source API를 호출하게 한다.
+TLS 검증을 끄지 않는다. Airflow까지 테스트할 때는 `bootstrap.sh`가 기록한
+`DATARIVER_API_BASE_URL`만 사용한다. macOS Docker Desktop은 native loopback gateway의
+`host.docker.internal:38101`을, Linux/WSL은 loopback API를 외부에 노출하지 않는 private Docker
+bridge의 `host.docker.internal:38103`을 사용한다.
 
 ```bash
-DATARIVER_API_BASE_URL=http://host.docker.internal:38101 \
-  docker compose -f compose.yaml -f compose.identity.yaml -f compose.source-host.yaml \
+docker compose -f compose.yaml -f compose.identity.yaml -f compose.source-host.yaml \
   -f compose.airflow.yaml up -d --pull never --no-build --wait \
   airflow-api-server airflow-scheduler airflow-dag-processor airflow-triggerer
+```
+
+Linux/WSL에서 **source API도 WSL에서 실행할 때만**, bootstrap에
+`--source-host-airflow-bridge`를 추가한다. `dev_host.sh`가 Docker bridge의 RFC1918 address에만
+`airflow-api-bridge`를 만들고 `127.0.0.1:38101` API로만 forward한다. `0.0.0.0` bind, Windows/LAN
+port-forward 또는 API token을 Airflow에 주는 방식으로 우회하지 않는다.
+
+```bash
+./scripts/bootstrap.sh --host-development --source-host-airflow-bridge \
+  --datahub-base-url https://datahub.example.internal
+./scripts/dev_host.sh start \
+  --datahub-base-url https://datahub.example.internal
+./scripts/dev_host.sh status
+# airflow-api-bridge가 running이어야 한다.
 ```
 
 `DATAHUB_BASE_URL`은 DataHub **GMS**의 origin(예: `https://datahub-gms.example.internal`)이며
@@ -359,12 +374,17 @@ account 범위가 Dataset/Tag/Glossary Term read에 부족한 경우이고, `VER
 
 source-host에서 Airflow를 처음 시작할 때 API origin을 지정하지 않으면 container topology의 기본값
 `http://api:8000`을 사용한다. 이 topology에는 API container가 없으므로 task가 DNS 오류로 실패한다.
-현재 `bootstrap.sh --host-development`은 이를 `.env`의
-`DATARIVER_API_BASE_URL=http://host.docker.internal:38101`로 기록한다. 이전 bootstrap으로 만든
-환경은 bootstrap을 token 인자 없이 한 번 다시 실행한 뒤 Airflow 네 서비스를 반드시 재생성한다.
+현재 `bootstrap.sh --host-development`은 macOS 및 Windows-host source에는
+`DATARIVER_API_BASE_URL=http://host.docker.internal:38101`을, Linux/WSL에는 private bridge의
+`DATARIVER_API_BASE_URL=http://host.docker.internal:38103`을 기록한다. 후자는
+`--source-host-airflow-bridge`를 명시한 경우에만 선택된다. 이전 bootstrap으로 만든 환경은 token
+인자 없이 한 번 다시 실행하고 source-host와 Airflow 네 서비스를 반드시 재생성한다.
 
 ```bash
-./scripts/bootstrap.sh --host-development \
+./scripts/bootstrap.sh --host-development --source-host-airflow-bridge \
+  --datahub-base-url https://datahub.example.internal
+./scripts/dev_host.sh stop
+./scripts/dev_host.sh start \
   --datahub-base-url https://datahub.example.internal
 docker compose -f compose.yaml -f compose.identity.yaml -f compose.source-host.yaml \
   -f compose.airflow.yaml up -d --pull never --no-build --force-recreate --wait \

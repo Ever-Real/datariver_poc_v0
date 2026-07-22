@@ -40,6 +40,8 @@ Current development knowledge-integration decision: [intranet OpenAI-compatible 
 
 Current local identity-lifecycle decision: [governed Keycloak identity provisioning](adr/0031-governed-keycloak-identity-provisioning.md).
 
+Current Linux/WSL source-host scheduling decision: [Airflow loopback bridge](adr/0032-linux-source-host-airflow-loopback-bridge.md).
+
 ## Change control
 
 - Requirements use stable IDs (`FR-*`, `NFR-*`, `SEC-*`).

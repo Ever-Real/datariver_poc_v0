@@ -426,12 +426,16 @@ def verify_host_development_ports() -> None:
         ROOT / "scripts" / "dev_host.sh": {
             "api_port=$(env_file_value API_PORT 38101)",
             "web_port=$(env_file_value WEB_PORT 38102)",
+            "airflow_source_api_bridge_enabled=$(env_file_value AIRFLOW_SOURCE_API_BRIDGE_ENABLED false)",
+            '"$root/scripts/source_api_bridge.py"',
             'VITE_API_PROXY_TARGET="http://127.0.0.1:$api_port"',
         },
         ROOT / "scripts" / "bootstrap.sh": {
             "web_public_origin=http://localhost:38102",
             "set_env_value API_PORT 38101",
             "set_env_value WEB_PORT 38102",
+            "--source-host-airflow-bridge",
+            "set_env_value AIRFLOW_SOURCE_API_BRIDGE_PORT 38103",
         },
         ROOT / "scripts" / "configure_keycloak_host_dev.sh": {
             "web_origin=${web_origin:-http://localhost:38102}",
