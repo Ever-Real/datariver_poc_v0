@@ -126,11 +126,13 @@ export function CatalogPage({
   const [query, setQuery] = useState(initialQuery)
   const [filters, setFilters] = useState<Filters>(emptyFilters)
   const [result, setResult] = useState<CatalogSearch>()
+  const [resultPageIndex, setResultPageIndex] = useState<number>()
   const [facets, setFacets] = useState<CatalogFacets>()
   const [suggestions, setSuggestions] = useState<CatalogSuggestion[]>([])
   const [suggestionIndex, setSuggestionIndex] = useState(-1)
   const [filtersOpen, setFiltersOpen] = useState(false)
   const [selectedAssetId, setSelectedAssetId] = useState<string>()
+  const [selectionTargetAssetId, setSelectionTargetAssetId] = useState<string>()
   const [detailWidth, setDetailWidth] = useState(550)
   const [cursors, setCursors] = useState<Array<string | undefined>>([undefined])
   const [pageIndex, setPageIndex] = useState(0)
@@ -146,16 +148,20 @@ export function CatalogPage({
     if (initialQueryRef.current === initialQuery) return
     initialQueryRef.current = initialQuery
     setDraftQuery(initialQuery); setQuery(initialQuery); setCursors([undefined]); setPageIndex(0)
+    setSelectedAssetId(undefined); setSelectionTargetAssetId(undefined)
   }, [initialQuery])
 
   useEffect(() => {
     const controller = new AbortController()
-    setLoading(true); setError(undefined); setSelectedAssetId(undefined)
+    const requestedPageIndex = pageIndex
+    setLoading(true); setError(undefined); setResultPageIndex(undefined)
     void Promise.all([
       loadCatalogWindow(client, query, filters, cursors[pageIndex], pageSize, controller.signal),
       client.request<CatalogFacets>(`/catalog/facets?${searchPath(query, filters, undefined, 30)}`, { signal: controller.signal }),
     ]).then(([nextResult, nextFacets]) => {
-      if (!controller.signal.aborted) { setResult(nextResult); setFacets(nextFacets) }
+      if (!controller.signal.aborted) {
+        setResult(nextResult); setResultPageIndex(requestedPageIndex); setFacets(nextFacets)
+      }
     }).catch((next: unknown) => { if (!controller.signal.aborted) setError(next) })
       .finally(() => { if (!controller.signal.aborted) setLoading(false) })
     return () => controller.abort()
@@ -193,6 +199,7 @@ export function CatalogPage({
     const normalized = value.trim()
     if (!validCatalogQuery(normalized)) { setError(new Error('검색어는 비워 두거나 2자 이상 입력하세요.')); return }
     setDraftQuery(normalized); setQuery(normalized); setSuggestions([]); setCursors([undefined]); setPageIndex(0)
+    setSelectedAssetId(undefined); setSelectionTargetAssetId(undefined)
     onQueryChange?.(normalized)
   }
 
@@ -227,6 +234,7 @@ export function CatalogPage({
 
   const updateFilter = (name: keyof Filters, value: string) => {
     setFilters((current) => ({ ...current, [name]: value })); setCursors([undefined]); setPageIndex(0)
+    setSelectedAssetId(undefined); setSelectionTargetAssetId(undefined)
   }
 
   const toggleSearchField = (field: SearchField) => {
@@ -239,18 +247,54 @@ export function CatalogPage({
       return { ...current, searchFields }
     })
     setCursors([undefined]); setPageIndex(0)
+    setSelectedAssetId(undefined); setSelectionTargetAssetId(undefined)
   }
 
   const setAllSearchFields = (checked: boolean) => {
     setFilters((current) => ({ ...current, searchFields: checked ? allSearchFields : [allSearchFields[0]!] }))
     setCursors([undefined]); setPageIndex(0)
+    setSelectedAssetId(undefined); setSelectionTargetAssetId(undefined)
   }
 
   const resetFilters = () => {
     setFilters(emptyFilters)
     setCursors([undefined])
     setPageIndex(0)
+    setSelectedAssetId(undefined)
+    setSelectionTargetAssetId(undefined)
   }
+
+  const selectAsset = (assetId: string) => {
+    setSelectedAssetId(assetId)
+    if (pageSize === 0 || result?.items.some((item) => item.id === assetId)) {
+      setSelectionTargetAssetId(undefined)
+      return
+    }
+    // Resource Tree and Lineage are independent of the current result page.
+    // Restart the same authorized query from page one, then advance only until
+    // the selected opaque asset id is visible in Search Results.
+    setSelectionTargetAssetId(assetId)
+    setResult(undefined)
+    setResultPageIndex(undefined)
+    setCursors([undefined])
+    setPageIndex(0)
+  }
+
+  const closeSelectedAsset = () => {
+    setSelectedAssetId(undefined)
+    setSelectionTargetAssetId(undefined)
+  }
+
+  useEffect(() => {
+    if (!selectionTargetAssetId || !result || loading || resultPageIndex !== pageIndex) return
+    if (result.items.some((item) => item.id === selectionTargetAssetId) || pageSize === 0 || !result.page.next_cursor) {
+      setSelectionTargetAssetId(undefined)
+      return
+    }
+    const nextCursor = result.page.next_cursor
+    setCursors((current) => [...current.slice(0, pageIndex + 1), nextCursor])
+    setPageIndex((current) => current === pageIndex ? current + 1 : current)
+  }, [loading, pageIndex, pageSize, result, resultPageIndex, selectionTargetAssetId])
 
   const resizeDetail = (requestedWidth: number) => {
     const measuredWorkspaceWidth = workspaceRef.current?.clientWidth ?? 0
@@ -306,7 +350,7 @@ export function CatalogPage({
         <div className="catalog-filter-root" ref={filterRoot}>
           <button aria-controls="catalog-filter-popover" aria-expanded={filtersOpen} className="button button-secondary catalog-filter-trigger" onClick={() => setFiltersOpen((current) => !current)} type="button"><Filter size={14} />필터{activeFilterCount > 0 && <span className="catalog-filter-count">{activeFilterCount}</span>}</button>
           {filtersOpen && <div className="catalog-filter-popover" id="catalog-filter-popover" role="dialog" aria-label="상세 검색 필터">
-            <header><div><span className="eyebrow">Advanced search</span><strong>검색 필터</strong></div><button className="button button-secondary" onClick={resetFilters} type="button"><RotateCcw size={12} />초기화</button></header>
+            <header><div><span className="eyebrow">Advanced search</span><strong>검색 필터</strong></div><button aria-label="필터 조건 초기화" className="button button-secondary" onClick={resetFilters} type="button"><RotateCcw size={12} />초기화</button></header>
             <fieldset className="catalog-search-targets"><legend>Search in</legend><label><input aria-label="Search in 전체" checked={filters.searchFields.length === allSearchFields.length} onChange={(event) => setAllSearchFields(event.target.checked)} type="checkbox" />전체</label>{allSearchFields.map((field) => <label key={field}><input checked={filters.searchFields.includes(field)} onChange={() => toggleSearchField(field)} type="checkbox" />{searchFieldLabels[field]}</label>)}</fieldset>
             <div className="catalog-filter-fields">
               <FacetSelect label="Type" value={filters.assetType} onChange={(value) => updateFilter('assetType', value)} options={facets?.asset_types ?? []} />
@@ -320,6 +364,7 @@ export function CatalogPage({
             <footer><button className="button" onClick={() => setFiltersOpen(false)} type="button">필터 적용</button></footer>
           </div>}
         </div>
+        <button aria-label="검색 조건 초기화" className="button button-secondary catalog-reset-trigger" disabled={activeFilterCount === 0} onClick={resetFilters} type="button"><RotateCcw size={13} />초기화</button>
         <CatalogExportControl
           client={client}
           compact
@@ -338,15 +383,15 @@ export function CatalogPage({
     </div>
     <ErrorNotice error={error} />
     <div className={`catalog-workspace ${selectedAssetId ? 'with-detail' : ''}`} ref={workspaceRef} style={selectedAssetId ? { '--catalog-detail-width': `${detailWidth}px` } as CSSProperties : undefined}>
-      <CatalogResourceTree client={client} selectedAssetId={selectedAssetId} onSelectAsset={setSelectedAssetId} />
+      <CatalogResourceTree client={client} selectedAssetId={selectedAssetId} onSelectAsset={selectAsset} />
       <section className="catalog-results" aria-label="카탈로그 검색 결과">
         <header><div><span className="eyebrow">Permission scoped</span><h2>Search Results</h2><span>{result ? `${result.items.length} / ${(result.total ?? result.items.length).toLocaleString()} items` : '0 items'} · ALL keywords · ↔ 좌우 스크롤</span></div><CursorPagination {...paginationProps} compact label="Search Results 상단 페이지 탐색" /></header>
-        <DenseDataTable caption="카탈로그 검색 결과" columns={columns} data={result?.items ?? []} getRowId={(item) => item.id} loading={loading} emptyMessage={query ? '검색 조건에 맞는 허용 자산이 없습니다.' : '현재 권한 범위에서 표시할 자산이 없습니다.'} selectedRowId={selectedAssetId} onRowActivate={(item) => setSelectedAssetId(item.id)} />
+        <DenseDataTable caption="카탈로그 검색 결과" columns={columns} data={result?.items ?? []} getRowId={(item) => item.id} loading={loading} emptyMessage={query ? '검색 조건에 맞는 허용 자산이 없습니다.' : '현재 권한 범위에서 표시할 자산이 없습니다.'} selectedRowId={selectedAssetId} onRowActivate={(item) => selectAsset(item.id)} />
         <p className="catalog-local-table-note">열 정렬은 현재 로드된 {result?.items.length.toLocaleString() ?? 0}건에 적용됩니다.</p>
         <CursorPagination {...paginationProps} />
         {result && <footer className="catalog-result-meta"><span>projection v{result.meta.projection_version}</span><span>policy {result.meta.policy_version}</span><time dateTime={result.meta.observed_at}>{result.meta.observed_at ? new Date(result.meta.observed_at).toLocaleString() : '관측 시각 없음'}</time></footer>}
       </section>
-      {selectedAssetId && <CatalogDetailPane key={selectedAssetId} client={client} assetId={selectedAssetId} onClose={() => setSelectedAssetId(undefined)} onResizeWidth={resizeDetail} onSelectAsset={setSelectedAssetId} width={detailWidth} />}
+      {selectedAssetId && <CatalogDetailPane key={selectedAssetId} client={client} assetId={selectedAssetId} onClose={closeSelectedAsset} onResizeWidth={resizeDetail} onSelectAsset={selectAsset} width={detailWidth} />}
     </div>
   </section>
 }
