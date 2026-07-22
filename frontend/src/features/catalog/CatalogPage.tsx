@@ -63,54 +63,6 @@ function searchPath(query: string, filters: Filters, cursor: string | undefined,
   return parameters
 }
 
-const catalogServerPageLimit = 100
-
-async function loadCatalogWindow(
-  client: ApiClient,
-  query: string,
-  filters: Filters,
-  cursor: string | undefined,
-  requestedSize: number,
-  signal: AbortSignal,
-): Promise<CatalogSearch> {
-  const loadAll = requestedSize === 0
-  const targetSize = loadAll ? Number.POSITIVE_INFINITY : requestedSize
-  const items: CatalogAsset[] = []
-  const visitedCursors = new Set<string>()
-  if (cursor) visitedCursors.add(cursor)
-  let nextCursor = cursor
-  let windowNextCursor: string | undefined
-  let first: CatalogSearch | undefined
-
-  while (items.length < targetSize) {
-    const remaining = loadAll ? catalogServerPageLimit : targetSize - items.length
-    const batchLimit = Math.min(catalogServerPageLimit, remaining)
-    const response = await client.request<CatalogSearch>(
-      `/catalog/assets?${searchPath(query, filters, nextCursor, batchLimit)}`,
-      { signal },
-    )
-    first ??= response
-    items.push(...response.items)
-    windowNextCursor = response.page.next_cursor
-    if (!windowNextCursor || items.length >= targetSize || items.length >= response.total) break
-    if (visitedCursors.has(windowNextCursor)) {
-      throw new Error('검색 커서가 반복되어 결과 로딩을 중단했습니다. 검색 조건을 다시 적용하세요.')
-    }
-    visitedCursors.add(windowNextCursor)
-    nextCursor = windowNextCursor
-  }
-
-  if (!first) throw new Error('검색 결과 응답을 확인하지 못했습니다.')
-  return {
-    ...first,
-    items: loadAll ? items : items.slice(0, requestedSize),
-    page: {
-      limit: loadAll ? items.length : requestedSize,
-      ...(loadAll || !windowNextCursor ? {} : { next_cursor: windowNextCursor }),
-    },
-  }
-}
-
 export function CatalogPage({
   client,
   initialQuery = '',
@@ -131,8 +83,6 @@ export function CatalogPage({
   const [suggestionIndex, setSuggestionIndex] = useState(-1)
   const [filtersOpen, setFiltersOpen] = useState(false)
   const [selectedAssetId, setSelectedAssetId] = useState<string>()
-  const [selectionTargetAssetId, setSelectionTargetAssetId] = useState<string>()
-  const [selectionLoading, setSelectionLoading] = useState(false)
   const [detailWidth, setDetailWidth] = useState(550)
   const [cursors, setCursors] = useState<Array<string | undefined>>([undefined])
   const [pageIndex, setPageIndex] = useState(0)
@@ -143,39 +93,35 @@ export function CatalogPage({
   const filterRoot = useRef<HTMLDivElement>(null)
   const workspaceRef = useRef<HTMLDivElement>(null)
   const initialQueryRef = useRef(initialQuery)
-  const skipResultLoadRef = useRef(false)
-  const resultLoadAbortRef = useRef<AbortController | undefined>(undefined)
 
   useEffect(() => {
     if (initialQueryRef.current === initialQuery) return
     initialQueryRef.current = initialQuery
     setDraftQuery(initialQuery); setQuery(initialQuery); setCursors([undefined]); setPageIndex(0)
-    setSelectedAssetId(undefined); setSelectionTargetAssetId(undefined); setSelectionLoading(false)
+    setSelectedAssetId(undefined)
   }, [initialQuery])
 
   useEffect(() => {
     const controller = new AbortController()
-    if (skipResultLoadRef.current) {
-      skipResultLoadRef.current = false
-      return () => controller.abort()
-    }
-    resultLoadAbortRef.current?.abort()
-    resultLoadAbortRef.current = controller
     setLoading(true); setError(undefined)
-    void Promise.all([
-      loadCatalogWindow(client, query, filters, cursors[pageIndex], pageSize, controller.signal),
-      client.request<CatalogFacets>(`/catalog/facets?${searchPath(query, filters, undefined, 30)}`, { signal: controller.signal }),
-    ]).then(([nextResult, nextFacets]) => {
-      if (!controller.signal.aborted) {
-        setResult(nextResult); setFacets(nextFacets)
-      }
-    }).catch((next: unknown) => { if (!controller.signal.aborted) setError(next) })
+    void client.request<CatalogSearch>(
+      `/catalog/assets?${searchPath(query, filters, cursors[pageIndex], pageSize)}`,
+      { signal: controller.signal },
+    ).then((nextResult) => { if (!controller.signal.aborted) setResult(nextResult) })
+      .catch((next: unknown) => { if (!controller.signal.aborted) setError(next) })
       .finally(() => { if (!controller.signal.aborted) setLoading(false) })
-    return () => {
-      controller.abort()
-      if (resultLoadAbortRef.current === controller) resultLoadAbortRef.current = undefined
-    }
+    return () => controller.abort()
   }, [client, cursors, filters, pageIndex, pageSize, query])
+
+  useEffect(() => {
+    const controller = new AbortController()
+    void client.request<CatalogFacets>(
+      `/catalog/facets?${searchPath(query, filters, undefined, 30)}`,
+      { signal: controller.signal },
+    ).then((nextFacets) => { if (!controller.signal.aborted) setFacets(nextFacets) })
+      .catch((next: unknown) => { if (!controller.signal.aborted) setError(next) })
+    return () => controller.abort()
+  }, [client, filters, query])
 
   useEffect(() => {
     const normalized = draftQuery.trim()
@@ -209,7 +155,7 @@ export function CatalogPage({
     const normalized = value.trim()
     if (!validCatalogQuery(normalized)) { setError(new Error('검색어는 비워 두거나 2자 이상 입력하세요.')); return }
     setDraftQuery(normalized); setQuery(normalized); setSuggestions([]); setCursors([undefined]); setPageIndex(0)
-    setSelectedAssetId(undefined); setSelectionTargetAssetId(undefined); setSelectionLoading(false)
+    setSelectedAssetId(undefined)
     onQueryChange?.(normalized)
   }
 
@@ -244,7 +190,7 @@ export function CatalogPage({
 
   const updateFilter = (name: keyof Filters, value: string) => {
     setFilters((current) => ({ ...current, [name]: value })); setCursors([undefined]); setPageIndex(0)
-    setSelectedAssetId(undefined); setSelectionTargetAssetId(undefined); setSelectionLoading(false)
+    setSelectedAssetId(undefined)
   }
 
   const toggleSearchField = (field: SearchField) => {
@@ -257,13 +203,13 @@ export function CatalogPage({
       return { ...current, searchFields }
     })
     setCursors([undefined]); setPageIndex(0)
-    setSelectedAssetId(undefined); setSelectionTargetAssetId(undefined); setSelectionLoading(false)
+    setSelectedAssetId(undefined)
   }
 
   const setAllSearchFields = (checked: boolean) => {
     setFilters((current) => ({ ...current, searchFields: checked ? allSearchFields : [allSearchFields[0]!] }))
     setCursors([undefined]); setPageIndex(0)
-    setSelectedAssetId(undefined); setSelectionTargetAssetId(undefined); setSelectionLoading(false)
+    setSelectedAssetId(undefined)
   }
 
   const resetFilters = () => {
@@ -277,76 +223,17 @@ export function CatalogPage({
     setPageIndex(0)
     setPageSize(50)
     setSelectedAssetId(undefined)
-    setSelectionTargetAssetId(undefined)
-    setSelectionLoading(false)
     setError(undefined)
     onQueryChange?.('')
   }
 
   const selectAsset = (assetId: string) => {
     setSelectedAssetId(assetId)
-    if (pageSize === 0 || result?.items.some((item) => item.id === assetId)) {
-      setSelectionTargetAssetId(undefined)
-      setSelectionLoading(false)
-      return
-    }
-    // Resource Tree and Lineage are independent of the current result page.
-    // Resolve the same authorized query off-screen, then switch directly to
-    // the page containing the selected opaque asset id.
-    resultLoadAbortRef.current?.abort()
-    setLoading(false)
-    setSelectionTargetAssetId(assetId)
   }
 
   const closeSelectedAsset = () => {
     setSelectedAssetId(undefined)
-    setSelectionTargetAssetId(undefined)
-    setSelectionLoading(false)
   }
-
-  useEffect(() => {
-    if (!selectionTargetAssetId || pageSize === 0) return
-    const controller = new AbortController()
-    let active = true
-    setSelectionLoading(true)
-    void client.request<CatalogFacets>(`/catalog/facets?${searchPath(query, filters, undefined, 30)}`, { signal: controller.signal })
-      .then((nextFacets) => { if (active && !controller.signal.aborted) setFacets(nextFacets) })
-      .catch(() => undefined)
-    void (async () => {
-      const targetCursors: Array<string | undefined> = [undefined]
-      const visitedCursors = new Set<string>()
-      let cursor: string | undefined
-      let targetPageIndex = 0
-
-      while (!controller.signal.aborted) {
-        const candidate = await loadCatalogWindow(client, query, filters, cursor, pageSize, controller.signal)
-        if (candidate.items.some((item) => item.id === selectionTargetAssetId)) {
-          if (!active) return
-          // The regular result effect would fetch this page again.  The
-          // already resolved window is authoritative for this same query.
-          skipResultLoadRef.current = true
-          setResult(candidate)
-          setCursors(targetCursors)
-          setPageIndex(targetPageIndex)
-          return
-        }
-        const nextCursor = candidate.page.next_cursor
-        if (!nextCursor || visitedCursors.has(nextCursor)) return
-        visitedCursors.add(nextCursor)
-        targetCursors.push(nextCursor)
-        cursor = nextCursor
-        targetPageIndex += 1
-      }
-    })().catch((next: unknown) => {
-      if (active && !controller.signal.aborted) setError(next)
-    }).finally(() => {
-      if (active) {
-        setSelectionLoading(false)
-        setSelectionTargetAssetId(undefined)
-      }
-    })
-    return () => { active = false; controller.abort() }
-  }, [client, filters, pageSize, query, selectionTargetAssetId])
 
   const resizeDetail = (requestedWidth: number) => {
     const measuredWorkspaceWidth = workspaceRef.current?.clientWidth ?? 0
@@ -370,9 +257,9 @@ export function CatalogPage({
   const paginationProps = {
     page: pageIndex + 1,
     pageSize,
-    pageSizeOptions: [50, 100, 200, 500, 1000, 0],
-    canPrevious: !selectionLoading && pageSize !== 0 && pageIndex > 0,
-    canNext: !selectionLoading && pageSize !== 0 && Boolean(result?.page.next_cursor),
+    pageSizeOptions: [25, 50, 100],
+    canPrevious: pageIndex > 0,
+    canNext: Boolean(result?.page.next_cursor),
     itemCount: result?.items.length,
     onPrevious: () => setPageIndex((current) => Math.max(0, current - 1)),
     onNext: () => {
@@ -381,7 +268,7 @@ export function CatalogPage({
       setPageIndex((current) => current + 1)
     },
     onPageSizeChange: (value: number) => {
-      setPageSize(value); setCursors([undefined]); setPageIndex(0); setSelectionTargetAssetId(undefined); setSelectionLoading(false)
+      setPageSize(value); setCursors([undefined]); setPageIndex(0)
     },
   }
 
@@ -439,7 +326,6 @@ export function CatalogPage({
       <CatalogResourceTree client={client} selectedAssetId={selectedAssetId} onSelectAsset={selectAsset} />
       <section className="catalog-results" aria-label="카탈로그 검색 결과">
         <header><div><span className="eyebrow">Permission scoped</span><h2>Search Results</h2><span>{result ? `${result.items.length} / ${(result.total ?? result.items.length).toLocaleString()} items` : '0 items'} · ALL keywords · ↔ 좌우 스크롤</span></div><CursorPagination {...paginationProps} label="Search Results 상단 페이지 탐색" /></header>
-        {selectionLoading && <div className="catalog-selection-loading" role="status"><span className="loader" />선택한 테이블이 있는 페이지를 찾는 중입니다.</div>}
         <DenseDataTable caption="카탈로그 검색 결과" columns={columns} data={result?.items ?? []} getRowId={(item) => item.id} loading={loading} emptyMessage={query ? '검색 조건에 맞는 허용 자산이 없습니다.' : '현재 권한 범위에서 표시할 자산이 없습니다.'} selectedRowId={selectedAssetId} onRowActivate={(item) => selectAsset(item.id)} />
         <p className="catalog-local-table-note">열 정렬은 현재 로드된 {result?.items.length.toLocaleString() ?? 0}건에 적용됩니다.</p>
         <CursorPagination {...paginationProps} />

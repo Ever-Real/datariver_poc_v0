@@ -14,9 +14,9 @@ from datariver_manual_metadata import apply_manual_metadata_receipts
     schedule="*/5 * * * *",
     start_date=datetime(2026, 7, 18, tzinfo=UTC),
     catchup=False,
-    # Registration processing is an explicitly enabled development-platform capability. Existing
-    # Airflow metadata databases still require one operator/API unpause during this migration.
-    is_paused_upon_creation=False,
+    # External Airflow must not begin polling a newly migrated DataRiver deployment before the
+    # operator verifies its OIDC identity, workspace and target API origin.
+    is_paused_upon_creation=True,
     max_active_runs=1,
     tags=["datariver", "registration", "metadata", "datahub"],
 )

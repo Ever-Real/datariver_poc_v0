@@ -7,15 +7,15 @@ def _dags_root() -> Path:
     return Path(__file__).resolve().parents[3] / "infra/airflow/dags"
 
 
-def test_registration_dags_are_explicitly_enabled_and_bounded() -> None:
+def test_registration_dags_are_paused_by_default_and_bounded() -> None:
     root = _dags_root()
     manual = (root / "manual_metadata_apply.py").read_text(encoding="utf-8")
     bulk = (root / "bulk_registration_prepare.py").read_text(encoding="utf-8")
 
     assert 'dag_id="datariver_manual_metadata_apply"' in manual
     assert 'dag_id="datariver_bulk_registration_prepare"' in bulk
-    assert "is_paused_upon_creation=False" in manual
-    assert "is_paused_upon_creation=False" in bulk
+    assert "is_paused_upon_creation=True" in manual
+    assert "is_paused_upon_creation=True" in bulk
     assert "max_active_runs=1" in manual
     assert "max_active_runs=1" in bulk
 

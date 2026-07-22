@@ -8,6 +8,26 @@ import { TruncatedText } from '../../components/common/TruncatedText'
 interface Branch {
   items: CatalogTreeNode[]
   nextCursor?: string
+  truncated?: boolean
+}
+
+const maximumBranchItems = 200
+
+function withoutBranchTree(branches: Record<string, Branch>, rootKey: string): Record<string, Branch> {
+  const next = { ...branches }
+  const pending = [rootKey]
+  while (pending.length > 0) {
+    const key = pending.pop()
+    if (!key) continue
+    const branch = next[key]
+    if (branch) {
+      for (const node of branch.items) {
+        if (next[node.id]) pending.push(node.id)
+      }
+    }
+    delete next[key]
+  }
+  return next
 }
 
 function branchKey(node?: CatalogTreeNode): string {
@@ -63,13 +83,19 @@ export function CatalogResourceTree({
         signal: controller.signal,
       })
       if (expectedGeneration !== generation.current) return
-      setBranches((current) => ({
-        ...current,
-        [key]: {
-          items: append ? [...(current[key]?.items ?? []), ...page.items] : page.items,
-          ...(page.page.next_cursor ? { nextCursor: page.page.next_cursor } : {}),
-        },
-      }))
+      setBranches((current) => {
+        const items = (append ? [...(current[key]?.items ?? []), ...page.items] : page.items)
+          .slice(0, maximumBranchItems)
+        const truncated = Boolean(page.page.next_cursor) && items.length >= maximumBranchItems
+        return {
+          ...current,
+          [key]: {
+            items,
+            ...(!truncated && page.page.next_cursor ? { nextCursor: page.page.next_cursor } : {}),
+            ...(truncated ? { truncated: true } : {}),
+          },
+        }
+      })
     } catch (next) {
       if (!controller.signal.aborted && expectedGeneration === generation.current) setError(next)
     } finally {
@@ -101,11 +127,13 @@ export function CatalogResourceTree({
   const toggle = (node: CatalogTreeNode) => {
     if (node.kind === 'ASSET') { if (node.asset) onSelectAsset(node.asset.id); return }
     const key = branchKey(node)
+    const isExpanded = expanded.has(key)
     setExpanded((current) => {
       const next = new Set(current)
-      if (next.has(key)) next.delete(key); else next.add(key)
+      if (isExpanded) next.delete(key); else next.add(key)
       return next
     })
+    if (isExpanded) setBranches((current) => withoutBranchTree(current, key))
     if (!branches[key]) void loadBranch(node)
   }
 
@@ -113,6 +141,7 @@ export function CatalogResourceTree({
     const flattened: Array<
       { type: 'NODE'; node: CatalogTreeNode; depth: number }
       | { type: 'MORE'; parent: CatalogTreeNode; depth: number }
+      | { type: 'LIMIT'; parent: CatalogTreeNode; depth: number }
     > = []
     const visit = (items: CatalogTreeNode[], depth: number) => {
       for (const node of items) {
@@ -121,6 +150,9 @@ export function CatalogResourceTree({
           visit(branches[node.id]?.items ?? [], depth + 1)
           if (branches[node.id]?.nextCursor) {
             flattened.push({ type: 'MORE', parent: node, depth: depth + 1 })
+          }
+          if (branches[node.id]?.truncated) {
+            flattened.push({ type: 'LIMIT', parent: node, depth: depth + 1 })
           }
         }
       }
@@ -134,6 +166,11 @@ export function CatalogResourceTree({
     <ErrorNotice error={error} />
     <div className="catalog-tree-rows" aria-busy={loading.size > 0}>
       {rows.map((row) => {
+        if (row.type === 'LIMIT') return <div
+          key={`${row.parent.id}-limit`}
+          className="catalog-tree-state"
+          style={{ paddingLeft: `${8 + row.depth * 12}px` }}
+        >메모리 보호를 위해 이 분기의 200개 항목만 표시합니다. 검색을 사용하세요.</div>
         if (row.type === 'MORE') return <button
           key={`${row.parent.id}-more`}
           type="button"
@@ -161,5 +198,6 @@ export function CatalogResourceTree({
       {!loading.has('ROOT') && rows.length === 0 && <div className="catalog-tree-state">표시할 권한 범위의 계층이 없습니다.</div>}
     </div>
     {branches.ROOT?.nextCursor && <button className="tree-more" type="button" onClick={() => void loadBranch(undefined, true)}>플랫폼 더 보기</button>}
+    {branches.ROOT?.truncated && <p className="catalog-tree-state">메모리 보호를 위해 플랫폼 200개만 표시합니다.</p>}
   </aside>
 }

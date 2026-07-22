@@ -25,12 +25,13 @@ This checklist is evidence-driven. `[x]` means the named repository evidence was
 
 ## Phase 2 — low-resource product correction
 
-- [ ] remove catalog `200/500/1000/all`; enforce one request with `limit<=100` per page action.
-- [ ] separate facet refresh from cursor navigation.
-- [ ] open tree/lineage detail without scanning result pages.
-- [ ] bound tree retained state and add regression evidence.
-- [ ] record remaining field/search/XLSX/lineage performance gates without claiming completion.
-- [ ] production frontend bundle warning is removed or explicitly budgeted.
+- [x] remove catalog `200/500/1000/all`; enforce one request with `limit<=100` per page action.
+- [x] separate facet refresh from cursor navigation.
+- [x] open tree/lineage detail without scanning result pages.
+- [x] evict collapsed tree branches, cap one retained branch at 200 nodes and add regression evidence.
+- [x] record remaining field/search/XLSX/lineage performance gates without claiming completion.
+- [x] split feature routes; the largest production JavaScript chunk is 241.17 kB and the former
+  861.17 kB monolithic-chunk warning is gone.
 
 ## Phase 3 — release artifacts
 

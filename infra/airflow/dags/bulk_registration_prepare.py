@@ -14,7 +14,7 @@ from datariver_bulk_registration import prepare_bulk_registration_receipts
     schedule="*/5 * * * *",
     start_date=datetime(2026, 7, 21, tzinfo=UTC),
     catchup=False,
-    is_paused_upon_creation=False,
+    is_paused_upon_creation=True,
     max_active_runs=1,
     tags=["datariver", "registration", "bulk", "xlsx"],
 )

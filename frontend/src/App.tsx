@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { lazy, Suspense, useEffect, useState } from 'react'
 import { ArrowRight, ShieldCheck } from 'lucide-react'
 import { remediationKind } from './api/client'
 import type { AdminOperation, AdminReadContext, CapabilitiesResponse, ExternalSystemLink } from './api/types'
@@ -8,22 +8,23 @@ import { defaultWorkspaceSelection, workspaceFromLocation } from './app/workspac
 import { useAuth } from './auth/AuthProvider'
 import { AppShell } from './components/layout/AppShell'
 import { PageTitle } from './components/layout/PageTitle'
-import { AdminPage } from './features/admin/AdminPage'
 import { allowedAdminSections } from './features/admin/adminSections'
 import { getAdminMessages } from './features/admin/messages'
-import { CatalogPage } from './features/catalog/CatalogPage'
 import { catalogExportCapabilityEnabled } from './features/catalog/catalogExportApi'
-import { ChatPage } from './features/chat/ChatPage'
-import { DashboardPage } from './features/dashboard/DashboardPage'
-import { GovernancePage } from './features/governance/GovernancePage'
-import { KnowledgePage } from './features/knowledge/KnowledgePage'
-import { KnowledgeChatPage } from './features/knowledge/KnowledgeChatPage'
-import { MonitoringPage } from './features/monitoring/MonitoringPage'
-import { PolicyGovernancePage } from './features/policy/PolicyGovernancePage'
-import { ProfilePage } from './features/profile/ProfilePage'
-import { QualityPage } from './features/quality/QualityPage'
-import { RegistrationPage } from './features/registration/RegistrationPage'
-import { SharingPage } from './features/sharing/SharingPage'
+
+const AdminPage = lazy(() => import('./features/admin/AdminPage').then((module) => ({ default: module.AdminPage })))
+const CatalogPage = lazy(() => import('./features/catalog/CatalogPage').then((module) => ({ default: module.CatalogPage })))
+const ChatPage = lazy(() => import('./features/chat/ChatPage').then((module) => ({ default: module.ChatPage })))
+const DashboardPage = lazy(() => import('./features/dashboard/DashboardPage').then((module) => ({ default: module.DashboardPage })))
+const GovernancePage = lazy(() => import('./features/governance/GovernancePage').then((module) => ({ default: module.GovernancePage })))
+const KnowledgePage = lazy(() => import('./features/knowledge/KnowledgePage').then((module) => ({ default: module.KnowledgePage })))
+const KnowledgeChatPage = lazy(() => import('./features/knowledge/KnowledgeChatPage').then((module) => ({ default: module.KnowledgeChatPage })))
+const MonitoringPage = lazy(() => import('./features/monitoring/MonitoringPage').then((module) => ({ default: module.MonitoringPage })))
+const PolicyGovernancePage = lazy(() => import('./features/policy/PolicyGovernancePage').then((module) => ({ default: module.PolicyGovernancePage })))
+const ProfilePage = lazy(() => import('./features/profile/ProfilePage').then((module) => ({ default: module.ProfilePage })))
+const QualityPage = lazy(() => import('./features/quality/QualityPage').then((module) => ({ default: module.QualityPage })))
+const RegistrationPage = lazy(() => import('./features/registration/RegistrationPage').then((module) => ({ default: module.RegistrationPage })))
+const SharingPage = lazy(() => import('./features/sharing/SharingPage').then((module) => ({ default: module.SharingPage })))
 
 export function App() {
   const auth = useAuth()
@@ -232,35 +233,37 @@ export function App() {
       onSignOut={() => void auth.signOut()}
       onClearNotice={auth.clearNotice}
     >
-      {page === 'dashboard' && <DashboardPage client={client} onNavigate={navigate} />}
-      {page === 'catalog' && <CatalogPage client={client} initialQuery={catalogQuery} onQueryChange={searchCatalog} catalogExportWorkerEnabled={catalogExportWorkerEnabled} />}
-      {page === 'registration' && <RegistrationPage client={client} />}
-      {page === 'change-management' && <GovernancePage client={client} requesterName={auth.profile?.display_name ?? auth.user.profile.name ?? auth.user.profile.sub} requesterEmail={auth.profile?.email} onNavigate={navigate} onStepUp={auth.beginStepUp} onPasswordReauth={auth.beginPasswordReauth} onEnroll={auth.beginWebAuthnEnrollment} />}
-      {page === 'quality' && <QualityPage />}
-      {page === 'knowledge' && <KnowledgePage client={client} onNavigate={navigate} />}
-      {page === 'knowledge-chat' && <KnowledgeChatPage client={client} onNavigate={navigate} />}
-      {page === 'monitoring' && <MonitoringPage client={client} />}
-      {page === 'governance' && <PolicyGovernancePage client={client} mayReadPolicies={mayReadPolicyGovernance} allowedOperations={currentAdminContext?.allowed_operations} />}
-      {page === 'sharing' && <SharingPage client={client} onStepUp={auth.beginStepUp} onPasswordReauth={auth.beginPasswordReauth} onEnroll={auth.beginWebAuthnEnrollment} />}
-      {page === 'chat' && <ChatPage client={client} />}
-      {page === 'profile' && auth.profile && <ProfilePage client={client} profile={auth.profile} workspace={activeWorkspace} capabilities={capabilities} externalSystemLinks={externalSystemLinks} onPasswordChange={() => void auth.beginPasswordChange()} onPasswordReauth={() => void auth.beginPasswordReauth()} />}
-      {page === 'profile' && !auth.profile && <PageTitle icon="ME" eyebrow="Verified identity profile" title="내 프로필" description="서버에서 검증된 프로필을 불러오지 못했습니다." />}
-      {page === 'admin' && currentAdminContext && <AdminPage client={client} initialContext={currentAdminContext} onStepUp={auth.beginStepUp} onPasswordReauth={auth.beginPasswordReauth} onEnroll={auth.beginWebAuthnEnrollment} />}
-      {page === 'admin' && !currentAdminContext && (
-        <PageTitle
-          icon="AD"
-          eyebrow="Governed administration"
-          title="관리자 권한 확인"
-          description={currentAdminStatus === 'checking'
-            ? '서버에서 현재 Workspace의 관리 권한을 확인하고 있습니다.'
-            : currentAdminStatus === 'reauth_required'
-              ? '로컬 관리자 멤버십은 확인되었지만, 민감한 관리 컨텍스트를 표시하려면 최근 비밀번호 재인증이 필요합니다. 재인증 후 작업은 자동으로 실행되지 않습니다.'
-              : '현재 사용자에게 노출 가능한 관리자 기능이 없습니다.'}
-          actions={currentAdminStatus === 'reauth_required'
-            ? <button className="button" type="button" onClick={() => void auth.beginPasswordReauth()}>관리자 재인증</button>
-            : undefined}
-        />
-      )}
+      <Suspense fallback={<main className="centered"><div className="loader" /><p>화면을 불러오고 있습니다.</p></main>}>
+        {page === 'dashboard' && <DashboardPage client={client} onNavigate={navigate} />}
+        {page === 'catalog' && <CatalogPage client={client} initialQuery={catalogQuery} onQueryChange={searchCatalog} catalogExportWorkerEnabled={catalogExportWorkerEnabled} />}
+        {page === 'registration' && <RegistrationPage client={client} />}
+        {page === 'change-management' && <GovernancePage client={client} requesterName={auth.profile?.display_name ?? auth.user.profile.name ?? auth.user.profile.sub} requesterEmail={auth.profile?.email} onNavigate={navigate} onStepUp={auth.beginStepUp} onPasswordReauth={auth.beginPasswordReauth} onEnroll={auth.beginWebAuthnEnrollment} />}
+        {page === 'quality' && <QualityPage />}
+        {page === 'knowledge' && <KnowledgePage client={client} onNavigate={navigate} />}
+        {page === 'knowledge-chat' && <KnowledgeChatPage client={client} onNavigate={navigate} />}
+        {page === 'monitoring' && <MonitoringPage client={client} />}
+        {page === 'governance' && <PolicyGovernancePage client={client} mayReadPolicies={mayReadPolicyGovernance} allowedOperations={currentAdminContext?.allowed_operations} />}
+        {page === 'sharing' && <SharingPage client={client} onStepUp={auth.beginStepUp} onPasswordReauth={auth.beginPasswordReauth} onEnroll={auth.beginWebAuthnEnrollment} />}
+        {page === 'chat' && <ChatPage client={client} />}
+        {page === 'profile' && auth.profile && <ProfilePage client={client} profile={auth.profile} workspace={activeWorkspace} capabilities={capabilities} externalSystemLinks={externalSystemLinks} onPasswordChange={() => void auth.beginPasswordChange()} onPasswordReauth={() => void auth.beginPasswordReauth()} />}
+        {page === 'profile' && !auth.profile && <PageTitle icon="ME" eyebrow="Verified identity profile" title="내 프로필" description="서버에서 검증된 프로필을 불러오지 못했습니다." />}
+        {page === 'admin' && currentAdminContext && <AdminPage client={client} initialContext={currentAdminContext} onStepUp={auth.beginStepUp} onPasswordReauth={auth.beginPasswordReauth} onEnroll={auth.beginWebAuthnEnrollment} />}
+        {page === 'admin' && !currentAdminContext && (
+          <PageTitle
+            icon="AD"
+            eyebrow="Governed administration"
+            title="관리자 권한 확인"
+            description={currentAdminStatus === 'checking'
+              ? '서버에서 현재 Workspace의 관리 권한을 확인하고 있습니다.'
+              : currentAdminStatus === 'reauth_required'
+                ? '로컬 관리자 멤버십은 확인되었지만, 민감한 관리 컨텍스트를 표시하려면 최근 비밀번호 재인증이 필요합니다. 재인증 후 작업은 자동으로 실행되지 않습니다.'
+                : '현재 사용자에게 노출 가능한 관리자 기능이 없습니다.'}
+            actions={currentAdminStatus === 'reauth_required'
+              ? <button className="button" type="button" onClick={() => void auth.beginPasswordReauth()}>관리자 재인증</button>
+              : undefined}
+          />
+        )}
+      </Suspense>
     </AppShell>
   )
 }

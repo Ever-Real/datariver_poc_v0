@@ -23,13 +23,17 @@ export function GlobalCatalogSearch({ client, onSearch }: { client?: ApiClient; 
     }
     setLoading(true)
     setSuggestionError(false)
+    const controller = new AbortController()
     const timer = window.setTimeout(() => {
-      void client.request<CatalogSuggestions>(`/catalog/suggestions?q=${encodeURIComponent(normalized)}&limit=8`)
+      void client.request<CatalogSuggestions>(
+        `/catalog/suggestions?q=${encodeURIComponent(normalized)}&limit=8`,
+        { signal: controller.signal },
+      )
         .then((response) => {
           if (currentIntent === intent.current) setSuggestions(response.items)
         })
         .catch(() => {
-          if (currentIntent === intent.current) {
+          if (!controller.signal.aborted && currentIntent === intent.current) {
             setSuggestions([])
             setSuggestionError(true)
           }
@@ -38,7 +42,7 @@ export function GlobalCatalogSearch({ client, onSearch }: { client?: ApiClient; 
           if (currentIntent === intent.current) setLoading(false)
         })
     }, 350)
-    return () => window.clearTimeout(timer)
+    return () => { controller.abort(); window.clearTimeout(timer) }
   }, [client, focused, query])
 
   const submit = (event: FormEvent) => {
