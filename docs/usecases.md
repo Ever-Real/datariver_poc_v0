@@ -550,7 +550,7 @@ TTFT, token rate, total latency를 dataset/model/prompt/release hash와 함께 �
 
 ## 9. 적용 DB 변경과 ERD
 
-승인된 변경은 SQLAlchemy metadata, deterministic `0001`, Alembic `0035`~`0039`과
+승인된 변경은 SQLAlchemy metadata, deterministic `0001`, Alembic `0035`~`0040`과
 `docs/06_DATA_MODEL.md`에 반영한다. 실제 적용/재적용 증거는 테스트 체크리스트에 남긴다.
 
 ### 9.1 CR workflow delta

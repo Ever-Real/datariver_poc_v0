@@ -106,8 +106,20 @@ $airflowAdminPassword = Get-OrCreateSecret "airflow_admin_password" 24
 $keycloakDemoPassword = Get-OrCreateSecret "keycloak_demo_password" 18
 $keycloakAdminPassword = Get-OrCreateSecret "keycloak_admin_password" 24
 $grafanaAdminPassword = Get-OrCreateSecret "grafana_admin_password" 24
-$cachePassword = Get-OrCreateSecret "valkey_cache_password"
-$queuePassword = Get-OrCreateSecret "valkey_queue_password"
+$legacyCacheSecret = Join-Path $secretsDirectory "valkey_cache_password"
+$redisCacheSecret = Join-Path $secretsDirectory "redis_cache_password"
+if (-not (Test-Path -LiteralPath $redisCacheSecret) -and
+    (Test-Path -LiteralPath $legacyCacheSecret)) {
+    Copy-Item -LiteralPath $legacyCacheSecret -Destination $redisCacheSecret
+}
+$legacyDeliverySecret = Join-Path $secretsDirectory "valkey_queue_password"
+$redisDeliverySecret = Join-Path $secretsDirectory "redis_delivery_password"
+if (-not (Test-Path -LiteralPath $redisDeliverySecret) -and
+    (Test-Path -LiteralPath $legacyDeliverySecret)) {
+    Copy-Item -LiteralPath $legacyDeliverySecret -Destination $redisDeliverySecret
+}
+$cachePassword = Get-OrCreateSecret "redis_cache_password"
+$queuePassword = Get-OrCreateSecret "redis_delivery_password"
 $intranetLlmChatApiKey = Get-OrCreateSecret "intranet_llm_chat_api_key"
 $intranetLlmEmbeddingApiKey = Get-OrCreateSecret "intranet_llm_embedding_api_key"
 $s3AccessKeyPath = Join-Path $secretsDirectory "s3_access_key"
@@ -146,8 +158,6 @@ if ($HostDevelopment) {
     Set-EnvValue "API_PORT" "38101"
     Set-EnvValue "WEB_PORT" "38102"
     Set-EnvValue "POSTGRES_PORT" "5432"
-    Set-EnvValue "VALKEY_CACHE_PORT" "6379"
-    Set-EnvValue "VALKEY_QUEUE_PORT" "6380"
     Set-EnvValue "KEYCLOAK_PORT" "18081"
     Set-EnvValue "APISIX_PORT" "9080"
     Set-EnvValue "OIDC_ISSUER" "http://localhost:18081/realms/datariver"
@@ -178,22 +188,6 @@ if ($EnableCatalogExportWorker) {
     Set-EnvValue "S3_EXPORT_SECRET_KEY_FILE" "/run/secrets/s3_export_secret_key"
     Set-EnvValue "CATALOG_EXPORT_WORKER_ENABLED" "true"
 }
-
-$seaweedConfig = @{
-    identities = @(
-        @{
-            name = "datariver"
-            credentials = @(@{ accessKey = $s3AccessKey; secretKey = $s3SecretKey })
-            actions = @("Admin", "Read", "Write", "List", "Tagging")
-        },
-        @{
-            name = "datariver-export"
-            credentials = @(@{ accessKey = $s3ExportAccessKey; secretKey = $s3ExportSecretKey })
-            actions = @("Read", "Write")
-        }
-    )
-} | ConvertTo-Json -Depth 6
-Write-Secret "seaweed_s3_config.json" $seaweedConfig
 
 $realmTemplate = [IO.File]::ReadAllText(
     (Join-Path $root "infra/keycloak/datariver-realm.template.json"),

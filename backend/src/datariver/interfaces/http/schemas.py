@@ -961,9 +961,13 @@ class SystemAssigneeUpdateResponse(BaseModel):
 
 
 SystemConfigurationId = Literal[
+    "POSTGRESQL",
+    "OIDC_IDENTITY",
     "DATAHUB_GMS",
     "DATAHUB_FRONTEND",
     "AIRFLOW",
+    "REDIS_CACHE",
+    "REDIS_DELIVERY",
     "S3_STORAGE",
     "LLM_CHAT_MODEL",
     "LLM_EMBEDDING",
@@ -974,11 +978,23 @@ SystemConfigurationId = Literal[
 ]
 
 
+class SystemConnectionRequirementResponse(BaseModel):
+    key: str
+    label: str
+    required: bool
+    secret: bool = False
+    example: str | None = None
+
+
 class SystemConfigurationEntryResponse(BaseModel):
     """Administrator-visible configuration state; values are masked before return."""
 
     system_id: SystemConfigurationId
     label: str
+    category: Literal["PLATFORM", "CATALOG", "ORCHESTRATION", "STORAGE", "AI", "OBSERVABILITY"]
+    requirement: Literal["BOOTSTRAP_REQUIRED", "CORE_CONNECTOR", "FEATURE_CONNECTOR"]
+    description: str
+    connection_requirements: list[SystemConnectionRequirementResponse]
     state: Literal["CONFIGURED", "NOT_CONFIGURED", "GOVERNED_PROFILE_REQUIRED"]
     management_plane: Literal["DEVELOPMENT_DATABASE", "DEPLOYMENT", "GOVERNED_PROVIDER_PROFILE"]
     secret_reference_configured: bool
@@ -989,7 +1005,9 @@ class SystemConfigurationEntryResponse(BaseModel):
     version: int = Field(ge=0)
     configured_at: datetime | None = None
     runtime_supported: bool = False
-    restart_scope: Literal["API_ONLY", "API_AND_WORKERS", "NOT_IMPLEMENTED"] = "NOT_IMPLEMENTED"
+    restart_scope: Literal["API_ONLY", "WORKERS_ONLY", "API_AND_WORKERS", "NOT_IMPLEMENTED"] = (
+        "NOT_IMPLEMENTED"
+    )
     activation_state: Literal[
         "NOT_CONFIGURED",
         "SAVED_UNTESTED",
@@ -997,6 +1015,7 @@ class SystemConfigurationEntryResponse(BaseModel):
         "TESTED",
         "ACTIVATED_RESTART_REQUIRED",
         "APPLIED_TO_API_PROCESS",
+        "DEPLOYMENT_MANAGED",
         "RUNTIME_NOT_IMPLEMENTED",
     ] = "NOT_CONFIGURED"
     tested_version: int | None = Field(default=None, ge=1)
@@ -1011,6 +1030,39 @@ class SystemConfigurationListResponse(BaseModel):
     items: list[SystemConfigurationEntryResponse]
 
 
+class SystemConfigurationVersionResponse(BaseModel):
+    configuration_version: int = Field(ge=1)
+    configuration_hash: str = Field(pattern=r"^[0-9a-f]{64}$")
+    created_by: UUID
+    created_at: datetime
+    test_status: Literal["AVAILABLE", "AUTHENTICATION_REQUIRED", "UNAVAILABLE"] | None = None
+    test_scope: (
+        Literal[
+            "HTTP_HEALTH",
+            "MODEL_DISCOVERY",
+            "MODEL_INFERENCE",
+            "EMBEDDING_INFERENCE",
+            "AUTHENTICATED_QUERY",
+            "REDIS_PING",
+        ]
+        | None
+    ) = None
+    test_latency_ms: int | None = Field(default=None, ge=0)
+    tested_by: UUID | None = None
+    tested_at: datetime | None = None
+    activated_by: UUID | None = None
+    activated_at: datetime | None = None
+    current: bool
+    activated: bool
+
+
+class SystemConfigurationVersionListResponse(BaseModel):
+    system_id: SystemConfigurationId
+    current_version: int = Field(ge=0)
+    activated_version: int | None = Field(default=None, ge=1)
+    items: list[SystemConfigurationVersionResponse]
+
+
 class SystemConfigurationTestResponse(BaseModel):
     system_id: SystemConfigurationId
     status: Literal["AVAILABLE", "AUTHENTICATION_REQUIRED", "UNAVAILABLE"]
@@ -1020,6 +1072,7 @@ class SystemConfigurationTestResponse(BaseModel):
         "MODEL_INFERENCE",
         "EMBEDDING_INFERENCE",
         "AUTHENTICATED_QUERY",
+        "REDIS_PING",
     ]
     latency_ms: int = Field(ge=0)
     detail: str

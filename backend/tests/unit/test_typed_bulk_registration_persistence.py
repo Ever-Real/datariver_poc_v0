@@ -131,7 +131,7 @@ def test_typed_bulk_migration_forces_rls_and_limits_mutation_grants() -> None:
         root / "backend/alembic/versions/0016_typed_bulk_registration_foundation.py"
     ).read_text(encoding="utf-8")
 
-    assert REQUIRED_DATABASE_REVISION == "0039"
+    assert REQUIRED_DATABASE_REVISION == "0040"
     assert "_enable_workspace_rls(schema, table)" in migration
     for schema, table in (
         ("integration", "upload_preparation_jobs"),

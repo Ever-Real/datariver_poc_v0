@@ -14,18 +14,26 @@ DB 마이그레이션, 선택적 시드 및 정상 상태를 확인하는 표준
 | PostgreSQL | CR, 승인, 감사, ABAC, 작업, 지식 릴리스 | DataRiver 업무 상태 |
 | DataHub | 적용된 카탈로그 메타데이터와 계보 | 외부 카탈로그 메타데이터 |
 | S3 호환 스토리지 | 업로드 객체 | 객체 바이트 |
-| Valkey | 캐시와 이벤트 전달 | 정본이 아닌 단기 상태 |
-| Keycloak/OIDC | 사용자 인증 | 사용자 자격 증명 |
+| 외부 Redis | 캐시와 이벤트 전달 | 정본이 아닌 단기 상태 |
+| 외부 OIDC/선택적 Keycloak 프로필 | 사용자 인증 | 사용자 자격 증명 |
 | APISIX | API Gateway | 라우팅과 프록시 |
 
-DataRiver는 DataHub를 생성·업그레이드·삭제하지 않습니다. DataHub, Valkey, 그래프 엔진,
-스토리지, Airflow와 LLM은 모두 실패 가능한 외부 의존성이므로 업무 정본으로 사용하지 않습니다.
+DataRiver는 DataHub, Redis, MinIO/S3, 그래프 엔진, Airflow와 LLM을 생성·업그레이드·삭제하지
+않습니다. 이들은 별도로 운영하고 접속 정보만 DataRiver에 연결하는 실패 가능한 외부
+의존성이므로 업무 정본으로 사용하지 않습니다.
+
+부팅에 필요한 인프라 능력은 PostgreSQL과 OIDC입니다. 기본 Compose가 소유하는 상태 저장
+서비스는 PostgreSQL뿐이며, 로컬 OIDC가 필요할 때만 `compose.identity.yaml`의 Keycloak
+프로필을 선택합니다. Redis 캐시/전달, S3/MinIO, DataHub, Airflow, Neo4j, LLM과 관측 도구는
+기능별 외부 커넥터입니다. API readiness는 PostgreSQL과 migration만 검사하므로 선택 기능의
+장애가 전체 플랫폼의 부팅 성공으로 오인되거나 반대로 전체 부팅을 막지 않습니다.
 
 ## 사전 준비
 
 - Git, Docker Engine/Desktop와 Compose v2
 - Python 3.12, `uv`, Node.js 22, npm 10 (소스 실행/검증 시)
-- 접근 가능한 DataHub URL과 범위가 제한된 서비스 토큰
+- 접근 가능한 OIDC, 두 개의 분리된 Redis URL, S3 호환 스토리지와 필요한 기능의 외부 서비스
+- DataHub 기능을 사용할 경우 DataHub URL과 범위가 제한된 서비스 토큰
 - 코어 스택 약 8 GiB, Airflow 포함 시 약 12 GiB 이상의 여유 메모리
 
 실제 `.env`, `secrets/`, `runtime/`, Docker volume, 업로드 데이터는 Git에 포함하지 않습니다.
@@ -37,7 +45,7 @@ DataRiver는 DataHub를 생성·업그레이드·삭제하지 않습니다. Data
 2. bootstrap 스크립트로 `.env`와 로컬 비밀 파일을 생성합니다. 다른 환경의 `.env`, volume,
    secret 파일을 복사하지 않습니다.
 3. 사용할 Compose overlay의 정합성을 검사합니다.
-4. 인프라를 기동하고 migration 서비스로 DB를 `0029` 헤드까지 올립니다.
+4. 인프라를 기동하고 migration 서비스로 DB를 `0040` 헤드까지 올립니다.
 5. API/worker/UI를 시작한 뒤 health, gateway, OIDC, DataHub capability를 확인합니다.
 6. 필요할 때만 합성 반도체 시드를 적용하고 검증합니다.
 
@@ -45,7 +53,7 @@ Linux/macOS/WSL 예시:
 
 ```bash
 ./scripts/bootstrap.sh '<datahub-service-token>'
-# .env의 DATAHUB_BASE_URL과 OIDC/UI origin을 환경에 맞게 확인합니다.
+# .env의 OIDC, REDIS_*, S3_* 및 사용할 외부 서비스 URL을 환경에 맞게 확인합니다.
 docker compose -f compose.yaml -f compose.identity.yaml config --quiet
 docker compose -f compose.yaml -f compose.identity.yaml up -d --build --wait
 docker compose --profile tools -f compose.yaml -f compose.identity.yaml \
@@ -64,8 +72,9 @@ docker compose --profile tools -f compose.yaml -f compose.identity.yaml `
 
 ## 소스 기반 개발 실행
 
-호스트 개발 모드는 PostgreSQL, Valkey, SeaweedFS, Keycloak, APISIX는 컨테이너에서 실행하고,
-API·relay·worker·Vite는 체크아웃 소스에서 실행합니다.
+호스트 개발 모드는 PostgreSQL과 선택적 Keycloak/APISIX만 DataRiver Compose에서 실행하고,
+Redis와 S3/MinIO는 별도 환경에서 운영합니다. API·relay·worker·Vite는 체크아웃 소스에서
+실행합니다.
 
 ```bash
 ./scripts/bootstrap.sh --host-development \
@@ -73,7 +82,7 @@ API·relay·worker·Vite는 체크아웃 소스에서 실행합니다.
 docker compose -f compose.yaml -f compose.identity.yaml -f compose.host-dev.yaml \
   config --quiet
 docker compose -f compose.yaml -f compose.identity.yaml -f compose.host-dev.yaml \
-  up -d --build --wait postgres valkey-cache valkey-queue seaweedfs keycloak
+  up -d --build --wait postgres keycloak
 docker compose -f compose.yaml -f compose.identity.yaml -f compose.host-dev.yaml \
   run --rm migrate
 ./scripts/configure_keycloak_host_dev.sh
@@ -96,8 +105,8 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 status
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 stop
 ```
 
-포트 기본값은 PostgreSQL `5432`, 캐시 Valkey `6379`, 큐 Valkey `6380`, S3 `8333`, API `8000`,
-APISIX `9080`, Keycloak `18081`, Vite `5173`입니다.
+DataRiver가 게시하는 개발 포트 기본값은 PostgreSQL `5432`, API `8000`, APISIX `9080`,
+Keycloak `18081`, Vite `5173`입니다. 외부 Redis와 S3/MinIO 포트는 해당 배포가 결정합니다.
 
 ## 연결 정보와 환경 변수
 
@@ -106,7 +115,7 @@ APISIX `9080`, Keycloak `18081`, Vite `5173`입니다.
 
 - `DATAHUB_BASE_URL`, `DATAHUB_EXPECTED_VERSION`, DataHub 서비스 토큰 파일
 - `APP_PUBLIC_ORIGIN`, `APP_CORS_ORIGINS`, `OIDC_*`
-- `DATABASE_*`, `VALKEY_*`, `S3_*`와 파일 기반 secret reference
+- `DATABASE_*`, `REDIS_CACHE_*`, `REDIS_DELIVERY_*`, `S3_*`와 파일 기반 secret reference
 - 선택적 UI 링크: `UI_DATAHUB_URL`, `UI_AIRFLOW_URL`, `UI_GRAFANA_URL`,
   `UI_PROMETHEUS_URL`, `UI_GRAPH_URL`
 
@@ -115,13 +124,19 @@ APISIX `9080`, Keycloak `18081`, Vite `5173`입니다.
 
 ## 관리자 시스템 설정
 
-개발 환경의 적격 관리자는 **프로필 → 시스템 설정**에서 DataHub, Airflow, S3, LLM, Neo4j,
-Prometheus, Grafana의 YAML 연결 정보를 관리할 수 있습니다.
+관리자 인벤토리는 PostgreSQL/OIDC를 `BOOTSTRAP_REQUIRED`, Redis cache/delivery와 S3/DataHub를
+`CORE_CONNECTOR`, 나머지를 `FEATURE_CONNECTOR`로 구분하고 필요한 필드와 비밀 여부를
+제공합니다. 개발 환경의 적격 관리자는 **프로필 → 시스템 설정**에서 Redis, DataHub,
+Airflow, S3, LLM, Neo4j, Prometheus, Grafana의 연결 정보를 버전 관리할 수 있습니다.
 
 - YAML은 PostgreSQL에 워크스페이스·버전 단위로 증분 저장됩니다.
 - `password`, `secret`, `token`, `api_key`, `private_key` 이름의 값은 조회 시
   `********`로 마스킹됩니다. 다른 항목만 수정할 때는 이 값을 유지하세요.
-- URL은 `url`, `endpoint`, `base_url` 키에 HTTP(S)로 입력합니다.
+- Redis는 `redis://` 또는 `rediss://`, 다른 연결은 허용된 HTTP(S) URL을 사용합니다.
+- PostgreSQL과 OIDC는 프로세스가 DB 설정을 읽기 전에 필요한 부팅 의존성이므로 시스템
+  설정에서 교체하지 않고 배포 설정으로 관리합니다.
+- SAVE → TEST → ACTIVATE 쓰기 흐름은 현재 개발 환경에만 열려 있습니다. 운영 반영은
+  승인된 secret backend, 재시작/롤백 절차와 감사 게이트가 마련될 때까지 배포 관리입니다.
 - Grafana URL을 저장하면 모니터링 메뉴가 서버 응답을 통해 sandboxed iframe으로 표시합니다.
 - 운영 환경에서는 이 DB 쓰기 API가 노출되지 않으며 배포 설정과 승인된 provider profile을
   사용합니다.

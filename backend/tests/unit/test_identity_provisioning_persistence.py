@@ -29,7 +29,7 @@ def test_identity_migration_and_initial_baseline_have_execute_only_contract() ->
     ).read_text(encoding="utf-8")
     initial = (root / "backend/alembic/versions/0001_initial_schema.py").read_text(encoding="utf-8")
 
-    assert REQUIRED_DATABASE_REVISION == "0039"
+    assert REQUIRED_DATABASE_REVISION == "0040"
     assert 'down_revision: str | Sequence[str] | None = "0038"' in migration
     assert "IDENTITY_PROVISIONING_FUNCTION_SQL" in migration
     assert "IDENTITY_PROVISIONING_SIGNATURE" in migration
@@ -44,7 +44,10 @@ def test_identity_migration_and_initial_baseline_have_execute_only_contract() ->
 def test_api_does_not_receive_keycloak_bootstrap_admin_secret() -> None:
     root = Path(__file__).resolve().parents[3]
     compose = yaml.safe_load((root / "compose.yaml").read_text(encoding="utf-8"))
-    api_secrets = set(compose["services"]["api"]["secrets"])
+    api_secrets = {
+        entry if isinstance(entry, str) else entry["source"]
+        for entry in compose["services"]["api"]["secrets"]
+    }
 
     assert "keycloak_identity_admin_client_secret" in api_secrets
     assert "keycloak_admin_password" not in api_secrets

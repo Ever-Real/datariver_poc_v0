@@ -205,6 +205,7 @@ def test_openapi_contains_all_required_product_modules() -> None:
         "/api/v1/admin/systems/{system_id}/assignees",
         "/api/v1/admin/system-configuration",
         "/api/v1/admin/system-configuration/{system_id}",
+        "/api/v1/admin/system-configuration/{system_id}/versions",
         "/api/v1/admin/system-configuration/{system_id}/test",
         "/api/v1/admin/me",
         "/api/v1/admin/fallback/workspace-membership-access-requests",
@@ -239,9 +240,13 @@ def test_system_configuration_inventory_is_server_owned_and_redacted() -> None:
     by_id = {entry.system_id: entry for entry in entries}
 
     assert list(by_id) == [
+        "POSTGRESQL",
+        "OIDC_IDENTITY",
         "DATAHUB_GMS",
         "DATAHUB_FRONTEND",
         "AIRFLOW",
+        "REDIS_CACHE",
+        "REDIS_DELIVERY",
         "S3_STORAGE",
         "LLM_CHAT_MODEL",
         "LLM_EMBEDDING",
@@ -251,6 +256,10 @@ def test_system_configuration_inventory_is_server_owned_and_redacted() -> None:
         "GRAFANA_DASHBOARD",
     ]
     assert by_id["DATAHUB_GMS"].secret_reference_configured is True
+    assert by_id["POSTGRESQL"].requirement == "BOOTSTRAP_REQUIRED"
+    assert by_id["REDIS_CACHE"].requirement == "CORE_CONNECTOR"
+    assert by_id["REDIS_DELIVERY"].restart_scope == "WORKERS_ONLY"
+    assert any(field.secret for field in by_id["S3_STORAGE"].connection_requirements)
     assert by_id["LLM_CHAT_MODEL"].state == "GOVERNED_PROFILE_REQUIRED"
     assert by_id["GRAFANA_DASHBOARD"].embedding_state == "AVAILABLE"
     assert all(entry.template_yaml == "" for entry in entries)
@@ -260,8 +269,10 @@ def test_system_configuration_inventory_is_server_owned_and_redacted() -> None:
 
     development = Settings(**(configured.model_dump() | {"app_env": "development"}))
     development_entries = _system_configuration_entries(development)
-    assert all(entry.template_yaml for entry in development_entries)
-    assert all("password" not in entry.template_yaml.lower() for entry in development_entries)
+    connector_entries = [
+        entry for entry in development_entries if entry.requirement != "BOOTSTRAP_REQUIRED"
+    ]
+    assert all(entry.template_yaml for entry in connector_entries)
     assert any("file:/run/secrets/" in entry.template_yaml for entry in development_entries)
     assert all("auth_token" not in entry.template_yaml.lower() for entry in development_entries)
     assert all("api_token" not in entry.template_yaml.lower() for entry in development_entries)
@@ -303,6 +314,26 @@ def test_system_configuration_display_removes_nested_secrets_and_submission_reje
         _validate_configuration_submission(
             {"secret_references": {"token": "literal-secret-value"}},
             {},
+        )
+
+
+def test_redis_system_configuration_requires_separate_secret_reference() -> None:
+    document = {
+        "url": "rediss://redis-cache.example.internal:6379/0",
+        "secret_references": {"password": "file:/run/secrets/redis_cache_password"},
+        "options": {"role": "CACHE", "required_policy": "allkeys-lfu"},
+    }
+
+    assert _validate_system_configuration("REDIS_CACHE", document) == document["url"]
+    with pytest.raises(ValidationError, match="must not be embedded"):
+        _validate_system_configuration(
+            "REDIS_CACHE",
+            document | {"url": "redis://default:secret@redis-cache:6379/0"},
+        )
+    with pytest.raises(ValidationError, match="exactly one password"):
+        _validate_system_configuration(
+            "REDIS_DELIVERY",
+            document | {"secret_references": {}},
         )
 
 

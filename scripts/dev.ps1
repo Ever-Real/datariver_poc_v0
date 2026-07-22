@@ -4,8 +4,10 @@ param(
     [string]$Action = "start",
     [string]$DataHubBaseUrl = "http://127.0.0.1:8080",
     [int]$PostgresPort = 5432,
-    [int]$ValkeyCachePort = 6379,
-    [int]$ValkeyQueuePort = 6380,
+    [string]$RedisCacheUrl = "redis://127.0.0.1:6379/0",
+    [string]$RedisDeliveryUrl = "redis://127.0.0.1:6380/0",
+    [string]$S3EndpointUrl = "http://127.0.0.1:9000",
+    [string]$S3PublicEndpointUrl = "http://localhost:9000",
     [int]$KeycloakPort = 18081,
     [int]$ApiPort = 38101,
     [int]$WebPort = 38102,
@@ -96,8 +98,8 @@ $requiredFiles = @(
     (Join-Path $root "secrets/postgres_relay_password"),
     (Join-Path $root "secrets/postgres_upload_password"),
     (Join-Path $root "secrets/postgres_governance_password"),
-    (Join-Path $root "secrets/valkey_cache_password"),
-    (Join-Path $root "secrets/valkey_queue_password"),
+    (Join-Path $root "secrets/redis_cache_password"),
+    (Join-Path $root "secrets/redis_delivery_password"),
     (Join-Path $root "secrets/datahub_token"),
     (Join-Path $root "secrets/s3_access_key"),
     (Join-Path $root "secrets/s3_secret_key")
@@ -129,12 +131,12 @@ Set-ProcessEnvironment "UPLOAD_DATABASE_URL" "postgresql+asyncpg://datariver_upl
 Set-ProcessEnvironment "UPLOAD_DATABASE_SECRET_REF" (& $secret "postgres_upload_password")
 Set-ProcessEnvironment "GOVERNANCE_DATABASE_URL" "postgresql+asyncpg://datariver_governance@127.0.0.1:$PostgresPort/datariver"
 Set-ProcessEnvironment "GOVERNANCE_DATABASE_SECRET_REF" (& $secret "postgres_governance_password")
-Set-ProcessEnvironment "VALKEY_CACHE_URL" "redis://127.0.0.1:$ValkeyCachePort/0"
-Set-ProcessEnvironment "VALKEY_QUEUE_URL" "redis://127.0.0.1:$ValkeyQueuePort/0"
-Set-ProcessEnvironment "VALKEY_CACHE_SECRET_REF" (& $secret "valkey_cache_password")
-Set-ProcessEnvironment "VALKEY_QUEUE_SECRET_REF" (& $secret "valkey_queue_password")
-Set-ProcessEnvironment "S3_ENDPOINT_URL" "http://127.0.0.1:8333"
-Set-ProcessEnvironment "S3_PUBLIC_ENDPOINT_URL" "http://localhost:8333"
+Set-ProcessEnvironment "REDIS_CACHE_URL" $RedisCacheUrl
+Set-ProcessEnvironment "REDIS_DELIVERY_URL" $RedisDeliveryUrl
+Set-ProcessEnvironment "REDIS_CACHE_SECRET_REF" (& $secret "redis_cache_password")
+Set-ProcessEnvironment "REDIS_DELIVERY_SECRET_REF" (& $secret "redis_delivery_password")
+Set-ProcessEnvironment "S3_ENDPOINT_URL" $S3EndpointUrl
+Set-ProcessEnvironment "S3_PUBLIC_ENDPOINT_URL" $S3PublicEndpointUrl
 Set-ProcessEnvironment "S3_ACCESS_KEY_FILE" (Join-Path $root "secrets/s3_access_key")
 Set-ProcessEnvironment "S3_SECRET_KEY_FILE" (Join-Path $root "secrets/s3_secret_key")
 Set-ProcessEnvironment "OIDC_ISSUER" "http://localhost:$KeycloakPort/realms/datariver"

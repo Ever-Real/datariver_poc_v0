@@ -1,1 +1,1 @@
-"""Valkey cache and delivery adapters."""
+"""Redis-protocol cache and short-lived delivery adapters."""

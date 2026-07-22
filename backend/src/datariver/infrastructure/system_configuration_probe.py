@@ -11,6 +11,7 @@ from urllib.parse import urlsplit, urlunsplit
 
 import httpx
 from neo4j import AsyncGraphDatabase
+from redis.asyncio import Redis
 
 from datariver.domain.common import ValidationError
 from datariver.infrastructure.secrets import SecretResolver
@@ -22,6 +23,7 @@ ProbeScope = Literal[
     "MODEL_INFERENCE",
     "EMBEDDING_INFERENCE",
     "AUTHENTICATED_QUERY",
+    "REDIS_PING",
 ]
 
 
@@ -63,6 +65,8 @@ def _validated_url(endpoint: str, *, schemes: set[str]) -> tuple[str, str, int]:
     default_port = 443 if parsed.scheme == "https" else 80
     if parsed.scheme in {"bolt", "neo4j"}:
         default_port = 7687
+    if parsed.scheme in {"redis", "rediss"}:
+        default_port = 6379
     return endpoint, parsed.hostname, parsed.port or default_port
 
 
@@ -235,6 +239,7 @@ async def probe_system_configuration(
     neo4j_query: Callable[[str, str, str, str, float], Awaitable[int]] = (
         _authenticated_neo4j_probe
     ),
+    redis_factory: Callable[..., Redis] = Redis.from_url,
 ) -> SystemConfigurationProbeResult:
     """Probe one saved, allowlisted development profile without accepting a request URL.
 
@@ -245,6 +250,36 @@ async def probe_system_configuration(
 
     started = time.monotonic()
     endpoint = _endpoint(document)
+    if system_id in {"REDIS_CACHE", "REDIS_DELIVERY"}:
+        _, host, port = _validated_url(endpoint, schemes={"redis", "rediss"})
+        await _reject_unsafe_destination(host, port)
+        password = (secret_resolver or SecretResolver()).resolve(
+            _secret_reference(document, "password")
+        )
+        redis_client = redis_factory(
+            endpoint,
+            password=password,
+            decode_responses=False,
+            socket_connect_timeout=3,
+            socket_timeout=3,
+        )
+        try:
+            if not await redis_client.ping():
+                raise ValidationError("The saved Redis endpoint did not return PONG.")
+        except ValidationError:
+            raise
+        except Exception as error:
+            raise ValidationError(
+                "The saved Redis endpoint or credential is unavailable."
+            ) from error
+        finally:
+            await redis_client.aclose()
+        return SystemConfigurationProbeResult(
+            status="AVAILABLE",
+            scope="REDIS_PING",
+            latency_ms=max(0, round((time.monotonic() - started) * 1000)),
+            detail="Redis accepted the mounted credential and returned PONG.",
+        )
     if system_id == "NEO4J":
         _, host, port = _validated_url(endpoint, schemes={"bolt", "neo4j"})
         await _reject_unsafe_destination(host, port)

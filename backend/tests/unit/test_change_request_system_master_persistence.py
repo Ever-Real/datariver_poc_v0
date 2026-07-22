@@ -81,9 +81,27 @@ def test_system_master_migration_is_forced_rls_and_uses_redacted_connection_prof
         encoding="utf-8"
     )
 
-    assert REQUIRED_DATABASE_REVISION == "0039"
+    assert REQUIRED_DATABASE_REVISION == "0040"
     assert "FORCE ROW LEVEL SECURITY" in migration
     assert "GRANT SELECT, INSERT, UPDATE ON platform.data_systems" in migration
     assert "secret_reference" in migration
+    assert "password" not in migration.casefold()
+    assert "DROP TABLE" not in migration
+
+
+def test_external_redis_connector_migration_extends_only_bounded_vocabularies() -> None:
+    root = Path(__file__).resolve().parents[3]
+    migration = (
+        root / "backend/alembic/versions/0040_external_redis_and_s3_connectors.py"
+    ).read_text(encoding="utf-8")
+
+    assert 'revision: str = "0040"' in migration
+    assert 'down_revision: str | Sequence[str] | None = "0039"' in migration
+    assert "REDIS_CACHE" in migration
+    assert "REDIS_DELIVERY" in migration
+    assert "REDIS_PING" in migration
+    assert "redis|rediss" in migration
+    assert "GRANT SELECT ON platform.external_service_profiles" in migration
+    assert "TO datariver_relay" in migration
     assert "password" not in migration.casefold()
     assert "DROP TABLE" not in migration

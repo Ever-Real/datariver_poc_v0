@@ -87,8 +87,14 @@ ensure_random_secret airflow_admin_password 24
 ensure_random_secret keycloak_demo_password 18
 ensure_random_secret keycloak_admin_password 24
 ensure_random_secret grafana_admin_password 24
-ensure_random_secret valkey_cache_password 32
-ensure_random_secret valkey_queue_password 32
+if [ ! -s "$secrets_dir/redis_cache_password" ] && [ -s "$secrets_dir/valkey_cache_password" ]; then
+  cp "$secrets_dir/valkey_cache_password" "$secrets_dir/redis_cache_password"
+fi
+if [ ! -s "$secrets_dir/redis_delivery_password" ] && [ -s "$secrets_dir/valkey_queue_password" ]; then
+  cp "$secrets_dir/valkey_queue_password" "$secrets_dir/redis_delivery_password"
+fi
+ensure_random_secret redis_cache_password 32
+ensure_random_secret redis_delivery_password 32
 # These files are inert unless a development administrator explicitly activates
 # an intranet OpenAI-compatible LLM profile. Operators replace them through the
 # approved secret channel; bootstrap never enables the provider on their behalf.
@@ -120,12 +126,6 @@ if [ ! -s "$secrets_dir/s3_export_access_key" ]; then
   random_secret 18 | tr '/+' 'AB' | tr -d '=' > "$secrets_dir/s3_export_access_key"
 fi
 ensure_random_secret s3_export_secret_key 36
-s3_access=$(cat "$secrets_dir/s3_access_key")
-s3_secret=$(cat "$secrets_dir/s3_secret_key")
-
-printf '{"identities":[{"name":"datariver","credentials":[{"accessKey":"%s","secretKey":"%s"}],"actions":["Admin","Read","Write","List","Tagging"]}]}' \
-  "$s3_access" "$s3_secret" > "$secrets_dir/seaweed_s3_config.json"
-
 demo_password=$(cat "$secrets_dir/keycloak_demo_password")
 airflow_client_secret=$(cat "$secrets_dir/airflow_client_secret")
 identity_admin_client_secret=$(cat "$secrets_dir/keycloak_identity_admin_client_secret")

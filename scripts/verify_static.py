@@ -37,7 +37,7 @@ EXPECTED_SERVICE_SECRETS = {
     "local-bootstrap": {"postgres_bootstrap_password"},
     "api": {
         "postgres_app_password",
-        "valkey_cache_password",
+        "redis_cache_password",
         "datahub_token",
         "intranet_llm_chat_api_key",
         "intranet_llm_embedding_api_key",
@@ -45,27 +45,27 @@ EXPECTED_SERVICE_SECRETS = {
         "s3_access_key",
         "s3_secret_key",
     },
-    "outbox-relay": {"postgres_relay_password", "valkey_queue_password"},
+    "outbox-relay": {"postgres_relay_password", "redis_delivery_password"},
     "upload-worker": {
         "postgres_upload_password",
-        "valkey_queue_password",
+        "redis_delivery_password",
         "s3_access_key",
         "s3_secret_key",
     },
     "upload-validation-worker": {
         "postgres_upload_password",
-        "valkey_queue_password",
+        "redis_delivery_password",
         "s3_access_key",
         "s3_secret_key",
     },
     "governance-apply-worker": {
         "postgres_governance_password",
-        "valkey_queue_password",
+        "redis_delivery_password",
         "datahub_token",
     },
     "catalog-export-worker": {
         "postgres_export_password",
-        "valkey_queue_password",
+        "redis_delivery_password",
         "s3_export_access_key",
         "s3_export_secret_key",
     },
@@ -88,6 +88,16 @@ def verify_compose() -> None:
     documents = {path: _yaml(path) for path in compose_files}
     base_services = set(documents[COMPOSE_FILES[0]].get("services", {}))
     base_secrets = set(documents[COMPOSE_FILES[0]].get("secrets", {}))
+    forbidden_bundled_connectors = {"valkey-cache", "valkey-queue", "redis", "minio", "seaweedfs"}
+    bundled = base_services & forbidden_bundled_connectors
+    if bundled:
+        raise AssertionError(
+            f"compose.yaml must not own external Redis/S3 connector services: {sorted(bundled)}"
+        )
+    forbidden_volumes = {"valkey-queue-data", "redis-data", "minio-data", "seaweed-data"}
+    declared_volumes = set(documents[COMPOSE_FILES[0]].get("volumes", {}))
+    if declared_volumes & forbidden_volumes:
+        raise AssertionError("compose.yaml must not own external Redis/S3 data volumes")
     for path, document in documents.items():
         services = document.get("services", {})
         if not isinstance(services, dict):
@@ -132,13 +142,42 @@ def verify_compose() -> None:
             "loopback port publication"
         )
     source_host_services = source_host["services"]
-    for name in ("postgres", "valkey-cache", "valkey-queue", "seaweedfs"):
+    for name in ("postgres",):
         networks = set(source_host_services[name].get("networks", []))
         if networks != {"data", "source-access"}:
             raise AssertionError(
                 f"compose.source-host.yaml:{name} must keep private data access and the "
                 "dedicated source-access publication bridge"
             )
+    base = documents[ROOT / "compose.yaml"]
+    if base.get("networks", {}).get("connectors", {}).get("internal") is not False:
+        raise AssertionError("compose.yaml:connectors must provide explicit external egress")
+    for name in (
+        "api",
+        "storage-init",
+        "outbox-relay",
+        "upload-worker",
+        "upload-validation-worker",
+        "governance-apply-worker",
+        "catalog-export-worker",
+    ):
+        networks = set(base["services"][name].get("networks", []))
+        if not networks:
+            networks = set(base.get("x-backend", {}).get("networks", []))
+        if "connectors" not in networks:
+            raise AssertionError(f"compose.yaml:{name} must reach external connector endpoints")
+
+    env_example = (ROOT / ".env.example").read_text(encoding="utf-8")
+    for setting in (
+        "REDIS_CACHE_URL=",
+        "REDIS_DELIVERY_URL=",
+        "REDIS_CACHE_SECRET_REF=",
+        "REDIS_DELIVERY_SECRET_REF=",
+        "S3_ENDPOINT_URL=",
+        "S3_PUBLIC_ENDPOINT_URL=",
+    ):
+        if setting not in env_example:
+            raise AssertionError(f".env.example is missing external connector setting {setting}")
 
 
 def verify_observability_contract() -> None:
@@ -615,6 +654,12 @@ def verify_database_roles() -> None:
         raise AssertionError("the application role cannot delete retention governance evidence")
     if re.search(r"GRANT[^;]*UPDATE[^;]*retention\.legal_hold_events", generator):
         raise AssertionError("Legal Hold history must remain append-only")
+    relay_configuration_grant = (
+        "GRANT SELECT ON platform.external_service_profiles,\n"
+        "            platform.external_service_profile_versions TO datariver_relay;"
+    )
+    if relay_configuration_grant not in generator:
+        raise AssertionError("relay cannot load its activated Redis delivery revision")
     archive_port = (
         (ROOT / "backend/src/datariver/application/ports.py")
         .read_text(encoding="utf-8")

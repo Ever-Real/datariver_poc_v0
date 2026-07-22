@@ -15,7 +15,7 @@ operations.
 
 DataHub remains canonical for applied catalog metadata. DataRiver PostgreSQL is canonical for
 identity mappings, ABAC decision evidence, change intent/approvals, jobs/outbox/inbox, upload
-manifests, KG ontology/changesets/releases, Chat audit and API grants. Valkey, Airflow and graph/search
+manifests, KG ontology/changesets/releases, Chat audit and API grants. Redis, Airflow and graph/search
 projections are replaceable acceleration or delivery planes. No generic DataHub GraphQL, SQL,
 Cypher, Bolt, shell or arbitrary HTTP surface is exposed.
 
@@ -26,12 +26,12 @@ Cypher, Bolt, shell or arbitrary HTTP surface is exposed.
 | `frontend/` | React/TypeScript dashboard, catalog, registration, governance, KG, Chat and sharing flows |
 | API process | FastAPI/OIDC boundary, request IDs, ABAC, RLS context, typed use cases and Prometheus endpoint |
 | PostgreSQL 17 | nine canonical schemas, RLS, optimistic versions, immutable releases and durable delivery state |
-| outbox relay | leases unpublished PostgreSQL events and sends event IDs to queue Valkey |
+| outbox relay | leases unpublished PostgreSQL events and sends event IDs to external Redis delivery |
 | upload workers | multipart completion/reconcile and bounded-memory validation; attempt-scoped promotion, full promoted-byte hash read-back and commit-receipt-gated cleanup; no DataHub secret |
 | governance worker | leased typed DataHub aspect apply plus re-read hash reconciliation |
 | DataHub adapter | fixed GraphQL/aspect contracts, timeout/error mapping, bounded concurrency and circuit breaker |
-| Valkey cache/queue | separate TTL/evictable cache and AOF/no-eviction delivery instances; never canonical |
-| SeaweedFS S3 profile | quarantine/accepted objects behind the object-store port; PostgreSQL owns the manifest |
+| external Redis cache/delivery | separate TTL/evictable cache and persistent/no-eviction delivery endpoints; never canonical |
+| external S3/MinIO connector | quarantine/accepted objects behind the object-store port; PostgreSQL owns the manifest; no provider image is bundled |
 | Airflow overlay | paused catalog probe/full reconciliation DAGs using short-lived Keycloak client credentials |
 | APISIX/Keycloak overlays | optional local edge/OIDC; application ABAC remains mandatory |
 | classification/inference governance | versioned four-class policies, provider-profile eligibility and policy-bound RESTRICTED Search grants with Admin API/UI |
@@ -102,7 +102,7 @@ security and infrastructure owners must replace or approve them before productio
 
 Reference latency/error objectives remain cached search p95 <= 300 ms, uncached p95 <= 800 ms,
 change-request write p95 <= 400 ms and error rate < 1%. Add p99 <= 1.5 s for uncached search to
-prevent a good p95 from hiding long authorization/DB waits. API RSS, DB CPU/connections/locks, Valkey
+prevent a good p95 from hiding long authorization/DB waits. API RSS, DB CPU/connections/locks, Redis
 memory/evictions, DataHub latency/concurrency and audit rows/transaction must accompany latency.
 
 ### Deployment-supplied validation profile
@@ -164,7 +164,7 @@ eligibility controls.
 |---|---|---|
 | literal search safety | implemented: NFKC, minimum non-empty length, `%`/`_`/backslash escape | API negative tests and UX message in browser E2E |
 | PostgreSQL search | implemented: stored `tsvector`, GIN FTS, `pg_trgm` name index, active scope/order partial index and lower-name short-prefix index | target-distribution EXPLAIN/BUFFERS and write-cost measurement |
-| search cache | implemented: search/facet/suggestion short TTL keys include workspace, full permission scope, policy version, request and transactional local projection version; access/source counters expose hit/miss/error/write paths; local same-token membership/deny/scope revocation p99 is below 200 ms | Valkey eviction exporter and two-identity revocation timing under target load |
+| search cache | implemented: search/facet/suggestion short TTL keys include workspace, full permission scope, policy version, request and transactional local projection version; access/source counters expose hit/miss/error/write paths; local same-token membership/deny/scope revocation p99 is below 200 ms | external Redis eviction exporter and two-identity revocation timing under target load |
 | ABAC audit amplification | Search/facet/suggestion and Chat candidates are SQL-prefiltered as sets; each request keeps a top-level authorization decision and Chat retains one grouped evidence decision row | export coverage and partition/retention volume proof |
 | change-target authorization | partial: new items persist a server-only immutable local dataset identity/scope binding; create and state mutation share the request DB session, projection rows use share locking, lists use one grouped current-target decision, point reads hide denied targets, approval/forward transitions reject target fingerprint drift, legacy unbound rows are quarantined, and the worker rejects unsafe/unbound queued shapes and reconciles an already-observed approved hash. Ordinary dataset-description editing now uses a typed live preview and composite target/source ETag; raw generic/upload proposal entry points are hardware-human, deny-by-default and absent from the UI | revalidate current requester/classification policy at apply under an approved least-privilege worker read capability, serialize provider+URN+aspect, obtain provider CAS where available, add the remaining typed edit DTOs, bind accepted upload content to the exact proposal and prove cross-process idempotency races |
 | DataHub isolation | timeout, concurrency bulkhead, circuit breaker, fresh + bounded stale detail fallback; fixed-label request/duration/in-flight/rejection/circuit metrics | target contract/fault test; worker-process metrics; incremental watermark |
@@ -273,8 +273,8 @@ prompt-injection control.
 
 The current Compose/host-development topology is explicitly Single-node Pilot. ADR-0013 prohibits an
 HA claim until at least three independent nodes, off-host distributed storage and measured failover/
-restore evidence are accepted. Likewise, ADR-0012 keeps SeaweedFS as Pilot upload storage and does
-not make archived MinIO OSS the default for a new immutable-archive deployment.
+restore evidence are accepted. ADR-0033 externalizes upload storage: a MinIO-compatible target is a
+deployment-selected S3 connector, not a bundled image or automatic immutable-archive acceptance.
 
 Implemented foundation: process liveness is separate from schema-aware readiness; readiness uses a
 bounded real pool lease and requires the packaged sole Alembic head. Compose, APISIX and host startup
@@ -287,9 +287,9 @@ budget visibility, not multi-replica HA or a target `max_connections` value.
   contract exist, but no PgBouncer deployment or live pass does.
 - PostgreSQL: HA topology, PITR/WAL archive, isolated restore drill, partition/autovacuum plans and
   measured RPO <= 5 minutes/RTO <= 60 minutes.
-- Objects: replicated, encrypted S3-compatible target with lifecycle, checksum, Object Lock where
-  required and restore evidence; local single-node SeaweedFS is not the production topology.
-- Delivery: retain Valkey + PostgreSQL outbox until retention/multi-consumer throughput requires a
+- Objects: replicated, encrypted external S3-compatible target with lifecycle, checksum, Object Lock
+  where required and restore evidence; the repository bundles no provider topology.
+- Delivery: retain external Redis + PostgreSQL outbox until retention/multi-consumer throughput requires a
   durable event log. Kafka/Pulsar does not replace canonical outbox/inbox semantics.
 - Airflow: LocalExecutor remains valid for a small single machine; use a remote/container executor
   for multi-machine or large batch after operational-cost review.
@@ -314,7 +314,7 @@ alert routing and telemetry retention remain target-deployment gates.
 3. Extend the local membership/deny/scope revocation probe to two identities, classification,
    policy-version and open Chat/stream sessions under load; add target DataHub fault, worker
    kill/reclaim and 60-minute load/soak automation. Cache/API DataHub metrics are exposed, while
-   worker/sync/Valkey metrics remain.
+   worker/sync/Redis metrics remain.
 4. Implement and contract-test incremental DataHub change-watermark ingestion, retaining nightly full
    reconcile as drift verification/recovery.
 5. Add the provider-neutral archive export/conformance worker around the implemented append-only

@@ -52,25 +52,6 @@ services:
     ports:
       - "127.0.0.1:${POSTGRES_PORT:-5432}:5432"
 
-  valkey-cache:
-    networks:
-      - data
-      - host-dev
-    ports:
-      - "127.0.0.1:${VALKEY_CACHE_PORT:-6379}:6379"
-
-  valkey-queue:
-    networks:
-      - data
-      - host-dev
-    ports:
-      - "127.0.0.1:${VALKEY_QUEUE_PORT:-6380}:6379"
-
-  seaweedfs:
-    networks:
-      - data
-      - host-dev
-
 networks:
   host-dev:
     internal: false

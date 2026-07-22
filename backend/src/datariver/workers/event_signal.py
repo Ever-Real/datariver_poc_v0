@@ -3,17 +3,17 @@ from __future__ import annotations
 import hashlib
 from collections.abc import Awaitable, Callable
 
-from datariver.infrastructure.cache.valkey import ValkeyEventDelivery
+from datariver.infrastructure.cache.redis import RedisEventDelivery
 from datariver.infrastructure.db.outbox import SqlInboxStore
 
 
 class EventSignalConsumer:
-    """Uses Valkey for low-latency wakeups while PostgreSQL remains canonical."""
+    """Uses Redis Streams for low-latency wakeups while PostgreSQL remains canonical."""
 
     def __init__(
         self,
         *,
-        delivery: ValkeyEventDelivery,
+        delivery: RedisEventDelivery,
         inbox: SqlInboxStore,
         group: str,
         consumer: str,

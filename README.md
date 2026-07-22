@@ -1,6 +1,6 @@
 # DataRiver Next
 
-DataRiver Next is a secure catalog and knowledge-governance control plane around an externally operated DataHub. It preserves catalog search, registration, change management, monitoring and evidence-based Chat, and adds reviewed knowledge-graph changesets/releases, release-pinned API products and grants, Valkey-backed cache/delivery and optional Airflow scheduling.
+DataRiver Next is a secure catalog and knowledge-governance control plane around an externally operated DataHub. It preserves catalog search, registration, change management, monitoring and evidence-based Chat, and adds reviewed knowledge-graph changesets/releases, release-pinned API products and grants, external Redis-backed cache/delivery and optional Airflow scheduling.
 
 The runtime is a boundary-enforced modular monolith with independent relay and worker processes. PostgreSQL remains the business source of truth, while modules can later be extracted without sharing domain models or bypassing ports.
 
@@ -12,7 +12,7 @@ The runtime is a boundary-enforced modular monolith with independent relay and w
 | Change intent, approval, audit, jobs, ABAC and KG releases | DataRiver PostgreSQL |
 | Credentials | External OIDC provider / mounted secret files |
 | Uploaded objects | S3-compatible object storage; manifest in PostgreSQL |
-| Cache and short-lived delivery | Separate Valkey instances; never canonical |
+| Cache and short-lived delivery | Separate external Redis endpoints; never canonical |
 | Graph query projection | Rebuildable from immutable KG releases |
 
 ## Repository map
@@ -46,7 +46,7 @@ Commit only the repository sources. A second PC clones the same tree, runs the m
 ## 폐쇄망 개발 PC 이관과 초기화
 
 `docker_imgs/`는 Git에서 무시되는 반입 산출물 디렉터리다. 여기에는 Linux OCI 이미지 tar,
-SHA-256 검증 파일과 이미지 ID/digest manifest만 둔다. `.env`, `secrets/`, DB·SeaweedFS
+SHA-256 검증 파일과 이미지 ID/digest manifest만 둔다. `.env`, `secrets/`, DB·외부 S3
 볼륨, 업로드 파일, DataHub 데이터 및 Ollama 모델은 포함하지 않는다. 반입 PC의 Docker
 아키텍처가 같아야 한다. 이 Mac 구성의 bundle은 기본적으로 `linux/arm64`이며,
 `linux/amd64` 서버에는 별도의 amd64 bundle을 연결망 빌드 환경에서 만들어야 한다.
@@ -105,11 +105,12 @@ DataHub 배포본이 아니다. 특히 upstream quickstart가 참조하는
    의도적으로 실패한다.
 3. 승인된 환경 설정과 비밀정보를 별도 보안 채널로 배포한다. 개발 PC의 비밀정보를 Git이나
    이미지 tar에 넣지 않는다. 새 환경에서는 최소한 DataHub service token, DB 역할별
-   password, Valkey password, S3 credential, OIDC client/issuer와 TLS·CA 신뢰 구성을
+   password, Redis password, S3 credential, OIDC client/issuer와 TLS·CA 신뢰 구성을
    대상 환경 값으로 발급한다.
-4. DataHub, OIDC, S3, Airflow, 외부 DB/Oracle 및 LLM은 DataRiver Compose가 자동 설치하는
-   외부 시스템이 아니다. Compose는 DataRiver의 PostgreSQL·Valkey·SeaweedFS와 선택적 로컬
-   Keycloak/Airflow/APISIX/Neo4j만 제공한다. DataHub는 외부 catalog provider이며, 실제
+4. DataHub, Redis, S3/MinIO, Airflow, 외부 DB/Oracle 및 LLM은 DataRiver Compose가 자동
+   설치하는 외부 시스템이 아니다. 기본 Compose가 소유하는 상태 저장 인프라는
+   PostgreSQL뿐이고, 로컬 OIDC가 필요할 때만 Keycloak overlay를 선택한다. Airflow/APISIX와
+   개발용 Neo4j도 명시적 선택 profile이다. DataHub는 외부 catalog provider이며, 실제
    Postgres/Oracle source system도 해당 시스템 또는 DataHub ingestion이 별도로 운영한다.
 
 `System settings` 화면은 접속 주소, 모델 ID, 비밀 **참조명**과 비민감 옵션을 관리한다.
@@ -236,18 +237,19 @@ docker compose -f compose.yaml -f compose.identity.yaml -f compose.source-host.y
   config --quiet
 docker compose -f compose.yaml -f compose.identity.yaml -f compose.source-host.yaml \
   up -d --pull never --no-build --wait \
-  postgres valkey-cache valkey-queue seaweedfs keycloak
+  postgres keycloak
 ./scripts/configure_keycloak_host_dev.sh
 docker compose -f compose.yaml -f compose.identity.yaml -f compose.source-host.yaml \
   run --rm migrate
-docker compose -f compose.yaml -f compose.identity.yaml -f compose.source-host.yaml \
+docker compose --profile object-storage-tools \
+  -f compose.yaml -f compose.identity.yaml -f compose.source-host.yaml \
   run --rm storage-init
 docker compose --profile tools -f compose.yaml -f compose.identity.yaml \
   -f compose.source-host.yaml run --rm local-bootstrap
 ```
 
-`compose.source-host.yaml`은 PostgreSQL, 두 Valkey와 SeaweedFS를 내부 `data` network와 전용
-`source-access` bridge에 함께 연결한다. 후자는 host source process가 사용하는 명시적
+`compose.source-host.yaml`은 PostgreSQL만 내부 `data` network와 전용 `source-access`
+bridge에 함께 연결한다. 후자는 host source process가 사용하는 명시적
 `127.0.0.1` binding만 게시하며 다른 application service를 수용하지 않는다. `docker ps`의
 PostgreSQL ports가 `5432/tcp`로만 보이고 `127.0.0.1:5432->5432/tcp`가 없다면 오래된 overlay로
 생성된 container이므로, 최신 overlay를 받은 뒤 같은 세 Compose 파일로 다시 생성한다.
@@ -529,7 +531,7 @@ environment's secrets or volumes.
 
 1. Read [architecture](docs/03_ARCHITECTURE.md), [deployment](docs/08_DEPLOYMENT.md) and the
    canonical ownership table above. PostgreSQL owns DataRiver workflow state; DataHub is the
-   external owner of applied catalog metadata; S3-compatible storage owns object bytes; Valkey is
+   external owner of applied catalog metadata; S3-compatible storage owns object bytes; Redis is
    disposable cache/delivery state.
 2. Bootstrap `.env` and ignored secret files with `scripts/bootstrap.sh` or
    `scripts/bootstrap.ps1`. Set the external DataHub base URL, service token, OIDC origins and any
@@ -538,8 +540,9 @@ environment's secrets or volumes.
    digest-pinned `v1.6.0` component images; do not add an RC compatibility exception for this local
    topology.
 3. Validate the selected Compose overlay with `docker compose ... config --quiet`, then bring up
-   PostgreSQL, Valkey, object storage, Keycloak and APISIX. Apply `alembic upgrade head` through the
-   migration service before API/workers; readiness requires revision `0039`.
+   the external Redis and S3 connectors, then PostgreSQL and the selected local Keycloak/APISIX
+   overlays. Apply `alembic upgrade head` through the migration service before API/workers;
+   readiness requires revision `0040`.
 4. Start the API, relay, workers and web service using either the container profile or the
    host-development commands below. Check `/api/v1/health/live`, `/api/v1/health/ready`,
    `/api/v1/capabilities` and the APISIX/Vite proxy before using application workflows.
@@ -557,16 +560,20 @@ security/exception workflows;
 **Retention & erasure governance** contains policy, Legal Hold and erasure review. Provider
 eligibility remains a nested policy approval because it is distinct from connection configuration.
 
-In development, an eligible administrator can open **Profile → System settings** and select a
-badge for DataHub, Airflow, S3, the grouped Chat/Embedding/Reranker LLM models, Neo4j, Prometheus or
-Grafana. Unconfigured entries start from a
+The inventory always shows deployment-managed PostgreSQL/OIDC bootstrap requirements, separate
+Redis cache/delivery and S3/DataHub core connectors, and optional feature connectors with their
+required fields and secret flags. In development, an eligible administrator can open
+**Profile → System settings** and select a badge for Redis, DataHub, Airflow, S3, the grouped
+Chat/Embedding/Reranker LLM models, Neo4j, Prometheus or Grafana. Unconfigured entries start from a
 server-owned sample YAML containing no credential values. Each SAVE creates a versioned YAML
 revision in PostgreSQL. The browser may save addresses, model identifiers, non-sensitive options
 and strict `file:/run/secrets/<name>` references; a literal `password`, `secret`, `token`, `api_key`
 or `private_key` value is rejected. Actual values remain in ignored local secret files/Docker
 secrets, and `.env` contains only deployment switches or reference paths. Use
 `url`, `endpoint` or `base_url` for an HTTP(S)
-endpoint. A saved Grafana URL is supplied by the server to the Monitoring page and rendered in its
+endpoint; Redis uses `redis://` or `rediss://`. The bounded versions API exposes newest-first
+hash/TEST/activation history without YAML or credentials. A saved Grafana URL is supplied by the
+server to the Monitoring page and rendered in its
 sandboxed iframe. Production keeps configuration in deployment/approved-provider controls and does
 not expose this write API.
 
@@ -574,7 +581,8 @@ not expose this write API.
 exact saved revision and never accepts a request URL. **ACTIVATE** is available only for a current
 AVAILABLE revision, an implemented runtime consumer and a recent hardware-WebAuthn administrator.
 It selects the version for the next process startup; it never hot-reloads or restarts a client.
-DataHub GMS and S3 changes require API plus relevant worker restart. Local Ollama or the development
+Redis cache requires API restart, Redis delivery requires relay/worker restart, and DataHub GMS and
+S3 changes require API plus relevant worker restart. Local Ollama or the development
 intranet OpenAI-compatible Chat/Embedding adapters together with Neo4j require an API restart;
 the Reranker remains storable/testable inventory and has no runtime activation. The API can report
 only the version it loaded itself and does not infer worker success.
@@ -748,7 +756,10 @@ docker compose --profile tools -f compose.yaml -f compose.identity.yaml \
   run --rm local-bootstrap
 ```
 
-Bootstrap is safe to rerun: it preserves every existing infrastructure credential, updates only the supplied DataHub token, and regenerates derived SeaweedFS/Keycloak configuration from the preserved credentials. Credential rotation is a separate deliberate operation followed by restart and dependency-specific verification.
+Bootstrap is safe to rerun: it preserves every existing infrastructure credential, migrates legacy
+Valkey secret filenames to their Redis aliases when needed, updates only a supplied DataHub token,
+and regenerates derived Keycloak configuration. Credential rotation is a separate deliberate
+operation followed by restart and dependency-specific verification.
 
 PowerShell:
 
@@ -836,7 +847,11 @@ The `local-identity` bootstrap is rejected when `APP_ENV=production`. With an en
 
 ## Host-development quick start
 
-Use this topology while API, workers and UI are changing frequently. PostgreSQL, the two Valkeys, SeaweedFS, Keycloak and APISIX stay in containers; Uvicorn, all four long-running backend relay/workers and Vite run directly from the checked-out source. The production-oriented base Compose remains private by default; `compose.host-dev.yaml` publishes only the required development ports on loopback.
+Use this topology while API, workers and UI are changing frequently. PostgreSQL and optional
+Keycloak/APISIX stay in DataRiver containers; Redis and S3/MinIO are independently operated.
+Uvicorn, the long-running backend relay/workers and Vite run directly from the checked-out source.
+The production-oriented base Compose remains private by default; `compose.host-dev.yaml` publishes
+only the required development ports on loopback.
 
 Every repository Compose/host-development combination is a **Single-node Pilot**, even if multiple
 processes run on that host. HA requires independent nodes, off-host distributed storage and accepted
@@ -861,11 +876,12 @@ For a checkout stored inside WSL, bootstrap and run Docker commands in that WSL 
 docker compose -f compose.yaml -f compose.identity.yaml -f compose.host-dev.yaml \
   config --quiet
 docker compose -f compose.yaml -f compose.identity.yaml -f compose.host-dev.yaml \
-  up -d --build --wait postgres valkey-cache valkey-queue seaweedfs keycloak
+  up -d --build --wait postgres keycloak
 ./scripts/configure_keycloak_host_dev.sh
 docker compose -f compose.yaml -f compose.identity.yaml -f compose.host-dev.yaml \
   run --rm migrate
-docker compose -f compose.yaml -f compose.identity.yaml -f compose.host-dev.yaml \
+docker compose --profile object-storage-tools \
+  -f compose.yaml -f compose.identity.yaml -f compose.host-dev.yaml \
   run --rm storage-init
 docker compose --profile tools -f compose.yaml -f compose.identity.yaml \
   -f compose.host-dev.yaml run --rm local-bootstrap
@@ -915,7 +931,10 @@ reloads backend sources stored in the WSL filesystem before APISIX serves them. 
 only that the process is running; readiness also leases an API database connection and requires the packaged sole Alembic head. If readiness reports
 `SCHEMA_REVISION_MISMATCH`, run the documented migration command before restarting host processes.
 
-The host-development port map is: PostgreSQL `5432`, cache Valkey `6379`, queue Valkey `6380`, SeaweedFS S3 `8333`, Uvicorn `38101`, APISIX `9080`, Keycloak `18081`, and Vite `38102`. Do not run a bare `docker compose up` for this topology because that would also start the containerized API, workers and web service.
+The DataRiver host-development port map is PostgreSQL `5432`, Uvicorn `38101`, APISIX `9080`,
+Keycloak `18081` and Vite `38102`. External Redis and S3/MinIO ports belong to their deployments.
+Do not run a bare `docker compose up` for this topology because that would also start the
+containerized API, workers and web service.
 
 Database connection ceilings are explicit settings. Budget the server for
 `API replicas × (DATABASE_POOL_SIZE + DATABASE_POOL_MAX_OVERFLOW) + long-running workers ×
@@ -962,7 +981,9 @@ docker compose -f compose.yaml -f compose.identity.yaml \
   -f compose.airflow.yaml -f compose.gateway.yaml up -d --build --wait
 ```
 
-Overlays may be combined. Keep PostgreSQL, Valkey, SeaweedFS, DataHub credentials and worker databases on private networks. See [deployment operations](docs/08_DEPLOYMENT.md) before using a non-local environment.
+Overlays may be combined. Keep PostgreSQL and worker databases private, and permit Redis, S3 and
+DataHub only through the explicit connector network and target firewall policy. See
+[deployment operations](docs/08_DEPLOYMENT.md) before using a non-local environment.
 
 If another local stack owns a default port, host bindings can be overridden for headless integration verification, for example:
 
@@ -1021,7 +1042,7 @@ docker compose -f compose.yaml build --pull
 ```
 
 애플리케이션을 올리기 전에 권한이 분리된 `migrate` 서비스로 Alembic을 실행한다. 이
-릴리스의 필수 revision은 `0039`이다. 호스트의 임의 DB 계정으로 `alembic`을 직접 실행하지
+릴리스의 필수 revision은 `0040`이다. 호스트의 임의 DB 계정으로 `alembic`을 직접 실행하지
 않는다.
 
 ```bash
@@ -1030,7 +1051,7 @@ docker compose -f compose.yaml run --rm migrate \
   /app/.venv/bin/alembic -c backend/alembic.ini current
 ```
 
-두 번째 명령의 현재 revision이 `0039 (head)`인지 확인한다. 마이그레이션 실패 시 서비스를
+두 번째 명령의 현재 revision이 `0040 (head)`인지 확인한다. 마이그레이션 실패 시 서비스를
 재기동하거나 downgrade를 추측 실행하지 말고, 로그와 DB 상태를 보존한 채 배포를 중단한다.
 
 ### 3. API·Worker·Web 재기동과 상태 확인
@@ -1096,10 +1117,11 @@ service token의 FINAL 호출은 `401` 또는 `403`으로 차단되어야 한다
 - Chat: deterministic baseline answers only from catalog or active-release knowledge evidence that passed prefiltering and per-item authorization. Immutable chunks bind workspace, classification, typed scope, source/version/effective time and content hash; only validated cited chunk IDs are persisted, otherwise the answer is `검증 불가`. Persistence additionally requires the workspace's independently approved ACTIVE retention policy: each new session binds its exact policy ID/hash and database-time deadline, and a superseded, expired or legacy-unbound session is append-closed. There is no duration fallback. The default inference-worker contract rejects SQL, Cypher, arbitrary HTTP, tools and mutation fields. Development Knowledge processing may use either the fixed loopback Ollama adapter in [ADR-0023](docs/adr/0023-mac-development-local-inference-and-graph-projection.md) or the private-network OpenAI-compatible adapter in [ADR-0030](docs/adr/0030-development-intranet-openai-compatible-adapter.md); both retain a fixed non-executable response contract and server-side validation. Commercial/public external inference remains disabled until live revalidation, delivery/streaming, metrics and scaled red-team gates are accepted.
 - Monitoring: liveness, readiness, dependency capabilities, workspace counts, outbox dead letters and ABAC-protected Prometheus HTTP metrics remain independent so one degraded optional dependency does not hide core state. Database-pool metrics expose only bounded connection states and configured limits, never workspace, subject or query labels.
 
-SeaweedFS is the local/Pilot upload store, not accepted WORM storage. The immutable-archive port is
-promoted only against a maintained, target-specific S3 deployment that passes Object Lock negative
-conformance and restore gates. Archived MinIO OSS is not the default for new production deployments;
-see ADR-0012 for the governed legacy exception and provider-neutral alternative.
+The upload store is an external S3-compatible deployment and is not an accepted WORM boundary. A
+MinIO target is supported through the provider-neutral port but its selected distribution, license,
+provenance and S3 behavior remain deployment gates. The separate immutable-archive port is promoted
+only against a maintained target that passes Object Lock negative conformance and restore gates; see
+ADR-0012 and ADR-0033.
 
 The bundled Airflow password file and `SimpleAuthManager` are strictly loopback local-development conveniences. Before any non-local Airflow exposure, use the deployment's supported enterprise/FAB SSO integration; the included DAG service account already uses short-lived Keycloak client credentials for DataRiver API calls.
 
@@ -1266,7 +1288,7 @@ CI repeats these checks, audits dependencies, scans source/IaC and release-equiv
   Maker-Checker, one-time and default-disabled; it never converts password/OTP into hardware assurance.
 - API, relay, upload, governance, bootstrap and migration database identities are separate; each worker receives only its own table grants and mounted secrets.
 - DataHub writes cannot bypass governance, and an external acknowledgement alone never means applied.
-- Valkey loss affects latency/delivery only; PostgreSQL outbox and leased job state recover correctness.
+- Redis loss affects latency/delivery only; PostgreSQL outbox and leased job state recover correctness.
 - Secrets are mounted as files. Production rejects HTTP external endpoints, wildcard CORS and seed activation.
 - Web Nginx and APISIX re-resolve replaceable API containers; a rolling API replacement must not require restarting the UI.
 

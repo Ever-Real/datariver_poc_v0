@@ -43,6 +43,8 @@ Current local identity-lifecycle decision: [governed Keycloak identity provision
 
 Current Linux/WSL source-host scheduling decision: [Airflow loopback bridge](adr/0032-linux-source-host-airflow-loopback-bridge.md).
 
+Current external infrastructure connector decision: [external Redis and S3 connector control plane](adr/0033-external-redis-and-s3-connector-control-plane.md).
+
 ## Change control
 
 - Requirements use stable IDs (`FR-*`, `NFR-*`, `SEC-*`).

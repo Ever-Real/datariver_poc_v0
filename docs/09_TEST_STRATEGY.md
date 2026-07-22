@@ -175,7 +175,11 @@ execution of any test. These checks cover source and component contracts. They d
 claim the final two-human OIDC/WebAuthn CR browser journey or provider-owned DataHub/Grafana SSO
 frame rendering, both of which remain target-environment acceptance gates.
 
-Executed resilience checks included cache-Valkey stop/recovery, API process restart, API container replacement behind both Nginx and APISIX, and outbox-relay restart. The API replacement test deliberately kept the web container running and verified that its Docker DNS resolver did not retain a stale upstream address.
+Historical resilience checks included cache-Valkey stop/recovery. The external Redis connector now
+requires equivalent cache and delivery endpoint loss/recovery evidence in each target deployment,
+alongside API process restart, API container replacement behind both Nginx and APISIX, and
+outbox-relay restart. The API replacement test deliberately kept the web container running and
+verified that its Docker DNS resolver did not retain a stale upstream address.
 
 The local seeded same-token revocation probe ran 100 iterations per scenario against the direct API:
 membership inactive p99 100.660 ms, explicit `catalog.search` deny p99 167.743 ms and system/domain
@@ -225,7 +229,7 @@ does not execute deletion. Target-provider deletion remains an unimplemented rel
 | UI component | Vitest/Testing Library | loading/error/permission/accessibility behavior |
 | Browser E2E | Playwright | search, upload/dry-run, CR lifecycle, monitoring, KG release, Chat |
 | Resilience | Toxiproxy/process kill | dependency failure matrix and recovery |
-| Performance | k6 plus RSS/DB/Valkey metrics | p95, error rate, memory and soak stability |
+| Performance | k6 plus RSS/DB/external Redis metrics | p95, error rate, memory and soak stability |
 | Security/supply chain | pip-audit, npm audit, Trivy secret/vulnerability/IaC/image scan, CycloneDX, license allowlist | zero unresolved Critical/High, retained SBOM |
 | Recovery | isolated restore/rebuild scripts | PostgreSQL restore and graph projection deterministic hash |
 

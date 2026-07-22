@@ -175,7 +175,9 @@ BEGIN
     END IF;
 
     IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'datariver_relay') THEN
-        GRANT USAGE ON SCHEMA integration TO datariver_relay;
+        GRANT USAGE ON SCHEMA platform, integration TO datariver_relay;
+        GRANT SELECT ON platform.external_service_profiles,
+            platform.external_service_profile_versions TO datariver_relay;
         GRANT SELECT, UPDATE ON integration.outbox_events TO datariver_relay;
         GRANT SELECT ON integration.inbox_messages TO datariver_relay;
     END IF;

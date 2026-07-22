@@ -83,6 +83,9 @@ from datariver.interfaces.http.schemas import (
     SystemConfigurationListResponse,
     SystemConfigurationTestResponse,
     SystemConfigurationUpdateRequest,
+    SystemConfigurationVersionListResponse,
+    SystemConfigurationVersionResponse,
+    SystemConnectionRequirementResponse,
     SystemDirectoryEntryResponse,
     SystemDirectoryListResponse,
     WorkspaceMembershipAccessResponse,
@@ -116,11 +119,17 @@ def _membership_renewal_response(
     )
 
 
-_SYSTEM_CONFIGURATION = (
+_BOOTSTRAP_SYSTEM_CONFIGURATION = (
+    ("POSTGRESQL", "POSTGRESQL", "PostgreSQL"),
+    ("OIDC_IDENTITY", "OIDC_IDENTITY", "OIDC Identity"),
+)
+_CONNECTOR_SYSTEM_CONFIGURATION = (
     ("DATAHUB_GMS", "DATAHUB", "DataHub GMS"),
     ("DATAHUB_FRONTEND", "DATAHUB_FRONTEND", "DataHub Frontend"),
     ("AIRFLOW", "AIRFLOW", "Airflow"),
-    ("S3_STORAGE", "S3_STORAGE", "S3 Storage"),
+    ("REDIS_CACHE", "REDIS_CACHE", "Redis Cache"),
+    ("REDIS_DELIVERY", "REDIS_DELIVERY", "Redis Delivery"),
+    ("S3_STORAGE", "S3_STORAGE", "S3-compatible Storage"),
     ("LLM_CHAT_MODEL", "LLM_CHAT_MODEL", "LLM · Chat model"),
     ("LLM_EMBEDDING", "LLM_EMBEDDING", "LLM · Embedding"),
     ("LLM_RERANKER", "LLM_RERANKER", "LLM · Reranker"),
@@ -128,13 +137,17 @@ _SYSTEM_CONFIGURATION = (
     ("PROMETHEUS", "PROMETHEUS", "Prometheus"),
     ("GRAFANA_DASHBOARD", "GRAFANA_DASHBOARD", "Grafana Dashboard"),
 )
+_SYSTEM_CONFIGURATION = _BOOTSTRAP_SYSTEM_CONFIGURATION + _CONNECTOR_SYSTEM_CONFIGURATION
 _CONFIGURATION_BY_ID = {
-    system_id: (service_key, label) for system_id, service_key, label in _SYSTEM_CONFIGURATION
+    system_id: (service_key, label)
+    for system_id, service_key, label in _CONNECTOR_SYSTEM_CONFIGURATION
 }
 _RUNTIME_RESTART_SCOPE = {
     "DATAHUB_GMS": "API_AND_WORKERS",
     "DATAHUB_FRONTEND": "API_ONLY",
     "AIRFLOW": "API_ONLY",
+    "REDIS_CACHE": "API_ONLY",
+    "REDIS_DELIVERY": "WORKERS_ONLY",
     "S3_STORAGE": "API_AND_WORKERS",
     "LLM_CHAT_MODEL": "API_ONLY",
     "LLM_EMBEDDING": "API_AND_WORKERS",
@@ -167,6 +180,16 @@ _SYSTEM_CONFIGURATION_TEMPLATES: dict[str, dict[str, Any]] = {
         "base_url": "",
         "secret_references": {},
         "options": {},
+    },
+    "REDIS_CACHE": {
+        "url": "redis://redis-cache.example.internal:6379/0",
+        "secret_references": {"password": "file:/run/secrets/redis_cache_password"},
+        "options": {"role": "CACHE", "required_policy": "allkeys-lfu"},
+    },
+    "REDIS_DELIVERY": {
+        "url": "redis://redis-delivery.example.internal:6379/0",
+        "secret_references": {"password": "file:/run/secrets/redis_delivery_password"},
+        "options": {"role": "DELIVERY", "required_policy": "noeviction+aof"},
     },
     "S3_STORAGE": {
         "endpoint": "",
@@ -219,6 +242,123 @@ _SYSTEM_CONFIGURATION_TEMPLATES: dict[str, dict[str, Any]] = {
     "GRAFANA_DASHBOARD": {
         "options": {"dashboard_path": "", "embed_enabled": False},
         "url": "",
+    },
+}
+
+_SYSTEM_METADATA: dict[str, dict[str, Any]] = {
+    "POSTGRESQL": {
+        "category": "PLATFORM",
+        "requirement": "BOOTSTRAP_REQUIRED",
+        "description": "Canonical application database and System Settings bootstrap store.",
+        "fields": (
+            ("url", "Database URL", True, False, "postgresql+asyncpg://user@db:5432/datariver"),
+            ("database", "Database name", True, False, "datariver"),
+            ("username", "Role name", True, False, "datariver_app"),
+            ("password", "Password secret reference", True, True, None),
+        ),
+    },
+    "OIDC_IDENTITY": {
+        "category": "PLATFORM",
+        "requirement": "BOOTSTRAP_REQUIRED",
+        "description": "Login and assurance provider; bundled Keycloak is one implementation.",
+        "fields": (
+            ("issuer", "Issuer URL", True, False, "https://id.example/realms/datariver"),
+            ("jwks_url", "JWKS URL", True, False, "https://id.example/certs"),
+            ("audience", "API audience", True, False, "datariver-api"),
+        ),
+    },
+    "DATAHUB_GMS": {
+        "category": "CATALOG",
+        "requirement": "CORE_CONNECTOR",
+        "description": "Authoritative catalog provider for enrichment and governed apply.",
+        "fields": (
+            ("base_url", "GMS endpoint", True, False, "https://datahub.example/api"),
+            ("token", "Service token reference", True, True, None),
+            ("expected_version", "Expected version", True, False, "v1.6.0"),
+        ),
+    },
+    "DATAHUB_FRONTEND": {
+        "category": "CATALOG",
+        "requirement": "FEATURE_CONNECTOR",
+        "description": "Optional DataHub link or separately reviewed embedded origin.",
+        "fields": (("url", "Frontend URL", True, False, "https://datahub.example"),),
+    },
+    "AIRFLOW": {
+        "category": "ORCHESTRATION",
+        "requirement": "FEATURE_CONNECTOR",
+        "description": "Optional scheduled and bulk workflow orchestrator.",
+        "fields": (("base_url", "Airflow URL", True, False, "https://airflow.example"),),
+    },
+    "REDIS_CACHE": {
+        "category": "PLATFORM",
+        "requirement": "CORE_CONNECTOR",
+        "description": "Evictable TTL cache; it must not share the delivery endpoint.",
+        "fields": (
+            ("url", "Redis URL", True, False, "rediss://redis-cache.example:6379/0"),
+            ("password", "Password secret reference", True, True, None),
+        ),
+    },
+    "REDIS_DELIVERY": {
+        "category": "PLATFORM",
+        "requirement": "CORE_CONNECTOR",
+        "description": "No-eviction Redis Streams delivery; PostgreSQL remains canonical.",
+        "fields": (
+            ("url", "Redis URL", True, False, "rediss://redis-delivery.example:6379/0"),
+            ("password", "Password secret reference", True, True, None),
+        ),
+    },
+    "S3_STORAGE": {
+        "category": "STORAGE",
+        "requirement": "CORE_CONNECTOR",
+        "description": "External MinIO/S3 endpoint for upload, validation and export objects.",
+        "fields": (
+            ("endpoint", "Private endpoint", True, False, "https://minio-api.example"),
+            ("public_endpoint", "Browser endpoint", True, False, "https://objects.example"),
+            ("region", "Region", True, False, "us-east-1"),
+            ("buckets", "Bucket names", True, False, "quarantine/accepted/exports"),
+            ("access_key", "Access key reference", True, True, None),
+            ("secret_key", "Secret key reference", True, True, None),
+        ),
+    },
+    "LLM_CHAT_MODEL": {
+        "category": "AI",
+        "requirement": "FEATURE_CONNECTOR",
+        "description": "Optional approved OpenAI-compatible Chat model endpoint.",
+        "fields": (("base_url", "Model endpoint", True, False, "https://llm.example/v1"),),
+    },
+    "LLM_EMBEDDING": {
+        "category": "AI",
+        "requirement": "FEATURE_CONNECTOR",
+        "description": "Optional approved OpenAI-compatible embedding endpoint.",
+        "fields": (("base_url", "Embedding endpoint", True, False, "https://llm.example/v1"),),
+    },
+    "LLM_RERANKER": {
+        "category": "AI",
+        "requirement": "FEATURE_CONNECTOR",
+        "description": "Optional reranking endpoint; no runtime adapter is active yet.",
+        "fields": (("base_url", "Reranker endpoint", True, False, "https://llm.example/v1"),),
+    },
+    "NEO4J": {
+        "category": "CATALOG",
+        "requirement": "FEATURE_CONNECTOR",
+        "description": "Optional rebuildable graph query projection.",
+        "fields": (
+            ("uri", "Bolt/Neo4j URI", True, False, "neo4j://graph.example:7687"),
+            ("database", "Database", True, False, "neo4j"),
+            ("credential", "Credential reference", True, True, None),
+        ),
+    },
+    "PROMETHEUS": {
+        "category": "OBSERVABILITY",
+        "requirement": "FEATURE_CONNECTOR",
+        "description": "Optional metrics backend link.",
+        "fields": (("base_url", "Prometheus URL", True, False, "https://metrics.example"),),
+    },
+    "GRAFANA_DASHBOARD": {
+        "category": "OBSERVABILITY",
+        "requirement": "FEATURE_CONNECTOR",
+        "description": "Optional reviewed operations dashboard link or embed.",
+        "fields": (("url", "Grafana URL", True, False, "https://grafana.example"),),
     },
 }
 _SENSITIVE_CONFIGURATION_KEY = re.compile(
@@ -404,6 +544,21 @@ def _validate_system_configuration(system_id: str, document: Mapping[str, Any]) 
             raise ValidationError("Credentials must not be embedded in the Neo4j URI.")
         _require_non_empty_string(document, "database")
         return None
+    if system_id in {"REDIS_CACHE", "REDIS_DELIVERY"}:
+        url = _require_non_empty_string(document, "url")
+        parsed = urlsplit(url)
+        if parsed.scheme not in {"redis", "rediss"} or parsed.hostname is None:
+            raise ValidationError("Redis URL values must use redis:// or rediss://.")
+        if parsed.username is not None or parsed.password is not None:
+            raise ValidationError("Credentials must not be embedded in a Redis URL.")
+        if parsed.query or parsed.fragment:
+            raise ValidationError("A Redis URL must not contain a query or fragment.")
+        secret_references = _secret_references(document.get("secret_references", {}))
+        if set(secret_references) != {"password"}:
+            raise ValidationError(
+                "Redis configuration requires exactly one password secret reference."
+            )
+        return url
     endpoint = _configuration_endpoint(document)
     if endpoint is None:
         raise ValidationError("System configuration requires one non-empty HTTP endpoint.")
@@ -544,6 +699,36 @@ def _system_configuration_entries(
     versions: Mapping[tuple[UUID, int], ExternalServiceProfileVersionModel] = {},
 ) -> list[SystemConfigurationEntryResponse]:
     development = settings.app_env == "development"
+    deployment_configured = {
+        "POSTGRESQL": True,
+        "OIDC_IDENTITY": True,
+        "DATAHUB_GMS": True,
+        "DATAHUB_FRONTEND": settings.ui_datahub_url is not None,
+        "AIRFLOW": settings.ui_airflow_url is not None,
+        "REDIS_CACHE": True,
+        "REDIS_DELIVERY": True,
+        "S3_STORAGE": True,
+        "LLM_CHAT_MODEL": (
+            settings.local_ollama_chat_enabled or settings.intranet_openai_compatible_chat_enabled
+        ),
+        "LLM_EMBEDDING": (
+            settings.local_ollama_embedding_enabled
+            or settings.intranet_openai_compatible_embedding_enabled
+        ),
+        "LLM_RERANKER": False,
+        "NEO4J": settings.neo4j_projection_enabled,
+        "PROMETHEUS": settings.ui_prometheus_url is not None,
+        "GRAFANA_DASHBOARD": settings.ui_grafana_url is not None,
+    }
+    deployment_secret_configured = {
+        "POSTGRESQL": bool(settings.database_secret_ref),
+        "OIDC_IDENTITY": False,
+        "DATAHUB_GMS": bool(settings.datahub_secret_ref),
+        "REDIS_CACHE": bool(settings.redis_cache_secret_ref),
+        "REDIS_DELIVERY": bool(settings.redis_delivery_secret_ref),
+        "S3_STORAGE": bool(settings.s3_access_key_file and settings.s3_secret_key_file),
+        "NEO4J": bool(settings.neo4j_auth_secret_ref),
+    }
     entries: list[SystemConfigurationEntryResponse] = []
     for system_id, service_key, label in _SYSTEM_CONFIGURATION:
         profile = profiles.get(service_key)
@@ -557,7 +742,11 @@ def _system_configuration_entries(
         runtime_supported = system_id in _RUNTIME_RESTART_SCOPE
         applied_version = settings.system_configuration_runtime_versions.get(service_key)
         configured = profile is not None and profile.active
-        if development:
+        if system_id in {"POSTGRESQL", "OIDC_IDENTITY"}:
+            state = "CONFIGURED"
+            embedding_state = "NOT_APPLICABLE"
+            management_plane = "DEPLOYMENT"
+        elif development and configured:
             state = "CONFIGURED" if configured else "NOT_CONFIGURED"
             if system_id == "GRAFANA_DASHBOARD":
                 embedding_state = "AVAILABLE" if configured else "NOT_CONFIGURED"
@@ -565,14 +754,7 @@ def _system_configuration_entries(
                 embedding_state = "NOT_APPLICABLE"
             management_plane = "DEVELOPMENT_DATABASE"
         else:
-            static_configured = {
-                "DATAHUB_GMS": True,
-                "DATAHUB_FRONTEND": settings.ui_datahub_url is not None,
-                "AIRFLOW": settings.ui_airflow_url is not None,
-                "S3_STORAGE": True,
-                "PROMETHEUS": settings.ui_prometheus_url is not None,
-                "GRAFANA_DASHBOARD": settings.ui_grafana_url is not None,
-            }.get(system_id, False)
+            static_configured = deployment_configured.get(system_id, False)
             if static_configured:
                 state = "CONFIGURED"
             elif system_id.startswith("LLM_"):
@@ -591,18 +773,22 @@ def _system_configuration_entries(
         configuration_yaml = ""
         display_yaml = ""
         template_yaml = (
-            _render_yaml(_SYSTEM_CONFIGURATION_TEMPLATES[system_id]) if development else ""
+            _render_yaml(_SYSTEM_CONFIGURATION_TEMPLATES[system_id])
+            if development and system_id in _SYSTEM_CONFIGURATION_TEMPLATES
+            else ""
         )
         if development and profile and profile.configuration_yaml:
             document = _yaml_document(profile.configuration_yaml)
             configuration_yaml = _render_yaml(_mask_configuration(document))
             display_yaml = _render_yaml(_display_configuration(document))
-        secret_reference_configured = (
-            bool(profile and profile.secret_reference)
-            if development
-            else system_id == "DATAHUB_GMS" and bool(settings.datahub_secret_ref)
+        secret_reference_configured = bool(profile and profile.secret_reference) or bool(
+            deployment_secret_configured.get(system_id, False)
         )
-        if profile is None:
+        if system_id in {"POSTGRESQL", "OIDC_IDENTITY"}:
+            activation_state = "DEPLOYMENT_MANAGED"
+        elif profile is None and deployment_configured.get(system_id, False):
+            activation_state = "DEPLOYMENT_MANAGED"
+        elif profile is None:
             activation_state = "NOT_CONFIGURED"
         elif not runtime_supported:
             activation_state = "RUNTIME_NOT_IMPLEMENTED"
@@ -616,10 +802,25 @@ def _system_configuration_entries(
             activation_state = "APPLIED_TO_API_PROCESS"
         else:
             activation_state = "ACTIVATED_RESTART_REQUIRED"
+        metadata = _SYSTEM_METADATA[system_id]
+        requirements = [
+            SystemConnectionRequirementResponse(
+                key=key,
+                label=field_label,
+                required=required,
+                secret=secret,
+                example=example,
+            )
+            for key, field_label, required, secret, example in metadata["fields"]
+        ]
         entries.append(
             SystemConfigurationEntryResponse(
                 system_id=system_id,
                 label=label,
+                category=metadata["category"],
+                requirement=metadata["requirement"],
+                description=metadata["description"],
+                connection_requirements=requirements,
                 state=state,
                 management_plane=management_plane,
                 secret_reference_configured=secret_reference_configured,
@@ -1244,6 +1445,94 @@ async def list_system_configuration(
     )
 
 
+@router.get(
+    "/system-configuration/{system_id}/versions",
+    response_model=SystemConfigurationVersionListResponse,
+)
+async def list_system_configuration_versions(
+    system_id: str,
+    request: Request,
+    context: ContextDep,
+    limit: Annotated[int, Query(ge=1, le=100)] = 50,
+) -> SystemConfigurationVersionListResponse:
+    """Return bounded non-secret SAVE/TEST/ACTIVATE history for one connector."""
+
+    container = get_container(request)
+    if container.settings.app_env != "development":
+        raise ForbiddenError(
+            "Database-backed system configuration history is available only in development."
+        )
+    if system_id not in _CONFIGURATION_BY_ID:
+        raise ValidationError(
+            "The system configuration identifier is invalid or deployment-managed."
+        )
+    admin_context = await _service(request).get_admin_read_context(
+        workspace_id=context.workspace_id,
+        subject=context.subject,
+        environment=context.environment,
+        request_id=context.request_id,
+    )
+    if "SYSTEM_CONFIGURATION_READ" not in admin_context.allowed_operations:
+        raise ForbiddenError("System configuration access is not available for this administrator.")
+    service_key, _ = _CONFIGURATION_BY_ID[system_id]
+    async with container.database.session_factory() as session:
+        async with session.begin():
+            await set_security_context(
+                session,
+                workspace_id=context.workspace_id,
+                subject_id=context.subject.subject_id,
+            )
+            profile = (
+                await session.scalars(
+                    select(ExternalServiceProfileModel).where(
+                        ExternalServiceProfileModel.workspace_id == context.workspace_id,
+                        ExternalServiceProfileModel.service_key == service_key,
+                    )
+                )
+            ).one_or_none()
+            if profile is None:
+                return SystemConfigurationVersionListResponse(
+                    system_id=system_id,
+                    current_version=0,
+                    activated_version=None,
+                    items=[],
+                )
+            revisions = (
+                await session.scalars(
+                    select(ExternalServiceProfileVersionModel)
+                    .where(
+                        ExternalServiceProfileVersionModel.workspace_id == context.workspace_id,
+                        ExternalServiceProfileVersionModel.profile_id == profile.id,
+                    )
+                    .order_by(ExternalServiceProfileVersionModel.configuration_version.desc())
+                    .limit(limit)
+                )
+            ).all()
+            return SystemConfigurationVersionListResponse(
+                system_id=system_id,
+                current_version=profile.version,
+                activated_version=profile.activated_version,
+                items=[
+                    SystemConfigurationVersionResponse(
+                        configuration_version=revision.configuration_version,
+                        configuration_hash=revision.configuration_hash,
+                        created_by=revision.created_by,
+                        created_at=revision.created_at,
+                        test_status=revision.test_status,
+                        test_scope=revision.test_scope,
+                        test_latency_ms=revision.test_latency_ms,
+                        tested_by=revision.tested_by,
+                        tested_at=revision.tested_at,
+                        activated_by=revision.activated_by,
+                        activated_at=revision.activated_at,
+                        current=revision.configuration_version == profile.version,
+                        activated=revision.configuration_version == profile.activated_version,
+                    )
+                    for revision in revisions
+                ],
+            )
+
+
 @router.put(
     "/system-configuration/{system_id}",
     response_model=SystemConfigurationEntryResponse,
@@ -1386,9 +1675,23 @@ async def update_system_configuration(
             saved_at = profile.updated_at
             saved_yaml = _render_yaml(_mask_configuration(merged))
     response.headers["ETag"] = f'"{saved_version}"'
+    metadata = _SYSTEM_METADATA[system_id]
     return SystemConfigurationEntryResponse(
         system_id=system_id,
         label=label,
+        category=metadata["category"],
+        requirement=metadata["requirement"],
+        description=metadata["description"],
+        connection_requirements=[
+            SystemConnectionRequirementResponse(
+                key=key,
+                label=field_label,
+                required=required,
+                secret=secret,
+                example=example,
+            )
+            for key, field_label, required, secret, example in metadata["fields"]
+        ],
         state="CONFIGURED",
         management_plane="DEVELOPMENT_DATABASE",
         secret_reference_configured=bool(secret_references),

@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from datariver.config import Settings
-from datariver.infrastructure.cache.valkey import ValkeyCache
+from datariver.infrastructure.cache.redis import RedisCache
 from datariver.infrastructure.datahub.http import HttpDataHubGateway
 from datariver.infrastructure.db.session import Database
 from datariver.infrastructure.identity.keycloak import KeycloakIdentityAdministration
@@ -18,7 +18,7 @@ from datariver.infrastructure.security.oidc import OidcTokenVerifier
 class AppContainer:
     settings: Settings
     database: Database
-    cache: ValkeyCache
+    cache: RedisCache
     datahub: HttpDataHubGateway
     oidc: OidcTokenVerifier
     object_store: S3ObjectStore
@@ -40,7 +40,7 @@ def build_container(settings: Settings) -> AppContainer:
     secret_resolver = SecretResolver(virtual_secret_root=settings.system_configuration_secret_root)
     database_password = secret_resolver.resolve(settings.database_secret_ref)
     datahub_token = secret_resolver.resolve(settings.datahub_secret_ref)
-    cache_password = secret_resolver.resolve(settings.valkey_cache_secret_ref)
+    cache_password = secret_resolver.resolve(settings.redis_cache_secret_ref)
     s3_access_key = secret_resolver.resolve(f"file:{settings.s3_access_key_file}")
     s3_secret_key = secret_resolver.resolve(f"file:{settings.s3_secret_key_file}")
     metrics = HttpMetrics()
@@ -83,8 +83,8 @@ def build_container(settings: Settings) -> AppContainer:
             max_overflow=settings.database_pool_max_overflow,
             pool_timeout_seconds=settings.database_pool_timeout_seconds,
         ),
-        cache=ValkeyCache(
-            settings.valkey_cache_url,
+        cache=RedisCache(
+            settings.redis_cache_url,
             password=cache_password,
             maximum_value_bytes=settings.cache_max_value_bytes,
         ),

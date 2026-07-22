@@ -24,7 +24,7 @@ The SQLAlchemy metadata and generated `backend/alembic/versions/0001_initial_sch
 | `platform.data_systems` | workspace-scoped code/name UQ, description, active flag, version/timestamps | canonical business-system master; not a DataHub provider connection |
 | `platform.system_schema_scopes` | workspace/platform/database/schema UQ, composite system FK, active flag | explicit DataHub projection scope to business-system assignment |
 | `platform.system_assignees` | system/subject/responsibility UQ, `DEVELOPER` or `DATA_STEWARD`, priority `1..999`, active flag | accountable human system assignments; never browser-derived |
-| `platform.external_service_profiles` | workspace/service-key UQ, current YAML/version, nullable activated version, updater and bounded service vocabulary | development-only current draft and pointer to the revision selected for next startup; production runtime settings remain deployment/provider controlled |
+| `platform.external_service_profiles` | workspace/service-key UQ, current YAML/version, nullable activated version, updater and bounded service vocabulary including separate `REDIS_CACHE`, `REDIS_DELIVERY` and `S3_STORAGE` connectors | development-only current draft and pointer to the revision selected for next startup; production runtime settings remain deployment/provider controlled |
 | `platform.external_service_profile_versions` | workspace/profile/configuration-version UQ, SHA-256 document hash, immutable YAML/endpoint, creator, TEST status/scope/latency/actor/time and activation actor/time | exact SAVE → TEST → ACTIVATE evidence; RLS-scoped reads are granted to each consuming process's existing least-privilege DB role |
 | `iam.subjects` | `id`, `issuer + external_subject UQ`, `display_name`, IdP email, ordinary last-login timestamp/IP, `active`, timestamps | external IdP mapping and profile audit; no credential or password |
 | `iam.workspace_memberships` | PK `workspace_id + subject_id`, `department_id`, `job_function`, `clearance`, `attributes`, `active`, nullable `access_expires_at`, `version` | versioned ABAC attributes/grants; human expiry is authorization-bearing, service-account expiry is operator-managed `NULL`, and the optional default marker only chooses among active unexpired memberships |
@@ -265,6 +265,11 @@ non-secret System Configuration/deployment binding on GraphRAG audits. Alembic `
 fixed governed identity-provisioning function and execute-only application grant; it adds no
 credential column or direct IAM-table write grant. SQLAlchemy metadata, the regenerated `0001`
 baseline and these incremental migrations must remain deterministic equivalents.
+
+Alembic `0040` extends only the bounded external-service and probe vocabularies for separate Redis
+cache/delivery profiles, `redis://`/`rediss://` endpoints and authenticated `REDIS_PING` evidence. It
+adds no credential column: profiles continue to persist only mounted-secret references and immutable
+version/test/activation history.
 
 `EVENT_RETENTION_DAYS` is a target online-retention input, not a deletion switch. Automatic event deletion remains disabled until immutable export has been written and read back from a verified Object-Lock store, Legal Hold precedence and Maker-Checker erasure approval are implemented, and a dedicated least-privilege retention worker is introduced.
 

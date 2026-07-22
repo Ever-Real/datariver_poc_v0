@@ -33,6 +33,34 @@ def test_datahub_activation_maps_only_validated_runtime_and_secret_references() 
     assert "token" not in updates
 
 
+def test_redis_activation_maps_cache_and_delivery_to_separate_settings() -> None:
+    cache = _runtime_updates(
+        "REDIS_CACHE",
+        {
+            "url": "rediss://redis-cache.example:6379/0",
+            "secret_references": {"password": "file:/run/secrets/redis_cache_password"},
+            "options": {},
+        },
+    )
+    delivery = _runtime_updates(
+        "REDIS_DELIVERY",
+        {
+            "url": "rediss://redis-delivery.example:6379/0",
+            "secret_references": {"password": "file:/run/secrets/redis_delivery_password"},
+            "options": {},
+        },
+    )
+
+    assert cache == {
+        "redis_cache_url": "rediss://redis-cache.example:6379/0",
+        "redis_cache_secret_ref": "file:/run/secrets/redis_cache_password",
+    }
+    assert delivery == {
+        "redis_delivery_url": "rediss://redis-delivery.example:6379/0",
+        "redis_delivery_secret_ref": "file:/run/secrets/redis_delivery_password",
+    }
+
+
 def test_local_ollama_activation_requires_openai_compatible_style_and_no_api_key() -> None:
     options: dict[str, object] = {
         "api_style": "openai_compatible",

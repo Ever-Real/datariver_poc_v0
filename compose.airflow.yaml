@@ -26,8 +26,8 @@ x-airflow-common: &airflow-common
     # path even when a developer workstation supplies a corporate HTTP proxy.
     # The external DataHub request is made only by the DataRiver API, never by
     # this scheduler or its task runners.
-    NO_PROXY: localhost,127.0.0.1,keycloak,api,apisix,host.docker.internal,postgres,valkey-cache,valkey-queue,seaweedfs,airflow-api-server
-    no_proxy: localhost,127.0.0.1,keycloak,api,apisix,host.docker.internal,postgres,valkey-cache,valkey-queue,seaweedfs,airflow-api-server
+    NO_PROXY: localhost,127.0.0.1,keycloak,api,apisix,host.docker.internal,postgres,airflow-api-server,${EXTERNAL_SERVICE_NO_PROXY:-}
+    no_proxy: localhost,127.0.0.1,keycloak,api,apisix,host.docker.internal,postgres,airflow-api-server,${EXTERNAL_SERVICE_NO_PROXY:-}
   secrets:
     - airflow_db_password
     - airflow_client_secret

@@ -95,6 +95,49 @@ class _IntranetLlmSecretResolver:
         return "intranet-api-key"
 
 
+class _RedisSecretResolver:
+    def resolve(self, reference: str) -> str:
+        assert reference == "file:/run/secrets/redis_cache_password"
+        return "redis-password"
+
+
+class _RedisClient:
+    def __init__(self) -> None:
+        self.closed = False
+
+    async def ping(self) -> bool:
+        return True
+
+    async def aclose(self) -> None:
+        self.closed = True
+
+
+@pytest.mark.asyncio
+async def test_redis_probe_uses_mounted_credential_and_ping_only() -> None:
+    client = _RedisClient()
+    calls: list[tuple[str, dict[str, object]]] = []
+
+    def redis_factory(url: str, **kwargs: object) -> _RedisClient:
+        calls.append((url, kwargs))
+        return client
+
+    result = await probe_system_configuration(
+        system_id="REDIS_CACHE",
+        document={
+            "url": "redis://127.0.0.1:6379/0",
+            "secret_references": {"password": "file:/run/secrets/redis_cache_password"},
+        },
+        secret_resolver=_RedisSecretResolver(),  # type: ignore[arg-type]
+        redis_factory=redis_factory,  # type: ignore[arg-type]
+    )
+
+    assert result.status == "AVAILABLE"
+    assert result.scope == "REDIS_PING"
+    assert calls[0][0] == "redis://127.0.0.1:6379/0"
+    assert calls[0][1]["password"] == "redis-password"
+    assert client.closed is True
+
+
 @pytest.mark.asyncio
 async def test_intranet_llm_probe_uses_the_operator_secret_and_rejects_bad_credentials() -> None:
     def accepted_handler(request: httpx.Request) -> httpx.Response:

@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from datariver.config import Settings
-from datariver.infrastructure.cache.valkey import ValkeyEventDelivery
+from datariver.infrastructure.cache.redis import RedisEventDelivery
 from datariver.infrastructure.datahub.http import HttpDataHubGateway
 from datariver.infrastructure.db.session import Database
 from datariver.infrastructure.object_store.s3 import S3ObjectStore
@@ -13,7 +13,7 @@ from datariver.infrastructure.secrets import SecretResolver
 @dataclass(slots=True)
 class RelayWorkerContainer:
     database: Database
-    event_delivery: ValkeyEventDelivery
+    event_delivery: RedisEventDelivery
 
     async def close(self) -> None:
         await self.event_delivery.close()
@@ -55,10 +55,10 @@ def _database(settings: Settings, *, role: str) -> Database:
     )
 
 
-def _delivery(settings: Settings, resolver: SecretResolver) -> ValkeyEventDelivery:
-    return ValkeyEventDelivery(
-        settings.valkey_queue_url,
-        password=resolver.resolve(settings.valkey_queue_secret_ref),
+def _delivery(settings: Settings, resolver: SecretResolver) -> RedisEventDelivery:
+    return RedisEventDelivery(
+        settings.redis_delivery_url,
+        password=resolver.resolve(settings.redis_delivery_secret_ref),
     )
 
 

@@ -297,12 +297,13 @@ class ExternalServiceProfileModel(Base, UuidPrimaryKeyMixin, TimestampMixin, Ver
             name="fk_external_service_profiles_updater",
         ),
         CheckConstraint(
-            "service_key IN ('DATAHUB', 'DATAHUB_FRONTEND', 'AIRFLOW', 'S3_STORAGE', "
+            "service_key IN ('DATAHUB', 'DATAHUB_FRONTEND', 'AIRFLOW', 'REDIS_CACHE', "
+            "'REDIS_DELIVERY', 'S3_STORAGE', "
             "'LLM_CHAT_MODEL', 'LLM_EMBEDDING', 'LLM_RERANKER', 'NEO4J', 'PROMETHEUS', "
             "'GRAFANA_DASHBOARD')",
             name="service_key_vocabulary",
         ),
-        CheckConstraint("endpoint_url ~ '^https?://'", name="endpoint_url_scheme"),
+        CheckConstraint("endpoint_url ~ '^(https?|redis|rediss)://'", name="endpoint_url_scheme"),
         CheckConstraint(
             "secret_reference IS NULL OR length(trim(secret_reference)) > 0",
             name="secret_reference_present",
@@ -375,7 +376,7 @@ class ExternalServiceProfileVersionModel(Base, UuidPrimaryKeyMixin, TimestampMix
         CheckConstraint(
             "test_scope IS NULL OR test_scope IN "
             "('HTTP_HEALTH', 'MODEL_DISCOVERY', 'MODEL_INFERENCE', "
-            "'EMBEDDING_INFERENCE', 'AUTHENTICATED_QUERY')",
+            "'EMBEDDING_INFERENCE', 'AUTHENTICATED_QUERY', 'REDIS_PING')",
             name="test_scope_vocabulary",
         ),
         CheckConstraint(

@@ -9,6 +9,7 @@ x-backend: &backend
   networks:
     - app
     - data
+    - connectors
   restart: unless-stopped
   security_opt:
     - no-new-privileges:true
@@ -48,106 +49,6 @@ services:
     security_opt:
       - no-new-privileges:true
 
-  valkey-cache:
-    image: valkey/valkey:9.1.0-alpine
-    command:
-      - /bin/sh
-      - -ec
-      - >-
-        exec valkey-server
-        --bind 0.0.0.0
-        --protected-mode yes
-        --requirepass "$$(cat /run/secrets/valkey_cache_password)"
-        --maxmemory 256mb
-        --maxmemory-policy allkeys-lfu
-        --save ""
-        --appendonly no
-    secrets:
-      - valkey_cache_password
-    networks:
-      - data
-    healthcheck:
-      test:
-        ["CMD-SHELL", "valkey-cli --no-auth-warning -a \"$$(cat /run/secrets/valkey_cache_password)\" ping | grep -q PONG"]
-      interval: 5s
-      timeout: 3s
-      retries: 20
-    restart: unless-stopped
-    mem_limit: 384m
-    cpus: 0.5
-    security_opt:
-      - no-new-privileges:true
-
-  valkey-queue:
-    image: valkey/valkey:9.1.0-alpine
-    command:
-      - /bin/sh
-      - -ec
-      - >-
-        exec valkey-server
-        --bind 0.0.0.0
-        --protected-mode yes
-        --requirepass "$$(cat /run/secrets/valkey_queue_password)"
-        --maxmemory 256mb
-        --maxmemory-policy noeviction
-        --appendonly yes
-        --appendfsync everysec
-        --save ""
-    secrets:
-      - valkey_queue_password
-    volumes:
-      - valkey-queue-data:/data
-    networks:
-      - data
-    healthcheck:
-      test:
-        ["CMD-SHELL", "valkey-cli --no-auth-warning -a \"$$(cat /run/secrets/valkey_queue_password)\" ping | grep -q PONG"]
-      interval: 5s
-      timeout: 3s
-      retries: 20
-    restart: unless-stopped
-    mem_limit: 384m
-    cpus: 0.5
-    security_opt:
-      - no-new-privileges:true
-
-  seaweedfs:
-    image: chrislusf/seaweedfs:4.39_full
-    command:
-      - server
-      - -dir=/data
-      - -ip=seaweedfs
-      - -ip.bind=0.0.0.0
-      - -s3
-      - -s3.port=8333
-      - -s3.ip.bind=0.0.0.0
-      - -s3.allowedOrigins=${APP_PUBLIC_ORIGIN:-http://localhost:8080}
-      - -s3.config=/run/secrets/seaweed_s3_config
-      - -master.volumeSizeLimitMB=1024
-    secrets:
-      - seaweed_s3_config
-    volumes:
-      - seaweed-data:/data
-    networks:
-      - data
-    ports:
-      - "127.0.0.1:${S3_PORT:-8333}:8333"
-    healthcheck:
-      test:
-        [
-          "CMD-SHELL",
-          "wget -q -O /dev/null http://127.0.0.1:9333/cluster/status && nc -z 127.0.0.1 8333",
-        ]
-      interval: 5s
-      timeout: 3s
-      retries: 30
-      start_period: 10s
-    restart: unless-stopped
-    mem_limit: 1g
-    cpus: 1.0
-    security_opt:
-      - no-new-privileges:true
-
   migrate:
     <<: *backend
     secrets:
@@ -161,15 +62,14 @@ services:
 
   storage-init:
     <<: *backend
+    profiles: ["object-storage-tools"]
     secrets:
       - s3_access_key
       - s3_secret_key
     command: ["/app/.venv/bin/python", "-m", "datariver.workers.storage_init"]
-    depends_on:
-      seaweedfs:
-        condition: service_healthy
     networks:
       - data
+      - connectors
     restart: "no"
 
   semiconductor-seed:
@@ -205,7 +105,9 @@ services:
     <<: *backend
     secrets:
       - postgres_app_password
-      - valkey_cache_password
+      - redis_cache_password
+      - source: redis_cache_password
+        target: valkey_cache_password
       - datahub_token
       - intranet_llm_chat_api_key
       - intranet_llm_embedding_api_key
@@ -234,15 +136,16 @@ services:
     <<: *backend
     secrets:
       - postgres_relay_password
-      - valkey_queue_password
+      - redis_delivery_password
+      - source: redis_delivery_password
+        target: valkey_queue_password
     command: ["/app/.venv/bin/python", "-m", "datariver.workers.outbox_relay"]
     depends_on:
       migrate:
         condition: service_completed_successfully
-      valkey-queue:
-        condition: service_healthy
     networks:
       - data
+      - connectors
     mem_limit: 384m
     cpus: 0.5
     read_only: true
@@ -253,19 +156,18 @@ services:
     <<: *backend
     secrets:
       - postgres_upload_password
-      - valkey_queue_password
+      - redis_delivery_password
+      - source: redis_delivery_password
+        target: valkey_queue_password
       - s3_access_key
       - s3_secret_key
     command: ["/app/.venv/bin/python", "-m", "datariver.workers.upload_worker"]
     depends_on:
       migrate:
         condition: service_completed_successfully
-      seaweedfs:
-        condition: service_healthy
-      storage-init:
-        condition: service_completed_successfully
     networks:
       - data
+      - connectors
     mem_limit: 512m
     cpus: 0.75
     read_only: true
@@ -276,19 +178,18 @@ services:
     <<: *backend
     secrets:
       - postgres_upload_password
-      - valkey_queue_password
+      - redis_delivery_password
+      - source: redis_delivery_password
+        target: valkey_queue_password
       - s3_access_key
       - s3_secret_key
     command: ["/app/.venv/bin/python", "-m", "datariver.workers.upload_validation"]
     depends_on:
       migrate:
         condition: service_completed_successfully
-      seaweedfs:
-        condition: service_healthy
-      storage-init:
-        condition: service_completed_successfully
     networks:
       - data
+      - connectors
     mem_limit: 512m
     cpus: 0.75
     read_only: true
@@ -299,7 +200,9 @@ services:
     <<: *backend
     secrets:
       - postgres_governance_password
-      - valkey_queue_password
+      - redis_delivery_password
+      - source: redis_delivery_password
+        target: valkey_queue_password
       - datahub_token
     command: ["/app/.venv/bin/python", "-m", "datariver.workers.governance_apply"]
     depends_on:
@@ -308,6 +211,7 @@ services:
     networks:
       - app
       - data
+      - connectors
     mem_limit: 512m
     cpus: 0.75
     read_only: true
@@ -319,19 +223,18 @@ services:
     profiles: ["catalog-export"]
     secrets:
       - postgres_export_password
-      - valkey_queue_password
+      - redis_delivery_password
+      - source: redis_delivery_password
+        target: valkey_queue_password
       - s3_export_access_key
       - s3_export_secret_key
     command: ["/app/.venv/bin/python", "-m", "datariver.workers.catalog_export"]
     depends_on:
       migrate:
         condition: service_completed_successfully
-      storage-init:
-        condition: service_completed_successfully
-      valkey-queue:
-        condition: service_healthy
     networks:
       - data
+      - connectors
     mem_limit: 512m
     cpus: 0.75
     read_only: true
@@ -350,7 +253,7 @@ services:
         VITE_OIDC_HIGH_ASSURANCE_ACR: ${OIDC_STEP_UP_ACR:-2}
         VITE_OIDC_PASSWORD_REAUTH_ACR: ${OIDC_PASSWORD_REAUTH_REQUEST_ACR:-1}
     environment:
-      S3_PUBLIC_ORIGIN: ${S3_PUBLIC_ORIGIN:-http://localhost:8333}
+      S3_PUBLIC_ORIGIN: ${S3_PUBLIC_ORIGIN:-http://localhost:9000}
       OIDC_PUBLIC_ORIGIN: ${OIDC_PUBLIC_ORIGIN:-http://localhost:8081}
       DATAHUB_EMBED_BASE_URL: ${DATAHUB_EMBED_BASE_URL:-}
       GRAFANA_EMBED_BASE_URL: ${GRAFANA_EMBED_BASE_URL:-}
@@ -381,11 +284,11 @@ networks:
     internal: false
   data:
     internal: true
+  connectors:
+    internal: false
 
 volumes:
   postgres-data:
-  valkey-queue-data:
-  seaweed-data:
 
 secrets:
   postgres_password:
@@ -416,10 +319,10 @@ secrets:
     file: ./secrets/airflow_api_secret
   airflow_admin_password:
     file: ./secrets/airflow_admin_password
-  valkey_cache_password:
-    file: ./secrets/valkey_cache_password
-  valkey_queue_password:
-    file: ./secrets/valkey_queue_password
+  redis_cache_password:
+    file: ./secrets/redis_cache_password
+  redis_delivery_password:
+    file: ./secrets/redis_delivery_password
   datahub_token:
     file: ./secrets/datahub_token
   intranet_llm_chat_api_key:
@@ -434,7 +337,5 @@ secrets:
     file: ./secrets/s3_export_access_key
   s3_export_secret_key:
     file: ./secrets/s3_export_secret_key
-  seaweed_s3_config:
-    file: ./secrets/seaweed_s3_config.json
   grafana_admin_password:
     file: ./secrets/grafana_admin_password

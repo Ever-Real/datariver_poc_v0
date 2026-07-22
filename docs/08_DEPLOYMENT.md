@@ -10,9 +10,9 @@ evidence.
 
 | File/profile | Components | Boundary |
 |---|---|---|
-| `compose.yaml` | PostgreSQL 17.10, two Valkey 9.1 instances, SeaweedFS 4.39, migration/storage init, API, UI, outbox relay, upload completion/validation and governance apply workers | portable core |
+| `compose.yaml` | PostgreSQL 17.10, migration/optional external-storage init, API, UI, outbox relay, upload completion/validation and governance apply workers; explicit external connector network | portable DataRiver core; no Redis or object-store provider is bundled |
 | `compose.identity.yaml` | Keycloak 26.7 and isolated Keycloak database/credentials | local identity only |
-| `compose.source-host.yaml` | loopback host ports and a dedicated publication bridge for PostgreSQL, the two Valkey instances and SeaweedFS | source-host development; does not assume a DataHub Docker network |
+| `compose.source-host.yaml` | loopback host port and a dedicated publication bridge for PostgreSQL | source-host development; does not publish external connector services |
 | `compose.airflow.yaml` | Airflow 3.3 API server, scheduler, DAG processor, triggerer and init using LocalExecutor/isolated DB role | scheduled scan/probe only |
 | `compose.gateway.yaml` | APISIX 3.17 standalone configuration | local gateway/rate limit/health-check profile |
 | `compose.graph.yaml` | Neo4j Community projection sandbox | local only; PostgreSQL KG releases remain canonical |
@@ -59,14 +59,33 @@ below remain mandatory.
 
 ## Configuration and bootstrap
 
-Bootstrap requires a DataHub token and generates ignored, permission-restricted secret files plus `.env` and the runtime Keycloak realm:
+Bootstrap generates ignored, permission-restricted secret files plus `.env` and the runtime Keycloak
+realm. A DataHub token is supplied when that connector is enabled:
 
 ```bash
 ./scripts/bootstrap.sh '<datahub-token>'
 # or: ./scripts/bootstrap.ps1 -DataHubToken '<datahub-token>'
 ```
 
-Bootstrap is idempotent for infrastructure credentials: an existing non-empty secret is preserved, while the supplied DataHub token and derived SeaweedFS/Keycloak files are refreshed. Deliberate credential rotation follows the runbook and is not coupled to ordinary bootstrap.
+Bootstrap is idempotent for infrastructure credentials: an existing non-empty secret is preserved,
+legacy Valkey secret filenames are copied to the canonical Redis filenames when necessary, and a
+supplied DataHub token plus derived Keycloak files are refreshed. Deliberate credential rotation
+follows the runbook and is not coupled to ordinary bootstrap.
+
+### Bootstrap dependencies and connector inventory
+
+PostgreSQL and an OIDC issuer are bootstrap capabilities: the API cannot read a database-backed
+configuration before they work. PostgreSQL is the only stateful dependency owned by the base
+Compose; `compose.identity.yaml` provides an optional local Keycloak implementation of OIDC.
+Redis cache/delivery, S3/MinIO, DataHub, Airflow, Neo4j, LLM and observability are external or
+opt-in feature connectors.
+
+Initial deployments set endpoints and mounted-secret references in `.env`. The authenticated System
+Settings inventory classifies entries as `BOOTSTRAP_REQUIRED`, `CORE_CONNECTOR` or
+`FEATURE_CONNECTOR` and returns every required connection field with a `secret` flag. In development,
+eligible administrators can SAVE → TEST → ACTIVATE versioned connector profiles in PostgreSQL;
+credentials remain mounted-secret references. Production activation remains deployment-managed
+until an approved secret backend, restart orchestration, rollback and audit procedure are accepted.
 
 ### Mac development topology
 
@@ -88,11 +107,11 @@ to the private `data` network for internal access and to an otherwise empty non-
 solely because Docker Desktop cannot publish loopback ports from an `internal: true` network. Its
 HTTP/Bolt bindings remain `127.0.0.1:17474` and `127.0.0.1:17687`.
 
-The source-host overlay applies the same boundary to PostgreSQL, both Valkey instances and
-SeaweedFS: their canonical container path remains the internal `data` network, while an otherwise
-empty non-internal `source-access` bridge permits only the explicitly declared `127.0.0.1` port
-bindings. The bridge is not a provider or application service network and must not gain unrelated
-members.
+The source-host overlay applies this boundary only to PostgreSQL: its canonical container path
+remains the internal `data` network, while an otherwise empty non-internal `source-access` bridge
+permits only the explicitly declared `127.0.0.1` binding. External connectors use the explicit
+non-internal `connectors` network plus deployment DNS/firewall policy; they are not attached to the
+source-access bridge.
 
 The local Ollama adapter is development-only and is enabled only for
 `http://host.docker.internal:11434/v1`, `datariver-gemma4-dev:0.1`, a fixed 8,192-token context
@@ -234,7 +253,7 @@ has passed. Local bootstrap intentionally does not manufacture a second administ
 ## Network and identity rules
 
 - Core container defaults remain web `8080`, API `8000` and Keycloak `8081`. Host-development uses Vite `38102`, source API `38101`, Keycloak `18081`, APISIX `9080` and Airflow `8082` when their overlays are enabled.
-- PostgreSQL, Valkey and object-service internals stay on the private `data` network and have no host bind in the core file.
+- PostgreSQL stays on the private `data` network and has no host bind in the core file. Connector-consuming processes also join `connectors`; Redis/S3/DataHub ingress remains owned and firewalled by those deployments.
 - API has an RLS-constrained database role; migration owns DDL. Relay, upload, governance and bootstrap have distinct least-privilege database identities and service-specific secret mounts. Airflow and Keycloak have distinct databases/roles.
 - APISIX standalone mode has no administration/control port and does not replace application ABAC.
 - APISIX and web run non-root with read-only root filesystems. APISIX renders configuration and request temp files only into bounded, non-executable tmpfs; its health check executes a real proxied HTTP request rather than trusting a process-only command. Its declarative upstream uses APISIX DNS discovery through Docker's embedded resolver, so replacement of the API container does not pin a stale startup address.
@@ -243,8 +262,8 @@ has passed. Local bootstrap intentionally does not manufacture a second administ
 
 ## Worker correctness
 
-- PostgreSQL outbox is canonical. Relay publishes IDs to queue Valkey; failed events are individually retried, dead-lettered after the configured maximum and exposed in operations. Published outbox and completed inbox rows are not automatically pruned until the governed WORM/Legal-Hold/Maker-Checker retention gate is implemented and accepted.
-- Cache Valkey has bounded volatile memory and `allkeys-lfu`; queue Valkey is separate, `noeviction`, AOF-backed. They never share a URL/database.
+- PostgreSQL outbox is canonical. Relay publishes IDs to the external Redis delivery stream; failed events are individually retried, dead-lettered after the configured maximum and exposed in operations. Published outbox and completed inbox rows are not automatically pruned until the governed WORM/Legal-Hold/Maker-Checker retention gate is implemented and accepted.
+- External Redis cache has bounded volatile memory and an evicting policy; Redis delivery is separate, `noeviction`, with deployment-reviewed persistence/recovery. They never share a URL/database or credential.
 - Upload completion reconciles an already-completed multipart operation via object `HEAD`. Validation streams chunks and promotes with copy-before-manifest-commit; a stale quarantine duplicate is safe to clean later.
 - Governance application uses a PostgreSQL job/attempt lease. Transient DataHub failures back off automatically; terminal/mismatched content reaches `APPLY_FAILED` and requires authorized requeue.
 - Catalog export is disabled by default. Enable the `catalog-export` Compose profile only after
@@ -289,11 +308,11 @@ egress or a DataHub credential. The complete Linux/WSL boundary is
 
 ## Database and object operations
 
-- Alembic has one head at `0039`: the generated current initial schema plus conditional compatibility bridges for local databases that applied earlier revisions. Deployment runs migration before API/workers. The API role can only read `public.alembic_version` for readiness; migration ownership remains separate. Clean-install bridges validate complete canonical objects, execute only when the feature contract is absent, and reject partially present schemas.
+- Alembic has one head at `0040`: the generated current initial schema plus conditional compatibility bridges for local databases that applied earlier revisions. Deployment runs migration before API/workers. The API role can only read `public.alembic_version` for readiness; migration ownership remains separate. Clean-install bridges validate complete canonical objects, execute only when the feature contract is absent, and reject partially present schemas.
 - PostgreSQL pool size/overflow/lease timeout, statement timeout, idle-transaction timeout and application names are explicit. Budget `API replicas × (API pool + overflow) + long-running workers × (worker pool + overflow) + one-shot/IdP/Airflow/admin reserve`; current one-API/four-worker defaults have a ceiling of 60 before reserve.
-- Liveness is process-only. Readiness leases the API pool and requires exactly packaged Alembic head `0039`; Compose and APISIX use readiness for upstream health.
+- Liveness is process-only. Readiness leases the API pool and requires exactly packaged Alembic head `0040`; Compose and APISIX use readiness for upstream health.
 - `scripts/probe_pgbouncer_rls.py` and its unit contract implement the pre-adoption transaction-pool leakage gate. No Compose profile currently deploys PgBouncer and no live pooler pass has been recorded; direct PostgreSQL remains the supported path until the isolated two-workspace probe succeeds.
-- Back up PostgreSQL and SeaweedFS as a consistency set or record a watermark; restore into isolation and follow the drill in [operations runbook](13_OPERATIONS_RUNBOOK.md) before traffic.
+- Back up PostgreSQL and the selected external S3 store as a consistency set or record a watermark; restore into isolation and follow the drill in [operations runbook](13_OPERATIONS_RUNBOOK.md) before traffic.
 - Accepted-object retention/lifecycle is environment policy. Quarantine receives a shorter cleanup policy, but never delete an object whose manifest is actively leased.
 - Initial recovery targets (RPO <= 5 minutes, RTO <= 60 minutes) are objectives until an environment drill records measured evidence.
 
@@ -317,20 +336,21 @@ CI verifies backend format/lint/types/tests, frontend type/lint/tests/build, gen
 
 Image tags are exact in development manifests; production promotes digest-pinned images. `latest` is forbidden. Major dependency upgrades require an ADR, migration rehearsal and rollback evidence.
 
-SeaweedFS remains the local/Pilot upload implementation. `application.ports.ObjectStore` is the
-provider-neutral S3 boundary and `infrastructure.object_store.S3ObjectStore` uses only that S3
-contract, so an existing MinIO-compatible endpoint can be selected by deployment configuration
-without changing use cases. Immutable archive production promotion uses the separate port and
-evidence gate in ADR-0012; no checked-in product label or Object Lock setting is treated as WORM
-acceptance.
+`application.ports.ObjectStore` is the provider-neutral S3 boundary and
+`infrastructure.object_store.S3ObjectStore` uses only that contract. A separately operated
+MinIO-compatible endpoint can therefore be selected without changing use cases; no MinIO image,
+administrator credential, lifecycle or data volume is bundled. Existing SeaweedFS bytes require an
+explicit inventory/copy/checksum/read-back/cutover procedure rather than an endpoint edit. Immutable
+archive promotion uses the separate port and evidence gate in ADR-0012/ADR-0033; no provider label
+or Object Lock setting is treated as WORM acceptance.
 
 ## Failure behavior
 
 | Failure | Expected behavior |
 |---|---|
 | DataHub | local authorized search/monitoring remain; enrichment/apply/sync degrade; no false `APPLIED` |
-| cache Valkey | higher latency only |
-| queue Valkey | outbox accumulates; relay later recovers delivery |
+| Redis cache | higher latency only |
+| Redis delivery | outbox accumulates; relay later recovers delivery |
 | object store | upload unavailable; catalog/change/KG remain |
 | Airflow | scheduled sync/probe delayed; interactive paths remain |
 | Keycloak/OIDC | protected requests fail authentication; public liveness remains |

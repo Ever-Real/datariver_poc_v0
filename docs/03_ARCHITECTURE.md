@@ -13,7 +13,7 @@ infrastructure ──┘             │
                               └─> application/ports <─ infrastructure adapters
 ```
 
-The domain imports no FastAPI, SQLAlchemy, Valkey, DataHub, object-storage, graph, or LLM SDK. An architecture test enforces this rule.
+The domain imports no FastAPI, SQLAlchemy, Redis, DataHub, object-storage, graph, or LLM SDK. An architecture test enforces this rule.
 
 ## Runtime view
 
@@ -22,13 +22,13 @@ flowchart LR
     U["Browser / API consumer"] --> G["API gateway profile"]
     G --> A["DataRiver API"]
     A --> P["PostgreSQL canonical state"]
-    A --> VC["Valkey cache"]
+    A --> VC["External Redis cache"]
     A --> O["Upload-oriented S3-compatible storage"]
     A --> D["External DataHub read facade"]
     A --> C["Deterministic evidence Chat (current)"]
     A --> Z["ABAC policy decision"]
     P --> R["Outbox relay"]
-    R --> VQ["Valkey job delivery"]
+    R --> VQ["External Redis job delivery"]
     VQ --> W["Integration / KG workers"]
     W --> D
     W --> O
@@ -42,7 +42,9 @@ flowchart LR
     W -. "reviewed OTLP instrumentation" .-> OT
 ```
 
-Only the gateway/UI ports are public. PostgreSQL, Valkey, object storage, OPA, DataHub credentials, graph protocols, and telemetry backends stay on private networks.
+Only the gateway/UI ports are public. PostgreSQL, Redis, object storage, OPA, DataHub credentials,
+graph protocols and telemetry backends stay on private or explicitly controlled connector networks.
+The base Compose owns no Redis, MinIO or SeaweedFS process or data volume.
 
 The checked-in Compose and hybrid host-development views are Single-node Pilot topologies. Multiple
 processes on the same host improve process recovery but do not establish HA. ADR-0013 requires at
@@ -71,7 +73,7 @@ The API gateway is a deployment boundary, not an authorization context. It valid
 - DataHub owns metadata after successful application. DataRiver stores a minimal authorized projection and a monotonic local projection version; a true DataHub source watermark remains an ingestion contract.
 - DataRiver PostgreSQL owns intent, approvals, job state, graph release manifests, policy and audit.
 - Graph projection data is disposable. Publishing first creates an immutable PostgreSQL/object snapshot, loads a shadow projection, verifies it, then switches the active pointer.
-- Valkey owns nothing durable. Cache loss changes latency, not correctness. Queue loss is recovered from the PostgreSQL outbox.
+- Redis owns nothing canonical. Cache loss changes latency, not correctness. Delivery-stream loss is recovered from the PostgreSQL outbox.
 - Airflow task status is operational evidence, never the business job status.
 - PostgreSQL, not an object provider, owns retention versions, Legal Hold state, erasure authority
   and archive verification receipts. Archive objects are evidence bytes referenced by those
@@ -219,14 +221,18 @@ grounding adapter, endpoint/secret, API-to-worker dispatch, durable inference jo
 transport or deployed worker process in this baseline. Dotted inference edges in the runtime view
 are future seams, not current network calls.
 
-## Valkey topology
+## External Redis topology
 
-| Instance | Persistence | Eviction | Content |
+| Capability | Persistence | Eviction | Content |
 |---|---|---|---|
-| `valkey-cache` | none | `allkeys-lfu` | bounded TTL search/detail/policy-derived results |
-| `valkey-queue` | AOF every second | `noeviction` | job IDs and delivery metadata only |
+| `REDIS_CACHE_URL` | none required | bounded evicting policy such as `allkeys-lfu` | bounded TTL search/detail/policy-derived results |
+| `REDIS_DELIVERY_URL` | deployment-reviewed persistence and recovery | `noeviction` | job IDs and delivery metadata only |
 
-Cache keys include workspace, permission-scope hash, policy version, request parameters and the local projection version. Tokens, credentials, presigned URLs, full uploads, canonical job state and confidential prompts are prohibited.
+The two URLs must identify distinct endpoints or databases and use distinct least-privilege
+credentials. Cache keys include workspace, permission-scope hash, policy version, request parameters
+and the local projection version. Tokens, credentials, presigned URLs, full uploads, canonical job
+state and confidential prompts are prohibited. The checked-in client uses the Redis protocol; legacy
+`VALKEY_*` environment names are accepted only as a migration alias.
 
 The browser treats its selected Workspace as a tenant/RLS context, not an authorization fact. The
 safe UUID selection is retained in the same-origin URL so an OIDC round-trip, reload or new tab can
@@ -250,8 +256,8 @@ URL, and the replacement password never crosses the DataRiver API.
 | Dependency failure | Expected behavior |
 |---|---|
 | DataHub | concurrency bulkhead/circuit breaker; authorized local base detail or explicitly bounded stale enrichment, otherwise 503; queued changes retained and never marked applied |
-| cache Valkey | direct authorized DB/DataHub path; higher latency |
-| queue Valkey | outbox accumulates and relay retries; writes remain durable |
+| Redis cache | direct authorized DB/DataHub path; higher latency |
+| Redis delivery | outbox accumulates and relay retries; writes remain durable |
 | graph projection | catalog remains available; graph Chat/analytics clearly degraded |
 | future inference provider/worker | deterministic evidence Chat remains; the disabled-first contract refuses with `검증 불가`; no provider call or graph mutation |
 | Airflow | scheduled/bulk jobs delayed; synchronous core unaffected |

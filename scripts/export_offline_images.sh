@@ -106,8 +106,6 @@ fi
 
 platform_images=(
   postgres:17.10-bookworm
-  valkey/valkey:9.1.0-alpine
-  chrislusf/seaweedfs:4.39_full
   neo4j:2026.06.0
   datariver-next-migrate:latest
   datariver-next-storage-init:latest
@@ -127,8 +125,6 @@ platform_images=(
 
 external_platform_images=(
   postgres:17.10-bookworm
-  valkey/valkey:9.1.0-alpine
-  chrislusf/seaweedfs:4.39_full
   neo4j:2026.06.0
 )
 

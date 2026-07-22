@@ -5,17 +5,19 @@
 | Signal | Severity trigger | First action |
 |---|---|---|
 | API canonical readiness | PostgreSQL unavailable for 2 minutes | stop mutations at the edge; preserve liveness |
-| outbox lag | oldest unpublished > 5 minutes | inspect Valkey queue/relay; do not edit event rows |
+| outbox lag | oldest unpublished > 5 minutes | inspect Redis delivery/relay; do not edit event rows |
 | dead letters | any new row | capture event/error, repair dependency, use an audited replay procedure |
 | upload rejection spike | > 5% over 15 minutes | inspect error-code distribution and object-store health |
 | DataHub reconcile | active heartbeat > 60 minutes or repeated abandon | pause DAG, validate DataHub contract and restart at offset zero with a new `sync_id` |
 | DataHub circuit | `datariver_datahub_circuit_state > 0` or new bulkhead rejections | inspect latency/error outcome, protect API capacity and verify bounded stale projection before recovery |
-| catalog cache | sustained `error` outcomes or unexpected hit-rate collapse | verify cache Valkey health; correctness must continue through PostgreSQL without extending TTL |
+| catalog cache | sustained `error` outcomes or unexpected hit-rate collapse | verify Redis cache health; correctness must continue through PostgreSQL without extending TTL |
 | grant quota denial | sustained 429 | confirm consumer identity/plan before changing limits |
 
 ## Local stack control
 
-Bootstrap may be rerun with a replacement DataHub token. It preserves all existing database, Valkey, S3, Keycloak and Airflow credentials, then regenerates only derived SeaweedFS/realm files. Do not use bootstrap as a credential-rotation tool.
+Bootstrap may be rerun with a replacement DataHub token. It preserves existing database, Redis, S3,
+Keycloak and Airflow credentials, migrates legacy Valkey secret filenames when necessary and
+regenerates only derived realm files. Do not use bootstrap as a credential-rotation tool.
 
 ```bash
 ./scripts/bootstrap.sh '<datahub-token>'
@@ -27,26 +29,29 @@ docker compose -f compose.yaml -f compose.identity.yaml \
   -f compose.airflow.yaml -f compose.gateway.yaml ps -a
 ```
 
-Expected one-shot states are `migrate`, `storage-init` and `airflow-init` exited with code 0. API, web, Keycloak, APISIX, PostgreSQL, both Valkey instances, SeaweedFS and the Airflow API/scheduler must be healthy; workers, DAG processor and triggerer must remain running.
+Expected one-shot states are `migrate` and enabled profile init jobs exited with code 0. API, web,
+enabled Keycloak/APISIX, PostgreSQL and enabled Airflow components must be healthy. External Redis,
+S3/MinIO and feature connectors are checked in their owner deployment and through fixed DataRiver
+connection probes; workers, DAG processor and triggerer must remain running when enabled.
 
 Host-port overrides do not change an OIDC issuer. When browser-facing origins change, update `APP_PUBLIC_ORIGIN`, `OIDC_PUBLIC_ORIGIN`, `OIDC_PUBLIC_AUTHORITY` and `OIDC_ISSUER` as one reviewed change and rebuild the affected services.
 
 ## Safe restart order
 
-1. PostgreSQL and SeaweedFS; verify storage and database health.
-2. Run Alembic exactly once with the migration identity.
-3. Start Valkey cache/queue; queue AOF recovery must complete before workers.
-4. Start API and confirm schema-aware readiness, then relay/workers and web/gateway.
-5. Start Keycloak/Airflow overlays where applicable; DAGs remain paused until probes pass.
+1. Verify the external OIDC, Redis cache/delivery and S3 endpoints required by enabled features.
+2. Start PostgreSQL and run Alembic exactly once with the migration identity.
+3. Start the API and confirm schema-aware readiness.
+4. Start relay/workers only after Redis delivery recovery and the relevant external connectors pass.
+5. Start web/gateway and Keycloak/Airflow overlays where applicable; DAGs remain paused until probes pass.
 6. Check `/health/ready`, `/capabilities`, `/operations/summary` and protected `/operations/metrics`.
 
 The protected metrics endpoint exposes bounded-label catalog cache access/detail-source counters,
 DataHub request outcome/duration/in-flight, queue-rejection and circuit-state signals, plus current
 API database-pool checked-in/checked-out/overflow counts and configured base/overflow limits. It does
 not expose query text, URNs, workspace IDs, subject IDs, tokens or provider payloads. Cache-server
-memory, eviction and keyspace signals still require the deployment's Valkey exporter.
+memory, eviction and keyspace signals still require the external Redis deployment's exporter.
 
-PostgreSQL remains canonical. Never repair a Valkey stream by inventing events; recover the relay from unpublished outbox rows.
+PostgreSQL remains canonical. Never repair a Redis stream by inventing events; recover the relay from unpublished outbox rows.
 
 Outbox/inbox automatic pruning is intentionally disabled. Revision `0006` revokes relay `DELETE` privileges, and `/operations/summary` reports `retention_automation_state=DISABLED_NOT_READY`. Do not manually delete retained rows or grant that privilege back. A future dedicated retention worker may delete only after governed policy activation, immutable export checksum and Object-Lock read-back, Legal Hold evaluation and Maker-Checker approval all succeed.
 
@@ -129,7 +134,7 @@ The Airflow API has a 90-second startup grace because provider imports and FastA
 1. Identify exactly which services mount the credential and confirm that a dependency supports overlap or coordinated cutover.
 2. Create the new value in the environment secret manager or ignored file without printing it to logs.
 3. Update the dependency and consumers in the required order, then recreate only affected services.
-4. Verify OIDC issuer/audience, database role, Valkey/S3/DataHub access and audit continuity as applicable.
+4. Verify OIDC issuer/audience, database role, Redis/S3/DataHub access and audit continuity as applicable.
 5. Revoke the old value and record operator, time, affected identities and validation evidence.
 
 File-based local secrets are readable by container UIDs but protected by owner-only parent directories. They are never committed or copied as Git artifacts.
@@ -140,15 +145,37 @@ Production automation must encrypt, checksum and immutably retain these artifact
 
 1. Record commit, migration revision, image digests, UTC start time and PostgreSQL WAL/LSN.
 2. Take a PostgreSQL physical backup or `pg_dump --format=custom` with a role able to read every schema.
-3. Snapshot the SeaweedFS data volume at the same consistency watermark. If snapshots are not atomic, pause new upload completion/promotion while recording the database/object cut line.
+3. Snapshot/export the selected external S3 bucket at the same consistency watermark. If snapshots are not atomic, pause new upload completion/promotion while recording the database/object cut line.
 4. Export only Keycloak realm configuration needed for recovery; credentials remain in the environment secret manager, not the Git artifact.
 5. Store SHA-256 checksums and perform a restore verification. A backup that has not been restored is not accepted evidence.
 
-Valkey cache is never backed up. Queue Valkey AOF may shorten recovery but is not the correctness backup because PostgreSQL outbox/inbox is authoritative.
+Redis cache is never backed up. Redis delivery persistence may shorten recovery but is not the
+correctness backup because PostgreSQL outbox/inbox is authoritative.
+
+## External connector cutover
+
+Treat an endpoint change as a reviewed migration, not a cosmetic settings edit.
+
+For Valkey-to-Redis cache, stop cache writes briefly if practical, configure the new isolated cache
+endpoint and credential, run authenticated PING plus authorization-negative probes, restart API
+replicas gradually and allow the cache to warm. Cache contents are deliberately not copied.
+
+For delivery, pause relay and consumers, record unpublished/dead-letter/in-flight counts, allow the
+old stream to drain or prove every remaining event is recoverable from PostgreSQL, then point relay
+and workers to the new `noeviction` Redis endpoint. Resume relay before consumers, verify inbox
+deduplication and lag convergence, and retain the old endpoint until the rollback window closes.
+
+For SeaweedFS-to-MinIO/S3, freeze new upload completion/promotion, inventory every PostgreSQL object
+manifest and source object version/size/checksum, copy into private target buckets, and perform full
+metadata plus sampled/full-byte checksum read-back according to classification. Validate multipart,
+copy, HEAD, presigned CORS, TLS/CA, least-privilege identities and lifecycle policy before changing
+`S3_*`. Reconcile every manifest after cutover, resume workers gradually and keep the source
+read-only until the rollback window closes. An endpoint-only switch without copied and verified
+bytes will orphan existing manifests.
 
 ## Isolated restore drill
 
-1. Create an isolated network and empty PostgreSQL/SeaweedFS targets; block DataHub writes and outbound notifications.
+1. Create an isolated network and empty PostgreSQL/external-S3 recovery targets; block DataHub writes and outbound notifications.
 2. Restore PostgreSQL and objects, then verify the recorded migration revision and checksums.
 3. Start the API with workers disabled. Check workspace/RLS isolation using two test workspaces and verify manifest-to-object size/SHA samples.
 4. Reconcile unpublished outbox, incomplete jobs, active leases and multipart manifests. Expired leases may be reclaimed by normal workers; do not manually mark business completion.

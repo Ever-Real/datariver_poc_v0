@@ -9,7 +9,7 @@ from typing import Literal, Self
 from urllib.parse import quote, urlsplit, urlunsplit
 from uuid import UUID
 
-from pydantic import Field, HttpUrl, field_validator, model_validator
+from pydantic import AliasChoices, Field, HttpUrl, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -186,10 +186,35 @@ class Settings(BaseSettings):
     grafana_embed_enabled: bool = False
     grafana_embed_evidence_reference: str | None = Field(default=None, max_length=500)
 
-    valkey_cache_url: str
-    valkey_queue_url: str
-    valkey_cache_secret_ref: str
-    valkey_queue_secret_ref: str
+    redis_cache_url: str = Field(
+        validation_alias=AliasChoices(
+            "redis_cache_url", "REDIS_CACHE_URL", "valkey_cache_url", "VALKEY_CACHE_URL"
+        )
+    )
+    redis_delivery_url: str = Field(
+        validation_alias=AliasChoices(
+            "redis_delivery_url",
+            "REDIS_DELIVERY_URL",
+            "valkey_queue_url",
+            "VALKEY_QUEUE_URL",
+        )
+    )
+    redis_cache_secret_ref: str = Field(
+        validation_alias=AliasChoices(
+            "redis_cache_secret_ref",
+            "REDIS_CACHE_SECRET_REF",
+            "valkey_cache_secret_ref",
+            "VALKEY_CACHE_SECRET_REF",
+        )
+    )
+    redis_delivery_secret_ref: str = Field(
+        validation_alias=AliasChoices(
+            "redis_delivery_secret_ref",
+            "REDIS_DELIVERY_SECRET_REF",
+            "valkey_queue_secret_ref",
+            "VALKEY_QUEUE_SECRET_REF",
+        )
+    )
     cache_default_ttl_seconds: int = Field(default=60, ge=1, le=3600)
     cache_max_value_bytes: int = Field(default=1_048_576, ge=1024, le=1_048_576)
     catalog_search_cache_ttl_seconds: int = Field(default=30, ge=1, le=300)
@@ -356,8 +381,8 @@ class Settings(BaseSettings):
     def validate_security_posture(self) -> Self:
         if "*" in self.app_cors_origins:
             raise ValueError("Wildcard CORS origins are not permitted.")
-        if self.valkey_cache_url == self.valkey_queue_url:
-            raise ValueError("Cache and queue must use separate Valkey endpoints/databases.")
+        if self.redis_cache_url == self.redis_delivery_url:
+            raise ValueError("Cache and delivery must use separate Redis endpoints/databases.")
         if self.datahub_stale_ttl_seconds < self.cache_default_ttl_seconds:
             raise ValueError("The DataHub stale TTL cannot be shorter than the fresh cache TTL.")
         for allowed_version in self.datahub_allowed_versions:
@@ -444,8 +469,8 @@ class Settings(BaseSettings):
             "upload_database_url": self.upload_database_url,
             "governance_database_url": self.governance_database_url,
             "bootstrap_database_url": self.bootstrap_database_url,
-            "valkey_cache_url": self.valkey_cache_url,
-            "valkey_queue_url": self.valkey_queue_url,
+            "redis_cache_url": self.redis_cache_url,
+            "redis_delivery_url": self.redis_delivery_url,
         }
         if self.export_database_url is not None:
             credential_urls["export_database_url"] = self.export_database_url
@@ -464,8 +489,8 @@ class Settings(BaseSettings):
             "governance_database": self.governance_database_secret_ref,
             "bootstrap_database": self.bootstrap_database_secret_ref,
             "datahub": self.datahub_secret_ref,
-            "valkey_cache": self.valkey_cache_secret_ref,
-            "valkey_queue": self.valkey_queue_secret_ref,
+            "redis_cache": self.redis_cache_secret_ref,
+            "redis_delivery": self.redis_delivery_secret_ref,
         }
         if self.identity_admin_enabled:
             if (

@@ -17,8 +17,10 @@ env_file_value() {
 action=start
 datahub_base_url=$(env_file_value DATAHUB_BASE_URL http://127.0.0.1:8080)
 postgres_port=$(env_file_value POSTGRES_PORT 5432)
-valkey_cache_port=$(env_file_value VALKEY_CACHE_PORT 6379)
-valkey_queue_port=$(env_file_value VALKEY_QUEUE_PORT 6380)
+redis_cache_url=$(env_file_value REDIS_CACHE_URL redis://127.0.0.1:6379/0)
+redis_delivery_url=$(env_file_value REDIS_DELIVERY_URL redis://127.0.0.1:6380/0)
+s3_endpoint_url=$(env_file_value S3_ENDPOINT_URL http://127.0.0.1:9000)
+s3_public_endpoint_url=$(env_file_value S3_PUBLIC_ENDPOINT_URL http://localhost:9000)
 keycloak_port=$(env_file_value KEYCLOAK_PORT 18081)
 api_port=$(env_file_value API_PORT 38101)
 web_port=$(env_file_value WEB_PORT 38102)
@@ -33,7 +35,8 @@ usage() {
 Usage: scripts/dev_host.sh [start|stop|status|migrate] [options]
 
 Run the mutable DataRiver API, four workers and Vite from the checked-out source.
-PostgreSQL, Valkey, SeaweedFS and (when selected) Keycloak remain Docker services.
+PostgreSQL and (when selected) Keycloak remain Docker services. Redis and
+MinIO/S3 are external services configured through .env or the options below.
 
 The `migrate` action applies the Alembic migrations from this checkout using the
 local PostgreSQL owner credential. Use it after pulling a source revision that
@@ -43,8 +46,11 @@ from an offline bundle.
 Options:
   --datahub-base-url URL   Approved DataHub GMS URL (default: .env DATAHUB_BASE_URL).
   --postgres-port PORT     Host PostgreSQL port (default: 5432).
-  --valkey-cache-port PORT Host cache Valkey port (default: 6379).
-  --valkey-queue-port PORT Host queue Valkey port (default: 6380).
+  --redis-cache-url URL     External Redis cache URL (default: .env REDIS_CACHE_URL).
+  --redis-delivery-url URL  External Redis delivery URL (default: .env REDIS_DELIVERY_URL).
+  --s3-endpoint-url URL     External MinIO/S3 worker URL (default: .env S3_ENDPOINT_URL).
+  --s3-public-endpoint-url URL
+                           Browser-reachable MinIO/S3 URL used for signing.
   --keycloak-port PORT     Host Keycloak port (default: 18081).
   --api-port PORT          Host Uvicorn port (default: .env API_PORT or 38101).
   --web-port PORT          Host Vite port (default: .env WEB_PORT or 38102).
@@ -69,13 +75,21 @@ while [ "$#" -gt 0 ]; do
       shift
       postgres_port=${1:?--postgres-port requires a value}
       ;;
-    --valkey-cache-port)
+    --redis-cache-url)
       shift
-      valkey_cache_port=${1:?--valkey-cache-port requires a value}
+      redis_cache_url=${1:?--redis-cache-url requires a value}
       ;;
-    --valkey-queue-port)
+    --redis-delivery-url)
       shift
-      valkey_queue_port=${1:?--valkey-queue-port requires a value}
+      redis_delivery_url=${1:?--redis-delivery-url requires a value}
+      ;;
+    --s3-endpoint-url)
+      shift
+      s3_endpoint_url=${1:?--s3-endpoint-url requires a value}
+      ;;
+    --s3-public-endpoint-url)
+      shift
+      s3_public_endpoint_url=${1:?--s3-public-endpoint-url requires a value}
       ;;
     --keycloak-port)
       shift
@@ -236,7 +250,7 @@ required_secrets=(postgres_password)
 if [ "$action" = start ]; then
   required_secrets+=(
     postgres_app_password postgres_relay_password postgres_upload_password
-    postgres_governance_password valkey_cache_password valkey_queue_password
+    postgres_governance_password redis_cache_password redis_delivery_password
     datahub_token s3_access_key s3_secret_key
     keycloak_identity_admin_client_secret
   )
@@ -303,12 +317,12 @@ export UPLOAD_DATABASE_URL="postgresql+asyncpg://datariver_upload@127.0.0.1:$pos
 export UPLOAD_DATABASE_SECRET_REF="$(secret_ref postgres_upload_password)"
 export GOVERNANCE_DATABASE_URL="postgresql+asyncpg://datariver_governance@127.0.0.1:$postgres_port/datariver"
 export GOVERNANCE_DATABASE_SECRET_REF="$(secret_ref postgres_governance_password)"
-export VALKEY_CACHE_URL="redis://127.0.0.1:$valkey_cache_port/0"
-export VALKEY_QUEUE_URL="redis://127.0.0.1:$valkey_queue_port/0"
-export VALKEY_CACHE_SECRET_REF="$(secret_ref valkey_cache_password)"
-export VALKEY_QUEUE_SECRET_REF="$(secret_ref valkey_queue_password)"
-export S3_ENDPOINT_URL="http://127.0.0.1:8333"
-export S3_PUBLIC_ENDPOINT_URL="http://localhost:8333"
+export REDIS_CACHE_URL="$redis_cache_url"
+export REDIS_DELIVERY_URL="$redis_delivery_url"
+export REDIS_CACHE_SECRET_REF="$(secret_ref redis_cache_password)"
+export REDIS_DELIVERY_SECRET_REF="$(secret_ref redis_delivery_password)"
+export S3_ENDPOINT_URL="$s3_endpoint_url"
+export S3_PUBLIC_ENDPOINT_URL="$s3_public_endpoint_url"
 export S3_ACCESS_KEY_FILE="$root/secrets/s3_access_key"
 export S3_SECRET_KEY_FILE="$root/secrets/s3_secret_key"
 export OIDC_ISSUER="http://localhost:$keycloak_port/realms/datariver"

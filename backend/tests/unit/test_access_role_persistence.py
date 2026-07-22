@@ -46,7 +46,7 @@ def test_access_role_migration_installs_rls_and_bounded_app_privileges() -> None
     )
     initial = (root / "backend/alembic/versions/0001_initial_schema.py").read_text(encoding="utf-8")
 
-    assert REQUIRED_DATABASE_REVISION == "0039"
+    assert REQUIRED_DATABASE_REVISION == "0040"
     assert "ALTER TABLE iam.access_roles FORCE ROW LEVEL SECURITY" in migration
     assert "GRANT SELECT, INSERT, UPDATE ON iam.access_roles" in migration
     assert "GRANT DELETE ON iam.access_roles" not in migration

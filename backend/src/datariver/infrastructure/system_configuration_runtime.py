@@ -82,6 +82,16 @@ def _runtime_updates(
         }
     if service_key == "AIRFLOW":
         return {"ui_airflow_url": _string(document, "base_url")}
+    if service_key == "REDIS_CACHE":
+        return {
+            "redis_cache_url": _string(document, "url"),
+            "redis_cache_secret_ref": _secret_reference(document, "password"),
+        }
+    if service_key == "REDIS_DELIVERY":
+        return {
+            "redis_delivery_url": _string(document, "url"),
+            "redis_delivery_secret_ref": _secret_reference(document, "password"),
+        }
     if service_key == "S3_STORAGE":
         buckets = _mapping(document, "buckets")
         access_key_reference = _secret_reference(document, "access_key")
@@ -189,7 +199,7 @@ def _runtime_updates(
 async def resolve_activated_system_configuration(
     settings: Settings,
     *,
-    database_role: Literal["api", "upload", "governance", "export"] = "api",
+    database_role: Literal["api", "relay", "upload", "governance", "export"] = "api",
 ) -> Settings:
     """Load exact activated revisions once during API/worker startup.
 

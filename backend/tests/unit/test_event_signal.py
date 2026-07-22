@@ -6,7 +6,7 @@ from uuid import UUID, uuid4
 
 import pytest
 
-from datariver.infrastructure.cache.valkey import DeliveredEvent, ValkeyEventDelivery
+from datariver.infrastructure.cache.redis import DeliveredEvent, RedisEventDelivery
 from datariver.infrastructure.db.outbox import SqlInboxStore
 from datariver.workers.event_signal import EventSignalConsumer
 
@@ -56,7 +56,7 @@ async def test_relevant_event_is_deduplicated_completed_and_acknowledged() -> No
         return True
 
     consumer = EventSignalConsumer(
-        delivery=cast(ValkeyEventDelivery, delivery),
+        delivery=cast(RedisEventDelivery, delivery),
         inbox=cast(SqlInboxStore, inbox),
         group="upload-completion-v1",
         consumer="worker-1",
@@ -82,7 +82,7 @@ async def test_irrelevant_event_is_drained_without_running_handler() -> None:
 
     handler: Callable[[], Awaitable[bool]] = fail_if_called
     consumer = EventSignalConsumer(
-        delivery=cast(ValkeyEventDelivery, delivery),
+        delivery=cast(RedisEventDelivery, delivery),
         inbox=cast(SqlInboxStore, inbox),
         group="upload-completion-v1",
         consumer="worker-1",

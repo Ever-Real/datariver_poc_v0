@@ -42,10 +42,10 @@ def settings() -> Settings:
         neo4j_projection_enabled=False,
         knowledge_pipeline_enabled=False,
         system_configuration_runtime_activation_enabled=False,
-        valkey_cache_url="redis://cache:6379/0",
-        valkey_queue_url="redis://queue:6379/0",
-        valkey_cache_secret_ref="file:/run/secrets/valkey_cache_password",
-        valkey_queue_secret_ref="file:/run/secrets/valkey_queue_password",
+        redis_cache_url="redis://cache:6379/0",
+        redis_delivery_url="redis://delivery:6379/0",
+        redis_cache_secret_ref="file:/run/secrets/redis_cache_password",
+        redis_delivery_secret_ref="file:/run/secrets/redis_delivery_password",
         s3_endpoint_url="http://s3",
         s3_public_endpoint_url="http://localhost:8333",
         s3_bucket_quarantine="q",
@@ -76,7 +76,7 @@ def test_api_container_passes_the_configured_pool_budget(
 
     monkeypatch.setattr(http_container, "SecretResolver", Resolver)
     monkeypatch.setattr(http_container, "Database", database)
-    monkeypatch.setattr(http_container, "ValkeyCache", lambda *args, **kwargs: object())
+    monkeypatch.setattr(http_container, "RedisCache", lambda *args, **kwargs: object())
     monkeypatch.setattr(
         http_container,
         "HttpDataHubGateway",

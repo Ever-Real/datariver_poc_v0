@@ -85,7 +85,7 @@ async def capabilities(request: Request, context: ContextDep) -> CapabilitiesRes
             detail_code=detail,
         )
 
-    async def valkey_status(name: str, ping: object) -> CapabilityResponse:
+    async def redis_status(name: str, ping: object) -> CapabilityResponse:
         started = asyncio.get_running_loop().time()
         state = "healthy"
         detail = None
@@ -125,7 +125,7 @@ async def capabilities(request: Request, context: ContextDep) -> CapabilitiesRes
 
     database, cache, datahub_status, configured_grafana_url = await asyncio.gather(
         database_status(),
-        valkey_status("valkey-cache", container.cache.ping()),
+        redis_status("redis-cache", container.cache.ping()),
         container.datahub.capability(),
         development_grafana_url(),
     )

@@ -47,6 +47,15 @@ def test_rejects_shared_cache_and_queue_endpoint() -> None:
         settings(valkey_queue_url="redis://cache:6379/0")
 
 
+def test_legacy_valkey_environment_names_map_to_redis_contract() -> None:
+    configured = settings()
+
+    assert configured.redis_cache_url == "redis://cache:6379/0"
+    assert configured.redis_delivery_url == "redis://queue:6379/0"
+    assert configured.redis_cache_secret_ref.endswith("valkey_cache_password")
+    assert configured.redis_delivery_secret_ref.endswith("valkey_queue_password")
+
+
 def test_rejects_wildcard_cors() -> None:
     with pytest.raises(ValidationError):
         settings(app_cors_origins=("*",))
