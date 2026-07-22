@@ -283,11 +283,14 @@ def verify_multiarch_release_contract() -> None:
         'release-index.tsv',
         '--accept-local-connector-license-review',
         'platform_staging_dir=$(mktemp -d',
+        'docker image pull --platform "$target_platform" "$image"',
     ):
         if fragment not in exporter:
             raise AssertionError(f"offline exporter is missing release guard: {fragment}")
     if "RELEASE.2025-10-15T17-29-55Z" in exporter:
         raise AssertionError("offline exporter references a nonexistent MinIO container tag")
+    if "FROM --platform=$TARGETPLATFORM ${BASE_IMAGE}" in exporter:
+        raise AssertionError("offline exporter must not wrap external images and change identity")
 
     verifier = (ROOT / "scripts" / "verify_offline_release.sh").read_text(encoding="utf-8")
     for fragment in (

@@ -233,14 +233,18 @@ observability_images=(
 
 backup_existing_tag() {
   local image=$1
-  if ! docker image inspect "$image" >/dev/null 2>&1; then
+  local original=$image
+  case "$image" in
+    *@sha256:*) original=${image%@sha256:*} ;;
+  esac
+  if ! docker image inspect "$original" >/dev/null 2>&1; then
     return
   fi
   local safe_image backup
-  safe_image=$(printf '%s' "$image" | tr '/:' '__')
+  safe_image=$(printf '%s' "$original" | tr '/:@' '___')
   backup="datariver-offline-export-backup:${safe_image}-${target_architecture}-$$"
-  docker image tag "$image" "$backup"
-  printf '%s\t%s\n' "$image" "$backup" >>"$backup_file"
+  docker image tag "$original" "$backup"
+  printf '%s\t%s\n' "$original" "$backup" >>"$backup_file"
 }
 
 restore_backed_up_tags() {
@@ -347,20 +351,10 @@ materialize_cross_platform_images() {
   if [ "$cross_platform" != true ]; then
     return
   fi
-  local temporary_dir dockerfile image
-  temporary_dir=$(mktemp -d "${TMPDIR:-/tmp}/datariver-external-image.XXXXXX")
-  dockerfile="$temporary_dir/Dockerfile"
-  printf '%s\n' 'ARG BASE_IMAGE' 'FROM --platform=$TARGETPLATFORM ${BASE_IMAGE}' >"$dockerfile"
+  local image
   for image in "$@"; do
-    docker buildx build \
-      --platform "$target_platform" \
-      --load \
-      --build-arg "BASE_IMAGE=$image" \
-      --file "$dockerfile" \
-      --tag "$image" \
-      "$temporary_dir"
+    docker image pull --platform "$target_platform" "$image"
   done
-  rm -rf "$temporary_dir"
 }
 
 if [ "$build_datariver" = true ]; then
