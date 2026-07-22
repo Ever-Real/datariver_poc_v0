@@ -45,6 +45,7 @@ class NotReadyContainer(LiveOnlyContainer):
 
 def settings() -> Settings:
     return Settings(
+        _env_file=None,
         app_env="test",
         database_url="postgresql+asyncpg://u@localhost/db",
         database_secret_ref="file:/run/secrets/postgres_password",
@@ -286,6 +287,9 @@ def test_system_configuration_inventory_is_server_owned_and_redacted() -> None:
             | {
                 "app_env": "development",
                 "system_configuration_runtime_activation_enabled": True,
+                "system_configuration_runtime_workspace_id": (
+                    "00000000-0000-4000-8000-000000000100"
+                ),
             }
         )
     )
