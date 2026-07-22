@@ -106,6 +106,15 @@ manifest와 모든 `*.sha256`을 확인하고, 외장 매체 또는 승인된 �
 release 디렉터리를 전달한다. 내부 Registry가 있으면 tar 대신 해당 Registry로 digest 고정
 이미지를 승격하는 방식을 우선한다.
 
+교차 빌드한 amd64 bundle은 arm64 반출 PC에서 `--artifact-only`로 checksum/source/manifest를
+검증한다. 이 옵션은 target Docker를 검증하지 않으므로 WSL 반입 시에는 생략하고 `--load`와
+`--env-file`을 사용해야 한다.
+
+```bash
+./scripts/verify_offline_release.sh docker_imgs/<release-id> \
+  --platform linux/amd64 --source-dir . --artifact-only
+```
+
 ### 폐쇄망 공통 사전조건
 
 1. Git mirror 또는 승인된 source bundle에서 이 repository의 동일 commit을 checkout한다.

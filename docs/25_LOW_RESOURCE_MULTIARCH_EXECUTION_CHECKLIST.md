@@ -51,7 +51,8 @@ This checklist is evidence-driven. `[x]` means the named repository evidence was
   now has an explicit cardinality guard. The second amd64 attempt built the application images but
   exposed Docker Desktop's host-default view of a multi-platform external index; manifest checks
   and tar export now select the explicit target platform and must be rerun from the corrected
-  commit.
+  commit. The cross-build host uses artifact-only verification; target daemon enforcement remains
+  mandatory for WSL import.
 - [ ] core, PostgreSQL, Redis, MinIO and Neo4j OCI indexes are digest-pinned. Redis/MinIO
   redistribution and target vulnerability/license acceptance remain operator gates; the
   nonexistent MinIO `2025-10-15` image tag was replaced by the available `2025-09-07` image.

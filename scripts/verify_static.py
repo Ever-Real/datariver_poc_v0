@@ -301,6 +301,7 @@ def verify_multiarch_release_contract() -> None:
         'Source checkout does not match release commit',
         'Loaded image platform mismatch',
         'config --images',
+        '--artifact-only and --load are mutually exclusive',
     ):
         if fragment not in verifier:
             raise AssertionError(f"offline verifier is missing fail-closed check: {fragment}")

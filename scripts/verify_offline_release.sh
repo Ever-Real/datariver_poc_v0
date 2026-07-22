@@ -4,6 +4,7 @@ set -euo pipefail
 release_root=
 requested_platform=
 load_images=false
+artifact_only=false
 source_dir=
 env_file=
 
@@ -15,6 +16,8 @@ Verify an immutable DataRiver source/image release before migration.
 
 Options:
   --load                  Load image tar files, then verify every image ID and platform.
+  --artifact-only         Verify source/checksums/manifests without requiring a matching daemon.
+                          Use this on a cross-build host; never use it as target import evidence.
   --source-dir DIR        Require this checkout to match the release commit and contracts.
   --env-file FILE         With --source-dir and --load, render core+identity Compose and prove
                           that every selected image is already local (no pull/build is run).
@@ -33,6 +36,9 @@ while [ "$#" -gt 0 ]; do
       ;;
     --load)
       load_images=true
+      ;;
+    --artifact-only)
+      artifact_only=true
       ;;
     --source-dir)
       shift
@@ -86,6 +92,14 @@ case "$requested_platform" in
     ;;
 esac
 normalized_platform="linux/$requested_architecture"
+[ "$artifact_only" != true ] || [ "$load_images" != true ] || {
+  echo "--artifact-only and --load are mutually exclusive." >&2
+  exit 2
+}
+[ "$artifact_only" != true ] || [ -z "$env_file" ] || {
+  echo "--artifact-only cannot perform target Compose image verification." >&2
+  exit 2
+}
 platform_dir="$release_root/$requested_architecture"
 index="$platform_dir/release-index.tsv"
 marker="$release_root/source-commit.txt"
@@ -179,6 +193,12 @@ if [ -n "$source_dir" ]; then
     actual_hash=$(git -C "$source_dir" hash-object "$source_dir/$path")
     [ "$actual_hash" = "$expected_hash" ] || { echo "Release contract changed: $path" >&2; exit 2; }
   done <"$index"
+fi
+
+if [ "$artifact_only" = true ]; then
+  printf 'Verified DataRiver release artifacts %s for %s at source commit %s.\n' \
+    "$release_id" "$normalized_platform" "$source_commit"
+  exit 0
 fi
 
 if ! command -v docker >/dev/null 2>&1; then
