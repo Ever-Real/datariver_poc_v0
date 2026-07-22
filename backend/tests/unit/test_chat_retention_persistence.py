@@ -113,7 +113,7 @@ def test_migration_and_initial_schema_install_fail_closed_binding_guards() -> No
     initial = (root / "backend/alembic/versions/0001_initial_schema.py").read_text(encoding="utf-8")
     generator = (root / "scripts/generate_initial_migration.py").read_text(encoding="utf-8")
 
-    assert REQUIRED_DATABASE_REVISION == "0038"
+    assert REQUIRED_DATABASE_REVISION == "0039"
     assert 'down_revision: str | Sequence[str] | None = "0017"' in migration
     for required in (
         "ACTIVE_POLICY_V1",

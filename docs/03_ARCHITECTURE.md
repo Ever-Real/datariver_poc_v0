@@ -236,6 +236,15 @@ in React memory. Browser persistence is limited to the short-lived PKCE redirect
 which contains only a versioned intent and validated same-origin return path; no client-side role or
 administrator flag exists.
 
+The optional Keycloak identity-administration adapter is a narrow anti-corruption boundary, not a
+generic IdP proxy. It owns only fixed user lookup/create, temporary-password and enable operations
+using a dedicated `manage-users` service account. A user remains disabled while the canonical
+PostgreSQL subject/membership, idempotency record and outbox event commit through the fixed
+`iam.provision_workspace_identity` function. Provider enablement occurs last and is safe to retry.
+Self-service password change uses a fixed provider-side application-initiated action and returns to
+the original DataRiver route. The browser UI exposes neither the provider product name nor an admin
+URL, and the replacement password never crosses the DataRiver API.
+
 ## Degradation model
 
 | Dependency failure | Expected behavior |

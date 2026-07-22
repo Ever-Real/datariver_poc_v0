@@ -31,7 +31,7 @@ Generated OpenAPI at `/api/v1/openapi.json` is authoritative for implemented pay
 
 | Method/path | Authorization | Purpose |
 |---|---|---|
-| `GET /auth/me` | verified bearer identity; no Workspace header | sanitized subject, display name, email, realm roles, normalized assurance/authentication time, one server-selected active `default_workspace_id`, and operator-owned `workspace_selection_enabled` / `hardware_webauthn_enabled` capability flags for React in-memory hydration after an OIDC callback or silent SSO round-trip. The default/flags are not browser authority; every later request still verifies Workspace membership and the API independently verifies assurance. |
+| `GET /auth/me` | verified bearer identity; no Workspace header | sanitized subject, display name, email, realm roles, normalized assurance/authentication time, one server-selected active `default_workspace_id` and operator-owned capability flags including `password_change_supported`. No provider URL or credential is returned; every later request still verifies Workspace membership and assurance. |
 | `GET /admin/me` | read-only workspace administrator context | reports the current verified assurance (including ordinary `PASSWORD`/`OTHER_MFA`) and server-authorized administrator operations without triggering FIDO2/password reauthentication; each sensitive mutation applies its own assurance check |
 
 ### Health and operations
@@ -259,6 +259,7 @@ message, citation or retention binding and production configuration rejects the 
 |---|---|---|
 | `GET /admin/me` | eligible human security administrator with a valid current OIDC identity | internal subject identity, current-assurance operations, fallback availability and the supported action vocabulary; read discovery never grants mutation authority |
 | `GET /admin/workspace-memberships?limit=` | eligible human security administrator with a valid current OIDC identity | bounded workspace membership display/version summaries, maximum 100 |
+| `POST /admin/identity-users` | eligible human security administrator + recent hardware WebAuthn + enabled governed Keycloak adapter | idempotently create a disabled marked Keycloak identity, temporary `UPDATE_PASSWORD` credential and canonical six-month Workspace membership, optionally from an active Role, then enable the identity. The password is excluded from request hash, DB, outbox and response. |
 | `GET /admin/workspace-memberships/me/summary` | current active member | server-calculated membership expiry, renewal opening and pending-request facts; browser time is not authorization input |
 | `POST /admin/membership-renewals/me` | current member during the final 30 days + `Idempotency-Key` | request exactly six calendar months beyond the observed current expiry; one pending request per member |
 | `GET /admin/membership-renewals/me?limit=` | current member | bounded own renewal history |

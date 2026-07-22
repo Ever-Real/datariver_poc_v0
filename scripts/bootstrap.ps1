@@ -101,6 +101,7 @@ $keycloakDatabasePassword = Get-OrCreateSecret "keycloak_db_password"
 $airflowDatabasePassword = Get-OrCreateSecret "airflow_db_password"
 $airflowApiSecret = Get-OrCreateSecret "airflow_api_secret" 48
 $airflowClientSecret = Get-OrCreateSecret "airflow_client_secret"
+$identityAdminClientSecret = Get-OrCreateSecret "keycloak_identity_admin_client_secret"
 $airflowAdminPassword = Get-OrCreateSecret "airflow_admin_password" 24
 $keycloakDemoPassword = Get-OrCreateSecret "keycloak_demo_password" 18
 $keycloakAdminPassword = Get-OrCreateSecret "keycloak_admin_password" 24
@@ -152,6 +153,10 @@ if ($HostDevelopment) {
     Set-EnvValue "OIDC_ISSUER" "http://localhost:18081/realms/datariver"
     Set-EnvValue "OIDC_PUBLIC_AUTHORITY" "http://localhost:18081/realms/datariver"
     Set-EnvValue "OIDC_PUBLIC_ORIGIN" "http://localhost:18081"
+    Set-EnvValue "IDENTITY_ADMIN_ENABLED" "true"
+    Set-EnvValue "IDENTITY_ADMIN_BASE_URL" "http://keycloak:8080"
+    Set-EnvValue "IDENTITY_ADMIN_CLIENT_SECRET_REF" "file:/run/secrets/keycloak_identity_admin_client_secret"
+    Set-EnvValue "IDENTITY_PASSWORD_CHANGE_ACTION_ENABLED" "true"
 }
 if ($PSBoundParameters.ContainsKey("DataHubBaseUrl") -and $DataHubBaseUrl.Length -gt 0) {
     Set-EnvValue "DATAHUB_BASE_URL" $DataHubBaseUrl
@@ -197,6 +202,7 @@ $realmTemplate = [IO.File]::ReadAllText(
 $realmDocument = $realmTemplate.Replace(
     "__DEMO_PASSWORD__", $keycloakDemoPassword
 ).Replace("__AIRFLOW_CLIENT_SECRET__", $airflowClientSecret
+).Replace("__IDENTITY_ADMIN_CLIENT_SECRET__", $identityAdminClientSecret
 ).Replace("__WEB_PUBLIC_ORIGIN__", $WebPublicOrigin)
 $realmPath = Join-Path $keycloakRuntimeDirectory "datariver-realm.json"
 if (Test-Path -LiteralPath $realmPath) {

@@ -87,6 +87,18 @@
         }
       ],
       "defaultClientScopes": ["acr", "roles"]
+    },
+    {
+      "clientId": "datariver-identity-admin",
+      "name": "DataRiver governed identity administration",
+      "enabled": true,
+      "publicClient": false,
+      "secret": "__IDENTITY_ADMIN_CLIENT_SECRET__",
+      "standardFlowEnabled": false,
+      "directAccessGrantsEnabled": false,
+      "implicitFlowEnabled": false,
+      "serviceAccountsEnabled": true,
+      "defaultClientScopes": ["roles"]
     }
   ],
   "authenticationFlows": [
@@ -240,6 +252,15 @@
       "username": "service-account-datariver-airflow",
       "enabled": true,
       "serviceAccountClientId": "datariver-airflow"
+    },
+    {
+      "id": "00000000-0000-4000-8000-000000000003",
+      "username": "service-account-datariver-identity-admin",
+      "enabled": true,
+      "serviceAccountClientId": "datariver-identity-admin",
+      "clientRoles": {
+        "realm-management": ["manage-users", "view-users", "query-users"]
+      }
     }
   ]
 }

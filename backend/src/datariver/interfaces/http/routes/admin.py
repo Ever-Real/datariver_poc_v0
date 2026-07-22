@@ -12,8 +12,10 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from datariver.application.dto import MembershipRenewalRecord
+from datariver.application.identity_admin import IdentityUserDraft
 from datariver.application.services.admin_access import AdminAccessService
 from datariver.application.services.authorization import AuthorizationService
+from datariver.application.services.identity_admin import IdentityAdminService
 from datariver.config import Settings
 from datariver.domain.admin_access import (
     AdminAccessDecision,
@@ -65,6 +67,8 @@ from datariver.interfaces.http.schemas import (
     AdminFallbackCreateRequest,
     AdminFallbackDecisionRequest,
     AdminReadContextResponse,
+    IdentityUserProvisionRequest,
+    IdentityUserProvisionResponse,
     MembershipAccessDocumentRequest,
     MembershipAccessUpdateResponse,
     MembershipRenewalCreateRequest,
@@ -654,6 +658,7 @@ def _service(request: Request) -> AdminAccessService:
         fallback_enabled=container.settings.admin_password_fallback_enabled,
         fallback_ttl_seconds=container.settings.admin_password_fallback_ttl_seconds,
         development_system_configuration_enabled=container.settings.app_env == "development",
+        identity_administration_enabled=container.identity_admin is not None,
     )
 
 
@@ -749,6 +754,75 @@ async def list_workspace_memberships(
     )
     return WorkspaceMembershipListResponse(
         items=[workspace_membership_summary_response(value) for value in values]
+    )
+
+
+@router.post(
+    "/identity-users",
+    response_model=IdentityUserProvisionResponse,
+    status_code=201,
+)
+async def provision_identity_user(
+    payload: IdentityUserProvisionRequest,
+    request: Request,
+    context: ContextDep,
+    idempotency_key: Annotated[str, Header(alias="Idempotency-Key", min_length=16, max_length=200)],
+) -> IdentityUserProvisionResponse:
+    container = get_container(request)
+    if container.identity_admin is None:
+        raise ForbiddenError("Identity administration is not enabled for this deployment.")
+    profile_document = {
+        "workspace_id": str(context.workspace_id),
+        "username": payload.username,
+        "email": payload.email,
+        "first_name": payload.first_name,
+        "last_name": payload.last_name,
+        "department_id": str(payload.department_id) if payload.department_id else None,
+        "job_function": payload.job_function,
+        "role_id": str(payload.role_id) if payload.role_id else None,
+    }
+    request_hash = canonical_json_hash(profile_document)
+    provisioning_reference = canonical_json_hash(
+        {
+            "workspace_id": str(context.workspace_id),
+            "idempotency_key": idempotency_key,
+        }
+    )
+    result = await IdentityAdminService(
+        uow_factory=lambda: SqlAdminAccessUnitOfWork(container.database.session_factory),
+        authorization=AuthorizationService(
+            decision_writer=SqlDecisionWriter(container.database.session_factory)
+        ),
+        provider=container.identity_admin,
+        issuer=container.settings.oidc_issuer,
+    ).provision_user(
+        draft=IdentityUserDraft(
+            username=payload.username,
+            email=payload.email,
+            first_name=payload.first_name,
+            last_name=payload.last_name,
+            temporary_password=payload.temporary_password.get_secret_value(),
+            workspace_id=context.workspace_id,
+            provisioning_reference=provisioning_reference,
+        ),
+        department_id=payload.department_id,
+        job_function=payload.job_function,
+        role_id=payload.role_id,
+        subject=context.subject,
+        environment=context.environment,
+        request_id=context.request_id,
+        idempotency_key=idempotency_key,
+        request_hash=request_hash,
+    )
+    return IdentityUserProvisionResponse(
+        subject_id=result.subject_id,
+        username=result.username,
+        display_name=result.display_name,
+        email=result.email,
+        workspace_id=result.workspace_id,
+        role_id=result.role_id,
+        access_expires_at=result.access_expires_at,
+        temporary_password_required=result.temporary_password_required,
     )
 
 

@@ -10,6 +10,10 @@ from sqlalchemy import ForeignKeyConstraint
 
 from datariver.infrastructure.db import models  # noqa: F401
 from datariver.infrastructure.db.base import Base
+from datariver.infrastructure.db.identity_provisioning_sql import (
+    IDENTITY_PROVISIONING_FUNCTION_SQL,
+    IDENTITY_PROVISIONING_SIGNATURE,
+)
 from datariver.infrastructure.db.migration_scope import MANAGED_DATABASE_SCHEMAS
 
 SCHEMAS = MANAGED_DATABASE_SCHEMAS
@@ -60,6 +64,10 @@ def build_upgrade() -> ops.UpgradeOps:
         ops.ExecuteSQLOp(statement) for statement in _candidate_evidence_immutability_sql()
     )
     operations.extend(ops.ExecuteSQLOp(statement) for statement in _chat_retention_binding_sql())
+    operations.append(ops.ExecuteSQLOp(IDENTITY_PROVISIONING_FUNCTION_SQL))
+    operations.append(
+        ops.ExecuteSQLOp(f"REVOKE ALL ON FUNCTION {IDENTITY_PROVISIONING_SIGNATURE} FROM PUBLIC")
+    )
     operations.extend(ops.ExecuteSQLOp(statement) for statement in _default_workspace_lookup_sql())
     operations.extend(
         ops.CreateForeignKeyOp.from_constraint(constraint)
@@ -84,6 +92,7 @@ BEGIN
         GRANT SELECT, INSERT, UPDATE ON iam.membership_renewal_requests TO datariver_app;
         GRANT SELECT, INSERT, UPDATE ON iam.access_roles TO datariver_app;
         GRANT EXECUTE ON FUNCTION iam.resolve_default_workspace(text, text) TO datariver_app;
+        GRANT EXECUTE ON FUNCTION {IDENTITY_PROVISIONING_SIGNATURE} TO datariver_app;
         GRANT UPDATE (active, clearance, attributes, version, updated_at)
             ON iam.workspace_memberships TO datariver_app;
         GRANT UPDATE (access_expires_at, version, updated_at)
@@ -389,6 +398,7 @@ EXECUTE FUNCTION assistant.enforce_chat_message_retention_binding()
 
 def build_downgrade() -> ops.DowngradeOps:
     operations: list[ops.MigrateOperation] = [
+        ops.ExecuteSQLOp(f"DROP FUNCTION {IDENTITY_PROVISIONING_SIGNATURE}"),
         ops.ExecuteSQLOp("DROP FUNCTION iam.resolve_default_workspace(text, text)"),
         ops.ExecuteSQLOp(
             "DROP TRIGGER enforce_chat_message_retention_binding ON assistant.chat_messages"

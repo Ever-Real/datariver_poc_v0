@@ -38,6 +38,14 @@ not an IAM list API.  It may return only one active Workspace UUID for the alrea
 subject during `/auth/me` hydration, prefers the optional membership default marker and otherwise
 uses deterministic active-Workspace ordering.  It is executable by the application role but returns
 no attributes, memberships, roles or cross-workspace data; normal IAM reads remain RLS-bound.
+
+`iam.provision_workspace_identity(...)` is the only app-executable identity-creation function. It
+is `SECURITY DEFINER`, has no dynamic SQL and independently requires matching transaction-local
+Workspace/subject context plus an active, unexpired human `security-administrators` membership with
+RESTRICTED clearance and `admin.manage`. It reads an optional active `iam.access_roles` row and
+atomically inserts exactly one OIDC subject and six-month membership. The application role has
+execute-only access and still has no direct `INSERT` grant on either IAM table. No password or
+provider client credential is a function argument or database column.
 | `authz.resources` | `workspace_id + resource_type + resource_key UQ`, scope/classification/lifecycle columns, `attributes`, `version` | durable resource attribute registry |
 | `authz.policy_decisions` | `id`, `workspace_id`, `subject_id`, `resource_id`, `action`, `effect`, reason/policy JSON, grouped `evaluation_context`, `request_id`, `decided_at` | immutable allow/deny/system-worker or bounded resource-set evidence |
 | `authz.classification_access_policy_versions` | workspace/policy number UQ, required jurisdiction, grant maximum, payload hash, maker/checker/supersede state and optimistic version | independently approved four-class Search/Chat policy |
@@ -253,8 +261,10 @@ Alembic `0035` adds CR revision rounds and immutable TEST attachment/hash eviden
 typed XLSX profile and fenced Bulk publication grants. `0037` adds the Knowledge PDF source/page/
 embedding/extraction, projection verification and GraphRAG audit tables. `0038` expands persisted
 connection-test scopes to actual model execution/authenticated Neo4j query evidence and records the
-non-secret System Configuration/deployment binding on GraphRAG audits. SQLAlchemy metadata, the
-regenerated `0001` baseline and these incremental migrations must remain deterministic equivalents.
+non-secret System Configuration/deployment binding on GraphRAG audits. Alembic `0039` installs the
+fixed governed identity-provisioning function and execute-only application grant; it adds no
+credential column or direct IAM-table write grant. SQLAlchemy metadata, the regenerated `0001`
+baseline and these incremental migrations must remain deterministic equivalents.
 
 `EVENT_RETENTION_DAYS` is a target online-retention input, not a deletion switch. Automatic event deletion remains disabled until immutable export has been written and read back from a verified Object-Lock store, Legal Hold precedence and Maker-Checker erasure approval are implemented, and a dedicated least-privilege retention worker is introduced.
 

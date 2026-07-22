@@ -3,7 +3,9 @@
 ## Hard constraints
 
 - External DataHub already exists and is integrated through a version-aware anti-corruption layer.
-- Production authentication is OIDC; DataRiver never stores user passwords.
+- Production authentication is OIDC; DataRiver never stores user passwords. An optional governed
+  Keycloak adapter may relay a temporary credential directly to Keycloak, but never persists,
+  hashes, audits or returns it.
 - PostgreSQL is the only required canonical application database.
 - Cache, queues, graph projections, metrics and orchestrator state are never business truth.
 - No proprietary/paid-only feature is required for correctness, security, backup, or scaling.

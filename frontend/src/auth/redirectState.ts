@@ -2,7 +2,12 @@ import type { SigninRedirectArgs } from 'oidc-client-ts'
 
 export const AUTH_REDIRECT_STATE_VERSION = 1 as const
 
-export type AuthIntent = 'SIGN_IN' | 'WEBAUTHN_ENROLLMENT' | 'STEP_UP' | 'PASSWORD_REAUTH'
+export type AuthIntent =
+  | 'SIGN_IN'
+  | 'WEBAUTHN_ENROLLMENT'
+  | 'STEP_UP'
+  | 'PASSWORD_REAUTH'
+  | 'PASSWORD_CHANGE'
 
 export interface AuthRedirectState {
   version: typeof AUTH_REDIRECT_STATE_VERSION
@@ -15,6 +20,7 @@ const intents = new Set<AuthIntent>([
   'WEBAUTHN_ENROLLMENT',
   'STEP_UP',
   'PASSWORD_REAUTH',
+  'PASSWORD_CHANGE',
 ])
 
 export function safeReturnTo(value: unknown, origin = window.location.origin): string {
@@ -50,6 +56,7 @@ export function callbackReturnTo(href = window.location.href): string {
     'error_description',
     'error_uri',
     'kc_action_status',
+    'kc_action',
   ]) {
     url.searchParams.delete(parameter)
   }
@@ -91,6 +98,13 @@ export function signinRedirectArgs(
       state,
       max_age: 0,
       extraQueryParams: { kc_action: 'webauthn-register:skip_if_exists' },
+    }
+  }
+  if (intent === 'PASSWORD_CHANGE') {
+    return {
+      state,
+      max_age: 0,
+      extraQueryParams: { kc_action: 'UPDATE_PASSWORD' },
     }
   }
   return { state }

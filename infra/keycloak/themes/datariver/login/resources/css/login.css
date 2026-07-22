@@ -17,4 +17,9 @@ input:focus { border-color: #004b87; box-shadow: 0 0 0 3px rgba(0, 75, 135, .12)
 button { display: flex; min-height: 54px; align-items: center; justify-content: center; gap: 12px; margin-top: 22px; border: 0; border-radius: 2px; background: #101828; color: #fff; cursor: pointer; font: inherit; font-size: 13px; font-weight: 900; letter-spacing: .12em; text-transform: uppercase; box-shadow: 0 12px 24px rgba(16, 24, 40, .2); }
 button:hover, button:focus-visible { background: #293247; }
 .login-message { margin: 0 0 14px; padding: 10px 12px; border: 1px solid #fecaca; background: #fef2f2; color: #b42318; font-size: 12px; font-weight: 700; text-align: center; }
+.field-error { color: #b42318; font-size: 11px; font-weight: 700; }
+.form-actions { display: grid; gap: 8px; }
+.form-actions button { margin-top: 14px; }
+.form-actions .button-secondary { margin-top: 0; border: 1px solid rgba(16, 24, 40, .15); background: #fff; color: #101828; box-shadow: none; }
+.form-actions .button-secondary:hover, .form-actions .button-secondary:focus-visible { background: #f1f5f9; }
 footer { margin-top: 30px; padding-top: 20px; border-top: 1px solid rgba(16, 24, 40, .08); text-align: center; }

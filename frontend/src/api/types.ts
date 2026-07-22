@@ -34,6 +34,7 @@ export interface AuthenticatedProfile {
   default_workspace_id?: string
   workspace_selection_enabled?: boolean
   hardware_webauthn_enabled?: boolean
+  password_change_supported?: boolean
 }
 
 export interface CatalogExportCapability {
@@ -710,6 +711,7 @@ export interface ConsumerGrant {
 export type Classification = 'PUBLIC' | 'INTERNAL' | 'CONFIDENTIAL' | 'RESTRICTED'
 
 export type AdminOperation =
+  | 'IDENTITY_USER_PROVISION'
   | 'MEMBERSHIP_ACCESS_READ'
   | 'MEMBERSHIP_ACCESS_UPDATE'
   | 'MEMBERSHIP_RENEWAL_READ'
@@ -838,6 +840,28 @@ export interface MembershipRoleAssignmentResult {
   role_id: string | null
   membership_version: number
   payload_hash: string
+}
+
+export interface IdentityUserProvisionInput {
+  username: string
+  email: string
+  first_name: string
+  last_name: string
+  department_id: string | null
+  job_function: string | null
+  role_id: string | null
+  temporary_password: string
+}
+
+export interface IdentityUserProvisionResult {
+  subject_id: string
+  username: string
+  display_name: string
+  email: string
+  workspace_id: string
+  role_id: string | null
+  access_expires_at: string
+  temporary_password_required: boolean
 }
 
 export interface SystemDirectoryEntry {

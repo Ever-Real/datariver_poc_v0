@@ -16,6 +16,7 @@ export function ProfilePage({
   workspace,
   capabilities,
   externalSystemLinks,
+  onPasswordChange,
   onPasswordReauth,
 }: {
   profile: AuthenticatedProfile
@@ -23,6 +24,7 @@ export function ProfilePage({
   workspace: string
   capabilities: Capability[]
   externalSystemLinks: ExternalSystemLink[]
+  onPasswordChange: () => void
   onPasswordReauth: () => void
 }) {
   const dataHubLink = externalSystemLinks.find((link) => link.system_id === 'datahub')
@@ -60,23 +62,27 @@ export function ProfilePage({
     } catch (error) { setRenewalError(error) } finally { setRenewalBusy(false) }
   }
   return <section className="grid gap-4">
-    <PageTitle icon="ME" eyebrow="Verified identity profile" title="내 프로필" description="OIDC가 검증한 사용자 정보와 현재 Workspace 범위만 표시합니다." />
+    <PageTitle icon="ME" eyebrow="Verified identity profile" title="내 프로필" description="인증 시스템이 검증한 사용자 정보와 현재 Workspace 범위만 표시합니다." />
     <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_360px]">
       <section className="rounded-enterprise border border-slate-300 bg-white p-5 shadow-sm">
         <header className="mb-5 flex items-center gap-3 border-b border-slate-200 pb-4"><span className="grid h-11 w-11 place-items-center rounded-full bg-navy-900 text-white"><UserRound size={21} /></span><div><span className="text-[10px] font-black tracking-[.14em] text-enterprise-blue uppercase">Basic information</span><h2 className="my-1 text-lg font-black text-navy-900">{profile.display_name}</h2><p className="m-0 text-xs text-slate-500">{profile.subject}</p></div></header>
         <div className="grid gap-3 md:grid-cols-2">
           <label className="grid gap-1 text-xs font-bold">이름<input readOnly value={profile.display_name} /></label>
-          <label className="grid gap-1 text-xs font-bold">닉네임<input readOnly value="OIDC 프로필 미제공" /></label>
-          <label className="grid gap-1 text-xs font-bold">Email<input readOnly value={profile.email ?? 'OIDC 프로필 미제공'} /></label>
-          <label className="grid gap-1 text-xs font-bold">Department<input readOnly value="OIDC 프로필 미제공" /></label>
+          <label className="grid gap-1 text-xs font-bold">닉네임<input readOnly value="인증 프로필 미제공" /></label>
+          <label className="grid gap-1 text-xs font-bold">Email<input readOnly value={profile.email ?? '인증 프로필 미제공'} /></label>
+          <label className="grid gap-1 text-xs font-bold">Department<input readOnly value="인증 프로필 미제공" /></label>
           <label className="grid gap-1 text-xs font-bold">현재 Workspace<input readOnly value={workspace || '선택되지 않음'} /></label>
           <label className="grid gap-1 text-xs font-bold">Workspace 운영 모드<input readOnly value={profile.workspace_selection_enabled === false ? '단일 Workspace · 전환 비활성' : 'Workspace 전환 허용'} /></label>
           <label className="grid gap-1 text-xs font-bold">인증 보증<input readOnly value={profile.authentication_assurance} /></label>
           <label className="grid gap-1 text-xs font-bold">WebAuthn<input readOnly value={profile.hardware_webauthn_enabled === false ? '비활성 · 고위험 작업 차단' : '활성'} /></label>
           <label className="grid gap-1 text-xs font-bold md:col-span-2">역할<input readOnly value={profile.roles.join(', ') || '역할 없음'} /></label>
         </div>
-        <div className="mt-5 flex flex-wrap gap-2"><button type="button" className="button button-secondary" onClick={onPasswordReauth}><KeyRound size={14} /> 비밀번호 재인증</button><button type="button" className="button" disabled title="사용자 프로필 수정은 조직 IdP가 관리합니다."><Save size={14} /> 변경사항 저장</button></div>
-        <div className="mt-4"><GovernedUnavailable compact title="프로필 변경은 IdP 관리 영역입니다" description="DataRiver는 이름·이메일·비밀번호를 직접 저장하거나 변경하지 않습니다. 조직 IdP의 계정 관리 경로가 서버 설정으로 제공되기 전에는 편집 버튼을 활성화하지 않습니다." /></div>
+        <div className="mt-5 flex flex-wrap gap-2">
+          {profile.password_change_supported && <button type="button" className="button" onClick={onPasswordChange}><KeyRound size={14} /> 비밀번호 변경</button>}
+          <button type="button" className="button button-secondary" onClick={onPasswordReauth}><KeyRound size={14} /> 비밀번호 재인증</button>
+          <button type="button" className="button" disabled title="사용자 프로필 수정은 조직 인증 시스템이 관리합니다."><Save size={14} /> 변경사항 저장</button>
+        </div>
+        <div className="mt-4"><GovernedUnavailable compact title="자격 증명은 인증 시스템 관리 영역입니다" description={profile.password_change_supported ? 'DataRiver에서 변경 절차를 시작하면 인증 화면에서만 새 비밀번호를 입력한 뒤 이 화면으로 돌아옵니다. DataRiver는 비밀번호를 저장하거나 로그에 남기지 않습니다.' : '이 배포의 인증 시스템은 DataRiver 내 비밀번호 변경 절차를 제공하지 않습니다. 이름·이메일·비밀번호는 조직의 승인된 계정 관리 절차를 따릅니다.'} /></div>
         <section className="mt-4 grid gap-2 rounded-enterprise border border-slate-300 bg-slate-50 p-4" aria-labelledby="membership-renewal-title">
           <div><span className="text-[10px] font-black tracking-[.14em] text-enterprise-blue uppercase">Workspace access renewal</span><h3 className="mb-1 mt-1 text-sm font-black text-navy-900" id="membership-renewal-title">6개월 계정 갱신</h3></div>
           {!membership ? <p className="m-0 text-xs text-slate-500">현재 멤버십 만료 정보를 확인하는 중입니다.</p> : <dl className="summary-list"><div><dt>가입일</dt><dd>{membership.joined_at ? new Date(membership.joined_at).toLocaleDateString() : '—'}</dd></div><div><dt>현재 만료일</dt><dd>{membership.access_expires_at ? new Date(membership.access_expires_at).toLocaleDateString() : '운영자 관리 계정'}</dd></div><div><dt>신청 가능일</dt><dd>{membership.renewal_eligible_at ? new Date(membership.renewal_eligible_at).toLocaleDateString() : '해당 없음'}</dd></div></dl>}

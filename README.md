@@ -688,6 +688,20 @@ Open `http://localhost:8080`, sign in as `datariver-admin`, and read the generat
 00000000-0000-4000-8000-000000000100
 ```
 
+After the first-login change, use **내 프로필 → 비밀번호 변경**. DataRiver starts the branded
+authentication system's password-change action and returns to the same profile; the ordinary UI
+does not expose the provider product name or administration URL. Editing
+`secrets/keycloak_demo_password` does not change an existing account because that file is only the
+bootstrap-time temporary credential source. DataRiver does not receive or store the replacement.
+
+For the bundled local identity profile, **Admin → 계정/권한 → User → 신규 사용자 등록** creates
+the authentication identity and current Workspace membership together. It requires recent WebAuthn
+assurance, an optional existing 간편 Role, and a temporary password of at least 12 characters. The
+authentication system forces the new user to replace that password at first login. The temporary
+value is excluded from DataRiver DB, idempotency, outbox/audit payloads and responses. Deliver it
+only through an approved secure channel. Enterprise/non-Keycloak OIDC leaves this control disabled
+and continues to use the organization's identity onboarding process.
+
 Workspace is not an Admin-only screen option: it is the tenant/security scope for every user,
 membership, RLS, ABAC and cache entry. With `WORKSPACE_SELECTION_ENABLED=true`, the selector is a
 validated URL convenience, not browser-stored authority, and every API request rechecks membership.

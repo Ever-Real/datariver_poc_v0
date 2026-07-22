@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import type {
+  AccessRole,
   AdminAccessRequest,
   AdminReadContext,
   MembershipAccessDocument,
@@ -47,6 +48,13 @@ export function MembershipAccessAdmin(props: AdminSectionProps) {
   const [detailTab, setDetailTab] = useState<'CR' | 'TABLES'>('CR')
   const [memberQuery, setMemberQuery] = useState('')
   const [memberStatus, setMemberStatus] = useState<'ALL' | 'ACTIVE' | 'INACTIVE'>('ALL')
+  const [createOpen, setCreateOpen] = useState(false)
+  const [createBusy, setCreateBusy] = useState(false)
+  const [roles, setRoles] = useState<AccessRole[]>([])
+  const [newUser, setNewUser] = useState({
+    username: '', email: '', firstName: '', lastName: '', departmentId: '',
+    jobFunction: '', roleId: '', temporaryPassword: '', passwordConfirmation: '',
+  })
 
   const loadMembers = useCallback(async () => {
     try {
@@ -126,6 +134,36 @@ export function MembershipAccessAdmin(props: AdminSectionProps) {
 
   const canDirect = context?.allowed_operations.includes('MEMBERSHIP_ACCESS_UPDATE') ?? false
   const canFallback = context?.allowed_operations.includes('FALLBACK_REQUEST_CREATE') ?? false
+  const canProvision = context?.allowed_operations.includes('IDENTITY_USER_PROVISION') ?? false
+  const openCreate = async () => {
+    if (!canProvision) {
+      if (context?.authentication_assurance !== 'HARDWARE_WEBAUTHN') void props.onStepUp()
+      return
+    }
+    try {
+      setRoles((await api.listAccessRoles()).filter((role) => role.active))
+      setCreateOpen(true)
+    } catch (error) { reportError(error) }
+  }
+  const provisionUser = async () => {
+    if (createBusy || newUser.temporaryPassword !== newUser.passwordConfirmation) return
+    const intent = `identity-user:${newUser.username}:${newUser.email}:${newUser.roleId}`
+    setCreateBusy(true)
+    try {
+      await api.provisionIdentityUser({
+        username: newUser.username.trim(), email: newUser.email.trim(),
+        first_name: newUser.firstName.trim(), last_name: newUser.lastName.trim(),
+        department_id: newUser.departmentId.trim() || null,
+        job_function: newUser.jobFunction.trim() || null,
+        role_id: newUser.roleId || null,
+        temporary_password: newUser.temporaryPassword,
+      }, keyFor(intent, 'identity-user'))
+      clearKey(intent)
+      setNewUser({ username: '', email: '', firstName: '', lastName: '', departmentId: '', jobFunction: '', roleId: '', temporaryPassword: '', passwordConfirmation: '' })
+      setCreateOpen(false)
+      await loadMembers()
+    } catch (error) { reportError(error) } finally { setCreateBusy(false) }
+  }
   const selected = members.find((member) => member.subject_id === selectedId)
   const filteredMembers = useMemo(() => {
     const normalizedQuery = memberQuery.trim().toLocaleLowerCase()
@@ -142,7 +180,7 @@ export function MembershipAccessAdmin(props: AdminSectionProps) {
   return (<>
     <div className="admin-two-column admin-membership-workspace">
       <section className="panel">
-        <div className="section-heading"><div><h3>User 관리</h3><p className="muted">OIDC 주체와 현재 Workspace 멤버십, 소유 테이블 및 CR 이력을 표시합니다.</p></div><div className="action-row"><button className="button button-secondary" disabled title="사용자 계정 생성과 비밀번호는 조직 OIDC/IdP에서 관리합니다.">신규 사용자 등록</button><button className="button button-secondary" onClick={() => void loadMembers()}>{messages.refresh}</button></div></div>
+        <div className="section-heading"><div><h3>User 관리</h3><p className="muted">인증된 사용자와 현재 Workspace 멤버십, 소유 테이블 및 CR 이력을 표시합니다.</p></div><div className="action-row"><button className="button button-secondary" disabled={context?.authentication_assurance === 'HARDWARE_WEBAUTHN' && !canProvision} title={canProvision ? '인증 계정과 Workspace 멤버십을 함께 생성합니다.' : context?.authentication_assurance === 'HARDWARE_WEBAUTHN' ? '이 배포에서는 계정 생성 연계가 비활성화되어 있습니다.' : '최근 WebAuthn 인증 후 계정을 생성할 수 있습니다.'} onClick={() => void openCreate()}>{canProvision ? '신규 사용자 등록' : context?.authentication_assurance === 'HARDWARE_WEBAUTHN' ? '신규 사용자 등록' : 'WebAuthn 후 사용자 등록'}</button><button className="button button-secondary" onClick={() => void loadMembers()}>{messages.refresh}</button></div></div>
         <div className="mb-3 grid gap-2 rounded-enterprise border border-slate-300 bg-slate-50 p-3 md:grid-cols-[minmax(220px,1fr)_170px_auto] md:items-end">
           <label className="grid gap-1 text-xs font-bold">사용자 검색<input type="search" value={memberQuery} onChange={(event) => setMemberQuery(event.target.value)} placeholder="사용자명, 이메일로 검색" /></label>
           <label className="grid gap-1 text-xs font-bold">상태 필터<select value={memberStatus} onChange={(event) => setMemberStatus(event.target.value as typeof memberStatus)}><option value="ALL">전체</option><option value="ACTIVE">활성</option><option value="INACTIVE">비활성</option></select></label>
@@ -171,7 +209,7 @@ export function MembershipAccessAdmin(props: AdminSectionProps) {
           selectedRowId={selectedId}
           onRowActivate={(member) => { setSelectedId(member.subject_id); setDetailOpen(true); setDetailTab('CR') }}
         />
-        <p className="callout">사용자 계정 생성과 비밀번호는 조직 OIDC/IdP의 책임입니다. 이 목록은 IdP 토큰에서 확인한 이메일과 최근 접속 정보만 기록하며, 비밀번호는 저장하거나 표시하지 않습니다.</p>
+        <p className="callout">계정 생성 연계가 활성화된 환경에서는 보안 관리자가 인증 계정과 Workspace 멤버십을 함께 생성할 수 있습니다. 임시 비밀번호는 인증 시스템으로만 전달되며 DataRiver DB·감사 로그에는 저장되지 않습니다.</p>
       </section>
       <section className="panel form-stack" aria-live="polite">
         <h3>{messages.accessDocument}</h3>
@@ -221,6 +259,21 @@ export function MembershipAccessAdmin(props: AdminSectionProps) {
         </aside>
         <main className="grid content-start gap-3"><div className="flex gap-2 border-b border-slate-300 pb-2" role="tablist" aria-label="사용자 활동 상세"><button type="button" role="tab" aria-selected={detailTab === 'CR'} className={`button ${detailTab === 'CR' ? '' : 'button-secondary'}`} onClick={() => setDetailTab('CR')}>CR History</button><button type="button" role="tab" aria-selected={detailTab === 'TABLES'} className={`button ${detailTab === 'TABLES' ? '' : 'button-secondary'}`} onClick={() => setDetailTab('TABLES')}>Owned Tables</button></div>{detailTab === 'CR' ? <GovernedUnavailable title="사용자별 CR 상세 목록 API 미구현" description={`서버는 참여 건수 ${selected.change_request_count}건만 제공합니다. CR 번호·역할·상태가 포함된 권한 필터 목록 API 없이 항목을 추정하지 않습니다.`} /> : <GovernedUnavailable title="사용자별 소유 테이블 목록 API 미구현" description={`서버는 소유 건수 ${selected.owned_table_count}건만 제공합니다. 자산 상세 목록은 전용 권한 필터 API가 추가된 뒤 표시합니다.`} />}</main>
       </div>}
+    </Dialog>
+    <Dialog open={createOpen} title="신규 사용자 등록" description="인증 계정과 현재 Workspace 멤버십을 하나의 통제된 작업으로 생성합니다." onRequestClose={() => { if (!createBusy) { setCreateOpen(false); setNewUser((value) => ({ ...value, temporaryPassword: '', passwordConfirmation: '' })) } }} footer={<><button type="button" className="button button-secondary" disabled={createBusy} onClick={() => { setCreateOpen(false); setNewUser((value) => ({ ...value, temporaryPassword: '', passwordConfirmation: '' })) }}>취소</button><button type="button" className="button" disabled={createBusy || !newUser.username.trim() || !newUser.email.trim() || !newUser.firstName.trim() || !newUser.lastName.trim() || newUser.temporaryPassword.length < 12 || newUser.temporaryPassword !== newUser.passwordConfirmation} onClick={() => void provisionUser()}>{createBusy ? '등록 중…' : '계정 생성'}</button></>}>
+      <div className="grid gap-3 md:grid-cols-2">
+        <label className="grid gap-1 text-xs font-bold">사용자명<input required minLength={3} maxLength={64} autoComplete="off" value={newUser.username} onChange={(event) => setNewUser({ ...newUser, username: event.target.value })} placeholder="예: hong.gildong" /></label>
+        <label className="grid gap-1 text-xs font-bold">Email<input required type="email" maxLength={320} autoComplete="off" value={newUser.email} onChange={(event) => setNewUser({ ...newUser, email: event.target.value })} /></label>
+        <label className="grid gap-1 text-xs font-bold">이름<input required maxLength={100} value={newUser.firstName} onChange={(event) => setNewUser({ ...newUser, firstName: event.target.value })} /></label>
+        <label className="grid gap-1 text-xs font-bold">성<input required maxLength={100} value={newUser.lastName} onChange={(event) => setNewUser({ ...newUser, lastName: event.target.value })} /></label>
+        <label className="grid gap-1 text-xs font-bold">부서 ID (선택)<input value={newUser.departmentId} onChange={(event) => setNewUser({ ...newUser, departmentId: event.target.value })} placeholder="UUID" /></label>
+        <label className="grid gap-1 text-xs font-bold">업무 역할 (선택)<input maxLength={100} value={newUser.jobFunction} onChange={(event) => setNewUser({ ...newUser, jobFunction: event.target.value })} placeholder="예: DATA_ANALYST" /></label>
+        <label className="grid gap-1 text-xs font-bold md:col-span-2">간편 Role<select value={newUser.roleId} onChange={(event) => setNewUser({ ...newUser, roleId: event.target.value })}><option value="">Role 미할당 · 최소 권한</option>{roles.map((role) => <option key={role.id} value={role.id}>{role.name} · {role.clearance}</option>)}</select></label>
+        <label className="grid gap-1 text-xs font-bold">임시 비밀번호<input required type="password" minLength={12} maxLength={128} autoComplete="new-password" value={newUser.temporaryPassword} onChange={(event) => setNewUser({ ...newUser, temporaryPassword: event.target.value })} /></label>
+        <label className="grid gap-1 text-xs font-bold">임시 비밀번호 확인<input required type="password" minLength={12} maxLength={128} autoComplete="new-password" value={newUser.passwordConfirmation} onChange={(event) => setNewUser({ ...newUser, passwordConfirmation: event.target.value })} /></label>
+        {newUser.passwordConfirmation && newUser.temporaryPassword !== newUser.passwordConfirmation && <p className="m-0 text-xs font-bold text-red-700 md:col-span-2">임시 비밀번호가 일치하지 않습니다.</p>}
+        <p className="callout m-0 md:col-span-2">사용자는 첫 로그인에서 임시 비밀번호를 반드시 변경합니다. 임시 비밀번호는 승인된 보안 채널로만 전달하세요.</p>
+      </div>
     </Dialog>
   </>)
 }

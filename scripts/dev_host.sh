@@ -176,6 +176,7 @@ if [ "$action" = start ]; then
     postgres_app_password postgres_relay_password postgres_upload_password
     postgres_governance_password valkey_cache_password valkey_queue_password
     datahub_token s3_access_key s3_secret_key
+    keycloak_identity_admin_client_secret
   )
 fi
 for required in "${required_secrets[@]}"; do
@@ -249,6 +250,12 @@ export S3_ACCESS_KEY_FILE="$root/secrets/s3_access_key"
 export S3_SECRET_KEY_FILE="$root/secrets/s3_secret_key"
 export OIDC_ISSUER="http://localhost:$keycloak_port/realms/datariver"
 export OIDC_JWKS_URL="http://localhost:$keycloak_port/realms/datariver/protocol/openid-connect/certs"
+export IDENTITY_ADMIN_ENABLED=true
+export IDENTITY_ADMIN_BASE_URL="http://127.0.0.1:$keycloak_port"
+export IDENTITY_ADMIN_REALM=datariver
+export IDENTITY_ADMIN_CLIENT_ID=datariver-identity-admin
+export IDENTITY_ADMIN_CLIENT_SECRET_REF="$(secret_ref keycloak_identity_admin_client_secret)"
+export IDENTITY_PASSWORD_CHANGE_ACTION_ENABLED=true
 export DATAHUB_BASE_URL="$datahub_base_url"
 export DATAHUB_SECRET_REF="$(secret_ref datahub_token)"
 export SEED_PROFILE=none

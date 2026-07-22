@@ -345,7 +345,7 @@ export function ChangeRequestCreateDialog({
             <label>요청자<input readOnly title={requesterEmail ?? requesterName} value={requesterEmail ? `${requesterName} · ${requesterEmail}` : requesterName} /></label>
             <label>관련 시스템<select onChange={(event) => setSystemId(event.target.value)} required value={systemId}><option value="">시스템 선택</option>{systems.map((system) => <option key={system.id} value={system.id}>{system.name} · {system.code}</option>)}</select></label>
             <label>요청일자<input onChange={(event) => setRequestDate(event.target.value)} type="date" value={requestDate} /></label>
-            <label>요청부서<input maxLength={500} onChange={(event) => setDepartment(event.target.value)} placeholder="IdP 프로필에 부서 정보가 없어 직접 입력" value={department} /></label>
+            <label>요청부서<input maxLength={500} onChange={(event) => setDepartment(event.target.value)} placeholder="인증 프로필에 부서 정보가 없어 직접 입력" value={department} /></label>
             <label>요청 납기<input onChange={(event) => setDueDate(event.target.value)} type="date" value={dueDate} /></label>
             <label>중요도<select onChange={(event) => setPriority(event.target.value as typeof priority)} value={priority}><option value="LOW">낮음</option><option value="NORMAL">보통</option><option value="HIGH">높음</option><option value="CRITICAL">최우선</option></select></label>
             <label>긴급도<select onChange={(event) => setUrgency(event.target.value as typeof urgency)} value={urgency}><option value="NORMAL">일반</option><option value="URGENT">긴급</option><option value="EMERGENCY">비상</option></select></label>

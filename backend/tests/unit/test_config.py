@@ -88,6 +88,40 @@ def test_external_ui_links_are_optional_and_cannot_embed_credentials() -> None:
         settings(ui_grafana_url="https://admin:secret@observe.example.com")
 
 
+def test_identity_administration_is_opt_in_and_requires_a_file_secret() -> None:
+    defaults = settings()
+    assert defaults.identity_admin_enabled is False
+    assert defaults.identity_admin_base_url is None
+
+    with pytest.raises(ValidationError, match="requires a Keycloak URL"):
+        settings(identity_admin_enabled=True)
+    with pytest.raises(ValidationError, match="file-mounted"):
+        settings(
+            identity_admin_enabled=True,
+            identity_admin_base_url="http://keycloak:8080",
+            identity_admin_client_secret_ref="literal:secret",
+        )
+    with pytest.raises(ValidationError, match="one origin"):
+        settings(
+            identity_admin_enabled=True,
+            identity_admin_base_url="http://keycloak:8080/admin",
+            identity_admin_client_secret_ref=(
+                "file:/run/secrets/keycloak_identity_admin_client_secret"
+            ),
+        )
+
+    configured = settings(
+        identity_admin_enabled=True,
+        identity_admin_base_url="http://keycloak:8080",
+        identity_admin_client_secret_ref=(
+            "file:/run/secrets/keycloak_identity_admin_client_secret"
+        ),
+        identity_password_change_action_enabled=True,
+    )
+    assert configured.identity_admin_enabled is True
+    assert configured.identity_password_change_action_enabled is True
+
+
 def test_platform_security_switches_are_explicit_and_fail_closed_by_default() -> None:
     configured = settings(
         oidc_hardware_webauthn_enabled=False,

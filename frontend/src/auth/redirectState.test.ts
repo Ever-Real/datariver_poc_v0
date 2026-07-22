@@ -31,11 +31,16 @@ describe('OIDC redirect state', () => {
       intent: 'PASSWORD_REAUTH',
       returnTo: '/?page=admin',
     })
+    expect(readRedirectState(redirectState('PASSWORD_CHANGE', '/?page=profile'))).toEqual({
+      version: 1,
+      intent: 'PASSWORD_CHANGE',
+      returnTo: '/?page=profile',
+    })
   })
 
   it('removes only OIDC callback parameters while retaining a workspace selection', () => {
     expect(callbackReturnTo(
-      'https://catalog.example/?workspace=00000000-0000-4000-8000-000000000100&page=catalog&code=code&state=state&session_state=session',
+      'https://catalog.example/?workspace=00000000-0000-4000-8000-000000000100&page=catalog&code=code&state=state&session_state=session&kc_action=UPDATE_PASSWORD&kc_action_status=success',
     )).toBe('/?workspace=00000000-0000-4000-8000-000000000100&page=catalog')
   })
 
@@ -68,6 +73,11 @@ describe('OIDC redirect state', () => {
         intent: 'PASSWORD_REAUTH',
         returnTo: '/?page=admin#fallback',
       },
+    })
+    expect(signinRedirectArgs('PASSWORD_CHANGE', { returnTo: '/?page=profile' })).toMatchObject({
+      max_age: 0,
+      extraQueryParams: { kc_action: 'UPDATE_PASSWORD' },
+      state: { version: 1, intent: 'PASSWORD_CHANGE', returnTo: '/?page=profile' },
     })
   })
 

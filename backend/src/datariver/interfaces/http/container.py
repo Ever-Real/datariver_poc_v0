@@ -6,6 +6,7 @@ from datariver.config import Settings
 from datariver.infrastructure.cache.valkey import ValkeyCache
 from datariver.infrastructure.datahub.http import HttpDataHubGateway
 from datariver.infrastructure.db.session import Database
+from datariver.infrastructure.identity.keycloak import KeycloakIdentityAdministration
 from datariver.infrastructure.knowledge.neo4j import BoltNeo4jQueryExecutor
 from datariver.infrastructure.object_store.s3 import S3ObjectStore
 from datariver.infrastructure.observability.metrics import HttpMetrics
@@ -23,6 +24,7 @@ class AppContainer:
     object_store: S3ObjectStore
     metrics: HttpMetrics
     knowledge_neo4j: BoltNeo4jQueryExecutor | None = None
+    identity_admin: KeycloakIdentityAdministration | None = None
 
     async def close(self) -> None:
         await self.datahub.close()
@@ -30,6 +32,8 @@ class AppContainer:
         await self.database.close()
         if self.knowledge_neo4j is not None:
             await self.knowledge_neo4j.close()
+        if self.identity_admin is not None:
+            await self.identity_admin.close()
 
 
 def build_container(settings: Settings) -> AppContainer:
@@ -41,6 +45,7 @@ def build_container(settings: Settings) -> AppContainer:
     s3_secret_key = secret_resolver.resolve(f"file:{settings.s3_secret_key_file}")
     metrics = HttpMetrics()
     knowledge_neo4j: BoltNeo4jQueryExecutor | None = None
+    identity_admin: KeycloakIdentityAdministration | None = None
     if settings.neo4j_projection_enabled:
         if settings.neo4j_uri is None or settings.neo4j_auth_secret_ref is None:
             raise ValueError("Enabled Neo4j projection has incomplete settings.")
@@ -55,6 +60,19 @@ def build_container(settings: Settings) -> AppContainer:
             database=settings.neo4j_database,
             connection_timeout_seconds=settings.neo4j_connection_timeout_seconds,
             maximum_connection_pool_size=settings.neo4j_maximum_connection_pool_size,
+        )
+    if settings.identity_admin_enabled:
+        if (
+            settings.identity_admin_base_url is None
+            or settings.identity_admin_client_secret_ref is None
+        ):
+            raise ValueError("Enabled identity administration has incomplete settings.")
+        identity_admin = KeycloakIdentityAdministration(
+            base_url=str(settings.identity_admin_base_url),
+            realm=settings.identity_admin_realm,
+            client_id=settings.identity_admin_client_id,
+            client_secret=secret_resolver.resolve(settings.identity_admin_client_secret_ref),
+            timeout_seconds=settings.identity_admin_timeout_seconds,
         )
     return AppContainer(
         settings=settings,
@@ -105,4 +123,5 @@ def build_container(settings: Settings) -> AppContainer:
         ),
         metrics=metrics,
         knowledge_neo4j=knowledge_neo4j,
+        identity_admin=identity_admin,
     )

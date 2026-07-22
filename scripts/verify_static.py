@@ -41,6 +41,7 @@ EXPECTED_SERVICE_SECRETS = {
         "datahub_token",
         "intranet_llm_chat_api_key",
         "intranet_llm_embedding_api_key",
+        "keycloak_identity_admin_client_secret",
         "s3_access_key",
         "s3_secret_key",
     },

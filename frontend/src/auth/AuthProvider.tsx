@@ -34,6 +34,7 @@ interface AuthValue {
   beginWebAuthnEnrollment: () => Promise<void>
   beginStepUp: () => Promise<void>
   beginPasswordReauth: () => Promise<void>
+  beginPasswordChange: () => Promise<void>
   clearNotice: () => void
 }
 
@@ -42,7 +43,7 @@ const AuthContext = createContext<AuthValue | undefined>(undefined)
 function createManager(): UserManager {
   const authority = String(import.meta.env.VITE_OIDC_AUTHORITY || '').trim()
   const clientId = String(import.meta.env.VITE_OIDC_CLIENT_ID || '').trim()
-  if (!authority || !clientId) throw new Error('OIDC 공개 설정이 누락되었습니다.')
+  if (!authority || !clientId) throw new Error('인증 공개 설정이 누락되었습니다.')
   const configuredRedirectUri = String(import.meta.env.VITE_OIDC_REDIRECT_URI || window.location.origin)
   const configuredOrigin = new URL(configuredRedirectUri).origin
   // Keycloak has an exact browser-origin redirect allowlist. Keep that origin,
@@ -104,7 +105,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       try {
         const next = await manager.signinSilent()
         if (!next || !next.access_token || next.expired || !await hydrate(next)) {
-          throw new Error('OIDC 갱신 응답에 사용할 access token이 없습니다.')
+          throw new Error('인증 갱신 응답에 사용할 access token이 없습니다.')
         }
         return next.access_token
       } catch {
@@ -174,6 +175,16 @@ export function AuthProvider({ children }: { children: ReactNode }) {
               message: actionStatus === 'cancelled'
                 ? '보안키 등록이 취소되었습니다.'
                 : '보안키 등록 응답을 받았습니다. 고위험 작업 전에 보안키 인증을 진행하세요.',
+            })
+          }
+          if (mounted.current && state.intent === 'PASSWORD_CHANGE') {
+            setNotice({
+              kind: actionStatus === 'cancelled' ? 'ERROR' : 'INFO',
+              message: actionStatus === 'success'
+                ? '비밀번호가 변경되었습니다.'
+                : actionStatus === 'cancelled'
+                  ? '비밀번호 변경이 취소되었습니다.'
+                  : '비밀번호 변경 절차가 종료되었지만 완료 여부를 확인하지 못했습니다.',
             })
           }
         }
@@ -258,6 +269,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     beginWebAuthnEnrollment: () => beginRedirect('WEBAUTHN_ENROLLMENT'),
     beginStepUp: () => beginRedirect('STEP_UP'),
     beginPasswordReauth: () => beginRedirect('PASSWORD_REAUTH'),
+    beginPasswordChange: () => beginRedirect('PASSWORD_CHANGE'),
     clearNotice: () => setNotice(undefined),
   }), [beginRedirect, loading, manager, notice, profile, renewAccessToken, user])
 

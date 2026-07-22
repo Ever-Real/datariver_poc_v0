@@ -135,3 +135,16 @@
 | PASS | focused code verification | Ruff, strict mypy (`160` source files), related pytest `83 passed`, `scripts/verify_static.py`, source-host/graph Compose `config --quiet`, frontend lint/typecheck/System Configuration test (`3 passed`)/production build 통과 |
 | OPEN | authenticated intranet model live TEST | 실제 private hostname, approved CA와 Chat·Embedding API key가 제공되지 않아 실행하지 않음. Admin System settings에서 SAVE → TEST → ACTIVATE 후 API 재시작으로 별도 검증 필요 |
 | OPEN | remote DataHub token-auth live enablement | 원격 DataHub Compose owner의 maintenance window와 signing key/salt 보관이 필요하므로 이 checkout에서 변경하지 않음. README 절차 후 service-account token으로 DataHub TEST 필요 |
+
+## 11. 2026-07-22 사용자 계정·비밀번호 셀프서비스
+
+| 상태 | 항목 | 증거 |
+|---|---|---|
+| PASS | DataRiver 내 비밀번호 변경 진입 | `내 프로필` 버튼이 고정 `UPDATE_PASSWORD` OIDC action만 시작하고 replacement password를 DataRiver API로 전달하지 않는 frontend contract test 통과 |
+| PASS | 인증 제품명 비노출 | 실제 로컬 브라우저에서 password action 진입 화면의 title/heading은 `DataRiver`, 본문 `Keycloak` 노출은 `false`; 별도 관리 콘솔 링크 없음 |
+| PASS | 전용 변경 화면 | 실행 Keycloak 이미지에 `login-update-password.ftl` 포함, 새 비밀번호/확인, 다른 세션 종료, AIA 취소 필드를 공식 26.7.0 계약과 동일하게 유지 |
+| PASS | 관리형 사용자 생성 경계 | API에는 전용 `manage-users/view-users/query-users` client secret만 마운트; master/bootstrap credential 미마운트, 임시 비밀번호 DB/idempotency/outbox/response 미기록 정적·unit test 통과 |
+| PASS | DB migration/runtime | Mac ARM SQLAlchemy 실행에 필요한 `greenlet==3.5.3` 명시 후 실제 `0038 -> 0039` upgrade 성공, API `/health/ready`가 `ready` 반환 |
+| PASS | verification gates | backend Ruff, strict mypy 165 files, full pytest `720 passed`; frontend typecheck/lint, Vitest `38 files / 158 tests`, production build; static verification 통과 |
+| PASS | deterministic baseline | `0001_initial_schema.py` 2회 생성 SHA-256 `f581e076d5264c953f8eb4756f306b286fc6564f7777a503d1f0b6e9154b13ed` 동일 |
+| OPEN | 실제 사용자 생성·비밀번호 최종 제출 | 실제 계정 변경이나 신규 사용자 생성은 운영 데이터 변형이며, 신규 생성은 실제 관리자의 최근 hardware WebAuthn이 필요하다. 이번 검증에서는 우회하거나 실제 비밀번호를 입력하지 않음 |

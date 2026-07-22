@@ -74,6 +74,20 @@ class Settings(BaseSettings):
     workspace_selection_enabled: bool = True
     oidc_password_reauth_acr_values: tuple[str, ...] = ("1",)
     oidc_password_amr_values: tuple[str, ...] = ("pwd",)
+    # Optional, operator-provisioned Keycloak control plane. The API receives
+    # only a dedicated manage-users client credential, never the realm/master
+    # administrator password. External enterprise IdPs leave this disabled.
+    identity_admin_enabled: bool = False
+    identity_admin_base_url: HttpUrl | None = None
+    identity_admin_realm: str = Field(default="datariver", min_length=1, max_length=128)
+    identity_admin_client_id: str = Field(
+        default="datariver-identity-admin", min_length=1, max_length=128
+    )
+    identity_admin_client_secret_ref: str | None = Field(default=None, max_length=512)
+    identity_admin_timeout_seconds: float = Field(default=10.0, ge=0.5, le=30.0)
+    # Keycloak-specific OIDC Application Initiated Action. Other IdPs keep it
+    # disabled and expose their own approved self-service journey externally.
+    identity_password_change_action_enabled: bool = False
     high_risk_auth_max_age_seconds: int = Field(default=300, ge=60, le=900)
     admin_password_fallback_enabled: bool = False
     admin_password_fallback_ttl_seconds: int = Field(default=300, ge=60, le=300)
@@ -299,6 +313,7 @@ class Settings(BaseSettings):
         "ui_graph_url",
         "datahub_embed_base_url",
         "grafana_embed_base_url",
+        "identity_admin_base_url",
     )
     @classmethod
     def reject_ui_link_credentials(cls, value: HttpUrl | None) -> HttpUrl | None:
@@ -308,6 +323,14 @@ class Settings(BaseSettings):
         if parsed.username is not None or parsed.password is not None:
             raise ValueError("External UI links cannot contain user information.")
         return value
+
+    @field_validator("identity_admin_realm", "identity_admin_client_id")
+    @classmethod
+    def validate_identity_admin_identifier(cls, value: str) -> str:
+        normalized = value.strip()
+        if re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}", normalized) is None:
+            raise ValueError("Identity-administration identifiers are invalid.")
+        return normalized
 
     def datahub_lineage_embed_url(self, external_urn: str) -> str | None:
         if not self.datahub_embed_enabled or self.datahub_embed_base_url is None:
@@ -444,6 +467,26 @@ class Settings(BaseSettings):
             "valkey_cache": self.valkey_cache_secret_ref,
             "valkey_queue": self.valkey_queue_secret_ref,
         }
+        if self.identity_admin_enabled:
+            if (
+                self.identity_admin_base_url is None
+                or self.identity_admin_client_secret_ref is None
+            ):
+                raise ValueError(
+                    "Enabled identity administration requires a Keycloak URL and client secret."
+                )
+        if self.identity_admin_client_secret_ref is not None:
+            references["identity_admin"] = self.identity_admin_client_secret_ref
+        if self.identity_admin_base_url is not None:
+            parsed_identity_url = urlsplit(str(self.identity_admin_base_url))
+            if (
+                parsed_identity_url.path not in ("", "/")
+                or parsed_identity_url.query
+                or parsed_identity_url.fragment
+            ):
+                raise ValueError(
+                    "The identity-administration URL must be one origin without a path or query."
+                )
         if self.export_database_secret_ref is not None:
             references["export_database"] = self.export_database_secret_ref
         invalid_references = [

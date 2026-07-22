@@ -70,6 +70,7 @@ ensure_random_secret keycloak_db_password 32
 ensure_random_secret airflow_db_password 32
 ensure_random_secret airflow_api_secret 48
 ensure_random_secret airflow_client_secret 32
+ensure_random_secret keycloak_identity_admin_client_secret 32
 ensure_random_secret airflow_admin_password 24
 ensure_random_secret keycloak_demo_password 18
 ensure_random_secret keycloak_admin_password 24
@@ -115,8 +116,10 @@ printf '{"identities":[{"name":"datariver","credentials":[{"accessKey":"%s","sec
 
 demo_password=$(cat "$secrets_dir/keycloak_demo_password")
 airflow_client_secret=$(cat "$secrets_dir/airflow_client_secret")
+identity_admin_client_secret=$(cat "$secrets_dir/keycloak_identity_admin_client_secret")
 escaped_demo_password=$(printf '%s' "$demo_password" | sed 's/[\/&]/\\&/g')
 escaped_airflow_client_secret=$(printf '%s' "$airflow_client_secret" | sed 's/[\/&]/\\&/g')
+escaped_identity_admin_client_secret=$(printf '%s' "$identity_admin_client_secret" | sed 's/[\/&]/\\&/g')
 web_public_origin=http://localhost:8080
 if [ "$host_development" = true ]; then
   web_public_origin=http://localhost:38102
@@ -126,6 +129,7 @@ fi
 escaped_web_public_origin=$(printf '%s' "$web_public_origin" | sed 's/[\/&]/\\&/g')
 sed -e "s/__DEMO_PASSWORD__/$escaped_demo_password/g" \
   -e "s/__AIRFLOW_CLIENT_SECRET__/$escaped_airflow_client_secret/g" \
+  -e "s/__IDENTITY_ADMIN_CLIENT_SECRET__/$escaped_identity_admin_client_secret/g" \
   -e "s/__WEB_PUBLIC_ORIGIN__/$escaped_web_public_origin/g" \
   "$root/infra/keycloak/datariver-realm.template.json" \
   > "$keycloak_runtime_dir/datariver-realm.json"
@@ -156,6 +160,10 @@ if [ "$host_development" = true ]; then
   set_env_value OIDC_ISSUER http://localhost:18081/realms/datariver
   set_env_value OIDC_PUBLIC_AUTHORITY http://localhost:18081/realms/datariver
   set_env_value OIDC_PUBLIC_ORIGIN http://localhost:18081
+  set_env_value IDENTITY_ADMIN_ENABLED true
+  set_env_value IDENTITY_ADMIN_BASE_URL http://keycloak:8080
+  set_env_value IDENTITY_ADMIN_CLIENT_SECRET_REF file:/run/secrets/keycloak_identity_admin_client_secret
+  set_env_value IDENTITY_PASSWORD_CHANGE_ACTION_ENABLED true
 fi
 if [ "$mac_development" = true ]; then
   # Keep this Mac development topology disjoint from common local DataHub,
@@ -171,6 +179,10 @@ if [ "$mac_development" = true ]; then
   set_env_value OIDC_ISSUER http://localhost:18081/realms/datariver
   set_env_value OIDC_PUBLIC_AUTHORITY http://localhost:18081/realms/datariver
   set_env_value OIDC_PUBLIC_ORIGIN http://localhost:18081
+  set_env_value IDENTITY_ADMIN_ENABLED true
+  set_env_value IDENTITY_ADMIN_BASE_URL http://keycloak:8080
+  set_env_value IDENTITY_ADMIN_CLIENT_SECRET_REF file:/run/secrets/keycloak_identity_admin_client_secret
+  set_env_value IDENTITY_PASSWORD_CHANGE_ACTION_ENABLED true
   set_env_value DATAHUB_BASE_URL http://host.docker.internal:8080
   set_env_value UI_DATAHUB_URL http://localhost:19002
   set_env_value LOCAL_OLLAMA_CHAT_ENABLED true

@@ -47,6 +47,44 @@ docker exec "$container" bash -ec '
     --config "$config" \
     -s "loginTheme=datariver" \
     >/dev/null
+  identity_client_id=$(
+    /opt/keycloak/bin/kcadm.sh get clients \
+      --config "$config" -r datariver \
+      -q clientId=datariver-identity-admin --fields id --format csv --noquotes
+  )
+  identity_secret=$(cat /run/secrets/keycloak_identity_admin_client_secret)
+  if [ -z "$identity_client_id" ]; then
+    /opt/keycloak/bin/kcadm.sh create clients \
+      --config "$config" -r datariver \
+      -s clientId=datariver-identity-admin \
+      -s name="DataRiver governed identity administration" \
+      -s enabled=true -s publicClient=false \
+      -s standardFlowEnabled=false -s directAccessGrantsEnabled=false \
+      -s implicitFlowEnabled=false -s serviceAccountsEnabled=true \
+      -s "secret=$identity_secret" >/dev/null
+    identity_client_id=$(
+      /opt/keycloak/bin/kcadm.sh get clients \
+        --config "$config" -r datariver \
+        -q clientId=datariver-identity-admin --fields id --format csv --noquotes
+    )
+  else
+    /opt/keycloak/bin/kcadm.sh update "clients/$identity_client_id" \
+      --config "$config" -r datariver \
+      -s enabled=true -s publicClient=false \
+      -s standardFlowEnabled=false -s directAccessGrantsEnabled=false \
+      -s implicitFlowEnabled=false -s serviceAccountsEnabled=true \
+      -s "secret=$identity_secret" >/dev/null
+  fi
+  test -n "$identity_client_id"
+  identity_user_id=$(
+    /opt/keycloak/bin/kcadm.sh get "clients/$identity_client_id/service-account-user" \
+      --config "$config" -r datariver --fields id --format csv --noquotes
+  )
+  test -n "$identity_user_id"
+  /opt/keycloak/bin/kcadm.sh add-roles \
+    --config "$config" -r datariver --uid "$identity_user_id" \
+    --cclientid realm-management \
+    --rolename manage-users --rolename view-users --rolename query-users >/dev/null
 ' -- "$web_origin"
 
-echo "Keycloak datariver-web redirects and DataRiver login theme configured for $web_origin."
+echo "Keycloak web redirects, login theme and governed identity client configured for $web_origin."

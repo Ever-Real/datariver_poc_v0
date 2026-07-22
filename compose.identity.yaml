@@ -29,6 +29,7 @@ services:
     secrets:
       - keycloak_db_password
       - keycloak_admin_password
+      - keycloak_identity_admin_client_secret
     volumes:
       - ./runtime/keycloak:/opt/keycloak/data/import:ro
       - keycloak-data:/opt/keycloak/data

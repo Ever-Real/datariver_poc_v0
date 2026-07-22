@@ -38,6 +38,8 @@ Current account/workflow/runtime decisions: [expiring membership renewal](adr/00
 
 Current development knowledge-integration decision: [intranet OpenAI-compatible adapter](adr/0030-development-intranet-openai-compatible-adapter.md).
 
+Current local identity-lifecycle decision: [governed Keycloak identity provisioning](adr/0031-governed-keycloak-identity-provisioning.md).
+
 ## Change control
 
 - Requirements use stable IDs (`FR-*`, `NFR-*`, `SEC-*`).

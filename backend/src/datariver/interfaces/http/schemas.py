@@ -5,7 +5,15 @@ from datetime import date, datetime
 from typing import Any, Literal
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field, HttpUrl, field_validator, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    HttpUrl,
+    SecretStr,
+    field_validator,
+    model_validator,
+)
 
 from datariver.domain.authz import Action
 
@@ -698,6 +706,55 @@ class AuthMeResponse(BaseModel):
     default_workspace_id: UUID | None = None
     workspace_selection_enabled: bool = True
     hardware_webauthn_enabled: bool = True
+    password_change_supported: bool = False
+
+
+class IdentityUserProvisionRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    username: str = Field(min_length=3, max_length=64, pattern=r"^[A-Za-z0-9][A-Za-z0-9._-]+$")
+    email: str = Field(min_length=3, max_length=320)
+    first_name: str = Field(min_length=1, max_length=100)
+    last_name: str = Field(min_length=1, max_length=100)
+    department_id: UUID | None = None
+    job_function: str | None = Field(default=None, max_length=100)
+    role_id: UUID | None = None
+    temporary_password: SecretStr = Field(min_length=12, max_length=128)
+
+    @field_validator("username", "email", "first_name", "last_name", "job_function")
+    @classmethod
+    def normalize_identity_profile(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        normalized = value.strip()
+        if not normalized:
+            raise ValueError("Identity profile values cannot be blank.")
+        return normalized
+
+    @field_validator("email")
+    @classmethod
+    def validate_identity_email(cls, value: str) -> str:
+        local, separator, domain = value.rpartition("@")
+        if (
+            not separator
+            or not local
+            or "." not in domain
+            or domain.startswith(".")
+            or domain.endswith(".")
+        ):
+            raise ValueError("A valid email address is required.")
+        return value
+
+
+class IdentityUserProvisionResponse(BaseModel):
+    subject_id: UUID
+    username: str
+    display_name: str
+    email: str
+    workspace_id: UUID
+    role_id: UUID | None
+    access_expires_at: datetime
+    temporary_password_required: bool
 
 
 class ProblemDetails(BaseModel):

@@ -56,6 +56,7 @@ from datariver.application.dto import (
     WorkspaceMembershipAccessRecord,
     WorkspaceMembershipSummary,
 )
+from datariver.application.identity_admin import ProvisionedWorkspaceUser
 from datariver.domain.admin_access import (
     AdminAccessRequest,
     MembershipAccessUpdate,
@@ -583,6 +584,22 @@ class MembershipAccessRepository(Protocol):
     async def extend_expiration(
         self, *, workspace_id: UUID, subject_id: UUID, expected: datetime, extended: datetime
     ) -> int: ...
+
+    async def provision_identity_membership(
+        self,
+        *,
+        subject_id: UUID,
+        workspace_id: UUID,
+        issuer: str,
+        external_subject: str,
+        username: str,
+        display_name: str,
+        email: str,
+        department_id: UUID | None,
+        job_function: str | None,
+        role_id: UUID | None,
+        access_expires_at: datetime,
+    ) -> ProvisionedWorkspaceUser: ...
 
 
 class MembershipRenewalRepository(Protocol):

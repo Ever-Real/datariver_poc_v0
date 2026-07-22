@@ -53,12 +53,14 @@ class AdminAccessService:
         fallback_enabled: bool,
         fallback_ttl_seconds: int,
         development_system_configuration_enabled: bool = False,
+        identity_administration_enabled: bool = False,
     ) -> None:
         self._uow_factory = uow_factory
         self._authorization = authorization
         self._fallback_enabled = fallback_enabled
         self._fallback_ttl = timedelta(seconds=fallback_ttl_seconds)
         self._development_system_configuration_enabled = development_system_configuration_enabled
+        self._identity_administration_enabled = identity_administration_enabled
 
     async def list_workspace_memberships(
         self,
@@ -214,6 +216,8 @@ class AdminAccessService:
                     AdminOperation.RESTRICTED_SEARCH_GRANT_REVOKE,
                 ]
             )
+            if self._identity_administration_enabled:
+                operations.append(AdminOperation.IDENTITY_USER_PROVISION)
             governed_operations = (
                 (Action.RETENTION_MANAGE, AdminOperation.RETENTION_POLICY_MANAGE),
                 (Action.LEGAL_HOLD_PLACE, AdminOperation.LEGAL_HOLD_PLACE),

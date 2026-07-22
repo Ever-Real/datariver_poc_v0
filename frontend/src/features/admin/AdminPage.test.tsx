@@ -62,11 +62,11 @@ describe('AdminPage mutation safety', () => {
 
     expect(await screen.findByText('Target User')).toBeInTheDocument()
     expect(screen.getByRole('table', { name: '워크스페이스 사용자 목록' })).toBeInTheDocument()
-    expect(screen.getByText(/OIDC 주체와 현재 Workspace 멤버십, 소유 테이블 및 CR 이력을 표시합니다/)).toBeInTheDocument()
+    expect(screen.getByText(/인증된 사용자와 현재 Workspace 멤버십, 소유 테이블 및 CR 이력을 표시합니다/)).toBeInTheDocument()
     fireEvent.change(screen.getByRole('searchbox', { name: '사용자 검색' }), { target: { value: 'missing' } })
     expect(screen.getByText(/조회 가능한 항목이 없습니다|No authorized items are available/)).toBeInTheDocument()
     fireEvent.click(screen.getByRole('button', { name: '필터 초기화' }))
-    expect(screen.getAllByText('Target User')).toHaveLength(2)
+    await waitFor(() => expect(screen.getAllByText('Target User')).toHaveLength(2))
     const accountTabs = screen.getByRole('tablist', { name: '계정/권한 관리 영역' })
     expect(within(accountTabs).getByRole('tab', { name: 'USERS' })).toBeInTheDocument()
     expect(screen.getByRole('tab', { name: 'Role 정의·할당' })).toBeInTheDocument()

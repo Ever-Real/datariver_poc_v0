@@ -54,6 +54,7 @@ function Harness() {
       {auth.profile && <span>{auth.profile.display_name}:{auth.profile.roles.join(',')}</span>}
       <button onClick={() => void auth.signIn()}>sign in</button>
       <button onClick={() => void auth.beginPasswordReauth()}>password reauth</button>
+      <button onClick={() => void auth.beginPasswordChange()}>password change</button>
       <button onClick={() => void auth.beginWebAuthnEnrollment()}>enroll WebAuthn</button>
       <button onClick={() => void auth.beginStepUp()}>step up WebAuthn</button>
       <button onClick={() => void auth.renewAccessToken()}>renew access token</button>
@@ -101,6 +102,35 @@ describe('AuthProvider password reauthentication', () => {
       max_age: 0,
       state: { version: 1, intent: 'PASSWORD_REAUTH', returnTo: '/' },
     })
+  })
+
+  it('starts a branded identity password-change action without receiving the password', async () => {
+    render(<AuthProvider><Harness /></AuthProvider>)
+    fireEvent.click(await screen.findByRole('button', { name: 'password change' }))
+
+    expect(oidc.signinRedirect).toHaveBeenLastCalledWith({
+      max_age: 0,
+      extraQueryParams: { kc_action: 'UPDATE_PASSWORD' },
+      state: { version: 1, intent: 'PASSWORD_CHANGE', returnTo: '/' },
+    })
+  })
+
+  it('returns to DataRiver and reports a completed password change', async () => {
+    window.history.replaceState(
+      {},
+      '',
+      '/?state=callback&code=authorization-code&kc_action_status=success',
+    )
+    oidc.signinRedirectCallback.mockResolvedValue({
+      access_token: 'not-a-real-token', expired: false, profile: { sub: 'subject-one' },
+      state: { version: 1, intent: 'PASSWORD_CHANGE', returnTo: '/?page=profile' },
+    })
+
+    render(<AuthProvider><Harness /></AuthProvider>)
+
+    expect(await screen.findByText('비밀번호가 변경되었습니다.')).toBeInTheDocument()
+    expect(`${window.location.pathname}${window.location.search}`).toBe('/?page=profile')
+    expect(oidc.signinRedirect).not.toHaveBeenCalled()
   })
 
   it('shows a redirecting state immediately when custom sign-in is selected', async () => {

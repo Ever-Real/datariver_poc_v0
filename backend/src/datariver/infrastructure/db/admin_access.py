@@ -5,6 +5,7 @@ from types import TracebackType
 from uuid import UUID
 
 from sqlalchemy import and_, delete, func, or_, select, text
+from sqlalchemy.exc import DBAPIError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from datariver.application.dto import (
@@ -14,6 +15,7 @@ from datariver.application.dto import (
     WorkspaceMembershipAccessRecord,
     WorkspaceMembershipSummary,
 )
+from datariver.application.identity_admin import ProvisionedWorkspaceUser
 from datariver.application.ports import (
     AdminAccessRequestRepository,
     AdminAccessUnitOfWork,
@@ -459,6 +461,73 @@ class SqlMembershipAccessRepository(MembershipAccessRepository):
             return None
         subject, membership = row
         return _membership_access_record(subject, membership)
+
+    async def provision_identity_membership(
+        self,
+        *,
+        subject_id: UUID,
+        workspace_id: UUID,
+        issuer: str,
+        external_subject: str,
+        username: str,
+        display_name: str,
+        email: str,
+        department_id: UUID | None,
+        job_function: str | None,
+        role_id: UUID | None,
+        access_expires_at: datetime,
+    ) -> ProvisionedWorkspaceUser:
+        try:
+            stored_subject_id = await self._session.scalar(
+                text(
+                    """
+                    SELECT iam.provision_workspace_identity(
+                        :subject_id, :workspace_id, :issuer, :external_subject,
+                        :display_name, :email, :department_id, :job_function,
+                        :role_id, :access_expires_at
+                    )
+                    """
+                ),
+                {
+                    "subject_id": subject_id,
+                    "workspace_id": workspace_id,
+                    "issuer": issuer,
+                    "external_subject": external_subject,
+                    "display_name": display_name,
+                    "email": email,
+                    "department_id": department_id,
+                    "job_function": job_function,
+                    "role_id": role_id,
+                    "access_expires_at": access_expires_at,
+                },
+            )
+        except DBAPIError as error:
+            sqlstate = getattr(error.orig, "sqlstate", None)
+            if sqlstate == "42501":
+                raise ForbiddenError(
+                    "Identity provisioning lost administrator authority."
+                ) from error
+            if sqlstate in {"23503", "23505"}:
+                raise ConflictError(
+                    "The identity or selected role changed during provisioning."
+                ) from error
+            if sqlstate == "23514":
+                raise ValidationError(
+                    "The identity provisioning request violates policy."
+                ) from error
+            raise
+        if stored_subject_id != subject_id:
+            raise ConflictError("The provisioned identity does not match the requested subject.")
+        return ProvisionedWorkspaceUser(
+            subject_id=subject_id,
+            external_subject=external_subject,
+            username=username,
+            display_name=display_name,
+            email=email,
+            workspace_id=workspace_id,
+            role_id=role_id,
+            access_expires_at=access_expires_at,
+        )
 
     async def apply(self, command: MembershipAccessUpdate) -> int:
         membership = await self._membership_for_update(command)

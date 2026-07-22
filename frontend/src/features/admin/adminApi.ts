@@ -17,6 +17,8 @@ import type {
   LegalHoldState,
   InferenceProviderProfile,
   InferenceProviderProfileState,
+  IdentityUserProvisionInput,
+  IdentityUserProvisionResult,
   MembershipAccessDocument,
   MembershipAccessUpdateResult,
   MembershipRenewalRequest,
@@ -59,6 +61,12 @@ export class AdminApi {
     return (await this.client.request<{ items: WorkspaceMembershipSummary[] }>(
       '/admin/workspace-memberships?limit=100',
     )).items
+  }
+
+  provisionIdentityUser(payload: IdentityUserProvisionInput, idempotencyKey: string) {
+    return this.client.request<IdentityUserProvisionResult>('/admin/identity-users', {
+      method: 'POST', idempotencyKey, body: JSON.stringify(payload),
+    })
   }
 
   async listMembershipRenewals(state?: MembershipRenewalRequest['state']) {
