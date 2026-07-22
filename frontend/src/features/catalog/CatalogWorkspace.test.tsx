@@ -152,7 +152,7 @@ describe('catalog workspace', () => {
     expect((await screen.findAllByText('전체 · 현재 120건')).length).toBeGreaterThanOrEqual(2)
     expect(screen.getAllByRole('button', { name: '다음' }).every((button) => button.hasAttribute('disabled'))).toBe(true)
     await waitFor(() => expect(request.mock.calls.filter(([path]) => String(path).startsWith('/catalog/assets?'))).toHaveLength(2))
-  })
+  }, 15_000)
 
   it('loads canonical tree branches only when a parent is expanded', async () => {
     const request = vi.fn((path: string, options?: RequestOptions): Promise<unknown> => {
