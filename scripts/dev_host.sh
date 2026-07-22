@@ -15,7 +15,7 @@ env_file_value() {
 }
 
 action=start
-datahub_base_url="http://127.0.0.1:8080"
+datahub_base_url=$(env_file_value DATAHUB_BASE_URL http://127.0.0.1:8080)
 postgres_port=$(env_file_value POSTGRES_PORT 5432)
 valkey_cache_port=$(env_file_value VALKEY_CACHE_PORT 6379)
 valkey_queue_port=$(env_file_value VALKEY_QUEUE_PORT 6380)
@@ -41,7 +41,7 @@ contains a database migration; it does not use the immutable migration image
 from an offline bundle.
 
 Options:
-  --datahub-base-url URL   Approved DataHub GMS URL for host processes.
+  --datahub-base-url URL   Approved DataHub GMS URL (default: .env DATAHUB_BASE_URL).
   --postgres-port PORT     Host PostgreSQL port (default: 5432).
   --valkey-cache-port PORT Host cache Valkey port (default: 6379).
   --valkey-queue-port PORT Host queue Valkey port (default: 6380).
@@ -115,10 +115,18 @@ pid_file() {
   printf '%s/%s.pid\n' "$runtime_dir" "$1"
 }
 
+process_is_active() {
+  local pid=$1
+  kill -0 "$pid" 2>/dev/null || return 1
+  local state
+  state=$(ps -p "$pid" -o stat= 2>/dev/null | tr -d '[:space:]' || true)
+  [[ "$state" != Z* ]]
+}
+
 is_running() {
   local file
   file=$(pid_file "$1")
-  [ -s "$file" ] && kill -0 "$(cat "$file")" 2>/dev/null
+  [ -s "$file" ] && process_is_active "$(cat "$file")"
 }
 
 stop_process() {
@@ -130,18 +138,52 @@ stop_process() {
   fi
   local pid
   pid=$(cat "$file")
-  if kill -0 "$pid" 2>/dev/null; then
+  if process_is_active "$pid"; then
     kill -TERM "$pid" 2>/dev/null || true
     local attempt=0
-    while kill -0 "$pid" 2>/dev/null && [ "$attempt" -lt 20 ]; do
+    while process_is_active "$pid" && [ "$attempt" -lt 20 ]; do
       sleep 0.5
       attempt=$((attempt + 1))
     done
-    if kill -0 "$pid" 2>/dev/null; then
+    if process_is_active "$pid"; then
       kill -KILL "$pid" 2>/dev/null || true
     fi
   fi
   rm -f "$file"
+}
+
+stop_owned_vite_processes() {
+  local current_uid
+  current_uid=$(id -u)
+  if ! command -v pgrep >/dev/null 2>&1; then
+    return
+  fi
+  local pid process_uid command_line
+  while IFS= read -r pid; do
+    [ -n "$pid" ] || continue
+    [ "$pid" != "$$" ] || continue
+    process_uid=$(ps -p "$pid" -o uid= 2>/dev/null | tr -d '[:space:]')
+    [ "$process_uid" = "$current_uid" ] || continue
+    command_line=$(ps -ww -p "$pid" -o command= 2>/dev/null || true)
+    if [[ "$command_line" != *"$root/frontend/node_modules/vite/bin/vite.js"* ]] &&
+      [[ "$command_line" != *"$root/frontend/node_modules/.bin/vite"* ]]; then
+      continue
+    fi
+    if [[ "$command_line" != *"--port $web_port"* ]] &&
+      [[ "$command_line" != *"--port=$web_port"* ]]; then
+      continue
+    fi
+    kill -TERM "$pid" 2>/dev/null || true
+    local attempt=0
+    while process_is_active "$pid" && [ "$attempt" -lt 20 ]; do
+      sleep 0.5
+      attempt=$((attempt + 1))
+    done
+    if process_is_active "$pid"; then
+      kill -KILL "$pid" 2>/dev/null || true
+    fi
+    printf 'Stopped orphaned DataRiver Vite process (pid %s).\n' "$pid"
+  done < <(pgrep -f '[v]ite' || true)
 }
 
 show_status() {
@@ -164,6 +206,7 @@ case "$action" in
     for process in vite governance-apply-worker upload-validation-worker upload-worker outbox-relay airflow-api-bridge api; do
       stop_process "$process"
     done
+    stop_owned_vite_processes
     echo "DataRiver source-host processes stopped."
     exit 0
     ;;
@@ -174,8 +217,10 @@ if [ ! -x "$python" ]; then
   echo "Missing $python. Run 'uv sync --frozen --all-extras' first." >&2
   exit 2
 fi
-if [ "$action" = start ] && ! command -v npm >/dev/null 2>&1; then
-  echo "npm is required. Install the approved Node.js toolchain first." >&2
+node=$(command -v node || true)
+vite_entry="$root/frontend/node_modules/vite/bin/vite.js"
+if [ "$action" = start ] && { [ -z "$node" ] || [ ! -f "$vite_entry" ]; }; then
+  echo "Node.js and installed Vite dependencies are required. Run 'npm ci' in frontend first." >&2
   exit 2
 fi
 if [ "$action" = start ] && [ "$enable_airflow_source_bridge" = true ] && [ "$(uname -s)" != Linux ]; then
@@ -236,6 +281,7 @@ with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
 }
 
 if [ "$action" = start ]; then
+  stop_owned_vite_processes
   require_available_port API "$api_port"
   require_available_port Vite "$web_port"
 fi
@@ -391,7 +437,8 @@ start_process outbox-relay "$root" "$python" -m datariver.workers.outbox_relay
 start_process upload-worker "$root" "$python" -m datariver.workers.upload_worker
 start_process upload-validation-worker "$root" "$python" -m datariver.workers.upload_validation
 start_process governance-apply-worker "$root" "$python" -m datariver.workers.governance_apply
-start_process vite "$root/frontend" npm run dev -- --host 127.0.0.1 --port "$web_port" --strictPort
+start_process vite "$root/frontend" "$node" "$vite_entry" \
+  --host 127.0.0.1 --port "$web_port" --strictPort
 
 sleep 2
 for process in api airflow-api-bridge outbox-relay upload-worker upload-validation-worker governance-apply-worker vite; do

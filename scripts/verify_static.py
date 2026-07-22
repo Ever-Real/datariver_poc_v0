@@ -424,9 +424,14 @@ def verify_runtime_hardening() -> None:
 def verify_host_development_ports() -> None:
     required_fragments = {
         ROOT / "scripts" / "dev_host.sh": {
+            "datahub_base_url=$(env_file_value DATAHUB_BASE_URL http://127.0.0.1:8080)",
             "api_port=$(env_file_value API_PORT 38101)",
             "web_port=$(env_file_value WEB_PORT 38102)",
-            "airflow_source_api_bridge_enabled=$(env_file_value AIRFLOW_SOURCE_API_BRIDGE_ENABLED false)",
+            "airflow_source_api_bridge_enabled=$(env_file_value "
+            "AIRFLOW_SOURCE_API_BRIDGE_ENABLED false)",
+            "stop_owned_vite_processes",
+            'vite_entry="$root/frontend/node_modules/vite/bin/vite.js"',
+            'start_process vite "$root/frontend" "$node" "$vite_entry"',
             '"$root/scripts/source_api_bridge.py"',
             'VITE_API_PROXY_TARGET="http://127.0.0.1:$api_port"',
         },
@@ -463,9 +468,9 @@ def verify_host_development_ports() -> None:
         raise AssertionError("host-development APISIX must default to the source API on 38101")
 
     bootstrap = (ROOT / "scripts" / "bootstrap.sh").read_text(encoding="utf-8")
-    mac_block = bootstrap.rsplit('if [ "$mac_development" = true ]; then', 1)[1].split(
-        "\nfi\n", 1
-    )[0]
+    mac_block = bootstrap.rsplit('if [ "$mac_development" = true ]; then', 1)[1].split("\nfi\n", 1)[
+        0
+    ]
     for fragment in (
         "set_env_value WEB_PORT 38102",
         "set_env_value API_PORT 38101",

@@ -264,20 +264,28 @@ uv sync --frozen --all-extras --offline
 (cd frontend && npm ci --offline --no-audit --no-fund)
 
 # API, relay, upload worker, validation worker, governance worker, Vite를 source에서 실행한다.
-./scripts/dev_host.sh start \
-  --datahub-base-url https://datahub.example.internal
+# bootstrap이 .env에 기록한 DATAHUB_BASE_URL을 자동으로 사용한다.
+./scripts/dev_host.sh start
 ./scripts/dev_host.sh status
 curl --fail --silent --show-error http://127.0.0.1:38101/api/v1/health/ready
 ```
 
-`--host-development` bootstrap은 source API `38101`, Vite `38102`를 `.env`에 기록하며
-`dev_host.sh`와 Keycloak redirect configurator는 같은 값을 읽는다. 시작 전에 포트가 이미
-점유되어 있으면 launcher는 임의로 프로세스를 종료하지 않고 검사 명령과 함께 실패한다.
+`--host-development` bootstrap은 source API `38101`, Vite `38102`와 승인된 GMS
+`DATAHUB_BASE_URL`을 `.env`에 기록하며 `dev_host.sh`와 Keycloak redirect configurator는 같은
+값을 읽는다. `dev_host.sh start`의 `--datahub-base-url`은 일회성 override가 필요할 때만 사용한다.
+
+Vite는 npm wrapper가 아니라 checkout의 Vite Node entrypoint를 직접 실행해 기록된 PID와 실제
+listener가 일치한다. `stop`과 다음 `start`는 이전 launcher가 남긴 Vite도 현재 사용자, 현재
+checkout의 `frontend/node_modules/vite`, 현재 `.env`의 `WEB_PORT`가 모두 일치할 때만 정리한다.
+다른 checkout, Docker, Windows `iphlpsvc` 또는 제3자 process는 종료하지 않으며 포트 검사와 함께
+실패한다.
 
 기존 source-host를 이 포트 계약으로 전환할 때는 volume이나 infra container를 지우지 않는다.
-먼저 `./scripts/dev_host.sh stop`을 실행하고 `sudo ss -ltnp "sport = :38101"` 및
-`sudo ss -ltnp "sport = :38102"`로 남은 listener의 PID를 확인한다. PID가 DataRiver의 이전
-Uvicorn/Vite process임을 `ps -fp <PID>`로 확인한 경우에만 `kill -TERM <PID>`로 종료한다.
+먼저 `./scripts/dev_host.sh stop`을 실행한다. 최신 launcher가 시작했거나 같은 checkout의 이전
+launcher가 남긴 Vite listener는 자동 종료된다. 그래도 포트가 남으면
+`sudo ss -ltnp "sport = :38101"` 및 `sudo ss -ltnp "sport = :38102"`로 listener의 PID를 확인한다.
+PID가 DataRiver의 이전 Uvicorn process임을 `ps -fp <PID>`로 확인한 경우에만
+`kill -TERM <PID>`로 종료한다.
 Docker가 점유한 경우에는 `docker ps --filter publish=38101 --filter publish=38102`로 정확한
 container를 찾고, 이전 DataRiver API/web container임을 확인한 뒤 해당 compose project에서만
 중지한다. WSL의 `ss`에 PID가 보이지 않으면 Windows 측도
@@ -301,7 +309,7 @@ uv sync --frozen --all-extras --offline
 # 새 migration이 있는 경우에만 실행한다. API/worker는 먼저 중지한다.
 ./scripts/dev_host.sh stop
 ./scripts/dev_host.sh migrate
-./scripts/dev_host.sh start --datahub-base-url https://datahub.example.internal
+./scripts/dev_host.sh start
 ./scripts/dev_host.sh status
 ```
 
@@ -320,8 +328,10 @@ docker compose -f compose.yaml -f compose.identity.yaml -f compose.source-host.y
 ./scripts/configure_keycloak_host_dev.sh
 ```
 
-외부 DataHub가 원격 HTTPS 주소라면 `bootstrap.sh`와 `dev_host.sh`의 두 DataHub URL을 모두
-그 정확한 HTTPS origin으로 바꾼다. API가 아닌 browser에는 DataHub service token을 주지 않는다.
+외부 DataHub가 원격 HTTPS 주소라면 bootstrap이 `.env`에 기록한 `DATAHUB_BASE_URL`이 정확한
+GMS HTTPS origin인지 확인한다. 이후 `dev_host.sh start`는 이 값을 자동으로 사용한다. CLI의
+`--datahub-base-url`은 `.env`를 변경하지 않는 일회성 override다. API가 아닌 browser에는 DataHub
+service token을 주지 않는다.
 사설 CA를 쓰는 경우 macOS의 시스템 신뢰 저장소와 host Python이 그 CA를 신뢰하게 사전 배포하며,
 TLS 검증을 끄지 않는다. Airflow까지 테스트할 때는 `bootstrap.sh`가 기록한
 `DATARIVER_API_BASE_URL`만 사용한다. macOS Docker Desktop은 native loopback gateway의
@@ -342,8 +352,7 @@ port-forward 또는 API token을 Airflow에 주는 방식으로 우회하지 않
 ```bash
 ./scripts/bootstrap.sh --host-development --source-host-airflow-bridge \
   --datahub-base-url https://datahub.example.internal
-./scripts/dev_host.sh start \
-  --datahub-base-url https://datahub.example.internal
+./scripts/dev_host.sh start
 ./scripts/dev_host.sh status
 # airflow-api-bridge가 running이어야 한다.
 ```
@@ -392,8 +401,7 @@ source-host에서 Airflow를 처음 시작할 때 API origin을 지정하지 않
 ./scripts/bootstrap.sh --host-development --source-host-airflow-bridge \
   --datahub-base-url https://datahub.example.internal
 ./scripts/dev_host.sh stop
-./scripts/dev_host.sh start \
-  --datahub-base-url https://datahub.example.internal
+./scripts/dev_host.sh start
 docker compose -f compose.yaml -f compose.identity.yaml -f compose.source-host.yaml \
   -f compose.airflow.yaml up -d --pull never --no-build --force-recreate --wait \
   airflow-api-server airflow-scheduler airflow-dag-processor airflow-triggerer
@@ -420,7 +428,6 @@ docker compose -f compose.yaml -f compose.graph.yaml \
   up -d --pull never --no-build --wait neo4j
 ./scripts/dev_host.sh stop
 ./scripts/dev_host.sh start \
-  --datahub-base-url https://datahub.example.internal \
   --enable-local-ollama --enable-neo4j
 ```
 
@@ -437,7 +444,7 @@ System Settings startup resolver가 세 profile을 함께 읽으므로 flag 없�
 docker compose -f compose.yaml -f compose.graph.yaml \
   up -d --pull never --no-build --wait neo4j
 ./scripts/dev_host.sh stop
-./scripts/dev_host.sh start --datahub-base-url https://datahub.example.internal
+./scripts/dev_host.sh start
 ```
 
 ### Case 2 — DataHub도 아직 없는 경우
