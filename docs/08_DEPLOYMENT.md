@@ -57,6 +57,17 @@ uv run python scripts/verify_datahub_contract.py \
 A successful image/version check is only the first gate; the live provider contract tests listed
 below remain mandatory.
 
+## Offline Python dependency cache
+
+The lockfile records dependency versions and hashes, but it intentionally does not commit package
+artifacts. A connected build host with the same target OS, CPU architecture, Python 3.12 and uv
+0.9.17 creates a checksum- and manifest-backed cache archive with
+`scripts/export_offline_python_cache.sh`. The script verifies a clean `uv sync --frozen
+--all-extras --offline` from the archive before release. Transfer the archive through the approved
+artifact channel, verify its SHA-256 sidecar and unpack its `uv/` directory under the target user's
+cache parent (normally `$HOME/.cache`) before running the frozen offline sync. Do not commit the
+archive, copy a cache across platforms or rely on an unverified cache from a different lockfile.
+
 ## Configuration and bootstrap
 
 Bootstrap requires a DataHub token and generates ignored, permission-restricted secret files plus `.env` and the runtime Keycloak realm:

@@ -28,6 +28,7 @@ test-results/
 volumes/
 runtime/
 docker_imgs/
+offline_python/
 uploads/
 *.log
 docs/generated/
