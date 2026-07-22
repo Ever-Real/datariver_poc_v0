@@ -6,13 +6,14 @@ from __future__ import annotations
 import argparse
 import asyncio
 import ipaddress
+import json
 import logging
 from collections.abc import Sequence
 
 LOGGER = logging.getLogger(__name__)
 BUFFER_SIZE = 65_536
 MAXIMUM_CONNECTIONS = 32
-MAXIMUM_DOCKER_IPAM_CANDIDATE_BYTES = 4_096
+MAXIMUM_DOCKER_NETWORK_INSPECT_BYTES = 131_072
 RFC1918_NETWORKS: tuple[ipaddress.IPv4Network, ...] = (
     ipaddress.IPv4Network("10.0.0.0/8"),
     ipaddress.IPv4Network("172.16.0.0/12"),
@@ -45,13 +46,33 @@ def tcp_port(value: str) -> int:
     return port
 
 
-def docker_bridge_gateway(ipam_candidates: str) -> str:
-    """Select a validated RFC1918 IPv4 gateway from ``subnet=gateway`` candidates."""
-    if len(ipam_candidates.encode("utf-8")) > MAXIMUM_DOCKER_IPAM_CANDIDATE_BYTES:
-        raise ValueError("Docker bridge IPAM candidates exceed the safety limit")
-    for candidate in ipam_candidates.split():
-        subnet_text, separator, gateway_text = candidate.partition("=")
-        if not separator:
+def docker_bridge_gateway(network_inspect_json: str) -> str:
+    """Select the RFC1918 IPv4 gateway from Docker's complete network-inspect document."""
+    if len(network_inspect_json.encode("utf-8")) > MAXIMUM_DOCKER_NETWORK_INSPECT_BYTES:
+        raise ValueError("Docker network inspect output exceeds the safety limit")
+    try:
+        document = json.loads(network_inspect_json)
+    except json.JSONDecodeError as error:
+        raise ValueError("Docker network inspect output is not JSON") from error
+    if not isinstance(document, list) or len(document) != 1:
+        raise ValueError("Docker network inspect output must contain exactly one network")
+    network = document[0]
+    if not isinstance(network, dict):
+        raise ValueError("Docker network inspect entry must be an object")
+    if network.get("Name") != "bridge" or network.get("Driver") != "bridge":
+        raise ValueError("Docker network inspect entry is not the default bridge network")
+    ipam = network.get("IPAM")
+    if not isinstance(ipam, dict):
+        raise ValueError("Docker bridge IPAM entry is missing")
+    configurations = ipam.get("Config")
+    if not isinstance(configurations, list):
+        raise ValueError("Docker bridge IPAM configuration must be a list")
+    for configuration in configurations:
+        if not isinstance(configuration, dict):
+            continue
+        subnet_text = configuration.get("Subnet")
+        gateway_text = configuration.get("Gateway")
+        if not isinstance(subnet_text, str) or not isinstance(gateway_text, str):
             continue
         try:
             subnet = ipaddress.ip_network(subnet_text, strict=False)
@@ -62,7 +83,7 @@ def docker_bridge_gateway(ipam_candidates: str) -> str:
         if not isinstance(subnet, ipaddress.IPv4Network) or gateway_address not in subnet:
             continue
         return gateway
-    raise ValueError("Docker bridge has no matching RFC1918 IPv4 subnet/gateway candidate")
+    raise ValueError("Docker bridge has no matching RFC1918 IPv4 subnet/gateway")
 
 
 async def _copy(
@@ -139,7 +160,7 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--listen-host", type=private_ipv4)
     parser.add_argument("--listen-port", type=tcp_port)
     parser.add_argument("--target-port", type=tcp_port)
-    parser.add_argument("--print-docker-bridge-gateway", metavar="SUBNET_GATEWAY_PAIRS")
+    parser.add_argument("--print-docker-bridge-gateway", metavar="DOCKER_NETWORK_INSPECT_JSON")
     arguments = parser.parse_args(argv)
     if arguments.print_docker_bridge_gateway is not None:
         if any(

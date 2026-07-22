@@ -352,8 +352,7 @@ bridge가 시작되지 않으면 컨테이너·volume을 삭제하지 말고 Doc
 IPv4/IPv6 gateway가 함께 반환되는 Docker Engine도 지원한다.
 
 ```bash
-docker network inspect bridge \
-  --format '{{range .IPAM.Config}}{{.Subnet}}={{.Gateway}} {{end}}'
+docker network inspect bridge
 cat runtime/source-host/airflow-api-bridge.err.log
 ```
 

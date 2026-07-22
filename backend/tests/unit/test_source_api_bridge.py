@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import importlib.util
+import json
 import sys
 from pathlib import Path
 from types import ModuleType
@@ -44,31 +45,45 @@ def test_source_api_bridge_rejects_invalid_ports(value: str) -> None:
 def test_source_api_bridge_selects_ipv4_gateway_from_dual_stack_docker_ipam() -> None:
     module = _module()
 
-    gateway = module.docker_bridge_gateway("172.17.0.0/16=172.17.0.1 fd00::/64=fd00::1")
+    gateway = module.docker_bridge_gateway(
+        json.dumps(
+            [
+                {
+                    "Name": "bridge",
+                    "Driver": "bridge",
+                    "IPAM": {
+                        "Config": [
+                            {"Subnet": "172.17.0.0/16", "Gateway": "172.17.0.1"},
+                            {"Subnet": "fd00::/64", "Gateway": "fd00::1"},
+                        ]
+                    },
+                }
+            ]
+        )
+    )
 
     assert gateway == "172.17.0.1"
 
 
-def test_source_api_bridge_ignores_non_ipam_output() -> None:
+def test_source_api_bridge_rejects_non_json_inspect_output() -> None:
     module = _module()
 
-    gateway = module.docker_bridge_gateway("Docker warning text 172.17.0.0/16=172.17.0.1")
-
-    assert gateway == "172.17.0.1"
+    with pytest.raises(ValueError, match="not JSON"):
+        module.docker_bridge_gateway("Docker warning text")
 
 
 @pytest.mark.parametrize(
     "candidates",
     (
-        "fd00::/64=fd00::1",
-        "172.18.0.0/16=172.17.0.1",
-        "warning without an IPAM pair",
+        [{"Subnet": "fd00::/64", "Gateway": "fd00::1"}],
+        [{"Subnet": "172.18.0.0/16", "Gateway": "172.17.0.1"}],
     ),
 )
 def test_source_api_bridge_rejects_ipam_without_matching_rfc1918_gateway(
-    candidates: str,
+    candidates: list[dict[str, str]],
 ) -> None:
     module = _module()
 
+    document = [{"Name": "bridge", "Driver": "bridge", "IPAM": {"Config": candidates}}]
     with pytest.raises(ValueError, match="no matching RFC1918"):
-        module.docker_bridge_gateway(candidates)
+        module.docker_bridge_gateway(json.dumps(document))

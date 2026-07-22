@@ -359,14 +359,13 @@ if [ "$api_ready" != true ]; then
 fi
 
 docker_bridge_gateway() {
-  local candidates
-  candidates=$(
-    docker network inspect bridge \
-      --format '{{range .IPAM.Config}}{{.Subnet}}={{.Gateway}} {{end}}' \
-      2>/dev/null || true
-  )
+  local inspection
+  if ! inspection=$(docker network inspect bridge); then
+    echo "Docker could not inspect its default bridge network." >&2
+    return 1
+  fi
   "$python" "$root/scripts/source_api_bridge.py" \
-    --print-docker-bridge-gateway "$candidates"
+    --print-docker-bridge-gateway "$inspection"
 }
 
 if [ "$enable_airflow_source_bridge" = true ]; then
