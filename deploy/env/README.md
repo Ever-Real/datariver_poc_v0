@@ -34,6 +34,12 @@ to the same path. Credentials remain in `secrets/`. Keep
 `SYSTEM_CONFIGURATION_RUNTIME_ACTIVATION_ENABLED=false` so the database does not become a second
 live configuration source.
 
+The local MinIO reference uses exact cluster-wide `MINIO_API_CORS_ALLOW_ORIGIN` because its
+Community distribution does not implement S3 `PutBucketCors`. The Mac profile therefore sets
+`S3_CORS_MANAGEMENT_MODE=external`. For any other S3 provider, retain the fail-closed `bucket`
+default unless its owner supplies equivalent exact-origin CORS evidence; `external` is not a way to
+skip the browser preflight test.
+
 ## Local connector distribution gate
 
 The reference Compose currently names Redis `8.2.6-bookworm`, matching the upstream 8.2.6 security

@@ -264,6 +264,7 @@ class Settings(BaseSettings):
     s3_secret_key_file: str
     s3_export_access_key_file: str | None = None
     s3_export_secret_key_file: str | None = None
+    s3_cors_management_mode: Literal["bucket", "external"] = "bucket"
     presigned_url_ttl_seconds: int = Field(default=900, ge=60, le=900)
 
     seed_profile: Literal["none", "semiconductor"] = "none"

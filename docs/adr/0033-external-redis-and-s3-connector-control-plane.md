@@ -73,3 +73,9 @@ does not delete the old provider volume.
    each runtime process receives only its required secret references;
 5. target backup/restore and cross-provider migration evidence records object counts, hashes,
    RPO/RTO and rollback disposition before traffic promotion.
+
+Some S3-compatible Community distributions do not implement per-bucket `PutBucketCors`. Such a
+deployment may select `S3_CORS_MANAGEMENT_MODE=external` only when its owner configures an exact
+cluster/edge origin allowlist and retains a real browser-style preflight result. The default remains
+`bucket`, and an unsupported call fails closed; the flag never permits wildcard CORS or omission of
+the conformance gate.

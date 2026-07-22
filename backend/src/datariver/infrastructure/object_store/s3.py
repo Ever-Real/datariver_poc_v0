@@ -81,7 +81,13 @@ class S3ObjectStore:
             upload_id=str(response["UploadId"]), bucket=bucket, object_key=object_key
         )
 
-    async def ensure_bucket(self, *, bucket: str, allowed_origins: Sequence[str]) -> None:
+    async def ensure_bucket(
+        self,
+        *,
+        bucket: str,
+        allowed_origins: Sequence[str],
+        manage_cors: bool = True,
+    ) -> None:
         try:
             await asyncio.to_thread(self._client.head_bucket, Bucket=bucket)
         except BotoCoreError as error:
@@ -99,6 +105,8 @@ class S3ObjectStore:
                 raise self._error(
                     "Object bucket could not be created.", create_error
                 ) from create_error
+        if not manage_cors:
+            return
         try:
             await asyncio.to_thread(
                 self._client.put_bucket_cors,

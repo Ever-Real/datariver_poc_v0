@@ -18,27 +18,33 @@ async def run() -> None:
         secret_key=resolver.resolve(f"file:{settings.s3_secret_key_file}"),
     )
     allowed_origins = (str(settings.app_public_origin).rstrip("/"),)
+    manage_cors = settings.s3_cors_management_mode == "bucket"
     await store.ensure_bucket(
         bucket=settings.s3_bucket_quarantine,
         allowed_origins=allowed_origins,
+        manage_cors=manage_cors,
     )
     await store.ensure_bucket(
         bucket=settings.s3_bucket_accepted,
         allowed_origins=allowed_origins,
+        manage_cors=manage_cors,
     )
     await store.ensure_bucket(
         bucket=settings.s3_bucket_exports,
         allowed_origins=allowed_origins,
+        manage_cors=manage_cors,
     )
     if settings.s3_bucket_filefolder:
         await store.ensure_bucket(
             bucket=settings.s3_bucket_filefolder,
             allowed_origins=allowed_origins,
+            manage_cors=manage_cors,
         )
     if settings.s3_bucket_infoschema:
         await store.ensure_bucket(
             bucket=settings.s3_bucket_infoschema,
             allowed_origins=allowed_origins,
+            manage_cors=manage_cors,
         )
 
 

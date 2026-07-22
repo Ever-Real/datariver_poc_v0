@@ -232,6 +232,8 @@ if [ "$mac_development" = true ]; then
   set_env_value IDENTITY_ADMIN_CLIENT_SECRET_REF file:/run/secrets/keycloak_identity_admin_client_secret
   set_env_value IDENTITY_PASSWORD_CHANGE_ACTION_ENABLED true
   set_env_value DATAHUB_BASE_URL http://host.docker.internal:8080
+  # MinIO Community supports exact cluster-wide CORS, not PutBucketCors.
+  set_env_value S3_CORS_MANAGEMENT_MODE external
   set_env_value UI_DATAHUB_URL http://localhost:19002
   set_env_value LOCAL_OLLAMA_CHAT_ENABLED true
   set_env_value LOCAL_OLLAMA_CHAT_BASE_URL http://host.docker.internal:11434/v1
