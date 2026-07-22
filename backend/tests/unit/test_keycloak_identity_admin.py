@@ -50,6 +50,7 @@ async def test_keycloak_adapter_creates_disabled_user_then_sets_temporary_passwo
             assert request.url.params["exact"] == "true"
             return httpx.Response(200, request=request, json=[])
         if request.method == "POST":
+            assert isinstance(body, dict)
             assert body["enabled"] is False
             assert body["requiredActions"] == ["UPDATE_PASSWORD"]
             return httpx.Response(

@@ -25,6 +25,7 @@
 | 20 | [Enterprise UI completion PRD](20_ENTERPRISE_UI_COMPLETION_PRD.md) | CR, Knowledge Studio, profile and administrator screen requirements with governed substitutions | Implemented; API gates open |
 | 21 | [Enterprise UI completion checklist](21_ENTERPRISE_UI_COMPLETION_CHECKLIST.md) | requirement-to-component/API/test traceability for the current UI completion work | Implemented; external gates open |
 | 22 | [Four-menu use cases and architecture review](usecases.md) | Search, Registration, CR and Knowledge use cases, integration gates and proposed ERDs | Step 1 design baseline |
+| 23 | [Catalog DataHub ingestion, metadata and export operation](23_CATALOG_DATAHUB_INGESTION_AND_EXPORT.md) | PostgreSQL/Oracle profile and Created Date limits, description sync, safe export activation | Implemented contract; remote activation gates open |
 
 Independent review records: [Data Architect](reviews/2026-07-14_DATA_ARCHITECT_REVIEW.md) and [Data Engineer/SRE](reviews/2026-07-14_DATA_ENGINEER_REVIEW.md).
 

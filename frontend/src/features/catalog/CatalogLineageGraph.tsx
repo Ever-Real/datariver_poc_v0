@@ -63,7 +63,8 @@ export function CatalogLineageGraph({
     if (!viewportBounds.width || !viewportBounds.height) return 1
     const horizontal = (viewportBounds.width - LINEAGE_CANVAS_PADDING * 2) / layout.width
     const vertical = (viewportBounds.height - LINEAGE_CANVAS_PADDING * 2) / layout.height
-    return Math.max(MINIMUM_SCALE, Math.min(1, horizontal, vertical))
+    const fittedScale = Math.max(MINIMUM_SCALE, Math.min(1, horizontal, vertical))
+    return Math.min(MAXIMUM_SCALE, fittedScale * 1.2)
   }, [layout.height, layout.width, viewportBounds.height, viewportBounds.width])
 
   const resetViewport = useCallback(() => {
@@ -202,10 +203,7 @@ export function CatalogLineageGraph({
               <article
                 className={`catalog-lineage-node catalog-lineage-node-${node.role.toLowerCase()}`}
                 key={node.asset.id}
-                onPointerDown={(event) => {
-                  if ((event.target as HTMLElement).closest('.catalog-lineage-node-select')) return
-                  startNodeDrag(event, node.asset.id)
-                }}
+                onPointerDown={(event) => startNodeDrag(event, node.asset.id)}
                 style={{ left: node.x, top: node.y, width: LINEAGE_NODE_WIDTH, minHeight: LINEAGE_NODE_HEIGHT }}
               >
                 <button
@@ -218,7 +216,7 @@ export function CatalogLineageGraph({
                   title={`${node.asset.name} 상세 정보 열기`}
                   type="button"
                 >
-                  <span className="catalog-lineage-node-role" onPointerDown={(event) => startNodeDrag(event, node.asset.id)}>{LINEAGE_ROLE_LABELS[node.role]}</span>
+                  <span className="catalog-lineage-node-role">{LINEAGE_ROLE_LABELS[node.role]}</span>
                   <strong>{node.asset.name}</strong>
                   <small>{node.asset.platform ?? 'platform 미지정'} · {node.asset.schema_name ?? node.asset.asset_type}</small>
                 </button>

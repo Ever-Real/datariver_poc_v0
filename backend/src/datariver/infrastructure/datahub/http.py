@@ -30,7 +30,8 @@ query DataRiverAsset($urn: String!) {
     urn
     type
     ... on Dataset {
-      properties { created }
+      properties { created description }
+      editableProperties { description }
       ownership {
         owners {
           owner {
@@ -127,6 +128,7 @@ query DataRiverCatalogScan($input: SearchAcrossEntitiesInput!) {
           subTypes { typeNames }
           platform { urn name }
           properties { name description created customProperties { key value } }
+          editableProperties { description }
           browsePathV2 {
             path {
               name
@@ -257,6 +259,22 @@ def _datahub_timestamp(value: object) -> datetime | None:
         return datetime.fromtimestamp(raw_time / 1_000, tz=UTC)
     except (OverflowError, OSError, ValueError):
         return None
+
+
+def _preferred_description(*, properties: object, editable_properties: object) -> str | None:
+    """Use the DataHub user-editable description when it is non-blank.
+
+    DataHub persists ingestion-source text in ``properties`` and UI/governed
+    edits in ``editableProperties``.  The latter is the effective description
+    shown by DataHub, so a projection must use the same precedence rather than
+    silently losing a valid UI edit on the next reconciliation.
+    """
+
+    for value in (editable_properties, properties):
+        description = value.get("description") if isinstance(value, dict) else None
+        if isinstance(description, str) and description.strip():
+            return description
+    return None
 
 
 def _metadata_names(value: object, *, wrapper: str, entity: str) -> tuple[str, ...]:
@@ -773,6 +791,7 @@ class HttpDataHubGateway:
         now = datetime.now(UTC)
         properties = entity.get("properties")
         properties_document = properties if isinstance(properties, dict) else {}
+        editable_properties = entity.get("editableProperties")
         return DataHubAssetEnrichment(
             ownership=owners,
             glossary_terms=glossary,
@@ -782,6 +801,10 @@ class HttpDataHubGateway:
             raw_version=canonical_json_hash(entity),
             observed_at=now,
             created_at=_datahub_timestamp(properties_document.get("created")),
+            description=_preferred_description(
+                properties=properties_document,
+                editable_properties=editable_properties,
+            ),
         )
 
     async def get_lineage(
@@ -951,6 +974,7 @@ class HttpDataHubGateway:
                 )
             properties = entity.get("properties")
             properties = properties if isinstance(properties, dict) else {}
+            editable_properties = entity.get("editableProperties")
             platform = entity.get("platform")
             platform_name = platform.get("name") if isinstance(platform, dict) else None
             system_ref = platform.get("urn") if isinstance(platform, dict) else None
@@ -981,8 +1005,9 @@ class HttpDataHubGateway:
                     external_urn=entity["urn"],
                     asset_type=_dataset_asset_type(entity),
                     name=str(name)[:500],
-                    description=(
-                        str(properties["description"]) if properties.get("description") else None
+                    description=_preferred_description(
+                        properties=properties,
+                        editable_properties=editable_properties,
                     ),
                     platform=str(platform_name)[:100] if platform_name else None,
                     database_name=database_name[:255] if database_name else None,

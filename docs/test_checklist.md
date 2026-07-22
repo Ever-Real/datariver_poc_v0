@@ -159,3 +159,20 @@
 | PASS | bounded Lineage contract | optional search-index resolver인 `scrollAcrossLineage` 대신 공식 `Dataset.lineage(LineageInput)`을 1–3 hop, 방향당 100 node, gateway bulkhead 이하 동시성으로 순회; null/filtered/truncated 결과는 부분 그래프로 fail-closed 처리 |
 | PASS | source verification | 관련 unit `34 passed`; 전체 backend `729 passed`; strict mypy source `165` files; focused Ruff; `scripts/verify_static.py`; `git diff --check` 통과 |
 | OPEN | 원격 DataHub live read-back | 이 Mac checkout에는 준비 PC의 원격 GMS URL·scoped token이 없으므로 실제 대상의 profile/column metadata/lineage HTTP read-back은 배포 후 수행해야 함. Profile이 수집되지 않은 테이블의 Rows/Size는 의도대로 `DataHub 미관측` 유지 |
+
+## 13. 2026-07-22 카탈로그 수집 진단·검색 UX 체크리스트
+
+| 상태 | 요청 항목 | 구현·검토 증거 |
+|---|---|---|
+| PASS / OPEN | PostgreSQL·Oracle Rows/Size/Created Date | v1.6 source와 DataRiver typed profile/created contract를 대조해 설정·권한·제한 원인을 문서화. profile Rows/Size와 `DatasetProperties.created`는 코드에서 null을 0으로 대체하지 않고 표시한다. PostgreSQL table Created Date 및 Oracle table Created Date는 표준 source가 채우지 않으므로 reviewed DataHub extension과 원격 read-back이 OPEN이다. |
+| PASS | 일부 Description 누락 | projection scan/detail query가 `properties.description`과 `editableProperties.description`을 함께 읽고, non-blank editable 값을 우선한다. adapter와 detail-cache unit test가 우선순위·cache round-trip을 검증한다. |
+| PASS | Search Results / Authorized Detail 빈 값 | Description, Matches, Terms, Tags, Owner, Domain 및 상세 Rows/Size/Created Date를 공통 연회색 `-`로 통일. Catalog workspace test가 빈 결과 9개, 상세 11개를 검증한다. |
+| PASS | Resource Tree 필터 제거 | Tree 요청은 `q`를 보내지 않으며 hierarchy parent 클릭은 펼침만 수행한다. asset 클릭은 현재 Search Results 필터를 변경하지 않고 해당 opaque asset id의 Authorized Detail을 연다. |
+| PASS | 상단 페이지네이션 | 동일 cursor/page-size handler를 Search Results header와 하단에 배치. workspace test가 상단 select와 양쪽 이전/다음 버튼을 검증한다. |
+| PASS | 데스크톱 세 패널 하단 정렬 | desktop workspace height 변수를 Tree, Results, Detail에 공통 적용하고, 좁은 화면에서는 기존 Detail overlay 규칙을 유지한다. CSS source review 및 production build 통과. |
+| PASS / OPEN | CSV·Excel 저장 | API→managed job→poll→download 흐름과 CSV/XLSX contract tests가 통과. 실제 `.env`는 `CATALOG_EXPORT_WORKER_ENABLED=false`라 버튼이 의도적으로 비활성이다. isolated DB·object-storage secret을 준비한 운영자가 worker를 활성화하고 실제 create/download를 검증해야 한다. |
+| PASS | Lineage 확대·노드 선택 | initial fit scale을 1.2배로 확대하고 node click은 local result selection/Authorized Detail callback을 사용한다. graph test가 opaque local asset id만 전달함을 검증한다. |
+| PASS | 노드 body drag | node article body의 pointer drag를 허용하며 실제 이동 뒤에는 detail select를 억제한다. graph interaction test 통과. |
+| PASS | lineage level color / current border | U2, U1, D1, D2, related의 좌측 띠 색을 분리하고 center node에 굵은 3px/6px border를 적용. CSS source review 및 build 통과. |
+| PASS | lineage font +2pt | node title, secondary text, level badge를 각각 13px, 12px, 11px로 조정해 기존 10px, 9px, 8px보다 약 2pt 크게 표시. CSS source review 및 build 통과. |
+| PASS | regression gates | frontend ESLint, Vitest `38 files / 160 tests`, production build; backend Ruff format/lint, strict mypy `265 files`, pytest `729 passed`, `scripts/verify_static.py`, `git diff --check` 통과. |

@@ -87,6 +87,9 @@ describe('catalog workspace', () => {
     expect(within(toolbar as HTMLElement).getByRole('button', { name: 'CSV 저장' })).toBeDisabled()
     expect(within(toolbar as HTMLElement).getByRole('button', { name: 'Excel 저장' })).toBeDisabled()
     expect(within(screen.getByRole('combobox', { name: '페이지 크기' })).getByRole('option', { name: '전체' })).toBeInTheDocument()
+    expect(screen.getByRole('combobox', { name: 'Search Results 상단 페이지 탐색 페이지 크기' })).toBeInTheDocument()
+    expect(screen.getAllByRole('button', { name: '이전' })).toHaveLength(2)
+    expect(screen.getAllByRole('button', { name: '다음' })).toHaveLength(2)
     expect(request.mock.calls.some(([path]) => String(path).includes('10000'))).toBe(false)
   })
 
@@ -140,8 +143,8 @@ describe('catalog workspace', () => {
 
     request.mockClear()
     fireEvent.change(screen.getByRole('combobox', { name: '페이지 크기' }), { target: { value: '0' } })
-    expect(await screen.findByText('전체 · 현재 120건')).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: '다음' })).toBeDisabled()
+    expect((await screen.findAllByText('전체 · 현재 120건')).length).toBeGreaterThanOrEqual(2)
+    expect(screen.getAllByRole('button', { name: '다음' }).every((button) => button.hasAttribute('disabled'))).toBe(true)
     await waitFor(() => expect(request.mock.calls.filter(([path]) => String(path).startsWith('/catalog/assets?'))).toHaveLength(2))
   })
 
@@ -162,6 +165,21 @@ describe('catalog workspace', () => {
     ))).toBe(true)
     expect(request.mock.calls.filter(([path]) => String(path).includes('parent_kind=PLATFORM'))).toHaveLength(1)
     expect(request.mock.calls.some(([path]) => String(path).includes('platform=snowflake'))).toBe(true)
+  })
+
+  it('opens an asset selected from the Resource Tree without changing search filters', async () => {
+    const request = vi.fn((path: string, options?: RequestOptions): Promise<unknown> => {
+      void options
+      if (path.includes('parent_kind=ROOT')) return Promise.resolve({ items: [{ id: 'asset-node', kind: 'ASSET', label: 'wafer_events', asset_count: 1, has_children: false, asset }], page: { limit: 100 }, meta })
+      return defaultRequest(path)
+    })
+    render(<CatalogPage client={clientWith(request)} initialQuery="wafer" />)
+
+    const tree = await screen.findByRole('complementary', { name: 'Resource Tree' })
+    fireEvent.click(await within(tree).findByRole('button', { name: /wafer_events/ }))
+    expect(await screen.findByRole('complementary', { name: '카탈로그 상세' })).toHaveTextContent('wafer_events')
+    expect(request.mock.calls.some(([path]) => String(path).includes('q=wafer'))).toBe(true)
+    expect(request.mock.calls.some(([path]) => String(path).startsWith('/catalog/tree/') && String(path).includes('q='))).toBe(false)
   })
 
   it('keeps legacy search targets and bounded facet filtering in a responsive popover', async () => {
@@ -224,5 +242,36 @@ describe('catalog workspace', () => {
     ))).toBe(true))
     expect(screen.getByRole('button', { name: 'wafer_events 선택' })).toHaveAttribute('title', 'wafer_events 상세 정보 열기')
     expect(screen.getByRole('complementary', { name: '카탈로그 상세' })).toHaveTextContent('wafer_events')
+  })
+
+  it('uses muted dashes for absent result and authorized-detail metadata', async () => {
+    const missing: CatalogAsset = {
+      ...asset,
+      id: '00000000-0000-4000-8000-000000000202',
+      name: 'missing_metadata',
+      description: undefined,
+      platform: undefined,
+      database_name: undefined,
+      schema_name: undefined,
+      owner: undefined,
+      domain: undefined,
+      tags: [],
+      terms: [],
+      created_at: undefined,
+      matches: [],
+    }
+    const request = vi.fn((path: string, options?: RequestOptions): Promise<unknown> => {
+      void options
+      if (path.startsWith('/catalog/assets?')) return Promise.resolve({ items: [missing], page: { limit: 50 }, total: 1, meta, match_mode: 'ALL' })
+      if (path === `/catalog/assets/${missing.id}`) return Promise.resolve({ ...missing, ownership: [], glossary_terms: [], tags: [], schema_fields: [], quality: {}, source_version: 'source-v7' })
+      return defaultRequest(path)
+    })
+    render(<CatalogPage client={clientWith(request)} />)
+
+    const table = await screen.findByRole('table', { name: '카탈로그 검색 결과' })
+    expect(within(table).getAllByLabelText('정보 없음')).toHaveLength(9)
+    fireEvent.click(screen.getByText('missing_metadata'))
+    const detail = await screen.findByRole('complementary', { name: '카탈로그 상세' })
+    expect(within(detail).getAllByLabelText('정보 없음')).toHaveLength(11)
   })
 })

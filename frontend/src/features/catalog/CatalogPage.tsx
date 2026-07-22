@@ -17,6 +17,7 @@ import { DenseDataTable } from '../../components/common/DenseDataTable'
 import { TruncatedText } from '../../components/common/TruncatedText'
 import { PageTitle } from '../../components/layout/PageTitle'
 import { CatalogDetailPane } from './CatalogDetailPane'
+import { CatalogEmptyValue } from './CatalogEmptyValue'
 import { CatalogExportControl } from './CatalogExportControl'
 import { CatalogMatchPreview } from './CatalogMatchText'
 import { CatalogResourceTree } from './CatalogResourceTree'
@@ -211,16 +212,16 @@ export function CatalogPage({
   const columns = useMemo<ColumnDef<CatalogAsset>[]>(() => [
     { id: 'number', header: 'No', size: 56, enableSorting: false, cell: ({ row }) => <span>{pageIndex * pageSize + row.index + 1}</span> },
     { accessorKey: 'asset_type', header: 'Type', size: 76, cell: ({ row }) => <span className={`badge catalog-asset-type-${row.original.asset_type.toLowerCase()}`}>{row.original.asset_type}</span> },
-    { accessorKey: 'platform', header: 'Platform', size: 96, cell: ({ row }) => <TruncatedText value={row.original.platform ?? '—'} /> },
-    { accessorKey: 'database_name', header: 'Database', size: 110, cell: ({ row }) => <TruncatedText value={row.original.database_name ?? '—'} /> },
-    { accessorKey: 'schema_name', header: 'Schema', size: 110, cell: ({ row }) => <TruncatedText value={row.original.schema_name ?? '—'} /> },
+    { accessorKey: 'platform', header: 'Platform', size: 96, cell: ({ row }) => optionalTableText(row.original.platform) },
+    { accessorKey: 'database_name', header: 'Database', size: 110, cell: ({ row }) => optionalTableText(row.original.database_name) },
+    { accessorKey: 'schema_name', header: 'Schema', size: 110, cell: ({ row }) => optionalTableText(row.original.schema_name) },
     { accessorKey: 'name', header: 'Table / Asset', size: 210, cell: ({ row }) => <TruncatedText value={row.original.name} className="catalog-asset-name" /> },
     { id: 'terms', accessorFn: (row) => (row.terms ?? []).join(' '), header: 'Terms', size: 170, cell: ({ row }) => <BadgeScroller label={`${row.original.name} Terms`} values={row.original.terms ?? []} /> },
     { id: 'tags', accessorFn: (row) => (row.tags ?? []).join(' '), header: 'Tags', size: 170, cell: ({ row }) => <BadgeScroller label={`${row.original.name} Tags`} values={row.original.tags ?? []} /> },
-    { accessorKey: 'owner', header: 'Owner', size: 140, cell: ({ row }) => <TruncatedText value={row.original.owner ?? '—'} /> },
-    { accessorKey: 'domain', header: 'Domain', size: 130, cell: ({ row }) => <TruncatedText value={row.original.domain ?? '—'} /> },
+    { accessorKey: 'owner', header: 'Owner', size: 140, cell: ({ row }) => optionalTableText(row.original.owner) },
+    { accessorKey: 'domain', header: 'Domain', size: 130, cell: ({ row }) => optionalTableText(row.original.domain) },
     { accessorKey: 'classification', header: 'Class', size: 100, cell: ({ row }) => <span className="badge badge-soft">{row.original.classification}</span> },
-    { accessorKey: 'description', header: 'Description', size: 260, cell: ({ row }) => <TruncatedText value={row.original.description ?? '설명 없음'} /> },
+    { accessorKey: 'description', header: 'Description', size: 260, cell: ({ row }) => optionalTableText(row.original.description) },
     { id: 'matches', accessorFn: (row) => row.matches.map((match) => match.text).join(' '), header: 'Matches', size: 300, cell: ({ row }) => <CatalogMatchPreview fragments={row.original.matches} /> },
   ], [pageIndex, pageSize])
 
@@ -251,10 +252,6 @@ export function CatalogPage({
     setPageIndex(0)
   }
 
-  const selectTreeScope = (scope: Pick<Filters, 'platform' | 'databaseName' | 'schemaName'>) => {
-    setFilters((current) => ({ ...current, ...scope })); setCursors([undefined]); setPageIndex(0)
-  }
-
   const resizeDetail = (requestedWidth: number) => {
     const measuredWorkspaceWidth = workspaceRef.current?.clientWidth ?? 0
     const workspaceWidth = measuredWorkspaceWidth || window.innerWidth
@@ -272,6 +269,24 @@ export function CatalogPage({
     filters.classification,
     filters.lifecycle,
   ].filter(Boolean).length + (filters.searchFields.length === allSearchFields.length ? 0 : 1)
+
+  const paginationProps = {
+    page: pageIndex + 1,
+    pageSize,
+    pageSizeOptions: [50, 100, 200, 500, 1000, 0],
+    canPrevious: pageSize !== 0 && pageIndex > 0,
+    canNext: pageSize !== 0 && Boolean(result?.page.next_cursor),
+    itemCount: result?.items.length,
+    onPrevious: () => setPageIndex((current) => Math.max(0, current - 1)),
+    onNext: () => {
+      if (!result?.page.next_cursor) return
+      setCursors((current) => [...current.slice(0, pageIndex + 1), result.page.next_cursor])
+      setPageIndex((current) => current + 1)
+    },
+    onPageSizeChange: (value: number) => {
+      setPageSize(value); setCursors([undefined]); setPageIndex(0)
+    },
+  }
 
   return <section className="catalog-page">
     <PageTitle icon="SR" eyebrow="DataHub Wrapper" title="데이터 카탈로그 검색" description="Workspace·분류정책·권한 범위 안의 로컬 projection을 검색합니다." />
@@ -323,17 +338,21 @@ export function CatalogPage({
     </div>
     <ErrorNotice error={error} />
     <div className={`catalog-workspace ${selectedAssetId ? 'with-detail' : ''}`} ref={workspaceRef} style={selectedAssetId ? { '--catalog-detail-width': `${detailWidth}px` } as CSSProperties : undefined}>
-      <CatalogResourceTree client={client} query={query} selectedAssetId={selectedAssetId} onSelectAsset={setSelectedAssetId} onSelectScope={selectTreeScope} />
+      <CatalogResourceTree client={client} selectedAssetId={selectedAssetId} onSelectAsset={setSelectedAssetId} />
       <section className="catalog-results" aria-label="카탈로그 검색 결과">
-        <header><div><span className="eyebrow">Permission scoped</span><h2>Search Results</h2></div><span>{result ? `${result.items.length} / ${(result.total ?? result.items.length).toLocaleString()} items` : '0 items'} · ALL keywords · ↔ 좌우 스크롤</span></header>
+        <header><div><span className="eyebrow">Permission scoped</span><h2>Search Results</h2><span>{result ? `${result.items.length} / ${(result.total ?? result.items.length).toLocaleString()} items` : '0 items'} · ALL keywords · ↔ 좌우 스크롤</span></div><CursorPagination {...paginationProps} compact label="Search Results 상단 페이지 탐색" /></header>
         <DenseDataTable caption="카탈로그 검색 결과" columns={columns} data={result?.items ?? []} getRowId={(item) => item.id} loading={loading} emptyMessage={query ? '검색 조건에 맞는 허용 자산이 없습니다.' : '현재 권한 범위에서 표시할 자산이 없습니다.'} selectedRowId={selectedAssetId} onRowActivate={(item) => setSelectedAssetId(item.id)} />
         <p className="catalog-local-table-note">열 정렬은 현재 로드된 {result?.items.length.toLocaleString() ?? 0}건에 적용됩니다.</p>
-        <CursorPagination page={pageIndex + 1} pageSize={pageSize} pageSizeOptions={[50, 100, 200, 500, 1000, 0]} canPrevious={pageSize !== 0 && pageIndex > 0} canNext={pageSize !== 0 && Boolean(result?.page.next_cursor)} itemCount={result?.items.length} onPrevious={() => setPageIndex((current) => Math.max(0, current - 1))} onNext={() => { if (!result?.page.next_cursor) return; setCursors((current) => [...current.slice(0, pageIndex + 1), result.page.next_cursor]); setPageIndex((current) => current + 1) }} onPageSizeChange={(value) => { setPageSize(value); setCursors([undefined]); setPageIndex(0) }} />
+        <CursorPagination {...paginationProps} />
         {result && <footer className="catalog-result-meta"><span>projection v{result.meta.projection_version}</span><span>policy {result.meta.policy_version}</span><time dateTime={result.meta.observed_at}>{result.meta.observed_at ? new Date(result.meta.observed_at).toLocaleString() : '관측 시각 없음'}</time></footer>}
       </section>
       {selectedAssetId && <CatalogDetailPane key={selectedAssetId} client={client} assetId={selectedAssetId} onClose={() => setSelectedAssetId(undefined)} onResizeWidth={resizeDetail} onSelectAsset={setSelectedAssetId} width={detailWidth} />}
     </div>
   </section>
+}
+
+function optionalTableText(value: string | undefined) {
+  return value?.trim() ? <TruncatedText value={value} /> : <CatalogEmptyValue />
 }
 
 function classificationValue(value: string): Classification | undefined {

@@ -53,10 +53,9 @@ def test_api_does_not_receive_keycloak_bootstrap_admin_secret() -> None:
 
 def test_password_change_template_preserves_provider_action_without_product_exposure() -> None:
     root = Path(__file__).resolve().parents[3]
-    template = (
-        root
-        / "infra/keycloak/themes/datariver/login/login-update-password.ftl"
-    ).read_text(encoding="utf-8")
+    template = (root / "infra/keycloak/themes/datariver/login/login-update-password.ftl").read_text(
+        encoding="utf-8"
+    )
 
     assert 'name="password-new"' in template
     assert 'name="password-confirm"' in template

@@ -654,6 +654,7 @@ async def test_authorized_detail_enrichment_uses_scope_versioned_cache() -> None
             raw_version="datahub-v2",
             observed_at=now,
             created_at=now,
+            description="governed events",
         )
     )
     cache = FakeCache()
@@ -694,6 +695,8 @@ async def test_authorized_detail_enrichment_uses_scope_versioned_cache() -> None
     assert first is not None and second is not None
     assert second.raw_version == "datahub-v2"
     assert second.index.created_at == now
+    assert first.index.description == "governed events"
+    assert second.index.description == "governed events"
     assert gateway.calls == 1
     assert len(cache.values) == 2
 
