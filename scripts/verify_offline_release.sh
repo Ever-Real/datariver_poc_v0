@@ -114,14 +114,17 @@ verify_checksums() {
   local checksum
   for checksum in "$directory"/*.sha256; do
     [ -f "$checksum" ] || continue
-    (
+    if ! (
       cd "$directory"
       if command -v sha256sum >/dev/null 2>&1; then
         sha256sum -c "$(basename "$checksum")"
       else
         shasum -a 256 -c "$(basename "$checksum")"
       fi
-    )
+    ); then
+      echo "Checksum verification failed: $checksum" >&2
+      return 2
+    fi
   done
 }
 
