@@ -160,6 +160,7 @@ async def test_asset_contract_uses_fixed_graphql_and_service_identity() -> None:
         body = json.loads(request.content)
         assert body["variables"] == {"urn": "urn:li:dataset:test"}
         assert "globalTags: tags" in body["query"]
+        assert "editableProperties" in body["query"]
         assert "editableSchemaMetadata" in body["query"]
         assert "schemaFieldEntity" in body["query"]
         assert "latestFullTableProfile: datasetProfiles" in body["query"]
@@ -171,7 +172,11 @@ async def test_asset_contract_uses_fixed_graphql_and_service_identity() -> None:
                     "entity": {
                         "urn": "urn:li:dataset:test",
                         "type": "DATASET",
-                        "properties": {"created": 1767225600000},
+                        "properties": {
+                            "created": 1767225600000,
+                            "description": "source description",
+                        },
+                        "editableProperties": {"description": "governed description"},
                         "ownership": {"owners": []},
                         "globalTags": {"tags": [{"tag": {"urn": "tag:one", "name": "One"}}]},
                         "glossaryTerms": {"terms": []},
@@ -278,6 +283,7 @@ async def test_asset_contract_uses_fixed_graphql_and_service_identity() -> None:
     }
     assert asset.created_at is not None
     assert asset.created_at.isoformat() == "2026-01-01T00:00:00+00:00"
+    assert asset.description == "governed description"
     await client.aclose()
 
 
@@ -421,6 +427,7 @@ async def test_catalog_scan_maps_a_fixed_datahub_contract_and_paginates() -> Non
                                             },
                                         ],
                                     },
+                                    "editableProperties": {"description": "governed events"},
                                     "subTypes": {"typeNames": ["Table"]},
                                     "browsePathV2": {
                                         "path": [
@@ -476,6 +483,7 @@ async def test_catalog_scan_maps_a_fixed_datahub_contract_and_paginates() -> Non
     page = await gateway.scan_assets(offset=0, limit=1)
 
     assert page.items[0].name == "wafer_events"
+    assert page.items[0].description == "governed events"
     assert page.items[0].platform == "snowflake"
     assert page.items[0].database_name == "seed_catalog"
     assert page.items[0].schema_name == "manufacturing"

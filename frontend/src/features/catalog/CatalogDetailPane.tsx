@@ -7,13 +7,14 @@ import { AccordionItem } from '../../components/common/Accordion'
 import { BadgeScroller } from '../../components/common/ControlledVocabularyInput'
 import { TruncatedText } from '../../components/common/TruncatedText'
 import { CatalogLineageGraph } from './CatalogLineageGraph'
+import { CatalogEmptyValue } from './CatalogEmptyValue'
 
-function valueOf(document: Record<string, unknown>, ...keys: string[]): string {
+function valueOf(document: Record<string, unknown>, ...keys: string[]): string | undefined {
   for (const key of keys) {
     const value = document[key]
     if (typeof value === 'string' && value) return value
   }
-  return '—'
+  return undefined
 }
 
 function referenceValues(value: unknown, collection: string, reference: string): string[] {
@@ -35,10 +36,14 @@ function ownerValues(ownership: Array<Record<string, unknown>>): string[] {
   }))]
 }
 
-function formatObservedValue(value: unknown, unit?: string): string {
+function formatObservedValue(value: unknown, unit?: string): string | undefined {
   if (typeof value === 'number' && Number.isFinite(value)) return `${value.toLocaleString()}${unit ?? ''}`
   if (typeof value === 'string' && value.trim()) return `${value}${unit ?? ''}`
-  return 'DataHub 미관측'
+  return undefined
+}
+
+function detailText(value: string | null | undefined) {
+  return value?.trim() ? value : <CatalogEmptyValue />
 }
 
 function fieldValues(field: Record<string, unknown>, key: 'globalTags' | 'glossaryTerms'): string[] {
@@ -182,15 +187,15 @@ export function CatalogDetailPane({
       <section aria-labelledby="catalog-metadata-tab" hidden={activeTab !== 'metadata'} id="catalog-metadata-panel" role="tabpanel">
         <AccordionItem itemId="details" title="Table details" summary={`${detail.schema_fields.length} fields`} expanded={expanded.has('details')} onToggle={() => toggle('details')}>
           <dl className="catalog-detail-properties">
-            <div><dt>Platform</dt><dd>{detail.platform ?? '—'}</dd></div>
-            <div><dt>Database</dt><dd>{detail.database_name ?? '—'}</dd></div>
-            <div><dt>Schema</dt><dd>{detail.schema_name ?? '—'}</dd></div>
-            <div><dt>Domain</dt><dd>{detail.domain ?? '—'}</dd></div>
-            <div><dt>Owner</dt><dd>{ownerValues(detail.ownership).join(', ') || detail.owner || '—'}</dd></div>
-            <div><dt>Rows</dt><dd>{formatObservedValue(detail.quality.rowCount ?? detail.quality.rows)}</dd></div>
-            <div><dt>Size</dt><dd>{formatObservedValue(detail.quality.sizeInBytes ?? detail.quality.size, ' B')}</dd></div>
-            <div><dt>Created Date</dt><dd>{detail.created_at ? new Date(detail.created_at).toLocaleString() : 'DataHub 미관측'}</dd></div>
-            <div className="wide"><dt>Description</dt><dd>{detail.description ?? '설명이 등록되지 않았습니다.'}</dd></div>
+            <div><dt>Platform</dt><dd>{detailText(detail.platform)}</dd></div>
+            <div><dt>Database</dt><dd>{detailText(detail.database_name)}</dd></div>
+            <div><dt>Schema</dt><dd>{detailText(detail.schema_name)}</dd></div>
+            <div><dt>Domain</dt><dd>{detailText(detail.domain)}</dd></div>
+            <div><dt>Owner</dt><dd>{detailText(ownerValues(detail.ownership).join(', ') || detail.owner)}</dd></div>
+            <div><dt>Rows</dt><dd>{detailText(formatObservedValue(detail.quality.rowCount ?? detail.quality.rows))}</dd></div>
+            <div><dt>Size</dt><dd>{detailText(formatObservedValue(detail.quality.sizeInBytes ?? detail.quality.size, ' B'))}</dd></div>
+            <div><dt>Created Date</dt><dd>{detailText(detail.created_at ? new Date(detail.created_at).toLocaleString() : undefined)}</dd></div>
+            <div className="wide"><dt>Description</dt><dd>{detailText(detail.description)}</dd></div>
             <div className="metadata-vocabulary"><dt>Terms</dt><dd><BadgeScroller label="테이블 Terms" values={referenceValues({ terms: detail.glossary_terms }, 'terms', 'term').length ? referenceValues({ terms: detail.glossary_terms }, 'terms', 'term') : detail.terms ?? []} /></dd></div>
             <div className="metadata-vocabulary"><dt>Tags</dt><dd><BadgeScroller label="테이블 Tags" values={detail.tags} /></dd></div>
           </dl>
@@ -198,7 +203,12 @@ export function CatalogDetailPane({
         <AccordionItem itemId="columns" title="Column metadata" summary={`${detail.schema_fields.length} columns`} expanded={expanded.has('columns')} onToggle={() => toggle('columns')}>
           <div className="catalog-schema-table">
             <table><caption className="sr-only">스키마 필드</caption><thead><tr><th>Column</th><th>Type</th><th>Description</th><th>Terms</th><th>Tags</th></tr></thead>
-              <tbody>{detail.schema_fields.map((field, index) => <tr key={`${valueOf(field, 'fieldPath', 'name')}-${index}`}><td><TruncatedText value={valueOf(field, 'fieldPath', 'name')} /></td><td>{valueOf(field, 'nativeDataType', 'type')}</td><td><TruncatedText value={valueOf(field, 'description')} /></td><td><BadgeScroller label={`${valueOf(field, 'fieldPath', 'name')} Terms`} values={fieldValues(field, 'glossaryTerms')} /></td><td><BadgeScroller label={`${valueOf(field, 'fieldPath', 'name')} Tags`} values={fieldValues(field, 'globalTags')} /></td></tr>)}</tbody>
+              <tbody>{detail.schema_fields.map((field, index) => {
+                const fieldName = valueOf(field, 'fieldPath', 'name')
+                const type = valueOf(field, 'nativeDataType', 'type')
+                const description = valueOf(field, 'description')
+                return <tr key={`${fieldName ?? 'unknown'}-${index}`}><td>{fieldName ? <TruncatedText value={fieldName} /> : <CatalogEmptyValue />}</td><td>{detailText(type)}</td><td>{description ? <TruncatedText value={description} /> : <CatalogEmptyValue />}</td><td><BadgeScroller label={`${fieldName ?? 'Column'} Terms`} values={fieldValues(field, 'glossaryTerms')} /></td><td><BadgeScroller label={`${fieldName ?? 'Column'} Tags`} values={fieldValues(field, 'globalTags')} /></td></tr>
+              })}</tbody>
             </table>
             {detail.schema_fields.length === 0 && <div className="catalog-detail-state">스키마 필드가 등록되지 않았습니다.</div>}
           </div>

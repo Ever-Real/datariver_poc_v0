@@ -32,16 +32,12 @@ function NodeIcon({ kind }: { kind: CatalogTreeNode['kind'] }) {
 
 export function CatalogResourceTree({
   client,
-  query,
   selectedAssetId,
   onSelectAsset,
-  onSelectScope,
 }: {
   client: ApiClient
-  query: string
   selectedAssetId?: string
   onSelectAsset: (assetId: string) => void
-  onSelectScope?: (scope: { platform: string; databaseName: string; schemaName: string }) => void
 }) {
   const [branches, setBranches] = useState<Record<string, Branch>>({})
   const [expanded, setExpanded] = useState<Set<string>>(new Set())
@@ -61,7 +57,6 @@ export function CatalogResourceTree({
     setLoading((current) => new Set(current).add(key)); setError(undefined)
     try {
       const parameters = new URLSearchParams(parent ? treePath(parent) : 'parent_kind=ROOT&limit=100')
-      if (query) parameters.set('q', query)
       const cursor = append ? branches[key]?.nextCursor : undefined
       if (cursor) parameters.set('cursor', cursor)
       const page = await client.request<CatalogTreePage>(`/catalog/tree/nodes?${parameters}`, {
@@ -83,7 +78,7 @@ export function CatalogResourceTree({
         setLoading((current) => { const next = new Set(current); next.delete(key); return next })
       }
     }
-  }, [branches, client, query])
+  }, [branches, client])
 
   useEffect(() => {
     const activeControllers = controllers.current
@@ -98,17 +93,13 @@ export function CatalogResourceTree({
       activeControllers.forEach((controller) => controller.abort())
       activeControllers.clear()
     }
-    // loadBranch intentionally resets when the committed server query changes.
+    // The Resource Tree is a standalone authorized hierarchy.  Search filters
+    // never narrow it or mutate the active Search Results filter state.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [client, query])
+  }, [client])
 
   const toggle = (node: CatalogTreeNode) => {
     if (node.kind === 'ASSET') { if (node.asset) onSelectAsset(node.asset.id); return }
-    onSelectScope?.({
-      platform: node.platform ?? '',
-      databaseName: node.database_name ?? '',
-      schemaName: node.schema_name ?? '',
-    })
     const key = branchKey(node)
     setExpanded((current) => {
       const next = new Set(current)

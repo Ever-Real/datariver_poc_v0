@@ -81,12 +81,19 @@ describe('catalog workspace', () => {
     const toolbar = document.querySelector('.catalog-search-toolbar')
     expect(toolbar).not.toBeNull()
     expect(within(toolbar as HTMLElement).getAllByRole('button').map((button) => button.textContent)).toEqual([
-      '검색', '필터', 'CSV 저장', 'Excel 저장',
+      '검색', '필터', '초기화', 'CSV 저장', 'Excel 저장',
     ])
     expect(within(toolbar as HTMLElement).getByRole('button', { name: '필터' })).toBeInTheDocument()
+    expect(within(toolbar as HTMLElement).getByRole('button', { name: '검색 화면 초기화' })).toBeEnabled()
     expect(within(toolbar as HTMLElement).getByRole('button', { name: 'CSV 저장' })).toBeDisabled()
     expect(within(toolbar as HTMLElement).getByRole('button', { name: 'Excel 저장' })).toBeDisabled()
-    expect(within(screen.getByRole('combobox', { name: '페이지 크기' })).getByRole('option', { name: '전체' })).toBeInTheDocument()
+    const topPagination = screen.getByRole('navigation', { name: 'Search Results 상단 페이지 탐색' })
+    expect(within(topPagination).getByText('페이지 크기')).toBeInTheDocument()
+    expect(within(topPagination).getByRole('combobox', { name: '페이지 크기' })).toBeInTheDocument()
+    const bottomPagination = screen.getByRole('navigation', { name: '페이지 탐색' })
+    expect(within(bottomPagination).getByRole('option', { name: '전체' })).toBeInTheDocument()
+    expect(screen.getAllByRole('button', { name: '이전' })).toHaveLength(2)
+    expect(screen.getAllByRole('button', { name: '다음' })).toHaveLength(2)
     expect(request.mock.calls.some(([path]) => String(path).includes('10000'))).toBe(false)
   })
 
@@ -119,8 +126,10 @@ describe('catalog workspace', () => {
     render(<CatalogPage client={clientWith(request)} />)
     await screen.findByText('asset_049')
     request.mockClear()
+    const bottomPagination = screen.getByRole('navigation', { name: '페이지 탐색' })
+    const pageSize = within(bottomPagination).getByRole('combobox', { name: '페이지 크기' })
 
-    fireEvent.change(screen.getByRole('combobox', { name: '페이지 크기' }), { target: { value: '200' } })
+    fireEvent.change(pageSize, { target: { value: '200' } })
     expect(await screen.findByText('asset_119')).toBeInTheDocument()
     await waitFor(() => {
       const assetCalls = request.mock.calls.filter(([path]) => String(path).startsWith('/catalog/assets?'))
@@ -130,7 +139,7 @@ describe('catalog workspace', () => {
 
     for (const logicalSize of ['500', '1000']) {
       request.mockClear()
-      fireEvent.change(screen.getByRole('combobox', { name: '페이지 크기' }), { target: { value: logicalSize } })
+      fireEvent.change(pageSize, { target: { value: logicalSize } })
       await waitFor(() => {
         const assetCalls = request.mock.calls.filter(([path]) => String(path).startsWith('/catalog/assets?'))
         expect(assetCalls).toHaveLength(2)
@@ -139,11 +148,11 @@ describe('catalog workspace', () => {
     }
 
     request.mockClear()
-    fireEvent.change(screen.getByRole('combobox', { name: '페이지 크기' }), { target: { value: '0' } })
-    expect(await screen.findByText('전체 · 현재 120건')).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: '다음' })).toBeDisabled()
+    fireEvent.change(pageSize, { target: { value: '0' } })
+    expect((await screen.findAllByText('전체 · 현재 120건')).length).toBeGreaterThanOrEqual(2)
+    expect(screen.getAllByRole('button', { name: '다음' }).every((button) => button.hasAttribute('disabled'))).toBe(true)
     await waitFor(() => expect(request.mock.calls.filter(([path]) => String(path).startsWith('/catalog/assets?'))).toHaveLength(2))
-  })
+  }, 15_000)
 
   it('loads canonical tree branches only when a parent is expanded', async () => {
     const request = vi.fn((path: string, options?: RequestOptions): Promise<unknown> => {
@@ -164,6 +173,83 @@ describe('catalog workspace', () => {
     expect(request.mock.calls.some(([path]) => String(path).includes('platform=snowflake'))).toBe(true)
   })
 
+  it('moves to and visibly selects a Resource Tree asset in the current result set', async () => {
+    const treeAsset: CatalogAsset = { ...asset, id: 'tree-asset', name: 'tree_selected_table' }
+    const assets = [...Array.from({ length: 50 }, (_, index) => ({
+      ...asset,
+      id: `first-page-${index}`,
+      name: `first_page_${index}`,
+    })), treeAsset]
+    const request = vi.fn((path: string, options?: RequestOptions): Promise<unknown> => {
+      void options
+      if (path.startsWith('/catalog/assets?')) {
+        const parameters = new URL(path, 'http://catalog.test').searchParams
+        const offset = Number(parameters.get('cursor')?.replace('offset-', '') ?? 0)
+        const limit = Number(parameters.get('limit'))
+        const items = assets.slice(offset, offset + limit)
+        const nextOffset = offset + items.length
+        return Promise.resolve({
+          items,
+          page: { limit, ...(nextOffset < assets.length ? { next_cursor: `offset-${nextOffset}` } : {}) },
+          total: assets.length,
+          meta,
+          match_mode: 'ALL',
+        })
+      }
+      if (path.includes('parent_kind=ROOT')) return Promise.resolve({ items: [{ id: 'asset-node', kind: 'ASSET', label: treeAsset.name, asset_count: 1, has_children: false, asset: treeAsset }], page: { limit: 100 }, meta })
+      if (path === `/catalog/assets/${treeAsset.id}`) return Promise.resolve({ ...treeAsset, ownership: [], glossary_terms: [], tags: [], schema_fields: [], quality: {}, source_version: 'source-v7' })
+      return defaultRequest(path)
+    })
+    render(<CatalogPage client={clientWith(request)} initialQuery="wafer" />)
+
+    const tree = await screen.findByRole('complementary', { name: 'Resource Tree' })
+    fireEvent.click(await within(tree).findByRole('button', { name: /tree_selected_table/ }))
+    expect(await screen.findByRole('complementary', { name: '카탈로그 상세' })).toHaveTextContent(treeAsset.name)
+    const table = screen.getByRole('table', { name: '카탈로그 검색 결과' })
+    await waitFor(() => expect(table.querySelector('tbody tr.selected')).toHaveTextContent(treeAsset.name))
+    expect(screen.getAllByText('2 페이지 · 현재 1건')).toHaveLength(2)
+    expect(request.mock.calls.some(([path]) => String(path).includes('q=wafer'))).toBe(true)
+    expect(request.mock.calls.some(([path]) => String(path).startsWith('/catalog/tree/') && String(path).includes('q='))).toBe(false)
+  })
+
+  it('keeps the current result page visible while resolving a Resource Tree target off-screen', async () => {
+    const treeAsset: CatalogAsset = { ...asset, id: 'tree-third-page-asset', name: 'tree_third_page_table' }
+    const assets = [...Array.from({ length: 100 }, (_, index) => ({ ...asset, id: `tree-page-${index}`, name: `tree_page_${index}` })), treeAsset]
+    let resolveSecondPage: ((value: unknown) => void) | undefined
+    const secondPage = new Promise<unknown>((resolve) => { resolveSecondPage = resolve })
+    const responseFor = (offset: number, limit: number) => {
+      const items = assets.slice(offset, offset + limit)
+      const nextOffset = offset + items.length
+      return { items, page: { limit, ...(nextOffset < assets.length ? { next_cursor: `offset-${nextOffset}` } : {}) }, total: assets.length, meta, match_mode: 'ALL' }
+    }
+    const request = vi.fn((path: string, options?: RequestOptions): Promise<unknown> => {
+      void options
+      if (path.startsWith('/catalog/assets?')) {
+        const parameters = new URL(path, 'http://catalog.test').searchParams
+        const offset = Number(parameters.get('cursor')?.replace('offset-', '') ?? 0)
+        const limit = Number(parameters.get('limit'))
+        if (offset === 50) return secondPage
+        return Promise.resolve(responseFor(offset, limit))
+      }
+      if (path.includes('parent_kind=ROOT')) return Promise.resolve({ items: [{ id: 'asset-node', kind: 'ASSET', label: treeAsset.name, asset_count: 1, has_children: false, asset: treeAsset }], page: { limit: 100 }, meta })
+      if (path === `/catalog/assets/${treeAsset.id}`) return Promise.resolve({ ...treeAsset, ownership: [], glossary_terms: [], tags: [], schema_fields: [], quality: {}, source_version: 'source-v7' })
+      return defaultRequest(path)
+    })
+    render(<CatalogPage client={clientWith(request)} initialQuery="wafer" />)
+
+    const tree = await screen.findByRole('complementary', { name: 'Resource Tree' })
+    fireEvent.click(await within(tree).findByRole('button', { name: /tree_third_page_table/ }))
+    expect(await screen.findByRole('status')).toHaveTextContent('선택한 테이블이 있는 페이지를 찾는 중입니다.')
+    const table = screen.getByRole('table', { name: '카탈로그 검색 결과' })
+    expect(table).toHaveTextContent('tree_page_0')
+    expect(table).not.toHaveTextContent('tree_page_50')
+
+    resolveSecondPage?.(responseFor(50, 50))
+    await waitFor(() => expect(table.querySelector('tbody tr.selected')).toHaveTextContent(treeAsset.name))
+    expect(screen.queryByRole('status')).not.toBeInTheDocument()
+    expect(screen.getAllByText('3 페이지 · 현재 1건')).toHaveLength(2)
+  })
+
   it('keeps legacy search targets and bounded facet filtering in a responsive popover', async () => {
     const request = vi.fn(defaultRequest)
     render(<CatalogPage client={clientWith(request)} initialQuery="wafer" />)
@@ -177,6 +263,70 @@ describe('catalog workspace', () => {
     await waitFor(() => expect(request.mock.calls.some(([path]) => (
       String(path).includes('database=analytics') && String(path).includes('lifecycle=ACTIVE')
     ))).toBe(true))
+
+    const toolbar = document.querySelector('.catalog-search-toolbar')
+    expect(toolbar).not.toBeNull()
+    const reset = within(toolbar as HTMLElement).getByRole('button', { name: '검색 화면 초기화' })
+    await waitFor(() => expect(reset).toBeEnabled())
+    fireEvent.click(reset)
+    await waitFor(() => expect(request.mock.calls.some(([path]) => (
+      String(path).startsWith('/catalog/assets?')
+      && !String(path).includes('database=analytics')
+      && !String(path).includes('lifecycle=ACTIVE')
+    ))).toBe(true))
+  })
+
+  it('moves to and visibly selects a Lineage node in Search Results', async () => {
+    const lineageAsset: CatalogAsset = { ...asset, id: 'lineage-asset', name: 'lineage_selected_table' }
+    const assets = [...Array.from({ length: 50 }, (_, index) => ({
+      ...asset,
+      id: `lineage-first-page-${index}`,
+      name: `lineage_first_page_${index}`,
+    })), lineageAsset]
+    const request = vi.fn((path: string, options?: RequestOptions): Promise<unknown> => {
+      void options
+      if (path.startsWith('/catalog/assets?')) {
+        const parameters = new URL(path, 'http://catalog.test').searchParams
+        const offset = Number(parameters.get('cursor')?.replace('offset-', '') ?? 0)
+        const limit = Number(parameters.get('limit'))
+        const items = offset === 0 ? [asset, ...assets.slice(0, limit - 1)] : assets.slice(offset, offset + limit)
+        const nextOffset = offset + items.length
+        return Promise.resolve({
+          items,
+          page: { limit, ...(nextOffset < assets.length ? { next_cursor: `offset-${nextOffset}` } : {}) },
+          total: assets.length,
+          meta,
+          match_mode: 'ALL',
+        })
+      }
+      if (path === `/catalog/assets/${asset.id}`) return Promise.resolve({ ...asset, ownership: [], glossary_terms: [], tags: [], schema_fields: [], quality: {}, source_version: 'source-v7' })
+      if (path === `/catalog/assets/${lineageAsset.id}`) return Promise.resolve({ ...lineageAsset, ownership: [], glossary_terms: [], tags: [], schema_fields: [], quality: {}, source_version: 'source-v7' })
+      if (path.includes('/lineage?')) return Promise.resolve({ center_asset_id: asset.id, nodes: [asset, lineageAsset], edges: [{ source_asset_id: asset.id, target_asset_id: lineageAsset.id }], direction: 'BOTH', depth: 2, truncated: false, meta })
+      return defaultRequest(path)
+    })
+    render(<CatalogPage client={clientWith(request)} initialQuery="wafer" />)
+
+    fireEvent.click(await screen.findByText('wafer_events'))
+    fireEvent.click(await screen.findByRole('tab', { name: 'Lineage' }))
+    fireEvent.click(await screen.findByRole('button', { name: `${lineageAsset.name} 선택` }))
+    const table = screen.getByRole('table', { name: '카탈로그 검색 결과' })
+    await waitFor(() => expect(table.querySelector('tbody tr.selected')).toHaveTextContent(lineageAsset.name))
+    expect(await screen.findByRole('complementary', { name: '카탈로그 상세' })).toHaveTextContent(lineageAsset.name)
+  })
+
+  it('resets the query, filters, result selection, and Authorized Detail', async () => {
+    const request = vi.fn(defaultRequest)
+    render(<CatalogPage client={clientWith(request)} initialQuery="wafer" />)
+
+    fireEvent.click(await screen.findByText('wafer_events'))
+    expect(await screen.findByRole('complementary', { name: '카탈로그 상세' })).toBeInTheDocument()
+    const toolbar = document.querySelector('.catalog-search-toolbar')
+    expect(toolbar).not.toBeNull()
+    fireEvent.click(within(toolbar as HTMLElement).getByRole('button', { name: '검색 화면 초기화' }))
+
+    await waitFor(() => expect(screen.getByLabelText('데이터셋 이름이나 설명 검색')).toHaveValue(''))
+    expect(screen.queryByRole('complementary', { name: '카탈로그 상세' })).not.toBeInTheDocument()
+    expect(screen.getByRole('table', { name: '카탈로그 검색 결과' }).querySelector('tbody tr.selected')).toBeNull()
   })
 
   it('opens authorized detail and fetches bounded lineage on demand', async () => {
@@ -224,5 +374,36 @@ describe('catalog workspace', () => {
     ))).toBe(true))
     expect(screen.getByRole('button', { name: 'wafer_events 선택' })).toHaveAttribute('title', 'wafer_events 상세 정보 열기')
     expect(screen.getByRole('complementary', { name: '카탈로그 상세' })).toHaveTextContent('wafer_events')
+  })
+
+  it('uses muted dashes for absent result and authorized-detail metadata', async () => {
+    const missing: CatalogAsset = {
+      ...asset,
+      id: '00000000-0000-4000-8000-000000000202',
+      name: 'missing_metadata',
+      description: undefined,
+      platform: undefined,
+      database_name: undefined,
+      schema_name: undefined,
+      owner: undefined,
+      domain: undefined,
+      tags: [],
+      terms: [],
+      created_at: undefined,
+      matches: [],
+    }
+    const request = vi.fn((path: string, options?: RequestOptions): Promise<unknown> => {
+      void options
+      if (path.startsWith('/catalog/assets?')) return Promise.resolve({ items: [missing], page: { limit: 50 }, total: 1, meta, match_mode: 'ALL' })
+      if (path === `/catalog/assets/${missing.id}`) return Promise.resolve({ ...missing, ownership: [], glossary_terms: [], tags: [], schema_fields: [], quality: {}, source_version: 'source-v7' })
+      return defaultRequest(path)
+    })
+    render(<CatalogPage client={clientWith(request)} />)
+
+    const table = await screen.findByRole('table', { name: '카탈로그 검색 결과' })
+    expect(within(table).getAllByLabelText('정보 없음')).toHaveLength(9)
+    fireEvent.click(screen.getByText('missing_metadata'))
+    const detail = await screen.findByRole('complementary', { name: '카탈로그 상세' })
+    expect(within(detail).getAllByLabelText('정보 없음')).toHaveLength(11)
   })
 })

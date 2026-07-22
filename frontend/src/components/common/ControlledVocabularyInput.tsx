@@ -38,7 +38,7 @@ export function BadgeScroller({ values, label, onRemove, className = '', control
     if (trackRef.current?.hasPointerCapture(event.pointerId)) trackRef.current.releasePointerCapture(event.pointerId)
   }
 
-  if (!values.length) return <span className={`badge-scroller-empty ${className}`.trim()}>—</span>
+  if (!values.length) return <span className={`badge-scroller-empty ${className}`.trim()} aria-label="정보 없음">-</span>
 
   return <div className={`badge-scroller ${className}`.trim()} aria-label={label}>
     {controls && <button aria-label={`${label} 이전 항목`} className="badge-scroller-arrow badge-scroller-arrow-left" onClick={(event) => { event.stopPropagation(); scroll(-140) }} type="button"><ChevronLeft size={12} /></button>}

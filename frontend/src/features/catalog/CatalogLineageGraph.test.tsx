@@ -95,8 +95,9 @@ describe('CatalogLineageGraph', () => {
     expect(screen.getByText('D·2')).toHaveClass('catalog-lineage-node-role')
   })
 
-  it('supports canvas panning, zoom controls, and individual node movement', () => {
-    render(<CatalogLineageGraph lineage={lineage} onSelectAsset={vi.fn()} />)
+  it('supports canvas panning, zoom controls, and individual node body movement', () => {
+    const onSelectAsset = vi.fn()
+    render(<CatalogLineageGraph lineage={lineage} onSelectAsset={onSelectAsset} />)
 
     const viewport = document.querySelector<HTMLElement>('.catalog-lineage-viewport')
     const world = document.querySelector<HTMLElement>('.catalog-lineage-world')
@@ -122,5 +123,6 @@ describe('CatalogLineageGraph', () => {
     fireEvent.pointerMove(viewport as HTMLElement, { clientX: 136, clientY: 112, pointerId: 2 })
     fireEvent.pointerUp(viewport as HTMLElement, { clientX: 136, clientY: 112, pointerId: 2 })
     expect((node as HTMLElement).style.left).not.toBe(initialLeft)
+    expect(onSelectAsset).not.toHaveBeenCalled()
   })
 })

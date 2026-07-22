@@ -82,7 +82,6 @@ export function RegistrationPage({ client }: { client: ApiClient }) {
         <div className="registration-manual-workbench" id="registration-manual-panel" role="tabpanel" aria-labelledby="registration-manual-tab">
           <CatalogResourceTree
             client={client}
-            query=""
             selectedAssetId={selectedAssetId}
             onSelectAsset={(assetId) => {
               setSelectedAssetId(assetId)

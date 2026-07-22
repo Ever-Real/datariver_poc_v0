@@ -8,6 +8,7 @@ interface CursorPaginationProps {
   onPrevious: () => void
   onNext: () => void
   onPageSizeChange: (pageSize: number) => void
+  label?: string
 }
 
 export function CursorPagination({
@@ -20,9 +21,10 @@ export function CursorPagination({
   onPrevious,
   onNext,
   onPageSizeChange,
+  label = '페이지 탐색',
 }: CursorPaginationProps) {
   return (
-    <nav className="cursor-pagination" aria-label="페이지 탐색">
+    <nav className="cursor-pagination" aria-label={label}>
       <span className="cursor-pagination-summary">
         {pageSize === 0
           ? `전체 · 현재 ${(itemCount ?? 0).toLocaleString()}건`

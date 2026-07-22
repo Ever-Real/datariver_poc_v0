@@ -81,6 +81,7 @@ class DataHubAssetEnrichment:
     raw_version: str
     observed_at: datetime
     created_at: datetime | None = None
+    description: str | None = None
 
 
 @dataclass(frozen=True, slots=True)

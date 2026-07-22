@@ -1324,8 +1324,18 @@ class CatalogService:
         stale_at: datetime | None = None,
     ) -> CatalogAssetDetail:
         index = authorized.index
-        if enrichment.created_at is not None:
-            index = replace(index, created_at=enrichment.created_at)
+        if enrichment.created_at is not None or enrichment.description is not None:
+            index = replace(
+                index,
+                created_at=(
+                    enrichment.created_at if enrichment.created_at is not None else index.created_at
+                ),
+                description=(
+                    enrichment.description
+                    if enrichment.description is not None
+                    else index.description
+                ),
+            )
         return CatalogAssetDetail(
             index=index,
             ownership=enrichment.ownership,
@@ -1343,7 +1353,7 @@ class CatalogService:
         enrichment: DataHubAssetEnrichment, *, fresh_until: datetime
     ) -> dict[str, Any]:
         return {
-            "schema": 2,
+            "schema": 3,
             "ownership": list(enrichment.ownership),
             "glossary_terms": list(enrichment.glossary_terms),
             "tags": list(enrichment.tags),
@@ -1354,6 +1364,7 @@ class CatalogService:
             "created_at": (
                 enrichment.created_at.isoformat() if enrichment.created_at is not None else None
             ),
+            "description": enrichment.description,
             "fresh_until": fresh_until.isoformat(),
         }
 
@@ -1368,7 +1379,7 @@ class CatalogService:
 
     @staticmethod
     def _cached_enrichment(value: object) -> DataHubAssetEnrichment | None:
-        if not isinstance(value, dict) or value.get("schema") != 2:
+        if not isinstance(value, dict) or value.get("schema") != 3:
             return None
         try:
             ownership = tuple(dict(item) for item in value["ownership"])
@@ -1383,6 +1394,11 @@ class CatalogService:
                 if value.get("created_at") is not None
                 else None
             )
+            description = (
+                str(value["description"])
+                if isinstance(value.get("description"), str) and value["description"].strip()
+                else None
+            )
         except (KeyError, TypeError, ValueError):
             return None
         return DataHubAssetEnrichment(
@@ -1394,4 +1410,5 @@ class CatalogService:
             raw_version=raw_version,
             observed_at=observed_at,
             created_at=created_at,
+            description=description,
         )

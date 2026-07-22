@@ -1,4 +1,5 @@
 import type { CatalogMatchFragment } from '../../api/types'
+import { CatalogEmptyValue } from './CatalogEmptyValue'
 
 function escapeExpression(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
@@ -16,7 +17,7 @@ export function HighlightedText({ text, terms }: { text: string; terms: string[]
 }
 
 export function CatalogMatchPreview({ fragments }: { fragments: CatalogMatchFragment[] }) {
-  if (fragments.length === 0) return <span className="muted">일치 문맥 없음</span>
+  if (fragments.length === 0) return <CatalogEmptyValue />
   return <span className="catalog-match-preview">{fragments.map((fragment) => (
     <span key={`${fragment.field}-${fragment.text}`} title={fragment.text}>
       <b>{fragment.field === 'NAME' ? 'Name' : 'Desc'}</b>

@@ -27,7 +27,8 @@ COPY frontend/nginx-main.conf /etc/nginx/nginx.conf
 COPY frontend/nginx.conf.template /etc/nginx/templates/default.conf.template
 COPY --chmod=0555 frontend/docker-entrypoint.sh /usr/local/bin/datariver-entrypoint
 COPY --from=build /app/dist /usr/share/nginx/html
-RUN chown -R nginx:nginx /usr/share/nginx/html /var/cache/nginx /var/run
+RUN apk upgrade --no-cache \
+    && chown -R nginx:nginx /usr/share/nginx/html /var/cache/nginx /var/run
 
 USER nginx
 EXPOSE 8080

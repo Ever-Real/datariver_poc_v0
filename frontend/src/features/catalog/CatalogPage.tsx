@@ -17,6 +17,7 @@ import { DenseDataTable } from '../../components/common/DenseDataTable'
 import { TruncatedText } from '../../components/common/TruncatedText'
 import { PageTitle } from '../../components/layout/PageTitle'
 import { CatalogDetailPane } from './CatalogDetailPane'
+import { CatalogEmptyValue } from './CatalogEmptyValue'
 import { CatalogExportControl } from './CatalogExportControl'
 import { CatalogMatchPreview } from './CatalogMatchText'
 import { CatalogResourceTree } from './CatalogResourceTree'
@@ -130,6 +131,8 @@ export function CatalogPage({
   const [suggestionIndex, setSuggestionIndex] = useState(-1)
   const [filtersOpen, setFiltersOpen] = useState(false)
   const [selectedAssetId, setSelectedAssetId] = useState<string>()
+  const [selectionTargetAssetId, setSelectionTargetAssetId] = useState<string>()
+  const [selectionLoading, setSelectionLoading] = useState(false)
   const [detailWidth, setDetailWidth] = useState(550)
   const [cursors, setCursors] = useState<Array<string | undefined>>([undefined])
   const [pageIndex, setPageIndex] = useState(0)
@@ -140,24 +143,38 @@ export function CatalogPage({
   const filterRoot = useRef<HTMLDivElement>(null)
   const workspaceRef = useRef<HTMLDivElement>(null)
   const initialQueryRef = useRef(initialQuery)
+  const skipResultLoadRef = useRef(false)
+  const resultLoadAbortRef = useRef<AbortController | undefined>(undefined)
 
   useEffect(() => {
     if (initialQueryRef.current === initialQuery) return
     initialQueryRef.current = initialQuery
     setDraftQuery(initialQuery); setQuery(initialQuery); setCursors([undefined]); setPageIndex(0)
+    setSelectedAssetId(undefined); setSelectionTargetAssetId(undefined); setSelectionLoading(false)
   }, [initialQuery])
 
   useEffect(() => {
     const controller = new AbortController()
-    setLoading(true); setError(undefined); setSelectedAssetId(undefined)
+    if (skipResultLoadRef.current) {
+      skipResultLoadRef.current = false
+      return () => controller.abort()
+    }
+    resultLoadAbortRef.current?.abort()
+    resultLoadAbortRef.current = controller
+    setLoading(true); setError(undefined)
     void Promise.all([
       loadCatalogWindow(client, query, filters, cursors[pageIndex], pageSize, controller.signal),
       client.request<CatalogFacets>(`/catalog/facets?${searchPath(query, filters, undefined, 30)}`, { signal: controller.signal }),
     ]).then(([nextResult, nextFacets]) => {
-      if (!controller.signal.aborted) { setResult(nextResult); setFacets(nextFacets) }
+      if (!controller.signal.aborted) {
+        setResult(nextResult); setFacets(nextFacets)
+      }
     }).catch((next: unknown) => { if (!controller.signal.aborted) setError(next) })
       .finally(() => { if (!controller.signal.aborted) setLoading(false) })
-    return () => controller.abort()
+    return () => {
+      controller.abort()
+      if (resultLoadAbortRef.current === controller) resultLoadAbortRef.current = undefined
+    }
   }, [client, cursors, filters, pageIndex, pageSize, query])
 
   useEffect(() => {
@@ -192,6 +209,7 @@ export function CatalogPage({
     const normalized = value.trim()
     if (!validCatalogQuery(normalized)) { setError(new Error('검색어는 비워 두거나 2자 이상 입력하세요.')); return }
     setDraftQuery(normalized); setQuery(normalized); setSuggestions([]); setCursors([undefined]); setPageIndex(0)
+    setSelectedAssetId(undefined); setSelectionTargetAssetId(undefined); setSelectionLoading(false)
     onQueryChange?.(normalized)
   }
 
@@ -211,21 +229,22 @@ export function CatalogPage({
   const columns = useMemo<ColumnDef<CatalogAsset>[]>(() => [
     { id: 'number', header: 'No', size: 56, enableSorting: false, cell: ({ row }) => <span>{pageIndex * pageSize + row.index + 1}</span> },
     { accessorKey: 'asset_type', header: 'Type', size: 76, cell: ({ row }) => <span className={`badge catalog-asset-type-${row.original.asset_type.toLowerCase()}`}>{row.original.asset_type}</span> },
-    { accessorKey: 'platform', header: 'Platform', size: 96, cell: ({ row }) => <TruncatedText value={row.original.platform ?? '—'} /> },
-    { accessorKey: 'database_name', header: 'Database', size: 110, cell: ({ row }) => <TruncatedText value={row.original.database_name ?? '—'} /> },
-    { accessorKey: 'schema_name', header: 'Schema', size: 110, cell: ({ row }) => <TruncatedText value={row.original.schema_name ?? '—'} /> },
+    { accessorKey: 'platform', header: 'Platform', size: 96, cell: ({ row }) => optionalTableText(row.original.platform) },
+    { accessorKey: 'database_name', header: 'Database', size: 110, cell: ({ row }) => optionalTableText(row.original.database_name) },
+    { accessorKey: 'schema_name', header: 'Schema', size: 110, cell: ({ row }) => optionalTableText(row.original.schema_name) },
     { accessorKey: 'name', header: 'Table / Asset', size: 210, cell: ({ row }) => <TruncatedText value={row.original.name} className="catalog-asset-name" /> },
     { id: 'terms', accessorFn: (row) => (row.terms ?? []).join(' '), header: 'Terms', size: 170, cell: ({ row }) => <BadgeScroller label={`${row.original.name} Terms`} values={row.original.terms ?? []} /> },
     { id: 'tags', accessorFn: (row) => (row.tags ?? []).join(' '), header: 'Tags', size: 170, cell: ({ row }) => <BadgeScroller label={`${row.original.name} Tags`} values={row.original.tags ?? []} /> },
-    { accessorKey: 'owner', header: 'Owner', size: 140, cell: ({ row }) => <TruncatedText value={row.original.owner ?? '—'} /> },
-    { accessorKey: 'domain', header: 'Domain', size: 130, cell: ({ row }) => <TruncatedText value={row.original.domain ?? '—'} /> },
+    { accessorKey: 'owner', header: 'Owner', size: 140, cell: ({ row }) => optionalTableText(row.original.owner) },
+    { accessorKey: 'domain', header: 'Domain', size: 130, cell: ({ row }) => optionalTableText(row.original.domain) },
     { accessorKey: 'classification', header: 'Class', size: 100, cell: ({ row }) => <span className="badge badge-soft">{row.original.classification}</span> },
-    { accessorKey: 'description', header: 'Description', size: 260, cell: ({ row }) => <TruncatedText value={row.original.description ?? '설명 없음'} /> },
+    { accessorKey: 'description', header: 'Description', size: 260, cell: ({ row }) => optionalTableText(row.original.description) },
     { id: 'matches', accessorFn: (row) => row.matches.map((match) => match.text).join(' '), header: 'Matches', size: 300, cell: ({ row }) => <CatalogMatchPreview fragments={row.original.matches} /> },
   ], [pageIndex, pageSize])
 
   const updateFilter = (name: keyof Filters, value: string) => {
     setFilters((current) => ({ ...current, [name]: value })); setCursors([undefined]); setPageIndex(0)
+    setSelectedAssetId(undefined); setSelectionTargetAssetId(undefined); setSelectionLoading(false)
   }
 
   const toggleSearchField = (field: SearchField) => {
@@ -238,22 +257,96 @@ export function CatalogPage({
       return { ...current, searchFields }
     })
     setCursors([undefined]); setPageIndex(0)
+    setSelectedAssetId(undefined); setSelectionTargetAssetId(undefined); setSelectionLoading(false)
   }
 
   const setAllSearchFields = (checked: boolean) => {
     setFilters((current) => ({ ...current, searchFields: checked ? allSearchFields : [allSearchFields[0]!] }))
     setCursors([undefined]); setPageIndex(0)
+    setSelectedAssetId(undefined); setSelectionTargetAssetId(undefined); setSelectionLoading(false)
   }
 
   const resetFilters = () => {
     setFilters(emptyFilters)
+    setDraftQuery('')
+    setQuery('')
+    setSuggestions([])
+    setSuggestionIndex(-1)
+    setFiltersOpen(false)
     setCursors([undefined])
     setPageIndex(0)
+    setPageSize(50)
+    setSelectedAssetId(undefined)
+    setSelectionTargetAssetId(undefined)
+    setSelectionLoading(false)
+    setError(undefined)
+    onQueryChange?.('')
   }
 
-  const selectTreeScope = (scope: Pick<Filters, 'platform' | 'databaseName' | 'schemaName'>) => {
-    setFilters((current) => ({ ...current, ...scope })); setCursors([undefined]); setPageIndex(0)
+  const selectAsset = (assetId: string) => {
+    setSelectedAssetId(assetId)
+    if (pageSize === 0 || result?.items.some((item) => item.id === assetId)) {
+      setSelectionTargetAssetId(undefined)
+      setSelectionLoading(false)
+      return
+    }
+    // Resource Tree and Lineage are independent of the current result page.
+    // Resolve the same authorized query off-screen, then switch directly to
+    // the page containing the selected opaque asset id.
+    resultLoadAbortRef.current?.abort()
+    setLoading(false)
+    setSelectionTargetAssetId(assetId)
   }
+
+  const closeSelectedAsset = () => {
+    setSelectedAssetId(undefined)
+    setSelectionTargetAssetId(undefined)
+    setSelectionLoading(false)
+  }
+
+  useEffect(() => {
+    if (!selectionTargetAssetId || pageSize === 0) return
+    const controller = new AbortController()
+    let active = true
+    setSelectionLoading(true)
+    void client.request<CatalogFacets>(`/catalog/facets?${searchPath(query, filters, undefined, 30)}`, { signal: controller.signal })
+      .then((nextFacets) => { if (active && !controller.signal.aborted) setFacets(nextFacets) })
+      .catch(() => undefined)
+    void (async () => {
+      const targetCursors: Array<string | undefined> = [undefined]
+      const visitedCursors = new Set<string>()
+      let cursor: string | undefined
+      let targetPageIndex = 0
+
+      while (!controller.signal.aborted) {
+        const candidate = await loadCatalogWindow(client, query, filters, cursor, pageSize, controller.signal)
+        if (candidate.items.some((item) => item.id === selectionTargetAssetId)) {
+          if (!active) return
+          // The regular result effect would fetch this page again.  The
+          // already resolved window is authoritative for this same query.
+          skipResultLoadRef.current = true
+          setResult(candidate)
+          setCursors(targetCursors)
+          setPageIndex(targetPageIndex)
+          return
+        }
+        const nextCursor = candidate.page.next_cursor
+        if (!nextCursor || visitedCursors.has(nextCursor)) return
+        visitedCursors.add(nextCursor)
+        targetCursors.push(nextCursor)
+        cursor = nextCursor
+        targetPageIndex += 1
+      }
+    })().catch((next: unknown) => {
+      if (active && !controller.signal.aborted) setError(next)
+    }).finally(() => {
+      if (active) {
+        setSelectionLoading(false)
+        setSelectionTargetAssetId(undefined)
+      }
+    })
+    return () => { active = false; controller.abort() }
+  }, [client, filters, pageSize, query, selectionTargetAssetId])
 
   const resizeDetail = (requestedWidth: number) => {
     const measuredWorkspaceWidth = workspaceRef.current?.clientWidth ?? 0
@@ -272,6 +365,25 @@ export function CatalogPage({
     filters.classification,
     filters.lifecycle,
   ].filter(Boolean).length + (filters.searchFields.length === allSearchFields.length ? 0 : 1)
+  const canReset = activeFilterCount > 0 || Boolean(draftQuery || query || selectedAssetId) || pageIndex > 0 || pageSize !== 50
+
+  const paginationProps = {
+    page: pageIndex + 1,
+    pageSize,
+    pageSizeOptions: [50, 100, 200, 500, 1000, 0],
+    canPrevious: !selectionLoading && pageSize !== 0 && pageIndex > 0,
+    canNext: !selectionLoading && pageSize !== 0 && Boolean(result?.page.next_cursor),
+    itemCount: result?.items.length,
+    onPrevious: () => setPageIndex((current) => Math.max(0, current - 1)),
+    onNext: () => {
+      if (!result?.page.next_cursor) return
+      setCursors((current) => [...current.slice(0, pageIndex + 1), result.page.next_cursor])
+      setPageIndex((current) => current + 1)
+    },
+    onPageSizeChange: (value: number) => {
+      setPageSize(value); setCursors([undefined]); setPageIndex(0); setSelectionTargetAssetId(undefined); setSelectionLoading(false)
+    },
+  }
 
   return <section className="catalog-page">
     <PageTitle icon="SR" eyebrow="DataHub Wrapper" title="데이터 카탈로그 검색" description="Workspace·분류정책·권한 범위 안의 로컬 projection을 검색합니다." />
@@ -291,7 +403,7 @@ export function CatalogPage({
         <div className="catalog-filter-root" ref={filterRoot}>
           <button aria-controls="catalog-filter-popover" aria-expanded={filtersOpen} className="button button-secondary catalog-filter-trigger" onClick={() => setFiltersOpen((current) => !current)} type="button"><Filter size={14} />필터{activeFilterCount > 0 && <span className="catalog-filter-count">{activeFilterCount}</span>}</button>
           {filtersOpen && <div className="catalog-filter-popover" id="catalog-filter-popover" role="dialog" aria-label="상세 검색 필터">
-            <header><div><span className="eyebrow">Advanced search</span><strong>검색 필터</strong></div><button className="button button-secondary" onClick={resetFilters} type="button"><RotateCcw size={12} />초기화</button></header>
+            <header><div><span className="eyebrow">Advanced search</span><strong>검색 필터</strong></div><button aria-label="필터 조건 초기화" className="button button-secondary" onClick={resetFilters} type="button"><RotateCcw size={12} />초기화</button></header>
             <fieldset className="catalog-search-targets"><legend>Search in</legend><label><input aria-label="Search in 전체" checked={filters.searchFields.length === allSearchFields.length} onChange={(event) => setAllSearchFields(event.target.checked)} type="checkbox" />전체</label>{allSearchFields.map((field) => <label key={field}><input checked={filters.searchFields.includes(field)} onChange={() => toggleSearchField(field)} type="checkbox" />{searchFieldLabels[field]}</label>)}</fieldset>
             <div className="catalog-filter-fields">
               <FacetSelect label="Type" value={filters.assetType} onChange={(value) => updateFilter('assetType', value)} options={facets?.asset_types ?? []} />
@@ -305,6 +417,7 @@ export function CatalogPage({
             <footer><button className="button" onClick={() => setFiltersOpen(false)} type="button">필터 적용</button></footer>
           </div>}
         </div>
+        <button aria-label="검색 화면 초기화" className="button button-secondary catalog-reset-trigger" disabled={!canReset} onClick={resetFilters} type="button"><RotateCcw size={13} />초기화</button>
         <CatalogExportControl
           client={client}
           compact
@@ -323,17 +436,22 @@ export function CatalogPage({
     </div>
     <ErrorNotice error={error} />
     <div className={`catalog-workspace ${selectedAssetId ? 'with-detail' : ''}`} ref={workspaceRef} style={selectedAssetId ? { '--catalog-detail-width': `${detailWidth}px` } as CSSProperties : undefined}>
-      <CatalogResourceTree client={client} query={query} selectedAssetId={selectedAssetId} onSelectAsset={setSelectedAssetId} onSelectScope={selectTreeScope} />
+      <CatalogResourceTree client={client} selectedAssetId={selectedAssetId} onSelectAsset={selectAsset} />
       <section className="catalog-results" aria-label="카탈로그 검색 결과">
-        <header><div><span className="eyebrow">Permission scoped</span><h2>Search Results</h2></div><span>{result ? `${result.items.length} / ${(result.total ?? result.items.length).toLocaleString()} items` : '0 items'} · ALL keywords · ↔ 좌우 스크롤</span></header>
-        <DenseDataTable caption="카탈로그 검색 결과" columns={columns} data={result?.items ?? []} getRowId={(item) => item.id} loading={loading} emptyMessage={query ? '검색 조건에 맞는 허용 자산이 없습니다.' : '현재 권한 범위에서 표시할 자산이 없습니다.'} selectedRowId={selectedAssetId} onRowActivate={(item) => setSelectedAssetId(item.id)} />
+        <header><div><span className="eyebrow">Permission scoped</span><h2>Search Results</h2><span>{result ? `${result.items.length} / ${(result.total ?? result.items.length).toLocaleString()} items` : '0 items'} · ALL keywords · ↔ 좌우 스크롤</span></div><CursorPagination {...paginationProps} label="Search Results 상단 페이지 탐색" /></header>
+        {selectionLoading && <div className="catalog-selection-loading" role="status"><span className="loader" />선택한 테이블이 있는 페이지를 찾는 중입니다.</div>}
+        <DenseDataTable caption="카탈로그 검색 결과" columns={columns} data={result?.items ?? []} getRowId={(item) => item.id} loading={loading} emptyMessage={query ? '검색 조건에 맞는 허용 자산이 없습니다.' : '현재 권한 범위에서 표시할 자산이 없습니다.'} selectedRowId={selectedAssetId} onRowActivate={(item) => selectAsset(item.id)} />
         <p className="catalog-local-table-note">열 정렬은 현재 로드된 {result?.items.length.toLocaleString() ?? 0}건에 적용됩니다.</p>
-        <CursorPagination page={pageIndex + 1} pageSize={pageSize} pageSizeOptions={[50, 100, 200, 500, 1000, 0]} canPrevious={pageSize !== 0 && pageIndex > 0} canNext={pageSize !== 0 && Boolean(result?.page.next_cursor)} itemCount={result?.items.length} onPrevious={() => setPageIndex((current) => Math.max(0, current - 1))} onNext={() => { if (!result?.page.next_cursor) return; setCursors((current) => [...current.slice(0, pageIndex + 1), result.page.next_cursor]); setPageIndex((current) => current + 1) }} onPageSizeChange={(value) => { setPageSize(value); setCursors([undefined]); setPageIndex(0) }} />
+        <CursorPagination {...paginationProps} />
         {result && <footer className="catalog-result-meta"><span>projection v{result.meta.projection_version}</span><span>policy {result.meta.policy_version}</span><time dateTime={result.meta.observed_at}>{result.meta.observed_at ? new Date(result.meta.observed_at).toLocaleString() : '관측 시각 없음'}</time></footer>}
       </section>
-      {selectedAssetId && <CatalogDetailPane key={selectedAssetId} client={client} assetId={selectedAssetId} onClose={() => setSelectedAssetId(undefined)} onResizeWidth={resizeDetail} onSelectAsset={setSelectedAssetId} width={detailWidth} />}
+      {selectedAssetId && <CatalogDetailPane key={selectedAssetId} client={client} assetId={selectedAssetId} onClose={closeSelectedAsset} onResizeWidth={resizeDetail} onSelectAsset={selectAsset} width={detailWidth} />}
     </div>
   </section>
+}
+
+function optionalTableText(value: string | undefined) {
+  return value?.trim() ? <TruncatedText value={value} /> : <CatalogEmptyValue />
 }
 
 function classificationValue(value: string): Classification | undefined {

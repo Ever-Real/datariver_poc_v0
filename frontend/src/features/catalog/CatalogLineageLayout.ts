@@ -1,7 +1,7 @@
 import type { CatalogAsset, CatalogLineage } from '../../api/types'
 
 export const LINEAGE_NODE_WIDTH = 248
-export const LINEAGE_NODE_HEIGHT = 58
+export const LINEAGE_NODE_HEIGHT = 72
 const HORIZONTAL_GAP = 36
 const VERTICAL_GAP = 58
 export const LINEAGE_CANVAS_PADDING = 24
