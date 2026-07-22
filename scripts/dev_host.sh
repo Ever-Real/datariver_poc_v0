@@ -359,10 +359,14 @@ if [ "$api_ready" != true ]; then
 fi
 
 docker_bridge_gateway() {
-  local configuration
-  configuration=$(docker network inspect bridge --format '{{json .IPAM.Config}}' 2>/dev/null || true)
+  local candidates
+  candidates=$(
+    docker network inspect bridge \
+      --format '{{range .IPAM.Config}}{{.Subnet}}={{.Gateway}} {{end}}' \
+      2>/dev/null || true
+  )
   "$python" "$root/scripts/source_api_bridge.py" \
-    --print-docker-bridge-gateway "$configuration"
+    --print-docker-bridge-gateway "$candidates"
 }
 
 if [ "$enable_airflow_source_bridge" = true ]; then

@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import argparse
 import importlib.util
-import json
 import sys
 from pathlib import Path
 from types import ModuleType
@@ -45,28 +44,31 @@ def test_source_api_bridge_rejects_invalid_ports(value: str) -> None:
 def test_source_api_bridge_selects_ipv4_gateway_from_dual_stack_docker_ipam() -> None:
     module = _module()
 
-    gateway = module.docker_bridge_gateway(
-        json.dumps(
-            [
-                {"Subnet": "172.17.0.0/16", "Gateway": "172.17.0.1"},
-                {"Subnet": "fd00::/64", "Gateway": "fd00::1"},
-            ]
-        )
-    )
+    gateway = module.docker_bridge_gateway("172.17.0.0/16=172.17.0.1 fd00::/64=fd00::1")
 
     assert gateway == "172.17.0.1"
 
 
-def test_source_api_bridge_accepts_docker_compatible_literal_ipam() -> None:
+def test_source_api_bridge_ignores_non_ipam_output() -> None:
     module = _module()
 
-    gateway = module.docker_bridge_gateway("[{'Subnet': '172.17.0.0/16', 'Gateway': '172.17.0.1'}]")
+    gateway = module.docker_bridge_gateway("Docker warning text 172.17.0.0/16=172.17.0.1")
 
     assert gateway == "172.17.0.1"
 
 
-def test_source_api_bridge_rejects_ipam_without_rfc1918_gateway() -> None:
+@pytest.mark.parametrize(
+    "candidates",
+    (
+        "fd00::/64=fd00::1",
+        "172.18.0.0/16=172.17.0.1",
+        "warning without an IPAM pair",
+    ),
+)
+def test_source_api_bridge_rejects_ipam_without_matching_rfc1918_gateway(
+    candidates: str,
+) -> None:
     module = _module()
 
-    with pytest.raises(ValueError, match="no RFC1918"):
-        module.docker_bridge_gateway(json.dumps([{"Gateway": "fd00::1"}]))
+    with pytest.raises(ValueError, match="no matching RFC1918"):
+        module.docker_bridge_gateway(candidates)
