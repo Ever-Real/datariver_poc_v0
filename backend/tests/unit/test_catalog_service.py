@@ -637,6 +637,11 @@ async def test_authorized_detail_enrichment_uses_scope_versioned_cache() -> None
         lifecycle="ACTIVE",
         source_version="projection-v1",
         observed_at=now,
+        owner="urn:li:corpGroup:yield",
+        domain="urn:li:domain:manufacturing",
+        tags=("trusted",),
+        glossary_terms=("Wafer",),
+        created_at=now - timedelta(days=1),
     )
     local = CatalogAssetDetail(index, (), (), (), (), {}, "projection-v1", now)
     gateway = FakeGateway(
@@ -648,6 +653,7 @@ async def test_authorized_detail_enrichment_uses_scope_versioned_cache() -> None
             quality={"score": 0.99},
             raw_version="datahub-v2",
             observed_at=now,
+            created_at=now,
         )
     )
     cache = FakeCache()
@@ -687,6 +693,7 @@ async def test_authorized_detail_enrichment_uses_scope_versioned_cache() -> None
 
     assert first is not None and second is not None
     assert second.raw_version == "datahub-v2"
+    assert second.index.created_at == now
     assert gateway.calls == 1
     assert len(cache.values) == 2
 
@@ -717,6 +724,11 @@ async def test_authorized_detail_enrichment_uses_scope_versioned_cache() -> None
         request_id="search-two",
     )
     assert first_page == second_page
+    assert second_page.items[0].owner == "urn:li:corpGroup:yield"
+    assert second_page.items[0].domain == "urn:li:domain:manufacturing"
+    assert second_page.items[0].tags == ("trusted",)
+    assert second_page.items[0].glossary_terms == ("Wafer",)
+    assert second_page.items[0].created_at == now - timedelta(days=1)
     assert index_reader.search_calls == 1
     index_reader.projection_version += 1
     third_page = await service.search(

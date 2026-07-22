@@ -159,6 +159,11 @@ async def test_asset_contract_uses_fixed_graphql_and_service_identity() -> None:
         assert request.headers["Authorization"] == "Bearer service-token"
         body = json.loads(request.content)
         assert body["variables"] == {"urn": "urn:li:dataset:test"}
+        assert "globalTags: tags" in body["query"]
+        assert "editableSchemaMetadata" in body["query"]
+        assert "schemaFieldEntity" in body["query"]
+        assert "latestFullTableProfile: datasetProfiles" in body["query"]
+        assert "FULL_TABLE_SNAPSHOT" in body["query"]
         return httpx.Response(
             200,
             json={
@@ -166,10 +171,74 @@ async def test_asset_contract_uses_fixed_graphql_and_service_identity() -> None:
                     "entity": {
                         "urn": "urn:li:dataset:test",
                         "type": "DATASET",
+                        "properties": {"created": 1767225600000},
                         "ownership": {"owners": []},
                         "globalTags": {"tags": [{"tag": {"urn": "tag:one", "name": "One"}}]},
                         "glossaryTerms": {"terms": []},
-                        "schemaMetadata": {"fields": [{"fieldPath": "id", "type": "STRING"}]},
+                        "schemaMetadata": {
+                            "fields": [
+                                {
+                                    "fieldPath": "id",
+                                    "type": "STRING",
+                                    "description": "source description",
+                                    "globalTags": {
+                                        "tags": [{"tag": {"urn": "tag:source", "name": "Source"}}]
+                                    },
+                                    "glossaryTerms": {
+                                        "terms": [
+                                            {
+                                                "term": {
+                                                    "urn": "term:source",
+                                                    "name": "Source term",
+                                                }
+                                            }
+                                        ]
+                                    },
+                                    "schemaFieldEntity": {
+                                        "globalTags": {
+                                            "tags": [
+                                                {
+                                                    "tag": {
+                                                        "urn": "tag:field-entity",
+                                                        "name": "Field entity",
+                                                    }
+                                                }
+                                            ]
+                                        },
+                                        "glossaryTerms": {"terms": []},
+                                    },
+                                }
+                            ]
+                        },
+                        "editableSchemaMetadata": {
+                            "editableSchemaFieldInfo": [
+                                {
+                                    "fieldPath": "id",
+                                    "description": "governed description",
+                                    "globalTags": {
+                                        "tags": [{"tag": {"urn": "tag:edited", "name": "Edited"}}]
+                                    },
+                                    "glossaryTerms": {
+                                        "terms": [
+                                            {
+                                                "term": {
+                                                    "urn": "term:edited",
+                                                    "name": "Edited term",
+                                                }
+                                            }
+                                        ]
+                                    },
+                                }
+                            ]
+                        },
+                        "latestFullTableProfile": [
+                            {
+                                "rowCount": 1240,
+                                "columnCount": 8,
+                                "sizeInBytes": 8192,
+                                "timestampMillis": 1767229200000,
+                            }
+                        ],
                     }
                 }
             },
@@ -191,6 +260,24 @@ async def test_asset_contract_uses_fixed_graphql_and_service_identity() -> None:
 
     assert asset.tags == ("One",)
     assert asset.schema_fields[0]["fieldPath"] == "id"
+    assert asset.schema_fields[0]["description"] == "governed description"
+    assert {item["tag"]["name"] for item in asset.schema_fields[0]["globalTags"]["tags"]} == {
+        "Source",
+        "Field entity",
+        "Edited",
+    }
+    assert {item["term"]["name"] for item in asset.schema_fields[0]["glossaryTerms"]["terms"]} == {
+        "Source term",
+        "Edited term",
+    }
+    assert asset.quality == {
+        "rowCount": 1240,
+        "columnCount": 8,
+        "sizeInBytes": 8192,
+        "profiledAt": "2026-01-01T01:00:00+00:00",
+    }
+    assert asset.created_at is not None
+    assert asset.created_at.isoformat() == "2026-01-01T00:00:00+00:00"
     await client.aclose()
 
 
@@ -441,44 +528,38 @@ def test_browse_path_schema_segment_is_used_without_inferring_a_database() -> No
 
 
 async def test_lineage_contract_returns_only_typed_bounded_paths() -> None:
+    calls: list[str] = []
+
     async def handler(request: httpx.Request) -> httpx.Response:
         body = json.loads(request.content)
-        assert "paths { path { urn type } }" in body["query"]
-        assert body["variables"]["input"]["orFilters"] == [
-            {
-                "and": [
-                    {
-                        "condition": "EQUAL",
-                        "negated": False,
-                        "field": "degree",
-                        "values": ["1", "2"],
-                    }
-                ]
-            }
-        ]
+        assert "dataset(urn: $urn)" in body["query"]
+        assert body["variables"]["input"] == {
+            "direction": "UPSTREAM",
+            "start": 0,
+            "count": 100,
+        }
+        urn = body["variables"]["urn"]
+        calls.append(urn)
+        relationships = {
+            "urn:li:dataset:center": [
+                {"entity": {"urn": "urn:li:dataset:middle", "type": "DATASET"}},
+                {"entity": {"urn": "urn:li:dataJob:hidden", "type": "DATA_JOB"}},
+            ],
+            "urn:li:dataset:middle": [
+                {"entity": {"urn": "urn:li:dataset:upstream", "type": "DATASET"}}
+            ],
+        }[urn]
         return httpx.Response(
             200,
             json={
                 "data": {
-                    "scrollAcrossLineage": {
-                        "count": 1,
-                        "total": 2,
-                        "isPartial": True,
-                        "searchResults": [
-                            {
-                                "entity": {"urn": "urn:li:dataset:upstream", "type": "DATASET"},
-                                "degree": 2,
-                                "truncatedChildren": True,
-                                "paths": [
-                                    {
-                                        "path": [
-                                            {"urn": "urn:li:dataset:center", "type": "DATASET"},
-                                            {"urn": "urn:li:dataset:upstream", "type": "DATASET"},
-                                        ]
-                                    }
-                                ],
-                            }
-                        ],
+                    "dataset": {
+                        "urn": urn,
+                        "lineage": {
+                            "total": 3 if urn == "urn:li:dataset:center" else 1,
+                            "filtered": 0,
+                            "relationships": relationships,
+                        },
                     }
                 }
             },
@@ -496,9 +577,18 @@ async def test_lineage_contract_returns_only_typed_bounded_paths() -> None:
     )
 
     assert page.partial is True
-    assert page.total == 2
-    assert page.items[0].paths == (("urn:li:dataset:center", "urn:li:dataset:upstream"),)
-    assert page.items[0].truncated_children is True
+    assert page.total == 3
+    assert calls == ["urn:li:dataset:center", "urn:li:dataset:middle"]
+    upstream = next(item for item in page.items if item.external_urn == "urn:li:dataset:upstream")
+    assert upstream.degree == 2
+    assert upstream.paths == (
+        (
+            "urn:li:dataset:center",
+            "urn:li:dataset:middle",
+            "urn:li:dataset:upstream",
+        ),
+    )
+    assert upstream.truncated_children is False
     await client.aclose()
 
 

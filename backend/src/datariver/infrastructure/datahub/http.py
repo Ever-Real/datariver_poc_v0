@@ -30,6 +30,7 @@ query DataRiverAsset($urn: String!) {
     urn
     type
     ... on Dataset {
+      properties { created }
       ownership {
         owners {
           owner {
@@ -39,9 +40,9 @@ query DataRiverAsset($urn: String!) {
           type
         }
       }
-      globalTags { tags { tag { urn name } } }
+      globalTags: tags { tags { tag { urn name } } }
       glossaryTerms { terms { term { urn name } } }
-      schemaMetadata {
+      schemaMetadata(version: 0) {
         fields {
           fieldPath
           type
@@ -49,7 +50,34 @@ query DataRiverAsset($urn: String!) {
           description
           globalTags { tags { tag { urn name } } }
           glossaryTerms { terms { term { urn name } } }
+          schemaFieldEntity {
+            globalTags: tags { tags { tag { urn name } } }
+            glossaryTerms { terms { term { urn name } } }
+          }
         }
+      }
+      editableSchemaMetadata {
+        editableSchemaFieldInfo {
+          fieldPath
+          description
+          globalTags { tags { tag { urn name } } }
+          glossaryTerms { terms { term { urn name } } }
+        }
+      }
+      latestFullTableProfile: datasetProfiles(
+        limit: 1
+        filter: {
+          and: [{
+            field: "partitionSpec.partition"
+            values: ["FULL_TABLE_SNAPSHOT", "SAMPLE"]
+            condition: START_WITH
+          }]
+        }
+      ) {
+        rowCount
+        columnCount
+        sizeInBytes
+        timestampMillis
       }
     }
   }
@@ -70,18 +98,16 @@ class DataHubTelemetry(Protocol):
 
 
 LINEAGE_QUERY = """
-query DataRiverLineage($input: ScrollAcrossLineageInput!) {
-  scrollAcrossLineage(input: $input) {
-    count
-    total
-    isPartial
-    searchResults {
-      entity { urn type }
-      degree
-      truncatedChildren
-      paths { path { urn type } }
+query DataRiverLineageNeighbors($urn: String!, $input: LineageInput!) {
+  dataset(urn: $urn) {
+    urn
+    lineage(input: $input) {
+      total
+      filtered
+      relationships {
+        entity { urn type }
+      }
     }
-    nextScrollId
   }
 }
 """
@@ -123,7 +149,7 @@ query DataRiverCatalogScan($input: SearchAcrossEntitiesInput!) {
               }
             }
           }
-          globalTags { tags { tag { name } } }
+          globalTags: tags { tags { tag { name } } }
           glossaryTerms { terms { term { urn name } } }
           schemaMetadata { fields { fieldPath } }
         }
@@ -244,6 +270,116 @@ def _metadata_names(value: object, *, wrapper: str, entity: str) -> tuple[str, .
         if isinstance(reference, dict) and (reference.get("name") or reference.get("urn"))
     }
     return tuple(sorted(names))
+
+
+def _metadata_references(value: object, *, wrapper: str, entity: str) -> tuple[dict[str, Any], ...]:
+    raw_items = value.get(wrapper, []) if isinstance(value, dict) else []
+    items = raw_items if isinstance(raw_items, list) else []
+    references: dict[str, dict[str, Any]] = {}
+    for item in items:
+        reference = item.get(entity) if isinstance(item, dict) else None
+        if not isinstance(reference, dict):
+            continue
+        urn = reference.get("urn")
+        name = reference.get("name")
+        identity = urn if isinstance(urn, str) and urn else name
+        if not isinstance(identity, str) or not identity:
+            continue
+        normalized_reference: dict[str, Any] = {"urn": urn} if isinstance(urn, str) else {}
+        if isinstance(name, str):
+            normalized_reference["name"] = name
+        references[identity] = {entity: normalized_reference}
+    return tuple(references[key] for key in sorted(references))
+
+
+def _merged_metadata_references(
+    values: tuple[object, ...], *, wrapper: str, entity: str
+) -> dict[str, list[dict[str, Any]]]:
+    merged: dict[str, dict[str, Any]] = {}
+    for value in values:
+        for item in _metadata_references(value, wrapper=wrapper, entity=entity):
+            reference = item[entity]
+            identity = str(reference.get("urn") or reference.get("name"))
+            merged[identity] = item
+    return {wrapper: [merged[key] for key in sorted(merged)]}
+
+
+def _schema_fields(entity: dict[str, Any]) -> tuple[dict[str, Any], ...]:
+    schema_metadata = entity.get("schemaMetadata")
+    schema_document = schema_metadata if isinstance(schema_metadata, dict) else {}
+    raw_fields = schema_document.get("fields")
+    base_fields = raw_fields if isinstance(raw_fields, list) else []
+    base_by_path = {
+        str(item["fieldPath"]): item
+        for item in base_fields
+        if isinstance(item, dict) and isinstance(item.get("fieldPath"), str) and item["fieldPath"]
+    }
+    editable_metadata = entity.get("editableSchemaMetadata")
+    editable_document = editable_metadata if isinstance(editable_metadata, dict) else {}
+    raw_editable_fields = editable_document.get("editableSchemaFieldInfo")
+    editable_fields = raw_editable_fields if isinstance(raw_editable_fields, list) else []
+    editable_by_path = {
+        str(item["fieldPath"]): item
+        for item in editable_fields
+        if isinstance(item, dict) and isinstance(item.get("fieldPath"), str) and item["fieldPath"]
+    }
+    merged_fields: list[dict[str, Any]] = []
+    observed_paths: set[str] = set()
+    for raw_field in (*base_fields, *editable_fields):
+        if not isinstance(raw_field, dict):
+            continue
+        field_path = raw_field.get("fieldPath")
+        if not isinstance(field_path, str) or not field_path or field_path in observed_paths:
+            continue
+        observed_paths.add(field_path)
+        base = base_by_path.get(field_path, {})
+        editable = editable_by_path.get(field_path, {})
+        field: dict[str, Any] = {"fieldPath": field_path}
+        for key in ("type", "nativeDataType", "description"):
+            if key in base and base[key] is not None:
+                field[key] = base[key]
+        if "description" in editable and editable["description"] is not None:
+            field["description"] = editable["description"]
+        schema_field_entity = base.get("schemaFieldEntity")
+        schema_field_document = schema_field_entity if isinstance(schema_field_entity, dict) else {}
+        field["globalTags"] = _merged_metadata_references(
+            (
+                base.get("globalTags"),
+                schema_field_document.get("globalTags"),
+                editable.get("globalTags"),
+            ),
+            wrapper="tags",
+            entity="tag",
+        )
+        field["glossaryTerms"] = _merged_metadata_references(
+            (
+                base.get("glossaryTerms"),
+                schema_field_document.get("glossaryTerms"),
+                editable.get("glossaryTerms"),
+            ),
+            wrapper="terms",
+            entity="term",
+        )
+        merged_fields.append(field)
+    return tuple(merged_fields)
+
+
+def _dataset_quality(value: object) -> dict[str, Any]:
+    profiles = value if isinstance(value, list) else []
+    profile = profiles[0] if profiles and isinstance(profiles[0], dict) else {}
+    quality: dict[str, Any] = {}
+    for source_key, response_key in (
+        ("rowCount", "rowCount"),
+        ("columnCount", "columnCount"),
+        ("sizeInBytes", "sizeInBytes"),
+    ):
+        raw_value = profile.get(source_key)
+        if isinstance(raw_value, int) and not isinstance(raw_value, bool) and raw_value >= 0:
+            quality[response_key] = raw_value
+    profiled_at = _datahub_timestamp(profile.get("timestampMillis"))
+    if profiled_at is not None:
+        quality["profiledAt"] = profiled_at.isoformat()
+    return quality
 
 
 def _custom_property_value(value: object, *, key: str) -> str | None:
@@ -397,6 +533,7 @@ class HttpDataHubGateway:
         self._version_checked_at = 0.0
         self._observed_version: str | None = None
         self._semaphore = asyncio.Semaphore(maximum_concurrency)
+        self._lineage_traversal_concurrency = max(1, min(maximum_concurrency, 10))
         self._queue_timeout_seconds = queue_timeout_seconds
         self._circuit_failure_threshold = circuit_failure_threshold
         self._circuit_open_seconds = circuit_open_seconds
@@ -633,20 +770,18 @@ class HttpDataHubGateway:
         glossary = tuple(
             item for item in (glossary_document.get("terms") or ()) if isinstance(item, dict)
         )
-        schema_metadata = entity.get("schemaMetadata")
-        schema_document = schema_metadata if isinstance(schema_metadata, dict) else {}
-        fields = tuple(
-            item for item in (schema_document.get("fields") or ()) if isinstance(item, dict)
-        )
         now = datetime.now(UTC)
+        properties = entity.get("properties")
+        properties_document = properties if isinstance(properties, dict) else {}
         return DataHubAssetEnrichment(
             ownership=owners,
             glossary_terms=glossary,
             tags=tags,
-            schema_fields=fields,
-            quality={},
+            schema_fields=_schema_fields(entity),
+            quality=_dataset_quality(entity.get("latestFullTableProfile")),
             raw_version=canonical_json_hash(entity),
             observed_at=now,
+            created_at=_datahub_timestamp(properties_document.get("created")),
         )
 
     async def get_lineage(
@@ -654,102 +789,131 @@ class HttpDataHubGateway:
     ) -> DataHubLineagePage:
         if direction not in {"UPSTREAM", "DOWNSTREAM"} or not 1 <= depth <= 3:
             raise ValueError("Lineage direction or depth is invalid.")
-        # ``ScrollAcrossLineageInput`` has no ``maxDegree`` input in the
-        # reviewed DataHub v1.6 contract.  Depth is instead a facet value;
-        # ``3+`` is needed to include the third hop and is bounded again below
-        # because it can also represent results deeper than three hops.
-        degree_values = [str(value) for value in range(1, depth + 1)]
-        if depth == 3:
-            degree_values[-1] = "3+"
-        data = await self._graphql(
-            LINEAGE_QUERY,
-            {
-                "input": {
-                    "urn": external_urn,
-                    "direction": direction,
-                    "query": "*",
-                    "count": 100,
-                    "orFilters": [
-                        {
-                            "and": [
-                                {
-                                    "condition": "EQUAL",
-                                    "negated": False,
-                                    "field": "degree",
-                                    "values": degree_values,
-                                }
-                            ]
-                        }
-                    ],
-                }
-            },
-        )
-        result = data.get("scrollAcrossLineage")
-        raw_items = result.get("searchResults") if isinstance(result, dict) else None
-        if not isinstance(result, dict) or not isinstance(raw_items, list):
-            raise ExternalDependencyError(
-                "DataHub returned an invalid lineage contract.",
-                dependency="datahub",
-                retryable=False,
-                provider_code="INVALID_RESPONSE",
-            )
-        items: list[DataHubLineageNode] = []
-        excluded_deeper_result = False
-        for raw in raw_items:
-            entity = raw.get("entity") if isinstance(raw, dict) else None
-            raw_paths = raw.get("paths") if isinstance(raw, dict) else None
-            if (
-                not isinstance(raw, dict)
-                or not isinstance(entity, dict)
-                or not isinstance(entity.get("urn"), str)
-                or not isinstance(raw.get("degree"), int)
-                or not isinstance(raw_paths, list)
-            ):
-                raise ExternalDependencyError(
-                    "DataHub returned an invalid lineage result.",
-                    dependency="datahub",
-                    retryable=False,
-                    provider_code="INVALID_RESPONSE",
+        # DataHub's direct Dataset.lineage contract is the stable v1.6 UI
+        # contract.  Traverse it breadth-first so DataRiver keeps the public
+        # 1..3 hop bound without depending on the optional lineage search
+        # index/resolver used by scrollAcrossLineage.
+        maximum_nodes = 100
+        frontier: list[tuple[str, tuple[str, ...]]] = [(external_urn, (external_urn,))]
+        queried = {external_urn}
+        discovered: dict[str, DataHubLineageNode] = {}
+        partial = False
+        for degree in range(1, depth + 1):
+            next_frontier: list[tuple[str, tuple[str, ...]]] = []
+            batch_size = self._lineage_traversal_concurrency
+            for batch_start in range(0, len(frontier), batch_size):
+                batch = frontier[batch_start : batch_start + batch_size]
+                responses = await asyncio.gather(
+                    *(
+                        self._graphql(
+                            LINEAGE_QUERY,
+                            {
+                                "urn": source_urn,
+                                "input": {
+                                    "direction": direction,
+                                    "start": 0,
+                                    "count": 100,
+                                },
+                            },
+                        )
+                        for source_urn, _ in batch
+                    )
                 )
-            if int(raw["degree"]) > depth:
-                # DataHub represents a depth of three as the ``3+`` facet.
-                # Never let an over-depth path escape the facade's fixed
-                # 1..3-hop contract.
-                excluded_deeper_result = True
-                continue
-            paths: list[tuple[str, ...]] = []
-            for raw_path in raw_paths:
-                raw_entities = raw_path.get("path") if isinstance(raw_path, dict) else None
-                if not isinstance(raw_entities, list):
-                    continue
-                path = tuple(
-                    str(path_entity["urn"])
-                    for path_entity in raw_entities
-                    if isinstance(path_entity, dict) and isinstance(path_entity.get("urn"), str)
-                )
-                if path:
-                    paths.append(path)
-            items.append(
-                DataHubLineageNode(
-                    external_urn=str(entity["urn"]),
-                    degree=int(raw["degree"]),
-                    paths=tuple(paths),
-                    truncated_children=bool(raw.get("truncatedChildren", False)),
-                )
-            )
-        try:
-            total = int(result.get("total", len(items)))
-        except (TypeError, ValueError) as error:
-            raise ExternalDependencyError(
-                "DataHub returned invalid lineage pagination.",
-                dependency="datahub",
-                retryable=False,
-                provider_code="INVALID_RESPONSE",
-            ) from error
+                for (_, source_path), data in zip(batch, responses, strict=True):
+                    dataset = data.get("dataset")
+                    lineage = dataset.get("lineage") if isinstance(dataset, dict) else None
+                    relationships = (
+                        lineage.get("relationships") if isinstance(lineage, dict) else None
+                    )
+                    if not isinstance(lineage, dict) or not isinstance(relationships, list):
+                        raise ExternalDependencyError(
+                            "DataHub returned an invalid lineage contract.",
+                            dependency="datahub",
+                            retryable=False,
+                            provider_code="INVALID_RESPONSE",
+                        )
+                    raw_total = lineage.get("total")
+                    if raw_total is None:
+                        relationship_total = len(relationships)
+                        partial = True
+                    else:
+                        try:
+                            relationship_total = int(raw_total)
+                        except (TypeError, ValueError) as error:
+                            raise ExternalDependencyError(
+                                "DataHub returned invalid lineage pagination.",
+                                dependency="datahub",
+                                retryable=False,
+                                provider_code="INVALID_RESPONSE",
+                            ) from error
+                    raw_filtered = lineage.get("filtered")
+                    if raw_filtered is None:
+                        partial = True
+                    else:
+                        try:
+                            filtered = int(raw_filtered)
+                        except (TypeError, ValueError) as error:
+                            raise ExternalDependencyError(
+                                "DataHub returned invalid lineage pagination.",
+                                dependency="datahub",
+                                retryable=False,
+                                provider_code="INVALID_RESPONSE",
+                            ) from error
+                        if filtered < 0:
+                            raise ExternalDependencyError(
+                                "DataHub returned invalid lineage pagination.",
+                                dependency="datahub",
+                                retryable=False,
+                                provider_code="INVALID_RESPONSE",
+                            )
+                        partial = partial or filtered > 0
+                    if relationship_total < 0:
+                        raise ExternalDependencyError(
+                            "DataHub returned invalid lineage pagination.",
+                            dependency="datahub",
+                            retryable=False,
+                            provider_code="INVALID_RESPONSE",
+                        )
+                    partial = partial or relationship_total > len(relationships)
+                    for relationship in relationships:
+                        entity = (
+                            relationship.get("entity") if isinstance(relationship, dict) else None
+                        )
+                        urn = entity.get("urn") if isinstance(entity, dict) else None
+                        entity_type = entity.get("type") if isinstance(entity, dict) else None
+                        if entity is None:
+                            partial = True
+                            continue
+                        if not isinstance(urn, str) or not urn:
+                            raise ExternalDependencyError(
+                                "DataHub returned an invalid lineage result.",
+                                dependency="datahub",
+                                retryable=False,
+                                provider_code="INVALID_RESPONSE",
+                            )
+                        if urn in source_path:
+                            continue
+                        path = (*source_path, urn)
+                        if urn not in discovered:
+                            if len(discovered) >= maximum_nodes:
+                                partial = True
+                                continue
+                            discovered[urn] = DataHubLineageNode(
+                                external_urn=urn,
+                                degree=degree,
+                                paths=(path,),
+                                truncated_children=False,
+                            )
+                        if degree < depth and entity_type == "DATASET" and urn not in queried:
+                            queried.add(urn)
+                            next_frontier.append((urn, path))
+            frontier = next_frontier
+            if not frontier:
+                break
         return DataHubLineagePage(
-            items=tuple(items),
-            total=total,
-            partial=bool(result.get("isPartial", False)) or excluded_deeper_result,
+            items=tuple(discovered.values()),
+            total=len(discovered),
+            partial=partial,
         )
 
     async def scan_assets(self, *, offset: int, limit: int) -> DataHubScanPage:

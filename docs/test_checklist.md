@@ -148,3 +148,14 @@
 | PASS | verification gates | backend Ruff, strict mypy 165 files, full pytest `720 passed`; frontend typecheck/lint, Vitest `38 files / 158 tests`, production build; static verification 통과 |
 | PASS | deterministic baseline | `0001_initial_schema.py` 2회 생성 SHA-256 `f581e076d5264c953f8eb4756f306b286fc6564f7777a503d1f0b6e9154b13ed` 동일 |
 | OPEN | 실제 사용자 생성·비밀번호 최종 제출 | 실제 계정 변경이나 신규 사용자 생성은 운영 데이터 변형이며, 신규 생성은 실제 관리자의 최근 hardware WebAuthn이 필요하다. 이번 검증에서는 우회하거나 실제 비밀번호를 입력하지 않음 |
+
+## 12. 2026-07-22 DataHub 상세 메타데이터·Lineage 계약 보완
+
+| 상태 | 항목 | 증거 |
+|---|---|---|
+| PASS | Rows/Size/Created Date typed parsing | DataHub `v1.6.0` 공식 full-table profile filter와 `DatasetProperties.created` 계약을 사용하고, 관측되지 않은 값은 0으로 대체하지 않는 adapter test 통과 |
+| PASS | 컬럼 Terms/Tags 병합 | 원본 `SchemaField`, `SchemaFieldEntity`, `EditableSchemaMetadata`의 Tag/Term을 URN 기준으로 병합하고 편집 description 우선순위를 검증 |
+| PASS | 검색·트리 캐시 무손실 | owner/domain/Terms/Tags/created/match fragment를 포함하는 cache schema로 갱신하고 scope·projection-version cache 경계를 유지 |
+| PASS | bounded Lineage contract | optional search-index resolver인 `scrollAcrossLineage` 대신 공식 `Dataset.lineage(LineageInput)`을 1–3 hop, 방향당 100 node, gateway bulkhead 이하 동시성으로 순회; null/filtered/truncated 결과는 부분 그래프로 fail-closed 처리 |
+| PASS | source verification | 관련 unit `34 passed`; 전체 backend `729 passed`; strict mypy source `165` files; focused Ruff; `scripts/verify_static.py`; `git diff --check` 통과 |
+| OPEN | 원격 DataHub live read-back | 이 Mac checkout에는 준비 PC의 원격 GMS URL·scoped token이 없으므로 실제 대상의 profile/column metadata/lineage HTTP read-back은 배포 후 수행해야 함. Profile이 수집되지 않은 테이블의 Rows/Size는 의도대로 `DataHub 미관측` 유지 |

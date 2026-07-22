@@ -80,6 +80,7 @@ class DataHubAssetEnrichment:
     quality: dict[str, Any]
     raw_version: str
     observed_at: datetime
+    created_at: datetime | None = None
 
 
 @dataclass(frozen=True, slots=True)

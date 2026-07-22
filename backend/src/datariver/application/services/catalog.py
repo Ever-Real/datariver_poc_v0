@@ -947,38 +947,8 @@ class CatalogService:
     @staticmethod
     def _page_document(page: CatalogPage) -> dict[str, Any]:
         return {
-            "schema": 4,
-            "items": [
-                {
-                    "asset_id": str(item.asset_id),
-                    "workspace_id": str(item.workspace_id),
-                    "external_urn": item.external_urn,
-                    "asset_type": item.asset_type,
-                    "name": item.name,
-                    "description": item.description,
-                    "platform": item.platform,
-                    "database_name": item.database_name,
-                    "schema_name": item.schema_name,
-                    "domain_id": str(item.domain_id) if item.domain_id else None,
-                    "system_id": str(item.system_id) if item.system_id else None,
-                    "owner_department_id": (
-                        str(item.owner_department_id) if item.owner_department_id else None
-                    ),
-                    "classification": int(item.classification),
-                    "lifecycle": item.lifecycle,
-                    "source_version": item.source_version,
-                    "observed_at": item.observed_at.isoformat(),
-                    "matches": [
-                        {
-                            "field": fragment.field,
-                            "text": fragment.text,
-                            "matched_terms": list(fragment.matched_terms),
-                        }
-                        for fragment in item.matches
-                    ],
-                }
-                for item in page.items
-            ],
+            "schema": 5,
+            "items": [CatalogService._asset_index_document(item) for item in page.items],
             "next_cursor": page.next_cursor,
             "observed_at": page.observed_at.isoformat(),
             "total": page.total,
@@ -991,49 +961,11 @@ class CatalogService:
 
     @staticmethod
     def _cached_page(value: object) -> CatalogPage | None:
-        if not isinstance(value, dict) or value.get("schema") != 4:
+        if not isinstance(value, dict) or value.get("schema") != 5:
             return None
         try:
             items = tuple(
-                CatalogAssetIndex(
-                    asset_id=UUID(str(item["asset_id"])),
-                    workspace_id=UUID(str(item["workspace_id"])),
-                    external_urn=str(item["external_urn"]),
-                    asset_type=str(item["asset_type"]),
-                    name=str(item["name"]),
-                    description=(
-                        str(item["description"]) if item.get("description") is not None else None
-                    ),
-                    platform=str(item["platform"]) if item.get("platform") is not None else None,
-                    database_name=(
-                        str(item["database_name"])
-                        if item.get("database_name") is not None
-                        else None
-                    ),
-                    schema_name=(
-                        str(item["schema_name"]) if item.get("schema_name") is not None else None
-                    ),
-                    domain_id=UUID(str(item["domain_id"])) if item.get("domain_id") else None,
-                    system_id=UUID(str(item["system_id"])) if item.get("system_id") else None,
-                    owner_department_id=(
-                        UUID(str(item["owner_department_id"]))
-                        if item.get("owner_department_id")
-                        else None
-                    ),
-                    classification=Classification(int(item["classification"])),
-                    lifecycle=str(item["lifecycle"]),
-                    source_version=str(item["source_version"]),
-                    observed_at=datetime.fromisoformat(str(item["observed_at"])),
-                    matches=tuple(
-                        CatalogMatchFragment(
-                            field=str(fragment["field"]),
-                            text=str(fragment["text"]),
-                            matched_terms=tuple(str(term) for term in fragment["matched_terms"]),
-                        )
-                        for fragment in item.get("matches", [])
-                    ),
-                )
-                for item in value["items"]
+                CatalogService._asset_index_from_document(item) for item in value["items"]
             )
             stale_raw = value.get("stale_at")
             return CatalogPage(
@@ -1061,7 +993,7 @@ class CatalogService:
     @staticmethod
     def _tree_page_document(page: CatalogTreePage) -> dict[str, Any]:
         return {
-            "schema": 1,
+            "schema": 2,
             "items": [
                 {
                     "node_id": str(item.node_id),
@@ -1090,7 +1022,7 @@ class CatalogService:
 
     @staticmethod
     def _cached_tree_page(value: object) -> CatalogTreePage | None:
-        if not isinstance(value, dict) or value.get("schema") != 1:
+        if not isinstance(value, dict) or value.get("schema") != 2:
             return None
         try:
             return CatalogTreePage(
@@ -1165,6 +1097,19 @@ class CatalogService:
             "lifecycle": item.lifecycle,
             "source_version": item.source_version,
             "observed_at": item.observed_at.isoformat(),
+            "owner": item.owner,
+            "domain": item.domain,
+            "tags": list(item.tags),
+            "glossary_terms": list(item.glossary_terms),
+            "created_at": item.created_at.isoformat() if item.created_at else None,
+            "matches": [
+                {
+                    "field": fragment.field,
+                    "text": fragment.text,
+                    "matched_terms": list(fragment.matched_terms),
+                }
+                for fragment in item.matches
+            ],
         }
 
     @staticmethod
@@ -1192,6 +1137,23 @@ class CatalogService:
             lifecycle=str(item["lifecycle"]),
             source_version=str(item["source_version"]),
             observed_at=datetime.fromisoformat(str(item["observed_at"])),
+            owner=str(item["owner"]) if item.get("owner") is not None else None,
+            domain=str(item["domain"]) if item.get("domain") is not None else None,
+            tags=tuple(str(value) for value in item.get("tags", [])),
+            glossary_terms=tuple(str(value) for value in item.get("glossary_terms", [])),
+            created_at=(
+                datetime.fromisoformat(str(item["created_at"]))
+                if item.get("created_at") is not None
+                else None
+            ),
+            matches=tuple(
+                CatalogMatchFragment(
+                    field=str(fragment["field"]),
+                    text=str(fragment["text"]),
+                    matched_terms=tuple(str(term) for term in fragment["matched_terms"]),
+                )
+                for fragment in item.get("matches", [])
+            ),
         )
 
     @staticmethod
@@ -1361,8 +1323,11 @@ class CatalogService:
         *,
         stale_at: datetime | None = None,
     ) -> CatalogAssetDetail:
+        index = authorized.index
+        if enrichment.created_at is not None:
+            index = replace(index, created_at=enrichment.created_at)
         return CatalogAssetDetail(
-            index=authorized.index,
+            index=index,
             ownership=enrichment.ownership,
             glossary_terms=enrichment.glossary_terms,
             tags=enrichment.tags,
@@ -1378,7 +1343,7 @@ class CatalogService:
         enrichment: DataHubAssetEnrichment, *, fresh_until: datetime
     ) -> dict[str, Any]:
         return {
-            "schema": 1,
+            "schema": 2,
             "ownership": list(enrichment.ownership),
             "glossary_terms": list(enrichment.glossary_terms),
             "tags": list(enrichment.tags),
@@ -1386,6 +1351,9 @@ class CatalogService:
             "quality": enrichment.quality,
             "raw_version": enrichment.raw_version,
             "observed_at": enrichment.observed_at.isoformat(),
+            "created_at": (
+                enrichment.created_at.isoformat() if enrichment.created_at is not None else None
+            ),
             "fresh_until": fresh_until.isoformat(),
         }
 
@@ -1400,7 +1368,7 @@ class CatalogService:
 
     @staticmethod
     def _cached_enrichment(value: object) -> DataHubAssetEnrichment | None:
-        if not isinstance(value, dict) or value.get("schema") != 1:
+        if not isinstance(value, dict) or value.get("schema") != 2:
             return None
         try:
             ownership = tuple(dict(item) for item in value["ownership"])
@@ -1410,6 +1378,11 @@ class CatalogService:
             quality = dict(value["quality"])
             raw_version = str(value["raw_version"])
             observed_at = datetime.fromisoformat(str(value["observed_at"]))
+            created_at = (
+                datetime.fromisoformat(str(value["created_at"]))
+                if value.get("created_at") is not None
+                else None
+            )
         except (KeyError, TypeError, ValueError):
             return None
         return DataHubAssetEnrichment(
@@ -1420,4 +1393,5 @@ class CatalogService:
             quality=quality,
             raw_version=raw_version,
             observed_at=observed_at,
+            created_at=created_at,
         )
