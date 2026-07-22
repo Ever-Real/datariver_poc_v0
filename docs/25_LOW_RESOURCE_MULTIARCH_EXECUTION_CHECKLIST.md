@@ -59,8 +59,11 @@ This checklist is evidence-driven. `[x]` means the named repository evidence was
   commit. The cross-build host uses artifact-only verification; target daemon enforcement remains
   mandatory for WSL import. Tar inspection then found a digest-only PostgreSQL entry with no
   restorable tag; export now saves the already verified tag and rejects an archive missing any
-  requested Compose image name. Its first Mac run also exposed a BSD `awk` reserved-name conflict;
-  the filter now uses a portable field variable. A corrupted-checksum negative test then exposed
+  requested Compose image name. A later cross-build also proved that Docker Desktop may retain the
+  host-platform tag after a platform-qualified OCI-index digest pull; export now refreshes the
+  distributable tag and rejects it unless its platform child ID exactly matches the pinned index.
+  Its first Mac run also exposed a BSD `awk` reserved-name conflict; the filter now uses a portable
+  field variable. A corrupted-checksum negative test then exposed
   loop status masking; each checksum failure now returns immediately. The corrected verifier
   accepted both prior revision artifacts, and a deliberately corrupted checksum failed closed with
   exit 2; the same verifier is required for the clean final-head artifacts above.

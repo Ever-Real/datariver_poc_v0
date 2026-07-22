@@ -353,9 +353,26 @@ materialize_cross_platform_images() {
   if [ "$cross_platform" != true ]; then
     return
   fi
-  local image
+  local image original pinned_id tagged_id
   for image in "$@"; do
     docker image pull --platform "$target_platform" "$image"
+    case "$image" in
+      *@sha256:*)
+        # Docker Desktop's containerd store can retain the host-platform tag even after a
+        # platform-qualified digest pull. Refresh the distributable tag separately, but accept it
+        # only when it resolves to the exact platform child selected from the pinned OCI index.
+        original=${image%@sha256:*}
+        pinned_id=$(docker image inspect --platform "$target_platform" \
+          --format '{{.Id}}' "$image")
+        docker image pull --platform "$target_platform" "$original"
+        tagged_id=$(docker image inspect --platform "$target_platform" \
+          --format '{{.Id}}' "$original")
+        if [ "$tagged_id" != "$pinned_id" ]; then
+          echo "Tag $original no longer matches pinned image $image for $target_platform." >&2
+          exit 2
+        fi
+        ;;
+    esac
   done
 }
 
