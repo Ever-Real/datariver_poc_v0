@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import ipaddress
+import json
 import logging
 from collections.abc import Sequence
 
@@ -42,6 +43,27 @@ def tcp_port(value: str) -> int:
     if not 1 <= port <= 65_535:
         raise argparse.ArgumentTypeError("port must be between 1 and 65535")
     return port
+
+
+def docker_bridge_gateway(ipam_config_json: str) -> str:
+    """Select the first RFC1918 IPv4 gateway from Docker IPAM configuration."""
+    try:
+        configurations = json.loads(ipam_config_json)
+    except json.JSONDecodeError as error:
+        raise ValueError("Docker bridge IPAM configuration is not JSON") from error
+    if not isinstance(configurations, list):
+        raise ValueError("Docker bridge IPAM configuration must be a list")
+    for configuration in configurations:
+        if not isinstance(configuration, dict):
+            continue
+        gateway = configuration.get("Gateway")
+        if not isinstance(gateway, str):
+            continue
+        try:
+            return private_ipv4(gateway)
+        except argparse.ArgumentTypeError:
+            continue
+    raise ValueError("Docker bridge has no RFC1918 IPv4 gateway")
 
 
 async def _copy(
@@ -115,15 +137,40 @@ async def serve(*, listen_host: str, listen_port: int, target_port: int) -> None
 
 def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--listen-host", type=private_ipv4, required=True)
-    parser.add_argument("--listen-port", type=tcp_port, required=True)
-    parser.add_argument("--target-port", type=tcp_port, required=True)
-    return parser.parse_args(argv)
+    parser.add_argument("--listen-host", type=private_ipv4)
+    parser.add_argument("--listen-port", type=tcp_port)
+    parser.add_argument("--target-port", type=tcp_port)
+    parser.add_argument("--print-docker-bridge-gateway", metavar="IPAM_CONFIG_JSON")
+    arguments = parser.parse_args(argv)
+    if arguments.print_docker_bridge_gateway is not None:
+        if any(
+            value is not None
+            for value in (arguments.listen_host, arguments.listen_port, arguments.target_port)
+        ):
+            parser.error("--print-docker-bridge-gateway cannot be combined with listener options")
+        return arguments
+    if any(
+        value is None
+        for value in (arguments.listen_host, arguments.listen_port, arguments.target_port)
+    ):
+        parser.error(
+            "--listen-host, --listen-port and --target-port are required to start a bridge"
+        )
+    return arguments
 
 
 def main(argv: Sequence[str] | None = None) -> None:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
     arguments = parse_args(argv)
+    if arguments.print_docker_bridge_gateway is not None:
+        try:
+            print(docker_bridge_gateway(arguments.print_docker_bridge_gateway))
+        except ValueError as error:
+            raise SystemExit(f"error: {error}") from error
+        return
+    assert arguments.listen_host is not None
+    assert arguments.listen_port is not None
+    assert arguments.target_port is not None
     asyncio.run(
         serve(
             listen_host=arguments.listen_host,

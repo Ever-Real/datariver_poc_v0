@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import importlib.util
+import json
 import sys
 from pathlib import Path
 from types import ModuleType
@@ -39,3 +40,25 @@ def test_source_api_bridge_rejects_invalid_ports(value: str) -> None:
 
     with pytest.raises(argparse.ArgumentTypeError):
         module.tcp_port(value)
+
+
+def test_source_api_bridge_selects_ipv4_gateway_from_dual_stack_docker_ipam() -> None:
+    module = _module()
+
+    gateway = module.docker_bridge_gateway(
+        json.dumps(
+            [
+                {"Subnet": "172.17.0.0/16", "Gateway": "172.17.0.1"},
+                {"Subnet": "fd00::/64", "Gateway": "fd00::1"},
+            ]
+        )
+    )
+
+    assert gateway == "172.17.0.1"
+
+
+def test_source_api_bridge_rejects_ipam_without_rfc1918_gateway() -> None:
+    module = _module()
+
+    with pytest.raises(ValueError, match="no RFC1918"):
+        module.docker_bridge_gateway(json.dumps([{"Gateway": "fd00::1"}]))

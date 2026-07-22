@@ -359,25 +359,10 @@ if [ "$api_ready" != true ]; then
 fi
 
 docker_bridge_gateway() {
-  local gateway
-  gateway=$(docker network inspect bridge --format '{{range .IPAM.Config}}{{.Gateway}}{{end}}' 2>/dev/null || true)
-  "$python" - "$gateway" <<'PY'
-import ipaddress
-import sys
-
-try:
-    address = ipaddress.ip_address(sys.argv[1])
-except ValueError:
-    raise SystemExit(1)
-networks = (
-    ipaddress.ip_network("10.0.0.0/8"),
-    ipaddress.ip_network("172.16.0.0/12"),
-    ipaddress.ip_network("192.168.0.0/16"),
-)
-if not isinstance(address, ipaddress.IPv4Address) or not any(address in network for network in networks):
-    raise SystemExit(1)
-print(address)
-PY
+  local configuration
+  configuration=$(docker network inspect bridge --format '{{json .IPAM.Config}}' 2>/dev/null || true)
+  "$python" "$root/scripts/source_api_bridge.py" \
+    --print-docker-bridge-gateway "$configuration"
 }
 
 if [ "$enable_airflow_source_bridge" = true ]; then

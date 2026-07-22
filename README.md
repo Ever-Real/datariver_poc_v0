@@ -348,6 +348,14 @@ port-forward 또는 API token을 Airflow에 주는 방식으로 우회하지 않
 # airflow-api-bridge가 running이어야 한다.
 ```
 
+bridge가 시작되지 않으면 컨테이너·volume을 삭제하지 말고 Docker bridge의 IPAM 구성부터 확인한다.
+IPv4/IPv6 gateway가 함께 반환되는 Docker Engine도 지원한다.
+
+```bash
+docker network inspect bridge --format '{{json .IPAM.Config}}'
+cat runtime/source-host/airflow-api-bridge.err.log
+```
+
 `DATAHUB_BASE_URL`은 DataHub **GMS**의 origin(예: `https://datahub-gms.example.internal`)이며
 `/api` path나 DataHub Frontend URL이 아니다. 이 설정은 API가 scoped service token으로 provider에
 연결할 수 있게 할 뿐, 외부 catalog를 브라우저나 API 시작 시점에 자동 복사하지 않는다. 첫 projection은
