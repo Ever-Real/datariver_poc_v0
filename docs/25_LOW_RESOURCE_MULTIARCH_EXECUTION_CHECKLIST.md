@@ -52,7 +52,9 @@ This checklist is evidence-driven. `[x]` means the named repository evidence was
   exposed Docker Desktop's host-default view of a multi-platform external index; manifest checks
   and tar export now select the explicit target platform and must be rerun from the corrected
   commit. The cross-build host uses artifact-only verification; target daemon enforcement remains
-  mandatory for WSL import.
+  mandatory for WSL import. Tar inspection then found a digest-only PostgreSQL entry with no
+  restorable tag; export now saves the already verified tag and rejects an archive missing any
+  requested Compose image name.
 - [ ] core, PostgreSQL, Redis, MinIO and Neo4j OCI indexes are digest-pinned. Redis/MinIO
   redistribution and target vulnerability/license acceptance remain operator gates; the
   nonexistent MinIO `2025-10-15` image tag was replaced by the available `2025-09-07` image.

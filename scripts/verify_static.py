@@ -286,6 +286,8 @@ def verify_multiarch_release_contract() -> None:
         'docker image pull --platform "$target_platform" "$image"',
         'docker image save --platform "$target_platform"',
         'docker image inspect --platform "$target_platform"',
+        'save_image=${image%@sha256:*}',
+        'Saved archive omitted required image tag',
     ):
         if fragment not in exporter:
             raise AssertionError(f"offline exporter is missing release guard: {fragment}")

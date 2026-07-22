@@ -456,13 +456,25 @@ write_manifest() {
   local manifest="$output_dir/$label.manifest.tsv"
   {
     printf 'image\timage_id\trepository_digests\tplatform\n'
-    local image
+    local image repository_digests
     for image in "$@"; do
+      repository_digests=$(docker image inspect --platform "$target_platform" \
+        --format '{{join .RepoDigests ","}}' "$image" | awk -F ',' '
+          {
+            separator = ""
+            for (index = 1; index <= NF; index += 1) {
+              if ($index !~ /^datariver-offline-export-backup@/) {
+                printf "%s%s", separator, $index
+                separator = ","
+              }
+            }
+            printf "\n"
+          }
+        ')
       printf '%s\t%s\t%s\t%s\n' \
         "$image" \
         "$(docker image inspect --platform "$target_platform" --format '{{.Id}}' "$image")" \
-        "$(docker image inspect --platform "$target_platform" \
-          --format '{{join .RepoDigests ","}}' "$image")" \
+        "$repository_digests" \
         "$(docker image inspect --platform "$target_platform" \
           --format '{{.Os}}/{{.Architecture}}' "$image")"
     done
@@ -473,13 +485,28 @@ write_manifest() {
 save_bundle() {
   local label=$1
   shift
-  local image
+  local image save_image archive_manifest
+  local save_images=()
   for image in "$@"; do
     require_image "$image"
+    save_image=$image
+    case "$image" in
+      *@sha256:*) save_image=${image%@sha256:*} ;;
+    esac
+    save_images+=("$save_image")
   done
   local tar_name="$label.tar"
   local temporary="$output_dir/$tar_name.partial"
-  docker image save --platform "$target_platform" --output "$temporary" "$@"
+  docker image save --platform "$target_platform" --output "$temporary" "${save_images[@]}"
+  archive_manifest="$output_dir/$tar_name.manifest.partial"
+  tar -xOf "$temporary" manifest.json >"$archive_manifest"
+  for save_image in "${save_images[@]}"; do
+    if ! grep -F "\"$save_image\"" "$archive_manifest" >/dev/null; then
+      echo "Saved archive omitted required image tag: $save_image" >&2
+      exit 2
+    fi
+  done
+  rm -f "$archive_manifest"
   mv "$temporary" "$output_dir/$tar_name"
   write_checksum "$tar_name"
   write_manifest "$label" "$@"
