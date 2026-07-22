@@ -306,7 +306,19 @@ uv sync --frozen --all-extras --offline
 ```
 
 `secrets/`·`.env`의 변경도 Git pull 대상이 아니다. 승인된 별도 보안 채널로 배포한 뒤,
-관련 source process만 재시작한다.
+관련 source process만 재시작한다. 새 release가 `secrets/`의 파일명, Keycloak realm template 또는
+Compose secret mount를 추가한 경우에는 source process를 시작하기 전에 아래 bootstrap을 다시
+실행한다. 기존의 non-empty `secrets/datahub_token`은 보존되며, token을 명령행에 다시 넣지 않는다.
+`keycloak_identity_admin_client_secret` 같은 새 파일만 생성되고, 이어지는 Keycloak configurator가
+이미 존재하는 realm의 dedicated client secret을 안전하게 일치시킨다.
+
+```bash
+./scripts/bootstrap.sh --host-development \
+  --datahub-base-url https://datahub.example.internal
+docker compose -f compose.yaml -f compose.identity.yaml -f compose.source-host.yaml \
+  up -d --pull never --no-build --wait keycloak
+./scripts/configure_keycloak_host_dev.sh
+```
 
 외부 DataHub가 원격 HTTPS 주소라면 `bootstrap.sh`와 `dev_host.sh`의 두 DataHub URL을 모두
 그 정확한 HTTPS origin으로 바꾼다. API가 아닌 browser에는 DataHub service token을 주지 않는다.
@@ -320,6 +332,50 @@ DATARIVER_API_BASE_URL=http://host.docker.internal:38101 \
   -f compose.airflow.yaml up -d --pull never --no-build --wait \
   airflow-api-server airflow-scheduler airflow-dag-processor airflow-triggerer
 ```
+
+`DATAHUB_BASE_URL`은 DataHub **GMS**의 origin(예: `https://datahub-gms.example.internal`)이며
+`/api` path나 DataHub Frontend URL이 아니다. 이 설정은 API가 scoped service token으로 provider에
+연결할 수 있게 할 뿐, 외부 catalog를 브라우저나 API 시작 시점에 자동 복사하지 않는다. 첫 projection은
+Airflow의 최소권한 service account만 실행할 수 있다. Airflow가 healthy가 된 뒤 아래를 한 번 실행해
+즉시 동기화하고, 계속 6시간 주기 동기화를 원하면 DAG를 unpaused 상태로 둔다.
+
+```bash
+# local-bootstrap이 먼저 완료되어 Airflow service account의 catalog.sync 권한이 있어야 한다.
+docker compose -f compose.yaml -f compose.identity.yaml -f compose.source-host.yaml \
+  -f compose.airflow.yaml exec airflow-api-server \
+  /bin/bash /opt/datariver/airflow-entrypoint.sh \
+  dags unpause datariver_catalog_sync
+docker compose -f compose.yaml -f compose.identity.yaml -f compose.source-host.yaml \
+  -f compose.airflow.yaml exec airflow-api-server \
+  /bin/bash /opt/datariver/airflow-entrypoint.sh \
+  dags trigger datariver_catalog_sync
+```
+
+Sync run이 `SUCCESS`가 되면 Search는 DataHub의 Dataset projection을 표시한다. 실패하면 Airflow
+task log의 DataHub provider code를 확인한다: `UNAUTHORIZED`는 `secrets/datahub_token`의 service
+account 범위가 Dataset/Tag/Glossary Term read에 부족한 경우이고, `VERSION_MISMATCH`는 GMS가
+`DATAHUB_EXPECTED_VERSION`과 다를 때다. `NETWORK`/TLS 실패는 source API가 원격 GMS의 사설 CA를
+신뢰하지 못한 경우이므로 TLS 검증을 끄지 말고 해당 CA를 host trust store에 설치한다.
+
+source-host에서 Airflow를 처음 시작할 때 API origin을 지정하지 않으면 container topology의 기본값
+`http://api:8000`을 사용한다. 이 topology에는 API container가 없으므로 task가 DNS 오류로 실패한다.
+현재 `bootstrap.sh --host-development`은 이를 `.env`의
+`DATARIVER_API_BASE_URL=http://host.docker.internal:38101`로 기록한다. 이전 bootstrap으로 만든
+환경은 bootstrap을 token 인자 없이 한 번 다시 실행한 뒤 Airflow 네 서비스를 반드시 재생성한다.
+
+```bash
+./scripts/bootstrap.sh --host-development \
+  --datahub-base-url https://datahub.example.internal
+docker compose -f compose.yaml -f compose.identity.yaml -f compose.source-host.yaml \
+  -f compose.airflow.yaml up -d --pull never --no-build --force-recreate --wait \
+  airflow-api-server airflow-scheduler airflow-dag-processor airflow-triggerer
+```
+
+`datariver_bulk_registration_prepare`와 `datariver_manual_metadata_apply`는 각각 5분 주기의
+bounded receipt worker이며, 등록할 receipt가 없을 때도 DataRiver API에 안전하게 조회한다.
+`datariver_catalog_sync`는 6시간 주기의 DataHub-to-projection reconciliation이다. 세 DAG가
+동시에 `temporary failure in name resolution`으로 실패하면 DataHub token 문제가 아니라 이 API
+origin 또는 내부 proxy/DNS 구성을 먼저 확인한다.
 
 포함된 Airflow UI 인증은 loopback 개발용이다. 공유/운영 Airflow는 조직의 SSO 구성을 별도로
 적용해야 한다.
@@ -448,7 +504,7 @@ environment's secrets or volumes.
    topology.
 3. Validate the selected Compose overlay with `docker compose ... config --quiet`, then bring up
    PostgreSQL, Valkey, object storage, Keycloak and APISIX. Apply `alembic upgrade head` through the
-   migration service before API/workers; readiness requires revision `0038`.
+   migration service before API/workers; readiness requires revision `0039`.
 4. Start the API, relay, workers and web service using either the container profile or the
    host-development commands below. Check `/api/v1/health/live`, `/api/v1/health/ready`,
    `/api/v1/capabilities` and the APISIX/Vite proxy before using application workflows.
@@ -930,7 +986,7 @@ docker compose -f compose.yaml build --pull
 ```
 
 애플리케이션을 올리기 전에 권한이 분리된 `migrate` 서비스로 Alembic을 실행한다. 이
-릴리스의 필수 revision은 `0038`이다. 호스트의 임의 DB 계정으로 `alembic`을 직접 실행하지
+릴리스의 필수 revision은 `0039`이다. 호스트의 임의 DB 계정으로 `alembic`을 직접 실행하지
 않는다.
 
 ```bash
@@ -939,7 +995,7 @@ docker compose -f compose.yaml run --rm migrate \
   /app/.venv/bin/alembic -c backend/alembic.ini current
 ```
 
-두 번째 명령의 현재 revision이 `0038 (head)`인지 확인한다. 마이그레이션 실패 시 서비스를
+두 번째 명령의 현재 revision이 `0039 (head)`인지 확인한다. 마이그레이션 실패 시 서비스를
 재기동하거나 downgrade를 추측 실행하지 말고, 로그와 DB 상태를 보존한 채 배포를 중단한다.
 
 ### 3. API·Worker·Web 재기동과 상태 확인

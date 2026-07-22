@@ -273,11 +273,20 @@ for the selected workspace.
 
 The Compose overlay intentionally uses Airflow `SimpleAuthManager` only for loopback development and pre-creates its password file from a secret. Any shared or production deployment must replace it with an environment-supported enterprise/FAB SSO configuration and retest authorization; the DataRiver service-token flow is independent of that human UI login choice.
 
+For source-host development, `bootstrap.sh --host-development` persists
+`DATARIVER_API_BASE_URL=http://host.docker.internal:38101` in ignored `.env`. Airflow otherwise
+defaults to the container topology's `http://api:8000`; that name is deliberately absent when API
+and workers run from a checkout, so every task would fail before reaching DataHub. Recreate all
+four Airflow services after changing this value. Its `NO_PROXY`/`no_proxy` list explicitly covers
+only local Compose and source-host names, preventing a workstation proxy from intercepting Keycloak
+client-credentials or internal API calls. It does not grant Airflow DataHub egress or a DataHub
+credential.
+
 ## Database and object operations
 
-- Alembic has one head at `0034`: the generated current initial schema plus conditional compatibility bridges for local databases that applied earlier revisions. Deployment runs migration before API/workers. The API role can only read `public.alembic_version` for readiness; migration ownership remains separate. Clean-install bridges validate complete canonical objects, execute only when the feature contract is absent, and reject partially present schemas.
+- Alembic has one head at `0039`: the generated current initial schema plus conditional compatibility bridges for local databases that applied earlier revisions. Deployment runs migration before API/workers. The API role can only read `public.alembic_version` for readiness; migration ownership remains separate. Clean-install bridges validate complete canonical objects, execute only when the feature contract is absent, and reject partially present schemas.
 - PostgreSQL pool size/overflow/lease timeout, statement timeout, idle-transaction timeout and application names are explicit. Budget `API replicas × (API pool + overflow) + long-running workers × (worker pool + overflow) + one-shot/IdP/Airflow/admin reserve`; current one-API/four-worker defaults have a ceiling of 60 before reserve.
-- Liveness is process-only. Readiness leases the API pool and requires exactly packaged Alembic head `0034`; Compose and APISIX use readiness for upstream health.
+- Liveness is process-only. Readiness leases the API pool and requires exactly packaged Alembic head `0039`; Compose and APISIX use readiness for upstream health.
 - `scripts/probe_pgbouncer_rls.py` and its unit contract implement the pre-adoption transaction-pool leakage gate. No Compose profile currently deploys PgBouncer and no live pooler pass has been recorded; direct PostgreSQL remains the supported path until the isolated two-workspace probe succeeds.
 - Back up PostgreSQL and SeaweedFS as a consistency set or record a watermark; restore into isolation and follow the drill in [operations runbook](13_OPERATIONS_RUNBOOK.md) before traffic.
 - Accepted-object retention/lifecycle is environment policy. Quarantine receives a shorter cleanup policy, but never delete an object whose manifest is actively leased.
