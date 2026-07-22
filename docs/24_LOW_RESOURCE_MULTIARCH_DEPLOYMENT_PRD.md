@@ -58,6 +58,8 @@ PostgreSQL/OIDC alone is an implemented minimal runtime.
   development inventory/probe history may remain visible.
 - `CONN-001`: separately composed local connectors share a named external network. Remote endpoints
   use private DNS/TLS and must not rely on loopback.
+- `CONN-002`: Redis cache and delivery use distinct service origins; S3 endpoints are
+  credential-free origins; an external development Neo4j hostname must be explicitly allowlisted.
 - `DATA-001`: never copy Docker volumes across architectures. PostgreSQL uses logical backup/restore;
   S3 objects use key/size/SHA-256 reconciliation; Redis cache is rebuilt.
 
@@ -78,6 +80,8 @@ PostgreSQL/OIDC alone is an implemented minimal runtime.
   a measured write-only/spooled implementation meets its worker RSS budget.
 - `LOW-MEM-006`: the frontend production bundle uses route/feature splitting or an accepted budget;
   the current monolithic bundle warning is not a production-readiness pass.
+- `LOW-MEM-007`: DataHub and inference provider bodies are streamed through fixed pre-JSON limits
+  (8 MiB and 2 MiB respectively); an upstream `Content-Length` omission cannot bypass the limit.
 
 ## 5. Configuration profiles
 

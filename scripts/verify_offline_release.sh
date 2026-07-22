@@ -205,6 +205,13 @@ index_commit=$(awk -F '\t' '$1 == "release" && $2 == "source_commit" { print $3 
 index_platform=$(awk -F '\t' '$1 == "release" && $2 == "platform" { print $3 }' "$index")
 [ "$release_id" = "$(basename "$release_root")" ] || { echo "Release ID/directory mismatch." >&2; exit 2; }
 [ "$source_commit" = "$index_commit" ] || { echo "Source commit/index mismatch." >&2; exit 2; }
+git bundle list-heads "$bundle" | awk -v commit="$source_commit" '
+  $1 == commit { found = 1 }
+  END { if (!found) exit 2 }
+' || {
+  echo "Claimed source commit is absent from the source bundle." >&2
+  exit 2
+}
 [ "$normalized_platform" = "$index_platform" ] || {
   echo "Release is $index_platform, requested $normalized_platform." >&2
   exit 2

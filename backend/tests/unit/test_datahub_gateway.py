@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+from collections.abc import AsyncIterator
 
 import httpx
 import pytest
@@ -10,6 +11,7 @@ from datariver.application.errors import ExternalDependencyError
 from datariver.domain.authz import Classification
 from datariver.domain.common import canonical_json_hash
 from datariver.infrastructure.datahub.http import (
+    MAX_DATAHUB_RESPONSE_BYTES,
     VOCABULARY_SEARCH_QUERY,
     HttpDataHubGateway,
     _catalog_hierarchy_from_browse_path,
@@ -18,6 +20,53 @@ from datariver.infrastructure.datahub.http import (
 from datariver.infrastructure.observability.metrics import HttpMetrics
 
 DATAHUB_V160_CONFIG = {"versions": {"acryldata/datahub": {"version": "v1.6.0"}}}
+
+
+class _ChunkedResponse(httpx.AsyncByteStream):
+    async def __aiter__(self) -> AsyncIterator[bytes]:
+        yield b"x" * (MAX_DATAHUB_RESPONSE_BYTES // 2)
+        yield b"x" * (MAX_DATAHUB_RESPONSE_BYTES // 2 + 1)
+
+
+async def test_datahub_rejects_oversized_graphql_response_before_json_parsing() -> None:
+    async def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            content=b"x" * (MAX_DATAHUB_RESPONSE_BYTES + 1),
+            request=request,
+        )
+
+    client = httpx.AsyncClient(
+        base_url="https://datahub.example", transport=httpx.MockTransport(handler)
+    )
+    gateway = HttpDataHubGateway(
+        base_url="https://datahub.example", token="unused", timeout_seconds=1, client=client
+    )
+
+    with pytest.raises(ExternalDependencyError) as caught:
+        await gateway.search_vocabulary(kind="TAG", query="bounded", limit=10)
+
+    assert caught.value.details["retryable"] is False
+    assert caught.value.details["provider_code"] == "RESPONSE_TOO_LARGE"
+    await client.aclose()
+
+
+async def test_datahub_rejects_chunked_oversized_response_without_content_length() -> None:
+    async def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, stream=_ChunkedResponse(), request=request)
+
+    client = httpx.AsyncClient(
+        base_url="https://datahub.example", transport=httpx.MockTransport(handler)
+    )
+    gateway = HttpDataHubGateway(
+        base_url="https://datahub.example", token="unused", timeout_seconds=1, client=client
+    )
+
+    with pytest.raises(ExternalDependencyError) as caught:
+        await gateway.search_vocabulary(kind="TAG", query="bounded", limit=10)
+
+    assert caught.value.details["provider_code"] == "RESPONSE_TOO_LARGE"
+    await client.aclose()
 
 
 def test_schema_fields_retains_only_the_bounded_provider_projection() -> None:

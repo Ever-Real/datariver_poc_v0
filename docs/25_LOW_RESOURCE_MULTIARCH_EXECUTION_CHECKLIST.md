@@ -32,7 +32,8 @@ This checklist is evidence-driven. `[x]` means the named repository evidence was
   expanded branches and add regression evidence.
 - [x] cap retained DataHub schema enrichment at 1,000 unique fields, paginate serialization with a
   100-field default and 200-field maximum, and expose explicit total/total-exact/available/truncated
-  metadata; record remaining search/XLSX/lineage performance gates without claiming them.
+  metadata; stream DataHub responses through an 8 MiB pre-JSON limit; record remaining
+  search/XLSX/lineage performance gates without claiming them.
 - [x] split feature routes; the largest production JavaScript chunk is 241.32 kB and the former
   861.17 kB monolithic-chunk warning is gone.
 
@@ -99,8 +100,9 @@ This checklist is evidence-driven. `[x]` means the named repository evidence was
 
 ## Phase 5 — WSL `linux/amd64` preparation PC
 
-- [ ] WSL `linux/x86_64→linux/amd64` mapping is captured; CPU/RAM/disk and Docker/Compose versions
-  remain unavailable until the preparation PC is accessible.
+- [x] operator-reported WSL `linux/x86_64→linux/amd64` mapping is captured.
+- [ ] WSL CPU/RAM/disk and Docker/Compose versions remain unavailable until the preparation PC is
+  accessible.
 - [ ] exact source bundle and release artifacts pass import verification.
 - [ ] PostgreSQL logical restore is rehearsed in isolation; Alembic reaches the recorded head.
 - [ ] Keycloak import/issuer/redirect origins use WSL runtime values.

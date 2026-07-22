@@ -47,6 +47,25 @@ def test_rejects_shared_cache_and_queue_endpoint() -> None:
         settings(valkey_queue_url="redis://cache:6379/0")
 
 
+def test_rejects_shared_redis_service_even_when_database_numbers_differ() -> None:
+    with pytest.raises(ValidationError, match="separate Redis service origins"):
+        settings(valkey_queue_url="redis://cache:6379/1")
+
+
+@pytest.mark.parametrize(
+    "endpoint",
+    (
+        "https://user:secret@objects.example.com",
+        "https://objects.example.com/s3",
+        "https://objects.example.com?region=internal",
+        "file:///tmp/objects",
+    ),
+)
+def test_rejects_s3_endpoint_that_is_not_a_credential_free_origin(endpoint: str) -> None:
+    with pytest.raises(ValidationError, match="credential-free"):
+        settings(s3_endpoint_url=endpoint)
+
+
 def test_legacy_valkey_environment_names_map_to_redis_contract() -> None:
     configured = settings()
 
@@ -243,6 +262,24 @@ def test_local_ollama_chat_is_development_only_and_host_gateway_bound() -> None:
             local_ollama_chat_enabled=True,
             local_ollama_chat_base_url="http://host.docker.internal:11434/v1",
             local_ollama_chat_model="datariver-gemma4-dev:0.1",
+        )
+
+
+def test_neo4j_projection_accepts_only_explicit_deployment_hosts() -> None:
+    configured = settings(
+        neo4j_projection_enabled=True,
+        neo4j_uri="bolt://graph.internal.example:7687",
+        neo4j_allowed_hosts=("graph.internal.example",),
+        neo4j_auth_secret_ref="file:/run/secrets/neo4j_auth",
+    )
+
+    assert configured.neo4j_uri == "bolt://graph.internal.example:7687"
+    with pytest.raises(ValidationError, match="explicitly allowlisted"):
+        settings(
+            neo4j_projection_enabled=True,
+            neo4j_uri="bolt://unreviewed.internal.example:7687",
+            neo4j_allowed_hosts=("graph.internal.example",),
+            neo4j_auth_secret_ref="file:/run/secrets/neo4j_auth",
         )
 
 

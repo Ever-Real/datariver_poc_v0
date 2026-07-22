@@ -308,6 +308,8 @@ def verify_multiarch_release_contract() -> None:
     for fragment in (
         'verify_checksums "$release_root"',
         'bundle verify "$bundle"',
+        'bundle list-heads "$bundle"',
+        "Claimed source commit is absent from the source bundle",
         "Source checkout does not match release commit",
         "Loaded image platform mismatch",
         "inspect_image=${image%@sha256:*}",
@@ -323,6 +325,21 @@ def verify_multiarch_release_contract() -> None:
     ):
         if fragment not in verifier:
             raise AssertionError(f"offline verifier is missing fail-closed check: {fragment}")
+
+    migration_runbook = (ROOT / "docs" / "26_MAC_TO_WSL_MIGRATION_RUNBOOK.md").read_text(
+        encoding="utf-8"
+    )
+    for fragment in (
+        "/transfer/datariver-RELEASE/datariver-source.bundle",
+        "</run/secrets/postgres_password",
+        "run --rm --pull never local-bootstrap",
+        "SELECT count(*) FROM iam.subjects",
+        "--source-access-key-file /transfer/migration/source-minio/access_key",
+        "--target-access-key-file secrets/s3_access_key",
+        "NEO4J_ALLOWED_HOSTS=neo4j",
+    ):
+        if fragment not in migration_runbook:
+            raise AssertionError(f"WSL migration runbook omits fail-closed step: {fragment}")
 
     object_migrator = (ROOT / "scripts" / "migrate_s3_objects.py").read_text(encoding="utf-8")
     for fragment in (

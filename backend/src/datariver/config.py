@@ -132,6 +132,7 @@ class Settings(BaseSettings):
     )
     neo4j_projection_enabled: bool = False
     neo4j_uri: str | None = Field(default=None, max_length=2048)
+    neo4j_allowed_hosts: tuple[str, ...] = ("neo4j",)
     neo4j_database: str = Field(default="neo4j", min_length=1, max_length=128)
     neo4j_auth_secret_ref: str | None = Field(default=None, max_length=512)
     neo4j_connection_timeout_seconds: float = Field(default=30.0, ge=1.0, le=60.0)
@@ -279,6 +280,7 @@ class Settings(BaseSettings):
         "oidc_password_amr_values",
         "datahub_allowed_versions",
         "intranet_openai_compatible_allowed_hosts",
+        "neo4j_allowed_hosts",
         mode="before",
     )
     @classmethod
@@ -303,6 +305,39 @@ class Settings(BaseSettings):
         if len(set(normalized)) != len(normalized):
             raise ValueError("Intranet inference host allowlist values must be unique.")
         return normalized
+
+    @field_validator("neo4j_allowed_hosts")
+    @classmethod
+    def normalize_neo4j_allowed_hosts(cls, values: tuple[str, ...]) -> tuple[str, ...]:
+        normalized = tuple(value.strip().rstrip(".").lower() for value in values)
+        if not normalized or len(normalized) > 32:
+            raise ValueError("Neo4j requires between one and 32 allowlisted hosts.")
+        if any(
+            not value or re.fullmatch(r"[a-z0-9](?:[a-z0-9.-]{0,251}[a-z0-9])?", value) is None
+            for value in normalized
+        ):
+            raise ValueError("Neo4j host allowlist values are invalid.")
+        if len(set(normalized)) != len(normalized):
+            raise ValueError("Neo4j host allowlist values must be unique.")
+        return normalized
+
+    @field_validator("s3_endpoint_url", "s3_public_endpoint_url")
+    @classmethod
+    def validate_s3_origin(cls, value: str) -> str:
+        parsed = urlsplit(value)
+        if (
+            parsed.scheme not in {"http", "https"}
+            or not parsed.hostname
+            or parsed.username is not None
+            or parsed.password is not None
+            or parsed.path not in {"", "/"}
+            or parsed.query
+            or parsed.fragment
+        ):
+            raise ValueError(
+                "S3 endpoints must be credential-free absolute HTTP(S) origins without a path."
+            )
+        return value.rstrip("/")
 
     @field_validator("system_configuration_secret_root")
     @classmethod
@@ -382,8 +417,19 @@ class Settings(BaseSettings):
     def validate_security_posture(self) -> Self:
         if "*" in self.app_cors_origins:
             raise ValueError("Wildcard CORS origins are not permitted.")
-        if self.redis_cache_url == self.redis_delivery_url:
-            raise ValueError("Cache and delivery must use separate Redis endpoints/databases.")
+        cache_redis = urlsplit(self.redis_cache_url)
+        delivery_redis = urlsplit(self.redis_delivery_url)
+        try:
+            cache_origin = (cache_redis.scheme, cache_redis.hostname, cache_redis.port or 6379)
+            delivery_origin = (
+                delivery_redis.scheme,
+                delivery_redis.hostname,
+                delivery_redis.port or 6379,
+            )
+        except ValueError as error:
+            raise ValueError("Redis endpoints contain an invalid port.") from error
+        if cache_origin == delivery_origin:
+            raise ValueError("Cache and delivery must use separate Redis service origins.")
         if self.datahub_stale_ttl_seconds < self.cache_default_ttl_seconds:
             raise ValueError("The DataHub stale TTL cannot be shorter than the fresh cache TTL.")
         for allowed_version in self.datahub_allowed_versions:
@@ -652,13 +698,14 @@ class Settings(BaseSettings):
             if self.neo4j_uri is None or self.neo4j_auth_secret_ref is None:
                 raise ValueError("Enabled Neo4j projection requires URI and secret reference.")
             parsed_neo4j_uri = urlsplit(self.neo4j_uri)
-            compose_neo4j = parsed_neo4j_uri.hostname == "neo4j" and parsed_neo4j_uri.port == 7687
-            source_host_neo4j = (
-                parsed_neo4j_uri.hostname == "127.0.0.1" and parsed_neo4j_uri.port == 17687
+            neo4j_host = (parsed_neo4j_uri.hostname or "").rstrip(".").lower()
+            allowlisted_neo4j = (
+                neo4j_host in self.neo4j_allowed_hosts and parsed_neo4j_uri.port == 7687
             )
+            source_host_neo4j = neo4j_host == "127.0.0.1" and parsed_neo4j_uri.port == 17687
             if (
                 parsed_neo4j_uri.scheme != "bolt"
-                or not (compose_neo4j or source_host_neo4j)
+                or not (allowlisted_neo4j or source_host_neo4j)
                 or parsed_neo4j_uri.path not in {"", "/"}
                 or parsed_neo4j_uri.query
                 or parsed_neo4j_uri.fragment
@@ -666,8 +713,8 @@ class Settings(BaseSettings):
                 or parsed_neo4j_uri.password is not None
             ):
                 raise ValueError(
-                    "Local Neo4j projection must use bolt://neo4j:7687 or the source-host "
-                    "bolt://127.0.0.1:17687 endpoint."
+                    "Neo4j projection must use an explicitly allowlisted host on port 7687 or "
+                    "the source-host bolt://127.0.0.1:17687 endpoint."
                 )
             if source_host_neo4j:
                 if not self.neo4j_auth_secret_ref.startswith("file:"):

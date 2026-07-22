@@ -38,9 +38,9 @@ function branchTreeKeys(branches: Record<string, Branch>, rootKey: string): Set<
     const key = pending.pop()
     if (!key) continue
     for (const node of branches[key]?.items ?? []) {
-      if (branches[node.id] && !keys.has(node.id)) {
+      if (!keys.has(node.id)) {
         keys.add(node.id)
-        pending.push(node.id)
+        if (branches[node.id]) pending.push(node.id)
       }
     }
   }

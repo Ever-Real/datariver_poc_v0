@@ -244,7 +244,7 @@ migration. Generate WSL secrets locally; do not reuse Mac deployment credentials
 credential migration specifically requires it.
 
 ```bash
-git clone datariver-source.bundle datariver_v1
+git clone /transfer/datariver-RELEASE/datariver-source.bundle datariver_v1
 cd datariver_v1
 scripts/bootstrap.sh --env-file .env.wsl-preparation --wsl-preparation
 scripts/verify_offline_release.sh /transfer/datariver-RELEASE \
@@ -285,6 +285,26 @@ target that will pull the pinned digest instead, omit the offline connector over
 `--pull never` flag, then capture the resolved image ID before acceptance. A disconnected target
 must not fall back to a registry when the selected archive or override is absent.
 
+Neo4j follows the same explicit choice. For a connected WSL target, set
+`NEO4J_ALLOWED_HOSTS=neo4j` and `NEO4J_URI=bolt://neo4j:7687`, then pull/start the digest-pinned
+separate connector. For a remote private server, replace `neo4j` in both values with its exact DNS
+name; the API rejects a host absent from `NEO4J_ALLOWED_HOSTS`:
+
+```bash
+scripts/compose.sh --env-file .env.wsl-preparation \
+  --profile graph -f compose.local-connectors.yaml pull neo4j
+scripts/compose.sh --env-file .env.wsl-preparation \
+  --profile graph -f compose.local-connectors.yaml up -d --wait neo4j
+docker exec datariver-local-connectors-neo4j-1 sh -ec \
+  'exec cypher-shell -u neo4j -p "$(cut -d/ -f2- /run/secrets/neo4j_auth)" "RETURN 1"'
+```
+
+APISIX is optional edge infrastructure. The current core-only release does not contain it, and the
+WSL pilot must not build its mutable upstream base opportunistically. Keep APISIX disabled until a
+reviewed `--include-edge` release or a target-approved digest-pinned build is available; direct API
+port `8000` remains loopback-only during acceptance. This is a target gate, not permission to use an
+unpinned registry image.
+
 Start a new PostgreSQL volume and stop before Keycloak/API. Refuse restore unless both target
 databases have zero non-system tables. Restore each dump in one transaction as its target owner.
 The offline override is required because an image tar restores the verified tag, not a registry
@@ -296,8 +316,10 @@ scripts/compose.sh --env-file .env.wsl-preparation \
   -f /transfer/datariver-RELEASE/amd64/offline-core.compose.yaml \
   up -d --wait --no-build --pull never postgres
 (cd /transfer/migration && sha256sum -c SHA256SUMS)
-docker exec datariver-next-postgres-1 psql -XAt -U datariver_owner -d datariver \
-  -c "SELECT count(*) FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace WHERE c.relkind IN ('r','p') AND n.nspname NOT IN ('pg_catalog','information_schema');"
+docker exec datariver-next-postgres-1 sh -ec \
+  'PGPASSWORD="$(tr -d "\r\n" </run/secrets/postgres_password)" \
+   exec psql -XAt -U datariver_owner -d datariver \
+   -c "SELECT count(*) FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace WHERE c.relkind IN ('\''r'\'','\''p'\'') AND n.nspname NOT IN ('\''pg_catalog'\'','\''information_schema'\'');"'
 docker exec datariver-next-postgres-1 sh -ec \
   'PGPASSWORD="$(tr -d "\r\n" </run/secrets/keycloak_db_password)" \
    exec psql -XAt -U keycloak -d keycloak \
@@ -315,6 +337,15 @@ scripts/compose.sh --env-file .env.wsl-preparation \
   -f compose.yaml -f compose.identity.yaml \
   -f /transfer/datariver-RELEASE/amd64/offline-core.compose.yaml \
   run --rm --pull never migrate
+scripts/compose.sh --env-file .env.wsl-preparation --profile tools \
+  -f compose.yaml -f compose.identity.yaml \
+  -f /transfer/datariver-RELEASE/amd64/offline-core.compose.yaml \
+  run --rm --pull never local-bootstrap
+docker exec datariver-next-postgres-1 sh -ec \
+  'PGPASSWORD="$(tr -d "\r\n" </run/secrets/postgres_password)" \
+   exec psql -XAt -U datariver_owner -d datariver \
+   -c "SELECT count(*) FROM iam.subjects WHERE id IN ('\''00000000-0000-4000-8000-000000000101'\'', '\''00000000-0000-4000-8000-000000000102'\'') AND issuer = '\''http://localhost:8081/realms/datariver'\'';"'
+# The issuer query must print exactly 2 before Keycloak/API starts.
 ```
 
 If either restore fails, stop there. Preserve its logs and discard only the explicitly verified
@@ -325,6 +356,42 @@ Initialize/probe the external MinIO, then copy the final object set from the Mac
 (not SeaweedFS) using `/transfer/migration/object-manifest.json`. Use distinct source and target
 credential files, run a dry pass, `--apply`, and a second dry pass requiring
 `verified_existing=object_count` and `planned=0`. Do this before API or workers can accept writes.
+
+```bash
+scripts/compose.sh --env-file .env.wsl-preparation --profile object-storage-tools \
+  -f compose.yaml -f compose.identity.yaml \
+  -f /transfer/datariver-RELEASE/amd64/offline-core.compose.yaml \
+  run --rm --pull never storage-init
+
+# These endpoint variables contain no credentials. Use private DNS/IP reachable from WSL.
+SOURCE_MINIO_ENDPOINT=https://mac-minio.private.example
+TARGET_MINIO_ENDPOINT=https://wsl-minio.private.example
+uv run python scripts/migrate_s3_objects.py \
+  --manifest /transfer/migration/object-manifest.json \
+  --source-endpoint "$SOURCE_MINIO_ENDPOINT" \
+  --target-endpoint "$TARGET_MINIO_ENDPOINT" \
+  --source-access-key-file /transfer/migration/source-minio/access_key \
+  --source-secret-key-file /transfer/migration/source-minio/secret_key \
+  --target-access-key-file secrets/s3_access_key \
+  --target-secret-key-file secrets/s3_secret_key
+uv run python scripts/migrate_s3_objects.py \
+  --manifest /transfer/migration/object-manifest.json \
+  --source-endpoint "$SOURCE_MINIO_ENDPOINT" \
+  --target-endpoint "$TARGET_MINIO_ENDPOINT" \
+  --source-access-key-file /transfer/migration/source-minio/access_key \
+  --source-secret-key-file /transfer/migration/source-minio/secret_key \
+  --target-access-key-file secrets/s3_access_key \
+  --target-secret-key-file secrets/s3_secret_key \
+  --apply
+uv run python scripts/migrate_s3_objects.py \
+  --manifest /transfer/migration/object-manifest.json \
+  --source-endpoint "$SOURCE_MINIO_ENDPOINT" \
+  --target-endpoint "$TARGET_MINIO_ENDPOINT" \
+  --source-access-key-file /transfer/migration/source-minio/access_key \
+  --source-secret-key-file /transfer/migration/source-minio/secret_key \
+  --target-access-key-file secrets/s3_access_key \
+  --target-secret-key-file secrets/s3_secret_key
+```
 
 Start Keycloak alone. Replace the target `keycloak_admin_password` with the securely transferred
 source value first, then reconcile the WSL redirect and the target-generated identity/Airflow

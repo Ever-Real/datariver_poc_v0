@@ -26,6 +26,8 @@ from datariver.application.errors import ExternalDependencyError
 from datariver.domain.authz import Classification
 from datariver.domain.common import canonical_json_hash
 
+MAX_DATAHUB_RESPONSE_BYTES = 8 * 1024 * 1024
+
 ASSET_QUERY = """
 query DataRiverAsset($urn: String!) {
   entity(urn: $urn) {
@@ -607,7 +609,45 @@ class HttpDataHubGateway:
                 ) from error
             try:
                 try:
-                    response = await self._client.request(method, url, **kwargs)
+                    request = self._client.build_request(method, url, **kwargs)
+                    streamed_response = await self._client.send(request, stream=True)
+                    try:
+                        content_length = streamed_response.headers.get("content-length")
+                        if content_length is not None:
+                            try:
+                                declared_size = int(content_length)
+                            except ValueError:
+                                declared_size = 0
+                            if declared_size > MAX_DATAHUB_RESPONSE_BYTES:
+                                outcome = "response_too_large"
+                                await self._record_success()
+                                raise ExternalDependencyError(
+                                    "DataHub returned a response larger than the configured limit.",
+                                    dependency="datahub",
+                                    retryable=False,
+                                    provider_code="RESPONSE_TOO_LARGE",
+                                )
+                        response_body = bytearray()
+                        async for chunk in streamed_response.aiter_bytes():
+                            response_body.extend(chunk)
+                            if len(response_body) > MAX_DATAHUB_RESPONSE_BYTES:
+                                outcome = "response_too_large"
+                                await self._record_success()
+                                raise ExternalDependencyError(
+                                    "DataHub returned a response larger than the configured limit.",
+                                    dependency="datahub",
+                                    retryable=False,
+                                    provider_code="RESPONSE_TOO_LARGE",
+                                )
+                        response = httpx.Response(
+                            streamed_response.status_code,
+                            headers=streamed_response.headers,
+                            content=bytes(response_body),
+                            request=request,
+                            extensions=streamed_response.extensions,
+                        )
+                    finally:
+                        await streamed_response.aclose()
                 except httpx.TimeoutException as error:
                     outcome = "timeout"
                     await self._record_failure(half_open_probe=half_open_probe)

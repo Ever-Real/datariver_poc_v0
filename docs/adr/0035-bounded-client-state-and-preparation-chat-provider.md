@@ -13,6 +13,8 @@ default). DataHub detail enrichment retains at most 1,000 unique schema fields a
 retained count and a bounded `1,001+` source lower bound when truncated; it does not allocate an
 unbounded uniqueness set merely to calculate an exact total. Closing or evicting a tree branch
 aborts its request and discards its descendants and stale in-flight results.
+The DataHub HTTP adapter also streams every provider response through an 8 MiB hard limit before
+JSON parsing, so the schema-field cap is not defeated by an oversized upstream body.
 
 The Linux/WSL preparation profile may use the development-only intranet OpenAI-compatible Chat
 binding from ADR-0030 for the ordinary grounded `/chat/query` flow even when the Knowledge pipeline
@@ -26,6 +28,12 @@ misstates `Content-Length`.
 Database-backed System Settings activation remains disabled in the preparation profile. Deployment
 environment values and mounted secrets are the runtime source of truth; the Admin screen may report
 those connectors but cannot activate a stored database revision.
+
+Redis cache and delivery must use different service origins, not merely different logical database
+numbers on one instance, because their eviction/persistence policies conflict. S3 private/public
+endpoints are credential-free HTTP(S) origins without path/query/fragment. Development Neo4j may
+use a separate private server only when its exact port-7687 hostname appears in the deployment
+allowlist; PostgreSQL releases remain canonical.
 
 ## Consequences
 

@@ -5,9 +5,9 @@
 ### 2026-07-22 low-resource multi-architecture and external-connector verification
 
 The Redis/MinIO external-connector, bounded catalog state, OpenAI-compatible Chat and offline-release
-hardening passed repository-wide Ruff formatting/lint (`285` files), strict mypy (`271` source/test
-files), `765` backend tests and `scripts/verify_static.py`. The frontend passed strict TypeScript,
-zero-warning ESLint, `39` files / `169` Vitest tests and the production build. The largest emitted
+hardening passed repository-wide Ruff formatting/lint (`280` files), strict mypy (`273` source/test
+files), `774` backend tests and `scripts/verify_static.py`. The frontend passed strict TypeScript,
+zero-warning ESLint, `39` files / `170` Vitest tests and the production build. The largest emitted
 JavaScript chunk is `241.32 kB` (`77.16 kB` gzip); CSS is `155.37 kB` (`27.03 kB` gzip).
 
 On the Mac `linux/arm64` daemon, PostgreSQL, Keycloak and the DataRiver services started with the

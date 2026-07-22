@@ -31,6 +31,15 @@ class _Transport:
         return self.response
 
 
+class _ChunkedStream(httpx.AsyncByteStream):
+    def __init__(self, chunks: tuple[bytes, ...]) -> None:
+        self._chunks = chunks
+
+    async def __aiter__(self) -> AsyncIterator[bytes]:
+        for chunk in self._chunks:
+            yield chunk
+
+
 def _binding(model: str) -> ModelBinding:
     return ModelBinding("ollama", model, "knowledge-v1", "knowledge-schema-v1")
 
@@ -478,3 +487,32 @@ async def test_http_transport_rejects_oversized_success_response_without_returni
     assert caught.value.details["retryable"] is False
     assert caught.value.details["provider_code"] == "RESPONSE_TOO_LARGE"
     assert "secret" not in caught.value.message
+
+
+@pytest.mark.asyncio
+async def test_http_transport_enforces_response_limit_across_stream_chunks() -> None:
+    async def respond(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            stream=_ChunkedStream(
+                (
+                    b'{"answer":"',
+                    b"x" * (MAX_INFERENCE_RESPONSE_BYTES - 12),
+                    b'"}',
+                )
+            ),
+            request=request,
+        )
+
+    transport = HttpxOpenAIJsonTransport(
+        base_url="http://host.docker.internal/v1",
+        allowed_hosts=frozenset({"host.docker.internal"}),
+        api_key=None,
+        timeout_seconds=60,
+        transport=httpx.MockTransport(respond),
+    )
+
+    with pytest.raises(ExternalDependencyError) as caught:
+        await transport.post_json(path="/chat/completions", document={"messages": []})
+
+    assert caught.value.details["provider_code"] == "RESPONSE_TOO_LARGE"

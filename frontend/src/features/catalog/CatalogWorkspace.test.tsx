@@ -277,6 +277,40 @@ describe('catalog workspace', () => {
     )
   })
 
+  it('aborts an in-flight descendant branch when its ancestor is collapsed', async () => {
+    let branchSignal: AbortSignal | undefined
+    const request = vi.fn((path: string, options?: RequestOptions): Promise<unknown> => {
+      if (path.includes('parent_kind=ROOT')) return Promise.resolve({
+        items: [{ id: 'slow-platform', kind: 'PLATFORM', label: 'slow_platform',
+          asset_count: 1, has_children: true, platform: 'slow_platform' }],
+        page: { limit: 100 }, meta,
+      })
+      if (path.includes('parent_kind=PLATFORM')) return Promise.resolve({
+        items: [{ id: 'slow-database', kind: 'DATABASE', label: 'slow_database',
+          asset_count: 1, has_children: true, platform: 'slow_platform', database_name: 'slow' }],
+        page: { limit: 100 }, meta,
+      })
+      if (path.includes('parent_kind=DATABASE') && options?.signal) {
+        branchSignal = options.signal
+        return new Promise((_resolve, reject) => {
+          options.signal?.addEventListener('abort', () => reject(new DOMException('Aborted', 'AbortError')))
+        })
+      }
+      return defaultRequest(path)
+    })
+    render(<CatalogPage client={clientWith(request)} />)
+
+    const tree = await screen.findByRole('complementary', { name: 'Resource Tree' })
+    const platform = await within(tree).findByRole('button', { name: /slow_platform/ })
+    fireEvent.click(platform)
+    fireEvent.click(await within(tree).findByRole('button', { name: /slow_database/ }))
+    await waitFor(() => expect(branchSignal).toBeDefined())
+    fireEvent.click(platform)
+
+    expect(branchSignal?.aborted).toBe(true)
+    expect(platform).toHaveAttribute('aria-expanded', 'false')
+  })
+
   it('opens an authorized Resource Tree detail without crawling result pages', async () => {
     const treeAsset: CatalogAsset = { ...asset, id: 'tree-asset', name: 'tree_selected_table' }
     const assets = [...Array.from({ length: 50 }, (_, index) => ({
