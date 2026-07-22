@@ -308,6 +308,33 @@ def verify_multiarch_release_contract() -> None:
         if fragment not in verifier:
             raise AssertionError(f"offline verifier is missing fail-closed check: {fragment}")
 
+    object_migrator = (ROOT / "scripts" / "migrate_s3_objects.py").read_text(
+        encoding="utf-8"
+    )
+    for fragment in (
+        'raw["malformed_count"] != 0',
+        'raw["conflict_count"] != 0',
+        "Source object is missing",
+        "does not match PostgreSQL manifest",
+        "use_threads=False",
+    ):
+        if fragment not in object_migrator:
+            raise AssertionError(f"S3 migrator is missing fail-closed guard: {fragment}")
+
+    manifest_query = (ROOT / "scripts" / "export_s3_migration_manifest.sql").read_text(
+        encoding="utf-8"
+    )
+    for fragment in (
+        "WHERE state = 'ACCEPTED'",
+        "governance.change_request_attachments",
+        "governance.manual_metadata_submissions",
+        "knowledge.source_snapshots",
+        "catalog.export_requests",
+        "conflict_count",
+    ):
+        if fragment not in manifest_query:
+            raise AssertionError(f"S3 migration manifest omits required evidence: {fragment}")
+
 
 def verify_datahub_release_contract() -> None:
     contracts = tuple(sorted(DATAHUB_CONTRACT_DIRECTORY.glob("datahub-*-images.json")))
