@@ -393,7 +393,8 @@ require_image() {
     exit 2
   fi
   local platform
-  platform=$(docker image inspect --format '{{.Os}}/{{.Architecture}}' "$image")
+  platform=$(docker image inspect --platform "$target_platform" \
+    --format '{{.Os}}/{{.Architecture}}' "$image")
   if [ "$platform" != "$target_platform" ]; then
     echo "Image $image is $platform, but the requested platform is $target_platform." >&2
     exit 2
@@ -459,9 +460,11 @@ write_manifest() {
     for image in "$@"; do
       printf '%s\t%s\t%s\t%s\n' \
         "$image" \
-        "$(docker image inspect --format '{{.Id}}' "$image")" \
-        "$(docker image inspect --format '{{join .RepoDigests ","}}' "$image")" \
-        "$(docker image inspect --format '{{.Os}}/{{.Architecture}}' "$image")"
+        "$(docker image inspect --platform "$target_platform" --format '{{.Id}}' "$image")" \
+        "$(docker image inspect --platform "$target_platform" \
+          --format '{{join .RepoDigests ","}}' "$image")" \
+        "$(docker image inspect --platform "$target_platform" \
+          --format '{{.Os}}/{{.Architecture}}' "$image")"
     done
   } >"$manifest"
   write_checksum "$(basename "$manifest")"
@@ -476,7 +479,7 @@ save_bundle() {
   done
   local tar_name="$label.tar"
   local temporary="$output_dir/$tar_name.partial"
-  docker image save --output "$temporary" "$@"
+  docker image save --platform "$target_platform" --output "$temporary" "$@"
   mv "$temporary" "$output_dir/$tar_name"
   write_checksum "$tar_name"
   write_manifest "$label" "$@"

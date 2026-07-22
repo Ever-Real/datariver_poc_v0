@@ -284,6 +284,8 @@ def verify_multiarch_release_contract() -> None:
         '--accept-local-connector-license-review',
         'platform_staging_dir=$(mktemp -d',
         'docker image pull --platform "$target_platform" "$image"',
+        'docker image save --platform "$target_platform"',
+        'docker image inspect --platform "$target_platform"',
     ):
         if fragment not in exporter:
             raise AssertionError(f"offline exporter is missing release guard: {fragment}")
