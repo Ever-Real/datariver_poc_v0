@@ -43,7 +43,9 @@ This checklist is evidence-driven. `[x]` means the named repository evidence was
   `sha256:7f474774499c…` was started with both Mac `18081/38102` and WSL `8081/8080` origins and
   generated the correct configuration without rebuild.
 - [ ] source bundle, platform bundle, optional bundle and release index checksums are generated.
-- [ ] import verifier rejects checksum, platform, commit and image-inventory mismatches.
+- [ ] import verifier rejects checksum, platform, commit and image-inventory mismatches. The first
+  real arm64 bundle exposed and fixed a relative source-bundle path defect; regenerate from the
+  corrected commit before accepting this gate.
 - [ ] core, PostgreSQL, Redis, MinIO and Neo4j OCI indexes are digest-pinned. Redis/MinIO
   redistribution and target vulnerability/license acceptance remain operator gates; the
   nonexistent MinIO `2025-10-15` image tag was replaced by the available `2025-09-07` image.

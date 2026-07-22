@@ -58,6 +58,7 @@ done
 [ -n "$release_root" ] || { usage >&2; exit 2; }
 [ -d "$release_root" ] || { echo "Release directory does not exist: $release_root" >&2; exit 2; }
 [ -n "$requested_platform" ] || { echo "--platform is required." >&2; exit 2; }
+release_root=$(CDPATH= cd -- "$release_root" && pwd)
 
 normalize_architecture() {
   case "$1" in
@@ -163,7 +164,11 @@ for manifest in "$platform_dir"/*.manifest.tsv; do
 done
 
 if [ -n "$source_dir" ]; then
-  [ -d "$source_dir/.git" ] || { echo "Source directory is not a Git checkout: $source_dir" >&2; exit 2; }
+  source_dir=$(CDPATH= cd -- "$source_dir" && pwd)
+  git -C "$source_dir" rev-parse --is-inside-work-tree >/dev/null 2>&1 || {
+    echo "Source directory is not a Git checkout: $source_dir" >&2
+    exit 2
+  }
   [ "$(git -C "$source_dir" rev-parse --verify HEAD)" = "$source_commit" ] || {
     echo "Source checkout does not match release commit $source_commit." >&2
     exit 2
