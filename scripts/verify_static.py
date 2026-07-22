@@ -348,6 +348,19 @@ def verify_multiarch_release_contract() -> None:
         if fragment not in keycloak_host_dev:
             raise AssertionError(f"Keycloak host-development sync omits guard: {fragment}")
 
+    s3_probe = (ROOT / "scripts" / "probe_s3_contract.py").read_text(encoding="utf-8")
+    for fragment in (
+        "generate_presigned_url",
+        "create_multipart_upload",
+        "complete_multipart_upload",
+        "copy_object",
+        "Anonymous bucket access was not denied",
+        "CORS preflight did not return the exact allowed origin",
+        "client.delete_object",
+    ):
+        if fragment not in s3_probe:
+            raise AssertionError(f"S3 contract probe omits evidence: {fragment}")
+
 
 def verify_datahub_release_contract() -> None:
     contracts = tuple(sorted(DATAHUB_CONTRACT_DIRECTORY.glob("datahub-*-images.json")))

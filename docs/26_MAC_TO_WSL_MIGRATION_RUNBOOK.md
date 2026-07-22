@@ -51,6 +51,21 @@ uses the exact cluster-wide `MINIO_API_CORS_ALLOW_ORIGIN` value from `APP_PUBLIC
 therefore sets `S3_CORS_MANAGEMENT_MODE=external` and does not call unsupported bucket CORS APIs.
 The storage initializer still authenticates and reconciles all configured buckets.
 
+Run the self-cleaning development contract probe before accepting the endpoint. It verifies
+anonymous denial, authenticated buckets, a presigned PUT, multipart upload, server-side copy,
+full-byte SHA-256 read-back and exact-origin CORS:
+
+```bash
+uv run python scripts/probe_s3_contract.py \
+  --endpoint http://127.0.0.1:9000 \
+  --public-endpoint http://127.0.0.1:9000 \
+  --access-key-file secrets/s3_access_key \
+  --secret-key-file secrets/s3_secret_key \
+  --quarantine-bucket datariver-quarantine \
+  --accepted-bucket datariver-accepted \
+  --allowed-origin http://localhost:38102
+```
+
 ## 4. SeaweedFS to MinIO object cutover
 
 Stop API writers, relay and every object/delivery worker. Confirm unpublished outbox rows, stream
