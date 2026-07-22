@@ -78,7 +78,7 @@ provider read-back을 함께 확인한다.
 
 | 메뉴 | 확인된 구현 | 핵심 Gap |
 |---|---|---|
-| 검색 | 즉시 `ASC→DESC→NONE`, toolbar filter/export, Terms/Tags, horizontal scroll, `50/100/200/500/1000/전체`, DataHub typed parsing | 제한된 E2E 계정에는 server export 권한이 없어 다운로드 버튼은 의도대로 비활성 |
+| 검색 | 즉시 `ASC→DESC→NONE`, toolbar filter/export, Terms/Tags, horizontal scroll, bounded `25/50/100`, DataHub typed parsing | 제한된 E2E 계정에는 server export 권한이 없어 다운로드 버튼은 의도대로 비활성 |
 | MANUAL 등록 | typed metadata, name-only Tag/Term lookup, immutable receipt, Airflow apply와 DataHub typed read-back | 다른 aspect/provider failure와 catalog sync 지연은 계속 명시적 실패/지연 상태로 처리 |
 | BULK 등록 | multipart quarantine/validation, CSV/XLSX typed parser, fenced preparation/receipt/candidate, Airflow DAG | candidate를 실제 변경으로 적용하는 단계는 일반 CR 권한·검토 흐름에 종속 |
 | 변경관리 | revision round, bound TEST attachment/result, 다중 System Developer/Data Steward/global Admin authority와 typed FINAL decision | 실제 FINAL 3인 승인은 각 사람의 WebAuthn step-up이 필요한 외부 보안 gate |

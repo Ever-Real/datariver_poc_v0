@@ -245,6 +245,62 @@ def verify_build_context() -> None:
         raise AssertionError(f".dockerignore does not exclude sensitive paths: {missing}")
 
 
+def verify_multiarch_release_contract() -> None:
+    required_pins = {
+        ROOT / "backend" / "Dockerfile": {
+            "uv:0.9.17@sha256:5cb6b54d2bc3fe2eb9a8483db958a0b9eebf9edff68adedb369df8e7b98711a2",
+            "python:3.12.12-slim-bookworm@sha256:593bd06efe90efa80dc4eee3948be7c0fde4134606dd40d8dd8dbcade98e669c",
+        },
+        ROOT / "frontend" / "Dockerfile": {
+            "node:22.19.0-bookworm-slim@sha256:4a4884e8a44826194dff92ba316264f392056cbe243dcc9fd3551e71cea02b90",
+            "nginx:1.30.3-alpine3.23@sha256:0d3b80406a13a767339fbe2f41406d6c7da727ab89cf8fae399e81f780f814d1",
+        },
+        ROOT / "infra" / "keycloak" / "Dockerfile": {
+            "keycloak:26.7.0@sha256:2eb3cd316835c990e69e26ade292ffa78f6fb0db7d5fc6377463c162e1979ac0",
+        },
+        ROOT / "compose.yaml": {
+            "postgres:17.10-bookworm@sha256:4f736ae292687621d4dbe0d499ffd024a36bd2ee7d8ca6f2ccd4c800f047b394",
+        },
+        ROOT / "compose.local-connectors.yaml": {
+            "redis:8.2.6-bookworm@sha256:3055dc25265b0c19ec90a1756dad4e0faff6f79e2557a6ac3d1274e39ee906f6",
+            "minio:RELEASE.2025-09-07T16-13-09Z@sha256:14cea493d9a34af32f524e538b8346cf79f3321eff8e708c1e2960462bd8936e",
+        },
+    }
+    for path, fragments in required_pins.items():
+        content = path.read_text(encoding="utf-8")
+        missing = {fragment for fragment in fragments if fragment not in content}
+        if missing:
+            raise AssertionError(
+                f"{path.relative_to(ROOT)} is missing multi-architecture image pins: {missing}"
+            )
+
+    exporter = (ROOT / "scripts" / "export_offline_images.sh").read_text(encoding="utf-8")
+    for fragment in (
+        'status --porcelain --untracked-files=normal',
+        'arm64|aarch64',
+        'amd64|x86_64',
+        'datariver-source.bundle',
+        'release-index.tsv',
+        '--accept-local-connector-license-review',
+        'platform_staging_dir=$(mktemp -d',
+    ):
+        if fragment not in exporter:
+            raise AssertionError(f"offline exporter is missing release guard: {fragment}")
+    if "RELEASE.2025-10-15T17-29-55Z" in exporter:
+        raise AssertionError("offline exporter references a nonexistent MinIO container tag")
+
+    verifier = (ROOT / "scripts" / "verify_offline_release.sh").read_text(encoding="utf-8")
+    for fragment in (
+        'verify_checksums "$release_root"',
+        'bundle verify "$bundle"',
+        'Source checkout does not match release commit',
+        'Loaded image platform mismatch',
+        'config --images',
+    ):
+        if fragment not in verifier:
+            raise AssertionError(f"offline verifier is missing fail-closed check: {fragment}")
+
+
 def verify_datahub_release_contract() -> None:
     contracts = tuple(sorted(DATAHUB_CONTRACT_DIRECTORY.glob("datahub-*-images.json")))
     if not contracts:
@@ -801,6 +857,7 @@ def main() -> None:
     verify_compose()
     verify_observability_contract()
     verify_build_context()
+    verify_multiarch_release_contract()
     verify_datahub_release_contract()
     verify_identity_assurance_contract()
     verify_runtime_hardening()
@@ -814,7 +871,7 @@ def main() -> None:
     verify_seed()
     verify_document_links()
     print(
-        "static verification passed: compose, build context, DataHub release contract, "
+        "static verification passed: compose, build/release context, DataHub release contract, "
         "identity assurance contract, "
         "runtime hardening/readiness/browser storage, "
         "CI supply chain, "

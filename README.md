@@ -45,8 +45,9 @@ Commit only the repository sources. A second PC clones the same tree, runs the m
 
 ## 폐쇄망 개발 PC 이관과 초기화
 
-`docker_imgs/`는 Git에서 무시되는 반입 산출물 디렉터리다. 여기에는 Linux OCI 이미지 tar,
-SHA-256 검증 파일과 이미지 ID/digest manifest만 둔다. `.env`, `secrets/`, DB·외부 S3
+`docker_imgs/`는 Git에서 무시되는 반입 산출물 디렉터리다. 여기에는 정확한 source commit의
+Git bundle, Linux OCI 이미지 tar, SHA-256 검증 파일, 이미지 ID/digest manifest와 release
+index만 둔다. `.env`, `secrets/`, DB·외부 S3
 볼륨, 업로드 파일, DataHub 데이터 및 Ollama 모델은 포함하지 않는다. 반입 PC의 Docker
 아키텍처가 같아야 한다. 이 Mac 구성의 bundle은 기본적으로 `linux/arm64`이며,
 `linux/amd64` 서버에는 별도의 amd64 bundle을 연결망 빌드 환경에서 만들어야 한다.
@@ -64,12 +65,21 @@ bundle만 필요하다.
 
 ```bash
 chmod +x scripts/export_offline_images.sh scripts/dev_host.sh
-./scripts/export_offline_images.sh --build-datariver --include-observability
+./scripts/export_offline_images.sh --platform linux/aarch64 \
+  --build-datariver --include-observability
 
 # Linux x86_64/amd64 운영 PC용 (DataHub를 별도 운영하는 현재 경로)
 ./scripts/export_offline_images.sh --platform linux/amd64 \
   --build-datariver --include-observability
 ```
+
+두 명령은 같은 clean commit에서 실행하므로 기본적으로 동일한
+`docker_imgs/datariver-<12자리-commit>/arm64|amd64` 릴리스 아래에 기록된다. 기존 platform
+디렉터리는 덮어쓰지 않는다. Redis/MinIO reference image까지 외장 매체로 복사하려면 해당
+배포본의 라이선스·재배포 검토를 운영자가 승인한 뒤에만 두 명령에
+`--include-local-connectors --accept-local-connector-license-review`를 추가한다. 승인 없이도
+DataRiver source와 core image를 반출하고 대상이 별도로 운영하는 Redis/MinIO endpoint에
+연결할 수 있다.
 
 관측성 profile을 사용하지 않는 대상은 `--include-observability`를 생략해도 된다. 반대로 이
 Mac에서 현재처럼 Grafana/Prometheus/OTel/Tempo/Loki/Alertmanager를 함께 사용할 경우
@@ -91,8 +101,9 @@ DataHub 배포본이 아니다. 특히 upstream quickstart가 참조하는
 일반 운영 환경의 mutable tag 허용 근거로 사용하면 안 된다. 운영 DataHub는 별도 소유자가
 모든 component digest와 보안 설정을 확정해야 한다.
 
-반입 전 각 `*.sha256`을 확인하고, 외장 매체 또는 승인된 내부 artifact 저장소로
-`docker_imgs/`를 전달한다. 내부 Registry가 있으면 tar 대신 해당 Registry로 digest 고정
+반입 전 `scripts/verify_offline_release.sh`로 release ID, source commit, target platform,
+manifest와 모든 `*.sha256`을 확인하고, 외장 매체 또는 승인된 내부 artifact 저장소로 해당
+release 디렉터리를 전달한다. 내부 Registry가 있으면 tar 대신 해당 Registry로 digest 고정
 이미지를 승격하는 방식을 우선한다.
 
 ### 폐쇄망 공통 사전조건
@@ -192,15 +203,10 @@ DataHub가 같은 Mac Docker Desktop에 있다면 Docker process에는
 `host.docker.internal:8080`, host source process에는 `127.0.0.1:8080`을 사용한다.
 
 ```bash
-# 1. 반입한 platform image 검증 및 적재
-cd docker_imgs
-shasum -a 256 -c datariver-platform-arm64.tar.sha256
-shasum -a 256 -c datariver-platform-arm64.manifest.tsv.sha256
-docker load -i datariver-platform-arm64.tar
-# 현재처럼 local observability profile도 사용할 때만 추가로 적재한다.
-shasum -a 256 -c datariver-observability-pilot-arm64.tar.sha256
-docker load -i datariver-observability-pilot-arm64.tar
-cd ..
+# 1. 반입한 immutable release의 source/checksum/platform을 검증하고 모든 bundle을 적재한다.
+# <release-id>는 예: datariver-0123456789ab
+./scripts/verify_offline_release.sh docker_imgs/<release-id> \
+  --platform linux/aarch64 --source-dir . --load --env-file .env.mac-development
 
 # 2. 원격 DataHub service-account token은 보안 반입 위치에서 secret file로 배치한다.
 #    토큰 원문을 명령 인자, shell history, Git에 넣지 않는다.
@@ -1108,7 +1114,7 @@ service token의 FINAL 호출은 `401` 또는 `403`으로 차단되어야 한다
 
 ## Main functional flows
 
-- Catalog: an authorized local projection serves cursor-bound ALL-term search, facets, autocomplete and a lazy `platform -> database -> schema -> asset` Resource Tree before selected details are enriched through a fixed DataHub adapter. The result table shows source-backed Terms and Tags beside the asset identity, exposes a horizontal scroll region, and offers per-column ascending/descending sorting and text filtering over the currently loaded logical page. Logical page sizes 50/100/200/500/1000/All are composed by following the existing authorization- and policy-bound cursor in server batches of at most 100; this does not expand the API's bounded page contract. Database/schema hierarchy comes only from typed DataHub browse containers; the platform never invents it by splitting URNs. Tag/Term entry suggestions merge the authorized projection with a bounded, paged DataHub controlled-vocabulary search before applying the picker limit, so values outside a provider's first short page remain selectable. Provider failure safely falls back to the projection. Authorized detail keeps `Table Details` and a fixed-height, authorization-pruned local `Lineage` graph. The graph fits its detail-panel viewport, wraps each stage after three nodes without omitting nodes, and supports pan, node positioning and zoom. Selecting a node opens its authorized local detail; the external DataHub Lineage iframe is not invoked by this UI. A `sync_id`-bound full reconciliation is sequential, single-writer and tombstones missing DataHub-owned assets without touching seed-owned rows. Governed CSV/XLSX export is a server-managed, owner-scoped job bound to the exact query/filter, permission/classification-policy snapshot and projection watermark; toolbar buttons never synthesize a browser-side file. Export excludes RESTRICTED assets unconditionally, neutralizes spreadsheet formula injection, reauthorizes every download, and issues only a 60-second URL after object metadata reconciliation.
+- Catalog: an authorized local projection serves cursor-bound ALL-term search, facets, autocomplete and a lazy `platform -> database -> schema -> asset` Resource Tree before selected details are enriched through a fixed DataHub adapter. The result table shows source-backed Terms and Tags beside the asset identity, exposes a horizontal scroll region, and offers per-column ascending/descending sorting and text filtering over the currently loaded page. Page sizes are 25/50/100; one page action makes one bounded asset request and the browser never walks every cursor page. Facets refresh only when the query/filter/authorization scope changes. Collapsing a tree branch evicts its descendants, and one expanded branch retains at most 200 nodes. Database/schema hierarchy comes only from typed DataHub browse containers; the platform never invents it by splitting URNs. Tag/Term entry suggestions merge the authorized projection with a bounded, paged DataHub controlled-vocabulary search before applying the picker limit, so values outside a provider's first short page remain selectable. Provider failure safely falls back to the projection. Authorized detail keeps `Table Details` and a fixed-height, authorization-pruned local `Lineage` graph. The graph fits its detail-panel viewport, wraps each stage after three nodes without omitting nodes, and supports pan, node positioning and zoom. Selecting a tree or lineage node opens its authorized detail directly instead of rescanning search pages; the external DataHub Lineage iframe is not invoked by this UI. A `sync_id`-bound full reconciliation is sequential, single-writer and tombstones missing DataHub-owned assets without touching seed-owned rows. Governed CSV/XLSX export is a server-managed, owner-scoped job bound to the exact query/filter, permission/classification-policy snapshot and projection watermark; toolbar buttons never synthesize a browser-side file. Export excludes RESTRICTED assets unconditionally, neutralizes spreadsheet formula injection, reauthorizes every download, and issues only a 60-second URL after object metadata reconciliation.
 - Registration: browser multipart upload goes directly to quarantine storage. Table/column Tag and Term values remain on a one-line scrollable badge control with thin previous/next buttons; the compact `+` opens its vocabulary/new-proposal input directly below that control. Workers complete the object, stream SHA-256/size/format checks with bounded memory, copy to a validation-attempt-scoped accepted key, fully re-read the promoted bytes and delete quarantine only after the version-fenced database acceptance commits. The MANUAL workbench creates a dataset-description proposal only after a live DataHub preview, an opaque target/source-bound `If-Match`, server-side classification and a same-transaction target share lock. The BULK workbench explicitly separates format-only uploads from the bounded `DATASET_DESCRIPTION_CSV_V1` profile, can queue/read a server-configured preparation only from exact `ACCEPTED` byte evidence and renders real preparation state in the v0.3-style status tracker. A source-only bounded parser contract exists, but the isolated parser worker, candidate read/preview and proposal creation remain disabled, so READY preparation evidence is not presented as a change request or DataHub update and the browser exposes no raw proposal form.
 - Change management: typed DataHub aspect UPSERT requests are server-bound to an authorized local dataset identity and scope, then move through legal transitions and distinct final approval. In new-CR intake, each Tag/Term `+` unions the bounded authorized projection with the fixed, bounded DataHub `*` controlled-vocabulary browse; keyword input narrows that same adapter query before a comma-aware new proposal is offered. Column input reserves the table Schema track, so column item/Type/Description/Term/Tag/requested-change/management align with Table/Owner/description/Terms/Tags/requested-change/column-addition above it. Reads use the current authorized target; approval and forward transitions reject identity, revision or authorization-scope drift. REVIEW and TEST require every routed System's Developer evidence, while FINAL requires every routed System's Developer and Data Steward plus one role-separated global Admin. Every FINAL decision also requires recent hardware-WebAuthn assurance. Generic raw Aspect creation and the legacy upload-derived raw proposal API additionally require the deny-by-default, hardware-human-only `change.raw.create` action and are not exposed in the ordinary UI. A leased worker applies each aspect idempotently and only marks `APPLIED` after re-read hash equality. Apply-time requester/policy reauthorization, DataRiver target serialization and external provider CAS remain explicit production gates.
 - Classification access administration: eligible human security administrators can review and independently approve versioned four-class Search/Chat policies, review or revoke immutable inference-provider profile versions, and govern policy-bound RESTRICTED Search grants. ADR-0020 additionally permits an audited, read-only same-workspace catalog review of non-deleted quarantined DataHub projections for classification remediation, including the fixed typed DataHub metadata detail; it never enables export, Chat, arbitrary provider access or mutation. The Admin UI never accepts provider endpoints or credentials, and RESTRICTED evidence is never eligible for Chat.

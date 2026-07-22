@@ -5,7 +5,7 @@ name: datariver-local-connectors
 # registry digests before copying their images into an offline bundle.
 services:
   redis-cache:
-    image: ${REDIS_IMAGE:-redis:8.2.6-bookworm}
+    image: ${REDIS_IMAGE:-redis:8.2.6-bookworm@sha256:3055dc25265b0c19ec90a1756dad4e0faff6f79e2557a6ac3d1274e39ee906f6}
     entrypoint: ["/bin/sh", "-ec"]
     command:
       - >-
@@ -33,7 +33,7 @@ services:
       - no-new-privileges:true
 
   redis-delivery:
-    image: ${REDIS_IMAGE:-redis:8.2.6-bookworm}
+    image: ${REDIS_IMAGE:-redis:8.2.6-bookworm@sha256:3055dc25265b0c19ec90a1756dad4e0faff6f79e2557a6ac3d1274e39ee906f6}
     entrypoint: ["/bin/sh", "-ec"]
     command:
       - >-
@@ -65,7 +65,7 @@ services:
 
   minio:
     profiles: ["object-storage"]
-    image: ${MINIO_IMAGE:-quay.io/minio/minio:RELEASE.2025-10-15T17-29-55Z}
+    image: ${MINIO_IMAGE:-quay.io/minio/minio:RELEASE.2025-09-07T16-13-09Z@sha256:14cea493d9a34af32f524e538b8346cf79f3321eff8e708c1e2960462bd8936e}
     command: ["server", "/data", "--console-address", ":9001"]
     environment:
       MINIO_ROOT_USER_FILE: /run/secrets/s3_access_key
@@ -88,7 +88,7 @@ services:
 
   neo4j:
     profiles: ["graph"]
-    image: ${NEO4J_IMAGE:-neo4j:2026.06.0}
+    image: ${NEO4J_IMAGE:-neo4j:2026.06.0@sha256:ba2b859bdbe7017a9baa1a7b5681ac9732198753719b0a502e3645feddfdec72}
     environment:
       NEO4J_AUTH_FILE: /run/secrets/neo4j_auth
       NEO4J_server_memory_heap_initial__size: 384M

@@ -8,7 +8,7 @@ services:
     # Development graph projection only. PostgreSQL knowledge releases remain
     # canonical, so this independently rebuildable volume must never be used
     # as the source of approval, provenance, or authorization state.
-    image: neo4j:2026.06.0
+    image: neo4j:2026.06.0@sha256:ba2b859bdbe7017a9baa1a7b5681ac9732198753719b0a502e3645feddfdec72
     environment:
       NEO4J_AUTH_FILE: /run/secrets/neo4j_auth
       NEO4J_server_memory_heap_initial__size: 512M

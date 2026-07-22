@@ -35,14 +35,18 @@ This checklist is evidence-driven. `[x]` means the named repository evidence was
 
 ## Phase 3 — release artifacts
 
-- [ ] exporter accepts Docker aliases and emits only normalized `arm64`/`amd64` names.
-- [ ] exporter refuses a dirty tree and records exact commit/toolchain provenance.
+- [x] exporter accepts Docker aliases and emits only normalized `arm64`/`amd64` names; shell,
+  Compose and static contracts passed.
+- [x] exporter refuses a dirty tree and records exact commit/toolchain provenance; the dirty-tree
+  negative check exited `2` before Docker access.
 - [x] web configuration is runtime-bound in a generated no-store script. One arm64 image ID
   `sha256:7f474774499c…` was started with both Mac `18081/38102` and WSL `8081/8080` origins and
   generated the correct configuration without rebuild.
 - [ ] source bundle, platform bundle, optional bundle and release index checksums are generated.
 - [ ] import verifier rejects checksum, platform, commit and image-inventory mismatches.
-- [ ] base images and external Redis/MinIO distributions have approved exact tags/digests/licenses.
+- [ ] core, PostgreSQL, Redis, MinIO and Neo4j OCI indexes are digest-pinned. Redis/MinIO
+  redistribution and target vulnerability/license acceptance remain operator gates; the
+  nonexistent MinIO `2025-10-15` image tag was replaced by the available `2025-09-07` image.
 
 ## Phase 4 — Mac `linux/arm64` development PC
 

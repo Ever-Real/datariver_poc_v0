@@ -25,7 +25,7 @@
 |---|---|---|
 | PASS | Terms/Tags DataHub→API→DOM | VIEW `vw_supplier_qualification_analog_mixed_signal`에 Terms `semiconductor_scenario`, `supplier_qualification` 및 provider Tags 8개 표시 |
 | PASS | 즉시 3단계 정렬 | 동일 header를 세 번 클릭해 `ascending=1`, `descending=1`, `none=1`; dropdown 없이 `ASC -> DESC -> NONE` |
-| PASS | toolbar/layout | 검색창 오른쪽 Filter/CSV/Excel controls와 table horizontal overflow, page sizes `50/100/200/500/1000/전체` 확인 |
+| PASS | toolbar/layout | 검색창 오른쪽 Filter/CSV/Excel controls와 table horizontal overflow, bounded page sizes `25/50/100` 확인 |
 | PASS | 권한 없는 export | 현재 E2E Operator는 server export capability가 없어 CSV/Excel controls가 비활성; client-side 우회 없음 |
 
 ## 3. MANUAL registration

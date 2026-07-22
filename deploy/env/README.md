@@ -38,7 +38,10 @@ live configuration source.
 
 The reference Compose currently names Redis `8.2.6-bookworm`, matching the upstream 8.2.6 security
 release, and the last upstream MinIO security release
-`RELEASE.2025-10-15T17-29-55Z`. These are review inputs, not automatic redistribution approval.
+`RELEASE.2025-09-07T16-13-09Z` with OCI index digest
+`sha256:14cea493d9a34af32f524e538b8346cf79f3321eff8e708c1e2960462bd8936e`.
+The newer `RELEASE.2025-10-15T17-29-55Z` source release has no matching official Quay image, so it
+must not be used as a container tag. These are review inputs, not automatic redistribution approval.
 Redis 8 uses its upstream tri-license choices; MinIO is AGPLv3/commercial and its upstream repository
 was archived in April 2026. Record an approved registry digest, vulnerability result and legal
 decision before `--include-local-connectors` is ever added to an offline release.
