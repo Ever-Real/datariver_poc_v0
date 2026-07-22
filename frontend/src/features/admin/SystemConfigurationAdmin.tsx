@@ -36,6 +36,7 @@ function activationLabel(state: SystemConfigurationEntry['activation_state']) {
     TESTED: 'TEST 통과 · 활성화 가능',
     ACTIVATED_RESTART_REQUIRED: '활성화됨 · 재시작 필요',
     APPLIED_TO_API_PROCESS: '현재 API 적용됨',
+    DEPLOYMENT_MANAGED: '배포 환경·secret 관리',
     RUNTIME_NOT_IMPLEMENTED: '런타임 소비자 미구현',
   }
   return labels[state]
@@ -83,6 +84,11 @@ export function SystemConfigurationAdmin(props: AdminSectionProps) {
 
   const canUpdate = context?.allowed_operations.includes('SYSTEM_CONFIGURATION_UPDATE') ?? false
   const canActivate = context?.allowed_operations.includes('SYSTEM_CONFIGURATION_ACTIVATE') ?? false
+  const restartInstruction = selected?.restart_scope === 'API_AND_WORKERS'
+    ? 'API와 관련 Worker를 재시작해야 합니다.'
+    : selected?.restart_scope === 'WORKERS_ONLY'
+      ? '관련 Worker를 재시작해야 합니다.'
+      : 'API를 재시작해야 합니다.'
   const save = () => {
     if (!selected || !draft.trim() || !canUpdate || saving) return
     requestConfirmation({
@@ -108,7 +114,9 @@ export function SystemConfigurationAdmin(props: AdminSectionProps) {
       setTestResult(result)
       setItems((current) => current.map((item) => item.system_id === selected.system_id ? {
         ...item,
-        activation_state: !item.runtime_supported
+        activation_state: item.activation_state === 'DEPLOYMENT_MANAGED'
+          ? 'DEPLOYMENT_MANAGED'
+          : !item.runtime_supported
           ? 'RUNTIME_NOT_IMPLEMENTED'
           : result.status === 'AVAILABLE' ? 'TESTED' : 'TEST_NOT_AVAILABLE',
         tested_version: result.configuration_version,
@@ -124,7 +132,7 @@ export function SystemConfigurationAdmin(props: AdminSectionProps) {
       summary: [
         `${selected.system_id} · v${selected.version}`,
         '현재 TEST를 통과한 정확한 버전을 다음 프로세스 시작 설정으로 선택합니다.',
-        selected.restart_scope === 'API_AND_WORKERS' ? '활성화 후 API와 관련 Worker를 재시작해야 합니다.' : '활성화 후 API를 재시작해야 합니다.',
+        `활성화 후 ${restartInstruction}`,
       ],
       execute: async () => {
         const activated = await api.activateSystemConfiguration(selected.system_id, selected.version)
@@ -165,7 +173,8 @@ export function SystemConfigurationAdmin(props: AdminSectionProps) {
           {selected.display_yaml && <section className="rounded-enterprise border border-slate-300 bg-slate-50 p-3" aria-label={`${selected.label} 저장된 비밀 제외 설정`}><span className="eyebrow">Saved non-secret configuration</span><h5 className="mb-2 mt-1 text-xs text-navy-900">저장된 설정 요약</h5><pre className="m-0 overflow-auto whitespace-pre-wrap text-[11px] leading-5 text-slate-700">{selected.display_yaml}</pre><small className="mt-2 block text-[9px] text-slate-500">실제 실행 시크릿은 포함하지 않습니다. 표시된 <code>secret_references</code>는 Docker secret 파일의 참조명입니다.</small></section>}
           {testResult && <p className={`callout m-0 ${testResult.status === 'AVAILABLE' ? 'border-l-green-600' : 'border-l-amber-600'}`} role="status"><strong>{testResult.status}</strong> · {testResult.scope} · {testResult.latency_ms}ms<br />{testResult.detail}</p>}
           {canUpdate && <div className="action-row"><button className="button button-secondary" disabled={selected.version === 0 || dirty || testing} title={selected.version === 0 ? '먼저 설정을 SAVE하세요.' : dirty ? '변경사항을 SAVE한 뒤 저장된 설정을 TEST하세요.' : '저장된 설정의 서버 고정 probe를 실행합니다.'} onClick={() => void testSavedConfiguration()} type="button">{testing ? 'TESTING…' : 'TEST'}</button><button className="button button-secondary" disabled={!canActivate || selected.activation_state !== 'TESTED'} title={!selected.runtime_supported ? '현재 아키텍처에 이 설정을 소비하는 런타임 어댑터가 없습니다.' : !canActivate ? '활성화에는 최근 WebAuthn 보증이 필요합니다.' : 'TEST를 통과한 현재 버전만 활성화할 수 있습니다.'} onClick={activate} type="button">ACTIVATE</button><button className="button" disabled={!draft.trim() || saving || !dirty} onClick={save} type="button">{saving ? '저장 중…' : 'SAVE'}</button></div>}
-          {selected.activation_state === 'ACTIVATED_RESTART_REQUIRED' && <p className="callout m-0">활성 버전은 저장되었지만 실행 중인 프로세스에는 아직 적용되지 않았습니다. {selected.restart_scope === 'API_AND_WORKERS' ? 'API와 이 연결을 사용하는 Worker' : 'API'}를 재시작하세요.</p>}
+          {selected.activation_state === 'DEPLOYMENT_MANAGED' && <p className="callout m-0">이 연결은 데이터베이스의 저장·활성화 상태가 아니라 배포 환경 변수와 secret 파일을 기준으로 적용됩니다.</p>}
+          {selected.activation_state === 'ACTIVATED_RESTART_REQUIRED' && <p className="callout m-0">활성 버전은 저장되었지만 실행 중인 프로세스에는 아직 적용되지 않았습니다. {restartInstruction}</p>}
           {selected.activation_state === 'APPLIED_TO_API_PROCESS' && selected.restart_scope === 'API_AND_WORKERS' && <p className="callout m-0">현재 API는 이 버전을 시작 시 로드했습니다. 관련 Worker도 동일한 배포 설정으로 재시작해야 하며, 이 화면은 Worker 적용 완료를 추정하지 않습니다.</p>}
         </>}
       </section>

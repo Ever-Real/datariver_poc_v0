@@ -8,7 +8,6 @@ governance_password=$(cat /run/secrets/postgres_governance_password)
 export_password=$(cat /run/secrets/postgres_export_password)
 bootstrap_password=$(cat /run/secrets/postgres_bootstrap_password)
 keycloak_password=$(cat /run/secrets/keycloak_db_password)
-airflow_password=$(cat /run/secrets/airflow_db_password)
 
 psql --username "$POSTGRES_USER" --dbname "$POSTGRES_DB" \
   --set=ON_ERROR_STOP=1 \
@@ -18,8 +17,7 @@ psql --username "$POSTGRES_USER" --dbname "$POSTGRES_DB" \
   --set=governance_password="$governance_password" \
   --set=export_password="$export_password" \
   --set=bootstrap_password="$bootstrap_password" \
-  --set=keycloak_password="$keycloak_password" \
-  --set=airflow_password="$airflow_password" <<'SQL'
+  --set=keycloak_password="$keycloak_password" <<'SQL'
 SELECT format('CREATE ROLE datariver_app LOGIN PASSWORD %L', :'app_password')
 WHERE NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'datariver_app') \gexec
 SELECT format('CREATE ROLE datariver_relay LOGIN PASSWORD %L', :'relay_password')
@@ -34,8 +32,6 @@ SELECT format('CREATE ROLE datariver_bootstrap LOGIN PASSWORD %L', :'bootstrap_p
 WHERE NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'datariver_bootstrap') \gexec
 SELECT format('CREATE ROLE keycloak LOGIN PASSWORD %L', :'keycloak_password')
 WHERE NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'keycloak') \gexec
-SELECT format('CREATE ROLE airflow LOGIN PASSWORD %L', :'airflow_password')
-WHERE NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'airflow') \gexec
 
 ALTER ROLE datariver_app WITH LOGIN PASSWORD :'app_password'
   NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS;
@@ -51,11 +47,7 @@ ALTER ROLE datariver_bootstrap WITH LOGIN PASSWORD :'bootstrap_password'
   NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION BYPASSRLS;
 ALTER ROLE keycloak WITH LOGIN PASSWORD :'keycloak_password'
   NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS;
-ALTER ROLE airflow WITH LOGIN PASSWORD :'airflow_password'
-  NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS;
 
 SELECT 'CREATE DATABASE keycloak OWNER keycloak'
 WHERE NOT EXISTS (SELECT 1 FROM pg_database WHERE datname = 'keycloak') \gexec
-SELECT 'CREATE DATABASE airflow OWNER airflow'
-WHERE NOT EXISTS (SELECT 1 FROM pg_database WHERE datname = 'airflow') \gexec
 SQL

@@ -28,9 +28,12 @@ This checklist is evidence-driven. `[x]` means the named repository evidence was
 - [x] remove catalog `200/500/1000/all`; enforce one request with `limit<=100` per page action.
 - [x] separate facet refresh from cursor navigation.
 - [x] open tree/lineage detail without scanning result pages.
-- [x] evict collapsed tree branches, cap one retained branch at 200 nodes and add regression evidence.
-- [x] record remaining field/search/XLSX/lineage performance gates without claiming completion.
-- [x] split feature routes; the largest production JavaScript chunk is 241.17 kB and the former
+- [x] evict collapsed tree branches, cap one retained branch at 200 nodes, retain at most eight
+  expanded branches and add regression evidence.
+- [x] cap retained DataHub schema enrichment at 1,000 unique fields, paginate serialization with a
+  100-field default and 200-field maximum, and expose explicit total/total-exact/available/truncated
+  metadata; record remaining search/XLSX/lineage performance gates without claiming them.
+- [x] split feature routes; the largest production JavaScript chunk is 241.32 kB and the former
   861.17 kB monolithic-chunk warning is gone.
 
 ## Phase 3 — release artifacts
@@ -42,8 +45,10 @@ This checklist is evidence-driven. `[x]` means the named repository evidence was
 - [x] web configuration is runtime-bound in a generated no-store script. One arm64 image ID
   `sha256:7f474774499c…` was started with both Mac `18081/38102` and WSL `8081/8080` origins and
   generated the correct configuration without rebuild.
-- [ ] source bundle, platform bundle, optional bundle and release index checksums are generated.
-- [ ] import verifier rejects checksum, platform, commit and image-inventory mismatches. The first
+- [x] exact source bundle, arm64/amd64 core bundles, per-platform manifests and release-index
+  checksums were generated from one clean final branch head and verified. Optional connector image
+  archives remain an operator-controlled license/distribution choice, not a hidden core dependency.
+- [x] import verifier rejects checksum, platform, commit and image-inventory mismatches. The first
   real arm64 bundle exposed and fixed a relative source-bundle path defect; regenerate from the
   corrected commit before accepting this gate. Preflight also replaced cross-platform wrapper
   builds with exact-digest platform pulls so external image identity is preserved. The first amd64
@@ -56,26 +61,43 @@ This checklist is evidence-driven. `[x]` means the named repository evidence was
   restorable tag; export now saves the already verified tag and rejects an archive missing any
   requested Compose image name. Its first Mac run also exposed a BSD `awk` reserved-name conflict;
   the filter now uses a portable field variable. A corrupted-checksum negative test then exposed
-  loop status masking; each checksum failure now returns immediately and must be rerun.
-- [ ] core, PostgreSQL, Redis, MinIO and Neo4j OCI indexes are digest-pinned. Redis/MinIO
-  redistribution and target vulnerability/license acceptance remain operator gates; the
+  loop status masking; each checksum failure now returns immediately. The corrected verifier
+  accepted both prior revision artifacts, and a deliberately corrupted checksum failed closed with
+  exit 2; the same verifier is required for the clean final-head artifacts above.
+- [x] core, PostgreSQL, Redis, MinIO and Neo4j OCI indexes are digest-pinned. Redis/MinIO
+  redistribution and target vulnerability/license acceptance remain open operator gates; the
   nonexistent MinIO `2025-10-15` image tag was replaced by the available `2025-09-07` image.
 
 ## Phase 4 — Mac `linux/arm64` development PC
 
 - [x] Docker daemon reports `linux/arm64`, 6 CPUs and 20,942,880,768 bytes memory; Buildx advertises
   both `linux/arm64` and `linux/amd64`. Disk headroom remains an export-time gate.
-- [ ] external Redis cache/delivery endpoints pass distinct policy/authentication probes.
-- [ ] external MinIO/S3 buckets pass authenticated bucket, multipart, copy, checksum, CORS and
-  presign probes; anonymous access is denied.
-- [ ] PostgreSQL/Keycloak/DataRiver start with the Mac env file and native Ollama path.
-- [ ] migration head, readiness, authentication, catalog, registration and selected knowledge
-  smoke tests pass.
-- [ ] arm64 release artifact checksums and rollback inputs are stored outside Git.
+- [x] separate Redis cache/delivery endpoints authenticate. Cache reports `appendonly=no` and
+  `allkeys-lfu`; delivery reports `appendonly=yes`, `appendfsync=everysec` and `noeviction`.
+- [x] external MinIO/S3 buckets pass authenticated bucket, 5,242,897-byte multipart, presigned PUT,
+  server-side copy, full-byte SHA-256, exact-origin CORS and anonymous-denial probes. The temporary
+  probe objects were deleted after verification.
+- [x] six accepted upload objects plus seven manual-metadata CSV objects were selected from the
+  repeatable-read PostgreSQL evidence manifest, copied SeaweedFS→MinIO and re-read from both ends;
+  the idempotent rerun reported `verified_existing=13` and `planned=0`.
+- [x] PostgreSQL/Keycloak/DataRiver start with `.env.mac-development`; native Ollama advertises the
+  configured `datariver-gemma4-dev:0.1` model.
+- [x] Alembic `0040`, readiness, browser PKCE login, dashboard and catalog paging passed. At page
+  size 100, moving page 1→2 retained exactly 101 table rows including the header and browser
+  warning/error logs remained empty.
+- [ ] a new canonical registration mutation and disabled knowledge paths were not enabled merely
+  to produce smoke evidence. Their target-specific gates remain open until the feature is selected.
+- [x] arm64 release checksums plus pre-cutover DataRiver/Keycloak logical dumps and their SHA-256
+  files are stored under ignored local artifact directories. SeaweedFS remains online for rollback.
+- [x] unused Mac Airflow/APISIX/Neo4j/telemetry containers were stopped without deleting volumes.
+  Running DataRiver core plus Redis/MinIO used about 1.2 GiB at the observation point; retained
+  SeaweedFS added about 215 MiB. Separately operated local DataHub used about 6 GiB and is the
+  dominant Mac resource risk.
 
 ## Phase 5 — WSL `linux/amd64` preparation PC
 
-- [ ] CPU/RAM/disk, Docker/Compose versions and `linux/x86_64→linux/amd64` mapping captured.
+- [ ] WSL `linux/x86_64→linux/amd64` mapping is captured; CPU/RAM/disk and Docker/Compose versions
+  remain unavailable until the preparation PC is accessible.
 - [ ] exact source bundle and release artifacts pass import verification.
 - [ ] PostgreSQL logical restore is rehearsed in isolation; Alembic reaches the recorded head.
 - [ ] Keycloak import/issuer/redirect origins use WSL runtime values.
@@ -85,8 +107,11 @@ This checklist is evidence-driven. `[x]` means the named repository evidence was
 
 ## Phase 6 — promotion boundary
 
-- [ ] no open P0/P1 release issue remains.
-- [ ] independent reviewer confirms source, images, configuration and data reconciliation.
-- [ ] branch is current with `origin/main`, commits are pushed and CI is green.
+- [x] no open P0/P1 source or Mac release issue remains; target-only WSL gates stay open below.
+- [x] independent reviewers covered pagination, multi-architecture release safety and final
+  data/SRE plus architecture consistency; accepted findings were resolved and rerun through the
+  local final gates.
+- [ ] branch is current with `origin/main` and local gates pass; push and remote CI remain open until
+  the final branch publication succeeds.
 - [ ] preparation PC remains labeled Single-node Pilot.
 - [ ] production/HA promotion is handled by a separate three-failure-domain decision and drill.

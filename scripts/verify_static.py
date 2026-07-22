@@ -276,18 +276,23 @@ def verify_multiarch_release_contract() -> None:
 
     exporter = (ROOT / "scripts" / "export_offline_images.sh").read_text(encoding="utf-8")
     for fragment in (
-        'status --porcelain --untracked-files=normal',
-        'arm64|aarch64',
-        'amd64|x86_64',
-        'datariver-source.bundle',
-        'release-index.tsv',
-        '--accept-local-connector-license-review',
-        'platform_staging_dir=$(mktemp -d',
+        "status --porcelain --untracked-files=normal",
+        "arm64|aarch64",
+        "amd64|x86_64",
+        "datariver-source.bundle",
+        "release-index.tsv",
+        "offline-core.compose.yaml",
+        "source-commit.txt.sha256",
+        "--accept-local-connector-license-review",
+        "platform_staging_dir=$(mktemp -d",
         'docker image pull --platform "$target_platform" "$image"',
         'docker image save --platform "$target_platform"',
         'docker image inspect --platform "$target_platform"',
-        'save_image=${image%@sha256:*}',
-        'Saved archive omitted required image tag',
+        "save_image=${image%@sha256:*}",
+        "Saved archive omitted required image tag",
+        "include_local_connectors",
+        "compose.airflow.yaml infra/airflow/Dockerfile infra/postgres/init-airflow.sh",
+        '"$output_dir"/*.bundle',
     ):
         if fragment not in exporter:
             raise AssertionError(f"offline exporter is missing release guard: {fragment}")
@@ -300,17 +305,23 @@ def verify_multiarch_release_contract() -> None:
     for fragment in (
         'verify_checksums "$release_root"',
         'bundle verify "$bundle"',
-        'Source checkout does not match release commit',
-        'Loaded image platform mismatch',
-        'config --images',
-        '--artifact-only and --load are mutually exclusive',
+        "Source checkout does not match release commit",
+        "Loaded image platform mismatch",
+        "inspect_image=${image%@sha256:*}",
+        "Source checkout is not clean",
+        "Indexed artifact is missing",
+        "offline-core.compose.yaml",
+        "config --images",
+        "--artifact-only and --load are mutually exclusive",
+        "require_platform_artifact offline-local-connectors.compose.yaml",
+        "include_observability=$(release_flag include_observability)",
+        "verify_compose_inventory --profile object-storage",
+        "Compose image is absent from the selected release manifests",
     ):
         if fragment not in verifier:
             raise AssertionError(f"offline verifier is missing fail-closed check: {fragment}")
 
-    object_migrator = (ROOT / "scripts" / "migrate_s3_objects.py").read_text(
-        encoding="utf-8"
-    )
+    object_migrator = (ROOT / "scripts" / "migrate_s3_objects.py").read_text(encoding="utf-8")
     for fragment in (
         'raw["malformed_count"] != 0',
         'raw["conflict_count"] != 0',
@@ -339,22 +350,41 @@ def verify_multiarch_release_contract() -> None:
         encoding="utf-8"
     )
     for fragment in (
-        'docker exec -i "$container"',
-        'demo_password_file="$root/secrets/keycloak_demo_password"',
-        "set-password",
-        "unset demo_password",
+        'docker exec "$container"',
+        'attributes.\\"pkce.code.challenge.method\\"',
+        'attributes.\\"post.logout.redirect.uris\\"',
+        'attributes.\\"default.acr.values\\"',
+        "clientId=datariver-airflow",
+        "/run/secrets/airflow_client_secret",
         "trap '\\''rm -f",
     ):
         if fragment not in keycloak_host_dev:
             raise AssertionError(f"Keycloak host-development sync omits guard: {fragment}")
+    if "set-password" in keycloak_host_dev or "keycloak_demo_password" in keycloak_host_dev:
+        raise AssertionError("Keycloak host-development sync must not rotate an existing user")
+
+    connector_network = (ROOT / "scripts" / "ensure_connector_network.sh").read_text(
+        encoding="utf-8"
+    )
+    for fragment in (
+        'docker network inspect "$network"',
+        'docker network create --driver bridge "$network"',
+        "*[!A-Za-z0-9_.-]*",
+    ):
+        if fragment not in connector_network:
+            raise AssertionError(f"connector network bootstrap omits guard: {fragment}")
 
     s3_probe = (ROOT / "scripts" / "probe_s3_contract.py").read_text(encoding="utf-8")
     for fragment in (
-        "generate_presigned_url",
+        '"upload_part"',
+        "public_client.generate_presigned_url",
+        '"x-amz-checksum-sha256"',
         "create_multipart_upload",
         "complete_multipart_upload",
         "copy_object",
-        "Anonymous bucket access was not denied",
+        "Anonymous object",
+        '"access-control-allow-methods"',
+        '"access-control-allow-headers"',
         "CORS preflight did not return the exact allowed origin",
         "client.delete_object",
     ):
@@ -520,6 +550,7 @@ def verify_runtime_hardening() -> None:
             "web",
         },
         "compose.identity.yaml": {"keycloak"},
+        "compose.airflow.yaml": {"airflow-db-init"},
         "compose.gateway.yaml": {"apisix"},
         "aux-compose.yml": {"otel-collector", "prometheus", "alertmanager"},
     }
@@ -528,6 +559,7 @@ def verify_runtime_hardening() -> None:
         "compose.identity.yaml": {"keycloak"},
         "compose.gateway.yaml": {"apisix"},
         "compose.airflow.yaml": {
+            "airflow-db-init",
             "airflow-init",
             "airflow-api-server",
             "airflow-scheduler",
@@ -647,6 +679,32 @@ def verify_host_development_ports() -> None:
             raise AssertionError(
                 "Mac development must use the same 38101/38102 developer port contract"
             )
+
+    wsl_block = bootstrap.rsplit('if [ "$wsl_preparation" = true ]; then', 1)[1].split("\nfi\n", 1)[
+        0
+    ]
+    for fragment in (
+        "set_env_value OIDC_ISSUER http://localhost:8081/realms/datariver",
+        "set_env_value OIDC_JWKS_URL http://keycloak:8080/realms/datariver/protocol/openid-connect/certs",
+        "set_env_value SYSTEM_CONFIGURATION_RUNTIME_ACTIVATION_ENABLED false",
+    ):
+        if fragment not in wsl_block:
+            raise AssertionError(
+                "WSL preparation must separate the public token issuer from private JWKS access"
+            )
+
+    admin_routes = (
+        ROOT / "backend" / "src" / "datariver" / "interfaces" / "http" / "routes" / "admin.py"
+    ).read_text(encoding="utf-8")
+    if (
+        "def _require_system_configuration_runtime_activation" not in admin_routes
+        or "_require_system_configuration_runtime_activation(container.settings)"
+        not in admin_routes
+    ):
+        raise AssertionError(
+            "system configuration activation must fail closed when deployment settings own "
+            "runtime state"
+        )
 
     core = _yaml(ROOT / "compose.yaml")
     if "127.0.0.1:${API_PORT:-8000}:8000" not in core["services"]["api"].get("ports", []):

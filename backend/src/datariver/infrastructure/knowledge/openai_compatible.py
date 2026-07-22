@@ -34,6 +34,7 @@ MAX_EXTRACTION_EDGES_PER_BATCH = 2
 MAX_EXTRACTION_OUTPUT_TOKENS = 2_048
 MAX_GRAPHRAG_OUTPUT_TOKENS = 2_048
 MAX_EVIDENCE_UNIT_CHARACTERS = 240
+MAX_INFERENCE_RESPONSE_BYTES = 2 * 1024 * 1024
 
 
 class OpenAIJsonTransport(Protocol):
@@ -83,8 +84,31 @@ class HttpxOpenAIJsonTransport:
                 trust_env=False,
                 transport=self._transport,
             ) as client:
-                response = await client.post(path, json=document)
-                response.raise_for_status()
+                async with client.stream("POST", path, json=document) as response:
+                    response.raise_for_status()
+                    content_length = response.headers.get("content-length")
+                    if content_length is not None:
+                        try:
+                            declared_size = int(content_length)
+                        except ValueError:
+                            declared_size = 0
+                        if declared_size > MAX_INFERENCE_RESPONSE_BYTES:
+                            raise ExternalDependencyError(
+                                "The configured inference provider response exceeded the limit.",
+                                dependency="knowledge_inference",
+                                retryable=False,
+                                provider_code="RESPONSE_TOO_LARGE",
+                            )
+                    response_body = bytearray()
+                    async for chunk in response.aiter_bytes():
+                        response_body.extend(chunk)
+                        if len(response_body) > MAX_INFERENCE_RESPONSE_BYTES:
+                            raise ExternalDependencyError(
+                                "The configured inference provider response exceeded the limit.",
+                                dependency="knowledge_inference",
+                                retryable=False,
+                                provider_code="RESPONSE_TOO_LARGE",
+                            )
         except httpx.TimeoutException as error:
             raise ExternalDependencyError(
                 "The configured inference provider timed out.",
@@ -109,7 +133,7 @@ class HttpxOpenAIJsonTransport:
                 provider_code="NETWORK",
             ) from error
         try:
-            value = response.json()
+            value = json.loads(response_body)
         except ValueError as error:
             raise ValidationError(
                 "The inference provider response must be a valid JSON object."

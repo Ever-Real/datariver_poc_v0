@@ -35,9 +35,9 @@ async def test_bucket_cors_is_applied_by_default() -> None:
     )
 
     assert client.headed == ["quarantine"]
-    assert client.cors_requests[0]["CORSConfiguration"]["CORSRules"][0][
-        "AllowedOrigins"
-    ] == ["https://catalog.example"]
+    assert client.cors_requests[0]["CORSConfiguration"]["CORSRules"][0]["AllowedOrigins"] == [
+        "https://catalog.example"
+    ]
 
 
 @pytest.mark.asyncio

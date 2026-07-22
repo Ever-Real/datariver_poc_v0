@@ -78,17 +78,36 @@ export function CatalogDetailPane({
   const [error, setError] = useState<unknown>()
   const [lineageError, setLineageError] = useState<unknown>()
   const [copied, setCopied] = useState(false)
+  const [fieldOffset, setFieldOffset] = useState(0)
   const lineageController = useRef<AbortController | null>(null)
   const copyFeedbackTimer = useRef<number | undefined>(undefined)
+  const pagedAssetId = useRef(assetId)
+  const fieldSourceVersion = useRef<string | undefined>(undefined)
 
   useEffect(() => {
+    if (pagedAssetId.current !== assetId) {
+      pagedAssetId.current = assetId
+      fieldSourceVersion.current = undefined
+      if (fieldOffset !== 0) {
+        setFieldOffset(0)
+        return
+      }
+    }
     const controller = new AbortController()
     lineageController.current?.abort()
     onDetailLoaded?.(undefined)
     setLoading(true); setError(undefined); setDetail(undefined); setLineage(undefined)
-    void client.request<CatalogAssetDetail>(`/catalog/assets/${assetId}`, { signal: controller.signal })
+    const fieldQuery = fieldOffset > 0
+      ? `?${new URLSearchParams({
+        field_offset: String(fieldOffset),
+        field_limit: '100',
+        ...(fieldSourceVersion.current ? { field_source_version: fieldSourceVersion.current } : {}),
+      })}`
+      : ''
+    void client.request<CatalogAssetDetail>(`/catalog/assets/${assetId}${fieldQuery}`, { signal: controller.signal })
       .then((value) => {
         if (!controller.signal.aborted) {
+          if (fieldOffset === 0) fieldSourceVersion.current = value.source_version
           setDetail(value)
           onDetailLoaded?.(value)
         }
@@ -100,7 +119,7 @@ export function CatalogDetailPane({
       lineageController.current?.abort()
       if (copyFeedbackTimer.current) window.clearTimeout(copyFeedbackTimer.current)
     }
-  }, [assetId, client, onDetailLoaded])
+  }, [assetId, client, fieldOffset, onDetailLoaded])
 
   const toggle = (section: string) => {
     setExpanded((current) => {
@@ -185,7 +204,7 @@ export function CatalogDetailPane({
         <button aria-controls="catalog-lineage-panel" aria-selected={activeTab === 'lineage'} className={activeTab === 'lineage' ? 'active' : ''} id="catalog-lineage-tab" onClick={() => showTab('lineage')} role="tab" type="button">Lineage</button>
       </div>
       <section aria-labelledby="catalog-metadata-tab" hidden={activeTab !== 'metadata'} id="catalog-metadata-panel" role="tabpanel">
-        <AccordionItem itemId="details" title="Table details" summary={`${detail.schema_fields.length} fields`} expanded={expanded.has('details')} onToggle={() => toggle('details')}>
+        <AccordionItem itemId="details" title="Table details" summary={`${detail.schema_fields_total ?? detail.schema_fields.length} fields`} expanded={expanded.has('details')} onToggle={() => toggle('details')}>
           <dl className="catalog-detail-properties">
             <div><dt>Platform</dt><dd>{detailText(detail.platform)}</dd></div>
             <div><dt>Database</dt><dd>{detailText(detail.database_name)}</dd></div>
@@ -200,8 +219,9 @@ export function CatalogDetailPane({
             <div className="metadata-vocabulary"><dt>Tags</dt><dd><BadgeScroller label="테이블 Tags" values={detail.tags} /></dd></div>
           </dl>
         </AccordionItem>
-        <AccordionItem itemId="columns" title="Column metadata" summary={`${detail.schema_fields.length} columns`} expanded={expanded.has('columns')} onToggle={() => toggle('columns')}>
+        <AccordionItem itemId="columns" title="Column metadata" summary={`${detail.schema_fields_total ?? detail.schema_fields.length} columns`} expanded={expanded.has('columns')} onToggle={() => toggle('columns')}>
           <div className="catalog-schema-table">
+            {detail.schema_fields_truncated && <div className="catalog-detail-state" role="status">원본 {detail.schema_fields_total_exact ? '' : '최소 '}{detail.schema_fields_total.toLocaleString()}개 중 메모리 보호 상한인 {detail.schema_fields_available.toLocaleString()}개 컬럼만 제공합니다.</div>}
             <table><caption className="sr-only">스키마 필드</caption><thead><tr><th>Column</th><th>Type</th><th>Description</th><th>Terms</th><th>Tags</th></tr></thead>
               <tbody>{detail.schema_fields.map((field, index) => {
                 const fieldName = valueOf(field, 'fieldPath', 'name')
@@ -211,6 +231,11 @@ export function CatalogDetailPane({
               })}</tbody>
             </table>
             {detail.schema_fields.length === 0 && <div className="catalog-detail-state">스키마 필드가 등록되지 않았습니다.</div>}
+            {(detail.schema_fields_available ?? detail.schema_fields_total ?? detail.schema_fields.length) > detail.schema_fields.length && <nav aria-label="컬럼 페이지 탐색" className="pagination-bar">
+              <button className="button button-secondary" disabled={(detail.schema_fields_offset ?? 0) === 0} onClick={() => setFieldOffset(Math.max(0, (detail.schema_fields_offset ?? 0) - (detail.schema_fields_limit ?? 100)))} type="button">이전 컬럼</button>
+              <span>{(detail.schema_fields_offset ?? 0) + 1}–{(detail.schema_fields_offset ?? 0) + detail.schema_fields.length} / {detail.schema_fields_available ?? detail.schema_fields_total}</span>
+              <button className="button button-secondary" disabled={!detail.schema_fields_has_more} onClick={() => setFieldOffset((detail.schema_fields_offset ?? 0) + (detail.schema_fields_limit ?? 100))} type="button">다음 컬럼</button>
+            </nav>}
           </div>
         </AccordionItem>
       </section>

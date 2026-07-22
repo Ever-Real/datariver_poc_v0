@@ -69,8 +69,11 @@ PostgreSQL/OIDC alone is an implemented minimal runtime.
   not scan the current search from page one.
 - `LOW-MEM-003`: facets are refreshed only when query, filters or authorization scope changes, not
   on cursor navigation.
-- `LOW-MEM-004`: retained tree branches and detail fields have explicit budgets. Until field
-  pagination is implemented, provider payload truncation must be visible and bounded.
+- `LOW-MEM-004`: retain at most eight expanded tree branches with at most 200 nodes per branch;
+  abort evicted/collapsed in-flight branch requests, retain at most 1,000 unique provider schema
+  fields per asset, and serialize detail fields in server pages of at most 200 fields (100 by
+  default) with explicit total/total-exact/available/truncated metadata. A truncated provider
+  response reports a bounded `1,001+` lower bound instead of allocating an unbounded uniqueness set.
 - `LOW-MEM-005`: CSV stays streaming. XLSX is disabled or capped for the low-resource profile until
   a measured write-only/spooled implementation meets its worker RSS budget.
 - `LOW-MEM-006`: the frontend production bundle uses route/feature splitting or an accepted budget;

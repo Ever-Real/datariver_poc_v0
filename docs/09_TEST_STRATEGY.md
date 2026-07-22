@@ -2,6 +2,29 @@
 
 ## Latest executed baseline
 
+### 2026-07-22 low-resource multi-architecture and external-connector verification
+
+The Redis/MinIO external-connector, bounded catalog state, OpenAI-compatible Chat and offline-release
+hardening passed repository-wide Ruff formatting/lint (`285` files), strict mypy (`271` source/test
+files), `765` backend tests and `scripts/verify_static.py`. The frontend passed strict TypeScript,
+zero-warning ESLint, `39` files / `169` Vitest tests and the production build. The largest emitted
+JavaScript chunk is `241.32 kB` (`77.16 kB` gzip); CSS is `155.37 kB` (`27.03 kB` gzip).
+
+On the Mac `linux/arm64` daemon, PostgreSQL, Keycloak and the DataRiver services started with the
+selected development profile while Redis and MinIO ran as separately managed connectors. The S3
+contract verified authenticated bucket access, exact-origin CORS, anonymous GET/HEAD denial,
+5,242,897-byte multipart and presigned-part upload, full-byte checksum read-back and server-side
+copy. The repeatable SeaweedFS-to-MinIO migration copied `13` referenced objects and its idempotent
+rerun reported `verified_existing=13` and `planned=0`. The final cutover-state probe found zero
+active leases, incomplete jobs, unpublished/dead-letter outbox entries and Redis consumer-group
+pending/lag. The optional Airflow database initializer also ran with a read-only root filesystem,
+tmpfs, dropped capabilities and `no-new-privileges`.
+
+Independent code and architecture reviewers found no remaining P0/P1 issue after the corrective
+passes. These are source and Mac-host claims only: final WSL `linux/amd64` import, target restore,
+connector reachability, smoke/load/soak and rollback rehearsal remain explicit target-environment
+gates.
+
 ### 2026-07-20 account/CR/System Settings policy verification
 
 The approved account renewal, System-routed CR authority and development System Settings activation

@@ -17,4 +17,14 @@ esac
 [ -f "$env_file" ] || { echo "Missing deployment environment file: $env_file" >&2; exit 2; }
 
 export DATARIVER_ENV_FILE="$env_file"
+for argument in "$@"; do
+  case "$argument" in
+    up|run|create|start)
+      DATARIVER_CONNECTOR_NETWORK=$(
+        sed -n 's/^DATARIVER_CONNECTOR_NETWORK=//p' "$env_file" | tail -n 1
+      ) "$root/scripts/ensure_connector_network.sh"
+      break
+      ;;
+  esac
+done
 exec docker compose --env-file "$env_file" "$@"

@@ -7,7 +7,10 @@ import { RegistrationControlledMetadataEditor } from './RegistrationControlledMe
 const asset: CatalogAssetDetail = {
   id: 'asset-1', external_urn: 'urn:li:dataset:(urn:li:dataPlatform:postgres,wafer,PROD)', asset_type: 'DATASET',
   name: 'wafer', platform: 'postgres', database_name: 'fab', schema_name: 'yield', classification: 'INTERNAL', lifecycle: 'ACTIVE', observed_at: '2026-07-18T00:00:00Z',
-  ownership: [], glossary_terms: [], tags: ['PII'], schema_fields: [], quality: {}, projection_source_version: 'projection-v1', source_version: 'source-v1', matches: [],
+  ownership: [], glossary_terms: [], tags: ['PII'], schema_fields: [], schema_fields_total: 0,
+  schema_fields_available: 0, schema_fields_truncated: false, schema_fields_total_exact: true,
+  schema_fields_offset: 0, schema_fields_limit: 100, schema_fields_has_more: false,
+  quality: {}, projection_source_version: 'projection-v1', source_version: 'source-v1', matches: [],
 }
 
 const proposal: ChangeRequestRecord = {

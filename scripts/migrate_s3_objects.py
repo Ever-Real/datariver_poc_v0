@@ -65,10 +65,15 @@ def _parser() -> argparse.ArgumentParser:
 
 def _endpoint(value: str) -> str:
     parsed = urlparse(value)
-    if parsed.scheme not in {"http", "https"} or not parsed.hostname or parsed.username:
+    if (
+        parsed.scheme not in {"http", "https"}
+        or not parsed.hostname
+        or parsed.username is not None
+        or parsed.password is not None
+    ):
         raise ValueError("S3 endpoints must be credential-free absolute HTTP(S) origins.")
-    if parsed.query or parsed.fragment:
-        raise ValueError("S3 endpoints cannot contain a query or fragment.")
+    if parsed.path not in {"", "/"} or parsed.query or parsed.fragment:
+        raise ValueError("S3 endpoints cannot contain a path, query or fragment.")
     return value.rstrip("/")
 
 

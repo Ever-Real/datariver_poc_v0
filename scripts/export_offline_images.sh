@@ -430,6 +430,14 @@ ensure_source_bundle() {
       exit 2
     fi
     [ -f "$bundle" ] || { echo "Release source bundle is missing: $bundle" >&2; exit 2; }
+    [ -f "$release_root/datariver-source.bundle.sha256" ] || {
+      echo "Release source bundle checksum is missing." >&2
+      exit 2
+    }
+    [ -f "$release_root/source-commit.txt.sha256" ] || {
+      echo "Release source marker checksum is missing." >&2
+      exit 2
+    }
     git -C "$root" bundle verify "$bundle" >/dev/null
     return
   fi
@@ -447,7 +455,50 @@ ensure_source_bundle() {
     else
       shasum -a 256 datariver-source.bundle >datariver-source.bundle.sha256
     fi
+    if command -v sha256sum >/dev/null 2>&1; then
+      sha256sum source-commit.txt >source-commit.txt.sha256
+    else
+      shasum -a 256 source-commit.txt >source-commit.txt.sha256
+    fi
   )
+}
+
+write_offline_compose_overrides() {
+  printf '%s\n' \
+    'services:' \
+    '  postgres:' \
+    '    image: postgres:17.10-bookworm' \
+    >"$output_dir/offline-core.compose.yaml"
+  write_checksum offline-core.compose.yaml
+
+  if [ "$include_airflow" = true ]; then
+    printf '%s\n' \
+      'services:' \
+      '  airflow-db-init:' \
+      '    image: postgres:17.10-bookworm' \
+      >"$output_dir/offline-airflow.compose.yaml"
+    write_checksum offline-airflow.compose.yaml
+  fi
+  if [ "$include_graph" = true ]; then
+    printf '%s\n' \
+      'services:' \
+      '  neo4j:' \
+      '    image: neo4j:2026.06.0' \
+      >"$output_dir/offline-graph.compose.yaml"
+    write_checksum offline-graph.compose.yaml
+  fi
+  if [ "$include_local_connectors" = true ]; then
+    printf '%s\n' \
+      'services:' \
+      '  redis-cache:' \
+      '    image: redis:8.2.6-bookworm' \
+      '  redis-delivery:' \
+      '    image: redis:8.2.6-bookworm' \
+      '  minio:' \
+      '    image: quay.io/minio/minio:RELEASE.2025-09-07T16-13-09Z' \
+      >"$output_dir/offline-local-connectors.compose.yaml"
+    write_checksum offline-local-connectors.compose.yaml
+  fi
 }
 
 write_manifest() {
@@ -516,12 +567,44 @@ save_bundle() {
 write_release_index() {
   local index="$output_dir/release-index.tsv"
   local artifact relative_path
+  local contract_files=(
+    pyproject.toml uv.lock frontend/package-lock.json backend/Dockerfile frontend/Dockerfile
+    compose.yaml compose.identity.yaml
+  )
+  if [ "$include_airflow" = true ]; then
+    contract_files+=(compose.airflow.yaml infra/airflow/Dockerfile infra/postgres/init-airflow.sh)
+  fi
+  if [ "$include_edge" = true ]; then
+    contract_files+=(compose.gateway.yaml infra/apisix/Dockerfile)
+  fi
+  if [ "$include_graph" = true ]; then
+    contract_files+=(compose.graph.yaml)
+  fi
+  if [ "$include_local_connectors" = true ]; then
+    contract_files+=(compose.local-connectors.yaml)
+  fi
+  if [ "$include_observability" = true ]; then
+    contract_files+=(
+      aux-compose.yml
+      infra/observability/alertmanager.yml
+      infra/observability/loki.yaml
+      infra/observability/otel-collector.yaml
+      infra/observability/prometheus.yml
+      infra/observability/tempo.yaml
+    )
+  fi
   {
     printf 'record\tname\tvalue\textra\n'
     printf 'release\trelease_id\t%s\t\n' "$release_id"
     printf 'release\tsource_commit\t%s\t\n' "$source_commit"
     printf 'release\tplatform\t%s\t\n' "$target_platform"
     printf 'release\tbuild_host_platform\t%s/%s\t\n' "$os" "$architecture"
+    printf 'release\tinclude_airflow\t%s\t\n' "$include_airflow"
+    printf 'release\tinclude_edge\t%s\t\n' "$include_edge"
+    printf 'release\tinclude_graph\t%s\t\n' "$include_graph"
+    printf 'release\tinclude_local_connectors\t%s\t\n' "$include_local_connectors"
+    printf 'release\tinclude_datahub_mac_dev\t%s\t\n' "$include_datahub_mac_dev"
+    printf 'release\tinclude_observability\t%s\t\n' "$include_observability"
     printf 'toolchain\tgit\t%s\t\n' "$(git --version)"
     printf 'toolchain\tdocker_client\t%s\t\n' "$(docker version --format '{{.Client.Version}}')"
     printf 'release\tdocker_server_version\t%s\t\n' "$(docker version --format '{{.Server.Version}}')"
@@ -532,13 +615,13 @@ write_release_index() {
     printf 'release\tcreated_at_utc\t%s\t\n' "$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
     printf 'source\tbundle\t../datariver-source.bundle\t%s\n' \
       "$(file_sha256 "$release_root/datariver-source.bundle")"
-    for relative_path in \
-      pyproject.toml uv.lock frontend/package-lock.json backend/Dockerfile frontend/Dockerfile \
-      compose.yaml compose.identity.yaml compose.local-connectors.yaml; do
+    for relative_path in "${contract_files[@]}"; do
       printf 'contract\t%s\t%s\t\n' "$relative_path" \
         "$(git -C "$root" hash-object "$root/$relative_path")"
     done
-    for artifact in "$output_dir"/*.tar "$output_dir"/*.manifest.tsv; do
+    for artifact in \
+      "$output_dir"/*.tar "$output_dir"/*.manifest.tsv "$output_dir"/*.compose.yaml \
+      "$output_dir"/*.bundle; do
       [ -f "$artifact" ] || continue
       printf 'artifact\t%s\t%s\t\n' "$(basename "$artifact")" "$(file_sha256 "$artifact")"
     done
@@ -547,6 +630,7 @@ write_release_index() {
 }
 
 ensure_source_bundle
+write_offline_compose_overrides
 materialize_cross_platform_images "${external_platform_images[@]}"
 save_bundle "datariver-core-$target_architecture" "${core_images[@]}"
 

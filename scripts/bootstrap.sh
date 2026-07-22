@@ -254,7 +254,9 @@ if [ "$wsl_preparation" = true ]; then
   set_env_value API_PORT 8000
   set_env_value POSTGRES_PORT 5432
   set_env_value KEYCLOAK_PORT 8081
-  set_env_value OIDC_ISSUER http://keycloak:8080/realms/datariver
+  # Tokens carry the browser-reachable issuer.  API-side key retrieval remains
+  # on the private Compose network through OIDC_JWKS_URL below.
+  set_env_value OIDC_ISSUER http://localhost:8081/realms/datariver
   set_env_value OIDC_JWKS_URL http://keycloak:8080/realms/datariver/protocol/openid-connect/certs
   set_env_value OIDC_PUBLIC_AUTHORITY http://localhost:8081/realms/datariver
   set_env_value OIDC_PUBLIC_ORIGIN http://localhost:8081

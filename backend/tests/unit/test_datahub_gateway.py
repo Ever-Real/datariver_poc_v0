@@ -13,10 +13,29 @@ from datariver.infrastructure.datahub.http import (
     VOCABULARY_SEARCH_QUERY,
     HttpDataHubGateway,
     _catalog_hierarchy_from_browse_path,
+    _schema_fields,
 )
 from datariver.infrastructure.observability.metrics import HttpMetrics
 
 DATAHUB_V160_CONFIG = {"versions": {"acryldata/datahub": {"version": "v1.6.0"}}}
+
+
+def test_schema_fields_retains_only_the_bounded_provider_projection() -> None:
+    fields, total, truncated, total_exact = _schema_fields(
+        {
+            "schemaMetadata": {
+                "fields": [
+                    {"fieldPath": f"field_{index}", "type": "STRING"} for index in range(1_005)
+                ]
+            }
+        }
+    )
+
+    assert len(fields) == 1_000
+    assert total == 1_001
+    assert truncated is True
+    assert total_exact is False
+    assert fields[-1]["fieldPath"] == "field_999"
 
 
 async def test_vocabulary_search_uses_the_fixed_tag_contract() -> None:

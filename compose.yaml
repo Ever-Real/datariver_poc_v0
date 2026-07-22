@@ -33,7 +33,6 @@ services:
       - postgres_export_password
       - postgres_bootstrap_password
       - keycloak_db_password
-      - airflow_db_password
     volumes:
       - postgres-data:/var/lib/postgresql/data
       - ./infra/postgres/init:/docker-entrypoint-initdb.d:ro

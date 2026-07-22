@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
-from collections.abc import Mapping
+from collections.abc import AsyncIterator, Mapping
 from typing import Any
 from uuid import uuid4
 
@@ -13,6 +13,7 @@ from datariver.application.errors import ExternalDependencyError
 from datariver.domain.common import ValidationError
 from datariver.domain.knowledge_pipeline import GraphRagEvidence, ModelBinding, PdfPage
 from datariver.infrastructure.knowledge.openai_compatible import (
+    MAX_INFERENCE_RESPONSE_BYTES,
     HttpxOpenAIJsonTransport,
     OpenAICompatibleEmbeddingProvider,
     OpenAICompatibleKnowledgeAnswerComposer,
@@ -445,3 +446,35 @@ async def test_http_transport_treats_invalid_success_json_as_contract_validation
 
     with pytest.raises(ValidationError, match="valid JSON object"):
         await transport.post_json(path="/embeddings", document={"input": ["one"]})
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("declare_size", [True, False])
+async def test_http_transport_rejects_oversized_success_response_without_returning_body(
+    declare_size: bool,
+) -> None:
+    secret_body = b'{"secret":"' + (b"x" * MAX_INFERENCE_RESPONSE_BYTES) + b'"}'
+
+    class BodyStream(httpx.AsyncByteStream):
+        async def __aiter__(self) -> AsyncIterator[bytes]:
+            yield secret_body
+
+    async def respond(request: httpx.Request) -> httpx.Response:
+        if declare_size:
+            return httpx.Response(200, content=secret_body, request=request)
+        return httpx.Response(200, stream=BodyStream(), request=request)
+
+    transport = HttpxOpenAIJsonTransport(
+        base_url="http://host.docker.internal/v1",
+        allowed_hosts=frozenset({"host.docker.internal"}),
+        api_key=None,
+        timeout_seconds=60,
+        transport=httpx.MockTransport(respond),
+    )
+
+    with pytest.raises(ExternalDependencyError) as caught:
+        await transport.post_json(path="/chat/completions", document={"messages": []})
+
+    assert caught.value.details["retryable"] is False
+    assert caught.value.details["provider_code"] == "RESPONSE_TOO_LARGE"
+    assert "secret" not in caught.value.message

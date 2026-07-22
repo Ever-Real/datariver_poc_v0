@@ -18,6 +18,8 @@ from datariver.domain.authz import (
 )
 from datariver.domain.governance import ChangeRequest
 
+MAX_CATALOG_SCHEMA_FIELDS = 1_000
+
 
 @dataclass(frozen=True, slots=True)
 class CatalogAssetIndex:
@@ -63,6 +65,9 @@ class CatalogAssetDetail:
     raw_version: str
     observed_at: datetime
     stale_at: datetime | None = None
+    schema_fields_total: int | None = None
+    schema_fields_truncated: bool = False
+    schema_fields_total_exact: bool = True
 
 
 @dataclass(frozen=True, slots=True)
@@ -82,6 +87,9 @@ class DataHubAssetEnrichment:
     observed_at: datetime
     created_at: datetime | None = None
     description: str | None = None
+    schema_fields_total: int | None = None
+    schema_fields_truncated: bool = False
+    schema_fields_total_exact: bool = True
 
 
 @dataclass(frozen=True, slots=True)

@@ -20,7 +20,7 @@ from datariver.application.services.catalog_sync import CatalogSyncService
 from datariver.application.services.change_targets import CatalogChangeTargetAuthorizer
 from datariver.application.services.governance import GovernanceService
 from datariver.domain.authz import BuiltinPolicyEngine
-from datariver.domain.common import ValidationError
+from datariver.domain.common import ConflictError, ValidationError
 from datariver.domain.governance import ChangePriority, ChangeUrgency
 from datariver.infrastructure.db.authz import SqlDecisionWriter
 from datariver.infrastructure.db.catalog import SqlCatalogIndexReader, SqlCatalogProjectionWriter
@@ -589,6 +589,9 @@ async def get_asset(
     request: Request,
     context: ContextDep,
     session: SessionDep,
+    field_offset: Annotated[int, Query(ge=0, le=1_000)] = 0,
+    field_limit: Annotated[int, Query(ge=1, le=200)] = 100,
+    field_source_version: Annotated[str | None, Query(min_length=1, max_length=255)] = None,
 ) -> CatalogAssetResponse | JSONResponse:
     asset = await _service(request, session).get_asset(
         subject=context.subject,
@@ -609,7 +612,9 @@ async def get_asset(
                 "request_id": context.request_id,
             },
         )
-    return catalog_detail(asset)
+    if field_source_version is not None and field_source_version != asset.raw_version:
+        raise ConflictError("The catalog schema changed during field pagination.")
+    return catalog_detail(asset, field_offset=field_offset, field_limit=field_limit)
 
 
 @router.get(

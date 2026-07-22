@@ -162,13 +162,30 @@ def catalog_summary(asset: CatalogAssetIndex) -> CatalogAssetSummary:
     )
 
 
-def catalog_detail(asset: CatalogAssetDetail) -> CatalogAssetResponse:
+def catalog_detail(
+    asset: CatalogAssetDetail,
+    *,
+    field_offset: int = 0,
+    field_limit: int = 100,
+) -> CatalogAssetResponse:
     summary = catalog_summary(asset.index)
+    field_end = field_offset + field_limit
+    fields_available = len(asset.schema_fields)
+    fields_total = (
+        asset.schema_fields_total if asset.schema_fields_total is not None else fields_available
+    )
     return CatalogAssetResponse(
         **summary.model_dump(),
         ownership=list(asset.ownership),
         glossary_terms=list(asset.glossary_terms),
-        schema_fields=list(asset.schema_fields),
+        schema_fields=list(asset.schema_fields[field_offset:field_end]),
+        schema_fields_total=fields_total,
+        schema_fields_available=fields_available,
+        schema_fields_truncated=asset.schema_fields_truncated,
+        schema_fields_total_exact=asset.schema_fields_total_exact,
+        schema_fields_offset=field_offset,
+        schema_fields_limit=field_limit,
+        schema_fields_has_more=field_end < fields_available,
         quality=asset.quality,
         projection_source_version=asset.index.source_version,
         source_version=asset.raw_version,

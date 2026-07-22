@@ -209,6 +209,74 @@ describe('catalog workspace', () => {
     expect(within(tree).queryByRole('button', { name: /하위 항목 더 보기/ })).not.toBeInTheDocument()
   })
 
+  it('evicts the least-recently expanded branch after eight retained branches', async () => {
+    const request = vi.fn((path: string, options?: RequestOptions): Promise<unknown> => {
+      void options
+      if (path.includes('parent_kind=ROOT')) return Promise.resolve({
+        items: Array.from({ length: 9 }, (_, index) => ({
+          id: `platform-${index}`, kind: 'PLATFORM', label: `platform_${index}`,
+          asset_count: 1, has_children: true, platform: `platform_${index}`,
+        })),
+        page: { limit: 100 }, meta,
+      })
+      if (path.includes('parent_kind=PLATFORM')) {
+        const platform = new URL(path, 'http://catalog.test').searchParams.get('platform') ?? ''
+        return Promise.resolve({
+          items: [{ id: `database-${platform}`, kind: 'DATABASE', label: `database_${platform}`,
+            asset_count: 1, has_children: false, platform, database_name: 'database' }],
+          page: { limit: 100 }, meta,
+        })
+      }
+      return defaultRequest(path)
+    })
+    render(<CatalogPage client={clientWith(request)} />)
+
+    const tree = await screen.findByRole('complementary', { name: 'Resource Tree' })
+    for (let index = 0; index < 9; index += 1) {
+      fireEvent.click(await within(tree).findByRole('button', { name: new RegExp(`platform_${index}`) }))
+      await within(tree).findByText(`database_platform_${index}`)
+    }
+
+    expect(within(tree).queryByText('database_platform_0')).not.toBeInTheDocument()
+    expect(within(tree).getByRole('button', { name: /platform_0/ })).toHaveAttribute('aria-expanded', 'false')
+    expect(within(tree).getByText('database_platform_8')).toBeInTheDocument()
+  })
+
+  it('aborts an evicted in-flight Resource Tree branch before opening the ninth branch', async () => {
+    const branchSignals: AbortSignal[] = []
+    const request = vi.fn((path: string, options?: RequestOptions): Promise<unknown> => {
+      if (path.includes('parent_kind=ROOT')) return Promise.resolve({
+        items: Array.from({ length: 9 }, (_, index) => ({
+          id: `slow-platform-${index}`, kind: 'PLATFORM', label: `slow_platform_${index}`,
+          asset_count: 1, has_children: true, platform: `slow_platform_${index}`,
+        })),
+        page: { limit: 100 }, meta,
+      })
+      if (path.includes('parent_kind=PLATFORM') && options?.signal) {
+        branchSignals.push(options.signal)
+        return new Promise((_resolve, reject) => {
+          options.signal?.addEventListener('abort', () => reject(new DOMException('Aborted', 'AbortError')))
+        })
+      }
+      return defaultRequest(path)
+    })
+    render(<CatalogPage client={clientWith(request)} />)
+
+    const tree = await screen.findByRole('complementary', { name: 'Resource Tree' })
+    for (let index = 0; index < 9; index += 1) {
+      fireEvent.click(await within(tree).findByRole('button', {
+        name: new RegExp(`slow_platform_${index}`),
+      }))
+    }
+
+    await waitFor(() => expect(branchSignals).toHaveLength(9))
+    expect(branchSignals[0]?.aborted).toBe(true)
+    expect(branchSignals.slice(1).filter((signal) => !signal.aborted)).toHaveLength(8)
+    expect(within(tree).getByRole('button', { name: /slow_platform_0/ })).toHaveAttribute(
+      'aria-expanded', 'false',
+    )
+  })
+
   it('opens an authorized Resource Tree detail without crawling result pages', async () => {
     const treeAsset: CatalogAsset = { ...asset, id: 'tree-asset', name: 'tree_selected_table' }
     const assets = [...Array.from({ length: 50 }, (_, index) => ({
@@ -409,6 +477,44 @@ describe('catalog workspace', () => {
     ))).toBe(true))
     expect(screen.getByRole('button', { name: 'wafer_events 선택' })).toHaveAttribute('title', 'wafer_events 상세 정보 열기')
     expect(screen.getByRole('complementary', { name: '카탈로그 상세' })).toHaveTextContent('wafer_events')
+  })
+
+  it('keeps wide schema metadata on bounded server pages', async () => {
+    const request = vi.fn((path: string, options?: RequestOptions): Promise<unknown> => {
+      void options
+      if (path === `/catalog/assets/${asset.id}` || path.startsWith(`/catalog/assets/${asset.id}?`)) {
+        const parameters = new URL(path, 'http://catalog.test').searchParams
+        const offset = Number(parameters.get('field_offset') ?? 0)
+        const fields = Array.from({ length: 100 }, (_, index) => ({
+          fieldPath: `field_${String(offset + index).padStart(3, '0')}`,
+          nativeDataType: 'STRING',
+        }))
+        return Promise.resolve({
+          ...asset, ownership: [], glossary_terms: [], tags: [], schema_fields: fields,
+          schema_fields_total: 250, schema_fields_available: 250, schema_fields_truncated: false,
+          schema_fields_total_exact: true,
+          schema_fields_offset: offset, schema_fields_limit: 100,
+          schema_fields_has_more: offset + fields.length < 250, quality: {},
+          projection_source_version: 'projection-v7', source_version: 'source-v7',
+        })
+      }
+      return defaultRequest(path)
+    })
+    render(<CatalogPage client={clientWith(request)} />)
+
+    fireEvent.click(await screen.findByText('wafer_events'))
+    expect(await screen.findByText('field_099')).toBeInTheDocument()
+    const detail = screen.getByRole('complementary', { name: '카탈로그 상세' })
+    expect(within(detail).getByRole('table', { name: '스키마 필드' }).querySelectorAll('tbody tr'))
+      .toHaveLength(100)
+    fireEvent.click(within(detail).getByRole('button', { name: '다음 컬럼' }))
+
+    expect(await within(detail).findByText('field_100')).toBeInTheDocument()
+    expect(within(detail).queryByText('field_000')).not.toBeInTheDocument()
+    expect(request.mock.calls.some(([path, options]) => (
+      path === `/catalog/assets/${asset.id}?field_offset=100&field_limit=100&field_source_version=source-v7`
+      && options?.signal instanceof AbortSignal
+    ))).toBe(true)
   })
 
   it('uses muted dashes for absent result and authorized-detail metadata', async () => {

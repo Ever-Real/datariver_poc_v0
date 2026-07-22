@@ -22,6 +22,7 @@ from datariver.application.classification_access import (
     static_classification_access_floor,
 )
 from datariver.application.dto import (
+    MAX_CATALOG_SCHEMA_FIELDS,
     CatalogAssetDetail,
     CatalogAssetIndex,
     CatalogFacetBucket,
@@ -564,6 +565,9 @@ class CatalogService:
                     raw_version=authorized.raw_version,
                     observed_at=authorized.observed_at,
                     stale_at=authorized.index.observed_at,
+                    schema_fields_total=authorized.schema_fields_total,
+                    schema_fields_truncated=authorized.schema_fields_truncated,
+                    schema_fields_total_exact=authorized.schema_fields_total_exact,
                 )
             raise
         self._detail_source(source="datahub")
@@ -1346,6 +1350,9 @@ class CatalogService:
             raw_version=enrichment.raw_version,
             observed_at=enrichment.observed_at,
             stale_at=stale_at,
+            schema_fields_total=enrichment.schema_fields_total,
+            schema_fields_truncated=enrichment.schema_fields_truncated,
+            schema_fields_total_exact=enrichment.schema_fields_total_exact,
         )
 
     @staticmethod
@@ -1353,11 +1360,14 @@ class CatalogService:
         enrichment: DataHubAssetEnrichment, *, fresh_until: datetime
     ) -> dict[str, Any]:
         return {
-            "schema": 3,
+            "schema": 4,
             "ownership": list(enrichment.ownership),
             "glossary_terms": list(enrichment.glossary_terms),
             "tags": list(enrichment.tags),
             "schema_fields": list(enrichment.schema_fields),
+            "schema_fields_total": enrichment.schema_fields_total,
+            "schema_fields_truncated": enrichment.schema_fields_truncated,
+            "schema_fields_total_exact": enrichment.schema_fields_total_exact,
             "quality": enrichment.quality,
             "raw_version": enrichment.raw_version,
             "observed_at": enrichment.observed_at.isoformat(),
@@ -1379,13 +1389,42 @@ class CatalogService:
 
     @staticmethod
     def _cached_enrichment(value: object) -> DataHubAssetEnrichment | None:
-        if not isinstance(value, dict) or value.get("schema") != 3:
+        if not isinstance(value, dict) or value.get("schema") not in {3, 4}:
             return None
         try:
             ownership = tuple(dict(item) for item in value["ownership"])
             glossary_terms = tuple(dict(item) for item in value["glossary_terms"])
             tags = tuple(str(item) for item in value["tags"])
-            schema_fields = tuple(dict(item) for item in value["schema_fields"])
+            raw_schema_fields = value["schema_fields"]
+            if not isinstance(raw_schema_fields, list):
+                return None
+            schema_fields = tuple(
+                dict(item) for item in raw_schema_fields[:MAX_CATALOG_SCHEMA_FIELDS]
+            )
+            if value["schema"] == 3:
+                schema_fields_total = len(raw_schema_fields)
+                schema_fields_truncated = len(raw_schema_fields) > len(schema_fields)
+                schema_fields_total_exact = True
+            else:
+                schema_fields_total = (
+                    int(value["schema_fields_total"])
+                    if value.get("schema_fields_total") is not None
+                    else len(raw_schema_fields)
+                )
+                raw_truncated = value.get("schema_fields_truncated", False)
+                raw_total_exact = value.get("schema_fields_total_exact", True)
+                if not isinstance(raw_truncated, bool) or not isinstance(raw_total_exact, bool):
+                    return None
+                schema_fields_truncated = raw_truncated
+                schema_fields_total_exact = raw_total_exact
+            if (
+                schema_fields_total < len(schema_fields)
+                or (schema_fields_truncated and schema_fields_total <= len(schema_fields))
+                or (schema_fields_truncated and len(schema_fields) != MAX_CATALOG_SCHEMA_FIELDS)
+                or (not schema_fields_truncated and schema_fields_total != len(schema_fields))
+                or (not schema_fields_total_exact and not schema_fields_truncated)
+            ):
+                return None
             quality = dict(value["quality"])
             raw_version = str(value["raw_version"])
             observed_at = datetime.fromisoformat(str(value["observed_at"]))
@@ -1411,4 +1450,7 @@ class CatalogService:
             observed_at=observed_at,
             created_at=created_at,
             description=description,
+            schema_fields_total=schema_fields_total,
+            schema_fields_truncated=schema_fields_truncated,
+            schema_fields_total_exact=schema_fields_total_exact,
         )

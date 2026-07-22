@@ -698,6 +698,7 @@ async def test_authorized_detail_enrichment_uses_scope_versioned_cache() -> None
     assert first.index.description == "governed events"
     assert second.index.description == "governed events"
     assert gateway.calls == 1
+
     assert len(cache.values) == 2
 
     fresh_key = next(key for key in cache.values if ":fresh:" in key)
@@ -855,6 +856,60 @@ async def test_authorized_detail_enrichment_uses_scope_versioned_cache() -> None
             environment=environment,
             request_id="empty-suggestion",
         )
+
+
+def test_legacy_wide_detail_cache_preserves_truncation_evidence() -> None:
+    now = datetime.now(UTC)
+    cached = CatalogService._cached_enrichment(
+        {
+            "schema": 3,
+            "ownership": [],
+            "glossary_terms": [],
+            "tags": [],
+            "schema_fields": [{"fieldPath": f"field_{index}"} for index in range(1_005)],
+            "quality": {},
+            "raw_version": "legacy-wide-v1",
+            "observed_at": now.isoformat(),
+            "created_at": None,
+            "description": None,
+        }
+    )
+
+    assert cached is not None
+    assert len(cached.schema_fields) == 1_000
+    assert cached.schema_fields_total == 1_005
+    assert cached.schema_fields_truncated is True
+    assert cached.schema_fields_total_exact is True
+
+
+@pytest.mark.parametrize(
+    ("total", "truncated", "total_exact"),
+    [(1_001, False, True), (1_000, True, False), (1_000, False, False)],
+)
+def test_current_detail_cache_rejects_inconsistent_schema_field_metadata(
+    total: int, truncated: bool, total_exact: bool
+) -> None:
+    now = datetime.now(UTC)
+
+    cached = CatalogService._cached_enrichment(
+        {
+            "schema": 4,
+            "ownership": [],
+            "glossary_terms": [],
+            "tags": [],
+            "schema_fields": [{"fieldPath": "field_0"}],
+            "schema_fields_total": total,
+            "schema_fields_truncated": truncated,
+            "schema_fields_total_exact": total_exact,
+            "quality": {},
+            "raw_version": "malformed-v1",
+            "observed_at": now.isoformat(),
+            "created_at": None,
+            "description": None,
+        }
+    )
+
+    assert cached is None
 
 
 @pytest.mark.asyncio

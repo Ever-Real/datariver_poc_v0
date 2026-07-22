@@ -12,6 +12,7 @@ interface Branch {
 }
 
 const maximumBranchItems = 200
+const maximumExpandedBranches = 8
 
 function withoutBranchTree(branches: Record<string, Branch>, rootKey: string): Record<string, Branch> {
   const next = { ...branches }
@@ -28,6 +29,22 @@ function withoutBranchTree(branches: Record<string, Branch>, rootKey: string): R
     delete next[key]
   }
   return next
+}
+
+function branchTreeKeys(branches: Record<string, Branch>, rootKey: string): Set<string> {
+  const keys = new Set([rootKey])
+  const pending = [rootKey]
+  while (pending.length > 0) {
+    const key = pending.pop()
+    if (!key) continue
+    for (const node of branches[key]?.items ?? []) {
+      if (branches[node.id] && !keys.has(node.id)) {
+        keys.add(node.id)
+        pending.push(node.id)
+      }
+    }
+  }
+  return keys
 }
 
 function branchKey(node?: CatalogTreeNode): string {
@@ -64,7 +81,9 @@ export function CatalogResourceTree({
   const [loading, setLoading] = useState<Set<string>>(new Set())
   const [error, setError] = useState<unknown>()
   const generation = useRef(0)
-  const controllers = useRef(new Set<AbortController>())
+  const controllers = useRef(new Map<string, AbortController>())
+  const activeBranchKeys = useRef(new Set<string>())
+  const expandedOrder = useRef<string[]>([])
 
   const loadBranch = useCallback(async (
     parent?: CatalogTreeNode,
@@ -72,8 +91,9 @@ export function CatalogResourceTree({
     expectedGeneration = generation.current,
   ) => {
     const key = branchKey(parent)
+    if (controllers.current.has(key)) return
     const controller = new AbortController()
-    controllers.current.add(controller)
+    controllers.current.set(key, controller)
     setLoading((current) => new Set(current).add(key)); setError(undefined)
     try {
       const parameters = new URLSearchParams(parent ? treePath(parent) : 'parent_kind=ROOT&limit=100')
@@ -83,6 +103,7 @@ export function CatalogResourceTree({
         signal: controller.signal,
       })
       if (expectedGeneration !== generation.current) return
+      if (key !== 'ROOT' && !activeBranchKeys.current.has(key)) return
       setBranches((current) => {
         const items = (append ? [...(current[key]?.items ?? []), ...page.items] : page.items)
           .slice(0, maximumBranchItems)
@@ -99,8 +120,8 @@ export function CatalogResourceTree({
     } catch (next) {
       if (!controller.signal.aborted && expectedGeneration === generation.current) setError(next)
     } finally {
-      controllers.current.delete(controller)
-      if (expectedGeneration === generation.current) {
+      if (controllers.current.get(key) === controller) controllers.current.delete(key)
+      if (expectedGeneration === generation.current && !controllers.current.has(key)) {
         setLoading((current) => { const next = new Set(current); next.delete(key); return next })
       }
     }
@@ -112,6 +133,8 @@ export function CatalogResourceTree({
     const currentGeneration = generation.current
     activeControllers.forEach((controller) => controller.abort())
     activeControllers.clear()
+    activeBranchKeys.current.clear()
+    expandedOrder.current = []
     setBranches({}); setExpanded(new Set()); setLoading(new Set()); setError(undefined)
     void loadBranch(undefined, false, currentGeneration)
     return () => {
@@ -128,12 +151,39 @@ export function CatalogResourceTree({
     if (node.kind === 'ASSET') { if (node.asset) onSelectAsset(node.asset.id); return }
     const key = branchKey(node)
     const isExpanded = expanded.has(key)
+    if (isExpanded) {
+      const removed = branchTreeKeys(branches, key)
+      removed.forEach((removedKey) => {
+        activeBranchKeys.current.delete(removedKey)
+        controllers.current.get(removedKey)?.abort()
+        controllers.current.delete(removedKey)
+      })
+      expandedOrder.current = expandedOrder.current.filter((item) => !removed.has(item))
+      setExpanded((current) => new Set([...current].filter((item) => !removed.has(item))))
+      setBranches((current) => withoutBranchTree(current, key))
+      return
+    }
+
+    let evicted: string | undefined
+    if (expandedOrder.current.length >= maximumExpandedBranches) {
+      evicted = expandedOrder.current.shift()
+    }
+    const evictedKeys = evicted ? branchTreeKeys(branches, evicted) : new Set<string>()
+    evictedKeys.forEach((removedKey) => {
+      activeBranchKeys.current.delete(removedKey)
+      controllers.current.get(removedKey)?.abort()
+      controllers.current.delete(removedKey)
+    })
+    expandedOrder.current = expandedOrder.current.filter((item) => !evictedKeys.has(item))
+    activeBranchKeys.current.add(key)
+    expandedOrder.current.push(key)
     setExpanded((current) => {
       const next = new Set(current)
-      if (isExpanded) next.delete(key); else next.add(key)
+      evictedKeys.forEach((removedKey) => next.delete(removedKey))
+      next.add(key)
       return next
     })
-    if (isExpanded) setBranches((current) => withoutBranchTree(current, key))
+    if (evicted) setBranches((current) => withoutBranchTree(current, evicted))
     if (!branches[key]) void loadBranch(node)
   }
 

@@ -8,13 +8,14 @@ from fastapi.testclient import TestClient
 
 from datariver.config import Settings
 from datariver.domain.authz import Action
-from datariver.domain.common import ForbiddenError, ValidationError
+from datariver.domain.common import ConflictError, ForbiddenError, ValidationError
 from datariver.infrastructure.db.session import DatabaseReadiness
 from datariver.infrastructure.observability.metrics import HttpMetrics
 from datariver.interfaces.http.container import AppContainer
 from datariver.interfaces.http.factory import create_app
 from datariver.interfaces.http.routes.admin import (
     _display_configuration,
+    _require_system_configuration_runtime_activation,
     _system_configuration_entries,
     _validate_configuration_submission,
     _validate_system_configuration,
@@ -262,6 +263,7 @@ def test_system_configuration_inventory_is_server_owned_and_redacted() -> None:
     assert any(field.secret for field in by_id["S3_STORAGE"].connection_requirements)
     assert by_id["LLM_CHAT_MODEL"].state == "GOVERNED_PROFILE_REQUIRED"
     assert by_id["GRAFANA_DASHBOARD"].embedding_state == "AVAILABLE"
+    assert all(entry.activation_state == "DEPLOYMENT_MANAGED" for entry in entries)
     assert all(entry.template_yaml == "" for entry in entries)
     assert all(entry.display_yaml == "" for entry in entries)
     assert all("url" not in entry.model_dump() for entry in entries)
@@ -276,6 +278,50 @@ def test_system_configuration_inventory_is_server_owned_and_redacted() -> None:
     assert any("file:/run/secrets/" in entry.template_yaml for entry in development_entries)
     assert all("auth_token" not in entry.template_yaml.lower() for entry in development_entries)
     assert all("api_token" not in entry.template_yaml.lower() for entry in development_entries)
+    assert all(entry.activation_state == "DEPLOYMENT_MANAGED" for entry in development_entries)
+
+    runtime_managed = Settings(
+        **(
+            configured.model_dump()
+            | {
+                "app_env": "development",
+                "system_configuration_runtime_activation_enabled": True,
+            }
+        )
+    )
+    runtime_entries = _system_configuration_entries(runtime_managed)
+    assert (
+        next(entry for entry in runtime_entries if entry.system_id == "POSTGRESQL").activation_state
+        == "DEPLOYMENT_MANAGED"
+    )
+    assert (
+        next(
+            entry for entry in runtime_entries if entry.system_id == "LLM_RERANKER"
+        ).activation_state
+        == "NOT_CONFIGURED"
+    )
+
+
+def test_system_configuration_runtime_activation_fails_closed_by_deployment_mode() -> None:
+    with pytest.raises(ForbiddenError):
+        _require_system_configuration_runtime_activation(settings())
+
+    development = Settings(**(settings().model_dump() | {"app_env": "development"}))
+    with pytest.raises(ConflictError):
+        _require_system_configuration_runtime_activation(development)
+
+    enabled = Settings(
+        **(
+            development.model_dump()
+            | {
+                "system_configuration_runtime_activation_enabled": True,
+                "system_configuration_runtime_workspace_id": (
+                    "00000000-0000-4000-8000-000000000100"
+                ),
+            }
+        )
+    )
+    _require_system_configuration_runtime_activation(enabled)
 
 
 def test_system_configuration_display_removes_nested_secrets_and_submission_rejects_them() -> None:

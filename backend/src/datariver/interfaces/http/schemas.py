@@ -148,6 +148,13 @@ class CatalogAssetResponse(CatalogAssetSummary):
     glossary_terms: list[dict[str, Any]]
     tags: list[str]
     schema_fields: list[dict[str, Any]]
+    schema_fields_total: int = Field(ge=0)
+    schema_fields_available: int = Field(ge=0, le=1_000)
+    schema_fields_truncated: bool
+    schema_fields_total_exact: bool
+    schema_fields_offset: int = Field(ge=0)
+    schema_fields_limit: int = Field(ge=1, le=200)
+    schema_fields_has_more: bool
     quality: dict[str, Any]
     projection_source_version: str
     source_version: str

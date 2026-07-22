@@ -784,7 +784,9 @@ def _system_configuration_entries(
         secret_reference_configured = bool(profile and profile.secret_reference) or bool(
             deployment_secret_configured.get(system_id, False)
         )
-        if system_id in {"POSTGRESQL", "OIDC_IDENTITY"}:
+        if not settings.system_configuration_runtime_activation_enabled:
+            activation_state = "DEPLOYMENT_MANAGED"
+        elif system_id in {"POSTGRESQL", "OIDC_IDENTITY"}:
             activation_state = "DEPLOYMENT_MANAGED"
         elif profile is None and deployment_configured.get(system_id, False):
             activation_state = "DEPLOYMENT_MANAGED"
@@ -846,6 +848,18 @@ def _system_configuration_entries(
             )
         )
     return entries
+
+
+def _require_system_configuration_runtime_activation(settings: Settings) -> None:
+    if settings.app_env != "development":
+        raise ForbiddenError(
+            "Database-backed system configuration activation is available only in development."
+        )
+    if not settings.system_configuration_runtime_activation_enabled:
+        raise ConflictError(
+            "Runtime activation is disabled; deployment environment and secret files are the "
+            "source of truth."
+        )
 
 
 def _service(request: Request) -> AdminAccessService:
@@ -1850,10 +1864,7 @@ async def activate_system_configuration(
     """Select one TEST-passed revision for the next API/worker process startup."""
 
     container = get_container(request)
-    if container.settings.app_env != "development":
-        raise ForbiddenError(
-            "Database-backed system configuration activation is available only in development."
-        )
+    _require_system_configuration_runtime_activation(container.settings)
     if system_id not in _CONFIGURATION_BY_ID:
         raise ValidationError("The system configuration identifier is invalid.")
     if system_id not in _RUNTIME_RESTART_SCOPE:

@@ -10,6 +10,10 @@ import { SystemConfigurationAdmin } from './SystemConfigurationAdmin'
 const initialEntry: SystemConfigurationEntry = {
   system_id: 'DATAHUB_GMS',
   label: 'DataHub GMS',
+  category: 'CATALOG',
+  requirement: 'CORE_CONNECTOR',
+  description: 'Catalog metadata API.',
+  connection_requirements: [],
   state: 'NOT_CONFIGURED',
   management_plane: 'DEVELOPMENT_DATABASE',
   secret_reference_configured: false,
@@ -165,7 +169,7 @@ describe('SystemConfigurationAdmin', () => {
       '/admin/system-configuration/DATAHUB_GMS/activate',
       expect.objectContaining({ method: 'POST', ifMatch: '"1"' }),
     ))
-    expect(await screen.findByText(/API와 이 연결을 사용하는 Worker를 재시작하세요/))
+    expect(await screen.findByText(/API와 관련 Worker를 재시작해야 합니다/))
       .toBeInTheDocument()
   })
 
@@ -206,5 +210,41 @@ describe('SystemConfigurationAdmin', () => {
     fireEvent.click(screen.getByRole('tab', { name: 'Reranker' }))
     expect(screen.getByRole('tab', { name: 'Reranker' })).toHaveAttribute('aria-selected', 'true')
     expect(screen.getByRole('heading', { name: 'LLM · Reranker' })).toBeInTheDocument()
+  })
+
+  it('keeps deployment-managed connectors visible but prevents database activation', async () => {
+    const deploymentManaged: SystemConfigurationEntry = {
+      ...savedEntry,
+      system_id: 'REDIS_DELIVERY',
+      label: 'Redis Delivery',
+      category: 'PLATFORM',
+      requirement: 'CORE_CONNECTOR',
+      restart_scope: 'WORKERS_ONLY',
+      activation_state: 'DEPLOYMENT_MANAGED',
+    }
+    const api = new AdminApi({
+      request: vi.fn((path: string) => {
+        if (path === '/admin/system-configuration') return Promise.resolve({ items: [deploymentManaged] })
+        throw new Error(`unexpected request: ${path}`)
+      }),
+      requestWithMeta: vi.fn(),
+    } as unknown as Pick<ApiClient, 'request' | 'requestWithMeta'>)
+    const context: AdminReadContext = {
+      subject_id: 'administrator', workspace_id: 'workspace-one', display_name: 'Administrator',
+      authentication_assurance: 'HARDWARE_WEBAUTHN', fallback_enabled: false,
+      allowed_operations: ['SYSTEM_CONFIGURATION_READ', 'SYSTEM_CONFIGURATION_UPDATE', 'SYSTEM_CONFIGURATION_ACTIVATE'],
+      action_vocabulary: [],
+    }
+
+    render(<SystemConfigurationAdmin
+      api={api} context={context} messages={getAdminMessages('ko')}
+      requestConfirmation={vi.fn()} keyFor={vi.fn(() => 'unused')} clearKey={vi.fn()}
+      reportError={vi.fn()} onStepUp={vi.fn(() => Promise.resolve())}
+      onPasswordReauth={vi.fn(() => Promise.resolve())} onEnroll={vi.fn(() => Promise.resolve())}
+    />)
+
+    expect(await screen.findByText('배포 환경·secret 관리')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'ACTIVATE' })).toBeDisabled()
+    expect(screen.getByText(/배포 환경 변수와 secret 파일을 기준/)).toBeInTheDocument()
   })
 })

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import base64
 import hashlib
 import json
 import secrets
@@ -37,7 +38,12 @@ def _parser() -> argparse.ArgumentParser:
 
 def _endpoint(value: str) -> str:
     parsed = urlparse(value)
-    if parsed.scheme not in {"http", "https"} or not parsed.hostname or parsed.username:
+    if (
+        parsed.scheme not in {"http", "https"}
+        or not parsed.hostname
+        or parsed.username is not None
+        or parsed.password is not None
+    ):
         raise ValueError("S3 endpoints must be credential-free absolute HTTP(S) origins.")
     if parsed.path not in {"", "/"} or parsed.query or parsed.fragment:
         raise ValueError("S3 endpoints must not contain a path, query or fragment.")
@@ -88,9 +94,14 @@ def _object_bytes(client: S3Client, *, bucket: str, key: str) -> bytes:
         body.close()
 
 
+def _header_tokens(value: str) -> set[str]:
+    return {token.strip().casefold() for token in value.split(",") if token.strip()}
+
+
 def probe(
     *,
     client: S3Client,
+    public_client: S3Client,
     public_endpoint: str,
     quarantine_bucket: str,
     accepted_bucket: str,
@@ -102,54 +113,20 @@ def probe(
 
     run_id = secrets.token_hex(12)
     prefix = f"datariver-contract-probe/{run_id}"
-    presigned_key = f"{prefix}/presigned.bin"
     multipart_key = f"{prefix}/multipart.bin"
     copied_key = f"{prefix}/copied.bin"
     cleanup = (
-        (quarantine_bucket, presigned_key),
         (quarantine_bucket, multipart_key),
         (accepted_bucket, copied_key),
     )
     cleanup_errors: list[str] = []
+    primary_error: BaseException | None = None
     try:
-        anonymous_status, _ = _http(
-            Request(  # noqa: S310 - public_origin is validated by _endpoint
-                f"{public_origin}/{quote(accepted_bucket, safe='')}", method="HEAD"
-            )
-        )
-        if anonymous_status not in {401, 403}:
-            raise RuntimeError(f"Anonymous bucket access was not denied: HTTP {anonymous_status}")
-
-        presigned_value = b"datariver-presigned-contract-probe-v1"
-        presigned_sha256 = hashlib.sha256(presigned_value).hexdigest()
-        presigned_url = client.generate_presigned_url(
-            "put_object",
-            Params={
-                "Bucket": quarantine_bucket,
-                "Key": presigned_key,
-                "ContentType": "application/octet-stream",
-                "Metadata": {"sha256": presigned_sha256},
-            },
-            ExpiresIn=60,
-        )
-        presigned_status, _ = _http(
-            Request(  # noqa: S310 - boto3 generated from the validated endpoint
-                presigned_url,
-                data=presigned_value,
-                method="PUT",
-                headers={
-                    "Content-Type": "application/octet-stream",
-                    "x-amz-meta-sha256": presigned_sha256,
-                },
-            )
-        )
-        if presigned_status not in {200, 204}:
-            raise RuntimeError(f"Presigned PUT failed: HTTP {presigned_status}")
-        if _object_bytes(client, bucket=quarantine_bucket, key=presigned_key) != presigned_value:
-            raise RuntimeError("Presigned PUT read-back mismatch.")
-
         multipart_value = b"m" * (5 * 1024 * 1024 + 17)
         multipart_sha256 = hashlib.sha256(multipart_value).hexdigest()
+        multipart_checksum = base64.b64encode(hashlib.sha256(multipart_value).digest()).decode(
+            "ascii"
+        )
         initiated = client.create_multipart_upload(
             Bucket=quarantine_bucket,
             Key=multipart_key,
@@ -158,28 +135,69 @@ def probe(
         )
         upload_id = str(initiated["UploadId"])
         try:
-            part = client.upload_part(
-                Bucket=quarantine_bucket,
-                Key=multipart_key,
-                PartNumber=1,
-                UploadId=upload_id,
-                Body=multipart_value,
+            presigned_url = public_client.generate_presigned_url(
+                "upload_part",
+                Params={
+                    "Bucket": quarantine_bucket,
+                    "Key": multipart_key,
+                    "UploadId": upload_id,
+                    "PartNumber": 1,
+                    "ChecksumSHA256": multipart_checksum,
+                },
+                ExpiresIn=60,
+                HttpMethod="PUT",
             )
+            presigned_status, presigned_headers = _http(
+                Request(  # noqa: S310 - boto3 generated from the validated public endpoint
+                    presigned_url,
+                    data=multipart_value,
+                    method="PUT",
+                    headers={"x-amz-checksum-sha256": multipart_checksum},
+                )
+            )
+            if presigned_status not in {200, 204}:
+                raise RuntimeError(f"Presigned multipart PUT failed: HTTP {presigned_status}")
+            etag = presigned_headers.get("etag")
+            if not etag:
+                raise RuntimeError("Presigned multipart PUT returned no ETag.")
             client.complete_multipart_upload(
                 Bucket=quarantine_bucket,
                 Key=multipart_key,
                 UploadId=upload_id,
-                MultipartUpload={"Parts": [{"ETag": str(part["ETag"]), "PartNumber": 1}]},
+                MultipartUpload={
+                    "Parts": [
+                        {
+                            "ETag": etag,
+                            "PartNumber": 1,
+                            "ChecksumSHA256": multipart_checksum,
+                        }
+                    ]
+                },
             )
-        except Exception:
-            client.abort_multipart_upload(
-                Bucket=quarantine_bucket,
-                Key=multipart_key,
-                UploadId=upload_id,
-            )
+        except Exception as error:
+            try:
+                client.abort_multipart_upload(
+                    Bucket=quarantine_bucket,
+                    Key=multipart_key,
+                    UploadId=upload_id,
+                )
+            except Exception as abort_error:  # pragma: no cover - runtime cleanup evidence
+                error.add_note(f"Multipart abort also failed: {type(abort_error).__name__}")
             raise
         if _object_bytes(client, bucket=quarantine_bucket, key=multipart_key) != multipart_value:
             raise RuntimeError("Multipart upload read-back mismatch.")
+
+        object_url = f"{public_origin}/{quote(quarantine_bucket, safe='')}/{quote(multipart_key)}"
+        for method in ("HEAD", "GET"):
+            anonymous_status, _ = _http(
+                Request(  # noqa: S310 - public_origin is validated by _endpoint
+                    object_url, method=method
+                )
+            )
+            if anonymous_status not in {401, 403}:
+                raise RuntimeError(
+                    f"Anonymous object {method} was not denied: HTTP {anonymous_status}"
+                )
 
         client.copy_object(
             Bucket=accepted_bucket,
@@ -193,26 +211,36 @@ def probe(
 
         cors_status, cors_headers = _http(
             Request(  # noqa: S310 - public_origin is validated by _endpoint
-                f"{public_origin}/{quote(quarantine_bucket, safe='')}/{quote(presigned_key)}",
+                object_url,
                 method="OPTIONS",
                 headers={
                     "Origin": allowed_origin,
                     "Access-Control-Request-Method": "PUT",
-                    "Access-Control-Request-Headers": "content-type,x-amz-meta-sha256",
+                    "Access-Control-Request-Headers": "x-amz-checksum-sha256",
                 },
             )
         )
-        if cors_status != 204 or cors_headers.get("access-control-allow-origin") != allowed_origin:
+        allow_methods = _header_tokens(cors_headers.get("access-control-allow-methods", ""))
+        allow_headers = _header_tokens(cors_headers.get("access-control-allow-headers", ""))
+        if (
+            cors_status != 204
+            or cors_headers.get("access-control-allow-origin") != allowed_origin
+            or "put" not in allow_methods
+            or ("*" not in allow_headers and "x-amz-checksum-sha256" not in allow_headers)
+        ):
             raise RuntimeError("CORS preflight did not return the exact allowed origin.")
 
         return {
-            "anonymous_denied": True,
+            "anonymous_object_get_head_denied": True,
             "authenticated_buckets": 2,
-            "presigned_put_verified": True,
+            "presigned_multipart_part_verified": True,
             "multipart_bytes_verified": len(multipart_value),
             "server_side_copy_verified": True,
             "cors_origin_verified": allowed_origin,
         }
+    except BaseException as error:
+        primary_error = error
+        raise
     finally:
         for bucket, key in cleanup:
             try:
@@ -220,7 +248,11 @@ def probe(
             except Exception as error:  # pragma: no cover - runtime cleanup evidence
                 cleanup_errors.append(f"{bucket}/{key}: {type(error).__name__}")
         if cleanup_errors:
-            raise RuntimeError(f"S3 probe cleanup failed: {', '.join(cleanup_errors)}")
+            detail = f"S3 probe cleanup failed: {', '.join(cleanup_errors)}"
+            if primary_error is not None:
+                primary_error.add_note(detail)
+            else:
+                raise RuntimeError(detail)
 
 
 def main() -> None:
@@ -231,8 +263,15 @@ def main() -> None:
         access_key=_secret(arguments.access_key_file),
         secret_key=_secret(arguments.secret_key_file),
     )
+    public_client = _client(
+        endpoint=arguments.public_endpoint,
+        region=arguments.region,
+        access_key=_secret(arguments.access_key_file),
+        secret_key=_secret(arguments.secret_key_file),
+    )
     result = probe(
         client=client,
+        public_client=public_client,
         public_endpoint=arguments.public_endpoint,
         quarantine_bucket=arguments.quarantine_bucket,
         accepted_bucket=arguments.accepted_bucket,

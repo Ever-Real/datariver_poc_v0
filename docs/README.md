@@ -50,6 +50,8 @@ Current external infrastructure connector decision: [external Redis and S3 conne
 
 Current multi-architecture release decision: [runtime configuration and release bundles](adr/0034-multi-architecture-runtime-configuration-and-release-bundles.md).
 
+Current low-resource client and preparation Chat decision: [bounded client state and preparation Chat provider](adr/0035-bounded-client-state-and-preparation-chat-provider.md).
+
 ## Change control
 
 - Requirements use stable IDs (`FR-*`, `NFR-*`, `SEC-*`).

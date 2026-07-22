@@ -4,6 +4,7 @@ import asyncio
 import json
 import time
 from datetime import UTC, datetime
+from itertools import chain
 from types import MappingProxyType
 from typing import Any, Literal, Protocol
 from urllib.parse import quote
@@ -11,6 +12,7 @@ from urllib.parse import quote
 import httpx
 
 from datariver.application.dto import (
+    MAX_CATALOG_SCHEMA_FIELDS,
     CapabilityStatus,
     DataHubApplyReceipt,
     DataHubAspectSnapshot,
@@ -322,34 +324,48 @@ def _merged_metadata_references(
     return {wrapper: [merged[key] for key in sorted(merged)]}
 
 
-def _schema_fields(entity: dict[str, Any]) -> tuple[dict[str, Any], ...]:
+def _schema_fields(
+    entity: dict[str, Any],
+) -> tuple[tuple[dict[str, Any], ...], int, bool, bool]:
     schema_metadata = entity.get("schemaMetadata")
     schema_document = schema_metadata if isinstance(schema_metadata, dict) else {}
     raw_fields = schema_document.get("fields")
     base_fields = raw_fields if isinstance(raw_fields, list) else []
-    base_by_path = {
-        str(item["fieldPath"]): item
-        for item in base_fields
-        if isinstance(item, dict) and isinstance(item.get("fieldPath"), str) and item["fieldPath"]
-    }
     editable_metadata = entity.get("editableSchemaMetadata")
     editable_document = editable_metadata if isinstance(editable_metadata, dict) else {}
     raw_editable_fields = editable_document.get("editableSchemaFieldInfo")
     editable_fields = raw_editable_fields if isinstance(raw_editable_fields, list) else []
-    editable_by_path = {
-        str(item["fieldPath"]): item
-        for item in editable_fields
-        if isinstance(item, dict) and isinstance(item.get("fieldPath"), str) and item["fieldPath"]
-    }
-    merged_fields: list[dict[str, Any]] = []
+    selected_paths: list[str] = []
     observed_paths: set[str] = set()
-    for raw_field in (*base_fields, *editable_fields):
+    truncated = False
+    for raw_field in chain(base_fields, editable_fields):
         if not isinstance(raw_field, dict):
             continue
         field_path = raw_field.get("fieldPath")
         if not isinstance(field_path, str) or not field_path or field_path in observed_paths:
             continue
+        if len(observed_paths) >= MAX_CATALOG_SCHEMA_FIELDS:
+            truncated = True
+            break
         observed_paths.add(field_path)
+        selected_paths.append(field_path)
+    selected_path_set = set(selected_paths)
+    base_by_path = {
+        str(item["fieldPath"]): item
+        for item in base_fields
+        if isinstance(item, dict)
+        and isinstance(item.get("fieldPath"), str)
+        and item["fieldPath"] in selected_path_set
+    }
+    editable_by_path = {
+        str(item["fieldPath"]): item
+        for item in editable_fields
+        if isinstance(item, dict)
+        and isinstance(item.get("fieldPath"), str)
+        and item["fieldPath"] in selected_path_set
+    }
+    merged_fields: list[dict[str, Any]] = []
+    for field_path in selected_paths:
         base = base_by_path.get(field_path, {})
         editable = editable_by_path.get(field_path, {})
         field: dict[str, Any] = {"fieldPath": field_path}
@@ -379,7 +395,8 @@ def _schema_fields(entity: dict[str, Any]) -> tuple[dict[str, Any], ...]:
             entity="term",
         )
         merged_fields.append(field)
-    return tuple(merged_fields)
+    total = len(observed_paths) + (1 if truncated else 0)
+    return tuple(merged_fields), total, truncated, not truncated
 
 
 def _dataset_quality(value: object) -> dict[str, Any]:
@@ -792,11 +809,17 @@ class HttpDataHubGateway:
         properties = entity.get("properties")
         properties_document = properties if isinstance(properties, dict) else {}
         editable_properties = entity.get("editableProperties")
+        (
+            schema_fields,
+            schema_fields_total,
+            schema_fields_truncated,
+            schema_fields_total_exact,
+        ) = _schema_fields(entity)
         return DataHubAssetEnrichment(
             ownership=owners,
             glossary_terms=glossary,
             tags=tags,
-            schema_fields=_schema_fields(entity),
+            schema_fields=schema_fields,
             quality=_dataset_quality(entity.get("latestFullTableProfile")),
             raw_version=canonical_json_hash(entity),
             observed_at=now,
@@ -805,6 +828,9 @@ class HttpDataHubGateway:
                 properties=properties_document,
                 editable_properties=editable_properties,
             ),
+            schema_fields_total=schema_fields_total,
+            schema_fields_truncated=schema_fields_truncated,
+            schema_fields_total_exact=schema_fields_total_exact,
         )
 
     async def get_lineage(

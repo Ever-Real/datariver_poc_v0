@@ -105,7 +105,10 @@ index="$platform_dir/release-index.tsv"
 marker="$release_root/source-commit.txt"
 bundle="$release_root/datariver-source.bundle"
 
-for required in "$index" "$marker" "$bundle"; do
+for required in \
+  "$index" "$index.sha256" "$marker" "$marker.sha256" \
+  "$bundle" "$bundle.sha256" "$platform_dir/offline-core.compose.yaml" \
+  "$platform_dir/offline-core.compose.yaml.sha256"; do
   [ -f "$required" ] || { echo "Release artifact is missing: $required" >&2; exit 2; }
 done
 
@@ -130,8 +133,69 @@ verify_checksums() {
 
 verify_checksums "$release_root"
 verify_checksums "$platform_dir"
+
+release_flag() {
+  local name=$1 value
+  value=$(awk -F '\t' -v name="$name" \
+    '$1 == "release" && $2 == name { print $3 }' "$index")
+  case "$value" in
+    true|false) printf '%s' "$value" ;;
+    *) echo "Release index has an invalid or missing $name flag." >&2; return 2 ;;
+  esac
+}
+
+include_airflow=$(release_flag include_airflow)
+include_edge=$(release_flag include_edge)
+include_graph=$(release_flag include_graph)
+include_local_connectors=$(release_flag include_local_connectors)
+include_datahub_mac_dev=$(release_flag include_datahub_mac_dev)
+include_observability=$(release_flag include_observability)
+
+require_platform_artifact() {
+  local artifact=$1
+  [ -s "$platform_dir/$artifact" ] || {
+    echo "Selected release artifact is missing: $platform_dir/$artifact" >&2
+    return 2
+  }
+  [ -f "$platform_dir/$artifact.sha256" ] || {
+    echo "Selected release artifact checksum is missing: $platform_dir/$artifact.sha256" >&2
+    return 2
+  }
+}
+
+if [ "$include_airflow" = true ] || [ "$include_edge" = true ] || [ "$include_graph" = true ]; then
+  require_platform_artifact "datariver-optional-$requested_architecture.tar"
+  require_platform_artifact "datariver-optional-$requested_architecture.manifest.tsv"
+fi
+if [ "$include_airflow" = true ]; then
+  require_platform_artifact offline-airflow.compose.yaml
+fi
+if [ "$include_graph" = true ]; then
+  require_platform_artifact offline-graph.compose.yaml
+fi
+if [ "$include_local_connectors" = true ]; then
+  require_platform_artifact "datariver-local-connectors-$requested_architecture.tar"
+  require_platform_artifact "datariver-local-connectors-$requested_architecture.manifest.tsv"
+  require_platform_artifact offline-local-connectors.compose.yaml
+fi
+if [ "$include_observability" = true ]; then
+  require_platform_artifact "datariver-observability-pilot-$requested_architecture.tar"
+  require_platform_artifact "datariver-observability-pilot-$requested_architecture.manifest.tsv"
+fi
+if [ "$include_datahub_mac_dev" = true ]; then
+  require_platform_artifact "datahub-v1.6.0-mac-dev-$requested_architecture.tar"
+  require_platform_artifact "datahub-v1.6.0-mac-dev-$requested_architecture.manifest.tsv"
+  require_platform_artifact datahub-v1.6.0-source.bundle
+fi
 verification_repository=$(mktemp -d "${TMPDIR:-/tmp}/datariver-release-verify.XXXXXX")
-trap 'rm -rf "$verification_repository"' EXIT HUP INT TERM
+manifest_inventory=
+cleanup_verification() {
+  rm -rf "$verification_repository"
+  if [ -n "$manifest_inventory" ]; then
+    rm -f "$manifest_inventory"
+  fi
+}
+trap cleanup_verification EXIT HUP INT TERM
 git init --bare --quiet "$verification_repository"
 git -C "$verification_repository" bundle verify "$bundle" >/dev/null
 
@@ -156,7 +220,9 @@ core_manifest="datariver-core-$requested_architecture.manifest.tsv"
 for required_core in "$platform_dir/$core_archive" "$platform_dir/$core_manifest"; do
   [ -s "$required_core" ] || { echo "Core release artifact is missing: $required_core" >&2; exit 2; }
 done
-for artifact in "$platform_dir"/*.tar "$platform_dir"/*.manifest.tsv; do
+for artifact in \
+  "$platform_dir"/*.tar "$platform_dir"/*.manifest.tsv "$platform_dir"/*.compose.yaml \
+  "$platform_dir"/*.bundle; do
   [ -f "$artifact" ] || continue
   artifact_name=$(basename "$artifact")
   indexed_hash=$(awk -F '\t' -v name="$artifact_name" \
@@ -167,6 +233,24 @@ for artifact in "$platform_dir"/*.tar "$platform_dir"/*.manifest.tsv; do
     exit 2
   }
 done
+while IFS="$(printf '\t')" read -r record artifact_name indexed_hash _extra; do
+  [ "$record" = artifact ] || continue
+  case "$artifact_name" in
+    ''|*/*|*\\*) echo "Invalid indexed artifact name: $artifact_name" >&2; exit 2 ;;
+  esac
+  [ -f "$platform_dir/$artifact_name" ] || {
+    echo "Indexed artifact is missing: $artifact_name" >&2
+    exit 2
+  }
+  [ -f "$platform_dir/$artifact_name.sha256" ] || {
+    echo "Indexed artifact checksum is missing: $artifact_name" >&2
+    exit 2
+  }
+  [ "$(file_sha256 "$platform_dir/$artifact_name")" = "$indexed_hash" ] || {
+    echo "Indexed artifact hash mismatch: $artifact_name" >&2
+    exit 2
+  }
+done <"$index"
 for manifest in "$platform_dir"/*.manifest.tsv; do
   [ -f "$manifest" ] || continue
   awk -F '\t' -v platform="$normalized_platform" '
@@ -188,6 +272,10 @@ if [ -n "$source_dir" ]; then
   }
   [ "$(git -C "$source_dir" rev-parse --verify HEAD)" = "$source_commit" ] || {
     echo "Source checkout does not match release commit $source_commit." >&2
+    exit 2
+  }
+  [ -z "$(git -C "$source_dir" status --porcelain --untracked-files=normal)" ] || {
+    echo "Source checkout is not clean." >&2
     exit 2
   }
   while IFS="$(printf '\t')" read -r record path expected_hash _extra; do
@@ -228,8 +316,9 @@ if [ "$load_images" = true ]; then
     [ -f "$manifest" ] || continue
     tail -n +2 "$manifest" | while IFS="$(printf '\t')" read -r image expected_id _digests expected_platform; do
       [ -n "$image" ] || continue
-      actual_id=$(docker image inspect --format '{{.Id}}' "$image")
-      actual_platform=$(docker image inspect --format '{{.Os}}/{{.Architecture}}' "$image")
+      inspect_image=${image%@sha256:*}
+      actual_id=$(docker image inspect --format '{{.Id}}' "$inspect_image")
+      actual_platform=$(docker image inspect --format '{{.Os}}/{{.Architecture}}' "$inspect_image")
       [ "$actual_id" = "$expected_id" ] || { echo "Loaded image ID mismatch: $image" >&2; exit 2; }
       [ "$actual_platform" = "$expected_platform" ] || { echo "Loaded image platform mismatch: $image" >&2; exit 2; }
       [ "$actual_platform" = "$normalized_platform" ] || { echo "Wrong target image platform: $image" >&2; exit 2; }
@@ -241,13 +330,73 @@ if [ -n "$env_file" ]; then
   [ "$load_images" = true ] || { echo "--env-file requires --load for local image verification." >&2; exit 2; }
   [ -n "$source_dir" ] || { echo "--env-file requires --source-dir." >&2; exit 2; }
   [ -f "$env_file" ] || { echo "Deployment environment file is missing: $env_file" >&2; exit 2; }
-  while IFS= read -r image; do
-    [ -n "$image" ] || continue
-    docker image inspect "$image" >/dev/null
-  done < <(
-    "$source_dir/scripts/compose.sh" --env-file "$env_file" \
-      -f "$source_dir/compose.yaml" -f "$source_dir/compose.identity.yaml" config --images
-  )
+  normalize_image_reference() {
+    local reference=${1%@sha256:*} final_component
+    final_component=${reference##*/}
+    case "$final_component" in
+      *:*) ;;
+      *) reference="$reference:latest" ;;
+    esac
+    printf '%s' "$reference"
+  }
+  manifest_inventory=$(mktemp "${TMPDIR:-/tmp}/datariver-release-images.XXXXXX")
+  for manifest in "$platform_dir"/*.manifest.tsv; do
+    [ -f "$manifest" ] || continue
+    tail -n +2 "$manifest" | while IFS="$(printf '\t')" read -r image expected_id _rest; do
+      [ -n "$image" ] || continue
+      printf '%s\t%s\n' "$(normalize_image_reference "$image")" "$expected_id"
+    done >>"$manifest_inventory"
+  done
+  verify_compose_inventory() {
+    local rendered_images image normalized_image actual_id
+    rendered_images=$("$source_dir/scripts/compose.sh" --env-file "$env_file" "$@" config --images)
+    while IFS= read -r image; do
+      [ -n "$image" ] || continue
+      normalized_image=$(normalize_image_reference "$image")
+      actual_id=$(docker image inspect --format '{{.Id}}' "$normalized_image")
+      awk -F '\t' -v image="$normalized_image" -v image_id="$actual_id" '
+        $1 == image && $2 == image_id { found = 1 }
+        END { if (!found) exit 2 }
+      ' "$manifest_inventory" || {
+        echo "Compose image is absent from the selected release manifests: $normalized_image" >&2
+        return 2
+      }
+    done <<<"$rendered_images"
+  }
+
+  verify_compose_inventory \
+    -f "$source_dir/compose.yaml" -f "$source_dir/compose.identity.yaml" \
+    -f "$platform_dir/offline-core.compose.yaml"
+  if [ "$include_airflow" = true ]; then
+    verify_compose_inventory \
+      -f "$source_dir/compose.yaml" -f "$source_dir/compose.identity.yaml" \
+      -f "$source_dir/compose.airflow.yaml" \
+      -f "$platform_dir/offline-core.compose.yaml" \
+      -f "$platform_dir/offline-airflow.compose.yaml"
+  fi
+  if [ "$include_edge" = true ]; then
+    verify_compose_inventory \
+      -f "$source_dir/compose.yaml" -f "$source_dir/compose.identity.yaml" \
+      -f "$source_dir/compose.gateway.yaml" \
+      -f "$platform_dir/offline-core.compose.yaml"
+  fi
+  if [ "$include_graph" = true ]; then
+    verify_compose_inventory \
+      -f "$source_dir/compose.yaml" -f "$source_dir/compose.identity.yaml" \
+      -f "$source_dir/compose.graph.yaml" \
+      -f "$platform_dir/offline-core.compose.yaml" \
+      -f "$platform_dir/offline-graph.compose.yaml"
+  fi
+  if [ "$include_local_connectors" = true ]; then
+    verify_compose_inventory --profile object-storage \
+      -f "$source_dir/compose.local-connectors.yaml" \
+      -f "$platform_dir/offline-local-connectors.compose.yaml"
+  fi
+  if [ "$include_observability" = true ]; then
+    verify_compose_inventory --profile observability \
+      -f "$source_dir/compose.yaml" -f "$source_dir/aux-compose.yml" \
+      -f "$platform_dir/offline-core.compose.yaml"
+  fi
 fi
 
 printf 'Verified DataRiver release %s for %s at source commit %s.\n' \

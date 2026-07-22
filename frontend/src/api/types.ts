@@ -141,6 +141,13 @@ export interface CatalogAssetDetail extends CatalogAsset {
   glossary_terms: Array<Record<string, unknown>>
   tags: string[]
   schema_fields: Array<Record<string, unknown>>
+  schema_fields_total: number
+  schema_fields_available: number
+  schema_fields_truncated: boolean
+  schema_fields_total_exact: boolean
+  schema_fields_offset: number
+  schema_fields_limit: number
+  schema_fields_has_more: boolean
   quality: Record<string, unknown>
   projection_source_version: string
   source_version: string
@@ -893,8 +900,18 @@ export interface SystemAssigneeUpdateResult {
 }
 
 export interface SystemConfigurationEntry {
-  system_id: 'DATAHUB_GMS' | 'DATAHUB_FRONTEND' | 'AIRFLOW' | 'S3_STORAGE' | 'LLM_CHAT_MODEL' | 'LLM_EMBEDDING' | 'LLM_RERANKER' | 'NEO4J' | 'PROMETHEUS' | 'GRAFANA_DASHBOARD'
+  system_id: 'POSTGRESQL' | 'OIDC_IDENTITY' | 'DATAHUB_GMS' | 'DATAHUB_FRONTEND' | 'AIRFLOW' | 'REDIS_CACHE' | 'REDIS_DELIVERY' | 'S3_STORAGE' | 'LLM_CHAT_MODEL' | 'LLM_EMBEDDING' | 'LLM_RERANKER' | 'NEO4J' | 'PROMETHEUS' | 'GRAFANA_DASHBOARD'
   label: string
+  category: 'PLATFORM' | 'CATALOG' | 'ORCHESTRATION' | 'STORAGE' | 'AI' | 'OBSERVABILITY'
+  requirement: 'BOOTSTRAP_REQUIRED' | 'CORE_CONNECTOR' | 'FEATURE_CONNECTOR'
+  description: string
+  connection_requirements: Array<{
+    key: string
+    label: string
+    required: boolean
+    secret: boolean
+    example: string | null
+  }>
   state: 'CONFIGURED' | 'NOT_CONFIGURED' | 'GOVERNED_PROFILE_REQUIRED'
   management_plane: 'DEVELOPMENT_DATABASE' | 'DEPLOYMENT' | 'GOVERNED_PROVIDER_PROFILE'
   secret_reference_configured: boolean
@@ -905,8 +922,8 @@ export interface SystemConfigurationEntry {
   version: number
   configured_at: string | null
   runtime_supported: boolean
-  restart_scope: 'API_ONLY' | 'API_AND_WORKERS' | 'NOT_IMPLEMENTED'
-  activation_state: 'NOT_CONFIGURED' | 'SAVED_UNTESTED' | 'TEST_NOT_AVAILABLE' | 'TESTED' | 'ACTIVATED_RESTART_REQUIRED' | 'APPLIED_TO_API_PROCESS' | 'RUNTIME_NOT_IMPLEMENTED'
+  restart_scope: 'API_ONLY' | 'WORKERS_ONLY' | 'API_AND_WORKERS' | 'NOT_IMPLEMENTED'
+  activation_state: 'NOT_CONFIGURED' | 'SAVED_UNTESTED' | 'TEST_NOT_AVAILABLE' | 'TESTED' | 'ACTIVATED_RESTART_REQUIRED' | 'APPLIED_TO_API_PROCESS' | 'DEPLOYMENT_MANAGED' | 'RUNTIME_NOT_IMPLEMENTED'
   tested_version: number | null
   test_status: 'AVAILABLE' | 'AUTHENTICATION_REQUIRED' | 'UNAVAILABLE' | null
   tested_at: string | null

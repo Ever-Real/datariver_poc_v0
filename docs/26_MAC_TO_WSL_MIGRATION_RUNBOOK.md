@@ -52,7 +52,8 @@ therefore sets `S3_CORS_MANAGEMENT_MODE=external` and does not call unsupported 
 The storage initializer still authenticates and reconciles all configured buckets.
 
 Run the self-cleaning development contract probe before accepting the endpoint. It verifies
-anonymous denial, authenticated buckets, a presigned PUT, multipart upload, server-side copy,
+anonymous object GET/HEAD denial, authenticated buckets, a public-endpoint presigned multipart
+part with `x-amz-checksum-sha256`, server-side copy,
 full-byte SHA-256 read-back and exact-origin CORS:
 
 ```bash
@@ -68,8 +69,9 @@ uv run python scripts/probe_s3_contract.py \
 
 ## 4. SeaweedFS to MinIO object cutover
 
-Stop API writers, relay and every object/delivery worker. Confirm unpublished outbox rows, stream
-consumer lag and pending counts are zero. Keep SeaweedFS online and read-only for rollback.
+Stop API writers, then allow the relay and every object/delivery worker to drain. Confirm stream
+consumer lag and pending counts are zero, stop the relay/workers, and finally confirm unpublished
+outbox rows are zero. Keep SeaweedFS online and read-only for rollback.
 
 Export one repeatable-read PostgreSQL evidence manifest. The query includes accepted uploads,
 change-request attachments, manual metadata CSVs, knowledge source snapshots and completed catalog
@@ -77,12 +79,14 @@ exports. INITIATED uploads are excluded. Immutable retention archives use their 
 and are deliberately not treated as upload-store objects.
 
 ```bash
-mkdir -p runtime/s3-migration
+umask 077
+install -d -m 0700 runtime/s3-migration
 docker exec -i datariver-next-postgres-1 sh -ec \
   'PGPASSWORD="$(tr -d "\r\n" </run/secrets/postgres_password)" \
    exec psql -XqAt -U datariver_owner -d datariver' \
   < scripts/export_s3_migration_manifest.sql \
   > runtime/s3-migration/seaweed-to-minio.json
+chmod 0600 runtime/s3-migration/seaweed-to-minio.json
 ```
 
 The checked-in SQL is streamed to `psql`; it is not mounted into or persisted by the database
@@ -137,6 +141,10 @@ scripts/compose.sh --env-file .env.mac-development \
   api web outbox-relay upload-worker upload-validation-worker governance-apply-worker
 ```
 
+The Keycloak host-development helper preserves unrelated client attributes and never changes an
+existing user's password. Realm-import credentials apply only when the realm is first created;
+subsequent password recovery or rotation is an explicit identity-administration operation.
+
 Verify readiness, OIDC login/refresh/logout, catalog paging at 25/50/100, a small upload through
 presign/CORS/validation, DataHub read-only behavior and native Ollama chat separately. Keep Airflow,
 APISIX, Neo4j and telemetry stopped unless the current Mac test explicitly requires them.
@@ -169,27 +177,65 @@ Platform directories are immutable; options cannot be appended later. Prefer pul
 pinned connector digests directly on a connected WSL host. Never interpret an artifact-only check
 on Mac as WSL import evidence.
 
-## 7. PostgreSQL and Keycloak logical transfer
+## 7. Final quiesced transfer boundary
 
-After quiescing writers, create custom-format dumps inside the PostgreSQL container. Dump DataRiver
-and Keycloak separately with no source ownership or ACL. Store hashes beside them and transfer the
-directory encrypted:
+Create the final transfer only after the exact cut line: stop API producers; drain relay/workers;
+record stream pending/lag and every canonical work/lease counter at zero; stop relay/workers;
+capture the same fail-closed evidence again; stop Keycloak; then create a **new** object manifest
+and both database dumps without restarting any writer. The earlier SeaweedFS cutover manifest is
+evidence, not the final WSL transfer manifest. Use the checked-in helper so this is an executable
+gate rather than an operator assertion (add `--include-catalog-export` only when that worker was
+enabled):
 
 ```bash
-mkdir -p runtime/migration
+scripts/compose.sh --env-file .env.mac-development \
+  -f compose.yaml -f compose.identity.yaml stop api web
+# Keep relay/workers running until this succeeds; failures identify nonzero DB or stream state.
+scripts/capture_cutover_state.sh \
+  --output-dir runtime/migration/final/pre-stop-cutover-state
+scripts/compose.sh --env-file .env.mac-development \
+  -f compose.yaml -f compose.identity.yaml stop \
+  outbox-relay upload-worker upload-validation-worker governance-apply-worker catalog-export-worker
+scripts/capture_cutover_state.sh \
+  --output-dir runtime/migration/final/cutover-state
+scripts/compose.sh --env-file .env.mac-development \
+  -f compose.yaml -f compose.identity.yaml stop keycloak
+```
+
+Dump DataRiver and Keycloak separately without source ownership. Preserve the DataRiver named-role
+ACL because the restored Alembic revision will not replay its role grants; omit Keycloak ACL.
+Restrictive filesystem permissions must exist before redirection creates any file. Store
+basename-only hashes beside all three final artifacts and transfer the directory encrypted:
+
+```bash
+umask 077
+install -d -m 0700 runtime/migration/final
+docker exec -i datariver-next-postgres-1 sh -ec \
+  'PGPASSWORD="$(tr -d "\r\n" </run/secrets/postgres_password)" \
+   exec psql -XqAt -U datariver_owner -d datariver' \
+  < scripts/export_s3_migration_manifest.sql \
+  > runtime/migration/final/object-manifest.json
 docker exec datariver-next-postgres-1 sh -ec \
   'PGPASSWORD="$(tr -d "\r\n" </run/secrets/postgres_password)" \
    exec pg_dump -Fc --no-owner -U datariver_owner -d datariver' \
-  > runtime/migration/datariver.dump
+  > runtime/migration/final/datariver.dump
 docker exec datariver-next-postgres-1 sh -ec \
   'PGPASSWORD="$(tr -d "\r\n" </run/secrets/keycloak_db_password)" \
    exec pg_dump -Fc --no-owner --no-acl -U keycloak -d keycloak' \
-  > runtime/migration/keycloak.dump
-shasum -a 256 runtime/migration/*.dump > runtime/migration/SHA256SUMS
+  > runtime/migration/final/keycloak.dump
+chmod 0600 runtime/migration/final/{object-manifest.json,datariver.dump,keycloak.dump}
+(cd runtime/migration/final && \
+  shasum -a 256 datariver.dump keycloak.dump object-manifest.json > SHA256SUMS)
+chmod 0600 runtime/migration/final/SHA256SUMS
+pg_restore --list runtime/migration/final/datariver.dump >/dev/null
+pg_restore --list runtime/migration/final/keycloak.dump >/dev/null
 ```
 
-Pause Keycloak during its final dump if preserving live sessions/identity changes is required.
 The generated realm import is bootstrap-only and is not a substitute for the Keycloak database.
+The restored Keycloak database also preserves the hash of the existing `datariver-bootstrap`
+credential. Transfer only the source `keycloak_admin_password` through the approved encrypted
+secret channel so the post-restore reconciliation helper can authenticate; do not copy the whole
+source `secrets/` directory. Target database passwords and connector credentials remain fresh.
 
 ## 8. WSL clean import and restore
 
@@ -209,30 +255,103 @@ Set private DNS/TLS endpoints in `.env.wsl-preparation`. Loopback means the curr
 remote MinIO/DataHub/LLM must never use `localhost`. For a Windows-host endpoint use the reviewed
 `host.docker.internal` bridge only when the service is intentionally host-bound.
 
-Start a new PostgreSQL volume and stop before Keycloak/API. Refuse restore unless both target
-databases are empty. Restore as their target owners, run Alembic, then start identity and core:
+The pilot images currently trust only their base-image/public CA bundle. An endpoint signed by a
+private CA is therefore a blocked target gate until that CA is mounted and configured for each
+selected client container; do not disable TLS verification or copy a CA ad hoc into a running
+container. Publicly trusted HTTPS or an explicitly accepted private-network HTTP development
+endpoint may be used within the existing adapter policy.
+
+For ordinary Chat through an approved private OpenAI-compatible server, set the exact host in
+`INTRANET_OPENAI_COMPATIBLE_ALLOWED_HOSTS`, enable Chat, set its HTTPS `/v1` base URL and model, and
+use `file:/run/secrets/intranet_llm_chat_api_key`. Replace that generated placeholder file through
+the secret channel. Keep Embedding and `KNOWLEDGE_PIPELINE_ENABLED` disabled unless the separately
+required Embedding and Neo4j contracts are selected. A public/SaaS endpoint is outside this
+development adapter's accepted boundary.
+
+The wrapper creates the named connector network before a start operation. Choose one Redis branch:
 
 ```bash
-scripts/compose.sh --env-file .env.wsl-preparation -f compose.yaml up -d --wait postgres
-shasum -a 256 -c /transfer/migration/SHA256SUMS
+# Local, separately composed Redis reference
+scripts/compose.sh --env-file .env.wsl-preparation \
+  -f compose.local-connectors.yaml \
+  -f /transfer/datariver-RELEASE/amd64/offline-local-connectors.compose.yaml \
+  up -d --wait --no-build --pull never redis-cache redis-delivery
+
+# Or external Redis: do not start the services above; set both private redis:// or rediss:// URLs.
+```
+
+The local command assumes `--include-local-connectors` was selected when exporting. On a connected
+target that will pull the pinned digest instead, omit the offline connector override and the
+`--pull never` flag, then capture the resolved image ID before acceptance. A disconnected target
+must not fall back to a registry when the selected archive or override is absent.
+
+Start a new PostgreSQL volume and stop before Keycloak/API. Refuse restore unless both target
+databases have zero non-system tables. Restore each dump in one transaction as its target owner.
+The offline override is required because an image tar restores the verified tag, not a registry
+digest reference:
+
+```bash
+scripts/compose.sh --env-file .env.wsl-preparation \
+  -f compose.yaml \
+  -f /transfer/datariver-RELEASE/amd64/offline-core.compose.yaml \
+  up -d --wait --no-build --pull never postgres
+(cd /transfer/migration && sha256sum -c SHA256SUMS)
+docker exec datariver-next-postgres-1 psql -XAt -U datariver_owner -d datariver \
+  -c "SELECT count(*) FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace WHERE c.relkind IN ('r','p') AND n.nspname NOT IN ('pg_catalog','information_schema');"
+docker exec datariver-next-postgres-1 sh -ec \
+  'PGPASSWORD="$(tr -d "\r\n" </run/secrets/keycloak_db_password)" \
+   exec psql -XAt -U keycloak -d keycloak \
+   -c "SELECT count(*) FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace WHERE c.relkind IN ('\''r'\'','\''p'\'') AND n.nspname NOT IN ('\''pg_catalog'\'','\''information_schema'\'');"'
+# Both commands above must print exactly 0.
 docker exec -i datariver-next-postgres-1 sh -ec \
   'PGPASSWORD="$(tr -d "\r\n" </run/secrets/postgres_password)" \
-   exec pg_restore --exit-on-error --no-owner \
+   exec pg_restore --single-transaction --exit-on-error --no-owner \
    -U datariver_owner -d datariver' < /transfer/migration/datariver.dump
 docker exec -i datariver-next-postgres-1 sh -ec \
   'PGPASSWORD="$(tr -d "\r\n" </run/secrets/keycloak_db_password)" \
-   exec pg_restore --exit-on-error --no-owner --no-acl \
+   exec pg_restore --single-transaction --exit-on-error --no-owner --no-acl \
    -U keycloak -d keycloak' < /transfer/migration/keycloak.dump
 scripts/compose.sh --env-file .env.wsl-preparation \
-  -f compose.yaml -f compose.identity.yaml run --rm migrate
-scripts/compose.sh --env-file .env.wsl-preparation \
-  -f compose.yaml -f compose.identity.yaml up -d --wait keycloak api web
+  -f compose.yaml -f compose.identity.yaml \
+  -f /transfer/datariver-RELEASE/amd64/offline-core.compose.yaml \
+  run --rm --pull never migrate
 ```
 
-Restore S3 objects to the external MinIO with the same manifest/copy tool, using separate target
-credential files when credentials differ. Redis cache is disposable. Delivery stream state is not
-silently copied: cut over only after the source stream is drained, then let the outbox relay replay
-any still-unpublished canonical PostgreSQL events.
+If either restore fails, stop there. Preserve its logs and discard only the explicitly verified
+fresh target `datariver-next_postgres-data` volume before a clean retry; never retry into a
+partially restored database.
+
+Initialize/probe the external MinIO, then copy the final object set from the Mac **MinIO** endpoint
+(not SeaweedFS) using `/transfer/migration/object-manifest.json`. Use distinct source and target
+credential files, run a dry pass, `--apply`, and a second dry pass requiring
+`verified_existing=object_count` and `planned=0`. Do this before API or workers can accept writes.
+
+Start Keycloak alone. Replace the target `keycloak_admin_password` with the securely transferred
+source value first, then reconcile the WSL redirect and the target-generated identity/Airflow
+client secrets. Supply the target Airflow client secret to the external Airflow owner:
+
+```bash
+scripts/compose.sh --env-file .env.wsl-preparation \
+  -f compose.yaml -f compose.identity.yaml \
+  -f /transfer/datariver-RELEASE/amd64/offline-core.compose.yaml \
+  up -d --wait --no-build --pull never keycloak
+DATARIVER_WEB_ORIGIN=http://localhost:8080 scripts/configure_keycloak_host_dev.sh
+```
+
+Verify the public issuer is exactly `http://localhost:8081/realms/datariver`, the API uses the
+private JWKS URL, and both confidential clients authenticate. Only then start API, web, relay and
+selected workers:
+
+```bash
+scripts/compose.sh --env-file .env.wsl-preparation \
+  -f compose.yaml -f compose.identity.yaml \
+  -f /transfer/datariver-RELEASE/amd64/offline-core.compose.yaml \
+  up -d --wait --no-build --pull never \
+  api web outbox-relay upload-worker upload-validation-worker governance-apply-worker
+```
+
+Redis cache is disposable. Delivery stream state is not copied: the source cut line requires it to
+be drained, and canonical PostgreSQL outbox state is checked before the target relay starts.
 
 ## 9. WSL acceptance and rollback
 

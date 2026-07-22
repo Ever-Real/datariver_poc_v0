@@ -34,8 +34,11 @@ describe('AdminPage mutation safety', () => {
       }] }))
       if (url.endsWith('/admin/system-configuration')) return Promise.resolve(json({ items: [{
         system_id: 'GRAFANA_DASHBOARD', label: 'Grafana Dashboard', state: 'CONFIGURED', management_plane: 'DEPLOYMENT',
+        category: 'OBSERVABILITY', requirement: 'FEATURE_CONNECTOR', description: 'Dashboard', connection_requirements: [],
         secret_reference_configured: false, embedding_state: 'DISABLED', configuration_yaml: '',
-        template_yaml: '', display_yaml: '', version: 0, configured_at: null,
+        template_yaml: '', display_yaml: '', version: 0, configured_at: null, runtime_supported: true,
+        restart_scope: 'API_ONLY', activation_state: 'DEPLOYMENT_MANAGED', tested_version: null,
+        test_status: null, tested_at: null, activated_version: null, activated_at: null, applied_version: null,
       }] }))
       if (url.endsWith('/admin/workspace-memberships/target-one/access') && init?.method === 'PUT') {
         return Promise.resolve(json({
