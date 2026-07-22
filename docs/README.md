@@ -26,6 +26,8 @@
 | 21 | [Enterprise UI completion checklist](21_ENTERPRISE_UI_COMPLETION_CHECKLIST.md) | requirement-to-component/API/test traceability for the current UI completion work | Implemented; external gates open |
 | 22 | [Four-menu use cases and architecture review](usecases.md) | Search, Registration, CR and Knowledge use cases, integration gates and proposed ERDs | Step 1 design baseline |
 | 23 | [Catalog DataHub ingestion, metadata and export operation](23_CATALOG_DATAHUB_INGESTION_AND_EXPORT.md) | PostgreSQL/Oracle profile and Created Date limits, description sync, safe export activation | Implemented contract; remote activation gates open |
+| 24 | [Low-resource multi-architecture deployment PRD](24_LOW_RESOURCE_MULTIARCH_DEPLOYMENT_PRD.md) | arm64/amd64 parity, dependency placement, configuration and migration acceptance | Active |
+| 25 | [Low-resource multi-architecture execution checklist](25_LOW_RESOURCE_MULTIARCH_EXECUTION_CHECKLIST.md) | phased implementation and target-environment evidence | Active |
 
 Independent review records: [Data Architect](reviews/2026-07-14_DATA_ARCHITECT_REVIEW.md) and [Data Engineer/SRE](reviews/2026-07-14_DATA_ENGINEER_REVIEW.md).
 
@@ -44,6 +46,8 @@ Current local identity-lifecycle decision: [governed Keycloak identity provision
 Current Linux/WSL source-host scheduling decision: [Airflow loopback bridge](adr/0032-linux-source-host-airflow-loopback-bridge.md).
 
 Current external infrastructure connector decision: [external Redis and S3 connector control plane](adr/0033-external-redis-and-s3-connector-control-plane.md).
+
+Current multi-architecture release decision: [runtime configuration and release bundles](adr/0034-multi-architecture-runtime-configuration-and-release-bundles.md).
 
 ## Change control
 
