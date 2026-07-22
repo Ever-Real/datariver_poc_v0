@@ -335,6 +335,19 @@ def verify_multiarch_release_contract() -> None:
         if fragment not in manifest_query:
             raise AssertionError(f"S3 migration manifest omits required evidence: {fragment}")
 
+    keycloak_host_dev = (ROOT / "scripts" / "configure_keycloak_host_dev.sh").read_text(
+        encoding="utf-8"
+    )
+    for fragment in (
+        'docker exec -i "$container"',
+        'demo_password_file="$root/secrets/keycloak_demo_password"',
+        "set-password",
+        "unset demo_password",
+        "trap '\\''rm -f",
+    ):
+        if fragment not in keycloak_host_dev:
+            raise AssertionError(f"Keycloak host-development sync omits guard: {fragment}")
+
 
 def verify_datahub_release_contract() -> None:
     contracts = tuple(sorted(DATAHUB_CONTRACT_DIRECTORY.glob("datahub-*-images.json")))

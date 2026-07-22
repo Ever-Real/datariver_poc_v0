@@ -112,6 +112,7 @@ when their corresponding external service has passed its contract probe.
 ```bash
 scripts/compose.sh --env-file .env.mac-development \
   -f compose.yaml -f compose.identity.yaml up -d --build --wait postgres keycloak
+DATARIVER_WEB_ORIGIN=http://localhost:38102 scripts/configure_keycloak_host_dev.sh
 scripts/compose.sh --env-file .env.mac-development \
   -f compose.yaml -f compose.identity.yaml run --rm migrate
 scripts/compose.sh --env-file .env.mac-development \
