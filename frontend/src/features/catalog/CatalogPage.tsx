@@ -126,13 +126,13 @@ export function CatalogPage({
   const [query, setQuery] = useState(initialQuery)
   const [filters, setFilters] = useState<Filters>(emptyFilters)
   const [result, setResult] = useState<CatalogSearch>()
-  const [resultPageIndex, setResultPageIndex] = useState<number>()
   const [facets, setFacets] = useState<CatalogFacets>()
   const [suggestions, setSuggestions] = useState<CatalogSuggestion[]>([])
   const [suggestionIndex, setSuggestionIndex] = useState(-1)
   const [filtersOpen, setFiltersOpen] = useState(false)
   const [selectedAssetId, setSelectedAssetId] = useState<string>()
   const [selectionTargetAssetId, setSelectionTargetAssetId] = useState<string>()
+  const [selectionLoading, setSelectionLoading] = useState(false)
   const [detailWidth, setDetailWidth] = useState(550)
   const [cursors, setCursors] = useState<Array<string | undefined>>([undefined])
   const [pageIndex, setPageIndex] = useState(0)
@@ -143,28 +143,38 @@ export function CatalogPage({
   const filterRoot = useRef<HTMLDivElement>(null)
   const workspaceRef = useRef<HTMLDivElement>(null)
   const initialQueryRef = useRef(initialQuery)
+  const skipResultLoadRef = useRef(false)
+  const resultLoadAbortRef = useRef<AbortController | undefined>(undefined)
 
   useEffect(() => {
     if (initialQueryRef.current === initialQuery) return
     initialQueryRef.current = initialQuery
     setDraftQuery(initialQuery); setQuery(initialQuery); setCursors([undefined]); setPageIndex(0)
-    setSelectedAssetId(undefined); setSelectionTargetAssetId(undefined)
+    setSelectedAssetId(undefined); setSelectionTargetAssetId(undefined); setSelectionLoading(false)
   }, [initialQuery])
 
   useEffect(() => {
     const controller = new AbortController()
-    const requestedPageIndex = pageIndex
-    setLoading(true); setError(undefined); setResultPageIndex(undefined)
+    if (skipResultLoadRef.current) {
+      skipResultLoadRef.current = false
+      return () => controller.abort()
+    }
+    resultLoadAbortRef.current?.abort()
+    resultLoadAbortRef.current = controller
+    setLoading(true); setError(undefined)
     void Promise.all([
       loadCatalogWindow(client, query, filters, cursors[pageIndex], pageSize, controller.signal),
       client.request<CatalogFacets>(`/catalog/facets?${searchPath(query, filters, undefined, 30)}`, { signal: controller.signal }),
     ]).then(([nextResult, nextFacets]) => {
       if (!controller.signal.aborted) {
-        setResult(nextResult); setResultPageIndex(requestedPageIndex); setFacets(nextFacets)
+        setResult(nextResult); setFacets(nextFacets)
       }
     }).catch((next: unknown) => { if (!controller.signal.aborted) setError(next) })
       .finally(() => { if (!controller.signal.aborted) setLoading(false) })
-    return () => controller.abort()
+    return () => {
+      controller.abort()
+      if (resultLoadAbortRef.current === controller) resultLoadAbortRef.current = undefined
+    }
   }, [client, cursors, filters, pageIndex, pageSize, query])
 
   useEffect(() => {
@@ -199,7 +209,7 @@ export function CatalogPage({
     const normalized = value.trim()
     if (!validCatalogQuery(normalized)) { setError(new Error('검색어는 비워 두거나 2자 이상 입력하세요.')); return }
     setDraftQuery(normalized); setQuery(normalized); setSuggestions([]); setCursors([undefined]); setPageIndex(0)
-    setSelectedAssetId(undefined); setSelectionTargetAssetId(undefined)
+    setSelectedAssetId(undefined); setSelectionTargetAssetId(undefined); setSelectionLoading(false)
     onQueryChange?.(normalized)
   }
 
@@ -234,7 +244,7 @@ export function CatalogPage({
 
   const updateFilter = (name: keyof Filters, value: string) => {
     setFilters((current) => ({ ...current, [name]: value })); setCursors([undefined]); setPageIndex(0)
-    setSelectedAssetId(undefined); setSelectionTargetAssetId(undefined)
+    setSelectedAssetId(undefined); setSelectionTargetAssetId(undefined); setSelectionLoading(false)
   }
 
   const toggleSearchField = (field: SearchField) => {
@@ -247,54 +257,96 @@ export function CatalogPage({
       return { ...current, searchFields }
     })
     setCursors([undefined]); setPageIndex(0)
-    setSelectedAssetId(undefined); setSelectionTargetAssetId(undefined)
+    setSelectedAssetId(undefined); setSelectionTargetAssetId(undefined); setSelectionLoading(false)
   }
 
   const setAllSearchFields = (checked: boolean) => {
     setFilters((current) => ({ ...current, searchFields: checked ? allSearchFields : [allSearchFields[0]!] }))
     setCursors([undefined]); setPageIndex(0)
-    setSelectedAssetId(undefined); setSelectionTargetAssetId(undefined)
+    setSelectedAssetId(undefined); setSelectionTargetAssetId(undefined); setSelectionLoading(false)
   }
 
   const resetFilters = () => {
     setFilters(emptyFilters)
+    setDraftQuery('')
+    setQuery('')
+    setSuggestions([])
+    setSuggestionIndex(-1)
+    setFiltersOpen(false)
     setCursors([undefined])
     setPageIndex(0)
+    setPageSize(50)
     setSelectedAssetId(undefined)
     setSelectionTargetAssetId(undefined)
+    setSelectionLoading(false)
+    setError(undefined)
+    onQueryChange?.('')
   }
 
   const selectAsset = (assetId: string) => {
     setSelectedAssetId(assetId)
     if (pageSize === 0 || result?.items.some((item) => item.id === assetId)) {
       setSelectionTargetAssetId(undefined)
+      setSelectionLoading(false)
       return
     }
     // Resource Tree and Lineage are independent of the current result page.
-    // Restart the same authorized query from page one, then advance only until
-    // the selected opaque asset id is visible in Search Results.
+    // Resolve the same authorized query off-screen, then switch directly to
+    // the page containing the selected opaque asset id.
+    resultLoadAbortRef.current?.abort()
+    setLoading(false)
     setSelectionTargetAssetId(assetId)
-    setResult(undefined)
-    setResultPageIndex(undefined)
-    setCursors([undefined])
-    setPageIndex(0)
   }
 
   const closeSelectedAsset = () => {
     setSelectedAssetId(undefined)
     setSelectionTargetAssetId(undefined)
+    setSelectionLoading(false)
   }
 
   useEffect(() => {
-    if (!selectionTargetAssetId || !result || loading || resultPageIndex !== pageIndex) return
-    if (result.items.some((item) => item.id === selectionTargetAssetId) || pageSize === 0 || !result.page.next_cursor) {
-      setSelectionTargetAssetId(undefined)
-      return
-    }
-    const nextCursor = result.page.next_cursor
-    setCursors((current) => [...current.slice(0, pageIndex + 1), nextCursor])
-    setPageIndex((current) => current === pageIndex ? current + 1 : current)
-  }, [loading, pageIndex, pageSize, result, resultPageIndex, selectionTargetAssetId])
+    if (!selectionTargetAssetId || pageSize === 0) return
+    const controller = new AbortController()
+    let active = true
+    setSelectionLoading(true)
+    void client.request<CatalogFacets>(`/catalog/facets?${searchPath(query, filters, undefined, 30)}`, { signal: controller.signal })
+      .then((nextFacets) => { if (active && !controller.signal.aborted) setFacets(nextFacets) })
+      .catch(() => undefined)
+    void (async () => {
+      const targetCursors: Array<string | undefined> = [undefined]
+      const visitedCursors = new Set<string>()
+      let cursor: string | undefined
+      let targetPageIndex = 0
+
+      while (!controller.signal.aborted) {
+        const candidate = await loadCatalogWindow(client, query, filters, cursor, pageSize, controller.signal)
+        if (candidate.items.some((item) => item.id === selectionTargetAssetId)) {
+          if (!active) return
+          // The regular result effect would fetch this page again.  The
+          // already resolved window is authoritative for this same query.
+          skipResultLoadRef.current = true
+          setResult(candidate)
+          setCursors(targetCursors)
+          setPageIndex(targetPageIndex)
+          return
+        }
+        const nextCursor = candidate.page.next_cursor
+        if (!nextCursor || visitedCursors.has(nextCursor)) return
+        visitedCursors.add(nextCursor)
+        targetCursors.push(nextCursor)
+        cursor = nextCursor
+        targetPageIndex += 1
+      }
+    })().catch((next: unknown) => {
+      if (active && !controller.signal.aborted) setError(next)
+    }).finally(() => {
+      if (active) {
+        setSelectionLoading(false)
+        setSelectionTargetAssetId(undefined)
+      }
+    })
+    return () => { active = false; controller.abort() }
+  }, [client, filters, pageSize, query, selectionTargetAssetId])
 
   const resizeDetail = (requestedWidth: number) => {
     const measuredWorkspaceWidth = workspaceRef.current?.clientWidth ?? 0
@@ -313,13 +365,14 @@ export function CatalogPage({
     filters.classification,
     filters.lifecycle,
   ].filter(Boolean).length + (filters.searchFields.length === allSearchFields.length ? 0 : 1)
+  const canReset = activeFilterCount > 0 || Boolean(draftQuery || query || selectedAssetId) || pageIndex > 0 || pageSize !== 50
 
   const paginationProps = {
     page: pageIndex + 1,
     pageSize,
     pageSizeOptions: [50, 100, 200, 500, 1000, 0],
-    canPrevious: pageSize !== 0 && pageIndex > 0,
-    canNext: pageSize !== 0 && Boolean(result?.page.next_cursor),
+    canPrevious: !selectionLoading && pageSize !== 0 && pageIndex > 0,
+    canNext: !selectionLoading && pageSize !== 0 && Boolean(result?.page.next_cursor),
     itemCount: result?.items.length,
     onPrevious: () => setPageIndex((current) => Math.max(0, current - 1)),
     onNext: () => {
@@ -328,7 +381,7 @@ export function CatalogPage({
       setPageIndex((current) => current + 1)
     },
     onPageSizeChange: (value: number) => {
-      setPageSize(value); setCursors([undefined]); setPageIndex(0)
+      setPageSize(value); setCursors([undefined]); setPageIndex(0); setSelectionTargetAssetId(undefined); setSelectionLoading(false)
     },
   }
 
@@ -364,7 +417,7 @@ export function CatalogPage({
             <footer><button className="button" onClick={() => setFiltersOpen(false)} type="button">필터 적용</button></footer>
           </div>}
         </div>
-        <button aria-label="검색 조건 초기화" className="button button-secondary catalog-reset-trigger" disabled={activeFilterCount === 0} onClick={resetFilters} type="button"><RotateCcw size={13} />초기화</button>
+        <button aria-label="검색 화면 초기화" className="button button-secondary catalog-reset-trigger" disabled={!canReset} onClick={resetFilters} type="button"><RotateCcw size={13} />초기화</button>
         <CatalogExportControl
           client={client}
           compact
@@ -385,7 +438,8 @@ export function CatalogPage({
     <div className={`catalog-workspace ${selectedAssetId ? 'with-detail' : ''}`} ref={workspaceRef} style={selectedAssetId ? { '--catalog-detail-width': `${detailWidth}px` } as CSSProperties : undefined}>
       <CatalogResourceTree client={client} selectedAssetId={selectedAssetId} onSelectAsset={selectAsset} />
       <section className="catalog-results" aria-label="카탈로그 검색 결과">
-        <header><div><span className="eyebrow">Permission scoped</span><h2>Search Results</h2><span>{result ? `${result.items.length} / ${(result.total ?? result.items.length).toLocaleString()} items` : '0 items'} · ALL keywords · ↔ 좌우 스크롤</span></div><CursorPagination {...paginationProps} compact label="Search Results 상단 페이지 탐색" /></header>
+        <header><div><span className="eyebrow">Permission scoped</span><h2>Search Results</h2><span>{result ? `${result.items.length} / ${(result.total ?? result.items.length).toLocaleString()} items` : '0 items'} · ALL keywords · ↔ 좌우 스크롤</span></div><CursorPagination {...paginationProps} label="Search Results 상단 페이지 탐색" /></header>
+        {selectionLoading && <div className="catalog-selection-loading" role="status"><span className="loader" />선택한 테이블이 있는 페이지를 찾는 중입니다.</div>}
         <DenseDataTable caption="카탈로그 검색 결과" columns={columns} data={result?.items ?? []} getRowId={(item) => item.id} loading={loading} emptyMessage={query ? '검색 조건에 맞는 허용 자산이 없습니다.' : '현재 권한 범위에서 표시할 자산이 없습니다.'} selectedRowId={selectedAssetId} onRowActivate={(item) => selectAsset(item.id)} />
         <p className="catalog-local-table-note">열 정렬은 현재 로드된 {result?.items.length.toLocaleString() ?? 0}건에 적용됩니다.</p>
         <CursorPagination {...paginationProps} />

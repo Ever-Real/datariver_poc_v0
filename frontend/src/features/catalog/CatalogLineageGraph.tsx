@@ -35,9 +35,7 @@ export function CatalogLineageGraph({
     startViewportY: number
     startNodeX?: number
     startNodeY?: number
-    moved: boolean
   } | undefined>(undefined)
-  const suppressSelectionRef = useRef<string | undefined>(undefined)
   const [viewport, setViewport] = useState({ x: 0, y: 0, scale: 1 })
   const [nodeOffsets, setNodeOffsets] = useState<Record<string, { x: number; y: number }>>({})
   const [viewportBounds, setViewportBounds] = useState({ height: 0, width: 0 })
@@ -118,18 +116,18 @@ export function CatalogLineageGraph({
     interactionRef.current = {
       kind: 'PAN', pointerId: event.pointerId, element: event.currentTarget,
       startX: event.clientX, startY: event.clientY,
-      startViewportX: viewport.x, startViewportY: viewport.y, moved: false,
+      startViewportX: viewport.x, startViewportY: viewport.y,
     }
   }
 
   const startNodeDrag = (event: React.PointerEvent<HTMLElement>, nodeId: string) => {
+    if ((event.target as HTMLElement).closest('.catalog-lineage-node-title')) return
     event.currentTarget.setPointerCapture?.(event.pointerId)
     interactionRef.current = {
       kind: 'NODE', pointerId: event.pointerId, nodeId, element: event.currentTarget,
       startX: event.clientX, startY: event.clientY,
       startViewportX: viewport.x, startViewportY: viewport.y,
       startNodeX: nodeOffsets[nodeId]?.x ?? 0, startNodeY: nodeOffsets[nodeId]?.y ?? 0,
-      moved: false,
     }
   }
 
@@ -138,7 +136,6 @@ export function CatalogLineageGraph({
     if (!interaction || interaction.pointerId !== event.pointerId) return
     const deltaX = event.clientX - interaction.startX
     const deltaY = event.clientY - interaction.startY
-    if (Math.abs(deltaX) > 3 || Math.abs(deltaY) > 3) interaction.moved = true
     if (interaction.kind === 'PAN') {
       setViewport((current) => ({ ...current, x: interaction.startViewportX + deltaX, y: interaction.startViewportY + deltaY }))
       return
@@ -157,7 +154,6 @@ export function CatalogLineageGraph({
     const interaction = interactionRef.current
     if (!interaction || interaction.pointerId !== event.pointerId) return
     if (interaction.element.hasPointerCapture?.(event.pointerId)) interaction.element.releasePointerCapture?.(event.pointerId)
-    if (interaction.kind === 'NODE' && interaction.moved && interaction.nodeId) suppressSelectionRef.current = interaction.nodeId
     interactionRef.current = undefined
   }
 
@@ -206,20 +202,16 @@ export function CatalogLineageGraph({
                 onPointerDown={(event) => startNodeDrag(event, node.asset.id)}
                 style={{ left: node.x, top: node.y, width: LINEAGE_NODE_WIDTH, minHeight: LINEAGE_NODE_HEIGHT }}
               >
+                <span className="catalog-lineage-node-role">{LINEAGE_ROLE_LABELS[node.role]}</span>
                 <button
                   aria-label={`${node.asset.name} 선택`}
-                  className="catalog-lineage-node-select"
-                  onClick={() => {
-                    if (suppressSelectionRef.current === node.asset.id) { suppressSelectionRef.current = undefined; return }
-                    onSelectAsset(node.asset.id)
-                  }}
+                  className="catalog-lineage-node-title"
+                  onPointerDown={(event) => event.stopPropagation()}
+                  onClick={() => onSelectAsset(node.asset.id)}
                   title={`${node.asset.name} 상세 정보 열기`}
                   type="button"
-                >
-                  <span className="catalog-lineage-node-role">{LINEAGE_ROLE_LABELS[node.role]}</span>
-                  <strong>{node.asset.name}</strong>
-                  <small>{node.asset.platform ?? 'platform 미지정'} · {node.asset.schema_name ?? node.asset.asset_type}</small>
-                </button>
+                ><strong>{node.asset.name}</strong></button>
+                <small className="catalog-lineage-node-metadata">{node.asset.platform ?? 'platform 미지정'} · {node.asset.schema_name ?? node.asset.asset_type}</small>
               </article>
             ))}
           </div>

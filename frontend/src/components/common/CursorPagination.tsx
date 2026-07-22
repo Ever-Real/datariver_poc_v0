@@ -9,7 +9,6 @@ interface CursorPaginationProps {
   onNext: () => void
   onPageSizeChange: (pageSize: number) => void
   label?: string
-  compact?: boolean
 }
 
 export function CursorPagination({
@@ -23,10 +22,9 @@ export function CursorPagination({
   onNext,
   onPageSizeChange,
   label = '페이지 탐색',
-  compact = false,
 }: CursorPaginationProps) {
   return (
-    <nav className={`cursor-pagination ${compact ? 'cursor-pagination-compact' : ''}`.trim()} aria-label={label}>
+    <nav className="cursor-pagination" aria-label={label}>
       <span className="cursor-pagination-summary">
         {pageSize === 0
           ? `전체 · 현재 ${(itemCount ?? 0).toLocaleString()}건`
@@ -34,7 +32,7 @@ export function CursorPagination({
       </span>
       <label>
         <span>페이지 크기</span>
-        <select aria-label={compact ? `${label} 페이지 크기` : '페이지 크기'} value={pageSize} onChange={(event) => onPageSizeChange(Number(event.target.value))}>
+        <select aria-label="페이지 크기" value={pageSize} onChange={(event) => onPageSizeChange(Number(event.target.value))}>
           {pageSizeOptions.map((option) => <option key={option} value={option}>{option === 0 ? '전체' : option}</option>)}
         </select>
       </label>
