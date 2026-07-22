@@ -57,6 +57,14 @@ def test_source_api_bridge_selects_ipv4_gateway_from_dual_stack_docker_ipam() ->
     assert gateway == "172.17.0.1"
 
 
+def test_source_api_bridge_accepts_docker_compatible_literal_ipam() -> None:
+    module = _module()
+
+    gateway = module.docker_bridge_gateway("[{'Subnet': '172.17.0.0/16', 'Gateway': '172.17.0.1'}]")
+
+    assert gateway == "172.17.0.1"
+
+
 def test_source_api_bridge_rejects_ipam_without_rfc1918_gateway() -> None:
     module = _module()
 

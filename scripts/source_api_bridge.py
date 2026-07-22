@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import ast
 import asyncio
 import ipaddress
 import json
@@ -13,6 +14,7 @@ from collections.abc import Sequence
 LOGGER = logging.getLogger(__name__)
 BUFFER_SIZE = 65_536
 MAXIMUM_CONNECTIONS = 32
+MAXIMUM_DOCKER_IPAM_CONFIG_BYTES = 32_768
 RFC1918_NETWORKS: tuple[ipaddress.IPv4Network, ...] = (
     ipaddress.IPv4Network("10.0.0.0/8"),
     ipaddress.IPv4Network("172.16.0.0/12"),
@@ -47,10 +49,17 @@ def tcp_port(value: str) -> int:
 
 def docker_bridge_gateway(ipam_config_json: str) -> str:
     """Select the first RFC1918 IPv4 gateway from Docker IPAM configuration."""
+    if len(ipam_config_json.encode("utf-8")) > MAXIMUM_DOCKER_IPAM_CONFIG_BYTES:
+        raise ValueError("Docker bridge IPAM configuration exceeds the safety limit")
     try:
         configurations = json.loads(ipam_config_json)
-    except json.JSONDecodeError as error:
-        raise ValueError("Docker bridge IPAM configuration is not JSON") from error
+    except json.JSONDecodeError:
+        try:
+            # Some Docker-compatible CLIs render the inspected list with single-quoted
+            # mapping keys. literal_eval accepts only Python literals, never code.
+            configurations = ast.literal_eval(ipam_config_json)
+        except (MemoryError, RecursionError, SyntaxError, ValueError) as error:
+            raise ValueError("Docker bridge IPAM configuration is not a safe list") from error
     if not isinstance(configurations, list):
         raise ValueError("Docker bridge IPAM configuration must be a list")
     for configuration in configurations:
