@@ -147,6 +147,11 @@ class ManualMetadataSubmissionService:
             request_id=request_id,
         )
         enrichment = await self._datahub.get_asset(asset.external_urn)
+        if enrichment.schema_fields_truncated or not enrichment.schema_fields_total_exact:
+            raise ConflictError(
+                "The provider schema exceeds the safe editable boundary.",
+                details={"code": "SCHEMA_FIELDS_TRUNCATED"},
+            )
         schema = self._schema_fields(enrichment.schema_fields)
         if set(column.field_path for column in normalized.columns) != set(schema):
             raise ConflictError(

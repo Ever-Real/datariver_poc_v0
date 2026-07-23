@@ -29,6 +29,9 @@ from datariver.application.dto import (
     CatalogFacets,
     CatalogPage,
     CatalogSuggestions,
+    CatalogSyncProgress,
+    CatalogSyncReservation,
+    CatalogSyncResult,
     CatalogTreePage,
     CatalogVocabulary,
     ChangeRequestSchemaOverview,
@@ -349,25 +352,76 @@ class DataHubGateway(Protocol):
 
     async def capability(self) -> CapabilityStatus: ...
 
-    async def scan_assets(self, *, offset: int, limit: int) -> DataHubScanPage: ...
+    async def scan_assets(self, *, cursor: str | None, limit: int) -> DataHubScanPage: ...
 
     async def search_vocabulary(self, *, kind: str, query: str, limit: int) -> tuple[str, ...]: ...
 
 
 class CatalogProjectionWriter(Protocol):
+    async def reserve_scan(
+        self,
+        *,
+        workspace_id: UUID,
+        sync_id: UUID,
+        offset: int,
+        idempotency_key: str,
+        request_hash: str,
+        operation: str,
+    ) -> CatalogSyncReservation: ...
+
+    async def release_scan(self) -> None: ...
+
+    async def abandon_scan(
+        self,
+        *,
+        workspace_id: UUID,
+        sync_id: UUID,
+    ) -> None: ...
+
+    async def replay_scan(
+        self,
+        *,
+        workspace_id: UUID,
+        idempotency_key: str,
+        request_hash: str,
+        operation: str,
+    ) -> CatalogSyncResult | None: ...
+
+    async def expected_cursor(
+        self,
+        *,
+        workspace_id: UUID,
+        sync_id: UUID,
+        offset: int,
+    ) -> str | None: ...
+
+    async def scan_progress(
+        self,
+        *,
+        workspace_id: UUID,
+        sync_id: UUID,
+    ) -> CatalogSyncProgress: ...
+
     async def upsert_scan(
         self,
         *,
         workspace_id: UUID,
         sync_id: UUID,
         offset: int,
+        cursor: str | None,
         next_offset: int | None,
+        next_cursor: str | None,
+        total: int,
+        snapshot_consistent: bool,
+        snapshot_evidence_reference: str | None,
+        snapshot_contract_hash: str | None,
+        snapshot_provider_version: str | None,
         items: Sequence[DataHubScanAsset],
         observed_at: datetime,
         idempotency_key: str,
         request_hash: str,
         operation: str,
-    ) -> tuple[int, int]: ...
+    ) -> CatalogSyncResult: ...
 
 
 class Cache(Protocol):

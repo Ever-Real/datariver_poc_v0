@@ -58,6 +58,49 @@ function defaultRequest(path: string, options?: RequestOptions): Promise<unknown
 }
 
 describe('catalog workspace', () => {
+  it('submits the full multi-term query when no autocomplete option is selected', async () => {
+    const request = vi.fn((path: string, options?: RequestOptions): Promise<unknown> => {
+      void options
+      if (path.startsWith('/catalog/suggestions?')) {
+        return Promise.resolve({
+          items: [{
+            id: asset.id,
+            name: asset.name,
+            asset_type: asset.asset_type,
+            platform: asset.platform,
+            database_name: asset.database_name,
+            schema_name: asset.schema_name,
+            matches: asset.matches,
+          }],
+          meta,
+          match_mode: 'ALL',
+        })
+      }
+      return defaultRequest(path)
+    })
+    render(<CatalogPage client={clientWith(request)} />)
+    const input = screen.getByRole('combobox', { name: /데이터셋 이름이나 설명 검색/ })
+    fireEvent.focus(input)
+    fireEvent.change(input, { target: { value: 'wafer yield' } })
+    expect(await screen.findByRole('option', { name: /wafer_events/ })).toBeInTheDocument()
+    expect(input).toHaveAttribute('aria-autocomplete', 'list')
+    fireEvent.keyDown(input, { key: 'End' })
+    expect(input).toHaveAttribute('aria-activedescendant', 'catalog-suggestion-0')
+    fireEvent.keyDown(input, { key: 'Home' })
+    expect(input).toHaveAttribute('aria-activedescendant', 'catalog-suggestion-0')
+    fireEvent.keyDown(input, { key: 'Escape' })
+    expect(input).not.toHaveAttribute('aria-activedescendant')
+    expect(screen.queryByRole('listbox')).not.toBeInTheDocument()
+    fireEvent.change(input, { target: { value: 'wafer yield ' } })
+
+    fireEvent.keyDown(input, { key: 'Enter' })
+
+    await waitFor(() => expect(request.mock.calls.some(([path]) => {
+      if (!String(path).startsWith('/catalog/assets?')) return false
+      return new URL(String(path), 'http://catalog.test').searchParams.get('q') === 'wafer yield'
+    })).toBe(true))
+  })
+
   it('renders dense server results and plain-text ALL keyword fragments', async () => {
     const request = vi.fn(defaultRequest)
     const client = { request } as unknown as ApiClient
@@ -96,6 +139,46 @@ describe('catalog workspace', () => {
     expect(screen.getAllByRole('button', { name: '이전' })).toHaveLength(2)
     expect(screen.getAllByRole('button', { name: '다음' })).toHaveLength(2)
     expect(request.mock.calls.some(([path]) => String(path).includes('10000'))).toBe(false)
+  })
+
+  it('surfaces bounded catalog summary evidence instead of implying completeness', async () => {
+    const bounded = {
+      ...asset,
+      description: 'bounded description',
+      description_truncated: true,
+      tags_truncated: true,
+      terms_truncated: true,
+    }
+    const request = vi.fn((path: string, options?: RequestOptions): Promise<unknown> => {
+      void options
+      if (path.startsWith('/catalog/assets?')) return Promise.resolve({ items: [bounded], page: { limit: 50 }, total: 1, meta, match_mode: 'ALL' })
+      if (path === `/catalog/assets/${bounded.id}`) return Promise.resolve({
+        ...bounded,
+        ownership: [{ owner: { urn: 'urn:li:corpGroup:bounded' } }],
+        ownership_truncated: true,
+        glossary_terms: [{ term: { name: 'raw-provider-term-must-not-win' } }],
+        schema_fields: [],
+        schema_fields_total: 0,
+        schema_fields_available: 0,
+        schema_fields_truncated: false,
+        schema_fields_total_exact: true,
+        schema_fields_offset: 0,
+        schema_fields_limit: 100,
+        schema_fields_has_more: false,
+        quality: {},
+        projection_source_version: 'projection-v1',
+        source_version: 'provider-v1',
+      })
+      return defaultRequest(path)
+    })
+    render(<CatalogPage client={clientWith(request)} />)
+
+    const table = await screen.findByRole('table', { name: '카탈로그 검색 결과' })
+    expect(within(table).getAllByLabelText('일부만 표시')).toHaveLength(3)
+    fireEvent.click(within(table).getByText(bounded.name))
+    const detail = await screen.findByRole('complementary', { name: '카탈로그 상세' })
+    expect(within(detail).getAllByLabelText('일부만 표시')).toHaveLength(4)
+    expect(within(detail).queryByText('raw-provider-term-must-not-win')).not.toBeInTheDocument()
   })
 
   it('keeps every browser page and request within the 100-row server bound', async () => {

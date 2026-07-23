@@ -13,7 +13,7 @@ from sqlalchemy.sql.elements import ClauseElement
 
 from datariver.application.classification_access import static_classification_access_floor
 from datariver.domain.authz import Classification, SubjectAttributes
-from datariver.infrastructure.db.catalog import SqlCatalogIndexReader
+from datariver.infrastructure.db.catalog import SqlCatalogIndexReader, _encode_cursor
 from datariver.infrastructure.db.models.catalog import AssetProjectionModel
 
 
@@ -38,6 +38,20 @@ class _Session:
         return _MappingResult(self._rows)
 
 
+class _ScalarResult:
+    def all(self) -> list[object]:
+        return []
+
+
+class _SearchSession:
+    def __init__(self) -> None:
+        self.statements: list[object] = []
+
+    async def scalars(self, statement: object) -> _ScalarResult:
+        self.statements.append(statement)
+        return _ScalarResult()
+
+
 def _compile_postgresql(statement: ClauseElement) -> str:
     compiler = cast(Any, statement).compile
     dialect = cast(Any, postgresql).dialect()
@@ -45,8 +59,8 @@ def _compile_postgresql(statement: ClauseElement) -> str:
 
 
 @pytest.mark.asyncio
-async def test_facets_normalizes_classification_for_postgresql_union() -> None:
-    """Keep PostgreSQL's UNION type contract explicit for mixed facet columns."""
+async def test_facets_use_one_bounded_grouping_sets_query() -> None:
+    """Keep mixed facet values typed while avoiding seven repeated base scans."""
     workspace_id = uuid4()
     observed_at = datetime(2035, 1, 1, tzinfo=UTC)
     session = _Session(
@@ -116,18 +130,63 @@ async def test_facets_normalizes_classification_for_postgresql_union() -> None:
 
     assert len(session.statements) == 1
     sql = _compile_postgresql(cast(ClauseElement, session.statements[0]))
-    assert "UNION ALL" in sql
-    assert "CAST(catalog.assets_projection.asset_type AS VARCHAR) AS value" in sql
-    assert "CAST(catalog.assets_projection.platform AS VARCHAR) AS value" in sql
-    assert "CAST(catalog.assets_projection.database_name AS VARCHAR) AS value" in sql
-    assert "CAST(catalog.assets_projection.schema_name AS VARCHAR) AS value" in sql
-    assert "CAST(catalog.assets_projection.domain_ref AS VARCHAR) AS value" in sql
-    assert "CAST(catalog.assets_projection.classification AS VARCHAR) AS value" in sql
+    assert "UNION ALL" not in sql
+    assert "GROUPING SETS" in sql
+    assert "row_number() OVER (PARTITION BY" in sql
+    assert "facet_rank <=" in sql
+    for column in (
+        "asset_type",
+        "platform",
+        "database_name",
+        "schema_name",
+        "domain_ref",
+        "classification",
+        "lifecycle",
+    ):
+        assert f"CAST(catalog.assets_projection.{column} AS VARCHAR)" in sql
     assert facets.classifications[0].value == "INTERNAL"
     assert facets.databases[0].value == "manufacturing"
     assert facets.schemas[0].value == "yield"
     assert facets.domains[0].value == "urn:li:domain:semiconductor"
     assert facets.lifecycles[0].value == "ACTIVE"
+
+
+@pytest.mark.asyncio
+async def test_search_uses_only_the_bounded_page_query_and_declares_exactness() -> None:
+    workspace_id = uuid4()
+    subject = SubjectAttributes(
+        subject_id=uuid4(),
+        workspace_id=workspace_id,
+        active=True,
+        department_id=None,
+        groups=frozenset(),
+        job_function=None,
+        clearance=Classification.INTERNAL,
+    )
+    session = _SearchSession()
+    reader = SqlCatalogIndexReader(cast(AsyncSession, session))
+
+    first = await reader.search(
+        subject=subject,
+        access=static_classification_access_floor(),
+        query="",
+        filters={},
+        cursor=None,
+        limit=25,
+    )
+    continuation = await reader.search(
+        subject=subject,
+        access=static_classification_access_floor(),
+        query="",
+        filters={},
+        cursor=_encode_cursor("asset", uuid4()),
+        limit=25,
+    )
+
+    assert len(session.statements) == 2
+    assert first.total == 0
+    assert first.total_exact is True
+    assert continuation.total_exact is False
 
 
 def test_quarantine_review_scope_keeps_workspace_and_tombstone_boundaries() -> None:

@@ -48,11 +48,11 @@ Generated OpenAPI at `/api/v1/openapi.json` is authoritative for implemented pay
 
 | Method/path | Action | Purpose |
 |---|---|---|
-| `GET /catalog/assets?q=&search_fields=&asset_type=&platform=&database=&schema=&domain=&classification=&lifecycle=&cursor=&limit=` | `catalog.search` | ABAC-prefiltered ALL-term local projection search with plain-text match fragments and a bounded `total`; `search_fields` is the fixed `SCHEMA,TABLE,COLUMN,TAG,TERM,DESCRIPTION` vocabulary, and non-empty `q` minimum defaults to 2; cursor is bound to the exact permission/policy/projection/request snapshot |
-| `GET /catalog/facets?q=&search_fields=&asset_type=&platform=&database=&schema=&domain=&classification=&lifecycle=&limit=` | `catalog.search` | permission-prefiltered asset type, platform, database, schema, domain, classification and lifecycle buckets; null source values remain explicit null buckets |
-| `GET /catalog/suggestions?q=&limit=` | `catalog.search` | permission-prefiltered name autocomplete, maximum 20; two-character requests use the bounded prefix path and longer requests may use trigram similarity |
+| `GET /catalog/assets?q=&search_fields=&asset_type=&platform=&database=&schema=&domain=&classification=&lifecycle=&cursor=&limit=` | `catalog.search` | ABAC-prefiltered ALL-term local projection search with plain-text match fragments and bounded `total`; `total_exact=true` only proves an exhaustive first page, otherwise `total` is the page-local lower bound and `next_cursor` is authoritative; each summary returns at most 1,000 description characters, 20 tags and 20 terms (240 characters per value) with explicit truncation flags; `search_fields` is the fixed `SCHEMA,TABLE,COLUMN,TAG,TERM,DESCRIPTION` vocabulary, and non-empty `q` minimum defaults to 2; cursor is bound to the exact permission/policy/projection/request snapshot |
+| `GET /catalog/facets?q=&search_fields=&asset_type=&platform=&database=&schema=&domain=&classification=&lifecycle=&limit=` | `catalog.search` | permission-prefiltered asset type, platform, database, schema, domain, classification and lifecycle buckets computed with the identical search-field predicate and one server-ranked `GROUPING SETS` aggregation; each collection is bounded by `limit`, and null source values remain explicit null buckets |
+| `GET /catalog/suggestions?q=&limit=` | `catalog.search` | permission-prefiltered ALL-term autocomplete over the same fixed Schema/Table/Column/Tag/Term/Description vocabulary as default catalog search, maximum 20; each item returns database/schema context and bounded plain-text `matches`, and the response declares `match_mode=ALL` |
 | `GET /catalog/tree/nodes?q=&parent_kind=ROOT\|PLATFORM\|DATABASE\|SCHEMA&platform=&database=&schema=&cursor=&limit=` | `catalog.search` | lazy canonical Resource Tree branch; authorization-pruned child counts, branch cursor and cache context are bound to the request security/projection snapshot |
-| `GET /catalog/assets/{asset_id}?field_offset=&field_limit=&field_source_version=` | `catalog.read` | authorized local base detail plus typed DataHub enrichment; schema fields are serialized in an offset page (default 100, maximum 200), subsequent pages may bind the first page's source version and fail with 409 if it changes, and the provider projection retains at most 1,000 unique fields; total/total-exact/available/truncated/offset/limit/has-more metadata makes the bound explicit, with `total` representing the proven lower bound when `total_exact=false`; optional `stale_at` marks bounded fallback |
+| `GET /catalog/assets/{asset_id}?field_offset=&field_limit=&field_source_version=` | `catalog.read` | authorized local base detail plus typed DataHub enrichment; detail display metadata is bounded to 10,000 description characters, 100 tags and 100 terms (1,000 characters per value) with explicit truncation flags; schema fields are serialized in an offset page (default 100, maximum 200), subsequent pages may bind the first page's source version and fail with 409 if it changes, and the provider projection retains at most 1,000 unique fields; total/total-exact/available/truncated/offset/limit/has-more metadata makes the bound explicit, with `total` representing the proven lower bound when `total_exact=false`; optional `stale_at` marks bounded fallback |
 | `GET /catalog/assets/{asset_id}/datahub-lineage-embed` | `catalog.read` | after local authorization, return only the server-built exact configured DataHub `/dataset/{encoded-URN}/Lineage` URL or an explicit disabled/not-configured state; never returns a provider token or accepts a browser URL |
 | `POST /catalog/assets/{asset_id}/description-previews` | `catalog.read` + `change.create` | read live `datasetProperties`, preserve every provider field, and return only the typed description diff, source/hash evidence and opaque quoted preview ETag; `Cache-Control: no-store, private` |
 | `POST /catalog/assets/{asset_id}/description-change-requests` | `catalog.read` + `change.create` | require the exact preview `If-Match`, re-read DataHub, share-lock/revalidate the path asset and create one server-classified governed request |
@@ -61,7 +61,8 @@ Generated OpenAPI at `/api/v1/openapi.json` is authoritative for implemented pay
 | `POST /catalog/exports` | `catalog.export` | create an owner-scoped CSV or XLSX job from exact typed search filters and an `Idempotency-Key`; RESTRICTED is denied |
 | `GET /catalog/exports/{export_id}` | `catalog.export` + owner | bounded job/artifact status; never returns bucket, object key or a source cursor |
 | `POST /catalog/exports/{export_id}/download` | `catalog.export` + owner | revalidate current permission/policy/projection and object metadata, then issue a 60-second URL with `Cache-Control: no-store` |
-| `POST /catalog/sync/datahub` | `catalog.sync` | idempotently upsert one fixed-contract DataHub scan page |
+| `GET /catalog/sync/datahub/{sync_id}` | `catalog.sync` | return governed run state, public next-page ordinal, seen/expected counts and the verified-snapshot flag for bounded scheduler resume; never returns the provider cursor |
+| `POST /catalog/sync/datahub` | `catalog.sync` | reserve and idempotently commit one fixed-contract DataHub scroll page; the request carries only the server page ordinal, never a provider cursor; an oversized response adaptively reduces its bounded page size |
 
 Under ADR-0020, the four discovery endpoints and `GET /catalog/assets/{asset_id}` use the same
 standard response schema for an eligible human security administrator's audited
@@ -75,9 +76,20 @@ Search, facet and suggestion metadata identifies the built-in policy version, go
 policy version, authorization generation and committed local `projection_version`. The latter is not a
 DataHub source cursor or proof that a full reconciliation completed. Facet values are textual at the
 HTTP boundary: `classification` uses its enum name, as do `asset_type`, `platform`, database,
-schema, domain and lifecycle values. This
-also keeps PostgreSQL `UNION ALL` aggregation type-consistent. Facet/suggestion `observed_at` is
+schema, domain and lifecycle values. Facet/suggestion `observed_at` is
 nullable when no authorized row contributes a source observation.
+
+Catalog query expansion is bounded to 12 unique whitespace-delimited terms and 120 characters per
+term. Every term must match at least one enabled field. Match evidence uses only
+`NAME|DESCRIPTION|SCHEMA|COLUMN|TAG|TERM`; a long value is split into bounded fragments so every
+declared `matched_term` occurs in the returned plain text. The browser renders text, never
+provider/server HTML.
+
+Every catalog asset summary/detail carries `description_truncated`, `tags_truncated` and
+`terms_truncated`. Each schema field additionally carries type/description/term/tag truncation
+evidence. `false` means the value was complete at that response boundary, not that DataHub contains
+no other Aspect. The local search projection itself stores at most 10,000 description characters,
+100 tags, 100 terms and 1,000 column paths under ADR-0039.
 
 The ordinary MANUAL description contract accepts only `{description}` for preview and
 `{description,title,change_description}` for creation. The browser cannot submit a URN, Aspect name,
@@ -93,7 +105,28 @@ DataHub sync request:
 {"sync_id":"018f47aa-7c2e-7a11-8e54-3b08ef40fc91","offset":0,"limit":100}
 ```
 
-Response carries `upserted,tombstoned,next_offset,total,observed_at`. A single active `sync_id` must start at offset zero and advance in order. The final page tombstones missing DataHub-owned rows; seed-owned rows are excluded. A scheduler never forwards arbitrary GraphQL. DataHub calls use a bounded-concurrency bulkhead and circuit breaker; stale detail fallback is never valid for applying or reconciling a change.
+Response carries
+`upserted,tombstoned,next_offset,total,observed_at,tombstone_status`. `next_offset` is a page ordinal,
+not the opaque DataHub scroll cursor. A single active `sync_id` starts at zero and advances in order;
+the server persists the cursor, first-page total, distinct seen count and snapshot assertion.
+`GET /catalog/sync/datahub/{sync_id}` returns only the governed run state, next public page ordinal,
+seen/expected counts and snapshot-consistency flag; it never exposes the provider cursor. Airflow
+reads this progress before each task attempt, jumps directly to the persisted page and returns
+without replaying an already completed run. The server reserves a workspace reconciliation under
+one transaction-scoped advisory lock before calling DataHub, so different runs cannot fetch
+concurrent snapshots and apply them in reverse order. Identical concurrent idempotency keys replay
+the first committed result after that lock instead of making a second provider request.
+`tombstone_status` is `NOT_FINAL`, `APPLIED`, or
+`SUPPRESSED_UNVERIFIED_SNAPSHOT`. Missing DataHub-owned rows are tombstoned only after terminal,
+stable-total, exact-seen completion and an operator-evidenced PIT configuration under ADR-0040;
+seed-owned rows are always excluded. Cursor expiry abandons the run without deletion. A scheduler
+never forwards arbitrary GraphQL. A bounded DataHub response overflow halves the page size down to
+one entity while retaining the same server-owned cursor. Queue, version probe, GraphQL and adaptive
+attempts share a fixed 10-second reservation budget below the runtime database's 15-second statement
+and 30-second idle-transaction timeouts; budget expiry rolls back and is retryable. Other
+non-retryable failures abandon a continuation without deletion. DataHub calls use a
+bounded-concurrency bulkhead and circuit breaker; stale detail fallback is never valid for applying
+or reconciling a change.
 
 ### Upload and registration
 
@@ -111,7 +144,7 @@ Response carries `upserted,tombstoned,next_offset,total,observed_at`. A single a
 | `POST /uploads/{upload_id}/registration-proposals` | `registration.read` + `change.create` + `change.raw.create` | operator/recovery-only raw proposal from an `ACCEPTED` upload; not exposed in the ordinary UI and not accepted as typed-content binding |
 | `POST /registration/manual-submissions` | `catalog.read` + `registration.create` | typed table/field Description, Domain, Tag and Term submission for exactly one current dataset; requires `Idempotency-Key`, validates the current source/schema and creates immutable DB/CSV receipt without exposing storage coordinates |
 | `POST /registration/manual-submissions/apply` | `catalog.sync` service account only | claim at most one durable MANUAL receipt, verify its private CSV hash/shape, typed DataHub apply/read-back and report only opaque processing state; scheduled only by the paused Airflow DAG |
-| `GET /catalog/vocabulary?kind=TAG|TERM|DOMAIN&q=&limit=` | `catalog.search` | bounded suggestions begin with the authorization-pruned synchronized projection; Tag/Term picker opening additionally unions a fixed-contract DataHub `*` browse (at the request limit), while a typed keyword narrows the provider search so unattached and column-only values remain discoverable. An entered query may be one normalized character (unlike general catalog search's two-character minimum); a DataHub failure degrades to the local projection, and new values are typed submission intent, not browser provider writes. |
+| `GET /catalog/vocabulary?kind=TAG|TERM|DOMAIN&q=&limit=` | `catalog.search` | bounded suggestions come only from the authorization-pruned synchronized workspace projection. An entered query may be one normalized character (unlike general catalog search's two-character minimum). Global DataHub vocabulary search is not unioned because its provider contract has no workspace/classification predicate; canonical provider-ref selection remains a governed server-side registration contract. |
 
 Completion does not mean accepted. Durable states are `INITIATED → COMPLETION_QUEUED → COMPLETING → QUARANTINED → VALIDATING → ACCEPTED`, with terminal `REJECTED/ABORTED/EXPIRED`. Workers stream object bytes, compare declared size/SHA-256, apply bounded format rules, copy to the accepted bucket, commit canonical location, then best-effort clean quarantine.
 

@@ -96,11 +96,16 @@ function clientWith(
 describe('RegistrationColumnDescriptionEditor', () => {
   it('filters malformed projection rows and submits only a typed field-path proposal after preview', async () => {
     expect(schemaDescriptionFields([
-      { fieldPath: 'valid', description: 'description' },
+      { fieldPath: 'valid', label: 'Valid logical name', description: 'description' },
       { fieldPath: 'valid', description: 'duplicate' },
       { fieldPath: 2, description: 'invalid' },
       { fieldPath: 'bad-description', description: { nested: true } },
-    ])).toEqual([{ fieldPath: 'valid', description: 'description', dataType: null }])
+    ])).toEqual([{
+      fieldPath: 'valid',
+      logicalName: 'Valid logical name',
+      description: 'description',
+      dataType: null,
+    }])
 
     const request = vi.fn((path: string, options?: RequestOptions): Promise<unknown> => {
       void options

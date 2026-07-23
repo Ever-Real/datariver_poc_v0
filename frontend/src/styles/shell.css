@@ -25,14 +25,19 @@
 .global-search-suggestions { position: absolute; z-index: 80; top: calc(100% + 6px); right: 0; left: 0; overflow: hidden; border: 1px solid var(--line-300); border-radius: var(--radius); color: var(--text-900); background: white; box-shadow: 0 14px 34px rgba(7, 20, 38, .28); }
 .global-search-suggestions > header { min-height: 31px; display: flex; align-items: center; justify-content: space-between; border-bottom: 1px solid var(--line-200); padding: 5px 9px; color: var(--text-500); font-size: 8px; font-weight: 900; letter-spacing: .1em; text-transform: uppercase; background: #f7f8f8; }
 .global-search-suggestions > header small { color: var(--blue-700); font-size: 8px; }
-.global-search-suggestions > button { width: 100%; display: grid; grid-template-columns: 64px minmax(0, 1fr); align-items: center; gap: 8px; border: 0; border-bottom: 1px solid #eef0f2; padding: 7px 9px; color: var(--text-900); text-align: left; background: white; }
-.global-search-suggestions > button:hover, .global-search-suggestions > button:focus-visible { background: var(--blue-100); }
+.global-search-suggestions > div > button { width: 100%; display: grid; grid-template-columns: 64px minmax(0, 1fr); align-items: center; gap: 8px; border: 0; border-bottom: 1px solid #eef0f2; padding: 7px 9px; color: var(--text-900); text-align: left; background: white; }
+.global-search-suggestions > div > button:hover, .global-search-suggestions > div > button:focus-visible, .global-search-suggestions > div > button[aria-selected="true"] { background: var(--blue-100); }
 .global-search-suggestion-type { overflow: hidden; border-radius: var(--radius); padding: 3px 4px; color: white; font-size: 8px; font-weight: 900; text-align: center; text-overflow: ellipsis; white-space: nowrap; background: var(--blue-700); }
-.global-search-suggestions > button > span:last-child { min-width: 0; display: grid; gap: 2px; }
+.global-search-suggestions > div > button > span:last-child { min-width: 0; display: grid; gap: 2px; }
 .global-search-suggestions strong, .global-search-suggestions small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .global-search-suggestions strong { color: var(--blue-700); font-size: 10px; }
 .global-search-suggestions small { color: var(--text-500); font-size: 8px; }
 .global-search-suggestions > p { margin: 0; padding: 18px 10px; color: var(--text-500); text-align: center; font-size: 9px; line-height: 1.5; }
+.global-search-suggestions { max-height: min(480px, calc(100vh - 84px)); overflow-y: auto; }
+.global-search-match-evidence { min-width: 0; display: grid; gap: 3px; margin-top: 3px; }
+.global-search-match-evidence > span { min-width: 0; display: grid; grid-template-columns: 82px minmax(0, 1fr); align-items: center; gap: 4px; }
+.global-search-match-evidence small { overflow: hidden; color: var(--blue-700); font-weight: 800; text-overflow: ellipsis; white-space: nowrap; }
+.global-search-match-evidence > span > span { overflow: hidden; color: var(--text-600); font-size: 8px; text-overflow: ellipsis; white-space: nowrap; }
 .external-system-links { display: flex; align-items: center; gap: 3px; border-left: 1px solid #35495f; padding-left: 7px; }
 .external-system-links a { width: 25px; height: 25px; display: grid; place-items: center; border: 1px solid #3a526a; border-radius: var(--radius); color: #aebfd0; font-size: 8px; font-weight: 900; letter-spacing: -.02em; text-decoration: none; background: #10263f; }
 .external-system-links a:hover, .external-system-links a:focus-visible { border-color: #6ba3c9; color: white; background: var(--blue-700); }

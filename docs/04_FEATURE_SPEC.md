@@ -24,6 +24,10 @@ The shared shell follows the controlled v0.3 parity contract: 56-pixel navy GNB;
   classification-access snapshot, built-in policy version, CSV safety version and projection
   watermark. RESTRICTED is never exportable, including with a Search grant.
 - No catalog read endpoint mutates DataHub.
+- Full reconciliation reserves one workspace page before reading DataHub, keeps provider cursors
+  server-only, resumes Airflow retries from the persisted public page ordinal and reduces an
+  oversized provider response down to a one-entity page. Missing-row deletion remains disabled
+  without accepted point-in-time evidence.
 
 Acceptance: hidden assets do not alter branch counts, autocomplete, facets, cursor sequence or an
 export artifact; response paging does not expose a hidden global total; DataHub credentials and
@@ -42,7 +46,8 @@ field. Existing controlled values remain on one horizontally scrollable badge li
 previous/next controls. A compact far-right `+` opens a small floating search/input surface directly
 below that same input. A user may select a permission-pruned existing-vocabulary suggestion first,
 or add a comma/Enter/Tab-delimited new Tag/Term as governed proposal intent when no suitable value
-exists. A badge exposes its remove action only on hover or keyboard focus. On Save, the server rechecks the active target, source version, schema field set and
+exists. A badge exposes its remove action only on hover or keyboard focus. On Save, the server
+rechecks the active target, source version, complete/non-truncated schema field set and
 `catalog.read` plus `registration.create`, then records immutable typed intent and a server-written
 CSV receipt.  The browser receives only an opaque submission ID, status and serial; it never sees a
 MinIO object key, an Airflow endpoint or a DataHub credential.  The configured InfoSchema bucket is
@@ -87,8 +92,8 @@ height. Existing table intake omits the redundant Platform/Database display; a t
 `requested_change` text field sits between Tags and column addition at table and column level and is
 preserved in immutable intake evidence without replacing metadata Description. Tag/Term follows the same
 single-line scrollable badges, nearby floating input, vocabulary-first and comma-aware proposal
-interaction as Registration: opening `+` unions an authorized bounded projection vocabulary with a
-fixed, bounded DataHub `*` controlled-vocabulary browse; a typed keyword narrows that same adapter
+interaction as Registration: opening `+` reads the authorization-pruned workspace projection only;
+a typed keyword narrows that same projection
 query before a new proposal is offered. Provider failure retains the projection-only result. The column row uses the same eight-track grid as its table row: its
 hierarchy spacer occupies the Schema track, then column item/Type/Description/Term/Tag/requested-change/
 management align with table/Table/Owner/description/Terms/Tags/requested-change/column-addition.

@@ -6,7 +6,7 @@ from typing import Any, cast
 from uuid import uuid4
 
 import pytest
-from sqlalchemy import Table
+from sqlalchemy import CheckConstraint, Table
 
 from datariver.application.classification_access import (
     ClassificationAccessSnapshot,
@@ -17,6 +17,7 @@ from datariver.application.dto import (
     CatalogAssetIndex,
     CatalogFacetBucket,
     CatalogFacets,
+    CatalogMatchFragment,
     CatalogPage,
     CatalogSuggestion,
     CatalogSuggestions,
@@ -51,7 +52,10 @@ from datariver.infrastructure.db.catalog import (
     _match_fragments,
     _query_terms,
 )
-from datariver.infrastructure.db.models.catalog import AssetProjectionModel
+from datariver.infrastructure.db.models.catalog import (
+    AssetProjectionModel,
+    CatalogSyncRunModel,
+)
 from datariver.infrastructure.observability.metrics import HttpMetrics
 
 
@@ -77,6 +81,7 @@ class FakeIndex:
             items=(self.detail.index,),
             next_cursor=None,
             observed_at=self.detail.observed_at,
+            total=1,
         )
 
     async def get_authorized_asset(
@@ -107,6 +112,15 @@ class FakeIndex:
                     name=self.detail.index.name,
                     asset_type=self.detail.index.asset_type,
                     platform=self.detail.index.platform,
+                    database_name=self.detail.index.database_name,
+                    schema_name=self.detail.index.schema_name,
+                    matches=(
+                        CatalogMatchFragment(
+                            field="NAME",
+                            text=self.detail.index.name,
+                            matched_terms=("wafer",),
+                        ),
+                    ),
                 ),
             ),
             observed_at=self.detail.observed_at,
@@ -295,13 +309,13 @@ async def test_catalog_vocabulary_allows_a_single_character_query() -> None:
         request_id="single-character-vocabulary",
     )
 
-    assert vocabulary.items == ("Calibration", "Calibration policy", "Capacity")
+    assert vocabulary.items == ("Calibration",)
     assert index_reader.vocabulary_calls == 1
-    assert gateway.vocabulary_queries == [{"kind": "TERM", "query": "c", "limit": 12}]
+    assert gateway.vocabulary_queries == []
 
 
 @pytest.mark.asyncio
-async def test_catalog_vocabulary_browses_datahub_controlled_values_on_initial_open() -> None:
+async def test_catalog_vocabulary_initial_browse_is_workspace_projection_scoped() -> None:
     now = datetime.now(UTC)
     workspace_id, asset_id = uuid4(), uuid4()
     asset = CatalogAssetIndex(
@@ -356,8 +370,8 @@ async def test_catalog_vocabulary_browses_datahub_controlled_values_on_initial_o
         request_id="initial-vocabulary-browse",
     )
 
-    assert vocabulary.items == ("Business Critical", "Calibration", "Customer")
-    assert gateway.vocabulary_queries == [{"kind": "TAG", "query": "*", "limit": 12}]
+    assert vocabulary.items == ("Calibration",)
+    assert gateway.vocabulary_queries == []
 
 
 @pytest.mark.asyncio
@@ -417,6 +431,7 @@ async def test_catalog_vocabulary_keeps_projection_when_datahub_unavailable() ->
     )
 
     assert vocabulary.items == ("Calibration",)
+    assert gateway.vocabulary_queries == []
 
 
 @pytest.mark.asyncio
@@ -508,7 +523,7 @@ async def test_catalog_detail_allows_typed_datahub_enrichment_for_review_scope()
     index_reader = FakeIndex(local_detail)
     gateway = FakeGateway(
         DataHubAssetEnrichment(
-            ownership=({"owner": "security-admin"},),
+            ownership=({"owner": {"urn": "urn:li:corpUser:security-admin"}},),
             glossary_terms=(),
             tags=(),
             schema_fields=(),
@@ -551,7 +566,7 @@ async def test_catalog_detail_allows_typed_datahub_enrichment_for_review_scope()
     )
 
     assert detail is not None
-    assert detail.ownership == ({"owner": "security-admin"},)
+    assert detail.ownership == ({"owner": {"urn": "urn:li:corpUser:security-admin"}},)
     assert gateway.calls == 1
 
 
@@ -646,7 +661,7 @@ async def test_authorized_detail_enrichment_uses_scope_versioned_cache() -> None
     local = CatalogAssetDetail(index, (), (), (), (), {}, "projection-v1", now)
     gateway = FakeGateway(
         DataHubAssetEnrichment(
-            ownership=({"owner": "yield"},),
+            ownership=({"owner": {"urn": "urn:li:corpGroup:yield"}},),
             glossary_terms=(),
             tags=("trusted",),
             schema_fields=({"fieldPath": "wafer_id"},),
@@ -789,6 +804,7 @@ async def test_authorized_detail_enrichment_uses_scope_versioned_cache() -> None
     )
     assert first_suggestions == second_suggestions
     assert first_suggestions.projection_version == 2
+    assert first_suggestions.items[0].matches[0].matched_terms == ("wafer",)
     assert index_reader.suggestion_calls == 1
 
     first_tree = await service.tree_nodes(
@@ -858,7 +874,7 @@ async def test_authorized_detail_enrichment_uses_scope_versioned_cache() -> None
         )
 
 
-def test_legacy_wide_detail_cache_preserves_truncation_evidence() -> None:
+def test_legacy_detail_cache_is_invalidated_after_logical_name_contract_change() -> None:
     now = datetime.now(UTC)
     cached = CatalogService._cached_enrichment(
         {
@@ -875,11 +891,7 @@ def test_legacy_wide_detail_cache_preserves_truncation_evidence() -> None:
         }
     )
 
-    assert cached is not None
-    assert len(cached.schema_fields) == 1_000
-    assert cached.schema_fields_total == 1_005
-    assert cached.schema_fields_truncated is True
-    assert cached.schema_fields_total_exact is True
+    assert cached is None
 
 
 @pytest.mark.parametrize(
@@ -893,7 +905,7 @@ def test_current_detail_cache_rejects_inconsistent_schema_field_metadata(
 
     cached = CatalogService._cached_enrichment(
         {
-            "schema": 4,
+            "schema": 7,
             "ownership": [],
             "glossary_terms": [],
             "tags": [],
@@ -906,10 +918,39 @@ def test_current_detail_cache_rejects_inconsistent_schema_field_metadata(
             "observed_at": now.isoformat(),
             "created_at": None,
             "description": None,
+            "ownership_truncated": False,
+            "glossary_terms_truncated": False,
+            "tags_truncated": False,
+            "description_truncated": False,
         }
     )
 
     assert cached is None
+
+
+def test_pre_logical_name_detail_cache_is_invalidated() -> None:
+    now = datetime.now(UTC)
+
+    assert (
+        CatalogService._cached_enrichment(
+            {
+                "schema": 4,
+                "ownership": [],
+                "glossary_terms": [],
+                "tags": [],
+                "schema_fields": [{"fieldPath": "field_0", "description": "legacy"}],
+                "schema_fields_total": 1,
+                "schema_fields_truncated": False,
+                "schema_fields_total_exact": True,
+                "quality": {},
+                "raw_version": "pre-label-v1",
+                "observed_at": now.isoformat(),
+                "created_at": None,
+                "description": None,
+            }
+        )
+        is None
+    )
 
 
 @pytest.mark.asyncio
@@ -1017,6 +1058,310 @@ def test_catalog_match_fragments_use_all_normalized_terms_without_html() -> None
     assert "<mark>" in fragments[1].text
 
 
+def test_catalog_cache_match_fragments_fail_closed_on_unbounded_or_unexplained_evidence() -> None:
+    valid = CatalogService._match_fragment_from_document(
+        {"field": "TAG", "text": "tier:gold", "matched_terms": ["gold"]}
+    )
+    assert valid == CatalogMatchFragment(
+        field="TAG",
+        text="tier:gold",
+        matched_terms=("gold",),
+    )
+
+    with pytest.raises(ValueError):
+        CatalogService._match_fragment_from_document(
+            {"field": "RAW", "text": "secret", "matched_terms": ["secret"]}
+        )
+    with pytest.raises(ValueError):
+        CatalogService._match_fragment_from_document(
+            {"field": "TAG", "text": "x" * 241, "matched_terms": ["gold"]}
+        )
+    with pytest.raises(ValueError):
+        CatalogService._match_fragment_from_document(
+            {"field": "TAG", "text": "tier:silver", "matched_terms": ["gold"]}
+        )
+
+
+def test_catalog_asset_cache_rejects_an_unbounded_match_collection() -> None:
+    now = datetime.now(UTC)
+    item = CatalogService._asset_index_document(
+        CatalogAssetIndex(
+            asset_id=uuid4(),
+            workspace_id=uuid4(),
+            external_urn="urn:li:dataset:cache-bound",
+            asset_type="TABLE",
+            name="cache_bound",
+            description=None,
+            platform="postgres",
+            domain_id=None,
+            system_id=None,
+            owner_department_id=None,
+            classification=Classification.PUBLIC,
+            lifecycle="ACTIVE",
+            source_version="v1",
+            observed_at=now,
+        )
+    )
+    item["matches"] = [
+        {"field": "NAME", "text": "cache", "matched_terms": ["cache"]} for _ in range(73)
+    ]
+
+    with pytest.raises(ValueError, match="Invalid cached catalog matches"):
+        CatalogService._asset_index_from_document(item)
+    item["matches"] = []
+    item["name"] = {"not": "a scalar"}
+    with pytest.raises(ValueError, match="Invalid cached catalog asset scalar"):
+        CatalogService._asset_index_from_document(item)
+
+
+def test_catalog_page_cache_rejects_cross_workspace_and_over_limit_documents() -> None:
+    now = datetime.now(UTC)
+    workspace_id = uuid4()
+    index = CatalogAssetIndex(
+        asset_id=uuid4(),
+        workspace_id=workspace_id,
+        external_urn="urn:li:dataset:cache-scope",
+        asset_type="TABLE",
+        name="cache_scope",
+        description=None,
+        platform="postgres",
+        domain_id=None,
+        system_id=None,
+        owner_department_id=None,
+        classification=Classification.PUBLIC,
+        lifecycle="ACTIVE",
+        source_version="v1",
+        observed_at=now,
+    )
+    document = CatalogService._page_document(
+        CatalogPage(items=(index,), next_cursor=None, observed_at=now, total=1)
+    )
+
+    assert CatalogService._cached_page(document, workspace_id=workspace_id, limit=1) is not None
+    foreign_document = dict(document)
+    foreign_item = dict(cast(list[dict[str, object]], document["items"])[0])
+    foreign_item["workspace_id"] = str(uuid4())
+    foreign_document["items"] = [foreign_item]
+    assert (
+        CatalogService._cached_page(
+            foreign_document,
+            workspace_id=workspace_id,
+            limit=1,
+        )
+        is None
+    )
+    oversized_document = dict(document)
+    oversized_document["items"] = [
+        cast(list[dict[str, object]], document["items"])[0],
+        cast(list[dict[str, object]], document["items"])[0],
+    ]
+    oversized_document["total"] = 2
+    assert (
+        CatalogService._cached_page(
+            oversized_document,
+            workspace_id=workspace_id,
+            limit=1,
+        )
+        is None
+    )
+    inconsistent_exact = dict(document)
+    inconsistent_exact["total_exact"] = True
+    inconsistent_exact["next_cursor"] = "next"
+    assert (
+        CatalogService._cached_page(
+            inconsistent_exact,
+            workspace_id=workspace_id,
+            limit=1,
+        )
+        is None
+    )
+
+
+def test_catalog_tree_cache_is_versioned_scoped_and_response_bounded() -> None:
+    workspace_id = uuid4()
+    page = CatalogTreePage(
+        items=(
+            CatalogTreeNode(
+                node_id=uuid4(),
+                kind="PLATFORM",
+                label="postgres",
+                asset_count=3,
+                has_children=True,
+                platform="postgres",
+            ),
+        ),
+        next_cursor=None,
+        observed_at=None,
+    )
+    document = CatalogService._tree_page_document(page, workspace_id=workspace_id)
+
+    assert (
+        CatalogService._cached_tree_page(
+            document,
+            workspace_id=workspace_id,
+            limit=1,
+        )
+        == page
+    )
+    assert (
+        CatalogService._cached_tree_page(
+            document,
+            workspace_id=uuid4(),
+            limit=1,
+        )
+        is None
+    )
+    legacy_document = dict(document)
+    legacy_document["schema"] = 2
+    assert (
+        CatalogService._cached_tree_page(
+            legacy_document,
+            workspace_id=workspace_id,
+            limit=1,
+        )
+        is None
+    )
+    invalid_count = dict(document)
+    invalid_count["items"] = [
+        {**cast(list[dict[str, object]], document["items"])[0], "asset_count": True}
+    ]
+    assert (
+        CatalogService._cached_tree_page(
+            invalid_count,
+            workspace_id=workspace_id,
+            limit=1,
+        )
+        is None
+    )
+    oversized_cursor = dict(document)
+    oversized_cursor["next_cursor"] = "x" * 4_097
+    assert (
+        CatalogService._cached_tree_page(
+            oversized_cursor,
+            workspace_id=workspace_id,
+            limit=1,
+        )
+        is None
+    )
+
+
+def test_catalog_facet_cache_is_versioned_scoped_and_response_bounded() -> None:
+    workspace_id = uuid4()
+    facets = CatalogFacets(
+        asset_types=(CatalogFacetBucket("DATASET", 1),),
+        platforms=(),
+        classifications=(),
+        databases=(),
+        schemas=(),
+        domains=(),
+        lifecycles=(),
+        observed_at=None,
+    )
+    document = CatalogService._facets_document(facets, workspace_id=workspace_id)
+
+    assert CatalogService._cached_facets(document, workspace_id=workspace_id, limit=1) == facets
+    legacy_document = dict(document)
+    legacy_document["schema"] = 2
+    assert (
+        CatalogService._cached_facets(
+            legacy_document,
+            workspace_id=workspace_id,
+            limit=1,
+        )
+        is None
+    )
+    assert (
+        CatalogService._cached_facets(
+            document,
+            workspace_id=uuid4(),
+            limit=1,
+        )
+        is None
+    )
+
+    over_limit = dict(document)
+    over_limit["asset_types"] = [
+        {"value": "DATASET", "count": 1},
+        {"value": "CHART", "count": 1},
+    ]
+    assert (
+        CatalogService._cached_facets(
+            over_limit,
+            workspace_id=workspace_id,
+            limit=1,
+        )
+        is None
+    )
+    invalid_count = dict(document)
+    invalid_count["asset_types"] = [{"value": "DATASET", "count": True}]
+    assert (
+        CatalogService._cached_facets(
+            invalid_count,
+            workspace_id=workspace_id,
+            limit=1,
+        )
+        is None
+    )
+
+
+def test_catalog_suggestion_cache_is_scoped_and_response_bounded() -> None:
+    workspace_id = uuid4()
+    suggestions = CatalogSuggestions(
+        items=(
+            CatalogSuggestion(
+                asset_id=uuid4(),
+                name="orders",
+                asset_type="DATASET",
+                platform="postgres",
+                database_name="warehouse",
+                schema_name="public",
+            ),
+        ),
+        observed_at=None,
+    )
+    document = CatalogService._suggestions_document(
+        suggestions,
+        workspace_id=workspace_id,
+    )
+
+    assert (
+        CatalogService._cached_suggestions(
+            document,
+            workspace_id=workspace_id,
+            limit=1,
+        )
+        == suggestions
+    )
+    assert (
+        CatalogService._cached_suggestions(
+            document,
+            workspace_id=uuid4(),
+            limit=1,
+        )
+        is None
+    )
+    legacy_document = dict(document)
+    legacy_document["schema"] = 2
+    assert (
+        CatalogService._cached_suggestions(
+            legacy_document,
+            workspace_id=workspace_id,
+            limit=1,
+        )
+        is None
+    )
+    oversized_name = dict(document)
+    oversized_name["items"] = [{**document["items"][0], "name": "x" * 501}]
+    assert (
+        CatalogService._cached_suggestions(
+            oversized_name,
+            workspace_id=workspace_id,
+            limit=1,
+        )
+        is None
+    )
+
+
 def test_catalog_projection_declares_canonical_hierarchy_and_active_tree_index() -> None:
     table = cast(Table, AssetProjectionModel.__table__)
 
@@ -1040,6 +1385,44 @@ def test_catalog_projection_declares_canonical_hierarchy_and_active_tree_index()
         "name",
         "id",
     ]
+    check_names = {
+        constraint.name
+        for constraint in table.constraints
+        if isinstance(constraint, CheckConstraint)
+    }
+    assert {
+        "ck_assets_projection_description_bounded",
+        "ck_assets_projection_tags_bounded",
+        "ck_assets_projection_glossary_terms_bounded",
+        "ck_assets_projection_column_names_bounded",
+        "ck_assets_projection_tags_string_items",
+        "ck_assets_projection_glossary_terms_string_items",
+        "ck_assets_projection_column_names_string_items",
+        "ck_assets_projection_external_urn_bounded",
+    } <= check_names
+    assert {
+        "description_truncated",
+        "tags_truncated",
+        "glossary_terms_truncated",
+        "column_names_truncated",
+    } <= set(table.columns.keys())
+
+
+def test_catalog_sync_cursor_persistence_is_bounded() -> None:
+    table = cast(Table, CatalogSyncRunModel.__table__)
+    check_names = {
+        constraint.name
+        for constraint in table.constraints
+        if isinstance(constraint, CheckConstraint)
+    }
+
+    assert "ck_sync_runs_next_cursor_bounded" in check_names
+    assert "ck_sync_runs_snapshot_evidence_bounded" in check_names
+    assert {
+        "snapshot_evidence_reference",
+        "snapshot_contract_hash",
+        "snapshot_provider_version",
+    } <= set(table.columns.keys())
 
 
 def test_catalog_cursor_is_bound_to_the_authorized_request_snapshot() -> None:

@@ -13,6 +13,7 @@ const QUOTED_SHA256_ETAG_PATTERN = /^"[0-9a-f]{64}"$/
 
 export interface SchemaDescriptionField {
   fieldPath: string
+  logicalName: string | null
   description: string | null
   dataType: string | null
 }
@@ -26,10 +27,15 @@ export function schemaDescriptionFields(
     const fieldPath = value.fieldPath
     if (typeof fieldPath !== 'string' || !fieldPath || seen.has(fieldPath)) continue
     const description = value.description
+    const logicalName = value.label
     const dataType = value.nativeDataType ?? value.dataType
     if (description !== undefined && description !== null && typeof description !== 'string') continue
+    if (logicalName !== undefined && logicalName !== null && typeof logicalName !== 'string') continue
     values.push({
       fieldPath,
+      logicalName: typeof logicalName === 'string' && logicalName.trim()
+        ? logicalName.trim()
+        : null,
       description: typeof description === 'string' ? description : null,
       dataType: typeof dataType === 'string' ? dataType : null,
     })

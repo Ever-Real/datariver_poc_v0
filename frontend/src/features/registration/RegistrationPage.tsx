@@ -10,6 +10,47 @@ import { RegistrationManualWorkbench } from './RegistrationManualWorkbench'
 
 type RegistrationMode = 'MANUAL' | 'BULK'
 
+export async function loadCompleteAssetDetail(
+  client: ApiClient,
+  assetId: string,
+  signal: AbortSignal,
+): Promise<CatalogAssetDetail> {
+  const first = await client.request<CatalogAssetDetail>(
+    `/catalog/assets/${assetId}?field_offset=0&field_limit=200`,
+    { signal },
+  )
+  const fields = [...first.schema_fields]
+  let page = first
+  while (
+    page.schema_fields_has_more
+    && fields.length < first.schema_fields_available
+  ) {
+    const offset = fields.length
+    page = await client.request<CatalogAssetDetail>(
+      `/catalog/assets/${assetId}?field_offset=${offset}&field_limit=200&field_source_version=${encodeURIComponent(first.source_version)}`,
+      { signal },
+    )
+    if (
+      page.id !== first.id
+      || page.source_version !== first.source_version
+      || page.schema_fields_offset !== offset
+    ) {
+      throw new Error('컬럼 페이지의 원본 버전 또는 위치가 변경되었습니다.')
+    }
+    fields.push(...page.schema_fields)
+  }
+  if (fields.length !== first.schema_fields_available) {
+    throw new Error('전체 컬럼 메타데이터를 검증된 페이지로 불러오지 못했습니다.')
+  }
+  return {
+    ...first,
+    schema_fields: fields,
+    schema_fields_offset: 0,
+    schema_fields_limit: fields.length,
+    schema_fields_has_more: false,
+  }
+}
+
 export function RegistrationPage({ client }: { client: ApiClient }) {
   const [mode, setMode] = useState<RegistrationMode>('MANUAL')
   const [selectedAssetId, setSelectedAssetId] = useState<string>()
@@ -36,7 +77,7 @@ export function RegistrationPage({ client }: { client: ApiClient }) {
     setLoadingDetail(true)
     setSelectedAssetDetail(undefined)
     setDetailError(undefined)
-    void client.request<CatalogAssetDetail>(`/catalog/assets/${selectedAssetId}`, { signal: controller.signal })
+    void loadCompleteAssetDetail(client, selectedAssetId, controller.signal)
       .then((detail) => { if (active) setSelectedAssetDetail(detail) })
       .catch((error: unknown) => {
         if (active && !controller.signal.aborted) setDetailError(error)

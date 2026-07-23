@@ -140,6 +140,10 @@ def build_governance_container(settings: Settings) -> GovernanceWorkerContainer:
             queue_timeout_seconds=settings.datahub_queue_timeout_seconds,
             circuit_failure_threshold=settings.datahub_circuit_failure_threshold,
             circuit_open_seconds=settings.datahub_circuit_open_seconds,
+            catalog_scan_snapshot_consistent=settings.datahub_catalog_pit_verified,
+            catalog_scan_snapshot_evidence_reference=(
+                settings.datahub_catalog_pit_evidence_reference
+            ),
         ),
     )
 

@@ -78,7 +78,11 @@ export function TopNavigation({
         </div>
         <button className="navigation-scroll navigation-scroll-right" type="button" aria-label="다음 메뉴" onClick={() => navigation?.scrollBy({ left: 240, behavior: 'smooth' })}><ChevronRight size={14} /></button>
       </nav>
-      <GlobalCatalogSearch client={client} onSearch={onSearch} />
+      <GlobalCatalogSearch
+        key={workspace || 'workspace-unset'}
+        client={client}
+        onSearch={onSearch}
+      />
       <ExternalSystemLinks links={externalSystemLinks} />
       <ProfileMenu
         displayName={displayName}

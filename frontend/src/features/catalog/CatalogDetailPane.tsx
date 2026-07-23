@@ -42,14 +42,19 @@ function formatObservedValue(value: unknown, unit?: string): string | undefined 
   return undefined
 }
 
-function detailText(value: string | null | undefined) {
-  return value?.trim() ? value : <CatalogEmptyValue />
+function detailText(value: string | null | undefined, truncated = false) {
+  if (!value?.trim()) return <CatalogEmptyValue />
+  return <span>{value}{truncated && <span aria-label="일부만 표시" title="응답 크기 제한으로 일부 내용만 표시됩니다."> …</span>}</span>
 }
 
 function fieldValues(field: Record<string, unknown>, key: 'globalTags' | 'glossaryTerms'): string[] {
   return key === 'globalTags'
     ? referenceValues(field[key], 'tags', 'tag')
     : referenceValues(field[key], 'terms', 'term')
+}
+
+function fieldFlag(field: Record<string, unknown>, key: string): boolean {
+  return field[key] === true
 }
 
 export function CatalogDetailPane({
@@ -210,13 +215,13 @@ export function CatalogDetailPane({
             <div><dt>Database</dt><dd>{detailText(detail.database_name)}</dd></div>
             <div><dt>Schema</dt><dd>{detailText(detail.schema_name)}</dd></div>
             <div><dt>Domain</dt><dd>{detailText(detail.domain)}</dd></div>
-            <div><dt>Owner</dt><dd>{detailText(ownerValues(detail.ownership).join(', ') || detail.owner)}</dd></div>
+            <div><dt>Owner</dt><dd>{detailText(ownerValues(detail.ownership).join(', ') || detail.owner, detail.ownership_truncated)}</dd></div>
             <div><dt>Rows</dt><dd>{detailText(formatObservedValue(detail.quality.rowCount ?? detail.quality.rows))}</dd></div>
             <div><dt>Size</dt><dd>{detailText(formatObservedValue(detail.quality.sizeInBytes ?? detail.quality.size, ' B'))}</dd></div>
             <div><dt>Created Date</dt><dd>{detailText(detail.created_at ? new Date(detail.created_at).toLocaleString() : undefined)}</dd></div>
-            <div className="wide"><dt>Description</dt><dd>{detailText(detail.description)}</dd></div>
-            <div className="metadata-vocabulary"><dt>Terms</dt><dd><BadgeScroller label="테이블 Terms" values={referenceValues({ terms: detail.glossary_terms }, 'terms', 'term').length ? referenceValues({ terms: detail.glossary_terms }, 'terms', 'term') : detail.terms ?? []} /></dd></div>
-            <div className="metadata-vocabulary"><dt>Tags</dt><dd><BadgeScroller label="테이블 Tags" values={detail.tags} /></dd></div>
+            <div className="wide"><dt>Description</dt><dd>{detailText(detail.description, detail.description_truncated)}</dd></div>
+            <div className="metadata-vocabulary"><dt>Terms</dt><dd><BadgeScroller label="테이블 Terms" values={detail.terms ?? []} truncated={detail.terms_truncated} /></dd></div>
+            <div className="metadata-vocabulary"><dt>Tags</dt><dd><BadgeScroller label="테이블 Tags" values={detail.tags} truncated={detail.tags_truncated} /></dd></div>
           </dl>
         </AccordionItem>
         <AccordionItem itemId="columns" title="Column metadata" summary={`${detail.schema_fields_total ?? detail.schema_fields.length} columns`} expanded={expanded.has('columns')} onToggle={() => toggle('columns')}>
@@ -227,7 +232,10 @@ export function CatalogDetailPane({
                 const fieldName = valueOf(field, 'fieldPath', 'name')
                 const type = valueOf(field, 'nativeDataType', 'type')
                 const description = valueOf(field, 'description')
-                return <tr key={`${fieldName ?? 'unknown'}-${index}`}><td>{fieldName ? <TruncatedText value={fieldName} /> : <CatalogEmptyValue />}</td><td>{detailText(type)}</td><td>{description ? <TruncatedText value={description} /> : <CatalogEmptyValue />}</td><td><BadgeScroller label={`${fieldName ?? 'Column'} Terms`} values={fieldValues(field, 'glossaryTerms')} /></td><td><BadgeScroller label={`${fieldName ?? 'Column'} Tags`} values={fieldValues(field, 'globalTags')} /></td></tr>
+                const typeTruncated = field.nativeDataType
+                  ? fieldFlag(field, 'nativeDataType_truncated')
+                  : fieldFlag(field, 'type_truncated')
+                return <tr key={`${fieldName ?? 'unknown'}-${index}`}><td>{fieldName ? <TruncatedText value={fieldName} /> : <CatalogEmptyValue />}</td><td>{detailText(type, typeTruncated)}</td><td>{detailText(description, fieldFlag(field, 'description_truncated'))}</td><td><BadgeScroller label={`${fieldName ?? 'Column'} Terms`} values={fieldValues(field, 'glossaryTerms')} truncated={fieldFlag(field, 'terms_truncated')} /></td><td><BadgeScroller label={`${fieldName ?? 'Column'} Tags`} values={fieldValues(field, 'globalTags')} truncated={fieldFlag(field, 'tags_truncated')} /></td></tr>
               })}</tbody>
             </table>
             {detail.schema_fields.length === 0 && <div className="catalog-detail-state">스키마 필드가 등록되지 않았습니다.</div>}

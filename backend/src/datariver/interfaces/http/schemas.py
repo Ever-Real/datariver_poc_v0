@@ -49,6 +49,9 @@ class CatalogAssetSummary(BaseModel):
     domain: str | None
     tags: list[str] = Field(default_factory=list)
     terms: list[str] = Field(default_factory=list)
+    description_truncated: bool = False
+    tags_truncated: bool = False
+    terms_truncated: bool = False
     created_at: datetime | None
     classification: str
     lifecycle: str
@@ -57,7 +60,7 @@ class CatalogAssetSummary(BaseModel):
 
 
 class CatalogMatchFragmentResponse(BaseModel):
-    field: Literal["NAME", "DESCRIPTION"]
+    field: Literal["NAME", "DESCRIPTION", "SCHEMA", "COLUMN", "TAG", "TERM"]
     text: str
     matched_terms: list[str]
 
@@ -66,6 +69,7 @@ class CatalogSearchResponse(BaseModel):
     items: list[CatalogAssetSummary]
     page: PageMeta
     total: int = Field(ge=0)
+    total_exact: bool
     meta: CatalogPolicyMeta
     match_mode: Literal["ALL"] = "ALL"
 
@@ -99,11 +103,15 @@ class CatalogSuggestionResponse(BaseModel):
     name: str
     asset_type: str
     platform: str | None
+    database_name: str | None
+    schema_name: str | None
+    matches: list[CatalogMatchFragmentResponse] = Field(default_factory=list)
 
 
 class CatalogSuggestionsResponse(BaseModel):
     items: list[CatalogSuggestionResponse]
     meta: CatalogDiscoveryPolicyMeta
+    match_mode: Literal["ALL"] = "ALL"
 
 
 class CatalogVocabularyResponse(BaseModel):
@@ -146,6 +154,7 @@ class CatalogLineageResponse(BaseModel):
 
 class CatalogAssetResponse(CatalogAssetSummary):
     ownership: list[dict[str, Any]]
+    ownership_truncated: bool = False
     glossary_terms: list[dict[str, Any]]
     tags: list[str]
     schema_fields: list[dict[str, Any]]
@@ -323,6 +332,19 @@ class CatalogSyncResponse(BaseModel):
     next_offset: int | None
     total: int
     observed_at: datetime
+    tombstone_status: Literal[
+        "NOT_FINAL",
+        "APPLIED",
+        "SUPPRESSED_UNVERIFIED_SNAPSHOT",
+    ]
+
+
+class CatalogSyncProgressResponse(BaseModel):
+    state: Literal["NOT_STARTED", "ACTIVE", "COMPLETED", "ABANDONED"]
+    next_offset: int | None
+    seen_count: int = Field(ge=0)
+    expected_total: int | None = Field(default=None, ge=0)
+    snapshot_consistent: bool
 
 
 class CatalogExportCreateRequest(BaseModel):

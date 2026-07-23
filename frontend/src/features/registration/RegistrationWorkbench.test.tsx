@@ -7,7 +7,7 @@ import type {
   UploadPreparation,
   UploadRecord,
 } from '../../api/types'
-import { RegistrationPage } from './RegistrationPage'
+import { loadCompleteAssetDetail, RegistrationPage } from './RegistrationPage'
 import { supportedContentType } from './RegistrationBulkWorkbench'
 import { RegistrationManualWorkbench } from './RegistrationManualWorkbench'
 
@@ -99,6 +99,104 @@ describe('Registration workbench', () => {
     ))).toBe(true))
   })
 
+  it('loads every version-bound schema page before manual editing', async () => {
+    const fields = Array.from({ length: 450 }, (_, index) => ({
+      fieldPath: `column_${index}`,
+      nativeDataType: 'varchar',
+    }))
+    const base = {
+      id: 'asset-many-fields',
+      external_urn: 'urn:li:dataset:many-fields',
+      asset_type: 'DATASET',
+      name: 'many_fields',
+      description: null,
+      platform: 'postgres',
+      database_name: 'warehouse',
+      schema_name: 'public',
+      domain: null,
+      tags: [],
+      terms: [],
+      classification: 'INTERNAL',
+      lifecycle: 'ACTIVE',
+      observed_at: '2026-01-01T00:00:00Z',
+      matches: [],
+      ownership: [],
+      glossary_terms: [],
+      quality: {},
+      projection_source_version: 'source/version 7',
+      source_version: 'source-7',
+      schema_fields_total: 450,
+      schema_fields_available: 450,
+      schema_fields_truncated: false,
+      schema_fields_total_exact: true,
+    } satisfies Partial<CatalogAssetDetail>
+    const request = vi.fn((path: string) => {
+      const offset = Number(new URL(`https://example.test${path}`).searchParams.get('field_offset'))
+      const pageFields = fields.slice(offset, offset + 200)
+      return Promise.resolve({
+        ...base,
+        schema_fields: pageFields,
+        schema_fields_offset: offset,
+        schema_fields_limit: 200,
+        schema_fields_has_more: offset + pageFields.length < fields.length,
+      } as CatalogAssetDetail)
+    })
+
+    const detail = await loadCompleteAssetDetail(
+      clientWith(request),
+      'asset-many-fields',
+      new AbortController().signal,
+    )
+
+    expect(detail.schema_fields).toHaveLength(450)
+    expect(detail.schema_fields[449]?.fieldPath).toBe('column_449')
+    expect(request.mock.calls.map(([path]) => path)).toEqual([
+      '/catalog/assets/asset-many-fields?field_offset=0&field_limit=200',
+      '/catalog/assets/asset-many-fields?field_offset=200&field_limit=200&field_source_version=source-7',
+      '/catalog/assets/asset-many-fields?field_offset=400&field_limit=200&field_source_version=source-7',
+    ])
+  })
+
+  it('rejects a provider-version change while loading schema pages', async () => {
+    const request = vi.fn((path: string) => Promise.resolve({
+      id: 'asset-version-drift',
+      external_urn: 'urn:li:dataset:version-drift',
+      asset_type: 'DATASET',
+      name: 'version_drift',
+      description: null,
+      platform: 'postgres',
+      database_name: 'warehouse',
+      schema_name: 'public',
+      domain: null,
+      tags: [],
+      terms: [],
+      classification: 'INTERNAL',
+      lifecycle: 'ACTIVE',
+      observed_at: '2026-01-01T00:00:00Z',
+      matches: [],
+      ownership: [],
+      glossary_terms: [],
+      quality: {},
+      projection_source_version: 'projection-stable',
+      source_version: path.includes('field_offset=0') ? 'provider-v1' : 'provider-v2',
+      schema_fields: [{ fieldPath: path.includes('field_offset=0') ? 'first' : 'second' }],
+      schema_fields_total: 2,
+      schema_fields_available: 2,
+      schema_fields_truncated: false,
+      schema_fields_total_exact: true,
+      schema_fields_offset: path.includes('field_offset=0') ? 0 : 1,
+      schema_fields_limit: 1,
+      schema_fields_has_more: path.includes('field_offset=0'),
+    } as CatalogAssetDetail))
+
+    await expect(loadCompleteAssetDetail(
+      clientWith(request),
+      'asset-version-drift',
+      new AbortController().signal,
+    )).rejects.toThrow(/원본 버전/)
+    expect(request.mock.calls[1]?.[0]).toContain('field_source_version=provider-v1')
+  })
+
   it('uses the v0.3 property table and column grid with an independent manual submission', async () => {
     const asset: CatalogAssetDetail = {
       id: 'asset-1',
@@ -119,7 +217,7 @@ describe('Registration workbench', () => {
       ownership: [],
       glossary_terms: [],
       schema_fields: [{
-        fieldPath: 'wafer_id', nativeDataType: 'uuid', description: 'Identifier',
+        fieldPath: 'wafer_id', label: 'Wafer identifier', nativeDataType: 'uuid', description: 'Identifier',
         globalTags: { tags: [{ tag: { name: 'field:identifier' } }] },
         glossaryTerms: { terms: [{ term: { name: 'record_identifier' } }] },
       }],
@@ -148,7 +246,7 @@ describe('Registration workbench', () => {
       }
       return Promise.resolve({ items: [], meta: emptyTree.meta })
     })
-    render(<RegistrationManualWorkbench
+    const view = render(<RegistrationManualWorkbench
       client={clientWith(request)}
       asset={asset}
       loading={false}
@@ -158,6 +256,10 @@ describe('Registration workbench', () => {
     expect(screen.getByText('Table Properties')).toBeInTheDocument()
     expect(screen.getByText('Column Schema Specifications')).toBeInTheDocument()
     expect(screen.getByText('wafer_id')).toBeInTheDocument()
+    expect(screen.getByText('Wafer identifier')).toBeInTheDocument()
+    const columnGrid = screen.getByRole('region', { name: 'Column Schema Specifications' })
+    expect(within(columnGrid).getByRole('columnheader', { name: 'Logical Name' })).toBeInTheDocument()
+    expect(within(columnGrid).getByRole('columnheader', { name: 'Description' })).toBeInTheDocument()
     expect(screen.getByLabelText('테이블 Description')).toHaveValue('Wafer production records.')
     expect(screen.getByLabelText('wafer_id Description')).toHaveValue('Identifier')
     expect(screen.getByText('tier:gold')).toBeInTheDocument()
@@ -194,6 +296,30 @@ describe('Registration workbench', () => {
       source_version: 'projection-1',
     })
     expect(screen.getByText(/제출 #3이 2개 행으로 저장되었습니다/)).toBeInTheDocument()
+
+    view.rerender(<RegistrationManualWorkbench
+      client={clientWith(request)}
+      asset={{ ...asset, description_truncated: true }}
+      loading={false}
+      onClose={vi.fn()}
+    />)
+    expect(screen.getByRole('alert')).toHaveTextContent(/응답 상한으로 잘려/)
+    expect(screen.getByRole('button', { name: 'SAVE' })).toBeDisabled()
+
+    view.rerender(<RegistrationManualWorkbench
+      client={clientWith(request)}
+      asset={{
+        ...asset,
+        description_truncated: false,
+        schema_fields_truncated: true,
+        schema_fields_total_exact: false,
+        schema_fields_total: 1_001,
+      }}
+      loading={false}
+      onClose={vi.fn()}
+    />)
+    expect(screen.getByRole('alert')).toHaveTextContent(/응답 상한으로 잘려/)
+    expect(screen.getByRole('button', { name: 'SAVE' })).toBeDisabled()
   })
 
   it('loads upload history only after the bulk workbench is selected', async () => {

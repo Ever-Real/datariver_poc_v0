@@ -130,20 +130,20 @@ System을 담당하는 Data Steward, Global Admin의 4명이다. System별 담�
 |---|---|---|---|
 | `SRCH-01` | 기본 검색 결과 조회 | active Workspace와 `catalog.search` | 빈 query로 서버 허용 순서의 첫 50건을 조회한다. hidden total이나 denied row는 노출하지 않는다. |
 | `SRCH-02` | literal multi-term 검색 | 2자 이상 query | Schema/Table/Column/Tag/Term/Description 중 선택된 필드에서 ALL semantics로 검색한다. `%`, `_`, `\`는 wildcard가 아니라 문자다. |
-| `SRCH-03` | autocomplete | 2자 이상 입력 | 권한이 선적용된 name suggestion만 최대 20건 이내 반환한다. |
+| `SRCH-03` | autocomplete | 2자 이상 입력 | 기본 검색과 같은 Schema/Table/Column/Tag/Term/Description ALL-term 의미로 권한이 선적용된 suggestion을 최대 20건 반환하고, 각 결과의 bounded plain-text match 근거를 표시한다. |
 | `SRCH-04` | 고급 필터 | filter button 클릭 | Type, Platform, Database, Schema, Domain, Classification, Lifecycle와 검색 필드를 선택하고 cursor를 초기화한다. |
 | `SRCH-05` | Resource Tree scope | typed container projection 존재 | Platform -> Database -> Schema branch를 lazy paging하며 선택 scope를 검색 조건에 반영한다. URN을 분해해 hierarchy를 추측하지 않는다. |
 | `SRCH-06` | 헤더 즉시 정렬 | sortable column | 헤더 클릭마다 `ASC -> DESC -> NONE`으로 순환하고 popover/menu를 열지 않는다. `aria-sort`와 아이콘을 함께 갱신한다. |
 | `SRCH-07` | 정렬 해제 | `ASC` 또는 `DESC` | 세 번째 클릭은 서버가 반환한 원래 logical window 순서로 복귀한다. multi-sort는 이번 요구에 포함하지 않는다. |
 | `SRCH-08` | column/local filter | 검색 결과 존재 | 헤더 click은 정렬 전용이다. 현재-window column filter가 필요할 때는 검색창 옆 Filter panel 안의 명시적 control로 제공해 click 의미를 혼합하지 않는다. |
-| `SRCH-09` | logical page size | 결과 존재 | 50, 100, 200, 500, 1000, 전체를 선택한다. browser는 server cursor를 최대 100건씩 순차 소비하며 API max limit를 우회하지 않는다. |
+| `SRCH-09` | bounded page size | 결과 존재 | 25, 50, 100 중 하나를 선택한다. 한 번의 page action은 정확히 한 번의 bounded asset request만 수행하며, browser는 `전체`를 제공하거나 뒤쪽 cursor를 자동 순회해 누적하지 않는다. |
 | `SRCH-10` | Terms/Tags 표시 | projection association 존재 | `terms[]`, `tags[]`를 각각 badge scroller로 표시한다. 누락 값은 `-`로 표시하고 다른 필드에서 추론하지 않는다. |
 | `SRCH-11` | 가로 스크롤 | 총 column width가 viewport보다 큼 | table frame 안에서만 horizontal scroll을 제공하고 page 전체 폭을 늘리지 않는다. 첫 열, header와 keyboard focus가 유지된다. |
 | `SRCH-12` | detail/column metadata | `catalog.read` | local authorized base detail 후 DataHub typed enrichment를 표시한다. `observed_at`/`stale_at`을 구분한다. |
 | `SRCH-13` | lineage 조회 | authorized target | depth 1..3의 typed lineage만 조회하고 모든 intermediate node를 set authorization한다. hidden path를 건너 연결하지 않는다. |
 | `SRCH-14` | CSV/XLSX export | 별도 `catalog.export`와 worker capability | 현재 query/filter/security/source snapshot으로 server job을 만든다. 브라우저 visible row를 파일로 변환하지 않는다. |
 | `SRCH-15` | query 변경 취소 | 이전 요청 진행 중 | 이전 fetch를 abort하고 새 query/cursor만 화면에 반영한다. 늦게 도착한 응답이 최신 결과를 덮지 않는다. |
-| `SRCH-16` | DataHub 재동기화 | `datariver_catalog_sync`가 활성화됨 | 고정 100건 page로 scan하고 각 commit마다 projection watermark를 증가시킨다. 마지막 page에서 tombstone과 sync completion을 기록한다. |
+| `SRCH-16` | DataHub 재동기화 | `datariver_catalog_sync`가 활성화됨 | 기본 100건 DataHub scroll page를 workspace 실행권 아래 순차 commit하고, 응답이 8 MiB를 넘으면 동일 cursor에서 1건까지 page size를 줄인다. 재시도는 서버의 persisted `next_offset`에서 바로 재개한다. 서버가 opaque cursor/첫 total/distinct seen을 보존하며 terminal equality를 증명한다. 승인된 PIT evidence와 enforced provider version이 있을 때만 DataHub-owned 누락 row를 tombstone하고, 기본값에서는 `SUPPRESSED_UNVERIFIED_SNAPSHOT`으로 completion만 기록한다. |
 
 `SRCH-06`은 현재 수용된 "loaded logical window 정렬" 의미를 유지한다. 전체 결과의 전역 정렬이
 필요하면 `/catalog/assets`에 allowlisted `sort`/`order`를 추가하고 cursor, cache, export request
@@ -158,11 +158,13 @@ hash에 포함해야 한다. 그 계약 없이 현재 page 정렬을 전역 정�
 | `SRCH-N03` | stale/cross-shape cursor | 명시적 409/422, 처음부터 다시 검색 |
 | `SRCH-N04` | DataHub timeout/rate limit/contract drift | authorized local base 또는 bounded stale enrichment, 아니면 sanitized 503; 새 값을 만들어내지 않음 |
 | `SRCH-N05` | catalog sync paused | 화면은 현재 projection watermark를 사용하고 "실시간"이라고 주장하지 않음 |
+| `SRCH-N05A` | PIT 미검증 또는 scroll cursor 만료 | 현재 asset의 upsert는 보존하되 누락 asset 삭제는 0건; 미검증 completion 또는 ABANDONED run을 명시적으로 보고하고 새 sync ID로 재시작 |
 | `SRCH-N06` | export snapshot 중 권한/source version 변경 | job 실패, artifact download 금지 |
 | `SRCH-N07` | formula-like CSV/XLSX value | server worker가 spreadsheet execution을 neutralize |
 | `SRCH-N08` | Terms/Tags가 특정 asset에 없음 | 빈 badge 상태; description/column association을 table association으로 승격하지 않음 |
 | `SRCH-N09` | cache Valkey 장애 | 같은 ABAC SQL/DataHub 경로로 동작하고 latency만 degraded |
 | `SRCH-N10` | 전체 조회 cursor 반복/무한 paging | visited cursor와 total/page bound로 중단하고 오류 표시 |
+| `SRCH-N11` | Workspace 전환 중 이전 suggestion 응답 도착 | 전역 검색 component를 Workspace key로 즉시 초기화하고 이전 요청을 abort한다. 늦은 응답은 새 Workspace 화면에 표시하지 않는다. |
 
 ## 5. 등록관리(Registration) 유즈케이스
 

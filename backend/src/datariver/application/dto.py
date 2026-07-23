@@ -46,6 +46,10 @@ class CatalogAssetIndex:
     glossary_terms: tuple[str, ...] = ()
     created_at: datetime | None = None
     matches: tuple[CatalogMatchFragment, ...] = ()
+    description_truncated: bool = False
+    tags_truncated: bool = False
+    glossary_terms_truncated: bool = False
+    column_names_truncated: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -69,6 +73,10 @@ class CatalogAssetDetail:
     schema_fields_total: int | None = None
     schema_fields_truncated: bool = False
     schema_fields_total_exact: bool = True
+    ownership_truncated: bool = False
+    glossary_terms_truncated: bool = False
+    tags_truncated: bool = False
+    description_truncated: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -91,6 +99,10 @@ class DataHubAssetEnrichment:
     schema_fields_total: int | None = None
     schema_fields_truncated: bool = False
     schema_fields_total_exact: bool = True
+    ownership_truncated: bool = False
+    glossary_terms_truncated: bool = False
+    tags_truncated: bool = False
+    description_truncated: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -113,6 +125,10 @@ class DataHubScanAsset:
     # metadata remains an authorized, typed DataHub enrichment on asset open.
     column_names: tuple[str, ...] = ()
     created_at: datetime | None = None
+    description_truncated: bool = False
+    tags_truncated: bool = False
+    glossary_terms_truncated: bool = False
+    column_names_truncated: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -133,9 +149,13 @@ class DataHubLineagePage:
 @dataclass(frozen=True, slots=True)
 class DataHubScanPage:
     items: tuple[DataHubScanAsset, ...]
-    next_offset: int | None
+    next_cursor: str | None
     total: int
     observed_at: datetime
+    snapshot_consistent: bool = False
+    snapshot_evidence_reference: str | None = None
+    snapshot_contract_hash: str | None = None
+    snapshot_provider_version: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -145,6 +165,22 @@ class CatalogSyncResult:
     next_offset: int | None
     total: int
     observed_at: datetime
+    tombstone_status: str = "NOT_FINAL"
+
+
+@dataclass(frozen=True, slots=True)
+class CatalogSyncReservation:
+    cursor: str | None
+    replayed: CatalogSyncResult | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class CatalogSyncProgress:
+    state: str
+    next_offset: int | None
+    seen_count: int
+    expected_total: int | None
+    snapshot_consistent: bool
 
 
 @dataclass(frozen=True, slots=True)
@@ -153,6 +189,7 @@ class CatalogPage:
     next_cursor: str | None
     observed_at: datetime
     total: int = 0
+    total_exact: bool = False
     stale_at: datetime | None = None
     projection_version: int = 0
     policy_version: str = ""
@@ -188,6 +225,9 @@ class CatalogSuggestion:
     name: str
     asset_type: str
     platform: str | None
+    database_name: str | None = None
+    schema_name: str | None = None
+    matches: tuple[CatalogMatchFragment, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)

@@ -66,7 +66,74 @@ def test_datahub_activation_maps_only_validated_runtime_and_secret_references() 
 
     assert updates["datahub_base_url"] == "http://datahub-gms:8080"
     assert updates["datahub_secret_ref"] == "file:/run/secrets/datahub_token"
+    assert updates["datahub_catalog_pit_verified"] is False
     assert "token" not in updates
+
+
+def test_datahub_pit_activation_is_fail_closed_and_requires_evidence() -> None:
+    current = _settings()
+    legacy_options: dict[str, object] = {
+        "allowed_versions": [],
+        "circuit_failure_threshold": 5,
+        "circuit_open_seconds": 30,
+        "expected_version": "v1.6.0",
+        "maximum_concurrency": 20,
+        "queue_timeout_seconds": 2,
+        "stale_ttl_seconds": 900,
+        "timeout_seconds": 10,
+        "version_enforcement": "report",
+        "version_probe_ttl_seconds": 300,
+    }
+    legacy_document: dict[str, object] = {
+        "base_url": "http://datahub-gms:8080",
+        "secret_references": {"token": "file:/run/secrets/datahub_token"},
+        "options": legacy_options,
+    }
+
+    legacy_updates = _runtime_updates("DATAHUB", legacy_document)
+    assert legacy_updates["datahub_catalog_pit_verified"] is False
+
+    with pytest.raises(ValueError, match="operator evidence reference"):
+        validate_runtime_system_configuration(
+            current,
+            service_key="DATAHUB",
+            document={
+                **legacy_document,
+                "options": {
+                    **legacy_options,
+                    "catalog_pit_verified": True,
+                },
+            },
+        )
+
+    validate_runtime_system_configuration(
+        current,
+        service_key="DATAHUB",
+        document={
+            **legacy_document,
+            "options": {
+                **legacy_options,
+                "catalog_pit_verified": True,
+                "catalog_pit_evidence_reference": "ops://datahub/pit/2026-07-23",
+                "version_enforcement": "enforce",
+            },
+        },
+    )
+
+    with pytest.raises(ValueError, match="enforced provider version"):
+        validate_runtime_system_configuration(
+            current,
+            service_key="DATAHUB",
+            document={
+                **legacy_document,
+                "options": {
+                    **legacy_options,
+                    "catalog_pit_verified": True,
+                    "catalog_pit_evidence_reference": "ops://datahub/pit/2026-07-23",
+                    "version_enforcement": "report",
+                },
+            },
+        )
 
 
 def test_redis_activation_maps_cache_and_delivery_to_separate_settings() -> None:

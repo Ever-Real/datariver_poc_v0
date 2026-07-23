@@ -3,13 +3,27 @@ from __future__ import annotations
 import base64
 import hashlib
 import json
+import re
 from collections.abc import Sequence
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from typing import Any
 from uuid import NAMESPACE_URL, UUID, uuid5
 
-from sqlalchemy import String, and_, cast, false, func, literal, or_, select, union_all, update
+from sqlalchemy import (
+    String,
+    and_,
+    case,
+    cast,
+    false,
+    func,
+    literal,
+    or_,
+    select,
+    tuple_,
+    union_all,
+    update,
+)
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -26,6 +40,9 @@ from datariver.application.dto import (
     CatalogPage,
     CatalogSuggestion,
     CatalogSuggestions,
+    CatalogSyncProgress,
+    CatalogSyncReservation,
+    CatalogSyncResult,
     CatalogTreeNode,
     CatalogTreePage,
     CatalogVocabulary,
@@ -45,6 +62,73 @@ from datariver.infrastructure.db.models.catalog import (
 from datariver.infrastructure.db.models.platform import WorkspaceModel
 
 CATALOG_SEARCH_FIELDS = frozenset({"SCHEMA", "TABLE", "COLUMN", "TAG", "TERM", "DESCRIPTION"})
+MAX_CATALOG_QUERY_TERMS = 12
+MAX_CATALOG_QUERY_TERM_LENGTH = 120
+MAX_CATALOG_EXTERNAL_URN_CHARACTERS = 4_096
+MAX_CATALOG_PROJECTION_DESCRIPTION_CHARACTERS = 10_000
+MAX_CATALOG_PROJECTION_METADATA_ITEMS = 100
+MAX_CATALOG_PROJECTION_METADATA_CHARACTERS = 1_000
+MAX_CATALOG_PROJECTION_COLUMN_ITEMS = 1_000
+MAX_CATALOG_PROJECTION_COLUMN_CHARACTERS = 500
+
+
+def _bounded_scan_asset(item: DataHubScanAsset) -> DataHubScanAsset:
+    if not item.external_urn or len(item.external_urn) > MAX_CATALOG_EXTERNAL_URN_CHARACTERS:
+        raise ValidationError(
+            "Catalog asset URNs must contain between 1 and "
+            f"{MAX_CATALOG_EXTERNAL_URN_CHARACTERS} characters."
+        )
+    return replace(
+        item,
+        description=(
+            item.description[:MAX_CATALOG_PROJECTION_DESCRIPTION_CHARACTERS]
+            if item.description is not None
+            else None
+        ),
+        tags=tuple(
+            value[:MAX_CATALOG_PROJECTION_METADATA_CHARACTERS]
+            for value in item.tags[:MAX_CATALOG_PROJECTION_METADATA_ITEMS]
+        ),
+        glossary_terms=tuple(
+            value[:MAX_CATALOG_PROJECTION_METADATA_CHARACTERS]
+            for value in item.glossary_terms[:MAX_CATALOG_PROJECTION_METADATA_ITEMS]
+        ),
+        column_names=tuple(
+            value[:MAX_CATALOG_PROJECTION_COLUMN_CHARACTERS]
+            for value in item.column_names[:MAX_CATALOG_PROJECTION_COLUMN_ITEMS]
+        ),
+        description_truncated=(
+            item.description_truncated
+            or (
+                item.description is not None
+                and len(item.description) > MAX_CATALOG_PROJECTION_DESCRIPTION_CHARACTERS
+            )
+        ),
+        tags_truncated=(
+            item.tags_truncated
+            or len(item.tags) > MAX_CATALOG_PROJECTION_METADATA_ITEMS
+            or any(
+                len(value) > MAX_CATALOG_PROJECTION_METADATA_CHARACTERS
+                for value in item.tags[:MAX_CATALOG_PROJECTION_METADATA_ITEMS]
+            )
+        ),
+        glossary_terms_truncated=(
+            item.glossary_terms_truncated
+            or len(item.glossary_terms) > MAX_CATALOG_PROJECTION_METADATA_ITEMS
+            or any(
+                len(value) > MAX_CATALOG_PROJECTION_METADATA_CHARACTERS
+                for value in item.glossary_terms[:MAX_CATALOG_PROJECTION_METADATA_ITEMS]
+            )
+        ),
+        column_names_truncated=(
+            item.column_names_truncated
+            or len(item.column_names) > MAX_CATALOG_PROJECTION_COLUMN_ITEMS
+            or any(
+                len(value) > MAX_CATALOG_PROJECTION_COLUMN_CHARACTERS
+                for value in item.column_names[:MAX_CATALOG_PROJECTION_COLUMN_ITEMS]
+            )
+        ),
+    )
 
 
 def _encode_cursor(name: str, asset_id: UUID) -> str:
@@ -76,6 +160,10 @@ def _to_index(model: AssetProjectionModel) -> CatalogAssetIndex:
         domain=model.domain_ref,
         tags=tuple(model.tags),
         glossary_terms=tuple(model.glossary_terms),
+        description_truncated=model.description_truncated,
+        tags_truncated=model.tags_truncated,
+        glossary_terms_truncated=model.glossary_terms_truncated,
+        column_names_truncated=model.column_names_truncated,
         created_at=model.source_created_at,
         domain_id=model.domain_id,
         system_id=model.system_id,
@@ -88,7 +176,16 @@ def _to_index(model: AssetProjectionModel) -> CatalogAssetIndex:
 
 
 def _query_terms(query: str) -> tuple[str, ...]:
-    return tuple(dict.fromkeys(term for term in query.split() if term))
+    terms = tuple(dict.fromkeys(term for term in query.split() if term))
+    if len(terms) > MAX_CATALOG_QUERY_TERMS:
+        raise ValidationError(
+            f"Catalog search accepts at most {MAX_CATALOG_QUERY_TERMS} unique terms."
+        )
+    if any(len(term) > MAX_CATALOG_QUERY_TERM_LENGTH for term in terms):
+        raise ValidationError(
+            f"Each catalog search term must be at most {MAX_CATALOG_QUERY_TERM_LENGTH} characters."
+        )
+    return terms
 
 
 def _search_fields(filters: dict[str, Any]) -> tuple[str, ...]:
@@ -105,12 +202,26 @@ def _search_fields(filters: dict[str, Any]) -> tuple[str, ...]:
     return fields
 
 
+def _jsonb_array_contains(column: Any, pattern: str) -> Any:
+    values = func.jsonb_array_elements_text(column).table_valued(
+        "value",
+        joins_implicitly=True,
+    )
+    return (
+        select(literal(1))
+        .select_from(values)
+        .where(values.c.value.ilike(pattern, escape="\\"))
+        .exists()
+    )
+
+
 def _catalog_query_condition(query: str, *, search_fields: tuple[str, ...]) -> Any:
     terms = _query_terms(query)
     per_term: list[Any] = []
     for term in terms:
         pattern = _literal_contains_pattern(term)
         fields: list[Any] = []
+        array_fields: list[Any] = []
         if "TABLE" in search_fields:
             fields.append(AssetProjectionModel.name.ilike(pattern, escape="\\"))
         if "DESCRIPTION" in search_fields:
@@ -118,15 +229,16 @@ def _catalog_query_condition(query: str, *, search_fields: tuple[str, ...]) -> A
         if "SCHEMA" in search_fields:
             fields.append(AssetProjectionModel.schema_name.ilike(pattern, escape="\\"))
         if "COLUMN" in search_fields:
-            fields.append(
-                cast(AssetProjectionModel.column_names, String).ilike(pattern, escape="\\")
-            )
+            array_fields.append(AssetProjectionModel.column_names)
         if "TAG" in search_fields:
-            fields.append(cast(AssetProjectionModel.tags, String).ilike(pattern, escape="\\"))
+            array_fields.append(AssetProjectionModel.tags)
         if "TERM" in search_fields:
-            fields.append(
-                cast(AssetProjectionModel.glossary_terms, String).ilike(pattern, escape="\\")
-            )
+            array_fields.append(AssetProjectionModel.glossary_terms)
+        if array_fields:
+            combined_array = array_fields[0]
+            for array_field in array_fields[1:]:
+                combined_array = combined_array.op("||")(array_field)
+            fields.append(_jsonb_array_contains(combined_array, pattern))
         per_term.append(or_(*fields))
     # Each query token must match one enabled field.  This preserves the v0.3
     # ALL-keyword behavior while keeping every condition typed and locally
@@ -134,14 +246,55 @@ def _catalog_query_condition(query: str, *, search_fields: tuple[str, ...]) -> A
     return and_(*per_term)
 
 
+def _source_index_for_folded_offset(value: str, folded_offset: int) -> int:
+    current_offset = 0
+    for source_index, character in enumerate(value):
+        next_offset = current_offset + len(character.casefold())
+        if current_offset <= folded_offset < next_offset:
+            return source_index
+        current_offset = next_offset
+    return len(value)
+
+
+def _match_context(value: str, folded: str, matched_term: str) -> str:
+    if len(value) <= 240:
+        return value
+    term_folded = matched_term.casefold()
+    first = folded.find(term_folded)
+    source_start = _source_index_for_folded_offset(value, first)
+    source_end = _source_index_for_folded_offset(value, first + len(term_folded) - 1) + 1
+    padding = max(0, (238 - (source_end - source_start)) // 2)
+    start = max(0, source_start - padding)
+    end = min(len(value), start + 238)
+    start = max(0, end - 238)
+    return ("…" if start else "") + value[start:end] + ("…" if end < len(value) else "")
+
+
 def _match_fragments(
-    *, name: str, description: str | None, query: str
+    *,
+    name: str,
+    description: str | None,
+    schema_name: str | None = None,
+    column_names: Sequence[str] = (),
+    tags: Sequence[str] = (),
+    glossary_terms: Sequence[str] = (),
+    query: str,
+    search_fields: tuple[str, ...] | None = None,
 ) -> tuple[CatalogMatchFragment, ...]:
     terms = _query_terms(query)
     if not terms:
         return ()
+    enabled = frozenset(search_fields or CATALOG_SEARCH_FIELDS)
     fragments: list[CatalogMatchFragment] = []
-    for field, value in (("NAME", name), ("DESCRIPTION", description)):
+    values: tuple[tuple[str, str | None], ...] = (
+        ("NAME", name if "TABLE" in enabled else None),
+        ("DESCRIPTION", description if "DESCRIPTION" in enabled else None),
+        ("SCHEMA", schema_name if "SCHEMA" in enabled else None),
+        ("COLUMN", " · ".join(column_names) if "COLUMN" in enabled else None),
+        ("TAG", " · ".join(tags) if "TAG" in enabled else None),
+        ("TERM", " · ".join(glossary_terms) if "TERM" in enabled else None),
+    )
+    for field, value in values:
         if not value:
             continue
         folded = value.casefold()
@@ -149,14 +302,16 @@ def _match_fragments(
         if not matched:
             continue
         if len(value) <= 240:
-            context = value
-        else:
-            positions = [folded.find(term.casefold()) for term in matched]
-            first = min(position for position in positions if position >= 0)
-            start = max(0, first - 80)
-            end = min(len(value), start + 240)
-            context = ("…" if start else "") + value[start:end] + ("…" if end < len(value) else "")
-        fragments.append(CatalogMatchFragment(field=field, text=context, matched_terms=matched))
+            fragments.append(CatalogMatchFragment(field=field, text=value, matched_terms=matched))
+            continue
+        for term in matched:
+            fragments.append(
+                CatalogMatchFragment(
+                    field=field,
+                    text=_match_context(value, folded, term),
+                    matched_terms=(term,),
+                )
+            )
     return tuple(fragments)
 
 
@@ -324,9 +479,7 @@ class SqlCatalogIndexReader(CatalogIndexReader):
                 _catalog_query_condition(query, search_fields=_search_fields(filters))
             )
         conditions.extend(self._filter_conditions(filters))
-        total = await self._session.scalar(
-            select(func.count(AssetProjectionModel.id)).where(and_(*conditions))
-        )
+        first_page = cursor is None
         if cursor:
             cursor_name, cursor_id = _decode_cursor(cursor)
             conditions.append(
@@ -358,14 +511,22 @@ class SqlCatalogIndexReader(CatalogIndexReader):
                 replace(
                     _to_index(row),
                     matches=_match_fragments(
-                        name=row.name, description=row.description, query=query
+                        name=row.name,
+                        description=row.description,
+                        schema_name=row.schema_name,
+                        column_names=row.column_names,
+                        tags=row.tags,
+                        glossary_terms=row.glossary_terms,
+                        query=query,
+                        search_fields=_search_fields(filters),
                     ),
                 )
                 for row in visible_rows
             ),
             next_cursor=next_cursor,
             observed_at=observed_at,
-            total=int(total or 0),
+            total=len(rows),
+            total_exact=first_page and not has_more,
         )
 
     async def export_page(
@@ -437,7 +598,7 @@ class SqlCatalogIndexReader(CatalogIndexReader):
         conditions = self._scope_conditions(subject, access)
         if query:
             conditions.append(
-                _catalog_query_condition(query, search_fields=tuple(sorted(CATALOG_SEARCH_FIELDS)))
+                _catalog_query_condition(query, search_fields=_search_fields(filters))
             )
         conditions.extend(self._filter_conditions(filters))
         facet_columns = {
@@ -449,24 +610,55 @@ class SqlCatalogIndexReader(CatalogIndexReader):
             "classification": AssetProjectionModel.classification,
             "lifecycle": AssetProjectionModel.lifecycle,
         }
-        statements = []
-        for facet, column in facet_columns.items():
-            statements.append(
-                select(
-                    literal(facet).label("facet"),
-                    # PostgreSQL requires a common type for every UNION column.  The
-                    # public facet DTO is textual (classification is rendered as its
-                    # enum name below), so normalize every grouped value at the SQL
-                    # boundary instead of allowing an integer classification branch
-                    # to be unioned with asset/platform strings.
-                    cast(column, String).label("value"),
-                    func.count(AssetProjectionModel.id).label("count"),
-                    func.max(AssetProjectionModel.observed_at).label("observed_at"),
-                )
-                .where(and_(*conditions))
-                .group_by(column)
+        facet_expression = case(
+            *[
+                (func.grouping(column) == 0, literal(facet))
+                for facet, column in facet_columns.items()
+            ]
+        ).label("facet")
+        value_expression = case(
+            *[
+                (func.grouping(column) == 0, cast(column, String))
+                for column in facet_columns.values()
+            ]
+        ).label("value")
+        aggregated = (
+            select(
+                facet_expression,
+                value_expression,
+                func.count(AssetProjectionModel.id).label("count"),
+                func.max(AssetProjectionModel.observed_at).label("observed_at"),
             )
-        rows = (await self._session.execute(union_all(*statements))).mappings().all()
+            .where(and_(*conditions))
+            .group_by(func.grouping_sets(*(tuple_(column) for column in facet_columns.values())))
+            .subquery()
+        )
+        ranked = select(
+            aggregated,
+            func.row_number()
+            .over(
+                partition_by=aggregated.c.facet,
+                order_by=(
+                    aggregated.c.count.desc(),
+                    aggregated.c.value.asc().nulls_first(),
+                ),
+            )
+            .label("facet_rank"),
+        ).subquery()
+        rows = (
+            (
+                await self._session.execute(
+                    select(
+                        ranked.c.facet,
+                        ranked.c.value,
+                        ranked.c.count,
+                        ranked.c.observed_at,
+                    ).where(ranked.c.facet_rank <= limit)
+                )
+            )
+            .mappings()
+            .all()
+        )
         buckets: dict[str, list[CatalogFacetBucket]] = {name: [] for name in facet_columns}
         observed_values: list[datetime] = []
         for row in rows:
@@ -507,25 +699,17 @@ class SqlCatalogIndexReader(CatalogIndexReader):
         if not 1 <= limit <= 20:
             raise ValueError("Catalog suggestion limit must be between 1 and 20.")
         conditions = self._scope_conditions(subject, access)
-        if len(query) < 3:
-            conditions.append(
-                func.lower(AssetProjectionModel.name).like(
-                    _literal_prefix_pattern(query.lower()), escape="\\"
-                )
+        conditions.append(
+            _catalog_query_condition(
+                query,
+                search_fields=tuple(sorted(CATALOG_SEARCH_FIELDS)),
             )
-            ordering: tuple[Any, ...] = (
-                func.lower(AssetProjectionModel.name),
-                AssetProjectionModel.id,
-            )
-        else:
-            conditions.append(
-                AssetProjectionModel.name.ilike(_literal_contains_pattern(query), escape="\\")
-            )
-            ordering = (
-                func.similarity(AssetProjectionModel.name, query).desc(),
-                AssetProjectionModel.name,
-                AssetProjectionModel.id,
-            )
+        )
+        ordering: tuple[Any, ...] = (
+            func.similarity(AssetProjectionModel.name, query).desc(),
+            AssetProjectionModel.name,
+            AssetProjectionModel.id,
+        )
         statement = (
             select(AssetProjectionModel).where(and_(*conditions)).order_by(*ordering).limit(limit)
         )
@@ -537,6 +721,17 @@ class SqlCatalogIndexReader(CatalogIndexReader):
                     name=row.name,
                     asset_type=row.asset_type,
                     platform=row.platform,
+                    database_name=row.database_name,
+                    schema_name=row.schema_name,
+                    matches=_match_fragments(
+                        name=row.name,
+                        description=row.description,
+                        schema_name=row.schema_name,
+                        column_names=row.column_names,
+                        tags=row.tags,
+                        glossary_terms=row.glossary_terms,
+                        query=query,
+                    ),
                 )
                 for row in rows
             ),
@@ -928,35 +1123,257 @@ class SqlCatalogProjectionWriter(CatalogProjectionWriter):
     def __init__(self, session: AsyncSession) -> None:
         self._session = session
 
-    async def upsert_scan(
-        self,
-        *,
-        workspace_id: UUID,
-        sync_id: UUID,
-        offset: int,
-        next_offset: int | None,
-        items: Sequence[DataHubScanAsset],
-        observed_at: datetime,
-        idempotency_key: str,
-        request_hash: str,
-        operation: str,
-    ) -> tuple[int, int]:
-        idempotency = SqlIdempotencyStore(self._session)
-        existing = await idempotency.get_result(
-            workspace_id=workspace_id,
-            key=idempotency_key,
-            operation=operation,
-        )
-        if existing is not None:
-            if existing.request_hash != request_hash:
-                raise ConflictError("The idempotency key was used with a different request.")
-            return int(existing.result["upserted"]), int(existing.result["tombstoned"])
+    async def _lock_workspace(self, workspace_id: UUID) -> None:
         workspace_lock_key = int.from_bytes(
             hashlib.sha256(f"catalog-sync:{workspace_id}".encode()).digest()[:8],
             byteorder="big",
             signed=True,
         )
         await self._session.execute(select(func.pg_advisory_xact_lock(workspace_lock_key)))
+
+    async def reserve_scan(
+        self,
+        *,
+        workspace_id: UUID,
+        sync_id: UUID,
+        offset: int,
+        idempotency_key: str,
+        request_hash: str,
+        operation: str,
+    ) -> CatalogSyncReservation:
+        await self._lock_workspace(workspace_id)
+        replayed = await self.replay_scan(
+            workspace_id=workspace_id,
+            idempotency_key=idempotency_key,
+            request_hash=request_hash,
+            operation=operation,
+        )
+        if replayed is not None:
+            await self._session.rollback()
+            return CatalogSyncReservation(cursor=None, replayed=replayed)
+        workspace = await self._session.scalar(
+            select(WorkspaceModel).where(WorkspaceModel.id == workspace_id)
+        )
+        if workspace is None:
+            await self._session.rollback()
+            raise ValidationError("The catalog sync workspace does not exist.")
+        now = utc_now()
+        active = await self._session.scalar(
+            select(CatalogSyncRunModel)
+            .where(
+                CatalogSyncRunModel.workspace_id == workspace_id,
+                CatalogSyncRunModel.state == "ACTIVE",
+            )
+            .with_for_update()
+        )
+        if active is not None and active.sync_id != sync_id:
+            if active.heartbeat_at >= now - timedelta(hours=1):
+                await self._session.rollback()
+                raise ConflictError("Another catalog full reconciliation is active.")
+            active.state = "ABANDONED"
+            active.completed_at = now
+            active.heartbeat_at = now
+            active = None
+        if active is None:
+            if offset != 0:
+                await self._session.rollback()
+                raise ConflictError("A catalog reconciliation must begin at page zero.")
+            active = CatalogSyncRunModel(
+                workspace_id=workspace_id,
+                sync_id=sync_id,
+                state="ACTIVE",
+                next_offset=0,
+                next_cursor=None,
+                expected_total=None,
+                seen_count=0,
+                snapshot_consistent=False,
+                snapshot_evidence_reference=None,
+                snapshot_contract_hash=None,
+                snapshot_provider_version=None,
+                started_at=now,
+                heartbeat_at=now,
+            )
+            self._session.add(active)
+            await self._session.flush()
+        elif active.next_offset != offset:
+            await self._session.rollback()
+            raise ConflictError("The catalog reconciliation page is out of sequence.")
+        return CatalogSyncReservation(cursor=active.next_cursor)
+
+    async def release_scan(self) -> None:
+        await self._session.rollback()
+
+    async def abandon_scan(
+        self,
+        *,
+        workspace_id: UUID,
+        sync_id: UUID,
+    ) -> None:
+        now = utc_now()
+        await self._session.execute(
+            update(CatalogSyncRunModel)
+            .where(
+                CatalogSyncRunModel.workspace_id == workspace_id,
+                CatalogSyncRunModel.sync_id == sync_id,
+                CatalogSyncRunModel.state == "ACTIVE",
+            )
+            .values(
+                state="ABANDONED",
+                completed_at=now,
+                heartbeat_at=now,
+            )
+        )
+        await self._session.commit()
+
+    async def replay_scan(
+        self,
+        *,
+        workspace_id: UUID,
+        idempotency_key: str,
+        request_hash: str,
+        operation: str,
+    ) -> CatalogSyncResult | None:
+        existing = await SqlIdempotencyStore(self._session).get_result(
+            workspace_id=workspace_id,
+            key=idempotency_key,
+            operation=operation,
+        )
+        if existing is None:
+            return None
+        if existing.request_hash != request_hash:
+            raise ConflictError("The idempotency key was used with a different request.")
+        try:
+            result = existing.result
+            next_offset_raw = result["next_offset"]
+            next_offset = int(next_offset_raw) if next_offset_raw is not None else None
+            tombstone_status = str(result["tombstone_status"])
+            if tombstone_status not in {
+                "NOT_FINAL",
+                "APPLIED",
+                "SUPPRESSED_UNVERIFIED_SNAPSHOT",
+            }:
+                raise ValueError
+            return CatalogSyncResult(
+                upserted=int(result["upserted"]),
+                tombstoned=int(result["tombstoned"]),
+                next_offset=next_offset,
+                total=int(result["total"]),
+                observed_at=datetime.fromisoformat(str(result["observed_at"])),
+                tombstone_status=tombstone_status,
+            )
+        except (KeyError, TypeError, ValueError) as error:
+            raise ConflictError("The stored catalog sync replay result is invalid.") from error
+
+    async def expected_cursor(
+        self,
+        *,
+        workspace_id: UUID,
+        sync_id: UUID,
+        offset: int,
+    ) -> str | None:
+        active = await self._session.scalar(
+            select(CatalogSyncRunModel).where(
+                CatalogSyncRunModel.workspace_id == workspace_id,
+                CatalogSyncRunModel.state == "ACTIVE",
+            )
+        )
+        if active is None:
+            if offset != 0:
+                raise ConflictError("A catalog reconciliation must begin at page zero.")
+            return None
+        if active.sync_id != sync_id:
+            if offset == 0 and active.heartbeat_at < utc_now() - timedelta(hours=1):
+                return None
+            raise ConflictError("Another catalog full reconciliation is active.")
+        if active.next_offset != offset:
+            raise ConflictError("The catalog reconciliation page is out of sequence.")
+        return active.next_cursor
+
+    async def scan_progress(
+        self,
+        *,
+        workspace_id: UUID,
+        sync_id: UUID,
+    ) -> CatalogSyncProgress:
+        run = await self._session.scalar(
+            select(CatalogSyncRunModel).where(
+                CatalogSyncRunModel.workspace_id == workspace_id,
+                CatalogSyncRunModel.sync_id == sync_id,
+            )
+        )
+        if run is None:
+            return CatalogSyncProgress(
+                state="NOT_STARTED",
+                next_offset=0,
+                seen_count=0,
+                expected_total=None,
+                snapshot_consistent=False,
+            )
+        return CatalogSyncProgress(
+            state=run.state,
+            next_offset=run.next_offset if run.state == "ACTIVE" else None,
+            seen_count=run.seen_count,
+            expected_total=run.expected_total,
+            snapshot_consistent=run.snapshot_consistent,
+        )
+
+    async def upsert_scan(
+        self,
+        *,
+        workspace_id: UUID,
+        sync_id: UUID,
+        offset: int,
+        cursor: str | None,
+        next_offset: int | None,
+        next_cursor: str | None,
+        total: int,
+        snapshot_consistent: bool,
+        snapshot_evidence_reference: str | None,
+        snapshot_contract_hash: str | None,
+        snapshot_provider_version: str | None,
+        items: Sequence[DataHubScanAsset],
+        observed_at: datetime,
+        idempotency_key: str,
+        request_hash: str,
+        operation: str,
+    ) -> CatalogSyncResult:
+        for candidate in (cursor, next_cursor):
+            if candidate is not None and not 1 <= len(candidate) <= 4_096:
+                raise ValidationError("The catalog sync cursor is outside the configured bound.")
+        if snapshot_consistent:
+            if (
+                not isinstance(snapshot_evidence_reference, str)
+                or not 1 <= len(snapshot_evidence_reference) <= 500
+                or not isinstance(snapshot_contract_hash, str)
+                or re.fullmatch(r"[0-9a-f]{64}", snapshot_contract_hash) is None
+                or not isinstance(snapshot_provider_version, str)
+                or not 1 <= len(snapshot_provider_version) <= 128
+            ):
+                raise ValidationError(
+                    "A verified catalog snapshot requires bounded immutable evidence."
+                )
+        elif any(
+            value is not None
+            for value in (
+                snapshot_evidence_reference,
+                snapshot_contract_hash,
+                snapshot_provider_version,
+            )
+        ):
+            raise ValidationError(
+                "An unverified catalog snapshot cannot persist verification evidence."
+            )
+        idempotency = SqlIdempotencyStore(self._session)
+        await self._lock_workspace(workspace_id)
+        existing = await self.replay_scan(
+            workspace_id=workspace_id,
+            idempotency_key=idempotency_key,
+            request_hash=request_hash,
+            operation=operation,
+        )
+        if existing is not None:
+            await self._session.rollback()
+            return existing
         workspace = await self._session.scalar(
             select(WorkspaceModel).where(WorkspaceModel.id == workspace_id)
         )
@@ -978,26 +1395,74 @@ class SqlCatalogProjectionWriter(CatalogProjectionWriter):
             active.completed_at = now
             active = None
         if active is None:
-            if offset != 0:
+            if offset != 0 or cursor is not None:
                 raise ConflictError("A catalog reconciliation must begin at offset zero.")
             active = CatalogSyncRunModel(
                 workspace_id=workspace_id,
                 sync_id=sync_id,
                 state="ACTIVE",
                 next_offset=0,
+                next_cursor=None,
+                expected_total=total,
+                seen_count=0,
+                snapshot_consistent=snapshot_consistent,
+                snapshot_evidence_reference=snapshot_evidence_reference,
+                snapshot_contract_hash=snapshot_contract_hash,
+                snapshot_provider_version=snapshot_provider_version,
                 started_at=now,
                 heartbeat_at=now,
             )
             self._session.add(active)
-        elif active.next_offset != offset:
+        elif active.next_offset != offset or active.next_cursor != cursor:
             raise ConflictError("The catalog reconciliation page is out of sequence.")
-        for item in items:
-            urn_hash = hashlib.sha256(item.external_urn.encode()).hexdigest()
+        elif active.expected_total is None:
+            if offset != 0 or cursor is not None or active.seen_count != 0:
+                raise ConflictError("The catalog reconciliation reservation is invalid.")
+            active.expected_total = total
+            active.snapshot_consistent = snapshot_consistent
+            active.snapshot_evidence_reference = snapshot_evidence_reference
+            active.snapshot_contract_hash = snapshot_contract_hash
+            active.snapshot_provider_version = snapshot_provider_version
+        elif (
+            active.expected_total != total
+            or active.snapshot_consistent != snapshot_consistent
+            or active.snapshot_evidence_reference != snapshot_evidence_reference
+            or active.snapshot_contract_hash != snapshot_contract_hash
+            or active.snapshot_provider_version != snapshot_provider_version
+        ):
+            raise ConflictError("The catalog reconciliation snapshot changed between pages.")
+        if next_cursor is not None and (not next_cursor or next_cursor == cursor):
+            raise ConflictError("The catalog reconciliation cursor did not advance.")
+        bounded_items = tuple(_bounded_scan_asset(item) for item in items)
+        urn_hashes = tuple(
+            hashlib.sha256(item.external_urn.encode()).hexdigest() for item in bounded_items
+        )
+        if len(set(urn_hashes)) != len(urn_hashes):
+            raise ConflictError("The catalog reconciliation page contains duplicate assets.")
+        if urn_hashes:
+            previously_seen = await self._session.scalar(
+                select(AssetProjectionModel.id)
+                .where(
+                    AssetProjectionModel.workspace_id == workspace_id,
+                    AssetProjectionModel.last_seen_sync_id == sync_id,
+                    AssetProjectionModel.urn_hash.in_(urn_hashes),
+                )
+                .limit(1)
+            )
+            if previously_seen is not None:
+                raise ConflictError(
+                    "The catalog reconciliation repeated an asset from an earlier page."
+                )
+        for item, urn_hash in zip(bounded_items, urn_hashes, strict=True):
             mapped = item.classification is not None and (
                 item.classification is Classification.PUBLIC
                 or (item.domain_ref is not None and item.system_ref is not None)
             )
-            classification = int(item.classification or Classification.RESTRICTED)
+            classification = int(
+                item.classification
+                if item.classification is not None
+                else Classification.RESTRICTED
+            )
             domain_id = _scope_id("domain", item.domain_ref)
             system_id = _scope_id("system", item.system_ref)
             owner_department_id = _scope_id("owner", item.owner_ref)
@@ -1010,14 +1475,18 @@ class SqlCatalogProjectionWriter(CatalogProjectionWriter):
                 asset_type=item.asset_type,
                 name=item.name,
                 description=item.description,
+                description_truncated=item.description_truncated,
                 platform=item.platform,
                 database_name=item.database_name,
                 schema_name=item.schema_name,
                 owner_ref=item.owner_ref,
                 domain_ref=item.domain_ref,
                 tags=list(item.tags),
+                tags_truncated=item.tags_truncated,
                 glossary_terms=list(item.glossary_terms),
+                glossary_terms_truncated=item.glossary_terms_truncated,
                 column_names=list(item.column_names),
+                column_names_truncated=item.column_names_truncated,
                 source_created_at=item.created_at,
                 domain_id=domain_id,
                 system_id=system_id,
@@ -1040,14 +1509,18 @@ class SqlCatalogProjectionWriter(CatalogProjectionWriter):
                     "asset_type": item.asset_type,
                     "name": item.name,
                     "description": item.description,
+                    "description_truncated": item.description_truncated,
                     "platform": item.platform,
                     "database_name": item.database_name,
                     "schema_name": item.schema_name,
                     "owner_ref": item.owner_ref,
                     "domain_ref": item.domain_ref,
                     "tags": list(item.tags),
+                    "tags_truncated": item.tags_truncated,
                     "glossary_terms": list(item.glossary_terms),
+                    "glossary_terms_truncated": item.glossary_terms_truncated,
                     "column_names": list(item.column_names),
+                    "column_names_truncated": item.column_names_truncated,
                     "source_created_at": item.created_at,
                     "domain_id": domain_id,
                     "system_id": system_id,
@@ -1063,44 +1536,77 @@ class SqlCatalogProjectionWriter(CatalogProjectionWriter):
                 },
             )
             await self._session.execute(statement)
+        seen_count = active.seen_count + len(bounded_items)
+        expected_total = active.expected_total
+        if expected_total is None or seen_count > expected_total:
+            raise ConflictError("The catalog reconciliation exceeded its declared snapshot total.")
         tombstoned = 0
-        if next_offset is None:
-            tombstoned_ids = (
-                await self._session.scalars(
-                    update(AssetProjectionModel)
-                    .where(
-                        AssetProjectionModel.workspace_id == workspace_id,
-                        AssetProjectionModel.projection_source == "DATAHUB",
-                        AssetProjectionModel.deleted_at.is_(None),
-                        AssetProjectionModel.last_seen_sync_id.is_distinct_from(sync_id),
+        if next_cursor is None:
+            if next_offset is not None or seen_count != expected_total:
+                raise ConflictError("The catalog reconciliation snapshot is incomplete.")
+            if active.snapshot_consistent:
+                tombstoned_ids = (
+                    await self._session.scalars(
+                        update(AssetProjectionModel)
+                        .where(
+                            AssetProjectionModel.workspace_id == workspace_id,
+                            AssetProjectionModel.projection_source == "DATAHUB",
+                            AssetProjectionModel.deleted_at.is_(None),
+                            AssetProjectionModel.last_seen_sync_id.is_distinct_from(sync_id),
+                        )
+                        .values(
+                            lifecycle="DELETED",
+                            deleted_at=observed_at,
+                            updated_at=observed_at,
+                        )
+                        .returning(AssetProjectionModel.id)
                     )
-                    .values(
-                        lifecycle="DELETED",
-                        deleted_at=observed_at,
-                        updated_at=observed_at,
-                    )
-                    .returning(AssetProjectionModel.id)
-                )
-            ).all()
-            tombstoned = len(tombstoned_ids)
+                ).all()
+                tombstoned = len(tombstoned_ids)
             active.state = "COMPLETED"
             active.completed_at = now
         else:
+            if next_offset != offset + 1:
+                raise ConflictError("The catalog reconciliation page number did not advance.")
             active.next_offset = next_offset
+            active.next_cursor = next_cursor
+        active.seen_count = seen_count
         active.heartbeat_at = now
         await advance_catalog_projection_version(
             self._session,
             workspace_id=workspace_id,
+        )
+        tombstone_status = (
+            "NOT_FINAL"
+            if next_cursor is not None
+            else "APPLIED"
+            if active.snapshot_consistent
+            else "SUPPRESSED_UNVERIFIED_SNAPSHOT"
+        )
+        result = CatalogSyncResult(
+            upserted=len(items),
+            tombstoned=tombstoned,
+            next_offset=next_offset,
+            total=total,
+            observed_at=observed_at,
+            tombstone_status=tombstone_status,
         )
         await idempotency.save_result(
             workspace_id=workspace_id,
             key=idempotency_key,
             operation=operation,
             request_hash=request_hash,
-            result={"upserted": len(items), "tombstoned": tombstoned},
+            result={
+                "upserted": result.upserted,
+                "tombstoned": result.tombstoned,
+                "next_offset": result.next_offset,
+                "total": result.total,
+                "observed_at": result.observed_at.isoformat(),
+                "tombstone_status": result.tombstone_status,
+            },
         )
         await self._session.commit()
-        return len(items), tombstoned
+        return result
 
 
 async def advance_catalog_projection_version(

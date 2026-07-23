@@ -18,9 +18,17 @@ export function HighlightedText({ text, terms }: { text: string; terms: string[]
 
 export function CatalogMatchPreview({ fragments }: { fragments: CatalogMatchFragment[] }) {
   if (fragments.length === 0) return <CatalogEmptyValue />
-  return <span className="catalog-match-preview">{fragments.map((fragment) => (
-    <span key={`${fragment.field}-${fragment.text}`} title={fragment.text}>
-      <b>{fragment.field === 'NAME' ? 'Name' : 'Desc'}</b>
+  const labels: Record<CatalogMatchFragment['field'], string> = {
+    NAME: 'Name',
+    DESCRIPTION: 'Desc',
+    SCHEMA: 'Schema',
+    COLUMN: 'Column',
+    TAG: 'Tag',
+    TERM: 'Term',
+  }
+  return <span className="catalog-match-preview">{fragments.map((fragment, index) => (
+    <span key={`${fragment.field}-${index}-${fragment.text}`} title={fragment.text}>
+      <b>{labels[fragment.field]}</b>
       <HighlightedText text={fragment.text} terms={fragment.matched_terms} />
     </span>
   ))}</span>

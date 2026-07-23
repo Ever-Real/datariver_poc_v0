@@ -43,6 +43,70 @@ def test_catalog_summary_preserves_projected_term_and_tag_arrays() -> None:
         "semiconductor_scenario",
         "wafer",
     ]
+    assert response.description_truncated is False
+    assert response.tags_truncated is False
+    assert response.terms_truncated is False
+
+
+def test_catalog_summary_bounds_large_provider_values_and_reports_truncation() -> None:
+    observed_at = datetime.now(UTC)
+    asset = CatalogAssetIndex(
+        asset_id=uuid4(),
+        workspace_id=uuid4(),
+        external_urn="urn:li:dataset:large",
+        asset_type="TABLE",
+        name="large_asset",
+        description="d" * 12_000,
+        platform="postgres",
+        database_name="catalog",
+        schema_name="public",
+        owner=None,
+        domain=None,
+        tags=tuple(f"{index:03d}-{'t' * 500}" for index in range(105)),
+        glossary_terms=tuple(f"{index:03d}-{'g' * 500}" for index in range(105)),
+        domain_id=None,
+        system_id=None,
+        owner_department_id=None,
+        classification=Classification.PUBLIC,
+        lifecycle="ACTIVE",
+        source_version="projection-v1",
+        observed_at=observed_at,
+    )
+
+    summary = catalog_summary(asset)
+    detail = catalog_detail(
+        CatalogAssetDetail(
+            index=asset,
+            ownership=(),
+            glossary_terms=(),
+            tags=(),
+            schema_fields=(),
+            quality={},
+            raw_version="provider-v1",
+            observed_at=observed_at,
+            ownership_truncated=True,
+            glossary_terms_truncated=True,
+            tags_truncated=True,
+            description_truncated=True,
+        )
+    )
+
+    assert len(summary.description or "") == 1_000
+    assert len(summary.tags) == 20
+    assert len(summary.terms) == 20
+    assert all(len(value) <= 240 for value in [*summary.tags, *summary.terms])
+    assert summary.description_truncated is True
+    assert summary.tags_truncated is True
+    assert summary.terms_truncated is True
+
+    assert len(detail.description or "") == 10_000
+    assert len(detail.tags) == 100
+    assert len(detail.terms) == 100
+    assert all(len(value) <= 1_000 for value in [*detail.tags, *detail.terms])
+    assert detail.description_truncated is True
+    assert detail.tags_truncated is True
+    assert detail.terms_truncated is True
+    assert detail.ownership_truncated is True
 
 
 def test_catalog_detail_distinguishes_projection_and_provider_versions() -> None:

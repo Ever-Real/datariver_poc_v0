@@ -125,19 +125,22 @@ export function CatalogPage({
 
   useEffect(() => {
     const normalized = draftQuery.trim()
-    if (normalized.length < 2 || normalized === query) { setSuggestions([]); return }
+    if (normalized.length < 2 || normalized === query) { setSuggestions([]); setSuggestionIndex(-1); return }
     const controller = new AbortController()
     const timer = window.setTimeout(() => {
       void client.request<CatalogSuggestions>(`/catalog/suggestions?q=${encodeURIComponent(normalized)}&limit=8`, { signal: controller.signal })
         .then((response) => { if (!controller.signal.aborted) { setSuggestions(response.items); setSuggestionIndex(-1) } })
-        .catch(() => { if (!controller.signal.aborted) setSuggestions([]) })
+        .catch(() => { if (!controller.signal.aborted) { setSuggestions([]); setSuggestionIndex(-1) } })
     }, 300)
     return () => { controller.abort(); window.clearTimeout(timer) }
   }, [client, draftQuery, query])
 
   useEffect(() => {
     const close = (event: MouseEvent) => {
-      if (!suggestionRoot.current?.contains(event.target as Node)) setSuggestions([])
+      if (!suggestionRoot.current?.contains(event.target as Node)) {
+        setSuggestions([])
+        setSuggestionIndex(-1)
+      }
     }
     document.addEventListener('mousedown', close)
     return () => document.removeEventListener('mousedown', close)
@@ -154,18 +157,25 @@ export function CatalogPage({
   const commitQuery = (value: string) => {
     const normalized = value.trim()
     if (!validCatalogQuery(normalized)) { setError(new Error('검색어는 비워 두거나 2자 이상 입력하세요.')); return }
-    setDraftQuery(normalized); setQuery(normalized); setSuggestions([]); setCursors([undefined]); setPageIndex(0)
+    setDraftQuery(normalized); setQuery(normalized); setSuggestions([]); setSuggestionIndex(-1); setCursors([undefined]); setPageIndex(0)
     setSelectedAssetId(undefined)
     onQueryChange?.(normalized)
   }
 
   const submit = (event: FormEvent) => { event.preventDefault(); commitQuery(draftQuery) }
   const navigateSuggestions = (event: KeyboardEvent<HTMLInputElement>) => {
-    if (event.key === 'Escape') { setSuggestions([]); return }
-    if (suggestions.length === 0 || !['ArrowDown', 'ArrowUp', 'Enter'].includes(event.key)) return
+    if (event.key === 'Escape') { setSuggestions([]); setSuggestionIndex(-1); return }
+    if (event.key === 'Enter' && suggestionIndex < 0) {
+      event.preventDefault()
+      commitQuery(draftQuery)
+      return
+    }
+    if (suggestions.length === 0 || !['ArrowDown', 'ArrowUp', 'Home', 'End', 'Enter'].includes(event.key)) return
     event.preventDefault()
     if (event.key === 'ArrowDown') setSuggestionIndex((current) => Math.min(current + 1, suggestions.length - 1))
-    if (event.key === 'ArrowUp') setSuggestionIndex((current) => Math.max(current - 1, 0))
+    if (event.key === 'ArrowUp') setSuggestionIndex((current) => current < 0 ? suggestions.length - 1 : Math.max(current - 1, 0))
+    if (event.key === 'Home') setSuggestionIndex(0)
+    if (event.key === 'End') setSuggestionIndex(suggestions.length - 1)
     if (event.key === 'Enter' && suggestionIndex >= 0) {
       const selected = suggestions[suggestionIndex]
       if (selected) commitQuery(selected.name)
@@ -179,12 +189,12 @@ export function CatalogPage({
     { accessorKey: 'database_name', header: 'Database', size: 110, cell: ({ row }) => optionalTableText(row.original.database_name) },
     { accessorKey: 'schema_name', header: 'Schema', size: 110, cell: ({ row }) => optionalTableText(row.original.schema_name) },
     { accessorKey: 'name', header: 'Table / Asset', size: 210, cell: ({ row }) => <TruncatedText value={row.original.name} className="catalog-asset-name" /> },
-    { id: 'terms', accessorFn: (row) => (row.terms ?? []).join(' '), header: 'Terms', size: 170, cell: ({ row }) => <BadgeScroller label={`${row.original.name} Terms`} values={row.original.terms ?? []} /> },
-    { id: 'tags', accessorFn: (row) => (row.tags ?? []).join(' '), header: 'Tags', size: 170, cell: ({ row }) => <BadgeScroller label={`${row.original.name} Tags`} values={row.original.tags ?? []} /> },
+    { id: 'terms', accessorFn: (row) => (row.terms ?? []).join(' '), header: 'Terms', size: 170, cell: ({ row }) => <BadgeScroller label={`${row.original.name} Terms`} values={row.original.terms ?? []} truncated={row.original.terms_truncated} /> },
+    { id: 'tags', accessorFn: (row) => (row.tags ?? []).join(' '), header: 'Tags', size: 170, cell: ({ row }) => <BadgeScroller label={`${row.original.name} Tags`} values={row.original.tags ?? []} truncated={row.original.tags_truncated} /> },
     { accessorKey: 'owner', header: 'Owner', size: 140, cell: ({ row }) => optionalTableText(row.original.owner) },
     { accessorKey: 'domain', header: 'Domain', size: 130, cell: ({ row }) => optionalTableText(row.original.domain) },
     { accessorKey: 'classification', header: 'Class', size: 100, cell: ({ row }) => <span className="badge badge-soft">{row.original.classification}</span> },
-    { accessorKey: 'description', header: 'Description', size: 260, cell: ({ row }) => optionalTableText(row.original.description) },
+    { accessorKey: 'description', header: 'Description', size: 260, cell: ({ row }) => boundedTableText(row.original.description, row.original.description_truncated) },
     { id: 'matches', accessorFn: (row) => row.matches.map((match) => match.text).join(' '), header: 'Matches', size: 300, cell: ({ row }) => <CatalogMatchPreview fragments={row.original.matches} /> },
   ], [pageIndex, pageSize])
 
@@ -263,8 +273,9 @@ export function CatalogPage({
     itemCount: result?.items.length,
     onPrevious: () => setPageIndex((current) => Math.max(0, current - 1)),
     onNext: () => {
-      if (!result?.page.next_cursor) return
-      setCursors((current) => [...current.slice(0, pageIndex + 1), result.page.next_cursor])
+      const nextCursor = result?.page.next_cursor
+      if (!nextCursor) return
+      setCursors((current) => [...current.slice(0, pageIndex + 1), nextCursor])
       setPageIndex((current) => current + 1)
     },
     onPageSizeChange: (value: number) => {
@@ -280,9 +291,9 @@ export function CatalogPage({
           <div className="catalog-query-control" ref={suggestionRoot}>
             <Search size={16} aria-hidden="true" />
             <label className="sr-only" htmlFor="catalog-query">데이터셋 이름이나 설명 검색</label>
-            <input id="catalog-query" value={draftQuery} onChange={(event) => setDraftQuery(event.target.value)} onKeyDown={navigateSuggestions} placeholder="데이터셋 이름이나 설명 검색 (2자 이상)" maxLength={500} autoComplete="off" aria-controls={suggestions.length ? 'catalog-suggestions' : undefined} aria-expanded={suggestions.length > 0} />
+            <input id="catalog-query" value={draftQuery} onChange={(event) => { setDraftQuery(event.target.value); setSuggestionIndex(-1) }} onKeyDown={navigateSuggestions} placeholder="데이터셋 이름이나 설명 검색 (2자 이상)" maxLength={500} autoComplete="off" aria-controls="catalog-suggestions" aria-expanded={suggestions.length > 0} aria-autocomplete="list" aria-activedescendant={suggestionIndex >= 0 ? `catalog-suggestion-${suggestionIndex}` : undefined} role="combobox" />
             {suggestions.length > 0 && <ul id="catalog-suggestions" className="catalog-suggestions" role="listbox">
-              {suggestions.map((suggestion, index) => <li key={suggestion.id} role="option" aria-selected={index === suggestionIndex}><button type="button" onMouseDown={(event) => event.preventDefault()} onClick={() => commitQuery(suggestion.name)}><span><b>{suggestion.name}</b><small>{suggestion.asset_type} · {suggestion.platform ?? 'platform 미지정'}</small></span></button></li>)}
+              {suggestions.map((suggestion, index) => <li key={suggestion.id} role="none"><button id={`catalog-suggestion-${index}`} role="option" aria-selected={index === suggestionIndex} type="button" onMouseDown={(event) => event.preventDefault()} onClick={() => commitQuery(suggestion.name)}><span><b>{suggestion.name}</b><small>{suggestion.asset_type} · {[suggestion.platform, suggestion.database_name, suggestion.schema_name].filter(Boolean).join(' · ') || '위치 미지정'}</small><CatalogMatchPreview fragments={suggestion.matches ?? []} /></span></button></li>)}
             </ul>}
           </div>
           <button className="button" disabled={loading}><Search size={13} />{loading ? '검색 중…' : '검색'}</button>
@@ -325,19 +336,24 @@ export function CatalogPage({
     <div className={`catalog-workspace ${selectedAssetId ? 'with-detail' : ''}`} ref={workspaceRef} style={selectedAssetId ? { '--catalog-detail-width': `${detailWidth}px` } as CSSProperties : undefined}>
       <CatalogResourceTree client={client} selectedAssetId={selectedAssetId} onSelectAsset={selectAsset} />
       <section className="catalog-results" aria-label="카탈로그 검색 결과">
-        <header><div><span className="eyebrow">Permission scoped</span><h2>Search Results</h2><span>{result ? `${result.items.length} / ${(result.total ?? result.items.length).toLocaleString()} items` : '0 items'} · ALL keywords · ↔ 좌우 스크롤</span></div><CursorPagination {...paginationProps} label="Search Results 상단 페이지 탐색" /></header>
+        <header><div><span className="eyebrow">Permission scoped</span><h2>Search Results</h2><span>{result ? (result.total_exact ? `${result.total.toLocaleString()} items` : `현재 ${result.items.length.toLocaleString()}건${result.page.next_cursor ? ' · 더 있음' : ''}`) : '0 items'} · ALL keywords · ↔ 좌우 스크롤</span></div><CursorPagination {...paginationProps} label="Search Results 상단 페이지 탐색" /></header>
         <DenseDataTable caption="카탈로그 검색 결과" columns={columns} data={result?.items ?? []} getRowId={(item) => item.id} loading={loading} emptyMessage={query ? '검색 조건에 맞는 허용 자산이 없습니다.' : '현재 권한 범위에서 표시할 자산이 없습니다.'} selectedRowId={selectedAssetId} onRowActivate={(item) => selectAsset(item.id)} />
         <p className="catalog-local-table-note">열 정렬은 현재 로드된 {result?.items.length.toLocaleString() ?? 0}건에 적용됩니다.</p>
         <CursorPagination {...paginationProps} />
-        {result && <footer className="catalog-result-meta"><span>projection v{result.meta.projection_version}</span><span>policy {result.meta.policy_version}</span><time dateTime={result.meta.observed_at}>{result.meta.observed_at ? new Date(result.meta.observed_at).toLocaleString() : '관측 시각 없음'}</time></footer>}
+        {result && <footer className="catalog-result-meta"><span>projection v{result.meta.projection_version}</span><span>policy {result.meta.policy_version}</span><time dateTime={result.meta.observed_at ?? undefined}>{result.meta.observed_at ? new Date(result.meta.observed_at).toLocaleString() : '관측 시각 없음'}</time></footer>}
       </section>
       {selectedAssetId && <CatalogDetailPane key={selectedAssetId} client={client} assetId={selectedAssetId} onClose={closeSelectedAsset} onResizeWidth={resizeDetail} onSelectAsset={selectAsset} width={detailWidth} />}
     </div>
   </section>
 }
 
-function optionalTableText(value: string | undefined) {
+function optionalTableText(value: string | null | undefined) {
   return value?.trim() ? <TruncatedText value={value} /> : <CatalogEmptyValue />
+}
+
+function boundedTableText(value: string | null | undefined, truncated = false) {
+  if (!value?.trim()) return <CatalogEmptyValue />
+  return <span><TruncatedText value={value} />{truncated && <span aria-label="일부만 표시" title="응답 크기 제한으로 일부 내용만 표시됩니다."> …</span>}</span>
 }
 
 function classificationValue(value: string): Classification | undefined {
@@ -356,7 +372,7 @@ function FacetSelect({
   label: string
   value: string
   onChange: (value: string) => void
-  options: Array<{ value?: string; count: number }>
+  options: Array<{ value?: string | null; count: number }>
 }) {
   const available = options.filter((item): item is { value: string; count: number } => Boolean(item.value))
   const selectedMissing = value && !available.some((item) => item.value === value)

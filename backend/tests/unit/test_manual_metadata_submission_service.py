@@ -27,7 +27,7 @@ from datariver.application.ports import (
 from datariver.application.services.authorization import AuthorizationService
 from datariver.application.services.manual_metadata import ManualMetadataSubmissionService
 from datariver.domain.authz import Action, Classification, EnvironmentAttributes, SubjectAttributes
-from datariver.domain.common import DomainEvent, ForbiddenError
+from datariver.domain.common import ConflictError, DomainEvent, ForbiddenError
 from datariver.domain.manual_metadata import ManualColumnMetadata, ManualMetadataSubmission
 
 
@@ -68,6 +68,23 @@ class _DataHub:
             quality={},
             raw_version="provider-v1",
             observed_at=datetime.now(UTC),
+        )
+
+
+class _TruncatedDataHub(_DataHub):
+    async def get_asset(self, urn: str) -> DataHubAssetEnrichment:
+        enrichment = await super().get_asset(urn)
+        return DataHubAssetEnrichment(
+            ownership=enrichment.ownership,
+            glossary_terms=enrichment.glossary_terms,
+            tags=enrichment.tags,
+            schema_fields=enrichment.schema_fields,
+            quality=enrichment.quality,
+            raw_version=enrichment.raw_version,
+            observed_at=enrichment.observed_at,
+            schema_fields_total=1_001,
+            schema_fields_truncated=True,
+            schema_fields_total_exact=False,
         )
 
 
@@ -167,6 +184,7 @@ def _fixture(
     denied: Action | None = None,
     *,
     asset_type: str = "DATASET",
+    datahub: DataHubGateway | None = None,
 ) -> tuple[
     ManualMetadataSubmissionService,
     _Store,
@@ -204,7 +222,7 @@ def _fixture(
         index=cast(CatalogIndexReader, _Index(detail)),
         classification_access=cast(ClassificationAccessResolver, _Access()),
         authorization=cast(AuthorizationService, _Authorization(actions, denied)),
-        datahub=cast(DataHubGateway, _DataHub()),
+        datahub=datahub or cast(DataHubGateway, _DataHub()),
         object_store=cast(CatalogExportObjectStore, store),
         uow_factory=lambda: cast(GovernanceUnitOfWork, uow),
         infoschema_bucket="datariver-infoschema",
@@ -285,5 +303,35 @@ async def test_manual_submission_denial_never_writes_the_csv() -> None:
             idempotency_key="manual-submission-0002",
             request_hash="b" * 64,
         )
+    assert store.writes == []
+    assert uow.committed is False
+
+
+@pytest.mark.asyncio
+async def test_manual_submission_rejects_a_truncated_provider_schema() -> None:
+    service, store, uow, subject, environment, _, asset_id = _fixture(
+        datahub=cast(DataHubGateway, _TruncatedDataHub())
+    )
+
+    with pytest.raises(ConflictError) as captured:
+        await service.submit(
+            asset_id=asset_id,
+            source_version="source-v1",
+            description="updated",
+            domain=None,
+            tags=(),
+            terms=(),
+            columns=(
+                ManualColumnMetadata("wafer_id", "Identifier", (), ()),
+                ManualColumnMetadata("measured_at", "Observed time", (), ()),
+            ),
+            subject=subject,
+            environment=environment,
+            request_id="manual-truncated-schema",
+            idempotency_key="manual-submission-0003",
+            request_hash="c" * 64,
+        )
+
+    assert captured.value.details == {"code": "SCHEMA_FIELDS_TRUNCATED"}
     assert store.writes == []
     assert uow.committed is False

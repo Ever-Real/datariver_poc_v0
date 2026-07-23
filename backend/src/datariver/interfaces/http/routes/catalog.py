@@ -57,10 +57,12 @@ from datariver.interfaces.http.schemas import (
     CatalogFacetsResponse,
     CatalogLineageEdgeResponse,
     CatalogLineageResponse,
+    CatalogMatchFragmentResponse,
     CatalogPolicyMeta,
     CatalogSearchResponse,
     CatalogSuggestionResponse,
     CatalogSuggestionsResponse,
+    CatalogSyncProgressResponse,
     CatalogSyncRequest,
     CatalogSyncResponse,
     CatalogTreeNodeResponse,
@@ -327,6 +329,33 @@ async def sync_datahub_catalog(
         next_offset=result.next_offset,
         total=result.total,
         observed_at=result.observed_at,
+        tombstone_status=result.tombstone_status,
+    )
+
+
+@router.get(
+    "/sync/datahub/{sync_id}",
+    response_model=CatalogSyncProgressResponse,
+)
+async def get_datahub_catalog_sync_progress(
+    sync_id: UUID,
+    request: Request,
+    context: ContextDep,
+    session: SessionDep,
+) -> CatalogSyncProgressResponse:
+    progress = await _sync_service(request, session).progress(
+        workspace_id=context.workspace_id,
+        sync_id=sync_id,
+        subject=context.subject,
+        environment=context.environment,
+        request_id=context.request_id,
+    )
+    return CatalogSyncProgressResponse(
+        state=progress.state,
+        next_offset=progress.next_offset,
+        seen_count=progress.seen_count,
+        expected_total=progress.expected_total,
+        snapshot_consistent=progress.snapshot_consistent,
     )
 
 
@@ -377,6 +406,7 @@ async def search_assets(
         items=[catalog_summary(item) for item in page.items],
         page=PageMeta(next_cursor=page.next_cursor, limit=limit),
         total=page.total,
+        total_exact=page.total_exact,
         meta=CatalogPolicyMeta(
             observed_at=page.observed_at,
             stale_at=page.stale_at,
@@ -490,6 +520,16 @@ async def catalog_suggestions(
                 name=item.name,
                 asset_type=item.asset_type,
                 platform=item.platform,
+                database_name=item.database_name,
+                schema_name=item.schema_name,
+                matches=[
+                    CatalogMatchFragmentResponse(
+                        field=match.field,
+                        text=match.text,
+                        matched_terms=list(match.matched_terms),
+                    )
+                    for match in item.matches
+                ],
             )
             for item in suggestions.items
         ],

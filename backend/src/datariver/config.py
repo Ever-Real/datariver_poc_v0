@@ -194,6 +194,11 @@ class Settings(BaseSettings):
     datahub_circuit_failure_threshold: int = Field(default=5, ge=1, le=100)
     datahub_circuit_open_seconds: float = Field(default=30.0, ge=1, le=300)
     datahub_stale_ttl_seconds: int = Field(default=900, ge=30, le=86_400)
+    datahub_catalog_pit_verified: bool = False
+    datahub_catalog_pit_evidence_reference: str | None = Field(
+        default=None,
+        max_length=500,
+    )
     ui_datahub_url: HttpUrl | None = None
     ui_airflow_url: HttpUrl | None = None
     ui_grafana_url: HttpUrl | None = None
@@ -490,6 +495,17 @@ class Settings(BaseSettings):
             raise ValueError("Cache and delivery must use separate Redis service origins.")
         if self.datahub_stale_ttl_seconds < self.cache_default_ttl_seconds:
             raise ValueError("The DataHub stale TTL cannot be shorter than the fresh cache TTL.")
+        if self.datahub_catalog_pit_verified and not (
+            self.datahub_catalog_pit_evidence_reference
+            and self.datahub_catalog_pit_evidence_reference.strip()
+        ):
+            raise ValueError(
+                "Verified DataHub catalog PIT requires an operator evidence reference."
+            )
+        if self.datahub_catalog_pit_verified and self.datahub_version_enforcement != "enforce":
+            raise ValueError(
+                "Verified DataHub catalog PIT requires enforced provider version compatibility."
+            )
         for allowed_version in self.datahub_allowed_versions:
             if (
                 re.fullmatch(

@@ -171,20 +171,70 @@ def admin_read_context_response(context: AdminReadContext) -> AdminReadContextRe
     )
 
 
-def catalog_summary(asset: CatalogAssetIndex) -> CatalogAssetSummary:
+CATALOG_SUMMARY_DESCRIPTION_CHARACTERS = 1_000
+CATALOG_SUMMARY_METADATA_ITEMS = 20
+CATALOG_SUMMARY_METADATA_CHARACTERS = 240
+CATALOG_DETAIL_DESCRIPTION_CHARACTERS = 10_000
+CATALOG_DETAIL_METADATA_ITEMS = 100
+CATALOG_DETAIL_METADATA_CHARACTERS = 1_000
+
+
+def _bounded_text(value: str | None, *, maximum_characters: int) -> tuple[str | None, bool]:
+    if value is None:
+        return None, False
+    return value[:maximum_characters], len(value) > maximum_characters
+
+
+def _bounded_values(
+    values: tuple[str, ...],
+    *,
+    maximum_items: int,
+    maximum_characters: int,
+) -> tuple[list[str], bool]:
+    bounded = [value[:maximum_characters] for value in values[:maximum_items]]
+    truncated = len(values) > maximum_items or any(
+        len(value) > maximum_characters for value in values[:maximum_items]
+    )
+    return bounded, truncated
+
+
+def catalog_summary(
+    asset: CatalogAssetIndex,
+    *,
+    description_characters: int = CATALOG_SUMMARY_DESCRIPTION_CHARACTERS,
+    metadata_items: int = CATALOG_SUMMARY_METADATA_ITEMS,
+    metadata_characters: int = CATALOG_SUMMARY_METADATA_CHARACTERS,
+) -> CatalogAssetSummary:
+    description, description_truncated = _bounded_text(
+        asset.description,
+        maximum_characters=description_characters,
+    )
+    tags, tags_truncated = _bounded_values(
+        asset.tags,
+        maximum_items=metadata_items,
+        maximum_characters=metadata_characters,
+    )
+    terms, terms_truncated = _bounded_values(
+        asset.glossary_terms,
+        maximum_items=metadata_items,
+        maximum_characters=metadata_characters,
+    )
     return CatalogAssetSummary(
         id=asset.asset_id,
         external_urn=asset.external_urn,
         asset_type=asset.asset_type,
         name=asset.name,
-        description=asset.description,
+        description=description,
         platform=asset.platform,
         database_name=asset.database_name,
         schema_name=asset.schema_name,
         owner=asset.owner,
         domain=asset.domain,
-        tags=list(asset.tags),
-        terms=list(asset.glossary_terms),
+        tags=tags,
+        terms=terms,
+        description_truncated=description_truncated or asset.description_truncated,
+        tags_truncated=tags_truncated or asset.tags_truncated,
+        terms_truncated=terms_truncated or asset.glossary_terms_truncated,
         created_at=asset.created_at,
         classification=asset.classification.name,
         lifecycle=asset.lifecycle,
@@ -206,15 +256,27 @@ def catalog_detail(
     field_offset: int = 0,
     field_limit: int = 100,
 ) -> CatalogAssetResponse:
-    summary = catalog_summary(asset.index)
+    summary = catalog_summary(
+        asset.index,
+        description_characters=CATALOG_DETAIL_DESCRIPTION_CHARACTERS,
+        metadata_items=CATALOG_DETAIL_METADATA_ITEMS,
+        metadata_characters=CATALOG_DETAIL_METADATA_CHARACTERS,
+    )
     field_end = field_offset + field_limit
     fields_available = len(asset.schema_fields)
     fields_total = (
         asset.schema_fields_total if asset.schema_fields_total is not None else fields_available
     )
+    summary_document = summary.model_dump()
+    summary_document["description_truncated"] = (
+        summary.description_truncated or asset.description_truncated
+    )
+    summary_document["tags_truncated"] = summary.tags_truncated or asset.tags_truncated
+    summary_document["terms_truncated"] = summary.terms_truncated or asset.glossary_terms_truncated
     return CatalogAssetResponse(
-        **summary.model_dump(),
+        **summary_document,
         ownership=list(asset.ownership),
+        ownership_truncated=asset.ownership_truncated,
         glossary_terms=list(asset.glossary_terms),
         schema_fields=list(asset.schema_fields[field_offset:field_end]),
         schema_fields_total=fields_total,

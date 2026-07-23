@@ -25,7 +25,7 @@ describe('application shell contracts', () => {
     vi.stubGlobal('fetch', fetchMock)
     render(<GlobalCatalogSearch onSearch={onSearch} />)
 
-    const input = screen.getByRole('textbox', { name: '카탈로그 검색' })
+    const input = screen.getByRole('combobox', { name: '카탈로그 검색' })
     fireEvent.change(input, { target: { value: ' a ' } })
     fireEvent.submit(screen.getByRole('search', { name: '전역 카탈로그 검색' }))
     expect(screen.getByRole('alert')).toHaveTextContent('2자 이상')
@@ -37,6 +37,61 @@ describe('application shell contracts', () => {
     expect(fetchMock).not.toHaveBeenCalled()
   })
 
+  it('shows bounded match evidence for every field used by the global preview', async () => {
+    const request = vi.fn((path: string, options?: { signal?: AbortSignal }) => {
+      void path
+      void options
+      return Promise.resolve({
+        items: [{
+        id: 'asset-one',
+        name: 'wafer_events',
+        asset_type: 'TABLE',
+        platform: 'postgres',
+        database_name: 'analytics',
+        schema_name: 'manufacturing',
+        matches: [
+          { field: 'NAME', text: 'wafer_events', matched_terms: ['wafer'] },
+          { field: 'DESCRIPTION', text: 'Yield evidence', matched_terms: ['yield'] },
+        ],
+      }, {
+        id: 'asset-two',
+        name: 'yield_summary',
+        asset_type: 'VIEW',
+        platform: 'postgres',
+        database_name: 'analytics',
+        schema_name: 'manufacturing',
+        matches: [{ field: 'DESCRIPTION', text: 'wafer yield summary', matched_terms: ['wafer', 'yield'] }],
+      }],
+      meta: { projection_version: 1, policy_version: 'test' },
+        match_mode: 'ALL',
+      })
+    })
+    const onSearch = vi.fn()
+    render(<GlobalCatalogSearch client={{ request } as unknown as ApiClient} onSearch={onSearch} />)
+
+    const input = screen.getByRole('combobox', { name: '카탈로그 검색' })
+    fireEvent.focus(input)
+    fireEvent.change(input, { target: { value: 'wafer yield' } })
+
+    expect(await screen.findByText('Yield evidence')).toBeInTheDocument()
+    expect(screen.getByText('이름 · wafer')).toBeInTheDocument()
+    expect(screen.getByText('설명 · yield')).toBeInTheDocument()
+    fireEvent.keyDown(input, { key: 'Enter' })
+    expect(onSearch).toHaveBeenCalledWith('wafer yield')
+    fireEvent.focus(input)
+    await screen.findByRole('option', { name: /wafer_events/ })
+    fireEvent.keyDown(input, { key: 'ArrowDown' })
+    expect(screen.getByRole('option', { name: /wafer_events/ })).toHaveAttribute('aria-selected', 'true')
+    expect(request.mock.calls[0]?.[0]).toBe('/catalog/suggestions?q=wafer%20yield&limit=8')
+    expect(request.mock.calls[0]?.[1]?.signal).toBeInstanceOf(AbortSignal)
+    fireEvent.keyDown(input, { key: 'Escape' })
+    expect(screen.queryByRole('listbox', { name: '카탈로그 검색 제안' })).not.toBeInTheDocument()
+    fireEvent.change(input, { target: { value: 'wafer yield revised' } })
+    expect(await screen.findByRole('option', { name: /yield_summary/ })).toBeInTheDocument()
+    fireEvent.keyDown(input, { key: 'ArrowUp' })
+    expect(screen.getByRole('option', { name: /yield_summary/ })).toHaveAttribute('aria-selected', 'true')
+  })
+
   it('updates and queries server catalog contracts without catalog preload', async () => {
     const request = vi.fn((path: string) => {
       if (path.startsWith('/catalog/tree/')) return Promise.resolve({ items: [], page: { limit: 100 }, meta: { projection_version: 1, policy_version: 'test' } })
@@ -45,9 +100,9 @@ describe('application shell contracts', () => {
     })
     const client = { request } as unknown as ApiClient
     const view = render(<CatalogPage client={client} initialQuery="wafer" />)
-    expect(screen.getByRole('textbox', { name: /데이터셋 이름이나 설명 검색/ })).toHaveValue('wafer')
+    expect(screen.getByRole('combobox', { name: /데이터셋 이름이나 설명 검색/ })).toHaveValue('wafer')
     view.rerender(<CatalogPage client={client} initialQuery="yield" />)
-    expect(screen.getByRole('textbox', { name: /데이터셋 이름이나 설명 검색/ })).toHaveValue('yield')
+    expect(screen.getByRole('combobox', { name: /데이터셋 이름이나 설명 검색/ })).toHaveValue('yield')
     await waitFor(() => expect(request).toHaveBeenCalledWith(expect.stringContaining('/catalog/assets?q=yield&limit=50'), expect.anything()))
     expect(request.mock.calls.some(([path]) => String(path).includes('10000'))).toBe(false)
   })
@@ -71,6 +126,48 @@ describe('application shell contracts', () => {
     expect(screen.getByRole('textbox', { name: 'Workspace scoped value' })).toHaveValue('secret-a')
     view.rerender(<AppShell {...common} workspace="workspace-b"><WorkspaceScopedInput /></AppShell>)
     expect(screen.getByRole('textbox', { name: 'Workspace scoped value' })).toHaveValue('')
+  })
+
+  it('purges global search state and discards a late response on workspace switch', async () => {
+    let resolveSuggestion: ((value: unknown) => void) | undefined
+    const request = vi.fn(() => new Promise((resolve) => {
+      resolveSuggestion = resolve
+    }))
+    const common = {
+      page: 'catalog' as const,
+      client: { request } as unknown as ApiClient,
+      displayName: 'User',
+      adminMenuItems: [],
+      externalSystemLinks: [],
+      onNavigate: vi.fn(),
+      onNavigateAdmin: vi.fn(),
+      onSearch: vi.fn(),
+      onWorkspaceChange: vi.fn(),
+      onEnrollSecurityKey: vi.fn(),
+      onSignOut: vi.fn(),
+      onClearNotice: vi.fn(),
+    }
+    const view = render(<AppShell {...common} workspace="workspace-a"><div /></AppShell>)
+    const input = screen.getByRole('combobox', { name: '카탈로그 검색' })
+    fireEvent.focus(input)
+    fireEvent.change(input, { target: { value: 'secret-a' } })
+    await waitFor(() => expect(request).toHaveBeenCalledTimes(1))
+
+    view.rerender(<AppShell {...common} workspace="workspace-b"><div /></AppShell>)
+    expect(screen.getByRole('combobox', { name: '카탈로그 검색' })).toHaveValue('')
+
+    resolveSuggestion?.({
+      items: [{
+        id: 'asset-a',
+        name: 'secret-a',
+        asset_type: 'TABLE',
+        matches: [{ field: 'NAME', text: 'secret-a', matched_terms: ['secret-a'] }],
+      }],
+      meta: { projection_version: 1, policy_version: 'test' },
+      match_mode: 'ALL',
+    })
+    await Promise.resolve()
+    expect(screen.queryByText('secret-a', { selector: 'strong' })).not.toBeInTheDocument()
   })
 
   it('derives administration tabs from exact server operations', () => {

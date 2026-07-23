@@ -33,6 +33,7 @@ from datariver.domain.authz import (
 )
 from datariver.domain.common import ConflictError, canonical_json_hash
 from datariver.infrastructure.db.admin_access import SqlAdminAccessUnitOfWork
+from datariver.infrastructure.db.revision import REQUIRED_DATABASE_REVISION
 from datariver.infrastructure.db.rls import set_security_context
 from datariver.infrastructure.secrets import SecretResolver
 
@@ -163,7 +164,7 @@ async def _prepare_fixture(admin_engine: AsyncEngine, fixture: PolicyFixture) ->
     async with admin_engine.begin() as connection:
         await _set_fixture_security_context(connection, fixture)
         revision = await connection.scalar(text("SELECT version_num FROM alembic_version"))
-        assert revision == "0044"
+        assert revision == REQUIRED_DATABASE_REVISION
         await connection.execute(
             text(
                 """

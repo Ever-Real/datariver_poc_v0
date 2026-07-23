@@ -74,7 +74,7 @@ first.
 - PostgreSQL and the application remain architecture-neutral. The same source revision and lockfiles
   build separate `linux/arm64` and `linux/amd64` images.
 - Redis and S3/MinIO are external connector choices and never canonical RBAC/retention stores.
-- A clean environment bootstraps secrets locally, applies Alembic through required revision `0044`,
+- A clean environment bootstraps secrets locally, applies Alembic through required revision `0045`,
   and never copies another machine's `.env`, secrets or volumes.
 
 ## Phase acceptance

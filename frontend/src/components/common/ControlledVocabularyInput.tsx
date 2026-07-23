@@ -12,9 +12,10 @@ interface BadgeScrollerProps {
   onRemove?: (value: string) => void
   className?: string
   controls?: boolean
+  truncated?: boolean
 }
 
-export function BadgeScroller({ values, label, onRemove, className = '', controls = true }: BadgeScrollerProps) {
+export function BadgeScroller({ values, label, onRemove, className = '', controls = true, truncated = false }: BadgeScrollerProps) {
   const trackRef = useRef<HTMLDivElement>(null)
   const dragRef = useRef<{ pointerId: number; startX: number; startScrollLeft: number } | undefined>(undefined)
 
@@ -51,6 +52,7 @@ export function BadgeScroller({ values, label, onRemove, className = '', control
       ref={trackRef}
     >
       {values.map((value) => <span className="badge badge-soft" key={value} title={value}>{value}{onRemove && <button aria-label={`${value} 제거`} onClick={(event) => { event.stopPropagation(); onRemove(value) }} onPointerDown={(event) => event.stopPropagation()} type="button">×</button>}</span>)}
+      {truncated && <span aria-label="일부만 표시" className="badge badge-soft" title="응답 크기 제한으로 일부 값만 표시됩니다.">…</span>}
     </div>
     {controls && <button aria-label={`${label} 다음 항목`} className="badge-scroller-arrow badge-scroller-arrow-right" onClick={(event) => { event.stopPropagation(); scroll(140) }} type="button"><ChevronRight size={12} /></button>}
   </div>

@@ -108,8 +108,8 @@ class MemoryDataHub:
     async def capability(self) -> CapabilityStatus:
         return CapabilityStatus("datahub", "healthy", datetime.now(UTC))
 
-    async def scan_assets(self, *, offset: int, limit: int) -> DataHubScanPage:
-        raise NotImplementedError(offset, limit)
+    async def scan_assets(self, *, cursor: str | None, limit: int) -> DataHubScanPage:
+        raise NotImplementedError(cursor, limit)
 
     async def search_vocabulary(self, *, kind: str, query: str, limit: int) -> tuple[str, ...]:
         raise NotImplementedError(kind, query, limit)

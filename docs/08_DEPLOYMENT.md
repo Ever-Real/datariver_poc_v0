@@ -57,6 +57,56 @@ uv run python scripts/verify_datahub_contract.py \
 A successful image/version check is only the first gate; the live provider contract tests listed
 below remain mandatory.
 
+### DataHub reconciliation deletion gate
+
+Catalog refresh uses DataHub `scrollAcrossEntities`; it does not use mutable numeric provider
+offsets. The opaque scroll cursor stays in `catalog.sync_runs` and never crosses the public API.
+DataHub v1.6 has point-in-time creation disabled by default, so an image or API version match is not
+evidence that missing assets may be treated as deleted.
+
+Keep these defaults in every new Mac/arm64 and WSL/linux-amd64 environment:
+
+```dotenv
+DATAHUB_CATALOG_PIT_VERIFIED=false
+DATARIVER_CATALOG_SYNC_MAX_PAGES=10002
+```
+
+With the default, a complete run refreshes present rows and reports
+`SUPPRESSED_UNVERIFIED_SNAPSHOT`; it does not tombstone missing rows. Enable deletion only after the
+external DataHub owner has proved PIT support for the exact Elasticsearch/OpenSearch runtime and
+accepted a live test covering concurrent add/delete, cursor expiry, response-loss replay and
+exact-multiple terminal paging:
+
+```dotenv
+DATAHUB_VERSION_ENFORCEMENT=enforce
+DATAHUB_CATALOG_PIT_VERIFIED=true
+DATAHUB_CATALOG_PIT_EVIDENCE_REFERENCE=ops://datahub/pit/accepted-run-id
+```
+
+All three values are required. `report` mode cannot be combined with verified PIT. A changed
+DataHub/search-backend version or topology invalidates the evidence and requires the gate to return
+to `false` until reaccepted. `DATARIVER_CATALOG_SYNC_MAX_PAGES` accepts `1..100002`; the default
+supports one million assets at 100 per page plus an empty terminal probe. See
+[ADR-0040](adr/0040-datahub-scroll-pit-reconciliation.md).
+
+Each verified run forces a fresh provider-version probe on page zero and stores the evidence
+reference, observed version and a SHA-256 bound to the normalized DataHub origin and fixed scroll
+contract. Changing an endpoint or scan contract therefore changes the run authority; an ordinary
+cached capability probe is not accepted as deletion evidence.
+
+Each Airflow attempt first reads `GET /catalog/sync/datahub/{sync_id}` and resumes from the persisted
+public page ordinal; it does not replay every earlier page and consume the five-minute provider
+cursor keepalive. A completed run returns immediately, while an abandoned run requires a new DAG run
+and therefore a new deterministic `sync_id`. DataRiver holds a transaction-scoped workspace
+reconciliation reservation across each bounded DataHub call and commit. A non-configurable 10-second
+provider budget covers queue wait, a page-zero version probe, GraphQL and every adaptive retry
+together; it is deliberately below both the runtime PostgreSQL 15-second statement timeout for a
+waiting duplicate lock and its 30-second `idle_in_transaction_session_timeout`. Expiry rolls back
+the reservation and returns a retryable dependency error. Size the API connection pool for the
+approved number of concurrent workspace syncs. If a provider response exceeds the 8 MiB transport
+boundary, the API retries the same cursor with page sizes `100 -> 50 -> 25 -> ... -> 1`; a single
+entity that still exceeds the boundary fails closed and requires provider/schema remediation.
+
 ## Configuration and bootstrap
 
 Bootstrap generates ignored, permission-restricted secret files plus `.env` and the runtime Keycloak
@@ -358,14 +408,14 @@ egress or a DataHub credential. The complete Linux/WSL boundary is
 
 ## Database and object operations
 
-- Alembic has one head at `0044`: the generated current initial schema plus conditional compatibility bridges for local databases that applied earlier revisions. Deployment runs migration before API/workers. The API role can only read `public.alembic_version` for readiness; migration ownership remains separate. After explicitly bounded compatibility repairs, the Policy Book and retention-execution bridges verify exact column type/length/nullability/timezone/default, PK/UQ, CHECK SQL, FK columns/target/delete action, index columns/uniqueness and forced-RLS policy definitions; same-name malformed objects and every remaining partial schema are rejected. Revision `0044` adds the bounded Admin cursor indexes concurrently and outside a migration transaction. It preserves an exact valid/ready canonical B-tree, drops and rebuilds only an exact invalid interrupted build, and fails closed on a same-name access-method/opclass/collation/INCLUDE/constraint/key mismatch. Operators must complete the revision and verify all six indexes are valid/ready before starting the API.
+- Alembic has one head at `0045`: the generated current initial schema plus conditional compatibility bridges for local databases that applied earlier revisions. Deployment runs migration before API/workers. The API role can only read `public.alembic_version` for readiness; migration ownership remains separate. After explicitly bounded compatibility repairs, the Policy Book and retention-execution bridges verify exact column type/length/nullability/timezone/default, PK/UQ, CHECK SQL, FK columns/target/delete action, index columns/uniqueness and forced-RLS policy definitions; same-name malformed objects and every remaining partial schema are rejected. Revision `0044` adds the bounded Admin cursor indexes concurrently and outside a migration transaction. It preserves an exact valid/ready canonical B-tree, drops and rebuilds only an exact invalid interrupted build, and fails closed on a same-name access-method/opclass/collation/INCLUDE/constraint/key mismatch. Revision `0045` truncates only the rebuildable catalog projection to the ADR-0039 limits, adds validated CHECK constraints and fails closed on same-name definition drift. Operators must complete the revision and verify the constraints and all six indexes before starting the API.
 - Existing PostgreSQL volumes must reconcile runtime roles before migration so `0042` can grant the
   new least-privilege capabilities. Run `scripts/reconcile-postgres-roles.sh` on macOS/Linux/WSL or
   `scripts/reconcile-postgres-roles.ps1` on Windows, run the migration service, then run the same
   reconciliation once more. The second pass is intentional: the idempotent init hook grants the
   Phase 2 tables even when an old volume created the roles only after `0042` had already run.
 - PostgreSQL pool size/overflow/lease timeout, statement timeout, idle-transaction timeout and application names are explicit. Budget `API replicas × (API pool + overflow) + long-running workers × (worker pool + overflow) + one-shot/IdP/Airflow/admin reserve`; current one-API/four-worker defaults have a ceiling of 60 before reserve.
-- Liveness is process-only. Readiness leases the API pool and requires exactly packaged Alembic head `0044`; Compose and APISIX use readiness for upstream health.
+- Liveness is process-only. Readiness leases the API pool and requires exactly packaged Alembic head `0045`; Compose and APISIX use readiness for upstream health.
 - `scripts/probe_pgbouncer_rls.py` and its unit contract implement the pre-adoption transaction-pool leakage gate. No Compose profile currently deploys PgBouncer and no live pooler pass has been recorded; direct PostgreSQL remains the supported path until the isolated two-workspace probe succeeds.
 - Back up PostgreSQL and the selected external S3 store as a consistency set or record a watermark; restore into isolation and follow the drill in [operations runbook](13_OPERATIONS_RUNBOOK.md) before traffic.
 - Accepted-object retention/lifecycle is environment policy. Quarantine receives a shorter cleanup policy, but never delete an object whose manifest is actively leased.

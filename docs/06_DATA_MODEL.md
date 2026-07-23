@@ -72,26 +72,38 @@ Missing or inconsistent active state falls back to the portable static floor.
 
 | Table | Key columns and constraints | Purpose |
 |---|---|---|
-| `catalog.assets_projection` | `id`, `workspace_id + urn_hash UQ`, external identity/scope/classification/lifecycle, nullable typed-container `database_name`/`schema_name`, bounded provider display summary (`owner_ref`, `domain_ref`, tag/term arrays, projected `column_names` and source-created time), stored `search_vector`, source version/owner, `last_seen_sync_id`, observed/deleted times | authorized search/tree/base-detail projection; projected column paths only power bounded discovery and DataHub remains canonical for detailed column metadata |
-| `catalog.sync_runs` | PK workspace/sync, state/next offset/start/heartbeat/completion | single-writer ordered full reconciliation and stale-run recovery |
+| `catalog.assets_projection` | `id`, `workspace_id + urn_hash UQ`, non-empty external URN `<= 4,096`, external identity/scope/classification/lifecycle, nullable typed-container `database_name`/`schema_name`, provider display projection with validated CHECK bounds (`description <= 10,000` characters, string-only tags/terms `<= 100` items, string-only `column_names <= 1,000` items), four explicit truncation-provenance flags, `owner_ref`, `domain_ref`, source-created time, stored `search_vector`, source version/owner, `last_seen_sync_id`, observed/deleted times | authorized search/tree/base-detail projection; projected values only power bounded discovery and DataHub remains canonical for detailed metadata |
+| `catalog.sync_runs` | PK workspace/sync, state/public page ordinal, bounded server-owned nullable scroll cursor, nullable first-page expected total, non-negative distinct seen count, snapshot-consistent assertion, bounded evidence reference, configuration-contract SHA-256 and observed provider version, start/heartbeat/completion | single-writer ordered full reconciliation, run-pinned deletion authority, response-loss replay and stale/cursor-failure recovery |
 | `catalog.projection_watermarks` | `workspace_id PK/FK`, non-negative `projection_version BIGINT` | transactional local read-model generation used for cache invalidation |
 | `catalog.export_requests` | workspace/requester/job composite FKs, canonical request and security/source hashes, non-RESTRICTED classification ceiling, private artifact receipt, format-safety version and access deadline; owner-select plus forced workspace RLS | owner-scoped managed CSV/XLSX intent and verified artifact metadata; object content remains private storage state |
 
-Projection page idempotency is recorded in `integration.idempotency_keys`. Every committed page
+Projection page idempotency is recorded in `integration.idempotency_keys`, including the complete
+prior result needed to replay a lost response without another provider call. Every committed page
 advances the workspace projection version exactly once in the same transaction; replay, rejection
-and rollback do not. Final-page reconciliation tombstones missing `DATAHUB` rows and never
-seed-owned rows. `sync_runs.state` records reconciliation completeness, while the version records
-only a committed local generation. Active rows have a workspace/scope/order partial index, GIN
+and rollback do not. Before any provider call, a workspace advisory transaction reserves the
+corresponding ACTIVE run/page; this serializes provider snapshot acquisition and page application.
+The same lock rechecks idempotency so a concurrent duplicate returns the committed result. A fixed
+DataHub scroll freezes the first total, and every page must preserve the
+same total, advance the server-owned cursor and add unique URNs. Terminal reconciliation requires
+`seen_count == expected_total`. It tombstones missing `DATAHUB` rows only when the deployment's
+point-in-time assertion has separately accepted operator evidence; otherwise completion is recorded
+with deletion suppressed. A verified run freezes its evidence reference, provider-contract hash and
+observed provider version on the first page and rejects drift on continuation. Seed-owned rows are
+never tombstoned. Legacy active runs are abandoned by
+`0045` because their cursor/total proof cannot be recovered. `sync_runs.state` records reconciliation
+completeness, while the projection version records only a committed local generation. Active rows
+have a workspace/scope/order partial index, GIN
 full-text index, `pg_trgm` name index, a lower-name prefix index for two-character autocomplete and
 a workspace/platform/database/schema/name partial index for lazy tree branches. Database/schema
 values are nullable projections of typed DataHub `Database`/`Schema` browse containers; an absent
 typed container stays absent and is never reconstructed from a URN. Facets and tree branches are
 derived from the same authorization-prefiltered projection and cached by security and projection
-generation; a separate facet projection and a true incremental DataHub source cursor remain backlog.
+generation. Facets use one PostgreSQL `GROUPING SETS` aggregation with server-side per-facet ranking;
+a separate facet projection and a true incremental DataHub event cursor remain backlog.
 Alembic `0019` adds only the bounded, non-authoritative display summary needed by dense catalog
-results; tags and glossary terms are JSONB arrays constrained to their array shape. It is never an
-authorization selector, provider payload or browser mutation surface. Detail continues to read the
-typed DataHub enrichment through the server anti-corruption layer.
+results. Alembic `0045` adds the current string-only/count/identity constraints and provenance flags.
+It is never an authorization selector, provider payload or browser mutation surface. Detail
+continues to read the typed DataHub enrichment through the server anti-corruption layer.
 
 ### Governance
 

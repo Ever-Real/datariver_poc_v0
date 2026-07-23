@@ -75,6 +75,10 @@ def _runtime_updates(
             "datahub_circuit_failure_threshold": options.get("circuit_failure_threshold"),
             "datahub_circuit_open_seconds": options.get("circuit_open_seconds"),
             "datahub_stale_ttl_seconds": options.get("stale_ttl_seconds"),
+            # Existing activated DATAHUB profiles predate the PIT option.  They
+            # must remain safe and loadable by defaulting to deletion-disabled.
+            "datahub_catalog_pit_verified": options.get("catalog_pit_verified", False),
+            "datahub_catalog_pit_evidence_reference": options.get("catalog_pit_evidence_reference"),
         }
     if service_key == "DATAHUB_FRONTEND":
         url = _string(document, "url")

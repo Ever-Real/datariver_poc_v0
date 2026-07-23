@@ -37,6 +37,32 @@ class AssetProjectionModel(Base, UuidPrimaryKeyMixin, TimestampMixin):
         CheckConstraint("jsonb_typeof(tags) = 'array'", name="tags_array"),
         CheckConstraint("jsonb_typeof(glossary_terms) = 'array'", name="glossary_terms_array"),
         CheckConstraint("jsonb_typeof(column_names) = 'array'", name="column_names_array"),
+        CheckConstraint(
+            "description IS NULL OR char_length(description) <= 10000",
+            name="description_bounded",
+        ),
+        CheckConstraint("jsonb_array_length(tags) <= 100", name="tags_bounded"),
+        CheckConstraint(
+            """NOT jsonb_path_exists(tags, '$[*] ? (@.type() != "string")')""",
+            name="tags_string_items",
+        ),
+        CheckConstraint(
+            "jsonb_array_length(glossary_terms) <= 100",
+            name="glossary_terms_bounded",
+        ),
+        CheckConstraint(
+            """NOT jsonb_path_exists(glossary_terms, '$[*] ? (@.type() != "string")')""",
+            name="glossary_terms_string_items",
+        ),
+        CheckConstraint("jsonb_array_length(column_names) <= 1000", name="column_names_bounded"),
+        CheckConstraint(
+            """NOT jsonb_path_exists(column_names, '$[*] ? (@.type() != "string")')""",
+            name="column_names_string_items",
+        ),
+        CheckConstraint(
+            "char_length(external_urn) BETWEEN 1 AND 4096",
+            name="external_urn_bounded",
+        ),
         Index(
             "ix_assets_projection_scope",
             "workspace_id",
@@ -84,6 +110,11 @@ class AssetProjectionModel(Base, UuidPrimaryKeyMixin, TimestampMixin):
     asset_type: Mapped[str] = mapped_column(String(100), nullable=False)
     name: Mapped[str] = mapped_column(String(500), nullable=False)
     description: Mapped[str | None] = mapped_column(Text)
+    description_truncated: Mapped[bool] = mapped_column(
+        default=False,
+        server_default=text("false"),
+        nullable=False,
+    )
     search_vector: Mapped[str] = mapped_column(
         TSVECTOR,
         Computed(
@@ -99,8 +130,23 @@ class AssetProjectionModel(Base, UuidPrimaryKeyMixin, TimestampMixin):
     owner_ref: Mapped[str | None] = mapped_column(String(1_000))
     domain_ref: Mapped[str | None] = mapped_column(String(1_000))
     tags: Mapped[list[str]] = mapped_column(JSON_DOCUMENT, default=list, nullable=False)
+    tags_truncated: Mapped[bool] = mapped_column(
+        default=False,
+        server_default=text("false"),
+        nullable=False,
+    )
     glossary_terms: Mapped[list[str]] = mapped_column(JSON_DOCUMENT, default=list, nullable=False)
+    glossary_terms_truncated: Mapped[bool] = mapped_column(
+        default=False,
+        server_default=text("false"),
+        nullable=False,
+    )
     column_names: Mapped[list[str]] = mapped_column(JSON_DOCUMENT, default=list, nullable=False)
+    column_names_truncated: Mapped[bool] = mapped_column(
+        default=False,
+        server_default=text("false"),
+        nullable=False,
+    )
     source_created_at: Mapped[datetime | None]
     domain_id: Mapped[UUID | None] = mapped_column(Uuid(as_uuid=True))
     system_id: Mapped[UUID | None] = mapped_column(Uuid(as_uuid=True))
@@ -126,6 +172,28 @@ class CatalogSyncRunModel(Base):
     __tablename__ = "sync_runs"
     __table_args__ = (
         Index("ix_catalog_sync_runs_workspace_state", "workspace_id", "state", "started_at"),
+        CheckConstraint("next_offset >= 0", name="next_offset_nonnegative"),
+        CheckConstraint(
+            "expected_total IS NULL OR expected_total >= 0",
+            name="expected_total_nonnegative",
+        ),
+        CheckConstraint("seen_count >= 0", name="seen_count_nonnegative"),
+        CheckConstraint(
+            "next_cursor IS NULL OR char_length(next_cursor) BETWEEN 1 AND 4096",
+            name="next_cursor_bounded",
+        ),
+        CheckConstraint(
+            "(NOT snapshot_consistent AND snapshot_evidence_reference IS NULL "
+            "AND snapshot_contract_hash IS NULL AND snapshot_provider_version IS NULL) OR "
+            "(snapshot_consistent "
+            "AND snapshot_evidence_reference IS NOT NULL "
+            "AND snapshot_contract_hash IS NOT NULL "
+            "AND snapshot_provider_version IS NOT NULL "
+            "AND char_length(snapshot_evidence_reference) BETWEEN 1 AND 500 "
+            "AND snapshot_contract_hash ~ '^[0-9a-f]{64}$' "
+            "AND char_length(snapshot_provider_version) BETWEEN 1 AND 128)",
+            name="snapshot_evidence_bounded",
+        ),
         {"schema": "catalog"},
     )
 
@@ -133,6 +201,22 @@ class CatalogSyncRunModel(Base):
     sync_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True)
     state: Mapped[str] = mapped_column(String(32), nullable=False)
     next_offset: Mapped[int] = mapped_column(nullable=False)
+    next_cursor: Mapped[str | None] = mapped_column(Text)
+    expected_total: Mapped[int | None] = mapped_column(BigInteger)
+    seen_count: Mapped[int] = mapped_column(
+        BigInteger,
+        default=0,
+        server_default=text("0"),
+        nullable=False,
+    )
+    snapshot_consistent: Mapped[bool] = mapped_column(
+        default=False,
+        server_default=text("false"),
+        nullable=False,
+    )
+    snapshot_evidence_reference: Mapped[str | None] = mapped_column(String(500))
+    snapshot_contract_hash: Mapped[str | None] = mapped_column(String(64))
+    snapshot_provider_version: Mapped[str | None] = mapped_column(String(128))
     started_at: Mapped[datetime] = mapped_column(nullable=False)
     heartbeat_at: Mapped[datetime] = mapped_column(nullable=False)
     completed_at: Mapped[datetime | None]

@@ -69,53 +69,57 @@ export interface CatalogAsset {
   external_urn: string
   asset_type: string
   name: string
-  description?: string
-  platform?: string
-  database_name?: string
-  schema_name?: string
-  owner?: string
-  domain?: string
+  description?: string | null
+  platform?: string | null
+  database_name?: string | null
+  schema_name?: string | null
+  owner?: string | null
+  domain?: string | null
   tags?: string[]
   terms?: string[]
-  created_at?: string
+  description_truncated?: boolean
+  tags_truncated?: boolean
+  terms_truncated?: boolean
+  created_at?: string | null
   classification: string
   lifecycle: string
   observed_at: string
-  stale_at?: string
+  stale_at?: string | null
   matches: CatalogMatchFragment[]
 }
 
 export interface CatalogMatchFragment {
-  field: 'NAME' | 'DESCRIPTION'
+  field: 'NAME' | 'DESCRIPTION' | 'SCHEMA' | 'COLUMN' | 'TAG' | 'TERM'
   text: string
   matched_terms: string[]
 }
 
 export interface CatalogPolicyMeta {
-  observed_at?: string
-  stale_at?: string
+  observed_at?: string | null
+  stale_at?: string | null
   projection_version: number
   policy_version: string
-  classification_policy_version?: number
-  authorization_generation?: number
+  classification_policy_version?: number | null
+  authorization_generation?: number | null
 }
 
 export interface CatalogSearch {
   items: CatalogAsset[]
-  page: { next_cursor?: string; limit: number }
+  page: { next_cursor?: string | null; limit: number }
   total: number
+  total_exact?: boolean
   meta: CatalogPolicyMeta
   match_mode: 'ALL'
 }
 
 export interface CatalogFacets {
-  asset_types: Array<{ value?: string; count: number }>
-  platforms: Array<{ value?: string; count: number }>
-  classifications: Array<{ value?: string; count: number }>
-  databases: Array<{ value?: string; count: number }>
-  schemas: Array<{ value?: string; count: number }>
-  domains: Array<{ value?: string; count: number }>
-  lifecycles: Array<{ value?: string; count: number }>
+  asset_types: Array<{ value?: string | null; count: number }>
+  platforms: Array<{ value?: string | null; count: number }>
+  classifications: Array<{ value?: string | null; count: number }>
+  databases: Array<{ value?: string | null; count: number }>
+  schemas: Array<{ value?: string | null; count: number }>
+  domains: Array<{ value?: string | null; count: number }>
+  lifecycles: Array<{ value?: string | null; count: number }>
   meta: CatalogPolicyMeta
 }
 
@@ -123,12 +127,16 @@ export interface CatalogSuggestion {
   id: string
   name: string
   asset_type: string
-  platform?: string
+  platform?: string | null
+  database_name?: string | null
+  schema_name?: string | null
+  matches: CatalogMatchFragment[]
 }
 
 export interface CatalogSuggestions {
   items: CatalogSuggestion[]
   meta: CatalogPolicyMeta
+  match_mode: 'ALL'
 }
 
 export interface CatalogVocabulary {
@@ -138,6 +146,7 @@ export interface CatalogVocabulary {
 
 export interface CatalogAssetDetail extends CatalogAsset {
   ownership: Array<Record<string, unknown>>
+  ownership_truncated?: boolean
   glossary_terms: Array<Record<string, unknown>>
   tags: string[]
   schema_fields: Array<Record<string, unknown>>
@@ -218,15 +227,15 @@ export interface CatalogTreeNode {
   label: string
   asset_count: number
   has_children: boolean
-  platform?: string
-  database_name?: string
-  schema_name?: string
-  asset?: CatalogAsset
+  platform?: string | null
+  database_name?: string | null
+  schema_name?: string | null
+  asset?: CatalogAsset | null
 }
 
 export interface CatalogTreePage {
   items: CatalogTreeNode[]
-  page: { next_cursor?: string; limit: number }
+  page: { next_cursor?: string | null; limit: number }
   meta: CatalogPolicyMeta
 }
 

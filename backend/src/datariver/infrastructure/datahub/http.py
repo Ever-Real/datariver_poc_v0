@@ -27,6 +27,14 @@ from datariver.domain.authz import Classification
 from datariver.domain.common import canonical_json_hash
 
 MAX_DATAHUB_RESPONSE_BYTES = 8 * 1024 * 1024
+MAX_DATAHUB_EXTERNAL_URN_CHARACTERS = 4_096
+MAX_DATAHUB_SCHEMA_FIELD_PATH_CHARACTERS = 4_096
+MAX_DATAHUB_SCHEMA_FIELD_TYPE_CHARACTERS = 500
+MAX_DATAHUB_SCHEMA_FIELD_LABEL_CHARACTERS = 500
+MAX_DATAHUB_SCHEMA_FIELD_DESCRIPTION_CHARACTERS = 10_000
+MAX_DATAHUB_SCHEMA_FIELD_REFERENCES = 20
+MAX_DATAHUB_SCHEMA_FIELD_REFERENCE_CHARACTERS = 240
+CATALOG_SCAN_CONTRACT_VERSION = "datahub-scroll-v1"
 
 ASSET_QUERY = """
 query DataRiverAsset($urn: String!) {
@@ -50,6 +58,7 @@ query DataRiverAsset($urn: String!) {
       schemaMetadata(version: 0) {
         fields {
           fieldPath
+          label
           type
           nativeDataType
           description
@@ -118,9 +127,9 @@ query DataRiverLineageNeighbors($urn: String!, $input: LineageInput!) {
 """
 
 CATALOG_SCAN_QUERY = """
-query DataRiverCatalogScan($input: SearchAcrossEntitiesInput!) {
-  searchAcrossEntities(input: $input) {
-    start
+query DataRiverCatalogScroll($input: ScrollAcrossEntitiesInput!) {
+  scrollAcrossEntities(input: $input) {
+    nextScrollId
     count
     total
     searchResults {
@@ -164,6 +173,36 @@ query DataRiverCatalogScan($input: SearchAcrossEntitiesInput!) {
   }
 }
 """
+
+
+def _catalog_snapshot_contract_hash(
+    *,
+    base_url: str,
+    expected_version: str,
+    allowed_versions: tuple[str, ...],
+    evidence_reference: str,
+    version_enforcement: Literal["report", "enforce"],
+) -> str:
+    return canonical_json_hash(
+        {
+            "allowed_versions": sorted(allowed_versions),
+            "base_url": base_url.rstrip("/"),
+            "contract_version": CATALOG_SCAN_CONTRACT_VERSION,
+            "entity_types": ["DATASET"],
+            "evidence_reference": evidence_reference,
+            "expected_version": expected_version,
+            "keep_alive": "5m",
+            "query": "*",
+            "query_hash": canonical_json_hash(CATALOG_SCAN_QUERY),
+            "search_flags": {
+                "skip_aggregates": True,
+                "skip_highlighting": True,
+            },
+            "sort": [{"field": "urn", "order": "ASCENDING"}],
+            "version_enforcement": version_enforcement,
+        }
+    )
+
 
 VOCABULARY_SEARCH_QUERY = """
 query DataRiverVocabularySearch($input: SearchAcrossEntitiesInput!) {
@@ -276,54 +315,182 @@ def _preferred_description(*, properties: object, editable_properties: object) -
 
     for value in (editable_properties, properties):
         description = value.get("description") if isinstance(value, dict) else None
+        if description is not None and not isinstance(description, str):
+            raise ExternalDependencyError(
+                "DataHub returned an invalid description.",
+                dependency="datahub",
+                retryable=False,
+                provider_code="INVALID_RESPONSE",
+            )
         if isinstance(description, str) and description.strip():
             return description
     return None
 
 
+def _metadata_names_with_truncation(
+    value: object,
+    *,
+    wrapper: str,
+    entity: str,
+) -> tuple[tuple[str, ...], bool]:
+    if value is not None and not isinstance(value, dict):
+        raise ExternalDependencyError(
+            "DataHub returned invalid metadata.",
+            dependency="datahub",
+            retryable=False,
+            provider_code="INVALID_RESPONSE",
+        )
+    raw_items = value.get(wrapper, []) if isinstance(value, dict) else []
+    if not isinstance(raw_items, list):
+        raise ExternalDependencyError(
+            "DataHub returned an invalid metadata collection.",
+            dependency="datahub",
+            retryable=False,
+            provider_code="INVALID_RESPONSE",
+        )
+    raw_names: set[str] = set()
+    for item in raw_items:
+        reference = item.get(entity) if isinstance(item, dict) else None
+        if not isinstance(reference, dict):
+            raise ExternalDependencyError(
+                "DataHub returned an invalid metadata reference.",
+                dependency="datahub",
+                retryable=False,
+                provider_code="INVALID_RESPONSE",
+            )
+        name = reference.get("name")
+        urn = reference.get("urn")
+        if (name is not None and not isinstance(name, str)) or (
+            urn is not None and not isinstance(urn, str)
+        ):
+            raise ExternalDependencyError(
+                "DataHub returned an invalid metadata identity.",
+                dependency="datahub",
+                retryable=False,
+                provider_code="INVALID_RESPONSE",
+            )
+        identity = name if isinstance(name, str) and name.strip() else urn
+        if isinstance(identity, str) and identity.strip():
+            raw_names.add(identity.strip())
+    names = {name[:1_000] for name in raw_names}
+    return tuple(sorted(names)[:100]), len(names) > 100 or any(
+        len(name) > 1_000 for name in raw_names
+    )
+
+
 def _metadata_names(value: object, *, wrapper: str, entity: str) -> tuple[str, ...]:
-    raw_items = value.get(wrapper, []) if isinstance(value, dict) else []
-    items = raw_items if isinstance(raw_items, list) else []
-    names = {
-        str(reference.get("name") or reference.get("urn")).strip()
-        for item in items
-        if isinstance(item, dict)
-        for reference in [item.get(entity)]
-        if isinstance(reference, dict) and (reference.get("name") or reference.get("urn"))
-    }
-    return tuple(sorted(names))
+    return _metadata_names_with_truncation(value, wrapper=wrapper, entity=entity)[0]
 
 
-def _metadata_references(value: object, *, wrapper: str, entity: str) -> tuple[dict[str, Any], ...]:
+def _metadata_references_with_truncation(
+    value: object,
+    *,
+    wrapper: str,
+    entity: str,
+    maximum_items: int = 100,
+    maximum_characters: int = 1_000,
+) -> tuple[tuple[dict[str, Any], ...], bool]:
+    if value is not None and not isinstance(value, dict):
+        raise ExternalDependencyError(
+            "DataHub returned invalid metadata.",
+            dependency="datahub",
+            retryable=False,
+            provider_code="INVALID_RESPONSE",
+        )
     raw_items = value.get(wrapper, []) if isinstance(value, dict) else []
-    items = raw_items if isinstance(raw_items, list) else []
+    if not isinstance(raw_items, list):
+        raise ExternalDependencyError(
+            "DataHub returned an invalid metadata collection.",
+            dependency="datahub",
+            retryable=False,
+            provider_code="INVALID_RESPONSE",
+        )
+    items = raw_items
     references: dict[str, dict[str, Any]] = {}
+    truncated = False
     for item in items:
         reference = item.get(entity) if isinstance(item, dict) else None
         if not isinstance(reference, dict):
             continue
         urn = reference.get("urn")
         name = reference.get("name")
+        if (urn is not None and not isinstance(urn, str)) or (
+            name is not None and not isinstance(name, str)
+        ):
+            raise ExternalDependencyError(
+                "DataHub returned an invalid metadata identity.",
+                dependency="datahub",
+                retryable=False,
+                provider_code="INVALID_RESPONSE",
+            )
         identity = urn if isinstance(urn, str) and urn else name
         if not isinstance(identity, str) or not identity:
             continue
-        normalized_reference: dict[str, Any] = {"urn": urn} if isinstance(urn, str) else {}
+        normalized_reference: dict[str, Any] = (
+            {"urn": urn[:maximum_characters]} if isinstance(urn, str) else {}
+        )
         if isinstance(name, str):
-            normalized_reference["name"] = name
+            normalized_reference["name"] = name[:maximum_characters]
+        truncated = (
+            truncated
+            or len(identity) > maximum_characters
+            or (isinstance(name, str) and len(name) > maximum_characters)
+        )
         references[identity] = {entity: normalized_reference}
-    return tuple(references[key] for key in sorted(references))
+    ordered = tuple(references[key] for key in sorted(references)[:maximum_items])
+    return ordered, truncated or len(references) > maximum_items
+
+
+def _metadata_references(
+    value: object,
+    *,
+    wrapper: str,
+    entity: str,
+) -> tuple[dict[str, Any], ...]:
+    return _metadata_references_with_truncation(
+        value,
+        wrapper=wrapper,
+        entity=entity,
+    )[0]
 
 
 def _merged_metadata_references(
     values: tuple[object, ...], *, wrapper: str, entity: str
 ) -> dict[str, list[dict[str, Any]]]:
+    return _merged_metadata_references_with_truncation(
+        values,
+        wrapper=wrapper,
+        entity=entity,
+    )[0]
+
+
+def _merged_metadata_references_with_truncation(
+    values: tuple[object, ...],
+    *,
+    wrapper: str,
+    entity: str,
+    maximum_items: int = 100,
+    maximum_characters: int = 1_000,
+) -> tuple[dict[str, list[dict[str, Any]]], bool]:
     merged: dict[str, dict[str, Any]] = {}
+    truncated = False
     for value in values:
-        for item in _metadata_references(value, wrapper=wrapper, entity=entity):
+        references, value_truncated = _metadata_references_with_truncation(
+            value,
+            wrapper=wrapper,
+            entity=entity,
+            maximum_items=maximum_items,
+            maximum_characters=maximum_characters,
+        )
+        truncated = truncated or value_truncated
+        for item in references:
             reference = item[entity]
             identity = str(reference.get("urn") or reference.get("name"))
             merged[identity] = item
-    return {wrapper: [merged[key] for key in sorted(merged)]}
+    return (
+        {wrapper: [merged[key] for key in sorted(merged)[:maximum_items]]},
+        truncated or len(merged) > maximum_items,
+    )
 
 
 def _schema_fields(
@@ -343,42 +510,60 @@ def _schema_fields(
     for raw_field in chain(base_fields, editable_fields):
         if not isinstance(raw_field, dict):
             continue
-        field_path = raw_field.get("fieldPath")
-        if not isinstance(field_path, str) or not field_path or field_path in observed_paths:
+        raw_field_path = raw_field.get("fieldPath")
+        field_path = raw_field_path.strip() if isinstance(raw_field_path, str) else ""
+        if not field_path or field_path in observed_paths:
             continue
+        if len(field_path) > MAX_DATAHUB_SCHEMA_FIELD_PATH_CHARACTERS:
+            raise ExternalDependencyError(
+                "DataHub returned a schema field path larger than the supported limit.",
+                dependency="datahub",
+                retryable=False,
+                provider_code="INVALID_RESPONSE",
+            )
         if len(observed_paths) >= MAX_CATALOG_SCHEMA_FIELDS:
             truncated = True
             break
         observed_paths.add(field_path)
         selected_paths.append(field_path)
     selected_path_set = set(selected_paths)
-    base_by_path = {
-        str(item["fieldPath"]): item
-        for item in base_fields
-        if isinstance(item, dict)
-        and isinstance(item.get("fieldPath"), str)
-        and item["fieldPath"] in selected_path_set
-    }
-    editable_by_path = {
-        str(item["fieldPath"]): item
-        for item in editable_fields
-        if isinstance(item, dict)
-        and isinstance(item.get("fieldPath"), str)
-        and item["fieldPath"] in selected_path_set
-    }
+    base_by_path: dict[str, dict[str, Any]] = {}
+    editable_by_path: dict[str, dict[str, Any]] = {}
+    for target, values in (
+        (base_by_path, base_fields),
+        (editable_by_path, editable_fields),
+    ):
+        for item in values:
+            raw_path = item.get("fieldPath") if isinstance(item, dict) else None
+            path = raw_path.strip() if isinstance(raw_path, str) else ""
+            if path in selected_path_set:
+                target[path] = item
     merged_fields: list[dict[str, Any]] = []
     for field_path in selected_paths:
         base = base_by_path.get(field_path, {})
         editable = editable_by_path.get(field_path, {})
         field: dict[str, Any] = {"fieldPath": field_path}
-        for key in ("type", "nativeDataType", "description"):
-            if key in base and base[key] is not None:
-                field[key] = base[key]
-        if "description" in editable and editable["description"] is not None:
-            field["description"] = editable["description"]
+        for key in ("type", "nativeDataType"):
+            value = base.get(key)
+            if isinstance(value, str) and value:
+                field[key] = value[:MAX_DATAHUB_SCHEMA_FIELD_TYPE_CHARACTERS]
+                field[f"{key}_truncated"] = len(value) > MAX_DATAHUB_SCHEMA_FIELD_TYPE_CHARACTERS
+        label = base.get("label")
+        if isinstance(label, str) and label.strip():
+            normalized_label = label.strip()
+            field["label"] = normalized_label[:MAX_DATAHUB_SCHEMA_FIELD_LABEL_CHARACTERS]
+            field["label_truncated"] = (
+                len(normalized_label) > MAX_DATAHUB_SCHEMA_FIELD_LABEL_CHARACTERS
+            )
+        description = editable.get("description", base.get("description"))
+        if isinstance(description, str):
+            field["description"] = description[:MAX_DATAHUB_SCHEMA_FIELD_DESCRIPTION_CHARACTERS]
+            field["description_truncated"] = (
+                len(description) > MAX_DATAHUB_SCHEMA_FIELD_DESCRIPTION_CHARACTERS
+            )
         schema_field_entity = base.get("schemaFieldEntity")
         schema_field_document = schema_field_entity if isinstance(schema_field_entity, dict) else {}
-        field["globalTags"] = _merged_metadata_references(
+        field["globalTags"], field["tags_truncated"] = _merged_metadata_references_with_truncation(
             (
                 base.get("globalTags"),
                 schema_field_document.get("globalTags"),
@@ -386,15 +571,21 @@ def _schema_fields(
             ),
             wrapper="tags",
             entity="tag",
+            maximum_items=MAX_DATAHUB_SCHEMA_FIELD_REFERENCES,
+            maximum_characters=MAX_DATAHUB_SCHEMA_FIELD_REFERENCE_CHARACTERS,
         )
-        field["glossaryTerms"] = _merged_metadata_references(
-            (
-                base.get("glossaryTerms"),
-                schema_field_document.get("glossaryTerms"),
-                editable.get("glossaryTerms"),
-            ),
-            wrapper="terms",
-            entity="term",
+        field["glossaryTerms"], field["terms_truncated"] = (
+            _merged_metadata_references_with_truncation(
+                (
+                    base.get("glossaryTerms"),
+                    schema_field_document.get("glossaryTerms"),
+                    editable.get("glossaryTerms"),
+                ),
+                wrapper="terms",
+                entity="term",
+                maximum_items=MAX_DATAHUB_SCHEMA_FIELD_REFERENCES,
+                maximum_characters=MAX_DATAHUB_SCHEMA_FIELD_REFERENCE_CHARACTERS,
+            )
         )
         merged_fields.append(field)
     total = len(observed_paths) + (1 if truncated else 0)
@@ -459,20 +650,24 @@ def _dataset_asset_type(entity: dict[str, Any]) -> str:
     return "DATASET"
 
 
-def _column_names(value: object) -> tuple[str, ...]:
+def _column_names_with_truncation(value: object) -> tuple[tuple[str, ...], bool]:
     raw_fields = value.get("fields") if isinstance(value, dict) else []
     fields = raw_fields if isinstance(raw_fields, list) else []
-    return tuple(
-        sorted(
-            {
-                str(field["fieldPath"]).strip()[:500]
-                for field in fields
-                if isinstance(field, dict)
-                and isinstance(field.get("fieldPath"), str)
-                and field["fieldPath"].strip()
-            }
-        )
+    raw_names = {
+        field["fieldPath"].strip()
+        for field in fields
+        if isinstance(field, dict)
+        and isinstance(field.get("fieldPath"), str)
+        and field["fieldPath"].strip()
+    }
+    names = {name[:500] for name in raw_names}
+    return tuple(sorted(names)[:1_000]), len(names) > 1_000 or any(
+        len(name) > 500 for name in raw_names
     )
+
+
+def _column_names(value: object) -> tuple[str, ...]:
+    return _column_names_with_truncation(value)[0]
 
 
 def _aspect_document(envelope: Any) -> dict[str, Any]:
@@ -548,6 +743,8 @@ class HttpDataHubGateway:
         queue_timeout_seconds: float = 2.0,
         circuit_failure_threshold: int = 5,
         circuit_open_seconds: float = 30.0,
+        catalog_scan_snapshot_consistent: bool = False,
+        catalog_scan_snapshot_evidence_reference: str | None = None,
         client: httpx.AsyncClient | None = None,
         telemetry: DataHubTelemetry | None = None,
     ) -> None:
@@ -574,6 +771,37 @@ class HttpDataHubGateway:
         self._queue_timeout_seconds = queue_timeout_seconds
         self._circuit_failure_threshold = circuit_failure_threshold
         self._circuit_open_seconds = circuit_open_seconds
+        evidence_reference = (
+            catalog_scan_snapshot_evidence_reference.strip()
+            if catalog_scan_snapshot_evidence_reference
+            else None
+        )
+        if catalog_scan_snapshot_consistent and (
+            version_enforcement != "enforce"
+            or expected_version is None
+            or evidence_reference is None
+            or len(evidence_reference) > 500
+        ):
+            raise ValueError(
+                "Verified catalog scan snapshots require enforced version and bounded evidence."
+            )
+        self._catalog_scan_snapshot_consistent = catalog_scan_snapshot_consistent
+        self._catalog_scan_snapshot_evidence_reference = (
+            evidence_reference if catalog_scan_snapshot_consistent else None
+        )
+        self._catalog_scan_snapshot_contract_hash: str | None
+        if catalog_scan_snapshot_consistent:
+            assert expected_version is not None
+            assert evidence_reference is not None
+            self._catalog_scan_snapshot_contract_hash = _catalog_snapshot_contract_hash(
+                base_url=self._base_url,
+                expected_version=expected_version,
+                allowed_versions=allowed_versions,
+                evidence_reference=evidence_reference,
+                version_enforcement=version_enforcement,
+            )
+        else:
+            self._catalog_scan_snapshot_contract_hash = None
         self._circuit_lock = asyncio.Lock()
         self._consecutive_failures = 0
         self._circuit_open_until = 0.0
@@ -819,31 +1047,37 @@ class HttpDataHubGateway:
     async def get_asset(self, external_urn: str) -> DataHubAssetEnrichment:
         data = await self._graphql(ASSET_QUERY, {"urn": external_urn})
         entity = data.get("entity")
-        if not isinstance(entity, dict):
+        if (
+            not isinstance(entity, dict)
+            or entity.get("urn") != external_urn
+            or entity.get("type") != "DATASET"
+        ):
             raise ExternalDependencyError(
-                "The DataHub asset does not exist.",
+                "DataHub returned an asset that does not match the requested dataset.",
                 dependency="datahub",
                 retryable=False,
-                provider_code="NOT_FOUND",
+                provider_code=("NOT_FOUND" if not isinstance(entity, dict) else "INVALID_RESPONSE"),
             )
         ownership = entity.get("ownership")
         ownership_document = ownership if isinstance(ownership, dict) else {}
-        owners = tuple(
-            item for item in (ownership_document.get("owners") or ()) if isinstance(item, dict)
+        owners, owners_truncated = _metadata_references_with_truncation(
+            ownership_document,
+            wrapper="owners",
+            entity="owner",
         )
         global_tags = entity.get("globalTags")
         tags_document = global_tags if isinstance(global_tags, dict) else {}
-        tags = tuple(
-            str(tag.get("name") or tag.get("urn"))
-            for item in (tags_document.get("tags") or ())
-            if isinstance(item, dict)
-            and isinstance((tag := item.get("tag")), dict)
-            and (tag.get("name") or tag.get("urn"))
+        tags, tags_truncated = _metadata_names_with_truncation(
+            tags_document,
+            wrapper="tags",
+            entity="tag",
         )
         glossary_terms = entity.get("glossaryTerms")
         glossary_document = glossary_terms if isinstance(glossary_terms, dict) else {}
-        glossary = tuple(
-            item for item in (glossary_document.get("terms") or ()) if isinstance(item, dict)
+        glossary, glossary_truncated = _metadata_references_with_truncation(
+            glossary_document,
+            wrapper="terms",
+            entity="term",
         )
         now = datetime.now(UTC)
         properties = entity.get("properties")
@@ -855,6 +1089,10 @@ class HttpDataHubGateway:
             schema_fields_truncated,
             schema_fields_total_exact,
         ) = _schema_fields(entity)
+        description = _preferred_description(
+            properties=properties_document,
+            editable_properties=editable_properties,
+        )
         return DataHubAssetEnrichment(
             ownership=owners,
             glossary_terms=glossary,
@@ -864,19 +1102,24 @@ class HttpDataHubGateway:
             raw_version=canonical_json_hash(entity),
             observed_at=now,
             created_at=_datahub_timestamp(properties_document.get("created")),
-            description=_preferred_description(
-                properties=properties_document,
-                editable_properties=editable_properties,
-            ),
+            description=description[:10_000] if description is not None else None,
             schema_fields_total=schema_fields_total,
             schema_fields_truncated=schema_fields_truncated,
             schema_fields_total_exact=schema_fields_total_exact,
+            ownership_truncated=owners_truncated,
+            glossary_terms_truncated=glossary_truncated,
+            tags_truncated=tags_truncated,
+            description_truncated=description is not None and len(description) > 10_000,
         )
 
     async def get_lineage(
         self, *, external_urn: str, direction: str, depth: int
     ) -> DataHubLineagePage:
-        if direction not in {"UPSTREAM", "DOWNSTREAM"} or not 1 <= depth <= 3:
+        if (
+            direction not in {"UPSTREAM", "DOWNSTREAM"}
+            or not 1 <= depth <= 3
+            or not 1 <= len(external_urn) <= MAX_DATAHUB_EXTERNAL_URN_CHARACTERS
+        ):
             raise ValueError("Lineage direction or depth is invalid.")
         # DataHub's direct Dataset.lineage contract is the stable v1.6 UI
         # contract.  Traverse it breadth-first so DataRiver keeps the public
@@ -973,13 +1216,19 @@ class HttpDataHubGateway:
                         if entity is None:
                             partial = True
                             continue
-                        if not isinstance(urn, str) or not urn:
+                        if (
+                            not isinstance(urn, str)
+                            or not 1 <= len(urn) <= MAX_DATAHUB_EXTERNAL_URN_CHARACTERS
+                        ):
                             raise ExternalDependencyError(
                                 "DataHub returned an invalid lineage result.",
                                 dependency="datahub",
                                 retryable=False,
                                 provider_code="INVALID_RESPONSE",
                             )
+                        if entity_type != "DATASET":
+                            partial = True
+                            continue
                         if urn in source_path:
                             continue
                         path = (*source_path, urn)
@@ -1005,14 +1254,38 @@ class HttpDataHubGateway:
             partial=partial,
         )
 
-    async def scan_assets(self, *, offset: int, limit: int) -> DataHubScanPage:
-        if offset < 0 or not 1 <= limit <= 100:
+    async def scan_assets(self, *, cursor: str | None, limit: int) -> DataHubScanPage:
+        if not 1 <= limit <= 100 or (cursor is not None and (not cursor or len(cursor) > 4_096)):
             raise ValueError("DataHub scan bounds are invalid.")
+        if self._catalog_scan_snapshot_consistent and cursor is None:
+            observed_version = await self._reported_version(force=True)
+            if observed_version not in self._accepted_versions:
+                raise ExternalDependencyError(
+                    "DataHub does not match the approved reconciliation release contract.",
+                    dependency="datahub",
+                    retryable=False,
+                    provider_code="VERSION_MISMATCH",
+                )
+        scan_input: dict[str, Any] = {
+            "types": ["DATASET"],
+            "query": "*",
+            "count": limit,
+            "keepAlive": "5m",
+            "sortInput": {
+                "sortCriteria": [{"field": "urn", "sortOrder": "ASCENDING"}],
+            },
+            "searchFlags": {
+                "skipHighlighting": True,
+                "skipAggregates": True,
+            },
+        }
+        if cursor is not None:
+            scan_input["scrollId"] = cursor
         data = await self._graphql(
             CATALOG_SCAN_QUERY,
-            {"input": {"types": ["DATASET"], "query": "*", "start": offset, "count": limit}},
+            {"input": scan_input},
         )
-        result = data.get("searchAcrossEntities")
+        result = data.get("scrollAcrossEntities")
         if not isinstance(result, dict):
             raise ExternalDependencyError(
                 "DataHub returned an invalid scan contract.",
@@ -1021,7 +1294,7 @@ class HttpDataHubGateway:
                 provider_code="INVALID_RESPONSE",
             )
         raw_results = result.get("searchResults")
-        if not isinstance(raw_results, list):
+        if not isinstance(raw_results, list) or len(raw_results) > limit:
             raise ExternalDependencyError(
                 "DataHub returned an invalid scan result list.",
                 dependency="datahub",
@@ -1029,35 +1302,118 @@ class HttpDataHubGateway:
                 provider_code="INVALID_RESPONSE",
             )
         items: list[DataHubScanAsset] = []
+        observed_urns: set[str] = set()
         for raw in raw_results:
             entity = raw.get("entity") if isinstance(raw, dict) else None
-            if not isinstance(entity, dict) or not isinstance(entity.get("urn"), str):
+            external_urn = entity.get("urn") if isinstance(entity, dict) else None
+            if (
+                not isinstance(entity, dict)
+                or not isinstance(external_urn, str)
+                or not 1 <= len(external_urn) <= MAX_DATAHUB_EXTERNAL_URN_CHARACTERS
+                or entity.get("type") != "DATASET"
+                or external_urn in observed_urns
+            ):
                 raise ExternalDependencyError(
                     "DataHub returned an invalid scan entity.",
                     dependency="datahub",
                     retryable=False,
                     provider_code="INVALID_RESPONSE",
                 )
+            observed_urns.add(external_urn)
             properties = entity.get("properties")
+            if properties is not None and not isinstance(properties, dict):
+                raise ExternalDependencyError(
+                    "DataHub returned invalid dataset properties.",
+                    dependency="datahub",
+                    retryable=False,
+                    provider_code="INVALID_RESPONSE",
+                )
             properties = properties if isinstance(properties, dict) else {}
             editable_properties = entity.get("editableProperties")
             platform = entity.get("platform")
+            if platform is not None and not isinstance(platform, dict):
+                raise ExternalDependencyError(
+                    "DataHub returned an invalid platform.",
+                    dependency="datahub",
+                    retryable=False,
+                    provider_code="INVALID_RESPONSE",
+                )
             platform_name = platform.get("name") if isinstance(platform, dict) else None
             system_ref = platform.get("urn") if isinstance(platform, dict) else None
+            if (platform_name is not None and not isinstance(platform_name, str)) or (
+                system_ref is not None and not isinstance(system_ref, str)
+            ):
+                raise ExternalDependencyError(
+                    "DataHub returned an invalid platform identity.",
+                    dependency="datahub",
+                    retryable=False,
+                    provider_code="INVALID_RESPONSE",
+                )
             domain_wrapper = entity.get("domain")
+            if domain_wrapper is not None and not isinstance(domain_wrapper, dict):
+                raise ExternalDependencyError(
+                    "DataHub returned an invalid domain.",
+                    dependency="datahub",
+                    retryable=False,
+                    provider_code="INVALID_RESPONSE",
+                )
             domain = domain_wrapper.get("domain") if isinstance(domain_wrapper, dict) else None
+            if domain is not None and not isinstance(domain, dict):
+                raise ExternalDependencyError(
+                    "DataHub returned an invalid domain reference.",
+                    dependency="datahub",
+                    retryable=False,
+                    provider_code="INVALID_RESPONSE",
+                )
             domain_ref = domain.get("urn") if isinstance(domain, dict) else None
+            if domain_ref is not None and not isinstance(domain_ref, str):
+                raise ExternalDependencyError(
+                    "DataHub returned an invalid domain identity.",
+                    dependency="datahub",
+                    retryable=False,
+                    provider_code="INVALID_RESPONSE",
+                )
             ownership = entity.get("ownership")
+            if ownership is not None and not isinstance(ownership, dict):
+                raise ExternalDependencyError(
+                    "DataHub returned invalid ownership.",
+                    dependency="datahub",
+                    retryable=False,
+                    provider_code="INVALID_RESPONSE",
+                )
             raw_owners = ownership.get("owners", []) if isinstance(ownership, dict) else []
-            owner_refs = sorted(
-                str(owner["urn"])
-                for item in raw_owners
-                if isinstance(raw_owners, list)
-                if isinstance(item, dict)
-                for owner in [item.get("owner")]
-                if isinstance(owner, dict) and owner.get("urn")
-            )
-            name = properties.get("name") or entity.get("name") or entity["urn"]
+            if not isinstance(raw_owners, list):
+                raise ExternalDependencyError(
+                    "DataHub returned an invalid owner collection.",
+                    dependency="datahub",
+                    retryable=False,
+                    provider_code="INVALID_RESPONSE",
+                )
+            owner_refs: list[str] = []
+            for owner_item in raw_owners:
+                owner = owner_item.get("owner") if isinstance(owner_item, dict) else None
+                owner_urn = owner.get("urn") if isinstance(owner, dict) else None
+                if not isinstance(owner_urn, str) or not owner_urn:
+                    raise ExternalDependencyError(
+                        "DataHub returned an invalid owner identity.",
+                        dependency="datahub",
+                        retryable=False,
+                        provider_code="INVALID_RESPONSE",
+                    )
+                owner_refs.append(owner_urn)
+            owner_refs.sort()
+            property_name = properties.get("name")
+            entity_name = entity.get("name")
+            if (property_name is not None and not isinstance(property_name, str)) or (
+                entity_name is not None and not isinstance(entity_name, str)
+            ):
+                raise ExternalDependencyError(
+                    "DataHub returned an invalid dataset name.",
+                    dependency="datahub",
+                    retryable=False,
+                    provider_code="INVALID_RESPONSE",
+                )
+            name = property_name or entity_name or external_urn
             database_name, schema_name = _catalog_hierarchy_from_browse_path(
                 entity.get("browsePathV2")
             )
@@ -1066,48 +1422,99 @@ class HttpDataHubGateway:
                     properties.get("customProperties") if isinstance(properties, dict) else None,
                     key="datariver.seed.database_name",
                 )
+            description = _preferred_description(
+                properties=properties,
+                editable_properties=editable_properties,
+            )
+            tags, tags_truncated = _metadata_names_with_truncation(
+                entity.get("globalTags"),
+                wrapper="tags",
+                entity="tag",
+            )
+            terms, terms_truncated = _metadata_names_with_truncation(
+                entity.get("glossaryTerms"),
+                wrapper="terms",
+                entity="term",
+            )
+            column_names, column_names_truncated = _column_names_with_truncation(
+                entity.get("schemaMetadata")
+            )
             items.append(
                 DataHubScanAsset(
-                    external_urn=entity["urn"],
+                    external_urn=external_urn,
                     asset_type=_dataset_asset_type(entity),
                     name=str(name)[:500],
-                    description=_preferred_description(
-                        properties=properties,
-                        editable_properties=editable_properties,
-                    ),
-                    platform=str(platform_name)[:100] if platform_name else None,
+                    description=description[:10_000] if description else None,
+                    platform=platform_name[:100] if platform_name else None,
                     database_name=database_name[:255] if database_name else None,
-                    schema_name=schema_name,
-                    domain_ref=str(domain_ref) if domain_ref else None,
-                    system_ref=str(system_ref) if system_ref else None,
-                    owner_ref=owner_refs[0] if owner_refs else None,
+                    schema_name=schema_name[:255] if schema_name else None,
+                    domain_ref=domain_ref[:1_000] if domain_ref else None,
+                    system_ref=system_ref[:1_000] if system_ref else None,
+                    owner_ref=owner_refs[0][:1_000] if owner_refs else None,
                     classification=_classification_from_tags(entity.get("globalTags")),
                     source_version=canonical_json_hash(entity),
-                    tags=_metadata_names(entity.get("globalTags"), wrapper="tags", entity="tag"),
-                    glossary_terms=_metadata_names(
-                        entity.get("glossaryTerms"), wrapper="terms", entity="term"
-                    ),
-                    column_names=_column_names(entity.get("schemaMetadata")),
+                    tags=tags,
+                    glossary_terms=terms,
+                    column_names=column_names,
                     created_at=_datahub_timestamp(properties.get("created")),
+                    description_truncated=description is not None and len(description) > 10_000,
+                    tags_truncated=tags_truncated,
+                    glossary_terms_truncated=terms_truncated,
+                    column_names_truncated=column_names_truncated,
                 )
             )
-        try:
-            start = int(result.get("start", offset))
-            count = int(result.get("count", len(items)))
-            total = int(result.get("total", start + count))
-        except (TypeError, ValueError) as error:
+        count_value = result.get("count")
+        total_value = result.get("total")
+        next_cursor_value = result.get("nextScrollId")
+        if (
+            isinstance(count_value, bool)
+            or not isinstance(count_value, int)
+            or count_value < 0
+            or isinstance(total_value, bool)
+            or not isinstance(total_value, int)
+            or total_value < 0
+        ):
             raise ExternalDependencyError(
                 "DataHub returned invalid scan pagination.",
                 dependency="datahub",
                 retryable=False,
                 provider_code="INVALID_RESPONSE",
-            ) from error
-        next_offset = start + count if count > 0 and start + count < total else None
+            )
+        count = count_value
+        total = total_value
+        if (
+            count > limit
+            or count != min(limit, total)
+            or len(items) > count
+            or (
+                next_cursor_value is not None
+                and (
+                    not isinstance(next_cursor_value, str)
+                    or not next_cursor_value
+                    or len(next_cursor_value) > 4_096
+                    or next_cursor_value == cursor
+                )
+            )
+            or (not items and next_cursor_value is not None)
+            or (cursor is None and len(items) < total and next_cursor_value is None)
+        ):
+            raise ExternalDependencyError(
+                "DataHub returned inconsistent scan pagination.",
+                dependency="datahub",
+                retryable=False,
+                provider_code="INVALID_RESPONSE",
+            )
         return DataHubScanPage(
             items=tuple(items),
-            next_offset=next_offset,
+            next_cursor=next_cursor_value,
             total=total,
             observed_at=datetime.now(UTC),
+            snapshot_consistent=self._catalog_scan_snapshot_consistent,
+            snapshot_evidence_reference=self._catalog_scan_snapshot_evidence_reference,
+            snapshot_contract_hash=self._catalog_scan_snapshot_contract_hash,
+            snapshot_provider_version=(
+                self._observed_version if self._catalog_scan_snapshot_consistent else None
+            ),
         )
 
     async def search_vocabulary(self, *, kind: str, query: str, limit: int) -> tuple[str, ...]:

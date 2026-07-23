@@ -183,6 +183,7 @@ def test_openapi_contains_all_required_product_modules() -> None:
         "/api/v1/knowledge/graphs",
         "/api/v1/chat/query",
         "/api/v1/catalog/sync/datahub",
+        "/api/v1/catalog/sync/datahub/{sync_id}",
         "/api/v1/change-requests/{change_request_id}/approvals",
         "/api/v1/knowledge/graphs/{graph_id}/releases/{release_id}/export",
         "/api/v1/knowledge/graphs/{graph_id}/releases/{release_id}/analysis/neighbors",
@@ -449,6 +450,32 @@ def test_redis_system_configuration_requires_separate_secret_reference() -> None
                 "secret_references": {
                     "password": "file:/run/secrets/keycloak_identity_admin_client_secret"
                 }
+            },
+        )
+
+
+def test_datahub_system_configuration_accepts_only_explicit_pit_evidence_contract() -> None:
+    options: dict[str, object] = {
+        "catalog_pit_verified": True,
+        "catalog_pit_evidence_reference": "ops://datahub/pit/2026-07-23",
+        "version_enforcement": "enforce",
+    }
+    document: dict[str, object] = {
+        "base_url": "https://datahub.example",
+        "secret_references": {"token": "file:/run/secrets/datahub_token"},
+        "options": options,
+    }
+
+    assert _validate_system_configuration("DATAHUB_GMS", document) == document["base_url"]
+    with pytest.raises(ValidationError, match="version_enforcement is invalid"):
+        _validate_system_configuration(
+            "DATAHUB_GMS",
+            {
+                **document,
+                "options": {
+                    **options,
+                    "version_enforcement": "strict",
+                },
             },
         )
 

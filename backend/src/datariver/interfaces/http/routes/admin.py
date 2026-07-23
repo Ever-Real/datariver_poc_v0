@@ -188,6 +188,8 @@ _SYSTEM_CONFIGURATION_TEMPLATES: dict[str, dict[str, Any]] = {
         "secret_references": dict(canonical_secret_references("DATAHUB_GMS")),
         "options": {
             "allowed_versions": [],
+            "catalog_pit_evidence_reference": "",
+            "catalog_pit_verified": False,
             "circuit_failure_threshold": 5,
             "circuit_open_seconds": 30,
             "expected_version": "v1.6.0",
@@ -644,7 +646,7 @@ def _validate_option_value(key: str, value: object, template: object) -> None:
         }
         if key in fixed_values and value != fixed_values[key]:
             raise ValidationError(f"System configuration option {key} is server-controlled.")
-        if key == "version_enforcement" and value not in {"report", "strict"}:
+        if key == "version_enforcement" and value not in {"report", "enforce"}:
             raise ValidationError("System configuration version_enforcement is invalid.")
         return
     if isinstance(template, list):

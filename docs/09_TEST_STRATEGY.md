@@ -2,16 +2,39 @@
 
 ## Current verification status
 
-The Policy Book Phase 3 local-exit source passed `953` backend tests with `28` explicitly
-environment-gated PostgreSQL cases skipped. Ruff format/lint passed over `305` files, strict mypy
-passed over `298` source/test files, and static architecture/role/Compose verification passed. The
-frontend passed strict TypeScript, zero-warning ESLint, `43` files / `194` tests and the production
-build. Base, local-identity and default-off `retention-archive` Compose configurations parsed.
-Canonical `0001` generation was byte-identical across two runs at SHA-256
-`72237a82d08cebb45e5337c66031486139e9760b5a882d0a9f84c75141c17972`; Alembic has the single head
-`0044`.
+The current Search/Registration-query local-exit source passed `1,002` backend tests with `29`
+explicitly environment-gated PostgreSQL cases skipped. Ruff format passed over `309` files, Ruff
+lint passed, strict mypy passed over `301` source/test files, and static
+architecture/role/Compose verification passed. The frontend passed strict TypeScript, zero-warning
+ESLint, `43` files / `200` tests and the production build. Canonical `0001` generation was
+byte-identical across two runs at SHA-256
+`b55018c082eab700a80edf749ade7abdd3b6b8f5be4268319210c5f33ea5466e`; Alembic has the single head
+`0045`.
 
-A disposable PostgreSQL 17.10 ran `0001 -> 0043 -> 0044`. The test replaced one canonical index
+A disposable native-arm64 PostgreSQL 17.10 ran the full `0001 -> 0045` chain. A separate simulated
+`0044` state held 12,000 description characters, 105 tags/terms and 1,005 column names; `0045`
+reduced them to `10,000 / 100 / 100 / 1,000`, bounded every retained string element, set all four
+conservative truncation/provenance flags and left all `13` catalog-projection/sync CHECK constraints
+validated. A legacy active sync run became `ABANDONED`. An empty external URN caused `0045` to roll
+back transactionally without truncating or rewriting identity.
+
+Database-negative probes rejected verified-snapshot state with absent evidence, a non-hex contract
+hash and a 4,097-character provider cursor; a complete evidence/hash/provider tuple was accepted.
+The environment-gated integration test then passed separately through the actual `datariver_app`
+role and writer transaction boundary. It proved replay without a second watermark update,
+cross-page duplicate/evidence-drift/incomplete-coverage rollback, unverified deletion suppression,
+and verified tombstoning of DataHub-owned rows without tombstoning seed-owned rows. Two independent
+sessions also proved that the pre-provider workspace reservation blocks a second run until the
+first commits, while a simultaneous same-key retry returns the exact stored result and leaves the
+watermark at one. Its facet path executed the single PostgreSQL `GROUPING SETS` query. Source tests
+prove `RESPONSE_TOO_LARGE` page reduction `100 -> 50 -> 25` and Airflow resume from public page 731
+without replaying earlier pages. The reservation's non-configurable ten-second provider budget is
+tested to cancel and roll back before the runtime 15-second statement and 30-second idle-transaction
+timeouts; a value above ten seconds is rejected. These are correctness and small-fixture smoke results;
+representative target-volume `EXPLAIN (ANALYZE, BUFFERS)` and DataHub deployment-specific
+scroll/point-in-time conformance remain external gates.
+
+The preceding Policy Book rehearsal ran `0001 -> 0043 -> 0044`. It replaced one canonical index
 with the same name and non-default `text_pattern_ops`; `0044` failed closed and did not normalize
 the drift. It then marked an exact definition invalid/not-ready, and `0044` concurrently
 dropped/rebuilt only that interrupted index. All six final cursor indexes were valid/ready plain
@@ -19,8 +42,9 @@ B-trees without INCLUDE columns. Earlier rehearsals also verified the `0042` cur
 fingerprint, the `0043` exact CHECK bridge and application-role System-assignee soft
 deactivate/reactivate with DELETE denied.
 
-Independent security and contract reviewers report no remaining Phase 3 P0/P1 after final
-remediation. Actual multi-human OIDC/WebAuthn browser acceptance, production-size
+The Policy Book Phase 3 audit record and its then-current counts remain in
+`docs/28_POLICY_BOOK_EXECUTION_CHECKLIST.md`; they are not promoted to current-head evidence.
+Actual multi-human OIDC/WebAuthn browser acceptance, production-size
 `EXPLAIN (ANALYZE, BUFFERS)`, maintained-provider WORM conformance, off-host restore,
 Windows/WSL `linux/amd64` runtime/crash/low-resource acceptance and accountable operations approval
 remain target gates. No local result authorizes destructive action or activation of the default-off
@@ -96,8 +120,8 @@ passed from the same source. A second isolated database with all three table nam
 required constraint was rejected by the `0041` complete-schema fingerprint. A same-name
 `CHECK(TRUE)` plus `USING(TRUE)` RLS-policy mutation was also rejected; the fingerprint compares
 column length/timezone/default, CHECK SQL, FK columns/targets/delete actions, index columns and RLS
-mode/predicate rather than object names alone. Direct `datariver_app`
-probes confirmed workspace-empty reads plus denial of protected Role/rule columns and event deletion.
+mode/predicate rather than object names alone. Direct `datariver_app` probes confirmed
+workspace-empty reads plus denial of protected Role/rule columns and event deletion.
 The real PostgreSQL service/UoW test self-provisioned and removed its workspace, subjects, Roles and
 failure trigger. It covered `ASSIGNED -> REASSIGNED -> REMOVED`, rejected a semantically identical
 Role reaffirmation even though its optimistic expected version changed, rejected a stale Role version,

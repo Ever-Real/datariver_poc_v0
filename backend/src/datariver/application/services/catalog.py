@@ -58,6 +58,87 @@ from datariver.domain.authz import (
 from datariver.domain.classification_policy import CLASSIFICATION_ACCESS_FLOOR_VERSION
 from datariver.domain.common import ValidationError
 
+MAX_CATALOG_MATCH_FRAGMENTS = 72
+MAX_CATALOG_CACHE_EXTERNAL_URN_CHARACTERS = 4_096
+MAX_CATALOG_CACHE_DESCRIPTION_CHARACTERS = 10_000
+MAX_CATALOG_CACHE_METADATA_ITEMS = 100
+MAX_CATALOG_CACHE_METADATA_CHARACTERS = 1_000
+MAX_CATALOG_CACHE_SCHEMA_FIELD_REFERENCES = 20
+MAX_CATALOG_CACHE_SCHEMA_FIELD_REFERENCE_CHARACTERS = 240
+
+
+def _cached_reference_items(
+    value: object,
+    *,
+    entity: str,
+    maximum_items: int,
+    maximum_characters: int,
+) -> tuple[dict[str, Any], ...]:
+    if not isinstance(value, list) or len(value) > maximum_items:
+        raise ValueError("Invalid cached catalog references.")
+    references: list[dict[str, Any]] = []
+    for item in value:
+        reference = item.get(entity) if isinstance(item, dict) else None
+        if not isinstance(reference, dict):
+            raise ValueError("Invalid cached catalog reference.")
+        normalized: dict[str, str] = {}
+        for key in ("urn", "name"):
+            candidate = reference.get(key)
+            if candidate is not None:
+                if not isinstance(candidate, str) or not 1 <= len(candidate) <= maximum_characters:
+                    raise ValueError("Invalid cached catalog reference identity.")
+                normalized[key] = candidate
+        if not normalized:
+            raise ValueError("Invalid cached catalog reference identity.")
+        references.append({entity: normalized})
+    return tuple(references)
+
+
+def _cached_schema_field(value: object) -> dict[str, Any]:
+    if not isinstance(value, dict):
+        raise ValueError("Invalid cached schema field.")
+    field_path = value.get("fieldPath")
+    if not isinstance(field_path, str) or not 1 <= len(field_path) <= 4_096:
+        raise ValueError("Invalid cached schema field path.")
+    field: dict[str, Any] = {"fieldPath": field_path}
+    limits = {
+        "type": 500,
+        "nativeDataType": 500,
+        "label": 500,
+        "description": 10_000,
+    }
+    for key, maximum in limits.items():
+        candidate = value.get(key)
+        if candidate is not None:
+            if not isinstance(candidate, str) or len(candidate) > maximum:
+                raise ValueError("Invalid cached schema field value.")
+            field[key] = candidate
+            flag = value.get(f"{key}_truncated", False)
+            if not isinstance(flag, bool):
+                raise ValueError("Invalid cached schema field truncation evidence.")
+            field[f"{key}_truncated"] = flag
+    for key, wrapper, entity, flag in (
+        ("globalTags", "tags", "tag", "tags_truncated"),
+        ("glossaryTerms", "terms", "term", "terms_truncated"),
+    ):
+        document = value.get(key)
+        items = document.get(wrapper) if isinstance(document, dict) else None
+        field[key] = {
+            wrapper: list(
+                _cached_reference_items(
+                    items if items is not None else [],
+                    entity=entity,
+                    maximum_items=MAX_CATALOG_CACHE_SCHEMA_FIELD_REFERENCES,
+                    maximum_characters=MAX_CATALOG_CACHE_SCHEMA_FIELD_REFERENCE_CHARACTERS,
+                )
+            )
+        }
+        raw_flag = value.get(flag, False)
+        if not isinstance(raw_flag, bool):
+            raise ValueError("Invalid cached schema field truncation evidence.")
+        field[flag] = raw_flag
+    return field
+
 
 class CatalogService:
     def __init__(
@@ -139,7 +220,11 @@ class CatalogService:
             except Exception:
                 self._cache_access(cache="search", outcome="error")
             else:
-                cached_page = self._cached_page(cached)
+                cached_page = self._cached_page(
+                    cached,
+                    workspace_id=subject.workspace_id,
+                    limit=limit,
+                )
                 if cached_page is not None:
                     self._cache_access(cache="search", outcome="hit")
                     return cached_page
@@ -215,7 +300,11 @@ class CatalogService:
             except Exception:
                 self._cache_access(cache="facets", outcome="error")
             else:
-                cached_facets = self._cached_facets(cached)
+                cached_facets = self._cached_facets(
+                    cached,
+                    workspace_id=subject.workspace_id,
+                    limit=limit,
+                )
                 if cached_facets is not None:
                     self._cache_access(cache="facets", outcome="hit")
                     return cached_facets
@@ -238,7 +327,7 @@ class CatalogService:
             try:
                 await self._cache.set_json(
                     cache_key,
-                    self._facets_document(facets),
+                    self._facets_document(facets, workspace_id=subject.workspace_id),
                     ttl_seconds=cache_ttl,
                 )
             except Exception:
@@ -285,7 +374,11 @@ class CatalogService:
             except Exception:
                 self._cache_access(cache="suggestions", outcome="error")
             else:
-                cached_suggestions = self._cached_suggestions(cached)
+                cached_suggestions = self._cached_suggestions(
+                    cached,
+                    workspace_id=subject.workspace_id,
+                    limit=limit,
+                )
                 if cached_suggestions is not None:
                     self._cache_access(cache="suggestions", outcome="hit")
                     return cached_suggestions
@@ -307,7 +400,10 @@ class CatalogService:
             try:
                 await self._cache.set_json(
                     cache_key,
-                    self._suggestions_document(suggestions),
+                    self._suggestions_document(
+                        suggestions,
+                        workspace_id=subject.workspace_id,
+                    ),
                     ttl_seconds=cache_ttl,
                 )
             except Exception:
@@ -373,7 +469,11 @@ class CatalogService:
             except Exception:
                 self._cache_access(cache="tree", outcome="error")
             else:
-                cached_page = self._cached_tree_page(cached)
+                cached_page = self._cached_tree_page(
+                    cached,
+                    workspace_id=subject.workspace_id,
+                    limit=limit,
+                )
                 if cached_page is not None:
                     self._cache_access(cache="tree", outcome="hit")
                     return cached_page
@@ -405,7 +505,7 @@ class CatalogService:
             try:
                 await self._cache.set_json(
                     cache_key,
-                    self._tree_page_document(page),
+                    self._tree_page_document(page, workspace_id=subject.workspace_id),
                     ttl_seconds=cache_ttl,
                 )
             except Exception:
@@ -440,28 +540,14 @@ class CatalogService:
             query=normalized_query,
             limit=limit,
         )
-        items = set(vocabulary.items)
-        if kind in {"TAG", "TERM"}:
-            try:
-                # DataHub's fixed search contract accepts ``*`` as a bounded
-                # browse query.  This lets the initial Tag/Term picker show
-                # currently registered controlled values even when the local
-                # projection only contains values already selected on the
-                # current asset.  Typed input still narrows the same query.
-                items.update(
-                    await self._datahub.search_vocabulary(
-                        kind=kind,
-                        query=normalized_query or "*",
-                        limit=limit,
-                    )
-                )
-            except ExternalDependencyError:
-                # Retain the authorization-scoped projection when this optional
-                # controlled-vocabulary enrichment cannot reach DataHub.
-                pass
+        # Discovery values must stay inside the authorization-pruned workspace
+        # projection. DataHub tags and terms are globally addressable and its
+        # provider search contract has no workspace/classification predicate,
+        # so unioning provider-only names here could disclose cross-tenant
+        # vocabulary. Provider refs are resolved only in governed server-side
+        # mutation workflows.
         return replace(
             vocabulary,
-            items=tuple(sorted(items, key=str.casefold)[:limit]),
             projection_version=watermark,
             policy_version=self._policy_version,
             classification_policy_version=access.policy_version,
@@ -568,6 +654,9 @@ class CatalogService:
                     schema_fields_total=authorized.schema_fields_total,
                     schema_fields_truncated=authorized.schema_fields_truncated,
                     schema_fields_total_exact=authorized.schema_fields_total_exact,
+                    glossary_terms_truncated=authorized.index.glossary_terms_truncated,
+                    tags_truncated=authorized.index.tags_truncated,
+                    description_truncated=authorized.index.description_truncated,
                 )
             raise
         self._detail_source(source="datahub")
@@ -951,11 +1040,12 @@ class CatalogService:
     @staticmethod
     def _page_document(page: CatalogPage) -> dict[str, Any]:
         return {
-            "schema": 5,
+            "schema": 8,
             "items": [CatalogService._asset_index_document(item) for item in page.items],
             "next_cursor": page.next_cursor,
             "observed_at": page.observed_at.isoformat(),
             "total": page.total,
+            "total_exact": page.total_exact,
             "stale_at": page.stale_at.isoformat() if page.stale_at else None,
             "projection_version": page.projection_version,
             "policy_version": page.policy_version,
@@ -964,19 +1054,41 @@ class CatalogService:
         }
 
     @staticmethod
-    def _cached_page(value: object) -> CatalogPage | None:
-        if not isinstance(value, dict) or value.get("schema") != 5:
+    def _cached_page(
+        value: object,
+        *,
+        workspace_id: UUID,
+        limit: int,
+    ) -> CatalogPage | None:
+        if not isinstance(value, dict) or value.get("schema") != 8:
             return None
         try:
-            items = tuple(
-                CatalogService._asset_index_from_document(item) for item in value["items"]
-            )
+            raw_items = value["items"]
+            if not isinstance(raw_items, list) or len(raw_items) > limit:
+                return None
+            items = tuple(CatalogService._asset_index_from_document(item) for item in raw_items)
+            if any(item.workspace_id != workspace_id for item in items):
+                return None
+            total = int(value["total"])
+            if total < len(items):
+                return None
+            total_exact = value.get("total_exact")
+            if not isinstance(total_exact, bool):
+                return None
+            raw_cursor = value.get("next_cursor")
+            if raw_cursor is not None and (
+                not isinstance(raw_cursor, str) or not 1 <= len(raw_cursor) <= 4_096
+            ):
+                return None
+            if total_exact and raw_cursor is not None:
+                return None
             stale_raw = value.get("stale_at")
             return CatalogPage(
                 items=items,
-                next_cursor=str(value["next_cursor"]) if value.get("next_cursor") else None,
+                next_cursor=raw_cursor,
                 observed_at=datetime.fromisoformat(str(value["observed_at"])),
-                total=int(value["total"]),
+                total=total,
+                total_exact=total_exact,
                 stale_at=datetime.fromisoformat(str(stale_raw)) if stale_raw else None,
                 projection_version=int(value["projection_version"]),
                 policy_version=str(value["policy_version"]),
@@ -995,9 +1107,14 @@ class CatalogService:
             return None
 
     @staticmethod
-    def _tree_page_document(page: CatalogTreePage) -> dict[str, Any]:
+    def _tree_page_document(
+        page: CatalogTreePage,
+        *,
+        workspace_id: UUID,
+    ) -> dict[str, Any]:
         return {
-            "schema": 2,
+            "schema": 3,
+            "workspace_id": str(workspace_id),
             "items": [
                 {
                     "node_id": str(item.node_id),
@@ -1025,40 +1142,87 @@ class CatalogService:
         }
 
     @staticmethod
-    def _cached_tree_page(value: object) -> CatalogTreePage | None:
-        if not isinstance(value, dict) or value.get("schema") != 2:
+    def _cached_tree_page(
+        value: object,
+        *,
+        workspace_id: UUID,
+        limit: int,
+    ) -> CatalogTreePage | None:
+        if (
+            not isinstance(value, dict)
+            or value.get("schema") != 3
+            or value.get("workspace_id") != str(workspace_id)
+            or not 1 <= limit <= 100
+        ):
             return None
         try:
-            return CatalogTreePage(
-                items=tuple(
+            raw_items = value.get("items")
+            if not isinstance(raw_items, list) or len(raw_items) > limit:
+                return None
+            nodes: list[CatalogTreeNode] = []
+            for item in raw_items:
+                if not isinstance(item, dict):
+                    return None
+                kind = item.get("kind")
+                label = item.get("label")
+                node_id = item.get("node_id")
+                asset_count = item.get("asset_count")
+                has_children = item.get("has_children")
+                optional_fields = (
+                    ("platform", 100),
+                    ("database_name", 255),
+                    ("schema_name", 255),
+                )
+                if (
+                    kind not in {"PLATFORM", "DATABASE", "SCHEMA", "ASSET"}
+                    or not isinstance(node_id, str)
+                    or not isinstance(label, str)
+                    or not 1 <= len(label) <= 500
+                    or isinstance(asset_count, bool)
+                    or not isinstance(asset_count, int)
+                    or asset_count < 0
+                    or not isinstance(has_children, bool)
+                ):
+                    return None
+                for key, maximum_characters in optional_fields:
+                    candidate = item.get(key)
+                    if candidate is not None and (
+                        not isinstance(candidate, str)
+                        or not 1 <= len(candidate) <= maximum_characters
+                    ):
+                        return None
+                asset = (
+                    CatalogService._asset_index_from_document(item["asset"])
+                    if item.get("asset") is not None
+                    else None
+                )
+                if (
+                    (kind == "ASSET" and asset is None)
+                    or (kind != "ASSET" and asset is not None)
+                    or (asset is not None and asset.workspace_id != workspace_id)
+                ):
+                    return None
+                nodes.append(
                     CatalogTreeNode(
-                        node_id=UUID(str(item["node_id"])),
-                        kind=str(item["kind"]),
-                        label=str(item["label"]),
-                        asset_count=int(item["asset_count"]),
-                        has_children=bool(item["has_children"]),
-                        platform=(
-                            str(item["platform"]) if item.get("platform") is not None else None
-                        ),
-                        database_name=(
-                            str(item["database_name"])
-                            if item.get("database_name") is not None
-                            else None
-                        ),
-                        schema_name=(
-                            str(item["schema_name"])
-                            if item.get("schema_name") is not None
-                            else None
-                        ),
-                        asset=(
-                            CatalogService._asset_index_from_document(item["asset"])
-                            if item.get("asset") is not None
-                            else None
-                        ),
+                        node_id=UUID(node_id),
+                        kind=kind,
+                        label=label,
+                        asset_count=asset_count,
+                        has_children=has_children,
+                        platform=item.get("platform"),
+                        database_name=item.get("database_name"),
+                        schema_name=item.get("schema_name"),
+                        asset=asset,
                     )
-                    for item in value["items"]
-                ),
-                next_cursor=(str(value["next_cursor"]) if value.get("next_cursor") else None),
+                )
+            raw_cursor = value.get("next_cursor")
+            if raw_cursor is not None and (
+                not isinstance(raw_cursor, str) or not 1 <= len(raw_cursor) <= 4_096
+            ):
+                return None
+            return CatalogTreePage(
+                items=tuple(nodes),
+                next_cursor=raw_cursor,
                 observed_at=(
                     datetime.fromisoformat(str(value["observed_at"]))
                     if value.get("observed_at")
@@ -1114,56 +1278,160 @@ class CatalogService:
                 }
                 for fragment in item.matches
             ],
+            "description_truncated": item.description_truncated,
+            "tags_truncated": item.tags_truncated,
+            "glossary_terms_truncated": item.glossary_terms_truncated,
+            "column_names_truncated": item.column_names_truncated,
         }
+
+    @staticmethod
+    def _match_fragment_from_document(item: object) -> CatalogMatchFragment:
+        if not isinstance(item, dict):
+            raise ValueError("Invalid cached catalog match.")
+        field = item.get("field")
+        text = item.get("text")
+        matched_terms = item.get("matched_terms")
+        if (
+            field not in {"NAME", "DESCRIPTION", "SCHEMA", "COLUMN", "TAG", "TERM"}
+            or not isinstance(text, str)
+            or not 1 <= len(text) <= 240
+            or not isinstance(matched_terms, list)
+            or not 1 <= len(matched_terms) <= 12
+            or any(
+                not isinstance(term, str)
+                or not 1 <= len(term) <= 120
+                or term.casefold() not in text.casefold()
+                for term in matched_terms
+            )
+        ):
+            raise ValueError("Invalid cached catalog match.")
+        return CatalogMatchFragment(
+            field=field,
+            text=text,
+            matched_terms=tuple(matched_terms),
+        )
 
     @staticmethod
     def _asset_index_from_document(item: object) -> CatalogAssetIndex:
         if not isinstance(item, dict):
             raise ValueError("Invalid cached catalog asset.")
-        return CatalogAssetIndex(
-            asset_id=UUID(str(item["asset_id"])),
-            workspace_id=UUID(str(item["workspace_id"])),
-            external_urn=str(item["external_urn"]),
-            asset_type=str(item["asset_type"]),
-            name=str(item["name"]),
-            description=(str(item["description"]) if item.get("description") is not None else None),
-            platform=str(item["platform"]) if item.get("platform") is not None else None,
-            database_name=(
-                str(item["database_name"]) if item.get("database_name") is not None else None
-            ),
-            schema_name=(str(item["schema_name"]) if item.get("schema_name") is not None else None),
-            domain_id=UUID(str(item["domain_id"])) if item.get("domain_id") else None,
-            system_id=UUID(str(item["system_id"])) if item.get("system_id") else None,
-            owner_department_id=(
-                UUID(str(item["owner_department_id"])) if item.get("owner_department_id") else None
-            ),
-            classification=Classification(int(item["classification"])),
-            lifecycle=str(item["lifecycle"]),
-            source_version=str(item["source_version"]),
-            observed_at=datetime.fromisoformat(str(item["observed_at"])),
-            owner=str(item["owner"]) if item.get("owner") is not None else None,
-            domain=str(item["domain"]) if item.get("domain") is not None else None,
-            tags=tuple(str(value) for value in item.get("tags", [])),
-            glossary_terms=tuple(str(value) for value in item.get("glossary_terms", [])),
-            created_at=(
-                datetime.fromisoformat(str(item["created_at"]))
-                if item.get("created_at") is not None
-                else None
-            ),
-            matches=tuple(
-                CatalogMatchFragment(
-                    field=str(fragment["field"]),
-                    text=str(fragment["text"]),
-                    matched_terms=tuple(str(term) for term in fragment["matched_terms"]),
+        raw_matches = item.get("matches", [])
+        if not isinstance(raw_matches, list) or len(raw_matches) > MAX_CATALOG_MATCH_FRAGMENTS:
+            raise ValueError("Invalid cached catalog matches.")
+        external_urn = item.get("external_urn")
+        description = item.get("description")
+        raw_tags = item.get("tags", [])
+        raw_terms = item.get("glossary_terms", [])
+        truncation_values = tuple(
+            item.get(key)
+            for key in (
+                "description_truncated",
+                "tags_truncated",
+                "glossary_terms_truncated",
+                "column_names_truncated",
+            )
+        )
+        bounded_fields = (
+            ("asset_type", 100, False),
+            ("name", 500, False),
+            ("platform", 100, True),
+            ("database_name", 255, True),
+            ("schema_name", 255, True),
+            ("owner", 1_000, True),
+            ("domain", 1_000, True),
+            ("lifecycle", 50, False),
+            ("source_version", 255, False),
+        )
+        for key, maximum_characters, nullable in bounded_fields:
+            candidate = item.get(key)
+            if candidate is None and nullable:
+                continue
+            if not isinstance(candidate, str) or not 1 <= len(candidate) <= maximum_characters:
+                raise ValueError("Invalid cached catalog asset scalar.")
+        for key in ("asset_id", "workspace_id"):
+            if not isinstance(item.get(key), str):
+                raise ValueError("Invalid cached catalog asset identity.")
+        for key in ("domain_id", "system_id", "owner_department_id"):
+            if item.get(key) is not None and not isinstance(item.get(key), str):
+                raise ValueError("Invalid cached catalog scope identity.")
+        classification = item.get("classification")
+        observed_at = item.get("observed_at")
+        created_at = item.get("created_at")
+        if (
+            not isinstance(external_urn, str)
+            or not 1 <= len(external_urn) <= MAX_CATALOG_CACHE_EXTERNAL_URN_CHARACTERS
+            or (
+                description is not None
+                and (
+                    not isinstance(description, str)
+                    or len(description) > MAX_CATALOG_CACHE_DESCRIPTION_CHARACTERS
                 )
-                for fragment in item.get("matches", [])
+            )
+            or not isinstance(raw_tags, list)
+            or len(raw_tags) > MAX_CATALOG_CACHE_METADATA_ITEMS
+            or any(
+                not isinstance(value, str) or len(value) > MAX_CATALOG_CACHE_METADATA_CHARACTERS
+                for value in raw_tags
+            )
+            or not isinstance(raw_terms, list)
+            or len(raw_terms) > MAX_CATALOG_CACHE_METADATA_ITEMS
+            or any(
+                not isinstance(value, str) or len(value) > MAX_CATALOG_CACHE_METADATA_CHARACTERS
+                for value in raw_terms
+            )
+            or not all(isinstance(value, bool) for value in truncation_values)
+            or isinstance(classification, bool)
+            or not isinstance(classification, int)
+            or not isinstance(observed_at, str)
+            or not 1 <= len(observed_at) <= 64
+            or (
+                created_at is not None
+                and (not isinstance(created_at, str) or not 1 <= len(created_at) <= 64)
+            )
+        ):
+            raise ValueError("Invalid cached catalog asset bounds.")
+        return CatalogAssetIndex(
+            asset_id=UUID(item["asset_id"]),
+            workspace_id=UUID(item["workspace_id"]),
+            external_urn=external_urn,
+            asset_type=item["asset_type"],
+            name=item["name"],
+            description=description,
+            platform=item.get("platform"),
+            database_name=item.get("database_name"),
+            schema_name=item.get("schema_name"),
+            domain_id=UUID(item["domain_id"]) if item.get("domain_id") else None,
+            system_id=UUID(item["system_id"]) if item.get("system_id") else None,
+            owner_department_id=(
+                UUID(item["owner_department_id"]) if item.get("owner_department_id") else None
             ),
+            classification=Classification(classification),
+            lifecycle=item["lifecycle"],
+            source_version=item["source_version"],
+            observed_at=datetime.fromisoformat(observed_at),
+            owner=item.get("owner"),
+            domain=item.get("domain"),
+            tags=tuple(raw_tags),
+            glossary_terms=tuple(raw_terms),
+            created_at=(datetime.fromisoformat(created_at) if created_at is not None else None),
+            matches=tuple(
+                CatalogService._match_fragment_from_document(fragment) for fragment in raw_matches
+            ),
+            description_truncated=bool(truncation_values[0]),
+            tags_truncated=bool(truncation_values[1]),
+            glossary_terms_truncated=bool(truncation_values[2]),
+            column_names_truncated=bool(truncation_values[3]),
         )
 
     @staticmethod
-    def _facets_document(facets: CatalogFacets) -> dict[str, Any]:
+    def _facets_document(
+        facets: CatalogFacets,
+        *,
+        workspace_id: UUID,
+    ) -> dict[str, Any]:
         return {
-            "schema": 2,
+            "schema": 3,
+            "workspace_id": str(workspace_id),
             "asset_types": [
                 {"value": item.value, "count": item.count} for item in facets.asset_types
             ],
@@ -1185,60 +1453,48 @@ class CatalogService:
         }
 
     @staticmethod
-    def _cached_facets(value: object) -> CatalogFacets | None:
-        if not isinstance(value, dict) or value.get("schema") != 2:
+    def _cached_facets(
+        value: object,
+        *,
+        workspace_id: UUID,
+        limit: int,
+    ) -> CatalogFacets | None:
+        if (
+            not isinstance(value, dict)
+            or value.get("schema") != 3
+            or value.get("workspace_id") != str(workspace_id)
+            or not 1 <= limit <= 100
+        ):
             return None
+
+        def buckets(key: str, *, maximum_characters: int) -> tuple[CatalogFacetBucket, ...]:
+            raw_buckets = value.get(key)
+            if not isinstance(raw_buckets, list) or len(raw_buckets) > limit:
+                raise ValueError("Invalid cached catalog facet collection.")
+            normalized: list[CatalogFacetBucket] = []
+            for item in raw_buckets:
+                if not isinstance(item, dict):
+                    raise ValueError("Invalid cached catalog facet bucket.")
+                raw_value = item.get("value")
+                if raw_value is not None and (
+                    not isinstance(raw_value, str) or not 1 <= len(raw_value) <= maximum_characters
+                ):
+                    raise ValueError("Invalid cached catalog facet value.")
+                raw_count = item.get("count")
+                if isinstance(raw_count, bool) or not isinstance(raw_count, int) or raw_count < 0:
+                    raise ValueError("Invalid cached catalog facet count.")
+                normalized.append(CatalogFacetBucket(value=raw_value, count=raw_count))
+            return tuple(normalized)
+
         try:
             return CatalogFacets(
-                asset_types=tuple(
-                    CatalogFacetBucket(
-                        value=str(item["value"]) if item.get("value") is not None else None,
-                        count=int(item["count"]),
-                    )
-                    for item in value["asset_types"]
-                ),
-                platforms=tuple(
-                    CatalogFacetBucket(
-                        value=str(item["value"]) if item.get("value") is not None else None,
-                        count=int(item["count"]),
-                    )
-                    for item in value["platforms"]
-                ),
-                classifications=tuple(
-                    CatalogFacetBucket(
-                        value=str(item["value"]) if item.get("value") is not None else None,
-                        count=int(item["count"]),
-                    )
-                    for item in value["classifications"]
-                ),
-                databases=tuple(
-                    CatalogFacetBucket(
-                        value=str(item["value"]) if item.get("value") is not None else None,
-                        count=int(item["count"]),
-                    )
-                    for item in value["databases"]
-                ),
-                schemas=tuple(
-                    CatalogFacetBucket(
-                        value=str(item["value"]) if item.get("value") is not None else None,
-                        count=int(item["count"]),
-                    )
-                    for item in value["schemas"]
-                ),
-                domains=tuple(
-                    CatalogFacetBucket(
-                        value=str(item["value"]) if item.get("value") is not None else None,
-                        count=int(item["count"]),
-                    )
-                    for item in value["domains"]
-                ),
-                lifecycles=tuple(
-                    CatalogFacetBucket(
-                        value=str(item["value"]) if item.get("value") is not None else None,
-                        count=int(item["count"]),
-                    )
-                    for item in value["lifecycles"]
-                ),
+                asset_types=buckets("asset_types", maximum_characters=100),
+                platforms=buckets("platforms", maximum_characters=100),
+                classifications=buckets("classifications", maximum_characters=100),
+                databases=buckets("databases", maximum_characters=255),
+                schemas=buckets("schemas", maximum_characters=255),
+                domains=buckets("domains", maximum_characters=1_000),
+                lifecycles=buckets("lifecycles", maximum_characters=50),
                 observed_at=(
                     datetime.fromisoformat(str(value["observed_at"]))
                     if value.get("observed_at") is not None
@@ -1261,15 +1517,30 @@ class CatalogService:
             return None
 
     @staticmethod
-    def _suggestions_document(suggestions: CatalogSuggestions) -> dict[str, Any]:
+    def _suggestions_document(
+        suggestions: CatalogSuggestions,
+        *,
+        workspace_id: UUID,
+    ) -> dict[str, Any]:
         return {
-            "schema": 1,
+            "schema": 3,
+            "workspace_id": str(workspace_id),
             "items": [
                 {
                     "asset_id": str(item.asset_id),
                     "name": item.name,
                     "asset_type": item.asset_type,
                     "platform": item.platform,
+                    "database_name": item.database_name,
+                    "schema_name": item.schema_name,
+                    "matches": [
+                        {
+                            "field": fragment.field,
+                            "text": fragment.text,
+                            "matched_terms": list(fragment.matched_terms),
+                        }
+                        for fragment in item.matches
+                    ],
                 }
                 for item in suggestions.items
             ],
@@ -1283,21 +1554,63 @@ class CatalogService:
         }
 
     @staticmethod
-    def _cached_suggestions(value: object) -> CatalogSuggestions | None:
-        if not isinstance(value, dict) or value.get("schema") != 1:
+    def _cached_suggestions(
+        value: object,
+        *,
+        workspace_id: UUID,
+        limit: int,
+    ) -> CatalogSuggestions | None:
+        if (
+            not isinstance(value, dict)
+            or value.get("schema") != 3
+            or value.get("workspace_id") != str(workspace_id)
+            or not 1 <= limit <= 20
+        ):
             return None
         try:
+            raw_items = value["items"]
+            if not isinstance(raw_items, list) or len(raw_items) > limit:
+                return None
+            for item in raw_items:
+                if not isinstance(item, dict):
+                    return None
+                bounded_fields = (
+                    ("name", 500, False),
+                    ("asset_type", 100, False),
+                    ("platform", 100, True),
+                    ("database_name", 255, True),
+                    ("schema_name", 255, True),
+                )
+                for key, maximum_characters, nullable in bounded_fields:
+                    candidate = item.get(key)
+                    if candidate is None and nullable:
+                        continue
+                    if (
+                        not isinstance(candidate, str)
+                        or not 1 <= len(candidate) <= maximum_characters
+                    ):
+                        return None
+                raw_matches = item.get("matches", [])
+                if (
+                    not isinstance(raw_matches, list)
+                    or len(raw_matches) > MAX_CATALOG_MATCH_FRAGMENTS
+                ):
+                    return None
             return CatalogSuggestions(
                 items=tuple(
                     CatalogSuggestion(
                         asset_id=UUID(str(item["asset_id"])),
-                        name=str(item["name"]),
-                        asset_type=str(item["asset_type"]),
-                        platform=(
-                            str(item["platform"]) if item.get("platform") is not None else None
+                        name=item["name"],
+                        asset_type=item["asset_type"],
+                        platform=item.get("platform"),
+                        database_name=item.get("database_name"),
+                        schema_name=item.get("schema_name"),
+                        matches=tuple(
+                            CatalogService._match_fragment_from_document(fragment)
+                            for fragment in item.get("matches", [])
                         ),
                     )
-                    for item in value["items"]
+                    for item in raw_items
                 ),
                 observed_at=(
                     datetime.fromisoformat(str(value["observed_at"]))
@@ -1328,7 +1641,19 @@ class CatalogService:
         stale_at: datetime | None = None,
     ) -> CatalogAssetDetail:
         index = authorized.index
-        if enrichment.created_at is not None or enrichment.description is not None:
+        glossary_terms = tuple(
+            str(reference.get("name") or reference.get("urn"))[:1_000]
+            for item in enrichment.glossary_terms
+            if isinstance(item, dict)
+            and isinstance((reference := item.get("term")), dict)
+            and (reference.get("name") or reference.get("urn"))
+        )[:100]
+        if (
+            enrichment.created_at is not None
+            or enrichment.description is not None
+            or enrichment.tags
+            or glossary_terms
+        ):
             index = replace(
                 index,
                 created_at=(
@@ -1339,6 +1664,11 @@ class CatalogService:
                     if enrichment.description is not None
                     else index.description
                 ),
+                tags=enrichment.tags,
+                glossary_terms=glossary_terms,
+                description_truncated=enrichment.description_truncated,
+                tags_truncated=enrichment.tags_truncated,
+                glossary_terms_truncated=enrichment.glossary_terms_truncated,
             )
         return CatalogAssetDetail(
             index=index,
@@ -1353,6 +1683,10 @@ class CatalogService:
             schema_fields_total=enrichment.schema_fields_total,
             schema_fields_truncated=enrichment.schema_fields_truncated,
             schema_fields_total_exact=enrichment.schema_fields_total_exact,
+            ownership_truncated=enrichment.ownership_truncated,
+            glossary_terms_truncated=enrichment.glossary_terms_truncated,
+            tags_truncated=enrichment.tags_truncated,
+            description_truncated=enrichment.description_truncated,
         )
 
     @staticmethod
@@ -1360,7 +1694,7 @@ class CatalogService:
         enrichment: DataHubAssetEnrichment, *, fresh_until: datetime
     ) -> dict[str, Any]:
         return {
-            "schema": 4,
+            "schema": 7,
             "ownership": list(enrichment.ownership),
             "glossary_terms": list(enrichment.glossary_terms),
             "tags": list(enrichment.tags),
@@ -1375,6 +1709,10 @@ class CatalogService:
                 enrichment.created_at.isoformat() if enrichment.created_at is not None else None
             ),
             "description": enrichment.description,
+            "ownership_truncated": enrichment.ownership_truncated,
+            "glossary_terms_truncated": enrichment.glossary_terms_truncated,
+            "tags_truncated": enrichment.tags_truncated,
+            "description_truncated": enrichment.description_truncated,
             "fresh_until": fresh_until.isoformat(),
         }
 
@@ -1389,34 +1727,47 @@ class CatalogService:
 
     @staticmethod
     def _cached_enrichment(value: object) -> DataHubAssetEnrichment | None:
-        if not isinstance(value, dict) or value.get("schema") not in {3, 4}:
+        if not isinstance(value, dict) or value.get("schema") != 7:
             return None
         try:
-            ownership = tuple(dict(item) for item in value["ownership"])
-            glossary_terms = tuple(dict(item) for item in value["glossary_terms"])
-            tags = tuple(str(item) for item in value["tags"])
-            raw_schema_fields = value["schema_fields"]
-            if not isinstance(raw_schema_fields, list):
-                return None
-            schema_fields = tuple(
-                dict(item) for item in raw_schema_fields[:MAX_CATALOG_SCHEMA_FIELDS]
+            ownership = _cached_reference_items(
+                value["ownership"],
+                entity="owner",
+                maximum_items=100,
+                maximum_characters=1_000,
             )
-            if value["schema"] == 3:
-                schema_fields_total = len(raw_schema_fields)
-                schema_fields_truncated = len(raw_schema_fields) > len(schema_fields)
-                schema_fields_total_exact = True
-            else:
-                schema_fields_total = (
-                    int(value["schema_fields_total"])
-                    if value.get("schema_fields_total") is not None
-                    else len(raw_schema_fields)
-                )
-                raw_truncated = value.get("schema_fields_truncated", False)
-                raw_total_exact = value.get("schema_fields_total_exact", True)
-                if not isinstance(raw_truncated, bool) or not isinstance(raw_total_exact, bool):
-                    return None
-                schema_fields_truncated = raw_truncated
-                schema_fields_total_exact = raw_total_exact
+            glossary_terms = _cached_reference_items(
+                value["glossary_terms"],
+                entity="term",
+                maximum_items=100,
+                maximum_characters=1_000,
+            )
+            raw_tags = value["tags"]
+            if (
+                not isinstance(raw_tags, list)
+                or len(raw_tags) > 100
+                or any(not isinstance(item, str) or len(item) > 1_000 for item in raw_tags)
+            ):
+                return None
+            tags = tuple(raw_tags)
+            raw_schema_fields = value["schema_fields"]
+            if (
+                not isinstance(raw_schema_fields, list)
+                or len(raw_schema_fields) > MAX_CATALOG_SCHEMA_FIELDS
+            ):
+                return None
+            schema_fields = tuple(_cached_schema_field(item) for item in raw_schema_fields)
+            schema_fields_total = (
+                int(value["schema_fields_total"])
+                if value.get("schema_fields_total") is not None
+                else len(raw_schema_fields)
+            )
+            raw_truncated = value.get("schema_fields_truncated", False)
+            raw_total_exact = value.get("schema_fields_total_exact", True)
+            if not isinstance(raw_truncated, bool) or not isinstance(raw_total_exact, bool):
+                return None
+            schema_fields_truncated = raw_truncated
+            schema_fields_total_exact = raw_total_exact
             if (
                 schema_fields_total < len(schema_fields)
                 or (schema_fields_truncated and schema_fields_total <= len(schema_fields))
@@ -1425,8 +1776,28 @@ class CatalogService:
                 or (not schema_fields_total_exact and not schema_fields_truncated)
             ):
                 return None
-            quality = dict(value["quality"])
+            raw_quality = value["quality"]
+            if not isinstance(raw_quality, dict):
+                return None
+            quality: dict[str, Any] = {}
+            for key in ("rowCount", "columnCount", "sizeInBytes"):
+                candidate = raw_quality.get(key)
+                if candidate is not None:
+                    if (
+                        isinstance(candidate, bool)
+                        or not isinstance(candidate, int)
+                        or candidate < 0
+                    ):
+                        return None
+                    quality[key] = candidate
+            profiled_at = raw_quality.get("profiledAt")
+            if profiled_at is not None:
+                if not isinstance(profiled_at, str) or len(profiled_at) > 100:
+                    return None
+                quality["profiledAt"] = profiled_at
             raw_version = str(value["raw_version"])
+            if not 1 <= len(raw_version) <= 255:
+                return None
             observed_at = datetime.fromisoformat(str(value["observed_at"]))
             created_at = (
                 datetime.fromisoformat(str(value["created_at"]))
@@ -1438,6 +1809,19 @@ class CatalogService:
                 if isinstance(value.get("description"), str) and value["description"].strip()
                 else None
             )
+            if description is not None and len(description) > 10_000:
+                return None
+            truncation_values = tuple(
+                value.get(key)
+                for key in (
+                    "ownership_truncated",
+                    "glossary_terms_truncated",
+                    "tags_truncated",
+                    "description_truncated",
+                )
+            )
+            if not all(isinstance(item, bool) for item in truncation_values):
+                return None
         except (KeyError, TypeError, ValueError):
             return None
         return DataHubAssetEnrichment(
@@ -1453,4 +1837,8 @@ class CatalogService:
             schema_fields_total=schema_fields_total,
             schema_fields_truncated=schema_fields_truncated,
             schema_fields_total_exact=schema_fields_total_exact,
+            ownership_truncated=bool(truncation_values[0]),
+            glossary_terms_truncated=bool(truncation_values[1]),
+            tags_truncated=bool(truncation_values[2]),
+            description_truncated=bool(truncation_values[3]),
         )

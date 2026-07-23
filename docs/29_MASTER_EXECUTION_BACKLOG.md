@@ -108,11 +108,13 @@ merged, released, or available to the preparation PC until publication actually 
 
 | ID | Checklist item | Current status | Evidence / remaining work |
 |---|---|---|---|
-| R3-01 | Restore the softer v0.3-style global search presentation | `PARTIAL` | Source exists; authenticated reference-viewport and accessibility acceptance remain. |
-| R3-02 | Use the same multi-keyword logic in global and catalog search | `PENDING` | Full search covers multiple fields; suggestions remain name-only. Add one shared typed query/match contract. |
-| R3-03 | Return all authorized `matches` in global preview | `PENDING` | Suggestion DTO/API/UI has no match fragments. Bound count and bytes before adding them. |
-| R3-04 | Explain/fix results whose visible `matches` are empty | `PENDING` | Search fields exceed the fragment fields. Extend typed fragments or return an explicit matched-field reason. |
-| R3-05 | Hydrate logical name and description for table/columns | `PARTIAL` + `EXTERNAL_GATE` | Column description merge/hydration exists, but the UI heading conflates `fieldPath` with a separate logical-name field that has no typed API contract. Add or explicitly remove that claim, then verify live DataHub. |
+| R3-01 | Restore the softer v0.3-style global search presentation | `DONE_LOCAL` + `EXTERNAL_GATE` | Bounded preview, match evidence, listbox keyboard navigation and Workspace-keyed late-response purge are source-tested; authenticated reference-viewport/browser acceptance remains external. |
+| R3-02 | Use the same multi-keyword logic in global and catalog search | `DONE_LOCAL` | Both surfaces now use the fixed six-field ALL-term SQL contract; query expansion is bounded to 12 unique terms and 120 characters per term. |
+| R3-03 | Return all authorized `matches` in global preview | `DONE_LOCAL` | Suggestion DTO/API/cache/UI carries database/schema plus bounded plain-text match fragments and declares `match_mode=ALL`. |
+| R3-04 | Explain/fix results whose visible `matches` are empty | `DONE_LOCAL` | NAME, DESCRIPTION, SCHEMA, COLUMN, TAG and TERM all produce evidence; long separated matches are split so no fragment declares a term absent from its text. |
+| R3-05 | Hydrate logical name and description for table/columns | `DONE_LOCAL` + `EXTERNAL_GATE` | The fixed DataHub query now reads bounded `SchemaField.label`; UI displays it read-only as Logical Name separately from editable merged Description. Live target-version verification remains external. |
+| R3-05A | Bound provider-controlled catalog projection and browser response size | `DONE_LOCAL` + `EXTERNAL_GATE` | ADR-0039, Alembic `0045`, per-source truncation evidence, workspace/limit-bound cache schema invalidation and PostgreSQL 17.10 migration/JSONB semantic smoke tests pass. Representative target-volume `EXPLAIN (ANALYZE, BUFFERS)` remains external. |
+| R3-05B | Make full DataHub reconciliation deletion-safe and million-row capable | `DONE_LOCAL` + `EXTERNAL_GATE` | ADR-0040 replaces provider offsets with a fixed server-owned scroll cursor, pre-provider workspace reservation, lock-inside idempotency replay, stable-total/distinct-seen completion, adaptive response-bounded pages, server-progress retry resume and default-off tombstones. Exact target DataHub PIT/search-backend configuration plus concurrent-mutation/expiry/replay acceptance remains external; until accepted, completion reports deletion suppressed. |
 | R3-06 | Manual: server-authored CSV → MinIO → Airflow → DataHub read-back | `PARTIAL` | Source/unit contracts exist and migrated CSV objects were storage-verified; no current-HEAD Manual submission→Airflow→DataHub read-back/report run has been accepted. |
 | R3-07 | Bulk: parse candidates and apply governed row additions to DataHub | `PARTIAL` | Preparation/candidate pipeline exists; governed DataHub mutation, correction/retry and report flow do not. |
 | R3-08 | Restrict Manual/Bulk to Admin/Data Steward and validate DataRiver OIDC | `PARTIAL` | DataRiver authorization exists. Reconfirm route matrix and negative cases after role changes. |
@@ -159,7 +161,7 @@ merged, released, or available to the preparation PC until publication actually 
 | R5-BE-03 | P0 | Prevent direct release publication from bypassing independent changeset review. | `PENDING` |
 | R5-BE-04 | P0 | Record the actual Chat provider/model/external-use audit facts. | `PENDING` |
 | R5-BE-05 | P0 | Make API-product idempotency, per-minute/monthly quota checks and invocation/result recording atomic; bind request hash and replayable response so retries cannot bypass quota or repeat work. | `PENDING` |
-| R5-FE-01 | P0 | Bind global search requests/results to Workspace epoch and abort/discard cross-workspace responses. | `PENDING` |
+| R5-FE-01 | P0 | Bind global search requests/results to Workspace epoch and abort/discard cross-workspace responses. | `DONE_LOCAL`; Top Navigation keys the search component by Workspace and a late-response regression proves purge/discard. |
 | R5-FE-02 | P1 | Bind Admin context/auth hydration and renewal to subject/session epoch. | `PENDING` |
 | R5-FE-03 | P1 | Preserve CSP/security headers in every Nginx location. | `PENDING` |
 | R5-FE-04 | P1 | Validate runtime API/OIDC origins before any Bearer-bearing request. | `PENDING` |

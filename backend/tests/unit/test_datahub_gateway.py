@@ -15,6 +15,11 @@ from datariver.infrastructure.datahub.http import (
     VOCABULARY_SEARCH_QUERY,
     HttpDataHubGateway,
     _catalog_hierarchy_from_browse_path,
+    _catalog_snapshot_contract_hash,
+    _column_names,
+    _metadata_names,
+    _metadata_names_with_truncation,
+    _metadata_references_with_truncation,
     _schema_fields,
 )
 from datariver.infrastructure.observability.metrics import HttpMetrics
@@ -26,6 +31,53 @@ class _ChunkedResponse(httpx.AsyncByteStream):
     async def __aiter__(self) -> AsyncIterator[bytes]:
         yield b"x" * (MAX_DATAHUB_RESPONSE_BYTES // 2)
         yield b"x" * (MAX_DATAHUB_RESPONSE_BYTES // 2 + 1)
+
+
+def test_catalog_scan_projection_values_are_bounded_before_persistence() -> None:
+    tags = {"tags": [{"tag": {"name": f"{index:03d}-{'x' * 2_000}"}} for index in range(105)]}
+    fields = {"fields": [{"fieldPath": f"{index:04d}-{'x' * 600}"} for index in range(1_005)]}
+
+    projected_tags = _metadata_names(tags, wrapper="tags", entity="tag")
+    projected_columns = _column_names(fields)
+
+    assert len(projected_tags) == 100
+    assert max(map(len, projected_tags)) == 1_000
+    assert len(projected_columns) == 1_000
+    assert max(map(len, projected_columns)) == 500
+
+
+def test_datahub_detail_references_are_typed_bounded_and_report_truncation() -> None:
+    values = {
+        "terms": [
+            {
+                "term": {
+                    "urn": f"urn:li:glossaryTerm:{index:03d}:{'u' * 1_100}",
+                    "name": f"{index:03d}-{'n' * 1_100}",
+                    "provider_only_field": "must-not-cross-the-adapter",
+                }
+            }
+            for index in range(105)
+        ]
+    }
+
+    references, references_truncated = _metadata_references_with_truncation(
+        values,
+        wrapper="terms",
+        entity="term",
+    )
+    names, names_truncated = _metadata_names_with_truncation(
+        values,
+        wrapper="terms",
+        entity="term",
+    )
+
+    assert len(references) == 100
+    assert references_truncated is True
+    assert set(references[0]["term"]) <= {"urn", "name"}
+    assert max(len(str(value)) for item in references for value in item["term"].values()) == 1_000
+    assert len(names) == 100
+    assert names_truncated is True
+    assert max(map(len, names)) == 1_000
 
 
 async def test_datahub_rejects_oversized_graphql_response_before_json_parsing() -> None:
@@ -74,7 +126,12 @@ def test_schema_fields_retains_only_the_bounded_provider_projection() -> None:
         {
             "schemaMetadata": {
                 "fields": [
-                    {"fieldPath": f"field_{index}", "type": "STRING"} for index in range(1_005)
+                    {
+                        "fieldPath": f"field_{index}",
+                        "label": f"Logical field {index}",
+                        "type": "STRING",
+                    }
+                    for index in range(1_005)
                 ]
             }
         }
@@ -85,6 +142,67 @@ def test_schema_fields_retains_only_the_bounded_provider_projection() -> None:
     assert truncated is True
     assert total_exact is False
     assert fields[-1]["fieldPath"] == "field_999"
+    assert fields[-1]["label"] == "Logical field 999"
+
+
+def test_schema_fields_bound_nested_values_and_report_field_level_truncation() -> None:
+    references = [
+        {
+            "tag": {
+                "urn": f"urn:li:tag:{index:03d}:{'u' * 300}",
+                "name": f"{index:03d}-{'n' * 300}",
+            }
+        }
+        for index in range(25)
+    ]
+    fields, total, truncated, total_exact = _schema_fields(
+        {
+            "schemaMetadata": {
+                "fields": [
+                    {
+                        "fieldPath": "column",
+                        "label": "l" * 501,
+                        "type": "t" * 501,
+                        "nativeDataType": "n" * 501,
+                        "description": "d" * 10_001,
+                        "globalTags": {"tags": references},
+                        "glossaryTerms": {"terms": []},
+                    }
+                ]
+            }
+        }
+    )
+
+    field = fields[0]
+    assert (total, truncated, total_exact) == (1, False, True)
+    assert len(field["label"]) == 500
+    assert len(field["type"]) == 500
+    assert len(field["nativeDataType"]) == 500
+    assert len(field["description"]) == 10_000
+    assert len(field["globalTags"]["tags"]) == 20
+    assert (
+        max(len(value) for item in field["globalTags"]["tags"] for value in item["tag"].values())
+        == 240
+    )
+    assert field["label_truncated"] is True
+    assert field["type_truncated"] is True
+    assert field["nativeDataType_truncated"] is True
+    assert field["description_truncated"] is True
+    assert field["tags_truncated"] is True
+    assert field["terms_truncated"] is False
+
+
+def test_schema_fields_reject_an_oversized_identity_path() -> None:
+    with pytest.raises(ExternalDependencyError) as caught:
+        _schema_fields(
+            {
+                "schemaMetadata": {
+                    "fields": [{"fieldPath": "f" * 4_097}],
+                }
+            }
+        )
+
+    assert caught.value.details["provider_code"] == "INVALID_RESPONSE"
 
 
 async def test_vocabulary_search_uses_the_fixed_tag_contract() -> None:
@@ -233,6 +351,7 @@ async def test_asset_contract_uses_fixed_graphql_and_service_identity() -> None:
         assert "schemaFieldEntity" in body["query"]
         assert "latestFullTableProfile: datasetProfiles" in body["query"]
         assert "FULL_TABLE_SNAPSHOT" in body["query"]
+        assert "\n          label\n" in body["query"]
         return httpx.Response(
             200,
             json={
@@ -252,6 +371,7 @@ async def test_asset_contract_uses_fixed_graphql_and_service_identity() -> None:
                             "fields": [
                                 {
                                     "fieldPath": "id",
+                                    "label": "Record identifier",
                                     "type": "STRING",
                                     "description": "source description",
                                     "globalTags": {
@@ -333,6 +453,7 @@ async def test_asset_contract_uses_fixed_graphql_and_service_identity() -> None:
 
     assert asset.tags == ("One",)
     assert asset.schema_fields[0]["fieldPath"] == "id"
+    assert asset.schema_fields[0]["label"] == "Record identifier"
     assert asset.schema_fields[0]["description"] == "governed description"
     assert {item["tag"]["name"] for item in asset.schema_fields[0]["globalTags"]["tags"]} == {
         "Source",
@@ -352,6 +473,42 @@ async def test_asset_contract_uses_fixed_graphql_and_service_identity() -> None:
     assert asset.created_at is not None
     assert asset.created_at.isoformat() == "2026-01-01T00:00:00+00:00"
     assert asset.description == "governed description"
+    await client.aclose()
+
+
+async def test_asset_contract_rejects_a_provider_entity_for_another_urn() -> None:
+    client = httpx.AsyncClient(
+        base_url="https://datahub.example",
+        transport=httpx.MockTransport(
+            lambda request: httpx.Response(
+                200,
+                json={
+                    "data": {
+                        "entity": {
+                            "urn": "urn:li:dataset:other",
+                            "type": "DATASET",
+                            "ownership": {"owners": []},
+                            "globalTags": {"tags": []},
+                            "glossaryTerms": {"terms": []},
+                            "schemaMetadata": {"fields": []},
+                        }
+                    }
+                },
+                request=request,
+            )
+        ),
+    )
+    gateway = HttpDataHubGateway(
+        base_url="https://datahub.example",
+        token="unused",
+        timeout_seconds=1,
+        client=client,
+    )
+
+    with pytest.raises(ExternalDependencyError) as caught:
+        await gateway.get_asset("urn:li:dataset:requested")
+
+    assert caught.value.details["provider_code"] == "INVALID_RESPONSE"
     await client.aclose()
 
 
@@ -459,15 +616,22 @@ async def test_catalog_scan_maps_a_fixed_datahub_contract_and_paginates() -> Non
         assert body["variables"]["input"] == {
             "types": ["DATASET"],
             "query": "*",
-            "start": 0,
             "count": 1,
+            "keepAlive": "5m",
+            "sortInput": {
+                "sortCriteria": [{"field": "urn", "sortOrder": "ASCENDING"}],
+            },
+            "searchFlags": {
+                "skipHighlighting": True,
+                "skipAggregates": True,
+            },
         }
         return httpx.Response(
             200,
             json={
                 "data": {
-                    "searchAcrossEntities": {
-                        "start": 0,
+                    "scrollAcrossEntities": {
+                        "nextScrollId": "cursor-1",
                         "count": 1,
                         "total": 2,
                         "searchResults": [
@@ -548,7 +712,7 @@ async def test_catalog_scan_maps_a_fixed_datahub_contract_and_paginates() -> Non
         base_url="https://datahub.example", token="unused", timeout_seconds=1, client=client
     )
 
-    page = await gateway.scan_assets(offset=0, limit=1)
+    page = await gateway.scan_assets(cursor=None, limit=1)
 
     assert page.items[0].name == "wafer_events"
     assert page.items[0].description == "governed events"
@@ -563,8 +727,273 @@ async def test_catalog_scan_maps_a_fixed_datahub_contract_and_paginates() -> Non
     assert page.items[0].column_names == ("wafer_id", "yield_pct")
     assert page.items[0].created_at is not None
     assert page.items[0].classification is Classification.CONFIDENTIAL
-    assert page.next_offset == 1
+    assert page.next_cursor == "cursor-1"
     assert page.total == 2
+    await client.aclose()
+
+
+@pytest.mark.parametrize(
+    "result",
+    [
+        {"nextScrollId": None, "count": 1, "total": 2, "searchResults": []},
+        {"nextScrollId": "cursor", "count": 0, "total": 2, "searchResults": []},
+        {"nextScrollId": None, "count": True, "total": 0, "searchResults": []},
+        {
+            "nextScrollId": None,
+            "count": 2,
+            "total": 2,
+            "searchResults": [
+                {"entity": {"urn": "urn:li:dataset:duplicate", "type": "DATASET"}},
+                {"entity": {"urn": "urn:li:dataset:duplicate", "type": "DATASET"}},
+            ],
+        },
+        {
+            "nextScrollId": None,
+            "count": 2,
+            "total": 1,
+            "searchResults": [
+                {"entity": {"urn": "u" * 4_097, "type": "DATASET"}},
+            ],
+        },
+    ],
+)
+async def test_catalog_scan_fails_closed_on_inconsistent_provider_pages(
+    result: dict[str, object],
+) -> None:
+    client = httpx.AsyncClient(
+        base_url="https://datahub.example",
+        transport=httpx.MockTransport(
+            lambda request: httpx.Response(
+                200,
+                json={"data": {"scrollAcrossEntities": result}},
+                request=request,
+            )
+        ),
+    )
+    gateway = HttpDataHubGateway(
+        base_url="https://datahub.example",
+        token="unused",
+        timeout_seconds=1,
+        client=client,
+    )
+
+    with pytest.raises(ExternalDependencyError) as caught:
+        await gateway.scan_assets(cursor=None, limit=2)
+
+    assert caught.value.details["provider_code"] == "INVALID_RESPONSE"
+    await client.aclose()
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("name", {"not": "text"}),
+        ("platform", {"urn": 7, "name": "postgres"}),
+        ("domain", {"domain": {"urn": True}}),
+        ("ownership", {"owners": [{"owner": {"urn": {"not": "text"}}}]}),
+        ("globalTags", {"tags": [{"tag": {"name": 42}}]}),
+    ],
+)
+async def test_catalog_scan_rejects_malformed_present_metadata_scalars(
+    field: str,
+    value: object,
+) -> None:
+    entity: dict[str, object] = {
+        "urn": "urn:li:dataset:malformed",
+        "type": "DATASET",
+        field: value,
+    }
+    result = {
+        "nextScrollId": None,
+        "count": 1,
+        "total": 1,
+        "searchResults": [{"entity": entity}],
+    }
+    client = httpx.AsyncClient(
+        base_url="https://datahub.example",
+        transport=httpx.MockTransport(
+            lambda request: httpx.Response(
+                200,
+                json={"data": {"scrollAcrossEntities": result}},
+                request=request,
+            )
+        ),
+    )
+    gateway = HttpDataHubGateway(
+        base_url="https://datahub.example",
+        token="unused",
+        timeout_seconds=1,
+        client=client,
+    )
+
+    with pytest.raises(ExternalDependencyError) as caught:
+        await gateway.scan_assets(cursor=None, limit=1)
+
+    assert caught.value.details["provider_code"] == "INVALID_RESPONSE"
+    await client.aclose()
+
+
+async def test_catalog_scan_accepts_a_short_final_page_using_provider_page_size() -> None:
+    result = {
+        "nextScrollId": None,
+        "count": 2,
+        "total": 3,
+        "searchResults": [
+            {"entity": {"urn": "urn:li:dataset:last", "type": "DATASET"}},
+        ],
+    }
+    client = httpx.AsyncClient(
+        base_url="https://datahub.example",
+        transport=httpx.MockTransport(
+            lambda request: httpx.Response(
+                200,
+                json={"data": {"scrollAcrossEntities": result}},
+                request=request,
+            )
+        ),
+    )
+    gateway = HttpDataHubGateway(
+        base_url="https://datahub.example",
+        token="unused",
+        timeout_seconds=1,
+        client=client,
+    )
+
+    page = await gateway.scan_assets(cursor="prior-cursor", limit=2)
+
+    assert len(page.items) == 1
+    assert page.next_cursor is None
+    assert page.total == 3
+    await client.aclose()
+
+
+async def test_catalog_scroll_accepts_an_empty_snapshot_and_reports_verified_pit() -> None:
+    result: dict[str, object] = {
+        "nextScrollId": None,
+        "count": 0,
+        "total": 0,
+        "searchResults": [],
+    }
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/config":
+            return httpx.Response(200, json=DATAHUB_V160_CONFIG, request=request)
+        return httpx.Response(
+            200,
+            json={"data": {"scrollAcrossEntities": result}},
+            request=request,
+        )
+
+    client = httpx.AsyncClient(
+        base_url="https://datahub.example",
+        transport=httpx.MockTransport(handler),
+    )
+    gateway = HttpDataHubGateway(
+        base_url="https://datahub.example",
+        token="unused",
+        timeout_seconds=1,
+        expected_version="v1.6.0",
+        version_enforcement="enforce",
+        client=client,
+        catalog_scan_snapshot_consistent=True,
+        catalog_scan_snapshot_evidence_reference="ops://datahub/pit/accepted-run",
+    )
+
+    page = await gateway.scan_assets(cursor=None, limit=100)
+
+    assert page.items == ()
+    assert page.next_cursor is None
+    assert page.total == 0
+    assert page.snapshot_consistent is True
+    assert page.snapshot_evidence_reference == "ops://datahub/pit/accepted-run"
+    assert page.snapshot_provider_version == "v1.6.0"
+    assert page.snapshot_contract_hash is not None
+    assert len(page.snapshot_contract_hash) == 64
+    await client.aclose()
+
+
+def test_verified_catalog_snapshot_configuration_fails_closed_without_evidence() -> None:
+    with pytest.raises(ValueError, match="enforced version and bounded evidence"):
+        HttpDataHubGateway(
+            base_url="https://datahub.example",
+            token="unused",
+            timeout_seconds=1,
+            expected_version="v1.6.0",
+            version_enforcement="report",
+            catalog_scan_snapshot_consistent=True,
+        )
+
+
+def test_catalog_snapshot_contract_hash_is_bound_to_the_provider_origin() -> None:
+    first = _catalog_snapshot_contract_hash(
+        base_url="https://datahub-a.example",
+        expected_version="v1.6.0",
+        allowed_versions=(),
+        evidence_reference="ops://datahub/pit/accepted-run",
+        version_enforcement="enforce",
+    )
+    second = _catalog_snapshot_contract_hash(
+        base_url="https://datahub-b.example",
+        expected_version="v1.6.0",
+        allowed_versions=(),
+        evidence_reference="ops://datahub/pit/accepted-run",
+        version_enforcement="enforce",
+    )
+
+    assert first != second
+    assert len(first) == 64
+
+
+async def test_verified_catalog_snapshot_forces_a_fresh_first_page_version_probe() -> None:
+    observed_version = "v1.6.0"
+    graphql_calls = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal graphql_calls
+        if request.url.path == "/config":
+            return httpx.Response(
+                200,
+                json={"versions": {"acryldata/datahub": {"version": observed_version}}},
+                request=request,
+            )
+        graphql_calls += 1
+        return httpx.Response(
+            200,
+            json={
+                "data": {
+                    "scrollAcrossEntities": {
+                        "nextScrollId": None,
+                        "count": 0,
+                        "total": 0,
+                        "searchResults": [],
+                    }
+                }
+            },
+            request=request,
+        )
+
+    client = httpx.AsyncClient(
+        base_url="https://datahub.example",
+        transport=httpx.MockTransport(handler),
+    )
+    gateway = HttpDataHubGateway(
+        base_url="https://datahub.example",
+        token="unused",
+        timeout_seconds=1,
+        expected_version="v1.6.0",
+        version_enforcement="enforce",
+        catalog_scan_snapshot_consistent=True,
+        catalog_scan_snapshot_evidence_reference="ops://datahub/pit/accepted-run",
+        client=client,
+    )
+    assert (await gateway.capability()).state == "healthy"
+    observed_version = "v1.7.0"
+
+    with pytest.raises(ExternalDependencyError) as caught:
+        await gateway.scan_assets(cursor=None, limit=100)
+
+    assert caught.value.details["provider_code"] == "VERSION_MISMATCH"
+    assert graphql_calls == 0
     await client.aclose()
 
 
@@ -653,7 +1082,7 @@ async def test_lineage_contract_returns_only_typed_bounded_paths() -> None:
     )
 
     assert page.partial is True
-    assert page.total == 3
+    assert page.total == 2
     assert calls == ["urn:li:dataset:center", "urn:li:dataset:middle"]
     upstream = next(item for item in page.items if item.external_urn == "urn:li:dataset:upstream")
     assert upstream.degree == 2
