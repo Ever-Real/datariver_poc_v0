@@ -53,7 +53,8 @@ workspace and current visibility, then derives the provider reference.
   canonical grouped row evidence, and publication replays the spool in bounded batches instead of
   materializing the whole candidate graph.
 - Existing V2 evidence, hashes, roots and bindings remain byte-for-byte compatible. New evidence
-  uses separate row/group/detail tables rather than nullable generic provider payloads.
+  uses separate immutable row/group/membership evidence plus binding metadata rather than nullable
+  generic provider payloads.
 - Preparation resolves only existing ACTIVE datasets in bounded set-based batches. Submitted
   hierarchy must exactly match the current projection. Column paths and vocabulary references are
   live-resolved; denied, missing, duplicate or drifted data fails without disclosing the row.
@@ -108,30 +109,35 @@ evidence and WSL x86_64 operation remain `EXTERNAL_GATE`. The source-local parse
 
 ## Acceptance checklist
 
-- [ ] `TB-01` Register the two exact wide-row CSV/XLSX profiles and header-only templates without
+- [x] `TB-01` Register the two exact wide-row CSV/XLSX profiles and header-only templates without
   MIME inference.
-- [ ] `TB-02` Parse every positive row kind into deterministic profile-bound CSV/XLSX row and
+- [x] `TB-02` Parse every positive row kind into deterministic profile-bound CSV/XLSX row and
   grouped-candidate hashes.
-- [ ] `TB-03` Reject shape/control/UUID/header/duplicate/conflict and existing byte/ZIP/XML attacks.
-- [ ] `TB-04` Add separate immutable row/group/membership/detail and binding metadata, migration, RLS,
+- [x] `TB-03` Reject shape/control/UUID/header/duplicate/conflict and existing byte/ZIP/XML attacks.
+- [x] `TB-04` Add separate immutable row/group/membership evidence and binding metadata, migration, RLS,
   immutability and grants while preserving V2.
-- [ ] `TB-05` Publish a complete row/group set under the current lease; verify identities,
+- [x] `TB-05` Publish a complete row/group set under the current lease; verify identities,
   vocabulary and column paths before READY.
-- [ ] `TB-06` Revalidate receipt, row/group roots, membership and current authorization on every
+- [x] `TB-06` Revalidate receipt, row/group roots, membership and current authorization on every
   bounded page/read.
-- [ ] `TB-07` Compile all five row kinds through fixed server mappings while preserving unknown
+- [x] `TB-07` Compile all five row kinds through fixed server mappings while preserving unknown
   provider fields.
-- [ ] `TB-08` Atomically bind one candidate to one fixed Aspect item/CR with before, after and
+- [x] `TB-08` Atomically bind one candidate to one fixed Aspect item/CR with before, after and
   item-contract hashes.
-- [ ] `TB-09` Reauthorize the initiating human and current local target immediately before every
+- [x] `TB-09` Reauthorize the initiating human and current local target immediately before every
   provider read/write; prove revocation causes zero calls.
-- [ ] `TB-10` Expose bounded typed API/UI states with no provider payload, target URN, Aspect or
+- [x] `TB-10` Expose bounded typed API/UI states with no provider payload, target URN, Aspect or
   fan-out input.
-- [ ] `TB-11` Prove no-op, stale-before, concurrent writer, ambiguous completion, read-back and
+- [x] `TB-11` Prove no-op, stale-before, concurrent writer, ambiguous completion, read-back and
   retry behavior for every fixed Aspect.
-- [ ] `TB-12` Pass deterministic migration, empty/current PostgreSQL, strict backend and full
+- [x] `TB-12` Pass deterministic migration, empty/current PostgreSQL, strict backend and full
   frontend gates.
-- [ ] `TB-13` Close independent data/security/UI/SW-quality P0/P1 findings and record P2 decisions.
-- [ ] `TB-14` Create focused local commits; remote push remains blocked until its exact
+- [x] `TB-13` Close independent data/security/UI/SW-quality P0/P1 findings and record P2 decisions.
+- [x] `TB-14` Create focused local commits; remote push remains blocked until its exact
   destination is explicitly approved.
-- [ ] `TB-15` Report all target-environment evidence honestly as `EXTERNAL_GATE`.
+- [x] `TB-15` Report all target-environment evidence honestly as `EXTERNAL_GATE`.
+
+Local implementation commit: `39d20d0`. Independent security/data and App/API/UI reviews reported
+no remaining P0/P1. Candidate-table typography at authenticated reference viewports, WSL amd64,
+external providers, real multi-actor identity and representative full-worker load/recovery remain
+explicit external gates.

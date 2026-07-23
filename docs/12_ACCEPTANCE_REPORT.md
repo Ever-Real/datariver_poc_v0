@@ -14,6 +14,22 @@ addenda and `docs/29_MASTER_EXECUTION_BACKLOG.md`.
 
 P0–P3 foundation addendum, updated 2026-07-16: current source checks additionally include the stable DataHub v1.6.0 release contract and typed OIDC assurance. Hardware WebAuthn requires an exact approved ACR+AMR combination and `auth_time`; OTP, generic MFA and refreshed-token `iat` cannot satisfy high-risk authorization. Browser remediation is bounded to typed authentication actions, rejects unsafe return locations, and never automatically replays a denied mutation after an authentication redirect. Compatibility migrations and the current hybrid runtime have separate live evidence below.
 
+## Typed BULK catalog metadata addendum — 2026-07-24
+
+This addendum covers local implementation commit `39d20d0` and does not convert Mac/isolated-source
+evidence into WSL, external-provider or production acceptance.
+
+| Gate | Result | Current executed evidence |
+|---|---|---|
+| Typed contract | PASS | Exact CSV/XLSX `CATALOG_METADATA_ROWS_*_V1` profiles compile table/column descriptions and controlled DOMAIN/TERM/TAG local UUIDs into immutable V3 row/group evidence. Browser/API contracts expose neither target URNs, arbitrary Aspects, provider documents nor fan-out mutation. |
+| Low-resource boundary | PASS (local) | All candidates remain in a 64 MiB attempt-local spool and database publication uses bounded replay batches. The 10,000-row parser test stayed below 64 MiB traced allocations; isolated process RSS was 77,971,456 bytes. A parser-valid 16,159,007-byte/1,600-row file whose evidence exceeded the retired 32 MiB formula completed the full worker path. |
+| Authorization and apply | PASS (source/isolated PostgreSQL) | Preparation uses coarse rejection, current target/vocabulary locks and final stable-order transaction-locking reauthorization. Concurrent membership/rule revocation blocks until commit, deterministic denial releases later locks and persists zero receipt/row/candidate evidence. Valid V2 compatibility, V2/V3 drift, same-key claim renewal, classification/generation/Restricted grants and read-back authorization are covered. |
+| Database | PASS (isolated local) | Native-arm64 PostgreSQL 17 passed five reauthorization/race cases before and after `0052 -> 0051 -> 0052`; `alembic check` was clean. Canonical `0001` generation repeated byte-identically at SHA-256 `5ba6583738b074d7ee2ed008a63d9a6e91aec75b59e8fe6e7f9ad12efc5c5694`. |
+| Backend | PASS | Ruff format/lint, strict mypy over 351 source/test files, static verification and `1,297` pytest passes; `51` target-environment cases were explicitly skipped and not presented as passes. |
+| Frontend | PASS | `45` files / `238` Vitest tests, TypeScript, zero-warning ESLint and production build passed. Controlled-vocabulary pages are no-store, capped, stale-response-safe and provide local UUID copy feedback with narrow-sidebar wrapping. |
+| Independent review | PASS WITH EXTERNAL GATES | Security/data and App/API/UI reviewers found no remaining P0/P1. Candidate-table reference-viewport typography is a P2 browser gate. |
+| External acceptance | OPEN | WSL `linux/amd64`, external MinIO/S3, Airflow OIDC, DataHub 1.6 Aspect ownership/write/ambiguity/read-back, real Admin/Data-Steward/approver revocation, representative 10,000-row full-worker crash/retry/load/soak and authenticated browser viewports remain `EXTERNAL_GATE`. |
+
 ## Governed Registration execution addendum — 2026-07-23
 
 This addendum covers Registration execution/evidence commit `b83a1fb` over base `a683a93`.

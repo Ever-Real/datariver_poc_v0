@@ -14,9 +14,9 @@ an unsafe bypass, or a historical result from another commit.
 | Ledger field | Value |
 |---|---|
 | Created | 2026-07-23, Asia/Seoul |
-| Baseline branch / working-tree base | `codex/admin-policy-rbac` / `a683a93` |
+| Branch / Phase 3.7 base / current local implementation | `codex/admin-policy-rbac` / `a683a93` / `39d20d0` |
 | Remote comparison at current Phase entry | `origin/main` at `313e59a`; `origin/codex/admin-policy-rbac` is published through `a683a93`, not merged |
-| Current controlled phase | Request group 3 — R3-07 additional typed BULK profiles |
+| Current controlled phase | Request group 4 — R4-01 current Neo4j/LLM capability preflight |
 | Final artifact order | Feature → API → Data/ERD → Screen → `README.md` → `ARCHITECTURE.md` |
 
 ## Status language
@@ -53,10 +53,14 @@ an unsafe bypass, or a historical result from another commit.
 - [x] The follow-on Registration execution/evidence package over `a683a93` passes the current local
   source, deterministic migration, actual-PostgreSQL and independent P0/P1/P2 gates through `0050`
   and is committed locally at `b83a1fb`.
-- [ ] Publishing `b83a1fb` remains a remote-approval gate: the attempted push to
+- [ ] Publishing `b83a1fb` and its successor `39d20d0` remains a remote-approval gate: the attempted push to
   `origin/codex/admin-policy-rbac` was rejected by the execution security reviewer because the
   substantial repository payload needs explicit destination approval. No alternate export was
   attempted, and this does not block safe local continuation.
+- [x] Phase 3.7 typed BULK catalog metadata completed locally at `39d20d0`. Backend, frontend,
+  deterministic migration, actual PostgreSQL and independent security/data/App/API/UI P0/P1 gates
+  passed; WSL, external providers, real identities, reference-viewport and full load/recovery remain
+  `EXTERNAL_GATE`.
 - [ ] Request groups 3 through 6 retain their stated dependency on earlier work. External gates are
   reported explicitly if the required machine or accountable human identities are unavailable.
 
@@ -77,7 +81,7 @@ an unsafe bypass, or a historical result from another commit.
 
 | ID | Checklist item | Current status | Evidence / remaining work |
 |---|---|---|---|
-| R1-01 | Recheck merged changes and risks before continuing | `PARTIAL` | Historical review exists, but current audit found new P0/P1 items; refresh the risk register against `51d7eac` and later HEADs. |
+| R1-01 | Recheck merged changes and risks before continuing | `PARTIAL` | Phase 3.7's security/data/App/API/UI findings are closed with no remaining P0/P1 at `39d20d0`; a repository-wide risk-register refresh against the later feature phases and final HEAD is still required. |
 | R1-02 | Normalize Mac `linux/aarch64→linux/arm64` and WSL `linux/x86_64→linux/amd64` | `DONE_LOCAL` + `EXTERNAL_GATE` | ADR-0034 and release scripts normalize aliases; current Mac cross-build passes. Actual WSL import/start remains open. |
 | R1-03 | Keep browser and backend reads bounded for low-resource operation | `PARTIAL` | Catalog cursor/page/tree bounds exist, but Governance/Knowledge/Sharing/Admin lists, Chat DOM, lineage fan-out and large export/PDF paths remain. |
 | R1-04 | Prefer environment-owned stable connection configuration over a second live DB configuration source | `DONE_LOCAL` | `.env` profiles plus mounted secrets are canonical; runtime System Settings activation stays disabled by default. Add schema-version migration for existing env files. |
@@ -123,7 +127,7 @@ merged, released, or available to the preparation PC until publication actually 
 | R3-05A | Bound provider-controlled catalog projection and browser response size | `DONE_LOCAL` + `EXTERNAL_GATE` | ADR-0039, Alembic `0045`, per-source truncation evidence, workspace/limit-bound cache schema invalidation and PostgreSQL 17.10 migration/JSONB semantic smoke tests pass. Representative target-volume `EXPLAIN (ANALYZE, BUFFERS)` remains external. |
 | R3-05B | Make full DataHub reconciliation deletion-safe and million-row capable | `DONE_LOCAL` + `EXTERNAL_GATE` | ADR-0040 replaces provider offsets with a fixed server-owned scroll cursor, pre-provider workspace reservation, lock-inside idempotency replay, stable-total/distinct-seen completion, adaptive response-bounded pages, server-progress retry resume and default-off tombstones. Exact target DataHub PIT/search-backend configuration plus concurrent-mutation/expiry/replay acceptance remains external; until accepted, completion reports deletion suppressed. |
 | R3-06 | Manual: server-authored CSV → MinIO → Airflow → DataHub read-back | `DONE_LOCAL` + `EXTERNAL_GATE` | Sparse browser edits are rehydrated from a fresh complete provider snapshot, written once as an immutable legacy-named CSV receipt and applied through database-time leases. Five ordered Aspect writes require full hash read-back and append-only success/failure evidence. `0047` atomically binds every authenticated Airflow run-call replay to a canonical claim receipt and proactively closes an older expired receipt when a newer claim wins. Local S3 conditional-create and source/DB tests pass; external MinIO, Airflow OIDC and DataHub 1.6 end-to-end acceptance remain external. |
-| R3-07 | Bulk: parse candidates and apply governed row additions to DataHub | `PARTIAL` + `EXTERNAL_GATE` | CSV/XLSX preparation is database-time fenced, bounded to 16 MiB/10,000 rows, reconciles immutable candidate/root evidence and creates one ETag-fenced server-authored CR for a dataset-description candidate. That approved CR uses the existing governed apply/report path. Additional typed table/column/domain/term/tag row profiles, external Airflow execution and live DataHub correction/retry acceptance remain open; raw direct writes stay forbidden. |
+| R3-07 | Bulk: parse candidates and apply governed row additions to DataHub | `DONE_LOCAL` + `EXTERNAL_GATE` | Commit `39d20d0` adds exact CSV/XLSX table/column/domain/term/tag profiles, immutable V3 row/group evidence, bounded spool replay, local controlled-vocabulary UUIDs, one-candidate/one-CR fixed-Aspect compilation, transaction-locking human reauthorization and exact provider read-back. Backend `1,297 passed + 51 skipped`, frontend `45/238`, deterministic `0001`, isolated PostgreSQL `5/5` and independent P0/P1 reviews pass. External Airflow/MinIO/DataHub, real multi-actor identity, WSL amd64 and representative full-worker load/recovery remain open; raw direct writes stay forbidden. |
 | R3-08 | Restrict Manual/Bulk to Admin/Data Steward and validate DataRiver OIDC | `DONE_LOCAL` + `EXTERNAL_GATE` | Active-human Admin/Data Steward authorization precedes every registration read/mutation; owner/Admin history and actual PostgreSQL Admin/Steward/service/inactive/expired/cross-workspace RLS negatives pass. Real Keycloak multi-human and external Airflow client-credential journeys remain external. |
 | R3-09 | Require individual DataHub authentication for writes | `CONFLICT` | Accepted architecture uses a scoped server service principal and forbids provider credentials in the browser. Resolve desired federated user evidence versus service authorization in a new ADR. |
 | R3-10 | Create `datariver-infoschema` and preserve the approved legacy filename contract | `DONE_LOCAL` + `EXTERNAL_GATE` | Storage init and `UPLOAD_METADATA_MANUAL_YYMMDD_SERIAL.csv` contract exist; verify external provider permission. |

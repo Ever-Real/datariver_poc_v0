@@ -223,9 +223,9 @@ The controlled PRD and detailed TDD/acceptance checklist are in
 execution boundary and implements ADR-0042 with row-to-Aspect grouping, local vocabulary IDs and
 no browser-supplied target URNs, Aspects or documents.
 
-- [ ] TB-01–03 Two wide-row profiles, canonical CSV/XLSX row/group vectors and attack negatives.
-- [ ] TB-04–06 separate immutable row/group evidence, fenced publication and authorized reads.
-- [ ] TB-07–09 fixed-Aspect compiler/binding, apply-time human reauthorization and read-back.
-- [ ] TB-10 bounded UI profile/template/candidate/preview states.
-- [ ] TB-11–12 full source, deterministic migration and actual PostgreSQL gates.
-- [ ] TB-13–15 independent P0/P1 audit, focused commit/publication attempt and external-gate report.
+- [x] TB-01–03 Two wide-row profiles, canonical CSV/XLSX row/group vectors and attack negatives.
+- [x] TB-04–06 separate immutable row/group evidence, fenced publication and authorized reads.
+- [x] TB-07–09 fixed-Aspect compiler/binding, apply-time human reauthorization and read-back.
+- [x] TB-10 bounded UI profile/template/candidate/preview states.
+- [x] TB-11–12 full source, deterministic migration and actual PostgreSQL gates.
+- [x] TB-13–15 independent P0/P1 audit, focused commit/publication boundary and external-gate report.

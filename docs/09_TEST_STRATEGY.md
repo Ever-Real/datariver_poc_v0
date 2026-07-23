@@ -2,7 +2,7 @@
 
 ## Current verification status
 
-The current typed-BULK Phase 3.7 local-exit candidate passed `1,297` backend tests with `51`
+The typed-BULK Phase 3.7 local implementation at `39d20d0` passed `1,297` backend tests with `51`
 explicitly environment-gated integration cases skipped. The exact README Ruff command passed,
 strict mypy passed over all `351` backend source/test files, and static
 architecture/role/Compose/documentation verification passed. The frontend passed strict

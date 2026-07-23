@@ -31,8 +31,8 @@
 | 26 | [Mac arm64 to WSL amd64 migration runbook](26_MAC_TO_WSL_MIGRATION_RUNBOOK.md) | exact-source/image transfer, object reconciliation, logical restore and rollback | Active target gate |
 | 27 | [Policy Book and Admin governance PRD](27_POLICY_BOOK_ADMIN_GOVERNANCE_PRD.md) | access levels, assignment evidence, retention and approval-gated Admin completion | Active; Phase 3 local source complete |
 | 28 | [Policy Book execution checklist](28_POLICY_BOOK_EXECUTION_CHECKLIST.md) | phase gates and exhaustive Admin function inventory | Phase 3 local source complete; target acceptance gates open |
-| 29 | [Master execution backlog](29_MASTER_EXECUTION_BACKLOG.md) | current delivery checklist, risk status and final artifact order | Active; request group 3 local exit in progress |
-| 30 | [Typed BULK catalog metadata rows PRD](30_TYPED_BULK_CATALOG_METADATA_PRD.md) | grouped table/column/domain/tag/term row contracts and TDD gates | Active |
+| 29 | [Master execution backlog](29_MASTER_EXECUTION_BACKLOG.md) | current delivery checklist, risk status and final artifact order | Active; request group 4 preflight in progress |
+| 30 | [Typed BULK catalog metadata rows PRD](30_TYPED_BULK_CATALOG_METADATA_PRD.md) | grouped table/column/domain/tag/term row contracts and TDD gates | Local source complete; external acceptance gates open |
 
 Independent review records: [Data Architect](reviews/2026-07-14_DATA_ARCHITECT_REVIEW.md) and [Data Engineer/SRE](reviews/2026-07-14_DATA_ENGINEER_REVIEW.md).
 
