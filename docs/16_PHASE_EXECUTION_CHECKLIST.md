@@ -196,8 +196,9 @@ claims.
 - [x] REG-13 Pass repository-wide backend/frontend/static/deterministic-migration gates on the final
   source candidate.
 - [x] REG-14 Resolve all independent security/data/SRE/UI P0/P1 findings and rerun affected gates.
-- [ ] REG-15 Create and publish the focused Phase commit; report WSL, multi-human OIDC,
-  external-Airflow and real-DataHub acceptance as `EXTERNAL_GATE`.
+- [ ] REG-15 Focused Phase commit `b83a1fb` exists locally. Remote publication awaits explicit
+  approval for the substantial payload to `origin/codex/admin-policy-rbac`; WSL, multi-human OIDC,
+  external-Airflow and real-DataHub acceptance remain `EXTERNAL_GATE`.
 - [x] REG-16 Add `0047` atomic worker call receipts, exact state history and proactive closure of
   superseded expired Manual/BULK calls; reject attempts-only fabricated supersession.
 - [x] REG-17 Add `0048` exact apply-job/attempt/CR lease and privilege fencing; completed work cannot

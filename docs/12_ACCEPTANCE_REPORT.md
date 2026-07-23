@@ -16,8 +16,9 @@ P0–P3 foundation addendum, updated 2026-07-16: current source checks additiona
 
 ## Governed Registration execution addendum — 2026-07-23
 
-This addendum covers the uncommitted Registration execution/evidence candidate over base
-`a683a93`. It does not convert source evidence into WSL, external-provider or production evidence.
+This addendum covers Registration execution/evidence commit `b83a1fb` over base `a683a93`.
+The commit is local because the substantial remote push requires explicit destination approval. It
+does not convert source evidence into WSL, external-provider or production evidence.
 
 | Gate | Result | Current executed evidence |
 |---|---|---|

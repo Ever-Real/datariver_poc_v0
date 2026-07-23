@@ -16,7 +16,7 @@ an unsafe bypass, or a historical result from another commit.
 | Created | 2026-07-23, Asia/Seoul |
 | Baseline branch / working-tree base | `codex/admin-policy-rbac` / `a683a93` |
 | Remote comparison at current Phase entry | `origin/main` at `313e59a`; `origin/codex/admin-policy-rbac` is published through `a683a93`, not merged |
-| Current controlled phase | Request group 3 — governed Registration execution and evidence (`0046`–`0050`) |
+| Current controlled phase | Request group 3 — R3-07 additional typed BULK profiles |
 | Final artifact order | Feature → API → Data/ERD → Screen → `README.md` → `ARCHITECTURE.md` |
 
 ## Status language
@@ -51,8 +51,12 @@ an unsafe bypass, or a historical result from another commit.
   publication at `2a0ae82` close the repository boundary; browser/WSL/provider gates remain explicit
   rather than blocking safe source continuation.
 - [x] The follow-on Registration execution/evidence package over `a683a93` passes the current local
-  source, deterministic migration, actual-PostgreSQL and independent P0/P1 gates through `0050`.
-  Its focused commit/publication record is written only after the commit and push actually succeed.
+  source, deterministic migration, actual-PostgreSQL and independent P0/P1/P2 gates through `0050`
+  and is committed locally at `b83a1fb`.
+- [ ] Publishing `b83a1fb` remains a remote-approval gate: the attempted push to
+  `origin/codex/admin-policy-rbac` was rejected by the execution security reviewer because the
+  substantial repository payload needs explicit destination approval. No alternate export was
+  attempted, and this does not block safe local continuation.
 - [ ] Request groups 3 through 6 retain their stated dependency on earlier work. External gates are
   reported explicitly if the required machine or accountable human identities are unavailable.
 
