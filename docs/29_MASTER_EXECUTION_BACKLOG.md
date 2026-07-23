@@ -15,8 +15,8 @@ an unsafe bypass, or a historical result from another commit.
 |---|---|
 | Created | 2026-07-23, Asia/Seoul |
 | Baseline branch / working-tree base | `codex/admin-policy-rbac` / `b8ab2dd` |
-| Remote comparison at creation | `origin/main` at `313e59a`; current branch is published through Phase 2 record `b8ab2dd`, not merged |
-| Current controlled phase | Policy Book Phase 3 local exit complete; focused publication record pending |
+| Remote comparison at creation | `origin/main` at `313e59a`; current branch is published through Phase 3 implementation `2a0ae82`, not merged |
+| Current controlled phase | Request group 3 — Search, Registration, Manual/Bulk and CR |
 | Final artifact order | Feature → API → Data/ERD → Screen → `README.md` → `ARCHITECTURE.md` |
 
 ## Status language
@@ -48,7 +48,7 @@ an unsafe bypass, or a historical result from another commit.
 - [x] Phase 3 started after the independently reviewed Phase 2 implementation and publication record
   at `b8ab2dd`; its changes are isolated in the current focused work package.
 - [x] Phase 3 current-source local gates and independent P0/P1 reviews pass. The focused commit and
-  publication record close the repository boundary; browser/WSL/provider gates remain explicit
+  publication at `2a0ae82` close the repository boundary; browser/WSL/provider gates remain explicit
   rather than blocking safe source continuation.
 - [ ] Request groups 3 through 6 retain their stated dependency on earlier work. External gates are
   reported explicitly if the required machine or accountable human identities are unavailable.

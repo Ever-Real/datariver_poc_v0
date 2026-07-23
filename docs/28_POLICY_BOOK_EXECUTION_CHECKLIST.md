@@ -216,3 +216,7 @@ external provider checks and operations-owner acceptance remain external gates. 
 development database was intentionally left at `0041` during source work so its older API image
 would not fail exact-revision readiness; current-source runtime promotion belongs to the controlled
 deployment phase.
+
+Phase 3 implementation was committed as `2a0ae82` and published on
+`origin/codex/admin-policy-rbac`. This is source publication only; it is not a PR, merge, release,
+target migration or production acceptance.
