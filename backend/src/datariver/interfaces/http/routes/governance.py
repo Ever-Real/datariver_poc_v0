@@ -69,6 +69,7 @@ from datariver.interfaces.http.dependencies import ContextDep, SessionDep, get_c
 from datariver.interfaces.http.presenters import (
     change_request_response,
     change_request_schema_overview_response,
+    public_change_item_identity,
 )
 from datariver.interfaces.http.schemas import (
     ApprovalRequest,
@@ -361,8 +362,18 @@ async def list_change_request_summaries(
                 version=value.version,
                 item_count=len(value.targets),
                 first_item=ChangeRequestSummaryItemResponse(
-                    target_ref=value.targets[0].target_ref,
-                    aspect_name=value.targets[0].aspect_name,
+                    target_ref=public_change_item_identity(
+                        request_type=value.request_type,
+                        target_ref=value.targets[0].target_ref,
+                        aspect_name=value.targets[0].aspect_name,
+                        target_asset_id=value.targets[0].target_asset_id,
+                    )[0],
+                    aspect_name=public_change_item_identity(
+                        request_type=value.request_type,
+                        target_ref=value.targets[0].target_ref,
+                        aspect_name=value.targets[0].aspect_name,
+                        target_asset_id=value.targets[0].target_asset_id,
+                    )[1],
                     operation=value.targets[0].operation,
                 ),
             )

@@ -160,6 +160,7 @@ def _to_index(model: AssetProjectionModel) -> CatalogAssetIndex:
         domain=model.domain_ref,
         tags=tuple(model.tags),
         glossary_terms=tuple(model.glossary_terms),
+        column_names=tuple(model.column_names),
         description_truncated=model.description_truncated,
         tags_truncated=model.tags_truncated,
         glossary_terms_truncated=model.glossary_terms_truncated,

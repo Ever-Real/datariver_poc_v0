@@ -135,7 +135,10 @@ or reconciling a change.
 | `GET /uploads/operator-capability` | authenticated DataRiver session | private/no-store page gate; returns only eligible/reason/fixed role labels and Admin workspace-history capability, never token or raw group evidence |
 | `GET /uploads?state=&limit=` | `registration.read` | bounded caller-authorized manifests after active-human Admin/Data Steward identity enforcement |
 | `GET /uploads/{upload_id}` | `registration.read` | manifest, worker state, validation summary/failure code |
-| `POST /uploads` | `registration.create` | create private multipart quarantine intent with explicit format-only or bounded dataset-description content profile |
+| `POST /uploads` | `registration.create` | create private multipart quarantine intent with an explicit format-only, dataset-description or typed catalog-metadata content profile |
+| `GET /uploads/profiles/{content_profile}/template` | active human Admin/Data Steward | download the exact server-versioned header-only CSV/XLSX template; private/no-store, configuration-hash ETag and no browser-authored schema |
+| `GET /uploads/metadata-vocabulary?kind=&q=&cursor=&limit=` | active human Admin/Data Steward | keyset-page at most 50 ACTIVE local DOMAIN/TAG/TERM UUIDs and display names; no provider URN, endpoint, Aspect or payload |
+| `POST /uploads/metadata-vocabulary/sync` | active human security administrator + `catalog.sync` | reserve and reconcile one ordered DataHub kind page using `sync_id`, server cursor and `Idempotency-Key`; only a complete verified snapshot may inactivate unseen local entries |
 | `POST /uploads/{upload_id}/parts` | `registration.create` | issue short-lived part URL |
 | `POST /uploads/{upload_id}/complete` | `registration.create` | persist completion intent; returns `202` |
 | `POST /uploads/{upload_id}/preparations` | `registration.read` + `registration.validate` | queue/reuse the server-owned typed configuration for an exact accepted manifest version; requires `If-Match` and `Idempotency-Key`, accepts no body |
@@ -144,6 +147,9 @@ or reconciling a change.
 | `GET /uploads/{upload_id}/preparations/{preparation_id}/candidates?cursor=&limit=` | `registration.read` + `catalog.read` + `change.create` | page immutable V2 submitted evidence and separately authorized current ACTIVE DATASET targets; private no-store, opaque cursor, no total or provider/object coordinates |
 | `GET /uploads/{upload_id}/preparations/{preparation_id}/candidates/{candidate_id}/preview` | `registration.read` + `catalog.read` + `change.create` | revalidate exact candidate/receipt/object identity and current target, safely merge live `datasetProperties`, return only typed before/after evidence plus quoted preview ETag |
 | `POST /uploads/{upload_id}/preparations/{preparation_id}/candidates/{candidate_id}/change-request` | `registration.read` + `catalog.read` + `change.create` | require preview `If-Match` and `Idempotency-Key`; atomically create one server-authored dataset-description CR item, outbox event and immutable candidate binding |
+| `GET /uploads/{upload_id}/preparations/{preparation_id}/metadata-candidates?cursor=&limit=` | `registration.read` + `catalog.read` + `change.create` | page immutable V3 row groups and separately authorized current targets; emits only fixed record/candidate kinds, local counts/hashes and bounded field samples |
+| `GET /uploads/{upload_id}/preparations/{preparation_id}/metadata-candidates/{candidate_id}/preview` | `registration.read` + `catalog.read` + `change.create` | re-read one current DataHub Aspect, resolve local vocabulary UUIDs server-side, apply a fixed compiler and return a bounded redacted diff plus preview ETag |
+| `POST /uploads/{upload_id}/preparations/{preparation_id}/metadata-candidates/{candidate_id}/change-request` | `registration.read` + `catalog.read` + `change.create` | require preview `If-Match` and `Idempotency-Key`; atomically bind exactly one V3 group to one fixed-Aspect CR item and outbox event |
 | `POST /uploads/{upload_id}/registration-proposals` | `registration.read` + `change.create` + `change.raw.create` | operator/recovery-only raw proposal from an `ACCEPTED` upload; not exposed in the ordinary UI and not accepted as typed-content binding |
 | `POST /registration/bulk-preparations/execute` | `catalog.sync` purpose-bound service account only | claim and execute at most one due typed preparation under DB-time lease/retry fencing; requires Airflow-owned `X-Run-Id` plus ordinal `X-Run-Call` 1..8. The hashed call receipt is atomic with canonical claim/terminal state, so response-loss replay cannot consume later work; returns only opaque processing state/count |
 | `POST /registration/manual-submissions` | `catalog.read` + `registration.create` | additive v1 contract for exactly one current dataset: legacy clients send the complete non-empty `columns` array, while current clients send sparse `column_edits` (including an empty array); exactly one shape is allowed. Both require `Idempotency-Key` and projection `source_version`; current clients also pin the 64-hex `provider_source_version`, while a legacy omission is resolved from the same fresh provider read. The server rehydrates the complete non-truncated provider schema before creating the immutable DB/CSV receipt; storage coordinates are never exposed |
@@ -154,8 +160,19 @@ or reconciling a change.
 
 Completion does not mean accepted. Durable states are `INITIATED → COMPLETION_QUEUED → COMPLETING → QUARANTINED → VALIDATING → ACCEPTED`, with terminal `REJECTED/ABORTED/EXPIRED`. Workers stream object bytes, compare declared size/SHA-256, apply bounded format rules, copy to the accepted bucket, commit canonical location, then best-effort clean quarantine.
 
-The typed profiles are `DATASET_DESCRIPTION_CSV_V1` and `DATASET_DESCRIPTION_XLSX_V1`, each limited
-to 16 MiB, 10,000 rows, 64 KiB per logical row and 10,000 description characters. CSV is
+The compatibility typed profiles are `DATASET_DESCRIPTION_CSV_V1` and
+`DATASET_DESCRIPTION_XLSX_V1`. The V3 profiles are `CATALOG_METADATA_ROWS_CSV_V1` and
+`CATALOG_METADATA_ROWS_XLSX_V1`; they use the exact ten-column
+`record_kind,asset_id,platform,database_name,schema_name,table_name,field_path,operation,value_text,controlled_ref`
+contract for table/column descriptions and DOMAIN/TERM/TAG changes. Controlled references are
+Workspace-local UUIDs obtained from the no-store vocabulary route, never browser-supplied DataHub
+URNs. The server maps each record kind to exactly one allowlisted Aspect and caps each grouped
+column-description candidate at 1,000 operations and each controlled-reference candidate at 100.
+CSV and XLSX compile to their profile-bound canonical evidence; header order and MIME/profile must
+match exactly, and XLSX ZIP/XML relationships are attack-bounded.
+
+All four executable typed profiles are limited
+to 16 MiB, 10,000 rows, 64 KiB per logical row and 10,000 description characters. The compatibility CSV is
 UTF-8-with-BOM-compatible with exact ordered headers
 `asset_id,platform,database_name,schema_name,table_name,description`. Platform is bounded to 100,
 database/schema to 255 and table name to 500 characters. The API derives the parser/schema/
@@ -171,7 +188,14 @@ a non-disclosing response. The opaque cursor binds upload/preparation/receipt, s
 scope, policy/classification snapshot, projection watermark and limit. The parser worker, fenced
 staging/finalize path and typed candidate-to-change command use server-owned contracts. A `QUEUED`
 preparation is still not an executable proposal; only a fenced `READY` V2 candidate can be previewed
-and bound to one governed Change Request.
+and bound to one governed Change Request. For V3 publication the database reauthorizes the
+initiating human and exact local target set against the current worker receipt/attempt/lease before
+target validation, then performs a final transaction-locking reauthorization before writing any row
+or candidate evidence. Candidate serialization uses a fixed 64 MiB attempt spool; overflow is
+`EVIDENCE_TOO_LARGE`, not `SOURCE_HASH_MISMATCH`. At apply time it repeats current human, target, binding,
+policy and worker-lease authorization immediately before every provider read/write; revocation
+therefore yields zero provider calls. Public candidate/preview/CR responses do not expose provider
+URNs, arbitrary Aspect names, raw provider documents or object coordinates.
 
 The current BULK UI sends `content_profile` explicitly rather than relying on the server default.
 Only an `ACCEPTED` typed dataset-description upload exposes preparation controls. It first reads

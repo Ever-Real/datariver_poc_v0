@@ -73,6 +73,8 @@ Missing or inconsistent active state falls back to the portable static floor.
 | Table | Key columns and constraints | Purpose |
 |---|---|---|
 | `catalog.assets_projection` | `id`, `workspace_id + urn_hash UQ`, non-empty external URN `<= 4,096`, external identity/scope/classification/lifecycle, nullable typed-container `database_name`/`schema_name`, provider display projection with validated CHECK bounds (`description <= 10,000` characters, string-only tags/terms `<= 100` items, string-only `column_names <= 1,000` items), four explicit truncation-provenance flags, `owner_ref`, `domain_ref`, source-created time, stored `search_vector`, source version/owner, `last_seen_sync_id`, observed/deleted times | authorized search/tree/base-detail projection; projected values only power bounded discovery and DataHub remains canonical for detailed metadata |
+| `catalog.vocabulary_entries` | stable local UUID, workspace/kind/provider-ref UQ, display name, `ACTIVE/INACTIVE`, provider-derived source version, observation/update time and last-seen sync; provider identity and local UUID are immutable | server-only DOMAIN/TAG/TERM projection used to translate browser-safe local UUIDs into fixed DataHub references |
+| `catalog.vocabulary_sync_runs` | PK workspace/sync/kind, one ACTIVE run per workspace/kind, ordered server cursor/offset, expected/seen totals, heartbeat and optional frozen snapshot evidence | bounded per-kind reconciliation; unseen entries become inactive only after a complete independently accepted snapshot |
 | `catalog.sync_runs` | PK workspace/sync, state/public page ordinal, bounded server-owned nullable scroll cursor, nullable first-page expected total, non-negative distinct seen count, snapshot-consistent assertion, bounded evidence reference, configuration-contract SHA-256 and observed provider version, start/heartbeat/completion | single-writer ordered full reconciliation, run-pinned deletion authority, response-loss replay and stale/cursor-failure recovery |
 | `catalog.projection_watermarks` | `workspace_id PK/FK`, non-negative `projection_version BIGINT` | transactional local read-model generation used for cache invalidation |
 | `catalog.export_requests` | workspace/requester/job composite FKs, canonical request and security/source hashes, non-RESTRICTED classification ceiling, private artifact receipt, format-safety version and access deadline; owner-select plus forced workspace RLS | owner-scoped managed CSV/XLSX intent and verified artifact metadata; object content remains private storage state |
@@ -110,8 +112,9 @@ continues to read the typed DataHub enrichment through the server anti-corruptio
 | Table | Key columns and constraints | Purpose |
 |---|---|---|
 | `governance.change_requests` | `id`, `workspace_id + number UQ`, type/title/description/state/requester/classification, nullable requested due date/priority/urgency vocabulary, `version`, timestamps | change aggregate/state machine |
-| `governance.change_request_items` | `id`, `change_request_id + ordinal UQ`, typed provider or intake target/aspect/operation, before/after hashes/document, nullable historical target binding and canonical `routing_system_id` | immutable executable item or typed multi-target intake evidence; every new item routes workflow authority through an active canonical System |
+| `governance.change_request_items` | `id`, `change_request_id + ordinal UQ`, typed provider or intake target/aspect/operation, before/after hashes/document, nullable historical target binding, canonical `routing_system_id` and nullable server-authored item-contract SHA-256 | immutable executable item or typed multi-target intake evidence; every new item routes workflow authority through an active canonical System |
 | `governance.registration_content_bindings` | candidate/hash UQ, Change Request UQ, change item UQ, request/item/creator composite workspace FKs, created time | append-only one-candidate/one-request/one-item provenance committed with the governed command; no ordinary update/delete grant |
+| `governance.registration_metadata_content_bindings` | typed candidate/hash/profile/kind/Aspect, before/after/item-contract hashes, one candidate/request/item UQ, creator and composite content FKs | append-only V3 one-candidate/one-request/one-fixed-Aspect provenance; prevents browser-controlled Aspect/document and duplicate execution |
 | `governance.manual_metadata_submissions` | workspace/asset/requester/lease-owner FKs, per-workspace serial UQ, catalog `source_version` plus mandatory 64-hex `provider_source_version`, immutable complete typed table/field payload, private bucket/key UQ, CSV SHA-256/size/row count, state, DB-time retry/lease epoch/token, at most 20 attempts, version/timestamps; one APPLYING row per workspace/asset | independent MANUAL registration intent/CSV receipt and lost-update evidence; ordinary writes may update only fenced execution columns after receipt verification |
 | `governance.manual_metadata_apply_attempts` | submission/attempt and submission/lease-epoch UQ, worker membership FK, token hash, RUNNING→terminal shape, failure/report-root hashes and times | append-only attempt identity with one bounded terminal transition; INSERT is trigger-gated to RUNNING evidence matching the persisted current APPLYING lease, and APPLIED is trigger-gated on five matching aspect reports |
 | `governance.manual_metadata_aspect_reports` | attempt/aspect UQ, fixed aspect ordinal/name mapping, optional before/expected/observed hashes, typed success/failure outcome, write flag, sanitized failure code and provider hashes/version | append-only reached-aspect DataHub evidence; `ALREADY_MATCHED`/`APPLIED_VERIFIED` require matching expected/observed hashes, failure retains only the reached ordered prefix, and only APPLIED requires exactly five verified rows |
@@ -133,6 +136,9 @@ continues to read the typed DataHub enrichment through the server anti-corruptio
 | `integration.upload_preparation_jobs` | upload/requester composite FKs, exact source-evidence identity UQ, source configuration UQ, typed state, DB-time retry schedule, lease token/time, attempts/progress/error, optimistic version | durable typed preparation claim with bounded retry/lease fencing |
 | `integration.upload_preparation_receipts` | exact job source-evidence/upload composite FKs and UQs, source/accepted SHA equality, locator hash, optional ETag/VersionId, parser/scanner/schema/config versions, counts/root/receipt hashes | append-only full-input preparation receipt |
 | `integration.upload_registration_candidates` | receipt/ordinal UQ, receipt/asset UQ, local asset ID, evidence version, submitted platform/database/schema/table plus identity hash, typed description operation/value and candidate hash | append-only server-prepared candidate; submitted evidence remains distinct from the current catalog target; no URN, Aspect, classification, provider document or object coordinate |
+| `integration.catalog_metadata_rows` | receipt/profile/ordinal identity, submitted asset hierarchy, fixed record-kind/Aspect/operation XOR detail, optional local controlled-vocabulary UUID/kind, semantic-target and row hashes | immutable V3 wide-row evidence; no browser provider URN or arbitrary Aspect/document is accepted |
+| `integration.catalog_metadata_candidates` | receipt/profile ordinal, fixed record/candidate/Aspect mapping, target asset ID, submitted identity hash, row span/root and candidate hash; one target/Aspect per receipt | immutable grouped metadata proposal evidence with bounded operation counts |
+| `integration.catalog_metadata_candidate_rows` | candidate/row composite FKs, member/source ordinals and content hashes | immutable ordered membership proving exactly which rows produced one candidate |
 | `integration.seed_runs` | `id`, `workspace + namespace + pack_version UQ`, content hash/state/counts/apply/remove time | optional pack ownership/audit |
 | `integration.inference_provider_profile_versions` | workspace/profile key/version UQ, server route key, provider/model/deployment identities, kind, jurisdiction/region, classification ceiling, two bounded attestation snapshots, payload hash, maker/checker/revocation and optimistic version | immutable server-registered routing eligibility; no endpoint or credential |
 | `integration.inference_provider_generations` | workspace PK, monotonic generation and update time | transactional provider-routing invalidation generation |
@@ -377,6 +383,28 @@ inserts the finalized attachment plus FINALIZED state; a finalized replay return
 after the same current authorization check. Provider success followed by HEAD/readback failure,
 cancellation or ambiguous commit remains operator-queryable evidence and is never converted into
 an automatic object delete.
+
+Alembic `0051` implements ADR-0042's typed catalog-metadata evidence boundary. It adds the local
+DOMAIN/TAG/TERM vocabulary projection and durable kind-scoped reconciliation cursor, immutable
+wide-row/group/membership tables and the one-candidate/one-Change-Request metadata binding. Every
+table has forced Workspace RLS and composite tenant foreign keys. The application may update only
+the mutable vocabulary projection/sync state; row, candidate, membership and binding evidence is
+append-only. A verified full DataHub snapshot may inactivate unseen vocabulary entries, while an
+unverified or incomplete scan records suppression and cannot infer deletion. The generated
+canonical `0001` including this model is deterministic at SHA-256
+`5ba6583738b074d7ee2ed008a63d9a6e91aec75b59e8fe6e7f9ad12efc5c5694`.
+
+Alembic `0052` installs the two fail-closed apply-time authorization functions. The preparation
+function accepts only the current V3 job attempt, worker receipt/lease, initiating human and exact
+target set before any row/candidate is persisted. Publication performs an early check, obtains
+target/vocabulary row locks, then repeats the function; its successful path locks the exact current
+membership/subject, System/asset, active policy/rules/generation and applicable Restricted-grant
+rows through transaction completion. This makes concurrent revocation and evidence publication
+linearizable. The governance function accepts only a current
+`BULK_CATALOG_METADATA` item and typed binding plus the exact running apply job/attempt/worker lease,
+then rechecks the initiating human, current target, classification/scope policy and records the
+decision. Both functions are `SECURITY DEFINER` with fixed search paths, are executable only by the
+least-privilege process role and replace no generic Change Request authorization.
 
 `EVENT_RETENTION_DAYS` is a target online-retention input, not a deletion switch. The Phase 2 worker
 archives only minimal erasure approval/execution evidence and stops at

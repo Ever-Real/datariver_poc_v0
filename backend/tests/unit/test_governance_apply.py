@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 from collections.abc import AsyncIterator, Sequence
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime
@@ -14,10 +15,13 @@ from datariver.application.dto import (
     DataHubAspectSnapshot,
     DataHubLineagePage,
     DataHubScanPage,
+    DataHubVocabularyScanPage,
+    GovernanceApplyAuthorizationContext,
     GovernanceApplyClaim,
 )
+from datariver.application.errors import ExternalDependencyError
 from datariver.application.services.governance_apply import GovernanceApplyWorker
-from datariver.domain.authz import Classification
+from datariver.domain.authz import Action, Classification
 from datariver.domain.common import canonical_json_hash
 from datariver.domain.governance import (
     ChangeItem,
@@ -84,10 +88,37 @@ class MemoryProviderMutationLock:
         yield
 
 
+class MemoryApplyReauthorizer:
+    def __init__(
+        self,
+        *,
+        allowed: bool = True,
+        error: Exception | None = None,
+        deny_on_call: int | None = None,
+    ) -> None:
+        self.allowed = allowed
+        self.error = error
+        self.deny_on_call = deny_on_call
+        self.calls: list[GovernanceApplyAuthorizationContext] = []
+
+    async def reauthorize(self, *, context: GovernanceApplyAuthorizationContext) -> bool:
+        self.calls.append(context)
+        if self.error is not None:
+            raise self.error
+        return self.allowed and len(self.calls) != self.deny_on_call
+
+
 class MemoryDataHub:
-    def __init__(self, *, observed_hash: str, before_hash: str = "b" * 64) -> None:
+    def __init__(
+        self,
+        *,
+        observed_hash: str,
+        before_hash: str = "b" * 64,
+        apply_error: ExternalDependencyError | None = None,
+    ) -> None:
         self.observed_hash = observed_hash
         self.before_hash = before_hash
+        self.apply_error = apply_error
         self.applied = 0
         self.reads = 0
 
@@ -101,6 +132,8 @@ class MemoryDataHub:
     ) -> DataHubApplyReceipt:
         del external_urn, aspect_name, document, idempotency_key
         self.applied += 1
+        if self.apply_error is not None:
+            raise self.apply_error
         return DataHubApplyReceipt("op-1", datetime.now(UTC), "1", "r" * 64)
 
     async def read_aspect(self, *, external_urn: str, aspect_name: str) -> DataHubAspectSnapshot:
@@ -127,19 +160,33 @@ class MemoryDataHub:
     async def scan_assets(self, *, cursor: str | None, limit: int) -> DataHubScanPage:
         raise NotImplementedError(cursor, limit)
 
+    async def scan_vocabulary(
+        self,
+        *,
+        kind: str,
+        cursor: str | None,
+        limit: int,
+    ) -> DataHubVocabularyScanPage:
+        raise NotImplementedError(kind, cursor, limit)
+
     async def search_vocabulary(self, *, kind: str, query: str, limit: int) -> tuple[str, ...]:
         raise NotImplementedError(kind, query, limit)
 
 
-def make_claim() -> tuple[GovernanceApplyClaim, str]:
-    document = {"description": "governed"}
+def make_claim(
+    *,
+    aspect_name: str = "datasetProperties",
+    document: dict[str, Any] | None = None,
+    request_type: str = "CATALOG_METADATA",
+) -> tuple[GovernanceApplyClaim, str]:
+    document = document or {"description": "governed"}
     expected_hash = canonical_json_hash(document)
     asset_id = uuid4()
     target_ref = "urn:li:dataset:test"
     request = ChangeRequest.create(
         workspace_id=uuid4(),
         number="CR-1",
-        request_type="CATALOG_METADATA",
+        request_type=request_type,
         title="Update",
         description="",
         requester_id=uuid4(),
@@ -150,7 +197,7 @@ def make_claim() -> tuple[GovernanceApplyClaim, str]:
                 target_ref=target_ref,
                 operation="UPSERT",
                 after_document=document,
-                aspect_name="datasetProperties",
+                aspect_name=aspect_name,
                 before_hash="b" * 64,
                 after_hash=expected_hash,
                 target_asset_id=asset_id,
@@ -175,18 +222,33 @@ def make_claim() -> tuple[GovernanceApplyClaim, str]:
     return GovernanceApplyClaim(request, uuid4(), uuid4(), 1, "lease-token", uuid4()), expected_hash
 
 
+TYPED_CATALOG_METADATA_ASPECTS = (
+    ("datasetProperties", {"description": "governed"}),
+    (
+        "schemaMetadata",
+        {"fields": [{"fieldPath": "event_id", "description": "governed"}]},
+    ),
+    ("domains", {"domains": ["urn:li:domain:manufacturing"]}),
+    ("glossaryTerms", {"terms": [{"urn": "urn:li:glossaryTerm:wafer"}]}),
+    ("globalTags", {"tags": [{"tag": "urn:li:tag:governed"}]}),
+)
+
+
 @pytest.mark.asyncio
 async def test_worker_only_marks_applied_after_equal_reread_hash() -> None:
     claim, expected_hash = make_claim()
     store = MemoryApplyStore(claim)
     gateway = MemoryDataHub(observed_hash=expected_hash)
     provider_lock = MemoryProviderMutationLock()
+    reauthorizer = MemoryApplyReauthorizer()
+    system_actor_id = uuid4()
     worker = GovernanceApplyWorker(
         store=store,
         datahub=gateway,
         provider_mutation_lock=provider_lock,
+        reauthorizer=reauthorizer,
         worker_id="worker-1",
-        system_actor_id=uuid4(),
+        system_actor_id=system_actor_id,
     )
 
     assert await worker.run_once() is True
@@ -203,16 +265,170 @@ async def test_worker_only_marks_applied_after_equal_reread_hash() -> None:
         "aspect_name": "*",
     }
     assert callable(provider_lock.calls[0]["on_wait"])
+    assert len(reauthorizer.calls) == 3
+    authorization_context = reauthorizer.calls[0]
+    assert authorization_context.workspace_id == claim.change_request.workspace_id
+    assert authorization_context.change_request_id == claim.change_request.change_request_id
+    assert authorization_context.requester_id == claim.change_request.requester_id
+    assert authorization_context.requester_id != system_actor_id
+    assert authorization_context.action is Action.CHANGE_CREATE
+    assert authorization_context.item_id == claim.change_request.items[0].item_id
+    assert authorization_context.target_asset_id == claim.change_request.items[0].target_asset_id
+    assert authorization_context.target_ref == claim.change_request.items[0].target_ref
+    assert (
+        authorization_context.target_binding_hash
+        == claim.change_request.items[0].target_binding_hash
+    )
+    assert authorization_context.job_id == claim.job_id
+    assert authorization_context.attempt_id == claim.attempt_id
+    assert authorization_context.attempt_no == claim.attempt_no
+    assert authorization_context.worker_subject_id == claim.worker_subject_id
+    assert (
+        authorization_context.lease_token_hash
+        == hashlib.sha256(claim.lease_token.encode()).hexdigest()
+    )
+    assert reauthorizer.calls[1] == authorization_context
+    assert reauthorizer.calls[2] == authorization_context
 
 
 @pytest.mark.asyncio
-async def test_worker_fails_closed_on_reconciliation_mismatch() -> None:
-    claim, _ = make_claim()
+@pytest.mark.parametrize(("aspect_name", "document"), TYPED_CATALOG_METADATA_ASPECTS)
+async def test_each_typed_catalog_metadata_aspect_uses_the_same_readback_fence(
+    aspect_name: str,
+    document: dict[str, Any],
+) -> None:
+    claim, expected_hash = make_claim(
+        aspect_name=aspect_name,
+        document=document,
+        request_type="BULK_CATALOG_METADATA",
+    )
+    store = MemoryApplyStore(claim)
+    gateway = MemoryDataHub(observed_hash=expected_hash)
+    worker = GovernanceApplyWorker(
+        store=store,
+        datahub=gateway,
+        provider_mutation_lock=MemoryProviderMutationLock(),
+        reauthorizer=MemoryApplyReauthorizer(),
+        worker_id="worker-1",
+        system_actor_id=claim.worker_subject_id,
+    )
+
+    assert await worker.run_once() is True
+    assert gateway.applied == 1
+    assert gateway.reads == 2
+    assert store.applied is not None
+    assert store.failed is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("aspect_name", "document"), TYPED_CATALOG_METADATA_ASPECTS)
+async def test_each_typed_catalog_metadata_aspect_rejects_a_stale_before_hash(
+    aspect_name: str,
+    document: dict[str, Any],
+) -> None:
+    claim, expected_hash = make_claim(
+        aspect_name=aspect_name,
+        document=document,
+        request_type="BULK_CATALOG_METADATA",
+    )
+    store = MemoryApplyStore(claim)
+    gateway = MemoryDataHub(observed_hash=expected_hash, before_hash="0" * 64)
+    worker = GovernanceApplyWorker(
+        store=store,
+        datahub=gateway,
+        provider_mutation_lock=MemoryProviderMutationLock(),
+        reauthorizer=MemoryApplyReauthorizer(),
+        worker_id="worker-1",
+        system_actor_id=claim.worker_subject_id,
+    )
+
+    assert await worker.run_once() is True
+    assert gateway.applied == 0
+    assert store.applied is None
+    assert store.failed == ("BEFORE_HASH_MISMATCH", False)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("aspect_name", "document"), TYPED_CATALOG_METADATA_ASPECTS)
+async def test_each_typed_catalog_metadata_aspect_reconciles_an_ambiguous_prior_success(
+    aspect_name: str,
+    document: dict[str, Any],
+) -> None:
+    claim, expected_hash = make_claim(
+        aspect_name=aspect_name,
+        document=document,
+        request_type="BULK_CATALOG_METADATA",
+    )
+    store = MemoryApplyStore(claim)
+    gateway = MemoryDataHub(observed_hash=expected_hash, before_hash=expected_hash)
+    worker = GovernanceApplyWorker(
+        store=store,
+        datahub=gateway,
+        provider_mutation_lock=MemoryProviderMutationLock(),
+        reauthorizer=MemoryApplyReauthorizer(),
+        worker_id="worker-1",
+        system_actor_id=claim.worker_subject_id,
+    )
+
+    assert await worker.run_once() is True
+    assert gateway.reads == 1
+    assert gateway.applied == 0
+    assert store.applied is not None
+    assert store.failed is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("aspect_name", "document"), TYPED_CATALOG_METADATA_ASPECTS)
+async def test_each_typed_catalog_metadata_aspect_classifies_transient_write_for_retry(
+    aspect_name: str,
+    document: dict[str, Any],
+) -> None:
+    claim, expected_hash = make_claim(
+        aspect_name=aspect_name,
+        document=document,
+        request_type="BULK_CATALOG_METADATA",
+    )
+    store = MemoryApplyStore(claim)
+    gateway = MemoryDataHub(
+        observed_hash=expected_hash,
+        apply_error=ExternalDependencyError(
+            "Provider completion is ambiguous.",
+            dependency="datahub",
+            retryable=True,
+        ),
+    )
+    worker = GovernanceApplyWorker(
+        store=store,
+        datahub=gateway,
+        provider_mutation_lock=MemoryProviderMutationLock(),
+        reauthorizer=MemoryApplyReauthorizer(),
+        worker_id="worker-1",
+        system_actor_id=claim.worker_subject_id,
+    )
+
+    assert await worker.run_once() is True
+    assert gateway.applied == 1
+    assert store.applied is None
+    assert store.failed == ("external_dependency_error", True)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("aspect_name", "document"), TYPED_CATALOG_METADATA_ASPECTS)
+async def test_worker_fails_closed_on_reconciliation_mismatch(
+    aspect_name: str,
+    document: dict[str, Any],
+) -> None:
+    claim, _ = make_claim(
+        aspect_name=aspect_name,
+        document=document,
+        request_type="BULK_CATALOG_METADATA",
+    )
     store = MemoryApplyStore(claim)
     worker = GovernanceApplyWorker(
         store=store,
         datahub=MemoryDataHub(observed_hash="0" * 64),
         provider_mutation_lock=MemoryProviderMutationLock(),
+        reauthorizer=MemoryApplyReauthorizer(),
         worker_id="worker-1",
         system_actor_id=uuid4(),
     )
@@ -231,6 +447,7 @@ async def test_worker_reconciles_provider_success_after_lost_completion_record()
         store=store,
         datahub=gateway,
         provider_mutation_lock=MemoryProviderMutationLock(),
+        reauthorizer=MemoryApplyReauthorizer(),
         worker_id="worker-1",
         system_actor_id=uuid4(),
     )
@@ -252,6 +469,7 @@ async def test_worker_rejects_legacy_multi_item_claim_before_provider_read() -> 
         store=store,
         datahub=gateway,
         provider_mutation_lock=MemoryProviderMutationLock(),
+        reauthorizer=MemoryApplyReauthorizer(),
         worker_id="worker-1",
         system_actor_id=uuid4(),
     )
@@ -282,6 +500,7 @@ async def test_worker_revalidates_legacy_queued_item_contract() -> None:
         store=store,
         datahub=gateway,
         provider_mutation_lock=MemoryProviderMutationLock(),
+        reauthorizer=MemoryApplyReauthorizer(),
         worker_id="worker-1",
         system_actor_id=uuid4(),
     )
@@ -312,6 +531,7 @@ async def test_worker_rejects_legacy_unbound_item_before_provider_read() -> None
         store=store,
         datahub=gateway,
         provider_mutation_lock=MemoryProviderMutationLock(),
+        reauthorizer=MemoryApplyReauthorizer(),
         worker_id="worker-1",
         system_actor_id=uuid4(),
     )
@@ -320,3 +540,105 @@ async def test_worker_rejects_legacy_unbound_item_before_provider_read() -> None
     assert gateway.reads == 0
     assert gateway.applied == 0
     assert store.failed == ("UNSAFE_QUEUED_CHANGE", False)
+
+
+@pytest.mark.asyncio
+async def test_worker_denied_reauthorization_is_terminal_before_provider_access() -> None:
+    claim, expected_hash = make_claim()
+    store = MemoryApplyStore(claim)
+    gateway = MemoryDataHub(observed_hash=expected_hash)
+    provider_lock = MemoryProviderMutationLock()
+    reauthorizer = MemoryApplyReauthorizer(allowed=False)
+    worker = GovernanceApplyWorker(
+        store=store,
+        datahub=gateway,
+        provider_mutation_lock=provider_lock,
+        reauthorizer=reauthorizer,
+        worker_id="worker-1",
+        system_actor_id=uuid4(),
+    )
+
+    assert await worker.run_once() is True
+    assert len(reauthorizer.calls) == 1
+    assert gateway.reads == 0
+    assert gateway.applied == 0
+    assert len(provider_lock.calls) == 1
+    assert store.applied is None
+    assert store.failed == ("APPLY_REAUTHORIZATION_DENIED", False)
+
+
+@pytest.mark.asyncio
+async def test_worker_reauthorization_error_is_terminal_before_provider_access() -> None:
+    claim, expected_hash = make_claim()
+    store = MemoryApplyStore(claim)
+    gateway = MemoryDataHub(observed_hash=expected_hash)
+    provider_lock = MemoryProviderMutationLock()
+    reauthorizer = MemoryApplyReauthorizer(
+        error=ExternalDependencyError(
+            "Local policy state could not be refreshed.",
+            dependency="postgresql",
+            retryable=True,
+        )
+    )
+    worker = GovernanceApplyWorker(
+        store=store,
+        datahub=gateway,
+        provider_mutation_lock=provider_lock,
+        reauthorizer=reauthorizer,
+        worker_id="worker-1",
+        system_actor_id=uuid4(),
+    )
+
+    assert await worker.run_once() is True
+    assert len(reauthorizer.calls) == 1
+    assert gateway.reads == 0
+    assert gateway.applied == 0
+    assert len(provider_lock.calls) == 1
+    assert store.applied is None
+    assert store.failed == ("APPLY_REAUTHORIZATION_FAILED", False)
+
+
+@pytest.mark.asyncio
+async def test_worker_reauthorizes_again_immediately_before_provider_write() -> None:
+    claim, expected_hash = make_claim()
+    store = MemoryApplyStore(claim)
+    gateway = MemoryDataHub(observed_hash=expected_hash)
+    reauthorizer = MemoryApplyReauthorizer(deny_on_call=2)
+    worker = GovernanceApplyWorker(
+        store=store,
+        datahub=gateway,
+        provider_mutation_lock=MemoryProviderMutationLock(),
+        reauthorizer=reauthorizer,
+        worker_id="worker-1",
+        system_actor_id=claim.worker_subject_id,
+    )
+
+    assert await worker.run_once() is True
+    assert len(reauthorizer.calls) == 2
+    assert gateway.reads == 1
+    assert gateway.applied == 0
+    assert store.applied is None
+    assert store.failed == ("APPLY_REAUTHORIZATION_DENIED", False)
+
+
+@pytest.mark.asyncio
+async def test_worker_reauthorizes_again_immediately_before_provider_readback() -> None:
+    claim, expected_hash = make_claim()
+    store = MemoryApplyStore(claim)
+    gateway = MemoryDataHub(observed_hash=expected_hash)
+    reauthorizer = MemoryApplyReauthorizer(deny_on_call=3)
+    worker = GovernanceApplyWorker(
+        store=store,
+        datahub=gateway,
+        provider_mutation_lock=MemoryProviderMutationLock(),
+        reauthorizer=reauthorizer,
+        worker_id="worker-1",
+        system_actor_id=claim.worker_subject_id,
+    )
+
+    assert await worker.run_once() is True
+    assert len(reauthorizer.calls) == 3
+    assert gateway.reads == 1
+    assert gateway.applied == 1
+    assert store.applied is None
+    assert store.failed == ("APPLY_REAUTHORIZATION_DENIED", False)

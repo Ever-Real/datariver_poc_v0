@@ -1,11 +1,21 @@
 from __future__ import annotations
 
+import hashlib
 from typing import Any
 from uuid import UUID
 
-from datariver.application.dto import GovernanceApplyClaim
+from datariver.application.dto import (
+    GovernanceApplyAuthorizationContext,
+    GovernanceApplyClaim,
+)
 from datariver.application.errors import ExternalDependencyError
-from datariver.application.ports import DataHubGateway, GovernanceApplyStore, ProviderMutationLock
+from datariver.application.ports import (
+    DataHubGateway,
+    GovernanceApplyReauthorizer,
+    GovernanceApplyStore,
+    ProviderMutationLock,
+)
+from datariver.domain.authz import Action
 from datariver.domain.common import ConflictError, DomainError, canonical_json_hash
 from datariver.domain.governance import ALLOWED_DATAHUB_ASPECTS
 
@@ -19,6 +29,7 @@ class GovernanceApplyWorker:
         store: GovernanceApplyStore,
         datahub: DataHubGateway,
         provider_mutation_lock: ProviderMutationLock,
+        reauthorizer: GovernanceApplyReauthorizer,
         worker_id: str,
         system_actor_id: UUID,
         lease_seconds: int = 120,
@@ -27,6 +38,7 @@ class GovernanceApplyWorker:
         self._store = store
         self._datahub = datahub
         self._provider_mutation_lock = provider_mutation_lock
+        self._reauthorizer = reauthorizer
         self._worker_id = worker_id
         self._system_actor_id = system_actor_id
         self._lease_seconds = lease_seconds
@@ -129,6 +141,8 @@ class GovernanceApplyWorker:
             on_wait=lambda: self._renew_lease(claim),
         ):
             await self._renew_lease(claim)
+            await self._reauthorize(claim=claim, item=item)
+            await self._renew_lease(claim)
             current = await self._datahub.read_aspect(
                 external_urn=item.target_ref, aspect_name=item.aspect_name
             )
@@ -150,6 +164,7 @@ class GovernanceApplyWorker:
                     details={"item_id": str(item.item_id), "code": "BEFORE_HASH_MISMATCH"},
                 )
             await self._renew_lease(claim)
+            await self._reauthorize(claim=claim, item=item)
             receipt = await self._datahub.apply_change(
                 external_urn=item.target_ref,
                 aspect_name=item.aspect_name,
@@ -157,6 +172,7 @@ class GovernanceApplyWorker:
                 idempotency_key=f"{item.item_id}:{expected_hash}",
             )
             await self._renew_lease(claim)
+            await self._reauthorize(claim=claim, item=item)
             snapshot = await self._datahub.read_aspect(
                 external_urn=item.target_ref, aspect_name=item.aspect_name
             )
@@ -176,6 +192,62 @@ class GovernanceApplyWorker:
                     "source_version": snapshot.source_version,
                     "content_hash": snapshot.content_hash,
                 },
+            )
+
+    async def _reauthorize(self, *, claim: GovernanceApplyClaim, item: Any) -> None:
+        # These assertions are backed by the executable-contract checks in
+        # ``_apply_items``. The reauthorizer receives only server-loaded claim
+        # state. The worker claim is included only to bind the current
+        # database-time lease; it cannot substitute for the initiating human.
+        assert item.target_asset_id is not None
+        assert item.target_asset_type is not None
+        assert item.target_classification is not None
+        assert item.target_lifecycle is not None
+        assert item.target_source_version is not None
+        assert item.target_binding_hash is not None
+        assert item.before_hash is not None
+        after_hash = item.after_hash or canonical_json_hash(item.after_document)
+        context = GovernanceApplyAuthorizationContext(
+            workspace_id=claim.change_request.workspace_id,
+            change_request_id=claim.change_request.change_request_id,
+            change_request_version=claim.change_request.version,
+            request_type=claim.change_request.request_type,
+            requester_id=claim.change_request.requester_id,
+            request_classification=claim.change_request.classification,
+            item_id=item.item_id,
+            action=Action.CHANGE_CREATE,
+            target_type=item.target_type,
+            target_ref=item.target_ref,
+            operation=item.operation,
+            aspect_name=item.aspect_name,
+            before_hash=item.before_hash,
+            after_hash=after_hash,
+            target_asset_id=item.target_asset_id,
+            target_asset_type=item.target_asset_type,
+            target_system_id=item.target_system_id,
+            target_domain_id=item.target_domain_id,
+            target_owner_department_id=item.target_owner_department_id,
+            target_classification=item.target_classification,
+            target_lifecycle=item.target_lifecycle,
+            target_source_version=item.target_source_version,
+            target_binding_hash=item.target_binding_hash,
+            job_id=claim.job_id,
+            attempt_id=claim.attempt_id,
+            attempt_no=claim.attempt_no,
+            worker_subject_id=claim.worker_subject_id,
+            lease_token_hash=hashlib.sha256(claim.lease_token.encode()).hexdigest(),
+        )
+        try:
+            allowed = await self._reauthorizer.reauthorize(context=context)
+        except Exception as error:
+            raise ConflictError(
+                "The initiating human and current target policy could not be reauthorized.",
+                details={"code": "APPLY_REAUTHORIZATION_FAILED"},
+            ) from error
+        if not allowed:
+            raise ConflictError(
+                "The initiating human or current target policy no longer permits this apply.",
+                details={"code": "APPLY_REAUTHORIZATION_DENIED"},
             )
 
     async def _renew_lease(self, claim: GovernanceApplyClaim) -> None:

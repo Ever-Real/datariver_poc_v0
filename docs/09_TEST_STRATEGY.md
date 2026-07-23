@@ -2,14 +2,28 @@
 
 ## Current verification status
 
-The current Search/Registration local-exit candidate passed `1,152` backend tests with `46`
+The current typed-BULK Phase 3.7 local-exit candidate passed `1,297` backend tests with `51`
 explicitly environment-gated integration cases skipped. The exact README Ruff command passed,
-strict mypy passed over `333` source/test files, and static
+strict mypy passed over all `351` backend source/test files, and static
 architecture/role/Compose/documentation verification passed. The frontend passed strict
-TypeScript, zero-warning ESLint, `44` files / `230` tests and the production build. Canonical `0001`
+TypeScript, zero-warning ESLint, `45` files / `238` tests and the production build. Canonical `0001`
 generation was byte-identical across two runs at SHA-256
-`1ca5b11f1c78ae6a193b2beca9f5ef19d252a2c59b32f955be0d10cf298ebbce`; Alembic has the single head
-`0050`.
+`5ba6583738b074d7ee2ed008a63d9a6e91aec75b59e8fe6e7f9ad12efc5c5694`; Alembic has the single head
+`0052`.
+
+The five Phase 3.7 PostgreSQL tests were then enabled separately against an isolated native-arm64
+PostgreSQL 17 database and passed both before and after `0052 -> 0051 -> 0052`. They prove valid V2
+binding compatibility, V2/V3 drift denials, current classification/generation/Restricted grants,
+same-key claim renewal, coarse non-locking evaluation, final publication locking against concurrent
+membership/rule revocation, deterministic-denial lock release and zero denied receipt/row/candidate
+evidence. `alembic check` reported no upgrade operations.
+
+The maximum 10,000-row V3 parser regression passed with `tracemalloc` below 64 MiB. An independent
+macOS `/usr/bin/time -l` run recorded 77,971,456 bytes maximum RSS and 64,733,736 bytes peak memory
+footprint for that isolated pytest process. A separate full-worker boundary uses a parser-valid
+16,159,007-byte CSV whose escaped JSON evidence exceeded the retired 32 MiB formula; the fixed
+64 MiB attempt spool accepted all 1,600 rows. These are local regression measurements, not a WSL
+soak or production capacity claim.
 
 The current network-free JavaScript gates do not include `npm audit`: that command sends the
 dependency manifest to the external npm service, and explicit disclosure permission was not
@@ -489,6 +503,20 @@ red-team corpus.
   threshold, bounded replay batches, kill/reclaim, complete-publication fences, cursor-bounded
   candidates and one candidate/one CR/outbox transaction. The 10,000-row XLSX memory regression
   remains below the explicit 8 MiB test ceiling.
+- V3 catalog-metadata tests cover all five fixed record-kind/Aspect mappings, deterministic
+  profile-bound CSV/XLSX row/group roots, non-contiguous ordered membership, group-operation caps,
+  strict UUID/XOR/header/ZIP/XML rejection and server-versioned header-only templates. Publication
+  tests require a current Airflow receipt/attempt/lease plus initiating-human/target-set
+  reauthorization before the first evidence insert.
+- Vocabulary tests cover DataHub kind/type/prefix/name/count/cursor validation, stable local UUID
+  upsert, workspace/kind/lifecycle resolution, keyset cursor binding, idempotent page replay,
+  incomplete/duplicate/cross-kind failure and deletion suppression unless a full frozen snapshot
+  is independently verified. HTTP/UI negatives assert that provider URNs and arbitrary Aspects or
+  documents are absent and that the browser replaces, rather than accumulates, 20-row pages.
+- V3 apply tests parameterize `datasetProperties`, `schemaMetadata`, `domains`, `glossaryTerms`
+  and `globalTags` for no-op, stale-before, ambiguous prior success, transient retry, read-back
+  mismatch and success. The database authorization function binds the exact running job/attempt/
+  worker lease and current human/target/binding; denial must occur before any provider call.
 - Manual and BULK route tests prove that the same authenticated Airflow run ID/call ordinal takes
   the worker effect once and replays the committed response. `0047` creates that receipt in the
   same transaction as the canonical claim, rejects attempts-only fabricated supersession and

@@ -42,7 +42,7 @@ def test_target_binding_migration_preserves_legacy_rows_without_backfill() -> No
     migration = (root / "backend/alembic/versions/0015_governance_target_bindings.py").read_text(
         encoding="utf-8"
     )
-    assert REQUIRED_DATABASE_REVISION == "0050"
+    assert REQUIRED_DATABASE_REVISION == "0052"
     assert "UPDATE governance.change_request_items" not in migration
     assert "target_binding_shape" in migration
     assert "pg_try_advisory_lock" not in migration
@@ -54,3 +54,11 @@ def test_change_request_summary_query_never_selects_mutable_documents() -> None:
     assert ".limit(limit)" in source
     assert "ChangeRequestModel.created_at.desc()" in source
     assert "ChangeRequestModel.id.desc()" in source
+
+
+def test_change_request_repository_round_trips_optional_item_contract_hash() -> None:
+    add_source = inspect.getsource(SqlChangeRequestRepository.add)
+    hydrate_source = inspect.getsource(SqlChangeRequestRepository.get_for_update)
+
+    assert "item_contract_hash=item.item_contract_hash" in add_source
+    assert "item_contract_hash=item.item_contract_hash" in hydrate_source

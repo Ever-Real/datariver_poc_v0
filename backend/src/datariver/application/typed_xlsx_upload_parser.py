@@ -15,6 +15,14 @@ from uuid import UUID
 from xml.etree import ElementTree
 from xml.parsers import expat
 
+from datariver.application.catalog_metadata_upload_parser import (
+    CatalogMetadataCandidateAccumulator,
+    CatalogMetadataCandidateDraft,
+    CatalogMetadataParseError,
+    CatalogMetadataParseFailureCode,
+    CatalogMetadataParseSummary,
+    catalog_metadata_candidate_root,
+)
 from datariver.application.typed_upload_parser import (
     DatasetDescriptionCandidateDraft,
     DatasetDescriptionParseSummary,
@@ -25,6 +33,7 @@ from datariver.application.typed_upload_parser import (
     dataset_description_candidate_root_seed,
 )
 from datariver.application.typed_upload_profiles import (
+    CATALOG_METADATA_ROWS_XLSX_V1,
     DATASET_DESCRIPTION_XLSX_V1,
     TypedUploadProfileDefinition,
 )
@@ -54,6 +63,10 @@ _CANDIDATE_REPLAY_BATCH_SIZE = 16
 _FORBIDDEN_XML_MARKERS = (b"<!doctype", b"<!entity")
 
 CandidateConsumer = Callable[[DatasetDescriptionCandidateDraft], Awaitable[None]]
+CatalogMetadataCandidateConsumer = Callable[
+    [CatalogMetadataCandidateDraft],
+    Awaitable[None],
+]
 
 
 async def parse_dataset_description_xlsx(
@@ -140,6 +153,85 @@ async def parse_dataset_description_xlsx(
     )
 
 
+async def parse_catalog_metadata_rows_xlsx(
+    *,
+    workspace_id: UUID,
+    chunks: AsyncIterable[bytes],
+    expected_source_sha256: str,
+    consume_candidate: CatalogMetadataCandidateConsumer,
+    definition: TypedUploadProfileDefinition = CATALOG_METADATA_ROWS_XLSX_V1,
+) -> CatalogMetadataParseSummary:
+    """Parse a V3 catalog-metadata workbook through the hardened XLSX package boundary."""
+
+    _validate_expected_hash(expected_source_sha256)
+    if definition.content_profile is not UploadContentProfile.CATALOG_METADATA_ROWS_XLSX_V1:
+        raise ValueError("The catalog-metadata XLSX parser requires its exact content profile.")
+
+    source_hasher = hashlib.sha256()
+    total_bytes = 0
+    with tempfile.SpooledTemporaryFile(max_size=_MEMORY_SPOOL_BYTES, mode="w+b") as package_file:
+        async for chunk in chunks:
+            if not isinstance(chunk, bytes):
+                raise TypeError("Typed upload chunks must be bytes.")
+            if not chunk:
+                continue
+            total_bytes += len(chunk)
+            if total_bytes > definition.maximum_file_bytes:
+                raise CatalogMetadataParseError(
+                    CatalogMetadataParseFailureCode.FILE_TOO_LARGE,
+                    "The catalog-metadata XLSX upload exceeds its bounded file-size limit.",
+                )
+            source_hasher.update(chunk)
+            package_file.write(chunk)
+        if total_bytes == 0:
+            raise CatalogMetadataParseError(
+                CatalogMetadataParseFailureCode.EMPTY_FILE,
+                "The catalog-metadata XLSX upload is empty.",
+            )
+        source_sha256 = source_hasher.hexdigest()
+        if source_sha256 != expected_source_sha256:
+            raise CatalogMetadataParseError(
+                CatalogMetadataParseFailureCode.SOURCE_HASH_MISMATCH,
+                "The catalog-metadata XLSX bytes do not match the accepted source hash.",
+            )
+
+        package_file.seek(0)
+        try:
+            compilation = await asyncio.to_thread(
+                _parse_catalog_metadata_xlsx_package,
+                package_file,
+                workspace_id,
+                definition,
+            )
+        except TypedUploadParseError as error:
+            raise _catalog_metadata_xlsx_error(error) from error
+
+        if compilation.row_count == 0:
+            raise CatalogMetadataParseError(
+                CatalogMetadataParseFailureCode.EMPTY_DATASET,
+                "The catalog-metadata XLSX upload contains no operation rows.",
+            )
+        candidate_root = catalog_metadata_candidate_root(
+            workspace_id=workspace_id,
+            candidates=compilation.iter_candidates(),
+            definition=definition,
+        )
+        for candidate in compilation.iter_candidates():
+            await consume_candidate(candidate)
+
+    return CatalogMetadataParseSummary(
+        source_sha256=source_sha256,
+        total_bytes=total_bytes,
+        item_count=compilation.row_count,
+        candidate_count=compilation.candidate_count,
+        rejected_count=0,
+        candidate_root_hash=candidate_root.hex(),
+        parser_version=definition.parser_version,
+        schema_version=definition.schema_version,
+        configuration_hash=definition.configuration_hash,
+    )
+
+
 def _parse_xlsx_package(
     package_file: IO[bytes],
     workspace_id: UUID,
@@ -149,57 +241,89 @@ def _parse_xlsx_package(
 
     candidates = _ReplayableCandidateSpool()
     try:
-        with zipfile.ZipFile(package_file) as package:
-            entries = _validate_package(package)
-            shared_strings = _read_shared_strings(package, entries)
-            worksheet_name = _resolve_single_visible_worksheet(package, entries)
-            item_count = 0
-            seen_assets: set[UUID] = set()
-            candidate_root = dataset_description_candidate_root_seed()
-            for row_number, fields in _iter_worksheet_rows(
-                package,
-                worksheet_name=worksheet_name,
-                shared_strings=shared_strings,
-                maximum_rows=definition.maximum_rows,
-            ):
-                if row_number == 1:
-                    if tuple(fields) != definition.headers:
-                        raise TypedUploadParseError(
-                            TypedUploadParseFailureCode.INVALID_HEADER,
-                            "The XLSX header does not match the registered schema.",
-                        )
-                    continue
-                item_count += 1
-                candidate = dataset_description_candidate_from_values(
-                    workspace_id=workspace_id,
-                    ordinal=item_count,
-                    values=fields,
-                    definition=definition,
-                )
-                if candidate.target_asset_id in seen_assets:
+        item_count = 0
+        seen_assets: set[UUID] = set()
+        candidate_root = dataset_description_candidate_root_seed()
+        for row_number, fields in _iter_registered_xlsx_values(package_file, definition):
+            if row_number == 1:
+                if tuple(fields) != definition.headers:
                     raise TypedUploadParseError(
-                        TypedUploadParseFailureCode.DUPLICATE_ASSET,
-                        "The XLSX upload contains more than one row for the same asset.",
-                        ordinal=item_count,
+                        TypedUploadParseFailureCode.INVALID_HEADER,
+                        "The XLSX header does not match the registered schema.",
                     )
-                seen_assets.add(candidate.target_asset_id)
-                candidate_root = advance_dataset_description_candidate_root(
-                    current=candidate_root,
+                continue
+            item_count += 1
+            candidate = dataset_description_candidate_from_values(
+                workspace_id=workspace_id,
+                ordinal=item_count,
+                values=fields,
+                definition=definition,
+            )
+            if candidate.target_asset_id in seen_assets:
+                raise TypedUploadParseError(
+                    TypedUploadParseFailureCode.DUPLICATE_ASSET,
+                    "The XLSX upload contains more than one row for the same asset.",
                     ordinal=item_count,
-                    candidate_hash=candidate.candidate_hash,
                 )
-                candidates.append(candidate)
+            seen_assets.add(candidate.target_asset_id)
+            candidate_root = advance_dataset_description_candidate_root(
+                current=candidate_root,
+                ordinal=item_count,
+                candidate_hash=candidate.candidate_hash,
+            )
+            candidates.append(candidate)
         candidates.finalize()
-    except (zipfile.BadZipFile, zipfile.LargeZipFile) as error:
-        candidates.close()
-        raise TypedUploadParseError(
-            TypedUploadParseFailureCode.INVALID_XLSX_PACKAGE,
-            "The XLSX package is not a valid ZIP container.",
-        ) from error
     except BaseException:
         candidates.close()
         raise
     return item_count, candidate_root, candidates
+
+
+def _parse_catalog_metadata_xlsx_package(
+    package_file: IO[bytes],
+    workspace_id: UUID,
+    definition: TypedUploadProfileDefinition,
+) -> CatalogMetadataCandidateAccumulator:
+    compilation = CatalogMetadataCandidateAccumulator(
+        workspace_id=workspace_id,
+        definition=definition,
+    )
+    for row_number, fields in _iter_registered_xlsx_values(package_file, definition):
+        if row_number == 1:
+            if tuple(fields) != definition.headers:
+                raise CatalogMetadataParseError(
+                    CatalogMetadataParseFailureCode.INVALID_HEADER,
+                    "The catalog-metadata XLSX header does not match the registered schema.",
+                )
+            continue
+        compilation.add_row(ordinal=compilation.row_count + 1, values=fields)
+    return compilation
+
+
+def _iter_registered_xlsx_values(
+    package_file: IO[bytes],
+    definition: TypedUploadProfileDefinition,
+) -> Iterator[tuple[int, list[str]]]:
+    """Yield bounded worksheet values after the single shared ZIP/XML security validation."""
+
+    try:
+        with zipfile.ZipFile(package_file) as package:
+            entries = _validate_package(package)
+            shared_strings = _read_shared_strings(package, entries)
+            worksheet_name = _resolve_single_visible_worksheet(package, entries)
+            yield from _iter_worksheet_rows(
+                package,
+                worksheet_name=worksheet_name,
+                shared_strings=shared_strings,
+                maximum_rows=definition.maximum_rows,
+                maximum_row_bytes=definition.maximum_row_bytes,
+                maximum_columns=len(definition.headers),
+            )
+    except (zipfile.BadZipFile, zipfile.LargeZipFile) as error:
+        raise TypedUploadParseError(
+            TypedUploadParseFailureCode.INVALID_XLSX_PACKAGE,
+            "The XLSX package is not a valid ZIP container.",
+        ) from error
 
 
 class _ReplayableCandidateSpool:
@@ -488,11 +612,14 @@ def _iter_worksheet_rows(
     worksheet_name: str,
     shared_strings: tuple[str, ...],
     maximum_rows: int,
+    maximum_row_bytes: int = 64 * 1024,
+    maximum_columns: int = 6,
 ) -> Iterator[tuple[int, list[str]]]:
     reader = _WorksheetRowReader(
         shared_strings=shared_strings,
         maximum_rows=maximum_rows,
-        maximum_row_bytes=64 * 1024,
+        maximum_row_bytes=maximum_row_bytes,
+        maximum_columns=maximum_columns,
     )
     with package.open(worksheet_name) as stream:
         yield from reader.parse(stream)
@@ -555,10 +682,12 @@ class _WorksheetRowReader:
         shared_strings: tuple[str, ...],
         maximum_rows: int,
         maximum_row_bytes: int,
+        maximum_columns: int = 6,
     ) -> None:
         self._shared_strings = shared_strings
         self._maximum_rows = maximum_rows
         self._maximum_row_bytes = maximum_row_bytes
+        self._maximum_columns = maximum_columns
         self._expected_row = 1
         self._row_number: int | None = None
         self._row_start_byte: int | None = None
@@ -612,7 +741,7 @@ class _WorksheetRowReader:
                 )
             self._row_number = row_number
             self._row_start_byte = self._current_byte_index()
-            self._fields = [""] * 6
+            self._fields = [""] * self._maximum_columns
             self._seen_columns = set()
             return
         if local == "c":
@@ -623,7 +752,7 @@ class _WorksheetRowReader:
             if match is None or int(match.group(2)) != self._row_number:
                 raise _xlsx_error("The XLSX worksheet contains an invalid cell reference.")
             column = _column_number(match.group(1))
-            if column > 6 or column in self._seen_columns:
+            if column > self._maximum_columns or column in self._seen_columns:
                 raise _xlsx_error("The XLSX worksheet contains extra or duplicate columns.")
             self._seen_columns.add(column)
             self._cell_column = column
@@ -747,6 +876,20 @@ def _xlsx_tag(value: str) -> str:
 def _validate_expected_hash(value: str) -> None:
     if len(value) != 64 or any(character not in "0123456789abcdef" for character in value):
         raise ValueError("The expected source SHA-256 must be lowercase hexadecimal.")
+
+
+def _catalog_metadata_xlsx_error(
+    error: TypedUploadParseError,
+) -> CatalogMetadataParseError:
+    try:
+        failure_code = CatalogMetadataParseFailureCode(error.failure_code.value)
+    except ValueError:
+        failure_code = CatalogMetadataParseFailureCode.INVALID_XLSX_PACKAGE
+    return CatalogMetadataParseError(
+        failure_code,
+        str(error),
+        ordinal=error.ordinal,
+    )
 
 
 def _xlsx_error(message: str) -> TypedUploadParseError:

@@ -217,7 +217,8 @@ class ObjectManifestModel(Base, UuidPrimaryKeyMixin, TimestampMixin, VersionMixi
         Index("ix_object_manifests_workspace_state", "workspace_id", "state"),
         CheckConstraint(
             "content_profile IN ('FORMAT_ONLY_V1', 'DATASET_DESCRIPTION_CSV_V1', "
-            "'DATASET_DESCRIPTION_XLSX_V1')",
+            "'DATASET_DESCRIPTION_XLSX_V1', 'CATALOG_METADATA_ROWS_CSV_V1', "
+            "'CATALOG_METADATA_ROWS_XLSX_V1')",
             name="content_profile_allowlist",
         ),
         {"schema": "integration"},
@@ -287,7 +288,8 @@ class UploadPreparationJobModel(Base, UuidPrimaryKeyMixin, TimestampMixin, Versi
             "created_at",
         ),
         CheckConstraint(
-            "content_profile IN ('DATASET_DESCRIPTION_CSV_V1', 'DATASET_DESCRIPTION_XLSX_V1')",
+            "content_profile IN ('DATASET_DESCRIPTION_CSV_V1', 'DATASET_DESCRIPTION_XLSX_V1', "
+            "'CATALOG_METADATA_ROWS_CSV_V1', 'CATALOG_METADATA_ROWS_XLSX_V1')",
             name="typed_profile_allowlist",
         ),
         CheckConstraint(
@@ -355,6 +357,12 @@ class UploadPreparationReceiptModel(Base, UuidPrimaryKeyMixin):
     __tablename__ = "upload_preparation_receipts"
     __table_args__ = (
         UniqueConstraint("workspace_id", "id"),
+        UniqueConstraint(
+            "workspace_id",
+            "id",
+            "content_profile",
+            name="uq_upload_preparation_receipts_profile_identity",
+        ),
         UniqueConstraint("workspace_id", "preparation_job_id"),
         CheckConstraint("manifest_version > 0", name="manifest_version_positive"),
         CheckConstraint("source_sha256 ~ '^[0-9a-f]{64}$'", name="source_sha256_valid"),
@@ -381,7 +389,8 @@ class UploadPreparationReceiptModel(Base, UuidPrimaryKeyMixin):
             name="row_counts_nonnegative",
         ),
         CheckConstraint(
-            "content_profile IN ('DATASET_DESCRIPTION_CSV_V1', 'DATASET_DESCRIPTION_XLSX_V1')",
+            "content_profile IN ('DATASET_DESCRIPTION_CSV_V1', 'DATASET_DESCRIPTION_XLSX_V1', "
+            "'CATALOG_METADATA_ROWS_CSV_V1', 'CATALOG_METADATA_ROWS_XLSX_V1')",
             name="typed_profile_allowlist",
         ),
         ForeignKeyConstraint(
@@ -527,6 +536,364 @@ class UploadRegistrationCandidateModel(Base, UuidPrimaryKeyMixin):
     submitted_table_name: Mapped[str | None] = mapped_column(String(500))
     submitted_identity_hash: Mapped[str | None] = mapped_column(String(64))
     candidate_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class CatalogMetadataRowModel(Base, UuidPrimaryKeyMixin):
+    """Immutable source-row evidence for the typed catalog-metadata profiles."""
+
+    __tablename__ = "catalog_metadata_rows"
+    __table_args__ = (
+        UniqueConstraint("workspace_id", "id"),
+        UniqueConstraint("workspace_id", "receipt_id", "ordinal"),
+        UniqueConstraint(
+            "workspace_id",
+            "receipt_id",
+            "semantic_target_hash",
+            name="uq_catalog_metadata_rows_semantic_target",
+        ),
+        UniqueConstraint(
+            "workspace_id",
+            "receipt_id",
+            "id",
+            "content_profile",
+            "row_hash",
+            name="uq_catalog_metadata_rows_content",
+        ),
+        CheckConstraint("ordinal BETWEEN 1 AND 10000", name="ordinal_range"),
+        CheckConstraint(
+            "content_profile IN ('CATALOG_METADATA_ROWS_CSV_V1', 'CATALOG_METADATA_ROWS_XLSX_V1')",
+            name="content_profile_allowlist",
+        ),
+        CheckConstraint(
+            "evidence_version = 'CATALOG_METADATA_CANDIDATE_V3'",
+            name="evidence_version_contract",
+        ),
+        CheckConstraint(
+            "record_kind IN ('TABLE_DESCRIPTION', 'COLUMN_DESCRIPTION', "
+            "'DATASET_DOMAIN', 'DATASET_TERM', 'DATASET_TAG')",
+            name="record_kind_allowlist",
+        ),
+        CheckConstraint(
+            "operation IN ('SET', 'CLEAR', 'ADD')",
+            name="operation_allowlist",
+        ),
+        CheckConstraint(
+            "(record_kind = 'TABLE_DESCRIPTION' AND aspect_name = 'datasetProperties') OR "
+            "(record_kind = 'COLUMN_DESCRIPTION' AND aspect_name = 'schemaMetadata') OR "
+            "(record_kind = 'DATASET_DOMAIN' AND aspect_name = 'domains') OR "
+            "(record_kind = 'DATASET_TERM' AND aspect_name = 'glossaryTerms') OR "
+            "(record_kind = 'DATASET_TAG' AND aspect_name = 'globalTags')",
+            name="record_kind_aspect_contract",
+        ),
+        CheckConstraint(
+            "char_length(submitted_platform) BETWEEN 1 AND 100 "
+            "AND submitted_platform = btrim(submitted_platform)",
+            name="submitted_platform_valid",
+        ),
+        CheckConstraint(
+            "char_length(submitted_database_name) BETWEEN 1 AND 255 "
+            "AND submitted_database_name = btrim(submitted_database_name)",
+            name="submitted_database_name_valid",
+        ),
+        CheckConstraint(
+            "char_length(submitted_schema_name) BETWEEN 1 AND 255 "
+            "AND submitted_schema_name = btrim(submitted_schema_name)",
+            name="submitted_schema_name_valid",
+        ),
+        CheckConstraint(
+            "char_length(submitted_table_name) BETWEEN 1 AND 500 "
+            "AND submitted_table_name = btrim(submitted_table_name)",
+            name="submitted_table_name_valid",
+        ),
+        CheckConstraint(
+            "field_path IS NULL OR "
+            "(char_length(field_path) BETWEEN 1 AND 2000 "
+            "AND field_path = btrim(field_path))",
+            name="field_path_valid",
+        ),
+        CheckConstraint(
+            "value_text IS NULL OR char_length(value_text) BETWEEN 1 AND 10000",
+            name="value_text_valid",
+        ),
+        CheckConstraint(
+            "controlled_kind IS NULL OR controlled_kind IN ('DOMAIN', 'TAG', 'TERM')",
+            name="controlled_kind_vocabulary",
+        ),
+        CheckConstraint(
+            "submitted_identity_hash ~ '^[0-9a-f]{64}$' "
+            "AND semantic_target_hash ~ '^[0-9a-f]{64}$' "
+            "AND row_hash ~ '^[0-9a-f]{64}$'",
+            name="evidence_hashes_valid",
+        ),
+        CheckConstraint(
+            "("
+            "record_kind = 'TABLE_DESCRIPTION' "
+            "AND field_path IS NULL AND controlled_ref_id IS NULL "
+            "AND controlled_kind IS NULL "
+            "AND ((operation = 'SET' AND value_text IS NOT NULL) "
+            "OR (operation = 'CLEAR' AND value_text IS NULL))"
+            ") OR ("
+            "record_kind = 'COLUMN_DESCRIPTION' "
+            "AND field_path IS NOT NULL AND controlled_ref_id IS NULL "
+            "AND controlled_kind IS NULL "
+            "AND ((operation = 'SET' AND value_text IS NOT NULL) "
+            "OR (operation = 'CLEAR' AND value_text IS NULL))"
+            ") OR ("
+            "record_kind = 'DATASET_DOMAIN' "
+            "AND field_path IS NULL AND value_text IS NULL "
+            "AND ((operation = 'SET' AND controlled_ref_id IS NOT NULL "
+            "AND controlled_kind = 'DOMAIN') "
+            "OR (operation = 'CLEAR' AND controlled_ref_id IS NULL "
+            "AND controlled_kind IS NULL))"
+            ") OR ("
+            "record_kind = 'DATASET_TERM' AND operation = 'ADD' "
+            "AND field_path IS NULL AND value_text IS NULL "
+            "AND controlled_ref_id IS NOT NULL AND controlled_kind = 'TERM'"
+            ") OR ("
+            "record_kind = 'DATASET_TAG' AND operation = 'ADD' "
+            "AND field_path IS NULL AND value_text IS NULL "
+            "AND controlled_ref_id IS NOT NULL AND controlled_kind = 'TAG'"
+            ")",
+            name="typed_detail_xor",
+        ),
+        ForeignKeyConstraint(
+            ("workspace_id", "receipt_id", "content_profile"),
+            (
+                "integration.upload_preparation_receipts.workspace_id",
+                "integration.upload_preparation_receipts.id",
+                "integration.upload_preparation_receipts.content_profile",
+            ),
+            name="fk_catalog_metadata_rows_receipt_profile",
+            ondelete="RESTRICT",
+        ),
+        ForeignKeyConstraint(
+            ("workspace_id", "controlled_ref_id", "controlled_kind"),
+            (
+                "catalog.vocabulary_entries.workspace_id",
+                "catalog.vocabulary_entries.id",
+                "catalog.vocabulary_entries.kind",
+            ),
+            name="fk_catalog_metadata_rows_vocabulary",
+            ondelete="RESTRICT",
+        ),
+        {"schema": "integration"},
+    )
+
+    workspace_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), nullable=False)
+    receipt_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), nullable=False)
+    ordinal: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    content_profile: Mapped[str] = mapped_column(String(100), nullable=False)
+    evidence_version: Mapped[str] = mapped_column(String(100), nullable=False)
+    record_kind: Mapped[str] = mapped_column(String(64), nullable=False)
+    aspect_name: Mapped[str] = mapped_column(String(64), nullable=False)
+    target_asset_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), nullable=False)
+    submitted_platform: Mapped[str] = mapped_column(String(100), nullable=False)
+    submitted_database_name: Mapped[str] = mapped_column(String(255), nullable=False)
+    submitted_schema_name: Mapped[str] = mapped_column(String(255), nullable=False)
+    submitted_table_name: Mapped[str] = mapped_column(String(500), nullable=False)
+    field_path: Mapped[str | None] = mapped_column(String(2_000))
+    operation: Mapped[str] = mapped_column(String(16), nullable=False)
+    value_text: Mapped[str | None] = mapped_column(Text)
+    controlled_ref_id: Mapped[UUID | None] = mapped_column(Uuid(as_uuid=True))
+    controlled_kind: Mapped[str | None] = mapped_column(String(16))
+    submitted_identity_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    semantic_target_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    row_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class CatalogMetadataCandidateModel(Base, UuidPrimaryKeyMixin):
+    """Immutable candidate grouping all rows for one dataset and fixed Aspect."""
+
+    __tablename__ = "catalog_metadata_candidates"
+    __table_args__ = (
+        UniqueConstraint("workspace_id", "id"),
+        UniqueConstraint("workspace_id", "receipt_id", "candidate_ordinal"),
+        UniqueConstraint(
+            "workspace_id",
+            "receipt_id",
+            "target_asset_id",
+            "aspect_name",
+            name="uq_catalog_metadata_candidates_target_aspect",
+        ),
+        UniqueConstraint(
+            "workspace_id",
+            "receipt_id",
+            "id",
+            "content_profile",
+            "candidate_hash",
+            name="uq_catalog_metadata_candidates_membership_content",
+        ),
+        UniqueConstraint(
+            "workspace_id",
+            "id",
+            "content_profile",
+            "candidate_kind",
+            "aspect_name",
+            "candidate_hash",
+            name="uq_catalog_metadata_candidates_binding_content",
+        ),
+        CheckConstraint(
+            "candidate_ordinal BETWEEN 1 AND 10000",
+            name="candidate_ordinal_range",
+        ),
+        CheckConstraint(
+            "content_profile IN ('CATALOG_METADATA_ROWS_CSV_V1', 'CATALOG_METADATA_ROWS_XLSX_V1')",
+            name="content_profile_allowlist",
+        ),
+        CheckConstraint(
+            "evidence_version = 'CATALOG_METADATA_CANDIDATE_V3'",
+            name="evidence_version_contract",
+        ),
+        CheckConstraint(
+            "(record_kind = 'TABLE_DESCRIPTION' "
+            "AND candidate_kind = 'TABLE_DESCRIPTION_UPDATE' "
+            "AND aspect_name = 'datasetProperties') OR "
+            "(record_kind = 'COLUMN_DESCRIPTION' "
+            "AND candidate_kind = 'COLUMN_DESCRIPTION_UPDATE' "
+            "AND aspect_name = 'schemaMetadata') OR "
+            "(record_kind = 'DATASET_DOMAIN' "
+            "AND candidate_kind = 'DATASET_DOMAIN_UPDATE' "
+            "AND aspect_name = 'domains') OR "
+            "(record_kind = 'DATASET_TERM' "
+            "AND candidate_kind = 'DATASET_TERM_ADD' "
+            "AND aspect_name = 'glossaryTerms') OR "
+            "(record_kind = 'DATASET_TAG' "
+            "AND candidate_kind = 'DATASET_TAG_ADD' "
+            "AND aspect_name = 'globalTags')",
+            name="record_candidate_aspect_contract",
+        ),
+        CheckConstraint(
+            "row_count BETWEEN 1 AND 10000 "
+            "AND first_row_ordinal BETWEEN 1 AND 10000 "
+            "AND last_row_ordinal BETWEEN first_row_ordinal AND 10000",
+            name="ordered_row_span",
+        ),
+        CheckConstraint(
+            "submitted_identity_hash ~ '^[0-9a-f]{64}$' "
+            "AND row_root_hash ~ '^[0-9a-f]{64}$' "
+            "AND candidate_hash ~ '^[0-9a-f]{64}$'",
+            name="evidence_hashes_valid",
+        ),
+        ForeignKeyConstraint(
+            ("workspace_id", "receipt_id", "content_profile"),
+            (
+                "integration.upload_preparation_receipts.workspace_id",
+                "integration.upload_preparation_receipts.id",
+                "integration.upload_preparation_receipts.content_profile",
+            ),
+            name="fk_catalog_metadata_candidates_receipt_profile",
+            ondelete="RESTRICT",
+        ),
+        {"schema": "integration"},
+    )
+
+    workspace_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), nullable=False)
+    receipt_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), nullable=False)
+    candidate_ordinal: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    content_profile: Mapped[str] = mapped_column(String(100), nullable=False)
+    record_kind: Mapped[str] = mapped_column(String(64), nullable=False)
+    candidate_kind: Mapped[str] = mapped_column(String(100), nullable=False)
+    evidence_version: Mapped[str] = mapped_column(String(100), nullable=False)
+    target_asset_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), nullable=False)
+    aspect_name: Mapped[str] = mapped_column(String(64), nullable=False)
+    submitted_identity_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    row_count: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    first_row_ordinal: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    last_row_ordinal: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    row_root_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    candidate_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class CatalogMetadataCandidateRowModel(Base):
+    """Immutable ordered membership between a grouped candidate and source rows."""
+
+    __tablename__ = "catalog_metadata_candidate_rows"
+    __table_args__ = (
+        UniqueConstraint(
+            "workspace_id",
+            "receipt_id",
+            "candidate_id",
+            "member_ordinal",
+            name="uq_catalog_metadata_candidate_rows_member",
+        ),
+        UniqueConstraint(
+            "workspace_id",
+            "receipt_id",
+            "candidate_id",
+            "source_ordinal",
+            name="uq_catalog_metadata_candidate_rows_source_ordinal",
+        ),
+        UniqueConstraint(
+            "workspace_id",
+            "receipt_id",
+            "row_id",
+            name="uq_catalog_metadata_candidate_rows_row",
+        ),
+        CheckConstraint(
+            "member_ordinal BETWEEN 1 AND 10000 AND source_ordinal BETWEEN 1 AND 10000",
+            name="ordinal_range",
+        ),
+        CheckConstraint(
+            "content_profile IN ('CATALOG_METADATA_ROWS_CSV_V1', 'CATALOG_METADATA_ROWS_XLSX_V1')",
+            name="content_profile_allowlist",
+        ),
+        CheckConstraint(
+            "candidate_hash ~ '^[0-9a-f]{64}$' AND row_hash ~ '^[0-9a-f]{64}$'",
+            name="content_hashes_valid",
+        ),
+        ForeignKeyConstraint(
+            (
+                "workspace_id",
+                "receipt_id",
+                "candidate_id",
+                "content_profile",
+                "candidate_hash",
+            ),
+            (
+                "integration.catalog_metadata_candidates.workspace_id",
+                "integration.catalog_metadata_candidates.receipt_id",
+                "integration.catalog_metadata_candidates.id",
+                "integration.catalog_metadata_candidates.content_profile",
+                "integration.catalog_metadata_candidates.candidate_hash",
+            ),
+            name="fk_catalog_metadata_candidate_rows_candidate",
+            ondelete="RESTRICT",
+        ),
+        ForeignKeyConstraint(
+            (
+                "workspace_id",
+                "receipt_id",
+                "row_id",
+                "content_profile",
+                "row_hash",
+            ),
+            (
+                "integration.catalog_metadata_rows.workspace_id",
+                "integration.catalog_metadata_rows.receipt_id",
+                "integration.catalog_metadata_rows.id",
+                "integration.catalog_metadata_rows.content_profile",
+                "integration.catalog_metadata_rows.row_hash",
+            ),
+            name="fk_catalog_metadata_candidate_rows_row",
+            ondelete="RESTRICT",
+        ),
+        {
+            "schema": "integration",
+        },
+    )
+
+    workspace_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True)
+    receipt_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True)
+    candidate_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True)
+    row_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True)
+    content_profile: Mapped[str] = mapped_column(String(100), nullable=False)
+    candidate_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    row_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    member_ordinal: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    source_ordinal: Mapped[int] = mapped_column(BigInteger, nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
 

@@ -34,6 +34,27 @@ from datariver.interfaces.http.schemas import (
     WorkspaceMembershipSummaryResponse,
 )
 
+_TYPED_CATALOG_METADATA_REQUEST = "BULK_CATALOG_METADATA"
+
+
+def public_change_item_identity(
+    *,
+    request_type: str,
+    target_ref: str,
+    aspect_name: str,
+    target_asset_id: object,
+) -> tuple[str, str]:
+    """Hide provider routing details for the typed catalog-metadata workflow."""
+
+    if request_type != _TYPED_CATALOG_METADATA_REQUEST:
+        return target_ref, aspect_name
+    local_target = (
+        f"datariver:catalog-asset:{target_asset_id}"
+        if target_asset_id is not None
+        else "datariver:catalog-asset"
+    )
+    return local_target, "GOVERNED_CATALOG_METADATA"
+
 
 def admin_access_request_response(request: AdminAccessRequest) -> AdminAccessRequestResponse:
     access = request.command.access_document()
@@ -294,6 +315,7 @@ def catalog_detail(
 
 
 def change_request_response(change_request: ChangeRequest) -> ChangeRequestResponse:
+    redact_provider_document = change_request.request_type == _TYPED_CATALOG_METADATA_REQUEST
     return ChangeRequestResponse(
         id=change_request.change_request_id,
         number=change_request.number,
@@ -314,13 +336,25 @@ def change_request_response(change_request: ChangeRequest) -> ChangeRequestRespo
         items=[
             ChangeItemResponse(
                 id=item.item_id,
-                target_type=item.target_type,
-                target_ref=item.target_ref,
-                aspect_name=item.aspect_name,
+                target_type=(
+                    "CATALOG_ASSET_METADATA" if redact_provider_document else item.target_type
+                ),
+                target_ref=public_change_item_identity(
+                    request_type=change_request.request_type,
+                    target_ref=item.target_ref,
+                    aspect_name=item.aspect_name,
+                    target_asset_id=item.target_asset_id,
+                )[0],
+                aspect_name=public_change_item_identity(
+                    request_type=change_request.request_type,
+                    target_ref=item.target_ref,
+                    aspect_name=item.aspect_name,
+                    target_asset_id=item.target_asset_id,
+                )[1],
                 operation=item.operation,
                 before_hash=item.before_hash,
                 after_hash=item.after_hash,
-                after_document=item.after_document,
+                after_document={} if redact_provider_document else item.after_document,
                 target_asset_id=item.target_asset_id,
                 target_asset_type=item.target_asset_type,
                 target_system_id=item.target_system_id,

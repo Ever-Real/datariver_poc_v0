@@ -12,6 +12,7 @@ from datariver.domain.authz import Classification
 from datariver.domain.common import canonical_json_hash
 from datariver.infrastructure.datahub.http import (
     MAX_DATAHUB_RESPONSE_BYTES,
+    VOCABULARY_SCAN_QUERY,
     VOCABULARY_SEARCH_QUERY,
     HttpDataHubGateway,
     _catalog_hierarchy_from_browse_path,
@@ -336,6 +337,134 @@ async def test_vocabulary_search_reads_later_bounded_pages_before_returning_matc
 
     assert calls == [0, 50]
     assert "Later match" in values
+    await client.aclose()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("kind", "entity_type", "provider_ref", "entity_fields", "display_name"),
+    [
+        (
+            "DOMAIN",
+            "DOMAIN",
+            "urn:li:domain:finance",
+            {"properties": {"name": "Finance"}},
+            "Finance",
+        ),
+        (
+            "TAG",
+            "TAG",
+            "urn:li:tag:critical",
+            {"name": "Business Critical"},
+            "Business Critical",
+        ),
+        (
+            "TERM",
+            "GLOSSARY_TERM",
+            "urn:li:glossaryTerm:revenue",
+            {"properties": {"name": "Revenue"}},
+            "Revenue",
+        ),
+    ],
+)
+async def test_vocabulary_scan_uses_bounded_typed_scroll_contract(
+    kind: str,
+    entity_type: str,
+    provider_ref: str,
+    entity_fields: dict[str, object],
+    display_name: str,
+) -> None:
+    async def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content)
+        assert body["query"] == VOCABULARY_SCAN_QUERY
+        assert body["variables"] == {
+            "input": {
+                "types": [entity_type],
+                "query": "*",
+                "count": 50,
+                "keepAlive": "5m",
+                "sortInput": {"sortCriteria": [{"field": "urn", "sortOrder": "ASCENDING"}]},
+                "searchFlags": {
+                    "skipHighlighting": True,
+                    "skipAggregates": True,
+                },
+            }
+        }
+        entity = {"urn": provider_ref, "type": entity_type, **entity_fields}
+        return httpx.Response(
+            200,
+            json={
+                "data": {
+                    "scrollAcrossEntities": {
+                        "nextScrollId": None,
+                        "count": 1,
+                        "total": 1,
+                        "searchResults": [{"entity": entity}],
+                    }
+                }
+            },
+        )
+
+    client = httpx.AsyncClient(
+        base_url="https://datahub.example",
+        transport=httpx.MockTransport(handler),
+    )
+    gateway = HttpDataHubGateway(
+        base_url="https://datahub.example",
+        token="unused",
+        timeout_seconds=1,
+        client=client,
+    )
+
+    page = await gateway.scan_vocabulary(kind=kind, cursor=None, limit=50)
+
+    assert page.items[0].provider_ref == provider_ref
+    assert page.items[0].kind == kind
+    assert page.items[0].display_name == display_name
+    assert page.items[0].source_version == canonical_json_hash(
+        {"urn": provider_ref, "type": entity_type, **entity_fields}
+    )
+    assert page.snapshot_consistent is False
+    assert page.snapshot_contract_hash is None
+    await client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_vocabulary_scan_rejects_duplicate_provider_refs() -> None:
+    entity = {
+        "urn": "urn:li:tag:duplicate",
+        "type": "TAG",
+        "name": "Duplicate",
+    }
+
+    async def handler(_: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "data": {
+                    "scrollAcrossEntities": {
+                        "nextScrollId": None,
+                        "count": 2,
+                        "total": 2,
+                        "searchResults": [{"entity": entity}, {"entity": entity}],
+                    }
+                }
+            },
+        )
+
+    client = httpx.AsyncClient(
+        base_url="https://datahub.example",
+        transport=httpx.MockTransport(handler),
+    )
+    gateway = HttpDataHubGateway(
+        base_url="https://datahub.example",
+        token="unused",
+        timeout_seconds=1,
+        client=client,
+    )
+
+    with pytest.raises(ExternalDependencyError, match="identity"):
+        await gateway.scan_vocabulary(kind="TAG", cursor=None, limit=50)
     await client.aclose()
 
 

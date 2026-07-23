@@ -119,6 +119,41 @@ class CatalogVocabularyResponse(BaseModel):
     meta: CatalogDiscoveryPolicyMeta
 
 
+class CatalogMetadataVocabularySyncRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    sync_id: UUID
+    kind: Literal["DOMAIN", "TAG", "TERM"]
+    offset: int = Field(default=0, ge=0)
+    limit: int = Field(default=100, ge=1, le=100)
+
+
+class CatalogMetadataVocabularySyncResponse(BaseModel):
+    kind: Literal["DOMAIN", "TAG", "TERM"]
+    upserted: int = Field(ge=0)
+    inactivated: int = Field(ge=0)
+    next_offset: int | None = Field(default=None, ge=0)
+    total: int = Field(ge=0)
+    observed_at: datetime
+    inactivation_status: Literal[
+        "NOT_FINAL",
+        "APPLIED",
+        "SUPPRESSED_UNVERIFIED_SNAPSHOT",
+    ]
+
+
+class CatalogMetadataVocabularyItemResponse(BaseModel):
+    id: UUID
+    kind: Literal["DOMAIN", "TAG", "TERM"]
+    display_name: str = Field(min_length=1, max_length=500)
+    source_version: str = Field(min_length=1, max_length=255)
+
+
+class CatalogMetadataVocabularyListResponse(BaseModel):
+    items: list[CatalogMetadataVocabularyItemResponse] = Field(max_length=50)
+    page: PageMeta
+
+
 class CatalogTreeNodeResponse(BaseModel):
     id: UUID
     kind: Literal["PLATFORM", "DATABASE", "SCHEMA", "ASSET"]
@@ -1421,6 +1456,8 @@ class UploadInitiateRequest(BaseModel):
     )
     content_profile: Literal[
         "FORMAT_ONLY_V1",
+        "CATALOG_METADATA_ROWS_CSV_V1",
+        "CATALOG_METADATA_ROWS_XLSX_V1",
         "DATASET_DESCRIPTION_CSV_V1",
         "DATASET_DESCRIPTION_XLSX_V1",
     ] = "FORMAT_ONLY_V1"
@@ -1444,6 +1481,8 @@ class UploadResponse(BaseModel):
     classification: str
     content_profile: Literal[
         "FORMAT_ONLY_V1",
+        "CATALOG_METADATA_ROWS_CSV_V1",
+        "CATALOG_METADATA_ROWS_XLSX_V1",
         "DATASET_DESCRIPTION_CSV_V1",
         "DATASET_DESCRIPTION_XLSX_V1",
     ]
@@ -1461,7 +1500,12 @@ class UploadListResponse(BaseModel):
 class UploadPreparationResponse(BaseModel):
     id: UUID
     upload_id: UUID
-    content_profile: Literal["DATASET_DESCRIPTION_CSV_V1", "DATASET_DESCRIPTION_XLSX_V1"]
+    content_profile: Literal[
+        "CATALOG_METADATA_ROWS_CSV_V1",
+        "CATALOG_METADATA_ROWS_XLSX_V1",
+        "DATASET_DESCRIPTION_CSV_V1",
+        "DATASET_DESCRIPTION_XLSX_V1",
+    ]
     source_manifest_version: int = Field(ge=1)
     source_sha256: str = Field(pattern="^[0-9a-f]{64}$")
     configuration_hash: str = Field(pattern="^[0-9a-f]{64}$")
@@ -1581,6 +1625,109 @@ class TypedBulkChangeRequestCreate(BaseModel):
         if "\x00" in value or not value.strip():
             raise ValueError("Typed BULK change fields must contain safe visible text.")
         return value
+
+
+class CatalogMetadataCandidateResponse(BaseModel):
+    id: UUID
+    ordinal: int = Field(ge=1, le=10_000)
+    evidence_version: Literal["CATALOG_METADATA_CANDIDATE_V3"]
+    record_kind: Literal[
+        "TABLE_DESCRIPTION",
+        "COLUMN_DESCRIPTION",
+        "DATASET_DOMAIN",
+        "DATASET_TERM",
+        "DATASET_TAG",
+    ]
+    candidate_kind: Literal[
+        "TABLE_DESCRIPTION_UPDATE",
+        "COLUMN_DESCRIPTION_UPDATE",
+        "DATASET_DOMAIN_UPDATE",
+        "DATASET_TERM_ADD",
+        "DATASET_TAG_ADD",
+    ]
+    operation_count: int = Field(ge=1, le=10_000)
+    field_path_sample: list[str] = Field(max_length=20)
+    controlled_reference_count: int = Field(ge=0, le=10_000)
+    row_summary_truncated: bool
+    submitted_identity: UploadCandidateSubmittedIdentityResponse
+    candidate_hash: str = Field(pattern="^[0-9a-f]{64}$")
+    created_at: datetime
+    current_target: UploadCandidateCurrentTargetResponse
+
+
+class CatalogMetadataCandidateReceiptResponse(BaseModel):
+    id: UUID
+    preparation_id: UUID
+    manifest_version: int = Field(ge=1)
+    source_sha256: str = Field(pattern="^[0-9a-f]{64}$")
+    content_profile: Literal[
+        "CATALOG_METADATA_ROWS_CSV_V1",
+        "CATALOG_METADATA_ROWS_XLSX_V1",
+    ]
+    parser_version: str
+    scanner_version: str
+    schema_version: str
+    configuration_hash: str = Field(pattern="^[0-9a-f]{64}$")
+    item_count: int = Field(ge=1, le=10_000)
+    candidate_count: int = Field(ge=1, le=10_000)
+    candidate_root_hash: str = Field(pattern="^[0-9a-f]{64}$")
+    receipt_hash: str = Field(pattern="^[0-9a-f]{64}$")
+    observed_at: datetime
+    created_at: datetime
+
+
+class CatalogMetadataCandidateListResponse(BaseModel):
+    items: list[CatalogMetadataCandidateResponse] = Field(max_length=50)
+    page: PageMeta
+    receipt: CatalogMetadataCandidateReceiptResponse
+    meta: UploadCandidatePolicyMetaResponse
+
+
+class CatalogMetadataDescriptionChangeResponse(BaseModel):
+    field_path: str | None
+    current_description: str | None
+    proposed_description: str | None
+
+
+class TypedCatalogMetadataPreviewResponse(BaseModel):
+    candidate_id: UUID
+    target_asset_id: UUID
+    platform: str
+    database_name: str
+    schema_name: str
+    table_name: str
+    record_kind: Literal[
+        "TABLE_DESCRIPTION",
+        "COLUMN_DESCRIPTION",
+        "DATASET_DOMAIN",
+        "DATASET_TERM",
+        "DATASET_TAG",
+    ]
+    candidate_kind: Literal[
+        "TABLE_DESCRIPTION_UPDATE",
+        "COLUMN_DESCRIPTION_UPDATE",
+        "DATASET_DOMAIN_UPDATE",
+        "DATASET_TERM_ADD",
+        "DATASET_TAG_ADD",
+    ]
+    operation_count: int = Field(ge=1, le=10_000)
+    description_change_count: int = Field(ge=0, le=10_000)
+    description_change_sample: list[CatalogMetadataDescriptionChangeResponse] = Field(max_length=20)
+    description_changes_truncated: bool
+    current_reference_count: int = Field(ge=0, le=100)
+    proposed_reference_count: int = Field(ge=0, le=100)
+    before_hash: str = Field(pattern="^[0-9a-f]{64}$")
+    after_hash: str = Field(pattern="^[0-9a-f]{64}$")
+    source_version: str
+    observed_at: datetime
+    preview_etag: str = Field(pattern='^"[0-9a-f]{64}"$')
+
+
+class TypedCatalogMetadataChangeRequestResponse(BaseModel):
+    id: UUID
+    number: str
+    request_type: Literal["BULK_CATALOG_METADATA"]
+    state: str
 
 
 class UploadPartRequest(BaseModel):

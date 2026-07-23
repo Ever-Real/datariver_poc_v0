@@ -21,6 +21,8 @@ from datariver.application.dto import (
     DataHubLineagePage,
     DataHubScanAsset,
     DataHubScanPage,
+    DataHubVocabularyEntry,
+    DataHubVocabularyScanPage,
 )
 from datariver.application.errors import ExternalDependencyError
 from datariver.domain.authz import Classification
@@ -218,6 +220,56 @@ query DataRiverVocabularySearch($input: SearchAcrossEntitiesInput!) {
   }
 }
 """
+
+
+VOCABULARY_SCAN_QUERY = """
+query DataRiverVocabularyScroll($input: ScrollAcrossEntitiesInput!) {
+  scrollAcrossEntities(input: $input) {
+    nextScrollId
+    count
+    total
+    searchResults {
+      entity {
+        urn
+        type
+        ... on Domain { properties { name } }
+        ... on Tag { name }
+        ... on GlossaryTerm { properties { name } }
+      }
+    }
+  }
+}
+"""
+
+
+def _vocabulary_snapshot_contract_hash(
+    *,
+    base_url: str,
+    accepted_versions: frozenset[str],
+    evidence_reference: str,
+    kind: str,
+) -> str:
+    return canonical_json_hash(
+        {
+            "accepted_versions": sorted(accepted_versions),
+            "base_url": base_url.rstrip("/"),
+            "contract_version": "datahub-vocabulary-scroll-v1",
+            "entity_type": {
+                "DOMAIN": "DOMAIN",
+                "TAG": "TAG",
+                "TERM": "GLOSSARY_TERM",
+            }[kind],
+            "evidence_reference": evidence_reference,
+            "keep_alive": "5m",
+            "query": "*",
+            "query_hash": canonical_json_hash(VOCABULARY_SCAN_QUERY),
+            "search_flags": {
+                "skip_aggregates": True,
+                "skip_highlighting": True,
+            },
+            "sort": [{"field": "urn", "order": "ASCENDING"}],
+        }
+    )
 
 
 def _classification_from_tags(tags: object) -> Classification | None:
@@ -1562,6 +1614,166 @@ class HttpDataHubGateway:
             if len(raw_results) < page_size:
                 break
         return tuple(sorted(values, key=str.casefold))
+
+    async def scan_vocabulary(
+        self,
+        *,
+        kind: str,
+        cursor: str | None,
+        limit: int,
+    ) -> DataHubVocabularyScanPage:
+        if (
+            kind not in {"DOMAIN", "TAG", "TERM"}
+            or not 1 <= limit <= 100
+            or (cursor is not None and (not cursor or len(cursor) > 4_096))
+        ):
+            raise ValueError("DataHub vocabulary scan bounds are invalid.")
+        if self._catalog_scan_snapshot_consistent and cursor is None:
+            observed_version = await self._reported_version(force=True)
+            if observed_version not in self._accepted_versions:
+                raise ExternalDependencyError(
+                    "DataHub does not match the approved vocabulary release contract.",
+                    dependency="datahub",
+                    retryable=False,
+                    provider_code="VERSION_MISMATCH",
+                )
+        entity_type = {
+            "DOMAIN": "DOMAIN",
+            "TAG": "TAG",
+            "TERM": "GLOSSARY_TERM",
+        }[kind]
+        scan_input: dict[str, Any] = {
+            "types": [entity_type],
+            "query": "*",
+            "count": limit,
+            "keepAlive": "5m",
+            "sortInput": {
+                "sortCriteria": [{"field": "urn", "sortOrder": "ASCENDING"}],
+            },
+            "searchFlags": {
+                "skipHighlighting": True,
+                "skipAggregates": True,
+            },
+        }
+        if cursor is not None:
+            scan_input["scrollId"] = cursor
+        data = await self._graphql(VOCABULARY_SCAN_QUERY, {"input": scan_input})
+        result = data.get("scrollAcrossEntities")
+        if not isinstance(result, dict):
+            raise ExternalDependencyError(
+                "DataHub returned an invalid vocabulary scan contract.",
+                dependency="datahub",
+                retryable=False,
+                provider_code="INVALID_RESPONSE",
+            )
+        raw_results = result.get("searchResults")
+        if not isinstance(raw_results, list) or len(raw_results) > limit:
+            raise ExternalDependencyError(
+                "DataHub returned an invalid vocabulary scan result list.",
+                dependency="datahub",
+                retryable=False,
+                provider_code="INVALID_RESPONSE",
+            )
+        expected_prefix = {
+            "DOMAIN": "urn:li:domain:",
+            "TAG": "urn:li:tag:",
+            "TERM": "urn:li:glossaryTerm:",
+        }[kind]
+        items: list[DataHubVocabularyEntry] = []
+        observed_refs: set[str] = set()
+        for raw in raw_results:
+            entity = raw.get("entity") if isinstance(raw, dict) else None
+            provider_ref = entity.get("urn") if isinstance(entity, dict) else None
+            if (
+                not isinstance(entity, dict)
+                or entity.get("type") != entity_type
+                or not isinstance(provider_ref, str)
+                or not provider_ref.startswith(expected_prefix)
+                or not 1 <= len(provider_ref) <= 1_000
+                or provider_ref in observed_refs
+            ):
+                raise ExternalDependencyError(
+                    "DataHub returned an invalid vocabulary identity.",
+                    dependency="datahub",
+                    retryable=False,
+                    provider_code="INVALID_RESPONSE",
+                )
+            observed_refs.add(provider_ref)
+            if kind == "TAG":
+                name = entity.get("name")
+            else:
+                properties = entity.get("properties")
+                name = properties.get("name") if isinstance(properties, dict) else None
+            if (
+                not isinstance(name, str)
+                or not (display_name := name.strip())
+                or len(display_name) > 500
+            ):
+                raise ExternalDependencyError(
+                    "DataHub returned an invalid vocabulary display name.",
+                    dependency="datahub",
+                    retryable=False,
+                    provider_code="INVALID_RESPONSE",
+                )
+            items.append(
+                DataHubVocabularyEntry(
+                    provider_ref=provider_ref,
+                    kind=kind,
+                    display_name=display_name,
+                    source_version=canonical_json_hash(entity),
+                )
+            )
+        count_value = result.get("count")
+        total_value = result.get("total")
+        next_cursor = result.get("nextScrollId")
+        if (
+            isinstance(count_value, bool)
+            or not isinstance(count_value, int)
+            or count_value < 0
+            or count_value != len(items)
+            or isinstance(total_value, bool)
+            or not isinstance(total_value, int)
+            or total_value < len(items)
+            or (
+                next_cursor is not None
+                and (
+                    not isinstance(next_cursor, str)
+                    or not next_cursor
+                    or len(next_cursor) > 4_096
+                    or next_cursor == cursor
+                )
+            )
+            or (not items and next_cursor is not None)
+            or (cursor is None and len(items) < total_value and next_cursor is None)
+        ):
+            raise ExternalDependencyError(
+                "DataHub returned inconsistent vocabulary pagination.",
+                dependency="datahub",
+                retryable=False,
+                provider_code="INVALID_RESPONSE",
+            )
+        evidence_reference = self._catalog_scan_snapshot_evidence_reference
+        return DataHubVocabularyScanPage(
+            items=tuple(items),
+            next_cursor=next_cursor,
+            total=total_value,
+            observed_at=datetime.now(UTC),
+            snapshot_consistent=self._catalog_scan_snapshot_consistent,
+            snapshot_evidence_reference=evidence_reference,
+            snapshot_contract_hash=(
+                _vocabulary_snapshot_contract_hash(
+                    base_url=self._base_url,
+                    accepted_versions=self._accepted_versions,
+                    evidence_reference=evidence_reference,
+                    kind=kind,
+                )
+                if self._catalog_scan_snapshot_consistent and evidence_reference is not None
+                else None
+            ),
+            snapshot_provider_version=(
+                self._observed_version if self._catalog_scan_snapshot_consistent else None
+            ),
+        )
 
     async def apply_change(
         self,

@@ -8,6 +8,7 @@ from uuid import UUID
 
 from datariver.application.classification_access import ClassificationAccessResolver
 from datariver.application.dto import (
+    MAX_CATALOG_SCHEMA_FIELDS,
     CatalogAssetIndex,
     CatalogColumnDescriptionPreview,
     CatalogControlledMetadataPreview,
@@ -639,7 +640,7 @@ class CatalogDescriptionService:
                 details={"code": "CONTROLLED_METADATA_UNCHANGED"},
             )
         if aspect_name == "domains":
-            document["domains"] = [{"urn": ref} for ref in refs]
+            document["domains"] = list(refs)
         elif aspect_name == "globalTags":
             document["tags"] = [{"tag": ref} for ref in refs]
         else:
@@ -649,21 +650,51 @@ class CatalogDescriptionService:
     @staticmethod
     def _controlled_metadata_refs(*, document: dict[str, Any], aspect_name: str) -> tuple[str, ...]:
         field_name, nested_name = {
-            "domains": ("domains", "urn"),
+            "domains": ("domains", None),
             "globalTags": ("tags", "tag"),
             "glossaryTerms": ("terms", "urn"),
         }[aspect_name]
-        raw_values = document.get(field_name)
+        raw_values = document.get(field_name, [])
+        if not isinstance(raw_values, list):
+            raise ExternalDependencyError(
+                "DataHub returned an invalid controlled metadata collection.",
+                dependency="datahub",
+                retryable=False,
+                provider_code="INVALID_RESPONSE",
+            )
         values: list[str] = []
-        for raw_value in raw_values if isinstance(raw_values, list) else []:
-            candidate: object = raw_value
-            if isinstance(raw_value, dict):
-                candidate = raw_value.get(nested_name, raw_value.get("urn"))
-            if isinstance(candidate, dict):
-                candidate = candidate.get("urn")
-            if isinstance(candidate, str):
-                values.append(candidate)
-        return tuple(sorted(set(values)))
+        for raw_value in raw_values:
+            candidate: object
+            if nested_name is None:
+                candidate = raw_value
+            elif isinstance(raw_value, dict):
+                candidate = raw_value.get(nested_name)
+            else:
+                candidate = None
+            if not isinstance(candidate, str):
+                raise ExternalDependencyError(
+                    "DataHub returned an invalid controlled metadata reference.",
+                    dependency="datahub",
+                    retryable=False,
+                    provider_code="INVALID_RESPONSE",
+                )
+            values.append(candidate)
+        prefix = CONTROLLED_METADATA_URN_PREFIXES[aspect_name]
+        if (
+            len(values) != len(set(values))
+            or (aspect_name == "domains" and len(values) > 1)
+            or any(
+                not value.startswith(prefix) or len(value) > 2_000 or "\x00" in value
+                for value in values
+            )
+        ):
+            raise ExternalDependencyError(
+                "DataHub returned invalid controlled metadata identities.",
+                dependency="datahub",
+                retryable=False,
+                provider_code="INVALID_RESPONSE",
+            )
+        return tuple(sorted(values))
 
     @staticmethod
     def _validate_snapshot(
@@ -820,6 +851,78 @@ def prepare_dataset_description_document(
     return CatalogDescriptionService._proposed_document(
         snapshot=snapshot,
         proposed_description=proposed_description,
+    )
+
+
+def prepare_column_descriptions_document(
+    *,
+    asset: CatalogAssetIndex,
+    snapshot: DataHubAspectSnapshot,
+    changes: tuple[tuple[str, str], ...],
+) -> tuple[tuple[tuple[str, str | None], ...], dict[str, Any]]:
+    """Merge a bounded set of exact field-description changes into one schema Aspect."""
+
+    CatalogDescriptionService._validate_snapshot(
+        asset=asset,
+        snapshot=snapshot,
+        aspect_name=SCHEMA_METADATA_ASPECT,
+    )
+    if not changes or len(changes) > MAX_CATALOG_SCHEMA_FIELDS:
+        raise ValidationError("Column description changes are outside the bounded contract.")
+    if len({field_path for field_path, _description in changes}) != len(changes):
+        raise ValidationError("Column description changes contain duplicate field paths.")
+    current_document: Mapping[str, Any] = snapshot.document
+    before_values: list[tuple[str, str | None]] = []
+    for field_path, proposed_description in changes:
+        synthetic_snapshot = DataHubAspectSnapshot(
+            urn=snapshot.urn,
+            aspect_name=snapshot.aspect_name,
+            document=current_document,
+            content_hash=canonical_json_hash(current_document),
+            source_version=snapshot.source_version,
+            observed_at=snapshot.observed_at,
+        )
+        current, proposed = CatalogDescriptionService._proposed_schema_document(
+            snapshot=synthetic_snapshot,
+            field_path=field_path,
+            proposed_description=proposed_description,
+        )
+        before_values.append((field_path, current))
+        current_document = proposed
+    return tuple(before_values), _mutable_json_object(current_document)
+
+
+def prepare_controlled_metadata_document(
+    *,
+    asset: CatalogAssetIndex,
+    snapshot: DataHubAspectSnapshot,
+    aspect_name: str,
+    refs: tuple[str, ...],
+) -> tuple[tuple[str, ...], dict[str, Any]]:
+    """Build one fixed controlled-metadata replacement after snapshot validation."""
+
+    CatalogDescriptionService._validate_snapshot(
+        asset=asset,
+        snapshot=snapshot,
+        aspect_name=aspect_name,
+    )
+    return CatalogDescriptionService._proposed_controlled_metadata_document(
+        snapshot=snapshot,
+        aspect_name=aspect_name,
+        refs=refs,
+    )
+
+
+def controlled_metadata_refs(
+    *,
+    document: Mapping[str, Any],
+    aspect_name: str,
+) -> tuple[str, ...]:
+    """Read the canonical current ref set without accepting a mutation document."""
+
+    return CatalogDescriptionService._controlled_metadata_refs(
+        document=_mutable_json_object(document),
+        aspect_name=aspect_name,
     )
 
 

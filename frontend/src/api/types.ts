@@ -347,6 +347,8 @@ export interface CatalogExportDownload {
 
 export type UploadContentProfile =
   | 'FORMAT_ONLY_V1'
+  | 'CATALOG_METADATA_ROWS_CSV_V1'
+  | 'CATALOG_METADATA_ROWS_XLSX_V1'
   | 'DATASET_DESCRIPTION_CSV_V1'
   | 'DATASET_DESCRIPTION_XLSX_V1'
 
@@ -377,7 +379,11 @@ export interface UploadRecord {
 export interface UploadPreparation {
   id: string
   upload_id: string
-  content_profile: 'DATASET_DESCRIPTION_CSV_V1' | 'DATASET_DESCRIPTION_XLSX_V1'
+  content_profile:
+    | 'CATALOG_METADATA_ROWS_CSV_V1'
+    | 'CATALOG_METADATA_ROWS_XLSX_V1'
+    | 'DATASET_DESCRIPTION_CSV_V1'
+    | 'DATASET_DESCRIPTION_XLSX_V1'
   source_manifest_version: number
   source_sha256: string
   configuration_hash: string
@@ -461,6 +467,111 @@ export interface TypedBulkCandidatePreview {
   source_version: string
   observed_at: string
   preview_etag: string
+}
+
+export type CatalogMetadataRecordKind =
+  | 'TABLE_DESCRIPTION'
+  | 'COLUMN_DESCRIPTION'
+  | 'DATASET_DOMAIN'
+  | 'DATASET_TERM'
+  | 'DATASET_TAG'
+
+export type CatalogMetadataCandidateKind =
+  | 'TABLE_DESCRIPTION_UPDATE'
+  | 'COLUMN_DESCRIPTION_UPDATE'
+  | 'DATASET_DOMAIN_UPDATE'
+  | 'DATASET_TERM_ADD'
+  | 'DATASET_TAG_ADD'
+
+export interface CatalogMetadataCandidate {
+  id: string
+  ordinal: number
+  evidence_version: 'CATALOG_METADATA_CANDIDATE_V3'
+  record_kind: CatalogMetadataRecordKind
+  candidate_kind: CatalogMetadataCandidateKind
+  operation_count: number
+  field_path_sample: string[]
+  controlled_reference_count: number
+  row_summary_truncated: boolean
+  submitted_identity: UploadRegistrationCandidate['submitted_identity']
+  candidate_hash: string
+  created_at: string
+  current_target: UploadRegistrationCandidate['current_target']
+}
+
+export interface CatalogMetadataCandidatePage {
+  items: CatalogMetadataCandidate[]
+  page: { next_cursor?: string; limit: number }
+  receipt: {
+    id: string
+    preparation_id: string
+    manifest_version: number
+    source_sha256: string
+    content_profile:
+      | 'CATALOG_METADATA_ROWS_CSV_V1'
+      | 'CATALOG_METADATA_ROWS_XLSX_V1'
+    parser_version: string
+    scanner_version: string
+    schema_version: string
+    configuration_hash: string
+    item_count: number
+    candidate_count: number
+    candidate_root_hash: string
+    receipt_hash: string
+    observed_at: string
+    created_at: string
+  }
+  meta: UploadRegistrationCandidatePage['meta']
+}
+
+export interface TypedCatalogMetadataPreview {
+  candidate_id: string
+  target_asset_id: string
+  platform: string
+  database_name: string
+  schema_name: string
+  table_name: string
+  record_kind: CatalogMetadataRecordKind
+  candidate_kind: CatalogMetadataCandidateKind
+  operation_count: number
+  description_change_count: number
+  description_change_sample: Array<{
+    field_path: string | null
+    current_description: string | null
+    proposed_description: string | null
+  }>
+  description_changes_truncated: boolean
+  current_reference_count: number
+  proposed_reference_count: number
+  before_hash: string
+  after_hash: string
+  source_version: string
+  observed_at: string
+  preview_etag: string
+}
+
+export interface TypedCatalogMetadataChangeRequest {
+  id: string
+  number: string
+  request_type: 'BULK_CATALOG_METADATA'
+  state: string
+}
+
+export type CatalogMetadataVocabularyKind = 'DOMAIN' | 'TAG' | 'TERM'
+
+export interface CatalogMetadataVocabularyItem {
+  id: string
+  kind: CatalogMetadataVocabularyKind
+  display_name: string
+  source_version: string
+}
+
+export interface CatalogMetadataVocabularyPage {
+  items: CatalogMetadataVocabularyItem[]
+  page: {
+    next_cursor?: string
+    limit: number
+  }
 }
 
 export type ChangeRequestState =

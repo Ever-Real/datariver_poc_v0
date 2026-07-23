@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import re
-from typing import Annotated
+from typing import Annotated, Literal
 from uuid import UUID
 
 import orjson
@@ -11,8 +11,17 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from datariver.application.change_numbers import change_request_number
 from datariver.application.classification_access import ClassificationAccessResolver
-from datariver.application.dto import UploadRegistrationCandidatePage
+from datariver.application.dto import (
+    CatalogMetadataCandidatePage,
+    UploadRegistrationCandidatePage,
+)
 from datariver.application.services.authorization import AuthorizationService
+from datariver.application.services.catalog_metadata_candidates import (
+    CatalogMetadataCandidateQueryService,
+)
+from datariver.application.services.catalog_metadata_vocabulary import (
+    CatalogMetadataVocabularyService,
+)
 from datariver.application.services.change_targets import CatalogChangeTargetAuthorizer
 from datariver.application.services.governance import GovernanceService
 from datariver.application.services.registration import RegistrationService
@@ -23,6 +32,11 @@ from datariver.application.services.registration_worker import (
 from datariver.application.services.typed_bulk_registration import (
     TypedBulkRegistrationService,
 )
+from datariver.application.services.typed_catalog_metadata_registration import (
+    TypedCatalogMetadataRegistrationService,
+)
+from datariver.application.typed_upload_profiles import typed_profile_definition
+from datariver.application.typed_upload_template import encode_typed_upload_template
 from datariver.domain.authz import BuiltinPolicyEngine, Classification
 from datariver.domain.common import (
     ConflictError,
@@ -42,11 +56,16 @@ from datariver.domain.registration import (
 )
 from datariver.infrastructure.db.authz import SqlDecisionWriter
 from datariver.infrastructure.db.catalog import SqlCatalogIndexReader
+from datariver.infrastructure.db.catalog_metadata import (
+    SqlCatalogMetadataVocabularyProjection,
+    SqlCatalogMetadataVocabularyResolver,
+)
 from datariver.infrastructure.db.classification_access import (
     SqlClassificationAccessSnapshotReader,
 )
 from datariver.infrastructure.db.governance import SqlGovernanceUnitOfWork
 from datariver.infrastructure.db.registration import (
+    SqlCatalogMetadataCandidateReader,
     SqlUploadCandidateReader,
     SqlUploadPreparationRepository,
     SqlUploadRepository,
@@ -55,11 +74,21 @@ from datariver.infrastructure.db.registration import (
 from datariver.interfaces.http.dependencies import ContextDep, SessionDep, get_container
 from datariver.interfaces.http.presenters import change_request_response
 from datariver.interfaces.http.schemas import (
+    CatalogMetadataCandidateListResponse,
+    CatalogMetadataCandidateReceiptResponse,
+    CatalogMetadataCandidateResponse,
+    CatalogMetadataDescriptionChangeResponse,
+    CatalogMetadataVocabularyItemResponse,
+    CatalogMetadataVocabularyListResponse,
+    CatalogMetadataVocabularySyncRequest,
+    CatalogMetadataVocabularySyncResponse,
     ChangeRequestResponse,
     PageMeta,
     RegistrationOperatorCapabilityResponse,
     TypedBulkCandidatePreviewResponse,
     TypedBulkChangeRequestCreate,
+    TypedCatalogMetadataChangeRequestResponse,
+    TypedCatalogMetadataPreviewResponse,
     UploadCandidateCurrentTargetResponse,
     UploadCandidatePolicyMetaResponse,
     UploadCandidateReceiptResponse,
@@ -141,6 +170,54 @@ def _typed_bulk_service(
         candidates=_candidate_service(request, session),
         datahub=get_container(request).datahub,
         governance=_governance_service(request, session),
+    )
+
+
+def _catalog_metadata_candidate_service(
+    request: Request,
+    session: AsyncSession,
+) -> CatalogMetadataCandidateQueryService:
+    container = get_container(request)
+    catalog = SqlCatalogIndexReader(session)
+    return CatalogMetadataCandidateQueryService(
+        uploads=SqlUploadRepository(session),
+        preparations=SqlUploadPreparationRepository(session),
+        candidates=SqlCatalogMetadataCandidateReader(session),
+        catalog=catalog,
+        watermark=catalog,
+        classification_access=ClassificationAccessResolver(
+            SqlClassificationAccessSnapshotReader(session)
+        ),
+        authorization=AuthorizationService(
+            decision_writer=SqlDecisionWriter(container.database.session_factory)
+        ),
+        policy_version=BuiltinPolicyEngine.policy_version,
+    )
+
+
+def _typed_catalog_metadata_service(
+    request: Request,
+    session: AsyncSession,
+) -> TypedCatalogMetadataRegistrationService:
+    return TypedCatalogMetadataRegistrationService(
+        candidates=_catalog_metadata_candidate_service(request, session),
+        vocabulary=SqlCatalogMetadataVocabularyResolver(session),
+        datahub=get_container(request).datahub,
+        governance=_governance_service(request, session),
+    )
+
+
+def _catalog_metadata_vocabulary_service(
+    request: Request,
+    session: AsyncSession,
+) -> CatalogMetadataVocabularyService:
+    container = get_container(request)
+    return CatalogMetadataVocabularyService(
+        datahub=container.datahub,
+        projection=SqlCatalogMetadataVocabularyProjection(session),
+        authorization=AuthorizationService(
+            decision_writer=SqlDecisionWriter(container.database.session_factory)
+        ),
     )
 
 
@@ -264,6 +341,83 @@ def _candidate_list_response(
     )
 
 
+def _catalog_metadata_candidate_list_response(
+    page: CatalogMetadataCandidatePage,
+    *,
+    limit: int,
+) -> CatalogMetadataCandidateListResponse:
+    receipt = page.receipt
+    items: list[CatalogMetadataCandidateResponse] = []
+    for value in page.items:
+        candidate = value.evidence
+        target = value.current_target
+        if target.platform is None or target.database_name is None or target.schema_name is None:
+            raise ConflictError("The catalog metadata candidate target is unavailable.")
+        field_paths = tuple(row.field_path for row in candidate.rows if row.field_path is not None)
+        controlled_count = sum(row.controlled_ref_id is not None for row in candidate.rows)
+        items.append(
+            CatalogMetadataCandidateResponse(
+                id=candidate.candidate_id,
+                ordinal=candidate.ordinal,
+                evidence_version="CATALOG_METADATA_CANDIDATE_V3",
+                record_kind=candidate.record_kind,
+                candidate_kind=candidate.candidate_kind,
+                operation_count=len(candidate.rows),
+                field_path_sample=list(field_paths[:20]),
+                controlled_reference_count=controlled_count,
+                row_summary_truncated=len(field_paths) > 20,
+                submitted_identity=UploadCandidateSubmittedIdentityResponse(
+                    platform=candidate.submitted_platform,
+                    database_name=candidate.submitted_database_name,
+                    schema_name=candidate.submitted_schema_name,
+                    table_name=candidate.submitted_table_name,
+                    identity_hash=candidate.submitted_identity_hash,
+                ),
+                candidate_hash=candidate.candidate_hash,
+                created_at=candidate.created_at,
+                current_target=UploadCandidateCurrentTargetResponse(
+                    id=target.asset_id,
+                    asset_type="DATASET",
+                    name=target.name,
+                    platform=target.platform,
+                    database_name=target.database_name,
+                    schema_name=target.schema_name,
+                    classification=target.classification.name,
+                    lifecycle="ACTIVE",
+                    source_version=target.source_version,
+                    observed_at=target.observed_at,
+                ),
+            )
+        )
+    return CatalogMetadataCandidateListResponse(
+        items=items,
+        page=PageMeta(next_cursor=page.next_cursor, limit=limit),
+        receipt=CatalogMetadataCandidateReceiptResponse(
+            id=receipt.receipt_id,
+            preparation_id=receipt.preparation_id,
+            manifest_version=receipt.manifest_version,
+            source_sha256=receipt.source_sha256,
+            content_profile=receipt.content_profile,
+            parser_version=receipt.parser_version,
+            scanner_version=receipt.scanner_version,
+            schema_version=receipt.schema_version,
+            configuration_hash=receipt.configuration_hash,
+            item_count=receipt.item_count,
+            candidate_count=receipt.candidate_count,
+            candidate_root_hash=receipt.candidate_root_hash,
+            receipt_hash=receipt.receipt_hash,
+            observed_at=receipt.observed_at,
+            created_at=receipt.created_at,
+        ),
+        meta=UploadCandidatePolicyMetaResponse(
+            projection_version=page.projection_version,
+            policy_version=page.policy_version,
+            classification_policy_version=page.classification_policy_version,
+            authorization_generation=page.authorization_generation,
+        ),
+    )
+
+
 def _set_preparation_response_headers(
     response: Response,
     *,
@@ -311,6 +465,47 @@ async def get_registration_operator_capability(
     )
 
 
+@router.get(
+    "/profiles/{content_profile}/template",
+    response_class=Response,
+    responses={
+        200: {
+            "content": {
+                "text/csv": {
+                    "schema": {"type": "string", "format": "binary"},
+                },
+                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": {
+                    "schema": {"type": "string", "format": "binary"},
+                },
+            },
+            "description": "Server-versioned typed upload template.",
+        }
+    },
+)
+async def download_typed_upload_template(
+    content_profile: Literal[
+        "DATASET_DESCRIPTION_CSV_V1",
+        "DATASET_DESCRIPTION_XLSX_V1",
+        "CATALOG_METADATA_ROWS_CSV_V1",
+        "CATALOG_METADATA_ROWS_XLSX_V1",
+    ],
+    context: ContextDep,
+) -> Response:
+    require_registration_operator_identity(context.subject)
+    definition = typed_profile_definition(UploadContentProfile(content_profile))
+    content, filename = encode_typed_upload_template(definition)
+    return Response(
+        content=content,
+        media_type=definition.content_type,
+        headers={
+            "Cache-Control": "private, no-store",
+            "Content-Disposition": f'attachment; filename="{filename}"',
+            "ETag": f'"{definition.configuration_hash}"',
+            "X-Content-Type-Options": "nosniff",
+        },
+    )
+
+
 @router.get("", response_model=UploadListResponse)
 async def list_uploads(
     request: Request,
@@ -334,6 +529,92 @@ async def list_uploads(
     )
     response.headers["Cache-Control"] = "private, no-store"
     return UploadListResponse(items=[_response(value) for value in values])
+
+
+@router.get(
+    "/metadata-vocabulary",
+    response_model=CatalogMetadataVocabularyListResponse,
+)
+async def list_catalog_metadata_vocabulary(
+    request: Request,
+    response: Response,
+    context: ContextDep,
+    session: SessionDep,
+    kind: Literal["DOMAIN", "TAG", "TERM"],
+    q: Annotated[str | None, Query(min_length=1, max_length=200)] = None,
+    cursor: Annotated[str | None, Query(min_length=1, max_length=2_000)] = None,
+    limit: Annotated[int, Query(ge=1, le=50)] = 20,
+) -> CatalogMetadataVocabularyListResponse:
+    page = await _catalog_metadata_vocabulary_service(request, session).list_active(
+        workspace_id=context.workspace_id,
+        kind=kind,
+        query=q,
+        cursor=cursor,
+        limit=limit,
+        subject=context.subject,
+    )
+    response.headers["Cache-Control"] = "private, no-store"
+    return CatalogMetadataVocabularyListResponse(
+        items=[
+            CatalogMetadataVocabularyItemResponse(
+                id=item.vocabulary_id,
+                kind=item.kind,
+                display_name=item.display_name,
+                source_version=item.source_version,
+            )
+            for item in page.items
+        ],
+        page=PageMeta(next_cursor=page.next_cursor, limit=limit),
+    )
+
+
+@router.post(
+    "/metadata-vocabulary/sync",
+    response_model=CatalogMetadataVocabularySyncResponse,
+)
+async def sync_catalog_metadata_vocabulary(
+    payload: CatalogMetadataVocabularySyncRequest,
+    request: Request,
+    response: Response,
+    context: ContextDep,
+    session: SessionDep,
+    idempotency_key: Annotated[
+        str,
+        Header(alias="Idempotency-Key", min_length=16, max_length=200),
+    ],
+) -> CatalogMetadataVocabularySyncResponse:
+    request_hash = hashlib.sha256(
+        orjson.dumps(
+            {
+                **payload.model_dump(mode="json"),
+                "operation": "catalog-metadata-vocabulary-sync.v1",
+                "workspace_id": str(context.workspace_id),
+            },
+            option=orjson.OPT_SORT_KEYS,
+        )
+    ).hexdigest()
+    result = await _catalog_metadata_vocabulary_service(request, session).sync_page(
+        workspace_id=context.workspace_id,
+        sync_id=payload.sync_id,
+        kind=payload.kind,
+        offset=payload.offset,
+        limit=payload.limit,
+        subject=context.subject,
+        environment=context.environment,
+        request_id=context.request_id,
+        idempotency_key=idempotency_key,
+        request_hash=request_hash,
+    )
+    response.headers["Cache-Control"] = "private, no-store"
+    return CatalogMetadataVocabularySyncResponse(
+        kind=payload.kind,
+        upserted=result.upserted,
+        inactivated=result.inactivated,
+        next_offset=result.next_offset,
+        total=result.total,
+        observed_at=result.observed_at,
+        inactivation_status=result.inactivation_status,
+    )
 
 
 @router.get("/{upload_id}", response_model=UploadResponse)
@@ -595,6 +876,148 @@ async def create_upload_registration_candidate_change_request(
     )
     response.headers["Cache-Control"] = "private, no-store"
     return change_request_response(change_request)
+
+
+@router.get(
+    "/{upload_id}/preparations/{preparation_id}/metadata-candidates",
+    response_model=CatalogMetadataCandidateListResponse,
+)
+async def list_catalog_metadata_candidates(
+    upload_id: UUID,
+    preparation_id: UUID,
+    request: Request,
+    response: Response,
+    context: ContextDep,
+    session: SessionDep,
+    cursor: Annotated[str | None, Query(min_length=1, max_length=2048)] = None,
+    limit: Annotated[int, Query(ge=1, le=50)] = 20,
+) -> CatalogMetadataCandidateListResponse:
+    require_registration_operator_identity(context.subject)
+    page = await _catalog_metadata_candidate_service(request, session).list_candidates(
+        workspace_id=context.workspace_id,
+        upload_id=upload_id,
+        preparation_id=preparation_id,
+        subject=context.subject,
+        environment=context.environment,
+        request_id=context.request_id,
+        cursor=cursor,
+        limit=limit,
+    )
+    response.headers["Cache-Control"] = "private, no-store"
+    return _catalog_metadata_candidate_list_response(page, limit=limit)
+
+
+@router.get(
+    "/{upload_id}/preparations/{preparation_id}/metadata-candidates/{candidate_id}/preview",
+    response_model=TypedCatalogMetadataPreviewResponse,
+)
+async def preview_catalog_metadata_candidate(
+    upload_id: UUID,
+    preparation_id: UUID,
+    candidate_id: UUID,
+    request: Request,
+    response: Response,
+    context: ContextDep,
+    session: SessionDep,
+) -> TypedCatalogMetadataPreviewResponse:
+    require_registration_operator_identity(context.subject)
+    preview = await _typed_catalog_metadata_service(request, session).preview(
+        workspace_id=context.workspace_id,
+        upload_id=upload_id,
+        preparation_id=preparation_id,
+        candidate_id=candidate_id,
+        subject=context.subject,
+        environment=context.environment,
+        request_id=context.request_id,
+    )
+    response.headers["ETag"] = preview.preview_etag
+    response.headers["Cache-Control"] = "private, no-store"
+    return TypedCatalogMetadataPreviewResponse(
+        candidate_id=preview.candidate_id,
+        target_asset_id=preview.target_asset_id,
+        platform=preview.platform,
+        database_name=preview.database_name,
+        schema_name=preview.schema_name,
+        table_name=preview.table_name,
+        record_kind=preview.record_kind,
+        candidate_kind=preview.candidate_kind,
+        operation_count=preview.operation_count,
+        description_change_count=preview.description_change_count,
+        description_change_sample=[
+            CatalogMetadataDescriptionChangeResponse(
+                field_path=field_path,
+                current_description=current,
+                proposed_description=proposed,
+            )
+            for field_path, current, proposed in preview.description_change_sample
+        ],
+        description_changes_truncated=preview.description_changes_truncated,
+        current_reference_count=preview.current_reference_count,
+        proposed_reference_count=preview.proposed_reference_count,
+        before_hash=preview.before_hash,
+        after_hash=preview.after_hash,
+        source_version=preview.source_version,
+        observed_at=preview.observed_at,
+        preview_etag=preview.preview_etag,
+    )
+
+
+@router.post(
+    "/{upload_id}/preparations/{preparation_id}/metadata-candidates/{candidate_id}/change-request",
+    response_model=TypedCatalogMetadataChangeRequestResponse,
+    status_code=201,
+)
+async def create_catalog_metadata_candidate_change_request(
+    upload_id: UUID,
+    preparation_id: UUID,
+    candidate_id: UUID,
+    payload: TypedBulkChangeRequestCreate,
+    request: Request,
+    response: Response,
+    context: ContextDep,
+    session: SessionDep,
+    if_match: Annotated[str, Header(alias="If-Match", min_length=66, max_length=66)],
+    idempotency_key: Annotated[str, Header(alias="Idempotency-Key", min_length=16, max_length=200)],
+) -> TypedCatalogMetadataChangeRequestResponse:
+    require_registration_operator_identity(context.subject)
+    if re.fullmatch(r'"[0-9a-f]{64}"', if_match) is None:
+        raise ValidationError("If-Match must contain the quoted typed preview ETag.")
+    request_hash = hashlib.sha256(
+        orjson.dumps(
+            {
+                "candidate_id": str(candidate_id),
+                "expected_preview_etag": if_match,
+                "operation": "typed-catalog-metadata-change-request.v1",
+                "preparation_id": str(preparation_id),
+                "reason": payload.reason,
+                "title": payload.title,
+                "upload_id": str(upload_id),
+                "workspace_id": str(context.workspace_id),
+            },
+            option=orjson.OPT_SORT_KEYS,
+        )
+    ).hexdigest()
+    change_request = await _typed_catalog_metadata_service(request, session).create_change_request(
+        workspace_id=context.workspace_id,
+        upload_id=upload_id,
+        preparation_id=preparation_id,
+        candidate_id=candidate_id,
+        expected_preview_etag=if_match,
+        title=payload.title,
+        reason=payload.reason,
+        subject=context.subject,
+        environment=context.environment,
+        request_id=context.request_id,
+        idempotency_key=idempotency_key,
+        request_hash=request_hash,
+    )
+    response.headers["Cache-Control"] = "private, no-store"
+    return TypedCatalogMetadataChangeRequestResponse(
+        id=change_request.change_request_id,
+        number=change_request.number,
+        request_type="BULK_CATALOG_METADATA",
+        state=change_request.state.value,
+    )
 
 
 @router.post("/{upload_id}/parts", response_model=UploadPartResponse)

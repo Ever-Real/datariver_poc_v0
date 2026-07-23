@@ -262,7 +262,7 @@ def upgrade() -> None:
         sa.Column('created_at', sa.DateTime(timezone=True), server_default=sa.text('CURRENT_TIMESTAMP'), nullable=False),
         sa.Column('updated_at', sa.DateTime(timezone=True), server_default=sa.text('CURRENT_TIMESTAMP'), nullable=False),
         sa.Column('version', sa.Integer(), nullable=False),
-        sa.CheckConstraint("content_profile IN ('FORMAT_ONLY_V1', 'DATASET_DESCRIPTION_CSV_V1', 'DATASET_DESCRIPTION_XLSX_V1')", name=op.f('ck_object_manifests_content_profile_allowlist')),
+        sa.CheckConstraint("content_profile IN ('FORMAT_ONLY_V1', 'DATASET_DESCRIPTION_CSV_V1', 'DATASET_DESCRIPTION_XLSX_V1', 'CATALOG_METADATA_ROWS_CSV_V1', 'CATALOG_METADATA_ROWS_XLSX_V1')", name=op.f('ck_object_manifests_content_profile_allowlist')),
         sa.PrimaryKeyConstraint('id', name=op.f('pk_object_manifests')),
         sa.UniqueConstraint('bucket', 'object_key', name=op.f('uq_object_manifests_bucket_object_key')),
         sa.UniqueConstraint('workspace_id', 'id', name=op.f('uq_object_manifests_workspace_id_id')),
@@ -370,6 +370,66 @@ def upgrade() -> None:
         op.execute('ALTER TABLE catalog.projection_watermarks ENABLE ROW LEVEL SECURITY')
         op.execute('ALTER TABLE catalog.projection_watermarks FORCE ROW LEVEL SECURITY')
         op.execute("CREATE POLICY workspace_isolation ON catalog.projection_watermarks USING (workspace_id = NULLIF(current_setting('app.workspace_id', true), '')::uuid) WITH CHECK (workspace_id = NULLIF(current_setting('app.workspace_id', true), '')::uuid)")
+        op.create_table('vocabulary_entries',
+        sa.Column('workspace_id', sa.Uuid(), nullable=False),
+        sa.Column('kind', sa.String(length=16), nullable=False),
+        sa.Column('provider_ref', sa.String(length=1000), nullable=False),
+        sa.Column('display_name', sa.String(length=500), nullable=False),
+        sa.Column('lifecycle', sa.String(length=16), nullable=False),
+        sa.Column('source_version', sa.String(length=255), nullable=False),
+        sa.Column('observed_at', sa.DateTime(timezone=True), nullable=False),
+        sa.Column('last_seen_sync_id', sa.Uuid(), nullable=True),
+        sa.Column('updated_at', sa.DateTime(timezone=True), server_default=sa.text('CURRENT_TIMESTAMP'), nullable=False),
+        sa.Column('id', sa.Uuid(), nullable=False),
+        sa.CheckConstraint("(kind = 'DOMAIN' AND provider_ref LIKE 'urn:li:domain:%') OR (kind = 'TAG' AND provider_ref LIKE 'urn:li:tag:%') OR (kind = 'TERM' AND provider_ref LIKE 'urn:li:glossaryTerm:%')", name=op.f('ck_vocabulary_entries_provider_ref_kind')),
+        sa.CheckConstraint("kind IN ('DOMAIN', 'TAG', 'TERM')", name=op.f('ck_vocabulary_entries_kind_vocabulary')),
+        sa.CheckConstraint("lifecycle IN ('ACTIVE', 'INACTIVE')", name=op.f('ck_vocabulary_entries_lifecycle_vocabulary')),
+        sa.CheckConstraint('char_length(display_name) BETWEEN 1 AND 500 AND display_name = btrim(display_name)', name=op.f('ck_vocabulary_entries_display_name_valid')),
+        sa.CheckConstraint('char_length(source_version) BETWEEN 1 AND 255 AND source_version = btrim(source_version)', name=op.f('ck_vocabulary_entries_source_version_valid')),
+        sa.CheckConstraint('observed_at <= updated_at', name=op.f('ck_vocabulary_entries_observation_time_order')),
+        sa.ForeignKeyConstraint(['workspace_id'], ['platform.workspaces.id'], name=op.f('fk_vocabulary_entries_workspace_id_workspaces'), ondelete='RESTRICT'),
+        sa.PrimaryKeyConstraint('id', name=op.f('pk_vocabulary_entries')),
+        sa.UniqueConstraint('workspace_id', 'id', 'kind', name=op.f('uq_vocabulary_entries_workspace_id_id_kind')),
+        sa.UniqueConstraint('workspace_id', 'id', name=op.f('uq_vocabulary_entries_workspace_id_id')),
+        sa.UniqueConstraint('workspace_id', 'kind', 'provider_ref', name='uq_vocabulary_entries_workspace_kind_provider_ref'),
+        schema='catalog'
+        )
+        op.create_index('ix_vocabulary_entries_workspace_kind_lifecycle_name', 'vocabulary_entries', ['workspace_id', 'kind', 'lifecycle', 'display_name', 'id'], unique=False, schema='catalog')
+        op.execute('ALTER TABLE catalog.vocabulary_entries ENABLE ROW LEVEL SECURITY')
+        op.execute('ALTER TABLE catalog.vocabulary_entries FORCE ROW LEVEL SECURITY')
+        op.execute("CREATE POLICY workspace_isolation ON catalog.vocabulary_entries USING (workspace_id = NULLIF(current_setting('app.workspace_id', true), '')::uuid) WITH CHECK (workspace_id = NULLIF(current_setting('app.workspace_id', true), '')::uuid)")
+        op.create_table('vocabulary_sync_runs',
+        sa.Column('workspace_id', sa.Uuid(), nullable=False),
+        sa.Column('sync_id', sa.Uuid(), nullable=False),
+        sa.Column('kind', sa.String(length=16), nullable=False),
+        sa.Column('state', sa.String(length=16), nullable=False),
+        sa.Column('next_offset', sa.Integer(), nullable=False),
+        sa.Column('next_cursor', sa.Text(), nullable=True),
+        sa.Column('expected_total', sa.BigInteger(), nullable=True),
+        sa.Column('seen_count', sa.BigInteger(), server_default=sa.text('0'), nullable=False),
+        sa.Column('snapshot_consistent', sa.Boolean(), server_default=sa.text('false'), nullable=False),
+        sa.Column('snapshot_evidence_reference', sa.String(length=500), nullable=True),
+        sa.Column('snapshot_contract_hash', sa.String(length=64), nullable=True),
+        sa.Column('snapshot_provider_version', sa.String(length=128), nullable=True),
+        sa.Column('started_at', sa.DateTime(timezone=True), nullable=False),
+        sa.Column('heartbeat_at', sa.DateTime(timezone=True), nullable=False),
+        sa.Column('completed_at', sa.DateTime(timezone=True), nullable=True),
+        sa.CheckConstraint("(NOT snapshot_consistent AND snapshot_evidence_reference IS NULL AND snapshot_contract_hash IS NULL AND snapshot_provider_version IS NULL) OR (snapshot_consistent AND snapshot_evidence_reference IS NOT NULL AND snapshot_contract_hash IS NOT NULL AND snapshot_provider_version IS NOT NULL AND char_length(snapshot_evidence_reference) BETWEEN 1 AND 500 AND snapshot_contract_hash ~ '^[0-9a-f]{64}$' AND char_length(snapshot_provider_version) BETWEEN 1 AND 128)", name=op.f('ck_vocabulary_sync_runs_snapshot_evidence_bounded')),
+        sa.CheckConstraint("kind IN ('DOMAIN', 'TAG', 'TERM')", name=op.f('ck_vocabulary_sync_runs_kind_vocabulary')),
+        sa.CheckConstraint("state IN ('ACTIVE', 'COMPLETED', 'ABANDONED')", name=op.f('ck_vocabulary_sync_runs_state_vocabulary')),
+        sa.CheckConstraint('expected_total IS NULL OR expected_total >= 0', name=op.f('ck_vocabulary_sync_runs_expected_total_nonnegative')),
+        sa.CheckConstraint('next_cursor IS NULL OR char_length(next_cursor) BETWEEN 1 AND 4096', name=op.f('ck_vocabulary_sync_runs_next_cursor_bounded')),
+        sa.CheckConstraint('next_offset >= 0', name=op.f('ck_vocabulary_sync_runs_next_offset_nonnegative')),
+        sa.CheckConstraint('seen_count >= 0', name=op.f('ck_vocabulary_sync_runs_seen_count_nonnegative')),
+        sa.ForeignKeyConstraint(['workspace_id'], ['platform.workspaces.id'], name=op.f('fk_vocabulary_sync_runs_workspace_id_workspaces'), ondelete='RESTRICT'),
+        sa.PrimaryKeyConstraint('workspace_id', 'sync_id', 'kind', name=op.f('pk_vocabulary_sync_runs')),
+        schema='catalog'
+        )
+        op.create_index('ix_vocabulary_sync_runs_workspace_kind_started', 'vocabulary_sync_runs', ['workspace_id', 'kind', 'started_at'], unique=False, schema='catalog')
+        op.create_index('uq_vocabulary_sync_runs_active_workspace_kind', 'vocabulary_sync_runs', ['workspace_id', 'kind'], unique=True, schema='catalog', postgresql_where=sa.text("state = 'ACTIVE'"))
+        op.execute('ALTER TABLE catalog.vocabulary_sync_runs ENABLE ROW LEVEL SECURITY')
+        op.execute('ALTER TABLE catalog.vocabulary_sync_runs FORCE ROW LEVEL SECURITY')
+        op.execute("CREATE POLICY workspace_isolation ON catalog.vocabulary_sync_runs USING (workspace_id = NULLIF(current_setting('app.workspace_id', true), '')::uuid) WITH CHECK (workspace_id = NULLIF(current_setting('app.workspace_id', true), '')::uuid)")
         op.create_table('change_request_rounds',
         sa.Column('workspace_id', sa.Uuid(), nullable=False),
         sa.Column('change_request_id', sa.Uuid(), nullable=False),
@@ -784,8 +844,10 @@ def upgrade() -> None:
         sa.Column('target_source_version', sa.String(length=255), nullable=True),
         sa.Column('target_observed_at', sa.DateTime(timezone=True), nullable=True),
         sa.Column('target_binding_hash', sa.String(length=64), nullable=True),
+        sa.Column('item_contract_hash', sa.String(length=64), nullable=True),
         sa.Column('routing_system_id', sa.Uuid(), nullable=True),
         sa.Column('id', sa.Uuid(), nullable=False),
+        sa.CheckConstraint("item_contract_hash IS NULL OR item_contract_hash ~ '^[0-9a-f]{64}$'", name=op.f('ck_change_request_items_item_contract_hash_sha256')),
         sa.CheckConstraint("target_binding_hash IS NULL OR target_binding_hash ~ '^[0-9a-f]{64}$'", name=op.f('ck_change_request_items_target_binding_hash_sha256')),
         sa.CheckConstraint('(target_asset_id IS NULL AND target_asset_type IS NULL AND target_system_id IS NULL AND target_domain_id IS NULL AND target_owner_department_id IS NULL AND target_classification IS NULL AND target_lifecycle IS NULL AND target_source_version IS NULL AND target_observed_at IS NULL AND target_binding_hash IS NULL) OR (target_asset_id IS NOT NULL AND target_asset_type IS NOT NULL AND target_classification IS NOT NULL AND target_lifecycle IS NOT NULL AND target_source_version IS NOT NULL AND target_observed_at IS NOT NULL AND target_binding_hash IS NOT NULL)', name=op.f('ck_change_request_items_target_binding_shape')),
         sa.CheckConstraint('target_classification IS NULL OR target_classification BETWEEN 0 AND 3', name=op.f('ck_change_request_items_target_classification_range')),
@@ -793,6 +855,7 @@ def upgrade() -> None:
         sa.ForeignKeyConstraint(['workspace_id', 'routing_system_id'], ['platform.data_systems.workspace_id', 'platform.data_systems.id'], name='fk_change_items_routing_system', ondelete='RESTRICT'),
         sa.PrimaryKeyConstraint('id', name=op.f('pk_change_request_items')),
         sa.UniqueConstraint('change_request_id', 'ordinal', name=op.f('uq_change_request_items_change_request_id_ordinal')),
+        sa.UniqueConstraint('workspace_id', 'change_request_id', 'id', 'aspect_name', 'before_hash', 'after_hash', 'item_contract_hash', name='uq_change_request_items_metadata_contract'),
         sa.UniqueConstraint('workspace_id', 'change_request_id', 'id', name='uq_change_request_item_request_identity'),
         sa.UniqueConstraint('workspace_id', 'id', name=op.f('uq_change_request_items_workspace_id_id')),
         schema='governance'
@@ -1131,7 +1194,7 @@ def upgrade() -> None:
         sa.CheckConstraint("(state = 'PREPARING' AND lease_token IS NOT NULL AND lease_until IS NOT NULL) OR (state <> 'PREPARING' AND lease_token IS NULL AND lease_until IS NULL)", name=op.f('ck_upload_preparation_jobs_lease_shape')),
         sa.CheckConstraint("(state = 'QUEUED' AND next_attempt_at IS NOT NULL) OR (state <> 'QUEUED' AND next_attempt_at IS NULL)", name=op.f('ck_upload_preparation_jobs_retry_schedule_shape')),
         sa.CheckConstraint("configuration_hash ~ '^[0-9a-f]{64}$'", name=op.f('ck_upload_preparation_jobs_configuration_hash_valid')),
-        sa.CheckConstraint("content_profile IN ('DATASET_DESCRIPTION_CSV_V1', 'DATASET_DESCRIPTION_XLSX_V1')", name=op.f('ck_upload_preparation_jobs_typed_profile_allowlist')),
+        sa.CheckConstraint("content_profile IN ('DATASET_DESCRIPTION_CSV_V1', 'DATASET_DESCRIPTION_XLSX_V1', 'CATALOG_METADATA_ROWS_CSV_V1', 'CATALOG_METADATA_ROWS_XLSX_V1')", name=op.f('ck_upload_preparation_jobs_typed_profile_allowlist')),
         sa.CheckConstraint("source_sha256 ~ '^[0-9a-f]{64}$'", name=op.f('ck_upload_preparation_jobs_source_sha256_valid')),
         sa.CheckConstraint("state IN ('QUEUED', 'PREPARING', 'READY', 'FAILED', 'CANCELLED', 'STALE')", name=op.f('ck_upload_preparation_jobs_state_allowlist')),
         sa.CheckConstraint('attempts >= 0', name=op.f('ck_upload_preparation_jobs_attempts_nonnegative')),
@@ -1649,7 +1712,8 @@ def upgrade() -> None:
         sa.PrimaryKeyConstraint('id', name=op.f('pk_access_role_data_rules')),
         sa.UniqueConstraint('workspace_id', 'id', name=op.f('uq_access_role_data_rules_workspace_id_id')),
         sa.UniqueConstraint('workspace_id', 'role_id', 'role_version', 'classification', name=op.f('uq_access_role_data_rules_workspace_id_role_id_role_version_classification')),
-        schema='iam'
+        schema='iam',
+        comment='Missing classification rule resolves to ROLE_DATA_RULE_MISSING (deny)'
         )
         op.create_index('ix_access_role_data_rules_workspace_role_version', 'access_role_data_rules', ['workspace_id', 'role_id', 'role_version'], unique=False, schema='iam')
         op.execute('ALTER TABLE iam.access_role_data_rules ENABLE ROW LEVEL SECURITY')
@@ -1724,7 +1788,7 @@ def upgrade() -> None:
         sa.CheckConstraint("accepted_sha256 ~ '^[0-9a-f]{64}$'", name=op.f('ck_upload_preparation_receipts_accepted_sha256_valid')),
         sa.CheckConstraint("candidate_root_hash ~ '^[0-9a-f]{64}$'", name=op.f('ck_upload_preparation_receipts_candidate_root_hash_valid')),
         sa.CheckConstraint("configuration_hash ~ '^[0-9a-f]{64}$'", name=op.f('ck_upload_preparation_receipts_configuration_hash_valid')),
-        sa.CheckConstraint("content_profile IN ('DATASET_DESCRIPTION_CSV_V1', 'DATASET_DESCRIPTION_XLSX_V1')", name=op.f('ck_upload_preparation_receipts_typed_profile_allowlist')),
+        sa.CheckConstraint("content_profile IN ('DATASET_DESCRIPTION_CSV_V1', 'DATASET_DESCRIPTION_XLSX_V1', 'CATALOG_METADATA_ROWS_CSV_V1', 'CATALOG_METADATA_ROWS_XLSX_V1')", name=op.f('ck_upload_preparation_receipts_typed_profile_allowlist')),
         sa.CheckConstraint("object_locator_hash ~ '^[0-9a-f]{64}$'", name=op.f('ck_upload_preparation_receipts_object_locator_hash_valid')),
         sa.CheckConstraint("receipt_hash ~ '^[0-9a-f]{64}$'", name=op.f('ck_upload_preparation_receipts_receipt_hash_valid')),
         sa.CheckConstraint("source_sha256 ~ '^[0-9a-f]{64}$'", name=op.f('ck_upload_preparation_receipts_source_sha256_valid')),
@@ -1734,6 +1798,7 @@ def upgrade() -> None:
         sa.ForeignKeyConstraint(['workspace_id', 'preparation_job_id', 'upload_id', 'manifest_version', 'source_sha256', 'content_profile', 'configuration_hash'], ['integration.upload_preparation_jobs.workspace_id', 'integration.upload_preparation_jobs.id', 'integration.upload_preparation_jobs.upload_id', 'integration.upload_preparation_jobs.source_manifest_version', 'integration.upload_preparation_jobs.source_sha256', 'integration.upload_preparation_jobs.content_profile', 'integration.upload_preparation_jobs.configuration_hash'], name='fk_upload_prep_receipts_source_evidence', ondelete='RESTRICT'),
         sa.ForeignKeyConstraint(['workspace_id', 'upload_id'], ['integration.object_manifests.workspace_id', 'integration.object_manifests.id'], name='fk_upload_prep_receipts_workspace_upload', ondelete='RESTRICT'),
         sa.PrimaryKeyConstraint('id', name=op.f('pk_upload_preparation_receipts')),
+        sa.UniqueConstraint('workspace_id', 'id', 'content_profile', name='uq_upload_preparation_receipts_profile_identity'),
         sa.UniqueConstraint('workspace_id', 'id', name=op.f('uq_upload_preparation_receipts_workspace_id_id')),
         sa.UniqueConstraint('workspace_id', 'preparation_job_id', name=op.f('uq_upload_preparation_receipts_workspace_id_preparation_job_id')),
         schema='integration'
@@ -2267,6 +2332,92 @@ def upgrade() -> None:
         op.execute('ALTER TABLE governance.manual_metadata_aspect_reports ENABLE ROW LEVEL SECURITY')
         op.execute('ALTER TABLE governance.manual_metadata_aspect_reports FORCE ROW LEVEL SECURITY')
         op.execute("CREATE POLICY workspace_isolation ON governance.manual_metadata_aspect_reports USING (workspace_id = NULLIF(current_setting('app.workspace_id', true), '')::uuid) WITH CHECK (workspace_id = NULLIF(current_setting('app.workspace_id', true), '')::uuid)")
+        op.create_table('catalog_metadata_candidates',
+        sa.Column('workspace_id', sa.Uuid(), nullable=False),
+        sa.Column('receipt_id', sa.Uuid(), nullable=False),
+        sa.Column('candidate_ordinal', sa.BigInteger(), nullable=False),
+        sa.Column('content_profile', sa.String(length=100), nullable=False),
+        sa.Column('record_kind', sa.String(length=64), nullable=False),
+        sa.Column('candidate_kind', sa.String(length=100), nullable=False),
+        sa.Column('evidence_version', sa.String(length=100), nullable=False),
+        sa.Column('target_asset_id', sa.Uuid(), nullable=False),
+        sa.Column('aspect_name', sa.String(length=64), nullable=False),
+        sa.Column('submitted_identity_hash', sa.String(length=64), nullable=False),
+        sa.Column('row_count', sa.BigInteger(), nullable=False),
+        sa.Column('first_row_ordinal', sa.BigInteger(), nullable=False),
+        sa.Column('last_row_ordinal', sa.BigInteger(), nullable=False),
+        sa.Column('row_root_hash', sa.String(length=64), nullable=False),
+        sa.Column('candidate_hash', sa.String(length=64), nullable=False),
+        sa.Column('created_at', sa.DateTime(timezone=True), nullable=False),
+        sa.Column('id', sa.Uuid(), nullable=False),
+        sa.CheckConstraint("(record_kind = 'TABLE_DESCRIPTION' AND candidate_kind = 'TABLE_DESCRIPTION_UPDATE' AND aspect_name = 'datasetProperties') OR (record_kind = 'COLUMN_DESCRIPTION' AND candidate_kind = 'COLUMN_DESCRIPTION_UPDATE' AND aspect_name = 'schemaMetadata') OR (record_kind = 'DATASET_DOMAIN' AND candidate_kind = 'DATASET_DOMAIN_UPDATE' AND aspect_name = 'domains') OR (record_kind = 'DATASET_TERM' AND candidate_kind = 'DATASET_TERM_ADD' AND aspect_name = 'glossaryTerms') OR (record_kind = 'DATASET_TAG' AND candidate_kind = 'DATASET_TAG_ADD' AND aspect_name = 'globalTags')", name=op.f('ck_catalog_metadata_candidates_record_candidate_aspect_contract')),
+        sa.CheckConstraint("content_profile IN ('CATALOG_METADATA_ROWS_CSV_V1', 'CATALOG_METADATA_ROWS_XLSX_V1')", name=op.f('ck_catalog_metadata_candidates_content_profile_allowlist')),
+        sa.CheckConstraint("evidence_version = 'CATALOG_METADATA_CANDIDATE_V3'", name=op.f('ck_catalog_metadata_candidates_evidence_version_contract')),
+        sa.CheckConstraint("submitted_identity_hash ~ '^[0-9a-f]{64}$' AND row_root_hash ~ '^[0-9a-f]{64}$' AND candidate_hash ~ '^[0-9a-f]{64}$'", name=op.f('ck_catalog_metadata_candidates_evidence_hashes_valid')),
+        sa.CheckConstraint('candidate_ordinal BETWEEN 1 AND 10000', name=op.f('ck_catalog_metadata_candidates_candidate_ordinal_range')),
+        sa.CheckConstraint('row_count BETWEEN 1 AND 10000 AND first_row_ordinal BETWEEN 1 AND 10000 AND last_row_ordinal BETWEEN first_row_ordinal AND 10000', name=op.f('ck_catalog_metadata_candidates_ordered_row_span')),
+        sa.ForeignKeyConstraint(['workspace_id', 'receipt_id', 'content_profile'], ['integration.upload_preparation_receipts.workspace_id', 'integration.upload_preparation_receipts.id', 'integration.upload_preparation_receipts.content_profile'], name='fk_catalog_metadata_candidates_receipt_profile', ondelete='RESTRICT'),
+        sa.PrimaryKeyConstraint('id', name=op.f('pk_catalog_metadata_candidates')),
+        sa.UniqueConstraint('workspace_id', 'id', 'content_profile', 'candidate_kind', 'aspect_name', 'candidate_hash', name='uq_catalog_metadata_candidates_binding_content'),
+        sa.UniqueConstraint('workspace_id', 'id', name=op.f('uq_catalog_metadata_candidates_workspace_id_id')),
+        sa.UniqueConstraint('workspace_id', 'receipt_id', 'candidate_ordinal', name=op.f('uq_catalog_metadata_candidates_workspace_id_receipt_id_candidate_ordinal')),
+        sa.UniqueConstraint('workspace_id', 'receipt_id', 'id', 'content_profile', 'candidate_hash', name='uq_catalog_metadata_candidates_membership_content'),
+        sa.UniqueConstraint('workspace_id', 'receipt_id', 'target_asset_id', 'aspect_name', name='uq_catalog_metadata_candidates_target_aspect'),
+        schema='integration'
+        )
+        op.execute('ALTER TABLE integration.catalog_metadata_candidates ENABLE ROW LEVEL SECURITY')
+        op.execute('ALTER TABLE integration.catalog_metadata_candidates FORCE ROW LEVEL SECURITY')
+        op.execute("CREATE POLICY workspace_isolation ON integration.catalog_metadata_candidates USING (workspace_id = NULLIF(current_setting('app.workspace_id', true), '')::uuid) WITH CHECK (workspace_id = NULLIF(current_setting('app.workspace_id', true), '')::uuid)")
+        op.create_table('catalog_metadata_rows',
+        sa.Column('workspace_id', sa.Uuid(), nullable=False),
+        sa.Column('receipt_id', sa.Uuid(), nullable=False),
+        sa.Column('ordinal', sa.BigInteger(), nullable=False),
+        sa.Column('content_profile', sa.String(length=100), nullable=False),
+        sa.Column('evidence_version', sa.String(length=100), nullable=False),
+        sa.Column('record_kind', sa.String(length=64), nullable=False),
+        sa.Column('aspect_name', sa.String(length=64), nullable=False),
+        sa.Column('target_asset_id', sa.Uuid(), nullable=False),
+        sa.Column('submitted_platform', sa.String(length=100), nullable=False),
+        sa.Column('submitted_database_name', sa.String(length=255), nullable=False),
+        sa.Column('submitted_schema_name', sa.String(length=255), nullable=False),
+        sa.Column('submitted_table_name', sa.String(length=500), nullable=False),
+        sa.Column('field_path', sa.String(length=2000), nullable=True),
+        sa.Column('operation', sa.String(length=16), nullable=False),
+        sa.Column('value_text', sa.Text(), nullable=True),
+        sa.Column('controlled_ref_id', sa.Uuid(), nullable=True),
+        sa.Column('controlled_kind', sa.String(length=16), nullable=True),
+        sa.Column('submitted_identity_hash', sa.String(length=64), nullable=False),
+        sa.Column('semantic_target_hash', sa.String(length=64), nullable=False),
+        sa.Column('row_hash', sa.String(length=64), nullable=False),
+        sa.Column('created_at', sa.DateTime(timezone=True), nullable=False),
+        sa.Column('id', sa.Uuid(), nullable=False),
+        sa.CheckConstraint("(record_kind = 'TABLE_DESCRIPTION' AND aspect_name = 'datasetProperties') OR (record_kind = 'COLUMN_DESCRIPTION' AND aspect_name = 'schemaMetadata') OR (record_kind = 'DATASET_DOMAIN' AND aspect_name = 'domains') OR (record_kind = 'DATASET_TERM' AND aspect_name = 'glossaryTerms') OR (record_kind = 'DATASET_TAG' AND aspect_name = 'globalTags')", name=op.f('ck_catalog_metadata_rows_record_kind_aspect_contract')),
+        sa.CheckConstraint("(record_kind = 'TABLE_DESCRIPTION' AND field_path IS NULL AND controlled_ref_id IS NULL AND controlled_kind IS NULL AND ((operation = 'SET' AND value_text IS NOT NULL) OR (operation = 'CLEAR' AND value_text IS NULL))) OR (record_kind = 'COLUMN_DESCRIPTION' AND field_path IS NOT NULL AND controlled_ref_id IS NULL AND controlled_kind IS NULL AND ((operation = 'SET' AND value_text IS NOT NULL) OR (operation = 'CLEAR' AND value_text IS NULL))) OR (record_kind = 'DATASET_DOMAIN' AND field_path IS NULL AND value_text IS NULL AND ((operation = 'SET' AND controlled_ref_id IS NOT NULL AND controlled_kind = 'DOMAIN') OR (operation = 'CLEAR' AND controlled_ref_id IS NULL AND controlled_kind IS NULL))) OR (record_kind = 'DATASET_TERM' AND operation = 'ADD' AND field_path IS NULL AND value_text IS NULL AND controlled_ref_id IS NOT NULL AND controlled_kind = 'TERM') OR (record_kind = 'DATASET_TAG' AND operation = 'ADD' AND field_path IS NULL AND value_text IS NULL AND controlled_ref_id IS NOT NULL AND controlled_kind = 'TAG')", name=op.f('ck_catalog_metadata_rows_typed_detail_xor')),
+        sa.CheckConstraint("content_profile IN ('CATALOG_METADATA_ROWS_CSV_V1', 'CATALOG_METADATA_ROWS_XLSX_V1')", name=op.f('ck_catalog_metadata_rows_content_profile_allowlist')),
+        sa.CheckConstraint("controlled_kind IS NULL OR controlled_kind IN ('DOMAIN', 'TAG', 'TERM')", name=op.f('ck_catalog_metadata_rows_controlled_kind_vocabulary')),
+        sa.CheckConstraint("evidence_version = 'CATALOG_METADATA_CANDIDATE_V3'", name=op.f('ck_catalog_metadata_rows_evidence_version_contract')),
+        sa.CheckConstraint("operation IN ('SET', 'CLEAR', 'ADD')", name=op.f('ck_catalog_metadata_rows_operation_allowlist')),
+        sa.CheckConstraint("record_kind IN ('TABLE_DESCRIPTION', 'COLUMN_DESCRIPTION', 'DATASET_DOMAIN', 'DATASET_TERM', 'DATASET_TAG')", name=op.f('ck_catalog_metadata_rows_record_kind_allowlist')),
+        sa.CheckConstraint("submitted_identity_hash ~ '^[0-9a-f]{64}$' AND semantic_target_hash ~ '^[0-9a-f]{64}$' AND row_hash ~ '^[0-9a-f]{64}$'", name=op.f('ck_catalog_metadata_rows_evidence_hashes_valid')),
+        sa.CheckConstraint('char_length(submitted_database_name) BETWEEN 1 AND 255 AND submitted_database_name = btrim(submitted_database_name)', name=op.f('ck_catalog_metadata_rows_submitted_database_name_valid')),
+        sa.CheckConstraint('char_length(submitted_platform) BETWEEN 1 AND 100 AND submitted_platform = btrim(submitted_platform)', name=op.f('ck_catalog_metadata_rows_submitted_platform_valid')),
+        sa.CheckConstraint('char_length(submitted_schema_name) BETWEEN 1 AND 255 AND submitted_schema_name = btrim(submitted_schema_name)', name=op.f('ck_catalog_metadata_rows_submitted_schema_name_valid')),
+        sa.CheckConstraint('char_length(submitted_table_name) BETWEEN 1 AND 500 AND submitted_table_name = btrim(submitted_table_name)', name=op.f('ck_catalog_metadata_rows_submitted_table_name_valid')),
+        sa.CheckConstraint('field_path IS NULL OR (char_length(field_path) BETWEEN 1 AND 2000 AND field_path = btrim(field_path))', name=op.f('ck_catalog_metadata_rows_field_path_valid')),
+        sa.CheckConstraint('ordinal BETWEEN 1 AND 10000', name=op.f('ck_catalog_metadata_rows_ordinal_range')),
+        sa.CheckConstraint('value_text IS NULL OR char_length(value_text) BETWEEN 1 AND 10000', name=op.f('ck_catalog_metadata_rows_value_text_valid')),
+        sa.ForeignKeyConstraint(['workspace_id', 'controlled_ref_id', 'controlled_kind'], ['catalog.vocabulary_entries.workspace_id', 'catalog.vocabulary_entries.id', 'catalog.vocabulary_entries.kind'], name='fk_catalog_metadata_rows_vocabulary', ondelete='RESTRICT'),
+        sa.ForeignKeyConstraint(['workspace_id', 'receipt_id', 'content_profile'], ['integration.upload_preparation_receipts.workspace_id', 'integration.upload_preparation_receipts.id', 'integration.upload_preparation_receipts.content_profile'], name='fk_catalog_metadata_rows_receipt_profile', ondelete='RESTRICT'),
+        sa.PrimaryKeyConstraint('id', name=op.f('pk_catalog_metadata_rows')),
+        sa.UniqueConstraint('workspace_id', 'id', name=op.f('uq_catalog_metadata_rows_workspace_id_id')),
+        sa.UniqueConstraint('workspace_id', 'receipt_id', 'id', 'content_profile', 'row_hash', name='uq_catalog_metadata_rows_content'),
+        sa.UniqueConstraint('workspace_id', 'receipt_id', 'ordinal', name=op.f('uq_catalog_metadata_rows_workspace_id_receipt_id_ordinal')),
+        sa.UniqueConstraint('workspace_id', 'receipt_id', 'semantic_target_hash', name='uq_catalog_metadata_rows_semantic_target'),
+        schema='integration'
+        )
+        op.execute('ALTER TABLE integration.catalog_metadata_rows ENABLE ROW LEVEL SECURITY')
+        op.execute('ALTER TABLE integration.catalog_metadata_rows FORCE ROW LEVEL SECURITY')
+        op.execute("CREATE POLICY workspace_isolation ON integration.catalog_metadata_rows USING (workspace_id = NULLIF(current_setting('app.workspace_id', true), '')::uuid) WITH CHECK (workspace_id = NULLIF(current_setting('app.workspace_id', true), '')::uuid)")
         op.create_table('upload_registration_candidates',
         sa.Column('workspace_id', sa.Uuid(), nullable=False),
         sa.Column('receipt_id', sa.Uuid(), nullable=False),
@@ -2476,6 +2627,63 @@ def upgrade() -> None:
         op.execute('ALTER TABLE governance.registration_content_bindings ENABLE ROW LEVEL SECURITY')
         op.execute('ALTER TABLE governance.registration_content_bindings FORCE ROW LEVEL SECURITY')
         op.execute("CREATE POLICY workspace_isolation ON governance.registration_content_bindings USING (workspace_id = NULLIF(current_setting('app.workspace_id', true), '')::uuid) WITH CHECK (workspace_id = NULLIF(current_setting('app.workspace_id', true), '')::uuid)")
+        op.create_table('registration_metadata_content_bindings',
+        sa.Column('workspace_id', sa.Uuid(), nullable=False),
+        sa.Column('candidate_id', sa.Uuid(), nullable=False),
+        sa.Column('candidate_hash', sa.String(length=64), nullable=False),
+        sa.Column('content_profile', sa.String(length=100), nullable=False),
+        sa.Column('candidate_kind', sa.String(length=100), nullable=False),
+        sa.Column('aspect_name', sa.String(length=64), nullable=False),
+        sa.Column('before_hash', sa.String(length=64), nullable=False),
+        sa.Column('after_hash', sa.String(length=64), nullable=False),
+        sa.Column('item_contract_hash', sa.String(length=64), nullable=False),
+        sa.Column('change_request_id', sa.Uuid(), nullable=False),
+        sa.Column('change_item_id', sa.Uuid(), nullable=False),
+        sa.Column('created_by', sa.Uuid(), nullable=False),
+        sa.Column('created_at', sa.DateTime(timezone=True), nullable=False),
+        sa.Column('id', sa.Uuid(), nullable=False),
+        sa.CheckConstraint("(candidate_kind = 'TABLE_DESCRIPTION_UPDATE' AND aspect_name = 'datasetProperties') OR (candidate_kind = 'COLUMN_DESCRIPTION_UPDATE' AND aspect_name = 'schemaMetadata') OR (candidate_kind = 'DATASET_DOMAIN_UPDATE' AND aspect_name = 'domains') OR (candidate_kind = 'DATASET_TERM_ADD' AND aspect_name = 'glossaryTerms') OR (candidate_kind = 'DATASET_TAG_ADD' AND aspect_name = 'globalTags')", name=op.f('ck_registration_metadata_content_bindings_candidate_aspect')),
+        sa.CheckConstraint("candidate_hash ~ '^[0-9a-f]{64}$' AND before_hash ~ '^[0-9a-f]{64}$' AND after_hash ~ '^[0-9a-f]{64}$' AND item_contract_hash ~ '^[0-9a-f]{64}$'", name=op.f('ck_registration_metadata_content_bindings_content_hashes_valid')),
+        sa.CheckConstraint("content_profile IN ('CATALOG_METADATA_ROWS_CSV_V1', 'CATALOG_METADATA_ROWS_XLSX_V1')", name=op.f('ck_registration_metadata_content_bindings_content_profile_allowlist')),
+        sa.ForeignKeyConstraint(['workspace_id', 'candidate_id', 'content_profile', 'candidate_kind', 'aspect_name', 'candidate_hash'], ['integration.catalog_metadata_candidates.workspace_id', 'integration.catalog_metadata_candidates.id', 'integration.catalog_metadata_candidates.content_profile', 'integration.catalog_metadata_candidates.candidate_kind', 'integration.catalog_metadata_candidates.aspect_name', 'integration.catalog_metadata_candidates.candidate_hash'], name='fk_registration_metadata_bindings_candidate_content', ondelete='RESTRICT'),
+        sa.ForeignKeyConstraint(['workspace_id', 'change_request_id', 'change_item_id', 'aspect_name', 'before_hash', 'after_hash', 'item_contract_hash'], ['governance.change_request_items.workspace_id', 'governance.change_request_items.change_request_id', 'governance.change_request_items.id', 'governance.change_request_items.aspect_name', 'governance.change_request_items.before_hash', 'governance.change_request_items.after_hash', 'governance.change_request_items.item_contract_hash'], name='fk_registration_metadata_bindings_request_item', ondelete='RESTRICT'),
+        sa.ForeignKeyConstraint(['workspace_id', 'change_request_id'], ['governance.change_requests.workspace_id', 'governance.change_requests.id'], name='fk_registration_metadata_bindings_request', ondelete='RESTRICT'),
+        sa.ForeignKeyConstraint(['workspace_id', 'created_by'], ['iam.workspace_memberships.workspace_id', 'iam.workspace_memberships.subject_id'], name='fk_registration_metadata_bindings_creator', ondelete='RESTRICT'),
+        sa.PrimaryKeyConstraint('id', name=op.f('pk_registration_metadata_content_bindings')),
+        sa.UniqueConstraint('workspace_id', 'candidate_id', name=op.f('uq_registration_metadata_content_bindings_workspace_id_candidate_id')),
+        sa.UniqueConstraint('workspace_id', 'change_item_id', name=op.f('uq_registration_metadata_content_bindings_workspace_id_change_item_id')),
+        sa.UniqueConstraint('workspace_id', 'change_request_id', name=op.f('uq_registration_metadata_content_bindings_workspace_id_change_request_id')),
+        sa.UniqueConstraint('workspace_id', 'id', name=op.f('uq_registration_metadata_content_bindings_workspace_id_id')),
+        schema='governance'
+        )
+        op.execute('ALTER TABLE governance.registration_metadata_content_bindings ENABLE ROW LEVEL SECURITY')
+        op.execute('ALTER TABLE governance.registration_metadata_content_bindings FORCE ROW LEVEL SECURITY')
+        op.execute("CREATE POLICY workspace_isolation ON governance.registration_metadata_content_bindings USING (workspace_id = NULLIF(current_setting('app.workspace_id', true), '')::uuid) WITH CHECK (workspace_id = NULLIF(current_setting('app.workspace_id', true), '')::uuid)")
+        op.create_table('catalog_metadata_candidate_rows',
+        sa.Column('workspace_id', sa.Uuid(), nullable=False),
+        sa.Column('receipt_id', sa.Uuid(), nullable=False),
+        sa.Column('candidate_id', sa.Uuid(), nullable=False),
+        sa.Column('row_id', sa.Uuid(), nullable=False),
+        sa.Column('content_profile', sa.String(length=100), nullable=False),
+        sa.Column('candidate_hash', sa.String(length=64), nullable=False),
+        sa.Column('row_hash', sa.String(length=64), nullable=False),
+        sa.Column('member_ordinal', sa.BigInteger(), nullable=False),
+        sa.Column('source_ordinal', sa.BigInteger(), nullable=False),
+        sa.Column('created_at', sa.DateTime(timezone=True), nullable=False),
+        sa.CheckConstraint("candidate_hash ~ '^[0-9a-f]{64}$' AND row_hash ~ '^[0-9a-f]{64}$'", name=op.f('ck_catalog_metadata_candidate_rows_content_hashes_valid')),
+        sa.CheckConstraint("content_profile IN ('CATALOG_METADATA_ROWS_CSV_V1', 'CATALOG_METADATA_ROWS_XLSX_V1')", name=op.f('ck_catalog_metadata_candidate_rows_content_profile_allowlist')),
+        sa.CheckConstraint('member_ordinal BETWEEN 1 AND 10000 AND source_ordinal BETWEEN 1 AND 10000', name=op.f('ck_catalog_metadata_candidate_rows_ordinal_range')),
+        sa.ForeignKeyConstraint(['workspace_id', 'receipt_id', 'candidate_id', 'content_profile', 'candidate_hash'], ['integration.catalog_metadata_candidates.workspace_id', 'integration.catalog_metadata_candidates.receipt_id', 'integration.catalog_metadata_candidates.id', 'integration.catalog_metadata_candidates.content_profile', 'integration.catalog_metadata_candidates.candidate_hash'], name='fk_catalog_metadata_candidate_rows_candidate', ondelete='RESTRICT'),
+        sa.ForeignKeyConstraint(['workspace_id', 'receipt_id', 'row_id', 'content_profile', 'row_hash'], ['integration.catalog_metadata_rows.workspace_id', 'integration.catalog_metadata_rows.receipt_id', 'integration.catalog_metadata_rows.id', 'integration.catalog_metadata_rows.content_profile', 'integration.catalog_metadata_rows.row_hash'], name='fk_catalog_metadata_candidate_rows_row', ondelete='RESTRICT'),
+        sa.PrimaryKeyConstraint('workspace_id', 'receipt_id', 'candidate_id', 'row_id', name=op.f('pk_catalog_metadata_candidate_rows')),
+        sa.UniqueConstraint('workspace_id', 'receipt_id', 'candidate_id', 'member_ordinal', name='uq_catalog_metadata_candidate_rows_member'),
+        sa.UniqueConstraint('workspace_id', 'receipt_id', 'candidate_id', 'source_ordinal', name='uq_catalog_metadata_candidate_rows_source_ordinal'),
+        sa.UniqueConstraint('workspace_id', 'receipt_id', 'row_id', name='uq_catalog_metadata_candidate_rows_row'),
+        schema='integration'
+        )
+        op.execute('ALTER TABLE integration.catalog_metadata_candidate_rows ENABLE ROW LEVEL SECURITY')
+        op.execute('ALTER TABLE integration.catalog_metadata_candidate_rows FORCE ROW LEVEL SECURITY')
+        op.execute("CREATE POLICY workspace_isolation ON integration.catalog_metadata_candidate_rows USING (workspace_id = NULLIF(current_setting('app.workspace_id', true), '')::uuid) WITH CHECK (workspace_id = NULLIF(current_setting('app.workspace_id', true), '')::uuid)")
         op.create_table('execution_attempts',
         sa.Column('workspace_id', sa.Uuid(), nullable=False),
         sa.Column('execution_job_id', sa.Uuid(), nullable=False),
@@ -2628,12 +2836,16 @@ def downgrade() -> None:
         op.drop_table('api_invocations', schema='sharing')
         op.drop_table('execution_events', schema='retention')
         op.drop_table('execution_attempts', schema='retention')
+        op.drop_table('catalog_metadata_candidate_rows', schema='integration')
+        op.drop_table('registration_metadata_content_bindings', schema='governance')
         op.drop_table('registration_content_bindings', schema='governance')
         op.drop_table('assistant_runs', schema='assistant')
         op.drop_table('consumer_grants', schema='sharing')
         op.drop_table('execution_jobs', schema='retention')
         op.drop_table('erasure_request_events', schema='retention')
         op.drop_table('upload_registration_candidates', schema='integration')
+        op.drop_table('catalog_metadata_rows', schema='integration')
+        op.drop_table('catalog_metadata_candidates', schema='integration')
         op.drop_table('manual_metadata_aspect_reports', schema='governance')
         op.drop_table('restricted_search_grant_events', schema='authz')
         op.drop_table('chat_messages', schema='assistant')
@@ -2693,6 +2905,8 @@ def downgrade() -> None:
         op.drop_table('inference_provider_generations', schema='integration')
         op.drop_table('workspace_memberships', schema='iam')
         op.drop_table('change_request_rounds', schema='governance')
+        op.drop_table('vocabulary_sync_runs', schema='catalog')
+        op.drop_table('vocabulary_entries', schema='catalog')
         op.drop_table('projection_watermarks', schema='catalog')
         op.drop_table('classification_access_generations', schema='authz')
         op.drop_table('workspaces', schema='platform')

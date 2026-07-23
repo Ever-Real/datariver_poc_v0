@@ -168,6 +168,148 @@ Index(
 )
 
 
+class CatalogVocabularyEntryModel(Base, UuidPrimaryKeyMixin):
+    """Workspace-owned resolver from local typed identity to a server-only provider reference."""
+
+    __tablename__ = "vocabulary_entries"
+    __table_args__ = (
+        UniqueConstraint("workspace_id", "id"),
+        UniqueConstraint("workspace_id", "id", "kind"),
+        UniqueConstraint(
+            "workspace_id",
+            "kind",
+            "provider_ref",
+            name="uq_vocabulary_entries_workspace_kind_provider_ref",
+        ),
+        CheckConstraint("kind IN ('DOMAIN', 'TAG', 'TERM')", name="kind_vocabulary"),
+        CheckConstraint(
+            "lifecycle IN ('ACTIVE', 'INACTIVE')",
+            name="lifecycle_vocabulary",
+        ),
+        CheckConstraint(
+            "char_length(display_name) BETWEEN 1 AND 500 AND display_name = btrim(display_name)",
+            name="display_name_valid",
+        ),
+        CheckConstraint(
+            "char_length(source_version) BETWEEN 1 AND 255 "
+            "AND source_version = btrim(source_version)",
+            name="source_version_valid",
+        ),
+        CheckConstraint(
+            "(kind = 'DOMAIN' AND provider_ref LIKE 'urn:li:domain:%') OR "
+            "(kind = 'TAG' AND provider_ref LIKE 'urn:li:tag:%') OR "
+            "(kind = 'TERM' AND provider_ref LIKE 'urn:li:glossaryTerm:%')",
+            name="provider_ref_kind",
+        ),
+        CheckConstraint("observed_at <= updated_at", name="observation_time_order"),
+        Index(
+            "ix_vocabulary_entries_workspace_kind_lifecycle_name",
+            "workspace_id",
+            "kind",
+            "lifecycle",
+            "display_name",
+            "id",
+        ),
+        {"schema": "catalog"},
+    )
+
+    workspace_id: Mapped[UUID] = mapped_column(
+        ForeignKey("platform.workspaces.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    kind: Mapped[str] = mapped_column(String(16), nullable=False)
+    provider_ref: Mapped[str] = mapped_column(String(1_000), nullable=False)
+    display_name: Mapped[str] = mapped_column(String(500), nullable=False)
+    lifecycle: Mapped[str] = mapped_column(String(16), nullable=False)
+    source_version: Mapped[str] = mapped_column(String(255), nullable=False)
+    observed_at: Mapped[datetime] = mapped_column(nullable=False)
+    last_seen_sync_id: Mapped[UUID | None] = mapped_column(Uuid(as_uuid=True))
+    updated_at: Mapped[datetime] = mapped_column(
+        server_default=text("CURRENT_TIMESTAMP"),
+        nullable=False,
+    )
+
+
+class CatalogVocabularySyncRunModel(Base):
+    """Durable per-kind reconciliation cursor and verified snapshot evidence."""
+
+    __tablename__ = "vocabulary_sync_runs"
+    __table_args__ = (
+        CheckConstraint(
+            "kind IN ('DOMAIN', 'TAG', 'TERM')",
+            name="kind_vocabulary",
+        ),
+        CheckConstraint(
+            "state IN ('ACTIVE', 'COMPLETED', 'ABANDONED')",
+            name="state_vocabulary",
+        ),
+        CheckConstraint("next_offset >= 0", name="next_offset_nonnegative"),
+        CheckConstraint(
+            "expected_total IS NULL OR expected_total >= 0",
+            name="expected_total_nonnegative",
+        ),
+        CheckConstraint("seen_count >= 0", name="seen_count_nonnegative"),
+        CheckConstraint(
+            "next_cursor IS NULL OR char_length(next_cursor) BETWEEN 1 AND 4096",
+            name="next_cursor_bounded",
+        ),
+        CheckConstraint(
+            "(NOT snapshot_consistent AND snapshot_evidence_reference IS NULL "
+            "AND snapshot_contract_hash IS NULL AND snapshot_provider_version IS NULL) OR "
+            "(snapshot_consistent "
+            "AND snapshot_evidence_reference IS NOT NULL "
+            "AND snapshot_contract_hash IS NOT NULL "
+            "AND snapshot_provider_version IS NOT NULL "
+            "AND char_length(snapshot_evidence_reference) BETWEEN 1 AND 500 "
+            "AND snapshot_contract_hash ~ '^[0-9a-f]{64}$' "
+            "AND char_length(snapshot_provider_version) BETWEEN 1 AND 128)",
+            name="snapshot_evidence_bounded",
+        ),
+        Index(
+            "uq_vocabulary_sync_runs_active_workspace_kind",
+            "workspace_id",
+            "kind",
+            unique=True,
+            postgresql_where=text("state = 'ACTIVE'"),
+        ),
+        Index(
+            "ix_vocabulary_sync_runs_workspace_kind_started",
+            "workspace_id",
+            "kind",
+            "started_at",
+        ),
+        {"schema": "catalog"},
+    )
+
+    workspace_id: Mapped[UUID] = mapped_column(
+        ForeignKey("platform.workspaces.id", ondelete="RESTRICT"),
+        primary_key=True,
+    )
+    sync_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True)
+    kind: Mapped[str] = mapped_column(String(16), primary_key=True)
+    state: Mapped[str] = mapped_column(String(16), nullable=False)
+    next_offset: Mapped[int] = mapped_column(nullable=False)
+    next_cursor: Mapped[str | None] = mapped_column(Text)
+    expected_total: Mapped[int | None] = mapped_column(BigInteger)
+    seen_count: Mapped[int] = mapped_column(
+        BigInteger,
+        default=0,
+        server_default=text("0"),
+        nullable=False,
+    )
+    snapshot_consistent: Mapped[bool] = mapped_column(
+        default=False,
+        server_default=text("false"),
+        nullable=False,
+    )
+    snapshot_evidence_reference: Mapped[str | None] = mapped_column(String(500))
+    snapshot_contract_hash: Mapped[str | None] = mapped_column(String(64))
+    snapshot_provider_version: Mapped[str | None] = mapped_column(String(128))
+    started_at: Mapped[datetime] = mapped_column(nullable=False)
+    heartbeat_at: Mapped[datetime] = mapped_column(nullable=False)
+    completed_at: Mapped[datetime | None]
+
+
 class CatalogSyncRunModel(Base):
     __tablename__ = "sync_runs"
     __table_args__ = (

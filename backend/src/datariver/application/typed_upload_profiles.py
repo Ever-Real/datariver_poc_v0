@@ -25,30 +25,48 @@ class TypedUploadProfileDefinition:
     acceptance_validator_version: str
     parser_version: str
     schema_version: str
+    profile_contract: str = "dataset-description-v2"
+    maximum_field_path_characters: int = 2_000
+    maximum_controlled_ref_characters: int = 36
+    maximum_column_operations_per_candidate: int = 1_000
+    maximum_controlled_operations_per_candidate: int = 100
 
     @property
     def configuration_hash(self) -> str:
-        return canonical_json_hash(
-            {
-                "acceptance_validator_version": self.acceptance_validator_version,
-                "content_profile": self.content_profile.value,
-                "content_type": self.content_type,
-                "delimiter": self.delimiter,
-                "encoding": self.encoding,
-                "filename_suffix": self.filename_suffix,
-                "headers": list(self.headers),
-                "maximum_description_characters": self.maximum_description_characters,
-                "maximum_file_bytes": self.maximum_file_bytes,
-                "maximum_database_name_characters": self.maximum_database_name_characters,
-                "maximum_platform_characters": self.maximum_platform_characters,
-                "maximum_row_bytes": self.maximum_row_bytes,
-                "maximum_rows": self.maximum_rows,
-                "maximum_schema_name_characters": self.maximum_schema_name_characters,
-                "maximum_table_name_characters": self.maximum_table_name_characters,
-                "parser_version": self.parser_version,
-                "schema_version": self.schema_version,
-            }
-        )
+        document: dict[str, object] = {
+            "acceptance_validator_version": self.acceptance_validator_version,
+            "content_profile": self.content_profile.value,
+            "content_type": self.content_type,
+            "delimiter": self.delimiter,
+            "encoding": self.encoding,
+            "filename_suffix": self.filename_suffix,
+            "headers": list(self.headers),
+            "maximum_description_characters": self.maximum_description_characters,
+            "maximum_file_bytes": self.maximum_file_bytes,
+            "maximum_database_name_characters": self.maximum_database_name_characters,
+            "maximum_platform_characters": self.maximum_platform_characters,
+            "maximum_row_bytes": self.maximum_row_bytes,
+            "maximum_rows": self.maximum_rows,
+            "maximum_schema_name_characters": self.maximum_schema_name_characters,
+            "maximum_table_name_characters": self.maximum_table_name_characters,
+            "parser_version": self.parser_version,
+            "schema_version": self.schema_version,
+        }
+        if self.profile_contract != "dataset-description-v2":
+            document.update(
+                {
+                    "maximum_controlled_ref_characters": (self.maximum_controlled_ref_characters),
+                    "maximum_controlled_operations_per_candidate": (
+                        self.maximum_controlled_operations_per_candidate
+                    ),
+                    "maximum_column_operations_per_candidate": (
+                        self.maximum_column_operations_per_candidate
+                    ),
+                    "maximum_field_path_characters": self.maximum_field_path_characters,
+                    "profile_contract": self.profile_contract,
+                }
+            )
+        return canonical_json_hash(document)
 
 
 DATASET_DESCRIPTION_CSV_V1 = TypedUploadProfileDefinition(
@@ -98,15 +116,79 @@ DATASET_DESCRIPTION_XLSX_V1 = TypedUploadProfileDefinition(
     schema_version="dataset-description-xlsx-schema-v1",
 )
 
+_CATALOG_METADATA_ROWS_HEADERS = (
+    "record_kind",
+    "asset_id",
+    "platform",
+    "database_name",
+    "schema_name",
+    "table_name",
+    "field_path",
+    "operation",
+    "value_text",
+    "controlled_ref",
+)
+
+CATALOG_METADATA_ROWS_CSV_V1 = TypedUploadProfileDefinition(
+    content_profile=UploadContentProfile.CATALOG_METADATA_ROWS_CSV_V1,
+    content_type="text/csv",
+    filename_suffix=".csv",
+    encoding="utf-8-sig",
+    delimiter=",",
+    headers=_CATALOG_METADATA_ROWS_HEADERS,
+    maximum_file_bytes=16 * 1024 * 1024,
+    maximum_rows=10_000,
+    maximum_row_bytes=64 * 1024,
+    maximum_platform_characters=100,
+    maximum_database_name_characters=255,
+    maximum_schema_name_characters=255,
+    maximum_table_name_characters=500,
+    maximum_description_characters=10_000,
+    acceptance_validator_version="integrity-format-v3-catalog-metadata-rows",
+    parser_version="catalog-metadata-rows-csv-parser-v1",
+    schema_version="catalog-metadata-rows-schema-v1",
+    profile_contract="catalog-metadata-rows-v1",
+)
+
+CATALOG_METADATA_ROWS_XLSX_V1 = TypedUploadProfileDefinition(
+    content_profile=UploadContentProfile.CATALOG_METADATA_ROWS_XLSX_V1,
+    content_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    filename_suffix=".xlsx",
+    encoding="opc-xml-utf8",
+    delimiter="",
+    headers=_CATALOG_METADATA_ROWS_HEADERS,
+    maximum_file_bytes=16 * 1024 * 1024,
+    maximum_rows=10_000,
+    maximum_row_bytes=64 * 1024,
+    maximum_platform_characters=100,
+    maximum_database_name_characters=255,
+    maximum_schema_name_characters=255,
+    maximum_table_name_characters=500,
+    maximum_description_characters=10_000,
+    acceptance_validator_version="integrity-xlsx-v3-catalog-metadata-rows",
+    parser_version="catalog-metadata-rows-xlsx-parser-v1",
+    schema_version="catalog-metadata-rows-schema-v1",
+    profile_contract="catalog-metadata-rows-v1",
+)
+
+TYPED_PROFILE_DEFINITIONS = {
+    definition.content_profile: definition
+    for definition in (
+        DATASET_DESCRIPTION_CSV_V1,
+        DATASET_DESCRIPTION_XLSX_V1,
+        CATALOG_METADATA_ROWS_CSV_V1,
+        CATALOG_METADATA_ROWS_XLSX_V1,
+    )
+}
+
 
 def typed_profile_definition(
     content_profile: UploadContentProfile,
 ) -> TypedUploadProfileDefinition:
-    if content_profile is UploadContentProfile.DATASET_DESCRIPTION_CSV_V1:
-        return DATASET_DESCRIPTION_CSV_V1
-    if content_profile is UploadContentProfile.DATASET_DESCRIPTION_XLSX_V1:
-        return DATASET_DESCRIPTION_XLSX_V1
-    raise ValidationError("The upload profile has no typed preparation workflow.")
+    try:
+        return TYPED_PROFILE_DEFINITIONS[content_profile]
+    except KeyError as error:
+        raise ValidationError("The upload profile has no typed preparation workflow.") from error
 
 
 def validate_upload_profile(

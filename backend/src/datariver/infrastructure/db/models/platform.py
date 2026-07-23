@@ -261,7 +261,10 @@ class AccessRoleDataRuleModel(Base, UuidPrimaryKeyMixin, TimestampMixin):
             "role_id",
             "role_version",
         ),
-        {"schema": "iam"},
+        {
+            "schema": "iam",
+            "comment": "Missing classification rule resolves to ROLE_DATA_RULE_MISSING (deny)",
+        },
     )
 
     workspace_id: Mapped[UUID] = mapped_column(

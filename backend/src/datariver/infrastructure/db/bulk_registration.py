@@ -1,15 +1,32 @@
 from __future__ import annotations
 
 import hashlib
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Iterator, Sequence
 from datetime import datetime, timedelta
-from typing import TypeGuard
+from typing import TypeGuard, cast
 from uuid import UUID
 
-from sqlalchemy import and_, func, insert, or_, select, true
+from sqlalchemy import and_, func, insert, or_, select, text, true
 from sqlalchemy.engine import Row
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from datariver.application.catalog_metadata_upload_parser import (
+    CATALOG_METADATA_CANDIDATE_EVIDENCE_VERSION,
+    CatalogMetadataAspect,
+    CatalogMetadataCandidateDraft,
+    CatalogMetadataCandidateKind,
+    CatalogMetadataOperation,
+    CatalogMetadataParseSummary,
+    CatalogMetadataRecordKind,
+    CatalogMetadataRowEvidence,
+    advance_catalog_metadata_candidate_root,
+    catalog_metadata_candidate_hash,
+    catalog_metadata_candidate_root_seed,
+    catalog_metadata_row_hash,
+    catalog_metadata_row_root,
+    catalog_metadata_semantic_target_hash,
+    catalog_metadata_submitted_identity_hash,
+)
 from datariver.application.dto import ObjectMetadata
 from datariver.application.services.bulk_registration import (
     BulkPreparationClaim,
@@ -25,7 +42,10 @@ from datariver.application.typed_upload_parser import (
     dataset_description_candidate_root_seed,
     dataset_description_submitted_identity_hash,
 )
-from datariver.application.typed_upload_profiles import typed_profile_definition
+from datariver.application.typed_upload_profiles import (
+    TypedUploadProfileDefinition,
+    typed_profile_definition,
+)
 from datariver.domain.catalog import DATASET_ASSET_TYPES
 from datariver.domain.common import (
     ConflictError,
@@ -39,8 +59,14 @@ from datariver.domain.registration_worker import (
     RegistrationWorkerCallReplay,
 )
 from datariver.infrastructure.db.governance import SqlOutboxWriter
-from datariver.infrastructure.db.models.catalog import AssetProjectionModel
+from datariver.infrastructure.db.models.catalog import (
+    AssetProjectionModel,
+    CatalogVocabularyEntryModel,
+)
 from datariver.infrastructure.db.models.integration import (
+    CatalogMetadataCandidateModel,
+    CatalogMetadataCandidateRowModel,
+    CatalogMetadataRowModel,
     ObjectManifestModel,
     RegistrationWorkerCallReceiptModel,
     UploadPreparationJobModel,
@@ -55,6 +81,12 @@ from datariver.infrastructure.db.rls import set_security_context
 _CANDIDATE_BATCH_SIZE = 500
 _MAXIMUM_EXHAUSTED_BULK_RECOVERIES_PER_CLAIM = 100
 _REGISTRATION_RECOVERY_LIMIT_STATE = "RECOVERY_LIMIT_REACHED"
+_CATALOG_METADATA_PROFILES = frozenset(
+    {
+        UploadContentProfile.CATALOG_METADATA_ROWS_CSV_V1,
+        UploadContentProfile.CATALOG_METADATA_ROWS_XLSX_V1,
+    }
+)
 
 
 class SqlBulkPreparationExecutionStore(BulkPreparationExecutionStore):
@@ -338,8 +370,11 @@ class SqlBulkPreparationExecutionStore(BulkPreparationExecutionStore):
         *,
         claim: BulkPreparationClaim,
         object_metadata: ObjectMetadata,
-        summary: DatasetDescriptionParseSummary,
-        candidates: Callable[[], Iterator[DatasetDescriptionCandidateDraft]],
+        summary: DatasetDescriptionParseSummary | CatalogMetadataParseSummary,
+        candidates: Callable[
+            [],
+            Iterator[DatasetDescriptionCandidateDraft | CatalogMetadataCandidateDraft],
+        ],
     ) -> bool:
         receipt_id = uuid7()
         async with self._session_factory() as session, session.begin():
@@ -397,13 +432,93 @@ class SqlBulkPreparationExecutionStore(BulkPreparationExecutionStore):
             ):
                 raise ConflictError("The BULK preparation result evidence does not reconcile.")
 
-            item_count = await self._verify_current_targets(
-                session=session,
-                claim=claim,
-                candidates=candidates,
-            )
-            if item_count != summary.item_count or item_count < 1:
-                raise ConflictError("The BULK preparation candidate count does not reconcile.")
+            is_catalog_metadata = isinstance(summary, CatalogMetadataParseSummary)
+            if is_catalog_metadata != (claim.content_profile in _CATALOG_METADATA_PROFILES):
+                raise ConflictError("The BULK preparation profile and evidence type do not match.")
+            candidate_count = summary.item_count
+            staged_catalog_candidates: (
+                Callable[[], Iterator[CatalogMetadataCandidateDraft]] | None
+            ) = None
+            if isinstance(summary, CatalogMetadataParseSummary):
+                definition = typed_profile_definition(claim.content_profile)
+                if (
+                    summary.total_bytes != claim.source_size_bytes
+                    or summary.parser_version != definition.parser_version
+                    or summary.schema_version != definition.schema_version
+                    or summary.configuration_hash != definition.configuration_hash
+                    or summary.rejected_count != 0
+                    or summary.item_count > definition.maximum_rows
+                    or summary.candidate_count < 1
+                    or summary.candidate_count > summary.item_count
+                ):
+                    raise ConflictError(
+                        "The catalog-metadata preparation receipt evidence is invalid."
+                    )
+                catalog_candidates = cast(
+                    Callable[[], Iterator[CatalogMetadataCandidateDraft]],
+                    candidates,
+                )
+                staged_catalog_candidates = catalog_candidates
+                (
+                    target_asset_ids,
+                    staged_item_count,
+                    staged_candidate_count,
+                    staged_root_hash,
+                ) = _scan_catalog_metadata_candidates(
+                    claim=claim,
+                    candidates=catalog_candidates,
+                )
+                if (
+                    staged_item_count != summary.item_count
+                    or staged_candidate_count != summary.candidate_count
+                    or staged_root_hash != summary.candidate_root_hash
+                ):
+                    raise ConflictError("The staged catalog-metadata evidence does not reconcile.")
+                if claim.run_call is None or not target_asset_ids:
+                    raise ConflictError(
+                        "The catalog-metadata preparation authorization is unavailable.",
+                        details={"code": "CATALOG_METADATA_PREPARATION_DENIED"},
+                    )
+                await self._require_catalog_metadata_preparation_authorization(
+                    session=session,
+                    claim=claim,
+                    target_asset_ids=target_asset_ids,
+                    lock_for_publication=False,
+                )
+                item_count, candidate_count = await self._verify_current_catalog_metadata(
+                    session=session,
+                    claim=claim,
+                    candidates=catalog_candidates,
+                )
+                if (
+                    item_count != summary.item_count
+                    or candidate_count != summary.candidate_count
+                    or item_count < 1
+                ):
+                    raise ConflictError(
+                        "The catalog-metadata row or candidate count does not reconcile."
+                    )
+                # The first check avoids expensive validation for a revoked request. The final
+                # database check acquires transaction-duration authorization locks after the
+                # target/vocabulary locks and linearizes publication against concurrent revocation.
+                await self._require_catalog_metadata_preparation_authorization(
+                    session=session,
+                    claim=claim,
+                    target_asset_ids=target_asset_ids,
+                    lock_for_publication=True,
+                )
+            else:
+                description_candidates = cast(
+                    Callable[[], Iterator[DatasetDescriptionCandidateDraft]],
+                    candidates,
+                )
+                item_count = await self._verify_current_targets(
+                    session=session,
+                    claim=claim,
+                    candidates=description_candidates,
+                )
+                if item_count != summary.item_count or item_count < 1:
+                    raise ConflictError("The BULK preparation candidate count does not reconcile.")
 
             locator_hash = canonical_json_hash(
                 {
@@ -413,25 +528,30 @@ class SqlBulkPreparationExecutionStore(BulkPreparationExecutionStore):
                     "workspace_id": str(claim.workspace_id),
                 }
             )
-            receipt_hash = canonical_json_hash(
-                {
-                    "accepted_etag": object_metadata.etag or None,
-                    "candidate_root_hash": summary.candidate_root_hash,
-                    "configuration_hash": summary.configuration_hash,
-                    "content_profile": claim.content_profile.value,
-                    "contract": "bulk-preparation-receipt-v1",
-                    "item_count": item_count,
-                    "manifest_version": claim.source_manifest_version,
-                    "object_locator_hash": locator_hash,
-                    "parser_version": summary.parser_version,
-                    "preparation_id": str(claim.preparation_id),
-                    "scanner_version": claim.scanner_version,
-                    "schema_version": summary.schema_version,
-                    "source_sha256": claim.source_sha256,
-                    "upload_id": str(claim.upload_id),
-                    "workspace_id": str(claim.workspace_id),
-                }
-            )
+            receipt_document = {
+                "accepted_etag": object_metadata.etag or None,
+                "candidate_root_hash": summary.candidate_root_hash,
+                "configuration_hash": summary.configuration_hash,
+                "content_profile": claim.content_profile.value,
+                "contract": (
+                    "catalog-metadata-preparation-receipt-v3"
+                    if is_catalog_metadata
+                    else "bulk-preparation-receipt-v1"
+                ),
+                "item_count": item_count,
+                "manifest_version": claim.source_manifest_version,
+                "object_locator_hash": locator_hash,
+                "parser_version": summary.parser_version,
+                "preparation_id": str(claim.preparation_id),
+                "scanner_version": claim.scanner_version,
+                "schema_version": summary.schema_version,
+                "source_sha256": claim.source_sha256,
+                "upload_id": str(claim.upload_id),
+                "workspace_id": str(claim.workspace_id),
+            }
+            if is_catalog_metadata:
+                receipt_document["candidate_count"] = candidate_count
+            receipt_hash = canonical_json_hash(receipt_document)
             session.add(
                 UploadPreparationReceiptModel(
                     id=receipt_id,
@@ -460,15 +580,44 @@ class SqlBulkPreparationExecutionStore(BulkPreparationExecutionStore):
             # Candidate rows use a Core bulk INSERT below. Flush the ORM receipt first so the
             # composite receipt foreign key is visible before those rows are checked.
             await session.flush()
-            inserted_count, inserted_root_hash = await self._insert_candidates(
-                session=session,
-                receipt_id=receipt_id,
-                claim=claim,
-                candidates=candidates,
-                created_at=now,
-            )
-            if inserted_count != item_count or inserted_root_hash != summary.candidate_root_hash:
-                raise ConflictError("The published BULK candidate root does not reconcile.")
+            if is_catalog_metadata:
+                if staged_catalog_candidates is None:
+                    raise ConflictError("The catalog-metadata candidate replay is unavailable.")
+                (
+                    inserted_count,
+                    inserted_candidate_count,
+                    inserted_root_hash,
+                ) = await self._insert_catalog_metadata_candidates(
+                    session=session,
+                    receipt_id=receipt_id,
+                    claim=claim,
+                    candidates=staged_catalog_candidates,
+                    created_at=now,
+                )
+                if (
+                    inserted_count != item_count
+                    or inserted_candidate_count != candidate_count
+                    or inserted_root_hash != summary.candidate_root_hash
+                ):
+                    raise ConflictError(
+                        "The published catalog-metadata evidence does not reconcile."
+                    )
+            else:
+                inserted_count, inserted_root_hash = await self._insert_candidates(
+                    session=session,
+                    receipt_id=receipt_id,
+                    claim=claim,
+                    candidates=cast(
+                        Callable[[], Iterator[DatasetDescriptionCandidateDraft]],
+                        candidates,
+                    ),
+                    created_at=now,
+                )
+                if (
+                    inserted_count != item_count
+                    or inserted_root_hash != summary.candidate_root_hash
+                ):
+                    raise ConflictError("The published BULK candidate root does not reconcile.")
             job.state = "READY"
             job.next_attempt_at = None
             job.lease_token = None
@@ -478,6 +627,14 @@ class SqlBulkPreparationExecutionStore(BulkPreparationExecutionStore):
             job.last_error_code = None
             job.version += 1
             job.updated_at = now
+            ready_payload: dict[str, object] = {
+                "content_profile": claim.content_profile.value,
+                "item_count": item_count,
+                "preparation_id": str(claim.preparation_id),
+                "upload_id": str(claim.upload_id),
+            }
+            if is_catalog_metadata:
+                ready_payload["candidate_count"] = candidate_count
             await SqlOutboxWriter(session).add_events(
                 (
                     DomainEvent.create(
@@ -485,12 +642,7 @@ class SqlBulkPreparationExecutionStore(BulkPreparationExecutionStore):
                         aggregate_type="upload_preparation",
                         aggregate_id=claim.preparation_id,
                         workspace_id=claim.workspace_id,
-                        payload={
-                            "content_profile": claim.content_profile.value,
-                            "item_count": item_count,
-                            "preparation_id": str(claim.preparation_id),
-                            "upload_id": str(claim.upload_id),
-                        },
+                        payload=ready_payload,
                     ),
                 )
             )
@@ -653,6 +805,87 @@ class SqlBulkPreparationExecutionStore(BulkPreparationExecutionStore):
             count += len(batch)
         return count
 
+    async def _require_catalog_metadata_preparation_authorization(
+        self,
+        *,
+        session: AsyncSession,
+        claim: BulkPreparationClaim,
+        target_asset_ids: tuple[UUID, ...],
+        lock_for_publication: bool,
+    ) -> None:
+        if claim.run_call is None or not target_asset_ids:
+            raise ConflictError(
+                "The catalog-metadata preparation authorization is unavailable.",
+                details={"code": "CATALOG_METADATA_PREPARATION_DENIED"},
+            )
+        authorized = await session.scalar(
+            text(
+                """
+                SELECT integration.reauthorize_catalog_metadata_preparation(
+                    :workspace_id,
+                    :preparation_id,
+                    :requested_by,
+                    :worker_subject_id,
+                    :attempt,
+                    :lease_token_hash,
+                    CAST(:target_asset_ids AS uuid[]),
+                    :lock_for_publication
+                )
+                """
+            ),
+            {
+                "workspace_id": claim.workspace_id,
+                "preparation_id": claim.preparation_id,
+                "requested_by": claim.requested_by,
+                "worker_subject_id": claim.run_call.worker_subject_id,
+                "attempt": claim.attempt,
+                "lease_token_hash": hashlib.sha256(str(claim.lease_token).encode()).hexdigest(),
+                "target_asset_ids": list(target_asset_ids),
+                "lock_for_publication": lock_for_publication,
+            },
+        )
+        if authorized is not True:
+            raise ConflictError(
+                "The catalog-metadata preparation authorization is unavailable.",
+                details={"code": "CATALOG_METADATA_PREPARATION_DENIED"},
+            )
+
+    async def _verify_current_catalog_metadata(
+        self,
+        *,
+        session: AsyncSession,
+        claim: BulkPreparationClaim,
+        candidates: Callable[[], Iterator[CatalogMetadataCandidateDraft]],
+    ) -> tuple[int, int]:
+        row_count = 0
+        candidate_count = 0
+        batch: list[CatalogMetadataCandidateDraft] = []
+        definition = typed_profile_definition(claim.content_profile)
+        for candidate in candidates():
+            _require_valid_catalog_metadata_candidate(
+                claim=claim,
+                candidate=candidate,
+                expected_ordinal=candidate_count + 1,
+                definition=definition,
+            )
+            batch.append(candidate)
+            row_count += len(candidate.rows)
+            candidate_count += 1
+            if len(batch) == _CANDIDATE_BATCH_SIZE:
+                await _verify_catalog_metadata_target_batch(
+                    session=session,
+                    claim=claim,
+                    values=batch,
+                )
+                batch.clear()
+        if batch:
+            await _verify_catalog_metadata_target_batch(
+                session=session,
+                claim=claim,
+                values=batch,
+            )
+        return row_count, candidate_count
+
     async def _insert_candidates(
         self,
         *,
@@ -722,6 +955,472 @@ class SqlBulkPreparationExecutionStore(BulkPreparationExecutionStore):
         if batch:
             await session.execute(insert(UploadRegistrationCandidateModel), batch)
         return expected_ordinal - 1, candidate_root.hex()
+
+    async def _insert_catalog_metadata_candidates(
+        self,
+        *,
+        session: AsyncSession,
+        receipt_id: UUID,
+        claim: BulkPreparationClaim,
+        candidates: Callable[[], Iterator[CatalogMetadataCandidateDraft]],
+        created_at: datetime,
+    ) -> tuple[int, int, str]:
+        definition = typed_profile_definition(claim.content_profile)
+        candidate_values: list[dict[str, object]] = []
+        row_values: list[dict[str, object]] = []
+        membership_values: list[dict[str, object]] = []
+        source_ordinals: set[int] = set()
+        semantic_target_hashes: set[str] = set()
+        row_count = 0
+        candidate_count = 0
+        candidate_root = catalog_metadata_candidate_root_seed(
+            workspace_id=claim.workspace_id,
+            definition=definition,
+        )
+
+        for candidate in candidates():
+            submitted_identity_hash, row_hashes = _require_valid_catalog_metadata_candidate(
+                claim=claim,
+                candidate=candidate,
+                expected_ordinal=candidate_count + 1,
+                definition=definition,
+            )
+            candidate_id = uuid7()
+            row_root_hash = catalog_metadata_row_root(row_hashes)
+            candidate_values.append(
+                {
+                    "id": candidate_id,
+                    "workspace_id": claim.workspace_id,
+                    "receipt_id": receipt_id,
+                    "candidate_ordinal": candidate.ordinal,
+                    "content_profile": claim.content_profile.value,
+                    "record_kind": candidate.record_kind.value,
+                    "candidate_kind": candidate.candidate_kind.value,
+                    "evidence_version": candidate.evidence_version,
+                    "target_asset_id": candidate.target_asset_id,
+                    "aspect_name": candidate.aspect_name.value,
+                    "submitted_identity_hash": submitted_identity_hash,
+                    "row_count": len(candidate.rows),
+                    "first_row_ordinal": candidate.rows[0].ordinal,
+                    "last_row_ordinal": candidate.rows[-1].ordinal,
+                    "row_root_hash": row_root_hash,
+                    "candidate_hash": candidate.candidate_hash,
+                    "created_at": created_at,
+                }
+            )
+            for member_ordinal, (row, row_hash) in enumerate(
+                zip(candidate.rows, row_hashes, strict=True),
+                start=1,
+            ):
+                if row.ordinal in source_ordinals:
+                    raise ConflictError("The catalog-metadata source ordinal is duplicated.")
+                source_ordinals.add(row.ordinal)
+                semantic_target_hash = catalog_metadata_semantic_target_hash(
+                    workspace_id=claim.workspace_id,
+                    target_asset_id=row.target_asset_id,
+                    aspect_name=row.aspect_name,
+                    semantic_key=row.semantic_key,
+                )
+                if semantic_target_hash in semantic_target_hashes:
+                    raise ConflictError("The catalog-metadata semantic target is duplicated.")
+                semantic_target_hashes.add(semantic_target_hash)
+                row_id = uuid7()
+                controlled_kind = _controlled_reference_kind(row)
+                row_values.append(
+                    {
+                        "id": row_id,
+                        "workspace_id": claim.workspace_id,
+                        "receipt_id": receipt_id,
+                        "ordinal": row.ordinal,
+                        "content_profile": claim.content_profile.value,
+                        "evidence_version": row.evidence_version,
+                        "record_kind": row.record_kind.value,
+                        "aspect_name": row.aspect_name.value,
+                        "target_asset_id": row.target_asset_id,
+                        "submitted_platform": row.platform,
+                        "submitted_database_name": row.database_name,
+                        "submitted_schema_name": row.schema_name,
+                        "submitted_table_name": row.table_name,
+                        "field_path": row.field_path,
+                        "operation": row.operation.value,
+                        "value_text": row.value_text,
+                        "controlled_ref_id": row.controlled_ref,
+                        "controlled_kind": controlled_kind,
+                        "submitted_identity_hash": submitted_identity_hash,
+                        "semantic_target_hash": semantic_target_hash,
+                        "row_hash": row_hash,
+                        "created_at": created_at,
+                    }
+                )
+                membership_values.append(
+                    {
+                        "workspace_id": claim.workspace_id,
+                        "receipt_id": receipt_id,
+                        "candidate_id": candidate_id,
+                        "row_id": row_id,
+                        "content_profile": claim.content_profile.value,
+                        "candidate_hash": candidate.candidate_hash,
+                        "row_hash": row_hash,
+                        "member_ordinal": member_ordinal,
+                        "source_ordinal": row.ordinal,
+                        "created_at": created_at,
+                    }
+                )
+            row_count += len(candidate.rows)
+            candidate_count += 1
+            candidate_root = advance_catalog_metadata_candidate_root(
+                current=candidate_root,
+                ordinal=candidate_count,
+                candidate_hash=candidate.candidate_hash,
+            )
+            if (
+                len(row_values) >= _CANDIDATE_BATCH_SIZE
+                or len(candidate_values) >= _CANDIDATE_BATCH_SIZE
+            ):
+                await _insert_catalog_metadata_batch(
+                    session=session,
+                    rows=row_values,
+                    candidates=candidate_values,
+                    memberships=membership_values,
+                )
+
+        if candidate_values:
+            await _insert_catalog_metadata_batch(
+                session=session,
+                rows=row_values,
+                candidates=candidate_values,
+                memberships=membership_values,
+            )
+        if source_ordinals != set(range(1, row_count + 1)):
+            raise ConflictError(
+                "The catalog-metadata source ordinals are incomplete or out of range."
+            )
+        return row_count, candidate_count, candidate_root.hex()
+
+
+def _scan_catalog_metadata_candidates(
+    *,
+    claim: BulkPreparationClaim,
+    candidates: Callable[[], Iterator[CatalogMetadataCandidateDraft]],
+) -> tuple[tuple[UUID, ...], int, int, str]:
+    """Validate one bounded replay without retaining candidate or row object graphs."""
+
+    definition = typed_profile_definition(claim.content_profile)
+    target_asset_ids: set[UUID] = set()
+    row_count = 0
+    candidate_count = 0
+    candidate_root = catalog_metadata_candidate_root_seed(
+        workspace_id=claim.workspace_id,
+        definition=definition,
+    )
+    for candidate in candidates():
+        if not isinstance(candidate, CatalogMetadataCandidateDraft):
+            raise ConflictError("The catalog-metadata staged evidence type is invalid.")
+        _require_valid_catalog_metadata_candidate(
+            claim=claim,
+            candidate=candidate,
+            expected_ordinal=candidate_count + 1,
+            definition=definition,
+        )
+        target_asset_ids.add(candidate.target_asset_id)
+        row_count += len(candidate.rows)
+        candidate_count += 1
+        candidate_root = advance_catalog_metadata_candidate_root(
+            current=candidate_root,
+            ordinal=candidate_count,
+            candidate_hash=candidate.candidate_hash,
+        )
+    return (
+        tuple(sorted(target_asset_ids, key=str)),
+        row_count,
+        candidate_count,
+        candidate_root.hex(),
+    )
+
+
+def _require_valid_catalog_metadata_candidate(
+    *,
+    claim: BulkPreparationClaim,
+    candidate: CatalogMetadataCandidateDraft,
+    expected_ordinal: int,
+    definition: TypedUploadProfileDefinition,
+) -> tuple[str, tuple[str, ...]]:
+    profile = definition
+    expected_contract = {
+        CatalogMetadataRecordKind.TABLE_DESCRIPTION: (
+            CatalogMetadataCandidateKind.TABLE_DESCRIPTION_UPDATE,
+            CatalogMetadataAspect.DATASET_PROPERTIES,
+        ),
+        CatalogMetadataRecordKind.COLUMN_DESCRIPTION: (
+            CatalogMetadataCandidateKind.COLUMN_DESCRIPTION_UPDATE,
+            CatalogMetadataAspect.SCHEMA_METADATA,
+        ),
+        CatalogMetadataRecordKind.DATASET_DOMAIN: (
+            CatalogMetadataCandidateKind.DATASET_DOMAIN_UPDATE,
+            CatalogMetadataAspect.DOMAINS,
+        ),
+        CatalogMetadataRecordKind.DATASET_TERM: (
+            CatalogMetadataCandidateKind.DATASET_TERM_ADD,
+            CatalogMetadataAspect.GLOSSARY_TERMS,
+        ),
+        CatalogMetadataRecordKind.DATASET_TAG: (
+            CatalogMetadataCandidateKind.DATASET_TAG_ADD,
+            CatalogMetadataAspect.GLOBAL_TAGS,
+        ),
+    }
+    if (
+        claim.content_profile not in _CATALOG_METADATA_PROFILES
+        or profile.content_profile is not claim.content_profile
+        or candidate.workspace_id != claim.workspace_id
+        or candidate.ordinal != expected_ordinal
+        or candidate.evidence_version != CATALOG_METADATA_CANDIDATE_EVIDENCE_VERSION
+        or expected_contract.get(candidate.record_kind)
+        != (candidate.candidate_kind, candidate.aspect_name)
+        or not candidate.rows
+        or len(candidate.rows) > profile.maximum_rows
+    ):
+        raise ConflictError("The staged catalog-metadata candidate evidence is invalid.")
+    submitted_identity_hash = catalog_metadata_submitted_identity_hash(
+        workspace_id=claim.workspace_id,
+        target_asset_id=candidate.target_asset_id,
+        platform=candidate.platform,
+        database_name=candidate.database_name,
+        schema_name=candidate.schema_name,
+        table_name=candidate.table_name,
+        aspect_name=candidate.aspect_name,
+        definition=profile,
+    )
+    row_hashes: list[str] = []
+    semantic_keys: set[str] = set()
+    previous_ordinal = 0
+    for row in candidate.rows:
+        if (
+            row.workspace_id != claim.workspace_id
+            or row.target_asset_id != candidate.target_asset_id
+            or row.record_kind is not candidate.record_kind
+            or row.aspect_name is not candidate.aspect_name
+            or row.evidence_version != CATALOG_METADATA_CANDIDATE_EVIDENCE_VERSION
+            or (row.platform, row.database_name, row.schema_name, row.table_name)
+            != (
+                candidate.platform,
+                candidate.database_name,
+                candidate.schema_name,
+                candidate.table_name,
+            )
+            or row.ordinal <= previous_ordinal
+            or row.ordinal > profile.maximum_rows
+            or not row.semantic_key
+            or row.semantic_key in semantic_keys
+        ):
+            raise ConflictError("The staged catalog-metadata row evidence is invalid.")
+        _controlled_reference_kind(row)
+        row_hash = catalog_metadata_row_hash(
+            workspace_id=claim.workspace_id,
+            ordinal=row.ordinal,
+            target_asset_id=row.target_asset_id,
+            platform=row.platform,
+            database_name=row.database_name,
+            schema_name=row.schema_name,
+            table_name=row.table_name,
+            record_kind=row.record_kind,
+            aspect_name=row.aspect_name,
+            operation=row.operation,
+            field_path=row.field_path,
+            value_text=row.value_text,
+            controlled_ref=row.controlled_ref,
+            definition=profile,
+        )
+        if row.row_hash != row_hash:
+            raise ConflictError("The staged catalog-metadata row hash is invalid.")
+        previous_ordinal = row.ordinal
+        semantic_keys.add(row.semantic_key)
+        row_hashes.append(row_hash)
+    expected_candidate_hash = catalog_metadata_candidate_hash(
+        workspace_id=claim.workspace_id,
+        ordinal=candidate.ordinal,
+        target_asset_id=candidate.target_asset_id,
+        candidate_kind=candidate.candidate_kind,
+        aspect_name=candidate.aspect_name,
+        submitted_identity_hash=submitted_identity_hash,
+        row_hashes=tuple(row_hashes),
+        definition=profile,
+    )
+    if (
+        candidate.submitted_identity_hash != submitted_identity_hash
+        or candidate.candidate_hash != expected_candidate_hash
+    ):
+        raise ConflictError("The staged catalog-metadata candidate hash is invalid.")
+    return submitted_identity_hash, tuple(row_hashes)
+
+
+def _controlled_reference_kind(row: CatalogMetadataRowEvidence) -> str | None:
+    if row.record_kind is CatalogMetadataRecordKind.TABLE_DESCRIPTION:
+        if (
+            row.field_path is not None
+            or row.controlled_ref is not None
+            or row.operation not in {CatalogMetadataOperation.SET, CatalogMetadataOperation.CLEAR}
+            or (row.operation is CatalogMetadataOperation.SET and row.value_text is None)
+            or (row.operation is CatalogMetadataOperation.CLEAR and row.value_text is not None)
+            or row.semantic_key != row.record_kind.value
+        ):
+            raise ConflictError("The table-description row shape is invalid.")
+        return None
+    if row.record_kind is CatalogMetadataRecordKind.COLUMN_DESCRIPTION:
+        expected_semantic_key = (
+            f"{row.record_kind.value}:{row.field_path}" if row.field_path is not None else ""
+        )
+        if (
+            not row.field_path
+            or row.controlled_ref is not None
+            or row.operation not in {CatalogMetadataOperation.SET, CatalogMetadataOperation.CLEAR}
+            or (row.operation is CatalogMetadataOperation.SET and row.value_text is None)
+            or (row.operation is CatalogMetadataOperation.CLEAR and row.value_text is not None)
+            or row.semantic_key != expected_semantic_key
+        ):
+            raise ConflictError("The column-description row shape is invalid.")
+        return None
+    if row.record_kind is CatalogMetadataRecordKind.DATASET_DOMAIN:
+        if row.field_path is not None or row.value_text is not None:
+            raise ConflictError("The domain row shape is invalid.")
+        if row.operation is CatalogMetadataOperation.CLEAR:
+            if row.controlled_ref is not None or row.semantic_key != row.record_kind.value:
+                raise ConflictError("A domain CLEAR cannot contain a controlled reference.")
+            return None
+        if (
+            row.operation is not CatalogMetadataOperation.SET
+            or row.controlled_ref is None
+            or row.semantic_key != row.record_kind.value
+        ):
+            raise ConflictError("A domain SET requires one controlled reference.")
+        return "DOMAIN"
+    if (
+        row.record_kind
+        not in {
+            CatalogMetadataRecordKind.DATASET_TERM,
+            CatalogMetadataRecordKind.DATASET_TAG,
+        }
+        or row.controlled_ref is None
+        or row.operation is not CatalogMetadataOperation.ADD
+        or row.field_path is not None
+        or row.value_text is not None
+        or row.semantic_key != f"{row.record_kind.value}:{row.controlled_ref}"
+    ):
+        raise ConflictError("A tag or term ADD requires one controlled reference.")
+    return "TERM" if row.record_kind is CatalogMetadataRecordKind.DATASET_TERM else "TAG"
+
+
+async def _verify_catalog_metadata_target_batch(
+    *,
+    session: AsyncSession,
+    claim: BulkPreparationClaim,
+    values: Sequence[CatalogMetadataCandidateDraft],
+) -> None:
+    target_ids = frozenset(value.target_asset_id for value in values)
+    models = list(
+        (
+            await session.scalars(
+                select(AssetProjectionModel)
+                .where(
+                    AssetProjectionModel.workspace_id == claim.workspace_id,
+                    AssetProjectionModel.id.in_(tuple(target_ids)),
+                    AssetProjectionModel.asset_type.in_(tuple(sorted(DATASET_ASSET_TYPES))),
+                    AssetProjectionModel.lifecycle == "ACTIVE",
+                    AssetProjectionModel.deleted_at.is_(None),
+                )
+                .with_for_update(read=True)
+            )
+        ).all()
+    )
+    by_id = {model.id: model for model in models}
+    if len(by_id) != len(target_ids):
+        raise ConflictError("A catalog-metadata target is unavailable, inactive, or not a dataset.")
+    references_by_kind: dict[str, set[UUID]] = {
+        "DOMAIN": set(),
+        "TAG": set(),
+        "TERM": set(),
+    }
+    for candidate in values:
+        model = by_id.get(candidate.target_asset_id)
+        if model is None or (
+            model.platform,
+            model.database_name,
+            model.schema_name,
+            model.name,
+        ) != (
+            candidate.platform,
+            candidate.database_name,
+            candidate.schema_name,
+            candidate.table_name,
+        ):
+            raise ConflictError("A catalog-metadata target identity changed during preparation.")
+        for row in candidate.rows:
+            if row.record_kind is CatalogMetadataRecordKind.COLUMN_DESCRIPTION:
+                if (
+                    model.column_names_truncated
+                    or row.field_path is None
+                    or model.column_names.count(row.field_path) != 1
+                ):
+                    raise ConflictError(
+                        "A catalog-metadata column target is unavailable or ambiguous."
+                    )
+            controlled_kind = _controlled_reference_kind(row)
+            if controlled_kind is not None:
+                assert row.controlled_ref is not None
+                references_by_kind[controlled_kind].add(row.controlled_ref)
+    for kind, reference_ids in references_by_kind.items():
+        if not reference_ids:
+            continue
+        ordered_ids = tuple(sorted(reference_ids, key=str))
+        observed_ids: set[UUID] = set()
+        for offset in range(0, len(ordered_ids), _CANDIDATE_BATCH_SIZE):
+            vocabulary_models = list(
+                (
+                    await session.scalars(
+                        select(CatalogVocabularyEntryModel)
+                        .where(
+                            CatalogVocabularyEntryModel.workspace_id == claim.workspace_id,
+                            CatalogVocabularyEntryModel.id.in_(
+                                ordered_ids[offset : offset + _CANDIDATE_BATCH_SIZE]
+                            ),
+                            CatalogVocabularyEntryModel.kind == kind,
+                            CatalogVocabularyEntryModel.lifecycle == "ACTIVE",
+                        )
+                        .with_for_update(read=True)
+                    )
+                ).all()
+            )
+            observed_ids.update(model.id for model in vocabulary_models)
+        if observed_ids != reference_ids:
+            raise ConflictError(
+                "A catalog-metadata controlled reference is unavailable or inactive."
+            )
+
+
+async def _insert_catalog_metadata_batch(
+    *,
+    session: AsyncSession,
+    rows: list[dict[str, object]],
+    candidates: list[dict[str, object]],
+    memberships: list[dict[str, object]],
+) -> None:
+    for offset in range(0, len(rows), _CANDIDATE_BATCH_SIZE):
+        await session.execute(
+            insert(CatalogMetadataRowModel),
+            rows[offset : offset + _CANDIDATE_BATCH_SIZE],
+        )
+    for offset in range(0, len(candidates), _CANDIDATE_BATCH_SIZE):
+        await session.execute(
+            insert(CatalogMetadataCandidateModel),
+            candidates[offset : offset + _CANDIDATE_BATCH_SIZE],
+        )
+    for offset in range(0, len(memberships), _CANDIDATE_BATCH_SIZE):
+        await session.execute(
+            insert(CatalogMetadataCandidateRowModel),
+            memberships[offset : offset + _CANDIDATE_BATCH_SIZE],
+        )
+    rows.clear()
+    candidates.clear()
+    memberships.clear()
 
 
 async def _verify_target_batch(

@@ -132,4 +132,40 @@ describe('API problem handling', () => {
     })
     expect(fetchMock).toHaveBeenCalledOnce()
   })
+
+  it('downloads a server-versioned template through the authenticated no-store boundary', async () => {
+    const fetchMock = vi.fn((_input: RequestInfo | URL, _init?: RequestInit) => {
+      void _input
+      void _init
+      return Promise.resolve(new Response(
+        'record_kind,asset_id,platform,database_name,schema_name,table_name,field_path,operation,value_text,controlled_ref\n',
+        {
+          status: 200,
+          headers: {
+            'Cache-Control': 'private, no-store',
+            'Content-Disposition': 'attachment; filename="catalog-metadata-template.csv"',
+            'Content-Type': 'text/csv',
+            ETag: '"template-v3"',
+          },
+        },
+      ))
+    })
+    vi.stubGlobal('fetch', fetchMock)
+    const client = new ApiClient('/api/v1', () => 'token', () => 'workspace')
+
+    const downloaded = await client.download(
+      '/uploads/profiles/CATALOG_METADATA_ROWS_CSV_V1/template',
+    )
+
+    expect(await downloaded.blob.text()).toBe(
+      'record_kind,asset_id,platform,database_name,schema_name,table_name,field_path,operation,value_text,controlled_ref\n',
+    )
+    expect(downloaded.filename).toBe('catalog-metadata-template.csv')
+    expect(downloaded.etag).toBe('"template-v3"')
+    const [, options] = fetchMock.mock.calls[0] ?? []
+    expect(options?.cache).toBe('no-store')
+    const headers = new Headers(options?.headers)
+    expect(headers.get('Authorization')).toBe('Bearer token')
+    expect(headers.get('X-Workspace-Id')).toBe('workspace')
+  })
 })

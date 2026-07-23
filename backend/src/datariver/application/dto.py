@@ -44,6 +44,7 @@ class CatalogAssetIndex:
     domain: str | None = None
     tags: tuple[str, ...] = ()
     glossary_terms: tuple[str, ...] = ()
+    column_names: tuple[str, ...] = ()
     created_at: datetime | None = None
     matches: tuple[CatalogMatchFragment, ...] = ()
     description_truncated: bool = False
@@ -156,6 +157,56 @@ class DataHubScanPage:
     snapshot_evidence_reference: str | None = None
     snapshot_contract_hash: str | None = None
     snapshot_provider_version: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class DataHubVocabularyEntry:
+    provider_ref: str
+    kind: str
+    display_name: str
+    source_version: str
+
+
+@dataclass(frozen=True, slots=True)
+class DataHubVocabularyScanPage:
+    items: tuple[DataHubVocabularyEntry, ...]
+    next_cursor: str | None
+    total: int
+    observed_at: datetime
+    snapshot_consistent: bool = False
+    snapshot_evidence_reference: str | None = None
+    snapshot_contract_hash: str | None = None
+    snapshot_provider_version: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class CatalogVocabularySyncResult:
+    upserted: int
+    inactivated: int
+    next_offset: int | None
+    total: int
+    observed_at: datetime
+    inactivation_status: str = "NOT_FINAL"
+
+
+@dataclass(frozen=True, slots=True)
+class CatalogVocabularySyncReservation:
+    cursor: str | None
+    replayed: CatalogVocabularySyncResult | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class CatalogMetadataVocabularyListItem:
+    vocabulary_id: UUID
+    kind: str
+    display_name: str
+    source_version: str
+
+
+@dataclass(frozen=True, slots=True)
+class CatalogMetadataVocabularyPage:
+    items: tuple[CatalogMetadataVocabularyListItem, ...]
+    next_cursor: str | None
 
 
 @dataclass(frozen=True, slots=True)
@@ -375,6 +426,109 @@ class RegistrationCandidateBindingCommand:
 
 
 @dataclass(frozen=True, slots=True)
+class CatalogMetadataRowEvidenceRecord:
+    row_id: UUID
+    ordinal: int
+    record_kind: str
+    aspect_name: str
+    operation: str
+    field_path: str | None
+    value_text: str | None
+    controlled_ref_id: UUID | None
+    controlled_kind: str | None
+    semantic_target_hash: str
+    row_hash: str
+
+
+@dataclass(frozen=True, slots=True)
+class CatalogMetadataCandidateEvidence:
+    candidate_id: UUID
+    workspace_id: UUID
+    receipt_id: UUID
+    ordinal: int
+    content_profile: str
+    evidence_version: str
+    record_kind: str
+    candidate_kind: str
+    target_asset_id: UUID
+    aspect_name: str
+    submitted_platform: str
+    submitted_database_name: str
+    submitted_schema_name: str
+    submitted_table_name: str
+    submitted_identity_hash: str
+    row_root_hash: str
+    candidate_hash: str
+    rows: tuple[CatalogMetadataRowEvidenceRecord, ...]
+    created_at: datetime
+
+
+@dataclass(frozen=True, slots=True)
+class CatalogMetadataCandidateView:
+    evidence: CatalogMetadataCandidateEvidence
+    current_target: CatalogAssetIndex
+
+
+@dataclass(frozen=True, slots=True)
+class CatalogMetadataCandidatePage:
+    items: tuple[CatalogMetadataCandidateView, ...]
+    next_cursor: str | None
+    receipt: UploadPreparationReceiptEvidence
+    projection_version: int
+    policy_version: str
+    classification_policy_version: int | None
+    authorization_generation: int | None
+
+
+@dataclass(frozen=True, slots=True)
+class CatalogMetadataBindingCommand:
+    workspace_id: UUID
+    upload_id: UUID
+    preparation_id: UUID
+    receipt_id: UUID
+    receipt_hash: str
+    content_profile: str
+    candidate_id: UUID
+    candidate_kind: str
+    candidate_hash: str
+    aspect_name: str
+    before_hash: str
+    after_hash: str
+    item_contract_hash: str
+    target_asset_id: UUID
+    target_source_version: str
+    target_binding_hash: str
+
+
+@dataclass(frozen=True, slots=True)
+class TypedCatalogMetadataPreview:
+    candidate_id: UUID
+    target_asset_id: UUID
+    target_ref: str
+    platform: str
+    database_name: str
+    schema_name: str
+    table_name: str
+    classification: Classification
+    record_kind: str
+    candidate_kind: str
+    aspect_name: str
+    operation_count: int
+    description_change_count: int
+    description_change_sample: tuple[tuple[str | None, str | None, str | None], ...]
+    description_changes_truncated: bool
+    current_reference_count: int
+    proposed_reference_count: int
+    before_hash: str
+    after_hash: str
+    source_version: str
+    observed_at: datetime
+    preview_etag: str
+    binding: CatalogMetadataBindingCommand
+    proposed_document: Mapping[str, Any] = field(repr=False)
+
+
+@dataclass(frozen=True, slots=True)
 class TypedBulkCandidatePreview:
     candidate_id: UUID
     target_asset_id: UUID
@@ -392,7 +546,7 @@ class TypedBulkCandidatePreview:
     observed_at: datetime
     preview_etag: str
     binding: RegistrationCandidateBindingCommand
-    proposed_document: Mapping[str, Any]
+    proposed_document: Mapping[str, Any] = field(repr=False)
 
 
 @dataclass(frozen=True, slots=True)
@@ -607,6 +761,40 @@ class GovernanceApplyClaim:
     attempt_no: int
     lease_token: str
     worker_subject_id: UUID
+
+
+@dataclass(frozen=True, slots=True)
+class GovernanceApplyAuthorizationContext:
+    """Server-derived identity and target scope for apply-time human reauthorization."""
+
+    workspace_id: UUID
+    change_request_id: UUID
+    change_request_version: int
+    request_type: str
+    requester_id: UUID
+    request_classification: Classification
+    item_id: UUID
+    action: Action
+    target_type: str
+    target_ref: str
+    operation: str
+    aspect_name: str
+    before_hash: str
+    after_hash: str
+    target_asset_id: UUID
+    target_asset_type: str
+    target_system_id: UUID | None
+    target_domain_id: UUID | None
+    target_owner_department_id: UUID | None
+    target_classification: Classification
+    target_lifecycle: str
+    target_source_version: str
+    target_binding_hash: str
+    job_id: UUID
+    attempt_id: UUID
+    attempt_no: int
+    worker_subject_id: UUID
+    lease_token_hash: str
 
 
 @dataclass(frozen=True, slots=True)

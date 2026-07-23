@@ -147,6 +147,7 @@ class ChangeItem:
     target_source_version: str | None = None
     target_observed_at: datetime | None = None
     target_binding_hash: str | None = None
+    item_contract_hash: str | None = None
     routing_system_id: UUID | None = None
 
     @property

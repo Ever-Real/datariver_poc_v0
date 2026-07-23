@@ -28,6 +28,9 @@ from datariver.application.dto import (
     CatalogExportRecord,
     CatalogExportRequest,
     CatalogFacets,
+    CatalogMetadataBindingCommand,
+    CatalogMetadataCandidateEvidence,
+    CatalogMetadataVocabularyPage,
     CatalogPage,
     CatalogSuggestions,
     CatalogSyncProgress,
@@ -35,6 +38,8 @@ from datariver.application.dto import (
     CatalogSyncResult,
     CatalogTreePage,
     CatalogVocabulary,
+    CatalogVocabularySyncReservation,
+    CatalogVocabularySyncResult,
     ChangeRequestSchemaOverview,
     ChangeRequestSummaryRecord,
     ChatDraft,
@@ -48,7 +53,9 @@ from datariver.application.dto import (
     DataHubLineagePage,
     DataHubScanAsset,
     DataHubScanPage,
+    DataHubVocabularyScanPage,
     DecisionAuditItem,
+    GovernanceApplyAuthorizationContext,
     GovernanceApplyClaim,
     IdempotencyRecord,
     InvocationAuthorizationRecord,
@@ -377,7 +384,60 @@ class DataHubGateway(Protocol):
 
     async def scan_assets(self, *, cursor: str | None, limit: int) -> DataHubScanPage: ...
 
+    async def scan_vocabulary(
+        self, *, kind: str, cursor: str | None, limit: int
+    ) -> DataHubVocabularyScanPage: ...
+
     async def search_vocabulary(self, *, kind: str, query: str, limit: int) -> tuple[str, ...]: ...
+
+
+class CatalogMetadataVocabularyProjection(Protocol):
+    async def reserve_scan(
+        self,
+        *,
+        workspace_id: UUID,
+        sync_id: UUID,
+        kind: str,
+        offset: int,
+        idempotency_key: str,
+        request_hash: str,
+        operation: str,
+    ) -> CatalogVocabularySyncReservation: ...
+
+    async def release_scan(self) -> None: ...
+
+    async def abandon_scan(
+        self,
+        *,
+        workspace_id: UUID,
+        sync_id: UUID,
+        kind: str,
+    ) -> None: ...
+
+    async def upsert_scan(
+        self,
+        *,
+        workspace_id: UUID,
+        sync_id: UUID,
+        kind: str,
+        offset: int,
+        cursor: str | None,
+        next_offset: int | None,
+        page: DataHubVocabularyScanPage,
+        idempotency_key: str,
+        request_hash: str,
+        operation: str,
+    ) -> CatalogVocabularySyncResult: ...
+
+    async def list_active(
+        self,
+        *,
+        workspace_id: UUID,
+        kind: str,
+        query: str | None,
+        cursor: str | None,
+        limit: int,
+    ) -> CatalogMetadataVocabularyPage: ...
 
 
 class CatalogProjectionWriter(Protocol):
@@ -500,6 +560,17 @@ class RegistrationContentBindingRepository(Protocol):
     ) -> None: ...
 
 
+class RegistrationMetadataContentBindingRepository(Protocol):
+    async def verify_and_add(
+        self,
+        *,
+        command: CatalogMetadataBindingCommand,
+        change_request_id: UUID,
+        change_item_id: UUID,
+        created_by: UUID,
+    ) -> None: ...
+
+
 class ChangeRequestOverviewReader(Protocol):
     async def list_schema_overview(
         self,
@@ -528,6 +599,7 @@ class OutboxWriter(Protocol):
 class GovernanceUnitOfWork(Protocol):
     change_requests: ChangeRequestRepository
     registration_content_bindings: RegistrationContentBindingRepository
+    registration_metadata_content_bindings: RegistrationMetadataContentBindingRepository
     workflow_authorities: ChangeWorkflowAuthorityReader
     manual_metadata_submissions: ManualMetadataSubmissionRepository
     outbox: OutboxWriter
@@ -953,6 +1025,12 @@ class GovernanceApplyStore(Protocol):
     ) -> bool: ...
 
 
+class GovernanceApplyReauthorizer(Protocol):
+    async def reauthorize(self, *, context: GovernanceApplyAuthorizationContext) -> bool:
+        """Re-read human membership, typed binding, target and policy state before apply."""
+        ...
+
+
 class ProviderMutationLock(Protocol):
     def hold(
         self,
@@ -1206,6 +1284,33 @@ class UploadCandidateReader(Protocol):
         after_ordinal: int,
         limit: int,
     ) -> Sequence[UploadRegistrationCandidateEvidence]: ...
+
+
+class CatalogMetadataCandidateReader(Protocol):
+    async def get_ready_receipt(
+        self,
+        *,
+        workspace_id: UUID,
+        upload_id: UUID,
+        preparation_id: UUID,
+    ) -> UploadPreparationReceiptEvidence | None: ...
+
+    async def get_candidate(
+        self,
+        *,
+        workspace_id: UUID,
+        receipt_id: UUID,
+        candidate_id: UUID,
+    ) -> CatalogMetadataCandidateEvidence | None: ...
+
+    async def list_candidates(
+        self,
+        *,
+        workspace_id: UUID,
+        receipt_id: UUID,
+        after_ordinal: int,
+        limit: int,
+    ) -> Sequence[CatalogMetadataCandidateEvidence]: ...
 
 
 class UploadUnitOfWork(Protocol):

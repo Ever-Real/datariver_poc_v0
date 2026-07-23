@@ -2,16 +2,25 @@ from __future__ import annotations
 
 import hashlib
 import inspect
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 from typing import Any, cast
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import pytest
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from datariver.application.catalog_metadata_upload_parser import (
+    CatalogMetadataCandidateDraft,
+    catalog_metadata_candidate_root,
+    catalog_metadata_row_root,
+    catalog_metadata_semantic_target_hash,
+    compile_catalog_metadata_candidates,
+)
 from datariver.application.services.bulk_registration import BulkPreparationClaim
 from datariver.application.typed_upload_profiles import (
+    CATALOG_METADATA_ROWS_CSV_V1,
     DATASET_DESCRIPTION_CSV_V1,
     DATASET_DESCRIPTION_XLSX_V1,
 )
@@ -25,7 +34,9 @@ from datariver.infrastructure.db import bulk_registration as bulk_registration_m
 from datariver.infrastructure.db.bulk_registration import (
     SqlBulkPreparationExecutionStore,
     _claim_is_current,
+    _require_valid_catalog_metadata_candidate,
     _retry_delay_seconds,
+    _verify_catalog_metadata_target_batch,
 )
 from datariver.infrastructure.db.models.integration import UploadPreparationJobModel
 
@@ -77,6 +88,78 @@ def _claim(job: UploadPreparationJobModel) -> BulkPreparationClaim:
     )
 
 
+def _catalog_claim() -> BulkPreparationClaim:
+    job = _job(lease_until=NOW + timedelta(minutes=1))
+    job.content_profile = UploadContentProfile.CATALOG_METADATA_ROWS_CSV_V1.value
+    job.configuration_hash = CATALOG_METADATA_ROWS_CSV_V1.configuration_hash
+    return _claim(job)
+
+
+def _catalog_row(
+    *,
+    record_kind: str,
+    asset_id: UUID,
+    field_path: str = "",
+    operation: str,
+    value_text: str = "",
+    controlled_ref: str = "",
+) -> tuple[str, ...]:
+    return (
+        record_kind,
+        str(asset_id),
+        "snowflake",
+        "warehouse",
+        "analytics",
+        "orders",
+        field_path,
+        operation,
+        value_text,
+        controlled_ref,
+    )
+
+
+def _catalog_candidates(
+    *,
+    workspace_id: UUID,
+    asset_id: UUID,
+    controlled_ref: UUID,
+) -> tuple[CatalogMetadataCandidateDraft, ...]:
+    return compile_catalog_metadata_candidates(
+        workspace_id=workspace_id,
+        rows=(
+            (
+                1,
+                _catalog_row(
+                    record_kind="COLUMN_DESCRIPTION",
+                    asset_id=asset_id,
+                    field_path="order_id",
+                    operation="SET",
+                    value_text="Order identifier",
+                ),
+            ),
+            (
+                2,
+                _catalog_row(
+                    record_kind="DATASET_TAG",
+                    asset_id=asset_id,
+                    operation="ADD",
+                    controlled_ref=str(controlled_ref),
+                ),
+            ),
+            (
+                3,
+                _catalog_row(
+                    record_kind="COLUMN_DESCRIPTION",
+                    asset_id=asset_id,
+                    field_path="customer_id",
+                    operation="CLEAR",
+                ),
+            ),
+        ),
+        definition=CATALOG_METADATA_ROWS_CSV_V1,
+    )
+
+
 def test_bulk_preparation_retry_backoff_is_bounded_and_monotonic() -> None:
     assert [_retry_delay_seconds(attempt) for attempt in range(1, 9)] == [
         2,
@@ -88,6 +171,224 @@ def test_bulk_preparation_retry_backoff_is_bounded_and_monotonic() -> None:
         60,
         60,
     ]
+
+
+def test_catalog_metadata_candidate_validation_recalculates_v3_hashes() -> None:
+    claim = _catalog_claim()
+    candidates = _catalog_candidates(
+        workspace_id=claim.workspace_id,
+        asset_id=uuid4(),
+        controlled_ref=uuid4(),
+    )
+
+    submitted_hash, row_hashes = _require_valid_catalog_metadata_candidate(
+        claim=claim,
+        candidate=candidates[0],
+        expected_ordinal=1,
+        definition=CATALOG_METADATA_ROWS_CSV_V1,
+    )
+
+    assert submitted_hash == candidates[0].submitted_identity_hash
+    assert row_hashes == tuple(row.row_hash for row in candidates[0].rows)
+    assert [row.ordinal for row in candidates[0].rows] == [1, 3]
+
+    tampered_row = replace(candidates[0].rows[0], row_hash="0" * 64)
+    tampered_candidate = replace(
+        candidates[0],
+        rows=(tampered_row, *candidates[0].rows[1:]),
+    )
+    with pytest.raises(ConflictError, match="row hash"):
+        _require_valid_catalog_metadata_candidate(
+            claim=claim,
+            candidate=tampered_candidate,
+            expected_ordinal=1,
+            definition=CATALOG_METADATA_ROWS_CSV_V1,
+        )
+
+    tampered_semantic = replace(candidates[0].rows[0], semantic_key="COLUMN_DESCRIPTION:other")
+    with pytest.raises(ConflictError, match="row shape"):
+        _require_valid_catalog_metadata_candidate(
+            claim=claim,
+            candidate=replace(
+                candidates[0],
+                rows=(tampered_semantic, *candidates[0].rows[1:]),
+            ),
+            expected_ordinal=1,
+            definition=CATALOG_METADATA_ROWS_CSV_V1,
+        )
+
+
+class _ScalarModels:
+    def __init__(self, values: list[SimpleNamespace]) -> None:
+        self._values = values
+
+    def all(self) -> list[SimpleNamespace]:
+        return self._values
+
+
+class _CatalogTargetSession:
+    def __init__(self, responses: list[list[SimpleNamespace]]) -> None:
+        self._responses = responses
+
+    async def scalars(self, _statement: object) -> _ScalarModels:
+        return _ScalarModels(self._responses.pop(0))
+
+
+@pytest.mark.asyncio
+async def test_catalog_metadata_targets_require_complete_columns_and_active_local_refs() -> None:
+    claim = _catalog_claim()
+    asset_id = uuid4()
+    controlled_ref = uuid4()
+    candidates = _catalog_candidates(
+        workspace_id=claim.workspace_id,
+        asset_id=asset_id,
+        controlled_ref=controlled_ref,
+    )
+    asset = SimpleNamespace(
+        id=asset_id,
+        platform="snowflake",
+        database_name="warehouse",
+        schema_name="analytics",
+        name="orders",
+        column_names=["order_id", "customer_id"],
+        column_names_truncated=False,
+    )
+    vocabulary = SimpleNamespace(id=controlled_ref)
+    session = _CatalogTargetSession([[asset], [vocabulary]])
+
+    await _verify_catalog_metadata_target_batch(
+        session=cast(AsyncSession, cast(Any, session)),
+        claim=claim,
+        values=candidates,
+    )
+    assert session._responses == []
+
+    truncated = SimpleNamespace(**{**vars(asset), "column_names_truncated": True})
+    with pytest.raises(ConflictError, match="column target"):
+        await _verify_catalog_metadata_target_batch(
+            session=cast(
+                AsyncSession,
+                cast(Any, _CatalogTargetSession([[truncated]])),
+            ),
+            claim=claim,
+            values=(candidates[0],),
+        )
+
+    with pytest.raises(ConflictError, match="controlled reference"):
+        await _verify_catalog_metadata_target_batch(
+            session=cast(
+                AsyncSession,
+                cast(Any, _CatalogTargetSession([[asset], []])),
+            ),
+            claim=claim,
+            values=(candidates[1],),
+        )
+
+
+class _CatalogInsertSession:
+    def __init__(self) -> None:
+        self.executions: list[tuple[str, list[dict[str, object]]]] = []
+
+    async def execute(
+        self,
+        statement: object,
+        values: list[dict[str, object]],
+    ) -> None:
+        table = cast(Any, statement).table
+        self.executions.append((str(table.name), list(values)))
+
+
+@pytest.mark.asyncio
+async def test_catalog_metadata_insert_is_ordered_atomic_evidence_with_server_ids() -> None:
+    claim = _catalog_claim()
+    asset_id = uuid4()
+    controlled_ref = uuid4()
+    candidates = _catalog_candidates(
+        workspace_id=claim.workspace_id,
+        asset_id=asset_id,
+        controlled_ref=controlled_ref,
+    )
+    session = _CatalogInsertSession()
+    store = SqlBulkPreparationExecutionStore(
+        cast(async_sessionmaker[AsyncSession], cast(Any, object()))
+    )
+
+    row_count, candidate_count, candidate_root = await store._insert_catalog_metadata_candidates(
+        session=cast(AsyncSession, cast(Any, session)),
+        receipt_id=uuid4(),
+        claim=claim,
+        candidates=lambda: iter(candidates),
+        created_at=NOW,
+    )
+
+    assert (row_count, candidate_count) == (3, 2)
+    assert (
+        candidate_root
+        == catalog_metadata_candidate_root(
+            workspace_id=claim.workspace_id,
+            candidates=candidates,
+            definition=CATALOG_METADATA_ROWS_CSV_V1,
+        ).hex()
+    )
+    assert [name for name, _ in session.executions] == [
+        "catalog_metadata_rows",
+        "catalog_metadata_candidates",
+        "catalog_metadata_candidate_rows",
+    ]
+    rows = session.executions[0][1]
+    groups = session.executions[1][1]
+    memberships = session.executions[2][1]
+    assert len(rows) == len(memberships) == 3
+    assert len(groups) == 2
+    assert {row["ordinal"] for row in rows} == {1, 2, 3}
+    assert {membership["source_ordinal"] for membership in memberships} == {1, 2, 3}
+    assert groups[0]["row_root_hash"] == catalog_metadata_row_root(
+        tuple(row.row_hash for row in candidates[0].rows)
+    )
+    assert rows[0]["semantic_target_hash"] == catalog_metadata_semantic_target_hash(
+        workspace_id=claim.workspace_id,
+        target_asset_id=candidates[0].rows[0].target_asset_id,
+        aspect_name=candidates[0].rows[0].aspect_name,
+        semantic_key=candidates[0].rows[0].semantic_key,
+    )
+    assert "provider_ref" not in rows[0]
+    assert "external_urn" not in rows[0]
+    assert {group["id"] for group in groups} == {
+        membership["candidate_id"] for membership in memberships
+    }
+    assert {row["id"] for row in rows} == {membership["row_id"] for membership in memberships}
+
+
+def test_catalog_metadata_publish_keeps_v2_and_replays_v3_without_full_tuple() -> None:
+    source = inspect.getsource(SqlBulkPreparationExecutionStore.publish)
+
+    assert "tuple(catalog_candidates())" not in source
+    assert "staged_catalog_candidates = catalog_candidates" in source
+    assert "_scan_catalog_metadata_candidates(" in source
+    assert "self._insert_catalog_metadata_candidates" in source
+    assert "self._insert_candidates" in source
+    assert '"candidate_count"' in source
+    assert '"catalog-metadata-preparation-receipt-v3"' in source
+    assert '"bulk-preparation-receipt-v1"' in source
+    assert "summary.source_sha256 != claim.source_sha256" in source
+    assert "summary.configuration_hash != claim.configuration_hash" in source
+    assert "_claim_is_current(job, claim, now=now)" in source
+    assert "_manifest_is_current(manifest=manifest, claim=claim)" in source
+
+    module_source = inspect.getsource(bulk_registration_module)
+    for helper_name in (
+        "catalog_metadata_row_hash",
+        "catalog_metadata_semantic_target_hash",
+        "catalog_metadata_row_root",
+        "catalog_metadata_candidate_hash",
+        "catalog_metadata_candidate_root_seed",
+        "advance_catalog_metadata_candidate_root",
+    ):
+        assert helper_name in module_source
+    assert 'CatalogVocabularyEntryModel.lifecycle == "ACTIVE"' in module_source
+    assert "column_names_truncated" in module_source
+    assert "provider_ref" not in module_source
+    assert "DataHub" not in module_source
 
 
 def test_typed_bulk_profiles_fit_the_api_spool_safety_budget() -> None:

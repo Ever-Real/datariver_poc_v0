@@ -10,6 +10,7 @@ from typing import Protocol
 from uuid import UUID
 
 from datariver.application.dto import (
+    CatalogMetadataBindingCommand,
     ChangeRequestSummaryPage,
     ChangeRequestSummaryRecord,
     RegistrationCandidateBindingCommand,
@@ -496,12 +497,15 @@ class GovernanceService:
         request_hash: str,
         require_raw_operator_gate: bool = True,
         registration_candidate_binding: RegistrationCandidateBindingCommand | None = None,
+        registration_metadata_binding: CatalogMetadataBindingCommand | None = None,
         requested_due_date: date | None = None,
         priority: ChangePriority | None = None,
         urgency: ChangeUrgency | None = None,
     ) -> ChangeRequest:
         if self._target_authorizer is None:
             raise RuntimeError("Change-request creation requires a target authorizer.")
+        if registration_candidate_binding is not None and registration_metadata_binding is not None:
+            raise ConflictError("A change request cannot bind two registration profiles.")
         if require_raw_operator_gate:
             await self._authorization.authorize(
                 subject=subject,
@@ -597,6 +601,13 @@ class GovernanceService:
             if registration_candidate_binding is not None:
                 await uow.registration_content_bindings.verify_and_add(
                     command=registration_candidate_binding,
+                    change_request_id=change_request.change_request_id,
+                    change_item_id=change_request.items[0].item_id,
+                    created_by=subject.subject_id,
+                )
+            if registration_metadata_binding is not None:
+                await uow.registration_metadata_content_bindings.verify_and_add(
+                    command=registration_metadata_binding,
                     change_request_id=change_request.change_request_id,
                     change_item_id=change_request.items[0].item_id,
                     created_by=subject.subject_id,

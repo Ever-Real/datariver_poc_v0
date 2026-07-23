@@ -10,6 +10,7 @@ from uuid import UUID, uuid4
 import pytest
 
 from datariver.application.dto import (
+    CatalogMetadataBindingCommand,
     ChangeRequestSummaryRecord,
     ChangeRequestSummaryTarget,
     IdempotencyRecord,
@@ -296,6 +297,9 @@ class MemoryUnitOfWork:
         self.registration_content_bindings = MemoryRegistrationBindings(
             cast(list[dict[str, object]], state.setdefault("bindings", []))
         )
+        self.registration_metadata_content_bindings = MemoryRegistrationBindings(
+            cast(list[dict[str, object]], state.setdefault("metadata_bindings", []))
+        )
         self.outbox = MemoryOutbox(state["outbox"])  # type: ignore[arg-type]
         self.idempotency = MemoryIdempotency(state["idempotency"])  # type: ignore[arg-type]
         self.workflow_authorities = MemoryWorkflowAuthorities(state)
@@ -562,6 +566,76 @@ async def test_typed_bulk_create_appends_binding_in_same_unit_of_work() -> None:
     assert values[0]["change_request_id"] == created.change_request_id
     assert values[0]["change_item_id"] == created.items[0].item_id
     assert values[0]["created_by"] == actor.subject_id
+
+
+@pytest.mark.asyncio
+async def test_typed_catalog_metadata_create_appends_exact_binding_in_same_unit_of_work() -> None:
+    workspace_id = uuid4()
+    actor = subject(workspace_id)
+    state: dict[str, object] = {
+        "requests": {},
+        "outbox": [],
+        "idempotency": {},
+        "metadata_bindings": [],
+    }
+    service = GovernanceService(
+        cast(Callable[[], GovernanceUnitOfWork], lambda: MemoryUnitOfWork(state)),
+        AuthorizationService(decision_writer=MemoryDecisionWriter()),
+        target_authorizer=MemoryTargetAuthorizer(),
+    )
+    binding = CatalogMetadataBindingCommand(
+        workspace_id=workspace_id,
+        upload_id=uuid4(),
+        preparation_id=uuid4(),
+        receipt_id=uuid4(),
+        receipt_hash="a" * 64,
+        content_profile="CATALOG_METADATA_ROWS_CSV_V1",
+        candidate_id=uuid4(),
+        candidate_kind="DATASET_TAG_ADD",
+        candidate_hash="b" * 64,
+        aspect_name="globalTags",
+        before_hash="c" * 64,
+        after_hash="d" * 64,
+        item_contract_hash="e" * 64,
+        target_asset_id=uuid4(),
+        target_source_version="projection-2",
+        target_binding_hash="f" * 64,
+    )
+    created = await service.create_change_request(
+        workspace_id=workspace_id,
+        number="CR-METADATA-1",
+        request_type="BULK_CATALOG_METADATA",
+        title="Typed metadata update",
+        description="Immutable grouped candidate evidence",
+        requester_id=actor.subject_id,
+        items=[
+            ChangeItem(
+                uuid4(),
+                "DATAHUB_ASPECT",
+                "urn:li:dataset:metadata",
+                "UPSERT",
+                {"tags": [{"tag": "urn:li:tag:controlled"}]},
+                "globalTags",
+                "c" * 64,
+                "d" * 64,
+                item_contract_hash="e" * 64,
+            )
+        ],
+        subject=actor,
+        classification=Classification.INTERNAL,
+        environment=EnvironmentAttributes(requested_at=datetime.now(UTC)),
+        request_id="typed-metadata-create",
+        idempotency_key="typed-metadata-create-0001",
+        request_hash="1" * 64,
+        require_raw_operator_gate=False,
+        registration_metadata_binding=binding,
+    )
+
+    values = cast(list[dict[str, object]], state["metadata_bindings"])
+    assert len(values) == 1
+    assert values[0]["command"] == binding
+    assert values[0]["change_request_id"] == created.change_request_id
+    assert values[0]["change_item_id"] == created.items[0].item_id
 
 
 @pytest.mark.asyncio

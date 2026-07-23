@@ -12,6 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from sqlalchemy.orm import aliased
 
 from datariver.application.dto import (
+    CatalogMetadataBindingCommand,
     ChangeRequestSummaryRecord,
     ChangeRequestSummaryTarget,
     IdempotencyRecord,
@@ -26,8 +27,13 @@ from datariver.application.ports import (
     ManualMetadataSubmissionRepository,
     OutboxWriter,
     RegistrationContentBindingRepository,
+    RegistrationMetadataContentBindingRepository,
+)
+from datariver.application.services.typed_catalog_metadata_registration import (
+    catalog_metadata_item_contract_hash,
 )
 from datariver.domain.authz import Classification
+from datariver.domain.catalog import is_dataset_asset_type
 from datariver.domain.common import ConflictError, DomainEvent, canonical_json_hash, utc_now, uuid7
 from datariver.domain.governance import (
     MAX_CHANGE_APPROVALS,
@@ -61,7 +67,10 @@ from datariver.domain.registration_worker import (
     RegistrationWorkerCallIdentity,
     RegistrationWorkerCallReplay,
 )
-from datariver.infrastructure.db.models.catalog import AssetProjectionModel
+from datariver.infrastructure.db.models.catalog import (
+    AssetProjectionModel,
+    CatalogVocabularyEntryModel,
+)
 from datariver.infrastructure.db.models.governance import (
     ApprovalModel,
     ChangeItemModel,
@@ -72,9 +81,13 @@ from datariver.infrastructure.db.models.governance import (
     ManualMetadataAspectReportModel,
     ManualMetadataSubmissionModel,
     RegistrationContentBindingModel,
+    RegistrationMetadataContentBindingModel,
     StateTransitionModel,
 )
 from datariver.infrastructure.db.models.integration import (
+    CatalogMetadataCandidateModel,
+    CatalogMetadataCandidateRowModel,
+    CatalogMetadataRowModel,
     IdempotencyKeyModel,
     ObjectManifestModel,
     OutboxEventModel,
@@ -194,6 +207,7 @@ class SqlChangeRequestRepository(ChangeRequestRepository):
                     target_source_version=item.target_source_version,
                     target_observed_at=item.target_observed_at,
                     target_binding_hash=item.target_binding_hash,
+                    item_contract_hash=item.item_contract_hash,
                     routing_system_id=item.routing_system_id,
                 )
                 for ordinal, item in enumerate(change_request.items)
@@ -320,6 +334,7 @@ class SqlChangeRequestRepository(ChangeRequestRepository):
                     target_source_version=item.target_source_version,
                     target_observed_at=item.target_observed_at,
                     target_binding_hash=item.target_binding_hash,
+                    item_contract_hash=item.item_contract_hash,
                     routing_system_id=item.routing_system_id,
                 )
                 for item in items
@@ -1942,6 +1957,272 @@ class SqlRegistrationContentBindingRepository(RegistrationContentBindingReposito
         )
 
 
+class SqlRegistrationMetadataContentBindingRepository(RegistrationMetadataContentBindingRepository):
+    """Atomically pin a V3 candidate to one server-authored CR Aspect item."""
+
+    def __init__(self, session: AsyncSession) -> None:
+        self._session = session
+
+    async def verify_and_add(
+        self,
+        *,
+        command: CatalogMetadataBindingCommand,
+        change_request_id: UUID,
+        change_item_id: UUID,
+        created_by: UUID,
+    ) -> None:
+        manifest = await self._session.scalar(
+            select(ObjectManifestModel)
+            .where(
+                ObjectManifestModel.workspace_id == command.workspace_id,
+                ObjectManifestModel.id == command.upload_id,
+            )
+            .with_for_update()
+        )
+        preparation = await self._session.scalar(
+            select(UploadPreparationJobModel)
+            .where(
+                UploadPreparationJobModel.workspace_id == command.workspace_id,
+                UploadPreparationJobModel.id == command.preparation_id,
+                UploadPreparationJobModel.upload_id == command.upload_id,
+            )
+            .with_for_update()
+        )
+        receipt = await self._session.scalar(
+            select(UploadPreparationReceiptModel)
+            .where(
+                UploadPreparationReceiptModel.workspace_id == command.workspace_id,
+                UploadPreparationReceiptModel.id == command.receipt_id,
+                UploadPreparationReceiptModel.preparation_job_id == command.preparation_id,
+                UploadPreparationReceiptModel.upload_id == command.upload_id,
+            )
+            .with_for_update()
+        )
+        candidate = await self._session.scalar(
+            select(CatalogMetadataCandidateModel)
+            .where(
+                CatalogMetadataCandidateModel.workspace_id == command.workspace_id,
+                CatalogMetadataCandidateModel.id == command.candidate_id,
+                CatalogMetadataCandidateModel.receipt_id == command.receipt_id,
+            )
+            .with_for_update()
+        )
+        target = await self._session.scalar(
+            select(AssetProjectionModel)
+            .where(
+                AssetProjectionModel.workspace_id == command.workspace_id,
+                AssetProjectionModel.id == command.target_asset_id,
+            )
+            .with_for_update(read=True)
+        )
+        existing = await self._session.scalar(
+            select(RegistrationMetadataContentBindingModel.id)
+            .where(
+                RegistrationMetadataContentBindingModel.workspace_id == command.workspace_id,
+                or_(
+                    RegistrationMetadataContentBindingModel.candidate_id == command.candidate_id,
+                    RegistrationMetadataContentBindingModel.change_request_id == change_request_id,
+                    RegistrationMetadataContentBindingModel.change_item_id == change_item_id,
+                ),
+            )
+            .with_for_update()
+        )
+        member_count = (
+            await self._session.scalar(
+                select(func.count(CatalogMetadataCandidateRowModel.row_id)).where(
+                    CatalogMetadataCandidateRowModel.workspace_id == command.workspace_id,
+                    CatalogMetadataCandidateRowModel.receipt_id == command.receipt_id,
+                    CatalogMetadataCandidateRowModel.candidate_id == command.candidate_id,
+                    CatalogMetadataCandidateRowModel.candidate_hash == command.candidate_hash,
+                    CatalogMetadataCandidateRowModel.content_profile == command.content_profile,
+                )
+            )
+            if candidate is not None
+            else None
+        )
+        source_rows = (
+            tuple(
+                (
+                    await self._session.scalars(
+                        select(CatalogMetadataRowModel)
+                        .join(
+                            CatalogMetadataCandidateRowModel,
+                            and_(
+                                CatalogMetadataCandidateRowModel.workspace_id
+                                == CatalogMetadataRowModel.workspace_id,
+                                CatalogMetadataCandidateRowModel.receipt_id
+                                == CatalogMetadataRowModel.receipt_id,
+                                CatalogMetadataCandidateRowModel.row_id
+                                == CatalogMetadataRowModel.id,
+                            ),
+                        )
+                        .where(
+                            CatalogMetadataCandidateRowModel.workspace_id == command.workspace_id,
+                            CatalogMetadataCandidateRowModel.receipt_id == command.receipt_id,
+                            CatalogMetadataCandidateRowModel.candidate_id == command.candidate_id,
+                        )
+                        .order_by(CatalogMetadataCandidateRowModel.member_ordinal)
+                    )
+                ).all()
+            )
+            if candidate is not None
+            else ()
+        )
+        inactive_controlled_count = (
+            await self._session.scalar(
+                select(func.count(CatalogMetadataRowModel.id))
+                .join(
+                    CatalogMetadataCandidateRowModel,
+                    and_(
+                        CatalogMetadataCandidateRowModel.workspace_id
+                        == CatalogMetadataRowModel.workspace_id,
+                        CatalogMetadataCandidateRowModel.receipt_id
+                        == CatalogMetadataRowModel.receipt_id,
+                        CatalogMetadataCandidateRowModel.row_id == CatalogMetadataRowModel.id,
+                    ),
+                )
+                .outerjoin(
+                    CatalogVocabularyEntryModel,
+                    and_(
+                        CatalogVocabularyEntryModel.workspace_id
+                        == CatalogMetadataRowModel.workspace_id,
+                        CatalogVocabularyEntryModel.id == CatalogMetadataRowModel.controlled_ref_id,
+                        CatalogVocabularyEntryModel.kind == CatalogMetadataRowModel.controlled_kind,
+                        CatalogVocabularyEntryModel.lifecycle == "ACTIVE",
+                    ),
+                )
+                .where(
+                    CatalogMetadataCandidateRowModel.workspace_id == command.workspace_id,
+                    CatalogMetadataCandidateRowModel.receipt_id == command.receipt_id,
+                    CatalogMetadataCandidateRowModel.candidate_id == command.candidate_id,
+                    CatalogMetadataRowModel.controlled_ref_id.is_not(None),
+                    CatalogVocabularyEntryModel.id.is_(None),
+                )
+            )
+            if candidate is not None
+            else None
+        )
+        target_binding_hash = (
+            change_target_binding_hash(
+                target_ref=target.external_urn,
+                asset_id=target.id,
+                asset_type=target.asset_type,
+                system_id=target.system_id,
+                domain_id=target.domain_id,
+                owner_department_id=target.owner_department_id,
+                classification=Classification(target.classification),
+                lifecycle=target.lifecycle,
+            )
+            if target is not None
+            else None
+        )
+        expected_item_contract_hash = (
+            catalog_metadata_item_contract_hash(
+                workspace_id=command.workspace_id,
+                candidate_id=command.candidate_id,
+                content_profile=command.content_profile,
+                candidate_kind=command.candidate_kind,
+                candidate_hash=command.candidate_hash,
+                row_root_hash=candidate.row_root_hash,
+                aspect_name=command.aspect_name,
+                target_asset_id=command.target_asset_id,
+                target_binding_hash=command.target_binding_hash,
+                before_hash=command.before_hash,
+                after_hash=command.after_hash,
+            )
+            if candidate is not None
+            else None
+        )
+        if (
+            manifest is None
+            or preparation is None
+            or receipt is None
+            or candidate is None
+            or target is None
+            or existing is not None
+            or manifest.state != "ACCEPTED"
+            or manifest.version != preparation.source_manifest_version
+            or manifest.actual_sha256 != preparation.source_sha256
+            or manifest.content_profile != command.content_profile
+            or preparation.state != "READY"
+            or preparation.content_profile != command.content_profile
+            or receipt.content_profile != command.content_profile
+            or receipt.receipt_hash != command.receipt_hash
+            or receipt.manifest_version != manifest.version
+            or receipt.source_sha256 != preparation.source_sha256
+            or receipt.configuration_hash != preparation.configuration_hash
+            or candidate.content_profile != command.content_profile
+            or candidate.evidence_version != "CATALOG_METADATA_CANDIDATE_V3"
+            or candidate.candidate_kind != command.candidate_kind
+            or candidate.aspect_name != command.aspect_name
+            or candidate.candidate_hash != command.candidate_hash
+            or candidate.target_asset_id != command.target_asset_id
+            or expected_item_contract_hash != command.item_contract_hash
+            or member_count != candidate.row_count
+            or len(source_rows) != candidate.row_count
+            or inactive_controlled_count != 0
+            or target.deleted_at is not None
+            or target.lifecycle != "ACTIVE"
+            or not is_dataset_asset_type(target.asset_type)
+            or target.source_version != command.target_source_version
+            or target_binding_hash != command.target_binding_hash
+            or any(
+                (
+                    row.target_asset_id,
+                    row.submitted_platform,
+                    row.submitted_database_name,
+                    row.submitted_schema_name,
+                    row.submitted_table_name,
+                    row.aspect_name,
+                )
+                != (
+                    target.id,
+                    target.platform,
+                    target.database_name,
+                    target.schema_name,
+                    target.name,
+                    command.aspect_name,
+                )
+                for row in source_rows
+            )
+            or (
+                command.aspect_name == "schemaMetadata"
+                and (
+                    target.column_names_truncated
+                    or any(
+                        row.field_path is None or target.column_names.count(row.field_path) != 1
+                        for row in source_rows
+                    )
+                )
+            )
+        ):
+            raise ConflictError(
+                "The typed catalog metadata candidate is stale or already bound.",
+                details={"code": "CATALOG_METADATA_CANDIDATE_STALE"},
+            )
+        created_at = await self._session.scalar(select(func.clock_timestamp()))
+        if not isinstance(created_at, datetime):
+            raise RuntimeError("PostgreSQL clock_timestamp() did not return a timestamp.")
+        self._session.add(
+            RegistrationMetadataContentBindingModel(
+                id=uuid7(),
+                workspace_id=command.workspace_id,
+                candidate_id=command.candidate_id,
+                candidate_hash=command.candidate_hash,
+                content_profile=command.content_profile,
+                candidate_kind=command.candidate_kind,
+                aspect_name=command.aspect_name,
+                before_hash=command.before_hash,
+                after_hash=command.after_hash,
+                item_contract_hash=command.item_contract_hash,
+                change_request_id=change_request_id,
+                change_item_id=change_item_id,
+                created_by=created_by,
+                created_at=created_at,
+            )
+        )
+
+
 class SqlGovernanceUnitOfWork(GovernanceUnitOfWork):
     def __init__(
         self,
@@ -1954,6 +2235,7 @@ class SqlGovernanceUnitOfWork(GovernanceUnitOfWork):
         self._owns_session = session is None
         self.change_requests: SqlChangeRequestRepository
         self.registration_content_bindings: SqlRegistrationContentBindingRepository
+        self.registration_metadata_content_bindings: SqlRegistrationMetadataContentBindingRepository
         self.workflow_authorities: SqlChangeWorkflowAuthorityReader
         self.manual_metadata_submissions: SqlManualMetadataSubmissionRepository
         self.outbox: SqlOutboxWriter
@@ -1965,6 +2247,9 @@ class SqlGovernanceUnitOfWork(GovernanceUnitOfWork):
             self._session = self._session_factory()
         self.change_requests = SqlChangeRequestRepository(self._session)
         self.registration_content_bindings = SqlRegistrationContentBindingRepository(self._session)
+        self.registration_metadata_content_bindings = (
+            SqlRegistrationMetadataContentBindingRepository(self._session)
+        )
         self.workflow_authorities = SqlChangeWorkflowAuthorityReader(self._session)
         self.manual_metadata_submissions = SqlManualMetadataSubmissionRepository(self._session)
         self.outbox = SqlOutboxWriter(self._session)

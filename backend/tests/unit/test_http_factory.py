@@ -174,11 +174,17 @@ def test_openapi_contains_all_required_product_modules() -> None:
         "/api/v1/catalog/assets/{asset_id}/controlled-metadata-change-requests",
         "/api/v1/uploads",
         "/api/v1/uploads/operator-capability",
+        "/api/v1/uploads/metadata-vocabulary",
+        "/api/v1/uploads/metadata-vocabulary/sync",
+        "/api/v1/uploads/profiles/{content_profile}/template",
         "/api/v1/uploads/{upload_id}/preparations",
         "/api/v1/uploads/{upload_id}/preparations/{preparation_id}",
         "/api/v1/uploads/{upload_id}/preparations/{preparation_id}/candidates",
         "/api/v1/uploads/{upload_id}/preparations/{preparation_id}/candidates/{candidate_id}/preview",
         "/api/v1/uploads/{upload_id}/preparations/{preparation_id}/candidates/{candidate_id}/change-request",
+        "/api/v1/uploads/{upload_id}/preparations/{preparation_id}/metadata-candidates",
+        "/api/v1/uploads/{upload_id}/preparations/{preparation_id}/metadata-candidates/{candidate_id}/preview",
+        "/api/v1/uploads/{upload_id}/preparations/{preparation_id}/metadata-candidates/{candidate_id}/change-request",
         "/api/v1/uploads/{upload_id}/registration-proposals",
         "/api/v1/change-requests",
         "/api/v1/change-requests/{change_request_id}/apply-report",
@@ -590,6 +596,8 @@ def test_upload_preparation_openapi_is_typed_and_server_managed() -> None:
     assert profile["default"] == "FORMAT_ONLY_V1"
     assert profile["enum"] == [
         "FORMAT_ONLY_V1",
+        "CATALOG_METADATA_ROWS_CSV_V1",
+        "CATALOG_METADATA_ROWS_XLSX_V1",
         "DATASET_DESCRIPTION_CSV_V1",
         "DATASET_DESCRIPTION_XLSX_V1",
     ]
@@ -628,6 +636,31 @@ def test_upload_preparation_openapi_is_typed_and_server_managed() -> None:
         "parser_configuration",
         "rows",
     }.isdisjoint(response["properties"])
+
+
+def test_typed_upload_template_is_an_authenticated_server_versioned_download() -> None:
+    factory = cast(Callable[[Settings], AppContainer], lambda _: LiveOnlyContainer())
+    document = create_app(settings(), container_factory=factory).openapi()
+
+    operation = document["paths"]["/api/v1/uploads/profiles/{content_profile}/template"]["get"]
+    assert "requestBody" not in operation
+    profile = next(
+        parameter for parameter in operation["parameters"] if parameter["name"] == "content_profile"
+    )
+    assert set(profile["schema"]["enum"]) == {
+        "DATASET_DESCRIPTION_CSV_V1",
+        "DATASET_DESCRIPTION_XLSX_V1",
+        "CATALOG_METADATA_ROWS_CSV_V1",
+        "CATALOG_METADATA_ROWS_XLSX_V1",
+    }
+    content = operation["responses"]["200"]["content"]
+    assert "application/json" not in content
+    assert content == {
+        "text/csv": {"schema": {"type": "string", "format": "binary"}},
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": {
+            "schema": {"type": "string", "format": "binary"}
+        },
+    }
 
 
 def test_upload_candidate_openapi_is_bounded_read_only_and_non_disclosing() -> None:
@@ -720,6 +753,63 @@ def test_typed_bulk_candidate_command_accepts_no_provider_or_storage_document() 
         "bucket",
         "accepted_etag",
         "accepted_version_id",
+        "credential",
+        "token",
+    ):
+        assert forbidden not in serialized
+
+
+def test_catalog_metadata_candidate_contract_is_bounded_and_non_disclosing() -> None:
+    factory = cast(Callable[[Settings], AppContainer], lambda _: LiveOnlyContainer())
+    document = create_app(settings(), container_factory=factory).openapi()
+    base = "/api/v1/uploads/{upload_id}/preparations/{preparation_id}/metadata-candidates"
+
+    listing = document["paths"][base]["get"]
+    parameters = {parameter["name"]: parameter for parameter in listing["parameters"]}
+    assert "requestBody" not in listing
+    assert parameters["limit"]["schema"] == {
+        "type": "integer",
+        "maximum": 50,
+        "minimum": 1,
+        "default": 20,
+        "title": "Limit",
+    }
+    assert parameters["cursor"]["schema"]["anyOf"][0]["maxLength"] == 2048
+
+    preview = document["paths"][f"{base}/{{candidate_id}}/preview"]["get"]
+    creation = document["paths"][f"{base}/{{candidate_id}}/change-request"]["post"]
+    assert "requestBody" not in preview
+    headers = {
+        parameter["name"] for parameter in creation["parameters"] if parameter.get("in") == "header"
+    }
+    assert {"If-Match", "Idempotency-Key"} <= headers
+
+    request_schema = document["components"]["schemas"]["TypedBulkChangeRequestCreate"]
+    candidate_schema = document["components"]["schemas"]["CatalogMetadataCandidateResponse"]
+    preview_schema = document["components"]["schemas"]["TypedCatalogMetadataPreviewResponse"]
+    response_schema = document["components"]["schemas"]["TypedCatalogMetadataChangeRequestResponse"]
+    assert set(request_schema["properties"]) == {"title", "reason"}
+    assert set(response_schema["properties"]) == {"id", "number", "request_type", "state"}
+    assert "aspect_name" not in candidate_schema["properties"]
+    assert "aspect_name" not in preview_schema["properties"]
+    assert candidate_schema["properties"]["field_path_sample"]["maxItems"] == 20
+    assert preview_schema["properties"]["description_change_sample"]["maxItems"] == 20
+
+    serialized = str(
+        {
+            "candidate": candidate_schema,
+            "preview": preview_schema,
+            "request": request_schema,
+            "response": response_schema,
+        }
+    ).lower()
+    for forbidden in (
+        "after_document",
+        "object_key",
+        "bucket",
+        "provider",
+        "controlled_ref_id",
+        "controlled_ref_urn",
         "credential",
         "token",
     ):
@@ -860,6 +950,48 @@ def test_openapi_keeps_inference_profile_proposals_out_of_the_browser_contract()
     serialized = str(document["components"]["schemas"]).lower()
     for forbidden in ("endpoint_url", "api_key", "credential", "secret_key"):
         assert forbidden not in serialized
+
+
+def test_openapi_exposes_only_local_bounded_catalog_metadata_vocabulary_contract() -> None:
+    factory = cast(Callable[[Settings], AppContainer], lambda _: LiveOnlyContainer())
+    document = create_app(settings(), container_factory=factory).openapi()
+
+    listing = document["paths"]["/api/v1/uploads/metadata-vocabulary"]["get"]
+    assert "requestBody" not in listing
+    parameters = {parameter["name"]: parameter for parameter in listing["parameters"]}
+    assert parameters["limit"]["schema"]["minimum"] == 1
+    assert parameters["limit"]["schema"]["maximum"] == 50
+    assert parameters["cursor"]["schema"]["anyOf"][0]["maxLength"] == 2000
+    assert parameters["q"]["schema"]["anyOf"][0]["maxLength"] == 200
+    assert set(parameters["kind"]["schema"]["enum"]) == {"DOMAIN", "TAG", "TERM"}
+
+    entry = document["components"]["schemas"]["CatalogMetadataVocabularyItemResponse"]
+    assert set(entry["properties"]) == {
+        "id",
+        "kind",
+        "display_name",
+        "source_version",
+    }
+    serialized_entry = str(entry).lower()
+    for forbidden in (
+        "provider",
+        "provider_ref",
+        "urn",
+        "credential",
+        "secret",
+        "endpoint",
+    ):
+        assert forbidden not in serialized_entry
+    listing_schema = document["components"]["schemas"]["CatalogMetadataVocabularyListResponse"]
+    assert listing_schema["properties"]["items"]["maxItems"] == 50
+
+    mutation = document["paths"]["/api/v1/uploads/metadata-vocabulary/sync"]["post"]
+    assert any(
+        parameter["name"] == "Idempotency-Key" and parameter["required"] is True
+        for parameter in mutation["parameters"]
+    )
+    request_schema = document["components"]["schemas"]["CatalogMetadataVocabularySyncRequest"]
+    assert set(request_schema["properties"]) == {"sync_id", "kind", "offset", "limit"}
 
 
 def test_classification_admin_requests_cannot_supply_policy_bindings_for_grants() -> None:

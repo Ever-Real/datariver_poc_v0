@@ -30,6 +30,13 @@ function clientWith(
     reason_code: 'ELIGIBLE',
     allowed_roles: ['ADMIN', 'DATA_STEWARD'],
   },
+  download: (
+    path: string,
+    options?: Pick<RequestOptions, 'signal'>,
+  ) => Promise<{ blob: Blob; filename: string; etag?: string }> = () => Promise.resolve({
+    blob: new Blob(),
+    filename: 'download',
+  }),
 ): ApiClient {
   return {
     request: vi.fn((path: string, options?: RequestOptions) => (
@@ -37,6 +44,7 @@ function clientWith(
         ? Promise.resolve(capability)
         : request(path, options)
     )),
+    download: vi.fn(download),
   } as unknown as ApiClient
 }
 
@@ -1194,6 +1202,7 @@ describe('Registration workbench', () => {
     fireEvent.click(within(preview).getByRole('button', { name: '검토 및 변경요청' }))
     expect(await within(preview).findByText('Current description')).toBeInTheDocument()
     expect(within(preview).getAllByText('Clarify the event identifier.')).toHaveLength(2)
+    expect(within(preview).queryByText('urn:li:dataset:asset-1')).not.toBeInTheDocument()
     fireEvent.click(within(preview).getByRole('button', { name: '검증된 후보로 변경요청 생성' }))
     expect(await within(preview).findByText(/CR-POSTGRES-260101-ABCD/)).toBeInTheDocument()
     const createCall = request.mock.calls.find(([path]) => (
@@ -1212,6 +1221,274 @@ describe('Registration workbench', () => {
     expect(await within(preview).findByText('Second bounded candidate page.')).toBeInTheDocument()
     fireEvent.click(within(preview).getByRole('button', { name: '이전 후보' }))
     expect(await within(preview).findByText('Clarify the event identifier.')).toBeInTheDocument()
+  })
+
+  it('uses bounded server pages to create one governed catalog metadata change request', async () => {
+    let createAttempts = 0
+    const upload = uploadRecord(
+      'ACCEPTED',
+      'catalog-metadata.csv',
+      'CATALOG_METADATA_ROWS_CSV_V1',
+    )
+    const ready: UploadPreparation = {
+      ...preparationRecord('READY'),
+      content_profile: 'CATALOG_METADATA_ROWS_CSV_V1',
+      rows_processed: 2,
+      total_rows: 2,
+    }
+    const candidate = {
+      id: 'metadata-candidate-1',
+      ordinal: 1,
+      evidence_version: 'CATALOG_METADATA_CANDIDATE_V3',
+      record_kind: 'COLUMN_DESCRIPTION',
+      candidate_kind: 'COLUMN_DESCRIPTION_UPDATE',
+      aspect_name: 'schemaMetadata',
+      operation_count: 2,
+      field_path_sample: ['event_id', 'event_time'],
+      controlled_reference_count: 0,
+      row_summary_truncated: false,
+      submitted_identity: {
+        platform: 'postgres',
+        database_name: 'fab',
+        schema_name: 'quality',
+        table_name: 'wafer_events',
+        identity_hash: 'a'.repeat(64),
+      },
+      candidate_hash: 'b'.repeat(64),
+      created_at: '2026-01-01T00:00:00Z',
+      current_target: {
+        id: 'asset-1',
+        asset_type: 'DATASET',
+        name: 'wafer_events',
+        platform: 'postgres',
+        database_name: 'fab',
+        schema_name: 'quality',
+        classification: 'INTERNAL',
+        lifecycle: 'ACTIVE',
+        source_version: 'source-v3',
+        observed_at: '2026-01-01T00:00:00Z',
+      },
+      target_ref: 'urn:li:dataset:must-not-enter-ui-state',
+      controlled_ref: 'urn:li:tag:must-not-enter-ui-state',
+      after_document: { secret: 'raw-after-document-secret' },
+      object_key: 'private/storage/coordinate.csv',
+    }
+    const firstPage = {
+      items: [candidate],
+      page: { limit: 20, next_cursor: 'metadata-page-2' },
+      receipt: {
+        id: 'metadata-receipt-1',
+        preparation_id: 'preparation-1',
+        manifest_version: 3,
+        source_sha256: 'c'.repeat(64),
+        content_profile: 'CATALOG_METADATA_ROWS_CSV_V1',
+        parser_version: 'catalog-parser-v1',
+        scanner_version: 'scanner-v1',
+        schema_version: 'catalog-schema-v1',
+        configuration_hash: 'd'.repeat(64),
+        item_count: 2,
+        candidate_count: 1,
+        candidate_root_hash: 'e'.repeat(64),
+        receipt_hash: 'f'.repeat(64),
+        observed_at: '2026-01-01T00:00:00Z',
+        created_at: '2026-01-01T00:00:00Z',
+      },
+      meta: {
+        projection_version: 3,
+        policy_version: 'test',
+        classification_policy_version: 1,
+        authorization_generation: 2,
+      },
+    }
+    const request = vi.fn((path: string, options?: RequestOptions) => {
+      if (path.startsWith('/catalog/tree')) return Promise.resolve(emptyTree)
+      if (path === '/uploads?limit=50') return Promise.resolve({ items: [upload] })
+      if (path === '/uploads/upload-1/preparations?limit=20') {
+        return Promise.resolve({ items: [ready] })
+      }
+      if (
+        path
+        === '/uploads/upload-1/preparations/preparation-1/metadata-candidates?limit=20'
+      ) return Promise.resolve(firstPage)
+      if (
+        path
+        === '/uploads/upload-1/preparations/preparation-1/metadata-candidates?limit=20&cursor=metadata-page-2'
+      ) {
+        return Promise.resolve({
+          ...firstPage,
+          items: [{
+            ...candidate,
+            id: 'metadata-candidate-2',
+            ordinal: 2,
+            record_kind: 'DATASET_TAG',
+            candidate_kind: 'DATASET_TAG_ADD',
+            aspect_name: 'globalTags',
+            operation_count: 1,
+            field_path_sample: [],
+            controlled_reference_count: 1,
+          }],
+          page: { limit: 20 },
+        })
+      }
+      if (
+        path
+        === '/uploads/upload-1/preparations/preparation-1/metadata-candidates/metadata-candidate-1/preview'
+      ) {
+        return Promise.resolve({
+          candidate_id: 'metadata-candidate-1',
+          target_asset_id: 'asset-1',
+          platform: 'postgres',
+          database_name: 'fab',
+          schema_name: 'quality',
+          table_name: 'wafer_events',
+          record_kind: 'COLUMN_DESCRIPTION',
+          candidate_kind: 'COLUMN_DESCRIPTION_UPDATE',
+          aspect_name: 'schemaMetadata',
+          operation_count: 2,
+          description_change_count: 2,
+          description_change_sample: [
+            {
+              field_path: 'event_id',
+              current_description: 'Old identifier',
+              proposed_description: 'Stable event identifier',
+            },
+            {
+              field_path: 'event_time',
+              current_description: null,
+              proposed_description: 'Event occurrence time',
+            },
+          ],
+          description_changes_truncated: false,
+          current_reference_count: 0,
+          proposed_reference_count: 0,
+          before_hash: '1'.repeat(64),
+          after_hash: '2'.repeat(64),
+          source_version: 'provider-v7',
+          observed_at: '2026-01-01T00:00:00Z',
+          preview_etag: `"${'3'.repeat(64)}"`,
+          target_ref: 'urn:li:dataset:must-not-enter-ui-state',
+          controlled_ref: 'urn:li:tag:must-not-enter-ui-state',
+          after_document: { secret: 'raw-after-document-secret' },
+          bucket: 'private-bucket',
+        })
+      }
+      if (
+        path
+        === '/uploads/upload-1/preparations/preparation-1/metadata-candidates/metadata-candidate-1/change-request'
+        && options?.method === 'POST'
+      ) {
+        createAttempts += 1
+        if (createAttempts === 1) {
+          return Promise.reject(new TypeError('response lost after server acceptance'))
+        }
+        return Promise.resolve({
+          id: 'metadata-change-1',
+          number: 'CR-METADATA-260101-ABCD',
+          request_type: 'BULK_CATALOG_METADATA',
+          state: 'REGISTERED',
+          target_ref: 'urn:li:dataset:must-not-enter-ui-state',
+          after_document: { secret: 'raw-after-document-secret' },
+        })
+      }
+      throw new Error(`unexpected request: ${path}`)
+    })
+
+    render(<RegistrationPage client={clientWith(request)} />)
+    fireEvent.click(await screen.findByRole('tab', { name: /BULK/ }))
+    fireEvent.click(await screen.findByRole('button', { name: /catalog-metadata.csv/ }))
+    fireEvent.click(await screen.findByRole('button', { name: '후보 조회' }))
+
+    const preview = await screen.findByRole('region', { name: '등록 후보 미리보기' })
+    expect(within(preview).getByText('컬럼 설명')).toBeInTheDocument()
+    expect(within(preview).getByText('event_id, event_time')).toBeInTheDocument()
+    expect(within(preview).queryByText(/must-not-enter-ui-state/)).not.toBeInTheDocument()
+    expect(within(preview).queryByText(/raw-after-document-secret/)).not.toBeInTheDocument()
+    expect(within(preview).queryByText(/private\/storage/)).not.toBeInTheDocument()
+    expect(within(preview).queryByText('schemaMetadata')).not.toBeInTheDocument()
+
+    fireEvent.click(within(preview).getByRole('button', { name: '검토 및 변경요청' }))
+    expect(await within(preview).findByText('Stable event identifier')).toBeInTheDocument()
+    expect(within(preview).getByText('Event occurrence time')).toBeInTheDocument()
+    fireEvent.click(within(preview).getByRole('button', {
+      name: '검증된 후보로 변경요청 생성',
+    }))
+    expect(await screen.findByRole('alert')).toHaveTextContent(
+      'response lost after server acceptance',
+    )
+    fireEvent.click(within(preview).getByRole('button', {
+      name: '검증된 후보로 변경요청 생성',
+    }))
+    expect(await within(preview).findByText(/CR-METADATA-260101-ABCD/)).toBeInTheDocument()
+
+    const createCalls = request.mock.calls.filter(([path]) => path.endsWith(
+      '/metadata-candidates/metadata-candidate-1/change-request',
+    ))
+    expect(createCalls).toHaveLength(2)
+    expect(createCalls[0]?.[1]?.ifMatch).toBe(`"${'3'.repeat(64)}"`)
+    expect(createCalls[0]?.[1]?.idempotencyKey).toMatch(/^typed-catalog-metadata-change-/)
+    expect(createCalls[1]?.[1]?.idempotencyKey).toBe(createCalls[0]?.[1]?.idempotencyKey)
+    expect(JSON.parse(createCalls[0]?.[1]?.body as string)).toEqual({
+      title: 'wafer_events 컬럼 설명 변경',
+      reason: '검증된 BULK 업로드 후보를 변경관리 검토 대상으로 등록합니다.',
+    })
+
+    fireEvent.click(within(preview).getByRole('button', { name: '다음 후보' }))
+    expect(await within(preview).findByText('태그 추가')).toBeInTheDocument()
+    expect(within(preview).queryByText('컬럼 설명')).not.toBeInTheDocument()
+    fireEvent.click(within(preview).getByRole('button', { name: '이전 후보' }))
+    expect(await within(preview).findByText('컬럼 설명')).toBeInTheDocument()
+    expect(within(preview).queryByText('태그 추가')).not.toBeInTheDocument()
+  })
+
+  it('downloads the server-versioned template only for the new typed profiles', async () => {
+    const request = vi.fn((path: string) => Promise.resolve(
+      path.startsWith('/uploads') ? { items: [] } : emptyTree,
+    ))
+    const download = vi.fn().mockResolvedValue({
+      blob: new Blob([
+        'record_kind,asset_id,platform,database_name,schema_name,table_name,field_path,operation,value_text,controlled_ref\n',
+      ], { type: 'text/csv' }),
+      filename: 'catalog-metadata-template-v3.csv',
+      etag: '"template-v3"',
+    })
+    const createObjectURL = vi.fn().mockReturnValue('blob:template-v3')
+    const revokeObjectURL = vi.fn()
+    vi.stubGlobal('URL', {
+      ...URL,
+      createObjectURL,
+      revokeObjectURL,
+    })
+    const anchorClick = vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => {})
+    render(<RegistrationPage client={clientWith(request, undefined, download)} />)
+    fireEvent.click(await screen.findByRole('tab', { name: /BULK/ }))
+    const profile = screen.getByLabelText('등록 프로파일')
+
+    expect(screen.queryByRole('button', { name: '서버 템플릿 받기' }))
+      .not.toBeInTheDocument()
+    fireEvent.change(profile, { target: { value: 'CATALOG_METADATA_ROWS_CSV_V1' } })
+    fireEvent.click(screen.getByRole('button', { name: '서버 템플릿 받기' }))
+    await waitFor(() => expect(download).toHaveBeenCalledOnce())
+    const downloadCall = download.mock.calls[0] as unknown as [
+      string,
+      { signal?: AbortSignal },
+    ]
+    expect(downloadCall[0]).toBe('/uploads/profiles/CATALOG_METADATA_ROWS_CSV_V1/template')
+    expect(downloadCall[1].signal).toBeInstanceOf(AbortSignal)
+    expect(createObjectURL).toHaveBeenCalledWith(expect.any(Blob))
+    expect(anchorClick).toHaveBeenCalledOnce()
+    expect(revokeObjectURL).toHaveBeenCalledWith('blob:template-v3')
+    expect(document.querySelector('a[href^="data:"]')).not.toBeInTheDocument()
+    expect(document.querySelector('input[type="file"]')).toHaveAttribute(
+      'accept',
+      '.csv,text/csv',
+    )
+
+    fireEvent.change(profile, { target: { value: 'CATALOG_METADATA_ROWS_XLSX_V1' } })
+    expect(document.querySelector('input[type="file"]')).toHaveAttribute(
+      'accept',
+      '.xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+    )
+    anchorClick.mockRestore()
   })
 
   it.each(['READY', 'FAILED', 'STALE'] as const)(

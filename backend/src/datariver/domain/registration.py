@@ -25,6 +25,8 @@ class UploadContentProfile(StrEnum):
     FORMAT_ONLY_V1 = "FORMAT_ONLY_V1"
     DATASET_DESCRIPTION_CSV_V1 = "DATASET_DESCRIPTION_CSV_V1"
     DATASET_DESCRIPTION_XLSX_V1 = "DATASET_DESCRIPTION_XLSX_V1"
+    CATALOG_METADATA_ROWS_CSV_V1 = "CATALOG_METADATA_ROWS_CSV_V1"
+    CATALOG_METADATA_ROWS_XLSX_V1 = "CATALOG_METADATA_ROWS_XLSX_V1"
 
 
 class UploadPreparationState(StrEnum):
@@ -72,16 +74,24 @@ class UploadManifest:
 
     def __post_init__(self) -> None:
         if (
-            self.content_profile is UploadContentProfile.DATASET_DESCRIPTION_CSV_V1
+            self.content_profile
+            in {
+                UploadContentProfile.DATASET_DESCRIPTION_CSV_V1,
+                UploadContentProfile.CATALOG_METADATA_ROWS_CSV_V1,
+            }
             and self.declared_mime != "text/csv"
         ):
-            raise ValidationError("The dataset-description profile requires a CSV upload.")
+            raise ValidationError("The selected content profile requires a CSV upload.")
         if (
-            self.content_profile is UploadContentProfile.DATASET_DESCRIPTION_XLSX_V1
+            self.content_profile
+            in {
+                UploadContentProfile.DATASET_DESCRIPTION_XLSX_V1,
+                UploadContentProfile.CATALOG_METADATA_ROWS_XLSX_V1,
+            }
             and self.declared_mime
             != "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
         ):
-            raise ValidationError("The dataset-description XLSX profile requires an XLSX upload.")
+            raise ValidationError("The selected content profile requires an XLSX upload.")
 
     def queue_completion(self, *, parts: list[CompletedUploadPart], expected_version: int) -> None:
         self._check_version(expected_version)

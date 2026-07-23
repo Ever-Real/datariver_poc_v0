@@ -130,6 +130,16 @@ class ChangeItemModel(Base, UuidPrimaryKeyMixin):
             "id",
             name="uq_change_request_item_request_identity",
         ),
+        UniqueConstraint(
+            "workspace_id",
+            "change_request_id",
+            "id",
+            "aspect_name",
+            "before_hash",
+            "after_hash",
+            "item_contract_hash",
+            name="uq_change_request_items_metadata_contract",
+        ),
         CheckConstraint(
             "(target_asset_id IS NULL AND target_asset_type IS NULL "
             "AND target_system_id IS NULL AND target_domain_id IS NULL "
@@ -150,6 +160,10 @@ class ChangeItemModel(Base, UuidPrimaryKeyMixin):
         CheckConstraint(
             "target_binding_hash IS NULL OR target_binding_hash ~ '^[0-9a-f]{64}$'",
             name="target_binding_hash_sha256",
+        ),
+        CheckConstraint(
+            "item_contract_hash IS NULL OR item_contract_hash ~ '^[0-9a-f]{64}$'",
+            name="item_contract_hash_sha256",
         ),
         ForeignKeyConstraint(
             ("workspace_id", "change_request_id"),
@@ -185,6 +199,7 @@ class ChangeItemModel(Base, UuidPrimaryKeyMixin):
     target_source_version: Mapped[str | None] = mapped_column(String(255))
     target_observed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     target_binding_hash: Mapped[str | None] = mapped_column(String(64))
+    item_contract_hash: Mapped[str | None] = mapped_column(String(64))
     routing_system_id: Mapped[UUID | None] = mapped_column(Uuid(as_uuid=True))
 
 
@@ -426,6 +441,108 @@ class RegistrationContentBindingModel(Base, UuidPrimaryKeyMixin):
     workspace_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), nullable=False)
     candidate_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), nullable=False)
     candidate_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    change_request_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), nullable=False)
+    change_item_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), nullable=False)
+    created_by: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class RegistrationMetadataContentBindingModel(Base, UuidPrimaryKeyMixin):
+    """Exact candidate/profile/Aspect binding for a server-authored metadata CR item."""
+
+    __tablename__ = "registration_metadata_content_bindings"
+    __table_args__ = (
+        UniqueConstraint("workspace_id", "id"),
+        UniqueConstraint("workspace_id", "candidate_id"),
+        UniqueConstraint("workspace_id", "change_request_id"),
+        UniqueConstraint("workspace_id", "change_item_id"),
+        CheckConstraint(
+            "content_profile IN ('CATALOG_METADATA_ROWS_CSV_V1', 'CATALOG_METADATA_ROWS_XLSX_V1')",
+            name="content_profile_allowlist",
+        ),
+        CheckConstraint(
+            "(candidate_kind = 'TABLE_DESCRIPTION_UPDATE' "
+            "AND aspect_name = 'datasetProperties') OR "
+            "(candidate_kind = 'COLUMN_DESCRIPTION_UPDATE' "
+            "AND aspect_name = 'schemaMetadata') OR "
+            "(candidate_kind = 'DATASET_DOMAIN_UPDATE' AND aspect_name = 'domains') OR "
+            "(candidate_kind = 'DATASET_TERM_ADD' AND aspect_name = 'glossaryTerms') OR "
+            "(candidate_kind = 'DATASET_TAG_ADD' AND aspect_name = 'globalTags')",
+            name="candidate_aspect",
+        ),
+        CheckConstraint(
+            "candidate_hash ~ '^[0-9a-f]{64}$' "
+            "AND before_hash ~ '^[0-9a-f]{64}$' "
+            "AND after_hash ~ '^[0-9a-f]{64}$' "
+            "AND item_contract_hash ~ '^[0-9a-f]{64}$'",
+            name="content_hashes_valid",
+        ),
+        ForeignKeyConstraint(
+            (
+                "workspace_id",
+                "candidate_id",
+                "content_profile",
+                "candidate_kind",
+                "aspect_name",
+                "candidate_hash",
+            ),
+            (
+                "integration.catalog_metadata_candidates.workspace_id",
+                "integration.catalog_metadata_candidates.id",
+                "integration.catalog_metadata_candidates.content_profile",
+                "integration.catalog_metadata_candidates.candidate_kind",
+                "integration.catalog_metadata_candidates.aspect_name",
+                "integration.catalog_metadata_candidates.candidate_hash",
+            ),
+            name="fk_registration_metadata_bindings_candidate_content",
+            ondelete="RESTRICT",
+        ),
+        ForeignKeyConstraint(
+            (
+                "workspace_id",
+                "change_request_id",
+                "change_item_id",
+                "aspect_name",
+                "before_hash",
+                "after_hash",
+                "item_contract_hash",
+            ),
+            (
+                "governance.change_request_items.workspace_id",
+                "governance.change_request_items.change_request_id",
+                "governance.change_request_items.id",
+                "governance.change_request_items.aspect_name",
+                "governance.change_request_items.before_hash",
+                "governance.change_request_items.after_hash",
+                "governance.change_request_items.item_contract_hash",
+            ),
+            name="fk_registration_metadata_bindings_request_item",
+            ondelete="RESTRICT",
+        ),
+        ForeignKeyConstraint(
+            ("workspace_id", "change_request_id"),
+            ("governance.change_requests.workspace_id", "governance.change_requests.id"),
+            name="fk_registration_metadata_bindings_request",
+            ondelete="RESTRICT",
+        ),
+        ForeignKeyConstraint(
+            ("workspace_id", "created_by"),
+            ("iam.workspace_memberships.workspace_id", "iam.workspace_memberships.subject_id"),
+            name="fk_registration_metadata_bindings_creator",
+            ondelete="RESTRICT",
+        ),
+        {"schema": "governance"},
+    )
+
+    workspace_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), nullable=False)
+    candidate_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), nullable=False)
+    candidate_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    content_profile: Mapped[str] = mapped_column(String(100), nullable=False)
+    candidate_kind: Mapped[str] = mapped_column(String(100), nullable=False)
+    aspect_name: Mapped[str] = mapped_column(String(64), nullable=False)
+    before_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    after_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    item_contract_hash: Mapped[str] = mapped_column(String(64), nullable=False)
     change_request_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), nullable=False)
     change_item_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), nullable=False)
     created_by: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), nullable=False)

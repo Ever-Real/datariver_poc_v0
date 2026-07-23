@@ -8,11 +8,14 @@ from sqlalchemy import and_, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from datariver.application.dto import (
+    CatalogMetadataCandidateEvidence,
+    CatalogMetadataRowEvidenceRecord,
     ObjectMetadata,
     UploadPreparationReceiptEvidence,
     UploadRegistrationCandidateEvidence,
 )
 from datariver.application.ports import (
+    CatalogMetadataCandidateReader,
     UploadCandidateReader,
     UploadCompletionStore,
     UploadPreparationRepository,
@@ -32,6 +35,9 @@ from datariver.domain.registration import (
 )
 from datariver.infrastructure.db.governance import SqlIdempotencyStore, SqlOutboxWriter
 from datariver.infrastructure.db.models.integration import (
+    CatalogMetadataCandidateModel,
+    CatalogMetadataCandidateRowModel,
+    CatalogMetadataRowModel,
     ObjectManifestModel,
     UploadPreparationJobModel,
     UploadPreparationReceiptModel,
@@ -451,6 +457,269 @@ class SqlUploadCandidateReader(UploadCandidateReader):
             ).all()
         )
         return [_to_candidate(model) for model in models]
+
+
+class SqlCatalogMetadataCandidateReader(CatalogMetadataCandidateReader):
+    _V3 = "CATALOG_METADATA_CANDIDATE_V3"
+
+    def __init__(self, session: AsyncSession) -> None:
+        self._session = session
+
+    async def get_ready_receipt(
+        self,
+        *,
+        workspace_id: UUID,
+        upload_id: UUID,
+        preparation_id: UUID,
+    ) -> UploadPreparationReceiptEvidence | None:
+        candidates = CatalogMetadataCandidateModel
+        candidate_stats = (
+            select(
+                candidates.receipt_id.label("receipt_id"),
+                func.count(candidates.id).label("candidate_count"),
+                func.min(candidates.candidate_ordinal).label("first_ordinal"),
+                func.max(candidates.candidate_ordinal).label("last_ordinal"),
+                func.count(candidates.id)
+                .filter(candidates.evidence_version != self._V3)
+                .label("legacy_candidate_count"),
+            )
+            .where(candidates.workspace_id == workspace_id)
+            .group_by(candidates.receipt_id)
+            .subquery()
+        )
+        receipts = UploadPreparationReceiptModel
+        jobs = UploadPreparationJobModel
+        row = (
+            (
+                await self._session.execute(
+                    select(
+                        receipts.id.label("receipt_id"),
+                        receipts.workspace_id,
+                        receipts.preparation_job_id.label("preparation_id"),
+                        receipts.upload_id,
+                        receipts.manifest_version,
+                        receipts.source_sha256,
+                        receipts.accepted_sha256,
+                        receipts.object_locator_hash,
+                        receipts.accepted_etag,
+                        receipts.accepted_version_id,
+                        receipts.content_profile,
+                        receipts.parser_version,
+                        receipts.scanner_version,
+                        receipts.schema_version,
+                        receipts.configuration_hash,
+                        receipts.item_count,
+                        receipts.rejected_count,
+                        receipts.candidate_root_hash,
+                        receipts.receipt_hash,
+                        receipts.observed_at,
+                        receipts.created_at,
+                        candidate_stats.c.candidate_count,
+                        candidate_stats.c.first_ordinal,
+                        candidate_stats.c.last_ordinal,
+                        candidate_stats.c.legacy_candidate_count,
+                    )
+                    .join(
+                        jobs,
+                        and_(
+                            jobs.workspace_id == receipts.workspace_id,
+                            jobs.id == receipts.preparation_job_id,
+                            jobs.upload_id == receipts.upload_id,
+                        ),
+                    )
+                    .join(candidate_stats, candidate_stats.c.receipt_id == receipts.id)
+                    .where(
+                        receipts.workspace_id == workspace_id,
+                        receipts.upload_id == upload_id,
+                        receipts.preparation_job_id == preparation_id,
+                        jobs.state == UploadPreparationState.READY.value,
+                    )
+                )
+            )
+            .mappings()
+            .one_or_none()
+        )
+        if row is None:
+            return None
+        return UploadPreparationReceiptEvidence(
+            receipt_id=row["receipt_id"],
+            workspace_id=row["workspace_id"],
+            preparation_id=row["preparation_id"],
+            upload_id=row["upload_id"],
+            manifest_version=row["manifest_version"],
+            source_sha256=row["source_sha256"],
+            accepted_sha256=row["accepted_sha256"],
+            content_profile=row["content_profile"],
+            parser_version=row["parser_version"],
+            scanner_version=row["scanner_version"],
+            schema_version=row["schema_version"],
+            configuration_hash=row["configuration_hash"],
+            item_count=row["item_count"],
+            rejected_count=row["rejected_count"],
+            candidate_root_hash=row["candidate_root_hash"],
+            receipt_hash=row["receipt_hash"],
+            observed_at=row["observed_at"],
+            created_at=row["created_at"],
+            candidate_count=row["candidate_count"],
+            first_ordinal=row["first_ordinal"],
+            last_ordinal=row["last_ordinal"],
+            legacy_candidate_count=row["legacy_candidate_count"],
+            object_locator_hash=row["object_locator_hash"],
+            accepted_etag=row["accepted_etag"],
+            accepted_version_id=row["accepted_version_id"],
+        )
+
+    async def get_candidate(
+        self,
+        *,
+        workspace_id: UUID,
+        receipt_id: UUID,
+        candidate_id: UUID,
+    ) -> CatalogMetadataCandidateEvidence | None:
+        values = await self._load(
+            workspace_id=workspace_id,
+            receipt_id=receipt_id,
+            candidate_id=candidate_id,
+            after_ordinal=None,
+            limit=1,
+        )
+        return values[0] if len(values) == 1 else None
+
+    async def list_candidates(
+        self,
+        *,
+        workspace_id: UUID,
+        receipt_id: UUID,
+        after_ordinal: int,
+        limit: int,
+    ) -> list[CatalogMetadataCandidateEvidence]:
+        return await self._load(
+            workspace_id=workspace_id,
+            receipt_id=receipt_id,
+            candidate_id=None,
+            after_ordinal=after_ordinal,
+            limit=limit,
+        )
+
+    async def _load(
+        self,
+        *,
+        workspace_id: UUID,
+        receipt_id: UUID,
+        candidate_id: UUID | None,
+        after_ordinal: int | None,
+        limit: int,
+    ) -> list[CatalogMetadataCandidateEvidence]:
+        candidate_statement = select(CatalogMetadataCandidateModel).where(
+            CatalogMetadataCandidateModel.workspace_id == workspace_id,
+            CatalogMetadataCandidateModel.receipt_id == receipt_id,
+        )
+        if candidate_id is not None:
+            candidate_statement = candidate_statement.where(
+                CatalogMetadataCandidateModel.id == candidate_id
+            )
+        else:
+            assert after_ordinal is not None
+            candidate_statement = candidate_statement.where(
+                CatalogMetadataCandidateModel.candidate_ordinal > after_ordinal
+            )
+        models = list(
+            (
+                await self._session.scalars(
+                    candidate_statement.order_by(
+                        CatalogMetadataCandidateModel.candidate_ordinal.asc()
+                    ).limit(limit)
+                )
+            ).all()
+        )
+        if not models:
+            return []
+        ids = tuple(model.id for model in models)
+        joined_rows = (
+            await self._session.execute(
+                select(CatalogMetadataCandidateRowModel, CatalogMetadataRowModel)
+                .join(
+                    CatalogMetadataRowModel,
+                    and_(
+                        CatalogMetadataRowModel.workspace_id
+                        == CatalogMetadataCandidateRowModel.workspace_id,
+                        CatalogMetadataRowModel.receipt_id
+                        == CatalogMetadataCandidateRowModel.receipt_id,
+                        CatalogMetadataRowModel.id == CatalogMetadataCandidateRowModel.row_id,
+                    ),
+                )
+                .where(
+                    CatalogMetadataCandidateRowModel.workspace_id == workspace_id,
+                    CatalogMetadataCandidateRowModel.receipt_id == receipt_id,
+                    CatalogMetadataCandidateRowModel.candidate_id.in_(ids),
+                )
+                .order_by(
+                    CatalogMetadataCandidateRowModel.candidate_id,
+                    CatalogMetadataCandidateRowModel.member_ordinal,
+                )
+            )
+        ).all()
+        rows_by_candidate: dict[UUID, list[CatalogMetadataRowEvidenceRecord]] = {
+            value: [] for value in ids
+        }
+        for membership, row in joined_rows:
+            if membership.source_ordinal != row.ordinal or membership.row_hash != row.row_hash:
+                return []
+            rows_by_candidate[membership.candidate_id].append(
+                CatalogMetadataRowEvidenceRecord(
+                    row_id=row.id,
+                    ordinal=row.ordinal,
+                    record_kind=row.record_kind,
+                    aspect_name=row.aspect_name,
+                    operation=row.operation,
+                    field_path=row.field_path,
+                    value_text=row.value_text,
+                    controlled_ref_id=row.controlled_ref_id,
+                    controlled_kind=row.controlled_kind,
+                    semantic_target_hash=row.semantic_target_hash,
+                    row_hash=row.row_hash,
+                )
+            )
+        values: list[CatalogMetadataCandidateEvidence] = []
+        for model in models:
+            rows = tuple(rows_by_candidate[model.id])
+            first = rows[0] if rows else None
+            source_row = next(
+                (row for membership, row in joined_rows if membership.candidate_id == model.id),
+                None,
+            )
+            if (
+                first is None
+                or source_row is None
+                or len(rows) != model.row_count
+                or first.ordinal != model.first_row_ordinal
+                or rows[-1].ordinal != model.last_row_ordinal
+            ):
+                return []
+            values.append(
+                CatalogMetadataCandidateEvidence(
+                    candidate_id=model.id,
+                    workspace_id=model.workspace_id,
+                    receipt_id=model.receipt_id,
+                    ordinal=model.candidate_ordinal,
+                    content_profile=model.content_profile,
+                    evidence_version=model.evidence_version,
+                    record_kind=model.record_kind,
+                    candidate_kind=model.candidate_kind,
+                    target_asset_id=model.target_asset_id,
+                    aspect_name=model.aspect_name,
+                    submitted_platform=source_row.submitted_platform,
+                    submitted_database_name=source_row.submitted_database_name,
+                    submitted_schema_name=source_row.submitted_schema_name,
+                    submitted_table_name=source_row.submitted_table_name,
+                    submitted_identity_hash=model.submitted_identity_hash,
+                    row_root_hash=model.row_root_hash,
+                    candidate_hash=model.candidate_hash,
+                    rows=rows,
+                    created_at=model.created_at,
+                )
+            )
+        return values
 
 
 def _to_candidate(model: UploadRegistrationCandidateModel) -> UploadRegistrationCandidateEvidence:

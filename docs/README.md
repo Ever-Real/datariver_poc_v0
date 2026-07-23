@@ -32,6 +32,7 @@
 | 27 | [Policy Book and Admin governance PRD](27_POLICY_BOOK_ADMIN_GOVERNANCE_PRD.md) | access levels, assignment evidence, retention and approval-gated Admin completion | Active; Phase 3 local source complete |
 | 28 | [Policy Book execution checklist](28_POLICY_BOOK_EXECUTION_CHECKLIST.md) | phase gates and exhaustive Admin function inventory | Phase 3 local source complete; target acceptance gates open |
 | 29 | [Master execution backlog](29_MASTER_EXECUTION_BACKLOG.md) | current delivery checklist, risk status and final artifact order | Active; request group 3 local exit in progress |
+| 30 | [Typed BULK catalog metadata rows PRD](30_TYPED_BULK_CATALOG_METADATA_PRD.md) | grouped table/column/domain/tag/term row contracts and TDD gates | Active |
 
 Independent review records: [Data Architect](reviews/2026-07-14_DATA_ARCHITECT_REVIEW.md) and [Data Engineer/SRE](reviews/2026-07-14_DATA_ENGINEER_REVIEW.md).
 
@@ -60,6 +61,8 @@ Current Policy Book decision: [normalized RBAC rules and Admin approval gates](a
 Current bounded Admin decision: [bounded navigation and delta assignment](adr/0038-bounded-admin-navigation-and-delta-assignment.md).
 
 Current Registration execution decision: [accountable execution and bounded provider evidence](adr/0041-accountable-registration-execution-and-evidence.md).
+
+Current typed BULK decision: [catalog metadata row and group contract](adr/0042-typed-bulk-catalog-metadata-profiles.md).
 
 ## Change control
 

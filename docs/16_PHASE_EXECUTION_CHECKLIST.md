@@ -215,3 +215,17 @@ claims.
   strict mypy over 333 files, Ruff/static verification, frontend 44 files / 230 tests,
   TypeScript/ESLint and production build. `npm audit` remains an explicit external manifest-
   disclosure permission gate and is not represented as executed.
+
+## Phase 3.7 — typed BULK catalog metadata rows
+
+The controlled PRD and detailed TDD/acceptance checklist are in
+`docs/30_TYPED_BULK_CATALOG_METADATA_PRD.md`. This phase preserves ADR-0016's one-candidate/one-CR
+execution boundary and implements ADR-0042 with row-to-Aspect grouping, local vocabulary IDs and
+no browser-supplied target URNs, Aspects or documents.
+
+- [ ] TB-01–03 Two wide-row profiles, canonical CSV/XLSX row/group vectors and attack negatives.
+- [ ] TB-04–06 separate immutable row/group evidence, fenced publication and authorized reads.
+- [ ] TB-07–09 fixed-Aspect compiler/binding, apply-time human reauthorization and read-back.
+- [ ] TB-10 bounded UI profile/template/candidate/preview states.
+- [ ] TB-11–12 full source, deterministic migration and actual PostgreSQL gates.
+- [ ] TB-13–15 independent P0/P1 audit, focused commit/publication attempt and external-gate report.

@@ -198,8 +198,25 @@ PostgreSQL or creates/deletes an object. No output authorizes deletion. Preserve
 report, release SHA, endpoint identity and operator record for reviewed recovery.
 
 The executable BULK profiles are capped at 16 MiB and 10,000 rows. A `READY` receipt permits only a
-typed dataset-description preview and one ETag-fenced Change Request. New table/column, raw Aspect
-and direct provider writes are not recovery shortcuts.
+typed dataset-description or fixed catalog-metadata preview and one ETag-fenced Change Request.
+The V3 profile supports existing table/column description and controlled DOMAIN/TERM/TAG changes;
+new assets, raw Aspect names/documents and direct provider writes are not recovery shortcuts.
+Each V3 candidate still represents one target and one server-fixed Aspect.
+Candidate evidence is staged in a fixed 64 MiB attempt-local spool and replayed in bounded database
+batches. `EVIDENCE_TOO_LARGE` means valid source bytes expanded beyond that evidence safety budget;
+it is not a source hash mismatch and must not be retried by increasing memory or bypassing the
+worker. Preserve the accepted object and failed preparation evidence for contract review.
+
+Before distributing a V3 template, a human security administrator reconciles each vocabulary kind
+through `POST /uploads/metadata-vocabulary/sync` with one stable `sync_id`, increasing public
+`offset` and a new idempotency key per page. The provider cursor remains server-side. Resume only
+at the returned `next_offset`; do not guess a cursor, skip a page or edit local UUID/provider
+bindings. `SUPPRESSED_UNVERIFIED_SNAPSHOT` means lookup rows were refreshed but deletion inference
+was deliberately disabled. Only `APPLIED` backed by the configured immutable snapshot evidence may
+inactivate unseen entries. A stale ACTIVE run older than one hour is abandoned on the next page-zero
+reservation with a new `sync_id`; preserve the prior run as evidence. Admin/Data Steward users then
+copy only local UUIDs from the bounded no-store lookup UI. Provider URNs never enter templates or
+browser storage.
 
 Manual and BULK browser polling stops after 20 checks or 120 seconds and while the tab is hidden.
 Use the explicit status-refresh control after inspecting the worker and provider health; do not

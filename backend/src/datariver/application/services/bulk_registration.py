@@ -8,6 +8,16 @@ from uuid import UUID
 
 import orjson
 
+from datariver.application.catalog_metadata_upload_parser import (
+    CatalogMetadataAspect,
+    CatalogMetadataCandidateDraft,
+    CatalogMetadataCandidateKind,
+    CatalogMetadataOperation,
+    CatalogMetadataParseSummary,
+    CatalogMetadataRecordKind,
+    CatalogMetadataRowEvidence,
+    parse_catalog_metadata_rows_csv,
+)
 from datariver.application.dto import ObjectMetadata
 from datariver.application.errors import ExternalDependencyError
 from datariver.application.typed_upload_parser import (
@@ -18,13 +28,22 @@ from datariver.application.typed_upload_parser import (
     parse_dataset_description_csv,
 )
 from datariver.application.typed_upload_profiles import typed_profile_definition
-from datariver.application.typed_xlsx_upload_parser import parse_dataset_description_xlsx
+from datariver.application.typed_xlsx_upload_parser import (
+    parse_catalog_metadata_rows_xlsx,
+    parse_dataset_description_xlsx,
+)
 from datariver.domain.common import DomainError
 from datariver.domain.registration import UploadContentProfile
 from datariver.domain.registration_worker import (
     RegistrationWorkerCallIdentity,
     RegistrationWorkerCallReplay,
 )
+
+BulkCandidateDraft = DatasetDescriptionCandidateDraft | CatalogMetadataCandidateDraft
+BulkParseSummary = DatasetDescriptionParseSummary | CatalogMetadataParseSummary
+_DATASET_DESCRIPTION_SPOOL_CONTRACT = "dataset-description-candidate-spool-v2"
+_CATALOG_METADATA_SPOOL_CONTRACT = "catalog-metadata-candidate-spool-v3"
+_MAXIMUM_CANDIDATE_SPOOL_BYTES = 64 * 1024 * 1024
 
 
 @dataclass(frozen=True, slots=True)
@@ -79,8 +98,8 @@ class BulkPreparationExecutionStore(Protocol):
         *,
         claim: BulkPreparationClaim,
         object_metadata: ObjectMetadata,
-        summary: DatasetDescriptionParseSummary,
-        candidates: Callable[[], Iterator[DatasetDescriptionCandidateDraft]],
+        summary: BulkParseSummary,
+        candidates: Callable[[], Iterator[BulkCandidateDraft]],
     ) -> bool: ...
 
     async def mark_failed(
@@ -159,8 +178,6 @@ class BulkRegistrationPreparationService:
                     else None
                 ),
             )
-        definition = typed_profile_definition(claim.content_profile)
-        maximum_spool_bytes = min(definition.maximum_file_bytes * 2, 1024 * 1024 * 1024)
         try:
             metadata = await self._object_store.head_object(
                 bucket=claim.source_bucket,
@@ -174,7 +191,7 @@ class BulkRegistrationPreparationService:
                     failure_code=TypedUploadParseFailureCode.SOURCE_HASH_MISMATCH,
                     message="The accepted BULK object metadata no longer matches its manifest.",
                 )
-            with AttemptCandidateSpool(maximum_bytes=maximum_spool_bytes) as spool:
+            with AttemptCandidateSpool(maximum_bytes=_MAXIMUM_CANDIDATE_SPOOL_BYTES) as spool:
                 summary = await self._parse(claim=claim, spool=spool)
                 spool.seal()
                 published = await self._store.publish(
@@ -224,7 +241,7 @@ class BulkRegistrationPreparationService:
         *,
         claim: BulkPreparationClaim,
         spool: AttemptCandidateSpool,
-    ) -> DatasetDescriptionParseSummary:
+    ) -> BulkParseSummary:
         chunks = self._object_store.iter_object_chunks(
             bucket=claim.source_bucket,
             object_key=claim.source_object_key,
@@ -245,6 +262,22 @@ class BulkRegistrationPreparationService:
             )
         if claim.content_profile is UploadContentProfile.DATASET_DESCRIPTION_XLSX_V1:
             return await parse_dataset_description_xlsx(
+                workspace_id=claim.workspace_id,
+                chunks=chunks,
+                expected_source_sha256=claim.source_sha256,
+                consume_candidate=spool.append,
+                definition=definition,
+            )
+        if claim.content_profile is UploadContentProfile.CATALOG_METADATA_ROWS_CSV_V1:
+            return await parse_catalog_metadata_rows_csv(
+                workspace_id=claim.workspace_id,
+                chunks=chunks,
+                expected_source_sha256=claim.source_sha256,
+                consume_candidate=spool.append,
+                definition=definition,
+            )
+        if claim.content_profile is UploadContentProfile.CATALOG_METADATA_ROWS_XLSX_V1:
+            return await parse_catalog_metadata_rows_xlsx(
                 workspace_id=claim.workspace_id,
                 chunks=chunks,
                 expected_source_sha256=claim.source_sha256,
@@ -275,35 +308,23 @@ class AttemptCandidateSpool:
             self._file.close()
             self._file = None
 
-    async def append(self, candidate: DatasetDescriptionCandidateDraft) -> None:
+    async def append(self, candidate: BulkCandidateDraft) -> None:
         if self._file is None or self._sealed:
             raise RuntimeError("The candidate spool is not writable.")
         record = (
             orjson.dumps(
-                {
-                    "candidate_hash": candidate.candidate_hash,
-                    "candidate_kind": candidate.candidate_kind,
-                    "database_name": candidate.database_name,
-                    "evidence_version": candidate.evidence_version,
-                    "ordinal": candidate.ordinal,
-                    "platform": candidate.platform,
-                    "proposed_description": candidate.proposed_description,
-                    "schema_name": candidate.schema_name,
-                    "submitted_identity_hash": candidate.submitted_identity_hash,
-                    "table_name": candidate.table_name,
-                    "target_asset_id": str(candidate.target_asset_id),
-                    "workspace_id": str(candidate.workspace_id),
-                },
+                _candidate_spool_record(candidate),
                 option=orjson.OPT_SORT_KEYS,
             )
             + b"\n"
         )
-        self._bytes_written += len(record)
-        if self._bytes_written > self._maximum_bytes:
+        updated_size = self._bytes_written + len(record)
+        if updated_size > self._maximum_bytes:
             raise TypedUploadParseError(
-                failure_code=TypedUploadParseFailureCode.SOURCE_HASH_MISMATCH,
+                failure_code=TypedUploadParseFailureCode.EVIDENCE_TOO_LARGE,
                 message="The typed candidate staging evidence exceeds its bounded size.",
             )
+        self._bytes_written = updated_size
         self._file.write(record)
         self._count += 1
 
@@ -313,26 +334,167 @@ class AttemptCandidateSpool:
         self._file.flush()
         self._sealed = True
 
-    def iter_candidates(self) -> Iterator[DatasetDescriptionCandidateDraft]:
+    def iter_candidates(self) -> Iterator[BulkCandidateDraft]:
         if self._file is None or not self._sealed:
             raise RuntimeError("The candidate spool is not readable.")
         self._file.seek(0)
         for line in self._file:
-            value = orjson.loads(line)
-            yield DatasetDescriptionCandidateDraft(
-                workspace_id=UUID(value["workspace_id"]),
-                ordinal=int(value["ordinal"]),
-                target_asset_id=UUID(value["target_asset_id"]),
-                platform=str(value["platform"]),
-                database_name=str(value["database_name"]),
-                schema_name=str(value["schema_name"]),
-                table_name=str(value["table_name"]),
-                proposed_description=str(value["proposed_description"]),
-                submitted_identity_hash=str(value["submitted_identity_hash"]),
-                candidate_hash=str(value["candidate_hash"]),
-                candidate_kind=str(value["candidate_kind"]),
-                evidence_version=str(value["evidence_version"]),
-            )
+            yield _candidate_from_spool_record(line)
+
+
+def _candidate_spool_record(candidate: BulkCandidateDraft) -> dict[str, object]:
+    common: dict[str, object] = {
+        "candidate_hash": candidate.candidate_hash,
+        "candidate_kind": candidate.candidate_kind,
+        "database_name": candidate.database_name,
+        "evidence_version": candidate.evidence_version,
+        "ordinal": candidate.ordinal,
+        "platform": candidate.platform,
+        "schema_name": candidate.schema_name,
+        "submitted_identity_hash": candidate.submitted_identity_hash,
+        "table_name": candidate.table_name,
+        "target_asset_id": str(candidate.target_asset_id),
+        "workspace_id": str(candidate.workspace_id),
+    }
+    if isinstance(candidate, DatasetDescriptionCandidateDraft):
+        common.update(
+            {
+                "proposed_description": candidate.proposed_description,
+                "spool_contract": _DATASET_DESCRIPTION_SPOOL_CONTRACT,
+            }
+        )
+        return common
+    common.update(
+        {
+            "aspect_name": candidate.aspect_name.value,
+            "record_kind": candidate.record_kind.value,
+            "rows": [_catalog_metadata_row_record(row) for row in candidate.rows],
+            "spool_contract": _CATALOG_METADATA_SPOOL_CONTRACT,
+        }
+    )
+    return common
+
+
+def _catalog_metadata_row_record(row: CatalogMetadataRowEvidence) -> dict[str, object]:
+    return {
+        "aspect_name": row.aspect_name.value,
+        "controlled_ref": str(row.controlled_ref) if row.controlled_ref is not None else None,
+        "database_name": row.database_name,
+        "evidence_version": row.evidence_version,
+        "field_path": row.field_path,
+        "operation": row.operation.value,
+        "ordinal": row.ordinal,
+        "platform": row.platform,
+        "record_kind": row.record_kind.value,
+        "row_hash": row.row_hash,
+        "schema_name": row.schema_name,
+        "semantic_key": row.semantic_key,
+        "table_name": row.table_name,
+        "target_asset_id": str(row.target_asset_id),
+        "value_text": row.value_text,
+        "workspace_id": str(row.workspace_id),
+    }
+
+
+def _candidate_from_spool_record(record: bytes) -> BulkCandidateDraft:
+    value = _spool_mapping(orjson.loads(record))
+    contract = _spool_string(value, "spool_contract")
+    if contract == _DATASET_DESCRIPTION_SPOOL_CONTRACT:
+        return DatasetDescriptionCandidateDraft(
+            workspace_id=UUID(_spool_string(value, "workspace_id")),
+            ordinal=_spool_positive_integer(value, "ordinal"),
+            target_asset_id=UUID(_spool_string(value, "target_asset_id")),
+            platform=_spool_string(value, "platform"),
+            database_name=_spool_string(value, "database_name"),
+            schema_name=_spool_string(value, "schema_name"),
+            table_name=_spool_string(value, "table_name"),
+            proposed_description=_spool_string(value, "proposed_description"),
+            submitted_identity_hash=_spool_string(value, "submitted_identity_hash"),
+            candidate_hash=_spool_string(value, "candidate_hash"),
+            candidate_kind=_spool_string(value, "candidate_kind"),
+            evidence_version=_spool_string(value, "evidence_version"),
+        )
+    if contract != _CATALOG_METADATA_SPOOL_CONTRACT:
+        raise RuntimeError("The candidate spool record has an unknown contract.")
+    rows_value = value.get("rows")
+    if not isinstance(rows_value, list) or not rows_value:
+        raise RuntimeError("The catalog-metadata candidate spool rows are invalid.")
+    rows = tuple(_catalog_metadata_row_from_record(row) for row in rows_value)
+    return CatalogMetadataCandidateDraft(
+        workspace_id=UUID(_spool_string(value, "workspace_id")),
+        ordinal=_spool_positive_integer(value, "ordinal"),
+        target_asset_id=UUID(_spool_string(value, "target_asset_id")),
+        platform=_spool_string(value, "platform"),
+        database_name=_spool_string(value, "database_name"),
+        schema_name=_spool_string(value, "schema_name"),
+        table_name=_spool_string(value, "table_name"),
+        record_kind=CatalogMetadataRecordKind(_spool_string(value, "record_kind")),
+        candidate_kind=CatalogMetadataCandidateKind(_spool_string(value, "candidate_kind")),
+        aspect_name=CatalogMetadataAspect(_spool_string(value, "aspect_name")),
+        rows=rows,
+        submitted_identity_hash=_spool_string(value, "submitted_identity_hash"),
+        candidate_hash=_spool_string(value, "candidate_hash"),
+        evidence_version=_spool_string(value, "evidence_version"),
+    )
+
+
+def _catalog_metadata_row_from_record(value: object) -> CatalogMetadataRowEvidence:
+    row = _spool_mapping(value)
+    controlled_ref_value = row.get("controlled_ref")
+    field_path_value = row.get("field_path")
+    value_text_value = row.get("value_text")
+    return CatalogMetadataRowEvidence(
+        workspace_id=UUID(_spool_string(row, "workspace_id")),
+        ordinal=_spool_positive_integer(row, "ordinal"),
+        target_asset_id=UUID(_spool_string(row, "target_asset_id")),
+        platform=_spool_string(row, "platform"),
+        database_name=_spool_string(row, "database_name"),
+        schema_name=_spool_string(row, "schema_name"),
+        table_name=_spool_string(row, "table_name"),
+        record_kind=CatalogMetadataRecordKind(_spool_string(row, "record_kind")),
+        aspect_name=CatalogMetadataAspect(_spool_string(row, "aspect_name")),
+        operation=CatalogMetadataOperation(_spool_string(row, "operation")),
+        field_path=_spool_optional_string(field_path_value),
+        value_text=_spool_optional_string(value_text_value),
+        controlled_ref=_spool_optional_uuid(controlled_ref_value),
+        semantic_key=_spool_string(row, "semantic_key"),
+        row_hash=_spool_string(row, "row_hash"),
+        evidence_version=_spool_string(row, "evidence_version"),
+    )
+
+
+def _spool_mapping(value: object) -> dict[str, object]:
+    if not isinstance(value, dict) or any(not isinstance(key, str) for key in value):
+        raise RuntimeError("The candidate spool record is invalid.")
+    return value
+
+
+def _spool_string(value: dict[str, object], key: str) -> str:
+    item = value.get(key)
+    if not isinstance(item, str):
+        raise RuntimeError("The candidate spool record has an invalid string field.")
+    return item
+
+
+def _spool_optional_string(value: object) -> str | None:
+    if value is None or isinstance(value, str):
+        return value
+    raise RuntimeError("The candidate spool record has an invalid optional string field.")
+
+
+def _spool_optional_uuid(value: object) -> UUID | None:
+    if value is None:
+        return None
+    if not isinstance(value, str):
+        raise RuntimeError("The candidate spool record has an invalid optional UUID field.")
+    return UUID(value)
+
+
+def _spool_positive_integer(value: dict[str, object], key: str) -> int:
+    item = value.get(key)
+    if not isinstance(item, int) or isinstance(item, bool) or item < 1:
+        raise RuntimeError("The candidate spool record has an invalid ordinal.")
+    return item
 
 
 def _error_code(error: DomainError) -> str:

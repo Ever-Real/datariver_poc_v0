@@ -18,7 +18,11 @@ import {
 } from 'react'
 import { newIdempotencyKey, type ApiClient } from '../../api/client'
 import type {
+  CatalogMetadataCandidate,
+  CatalogMetadataCandidatePage,
   ChangeRequestRecord,
+  TypedCatalogMetadataChangeRequest,
+  TypedCatalogMetadataPreview,
   TypedBulkCandidatePreview,
   UploadContentProfile,
   UploadPreparation,
@@ -27,18 +31,182 @@ import type {
   UploadRecord,
 } from '../../api/types'
 import { ErrorNotice } from '../../components/ErrorNotice'
+import { CatalogMetadataVocabularyBrowser } from './CatalogMetadataVocabularyBrowser'
 
 const HASH_CHUNK_SIZE = 4 * 1024 * 1024
 const PREPARATION_POLL_MAX_ATTEMPTS = 20
 const PREPARATION_POLL_MAX_ELAPSED_MS = 120_000
 const TERMINAL_STATES = new Set(['ACCEPTED', 'REJECTED', 'ABORTED', 'EXPIRED'])
 const TYPED_DESCRIPTION_PROFILES = new Set<UploadContentProfile>([
+  'CATALOG_METADATA_ROWS_CSV_V1',
+  'CATALOG_METADATA_ROWS_XLSX_V1',
   'DATASET_DESCRIPTION_CSV_V1',
   'DATASET_DESCRIPTION_XLSX_V1',
 ])
+const CATALOG_METADATA_PROFILES = new Set<UploadContentProfile>([
+  'CATALOG_METADATA_ROWS_CSV_V1',
+  'CATALOG_METADATA_ROWS_XLSX_V1',
+])
+
+type TypedCandidate = UploadRegistrationCandidate | CatalogMetadataCandidate
+type TypedCandidatePage = UploadRegistrationCandidatePage | CatalogMetadataCandidatePage
+type SafeDatasetDescriptionPreview = Omit<TypedBulkCandidatePreview, 'target_ref'>
+type TypedCandidatePreview = SafeDatasetDescriptionPreview | TypedCatalogMetadataPreview
+type TypedCandidatePreviewResponse = TypedBulkCandidatePreview | TypedCatalogMetadataPreview
+type TypedChangeRequest = ChangeRequestRecord | TypedCatalogMetadataChangeRequest
 
 function isTypedDescriptionProfile(profile: UploadContentProfile): boolean {
   return TYPED_DESCRIPTION_PROFILES.has(profile)
+}
+
+function isCatalogMetadataProfile(profile: UploadContentProfile): boolean {
+  return CATALOG_METADATA_PROFILES.has(profile)
+}
+
+function isCatalogMetadataCandidate(
+  candidate: TypedCandidate,
+): candidate is CatalogMetadataCandidate {
+  return candidate.evidence_version === 'CATALOG_METADATA_CANDIDATE_V3'
+}
+
+function isCatalogMetadataPage(
+  page: TypedCandidatePage,
+): page is CatalogMetadataCandidatePage {
+  return page.receipt.content_profile === 'CATALOG_METADATA_ROWS_CSV_V1'
+    || page.receipt.content_profile === 'CATALOG_METADATA_ROWS_XLSX_V1'
+}
+
+function isCatalogMetadataPreview(
+  preview: TypedCandidatePreviewResponse | TypedCandidatePreview,
+): preview is TypedCatalogMetadataPreview {
+  return 'record_kind' in preview
+}
+
+function boundedCatalogMetadataPage(
+  value: CatalogMetadataCandidatePage,
+): CatalogMetadataCandidatePage {
+  return {
+    items: value.items.slice(0, 50).map((candidate) => ({
+      id: candidate.id,
+      ordinal: candidate.ordinal,
+      evidence_version: candidate.evidence_version,
+      record_kind: candidate.record_kind,
+      candidate_kind: candidate.candidate_kind,
+      operation_count: candidate.operation_count,
+      field_path_sample: candidate.field_path_sample.slice(0, 20),
+      controlled_reference_count: candidate.controlled_reference_count,
+      row_summary_truncated: candidate.row_summary_truncated,
+      submitted_identity: {
+        platform: candidate.submitted_identity.platform,
+        database_name: candidate.submitted_identity.database_name,
+        schema_name: candidate.submitted_identity.schema_name,
+        table_name: candidate.submitted_identity.table_name,
+        identity_hash: candidate.submitted_identity.identity_hash,
+      },
+      candidate_hash: candidate.candidate_hash,
+      created_at: candidate.created_at,
+      current_target: {
+        id: candidate.current_target.id,
+        asset_type: candidate.current_target.asset_type,
+        name: candidate.current_target.name,
+        platform: candidate.current_target.platform,
+        database_name: candidate.current_target.database_name,
+        schema_name: candidate.current_target.schema_name,
+        classification: candidate.current_target.classification,
+        lifecycle: candidate.current_target.lifecycle,
+        source_version: candidate.current_target.source_version,
+        observed_at: candidate.current_target.observed_at,
+      },
+    })),
+    page: {
+      limit: Math.min(value.page.limit, 50),
+      ...(value.page.next_cursor ? { next_cursor: value.page.next_cursor } : {}),
+    },
+    receipt: {
+      id: value.receipt.id,
+      preparation_id: value.receipt.preparation_id,
+      manifest_version: value.receipt.manifest_version,
+      source_sha256: value.receipt.source_sha256,
+      content_profile: value.receipt.content_profile,
+      parser_version: value.receipt.parser_version,
+      scanner_version: value.receipt.scanner_version,
+      schema_version: value.receipt.schema_version,
+      configuration_hash: value.receipt.configuration_hash,
+      item_count: value.receipt.item_count,
+      candidate_count: value.receipt.candidate_count,
+      candidate_root_hash: value.receipt.candidate_root_hash,
+      receipt_hash: value.receipt.receipt_hash,
+      observed_at: value.receipt.observed_at,
+      created_at: value.receipt.created_at,
+    },
+    meta: {
+      projection_version: value.meta.projection_version,
+      policy_version: value.meta.policy_version,
+      classification_policy_version: value.meta.classification_policy_version,
+      authorization_generation: value.meta.authorization_generation,
+    },
+  }
+}
+
+function boundedCatalogMetadataPreview(
+  value: TypedCatalogMetadataPreview,
+): TypedCatalogMetadataPreview {
+  return {
+    candidate_id: value.candidate_id,
+    target_asset_id: value.target_asset_id,
+    platform: value.platform,
+    database_name: value.database_name,
+    schema_name: value.schema_name,
+    table_name: value.table_name,
+    record_kind: value.record_kind,
+    candidate_kind: value.candidate_kind,
+    operation_count: value.operation_count,
+    description_change_count: value.description_change_count,
+    description_change_sample: value.description_change_sample.slice(0, 20).map((change) => ({
+      field_path: change.field_path,
+      current_description: change.current_description,
+      proposed_description: change.proposed_description,
+    })),
+    description_changes_truncated: value.description_changes_truncated,
+    current_reference_count: value.current_reference_count,
+    proposed_reference_count: value.proposed_reference_count,
+    before_hash: value.before_hash,
+    after_hash: value.after_hash,
+    source_version: value.source_version,
+    observed_at: value.observed_at,
+    preview_etag: value.preview_etag,
+  }
+}
+
+function boundedDatasetDescriptionPreview(
+  value: TypedBulkCandidatePreview,
+): SafeDatasetDescriptionPreview {
+  return {
+    candidate_id: value.candidate_id,
+    target_asset_id: value.target_asset_id,
+    platform: value.platform,
+    database_name: value.database_name,
+    schema_name: value.schema_name,
+    table_name: value.table_name,
+    current_description: value.current_description,
+    proposed_description: value.proposed_description,
+    before_hash: value.before_hash,
+    after_hash: value.after_hash,
+    source_version: value.source_version,
+    observed_at: value.observed_at,
+    preview_etag: value.preview_etag,
+  }
+}
+
+function boundedCatalogMetadataChangeRequest(
+  value: TypedCatalogMetadataChangeRequest,
+): TypedCatalogMetadataChangeRequest {
+  return {
+    id: value.id,
+    number: value.number,
+    request_type: value.request_type,
+    state: value.state,
+  }
 }
 
 export function RegistrationBulkWorkbench({ client }: { client: ApiClient }) {
@@ -54,17 +222,18 @@ export function RegistrationBulkWorkbench({ client }: { client: ApiClient }) {
   const [preparation, setPreparation] = useState<UploadPreparation>()
   const [preparationLoaded, setPreparationLoaded] = useState(false)
   const [preparationBusy, setPreparationBusy] = useState(false)
+  const [templateBusy, setTemplateBusy] = useState(false)
   const [preparationPollingStopped, setPreparationPollingStopped] = useState(false)
-  const [candidatePage, setCandidatePage] = useState<UploadRegistrationCandidatePage>()
+  const [candidatePage, setCandidatePage] = useState<TypedCandidatePage>()
   const [candidateCursorStack, setCandidateCursorStack] = useState<string[]>([])
   const [candidatesBusy, setCandidatesBusy] = useState(false)
-  const [selectedCandidate, setSelectedCandidate] = useState<UploadRegistrationCandidate>()
-  const [candidatePreview, setCandidatePreview] = useState<TypedBulkCandidatePreview>()
+  const [selectedCandidate, setSelectedCandidate] = useState<TypedCandidate>()
+  const [candidatePreview, setCandidatePreview] = useState<TypedCandidatePreview>()
   const [candidatePreviewBusy, setCandidatePreviewBusy] = useState(false)
   const [candidateCreateBusy, setCandidateCreateBusy] = useState(false)
   const [candidateTitle, setCandidateTitle] = useState('')
   const [candidateReason, setCandidateReason] = useState('')
-  const [createdChangeRequest, setCreatedChangeRequest] = useState<ChangeRequestRecord>()
+  const [createdChangeRequest, setCreatedChangeRequest] = useState<TypedChangeRequest>()
   const [error, setError] = useState<unknown>()
   const [busy, setBusy] = useState(false)
   const generation = useRef(0)
@@ -74,6 +243,9 @@ export function RegistrationBulkWorkbench({ client }: { client: ApiClient }) {
   const candidateIntent = useRef(0)
   const candidatePreviewIntent = useRef(0)
   const candidatePreviewController = useRef<AbortController | undefined>(undefined)
+  const candidateCreateIdempotency = useRef<
+    { fingerprint: string; key: string } | undefined
+  >(undefined)
   const preparationPollDelay = useRef(1_000)
   const preparationPollAttempts = useRef(0)
   const preparationPollStartedAt = useRef(0)
@@ -99,6 +271,7 @@ export function RegistrationBulkWorkbench({ client }: { client: ApiClient }) {
     setCandidateTitle('')
     setCandidateReason('')
     setCreatedChangeRequest(undefined)
+    candidateCreateIdempotency.current = undefined
   }, [])
 
   const load = useCallback(async () => {
@@ -183,6 +356,7 @@ export function RegistrationBulkWorkbench({ client }: { client: ApiClient }) {
     setProgress(0)
     setStatus('파일을 선택하세요.'); setRecord(undefined); setRecords([])
     setPreparation(undefined); setPreparationLoaded(false); setPreparationBusy(false)
+    setTemplateBusy(false)
     setPreparationPollingStopped(false)
     preparationPollDelay.current = 1_000
     preparationPollAttempts.current = 0
@@ -392,6 +566,7 @@ export function RegistrationBulkWorkbench({ client }: { client: ApiClient }) {
 
   const loadCandidates = async (cursor?: string) => {
     if (!record || !preparation || preparation.state !== 'READY' || candidatesBusy) return
+    const catalogMetadata = isCatalogMetadataProfile(record.content_profile)
     clearCandidateCommand()
     const expectedIntent = candidateIntent.current + 1
     candidateIntent.current = expectedIntent
@@ -401,10 +576,18 @@ export function RegistrationBulkWorkbench({ client }: { client: ApiClient }) {
     try {
       const query = new URLSearchParams({ limit: '20' })
       if (cursor) query.set('cursor', cursor)
-      const value = await client.request<UploadRegistrationCandidatePage>(
-        `/uploads/${record.id}/preparations/${preparation.id}/candidates?${query.toString()}`,
+      const received = await client.request<TypedCandidatePage>(
+        `/uploads/${record.id}/preparations/${preparation.id}/${
+          catalogMetadata ? 'metadata-candidates' : 'candidates'
+        }?${query.toString()}`,
         { signal: controller.signal },
       )
+      if (catalogMetadata !== isCatalogMetadataPage(received)) {
+        throw new Error('후보 프로파일과 서버 응답이 일치하지 않습니다.')
+      }
+      const value = catalogMetadata
+        ? boundedCatalogMetadataPage(received as CatalogMetadataCandidatePage)
+        : received
       if (
         candidatePage
         && (
@@ -454,23 +637,36 @@ export function RegistrationBulkWorkbench({ client }: { client: ApiClient }) {
     void loadCandidates()
   }
 
-  const openCandidatePreview = async (candidate: UploadRegistrationCandidate) => {
+  const openCandidatePreview = async (candidate: TypedCandidate) => {
     if (!record || !preparation || candidatePreviewBusy || candidateCreateBusy) return
+    const catalogMetadata = isCatalogMetadataCandidate(candidate)
     clearCandidateCommand()
     const intent = candidatePreviewIntent.current + 1
     candidatePreviewIntent.current = intent
     const { controller, expectedGeneration } = beginOperation()
     candidatePreviewController.current = controller
     setSelectedCandidate(candidate)
-    setCandidateTitle(`${candidate.submitted_identity.table_name} Dataset 설명 변경`)
+    setCandidateTitle(
+      `${candidate.submitted_identity.table_name} ${
+        catalogMetadata ? catalogMetadataRecordLabel(candidate.record_kind) : 'Dataset 설명'
+      } 변경`,
+    )
     setCandidateReason('검증된 BULK 업로드 후보를 변경관리 검토 대상으로 등록합니다.')
     setCandidatePreviewBusy(true)
     setError(undefined)
     try {
-      const value = await client.request<TypedBulkCandidatePreview>(
-        `/uploads/${record.id}/preparations/${preparation.id}/candidates/${candidate.id}/preview`,
+      const received = await client.request<TypedCandidatePreviewResponse>(
+        `/uploads/${record.id}/preparations/${preparation.id}/${
+          catalogMetadata ? 'metadata-candidates' : 'candidates'
+        }/${candidate.id}/preview`,
         { signal: controller.signal },
       )
+      if (catalogMetadata !== isCatalogMetadataPreview(received)) {
+        throw new Error('후보와 미리보기 프로파일이 일치하지 않습니다.')
+      }
+      const value = catalogMetadata
+        ? boundedCatalogMetadataPreview(received as TypedCatalogMetadataPreview)
+        : boundedDatasetDescriptionPreview(received as TypedBulkCandidatePreview)
       if (
         controller.signal.aborted
         || expectedGeneration !== generation.current
@@ -508,6 +704,24 @@ export function RegistrationBulkWorkbench({ client }: { client: ApiClient }) {
       || !candidateTitle.trim()
       || !candidateReason.trim()
     ) return
+    const catalogMetadata = isCatalogMetadataCandidate(selectedCandidate)
+    const normalizedTitle = candidateTitle.trim()
+    const normalizedReason = candidateReason.trim()
+    const commandFingerprint = JSON.stringify({
+      candidate_id: selectedCandidate.id,
+      preview_etag: candidatePreview.preview_etag,
+      reason: normalizedReason,
+      title: normalizedTitle,
+    })
+    if (candidateCreateIdempotency.current?.fingerprint !== commandFingerprint) {
+      candidateCreateIdempotency.current = {
+        fingerprint: commandFingerprint,
+        key: newIdempotencyKey(
+          catalogMetadata ? 'typed-catalog-metadata-change' : 'typed-bulk-change',
+        ),
+      }
+    }
+    const idempotencyKey = candidateCreateIdempotency.current.key
     const intent = candidatePreviewIntent.current + 1
     candidatePreviewIntent.current = intent
     const { controller, expectedGeneration } = beginOperation()
@@ -515,25 +729,43 @@ export function RegistrationBulkWorkbench({ client }: { client: ApiClient }) {
     setCandidateCreateBusy(true)
     setError(undefined)
     try {
-      const value = await client.request<ChangeRequestRecord>(
-        `/uploads/${record.id}/preparations/${preparation.id}/candidates/${selectedCandidate.id}/change-request`,
+      const received = await client.request<TypedChangeRequest>(
+        `/uploads/${record.id}/preparations/${preparation.id}/${
+          catalogMetadata ? 'metadata-candidates' : 'candidates'
+        }/${selectedCandidate.id}/change-request`,
         {
           method: 'POST',
-          idempotencyKey: newIdempotencyKey('typed-bulk-change'),
+          idempotencyKey,
           ifMatch: candidatePreview.preview_etag,
           signal: controller.signal,
           body: JSON.stringify({
-            title: candidateTitle.trim(),
-            reason: candidateReason.trim(),
+            title: normalizedTitle,
+            reason: normalizedReason,
           }),
         },
       )
       if (
+        catalogMetadata
+        && (
+          !('request_type' in received)
+          || received.request_type !== 'BULK_CATALOG_METADATA'
+        )
+      ) throw new Error('서버가 예상하지 않은 변경요청 형식을 반환했습니다.')
+      const value = catalogMetadata
+        ? boundedCatalogMetadataChangeRequest(received as TypedCatalogMetadataChangeRequest)
+        : received
+      if (
         controller.signal.aborted
         || expectedGeneration !== generation.current
         || intent !== candidatePreviewIntent.current
-        || value.items.length !== 1
-        || value.items[0]?.target_asset_id !== candidatePreview.target_asset_id
+        || (
+          !catalogMetadata
+          && (
+            !('items' in value)
+            || value.items.length !== 1
+            || value.items[0]?.target_asset_id !== candidatePreview.target_asset_id
+          )
+        )
       ) return
       setCreatedChangeRequest(value)
     } catch (next) {
@@ -605,6 +837,44 @@ export function RegistrationBulkWorkbench({ client }: { client: ApiClient }) {
     }
   }
 
+  const downloadCatalogMetadataTemplate = async () => {
+    if (!isCatalogMetadataProfile(contentProfile) || templateBusy) return
+    const profile = contentProfile
+    const { controller, expectedGeneration } = beginOperation()
+    setTemplateBusy(true)
+    setError(undefined)
+    try {
+      const downloaded = await client.download(
+        `/uploads/profiles/${profile}/template`,
+        { signal: controller.signal },
+      )
+      if (
+        controller.signal.aborted
+        || expectedGeneration !== generation.current
+        || profile !== contentProfile
+      ) return
+      const url = URL.createObjectURL(downloaded.blob)
+      try {
+        const anchor = document.createElement('a')
+        anchor.href = url
+        anchor.download = downloaded.filename
+        document.body.append(anchor)
+        try {
+          anchor.click()
+        } finally {
+          anchor.remove()
+        }
+      } finally {
+        URL.revokeObjectURL(url)
+      }
+    } catch (next) {
+      if (!controller.signal.aborted && expectedGeneration === generation.current) setError(next)
+    } finally {
+      finishOperation(controller)
+      if (expectedGeneration === generation.current) setTemplateBusy(false)
+    }
+  }
+
   return (
     <div className="registration-bulk-workbench">
       <aside className="registration-bulk-sidebar panel">
@@ -626,15 +896,30 @@ export function RegistrationBulkWorkbench({ client }: { client: ApiClient }) {
             id={inputId}
             type="file"
             disabled={busy}
-            accept={contentProfile === 'DATASET_DESCRIPTION_CSV_V1'
-              ? '.csv,text/csv'
-              : contentProfile === 'DATASET_DESCRIPTION_XLSX_V1'
-                ? '.xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
-              : '.pdf,.csv,.json,.parquet,.yaml,.yml,.xlsx'}
+            accept={profileAccept(contentProfile)}
             onChange={(event) => selectFile(event.target.files?.[0])}
           />
-          <label>등록 프로파일<select aria-describedby={isTypedDescriptionProfile(contentProfile) ? profileHintId : undefined} disabled={busy} value={contentProfile} onChange={(event) => selectProfile(event.target.value as UploadContentProfile)}><option value="FORMAT_ONLY_V1">형식 검증만</option><option value="DATASET_DESCRIPTION_CSV_V1">Dataset 설명 CSV</option><option value="DATASET_DESCRIPTION_XLSX_V1">Dataset 설명 Excel (.xlsx)</option></select></label>
-          {isTypedDescriptionProfile(contentProfile) && (
+          <label>등록 프로파일<select aria-describedby={isTypedDescriptionProfile(contentProfile) ? profileHintId : undefined} disabled={busy} value={contentProfile} onChange={(event) => selectProfile(event.target.value as UploadContentProfile)}><option value="FORMAT_ONLY_V1">형식 검증만</option><option value="CATALOG_METADATA_ROWS_CSV_V1">카탈로그 메타데이터 CSV</option><option value="CATALOG_METADATA_ROWS_XLSX_V1">카탈로그 메타데이터 Excel (.xlsx)</option><option value="DATASET_DESCRIPTION_CSV_V1">Dataset 설명 CSV (호환)</option><option value="DATASET_DESCRIPTION_XLSX_V1">Dataset 설명 Excel (.xlsx, 호환)</option></select></label>
+          {isCatalogMetadataProfile(contentProfile) && (
+            <>
+              <p className="registration-profile-hint" id={profileHintId}>
+                테이블·컬럼 설명, 도메인, 용어, 태그 변경 전용입니다. 서버 버전과 일치하는
+                10열 템플릿을 사용하세요. 서버가 현재 자산과 통제 어휘를 다시 확인하며
+                업로드/준비만으로는 변경요청 또는 DataHub 반영이 생성되지 않습니다.
+                {' '}
+                <button
+                  className="button button-secondary"
+                  disabled={templateBusy}
+                  onClick={() => void downloadCatalogMetadataTemplate()}
+                  type="button"
+                >
+                  {templateBusy ? '템플릿 받는 중…' : '서버 템플릿 받기'}
+                </button>
+              </p>
+              <CatalogMetadataVocabularyBrowser client={client} />
+            </>
+          )}
+          {!isCatalogMetadataProfile(contentProfile) && isTypedDescriptionProfile(contentProfile) && (
             <p className="registration-profile-hint" id={profileHintId}>
               기존 ACTIVE Dataset 설명 변경 준비 전용 · 고정 헤더: asset_id, platform,
               database_name, schema_name, table_name, description · 업로드/준비는 변경 요청이나
@@ -711,8 +996,14 @@ export function RegistrationBulkWorkbench({ client }: { client: ApiClient }) {
             candidateReason={candidateReason}
             createdChangeRequest={createdChangeRequest}
             onSelectCandidate={(candidate) => { void openCandidatePreview(candidate) }}
-            onCandidateTitleChange={setCandidateTitle}
-            onCandidateReasonChange={setCandidateReason}
+            onCandidateTitleChange={(value) => {
+              candidateCreateIdempotency.current = undefined
+              setCandidateTitle(value)
+            }}
+            onCandidateReasonChange={(value) => {
+              candidateCreateIdempotency.current = undefined
+              setCandidateReason(value)
+            }}
             onCreateCandidateChangeRequest={() => { void createCandidateChangeRequest() }}
           />
         )}
@@ -761,20 +1052,20 @@ function PreparationPanel({
   pollingStopped: boolean
   onCreate: () => void
   onRefresh: () => void
-  candidatePage?: UploadRegistrationCandidatePage
+  candidatePage?: TypedCandidatePage
   candidatesBusy: boolean
   candidateHasPrevious: boolean
   onLoadCandidates: () => void
   onNextCandidates: () => void
   onPreviousCandidates: () => void
-  selectedCandidate?: UploadRegistrationCandidate
-  candidatePreview?: TypedBulkCandidatePreview
+  selectedCandidate?: TypedCandidate
+  candidatePreview?: TypedCandidatePreview
   candidatePreviewBusy: boolean
   candidateCreateBusy: boolean
   candidateTitle: string
   candidateReason: string
-  createdChangeRequest?: ChangeRequestRecord
-  onSelectCandidate: (candidate: UploadRegistrationCandidate) => void
+  createdChangeRequest?: TypedChangeRequest
+  onSelectCandidate: (candidate: TypedCandidate) => void
   onCandidateTitleChange: (value: string) => void
   onCandidateReasonChange: (value: string) => void
   onCreateCandidateChangeRequest: () => void
@@ -886,30 +1177,31 @@ function CandidatePreviewPanel({
   onReasonChange,
   onCreate,
 }: {
-  page?: UploadRegistrationCandidatePage
+  page?: TypedCandidatePage
   busy: boolean
   hasPrevious: boolean
   onLoad: () => void
   onNext: () => void
   onPrevious: () => void
-  selectedCandidate?: UploadRegistrationCandidate
-  preview?: TypedBulkCandidatePreview
+  selectedCandidate?: TypedCandidate
+  preview?: TypedCandidatePreview
   previewBusy: boolean
   createBusy: boolean
   title: string
   reason: string
-  createdChangeRequest?: ChangeRequestRecord
-  onSelect: (candidate: UploadRegistrationCandidate) => void
+  createdChangeRequest?: TypedChangeRequest
+  onSelect: (candidate: TypedCandidate) => void
   onTitleChange: (value: string) => void
   onReasonChange: (value: string) => void
   onCreate: () => void
 }) {
+  const catalogMetadata = page ? isCatalogMetadataPage(page) : false
   return (
     <section className="registration-candidate-preview" aria-label="등록 후보 미리보기" aria-busy={busy}>
       <header>
         <div>
           <span className="eyebrow">Authorized candidate evidence</span>
-          <h4>Dataset 설명 후보</h4>
+          <h4>{catalogMetadata ? '카탈로그 메타데이터 후보' : 'Dataset 설명 후보'}</h4>
         </div>
         <button className="button button-secondary" type="button" disabled={busy} onClick={onLoad}>
           {busy ? '후보 확인 중…' : page ? '후보 새로고침' : '후보 조회'}
@@ -923,31 +1215,60 @@ function CandidatePreviewPanel({
       ) : (
         <>
           <div className="registration-candidate-table-frame">
-            <table>
-              <caption>권한이 확인된 Dataset 설명 후보</caption>
-              <thead><tr><th scope="col">#</th><th scope="col">대상</th><th scope="col">제안 설명</th><th scope="col">등급</th><th scope="col">Source version</th><th scope="col">검토</th></tr></thead>
-              <tbody>
-                {page.items.map((candidate) => <tr key={candidate.id}>
-                  <td>{candidate.ordinal}</td>
-                  <td title={`${candidate.submitted_identity.platform}.${candidate.submitted_identity.database_name}.${candidate.submitted_identity.schema_name}.${candidate.submitted_identity.table_name}`}><strong>{candidate.submitted_identity.table_name}</strong><small>{candidate.submitted_identity.platform} · {candidate.submitted_identity.database_name}.{candidate.submitted_identity.schema_name}</small></td>
-                  <td title={candidate.proposed_description}>{candidate.proposed_description || '(설명 삭제)'}</td>
-                  <td><span className="badge">{candidate.current_target.classification}</span></td>
-                  <td title={candidate.current_target.source_version}><code>{candidate.current_target.source_version}</code></td>
-                  <td>
-                    <button
-                      className="button button-secondary"
-                      type="button"
-                      disabled={busy || previewBusy || createBusy}
-                      aria-pressed={selectedCandidate?.id === candidate.id}
-                      onClick={() => onSelect(candidate)}
-                    >
-                      검토 및 변경요청
-                    </button>
-                  </td>
-                </tr>)}
-                {!page.items.length && <tr><td colSpan={6}>현재 권한 범위에서 표시할 후보가 없습니다.</td></tr>}
-              </tbody>
-            </table>
+            {isCatalogMetadataPage(page) ? (
+              <table>
+                <caption>권한이 확인된 카탈로그 메타데이터 후보</caption>
+                <thead><tr><th scope="col">#</th><th scope="col">대상</th><th scope="col">변경 유형</th><th scope="col">범위</th><th scope="col">등급</th><th scope="col">Source version</th><th scope="col">검토</th></tr></thead>
+                <tbody>
+                  {page.items.map((candidate) => <tr key={candidate.id}>
+                    <td>{candidate.ordinal}</td>
+                    <td title={`${candidate.submitted_identity.platform}.${candidate.submitted_identity.database_name}.${candidate.submitted_identity.schema_name}.${candidate.submitted_identity.table_name}`}><strong>{candidate.submitted_identity.table_name}</strong><small>{candidate.submitted_identity.platform} · {candidate.submitted_identity.database_name}.{candidate.submitted_identity.schema_name}</small></td>
+                    <td><strong>{catalogMetadataRecordLabel(candidate.record_kind)}</strong><small>{candidate.operation_count.toLocaleString()}건</small></td>
+                    <td>{candidate.field_path_sample.length ? candidate.field_path_sample.join(', ') : `통제 참조 ${candidate.controlled_reference_count.toLocaleString()}건`}{candidate.row_summary_truncated ? ' 외' : ''}</td>
+                    <td><span className="badge">{candidate.current_target.classification}</span></td>
+                    <td title={candidate.current_target.source_version}><code>{candidate.current_target.source_version}</code></td>
+                    <td>
+                      <button
+                        className="button button-secondary"
+                        type="button"
+                        disabled={busy || previewBusy || createBusy}
+                        aria-pressed={selectedCandidate?.id === candidate.id}
+                        onClick={() => onSelect(candidate)}
+                      >
+                        검토 및 변경요청
+                      </button>
+                    </td>
+                  </tr>)}
+                  {!page.items.length && <tr><td colSpan={7}>현재 권한 범위에서 표시할 후보가 없습니다.</td></tr>}
+                </tbody>
+              </table>
+            ) : (
+              <table>
+                <caption>권한이 확인된 Dataset 설명 후보</caption>
+                <thead><tr><th scope="col">#</th><th scope="col">대상</th><th scope="col">제안 설명</th><th scope="col">등급</th><th scope="col">Source version</th><th scope="col">검토</th></tr></thead>
+                <tbody>
+                  {page.items.map((candidate) => <tr key={candidate.id}>
+                    <td>{candidate.ordinal}</td>
+                    <td title={`${candidate.submitted_identity.platform}.${candidate.submitted_identity.database_name}.${candidate.submitted_identity.schema_name}.${candidate.submitted_identity.table_name}`}><strong>{candidate.submitted_identity.table_name}</strong><small>{candidate.submitted_identity.platform} · {candidate.submitted_identity.database_name}.{candidate.submitted_identity.schema_name}</small></td>
+                    <td title={candidate.proposed_description}>{candidate.proposed_description || '(설명 삭제)'}</td>
+                    <td><span className="badge">{candidate.current_target.classification}</span></td>
+                    <td title={candidate.current_target.source_version}><code>{candidate.current_target.source_version}</code></td>
+                    <td>
+                      <button
+                        className="button button-secondary"
+                        type="button"
+                        disabled={busy || previewBusy || createBusy}
+                        aria-pressed={selectedCandidate?.id === candidate.id}
+                        onClick={() => onSelect(candidate)}
+                      >
+                        검토 및 변경요청
+                      </button>
+                    </td>
+                  </tr>)}
+                  {!page.items.length && <tr><td colSpan={6}>현재 권한 범위에서 표시할 후보가 없습니다.</td></tr>}
+                </tbody>
+              </table>
+            )}
           </div>
           <dl className="registration-candidate-receipt">
             <div><dt>Receipt SHA-256</dt><dd><code>{page.receipt.receipt_hash}</code></dd></div>
@@ -969,12 +1290,46 @@ function CandidatePreviewPanel({
               </header>
               {preview && (
                 <>
-                  <dl className="summary-list">
-                    <div><dt>현재 설명</dt><dd>{preview.current_description || '(없음)'}</dd></div>
-                    <div><dt>제안 설명</dt><dd>{preview.proposed_description || '(설명 삭제)'}</dd></div>
-                    <div><dt>Provider source</dt><dd><code>{preview.source_version}</code></dd></div>
-                    <div><dt>Read-back hash</dt><dd><code>{preview.after_hash}</code></dd></div>
-                  </dl>
+                  {isCatalogMetadataPreview(preview) ? (
+                    <>
+                      <dl className="summary-list">
+                        <div><dt>변경 유형</dt><dd>{catalogMetadataRecordLabel(preview.record_kind)}</dd></div>
+                        <div><dt>작업 수</dt><dd>{preview.operation_count.toLocaleString()}건</dd></div>
+                        <div><dt>설명 변경</dt><dd>{preview.description_change_count.toLocaleString()}건</dd></div>
+                        <div><dt>현재 통제 참조</dt><dd>{preview.current_reference_count.toLocaleString()}건</dd></div>
+                        <div><dt>제안 통제 참조</dt><dd>{preview.proposed_reference_count.toLocaleString()}건</dd></div>
+                        <div><dt>Provider source</dt><dd><code>{preview.source_version}</code></dd></div>
+                        <div><dt>제안 문서 해시</dt><dd><code>{preview.after_hash}</code></dd></div>
+                      </dl>
+                      {preview.description_change_sample.length > 0 && (
+                        <div className="registration-candidate-table-frame">
+                          <table>
+                            <caption>
+                              설명 변경 표본 {preview.description_change_sample.length.toLocaleString()}건
+                              {preview.description_changes_truncated ? ' (일부)' : ''}
+                            </caption>
+                            <thead><tr><th scope="col">Field</th><th scope="col">현재 설명</th><th scope="col">제안 설명</th></tr></thead>
+                            <tbody>
+                              {preview.description_change_sample.map((change, index) => (
+                                <tr key={`${change.field_path ?? 'table'}-${index}`}>
+                                  <td>{change.field_path ?? '(table)'}</td>
+                                  <td>{change.current_description ?? '(없음)'}</td>
+                                  <td>{change.proposed_description ?? '(삭제)'}</td>
+                                </tr>
+                              ))}
+                            </tbody>
+                          </table>
+                        </div>
+                      )}
+                    </>
+                  ) : (
+                    <dl className="summary-list">
+                      <div><dt>현재 설명</dt><dd>{preview.current_description || '(없음)'}</dd></div>
+                      <div><dt>제안 설명</dt><dd>{preview.proposed_description || '(설명 삭제)'}</dd></div>
+                      <div><dt>Provider source</dt><dd><code>{preview.source_version}</code></dd></div>
+                      <div><dt>제안 문서 해시</dt><dd><code>{preview.after_hash}</code></dd></div>
+                    </dl>
+                  )}
                   {!createdChangeRequest ? (
                     <div className="registration-candidate-command-form">
                       <label>
@@ -1155,9 +1510,24 @@ function preparationStatusLabel(
 }
 
 function profileLabel(profile: UploadContentProfile): string {
+  if (profile === 'CATALOG_METADATA_ROWS_CSV_V1') return '카탈로그 메타데이터 CSV'
+  if (profile === 'CATALOG_METADATA_ROWS_XLSX_V1') return '카탈로그 메타데이터 Excel (.xlsx)'
   if (profile === 'DATASET_DESCRIPTION_CSV_V1') return 'Dataset 설명 CSV'
   if (profile === 'DATASET_DESCRIPTION_XLSX_V1') return 'Dataset 설명 Excel (.xlsx)'
   return '형식 검증만'
+}
+
+function catalogMetadataRecordLabel(
+  recordKind: CatalogMetadataCandidate['record_kind'],
+): string {
+  const labels: Record<CatalogMetadataCandidate['record_kind'], string> = {
+    TABLE_DESCRIPTION: '테이블 설명',
+    COLUMN_DESCRIPTION: '컬럼 설명',
+    DATASET_DOMAIN: '도메인 지정',
+    DATASET_TERM: '용어 추가',
+    DATASET_TAG: '태그 추가',
+  }
+  return labels[recordKind]
 }
 
 function isTypedDescriptionCsv(file: Pick<File, 'name' | 'type'>): boolean {
@@ -1174,12 +1544,30 @@ export function validateProfileFile(
   file: Pick<File, 'name' | 'type'>,
   profile: UploadContentProfile,
 ): void {
+  if (profile === 'CATALOG_METADATA_ROWS_CSV_V1' && !isTypedDescriptionCsv(file)) {
+    throw new Error('카탈로그 메타데이터 CSV 프로파일은 CSV 파일만 등록할 수 있습니다.')
+  }
+  if (profile === 'CATALOG_METADATA_ROWS_XLSX_V1' && !isTypedDescriptionXlsx(file)) {
+    throw new Error('카탈로그 메타데이터 Excel 프로파일은 .xlsx 파일만 등록할 수 있습니다.')
+  }
   if (profile === 'DATASET_DESCRIPTION_CSV_V1' && !isTypedDescriptionCsv(file)) {
     throw new Error('Dataset 설명 CSV 프로파일은 CSV 파일만 등록할 수 있습니다.')
   }
   if (profile === 'DATASET_DESCRIPTION_XLSX_V1' && !isTypedDescriptionXlsx(file)) {
     throw new Error('Dataset 설명 Excel 프로파일은 .xlsx 파일만 등록할 수 있습니다.')
   }
+}
+
+export function profileAccept(profile: UploadContentProfile): string {
+  if (
+    profile === 'CATALOG_METADATA_ROWS_CSV_V1'
+    || profile === 'DATASET_DESCRIPTION_CSV_V1'
+  ) return '.csv,text/csv'
+  if (
+    profile === 'CATALOG_METADATA_ROWS_XLSX_V1'
+    || profile === 'DATASET_DESCRIPTION_XLSX_V1'
+  ) return '.xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+  return '.pdf,.csv,.json,.parquet,.yaml,.yml,.xlsx'
 }
 
 function displaySummaryValue(value: unknown): string {
