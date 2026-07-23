@@ -31,6 +31,7 @@ from datariver.domain.knowledge_pipeline import (
     ExtractedNodeDraft,
     ExtractionDraft,
     GraphRagAuditRecord,
+    GraphRagEvidence,
     KnowledgeSourceAnalysis,
     KnowledgeSourceSnapshot,
     ModelBinding,
@@ -40,6 +41,73 @@ from datariver.domain.knowledge_pipeline import (
 
 MAX_EXTRACTION_BATCH_PAGES = 6
 MAX_EXTRACTION_BATCH_CHARACTERS = 40_000
+
+
+def _canonical_graph_evidence(
+    *,
+    candidate: GraphRagEvidence,
+    snapshot: GraphSnapshot,
+    release_id: UUID,
+) -> GraphRagEvidence:
+    """Treat Neo4j as an ID selector and rebuild evidence from PostgreSQL truth."""
+
+    if candidate.entity_kind == "NODE":
+        node = snapshot.nodes.get(candidate.entity_id)
+        if node is None:
+            raise ValidationError("Neo4j selected a node outside the canonical release.")
+        entity_type = node.entity_type
+        properties = dict(node.properties)
+        classification = node.classification
+        provenance = node.provenance
+        source_entity_id = None
+        target_entity_id = None
+        edge_type = None
+        evidence_id = f"kg:{release_id}:{node.entity_id}"
+    elif candidate.entity_kind == "EDGE":
+        edge = snapshot.edges.get(candidate.entity_id)
+        if edge is None:
+            raise ValidationError("Neo4j selected an edge outside the canonical release.")
+        entity_type = edge.edge_type
+        properties = dict(edge.properties)
+        classification = edge.classification
+        provenance = edge.provenance
+        source_entity_id = edge.source_entity_id
+        target_entity_id = edge.target_entity_id
+        edge_type = edge.edge_type
+        evidence_id = f"kg:{release_id}:edge:{edge.edge_id}"
+    else:
+        raise ValidationError("Neo4j returned an invalid evidence kind.")
+    if not provenance:
+        raise ValidationError("Canonical GraphRAG evidence requires provenance.")
+    selected = next(
+        (value for value in provenance if value.evidence_excerpt is not None),
+        provenance[0],
+    )
+    selected.validate()
+    page_number = None
+    marker = "#page="
+    if marker in selected.source_locator:
+        try:
+            page_number = int(selected.source_locator.rsplit(marker, maxsplit=1)[1])
+        except ValueError:
+            page_number = None
+    return GraphRagEvidence(
+        evidence_id=evidence_id,
+        entity_id=candidate.entity_id,
+        entity_type=entity_type,
+        properties=properties,
+        source_locator=selected.source_locator,
+        source_version=selected.source_version,
+        page_number=page_number,
+        classification=classification,
+        entity_kind=candidate.entity_kind,
+        source_entity_id=source_entity_id,
+        target_entity_id=target_entity_id,
+        edge_type=edge_type,
+        evidence_excerpt=selected.evidence_excerpt,
+        evidence_sha256=selected.evidence_sha256,
+        source_page_sha256=selected.source_page_sha256,
+    )
 
 
 class KnowledgeSourcePipeline:
@@ -67,6 +135,11 @@ class KnowledgeSourcePipeline:
     ) -> KnowledgeSourceAnalysis:
         if not entity_types:
             raise ValidationError("A knowledge extraction requires an approved entity ontology.")
+        # The current development adapters are deployment bindings, not governed
+        # classification-provider routes. Keep the ADR-0011 portable floor:
+        # PUBLIC/INTERNAL may be analyzed, while CONFIDENTIAL/RESTRICTED must
+        # stop before object bytes or model bindings are touched.
+        source.require_inference_eligible(maximum_classification=1)
         embedding_binding.validate()
         extraction_binding.validate()
         payload = await self._reader.read_snapshot(source=source)
@@ -94,6 +167,12 @@ class KnowledgeSourcePipeline:
             edge_types=edge_types,
             page_numbers=frozenset(numbers),
         )
+        if any(node.classification != source.classification for node in extraction.nodes) or any(
+            edge.classification != source.classification for edge in extraction.edges
+        ):
+            raise ValidationError(
+                "Extracted graph content must inherit the immutable source classification."
+            )
         self._verify_extraction_evidence(pages=pages, extraction=extraction)
         return KnowledgeSourceAnalysis(
             source=source,
@@ -387,6 +466,7 @@ class KnowledgeGraphRagService:
         maximum_classification: int,
         maximum_hops: int,
         maximum_nodes: int,
+        canonical_snapshot: GraphSnapshot,
         binding: ModelBinding,
     ) -> CitedGraphRagAnswer:
         normalized_question = " ".join(question.split())
@@ -407,7 +487,7 @@ class KnowledgeGraphRagService:
         if not 1 <= maximum_hops <= 3 or not 1 <= maximum_nodes <= 100:
             raise ValidationError("GraphRAG traversal bounds are invalid.")
         binding.validate()
-        evidence = await self._retriever.retrieve(
+        selected_evidence = await self._retriever.retrieve(
             workspace_id=workspace_id,
             graph_id=graph_id,
             release_id=release_id,
@@ -419,8 +499,16 @@ class KnowledgeGraphRagService:
             maximum_hops=maximum_hops,
             maximum_nodes=maximum_nodes,
         )
-        if not evidence:
+        if not selected_evidence:
             raise ValidationError("No authorized evidence is available for this knowledge release.")
+        evidence = tuple(
+            _canonical_graph_evidence(
+                candidate=item,
+                snapshot=canonical_snapshot,
+                release_id=release_id,
+            )
+            for item in selected_evidence
+        )
         evidence_by_id = {item.evidence_id: item for item in evidence}
         if len(evidence_by_id) != len(evidence):
             raise ValidationError("GraphRAG evidence identifiers must be unique.")

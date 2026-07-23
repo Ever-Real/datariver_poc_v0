@@ -70,7 +70,6 @@ from datariver.interfaces.http.schemas import (
     KnowledgeGraphResponse,
     KnowledgeModelAuditResponse,
     KnowledgeProjectionResponse,
-    KnowledgeReleasePublish,
     KnowledgeReleaseResponse,
     KnowledgeSnapshotResponse,
     KnowledgeSourceAnalyzeRequest,
@@ -133,10 +132,6 @@ def _knowledge_adapters(
     ModelBinding,
 ]:
     settings = get_container(request).settings
-    if not settings.knowledge_pipeline_enabled:
-        raise ConflictError(
-            "The Knowledge pipeline requires activated Chat, embedding, and Neo4j settings."
-        )
     if settings.local_ollama_chat_enabled and settings.local_ollama_embedding_enabled:
         if (
             settings.local_ollama_chat_base_url is None
@@ -146,7 +141,11 @@ def _knowledge_adapters(
         ):
             raise ConflictError("The activated local Knowledge model bindings are incomplete.")
         provider = _LOCAL_OLLAMA_PROVIDER
-        allowed_hosts = frozenset({"host.docker.internal"})
+        allowed_hosts = frozenset(
+            {"host.docker.internal", "127.0.0.1"}
+            if settings.local_inference_source_host_enabled
+            else {"host.docker.internal"}
+        )
         chat_base_url = str(settings.local_ollama_chat_base_url)
         chat_model = settings.local_ollama_chat_model
         chat_api_key = None
@@ -359,45 +358,6 @@ def _edge_response(edge: GraphEdge) -> GraphEdgeResponse:
         classification=edge.classification,
         provenance=[_provenance_response(item) for item in edge.provenance],
     )
-
-
-def _snapshot(payload: KnowledgeReleasePublish) -> GraphSnapshot:
-    nodes = {
-        item.id: GraphNode(
-            entity_id=item.id,
-            entity_type=item.entity_type,
-            properties=item.properties,
-            classification=item.classification,
-            provenance=_provenance(item.provenance),
-        )
-        for item in payload.nodes
-    }
-    if len(nodes) != len(payload.nodes):
-        raise ValidationError("Knowledge graph node identifiers must be unique.")
-    edges = {
-        item.id: GraphEdge(
-            edge_id=item.id,
-            source_entity_id=item.source_id,
-            target_entity_id=item.target_id,
-            edge_type=item.edge_type,
-            properties=item.properties,
-            classification=item.classification,
-            provenance=_provenance(item.provenance),
-        )
-        for item in payload.edges
-    }
-    if len(edges) != len(payload.edges):
-        raise ValidationError("Knowledge graph edge identifiers must be unique.")
-    return GraphSnapshot(nodes=nodes, edges=edges)
-
-
-def _base_hash(if_match: str) -> str | None:
-    value = if_match.strip().strip('"')
-    if value == "none":
-        return None
-    if len(value) != 64 or any(character not in "0123456789abcdef" for character in value):
-        raise ValidationError('If-Match must be "none" or a quoted SHA-256 release hash.')
-    return value
 
 
 def _expected_version(if_match: str) -> int:
@@ -743,45 +703,31 @@ async def activate_release(
     return _graph_response(activated)
 
 
-@router.post("/{graph_id}/releases", status_code=201, response_model=KnowledgeReleaseResponse)
-async def publish_release(
+@router.post(
+    "/{graph_id}/releases",
+    status_code=410,
+    response_model=None,
+    deprecated=True,
+)
+async def retired_direct_release_publication(
     graph_id: UUID,
-    payload: KnowledgeReleasePublish,
-    request: Request,
     context: ContextDep,
-    session: SessionDep,
-    if_match: Annotated[str, Header(alias="If-Match", max_length=100)],
-    idempotency_key: Annotated[str, Header(alias="Idempotency-Key", min_length=16, max_length=200)],
-) -> KnowledgeReleaseResponse | JSONResponse:
-    service = _service(request, session)
-    graph = await service.get_graph(
-        workspace_id=context.workspace_id,
-        graph_id=graph_id,
-        subject=context.subject,
-        environment=context.environment,
-        request_id=context.request_id,
+) -> JSONResponse:
+    del graph_id, context
+    return JSONResponse(
+        status_code=410,
+        media_type="application/problem+json",
+        headers={"Cache-Control": "no-store"},
+        content={
+            "type": "https://datariver.invalid/problems/direct-release-retired",
+            "title": "Direct release publication is retired",
+            "status": 410,
+            "detail": (
+                "Submit and independently approve a typed changeset, then publish that "
+                "approved changeset."
+            ),
+        },
     )
-    if graph is None:
-        return _not_found(request, context.request_id)
-    expected_base_hash = _base_hash(if_match)
-    request_hash = hashlib.sha256(
-        orjson.dumps(
-            {"base_hash": expected_base_hash, "snapshot": payload.model_dump(mode="json")},
-            option=orjson.OPT_SORT_KEYS,
-        )
-    ).hexdigest()
-    release = await service.publish_release(
-        workspace_id=context.workspace_id,
-        graph=graph,
-        snapshot=_snapshot(payload),
-        expected_base_hash=expected_base_hash,
-        subject=context.subject,
-        environment=context.environment,
-        request_id=context.request_id,
-        idempotency_key=idempotency_key,
-        request_hash=request_hash,
-    )
-    return _release_response(release)
 
 
 @router.get(
@@ -1003,7 +949,6 @@ async def analyze_knowledge_pdf_source(
         environment=context.environment,
         request_id=context.request_id,
     )
-    embedding, extractor, _, embedding_binding, extraction_binding, _ = _knowledge_adapters(request)
     repository = SqlKnowledgePipelineRepository(session)
     source, entity_types, edge_types = await repository.prepare_source(
         workspace_id=context.workspace_id,
@@ -1011,6 +956,9 @@ async def analyze_knowledge_pdf_source(
         upload_id=upload_id,
         actor_id=context.subject.subject_id,
     )
+    source.require_inference_eligible(maximum_classification=int(Classification.INTERNAL))
+    source.require_graph_envelope(graph_classification=int(graph.classification))
+    embedding, extractor, _, embedding_binding, extraction_binding, _ = _knowledge_adapters(request)
     pipeline = KnowledgeSourcePipeline(
         reader=ObjectStoreKnowledgeSourceReader(object_store=get_container(request).object_store),
         parser=PypdfPageAwareParser(),
@@ -1054,8 +1002,6 @@ async def project_knowledge_release(
     session: SessionDep,
 ) -> KnowledgeProjectionResponse | JSONResponse:
     container = get_container(request)
-    if not container.settings.knowledge_pipeline_enabled or container.knowledge_neo4j is None:
-        raise ConflictError("The activated Neo4j projection adapter is unavailable.")
     service = _service(request, session)
     graph = await service.get_graph(
         workspace_id=context.workspace_id,
@@ -1083,6 +1029,12 @@ async def project_knowledge_release(
     if release_snapshot is None:
         return _not_found(request, context.request_id)
     release, snapshot = release_snapshot
+    if any(
+        node.classification > int(graph.classification) for node in snapshot.nodes.values()
+    ) or any(edge.classification > int(graph.classification) for edge in snapshot.edges.values()):
+        raise ConflictError("The release classification exceeds its knowledge graph envelope.")
+    if container.knowledge_neo4j is None:
+        raise ConflictError("The activated Neo4j projection adapter is unavailable.")
     receipt = await VerifiedProjectionService(
         writer=Neo4jKnowledgeProjectionAdapter(executor=container.knowledge_neo4j)
     ).project_shadow_release(
@@ -1116,8 +1068,6 @@ async def query_knowledge_release(
     session: SessionDep,
 ) -> KnowledgeGraphRagResponse | JSONResponse:
     container = get_container(request)
-    if container.knowledge_neo4j is None:
-        raise ConflictError("The activated Neo4j query adapter is unavailable.")
     service = _service(request, session)
     graph = await service.get_graph(
         workspace_id=context.workspace_id,
@@ -1146,7 +1096,11 @@ async def query_knowledge_release(
         graph_id=graph_id,
         release_id=release_id,
         release_hash=release.content_hash,
+        node_count=release.node_count,
+        edge_count=release.edge_count,
     )
+    if container.knowledge_neo4j is None:
+        raise ConflictError("The activated Neo4j query adapter is unavailable.")
     embedding, _, composer, embedding_binding, _, graphrag_binding = _knowledge_adapters(request)
     selector = SqlSemanticSeedSelector(
         session=session,
@@ -1170,9 +1124,13 @@ async def query_knowledge_release(
         start_node_id=payload.start_node_id,
         direction=payload.direction,
         edge_types=frozenset(payload.edge_types),
-        maximum_classification=int(context.subject.clearance),
+        maximum_classification=min(
+            int(context.subject.clearance),
+            int(Classification.INTERNAL),
+        ),
         maximum_hops=payload.maximum_hops,
         maximum_nodes=payload.maximum_nodes,
+        canonical_snapshot=snapshot,
         binding=graphrag_binding,
     )
     cited_node_ids = {

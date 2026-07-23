@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
-from typing import cast
+from typing import Any, cast
 from uuid import UUID
 
 import pytest
@@ -14,6 +14,7 @@ from datariver.infrastructure.db.models.platform import ExternalServiceProfileMo
 from datariver.infrastructure.db.session import DatabaseReadiness
 from datariver.infrastructure.observability.metrics import HttpMetrics
 from datariver.interfaces.http.container import AppContainer
+from datariver.interfaces.http.dependencies import get_request_context
 from datariver.interfaces.http.factory import create_app
 from datariver.interfaces.http.routes.admin import (
     _display_configuration,
@@ -238,6 +239,28 @@ def test_openapi_contains_all_required_product_modules() -> None:
         "/api/v1/admin/inference/provider-profiles/{profile_version_id}/decisions",
         "/api/v1/admin/inference/provider-profiles/{profile_version_id}/revocations",
     }.issubset(document["paths"])
+
+
+def test_direct_knowledge_release_publication_is_explicitly_retired() -> None:
+    factory = cast(Callable[[Settings], AppContainer], lambda _: LiveOnlyContainer())
+    app = create_app(settings(), container_factory=factory)
+    document = app.openapi()
+
+    operation = document["paths"]["/api/v1/knowledge/graphs/{graph_id}/releases"]["post"]
+
+    assert operation["deprecated"] is True
+    assert "410" in operation["responses"]
+    assert "requestBody" not in operation
+    app.dependency_overrides[get_request_context] = lambda: object()
+    with TestClient(app) as client:
+        response = client.post(
+            f"/api/v1/knowledge/graphs/{UUID(int=1)}/releases",
+            json={"snapshot": "must-not-be-accepted"},
+        )
+    assert response.status_code == 410
+    assert response.headers["Cache-Control"] == "no-store"
+    assert response.headers["Content-Type"].startswith("application/problem+json")
+    assert response.json()["type"].endswith("/direct-release-retired")
 
 
 def test_system_configuration_inventory_is_server_owned_and_redacted() -> None:
@@ -585,6 +608,69 @@ def test_system_configuration_contract_rejects_credentials_and_incomplete_profil
                 "options": {},
             },
         )
+
+
+def test_reranker_configuration_is_one_fixed_non_openai_contract() -> None:
+    valid: dict[str, Any] = {
+        "connection_mode": "INTRANET_RERANK_V1",
+        "base_url": "https://10.42.0.16/v1",
+        "model": "bge-reranker-v2-m3",
+        "secret_references": {"api_key": "file:/run/secrets/intranet_llm_reranker_api_key"},
+        "options": {"api_style": "rerank_v1", "timeout_seconds": 60, "top_n": 10},
+    }
+
+    assert _validate_system_configuration("LLM_RERANKER", valid) == ("https://10.42.0.16/v1")
+
+    with pytest.raises(ValidationError, match="server-controlled"):
+        _validate_system_configuration(
+            "LLM_RERANKER",
+            {
+                **valid,
+                "options": {
+                    **valid["options"],
+                    "api_style": "openai_compatible",
+                },
+            },
+        )
+    with pytest.raises(ValidationError, match="connection_mode"):
+        _validate_system_configuration(
+            "LLM_RERANKER",
+            {**valid, "connection_mode": "LOCAL_OLLAMA"},
+        )
+    with pytest.raises(ValidationError, match="canonical operator-managed secret"):
+        _validate_system_configuration(
+            "LLM_RERANKER",
+            {
+                **valid,
+                "secret_references": {"api_key": "file:/run/secrets/intranet_llm_chat_api_key"},
+            },
+        )
+
+
+def test_reranker_runtime_activation_is_rejected_by_the_actual_http_route() -> None:
+    startup_settings = settings()
+    runtime_settings = startup_settings.model_copy(
+        update={
+            "app_env": "development",
+            "system_configuration_runtime_activation_enabled": True,
+        }
+    )
+    container = LiveOnlyContainer()
+    container.settings = runtime_settings  # type: ignore[attr-defined]
+    factory = cast(Callable[[Settings], AppContainer], lambda _: cast(AppContainer, container))
+    app = create_app(startup_settings, container_factory=factory)
+    app.dependency_overrides[get_request_context] = lambda: object()
+
+    with TestClient(app) as client:
+        response = client.post(
+            "/api/v1/admin/system-configuration/LLM_RERANKER/activate",
+            headers={"If-Match": '"1"'},
+        )
+
+    assert response.status_code == 409
+    assert response.json()["detail"] == (
+        "No runtime consumer is implemented for this system configuration."
+    )
 
 
 def test_upload_preparation_openapi_is_typed_and_server_managed() -> None:

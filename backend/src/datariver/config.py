@@ -101,9 +101,10 @@ class Settings(BaseSettings):
     # a security administrator is exercising the local UI before retention
     # policy governance is configured. This never permits durable Chat writes.
     chat_ephemeral_admin_without_retention_enabled: bool = False
-    # Opt-in experimental developer adapter.  This is deliberately constrained
-    # to Docker Desktop's native-host gateway; it is not a provider registry or
-    # a production inference configuration.
+    # Opt-in experimental developer adapter. Container mode is constrained to
+    # Docker Desktop's native-host gateway; explicit source-host development may
+    # use exact loopback. This is not a provider registry or production inference.
+    local_inference_source_host_enabled: bool = False
     local_ollama_chat_enabled: bool = False
     local_ollama_chat_base_url: HttpUrl | None = None
     local_ollama_chat_model: str | None = Field(default=None, max_length=128)
@@ -866,9 +867,12 @@ class Settings(BaseSettings):
             if re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:/-]{0,127}", model) is None:
                 raise ValueError("Local Ollama model identity is invalid.")
             parsed_ollama_url = urlsplit(str(self.local_ollama_chat_base_url))
+            allowed_ollama_hosts = {"host.docker.internal"}
+            if self.local_inference_source_host_enabled:
+                allowed_ollama_hosts.add("127.0.0.1")
             if (
                 parsed_ollama_url.scheme != "http"
-                or parsed_ollama_url.hostname != "host.docker.internal"
+                or parsed_ollama_url.hostname not in allowed_ollama_hosts
                 or parsed_ollama_url.port != 11434
                 or parsed_ollama_url.path.rstrip("/") != "/v1"
                 or parsed_ollama_url.query
@@ -876,7 +880,10 @@ class Settings(BaseSettings):
                 or parsed_ollama_url.username is not None
                 or parsed_ollama_url.password is not None
             ):
-                raise ValueError("Local Ollama Chat must use http://host.docker.internal:11434/v1.")
+                raise ValueError(
+                    "Local Ollama Chat must use http://host.docker.internal:11434/v1, "
+                    "or the explicit source-host 127.0.0.1 binding."
+                )
         if self.local_ollama_embedding_enabled:
             if self.app_env != "development":
                 raise ValueError("Local Ollama embeddings are available only in development.")
@@ -896,9 +903,12 @@ class Settings(BaseSettings):
             ):
                 raise ValueError("Local Ollama embedding model identity is invalid.")
             parsed_embedding_url = urlsplit(str(self.local_ollama_embedding_base_url))
+            allowed_embedding_hosts = {"host.docker.internal"}
+            if self.local_inference_source_host_enabled:
+                allowed_embedding_hosts.add("127.0.0.1")
             if (
                 parsed_embedding_url.scheme != "http"
-                or parsed_embedding_url.hostname != "host.docker.internal"
+                or parsed_embedding_url.hostname not in allowed_embedding_hosts
                 or parsed_embedding_url.port != 11434
                 or parsed_embedding_url.path.rstrip("/") != "/v1"
                 or parsed_embedding_url.query
@@ -907,8 +917,13 @@ class Settings(BaseSettings):
                 or parsed_embedding_url.password is not None
             ):
                 raise ValueError(
-                    "Local Ollama embeddings must use http://host.docker.internal:11434/v1."
+                    "Local Ollama embeddings must use http://host.docker.internal:11434/v1, "
+                    "or the explicit source-host 127.0.0.1 binding."
                 )
+        if self.local_inference_source_host_enabled and self.app_env != "development":
+            raise ValueError(
+                "The local inference source-host mode is available only in development."
+            )
         intranet_chat_enabled = self.intranet_openai_compatible_chat_enabled
         intranet_embedding_enabled = self.intranet_openai_compatible_embedding_enabled
         if (self.local_ollama_chat_enabled or self.local_ollama_embedding_enabled) and (

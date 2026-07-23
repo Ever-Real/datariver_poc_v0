@@ -41,6 +41,7 @@ EXPECTED_SERVICE_SECRETS = {
         "datahub_token",
         "intranet_llm_chat_api_key",
         "intranet_llm_embedding_api_key",
+        "intranet_llm_reranker_api_key",
         "neo4j_auth",
         "keycloak_identity_admin_client_secret",
         "s3_access_key",
@@ -870,8 +871,7 @@ def verify_database_roles() -> None:
         if re.search(rf"ALTER ROLE {role}[^;]*NOBYPASSRLS;", combined) is None:
             raise AssertionError(f"{role} must remain subject to workspace RLS")
     attachment_migration = (
-        ROOT
-        / "backend/alembic/versions/0050_change_request_attachment_upload_intents.py"
+        ROOT / "backend/alembic/versions/0050_change_request_attachment_upload_intents.py"
     ).read_text(encoding="utf-8")
     if re.search(
         r"GRANT\s+SELECT\s+ON\s+governance"

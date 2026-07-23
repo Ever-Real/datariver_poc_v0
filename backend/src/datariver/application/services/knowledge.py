@@ -16,6 +16,7 @@ from datariver.domain.authz import (
     ResourceAttributes,
     SubjectAttributes,
 )
+from datariver.domain.common import ForbiddenError
 from datariver.domain.knowledge import ChangeSetState, GraphChangeOperation, GraphSnapshot
 
 
@@ -54,6 +55,7 @@ class KnowledgeService:
         )
         return await self._store.create_graph(
             workspace_id=workspace_id,
+            actor_id=subject.subject_id,
             slug=slug,
             name=name,
             graph_type=graph_type,
@@ -87,41 +89,6 @@ class KnowledgeService:
         return await self._store.list_graphs(
             workspace_id=workspace_id,
             clearance=int(subject.clearance),
-        )
-
-    async def publish_release(
-        self,
-        *,
-        workspace_id: UUID,
-        graph: KnowledgeGraphRecord,
-        snapshot: GraphSnapshot,
-        expected_base_hash: str | None,
-        subject: SubjectAttributes,
-        environment: EnvironmentAttributes,
-        request_id: str,
-        idempotency_key: str,
-        request_hash: str,
-    ) -> KnowledgeReleaseRecord:
-        await self._authorization.authorize(
-            subject=subject,
-            resource=self._resource(
-                graph_id=graph.graph_id,
-                workspace_id=workspace_id,
-                classification=graph.classification,
-                lifecycle=graph.status,
-            ),
-            action=Action.KG_PUBLISH,
-            environment=environment,
-            request_id=request_id,
-        )
-        return await self._store.publish_release(
-            workspace_id=workspace_id,
-            graph_id=graph.graph_id,
-            snapshot=snapshot,
-            expected_base_hash=expected_base_hash,
-            published_by=subject.subject_id,
-            idempotency_key=idempotency_key,
-            request_hash=request_hash,
         )
 
     async def create_changeset(
@@ -191,6 +158,9 @@ class KnowledgeService:
             environment=environment,
             request_id=request_id,
             action=Action.KG_EDIT,
+        )
+        operation.require_classification_ceiling(
+            maximum_classification=int(graph.classification),
         )
         return await self._store.append_change_operation(
             workspace_id=workspace_id,
@@ -279,28 +249,14 @@ class KnowledgeService:
             request_id=request_id,
             action=Action.KG_PUBLISH,
         )
-        changeset, snapshot, base_hash = await self._store.prepare_changeset_publication(
+        return await self._store.publish_approved_changeset(
             workspace_id=workspace_id,
             graph_id=graph.graph_id,
             changeset_id=changeset_id,
-        )
-        release = await self._store.publish_release(
-            workspace_id=workspace_id,
-            graph_id=graph.graph_id,
-            snapshot=snapshot,
-            expected_base_hash=base_hash,
             published_by=subject.subject_id,
             idempotency_key=idempotency_key,
             request_hash=request_hash,
         )
-        published = await self._store.mark_changeset_published(
-            workspace_id=workspace_id,
-            graph_id=graph.graph_id,
-            changeset_id=changeset_id,
-            release_id=release.release_id,
-            expected_version=changeset.version,
-        )
-        return published, release
 
     async def list_releases(
         self,
@@ -489,6 +445,10 @@ class KnowledgeService:
         request_id: str,
         maximum_nodes: int,
     ) -> tuple[KnowledgeReleaseRecord, GraphSnapshot] | None:
+        if graph.classification > Classification.INTERNAL:
+            raise ForbiddenError(
+                "Knowledge GraphRAG is unavailable above the configured inference policy floor."
+            )
         await self._authorize_graph(
             graph=graph,
             workspace_id=workspace_id,
@@ -501,7 +461,7 @@ class KnowledgeService:
             workspace_id=workspace_id,
             graph_id=graph.graph_id,
             release_id=release_id,
-            clearance=int(subject.clearance),
+            clearance=min(int(subject.clearance), int(Classification.INTERNAL)),
             maximum_nodes=maximum_nodes,
         )
 

@@ -2,12 +2,14 @@ from __future__ import annotations
 
 import hashlib
 import json
+from dataclasses import replace
 from typing import Any
 from uuid import UUID
 
 from sqlalchemy import delete, func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.sql import Select
 
 from datariver.application.dto import (
     KnowledgeChangeOperationRecord,
@@ -18,7 +20,14 @@ from datariver.application.dto import (
 )
 from datariver.application.ports import KnowledgeStore
 from datariver.domain.authz import Classification
-from datariver.domain.common import ConflictError, DomainEvent, ValidationError, utc_now, uuid7
+from datariver.domain.common import (
+    ConflictError,
+    DomainEvent,
+    ValidationError,
+    canonical_json_hash,
+    utc_now,
+    uuid7,
+)
 from datariver.domain.knowledge import (
     ChangeOperationType,
     ChangeSetState,
@@ -39,6 +48,7 @@ from datariver.infrastructure.db.models.knowledge import (
     ChangeSetModel,
     GraphModel,
     OntologyVersionModel,
+    ProjectionDeploymentModel,
     ReleaseEdgeModel,
     ReleaseModel,
     ReleaseNodeModel,
@@ -120,14 +130,88 @@ def _domain_operation(model: ChangeOperationModel) -> GraphChangeOperation:
     )
 
 
+def governed_release_ids(
+    *,
+    workspace_id: UUID,
+    graph_id: Any,
+) -> Select[tuple[UUID | None]]:
+    """Release ids backed by exactly one complete independent-review lineage."""
+
+    return (
+        select(ChangeSetModel.published_release_id)
+        .where(
+            ChangeSetModel.workspace_id == workspace_id,
+            ChangeSetModel.graph_id == graph_id,
+            ChangeSetModel.state == ChangeSetState.PUBLISHED.value,
+            ChangeSetModel.published_release_id.is_not(None),
+            ChangeSetModel.reviewed_by.is_not(None),
+            ChangeSetModel.reviewed_by != ChangeSetModel.author_id,
+            ChangeSetModel.reviewed_at.is_not(None),
+            ChangeSetModel.review_reason.is_not(None),
+            func.length(func.btrim(ChangeSetModel.review_reason)) > 0,
+        )
+        .group_by(ChangeSetModel.published_release_id)
+        .having(func.count(ChangeSetModel.id) == 1)
+    )
+
+
+async def require_governed_release_base(
+    session: AsyncSession,
+    *,
+    workspace_id: UUID,
+    graph_id: UUID,
+    release_id: UUID | None,
+) -> ReleaseModel | None:
+    """Return an exact independently reviewed base release or fail closed."""
+
+    if release_id is None:
+        return None
+    release = (
+        await session.scalars(
+            select(ReleaseModel).where(
+                ReleaseModel.id == release_id,
+                ReleaseModel.workspace_id == workspace_id,
+                ReleaseModel.graph_id == graph_id,
+                ReleaseModel.id.in_(
+                    governed_release_ids(
+                        workspace_id=workspace_id,
+                        graph_id=graph_id,
+                    )
+                ),
+            )
+        )
+    ).one_or_none()
+    if release is None:
+        raise ConflictError(
+            "The active knowledge release cannot be used as a governed changeset base."
+        )
+    return release
+
+
 class SqlKnowledgeStore(KnowledgeStore):
     def __init__(self, session: AsyncSession) -> None:
         self._session = session
+
+    async def _governed_graph_record(self, model: GraphModel) -> KnowledgeGraphRecord:
+        record = _graph_record(model)
+        if model.active_release_id is None:
+            return record
+        try:
+            await require_governed_release_base(
+                self._session,
+                workspace_id=model.workspace_id,
+                graph_id=model.id,
+                release_id=model.active_release_id,
+            )
+        except ConflictError:
+            return replace(record, active_release_id=None)
+        return record
 
     async def create_graph(
         self,
         *,
         workspace_id: UUID,
+        actor_id: UUID,
         slug: str,
         name: str,
         graph_type: str,
@@ -146,6 +230,10 @@ class SqlKnowledgeStore(KnowledgeStore):
         if existing is not None:
             if existing.request_hash != request_hash:
                 raise ConflictError("The idempotency key was used with a different request.")
+            if str(existing.result.get("actor_id", "")) != str(actor_id):
+                raise ConflictError(
+                    "The idempotent knowledge graph result is bound to another actor."
+                )
             graph = await self.get_graph(
                 workspace_id=workspace_id,
                 graph_id=UUID(existing.result["graph_id"]),
@@ -191,7 +279,7 @@ class SqlKnowledgeStore(KnowledgeStore):
             key=idempotency_key,
             operation="knowledge.graph.create",
             request_hash=request_hash,
-            result={"graph_id": str(graph_id)},
+            result={"graph_id": str(graph_id), "actor_id": str(actor_id)},
         )
         try:
             await self._session.commit()
@@ -215,7 +303,7 @@ class SqlKnowledgeStore(KnowledgeStore):
                 )
             ).all()
         )
-        return tuple(_graph_record(model) for model in models)
+        return tuple([await self._governed_graph_record(model) for model in models])
 
     async def get_graph(
         self, *, workspace_id: UUID, graph_id: UUID, clearance: int
@@ -229,7 +317,7 @@ class SqlKnowledgeStore(KnowledgeStore):
                 )
             )
         ).one_or_none()
-        return _graph_record(model) if model is not None else None
+        return await self._governed_graph_record(model) if model is not None else None
 
     async def create_changeset(
         self,
@@ -251,6 +339,8 @@ class SqlKnowledgeStore(KnowledgeStore):
         if existing is not None:
             if existing.request_hash != request_hash:
                 raise ConflictError("The idempotency key was used with a different request.")
+            if str(existing.result.get("author_id", "")) != str(author_id):
+                raise ConflictError("The idempotent changeset result is bound to another author.")
             value = await self.get_changeset(
                 workspace_id=workspace_id,
                 graph_id=graph_id,
@@ -258,6 +348,14 @@ class SqlKnowledgeStore(KnowledgeStore):
             )
             if value is None:
                 raise ConflictError("The idempotent changeset result is unavailable.")
+            if value.author_id != author_id:
+                raise ConflictError("The idempotent changeset result is bound to another author.")
+            await require_governed_release_base(
+                self._session,
+                workspace_id=workspace_id,
+                graph_id=graph_id,
+                release_id=value.base_release_id,
+            )
             return value
         graph = (
             await self._session.scalars(
@@ -268,6 +366,12 @@ class SqlKnowledgeStore(KnowledgeStore):
         ).one_or_none()
         if graph is None:
             raise ValidationError("The knowledge graph does not exist.")
+        await require_governed_release_base(
+            self._session,
+            workspace_id=workspace_id,
+            graph_id=graph_id,
+            release_id=graph.active_release_id,
+        )
         ontology = (
             await self._session.scalars(
                 select(OntologyVersionModel)
@@ -299,7 +403,7 @@ class SqlKnowledgeStore(KnowledgeStore):
             key=idempotency_key,
             operation=operation_name,
             request_hash=request_hash,
-            result={"changeset_id": str(model.id)},
+            result={"changeset_id": str(model.id), "author_id": str(author_id)},
         )
         await self._session.commit()
         return await self._changeset_record(model)
@@ -307,6 +411,10 @@ class SqlKnowledgeStore(KnowledgeStore):
     async def list_changesets(
         self, *, workspace_id: UUID, graph_id: UUID
     ) -> tuple[KnowledgeChangeSetRecord, ...]:
+        graph = await self._graph_for_envelope(
+            workspace_id=workspace_id,
+            graph_id=graph_id,
+        )
         models = list(
             (
                 await self._session.scalars(
@@ -319,6 +427,11 @@ class SqlKnowledgeStore(KnowledgeStore):
                 )
             ).all()
         )
+        for model in models:
+            await self._require_operation_envelope(
+                model=model,
+                maximum_classification=graph.classification,
+            )
         return tuple([await self._changeset_record(model) for model in models])
 
     async def get_changeset(
@@ -333,6 +446,15 @@ class SqlKnowledgeStore(KnowledgeStore):
                 )
             )
         ).one_or_none()
+        if model is not None:
+            graph = await self._graph_for_envelope(
+                workspace_id=workspace_id,
+                graph_id=graph_id,
+            )
+            await self._require_operation_envelope(
+                model=model,
+                maximum_classification=graph.classification,
+            )
         return await self._changeset_record(model) if model is not None else None
 
     async def append_change_operation(
@@ -345,8 +467,20 @@ class SqlKnowledgeStore(KnowledgeStore):
         expected_version: int,
         operation: GraphChangeOperation,
     ) -> KnowledgeChangeSetRecord:
+        graph = await self._graph_for_envelope(
+            workspace_id=workspace_id,
+            graph_id=graph_id,
+            lock=True,
+        )
+        operation.require_classification_ceiling(
+            maximum_classification=graph.classification,
+        )
         model = await self._lock_changeset(
             workspace_id=workspace_id, graph_id=graph_id, changeset_id=changeset_id
+        )
+        await self._require_operation_envelope(
+            model=model,
+            maximum_classification=graph.classification,
         )
         aggregate = _domain_changeset(model)
         aggregate.add_operation(
@@ -388,6 +522,11 @@ class SqlKnowledgeStore(KnowledgeStore):
         actor_id: UUID,
         expected_version: int,
     ) -> KnowledgeChangeSetRecord:
+        graph = await self._graph_for_envelope(
+            workspace_id=workspace_id,
+            graph_id=graph_id,
+            lock=True,
+        )
         model = await self._lock_changeset(
             workspace_id=workspace_id, graph_id=graph_id, changeset_id=changeset_id
         )
@@ -398,7 +537,10 @@ class SqlKnowledgeStore(KnowledgeStore):
         if ChangeSetState(model.state) is not ChangeSetState.DRAFT:
             raise ValidationError("Only a draft changeset can be submitted.")
         snapshot, ontology = await self._build_changeset_snapshot(model)
-        violations = snapshot.validate(ontology)
+        violations = snapshot.validate(
+            ontology,
+            maximum_classification=graph.classification,
+        )
         await self._session.execute(
             delete(ValidationResultModel).where(ValidationResultModel.changeset_id == changeset_id)
         )
@@ -429,6 +571,7 @@ class SqlKnowledgeStore(KnowledgeStore):
             expected_version=expected_version,
             snapshot=snapshot,
             ontology=ontology,
+            maximum_classification=graph.classification,
         )
         model.state = aggregate.state.value
         model.version = aggregate.version
@@ -446,9 +589,26 @@ class SqlKnowledgeStore(KnowledgeStore):
         reason: str,
         expected_version: int,
     ) -> KnowledgeChangeSetRecord:
+        normalized_reason = reason.strip()
+        if not normalized_reason:
+            raise ValidationError("A non-empty review reason is required.")
+        graph = await self._graph_for_envelope(
+            workspace_id=workspace_id,
+            graph_id=graph_id,
+            lock=True,
+        )
         model = await self._lock_changeset(
             workspace_id=workspace_id, graph_id=graph_id, changeset_id=changeset_id
         )
+        snapshot, ontology = await self._build_changeset_snapshot(model)
+        violations = snapshot.validate(
+            ontology,
+            maximum_classification=graph.classification,
+        )
+        if violations and decision is ChangeSetState.APPROVED:
+            raise ConflictError(
+                "The changeset cannot be approved because it violates the graph envelope."
+            )
         aggregate = _domain_changeset(model)
         aggregate.review(
             actor_id=actor_id,
@@ -459,62 +619,300 @@ class SqlKnowledgeStore(KnowledgeStore):
         model.version = aggregate.version
         model.reviewed_by = actor_id
         model.reviewed_at = utc_now()
-        model.review_reason = reason
+        model.review_reason = normalized_reason
         await self._session.commit()
-        return await self._changeset_record(model)
+        result = await self._changeset_record(model)
+        if violations:
+            # A reviewer can terminate a legacy invalid review item without
+            # receiving its over-envelope operation documents or validation
+            # coordinates in the response.
+            return replace(result, operations=(), validations=())
+        return result
 
-    async def prepare_changeset_publication(
+    async def publish_approved_changeset(
         self,
         *,
         workspace_id: UUID,
         graph_id: UUID,
         changeset_id: UUID,
-    ) -> tuple[KnowledgeChangeSetRecord, GraphSnapshot, str | None]:
-        model = await self._lock_changeset(
-            workspace_id=workspace_id, graph_id=graph_id, changeset_id=changeset_id
+        published_by: UUID,
+        idempotency_key: str,
+        request_hash: str,
+    ) -> tuple[KnowledgeChangeSetRecord, KnowledgeReleaseRecord]:
+        """Publish one independently approved changeset in exactly one DB transaction.
+
+        The release, immutable rows, canonical PostgreSQL projection receipt,
+        changeset state, outbox event and idempotency result become visible
+        together. Publication deliberately does not activate the graph.
+        """
+
+        idempotency = SqlIdempotencyStore(self._session)
+        # integration.idempotency_keys.operation is intentionally bounded to
+        # 100 characters. A changeset UUID is globally unique and the
+        # workspace remains a separate key component.
+        operation = f"knowledge.changeset.publish:{changeset_id}"
+        await idempotency.acquire_key_lock(
+            workspace_id=workspace_id,
+            key=idempotency_key,
+            operation=operation,
         )
-        if ChangeSetState(model.state) is not ChangeSetState.APPROVED:
-            raise ValidationError("Only an approved changeset can be published.")
-        snapshot, ontology = await self._build_changeset_snapshot(model)
-        violations = snapshot.validate(ontology)
-        if violations:
-            raise ValidationError(
-                "The approved changeset is no longer valid.",
-                details={"violations": violations},
+        existing = await idempotency.get_result(
+            workspace_id=workspace_id,
+            key=idempotency_key,
+            operation=operation,
+        )
+        if existing is not None:
+            if existing.request_hash != request_hash:
+                raise ConflictError("The idempotency key was used with a different request.")
+            existing_release = await require_governed_release_base(
+                self._session,
+                workspace_id=workspace_id,
+                graph_id=graph_id,
+                release_id=UUID(existing.result["release_id"]),
             )
+            changeset = (
+                await self._session.scalars(
+                    select(ChangeSetModel).where(
+                        ChangeSetModel.workspace_id == workspace_id,
+                        ChangeSetModel.graph_id == graph_id,
+                        ChangeSetModel.id == changeset_id,
+                    )
+                )
+            ).one_or_none()
+            if (
+                existing_release is None
+                or changeset is None
+                or changeset.state != ChangeSetState.PUBLISHED.value
+                or changeset.published_release_id != existing_release.id
+                or changeset.reviewed_by is None
+                or changeset.reviewed_by == changeset.author_id
+                or changeset.reviewed_at is None
+                or not (changeset.review_reason or "").strip()
+            ):
+                raise ConflictError("The idempotent changeset publication is unavailable.")
+            return await self._changeset_record(changeset), _release_record(existing_release)
+
+        graph = (
+            await self._session.scalars(
+                select(GraphModel)
+                .where(GraphModel.id == graph_id, GraphModel.workspace_id == workspace_id)
+                .with_for_update()
+            )
+        ).one_or_none()
+        if graph is None:
+            raise ValidationError("The knowledge graph does not exist.")
+        changeset = await self._lock_changeset(
+            workspace_id=workspace_id,
+            graph_id=graph_id,
+            changeset_id=changeset_id,
+        )
+        aggregate = _domain_changeset(changeset)
+        if aggregate.state is not ChangeSetState.APPROVED:
+            raise ValidationError("Only an approved changeset can be published.")
+        if (
+            changeset.reviewed_by is None
+            or changeset.reviewed_by == changeset.author_id
+            or changeset.reviewed_at is None
+            or not (changeset.review_reason or "").strip()
+        ):
+            raise ConflictError("The approved changeset has no valid independent-review evidence.")
+
+        snapshot, ontology = await self._build_changeset_snapshot(changeset)
+        violations = snapshot.validate(
+            ontology,
+            maximum_classification=graph.classification,
+        )
+        if violations:
+            raise ConflictError("The approved changeset is no longer valid for this graph.")
         base_release = (
-            await self._session.get(ReleaseModel, model.base_release_id)
-            if model.base_release_id is not None
+            await self._session.get(ReleaseModel, changeset.base_release_id)
+            if changeset.base_release_id is not None
             else None
         )
-        return (
-            await self._changeset_record(model),
-            snapshot,
-            base_release.content_hash if base_release is not None else None,
+        current_release = (
+            await self._session.get(ReleaseModel, graph.active_release_id)
+            if graph.active_release_id is not None
+            else None
+        )
+        release_no = (
+            int(
+                (
+                    await self._session.scalar(
+                        select(func.coalesce(func.max(ReleaseModel.release_no), 0)).where(
+                            ReleaseModel.graph_id == graph_id
+                        )
+                    )
+                )
+                or 0
+            )
+            + 1
+        )
+        graph_release = GraphRelease.publish(
+            graph_id=graph_id,
+            release_no=release_no,
+            ontology=ontology,
+            snapshot=snapshot,
+            expected_base_hash=base_release.content_hash if base_release is not None else None,
+            actual_base_hash=current_release.content_hash if current_release is not None else None,
+            maximum_classification=graph.classification,
+        )
+        duplicate_release_id = await self._session.scalar(
+            select(ReleaseModel.id).where(
+                ReleaseModel.workspace_id == workspace_id,
+                ReleaseModel.graph_id == graph_id,
+                ReleaseModel.content_hash == graph_release.content_hash,
+            )
+        )
+        if duplicate_release_id is not None:
+            raise ConflictError("An immutable release already contains this exact graph snapshot.")
+        published_at = utc_now()
+        release_model = ReleaseModel(
+            id=graph_release.release_id,
+            workspace_id=workspace_id,
+            graph_id=graph_id,
+            release_no=graph_release.release_no,
+            ontology_version_id=graph_release.ontology_version_id,
+            content_hash=graph_release.content_hash,
+            node_count=graph_release.node_count,
+            edge_count=graph_release.edge_count,
+            published_by=published_by,
+            published_at=published_at,
+        )
+        self._session.add(release_model)
+        # There are no ORM relationships between the immutable release and
+        # changeset models, so SQLAlchemy cannot infer the FK flush order.
+        # Flush only the release identity first; it remains uncommitted and is
+        # rolled back with every later publication effect on failure.
+        await self._session.flush((release_model,))
+        self._session.add_all(
+            [
+                ReleaseNodeModel(
+                    workspace_id=workspace_id,
+                    release_id=graph_release.release_id,
+                    entity_id=node.entity_id,
+                    entity_type=node.entity_type,
+                    properties=node.properties,
+                    classification=node.classification,
+                    provenance=[_provenance_document(item) for item in node.provenance],
+                )
+                for node in snapshot.nodes.values()
+            ]
+        )
+        self._session.add_all(
+            [
+                ReleaseEdgeModel(
+                    workspace_id=workspace_id,
+                    release_id=graph_release.release_id,
+                    edge_id=edge.edge_id,
+                    source_entity_id=edge.source_entity_id,
+                    target_entity_id=edge.target_entity_id,
+                    edge_type=edge.edge_type,
+                    properties=edge.properties,
+                    classification=edge.classification,
+                    provenance=[_provenance_document(item) for item in edge.provenance],
+                )
+                for edge in snapshot.edges.values()
+            ]
+        )
+        # A canonical verification receipt must be derived from rows read back
+        # from PostgreSQL, not from the in-memory publication proposal.
+        await self._session.flush()
+        persisted_node_models = list(
+            (
+                await self._session.scalars(
+                    select(ReleaseNodeModel)
+                    .where(
+                        ReleaseNodeModel.workspace_id == workspace_id,
+                        ReleaseNodeModel.release_id == graph_release.release_id,
+                    )
+                    .order_by(ReleaseNodeModel.entity_id)
+                    .execution_options(populate_existing=True)
+                )
+            ).all()
+        )
+        persisted_edge_models = list(
+            (
+                await self._session.scalars(
+                    select(ReleaseEdgeModel)
+                    .where(
+                        ReleaseEdgeModel.workspace_id == workspace_id,
+                        ReleaseEdgeModel.release_id == graph_release.release_id,
+                    )
+                    .order_by(ReleaseEdgeModel.edge_id)
+                    .execution_options(populate_existing=True)
+                )
+            ).all()
+        )
+        persisted_snapshot = GraphSnapshot(
+            nodes={model.entity_id: _node(model) for model in persisted_node_models},
+            edges={model.edge_id: _edge(model) for model in persisted_edge_models},
+        )
+        persisted_violations = persisted_snapshot.validate(
+            ontology,
+            maximum_classification=graph.classification,
+        )
+        if (
+            persisted_violations
+            or persisted_snapshot.content_hash() != graph_release.content_hash
+            or len(persisted_snapshot.nodes) != graph_release.node_count
+            or len(persisted_snapshot.edges) != graph_release.edge_count
+        ):
+            raise ConflictError("The canonical release read-back verification failed.")
+        verification_hash = canonical_json_hash(
+            {
+                "adapter": "postgres-adjacency-v1",
+                "edge_count": graph_release.edge_count,
+                "node_count": graph_release.node_count,
+                "release_hash": graph_release.content_hash,
+                "release_id": str(graph_release.release_id),
+            }
+        )
+        self._session.add(
+            ProjectionDeploymentModel(
+                id=uuid7(),
+                workspace_id=workspace_id,
+                graph_id=graph_id,
+                release_id=graph_release.release_id,
+                adapter="postgres-adjacency-v1",
+                target_ref=f"postgresql://knowledge/releases/{graph_release.release_id}",
+                state="CANONICAL_VERIFIED",
+                content_hash=graph_release.content_hash,
+                verification_hash=verification_hash,
+                node_count=graph_release.node_count,
+                edge_count=graph_release.edge_count,
+                verified_at=published_at,
+            )
         )
 
-    async def mark_changeset_published(
-        self,
-        *,
-        workspace_id: UUID,
-        graph_id: UUID,
-        changeset_id: UUID,
-        release_id: UUID,
-        expected_version: int,
-    ) -> KnowledgeChangeSetRecord:
-        model = await self._lock_changeset(
-            workspace_id=workspace_id, graph_id=graph_id, changeset_id=changeset_id
+        aggregate.mark_published(expected_version=aggregate.version)
+        changeset.state = aggregate.state.value
+        changeset.version = aggregate.version
+        changeset.published_release_id = graph_release.release_id
+        await SqlOutboxWriter(self._session).add_events(
+            [
+                DomainEvent.create(
+                    event_type="knowledge.release.published.v2",
+                    aggregate_type="knowledge_graph",
+                    aggregate_id=graph_id,
+                    workspace_id=workspace_id,
+                    payload={
+                        "changeset_id": str(changeset_id),
+                        "content_hash": graph_release.content_hash,
+                        "graph_id": str(graph_id),
+                        "release_id": str(graph_release.release_id),
+                    },
+                )
+            ]
         )
-        release = await self._session.get(ReleaseModel, release_id)
-        if release is None or release.graph_id != graph_id or release.workspace_id != workspace_id:
-            raise ValidationError("The published release does not belong to this changeset graph.")
-        aggregate = _domain_changeset(model)
-        aggregate.mark_published(expected_version=expected_version)
-        model.state = aggregate.state.value
-        model.version = aggregate.version
-        model.published_release_id = release_id
+        await idempotency.save_result(
+            workspace_id=workspace_id,
+            key=idempotency_key,
+            operation=operation,
+            request_hash=request_hash,
+            result={"release_id": str(graph_release.release_id)},
+        )
         await self._session.commit()
-        return await self._changeset_record(model)
+        return await self._changeset_record(changeset), _release_record(release_model)
 
     async def list_releases(
         self, *, workspace_id: UUID, graph_id: UUID
@@ -526,6 +924,12 @@ class SqlKnowledgeStore(KnowledgeStore):
                     .where(
                         ReleaseModel.workspace_id == workspace_id,
                         ReleaseModel.graph_id == graph_id,
+                        ReleaseModel.id.in_(
+                            governed_release_ids(
+                                workspace_id=workspace_id,
+                                graph_id=graph_id,
+                            )
+                        ),
                     )
                     .order_by(ReleaseModel.release_no.desc())
                 )
@@ -555,6 +959,54 @@ class SqlKnowledgeStore(KnowledgeStore):
         release = await self._session.get(ReleaseModel, release_id)
         if release is None or release.graph_id != graph_id or release.workspace_id != workspace_id:
             raise ValidationError("The release does not belong to this knowledge graph.")
+        publication_lineage = list(
+            (
+                await self._session.scalars(
+                    select(ChangeSetModel).where(
+                        ChangeSetModel.workspace_id == workspace_id,
+                        ChangeSetModel.graph_id == graph_id,
+                        ChangeSetModel.published_release_id == release_id,
+                        ChangeSetModel.state == ChangeSetState.PUBLISHED.value,
+                    )
+                )
+            ).all()
+        )
+        if (
+            len(publication_lineage) != 1
+            or publication_lineage[0].reviewed_by is None
+            or publication_lineage[0].reviewed_by == publication_lineage[0].author_id
+            or publication_lineage[0].reviewed_at is None
+            or not (publication_lineage[0].review_reason or "").strip()
+        ):
+            raise ConflictError(
+                "The release has no valid independently reviewed publication lineage."
+            )
+        projections = list(
+            (
+                await self._session.scalars(
+                    select(ProjectionDeploymentModel).where(
+                        ProjectionDeploymentModel.workspace_id == workspace_id,
+                        ProjectionDeploymentModel.graph_id == graph_id,
+                        ProjectionDeploymentModel.release_id == release_id,
+                        ProjectionDeploymentModel.content_hash == release.content_hash,
+                        ProjectionDeploymentModel.node_count == release.node_count,
+                        ProjectionDeploymentModel.edge_count == release.edge_count,
+                        ProjectionDeploymentModel.state.in_(
+                            ("CANONICAL_VERIFIED", "SHADOW_VERIFIED")
+                        ),
+                    )
+                )
+            ).all()
+        )
+        verified_projection = any(
+            self._projection_receipt_is_valid(
+                projection=projection,
+                release=release,
+            )
+            for projection in projections
+        )
+        if not verified_projection:
+            raise ConflictError("The release has no verified canonical or Neo4j projection.")
         graph.active_release_id = release_id
         graph.status = "PUBLISHED"
         graph.version += 1
@@ -572,158 +1024,6 @@ class SqlKnowledgeStore(KnowledgeStore):
         await self._session.commit()
         return _graph_record(graph)
 
-    async def publish_release(
-        self,
-        *,
-        workspace_id: UUID,
-        graph_id: UUID,
-        snapshot: GraphSnapshot,
-        expected_base_hash: str | None,
-        published_by: UUID,
-        idempotency_key: str,
-        request_hash: str,
-    ) -> KnowledgeReleaseRecord:
-        idempotency = SqlIdempotencyStore(self._session)
-        operation = f"knowledge.graph.publish:{graph_id}"
-        existing = await idempotency.get_result(
-            workspace_id=workspace_id,
-            key=idempotency_key,
-            operation=operation,
-        )
-        if existing is not None:
-            if existing.request_hash != request_hash:
-                raise ConflictError("The idempotency key was used with a different request.")
-            model = await self._session.get(ReleaseModel, UUID(existing.result["release_id"]))
-            if model is None:
-                raise ConflictError("The idempotent release result is unavailable.")
-            return _release_record(model)
-
-        graph = (
-            await self._session.scalars(
-                select(GraphModel)
-                .where(GraphModel.id == graph_id, GraphModel.workspace_id == workspace_id)
-                .with_for_update()
-            )
-        ).one_or_none()
-        if graph is None:
-            raise ValidationError("The knowledge graph does not exist.")
-        ontology_model = (
-            await self._session.scalars(
-                select(OntologyVersionModel)
-                .where(
-                    OntologyVersionModel.graph_id == graph_id,
-                    OntologyVersionModel.status == "ACTIVE",
-                )
-                .order_by(OntologyVersionModel.created_at.desc())
-                .limit(1)
-            )
-        ).one_or_none()
-        if ontology_model is None:
-            raise ValidationError("The graph has no active ontology.")
-        current_release = (
-            await self._session.get(ReleaseModel, graph.active_release_id)
-            if graph.active_release_id is not None
-            else None
-        )
-        release_no = (
-            int(
-                (
-                    await self._session.scalar(
-                        select(func.coalesce(func.max(ReleaseModel.release_no), 0)).where(
-                            ReleaseModel.graph_id == graph_id
-                        )
-                    )
-                )
-                or 0
-            )
-            + 1
-        )
-        schema = ontology_model.schema_document
-        ontology = Ontology(
-            version_id=ontology_model.id,
-            entity_types=frozenset(str(value) for value in schema.get("entity_types", [])),
-            edge_types=frozenset(str(value) for value in schema.get("edge_types", [])),
-        )
-        release = GraphRelease.publish(
-            graph_id=graph_id,
-            release_no=release_no,
-            ontology=ontology,
-            snapshot=snapshot,
-            expected_base_hash=expected_base_hash,
-            actual_base_hash=current_release.content_hash if current_release else None,
-        )
-        published_at = utc_now()
-        model = ReleaseModel(
-            id=release.release_id,
-            workspace_id=workspace_id,
-            graph_id=graph_id,
-            release_no=release.release_no,
-            ontology_version_id=release.ontology_version_id,
-            content_hash=release.content_hash,
-            node_count=release.node_count,
-            edge_count=release.edge_count,
-            published_by=published_by,
-            published_at=published_at,
-        )
-        self._session.add(model)
-        self._session.add_all(
-            [
-                ReleaseNodeModel(
-                    workspace_id=workspace_id,
-                    release_id=release.release_id,
-                    entity_id=node.entity_id,
-                    entity_type=node.entity_type,
-                    properties=node.properties,
-                    classification=node.classification,
-                    provenance=[_provenance_document(item) for item in node.provenance],
-                )
-                for node in snapshot.nodes.values()
-            ]
-        )
-        self._session.add_all(
-            [
-                ReleaseEdgeModel(
-                    workspace_id=workspace_id,
-                    release_id=release.release_id,
-                    edge_id=edge.edge_id,
-                    source_entity_id=edge.source_entity_id,
-                    target_entity_id=edge.target_entity_id,
-                    edge_type=edge.edge_type,
-                    properties=edge.properties,
-                    classification=edge.classification,
-                    provenance=[_provenance_document(item) for item in edge.provenance],
-                )
-                for edge in snapshot.edges.values()
-            ]
-        )
-        graph.active_release_id = release.release_id
-        graph.status = "PUBLISHED"
-        graph.version += 1
-        await SqlOutboxWriter(self._session).add_events(
-            [
-                DomainEvent.create(
-                    event_type="knowledge.release.published.v1",
-                    aggregate_type="knowledge_graph",
-                    aggregate_id=graph_id,
-                    workspace_id=workspace_id,
-                    payload={
-                        "graph_id": str(graph_id),
-                        "release_id": str(release.release_id),
-                        "content_hash": release.content_hash,
-                    },
-                )
-            ]
-        )
-        await idempotency.save_result(
-            workspace_id=workspace_id,
-            key=idempotency_key,
-            operation=operation,
-            request_hash=request_hash,
-            result={"release_id": str(release.release_id)},
-        )
-        await self._session.commit()
-        return _release_record(model)
-
     async def get_release_snapshot(
         self,
         *,
@@ -739,6 +1039,12 @@ class SqlKnowledgeStore(KnowledgeStore):
                     ReleaseModel.id == release_id,
                     ReleaseModel.graph_id == graph_id,
                     ReleaseModel.workspace_id == workspace_id,
+                    ReleaseModel.id.in_(
+                        governed_release_ids(
+                            workspace_id=workspace_id,
+                            graph_id=graph_id,
+                        )
+                    ),
                 )
             )
         ).one_or_none()
@@ -800,6 +1106,88 @@ class SqlKnowledgeStore(KnowledgeStore):
             raise ValidationError("The knowledge changeset does not exist.")
         return model
 
+    async def _graph_for_envelope(
+        self,
+        *,
+        workspace_id: UUID,
+        graph_id: UUID,
+        lock: bool = False,
+    ) -> GraphModel:
+        statement = select(GraphModel).where(
+            GraphModel.id == graph_id,
+            GraphModel.workspace_id == workspace_id,
+        )
+        if lock:
+            statement = statement.with_for_update()
+        graph = (await self._session.scalars(statement)).one_or_none()
+        if graph is None:
+            raise ValidationError("The knowledge graph does not exist.")
+        return graph
+
+    @staticmethod
+    def _projection_receipt_is_valid(
+        *,
+        projection: ProjectionDeploymentModel,
+        release: ReleaseModel,
+    ) -> bool:
+        if projection.verified_at is None or projection.verification_hash is None:
+            return False
+        if (
+            projection.adapter == "postgres-adjacency-v1"
+            and projection.state == "CANONICAL_VERIFIED"
+            and projection.target_ref == f"postgresql://knowledge/releases/{release.id}"
+        ):
+            expected = canonical_json_hash(
+                {
+                    "adapter": projection.adapter,
+                    "edge_count": release.edge_count,
+                    "node_count": release.node_count,
+                    "release_hash": release.content_hash,
+                    "release_id": str(release.id),
+                }
+            )
+            return projection.verification_hash == expected
+        if (
+            projection.adapter == "neo4j-bolt-shadow-v1"
+            and projection.state == "SHADOW_VERIFIED"
+            and projection.target_ref == f"neo4j://release/{release.id}"
+        ):
+            expected = canonical_json_hash(
+                {
+                    "deployment_id": str(projection.id),
+                    "edge_count": release.edge_count,
+                    "node_count": release.node_count,
+                    "release_hash": release.content_hash,
+                }
+            )
+            return projection.verification_hash == expected
+        return False
+
+    async def _require_operation_envelope(
+        self,
+        *,
+        model: ChangeSetModel,
+        maximum_classification: int,
+    ) -> None:
+        operation_models = list(
+            (
+                await self._session.scalars(
+                    select(ChangeOperationModel)
+                    .where(ChangeOperationModel.changeset_id == model.id)
+                    .order_by(ChangeOperationModel.sequence)
+                )
+            ).all()
+        )
+        try:
+            for operation_model in operation_models:
+                _domain_operation(operation_model).require_classification_ceiling(
+                    maximum_classification=maximum_classification,
+                )
+        except ValidationError as error:
+            raise ConflictError(
+                "A legacy changeset is outside the graph classification envelope."
+            ) from error
+
     async def _changeset_record(self, model: ChangeSetModel) -> KnowledgeChangeSetRecord:
         operations = list(
             (
@@ -851,13 +1239,12 @@ class SqlKnowledgeStore(KnowledgeStore):
         )
         base = GraphSnapshot()
         if model.base_release_id is not None:
-            release = await self._session.get(ReleaseModel, model.base_release_id)
-            if (
-                release is None
-                or release.workspace_id != model.workspace_id
-                or release.graph_id != model.graph_id
-            ):
-                raise ValidationError("The changeset base release is unavailable.")
+            await require_governed_release_base(
+                self._session,
+                workspace_id=model.workspace_id,
+                graph_id=model.graph_id,
+                release_id=model.base_release_id,
+            )
             node_models = list(
                 (
                     await self._session.scalars(

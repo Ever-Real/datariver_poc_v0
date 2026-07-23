@@ -11,7 +11,7 @@ def test_catalog_export_migration_is_owner_scoped_and_fail_closed() -> None:
         encoding="utf-8"
     )
 
-    assert REQUIRED_DATABASE_REVISION == "0052"
+    assert REQUIRED_DATABASE_REVISION == "0053"
     assert "ALTER TABLE catalog.export_requests FORCE ROW LEVEL SECURITY" in migration
     assert "CREATE POLICY workspace_isolation ON catalog.export_requests" in migration
     assert "CREATE POLICY catalog_export_owner_select" in migration

@@ -314,6 +314,26 @@ def test_local_ollama_chat_is_development_only_and_host_gateway_bound() -> None:
         )
 
 
+def test_source_host_local_ollama_requires_explicit_development_runtime_mode() -> None:
+    configured = settings(
+        local_inference_source_host_enabled=True,
+        local_ollama_chat_enabled=True,
+        local_ollama_chat_base_url="http://127.0.0.1:11434/v1",
+        local_ollama_chat_model="datariver-gemma4-dev:0.1",
+        local_ollama_embedding_enabled=True,
+        local_ollama_embedding_base_url="http://127.0.0.1:11434/v1",
+        local_ollama_embedding_model="bge-m3:latest",
+    )
+
+    assert configured.local_inference_source_host_enabled is True
+    with pytest.raises(ValidationError, match=r"host\.docker\.internal"):
+        settings(
+            local_ollama_chat_enabled=True,
+            local_ollama_chat_base_url="http://127.0.0.1:11434/v1",
+            local_ollama_chat_model="datariver-gemma4-dev:0.1",
+        )
+
+
 def test_neo4j_projection_accepts_only_explicit_deployment_hosts() -> None:
     configured = settings(
         neo4j_projection_enabled=True,

@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import ipaddress
 import json
+import math
 import time
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass
@@ -26,6 +27,7 @@ ProbeScope = Literal[
     "MODEL_DISCOVERY",
     "MODEL_INFERENCE",
     "EMBEDDING_INFERENCE",
+    "RERANKING_INFERENCE",
     "AUTHENTICATED_QUERY",
     "REDIS_POLICY",
     "S3_HEAD_BUCKET",
@@ -44,7 +46,6 @@ _HTTP_PROBE_PATHS: dict[str, tuple[str, ProbeScope]] = {
     "DATAHUB_GMS": ("/health", "HTTP_HEALTH"),
     "DATAHUB_FRONTEND": ("/", "HTTP_HEALTH"),
     "AIRFLOW": ("/api/v2/monitor/health", "HTTP_HEALTH"),
-    "LLM_RERANKER": ("/models", "MODEL_DISCOVERY"),
     "PROMETHEUS": ("/-/healthy", "HTTP_HEALTH"),
     "GRAFANA_DASHBOARD": ("/api/health", "HTTP_HEALTH"),
 }
@@ -108,7 +109,10 @@ async def _reject_unsafe_destination(
     port: int,
     *,
     allowed_hosts: tuple[str, ...],
-) -> None:
+) -> tuple[ipaddress.IPv4Address | ipaddress.IPv6Address, ...]:
+    normalized_host = host.rstrip(".").lower()
+    if normalized_host not in allowed_hosts:
+        raise ValidationError("The saved system host is not in the operator probe allowlist.")
     try:
         async with asyncio.timeout(2.0):
             addresses = await asyncio.get_running_loop().getaddrinfo(
@@ -120,6 +124,7 @@ async def _reject_unsafe_destination(
         raise ValidationError("The saved system host could not be resolved.") from error
     if not addresses:
         raise ValidationError("The saved system host could not be resolved.")
+    validated: list[ipaddress.IPv4Address | ipaddress.IPv6Address] = []
     for address in addresses:
         raw = address[4][0]
         try:
@@ -130,23 +135,18 @@ async def _reject_unsafe_destination(
             ) from error
         if value.is_link_local or value.is_multicast or value.is_unspecified or value.is_reserved:
             raise ValidationError("The saved system host resolves to a forbidden network range.")
-    normalized_host = host.rstrip(".").lower()
-    if normalized_host not in allowed_hosts:
-        raise ValidationError("The saved system host is not in the operator probe allowlist.")
+        validated.append(value)
+    return tuple(validated)
 
 
-async def _require_private_intranet_destination(host: str, port: int) -> None:
+def _require_private_intranet_destination(
+    addresses: tuple[ipaddress.IPv4Address | ipaddress.IPv6Address, ...],
+) -> None:
     """Require an operator-selected LLM endpoint to stay inside the private network."""
 
-    try:
-        async with asyncio.timeout(2.0):
-            addresses = await asyncio.get_running_loop().getaddrinfo(host, port, type=0)
-    except (TimeoutError, OSError) as error:
-        raise ValidationError("The intranet LLM host could not be resolved.") from error
     if not addresses:
         raise ValidationError("The intranet LLM host could not be resolved.")
-    for address in addresses:
-        value = ipaddress.ip_address(address[4][0])
+    for value in addresses:
         if not value.is_private or value.is_loopback or value.is_link_local:
             raise ValidationError(
                 "The intranet LLM host must resolve only to private non-loopback addresses."
@@ -180,19 +180,6 @@ def _llm_connection_mode(
     if value == "INTRANET_OPENAI_COMPATIBLE":
         return "INTRANET_OPENAI_COMPATIBLE"
     raise ValidationError("The saved LLM connection mode is invalid.")
-
-
-def _available_model_ids(payload: object) -> set[str]:
-    if not isinstance(payload, Mapping):
-        return set()
-    data = payload.get("data")
-    if not isinstance(data, list):
-        return set()
-    return {
-        str(item["id"])
-        for item in data
-        if isinstance(item, Mapping) and isinstance(item.get("id"), str)
-    }
 
 
 def _secret_reference(document: Mapping[str, Any], key: str) -> str:
@@ -252,6 +239,34 @@ def _validated_chat_completion(payload: object) -> bool:
     except ValueError:
         return False
     return isinstance(content, dict) and set(content) == {"status"} and content["status"] == "ok"
+
+
+def _validated_reranking(payload: object, *, document_count: int, top_n: int) -> bool:
+    if not isinstance(payload, Mapping):
+        return False
+    results = payload.get("results")
+    if not isinstance(results, list) or not 0 < len(results) <= top_n:
+        return False
+    indexes: list[int] = []
+    scores: list[float] = []
+    for item in results:
+        if not isinstance(item, Mapping):
+            return False
+        index = item.get("index")
+        score = item.get("relevance_score")
+        if (
+            not isinstance(index, int)
+            or isinstance(index, bool)
+            or not 0 <= index < document_count
+            or not isinstance(score, int | float)
+            or isinstance(score, bool)
+            or not math.isfinite(float(score))
+            or not 0 <= float(score) <= 1
+        ):
+            return False
+        indexes.append(index)
+        scores.append(float(score))
+    return len(set(indexes)) == len(indexes) and scores == sorted(scores, reverse=True)
 
 
 async def _bounded_http_request(
@@ -383,7 +398,7 @@ async def probe_system_configuration(
     endpoint = _endpoint(document)
     connection_mode: object = (
         document.get("connection_mode", "LOCAL_OLLAMA")
-        if system_id in {"LLM_CHAT_MODEL", "LLM_EMBEDDING"}
+        if system_id in {"LLM_CHAT_MODEL", "LLM_EMBEDDING", "LLM_RERANKER"}
         else None
     )
     references = document.get("secret_references", {})
@@ -544,33 +559,47 @@ async def probe_system_configuration(
             ),
         )
 
-    inference_probe = system_id in {"LLM_CHAT_MODEL", "LLM_EMBEDDING"}
+    inference_probe = system_id in {
+        "LLM_CHAT_MODEL",
+        "LLM_EMBEDDING",
+        "LLM_RERANKER",
+    }
     path_and_scope: tuple[str, ProbeScope] | None = (
         ("/chat/completions", "MODEL_INFERENCE")
         if system_id == "LLM_CHAT_MODEL"
         else ("/embeddings", "EMBEDDING_INFERENCE")
         if system_id == "LLM_EMBEDDING"
+        else ("/rerank", "RERANKING_INFERENCE")
+        if system_id == "LLM_RERANKER"
         else _HTTP_PROBE_PATHS.get(system_id)
     )
     if path_and_scope is None:
         raise ValidationError("The system configuration identifier is not probeable.")
     path, scope = path_and_scope
     _, host, port = _validated_url(endpoint, schemes={"http", "https"})
-    await _reject_unsafe_destination(
+    validated_addresses = await _reject_unsafe_destination(
         host,
         port,
         allowed_hosts=normalized_allowed_hosts,
     )
     _require_tls_for_nonlocal_endpoint(endpoint)
-    connection_mode = _llm_connection_mode(document) if inference_probe else "LOCAL_OLLAMA"
+    if system_id == "LLM_RERANKER":
+        if document.get("connection_mode") != "INTRANET_RERANK_V1":
+            raise ValidationError("The saved reranker connection mode is invalid.")
+        connection_mode = "INTRANET_RERANK_V1"
+    else:
+        connection_mode = _llm_connection_mode(document) if inference_probe else "LOCAL_OLLAMA"
     api_key: str | None = None
-    if connection_mode == "INTRANET_OPENAI_COMPATIBLE":
+    if connection_mode in {"INTRANET_OPENAI_COMPATIBLE", "INTRANET_RERANK_V1"}:
         parsed_endpoint = urlsplit(endpoint)
         if parsed_endpoint.scheme != "https" or parsed_endpoint.path.rstrip("/") != "/v1":
-            raise ValidationError(
-                "Intranet OpenAI-compatible probes require an HTTPS endpoint ending in /v1."
+            probe_name = (
+                "Private reranking probes"
+                if system_id == "LLM_RERANKER"
+                else "Intranet OpenAI-compatible probes"
             )
-        await _require_private_intranet_destination(host, port)
+            raise ValidationError(f"{probe_name} require an HTTPS endpoint ending in /v1.")
+        _require_private_intranet_destination(validated_addresses)
         api_key = (secret_resolver or SecretResolver()).resolve(
             _secret_reference(document, "api_key")
         )
@@ -633,6 +662,27 @@ async def probe_system_configuration(
                 headers={"Authorization": f"Bearer {api_key}"} if api_key else None,
                 json_document={"model": model, "input": ["DataRiver connectivity probe"]},
             )
+        elif system_id == "LLM_RERANKER":
+            probe_documents = [
+                "Data catalog metadata and governed lineage",
+                "Unrelated weather forecast",
+            ]
+            top_n = 2
+            if isinstance(options, Mapping) and isinstance(options.get("top_n"), int):
+                top_n = min(max(int(options["top_n"]), 1), len(probe_documents))
+            response = await _bounded_http_request(
+                active_client,
+                "POST",
+                request_url,
+                timeout_seconds=timeout_seconds,
+                headers={"Authorization": f"Bearer {api_key}"} if api_key else None,
+                json_document={
+                    "model": model,
+                    "query": "governed data catalog metadata",
+                    "documents": probe_documents,
+                    "top_n": top_n,
+                },
+            )
         else:
             response = await _bounded_http_request(
                 active_client,
@@ -648,11 +698,16 @@ async def probe_system_configuration(
     latency_ms = max(0, round((time.monotonic() - started) * 1000))
     if response.status_code in {401, 403}:
         if api_key is not None:
+            credential_name = (
+                "private reranking credential"
+                if system_id == "LLM_RERANKER"
+                else "intranet LLM credential"
+            )
             return SystemConfigurationProbeResult(
                 status="UNAVAILABLE",
                 scope=scope,
                 latency_ms=latency_ms,
-                detail="The configured intranet LLM credential was rejected by the fixed probe.",
+                detail=f"The configured {credential_name} was rejected by the fixed probe.",
             )
         return SystemConfigurationProbeResult(
             status="AUTHENTICATION_REQUIRED",
@@ -685,25 +740,20 @@ async def probe_system_configuration(
             latency_ms=latency_ms,
             detail="The configured embedding model returned an invalid vector.",
         )
-    if scope == "MODEL_DISCOVERY":
-        configured_model = _configured_model(document)
-        if configured_model is None:
+    if scope == "RERANKING_INFERENCE":
+        options = document.get("options")
+        configured_top_n = options.get("top_n") if isinstance(options, Mapping) else None
+        top_n = min(max(int(configured_top_n), 1), 2) if isinstance(configured_top_n, int) else 2
+        if not _validated_reranking(
+            response_payload,
+            document_count=2,
+            top_n=top_n,
+        ):
             return SystemConfigurationProbeResult(
                 status="UNAVAILABLE",
                 scope=scope,
                 latency_ms=latency_ms,
-                detail="The saved LLM profile has no model identity.",
-            )
-        try:
-            model_ids = _available_model_ids(response_payload)
-        except (TypeError, ValueError):
-            model_ids = set()
-        if configured_model not in model_ids:
-            return SystemConfigurationProbeResult(
-                status="UNAVAILABLE",
-                scope=scope,
-                latency_ms=latency_ms,
-                detail="The configured model was not returned by the fixed model discovery route.",
+                detail="The configured reranker returned an invalid ordered score result.",
             )
     return SystemConfigurationProbeResult(
         status="AVAILABLE",

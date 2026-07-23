@@ -178,18 +178,29 @@ privilege. No API or ordinary application unit of work can claim or complete exe
 | `knowledge.releases` | `id`, `graph_id + release_no UQ`, ontology/content hash/counts/publisher/time | immutable release manifest |
 | `knowledge.release_nodes` | composite release/entity identity, type/properties/classification/provenance | immutable assertion snapshot |
 | `knowledge.release_edges` | composite release/edge identity, endpoints/type/properties/classification/provenance | immutable relationship snapshot |
-| `knowledge.projection_deployments` | `id`, graph/release/job, adapter/target/state/content and verification hashes/counts/verified time/error | Neo4j shadow read-back evidence; `SHADOW_VERIFIED` requires reconstructed canonical content-hash equality |
+| `knowledge.projection_deployments` | `id`, graph/release/job, adapter/target/state/content and verification hashes/counts/verified time/error | exact canonical PostgreSQL or Neo4j shadow read-back evidence; verified state requires adapter-specific target, reconstructed content-hash and count equality |
 | `knowledge.source_snapshots` | graph/upload UQ, private object coordinate/version, PDF media/size/hash/classification/state/creator | immutable integrity-verified source binding; never an external URL |
 | `knowledge.source_pages` | source/page PK, page content hash and parsed text | reviewer-visible page-aware grounding source |
 | `knowledge.source_page_embeddings` | source/page/provider/model, dimension/vector and page hash | release-scoped semantic seed evidence for the exact parsed page |
 | `knowledge.extraction_runs` | source/changeset, parser hash, embedding/extraction bindings, input/output hashes/state/error | reproducible typed extraction execution and activated configuration revision evidence |
 | `knowledge.graphrag_audits` | graph/release/request UQ, actor, question hash, retrieved/cited IDs, model/prompt/tool and configuration source/version/hash, token counts | immutable citation-bounded inference audit without storing the raw question |
 
-The API supports complete snapshot publication, changeset author/submit/independent-review/publish,
-PDF source extraction into a DRAFT changeset, canonical Neo4j shadow verification and citation-bound
-GraphRAG. PostgreSQL releases remain canonical; Neo4j can be deleted and rebuilt. The current Mac
-developer extraction call is synchronous and bounded. A leased durable inference worker remains a
-production promotion gate rather than an implemented production claim.
+The API supports changeset author/submit/independent-review/publish, PDF source extraction into a
+DRAFT changeset, optional Neo4j shadow verification and citation-bound GraphRAG. Publication locks
+the graph and changeset and atomically commits the immutable release/content, canonical PostgreSQL
+read-back receipt, published-changeset lineage, outbox and idempotency result; it never activates the
+graph. A consumable release has exactly one valid independently reviewed published lineage and an
+exact adapter-specific verified receipt. The old complete-snapshot HTTP publication route is `410`,
+and unlineaged legacy releases are hidden from list/snapshot/export/projection/GraphRAG, general
+Chat evidence and release-pinned Sharing. Neo4j result properties are never canonical inputs:
+selected identifiers are rehydrated from these immutable PostgreSQL rows before prompt composition.
+
+PostgreSQL releases remain canonical; Neo4j can be deleted and rebuilt. Graph classification is a
+maximum envelope enforced on changeset operations, complete submission/review, publication,
+immutable source preparation, model-output persistence and release reads. Model operations inherit
+the immutable source classification exactly. The current Mac developer extraction call is
+synchronous and bounded. A leased durable inference worker remains a production promotion gate
+rather than an implemented production claim.
 
 Model-authored evidence text is never canonical input. The server whitespace-normalizes each parsed
 page into stable bounded evidence units, supplies only their opaque IDs to the model and resolves a
@@ -405,6 +416,12 @@ linearizable. The governance function accepts only a current
 then rechecks the initiating human, current target, classification/scope policy and records the
 decision. Both functions are `SECURITY DEFINER` with fixed search paths, are executable only by the
 least-privilege process role and replace no generic Change Request authorization.
+
+Alembic `0053` extends the persisted external-service TEST-scope CHECK by exactly
+`RERANKING_INFERENCE`. It accepts only the exact `0052` or already-current constraint definition,
+does not rewrite historical rows and refuses downgrade while reranking inference evidence exists.
+The canonical `0001` contains the same vocabulary. A reranking TEST is connection evidence only;
+there is no reranker runtime activation or Chat consumer in this revision.
 
 `EVENT_RETENTION_DAYS` is a target online-retention input, not a deletion switch. The Phase 2 worker
 archives only minimal erasure approval/execution evidence and stops at

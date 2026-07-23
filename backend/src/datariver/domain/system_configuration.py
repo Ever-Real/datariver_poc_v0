@@ -15,7 +15,6 @@ CANONICAL_SYSTEM_SECRET_REFERENCES: Mapping[str, Mapping[str, str]] = {
         "access_key": "file:/run/secrets/s3_access_key",
         "secret_key": "file:/run/secrets/s3_secret_key",
     },
-    "LLM_RERANKER": _NO_SECRETS,
     "NEO4J": {"credential": "file:/run/secrets/neo4j_auth"},
     "PROMETHEUS": _NO_SECRETS,
     "GRAFANA_DASHBOARD": _NO_SECRETS,
@@ -29,6 +28,9 @@ _INTRANET_LLM_SECRET_REFERENCES: Mapping[str, Mapping[str, str]] = {
         "api_key": "file:/run/secrets/intranet_llm_embedding_api_key",
     },
 }
+_INTRANET_RERANK_SECRET_REFERENCES: Mapping[str, str] = {
+    "api_key": "file:/run/secrets/intranet_llm_reranker_api_key",
+}
 
 
 def canonical_secret_references(
@@ -36,6 +38,10 @@ def canonical_secret_references(
     *,
     connection_mode: object = None,
 ) -> Mapping[str, str]:
+    if system_id == "LLM_RERANKER":
+        if connection_mode == "INTRANET_RERANK_V1":
+            return _INTRANET_RERANK_SECRET_REFERENCES
+        return _NO_SECRETS
     if system_id in _INTRANET_LLM_SECRET_REFERENCES:
         if connection_mode == "INTRANET_OPENAI_COMPATIBLE":
             return _INTRANET_LLM_SECRET_REFERENCES[system_id]

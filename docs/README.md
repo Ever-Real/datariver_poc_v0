@@ -33,6 +33,7 @@
 | 28 | [Policy Book execution checklist](28_POLICY_BOOK_EXECUTION_CHECKLIST.md) | phase gates and exhaustive Admin function inventory | Phase 3 local source complete; target acceptance gates open |
 | 29 | [Master execution backlog](29_MASTER_EXECUTION_BACKLOG.md) | current delivery checklist, risk status and final artifact order | Active; request group 4 preflight in progress |
 | 30 | [Typed BULK catalog metadata rows PRD](30_TYPED_BULK_CATALOG_METADATA_PRD.md) | grouped table/column/domain/tag/term row contracts and TDD gates | Local source complete; external acceptance gates open |
+| 31 | [Phase 4 Knowledge entry gate](31_PHASE4_KNOWLEDGE_ENTRY_GATE_PRD_CHECKLIST.md) | atomic governed publication, classification envelope and independent provider preflight | Local implementation in verification; external provider gates open |
 
 Independent review records: [Data Architect](reviews/2026-07-14_DATA_ARCHITECT_REVIEW.md) and [Data Engineer/SRE](reviews/2026-07-14_DATA_ENGINEER_REVIEW.md).
 
@@ -63,6 +64,8 @@ Current bounded Admin decision: [bounded navigation and delta assignment](adr/00
 Current Registration execution decision: [accountable execution and bounded provider evidence](adr/0041-accountable-registration-execution-and-evidence.md).
 
 Current typed BULK decision: [catalog metadata row and group contract](adr/0042-typed-bulk-catalog-metadata-profiles.md).
+
+Current governed Knowledge entry decision: [atomic publication and independent capability gates](adr/0043-governed-knowledge-publication-and-provider-capability-gates.md).
 
 ## Change control
 

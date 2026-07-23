@@ -196,6 +196,26 @@ class GraphChangeOperation:
         if not 0 <= classification <= 3:
             raise ValidationError("Graph edit classification must be between 0 and 3.")
 
+    def require_classification_ceiling(self, *, maximum_classification: int) -> None:
+        """Reject an UPSERT before its document can cross a graph envelope.
+
+        DELETE operations carry no entity document, so their effective
+        classification is validated against the materialized snapshot at the
+        submit/review/publish boundaries.
+        """
+
+        self.validate()
+        if self.operation is ChangeOperationType.DELETE:
+            return
+        classification = int(self.document["classification"])
+        if classification > maximum_classification:
+            raise ValidationError(
+                "The graph edit classification exceeds the graph classification envelope.",
+                details={
+                    "code": f"{self.entity_kind.value}_CLASSIFICATION_EXCEEDS_GRAPH",
+                },
+            )
+
     def apply(self, snapshot: GraphSnapshot) -> GraphSnapshot:
         self.validate()
         nodes = dict(snapshot.nodes)
@@ -284,13 +304,17 @@ class GraphChangeSet:
         expected_version: int,
         snapshot: GraphSnapshot,
         ontology: Ontology,
+        maximum_classification: int | None = None,
     ) -> None:
         self._assert_version(expected_version)
         if actor_id != self.author_id:
             raise ValidationError("Only the changeset author can submit it for review.")
         if self.state is not ChangeSetState.DRAFT:
             raise ValidationError("Only a draft changeset can be submitted.")
-        violations = snapshot.validate(ontology)
+        violations = snapshot.validate(
+            ontology,
+            maximum_classification=maximum_classification,
+        )
         if violations:
             raise ValidationError(
                 "The changeset cannot enter review.", details={"violations": violations}
@@ -332,11 +356,23 @@ class GraphSnapshot:
     nodes: dict[UUID, GraphNode] = field(default_factory=dict)
     edges: dict[UUID, GraphEdge] = field(default_factory=dict)
 
-    def validate(self, ontology: Ontology) -> list[str]:
+    def validate(
+        self,
+        ontology: Ontology,
+        *,
+        maximum_classification: int | None = None,
+    ) -> list[str]:
         errors: list[str] = []
         for node in self.nodes.values():
             if not 0 <= node.classification <= 3:
                 errors.append(f"NODE_CLASSIFICATION_INVALID:{node.entity_id}")
+            elif (
+                maximum_classification is not None and node.classification > maximum_classification
+            ):
+                errors.append(
+                    "NODE_CLASSIFICATION_EXCEEDS_GRAPH:"
+                    f"{node.entity_id}:{node.classification}:{maximum_classification}"
+                )
             if node.entity_type not in ontology.entity_types:
                 errors.append(f"NODE_TYPE_NOT_ALLOWED:{node.entity_id}:{node.entity_type}")
             if not node.provenance:
@@ -349,6 +385,13 @@ class GraphSnapshot:
         for edge in self.edges.values():
             if not 0 <= edge.classification <= 3:
                 errors.append(f"EDGE_CLASSIFICATION_INVALID:{edge.edge_id}")
+            elif (
+                maximum_classification is not None and edge.classification > maximum_classification
+            ):
+                errors.append(
+                    "EDGE_CLASSIFICATION_EXCEEDS_GRAPH:"
+                    f"{edge.edge_id}:{edge.classification}:{maximum_classification}"
+                )
             if edge.edge_type not in ontology.edge_types:
                 errors.append(f"EDGE_TYPE_NOT_ALLOWED:{edge.edge_id}:{edge.edge_type}")
             if edge.source_entity_id not in self.nodes or edge.target_entity_id not in self.nodes:
@@ -460,10 +503,14 @@ class GraphRelease:
         snapshot: GraphSnapshot,
         expected_base_hash: str | None,
         actual_base_hash: str | None,
+        maximum_classification: int | None = None,
     ) -> GraphRelease:
         if expected_base_hash != actual_base_hash:
             raise ConflictError("The graph base release changed before publication.")
-        errors = snapshot.validate(ontology)
+        errors = snapshot.validate(
+            ontology,
+            maximum_classification=maximum_classification,
+        )
         if errors:
             raise ValidationError(
                 "The graph snapshot cannot be published.", details={"violations": errors}

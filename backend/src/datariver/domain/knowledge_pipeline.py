@@ -41,6 +41,21 @@ class KnowledgeSourceSnapshot:
     media_type: str
     byte_size: int
     content_sha256: str
+    classification: int
+
+    def require_inference_eligible(self, *, maximum_classification: int) -> None:
+        if not 0 <= self.classification <= 3:
+            raise ValidationError("Knowledge source classification is invalid.")
+        if self.classification > maximum_classification:
+            raise ValidationError(
+                "The knowledge source classification is not eligible for this inference route."
+            )
+
+    def require_graph_envelope(self, *, graph_classification: int) -> None:
+        if not 0 <= graph_classification <= 3:
+            raise ValidationError("Knowledge graph classification is invalid.")
+        if self.classification > graph_classification:
+            raise ValidationError("The knowledge source classification exceeds its graph envelope.")
 
     def verify(self, payload: bytes) -> None:
         if self.media_type != PDF_MEDIA_TYPE:
@@ -287,6 +302,7 @@ class KnowledgeSourceAnalysis:
         return _canonical_hash(
             {
                 "source_sha256": self.source.content_sha256,
+                "source_classification": self.source.classification,
                 "pages": [
                     {"page": page.page_number, "sha256": page.content_sha256} for page in self.pages
                 ],

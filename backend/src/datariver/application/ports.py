@@ -1384,6 +1384,7 @@ class KnowledgeStore(Protocol):
         self,
         *,
         workspace_id: UUID,
+        actor_id: UUID,
         slug: str,
         name: str,
         graph_type: str,
@@ -1454,23 +1455,16 @@ class KnowledgeStore(Protocol):
         expected_version: int,
     ) -> KnowledgeChangeSetRecord: ...
 
-    async def prepare_changeset_publication(
+    async def publish_approved_changeset(
         self,
         *,
         workspace_id: UUID,
         graph_id: UUID,
         changeset_id: UUID,
-    ) -> tuple[KnowledgeChangeSetRecord, GraphSnapshot, str | None]: ...
-
-    async def mark_changeset_published(
-        self,
-        *,
-        workspace_id: UUID,
-        graph_id: UUID,
-        changeset_id: UUID,
-        release_id: UUID,
-        expected_version: int,
-    ) -> KnowledgeChangeSetRecord: ...
+        published_by: UUID,
+        idempotency_key: str,
+        request_hash: str,
+    ) -> tuple[KnowledgeChangeSetRecord, KnowledgeReleaseRecord]: ...
 
     async def list_releases(
         self, *, workspace_id: UUID, graph_id: UUID
@@ -1484,18 +1478,6 @@ class KnowledgeStore(Protocol):
         release_id: UUID,
         expected_graph_version: int,
     ) -> KnowledgeGraphRecord: ...
-
-    async def publish_release(
-        self,
-        *,
-        workspace_id: UUID,
-        graph_id: UUID,
-        snapshot: GraphSnapshot,
-        expected_base_hash: str | None,
-        published_by: UUID,
-        idempotency_key: str,
-        request_hash: str,
-    ) -> KnowledgeReleaseRecord: ...
 
     async def get_release_snapshot(
         self,

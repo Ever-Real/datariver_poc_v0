@@ -1,3 +1,5 @@
+import inspect
+from collections.abc import Callable
 from uuid import uuid4
 
 import pytest
@@ -17,6 +19,10 @@ from datariver.domain.knowledge import (
     Provenance,
     apply_change_operations,
 )
+from datariver.interfaces.http.routes.knowledge import (
+    project_knowledge_release,
+    query_knowledge_release,
+)
 
 
 def provenance() -> Provenance:
@@ -27,6 +33,26 @@ def provenance() -> Provenance:
         method="deterministic_import",
         confidence=1.0,
     )
+
+
+@pytest.mark.parametrize(
+    "operation,adapter_error",
+    [
+        (project_knowledge_release, "projection adapter is unavailable"),
+        (query_knowledge_release, "query adapter is unavailable"),
+    ],
+)
+def test_knowledge_routes_authorize_canonical_resources_before_revealing_adapter_state(
+    operation: Callable[..., object],
+    adapter_error: str,
+) -> None:
+    source = inspect.getsource(operation)
+
+    assert source.index("service.get_graph(") < source.index(adapter_error)
+    if operation is project_knowledge_release:
+        assert source.index("service.authorize_projection(") < source.index(adapter_error)
+    else:
+        assert source.index("service.get_release_for_graphrag(") < source.index(adapter_error)
 
 
 def valid_graph() -> tuple[Ontology, GraphSnapshot]:
@@ -112,6 +138,41 @@ def test_publish_rejects_changed_base_release() -> None:
             expected_base_hash="old",
             actual_base_hash="new",
         )
+
+
+def test_snapshot_rejects_content_above_graph_classification_envelope() -> None:
+    ontology, snapshot = valid_graph()
+    node = next(iter(snapshot.nodes.values()))
+    snapshot.nodes[node.entity_id] = GraphNode(
+        entity_id=node.entity_id,
+        entity_type=node.entity_type,
+        properties=node.properties,
+        classification=3,
+        provenance=node.provenance,
+    )
+
+    violations = snapshot.validate(ontology, maximum_classification=1)
+
+    assert violations == [f"NODE_CLASSIFICATION_EXCEEDS_GRAPH:{node.entity_id}:3:1"]
+
+
+def test_change_operation_rejects_classification_above_graph_before_persistence() -> None:
+    operation = GraphChangeOperation(
+        sequence=1,
+        operation=ChangeOperationType.UPSERT,
+        entity_kind=GraphEntityKind.NODE,
+        stable_entity_id=uuid4(),
+        document={
+            "entity_type": "Company",
+            "properties": {"name": "Restricted supplier"},
+            "classification": 3,
+        },
+        provenance=(provenance(),),
+        confidence=1.0,
+    )
+
+    with pytest.raises(ValidationError, match="exceeds the graph"):
+        operation.require_classification_ceiling(maximum_classification=1)
 
 
 def test_neighbor_analysis_is_typed_bounded_and_directional() -> None:

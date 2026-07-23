@@ -456,14 +456,20 @@ ollama show bge-m3:latest
 ./scripts/prepare_ollama_mac_dev.sh
 docker compose -f compose.yaml -f compose.graph.yaml \
   up -d --pull never --no-build --wait neo4j
+./scripts/dev_host.sh preflight \
+  --enable-local-ollama --enable-neo4j
 ./scripts/dev_host.sh stop
 ./scripts/dev_host.sh start \
   --enable-local-ollama --enable-neo4j
 ```
 
-`--enable-local-ollama`과 `--enable-neo4j`는 Mac 개발 adapter만 활성화한다. 각 Asset/LLM
-system setting은 실제 비밀정보가 아닌 이미 mount된 참조명을 사용해 TEST/SAVE/ACTIVATE하고,
-ACTIVATE 후 이 source-host 프로세스를 재시작한다.
+`preflight`는 프로세스를 시작하지 않고 선택한 Neo4j/Chat/Embedding의 최종 Settings 계약을
+검증해 안전한 JSON 결과를 출력한다. 실제 endpoint 연결 여부는 각 System Settings의 고정 TEST로
+별도 확인한다. `--enable-local-ollama`과 `--enable-neo4j`는 서로 독립적인
+Mac 개발 capability이며, 둘을 함께 켜야만 각 기능이 활성화되는 전역 전제는 아니다. 각 Asset/LLM
+system setting은 실제 비밀정보가 아닌 이미 mount된 참조명을 사용한다. 위 startup-resolver의
+두 값을 명시적으로 opt-in한 환경에서만 TEST/SAVE/ACTIVATE한 뒤 source-host 프로세스를
+재시작한다.
 
 사내 OpenAI-compatible LLM을 사용할 때는 위 두 flag를 함께 쓰지 않는다. 먼저 Neo4j container를
 기동하고 Chat·Embedding·Neo4j System Settings revision을 각각 TEST/SAVE/ACTIVATE한다. 이후에는
@@ -572,7 +578,7 @@ environment's secrets or volumes.
    overlays. For an existing PostgreSQL volume, run `scripts/reconcile-postgres-roles.sh` (or the
    PowerShell equivalent) before and after applying `alembic upgrade head` through the migration
    service; the second idempotent pass repairs Phase 2 grants when roles were created after an older
-   migration. Readiness requires revision `0046`.
+   migration. Readiness requires revision `0053`.
 4. Start the API, relay, workers and web service using either the container profile or the
    host-development commands below. Check `/api/v1/health/live`, `/api/v1/health/ready`,
    `/api/v1/capabilities` and the APISIX/Vite proxy before using application workflows.
@@ -601,7 +607,7 @@ See the
 [ADR-0036](docs/adr/0036-policy-book-rbac-and-admin-approval-gates.md) plus
 [ADR-0037](docs/adr/0037-retention-execution-control-plane.md). On a new or upgraded database,
 run `alembic upgrade head` and verify `/api/v1/health/ready` reports required/current revision
-`0046`. Legacy Role markers remain usable by the existing ABAC document but are not normalized audit
+`0053`. Legacy Role markers remain usable by the existing ABAC document but are not normalized audit
 evidence until an Admin explicitly reassigns the Role. Manual/fallback edits cannot submit a
 `datariver-role-*` marker; the dedicated assignment path matches it to the locked Role row and
 rejects exact same Role/version/canonical-access no-ops even when only the optimistic expected version
@@ -645,11 +651,24 @@ It selects the version for the next process startup; it never hot-reloads or res
 Redis cache requires API restart, Redis delivery requires relay/worker restart, and DataHub GMS and
 S3 changes require API plus relevant worker restart. Local Ollama or the development
 intranet OpenAI-compatible Chat/Embedding adapters together with Neo4j require an API restart;
-the Reranker remains storable/testable inventory and has no runtime activation. The API can report
-only the version it loaded itself and does not infer worker success.
+the Reranker remains storable/testable inventory and has no runtime activation. Its TEST contract is
+a private, fixed and bounded `POST /v1/rerank` inference request under
+`INTRANET_RERANK_V1`; it is not OpenAI-compatible. A local Ollama `404` for that route is an honest
+unavailable capability, not a reason to claim readiness or block unrelated authoring. The API can
+report only the version it loaded itself and does not infer worker success.
 
-For the Mac development topology, bootstrap enables the startup resolver for Workspace
-`00000000-0000-4000-8000-000000000100`. After ACTIVATE, recreate the API and relevant workers:
+Mac bootstrap deliberately leaves the startup resolver disabled. To opt into development-only
+ACTIVATE, set both values in the selected ignored deployment env file before saving/activating a
+revision:
+
+```dotenv
+SYSTEM_CONFIGURATION_RUNTIME_ACTIVATION_ENABLED=true
+SYSTEM_CONFIGURATION_RUNTIME_WORKSPACE_ID=00000000-0000-4000-8000-000000000100
+```
+
+Compose consumers keep `SYSTEM_CONFIGURATION_SECRET_ROOT=/run/secrets`; `scripts/dev_host.sh`
+maps the same canonical references to this checkout's ignored `secrets/` directory. Do not put
+credential values in the env file. After ACTIVATE, recreate the API and relevant workers:
 
 ```bash
 docker compose -f compose.yaml -f compose.identity.yaml -f compose.airflow.yaml \
@@ -709,10 +728,30 @@ options:
   timeout_seconds: 60
 ```
 
-각 revision은 **SAVE → TEST → ACTIVATE** 순서로 처리한 뒤 API를 재시작한다. source-host launcher는
+Reranker가 필요한 배포만 별도 private endpoint를 설정한다. 이 revision은 SAVE/TEST까지만
+지원하고 ACTIVATE는 의도적으로 제공하지 않는다.
+
+```yaml
+# Reranker — OpenAI-compatible API가 아님
+connection_mode: INTRANET_RERANK_V1
+base_url: https://reranker.corp.example/v1
+model: bge-reranker-v2-m3
+secret_references:
+  api_key: file:/run/secrets/intranet_llm_reranker_api_key
+options:
+  api_style: rerank_v1
+  timeout_seconds: 60
+  top_n: 10
+```
+
+Chat/Embedding revision은 **SAVE → TEST → ACTIVATE** 순서로 처리한 뒤 API를 재시작한다.
+source-host launcher는
 portable `/run/secrets` reference를 ignored `secrets/` directory로만 매핑하며, Compose는 API
-container에만 두 key를 mount한다. 사내 endpoint는 fixed strict-JSON Chat probe와 one-vector
+container에만 세 모델 key를 mount한다. 사내 endpoint는 fixed strict-JSON Chat probe와 one-vector
 Embedding probe를 통과해야 한다. key를 보낸 뒤 `401`/`403`을 받으면 `UNAVAILABLE`이며 성공이 아니다.
+
+위 ACTIVATE 절차는 Chat/Embedding에만 적용된다. Reranker TEST는 정렬된 유한 점수와 유효한
+문서 index를 검증하지만 런타임 소비자 활성화를 만들지 않는다.
 
 The exact state and security boundary are controlled by [ADR-0028](docs/adr/0028-development-system-configuration-startup-activation.md).
 
@@ -931,6 +970,9 @@ The v1 repository still does not own DataHub. The example below reuses a DataHub
 Browser-visible auxiliary links are optional and independent of backend provider endpoints. Configure only the links that the deployment wants to expose with `UI_DATAHUB_URL`, `UI_AIRFLOW_URL`, `UI_GRAFANA_URL`, `UI_PROMETHEUS_URL`, and `UI_GRAPH_URL`. The API validates and publishes them through the authenticated capabilities response; it does not invent localhost defaults or return credentials. Production accepts HTTPS links only. Grafana remains a new-window link unless the deployment separately supplies matching exact-origin `GRAFANA_EMBED_BASE_URL`, explicitly enables `GRAFANA_EMBED_ENABLED`, records `GRAFANA_EMBED_EVIDENCE_REFERENCE`, and passes the same origin into the web CSP; the browser cannot enable embedding or provide a frame URL.
 
 For a native Windows checkout, bootstrap from PowerShell. First use includes `-DataHubToken '<scoped-token>'`; later runs preserve the existing token when omitted.
+The script disables inherited ACLs on the ignored secrets and Keycloak-runtime directories and
+grants full control only to the current Windows identity and `SYSTEM`; do not move generated files
+to a location that replaces those ACLs.
 
 ```powershell
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/bootstrap.ps1 `
@@ -1118,7 +1160,7 @@ docker compose -f compose.yaml build --pull
 ```
 
 애플리케이션을 올리기 전에 권한이 분리된 `migrate` 서비스로 Alembic을 실행한다. 이
-릴리스의 필수 revision은 `0050`이다. 호스트의 임의 DB 계정으로 `alembic`을 직접 실행하지
+릴리스의 필수 revision은 `0053`이다. 호스트의 임의 DB 계정으로 `alembic`을 직접 실행하지
 않는다.
 
 ```bash
@@ -1127,7 +1169,7 @@ docker compose -f compose.yaml run --rm migrate \
   /app/.venv/bin/alembic -c backend/alembic.ini current
 ```
 
-두 번째 명령의 현재 revision이 `0050 (head)`인지 확인한다. 마이그레이션 실패 시 서비스를
+두 번째 명령의 현재 revision이 `0053 (head)`인지 확인한다. 마이그레이션 실패 시 서비스를
 재기동하거나 downgrade를 추측 실행하지 말고, 로그와 DB 상태를 보존한 채 배포를 중단한다.
 
 ### 3. API·Worker·Web 재기동과 상태 확인
@@ -1208,7 +1250,7 @@ service token의 FINAL 호출은 `401` 또는 `403`으로 차단되어야 한다
 - Change management: typed DataHub aspect UPSERT requests are server-bound to an authorized local dataset identity and scope, then move through legal transitions and distinct final approval. In new-CR intake, each Tag/Term `+` uses only the bounded authorization-pruned workspace projection; provider-wide `*` vocabulary is excluded because it cannot carry the same Workspace/classification predicate. Keyword input narrows that projection before a comma-aware new proposal is offered. Column input reserves the table Schema track, so column item/Type/Description/Term/Tag/requested-change/management align with Table/Owner/description/Terms/Tags/requested-change/column-addition above it. Reads use the current authorized target; approval and forward transitions reject identity, revision or authorization-scope drift. REVIEW and TEST require every routed System's Developer evidence, while FINAL requires every routed System's Developer and Data Steward plus one role-separated global Admin. Every FINAL decision also requires recent hardware-WebAuthn assurance. Generic raw Aspect creation and the legacy upload-derived raw proposal API additionally require the deny-by-default, hardware-human-only `change.raw.create` action and are not exposed in the ordinary UI. A leased worker applies each aspect idempotently and only marks `APPLIED` after re-read hash equality. Apply-time requester/policy reauthorization, DataRiver target serialization and external provider CAS remain explicit production gates.
 - Classification access administration: eligible human security administrators can review and independently approve versioned four-class Search/Chat policies, review or revoke immutable inference-provider profile versions, and govern policy-bound RESTRICTED Search grants. ADR-0020 additionally permits an audited, read-only same-workspace catalog review of non-deleted quarantined DataHub projections for classification remediation, including the fixed typed DataHub metadata detail; it never enables export, Chat, arbitrary provider access or mutation. The Admin UI never accepts provider endpoints or credentials, and RESTRICTED evidence is never eligible for Chat.
 - Knowledge graph: create a graph/ontology, author typed node/edge changesets, validate, independently review, publish or roll back immutable releases, export governed views and call bounded analysis. Raw SQL/Cypher is never accepted.
-- API sharing: create a release-pinned contract version, publish it with recent strong authentication, grant an OIDC `client_id` explicit scopes/classification/validity and quotas, revoke it, and invoke bounded neighbor analysis through an atomic grant-and-usage check.
+- API sharing: create a governed-release-pinned contract version, publish it with recent strong authentication, grant an OIDC `client_id` explicit scopes/classification/validity and quotas, revoke it, and invoke bounded neighbor analysis through an atomic grant-and-usage check. List/detail, idempotent replay, publish, grant and invocation revalidate the release's current independently reviewed lineage; a legacy or later-corrupted lineage is not exposed.
 - Chat: deterministic baseline answers only from catalog or active-release knowledge evidence that passed prefiltering and per-item authorization. Immutable chunks bind workspace, classification, typed scope, source/version/effective time and content hash; only validated cited chunk IDs are persisted, otherwise the answer is `검증 불가`. Persistence additionally requires the workspace's independently approved ACTIVE retention policy: each new session binds its exact policy ID/hash and database-time deadline, and a superseded, expired or legacy-unbound session is append-closed. There is no duration fallback. The default inference-worker contract rejects SQL, Cypher, arbitrary HTTP, tools and mutation fields. Development Knowledge processing may use either the fixed loopback Ollama adapter in [ADR-0023](docs/adr/0023-mac-development-local-inference-and-graph-projection.md) or the private-network OpenAI-compatible adapter in [ADR-0030](docs/adr/0030-development-intranet-openai-compatible-adapter.md); both retain a fixed non-executable response contract and server-side validation. Commercial/public external inference remains disabled until live revalidation, delivery/streaming, metrics and scaled red-team gates are accepted.
 - Monitoring: liveness, readiness, dependency capabilities, workspace counts, outbox dead letters and ABAC-protected Prometheus HTTP metrics remain independent so one degraded optional dependency does not hide core state. Database-pool metrics expose only bounded connection states and configured limits, never workspace, subject or query labels.
 
@@ -1224,7 +1266,7 @@ OpenAPI is available at `http://localhost:38101/api/docs` in source-host develop
 
 ## Optional semiconductor seed
 
-The seed is deterministic synthetic reference data and never installs by default. It contains 12 catalog assets and a 257-node/279-edge semiconductor value-chain release, including 168 monthly facility-capacity and product-demand observations with assertion-level provenance.
+The seed is deterministic synthetic reference data and never installs by default. It contains 12 catalog assets and a 257-node/279-edge semiconductor value-chain release, including 168 monthly facility-capacity and product-demand observations with assertion-level provenance. Apply records separate maker/checker and authorized-publisher evidence, 536 immutable changeset operations, a canonical PostgreSQL read-back receipt and the published lineage before setting the active release. Verify rechecks the active release, role permissions, the exact operation ledger and a canonical row reconstruction hash; seed data is not a governance bypass.
 
 ```bash
 docker compose --profile semiconductor-seed run --rm semiconductor-seed

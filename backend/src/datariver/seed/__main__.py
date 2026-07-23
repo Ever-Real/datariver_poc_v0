@@ -4,21 +4,32 @@ import argparse
 import asyncio
 import hashlib
 import json
+from collections.abc import Sequence
 
 from sqlalchemy import delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from datariver.config import Settings, get_settings
 from datariver.domain.authz import Action, Classification
-from datariver.domain.common import DomainEvent, utc_now
-from datariver.domain.knowledge import GraphRelease, Ontology, Provenance
+from datariver.domain.common import DomainEvent, canonical_json_hash, utc_now
+from datariver.domain.knowledge import (
+    GraphEdge,
+    GraphNode,
+    GraphRelease,
+    GraphSnapshot,
+    Ontology,
+    Provenance,
+)
 from datariver.domain.membership_renewal import add_calendar_months
 from datariver.infrastructure.db.catalog import advance_catalog_projection_version
 from datariver.infrastructure.db.models.catalog import AssetProjectionModel
 from datariver.infrastructure.db.models.integration import OutboxEventModel, SeedRunModel
 from datariver.infrastructure.db.models.knowledge import (
+    ChangeOperationModel,
+    ChangeSetModel,
     GraphModel,
     OntologyVersionModel,
+    ProjectionDeploymentModel,
     ReleaseEdgeModel,
     ReleaseModel,
     ReleaseNodeModel,
@@ -45,11 +56,107 @@ AIRFLOW_SUBJECT_ID = stable_id("subject:local-datariver-airflow")
 GRAPH_ID = stable_id("graph:semiconductor-value-chain")
 ONTOLOGY_ID = stable_id("ontology:semiconductor-value-chain:1.0.0")
 RELEASE_ID = stable_id("release:semiconductor-value-chain:1")
+CHANGESET_ID = stable_id("changeset:semiconductor-value-chain:1")
+PROJECTION_DEPLOYMENT_ID = stable_id("projection:semiconductor-value-chain:postgres:1")
 SEED_RUN_ID = stable_id("seed-run:semiconductor:1.0.0")
+REVIEWER_SUBJECT_ID = stable_id("subject:local-datariver-seed-reviewer")
 SYSTEM_ID = stable_id("system:semiconductor-reference")
 DOMAIN_ID = stable_id("domain:semiconductor-value-chain")
 LOCAL_KEYCLOAK_SUBJECT = "00000000-0000-4000-8000-000000000001"
 LOCAL_KEYCLOAK_AIRFLOW_SUBJECT = "00000000-0000-4000-8000-000000000002"
+LOCAL_KEYCLOAK_REVIEWER_SUBJECT = "00000000-0000-4000-8000-000000000003"
+ADMINISTRATOR_ACTIONS = tuple(
+    action.value for action in Action if action is not Action.CHANGE_RAW_CREATE
+)
+REVIEWER_ACTIONS = (Action.KG_READ.value, Action.KG_REVIEW.value)
+
+
+def graph_classification(pack: SemiconductorPack) -> int:
+    """Return the graph envelope required by every synthetic assertion."""
+
+    return max(
+        (
+            *(node.classification for node in pack.snapshot.nodes.values()),
+            *(edge.classification for edge in pack.snapshot.edges.values()),
+        ),
+        default=int(Classification.PUBLIC),
+    )
+
+
+def seed_operation_ledger(pack: SemiconductorPack) -> tuple[dict[str, object], ...]:
+    """Return the exact immutable operation ledger represented by the seed snapshot."""
+
+    documents: list[dict[str, object]] = []
+    sequence = 0
+    for node in sorted(pack.snapshot.nodes.values(), key=lambda item: item.entity_id.int):
+        sequence += 1
+        documents.append(
+            {
+                "id": str(stable_id(f"changeset-operation:semiconductor:node:{node.entity_id}")),
+                "sequence": sequence,
+                "operation": "UPSERT",
+                "entity_kind": "NODE",
+                "stable_entity_id": str(node.entity_id),
+                "document": {
+                    "entity_type": node.entity_type,
+                    "properties": node.properties,
+                    "classification": node.classification,
+                },
+                "provenance": [_provenance(item) for item in node.provenance],
+                "confidence": min(item.confidence for item in node.provenance),
+            }
+        )
+    for edge in sorted(pack.snapshot.edges.values(), key=lambda item: item.edge_id.int):
+        sequence += 1
+        documents.append(
+            {
+                "id": str(stable_id(f"changeset-operation:semiconductor:edge:{edge.edge_id}")),
+                "sequence": sequence,
+                "operation": "UPSERT",
+                "entity_kind": "EDGE",
+                "stable_entity_id": str(edge.edge_id),
+                "document": {
+                    "source_id": str(edge.source_entity_id),
+                    "target_id": str(edge.target_entity_id),
+                    "edge_type": edge.edge_type,
+                    "properties": edge.properties,
+                    "classification": edge.classification,
+                },
+                "provenance": [_provenance(item) for item in edge.provenance],
+                "confidence": min(item.confidence for item in edge.provenance),
+            }
+        )
+    return tuple(documents)
+
+
+def _release_snapshot(
+    nodes: Sequence[ReleaseNodeModel],
+    edges: Sequence[ReleaseEdgeModel],
+) -> GraphSnapshot:
+    return GraphSnapshot(
+        nodes={
+            item.entity_id: GraphNode(
+                entity_id=item.entity_id,
+                entity_type=item.entity_type,
+                properties=item.properties,
+                classification=item.classification,
+                provenance=tuple(Provenance.from_document(value) for value in item.provenance),
+            )
+            for item in nodes
+        },
+        edges={
+            item.edge_id: GraphEdge(
+                edge_id=item.edge_id,
+                source_entity_id=item.source_entity_id,
+                target_entity_id=item.target_entity_id,
+                edge_type=item.edge_type,
+                properties=item.properties,
+                classification=item.classification,
+                provenance=tuple(Provenance.from_document(value) for value in item.provenance),
+            )
+            for item in edges
+        },
+    )
 
 
 async def apply_pack(
@@ -75,6 +182,7 @@ async def apply_pack(
         entity_types=frozenset(ontology_document["entity_types"]),
         edge_types=frozenset(ontology_document["edge_types"]),
     )
+    maximum_classification = graph_classification(pack)
     validated = GraphRelease.publish(
         graph_id=GRAPH_ID,
         release_no=1,
@@ -82,6 +190,7 @@ async def apply_pack(
         snapshot=pack.snapshot,
         expected_base_hash=None,
         actual_base_hash=None,
+        maximum_classification=maximum_classification,
     )
     now = utc_now()
     graph_model = GraphModel(
@@ -92,7 +201,7 @@ async def apply_pack(
         graph_type="ANALYTIC_PRODUCT",
         status="PUBLISHED",
         active_release_id=None,
-        classification=int(Classification.INTERNAL),
+        classification=maximum_classification,
         version=1,
     )
     session.add(graph_model)
@@ -123,37 +232,129 @@ async def apply_pack(
         )
     )
     await session.flush()
+    release_nodes = [
+        ReleaseNodeModel(
+            workspace_id=WORKSPACE_ID,
+            release_id=RELEASE_ID,
+            entity_id=node.entity_id,
+            entity_type=node.entity_type,
+            properties=node.properties,
+            classification=node.classification,
+            provenance=[_provenance(item) for item in node.provenance],
+        )
+        for node in pack.snapshot.nodes.values()
+    ]
+    release_edges = [
+        ReleaseEdgeModel(
+            workspace_id=WORKSPACE_ID,
+            release_id=RELEASE_ID,
+            edge_id=edge.edge_id,
+            source_entity_id=edge.source_entity_id,
+            target_entity_id=edge.target_entity_id,
+            edge_type=edge.edge_type,
+            properties=edge.properties,
+            classification=edge.classification,
+            provenance=[_provenance(item) for item in edge.provenance],
+        )
+        for edge in pack.snapshot.edges.values()
+    ]
+    session.add_all(release_nodes)
+    session.add_all(release_edges)
+    changeset_model = ChangeSetModel(
+        id=CHANGESET_ID,
+        workspace_id=WORKSPACE_ID,
+        graph_id=GRAPH_ID,
+        base_release_id=None,
+        ontology_version_id=ONTOLOGY_ID,
+        title="Synthetic semiconductor seed publication",
+        state="PUBLISHED",
+        author_id=SUBJECT_ID,
+        reviewed_by=REVIEWER_SUBJECT_ID,
+        reviewed_at=now,
+        review_reason="Approved deterministic synthetic seed content.",
+        published_release_id=RELEASE_ID,
+        version=4,
+    )
+    session.add(changeset_model)
+    # There is intentionally no mutable ORM relationship from the immutable
+    # operation ledger to its changeset, so make the FK flush order explicit.
+    await session.flush((changeset_model,))
+    operations = [
+        ChangeOperationModel(
+            id=document["id"],
+            workspace_id=WORKSPACE_ID,
+            changeset_id=CHANGESET_ID,
+            sequence=document["sequence"],
+            operation=document["operation"],
+            entity_kind=document["entity_kind"],
+            stable_entity_id=document["stable_entity_id"],
+            document=document["document"],
+            provenance=document["provenance"],
+            confidence=document["confidence"],
+        )
+        for document in seed_operation_ledger(pack)
+    ]
+    session.add_all(operations)
+    await session.flush()
+    persisted_nodes = list(
+        (
+            await session.scalars(
+                select(ReleaseNodeModel)
+                .where(
+                    ReleaseNodeModel.workspace_id == WORKSPACE_ID,
+                    ReleaseNodeModel.release_id == RELEASE_ID,
+                )
+                .order_by(ReleaseNodeModel.entity_id)
+                .execution_options(populate_existing=True)
+            )
+        ).all()
+    )
+    persisted_edges = list(
+        (
+            await session.scalars(
+                select(ReleaseEdgeModel)
+                .where(
+                    ReleaseEdgeModel.workspace_id == WORKSPACE_ID,
+                    ReleaseEdgeModel.release_id == RELEASE_ID,
+                )
+                .order_by(ReleaseEdgeModel.edge_id)
+                .execution_options(populate_existing=True)
+            )
+        ).all()
+    )
+    persisted_snapshot = _release_snapshot(persisted_nodes, persisted_edges)
+    if (
+        persisted_snapshot.content_hash() != validated.content_hash
+        or len(persisted_nodes) != validated.node_count
+        or len(persisted_edges) != validated.edge_count
+    ):
+        raise RuntimeError("The synthetic seed release failed canonical database read-back.")
+    verification_hash = canonical_json_hash(
+        {
+            "adapter": "postgres-adjacency-v1",
+            "edge_count": validated.edge_count,
+            "node_count": validated.node_count,
+            "release_hash": validated.content_hash,
+            "release_id": str(RELEASE_ID),
+        }
+    )
+    session.add(
+        ProjectionDeploymentModel(
+            id=PROJECTION_DEPLOYMENT_ID,
+            workspace_id=WORKSPACE_ID,
+            graph_id=GRAPH_ID,
+            release_id=RELEASE_ID,
+            adapter="postgres-adjacency-v1",
+            target_ref=f"postgresql://knowledge/releases/{RELEASE_ID}",
+            state="CANONICAL_VERIFIED",
+            content_hash=validated.content_hash,
+            verification_hash=verification_hash,
+            node_count=validated.node_count,
+            edge_count=validated.edge_count,
+            verified_at=now,
+        )
+    )
     graph_model.active_release_id = RELEASE_ID
-    session.add_all(
-        [
-            ReleaseNodeModel(
-                workspace_id=WORKSPACE_ID,
-                release_id=RELEASE_ID,
-                entity_id=node.entity_id,
-                entity_type=node.entity_type,
-                properties=node.properties,
-                classification=node.classification,
-                provenance=[_provenance(item) for item in node.provenance],
-            )
-            for node in pack.snapshot.nodes.values()
-        ]
-    )
-    session.add_all(
-        [
-            ReleaseEdgeModel(
-                workspace_id=WORKSPACE_ID,
-                release_id=RELEASE_ID,
-                edge_id=edge.edge_id,
-                source_entity_id=edge.source_entity_id,
-                target_entity_id=edge.target_entity_id,
-                edge_type=edge.edge_type,
-                properties=edge.properties,
-                classification=edge.classification,
-                provenance=[_provenance(item) for item in edge.provenance],
-            )
-            for edge in pack.snapshot.edges.values()
-        ]
-    )
     session.add_all(
         [
             AssetProjectionModel(
@@ -222,6 +423,71 @@ async def verify_pack(session: AsyncSession, *, pack: SemiconductorPack) -> dict
     release = await session.get(ReleaseModel, RELEASE_ID)
     if release is None:
         raise RuntimeError("The semiconductor graph release is missing.")
+    graph = await session.get(GraphModel, GRAPH_ID)
+    changeset = await session.get(ChangeSetModel, CHANGESET_ID)
+    deployment = await session.get(ProjectionDeploymentModel, PROJECTION_DEPLOYMENT_ID)
+    publisher = await session.get(SubjectModel, release.published_by)
+    publisher_membership = await session.get(
+        WorkspaceMembershipModel,
+        {"workspace_id": WORKSPACE_ID, "subject_id": release.published_by},
+    )
+    reviewer = (
+        await session.get(SubjectModel, changeset.reviewed_by)
+        if changeset is not None and changeset.reviewed_by is not None
+        else None
+    )
+    reviewer_membership = (
+        await session.get(
+            WorkspaceMembershipModel,
+            {"workspace_id": WORKSPACE_ID, "subject_id": changeset.reviewed_by},
+        )
+        if changeset is not None and changeset.reviewed_by is not None
+        else None
+    )
+    expected_verification_hash = canonical_json_hash(
+        {
+            "adapter": "postgres-adjacency-v1",
+            "edge_count": release.edge_count,
+            "node_count": release.node_count,
+            "release_hash": release.content_hash,
+            "release_id": str(RELEASE_ID),
+        }
+    )
+    if (
+        graph is None
+        or graph.status != "PUBLISHED"
+        or graph.active_release_id != RELEASE_ID
+        or graph.classification != graph_classification(pack)
+        or changeset is None
+        or changeset.state != "PUBLISHED"
+        or changeset.author_id != SUBJECT_ID
+        or changeset.reviewed_by != REVIEWER_SUBJECT_ID
+        or changeset.author_id == changeset.reviewed_by
+        or changeset.reviewed_at is None
+        or not (changeset.review_reason or "").strip()
+        or changeset.published_release_id != RELEASE_ID
+        or release.published_by != SUBJECT_ID
+        or publisher is None
+        or not publisher.active
+        or publisher_membership is None
+        or not publisher_membership.active
+        or Action.KG_PUBLISH.value not in publisher_membership.attributes.get("allowed_actions", [])
+        or reviewer is None
+        or not reviewer.active
+        or reviewer_membership is None
+        or not reviewer_membership.active
+        or Action.KG_REVIEW.value not in reviewer_membership.attributes.get("allowed_actions", [])
+        or deployment is None
+        or deployment.adapter != "postgres-adjacency-v1"
+        or deployment.target_ref != f"postgresql://knowledge/releases/{RELEASE_ID}"
+        or deployment.state != "CANONICAL_VERIFIED"
+        or deployment.content_hash != release.content_hash
+        or deployment.verification_hash != expected_verification_hash
+        or deployment.node_count != release.node_count
+        or deployment.edge_count != release.edge_count
+        or deployment.verified_at is None
+    ):
+        raise RuntimeError("The semiconductor graph governance evidence is incomplete.")
     catalog_count = int(
         await session.scalar(
             select(func.count())
@@ -233,22 +499,62 @@ async def verify_pack(session: AsyncSession, *, pack: SemiconductorPack) -> dict
         )
         or 0
     )
-    node_count = int(
-        await session.scalar(
-            select(func.count())
-            .select_from(ReleaseNodeModel)
-            .where(ReleaseNodeModel.release_id == RELEASE_ID)
-        )
-        or 0
+    persisted_nodes = tuple(
+        (
+            await session.scalars(
+                select(ReleaseNodeModel)
+                .where(
+                    ReleaseNodeModel.workspace_id == WORKSPACE_ID,
+                    ReleaseNodeModel.release_id == RELEASE_ID,
+                )
+                .order_by(ReleaseNodeModel.entity_id)
+                .execution_options(populate_existing=True)
+            )
+        ).all()
     )
-    edge_count = int(
-        await session.scalar(
-            select(func.count())
-            .select_from(ReleaseEdgeModel)
-            .where(ReleaseEdgeModel.release_id == RELEASE_ID)
-        )
-        or 0
+    persisted_edges = tuple(
+        (
+            await session.scalars(
+                select(ReleaseEdgeModel)
+                .where(
+                    ReleaseEdgeModel.workspace_id == WORKSPACE_ID,
+                    ReleaseEdgeModel.release_id == RELEASE_ID,
+                )
+                .order_by(ReleaseEdgeModel.edge_id)
+                .execution_options(populate_existing=True)
+            )
+        ).all()
     )
+    node_count = len(persisted_nodes)
+    edge_count = len(persisted_edges)
+    persisted_snapshot = _release_snapshot(persisted_nodes, persisted_edges)
+    operation_models = tuple(
+        (
+            await session.scalars(
+                select(ChangeOperationModel)
+                .where(
+                    ChangeOperationModel.workspace_id == WORKSPACE_ID,
+                    ChangeOperationModel.changeset_id == CHANGESET_ID,
+                )
+                .order_by(ChangeOperationModel.sequence)
+            )
+        ).all()
+    )
+    operation_ledger = tuple(
+        {
+            "id": str(model.id),
+            "sequence": model.sequence,
+            "operation": model.operation,
+            "entity_kind": model.entity_kind,
+            "stable_entity_id": str(model.stable_entity_id),
+            "document": model.document,
+            "provenance": model.provenance,
+            "confidence": model.confidence,
+        }
+        for model in operation_models
+    )
+    if operation_ledger != seed_operation_ledger(pack):
+        raise RuntimeError("The semiconductor changeset operation ledger is incomplete.")
     actual = {
         "catalog_assets": catalog_count,
         "graph_nodes": node_count,
@@ -264,6 +570,9 @@ async def verify_pack(session: AsyncSession, *, pack: SemiconductorPack) -> dict
     if (
         seed_run.content_hash != pack.logical_hash
         or release.content_hash != pack.snapshot.content_hash()
+        or persisted_snapshot.content_hash() != release.content_hash
+        or release.node_count != node_count
+        or release.edge_count != edge_count
     ):
         raise RuntimeError("Seed content hash verification failed.")
     return {
@@ -337,9 +646,7 @@ async def _ensure_identity(session: AsyncSession, *, settings: Settings) -> None
     )
     administrator_attributes = {
         "groups": ["security-administrators"],
-        "allowed_actions": [
-            action.value for action in Action if action is not Action.CHANGE_RAW_CREATE
-        ],
+        "allowed_actions": list(ADMINISTRATOR_ACTIONS),
         "denied_actions": [],
         "allowed_system_ids": [str(SYSTEM_ID)],
         "allowed_domain_ids": [str(DOMAIN_ID)],
@@ -363,6 +670,52 @@ async def _ensure_identity(session: AsyncSession, *, settings: Settings) -> None
         membership.clearance = int(Classification.RESTRICTED)
         membership.attributes = administrator_attributes
         membership.active = True
+    reviewer_subject = await session.scalar(
+        select(SubjectModel).where(
+            SubjectModel.issuer == settings.oidc_issuer,
+            SubjectModel.external_subject == LOCAL_KEYCLOAK_REVIEWER_SUBJECT,
+        )
+    )
+    if reviewer_subject is None:
+        reviewer_subject = SubjectModel(
+            id=REVIEWER_SUBJECT_ID,
+            issuer=settings.oidc_issuer,
+            external_subject=LOCAL_KEYCLOAK_REVIEWER_SUBJECT,
+            display_name="DataRiver Synthetic Seed Reviewer",
+            active=True,
+        )
+        session.add(reviewer_subject)
+        await session.flush()
+    reviewer_membership = await session.get(
+        WorkspaceMembershipModel,
+        {"workspace_id": WORKSPACE_ID, "subject_id": reviewer_subject.id},
+    )
+    reviewer_attributes = {
+        "groups": ["data-stewards", "synthetic-seed-reviewers"],
+        "allowed_actions": list(REVIEWER_ACTIONS),
+        "denied_actions": [],
+        "allowed_system_ids": [str(SYSTEM_ID)],
+        "allowed_domain_ids": [str(DOMAIN_ID)],
+        "seed_namespace": SEED_NAMESPACE,
+    }
+    if reviewer_membership is None:
+        session.add(
+            WorkspaceMembershipModel(
+                workspace_id=WORKSPACE_ID,
+                subject_id=reviewer_subject.id,
+                department_id=None,
+                job_function="DATA_STEWARD",
+                clearance=int(Classification.RESTRICTED),
+                attributes=reviewer_attributes,
+                active=True,
+                access_expires_at=add_calendar_months(utc_now(), 6),
+            )
+        )
+    else:
+        reviewer_membership.job_function = "DATA_STEWARD"
+        reviewer_membership.clearance = int(Classification.RESTRICTED)
+        reviewer_membership.attributes = reviewer_attributes
+        reviewer_membership.active = True
     airflow_subject = await session.scalar(
         select(SubjectModel).where(
             SubjectModel.issuer == settings.oidc_issuer,

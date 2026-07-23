@@ -1258,7 +1258,8 @@ export interface SystemConfigurationTestResult {
   system_id: SystemConfigurationEntry['system_id']
   status: 'AVAILABLE' | 'AUTHENTICATION_REQUIRED' | 'UNAVAILABLE'
   scope: 'HTTP_HEALTH' | 'MODEL_DISCOVERY' | 'MODEL_INFERENCE' | 'EMBEDDING_INFERENCE'
-    | 'AUTHENTICATED_QUERY' | 'REDIS_PING' | 'REDIS_POLICY' | 'S3_HEAD_BUCKET'
+    | 'RERANKING_INFERENCE' | 'AUTHENTICATED_QUERY' | 'REDIS_PING' | 'REDIS_POLICY'
+    | 'S3_HEAD_BUCKET'
   latency_ms: number
   detail: string
   configuration_version: number

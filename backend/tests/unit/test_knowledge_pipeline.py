@@ -125,7 +125,7 @@ class _Extractor:
                     "WaferFab",
                     "Facility",
                     {"name": "Wafer fab"},
-                    2,
+                    1,
                     1,
                     "Wafer  fab uses\n lithography tool",
                     0.95,
@@ -134,7 +134,7 @@ class _Extractor:
                     "LithographyTool",
                     "Tool",
                     {"name": "Lithography tool"},
-                    2,
+                    1,
                     1,
                     "Wafer  fab uses\n lithography tool",
                     0.94,
@@ -147,7 +147,7 @@ class _Extractor:
                     "LithographyTool",
                     "USES",
                     {},
-                    2,
+                    1,
                     1,
                     "Wafer  fab uses\n lithography tool",
                     0.9,
@@ -185,6 +185,7 @@ async def test_generated_pdf_becomes_page_aware_typed_operations_without_url_fet
         media_type="application/pdf",
         byte_size=len(payload),
         content_sha256=hashlib.sha256(payload).hexdigest(),
+        classification=1,
     )
     parser = PypdfPageAwareParser(
         reader_factory=lambda value: _Reader(
@@ -243,6 +244,7 @@ async def test_llm_evidence_not_present_on_the_claimed_page_fails_closed() -> No
         media_type="application/pdf",
         byte_size=len(payload),
         content_sha256=hashlib.sha256(payload).hexdigest(),
+        classification=1,
     )
     pipeline = KnowledgeSourcePipeline(
         reader=_SourceReader(payload),
@@ -276,6 +278,7 @@ async def test_source_hash_mismatch_stops_before_embedding_or_llm() -> None:
         media_type="application/pdf",
         byte_size=len(payload),
         content_sha256="0" * 64,
+        classification=1,
     )
     pipeline = KnowledgeSourcePipeline(
         reader=_SourceReader(payload),
@@ -292,6 +295,106 @@ async def test_source_hash_mismatch_stops_before_embedding_or_llm() -> None:
             embedding_binding=_binding("bge-m3:latest"),
             extraction_binding=_binding("gemma4:latest"),
         )
+
+
+@pytest.mark.asyncio
+async def test_restricted_source_stops_before_object_read_embedding_or_llm() -> None:
+    payload = _generated_pdf_fixture()
+
+    class NeverReader:
+        async def read_snapshot(self, *, source: KnowledgeSourceSnapshot) -> bytes:
+            del source
+            raise AssertionError("restricted source bytes must not leave the governed store")
+
+    source = KnowledgeSourceSnapshot(
+        snapshot_id=uuid4(),
+        workspace_id=uuid4(),
+        graph_id=uuid4(),
+        bucket="accepted",
+        object_key="knowledge/private/restricted.pdf",
+        storage_version="version-1",
+        media_type="application/pdf",
+        byte_size=len(payload),
+        content_sha256=hashlib.sha256(payload).hexdigest(),
+        classification=3,
+    )
+    pipeline = KnowledgeSourcePipeline(
+        reader=NeverReader(),
+        parser=PypdfPageAwareParser(reader_factory=lambda _: _Reader([_Page("content")])),
+        embedding=_Embedding(),
+        extractor=_Extractor(),
+    )
+
+    with pytest.raises(ValidationError, match="classification is not eligible"):
+        await pipeline.analyze_pdf(
+            source=source,
+            entity_types=frozenset({"Facility", "Tool"}),
+            edge_types=frozenset({"USES"}),
+            embedding_binding=_binding("bge-m3:latest"),
+            extraction_binding=_binding("gemma4:latest"),
+        )
+
+
+@pytest.mark.asyncio
+async def test_model_cannot_down_classify_immutable_source_evidence() -> None:
+    payload = _generated_pdf_fixture()
+
+    class DownClassifyingExtractor(_Extractor):
+        async def propose(self, **kwargs: object) -> ExtractionDraft:
+            draft = await super().propose(**kwargs)  # type: ignore[arg-type]
+            return replace(
+                draft,
+                nodes=tuple(replace(node, classification=0) for node in draft.nodes),
+                edges=tuple(replace(edge, classification=0) for edge in draft.edges),
+            )
+
+    source = KnowledgeSourceSnapshot(
+        snapshot_id=uuid4(),
+        workspace_id=uuid4(),
+        graph_id=uuid4(),
+        bucket="accepted",
+        object_key="knowledge/private/internal.pdf",
+        storage_version="version-1",
+        media_type="application/pdf",
+        byte_size=len(payload),
+        content_sha256=hashlib.sha256(payload).hexdigest(),
+        classification=1,
+    )
+    pipeline = KnowledgeSourcePipeline(
+        reader=_SourceReader(payload),
+        parser=PypdfPageAwareParser(
+            reader_factory=lambda _: _Reader([_Page("Wafer fab uses lithography tool")])
+        ),
+        embedding=_Embedding(),
+        extractor=DownClassifyingExtractor(),
+    )
+
+    with pytest.raises(ValidationError, match="inherit the immutable source classification"):
+        await pipeline.analyze_pdf(
+            source=source,
+            entity_types=frozenset({"Facility", "Tool"}),
+            edge_types=frozenset({"USES"}),
+            embedding_binding=_binding("bge-m3:latest"),
+            extraction_binding=_binding("gemma4:latest"),
+        )
+
+
+def test_source_above_graph_envelope_is_rejected() -> None:
+    source = KnowledgeSourceSnapshot(
+        snapshot_id=uuid4(),
+        workspace_id=uuid4(),
+        graph_id=uuid4(),
+        bucket="accepted",
+        object_key="knowledge/private/internal.pdf",
+        storage_version="version-1",
+        media_type="application/pdf",
+        byte_size=1,
+        content_sha256="a" * 64,
+        classification=1,
+    )
+
+    with pytest.raises(ValidationError, match="exceeds its graph envelope"):
+        source.require_graph_envelope(graph_classification=0)
 
 
 @dataclass
@@ -546,9 +649,34 @@ class _Audit:
         self.records.append(record)
 
 
+def _canonical_snapshot_for_evidence(evidence: GraphRagEvidence) -> GraphSnapshot:
+    provenance = Provenance(
+        source_ref="test:canonical-graphrag",
+        source_locator=evidence.source_locator,
+        source_version=evidence.source_version,
+        method="deterministic_test",
+        confidence=1.0,
+        evidence_excerpt=evidence.evidence_excerpt,
+        evidence_sha256=evidence.evidence_sha256,
+        source_page_sha256=evidence.source_page_sha256,
+    )
+    return GraphSnapshot(
+        nodes={
+            evidence.entity_id: GraphNode(
+                entity_id=evidence.entity_id,
+                entity_type=evidence.entity_type,
+                properties=evidence.properties,
+                classification=evidence.classification,
+                provenance=(provenance,),
+            )
+        }
+    )
+
+
 @pytest.mark.asyncio
 async def test_graphrag_accepts_only_authorized_citations_and_audits_actual_model() -> None:
     binding = _binding("gemma4:latest")
+    release_id = uuid4()
     evidence = GraphRagEvidence(
         evidence_id="kg:release:fab",
         entity_id=uuid4(),
@@ -563,7 +691,13 @@ async def test_graphrag_accepts_only_authorized_citations_and_audits_actual_mode
     service = KnowledgeGraphRagService(
         retriever=_Retriever((evidence,)),
         composer=_Composer(
-            GraphRagCompletion("근거 기반 답변", (evidence.evidence_id,), binding, 20, 5)
+            GraphRagCompletion(
+                "근거 기반 답변",
+                (f"kg:{release_id}:{evidence.entity_id}",),
+                binding,
+                20,
+                5,
+            )
         ),
         audit_writer=audit,
     )
@@ -572,7 +706,7 @@ async def test_graphrag_accepts_only_authorized_citations_and_audits_actual_mode
         request_id="request-1",
         workspace_id=uuid4(),
         graph_id=uuid4(),
-        release_id=uuid4(),
+        release_id=release_id,
         actor_id=uuid4(),
         question="Fab과 장비의 관계는?",
         start_node_id=None,
@@ -581,10 +715,13 @@ async def test_graphrag_accepts_only_authorized_citations_and_audits_actual_mode
         maximum_classification=2,
         maximum_hops=2,
         maximum_nodes=50,
+        canonical_snapshot=_canonical_snapshot_for_evidence(evidence),
         binding=binding,
     )
 
-    assert result.citations == (evidence,)
+    assert result.citations[0].entity_id == evidence.entity_id
+    assert result.citations[0].evidence_id == f"kg:{release_id}:{evidence.entity_id}"
+    assert result.citations[0].properties == {"name": "Fab"}
     assert audit.records[0].binding.model == "gemma4:latest"
     assert len(audit.records[0].question_sha256) == 64
 
@@ -622,5 +759,64 @@ async def test_graphrag_rejects_model_citation_outside_authorized_package() -> N
             maximum_classification=2,
             maximum_hops=1,
             maximum_nodes=10,
+            canonical_snapshot=_canonical_snapshot_for_evidence(evidence),
+            binding=binding,
+        )
+
+
+@pytest.mark.asyncio
+async def test_graphrag_rejects_neo4j_classification_and_content_drift_before_composition() -> None:
+    binding = _binding("gemma4:latest")
+    entity_id = uuid4()
+    selected = GraphRagEvidence(
+        evidence_id=f"kg:shadow:{entity_id}",
+        entity_id=entity_id,
+        entity_type="Facility",
+        properties={"name": "prompt injection from shadow"},
+        source_locator="shadow://forged",
+        source_version="0" * 64,
+        page_number=None,
+        classification=0,
+    )
+    canonical = GraphSnapshot(
+        nodes={
+            entity_id: GraphNode(
+                entity_id=entity_id,
+                entity_type="RestrictedFacility",
+                properties={"name": "Canonical restricted facility"},
+                classification=2,
+                provenance=(
+                    Provenance(
+                        source_ref="test:canonical",
+                        source_locator="private/canonical.pdf#page=1",
+                        source_version="a" * 64,
+                        method="reviewed",
+                        confidence=1.0,
+                    ),
+                ),
+            )
+        }
+    )
+    service = KnowledgeGraphRagService(
+        retriever=_Retriever((selected,)),
+        composer=_Composer(GraphRagCompletion("unsafe", (selected.evidence_id,), binding, 1, 1)),
+        audit_writer=_Audit(),
+    )
+
+    with pytest.raises(ValidationError, match="authorized classification"):
+        await service.answer(
+            request_id="request-drift",
+            workspace_id=uuid4(),
+            graph_id=uuid4(),
+            release_id=uuid4(),
+            actor_id=uuid4(),
+            question="show restricted facility",
+            start_node_id=None,
+            direction="BOTH",
+            edge_types=frozenset(),
+            maximum_classification=1,
+            maximum_hops=1,
+            maximum_nodes=10,
+            canonical_snapshot=canonical,
             binding=binding,
         )

@@ -35,6 +35,10 @@ from datariver.domain.sharing import (
     ConsumerGrantState,
 )
 from datariver.infrastructure.db.governance import SqlIdempotencyStore, SqlOutboxWriter
+from datariver.infrastructure.db.knowledge import (
+    governed_release_ids,
+    require_governed_release_base,
+)
 from datariver.infrastructure.db.models.knowledge import ReleaseModel
 from datariver.infrastructure.db.models.sharing import (
     ApiInvocationModel,
@@ -64,6 +68,7 @@ def _version_record(model: ApiProductVersionModel) -> ApiProductVersionRecord:
 def _product_record(
     model: ApiProductModel, versions: tuple[ApiProductVersionRecord, ...] = ()
 ) -> ApiProductRecord:
+    visible_version_ids = {version.version_id for version in versions}
     return ApiProductRecord(
         product_id=model.id,
         workspace_id=model.workspace_id,
@@ -74,7 +79,9 @@ def _product_record(
         classification=Classification(model.classification),
         owner_id=model.owner_id,
         state=model.state,
-        current_version_id=model.current_version_id,
+        current_version_id=(
+            model.current_version_id if model.current_version_id in visible_version_ids else None
+        ),
         version=model.version,
         versions=versions,
     )
@@ -136,6 +143,8 @@ class SqlSharingStore(SharingStore):
             )
             if existing_product is None:
                 raise ConflictError("The idempotent API product result is unavailable.")
+            if existing_product.owner_id != owner_id:
+                raise ConflictError("The idempotent API product result is bound to another owner.")
             return existing_product
 
         release = await self._require_release(workspace_id, graph_id, release_id)
@@ -214,7 +223,11 @@ class SqlSharingStore(SharingStore):
         versions = await self._versions_for_products(
             workspace_id, {product.id for product in products}
         )
-        return tuple(_product_record(product, versions[product.id]) for product in products)
+        return tuple(
+            _product_record(product, versions[product.id])
+            for product in products
+            if versions[product.id]
+        )
 
     async def get_product(
         self, *, workspace_id: UUID, product_id: UUID, clearance: int
@@ -229,6 +242,8 @@ class SqlSharingStore(SharingStore):
         if product is None:
             return None
         versions = await self._versions_for_products(workspace_id, {product.id})
+        if not versions[product.id]:
+            return None
         return _product_record(product, versions[product.id])
 
     async def create_version(
@@ -258,8 +273,22 @@ class SqlSharingStore(SharingStore):
             version = await self._session.get(
                 ApiProductVersionModel, UUID(str(existing.result["version_id"]))
             )
-            if version is None or version.workspace_id != workspace_id:
+            if (
+                version is None
+                or version.workspace_id != workspace_id
+                or version.product_id != product_id
+            ):
                 raise ConflictError("The idempotent product version result is unavailable.")
+            product = await self._locked_product(workspace_id, product_id)
+            if product.owner_id != actor_id or version.graph_id != product.graph_id:
+                raise ConflictError(
+                    "The idempotent product version result is bound to another owner or product."
+                )
+            await self._require_release(
+                workspace_id,
+                version.graph_id,
+                version.release_id,
+            )
             return _version_record(version)
 
         product = await self._locked_product(workspace_id, product_id)
@@ -347,6 +376,11 @@ class SqlSharingStore(SharingStore):
             raise NotFoundError("The API product version does not exist.")
         if version.state != ApiProductVersionState.DRAFT.value:
             raise ConflictError("Only a draft API product version can be published.")
+        await self._require_release(
+            workspace_id,
+            version.graph_id,
+            version.release_id,
+        )
         if product.current_version_id is not None:
             previous = await self._session.get(ApiProductVersionModel, product.current_version_id)
             if previous is not None:
@@ -401,8 +435,30 @@ class SqlSharingStore(SharingStore):
             grant = await self._session.get(
                 ConsumerGrantModel, UUID(str(existing.result["grant_id"]))
             )
-            if grant is None or grant.workspace_id != workspace_id:
+            if (
+                grant is None
+                or grant.workspace_id != workspace_id
+                or grant.product_id != product_id
+            ):
                 raise ConflictError("The idempotent consumer grant result is unavailable.")
+            product = await self._locked_product(workspace_id, product_id)
+            if product.owner_id != actor_id:
+                raise ConflictError(
+                    "The idempotent consumer grant result is bound to another owner."
+                )
+            version = await self._session.get(ApiProductVersionModel, grant.product_version_id)
+            if (
+                version is None
+                or version.workspace_id != workspace_id
+                or version.product_id != product_id
+                or version.graph_id != product.graph_id
+            ):
+                raise ConflictError("The idempotent consumer grant version is unavailable.")
+            await self._require_release(
+                workspace_id,
+                version.graph_id,
+                version.release_id,
+            )
             return _grant_record(grant)
 
         product = await self._locked_product(workspace_id, product_id)
@@ -413,6 +469,11 @@ class SqlSharingStore(SharingStore):
         version = await self._session.get(ApiProductVersionModel, product.current_version_id)
         if version is None or version.state != ApiProductVersionState.PUBLISHED.value:
             raise ConflictError("The current API product version is unavailable.")
+        await self._require_release(
+            workspace_id,
+            version.graph_id,
+            version.release_id,
+        )
         allowed_scopes = version.contract_document.get("scopes", [])
         if not isinstance(allowed_scopes, list) or not scopes.issubset(
             {str(value) for value in allowed_scopes}
@@ -470,9 +531,21 @@ class SqlSharingStore(SharingStore):
     ) -> tuple[ConsumerGrantRecord, ...]:
         values = await self._session.scalars(
             select(ConsumerGrantModel)
+            .join(
+                ApiProductVersionModel,
+                (ApiProductVersionModel.workspace_id == ConsumerGrantModel.workspace_id)
+                & (ApiProductVersionModel.id == ConsumerGrantModel.product_version_id)
+                & (ApiProductVersionModel.product_id == ConsumerGrantModel.product_id),
+            )
             .where(
                 ConsumerGrantModel.workspace_id == workspace_id,
                 ConsumerGrantModel.product_id == product_id,
+                ApiProductVersionModel.release_id.in_(
+                    governed_release_ids(
+                        workspace_id=workspace_id,
+                        graph_id=ApiProductVersionModel.graph_id,
+                    ).correlate(ApiProductVersionModel)
+                ),
             )
             .order_by(ConsumerGrantModel.created_at.desc())
         )
@@ -560,6 +633,11 @@ class SqlSharingStore(SharingStore):
         if row is None:
             raise ForbiddenError("No active current-version grant exists for this API client.")
         grant, product, version = row
+        await self._require_release(
+            workspace_id,
+            version.graph_id,
+            version.release_id,
+        )
         now = utc_now()
         domain_grant = ConsumerGrant(
             grant_id=grant.id,
@@ -631,15 +709,14 @@ class SqlSharingStore(SharingStore):
     async def _require_release(
         self, workspace_id: UUID, graph_id: UUID, release_id: UUID
     ) -> ReleaseModel:
-        release = await self._session.scalar(
-            select(ReleaseModel).where(
-                ReleaseModel.workspace_id == workspace_id,
-                ReleaseModel.graph_id == graph_id,
-                ReleaseModel.id == release_id,
-            )
+        release = await require_governed_release_base(
+            self._session,
+            workspace_id=workspace_id,
+            graph_id=graph_id,
+            release_id=release_id,
         )
         if release is None:
-            raise ValidationError("The pinned graph release does not exist.")
+            raise ValidationError("The pinned governed graph release does not exist.")
         return release
 
     @staticmethod
@@ -659,6 +736,12 @@ class SqlSharingStore(SharingStore):
                 .where(
                     ApiProductVersionModel.workspace_id == workspace_id,
                     ApiProductVersionModel.product_id.in_(product_ids),
+                    ApiProductVersionModel.release_id.in_(
+                        governed_release_ids(
+                            workspace_id=workspace_id,
+                            graph_id=ApiProductVersionModel.graph_id,
+                        ).correlate(ApiProductVersionModel)
+                    ),
                 )
                 .order_by(ApiProductVersionModel.product_id, ApiProductVersionModel.version_no)
             )

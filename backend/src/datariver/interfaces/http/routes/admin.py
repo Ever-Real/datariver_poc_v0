@@ -253,10 +253,16 @@ _SYSTEM_CONFIGURATION_TEMPLATES: dict[str, dict[str, Any]] = {
         "options": {"api_style": "openai_compatible", "timeout_seconds": 60},
     },
     "LLM_RERANKER": {
+        "connection_mode": "INTRANET_RERANK_V1",
         "base_url": "",
         "model": "",
-        "secret_references": {},
-        "options": {"api_style": "openai_compatible", "timeout_seconds": 60, "top_n": 10},
+        "secret_references": dict(
+            canonical_secret_references(
+                "LLM_RERANKER",
+                connection_mode="INTRANET_RERANK_V1",
+            )
+        ),
+        "options": {"api_style": "rerank_v1", "timeout_seconds": 60, "top_n": 10},
     },
     "NEO4J": {
         "database": "neo4j",
@@ -361,8 +367,13 @@ _SYSTEM_METADATA: dict[str, dict[str, Any]] = {
     "LLM_RERANKER": {
         "category": "AI",
         "requirement": "FEATURE_CONNECTOR",
-        "description": "Optional reranking endpoint; no runtime adapter is active yet.",
-        "fields": (("base_url", "Reranker endpoint", True, False, "https://llm.example/v1"),),
+        "description": (
+            "Optional private fixed /v1/rerank endpoint; this is not an OpenAI-compatible API."
+        ),
+        "fields": (
+            ("base_url", "Reranker endpoint", True, False, "https://rerank.example/v1"),
+            ("api_key", "Reranker API-key reference", True, True, None),
+        ),
     },
     "NEO4J": {
         "category": "CATALOG",
@@ -640,7 +651,7 @@ def _validate_option_value(key: str, value: object, template: object) -> None:
         if not isinstance(value, str) or len(value) > 512:
             raise ValidationError(f"System configuration option {key} must be a short string.")
         fixed_values = {
-            "api_style": "openai_compatible",
+            "api_style": template,
             "required_policy": template,
             "role": template,
         }
@@ -778,6 +789,28 @@ def _validate_system_configuration(system_id: str, document: Mapping[str, Any]) 
             secret_references,
             connection_mode=connection_mode,
         )
+    if system_id == "LLM_RERANKER":
+        connection_mode = document.get("connection_mode")
+        if connection_mode != "INTRANET_RERANK_V1":
+            raise ValidationError("The reranker requires connection_mode=INTRANET_RERANK_V1.")
+        parsed = urlsplit(endpoint)
+        if parsed.scheme != "https" or parsed.path.rstrip("/") != "/v1":
+            raise ValidationError("The private reranker requires an HTTPS endpoint ending in /v1.")
+        if options.get("api_style") != "rerank_v1":
+            raise ValidationError("The reranker requires api_style=rerank_v1.")
+        top_n = options.get("top_n")
+        if not isinstance(top_n, int) or isinstance(top_n, bool) or not 1 <= top_n <= 100:
+            raise ValidationError("The reranker top_n must be between 1 and 100.")
+        secret_references = _secret_references(document.get("secret_references", {}))
+        if set(secret_references) != {"api_key"}:
+            raise ValidationError(
+                "The private reranker requires exactly one api_key secret reference."
+            )
+        _require_canonical_secret_contract(
+            system_id,
+            secret_references,
+            connection_mode=connection_mode,
+        )
     if system_id == "S3_STORAGE":
         _require_non_empty_string(document, "region")
         buckets = document.get("buckets")
@@ -785,7 +818,7 @@ def _validate_system_configuration(system_id: str, document: Mapping[str, Any]) 
             raise ValidationError("S3 configuration requires one buckets mapping.")
         for bucket_key in ("accepted", "exports", "quarantine"):
             _require_non_empty_string(buckets, bucket_key)
-    if not system_id.startswith("LLM_") or system_id == "LLM_RERANKER":
+    if not system_id.startswith("LLM_"):
         _require_canonical_secret_contract(
             system_id,
             _secret_references(document.get("secret_references", {})),

@@ -602,7 +602,8 @@ class ExternalServiceProfileVersionModel(Base, UuidPrimaryKeyMixin, TimestampMix
         CheckConstraint(
             "test_scope IS NULL OR test_scope IN "
             "('HTTP_HEALTH', 'MODEL_DISCOVERY', 'MODEL_INFERENCE', "
-            "'EMBEDDING_INFERENCE', 'AUTHENTICATED_QUERY', 'REDIS_PING', "
+            "'EMBEDDING_INFERENCE', 'RERANKING_INFERENCE', "
+            "'AUTHENTICATED_QUERY', 'REDIS_PING', "
             "'REDIS_POLICY', 'S3_HEAD_BUCKET')",
             name="test_scope_vocabulary",
         ),

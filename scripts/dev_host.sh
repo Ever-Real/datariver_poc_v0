@@ -46,7 +46,7 @@ enable_airflow_source_bridge=$airflow_source_api_bridge_enabled
 
 usage() {
   cat <<'EOF'
-Usage: scripts/dev_host.sh [start|stop|status|migrate] [options]
+Usage: scripts/dev_host.sh [start|stop|status|migrate|preflight] [options]
 
 Run the mutable DataRiver API, four workers and Vite from the checked-out source.
 PostgreSQL and (when selected) Keycloak remain Docker services. Redis and
@@ -74,12 +74,13 @@ Options:
                       source API. Required only for Linux/WSL Airflow.
   --enable-local-ollama    Use native Ollama on 127.0.0.1:11434 for Mac development.
   --enable-neo4j           Use the local Neo4j projection on 127.0.0.1:17687.
+  preflight                Validate the final source-host Settings without starting processes.
 EOF
 }
 
 while [ "$#" -gt 0 ]; do
   case "$1" in
-    start|stop|status|migrate)
+    start|stop|status|migrate|preflight)
       action=$1
       ;;
     --env-file)
@@ -300,22 +301,20 @@ load_env_file() {
 }
 
 load_env_file
+export LOCAL_INFERENCE_SOURCE_HOST_ENABLED=true
 if [ "$enable_neo4j" = true ] && [ ! -s "$root/secrets/neo4j_auth" ]; then
   echo "Missing required secret file: $root/secrets/neo4j_auth" >&2
   exit 2
 fi
-if [ "$enable_neo4j" = true ] && [ "$enable_local_ollama" != true ]; then
-  echo "--enable-neo4j is the native Ollama development path; activate the intranet LLM and Neo4j System Settings, then start without either development adapter flag." >&2
-  exit 2
-fi
-
 mkdir -p "$runtime_dir"
-for process in api airflow-api-bridge outbox-relay upload-worker upload-validation-worker governance-apply-worker vite; do
-  if is_running "$process"; then
-    echo "DataRiver source-host process is already running: $process" >&2
-    exit 2
-  fi
-done
+if [ "$action" = start ]; then
+  for process in api airflow-api-bridge outbox-relay upload-worker upload-validation-worker governance-apply-worker vite; do
+    if is_running "$process"; then
+      echo "DataRiver source-host process is already running: $process" >&2
+      exit 2
+    fi
+  done
+fi
 
 require_available_port() {
   local label=$1
@@ -376,7 +375,6 @@ export DATAHUB_BASE_URL="$datahub_base_url"
 export DATAHUB_SECRET_REF="$(secret_ref datahub_token)"
 export SEED_PROFILE=none
 export WATCHFILES_FORCE_POLLING=true
-export SYSTEM_CONFIGURATION_RUNTIME_ACTIVATION_ENABLED=false
 export SYSTEM_CONFIGURATION_SECRET_ROOT="$root/secrets"
 export VITE_API_BASE_URL=/api/v1
 export VITE_API_PROXY_TARGET="http://127.0.0.1:$api_port"
@@ -410,7 +408,41 @@ if [ "$enable_neo4j" = true ]; then
   export NEO4J_PROJECTION_ENABLED=true
   export NEO4J_URI=bolt://127.0.0.1:17687
   export NEO4J_AUTH_SECRET_REF="$(secret_ref neo4j_auth)"
+fi
+
+if [ "$enable_local_ollama" = true ] && [ "$enable_neo4j" = true ]; then
+  # Backward-compatible aggregate signal only. Knowledge authoring, model
+  # analysis, projection and GraphRAG are capability-gated independently.
   export KNOWLEDGE_PIPELINE_ENABLED=true
+fi
+
+if [ "$action" = preflight ]; then
+  PYTHONPATH="$root/backend/src" exec "$python" -c '
+import json
+
+from datariver.config import Settings
+
+settings = Settings(_env_file=None)
+source_analysis = (
+    settings.local_ollama_chat_enabled and settings.local_ollama_embedding_enabled
+) or (
+    settings.intranet_openai_compatible_chat_enabled
+    and settings.intranet_openai_compatible_embedding_enabled
+)
+print(
+    json.dumps(
+        {
+            "knowledge_source_analysis": "CONFIGURED" if source_analysis else "NOT_CONFIGURED",
+            "local_inference_source_host": settings.local_inference_source_host_enabled,
+            "neo4j_projection": (
+                "CONFIGURED" if settings.neo4j_projection_enabled else "NOT_CONFIGURED"
+            ),
+            "runtime_activation": settings.system_configuration_runtime_activation_enabled,
+        },
+        sort_keys=True,
+    )
+)
+'
 fi
 
 start_process() {

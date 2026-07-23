@@ -81,7 +81,7 @@ def test_system_master_migration_is_forced_rls_and_uses_redacted_connection_prof
         encoding="utf-8"
     )
 
-    assert REQUIRED_DATABASE_REVISION == "0052"
+    assert REQUIRED_DATABASE_REVISION == "0053"
     assert "FORCE ROW LEVEL SECURITY" in migration
     assert "GRANT SELECT, INSERT, UPDATE ON platform.data_systems" in migration
     assert "secret_reference" in migration
@@ -126,3 +126,21 @@ def test_connector_probe_scope_migration_matches_runtime_evidence() -> None:
     assert "op.drop_constraint(" in migration
     assert "op.f(_CONSTRAINT)" in migration
     assert "DROP TABLE" not in migration
+
+
+def test_reranking_probe_scope_migration_matches_runtime_evidence() -> None:
+    root = Path(__file__).resolve().parents[3]
+    migration = (root / "backend/alembic/versions/0053_reranking_probe_scope.py").read_text(
+        encoding="utf-8"
+    )
+    initial = (root / "backend/alembic/versions/0001_initial_schema.py").read_text(encoding="utf-8")
+
+    assert 'revision: str = "0053"' in migration
+    assert 'down_revision: str | Sequence[str] | None = "0052"' in migration
+    assert "RERANKING_INFERENCE" in migration
+    assert "Downgrade would falsify reranking probe evidence" in migration
+    assert "_constraint_definition()" in migration
+    assert "_scope_definition(_CURRENT_SCOPES)" in migration
+    assert "op.drop_constraint(" in migration
+    assert "DROP TABLE" not in migration
+    assert "RERANKING_INFERENCE" in initial

@@ -9,6 +9,7 @@ from datariver.application.dto import KnowledgeEvidenceCandidate
 from datariver.application.evidence import build_evidence_chunk
 from datariver.application.ports import KnowledgeEvidenceReader
 from datariver.domain.authz import Classification
+from datariver.infrastructure.db.knowledge import governed_release_ids
 from datariver.infrastructure.db.models.knowledge import (
     GraphModel,
     ReleaseModel,
@@ -39,6 +40,12 @@ class SqlKnowledgeEvidenceReader(KnowledgeEvidenceReader):
                     .where(
                         GraphModel.workspace_id == workspace_id,
                         GraphModel.classification <= maximum_classification,
+                        ReleaseModel.id.in_(
+                            governed_release_ids(
+                                workspace_id=workspace_id,
+                                graph_id=ReleaseModel.graph_id,
+                            ).correlate(ReleaseModel)
+                        ),
                         ReleaseNodeModel.classification <= maximum_classification,
                         or_(
                             ReleaseNodeModel.entity_type.ilike(pattern, escape="\\"),

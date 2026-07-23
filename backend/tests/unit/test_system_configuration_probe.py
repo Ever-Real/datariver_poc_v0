@@ -126,6 +126,25 @@ async def test_probe_requires_operator_host_allowlist_and_bounds_decoded_body() 
 
 
 @pytest.mark.asyncio
+async def test_probe_rejects_an_unallowlisted_hostname_before_dns_resolution() -> None:
+    async with httpx.AsyncClient(
+        transport=httpx.MockTransport(
+            lambda request: pytest.fail(f"unexpected HTTP request: {request.url}")
+        )
+    ) as client:
+        with pytest.raises(ValidationError, match="operator probe allowlist"):
+            await probe_system_configuration(
+                system_id="DATAHUB_GMS",
+                document={
+                    "base_url": "https://must-not-resolve.invalid",
+                    "secret_references": {"token": "file:/run/secrets/datahub_token"},
+                },
+                client=client,
+                allowed_hosts=("approved.internal",),
+            )
+
+
+@pytest.mark.asyncio
 async def test_probe_requires_tls_for_an_allowlisted_nonlocal_host() -> None:
     async with httpx.AsyncClient(
         transport=httpx.MockTransport(lambda request: httpx.Response(200, request=request))
@@ -164,6 +183,12 @@ class _IntranetLlmSecretResolver:
     def resolve(self, reference: str) -> str:
         assert reference == "file:/run/secrets/intranet_llm_chat_api_key"
         return "intranet-api-key"
+
+
+class _IntranetRerankerSecretResolver:
+    def resolve(self, reference: str) -> str:
+        assert reference == "file:/run/secrets/intranet_llm_reranker_api_key"
+        return "reranker-api-key"
 
 
 class _RedisSecretResolver:
@@ -327,6 +352,132 @@ async def test_intranet_llm_probe_uses_the_operator_secret_and_rejects_bad_crede
             allowed_hosts=("10.42.0.15",),
         )
     assert rejected.status == "UNAVAILABLE"
+
+
+@pytest.mark.asyncio
+async def test_private_reranker_probe_executes_fixed_rank_request() -> None:
+    def accepted_handler(request: httpx.Request) -> httpx.Response:
+        assert request.method == "POST"
+        assert request.url == httpx.URL("https://10.42.0.16/v1/rerank")
+        assert request.headers["Authorization"] == "Bearer reranker-api-key"
+        document = json.loads(request.content)
+        assert document == {
+            "model": "bge-reranker-v2-m3",
+            "query": "governed data catalog metadata",
+            "documents": [
+                "Data catalog metadata and governed lineage",
+                "Unrelated weather forecast",
+            ],
+            "top_n": 2,
+        }
+        return httpx.Response(
+            200,
+            request=request,
+            json={
+                "results": [
+                    {"index": 0, "relevance_score": 0.95},
+                    {"index": 1, "relevance_score": 0.05},
+                ]
+            },
+        )
+
+    document = {
+        "connection_mode": "INTRANET_RERANK_V1",
+        "base_url": "https://10.42.0.16/v1",
+        "model": "bge-reranker-v2-m3",
+        "secret_references": {"api_key": "file:/run/secrets/intranet_llm_reranker_api_key"},
+        "options": {"api_style": "rerank_v1", "timeout_seconds": 60, "top_n": 10},
+    }
+    async with httpx.AsyncClient(transport=httpx.MockTransport(accepted_handler)) as client:
+        result = await probe_system_configuration(
+            system_id="LLM_RERANKER",
+            document=document,
+            client=client,
+            secret_resolver=_IntranetRerankerSecretResolver(),  # type: ignore[arg-type]
+            allowed_hosts=("10.42.0.16",),
+        )
+
+    assert result.status == "AVAILABLE"
+    assert result.scope == "RERANKING_INFERENCE"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "results",
+    [
+        [
+            {"index": 0, "relevance_score": 0.1},
+            {"index": 1, "relevance_score": 0.9},
+        ],
+        [
+            {"index": 0, "relevance_score": 0.9},
+            {"index": 0, "relevance_score": 0.8},
+        ],
+        [{"index": 2, "relevance_score": 0.9}],
+        [{"index": 0, "relevance_score": 1.1}],
+        [{"index": True, "relevance_score": 0.9}],
+    ],
+)
+async def test_private_reranker_probe_rejects_invalid_rank_results(
+    results: list[dict[str, object]],
+) -> None:
+    document = {
+        "connection_mode": "INTRANET_RERANK_V1",
+        "base_url": "https://10.42.0.16/v1",
+        "model": "bge-reranker-v2-m3",
+        "secret_references": {"api_key": "file:/run/secrets/intranet_llm_reranker_api_key"},
+        "options": {"api_style": "rerank_v1", "timeout_seconds": 60, "top_n": 2},
+    }
+    async with httpx.AsyncClient(
+        transport=httpx.MockTransport(
+            lambda request: httpx.Response(
+                200,
+                request=request,
+                json={"results": results},
+            )
+        )
+    ) as client:
+        result = await probe_system_configuration(
+            system_id="LLM_RERANKER",
+            document=document,
+            client=client,
+            secret_resolver=_IntranetRerankerSecretResolver(),  # type: ignore[arg-type]
+            allowed_hosts=("10.42.0.16",),
+        )
+
+    assert result.status == "UNAVAILABLE"
+    assert result.scope == "RERANKING_INFERENCE"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("status_code", [401, 404])
+async def test_private_reranker_probe_never_claims_auth_or_route_failure_ready(
+    status_code: int,
+) -> None:
+    document = {
+        "connection_mode": "INTRANET_RERANK_V1",
+        "base_url": "https://10.42.0.16/v1",
+        "model": "bge-reranker-v2-m3",
+        "secret_references": {"api_key": "file:/run/secrets/intranet_llm_reranker_api_key"},
+        "options": {"api_style": "rerank_v1", "timeout_seconds": 60, "top_n": 2},
+    }
+    async with httpx.AsyncClient(
+        transport=httpx.MockTransport(lambda request: httpx.Response(status_code, request=request))
+    ) as client:
+        result = await probe_system_configuration(
+            system_id="LLM_RERANKER",
+            document=document,
+            client=client,
+            secret_resolver=_IntranetRerankerSecretResolver(),  # type: ignore[arg-type]
+            allowed_hosts=("10.42.0.16",),
+        )
+
+    assert result.status == "UNAVAILABLE"
+    assert result.scope == "RERANKING_INFERENCE"
+    if status_code == 401:
+        assert "private reranking credential" in result.detail
+    else:
+        assert result.detail == "The fixed probe route returned HTTP 404."
 
 
 @pytest.mark.asyncio

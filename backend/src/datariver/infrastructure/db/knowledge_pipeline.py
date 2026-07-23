@@ -25,6 +25,7 @@ from datariver.domain.knowledge_pipeline import (
     PdfPage,
     ProjectionReceipt,
 )
+from datariver.infrastructure.db.knowledge import require_governed_release_base
 from datariver.infrastructure.db.models.integration import ObjectManifestModel
 from datariver.infrastructure.db.models.knowledge import (
     ChangeOperationModel,
@@ -104,6 +105,16 @@ class SqlKnowledgePipelineRepository:
             or manifest.actual_size_bytes != manifest.size_bytes
         ):
             raise ValidationError("The source must be an integrity-verified accepted PDF upload.")
+        if manifest.classification > graph.classification:
+            raise ValidationError(
+                "The source classification exceeds the graph classification envelope."
+            )
+        await require_governed_release_base(
+            self._session,
+            workspace_id=workspace_id,
+            graph_id=graph_id,
+            release_id=graph.active_release_id,
+        )
         ontology = (
             await self._session.scalars(
                 select(OntologyVersionModel)
@@ -159,6 +170,7 @@ class SqlKnowledgePipelineRepository:
                 media_type=existing.media_type,
                 byte_size=existing.byte_size,
                 content_sha256=existing.content_sha256,
+                classification=existing.classification,
             ),
             frozenset(str(value) for value in schema.get("entity_types", [])),
             frozenset(str(value) for value in schema.get("edge_types", [])),
@@ -198,6 +210,28 @@ class SqlKnowledgePipelineRepository:
         ).one_or_none()
         if source is None or graph is None or source.state != "PENDING":
             raise ConflictError("The knowledge source is no longer available for analysis.")
+        if (
+            source.id != analysis.source.snapshot_id
+            or source.workspace_id != analysis.source.workspace_id
+            or source.graph_id != analysis.source.graph_id
+            or source.bucket != analysis.source.bucket
+            or source.object_key != analysis.source.object_key
+            or source.storage_version != analysis.source.storage_version
+            or source.media_type != analysis.source.media_type
+            or source.byte_size != analysis.source.byte_size
+            or source.classification != analysis.source.classification
+            or source.content_sha256 != analysis.source.content_sha256
+        ):
+            raise ConflictError("The immutable knowledge source changed before persistence.")
+        analysis.source.require_graph_envelope(
+            graph_classification=graph.classification,
+        )
+        await require_governed_release_base(
+            self._session,
+            workspace_id=analysis.source.workspace_id,
+            graph_id=analysis.source.graph_id,
+            release_id=graph.active_release_id,
+        )
         ontology = (
             await self._session.scalars(
                 select(OntologyVersionModel)
@@ -215,6 +249,10 @@ class SqlKnowledgePipelineRepository:
         operations = KnowledgeSourcePipeline.to_typed_operations(analysis)
         if not operations:
             raise ValidationError("The model produced no typed knowledge proposal.")
+        for operation in operations:
+            operation.require_classification_ceiling(
+                maximum_classification=graph.classification,
+            )
         changeset_id = uuid7()
         self._session.add(
             ChangeSetModel(
@@ -296,6 +334,22 @@ class SqlKnowledgePipelineRepository:
         return changeset_id
 
     async def record_projection(self, *, receipt: ProjectionReceipt) -> None:
+        release = await require_governed_release_base(
+            self._session,
+            workspace_id=receipt.workspace_id,
+            graph_id=receipt.graph_id,
+            release_id=receipt.release_id,
+        )
+        if (
+            not receipt.verified
+            or release is None
+            or release.content_hash != receipt.release_hash
+            or release.node_count != receipt.node_count
+            or release.edge_count != receipt.edge_count
+        ):
+            raise ConflictError(
+                "The Neo4j projection receipt does not match the governed canonical release."
+            )
         verification_hash = canonical_json_hash(
             {
                 "deployment_id": str(receipt.deployment_id),
@@ -323,23 +377,48 @@ class SqlKnowledgePipelineRepository:
         await self._session.commit()
 
     async def require_verified_projection(
-        self, *, workspace_id: UUID, graph_id: UUID, release_id: UUID, release_hash: str
+        self,
+        *,
+        workspace_id: UUID,
+        graph_id: UUID,
+        release_id: UUID,
+        release_hash: str,
+        node_count: int,
+        edge_count: int,
     ) -> None:
-        deployment = (
-            await self._session.scalars(
-                select(ProjectionDeploymentModel)
-                .where(
-                    ProjectionDeploymentModel.workspace_id == workspace_id,
-                    ProjectionDeploymentModel.graph_id == graph_id,
-                    ProjectionDeploymentModel.release_id == release_id,
-                    ProjectionDeploymentModel.content_hash == release_hash,
-                    ProjectionDeploymentModel.state == "SHADOW_VERIFIED",
+        deployments = list(
+            (
+                await self._session.scalars(
+                    select(ProjectionDeploymentModel)
+                    .where(
+                        ProjectionDeploymentModel.workspace_id == workspace_id,
+                        ProjectionDeploymentModel.graph_id == graph_id,
+                        ProjectionDeploymentModel.release_id == release_id,
+                        ProjectionDeploymentModel.adapter == "neo4j-bolt-shadow-v1",
+                        ProjectionDeploymentModel.target_ref == f"neo4j://release/{release_id}",
+                        ProjectionDeploymentModel.content_hash == release_hash,
+                        ProjectionDeploymentModel.node_count == node_count,
+                        ProjectionDeploymentModel.edge_count == edge_count,
+                        ProjectionDeploymentModel.state == "SHADOW_VERIFIED",
+                        ProjectionDeploymentModel.verified_at.is_not(None),
+                    )
+                    .order_by(ProjectionDeploymentModel.created_at.desc())
                 )
-                .order_by(ProjectionDeploymentModel.created_at.desc())
-                .limit(1)
+            ).all()
+        )
+        verified = any(
+            deployment.verification_hash
+            == canonical_json_hash(
+                {
+                    "deployment_id": str(deployment.id),
+                    "edge_count": edge_count,
+                    "node_count": node_count,
+                    "release_hash": release_hash,
+                }
             )
-        ).one_or_none()
-        if deployment is None:
+            for deployment in deployments
+        )
+        if not verified:
             raise ConflictError("The release has no verified Neo4j shadow projection.")
 
     async def record_success(self, *, record: GraphRagAuditRecord) -> None:

@@ -13,9 +13,58 @@ $secretsDirectory = Join-Path $root "secrets"
 $envFile = Join-Path $root ".env"
 $keycloakRuntimeDirectory = Join-Path $root "runtime/keycloak"
 $retentionControlFile = Join-Path $root "runtime/retention-execution.enabled"
+$nativeWindows = [Runtime.InteropServices.RuntimeInformation]::IsOSPlatform(
+    [Runtime.InteropServices.OSPlatform]::Windows
+)
+
+function Set-OwnerOnlyWindowsAcl([string]$Path, [switch]$Directory) {
+    if (-not $nativeWindows) {
+        return
+    }
+    $owner = [Security.Principal.WindowsIdentity]::GetCurrent().User
+    if ($null -eq $owner) {
+        throw "The current Windows user has no security identifier."
+    }
+    $system = [Security.Principal.SecurityIdentifier]::new("S-1-5-18")
+    $acl = if ($Directory) {
+        [Security.AccessControl.DirectorySecurity]::new()
+    } else {
+        [Security.AccessControl.FileSecurity]::new()
+    }
+    $acl.SetAccessRuleProtection($true, $false)
+    $acl.SetOwner($owner)
+    $inheritance = if ($Directory) {
+        [Security.AccessControl.InheritanceFlags]::ContainerInherit -bor
+            [Security.AccessControl.InheritanceFlags]::ObjectInherit
+    } else {
+        [Security.AccessControl.InheritanceFlags]::None
+    }
+    foreach ($principal in @($owner, $system)) {
+        $acl.AddAccessRule(
+            [Security.AccessControl.FileSystemAccessRule]::new(
+                $principal,
+                [Security.AccessControl.FileSystemRights]::FullControl,
+                $inheritance,
+                [Security.AccessControl.PropagationFlags]::None,
+                [Security.AccessControl.AccessControlType]::Allow
+            )
+        )
+    }
+    Set-Acl -LiteralPath $Path -AclObject $acl
+}
 
 New-Item -ItemType Directory -Force -Path $secretsDirectory | Out-Null
 New-Item -ItemType Directory -Force -Path $keycloakRuntimeDirectory | Out-Null
+Set-OwnerOnlyWindowsAcl -Path $secretsDirectory -Directory
+Set-OwnerOnlyWindowsAcl -Path $keycloakRuntimeDirectory -Directory
+if ($IsLinux -or $IsMacOS) {
+    [IO.File]::SetUnixFileMode(
+        $secretsDirectory,
+        [IO.UnixFileMode]::UserRead -bor
+            [IO.UnixFileMode]::UserWrite -bor
+            [IO.UnixFileMode]::UserExecute
+    )
+}
 if (-not (Test-Path -LiteralPath $retentionControlFile)) {
     [IO.File]::WriteAllText(
         $retentionControlFile,
@@ -37,6 +86,14 @@ if ($IsLinux -or $IsMacOS) {
             $existingRealm,
             [IO.UnixFileMode]::UserRead -bor [IO.UnixFileMode]::UserWrite
         )
+    }
+} elseif ($nativeWindows) {
+    Get-ChildItem -LiteralPath $secretsDirectory -File | ForEach-Object {
+        Set-OwnerOnlyWindowsAcl -Path $_.FullName
+    }
+    $existingRealm = Join-Path $keycloakRuntimeDirectory "datariver-realm.json"
+    if (Test-Path -LiteralPath $existingRealm) {
+        Set-OwnerOnlyWindowsAcl -Path $existingRealm
     }
 }
 
@@ -60,10 +117,10 @@ function Write-Secret([string]$Name, [string]$Value) {
     if ($IsLinux -or $IsMacOS) {
         [IO.File]::SetUnixFileMode(
             $path,
-            [IO.UnixFileMode]::UserRead -bor
-                [IO.UnixFileMode]::GroupRead -bor
-                [IO.UnixFileMode]::OtherRead
+            [IO.UnixFileMode]::UserRead -bor [IO.UnixFileMode]::UserWrite
         )
+    } elseif ($nativeWindows) {
+        Set-OwnerOnlyWindowsAcl -Path $path
     }
 }
 
@@ -121,17 +178,34 @@ $redisCacheSecret = Join-Path $secretsDirectory "redis_cache_password"
 if (-not (Test-Path -LiteralPath $redisCacheSecret) -and
     (Test-Path -LiteralPath $legacyCacheSecret)) {
     Copy-Item -LiteralPath $legacyCacheSecret -Destination $redisCacheSecret
+    if ($IsLinux -or $IsMacOS) {
+        [IO.File]::SetUnixFileMode(
+            $redisCacheSecret,
+            [IO.UnixFileMode]::UserRead -bor [IO.UnixFileMode]::UserWrite
+        )
+    } elseif ($nativeWindows) {
+        Set-OwnerOnlyWindowsAcl -Path $redisCacheSecret
+    }
 }
 $legacyDeliverySecret = Join-Path $secretsDirectory "valkey_queue_password"
 $redisDeliverySecret = Join-Path $secretsDirectory "redis_delivery_password"
 if (-not (Test-Path -LiteralPath $redisDeliverySecret) -and
     (Test-Path -LiteralPath $legacyDeliverySecret)) {
     Copy-Item -LiteralPath $legacyDeliverySecret -Destination $redisDeliverySecret
+    if ($IsLinux -or $IsMacOS) {
+        [IO.File]::SetUnixFileMode(
+            $redisDeliverySecret,
+            [IO.UnixFileMode]::UserRead -bor [IO.UnixFileMode]::UserWrite
+        )
+    } elseif ($nativeWindows) {
+        Set-OwnerOnlyWindowsAcl -Path $redisDeliverySecret
+    }
 }
 $cachePassword = Get-OrCreateSecret "redis_cache_password"
 $queuePassword = Get-OrCreateSecret "redis_delivery_password"
 $intranetLlmChatApiKey = Get-OrCreateSecret "intranet_llm_chat_api_key"
 $intranetLlmEmbeddingApiKey = Get-OrCreateSecret "intranet_llm_embedding_api_key"
+$intranetLlmRerankerApiKey = Get-OrCreateSecret "intranet_llm_reranker_api_key"
 $s3AccessKeyPath = Join-Path $secretsDirectory "s3_access_key"
 if ((Test-Path -LiteralPath $s3AccessKeyPath) -and
     (Get-Item -LiteralPath $s3AccessKeyPath).Length -gt 0) {
@@ -242,6 +316,8 @@ if ($IsLinux -or $IsMacOS) {
         [IO.UnixFileMode]::UserRead -bor [IO.UnixFileMode]::UserWrite -bor
             [IO.UnixFileMode]::GroupRead -bor [IO.UnixFileMode]::OtherRead
     )
+} elseif ($nativeWindows) {
+    Set-OwnerOnlyWindowsAcl -Path $realmPath
 }
 
 Write-Output "Bootstrap files created. Keep the secrets directory private and out of Git."

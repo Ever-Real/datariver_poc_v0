@@ -114,6 +114,7 @@ services:
       - datahub_token
       - intranet_llm_chat_api_key
       - intranet_llm_embedding_api_key
+      - intranet_llm_reranker_api_key
       - neo4j_auth
       - keycloak_identity_admin_client_secret
       - s3_access_key
@@ -382,6 +383,8 @@ secrets:
     file: ./secrets/intranet_llm_chat_api_key
   intranet_llm_embedding_api_key:
     file: ./secrets/intranet_llm_embedding_api_key
+  intranet_llm_reranker_api_key:
+    file: ./secrets/intranet_llm_reranker_api_key
   neo4j_auth:
     file: ./secrets/neo4j_auth
   s3_access_key:

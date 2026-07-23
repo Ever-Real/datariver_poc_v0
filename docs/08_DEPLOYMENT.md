@@ -122,6 +122,11 @@ legacy Valkey secret filenames are copied to the canonical Redis filenames when 
 supplied DataHub token plus derived Keycloak files are refreshed. Deliberate credential rotation
 follows the runbook and is not coupled to ordinary bootstrap.
 
+On Unix/WSL, bootstrap uses owner-only creation and a `0700` secrets parent before Compose
+materializes file secrets. Native Windows PowerShell disables inherited ACLs on the secrets and
+Keycloak-runtime directories/files and grants only the current identity and `SYSTEM`. Copying these
+files elsewhere is a new security boundary and requires an ACL review.
+
 ### Bootstrap dependencies and connector inventory
 
 PostgreSQL and an OIDC issuer are bootstrap capabilities: the API cannot read a database-backed
@@ -163,9 +168,10 @@ permits only the explicitly declared `127.0.0.1` binding. External connectors us
 non-internal `connectors` network plus deployment DNS/firewall policy; they are not attached to the
 source-access bridge.
 
-The local Ollama adapter is development-only and is enabled only for
-`http://host.docker.internal:11434/v1`, `datariver-gemma4-dev:0.1`, a fixed 8,192-token context
-and a 60-second timeout. `scripts/prepare_ollama_mac_dev.sh` creates that local derivative from
+The local Ollama adapter is development-only. Container mode accepts only
+`http://host.docker.internal:11434/v1`; explicit source-host development accepts the exact
+loopback origin `http://127.0.0.1:11434/v1`. Both use `datariver-gemma4-dev:0.1`, a fixed
+8,192-token context and a 60-second timeout. `scripts/prepare_ollama_mac_dev.sh` creates that local derivative from
 the checked-in Modelfile. It submits only a fixed non-executable answer/citation function and
 validates its output as untrusted evidence. It does not make the model a production provider.
 Neo4j is a rebuildable projection sandbox until a future verified release-projection adapter
@@ -175,10 +181,24 @@ in [ADR-0023](adr/0023-mac-development-local-inference-and-graph-projection.md).
 ADR-0030 adds a separate development-only bridge for an authenticated model server operated on the
 private corporate network. It is not an external commercial-provider route: the endpoint must be
 HTTPS `/v1`, match the operator's exact host allowlist, resolve only to private non-loopback
-addresses and use a mounted API-key secret. Chat and Embedding profiles are activated separately;
-both are required with Neo4j for the Knowledge pipeline. Compose mounts the two optional API-key
-secrets into the API process only. Production keeps this bridge disabled, and no provider endpoint,
-credential or allowlist is browser-controlled.
+addresses and use a mounted API-key secret. Chat, Embedding and Neo4j are configured and proven
+independently; a feature route checks only its declared capabilities. Compose mounts the optional
+API-key secrets into the API process only. Source-host loopback Ollama is accepted only with the
+explicit development source-host switch, while container mode keeps the
+`host.docker.internal:11434` boundary. Production keeps this bridge disabled, and no provider
+endpoint, credential or allowlist is browser-controlled.
+
+Reranking is not an OpenAI-compatible surface. The optional private profile uses
+`INTRANET_RERANK_V1` and an HTTPS `/v1` base, with a canonical mounted reranker key. TEST executes a
+fixed bounded `POST /v1/rerank`, records `RERANKING_INFERENCE` only after validating ordered finite
+scores and shares the probe destination/TLS/redirect/body-size controls. It has no ACTIVATE/runtime
+consumer in the current phase. The local Mac Ollama installation does not implement this contract;
+WSL/private endpoint evidence remains an external gate.
+
+Exact host allowlisting occurs before DNS and every returned address is checked. The current
+default HTTP transport is not address-pinned and may resolve again during connection, so private
+deployment acceptance must retain DNS-rebinding as open until the connection uses the vetted
+address set while validating TLS against the original hostname.
 
 Set `DATAHUB_BASE_URL` and review origins/ports in `.env`. Optional `UI_DATAHUB_URL`, `UI_AIRFLOW_URL`, `UI_GRAFANA_URL`, `UI_PROMETHEUS_URL`, and `UI_GRAPH_URL` values populate the GNB auxiliary links through the authenticated capabilities response. They are not provider API endpoints or embed authorities: URLs with user information are rejected, missing values create no fallback link, and production requires HTTPS. The production validator rejects wildcard CORS, HTTP external URLs, password-bearing URLs and seed activation. Only `file:` secret references are implemented; a Vault/KMS adapter is a separate deployment integration.
 
@@ -408,7 +428,7 @@ egress or a DataHub credential. The complete Linux/WSL boundary is
 
 ## Database and object operations
 
-- Alembic has one head at `0046`: the generated current initial schema plus conditional
+- Alembic has one head at `0053`: the generated current initial schema plus conditional
   compatibility bridges for local databases that applied earlier revisions. Deployment runs
   migration before API/workers. The API role can only read `public.alembic_version` for readiness;
   migration ownership remains separate. After explicitly bounded compatibility repairs, the Policy
@@ -429,7 +449,7 @@ egress or a DataHub credential. The complete Linux/WSL boundary is
   Phase 2 tables even when an old volume created the roles only after `0042` had already run.
 - PostgreSQL pool size/overflow/lease timeout, statement timeout, idle-transaction timeout and application names are explicit. Budget `API replicas × (API pool + overflow) + long-running workers × (worker pool + overflow) + one-shot/IdP/Airflow/admin reserve`; current one-API/four-worker defaults have a ceiling of 60 before reserve.
 - Liveness is process-only. Readiness leases the API pool and requires exactly packaged Alembic
-  head `0046`; Compose and APISIX use readiness for upstream health.
+  head `0053`; Compose and APISIX use readiness for upstream health.
 - `scripts/probe_pgbouncer_rls.py` and its unit contract implement the pre-adoption transaction-pool leakage gate. No Compose profile currently deploys PgBouncer and no live pooler pass has been recorded; direct PostgreSQL remains the supported path until the isolated two-workspace probe succeeds.
 - Back up PostgreSQL and the selected external S3 store as a consistency set or record a watermark; restore into isolation and follow the drill in [operations runbook](13_OPERATIONS_RUNBOOK.md) before traffic.
 - Accepted-object retention/lifecycle is environment policy. Quarantine receives a shorter cleanup policy, but never delete an object whose manifest is actively leased.
