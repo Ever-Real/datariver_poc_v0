@@ -2,6 +2,57 @@
 
 ## Current verification status
 
+The Phase 4 Knowledge entry implementation `bd0ee22`, based on `716fb6f`, passed the whole current
+backend suite:
+`1,328` tests passed and `60` target-environment integration cases were explicitly skipped. The
+README-equivalent Ruff format/lint arguments passed over `375` files, strict mypy passed over `358`
+source/test files, and static architecture/Compose/document verification passed. The `uv run`
+wrapper could not initialize its user cache inside the restricted filesystem sandbox; the same
+locked environment executables in `.venv` ran the gates without dependency resolution. The
+frontend passed strict TypeScript, zero-warning ESLint, `45` files / `238` tests and the production
+build. Canonical `0001`
+generation was byte-identical across two runs at SHA-256
+`2f38f83bfbcaf57ad6bfffb1ab182617a0dfd1ecb0766e5723924ba361fbcaa6`; Alembic has the single head
+`0053`.
+
+Nine publication tests ran separately against isolated native-arm64 PostgreSQL 17 at revision
+`0053`. They cover all-or-none release/content/receipt/changeset/outbox/idempotency commit, injected
+pre-commit failure, same-key concurrency, different-changeset/same-snapshot concurrency, graph
+classification ceiling, maker/checker and governed-lineage eligibility, exact activation receipt,
+whitespace-only review denial, exact Neo4j shadow-receipt binding and zero partial state. A legacy
+lineage-corruption regression proves that general Chat evidence and release-pinned Sharing
+list/detail/version replay/publish/grant/invocation all fail closed. It also proves cross-actor
+graph/changeset and cross-owner/resource Sharing idempotency replay fails closed and legacy grants
+are hidden after lineage corruption. The first current rerun used an invalid `file://` secret
+reference and failed before opening a database connection. Two later attempts stopped at
+authentication because stale temporary/container secrets did not match the initialized audit
+role. After synchronizing that dedicated role to its test secret, the corrected canonical `file:`
+reference under explicitly approved local-loopback access passed `9/9`. The
+isolated database also passed `0053 -> 0052 -> 0053` and finished at the sole head. Command/input
+errors are recorded as execution evidence, not converted into product failures or hidden passes.
+
+The optional semiconductor seed was applied, verified and removed against that same isolated
+database. The first apply exposed an ORM flush-order foreign-key failure and rolled back; an
+explicit changeset flush was added. The accepted rerun persisted a separate maker/checker and
+authorized publisher,
+536 immutable operations, canonical database read-back and the exact PostgreSQL deployment receipt
+for `12` catalog assets, `257` nodes and `279` edges, then verified and removed the synthetic pack.
+Deleting one operation and mutating one canonical node property without changing row counts each
+made `verify` fail closed. Both cases then passed explicit remove/reapply/verify/remove recovery.
+
+System Settings reranking tests execute one fixed private `POST /v1/rerank` request and reject
+401/404, duplicate/out-of-range or boolean indices, unsorted scores and scores outside `[0, 1]`.
+Migration `0053` extends only the TEST-scope vocabulary and refuses downgrade while such evidence
+exists. The current Mac authenticated Neo4j query, strict-JSON Chat and Embedding inference passed;
+the local Ollama reranking route is absent and is therefore honestly unavailable. WSL/private
+provider and runtime-consumer evidence remains external. Probe destinations are exact-allowlisted
+before DNS and resolved addresses are checked, but the default HTTP transport can resolve the
+hostname again at connection time. Address pinning while preserving original-host TLS verification
+therefore remains an explicit security gate rather than a completed DNS-rebinding claim.
+The final independent source audit found `P0=0`, `P1=0`. It carries one `P2` into the durable
+source-job phase: the synchronous PDF path commits a pending source before eligibility and does not
+pin/revalidate the prepared base release and ontology across inference.
+
 The typed-BULK Phase 3.7 local implementation at `39d20d0` passed `1,297` backend tests with `51`
 explicitly environment-gated integration cases skipped. The exact README Ruff command passed,
 strict mypy passed over all `351` backend source/test files, and static
@@ -9,7 +60,7 @@ architecture/role/Compose/documentation verification passed. The frontend passed
 TypeScript, zero-warning ESLint, `45` files / `238` tests and the production build. Canonical `0001`
 generation was byte-identical across two runs at SHA-256
 `5ba6583738b074d7ee2ed008a63d9a6e91aec75b59e8fe6e7f9ad12efc5c5694`; Alembic has the single head
-`0052`.
+`0052` at that historical Phase 3.7 boundary.
 
 The five Phase 3.7 PostgreSQL tests were then enabled separately against an isolated native-arm64
 PostgreSQL 17 database and passed both before and after `0052 -> 0051 -> 0052`. They prove valid V2

@@ -14,9 +14,9 @@ an unsafe bypass, or a historical result from another commit.
 | Ledger field | Value |
 |---|---|
 | Created | 2026-07-23, Asia/Seoul |
-| Branch / Phase 3.7 base / current local implementation | `codex/admin-policy-rbac` / `a683a93` / `39d20d0` |
+| Branch / Phase 4 entry base / current local implementation | `codex/admin-policy-rbac` / `716fb6f` / `bd0ee22` |
 | Remote comparison at current Phase entry | `origin/main` at `313e59a`; `origin/codex/admin-policy-rbac` is published through `a683a93`, not merged |
-| Current controlled phase | Request group 4 — R4-01 current Neo4j/LLM capability preflight |
+| Current controlled phase | Request group 4 — durable Knowledge source jobs |
 | Final artifact order | Feature → API → Data/ERD → Screen → `README.md` → `ARCHITECTURE.md` |
 
 ## Status language
@@ -61,6 +61,11 @@ an unsafe bypass, or a historical result from another commit.
   deterministic migration, actual PostgreSQL and independent security/data/App/API/UI P0/P1 gates
   passed; WSL, external providers, real identities, reference-viewport and full load/recovery remain
   `EXTERNAL_GATE`.
+- [x] Phase 4 entry implementation makes Knowledge publication atomic, closes direct and legacy
+  release bypasses, enforces the graph/source classification envelope and separates Neo4j, Chat,
+  Embedding and Reranking capability evidence. Whole-source and actual PostgreSQL gates pass;
+  final independent review is `P0=0`, `P1=0`; focused implementation commit `bd0ee22` closes the
+  local entry gate.
 - [ ] Request groups 3 through 6 retain their stated dependency on earlier work. External gates are
   reported explicitly if the required machine or accountable human identities are unavailable.
 
@@ -138,18 +143,18 @@ merged, released, or available to the preparation PC until publication actually 
 
 | ID | Checklist item | Current status | Evidence / remaining work |
 |---|---|---|---|
-| R4-01 | Probe Neo4j plus Chat, Embedding and Reranker adapters before feature execution | `PARTIAL` + `STALE_EVIDENCE` + `EXTERNAL_GATE` | Historical development contracts exist; current-HEAD Neo4j/Chat/Embedding/Reranker preflight is not proven, reranker is unavailable, and WSL external providers are unverified. |
+| R4-01 | Probe Neo4j plus Chat, Embedding and Reranker adapters before feature execution | `DONE_LOCAL` + `EXTERNAL_GATE` | Current Mac evidence proves authenticated Neo4j `RETURN 1`, strict-JSON Chat and 1,024-dimensional Embedding inference. The installed local Ollama reranker honestly fails the fixed contract: `/v1/rerank` is absent. Revision `0053` adds a bounded fixed private reranking TEST without inventing runtime activation. WSL/private-provider DNS, TLS, credentials and responses remain unverified. |
 | R4-02 | Compare v0.3 code/docs and retain safe functional intent | `PARTIAL` | Registry, changesets, releases and typed studio exist; keep a traceable safe-substitution matrix. |
-| R4-03 | Define and manage Knowledge Graph/Ontology assets | `PARTIAL` | Schema/domain/release contracts exist; publication/activation remains incomplete until R5-BE-01 and R5-BE-03 pass. |
-| R4-04 | Generate typed KG proposals from sources with provenance | `PARTIAL` | PDF development path exists; durable job/lease/retry/cancel, DB schema sources and evaluation are open. |
-| R4-05 | Populate, publish, project and evaluate graph assets | `PARTIAL` | Human-governed release flow exists; projection worker/rebuild/drift and independent live acceptance remain. |
+| R4-03 | Define and manage Knowledge Graph/Ontology assets | `PARTIAL` | Schema/domain/ontology/changeset/release contracts and atomic independently reviewed publication/receipt-backed activation are implemented. Lifecycle UX, durable source jobs and target acceptance remain. |
+| R4-04 | Generate typed KG proposals from sources with provenance | `PARTIAL` | PDF development path exists. The next package must move it to a durable job, reject ineligible sources before durable submission where possible, pin prepared base-release/ontology IDs and revalidate them atomically before draft persistence; lease/retry/cancel, DB schema sources and evaluation remain open. |
+| R4-05 | Populate, publish, project and evaluate graph assets | `PARTIAL` | Publication is one PostgreSQL UoW, canonical read-back is verified and activation is separate. Neo4j is only an ID-selecting rebuildable shadow: prompt evidence is rehydrated from PostgreSQL, and its receipt is bound to the exact adapter/target/hash/count. Releases without governed lineage are invisible to all release consumers. Durable projection worker/rebuild/drift/evaluation and target live acceptance remain. |
 | R4-06 | Search metadata and graph assets and run graph-grounded assistant tests | `PARTIAL` | Separate bounded Knowledge GraphRAG exists; current canonical/policy hardening and general Chat integration remain. |
 | R4-07 | Implement Chat `GENERAL` mode | `PARTIAL` | Grounded composer exists, but no public typed mode contract/session UX. |
 | R4-08 | Implement Chat `VECTOR` mode | `PENDING` | No integrated embedding retrieval mode. |
 | R4-09 | Implement Chat `GRAPH` mode | `PARTIAL` | Knowledge-specific GraphRAG exists; no general Chat mode integration. |
 | R4-10 | Implement `AUTO` intent routing with explicit evidence and policy | `PENDING` | UI label is decorative; no Tool Calling/Semantic Router contract, confidence, audit or safe no-route state. |
 | R4-11 | Let users select a governed Topic/Graph asset for deep answers | `PARTIAL` | Knowledge screen selects a release; general Chat topic routing is absent. |
-| R4-12 | Expose selected catalog capabilities through typed HTTP APIs | `PARTIAL` | Catalog and release-pinned sharing APIs exist; current idempotency/policy hardening and target evidence remain. |
+| R4-12 | Expose selected catalog capabilities through typed HTTP APIs | `PARTIAL` | Catalog and release-pinned Sharing APIs exist and revalidate governed release lineage on list/detail, replay, publish, grant and invocation. Atomic quota/result replay hardening under R5-BE-05 and target evidence remain. |
 | R4-13 | Implement official MCP JSON-RPC `tools/list` and `tools/call` | `PENDING` | No MCP route/server/test exists. Add ADR, threat model, allowlisted typed tools, pagination and authorization. |
 
 ## Request group 5 — platform audit, remediation and portability
@@ -167,10 +172,10 @@ merged, released, or available to the preparation PC until publication actually 
 
 | ID | Priority | Checklist item | Status |
 |---|---:|---|---|
-| R5-BE-01 | P0 | Make Knowledge changeset publication one UoW and separate publish from activate; inject failures between steps. | `PENDING` |
-| R5-BE-02 | P0 | Rehydrate current canonical release/hash and enforce classification/provider/retention policy before GraphRAG. | `PENDING` |
-| R5-BE-03 | P0 | Prevent direct release publication from bypassing independent changeset review. | `PENDING` |
-| R5-BE-04 | P0 | Record the actual Chat provider/model/external-use audit facts. | `PENDING` |
+| R5-BE-01 | P0 | Make Knowledge changeset publication one UoW and separate publish from activate; inject failures between steps. | `DONE_LOCAL`; atomic read-back-verified publication, fault injection, idempotency and concurrency pass on PostgreSQL. |
+| R5-BE-02 | P0 | Rehydrate current canonical release/hash and enforce classification/provider/retention policy before GraphRAG. | `PARTIAL`; governed lineage, exact release snapshot/hash, graph/source classification and provider binding fail closed. General Chat retention/profile routing remains in the Chat phase. |
+| R5-BE-03 | P0 | Prevent direct release publication from bypassing independent changeset review. | `DONE_LOCAL`; direct route is `410`, legacy unlineaged releases are hidden from all consumers and activation requires one exact reviewed lineage. |
+| R5-BE-04 | P0 | Record the actual Chat provider/model/external-use audit facts. | `DONE_LOCAL` + `EXTERNAL_GATE`; current Mac Neo4j/Chat/Embedding pass, local reranking is unavailable, and WSL/private-provider facts remain target evidence. |
 | R5-BE-05 | P0 | Make API-product idempotency, per-minute/monthly quota checks and invocation/result recording atomic; bind request hash and replayable response so retries cannot bypass quota or repeat work. | `PENDING` |
 | R5-FE-01 | P0 | Bind global search requests/results to Workspace epoch and abort/discard cross-workspace responses. | `DONE_LOCAL`; Top Navigation keys the search component by Workspace and a late-response regression proves purge/discard. |
 | R5-FE-02 | P1 | Bind Admin context/auth hydration and renewal to subject/session epoch. | `PENDING` |
@@ -182,7 +187,7 @@ merged, released, or available to the preparation PC until publication actually 
 | R5-DATA-01 | P1 | Add cursor pagination/set-based reads to Governance, Knowledge, Sharing and Admin; remove identified N+1 paths. | `PENDING` |
 | R5-DATA-02 | P1 | Budget API/worker DB pools against replicas and PostgreSQL `max_connections`; cap Redis pools. | `PENDING` |
 | R5-DATA-03 | P1 | Move large PDF and XLSX work to bounded durable/spooled paths with explicit resource rejection. | `PENDING` |
-| R5-SEC-01 | P1 | Constrain System Settings probes against SSRF/DNS rebinding/localhost and response-size abuse. | `PENDING` |
+| R5-SEC-01 | P1 | Constrain System Settings probes against SSRF/DNS rebinding/localhost and response-size abuse. | `PARTIAL` + `EXTERNAL_GATE`; fixed routes/bodies, pre-DNS exact operator allowlists, resolved-address checks, nonlocal TLS/private-network enforcement, disabled redirects/environment proxies and decoded-response bounds pass. The default HTTP transport still resolves the hostname again at connect time, so vetted-address pinning with original-host TLS verification and a rebinding regression remain open before this item can close. |
 | R5-SEC-02 | P1 | Harden OIDC token type/authorized-party/size and unknown-key refresh behavior. | `PENDING` |
 | R5-SEC-03 | P1 | Harden the Keycloak Admin adapter proxy/TLS/environment/body-size boundary and prevent credential-bearing redirect or proxy inheritance. | `PENDING` |
 | R5-SEC-04 | P1 | Fail production startup unless TrustedHost, exact CORS and public-origin/TLS settings are coherent and non-wildcard. | `PENDING` |

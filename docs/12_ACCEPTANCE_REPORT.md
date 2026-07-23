@@ -14,6 +14,24 @@ addenda and `docs/29_MASTER_EXECUTION_BACKLOG.md`.
 
 P0–P3 foundation addendum, updated 2026-07-16: current source checks additionally include the stable DataHub v1.6.0 release contract and typed OIDC assurance. Hardware WebAuthn requires an exact approved ACR+AMR combination and `auth_time`; OTP, generic MFA and refreshed-token `iat` cannot satisfy high-risk authorization. Browser remediation is bounded to typed authentication actions, rejects unsafe return locations, and never automatically replays a denied mutation after an authentication redirect. Compatibility migrations and the current hybrid runtime have separate live evidence below.
 
+## Phase 4 Knowledge entry-gate addendum — 2026-07-24
+
+This addendum covers implementation commit `bd0ee22` over base `716fb6f`. It accepts the local
+publication/provider entry boundary only; it does not accept durable Knowledge jobs, general Chat
+routing, MCP, WSL/private providers, production or HA.
+
+| Gate | Result | Current executed evidence |
+|---|---|---|
+| Canonical publication | PASS (source/isolated PostgreSQL) | One approved changeset command atomically commits immutable release/content, canonical read-back receipt, published lineage, outbox and idempotency without activation. Fault injection and two concurrency shapes leave one exact evidence chain or zero effects. |
+| Review and legacy boundary | PASS | Maker/checker/reason/time are rechecked under lock and on idempotent replay. Graph/changeset and Sharing replay is bound to the exact actor/owner/resource. The direct snapshot route returns `410`; a release without exactly one valid independently reviewed published lineage is invisible to list/snapshot/export/projection/GraphRAG, general Chat evidence, grants and release-pinned Sharing, and cannot activate. |
+| Classification and source integrity | PASS | Graph ceiling is enforced at operation append, full submit/review, publication, PDF source preparation/analysis, model persistence and release consumption. Integrity/authorization precede generic policy errors; invalid legacy proposals may be rejected with redacted content but not approved. |
+| Provider capabilities | PASS WITH UNAVAILABLE OPTIONAL CAPABILITY | Current Mac authenticated Neo4j `RETURN 1`, strict-JSON Chat and 1,024-dimensional Embedding inference passed. Local Ollama does not implement the fixed `/v1/rerank` contract, so Reranking is correctly unavailable rather than inferred ready. |
+| Reranking System TEST | PASS (source/contract only) | Fixed private `INTRANET_RERANK_V1` `POST /v1/rerank` TEST uses a mounted key and bounded server-authored body/response. It rejects 401/404 and invalid ordered score shapes, records `RERANKING_INFERENCE`, and deliberately has no runtime ACTIVATE/consumer. |
+| Database | PASS (local) | Alembic single head is `0053`; canonical `0001` regenerated twice at SHA-256 `2f38f83bfbcaf57ad6bfffb1ab182617a0dfd1ecb0766e5723924ba361fbcaa6`. Isolated PostgreSQL publication integration passed `9/9`; `0053 -> 0052 -> 0053` returned to head. The governed optional seed apply/verify/remove passed with an authorized publisher, exact 536-operation ledger and canonical-row hash; operation deletion and same-count content drift each failed closed and recovered through remove/reapply/verify/remove. |
+| Backend | PASS | README-equivalent Ruff arguments passed over 375 files, strict mypy over 358 files, static verification and `1,328` pytest passes; `60` target-environment tests were explicitly skipped. The restricted sandbox prevented `uv` from opening its user cache, so the same locked `.venv` executables ran the gates. |
+| Frontend and deployment shape | PASS (source/config) | TypeScript, zero-warning ESLint, `45` files / `238` tests and production build passed. Mac full, source-host infra, `linux/amd64` core/identity and graph/object-storage connector models rendered with `config --quiet`. |
+| Independent audit / external acceptance | LOCAL P0/P1 CLEAR; EXTERNAL OPEN | Final independent review found `P0=0`, `P1=0`; the durable source-job phase retains one base-release/ontology pinning and pre-eligibility `P2`. The HTTP client still needs vetted-address connection pinning with original-host TLS verification to close DNS rebinding. WSL amd64 import/migration, Windows PowerShell execution, private Neo4j/Chat/Embedding/Reranking evidence, real Admin/reviewer identities and representative load/recovery remain `EXTERNAL_GATE`. |
+
 ## Typed BULK catalog metadata addendum — 2026-07-24
 
 This addendum covers local implementation commit `39d20d0` and does not convert Mac/isolated-source
