@@ -15,7 +15,7 @@ an unsafe bypass, or a historical result from another commit.
 |---|---|
 | Created | 2026-07-23, Asia/Seoul |
 | Baseline branch / HEAD | `codex/admin-policy-rbac` / `51d7eac` |
-| Remote comparison at creation | `origin/main` at `313e59a`; current work is not merged or pushed |
+| Remote comparison at creation | `origin/main` at `313e59a`; current branch later published through Phase 2 commit `ca24c07`, not merged |
 | Current controlled phase | Policy Book Phase 2 local exit/focused commit; Phase 3 has not started |
 | Final artifact order | Feature → API → Data/ERD → Screen → `README.md` → `ARCHITECTURE.md` |
 
@@ -75,7 +75,7 @@ an unsafe bypass, or a historical result from another commit.
 | R1-06 | Validate Mac development topology | `DONE_LOCAL` / `STALE_EVIDENCE` | Selective Mac evidence exists, but current-HEAD end-to-end feature runs must be repeated after remediation. |
 | R1-07 | Export exact source and architecture-specific images | `DONE_LOCAL` / `STALE_EVIDENCE` | Offline export/checksum/platform scripts exist; artifacts predating `51d7eac` are not current release artifacts. |
 | R1-08 | Import, restore and configure the WSL preparation PC | `EXTERNAL_GATE` | Exact bundle verification, PostgreSQL restore, Keycloak issuer, connectors, external providers, smoke/load/rollback remain open. |
-| R1-09 | Use PRDs, checklists, independent reviews and traceable commits | `PARTIAL` | Controlled artifacts and commits exist; this ledger becomes the single continuation index. Remote publication remains open. |
+| R1-09 | Use PRDs, checklists, independent reviews and traceable commits | `PARTIAL` | Controlled artifacts and commits exist; this ledger is the continuation index. `origin/codex/admin-policy-rbac` is published, while PR review and merge remain open. |
 | R1-10 | Produce an architecture-simplification decision record | `PENDING` | For every questioned dependency/process/store, record retain/remove/externalize, rationale, cost, availability and security consequences rather than treating refactoring alone as simplification. |
 
 When a push needs destination-trust or egress approval, request it and record the pending gate. Work

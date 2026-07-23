@@ -43,7 +43,8 @@ target-environment production evidence.
 - [x] Run Ruff, strict mypy, relevant/full pytest and `scripts/verify_static.py`.
 - [x] Verify clean-clone/Compose documentation and arm64/amd64 source parity.
 - [x] Commit Phase 1; obtain explicit approval before Phase 2.
-- [ ] Push the Phase 1 branch after the GitHub destination trust/egress approval is accepted.
+- [x] Publish the accumulated Phase 1/2 branch to `origin/codex/admin-policy-rbac`; PR creation and
+  merge remain separate review actions.
 
 Executed 2026-07-23 evidence: 804 backend tests plus one environment-gated PostgreSQL test skipped in
 the default suite, that PostgreSQL test separately passing against an isolated real database, strict
@@ -138,6 +139,10 @@ aggregates/roles and the terminal `ARCHIVE_VERIFIED_DESTRUCTIVE_DISABLED` state.
 operators must also bind the configured worker-principal fingerprint to independently verified
 provider identity evidence and rehearse simultaneous same-workspace capability probes; these are
 nonblocking local-source risks, not production acceptance.
+
+Phase 2 implementation was committed as `ca24c07` and published on
+`origin/codex/admin-policy-rbac`. This is source publication only; it is not a PR, merge, release or
+target-profile activation.
 
 ## Admin function inventory and Phase 3 plan
 
