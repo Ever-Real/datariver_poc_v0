@@ -7,6 +7,7 @@ from uuid import UUID
 import httpx
 import pytest
 
+from datariver.application.errors import ExternalDependencyError
 from datariver.application.identity_admin import IdentityUserDraft
 from datariver.domain.common import ConflictError
 from datariver.infrastructure.identity.keycloak import KeycloakIdentityAdministration
@@ -146,3 +147,75 @@ async def test_existing_unmanaged_username_is_rejected_without_password_change()
     with pytest.raises(ConflictError, match="outside DataRiver"):
         await adapter.ensure_disabled_user(_draft())
     await adapter.close()
+
+
+@pytest.mark.asyncio
+async def test_created_user_location_cannot_supply_an_unbounded_external_subject() -> None:
+    exact_lookups = 0
+    reset_paths: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal exact_lookups
+        if request.url.path.endswith("/protocol/openid-connect/token"):
+            return httpx.Response(200, request=request, json={"access_token": "service-token"})
+        if request.method == "GET":
+            exact_lookups += 1
+            return httpx.Response(200, request=request, json=[])
+        if request.method == "POST":
+            return httpx.Response(
+                201,
+                request=request,
+                headers={"Location": ("http://keycloak/admin/realms/datariver/users/" + "x" * 256)},
+            )
+        reset_paths.append(request.url.path)
+        return httpx.Response(204, request=request)
+
+    adapter = KeycloakIdentityAdministration(
+        base_url="http://keycloak:8080",
+        realm="datariver",
+        client_id="datariver-identity-admin",
+        client_secret="client-secret",
+        timeout_seconds=1,
+        transport=httpx.MockTransport(handler),
+    )
+    with pytest.raises(ExternalDependencyError, match="created user identity"):
+        await adapter.ensure_disabled_user(_draft())
+    await adapter.close()
+
+    assert exact_lookups == 2
+    assert reset_paths == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("token_response", "expected_retryable"),
+    [
+        (httpx.Response(200, content=b"{" + b"x" * 262_145 + b"}"), False),
+        (httpx.Response(200, content=b"{invalid-json"), False),
+        (httpx.Response(429), True),
+    ],
+)
+async def test_keycloak_token_response_is_bounded_typed_and_retryable(
+    token_response: httpx.Response,
+    expected_retryable: bool,
+) -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            token_response.status_code,
+            request=request,
+            content=token_response.content,
+        )
+
+    adapter = KeycloakIdentityAdministration(
+        base_url="http://keycloak:8080",
+        realm="datariver",
+        client_id="datariver-identity-admin",
+        client_secret="client-secret",
+        timeout_seconds=1,
+        transport=httpx.MockTransport(handler),
+    )
+    with pytest.raises(ExternalDependencyError) as captured:
+        await adapter.ensure_disabled_user(_draft())
+    await adapter.close()
+
+    assert captured.value.details["retryable"] is expected_retryable

@@ -163,7 +163,7 @@ async def _prepare_fixture(admin_engine: AsyncEngine, fixture: PolicyFixture) ->
     async with admin_engine.begin() as connection:
         await _set_fixture_security_context(connection, fixture)
         revision = await connection.scalar(text("SELECT version_num FROM alembic_version"))
-        assert revision == "0042"
+        assert revision == "0044"
         await connection.execute(
             text(
                 """
@@ -523,6 +523,7 @@ async def test_role_assignment_transition_and_failure_rollback_on_postgres() -> 
             request_hash=canonical_json_hash({"suffix": suffix}),
             role_id=role_id,
             role_version=role_version,
+            role_transition=True,
         )
 
     try:

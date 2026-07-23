@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 from datetime import datetime
+from typing import Literal
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from datariver.domain.authz import Classification
 from datariver.domain.retention import (
@@ -18,9 +19,14 @@ from datariver.domain.retention import (
     RetentionPeriodUnit,
     RetentionPolicyState,
 )
+from datariver.interfaces.http.schemas import PageMeta
 
 
 class StrictRetentionRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+
+class StrictRetentionResponse(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
 
@@ -83,6 +89,7 @@ class RetentionPolicyResponse(BaseModel):
 
 class RetentionPolicyListResponse(BaseModel):
     items: list[RetentionPolicyResponse]
+    page: PageMeta
 
 
 class LegalHoldPlaceRequest(StrictRetentionRequest):
@@ -126,11 +133,13 @@ class LegalHoldResponse(BaseModel):
     released_at: datetime | None
     version: int
     actions: list[LegalHoldActionResponse]
+    action_history_truncated: bool
     deletion_effect: str
 
 
 class LegalHoldListResponse(BaseModel):
     items: list[LegalHoldResponse]
+    page: PageMeta
 
 
 class ErasureRequestCreate(StrictRetentionRequest):
@@ -172,8 +181,120 @@ class ErasureRequestResponse(BaseModel):
     decided_at: datetime | None
     version: int
     approvals: list[ErasureApprovalResponse]
+    approval_history_truncated: bool
     execution_state: str
 
 
 class ErasureRequestListResponse(BaseModel):
     items: list[ErasureRequestResponse]
+    page: PageMeta
+
+
+class RetentionExecutionAttemptResponse(StrictRetentionResponse):
+    attempt_no: int = Field(ge=1)
+    state: Literal[
+        "RUNNING",
+        "RETRY_WAIT",
+        "BLOCKED",
+        "ARCHIVE_VERIFIED_DESTRUCTIVE_DISABLED",
+        "SUPERSEDED",
+    ]
+    stage: str = Field(min_length=1, max_length=40)
+    evidence_hash: str = Field(pattern=r"^[0-9a-f]{64}$")
+    destructive_effect_count: Literal[0]
+    started_at: datetime
+    finished_at: datetime | None
+
+
+class RetentionExecutionEventResponse(StrictRetentionResponse):
+    sequence: int = Field(ge=1)
+    event_type: Literal[
+        "PLANNED",
+        "LEASED",
+        "RETRY_WAIT",
+        "BLOCKED",
+        "ARCHIVE_VERIFIED_DESTRUCTIVE_DISABLED",
+    ]
+    attempt_no: int | None = Field(default=None, ge=1)
+    evidence_hash: str = Field(pattern=r"^[0-9a-f]{64}$")
+    occurred_at: datetime
+
+
+class RetentionArchiveReceiptEvidenceResponse(StrictRetentionResponse):
+    receipt_id: UUID
+    manifest_hash: str = Field(pattern=r"^[0-9a-f]{64}$")
+    content_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    row_count: int = Field(gt=0)
+    byte_count: int = Field(gt=0)
+    retention_until: datetime
+    legal_hold: bool
+    content_verified_at: datetime
+    retention_verified_at: datetime
+    verified_at: datetime
+    payload_hash: str = Field(pattern=r"^[0-9a-f]{64}$")
+
+
+class RetentionExecutionJobResponse(StrictRetentionResponse):
+    job_id: UUID
+    erasure_request_version: int = Field(ge=1)
+    erasure_request_payload_hash: str = Field(pattern=r"^[0-9a-f]{64}$")
+    target_type: Literal["CHAT_SESSION"]
+    target_id: UUID
+    target_version: int = Field(ge=1)
+    classification: Literal["PUBLIC", "INTERNAL", "CONFIDENTIAL", "RESTRICTED"]
+    retention_policy_id: UUID
+    retention_policy_hash: str = Field(pattern=r"^[0-9a-f]{64}$")
+    policy_number: int = Field(ge=1)
+    execution_authorization_valid_until: datetime
+    archive_disposition: Literal["EVIDENCE_ONLY"]
+    command_hash: str = Field(pattern=r"^[0-9a-f]{64}$")
+    archive_retain_until: datetime
+    state: Literal[
+        "PLANNED",
+        "LEASED",
+        "RETRY_WAIT",
+        "BLOCKED",
+        "ARCHIVE_VERIFIED_DESTRUCTIVE_DISABLED",
+    ]
+    next_attempt_at: datetime
+    attempt_count: int = Field(ge=0, le=20)
+    maximum_attempts: int = Field(ge=1, le=20)
+    archive_manifest_hash: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
+    destructive_state: Literal["DISABLED_NOT_READY"]
+    separation_of_duties_verified: Literal[True]
+    version: int = Field(ge=1)
+    created_at: datetime
+    updated_at: datetime
+    attempts: list[RetentionExecutionAttemptResponse] = Field(max_length=20)
+    attempts_truncated: bool
+    events: list[RetentionExecutionEventResponse] = Field(max_length=100)
+    events_truncated: bool
+    receipt: RetentionArchiveReceiptEvidenceResponse | None
+
+    @model_validator(mode="after")
+    def verify_archive_only_evidence_shape(self) -> RetentionExecutionJobResponse:
+        if self.attempt_count > self.maximum_attempts:
+            raise ValueError("The execution attempt count exceeds the configured maximum.")
+        if self.receipt is not None and self.archive_manifest_hash != self.receipt.manifest_hash:
+            raise ValueError("The archive receipt does not match the execution manifest.")
+        if self.state == "ARCHIVE_VERIFIED_DESTRUCTIVE_DISABLED" and self.receipt is None:
+            raise ValueError("A verified terminal execution requires an archive receipt.")
+        if self.state not in {"ARCHIVE_VERIFIED_DESTRUCTIVE_DISABLED", "BLOCKED"} and (
+            self.receipt is not None or self.archive_manifest_hash is not None
+        ):
+            raise ValueError("Only terminal or post-write blocked execution may expose a receipt.")
+        return self
+
+
+class RetentionExecutionEvidenceResponse(StrictRetentionResponse):
+    erasure_request_id: UUID
+    availability: Literal["NOT_PLANNED", "AVAILABLE"]
+    archive_only: Literal[True]
+    deletion_automation_state: Literal["DISABLED_NOT_READY"]
+    job: RetentionExecutionJobResponse | None
+
+    @model_validator(mode="after")
+    def verify_availability(self) -> RetentionExecutionEvidenceResponse:
+        if (self.availability == "AVAILABLE") is not (self.job is not None):
+            raise ValueError("Execution availability and evidence must agree.")
+        return self

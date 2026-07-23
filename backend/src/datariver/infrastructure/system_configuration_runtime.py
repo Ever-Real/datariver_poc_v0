@@ -8,6 +8,7 @@ from sqlalchemy import select
 
 from datariver.config import Settings
 from datariver.domain.common import canonical_json_hash
+from datariver.domain.system_configuration import require_canonical_secret_references
 from datariver.infrastructure.db.models.platform import (
     ExternalServiceProfileModel,
     ExternalServiceProfileVersionModel,
@@ -57,6 +58,10 @@ def _runtime_updates(
 ) -> dict[str, object]:
     options = _mapping(document, "options")
     if service_key == "DATAHUB":
+        require_canonical_secret_references(
+            service_key,
+            _mapping(document, "secret_references"),
+        )
         return {
             "datahub_base_url": _string(document, "base_url"),
             "datahub_secret_ref": _secret_reference(document, "token"),
@@ -83,16 +88,28 @@ def _runtime_updates(
     if service_key == "AIRFLOW":
         return {"ui_airflow_url": _string(document, "base_url")}
     if service_key == "REDIS_CACHE":
+        require_canonical_secret_references(
+            service_key,
+            _mapping(document, "secret_references"),
+        )
         return {
             "redis_cache_url": _string(document, "url"),
             "redis_cache_secret_ref": _secret_reference(document, "password"),
         }
     if service_key == "REDIS_DELIVERY":
+        require_canonical_secret_references(
+            service_key,
+            _mapping(document, "secret_references"),
+        )
         return {
             "redis_delivery_url": _string(document, "url"),
             "redis_delivery_secret_ref": _secret_reference(document, "password"),
         }
     if service_key == "S3_STORAGE":
+        require_canonical_secret_references(
+            service_key,
+            _mapping(document, "secret_references"),
+        )
         buckets = _mapping(document, "buckets")
         access_key_reference = _secret_reference(document, "access_key")
         secret_key_reference = _secret_reference(document, "secret_key")
@@ -120,6 +137,11 @@ def _runtime_updates(
                 raise ValueError(
                     "The current local Ollama adapter does not consume an API-key reference."
                 )
+            require_canonical_secret_references(
+                service_key,
+                _mapping(document, "secret_references"),
+                connection_mode=connection_mode,
+            )
             return {
                 "local_ollama_chat_enabled": True,
                 "local_ollama_chat_base_url": _string(document, "base_url"),
@@ -130,6 +152,11 @@ def _runtime_updates(
             }
         if connection_mode != "INTRANET_OPENAI_COMPATIBLE":
             raise ValueError("The LLM connection mode is not supported.")
+        require_canonical_secret_references(
+            service_key,
+            _mapping(document, "secret_references"),
+            connection_mode=connection_mode,
+        )
         return {
             "local_ollama_chat_enabled": False,
             "intranet_openai_compatible_chat_enabled": True,
@@ -152,6 +179,11 @@ def _runtime_updates(
                 raise ValueError(
                     "The current local embedding adapter does not consume an API-key reference."
                 )
+            require_canonical_secret_references(
+                service_key,
+                _mapping(document, "secret_references"),
+                connection_mode=connection_mode,
+            )
             return {
                 "local_ollama_embedding_enabled": True,
                 "local_ollama_embedding_base_url": _string(document, "base_url"),
@@ -161,6 +193,11 @@ def _runtime_updates(
             }
         if connection_mode != "INTRANET_OPENAI_COMPATIBLE":
             raise ValueError("The LLM connection mode is not supported.")
+        require_canonical_secret_references(
+            service_key,
+            _mapping(document, "secret_references"),
+            connection_mode=connection_mode,
+        )
         return {
             "local_ollama_embedding_enabled": False,
             "intranet_openai_compatible_embedding_enabled": True,
@@ -172,6 +209,10 @@ def _runtime_updates(
             "intranet_openai_compatible_embedding_timeout_seconds": options.get("timeout_seconds"),
         }
     if service_key == "NEO4J":
+        require_canonical_secret_references(
+            service_key,
+            _mapping(document, "secret_references"),
+        )
         return {
             "neo4j_projection_enabled": True,
             "neo4j_uri": _string(document, "uri"),
@@ -194,6 +235,19 @@ def _runtime_updates(
             raise ValueError("The Grafana dashboard path must be a string.")
         return {"ui_grafana_url": f"{url.rstrip('/')}/{dashboard_path.lstrip('/')}".rstrip("/")}
     raise ValueError(f"No runtime consumer is implemented for activated service {service_key}.")
+
+
+def validate_runtime_system_configuration(
+    settings: Settings,
+    *,
+    service_key: str,
+    document: Mapping[str, Any],
+) -> None:
+    """Prove that one activated revision satisfies the process startup contract."""
+
+    values = settings.model_dump()
+    values.update(_runtime_updates(service_key, document))
+    Settings.model_validate(values)
 
 
 async def resolve_activated_system_configuration(

@@ -8,6 +8,8 @@ import pytest
 
 from datariver.application.classification_access_admin import (
     ClassificationAccessAdminUnitOfWork,
+    ClassificationPolicyPage,
+    RestrictedSearchGrantPage,
 )
 from datariver.application.dto import IdempotencyRecord
 from datariver.application.services.authorization import AuthorizationService, NullDecisionWriter
@@ -78,14 +80,20 @@ class _Policies:
         return value if value is not None and value.policy_id != excluding_policy_id else None
 
     async def list(
-        self, *, workspace_id: UUID, state: str | None, limit: int
-    ) -> tuple[ClassificationAccessPolicy, ...]:
+        self,
+        *,
+        workspace_id: UUID,
+        state: str | None,
+        limit: int,
+        cursor: str | None,
+    ) -> ClassificationPolicyPage:
+        del cursor
         values = tuple(
             value
             for value in self.values.values()
             if value.workspace_id == workspace_id and (state is None or value.state.value == state)
         )
-        return values[:limit]
+        return ClassificationPolicyPage(items=values[:limit], next_cursor=None)
 
     async def next_policy_number(self, *, workspace_id: UUID) -> int:
         return (
@@ -137,7 +145,9 @@ class _Grants:
         subject_id: UUID | None,
         state: str | None,
         limit: int,
-    ) -> tuple[RestrictedSearchGrant, ...]:
+        cursor: str | None,
+    ) -> RestrictedSearchGrantPage:
+        del cursor
         values = tuple(
             value
             for value in self.values.values()
@@ -145,7 +155,7 @@ class _Grants:
             and (subject_id is None or value.subject_id == subject_id)
             and (state is None or value.state.value == state)
         )
-        return values[:limit]
+        return RestrictedSearchGrantPage(items=values[:limit], next_cursor=None)
 
 
 class _Memberships:

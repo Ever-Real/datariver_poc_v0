@@ -15,6 +15,7 @@ from pydantic import (
     model_validator,
 )
 
+from datariver.domain.admin_access import AdminOperation
 from datariver.domain.authz import Action
 
 
@@ -827,6 +828,7 @@ class WorkspaceMembershipSummaryResponse(BaseModel):
 
 class WorkspaceMembershipListResponse(BaseModel):
     items: list[WorkspaceMembershipSummaryResponse]
+    page: PageMeta
 
 
 class MembershipRenewalCreateRequest(BaseModel):
@@ -863,6 +865,7 @@ class MembershipRenewalResponse(BaseModel):
 
 class MembershipRenewalListResponse(BaseModel):
     items: list[MembershipRenewalResponse]
+    page: PageMeta
 
 
 class AccessRoleDataRuleRequest(BaseModel):
@@ -964,6 +967,7 @@ class AccessRoleResponse(BaseModel):
 
 class AccessRoleListResponse(BaseModel):
     items: list[AccessRoleResponse]
+    page: PageMeta
 
 
 class MembershipRoleAssignmentRequest(BaseModel):
@@ -994,11 +998,13 @@ class SystemDirectoryEntryResponse(BaseModel):
     description: str
     active: bool
     version: int = Field(ge=1)
+    assignee_count: int = Field(ge=0)
     assignees: list[SystemDirectoryAssigneeResponse]
 
 
 class SystemDirectoryListResponse(BaseModel):
     items: list[SystemDirectoryEntryResponse]
+    page: PageMeta
 
 
 class SystemAssigneeUpdateRequest(BaseModel):
@@ -1009,6 +1015,28 @@ class SystemAssigneeUpdateRequest(BaseModel):
 
 class SystemAssigneeUpdateListRequest(BaseModel):
     assignees: list[SystemAssigneeUpdateRequest] = Field(min_length=2, max_length=500)
+
+
+class SystemAssigneeKeyRequest(BaseModel):
+    subject_id: UUID
+    responsibility: Literal["DEVELOPER", "DATA_STEWARD"]
+
+
+class SystemAssigneePatchRequest(BaseModel):
+    upserts: list[SystemAssigneeUpdateRequest] = Field(default_factory=list, max_length=100)
+    removals: list[SystemAssigneeKeyRequest] = Field(default_factory=list, max_length=100)
+
+    @model_validator(mode="after")
+    def require_changes(self) -> SystemAssigneePatchRequest:
+        if not self.upserts and not self.removals:
+            raise ValueError("A system-assignee patch cannot be empty.")
+        return self
+
+
+class SystemAssigneeListResponse(BaseModel):
+    system_version: int = Field(ge=1)
+    items: list[SystemDirectoryAssigneeResponse]
+    page: PageMeta
 
 
 class SystemAssigneeUpdateResponse(BaseModel):
@@ -1101,6 +1129,8 @@ class SystemConfigurationVersionResponse(BaseModel):
             "EMBEDDING_INFERENCE",
             "AUTHENTICATED_QUERY",
             "REDIS_PING",
+            "REDIS_POLICY",
+            "S3_HEAD_BUCKET",
         ]
         | None
     ) = None
@@ -1130,6 +1160,8 @@ class SystemConfigurationTestResponse(BaseModel):
         "EMBEDDING_INFERENCE",
         "AUTHENTICATED_QUERY",
         "REDIS_PING",
+        "REDIS_POLICY",
+        "S3_HEAD_BUCKET",
     ]
     latency_ms: int = Field(ge=0)
     detail: str
@@ -1143,6 +1175,18 @@ class SystemConfigurationUpdateRequest(BaseModel):
     configuration_yaml: str = Field(min_length=1, max_length=100_000)
 
 
+class MembershipRoleAssignmentEvidenceResponse(BaseModel):
+    status: Literal["VERIFIED", "MANUAL", "LEGACY_UNVERIFIED", "EVIDENCE_MISMATCH"]
+    role_id: UUID | None = None
+    role_version: int | None = Field(default=None, ge=1)
+    assignment_version: int | None = Field(default=None, ge=1)
+    membership_version: int | None = Field(default=None, ge=1)
+    access_payload_hash: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
+    assigned_by: UUID | None = None
+    updated_at: datetime | None = None
+    legacy_markers: list[str] = Field(default_factory=list, max_length=100)
+
+
 class WorkspaceMembershipAccessResponse(BaseModel):
     subject_id: UUID
     display_name: str
@@ -1151,6 +1195,7 @@ class WorkspaceMembershipAccessResponse(BaseModel):
     job_function: str | None
     membership_version: int = Field(ge=1)
     access: MembershipAccessDocumentResponse
+    role_assignment: MembershipRoleAssignmentEvidenceResponse
 
 
 class AdminReadContextResponse(BaseModel):
@@ -1164,40 +1209,7 @@ class AdminReadContextResponse(BaseModel):
         "UNKNOWN", "PASSWORD", "OTHER_MFA", "PASSWORD_REAUTH", "HARDWARE_WEBAUTHN"
     ]
     fallback_enabled: bool
-    allowed_operations: list[
-        Literal[
-            "MEMBERSHIP_ACCESS_READ",
-            "MEMBERSHIP_ACCESS_UPDATE",
-            "MEMBERSHIP_RENEWAL_READ",
-            "MEMBERSHIP_RENEWAL_DECIDE",
-            "SYSTEM_ASSIGNMENT_UPDATE",
-            "SYSTEM_CONFIGURATION_READ",
-            "SYSTEM_CONFIGURATION_UPDATE",
-            "SYSTEM_CONFIGURATION_ACTIVATE",
-            "FALLBACK_REQUEST_READ",
-            "FALLBACK_REQUEST_CREATE",
-            "FALLBACK_REQUEST_DECIDE",
-            "FALLBACK_REQUEST_CONSUME",
-            "CLASSIFICATION_POLICY_READ",
-            "CLASSIFICATION_POLICY_PROPOSE",
-            "CLASSIFICATION_POLICY_DECIDE",
-            "INFERENCE_PROVIDER_PROFILE_READ",
-            "INFERENCE_PROVIDER_PROFILE_DECIDE",
-            "INFERENCE_PROVIDER_PROFILE_REVOKE",
-            "RESTRICTED_SEARCH_GRANT_READ",
-            "RESTRICTED_SEARCH_GRANT_PROPOSE",
-            "RESTRICTED_SEARCH_GRANT_DECIDE",
-            "RESTRICTED_SEARCH_GRANT_REVOKE",
-            "RETENTION_POLICY_READ",
-            "RETENTION_POLICY_MANAGE",
-            "LEGAL_HOLD_READ",
-            "LEGAL_HOLD_PLACE",
-            "LEGAL_HOLD_RELEASE",
-            "ERASURE_READ",
-            "ERASURE_REQUEST",
-            "ERASURE_APPROVE",
-        ]
-    ]
+    allowed_operations: list[AdminOperation]
     action_vocabulary: list[Action]
 
 
@@ -1261,6 +1273,7 @@ class AdminAccessRequestResponse(BaseModel):
 
 class AdminAccessRequestListResponse(BaseModel):
     items: list[AdminAccessRequestResponse]
+    page: PageMeta
 
 
 class MembershipAccessUpdateResponse(BaseModel):

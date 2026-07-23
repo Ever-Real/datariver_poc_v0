@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import asyncio
 import json
+import time
 from typing import Any
 
 import httpx
@@ -28,6 +30,7 @@ async def test_chat_model_probe_executes_a_strict_json_completion() -> None:
             system_id="LLM_CHAT_MODEL",
             document={"base_url": "http://127.0.0.1:11434/v1", "model": "gemma4:latest"},
             client=client,
+            allowed_hosts=("127.0.0.1",),
         )
 
     assert result.status == "AVAILABLE"
@@ -49,6 +52,7 @@ async def test_embedding_probe_executes_and_validates_one_vector() -> None:
             system_id="LLM_EMBEDDING",
             document={"base_url": "http://127.0.0.1:11434/v1", "model": "bge-m3:latest"},
             client=client,
+            allowed_hosts=("127.0.0.1",),
         )
 
     assert result.status == "AVAILABLE"
@@ -62,8 +66,12 @@ async def test_http_probe_reports_authentication_without_claiming_readiness() ->
     ) as client:
         result = await probe_system_configuration(
             system_id="DATAHUB_GMS",
-            document={"base_url": "http://127.0.0.1:8080"},
+            document={
+                "base_url": "http://127.0.0.1:8080",
+                "secret_references": {"token": "file:/run/secrets/datahub_token"},
+            },
             client=client,
+            allowed_hosts=("127.0.0.1",),
         )
 
     assert result.status == "AUTHENTICATION_REQUIRED"
@@ -78,9 +86,72 @@ async def test_probe_rejects_link_local_metadata_destinations() -> None:
         with pytest.raises(ValidationError, match="forbidden network range"):
             await probe_system_configuration(
                 system_id="DATAHUB_GMS",
-                document={"base_url": "http://169.254.169.254"},
+                document={
+                    "base_url": "http://169.254.169.254",
+                    "secret_references": {"token": "file:/run/secrets/datahub_token"},
+                },
+                client=client,
+                allowed_hosts=("169.254.169.254",),
+            )
+
+
+@pytest.mark.asyncio
+async def test_probe_requires_operator_host_allowlist_and_bounds_decoded_body() -> None:
+    document = {
+        "base_url": "http://127.0.0.1:8080",
+        "secret_references": {"token": "file:/run/secrets/datahub_token"},
+    }
+    async with httpx.AsyncClient(
+        transport=httpx.MockTransport(
+            lambda request: httpx.Response(
+                200,
+                request=request,
+                content=b"x" * (1024 * 1024 + 1),
+            )
+        )
+    ) as client:
+        with pytest.raises(ValidationError, match="operator probe allowlist"):
+            await probe_system_configuration(
+                system_id="DATAHUB_GMS",
+                document=document,
                 client=client,
             )
+        with pytest.raises(ValidationError, match="one MiB"):
+            await probe_system_configuration(
+                system_id="DATAHUB_GMS",
+                document=document,
+                client=client,
+                allowed_hosts=("127.0.0.1",),
+            )
+
+
+@pytest.mark.asyncio
+async def test_probe_requires_tls_for_an_allowlisted_nonlocal_host() -> None:
+    async with httpx.AsyncClient(
+        transport=httpx.MockTransport(lambda request: httpx.Response(200, request=request))
+    ) as client:
+        with pytest.raises(ValidationError, match="Plaintext system probes"):
+            await probe_system_configuration(
+                system_id="DATAHUB_GMS",
+                document={
+                    "base_url": "http://10.42.0.15:8080",
+                    "secret_references": {"token": "file:/run/secrets/datahub_token"},
+                },
+                client=client,
+                allowed_hosts=("10.42.0.15",),
+            )
+
+        result = await probe_system_configuration(
+            system_id="DATAHUB_GMS",
+            document={
+                "base_url": "https://10.42.0.15",
+                "secret_references": {"token": "file:/run/secrets/datahub_token"},
+            },
+            client=client,
+            allowed_hosts=("10.42.0.15",),
+        )
+
+    assert result.status == "AVAILABLE"
 
 
 class _SecretResolver:
@@ -142,10 +213,11 @@ async def test_redis_cache_probe_uses_mounted_credential_and_role_policy() -> No
         system_id="REDIS_CACHE",
         document={
             "url": "redis://127.0.0.1:6379/0",
-            "secret_references": {"password": "file:/run/secrets/redis_delivery_password"},
+            "secret_references": {"password": "file:/run/secrets/redis_cache_password"},
         },
         secret_resolver=_RedisSecretResolver(),  # type: ignore[arg-type]
         redis_factory=redis_factory,  # type: ignore[arg-type]
+        allowed_hosts=("127.0.0.1",),
     )
 
     assert result.status == "AVAILABLE"
@@ -163,10 +235,11 @@ async def test_redis_delivery_probe_requires_noeviction_and_aof() -> None:
         system_id="REDIS_DELIVERY",
         document={
             "url": "redis://127.0.0.1:6380/0",
-            "secret_references": {"password": "file:/run/secrets/redis_cache_password"},
+            "secret_references": {"password": "file:/run/secrets/redis_delivery_password"},
         },
         secret_resolver=_RedisSecretResolver(),  # type: ignore[arg-type]
         redis_factory=lambda *_args, **_kwargs: client,  # type: ignore[arg-type]
+        allowed_hosts=("127.0.0.1",),
     )
 
     assert result.status == "AVAILABLE"
@@ -200,6 +273,7 @@ async def test_s3_probe_authenticates_against_one_fixed_bucket() -> None:
         },
         secret_resolver=_S3SecretResolver(),  # type: ignore[arg-type]
         s3_head_bucket=head_bucket,
+        allowed_hosts=("127.0.0.1",),
     )
 
     assert result.status == "AVAILABLE"
@@ -238,6 +312,7 @@ async def test_intranet_llm_probe_uses_the_operator_secret_and_rejects_bad_crede
             document=document,
             client=client,
             secret_resolver=_IntranetLlmSecretResolver(),  # type: ignore[arg-type]
+            allowed_hosts=("10.42.0.15",),
         )
     assert accepted.status == "AVAILABLE"
 
@@ -249,6 +324,7 @@ async def test_intranet_llm_probe_uses_the_operator_secret_and_rejects_bad_crede
             document=document,
             client=client,
             secret_resolver=_IntranetLlmSecretResolver(),  # type: ignore[arg-type]
+            allowed_hosts=("10.42.0.15",),
         )
     assert rejected.status == "UNAVAILABLE"
 
@@ -276,8 +352,50 @@ async def test_neo4j_probe_authenticates_and_executes_fixed_query() -> None:
         },
         secret_resolver=_SecretResolver(),  # type: ignore[arg-type]
         neo4j_query=neo4j_query,
+        allowed_hosts=("127.0.0.1",),
     )
 
     assert result.status == "AVAILABLE"
     assert result.scope == "AUTHENTICATED_QUERY"
     assert calls == [("bolt://127.0.0.1:7688", "neo4j", "secret-from-file", "neo4j", 3.0)]
+
+
+@pytest.mark.asyncio
+async def test_neo4j_probe_cancels_a_stalled_provider_with_sanitized_error() -> None:
+    cancelled = False
+
+    async def stalled_query(
+        endpoint: str,
+        username: str,
+        password: str,
+        database: str,
+        timeout_seconds: float,
+    ) -> int:
+        nonlocal cancelled
+        try:
+            await asyncio.Event().wait()
+        finally:
+            cancelled = True
+        return 1
+
+    started = time.monotonic()
+    with pytest.raises(
+        ValidationError,
+        match="saved Neo4j credentials or database are unavailable",
+    ) as caught:
+        await probe_system_configuration(
+            system_id="NEO4J",
+            document={
+                "uri": "bolt://127.0.0.1:7688",
+                "database": "neo4j",
+                "secret_references": {"credential": "file:/run/secrets/neo4j_auth"},
+                "options": {"connection_timeout_seconds": 1},
+            },
+            secret_resolver=_SecretResolver(),  # type: ignore[arg-type]
+            neo4j_query=stalled_query,
+            allowed_hosts=("127.0.0.1",),
+        )
+
+    assert time.monotonic() - started < 1.5
+    assert cancelled is True
+    assert "secret-from-file" not in str(caught.value)

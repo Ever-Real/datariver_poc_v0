@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from typing import cast
+from uuid import UUID
 
 import pytest
 from fastapi.testclient import TestClient
@@ -9,6 +10,7 @@ from fastapi.testclient import TestClient
 from datariver.config import Settings
 from datariver.domain.authz import Action
 from datariver.domain.common import ConflictError, ForbiddenError, ValidationError
+from datariver.infrastructure.db.models.platform import ExternalServiceProfileModel
 from datariver.infrastructure.db.session import DatabaseReadiness
 from datariver.infrastructure.observability.metrics import HttpMetrics
 from datariver.interfaces.http.container import AppContainer
@@ -17,8 +19,10 @@ from datariver.interfaces.http.routes.admin import (
     _display_configuration,
     _require_system_configuration_runtime_activation,
     _system_configuration_entries,
+    _system_configuration_revision_keys,
     _validate_configuration_submission,
     _validate_system_configuration,
+    _yaml_document,
 )
 from datariver.interfaces.http.routes.registration import _expected_version
 
@@ -306,6 +310,24 @@ def test_system_configuration_inventory_is_server_owned_and_redacted() -> None:
     )
 
 
+def test_system_configuration_inventory_reads_only_current_and_activated_revisions() -> None:
+    profile_id = UUID("00000000-0000-4000-8000-000000000123")
+    profile = ExternalServiceProfileModel(
+        id=profile_id,
+        version=3,
+        activated_version=1,
+    )
+
+    assert _system_configuration_revision_keys([profile]) == {
+        (profile_id, 1),
+        (profile_id, 3),
+    }
+
+    profile.activated_version = 3
+    assert _system_configuration_revision_keys([profile]) == {(profile_id, 3)}
+    assert _system_configuration_revision_keys([]) == set()
+
+
 def test_system_configuration_runtime_activation_fails_closed_by_deployment_mode() -> None:
     with pytest.raises(ForbiddenError):
         _require_system_configuration_runtime_activation(settings())
@@ -367,6 +389,36 @@ def test_system_configuration_display_removes_nested_secrets_and_submission_reje
         )
 
 
+def test_system_configuration_yaml_rejects_aliases_and_resource_exhaustion() -> None:
+    with pytest.raises(ValidationError, match="aliases and anchors are forbidden"):
+        _yaml_document("options: &loop\n  recursive: *loop\n")
+
+    nested = "value: terminal"
+    for index in range(20):
+        nested = f"level_{index}:\n" + "\n".join(f"  {line}" for line in nested.splitlines())
+    with pytest.raises(ValidationError, match="nesting depth limit"):
+        _yaml_document(nested)
+
+    nodes = "options:\n" + "\n".join(f"  item_{index}: {index}" for index in range(520))
+    with pytest.raises(ValidationError, match="node limit"):
+        _yaml_document(nodes)
+
+
+@pytest.mark.parametrize("secret_key", ["credential", "authorization"])
+def test_system_configuration_rejects_unknown_nested_secret_fields(secret_key: str) -> None:
+    document = {
+        "url": "https://grafana.example",
+        "options": {
+            "dashboard_path": "",
+            "embed_enabled": False,
+            secret_key: "plaintext-secret",
+        },
+    }
+
+    with pytest.raises(ValidationError, match="unsupported option keys"):
+        _validate_system_configuration("GRAFANA_DASHBOARD", document)
+
+
 def test_redis_system_configuration_requires_separate_secret_reference() -> None:
     document = {
         "url": "rediss://redis-cache.example.internal:6379/0",
@@ -383,8 +435,84 @@ def test_redis_system_configuration_requires_separate_secret_reference() -> None
     with pytest.raises(ValidationError, match="exactly one password"):
         _validate_system_configuration(
             "REDIS_DELIVERY",
-            document | {"secret_references": {}},
+            document
+            | {
+                "secret_references": {},
+                "options": {"role": "DELIVERY", "required_policy": "noeviction+aof"},
+            },
         )
+    with pytest.raises(ValidationError, match="canonical operator-managed secret"):
+        _validate_system_configuration(
+            "REDIS_CACHE",
+            document
+            | {
+                "secret_references": {
+                    "password": "file:/run/secrets/keycloak_identity_admin_client_secret"
+                }
+            },
+        )
+
+
+@pytest.mark.parametrize(
+    ("system_id", "document"),
+    [
+        (
+            "DATAHUB_GMS",
+            {
+                "base_url": "https://datahub.example",
+                "secret_references": {
+                    "token": "file:/run/secrets/keycloak_identity_admin_client_secret"
+                },
+                "options": {},
+            },
+        ),
+        (
+            "S3_STORAGE",
+            {
+                "endpoint": "https://minio.example",
+                "public_endpoint": "https://objects.example",
+                "region": "ap-northeast-2",
+                "buckets": {
+                    "accepted": "accepted",
+                    "exports": "exports",
+                    "filefolder": "filefolder",
+                    "infoschema": "infoschema",
+                    "quarantine": "quarantine",
+                },
+                "secret_references": {
+                    "access_key": "file:/run/secrets/datahub_token",
+                    "secret_key": "file:/run/secrets/s3_secret_key",
+                },
+                "options": {},
+            },
+        ),
+        (
+            "LLM_CHAT_MODEL",
+            {
+                "connection_mode": "INTRANET_OPENAI_COMPATIBLE",
+                "base_url": "https://10.42.0.15/v1",
+                "model": "approved-chat",
+                "secret_references": {"api_key": "file:/run/secrets/s3_secret_key"},
+                "options": {"api_style": "openai_compatible"},
+            },
+        ),
+        (
+            "NEO4J",
+            {
+                "uri": "neo4j://graph.example:7687",
+                "database": "neo4j",
+                "secret_references": {"credential": "file:/run/secrets/postgres_app_password"},
+                "options": {},
+            },
+        ),
+    ],
+)
+def test_system_configuration_rejects_cross_connector_secret_binding(
+    system_id: str,
+    document: dict[str, object],
+) -> None:
+    with pytest.raises(ValidationError, match="canonical operator-managed secret"):
+        _validate_system_configuration(system_id, document)
 
 
 def test_system_configuration_contract_rejects_credentials_and_incomplete_profiles() -> None:
@@ -655,12 +783,39 @@ def test_openapi_exposes_bounded_typed_administrator_read_contracts() -> None:
     document = create_app(settings(), container_factory=factory).openapi()
 
     membership_list = document["paths"]["/api/v1/admin/workspace-memberships"]["get"]
-    limit = next(
-        parameter for parameter in membership_list["parameters"] if parameter["name"] == "limit"
-    )
+    membership_parameters = {
+        parameter["name"]: parameter for parameter in membership_list["parameters"]
+    }
+    limit = membership_parameters["limit"]
     assert limit["schema"]["default"] == 50
     assert limit["schema"]["minimum"] == 1
     assert limit["schema"]["maximum"] == 100
+    assert membership_parameters["q"]["schema"]["anyOf"][0]["maxLength"] == 200
+    assert membership_parameters["cursor"]["schema"]["anyOf"][0]["maxLength"] == 2000
+    assert set(membership_parameters["status"]["schema"]["anyOf"][0]["enum"]) == {
+        "ACTIVE",
+        "INACTIVE",
+    }
+    membership_page = document["components"]["schemas"]["WorkspaceMembershipListResponse"]
+    assert set(membership_page["required"]) == {"items", "page"}
+
+    execution = document["paths"][
+        "/api/v1/admin/retention/erasure-requests/{erasure_request_id}/execution-evidence"
+    ]["get"]
+    assert "requestBody" not in execution
+    execution_schema = document["components"]["schemas"]["RetentionExecutionJobResponse"]
+    serialized_schema = str(execution_schema)
+    for forbidden in (
+        "object_bucket",
+        "object_key",
+        "object_version_id",
+        "provider_checksum",
+        "lease_token",
+        "lease_owner",
+        "principal_fingerprint",
+        "archive_configuration",
+    ):
+        assert forbidden not in serialized_schema
 
     membership_detail = document["paths"][
         "/api/v1/admin/workspace-memberships/{target_subject_id}/access"
@@ -685,7 +840,12 @@ def test_openapi_exposes_bounded_typed_administrator_read_contracts() -> None:
         "PASSWORD_REAUTH",
         "HARDWARE_WEBAUTHN",
     }
-    assert set(context_schema["properties"]["allowed_operations"]["items"]["enum"]) == {
+    operation_schema = document["components"]["schemas"]["AdminOperation"]
+    assert context_schema["properties"]["allowed_operations"]["items"] == {
+        "$ref": "#/components/schemas/AdminOperation"
+    }
+    assert set(operation_schema["enum"]) == {
+        "IDENTITY_USER_PROVISION",
         "MEMBERSHIP_ACCESS_READ",
         "MEMBERSHIP_ACCESS_UPDATE",
         "MEMBERSHIP_RENEWAL_READ",
@@ -724,6 +884,42 @@ def test_openapi_exposes_bounded_typed_administrator_read_contracts() -> None:
     assert assignment_headers["If-Match"]["required"] is True
     assert assignment_headers["Idempotency-Key"]["required"] is True
     assert system_assignment["responses"]["200"]["headers"]["ETag"]["schema"] == {"type": "string"}
+    system_assignee_path = document["paths"]["/api/v1/admin/systems/{system_id}/assignees"]
+    assert set(system_assignee_path) == {"get", "put", "patch"}
+    assignee_list = system_assignee_path["get"]
+    assignee_list_parameters = {
+        parameter["name"]: parameter for parameter in assignee_list["parameters"]
+    }
+    assert assignee_list_parameters["limit"]["schema"] == {
+        "type": "integer",
+        "maximum": 100,
+        "minimum": 1,
+        "default": 25,
+        "title": "Limit",
+    }
+    assert assignee_list_parameters["cursor"]["schema"]["anyOf"][0]["maxLength"] == 2000
+    assignee_list_schema = document["components"]["schemas"]["SystemAssigneeListResponse"]
+    assert set(assignee_list_schema["required"]) == {"system_version", "items", "page"}
+    assignee_item_schema = document["components"]["schemas"]["SystemDirectoryAssigneeResponse"]
+    assert set(assignee_item_schema["required"]) == {
+        "subject_id",
+        "display_name",
+        "responsibility",
+        "priority",
+        "active",
+    }
+    patch_assignment = system_assignee_path["patch"]
+    patch_headers = {parameter["name"]: parameter for parameter in patch_assignment["parameters"]}
+    assert patch_headers["If-Match"]["required"] is True
+    assert patch_headers["Idempotency-Key"]["required"] is True
+    assert patch_assignment["responses"]["200"]["headers"]["ETag"]["schema"] == {"type": "string"}
+    patch_schema_reference = patch_assignment["requestBody"]["content"]["application/json"][
+        "schema"
+    ]["$ref"]
+    assert patch_schema_reference == "#/components/schemas/SystemAssigneePatchRequest"
+    patch_schema = document["components"]["schemas"]["SystemAssigneePatchRequest"]
+    assert patch_schema["properties"]["upserts"]["maxItems"] == 100
+    assert patch_schema["properties"]["removals"]["maxItems"] == 100
     assert context_schema["properties"]["action_vocabulary"]["items"] == {
         "$ref": "#/components/schemas/Action"
     }

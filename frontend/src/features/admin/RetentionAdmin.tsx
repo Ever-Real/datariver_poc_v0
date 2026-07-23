@@ -1,13 +1,20 @@
-import { useCallback, useEffect, useState, type FormEvent } from 'react'
+import { useCallback, useEffect, useRef, useState, type FormEvent } from 'react'
 import type {
   AdminReadContext,
   LegalHold,
   LegalHoldScope,
+  LegalHoldState,
   RetentionDataClass,
+  RetentionArchiveDisposition,
+  RetentionClassRule,
+  RetentionPeriodUnit,
   RetentionPolicy,
+  RetentionPolicyContract,
+  RetentionPolicyState,
   RetentionRules,
 } from '../../api/types'
 import type { AssuranceActions } from '../../components/AssuranceNotice'
+import { useAbortSignalChannel } from '../../components/common/useAbortSignalChannel'
 import type { AdminApi } from './adminApi'
 import type { PendingAdminMutation } from './AdminMutationConfirmDialog'
 import type { AdminMessages } from './messages'
@@ -28,23 +35,80 @@ const emptyRules: RuleDraft = {
   completed_operation_days: '', chat_content_days: '', audit_online_months: '', immutable_archive_years: '',
 }
 
+type ClassRuleDraft = Omit<RetentionClassRule, 'minimum' | 'maximum'> & {
+  minimum: string
+  maximum: string
+}
+
+const initialClassRules: ClassRuleDraft[] = [
+  { data_class: 'COMPLETED_OPERATIONS', unit: 'DAYS', minimum: '30', maximum: '365', archive_disposition: 'NO_ARCHIVE' },
+  { data_class: 'CHAT_CONTENT', unit: 'DAYS', minimum: '7', maximum: '365', archive_disposition: 'NO_ARCHIVE' },
+  { data_class: 'AUDIT_EVIDENCE', unit: 'MONTHS', minimum: '12', maximum: '84', archive_disposition: 'CONTENT_WORM' },
+  { data_class: 'OBJECT_DATA', unit: 'DAYS', minimum: '30', maximum: '3650', archive_disposition: 'CONTENT_WORM' },
+]
+
+function currentLocalMinute() {
+  const now = new Date()
+  return new Date(now.getTime() - now.getTimezoneOffset() * 60_000).toISOString().slice(0, 16)
+}
+
 export function RetentionPolicyAdmin(props: Props) {
   const { api, context, messages, requestConfirmation, keyFor, clearKey, reportError } = props
   const [policies, setPolicies] = useState<RetentionPolicy[]>([])
   const [selectedId, setSelectedId] = useState('')
   const [rules, setRules] = useState<RuleDraft>(emptyRules)
+  const [classRules, setClassRules] = useState<ClassRuleDraft[]>(initialClassRules)
+  const [effectiveFrom, setEffectiveFrom] = useState(currentLocalMinute)
+  const [effectiveUntil, setEffectiveUntil] = useState('')
+  const [executionAuthorizationHours, setExecutionAuthorizationHours] = useState('24')
   const [proposalReason, setProposalReason] = useState('')
   const [decisionReason, setDecisionReason] = useState('')
+  const [stateFilter, setStateFilter] = useState<RetentionPolicyState | ''>('')
+  const [cursor, setCursor] = useState<string>()
+  const [cursorHistory, setCursorHistory] = useState<Array<string | null>>([])
+  const [nextCursor, setNextCursor] = useState<string | null>(null)
+  const [pageNumber, setPageNumber] = useState(1)
+  const loadGeneration = useRef(0)
+  const listChannel = useAbortSignalChannel()
   const canManage = context?.allowed_operations.includes('RETENTION_POLICY_MANAGE') ?? false
 
-  const load = useCallback(async () => {
+  const load = useCallback(async (pageCursor: string | undefined, signal?: AbortSignal) => {
+    const generation = ++loadGeneration.current
     try {
-      const next = await api.listRetentionPolicies()
-      setPolicies(next)
-      setSelectedId((current) => current || next[0]?.policy_id || '')
-    } catch (error) { reportError(error) }
-  }, [api, reportError])
-  useEffect(() => { void load() }, [load])
+      const page = await api.listRetentionPolicyPage({
+        state: stateFilter || undefined,
+        cursor: pageCursor,
+        limit: 25,
+        signal,
+      })
+      if (generation !== loadGeneration.current) return
+      setPolicies(page.items)
+      setNextCursor(page.nextCursor)
+      setSelectedId((current) => (
+        current && page.items.some((policy) => policy.policy_id === current)
+          ? current
+          : page.items[0]?.policy_id || ''
+      ))
+    } catch (error) {
+      if (!signal?.aborted && generation === loadGeneration.current) reportError(error)
+    }
+  }, [api, reportError, stateFilter])
+  useEffect(() => {
+    void load(cursor, listChannel.next())
+    return () => { loadGeneration.current += 1 }
+  }, [cursor, listChannel, load])
+
+  const resetPage = () => {
+    setCursor(undefined)
+    setCursorHistory([])
+    setNextCursor(null)
+    setPageNumber(1)
+  }
+  const reloadFirstPage = async () => {
+    const alreadyFirstPage = cursor === undefined
+    resetPage()
+    if (alreadyFirstPage) await load(undefined, listChannel.next())
+  }
 
   const propose = (event: FormEvent) => {
     event.preventDefault()
@@ -54,14 +118,25 @@ export function RetentionPolicyAdmin(props: Props) {
       audit_online_months: Number(rules.audit_online_months),
       immutable_archive_years: Number(rules.immutable_archive_years),
     }
-    const intent = `retention-propose:${JSON.stringify(payload)}:${proposalReason}`
+    const contract: RetentionPolicyContract = {
+      effective_from: new Date(effectiveFrom).toISOString(),
+      effective_until: effectiveUntil ? new Date(effectiveUntil).toISOString() : null,
+      execution_authorization_hours: Number(executionAuthorizationHours),
+      class_rules: classRules.map((rule) => ({
+        ...rule,
+        minimum: Number(rule.minimum),
+        maximum: Number(rule.maximum),
+      })),
+    }
+    const intent = `retention-propose:${JSON.stringify(payload)}:${JSON.stringify(contract)}:${proposalReason}`
     requestConfirmation({
       title: messages.policyProposal,
-      summary: [JSON.stringify(payload), proposalReason],
+      summary: ['POLICY_BOOK_V2', JSON.stringify(payload), JSON.stringify(contract), proposalReason],
       execute: async () => {
-        const next = await api.proposeRetentionPolicy(payload, proposalReason.trim(), keyFor(intent, 'retention-propose'))
+        const next = await api.proposeRetentionPolicy(payload, contract, proposalReason.trim(), keyFor(intent, 'retention-propose'))
         clearKey(intent); setRules(emptyRules); setProposalReason('')
-        setPolicies((current) => [next, ...current]); setSelectedId(next.policy_id)
+        await reloadFirstPage()
+        setSelectedId(next.policy_id)
       },
     })
   }
@@ -72,12 +147,18 @@ export function RetentionPolicyAdmin(props: Props) {
     const intent = `retention-decision:${selected.policy_id}:${selected.version}:${decision}:${decisionReason}`
     requestConfirmation({
       title: `${messages.releaseDecision}: ${decision}`,
-      summary: [`#${selected.policy_number}`, selected.payload_hash, `v${selected.version}`],
+      summary: [
+        `#${selected.policy_number}`,
+        selected.contract_version,
+        selected.contract ? JSON.stringify(selected.contract) : 'LEGACY CONTRACT — no class bounds',
+        selected.payload_hash,
+        `v${selected.version}`,
+      ],
       execute: async () => {
         const next = await api.decideRetentionPolicy(selected, decision, decisionReason.trim(), keyFor(intent, 'retention-decision'))
         clearKey(intent); setDecisionReason('')
         setPolicies((current) => current.map((item) => item.policy_id === next.policy_id ? next : item))
-        await load()
+        await reloadFirstPage()
       },
     })
   }
@@ -93,17 +174,50 @@ export function RetentionPolicyAdmin(props: Props) {
         <RuleField label={messages.chatDays} value={rules.chat_content_days} max={3650} onChange={(value) => setRules({ ...rules, chat_content_days: value })} />
         <RuleField label={messages.auditMonths} value={rules.audit_online_months} max={120} onChange={(value) => setRules({ ...rules, audit_online_months: value })} />
         <RuleField label={messages.archiveYears} value={rules.immutable_archive_years} max={100} onChange={(value) => setRules({ ...rules, immutable_archive_years: value })} />
+        <h4>POLICY_BOOK_V2 시행 계약</h4>
+        <label>시행 시작<input type="datetime-local" value={effectiveFrom} onChange={(event) => setEffectiveFrom(event.target.value)} required /></label>
+        <label>시행 종료 (선택)<input type="datetime-local" value={effectiveUntil} min={effectiveFrom} onChange={(event) => setEffectiveUntil(event.target.value)} /></label>
+        <RuleField label="실행 승인 유효시간" value={executionAuthorizationHours} max={168} onChange={setExecutionAuthorizationHours} />
+        {classRules.map((rule, index) => <fieldset className="form-stack" key={rule.data_class}>
+          <legend>{rule.data_class}</legend>
+          <label>단위<select value={rule.unit} onChange={(event) => setClassRules((current) => current.map((item, itemIndex) => itemIndex === index ? { ...item, unit: event.target.value as RetentionPeriodUnit } : item))}><option>DAYS</option><option>MONTHS</option><option>YEARS</option></select></label>
+          <RuleField label="최소 보존" value={rule.minimum} max={36500} onChange={(value) => setClassRules((current) => current.map((item, itemIndex) => itemIndex === index ? { ...item, minimum: value } : item))} />
+          <RuleField label="최대 보존" value={rule.maximum} max={36500} onChange={(value) => setClassRules((current) => current.map((item, itemIndex) => itemIndex === index ? { ...item, maximum: value } : item))} />
+          <label>만료 처리<select value={rule.archive_disposition} onChange={(event) => setClassRules((current) => current.map((item, itemIndex) => itemIndex === index ? { ...item, archive_disposition: event.target.value as RetentionArchiveDisposition } : item))}><option>NO_ARCHIVE</option><option>EVIDENCE_ONLY</option><option>CONTENT_WORM</option></select></label>
+        </fieldset>)}
         <label>{messages.reason}<textarea value={proposalReason} onChange={(event) => setProposalReason(event.target.value)} maxLength={4000} required /></label>
         <button className="button">{messages.propose}</button>
         <p className="callout">{messages.automationDisabled}</p>
       </form>}
-      <section className="panel"><div className="section-heading"><h3>{messages.policyHistory}</h3><button className="button button-secondary" onClick={() => void load()}>{messages.refresh}</button></div>
-        <div className="compact-list">{policies.map((policy) => <button key={policy.policy_id} className={selectedId === policy.policy_id ? 'selected' : ''} onClick={() => setSelectedId(policy.policy_id)}><span><strong>#{policy.policy_number}</strong><small>{policy.request_reason}</small></span><span className="badge">{policy.state}</span></button>)}</div>
+      <section className="panel"><div className="section-heading"><h3>{messages.policyHistory}</h3><button className="button button-secondary" onClick={() => void load(cursor, listChannel.next())}>{messages.refresh}</button></div>
+        <label>상태 필터<select value={stateFilter} onChange={(event) => { setStateFilter(event.target.value as RetentionPolicyState | ''); resetPage() }}><option value="">전체</option><option>DRAFT</option><option>ACTIVE</option><option>REJECTED</option><option>SUPERSEDED</option></select></label>
+        <div className="compact-list">{policies.map((policy) => <button key={policy.policy_id} className={selectedId === policy.policy_id ? 'selected' : ''} onClick={() => setSelectedId(policy.policy_id)}><span><strong>#{policy.policy_number}</strong><small>{policy.request_reason} · {policy.contract_version}</small></span><span className="badge">{policy.state}</span></button>)}</div>
+        <PageNavigation
+          page={pageNumber}
+          canPrevious={cursorHistory.length > 0}
+          canNext={Boolean(nextCursor)}
+          onPrevious={() => {
+            const previous = cursorHistory.at(-1) ?? null
+            setCursorHistory((history) => history.slice(0, -1))
+            setCursor(previous ?? undefined)
+            setPageNumber((page) => Math.max(1, page - 1))
+          }}
+          onNext={() => {
+            if (!nextCursor) return
+            setCursorHistory((history) => [...history.slice(-49), cursor ?? null])
+            setCursor(nextCursor)
+            setPageNumber((page) => page + 1)
+          }}
+        />
       </section>
     </div>
     {selected && <section className="result-card governance-detail form-stack">
       <h3>#{selected.policy_number} · {selected.state}</h3>
       <dl className="summary-list"><div><dt>completed days</dt><dd>{selected.rules.completed_operation_days}</dd></div><div><dt>chat days</dt><dd>{selected.rules.chat_content_days}</dd></div><div><dt>audit months</dt><dd>{selected.rules.audit_online_months}</dd></div><div><dt>archive years</dt><dd>{selected.rules.immutable_archive_years}</dd></div><div><dt>version</dt><dd>{selected.version}</dd></div><div><dt>maker</dt><dd>{selected.requester_id}</dd></div></dl>
+      <h4>{selected.contract_version}</h4>
+      {selected.contract
+        ? <><p>{selected.contract.effective_from} → {selected.contract.effective_until ?? 'open-ended'} · execution authorization {selected.contract.execution_authorization_hours}h</p><ul>{selected.contract.class_rules.map((rule) => <li key={rule.data_class}>{rule.data_class}: {rule.minimum}–{rule.maximum} {rule.unit} · {rule.archive_disposition}</li>)}</ul></>
+        : <p className="notice notice-warning">레거시 정책입니다. 최소/최대 보존 및 실행 승인 계약이 없으므로 신규 제안으로 대체해야 합니다.</p>}
       <p className="callout">{selected.partition_automation_state} · {selected.deletion_automation_state}</p>
       {selected.state === 'DRAFT' && <><label>{messages.reason}<textarea value={decisionReason} onChange={(event) => setDecisionReason(event.target.value)} maxLength={4000} /></label><div className="action-row">{canCheck ? <><button className="button" disabled={!decisionReason.trim()} onClick={() => decide('APPROVED')}>{messages.approve}</button><button className="button button-secondary" disabled={!decisionReason.trim()} onClick={() => decide('REJECTED')}>{messages.reject}</button></> : <p className="callout">{messages.makerCannotCheck}</p>}</div></>}
       <code>{selected.payload_hash}</code>
@@ -119,22 +233,70 @@ function RuleField({ label, value, max, onChange }: { label: string; value: stri
 export function LegalHoldAdmin(props: Props) {
   const { api, context, messages, requestConfirmation, keyFor, clearKey, reportError } = props
   const [holds, setHolds] = useState<LegalHold[]>([])
+  const [selectedDetail, setSelectedDetail] = useState<LegalHold>()
   const [selectedId, setSelectedId] = useState('')
   const [dataClass, setDataClass] = useState<RetentionDataClass>('AUDIT_EVIDENCE')
   const [scope, setScope] = useState<LegalHoldScope>('WORKSPACE')
   const [scopeId, setScopeId] = useState('')
   const [placeReason, setPlaceReason] = useState('')
   const [releaseReason, setReleaseReason] = useState('')
+  const [stateFilter, setStateFilter] = useState<LegalHoldState | ''>('')
+  const [cursor, setCursor] = useState<string>()
+  const [cursorHistory, setCursorHistory] = useState<Array<string | null>>([])
+  const [nextCursor, setNextCursor] = useState<string | null>(null)
+  const [pageNumber, setPageNumber] = useState(1)
+  const loadGeneration = useRef(0)
+  const listChannel = useAbortSignalChannel()
+  const detailChannel = useAbortSignalChannel()
   const canPlace = context?.allowed_operations.includes('LEGAL_HOLD_PLACE') ?? false
   const canRelease = context?.allowed_operations.includes('LEGAL_HOLD_RELEASE') ?? false
 
-  const load = useCallback(async () => {
+  const load = useCallback(async (pageCursor: string | undefined, signal?: AbortSignal) => {
+    const generation = ++loadGeneration.current
     try {
-      const next = await api.listLegalHolds()
-      setHolds(next); setSelectedId((current) => current || next[0]?.hold_id || '')
-    } catch (error) { reportError(error) }
-  }, [api, reportError])
-  useEffect(() => { void load() }, [load])
+      const page = await api.listLegalHoldPage({
+        state: stateFilter || undefined,
+        cursor: pageCursor,
+        limit: 25,
+        signal,
+      })
+      if (generation !== loadGeneration.current) return
+      setHolds(page.items)
+      setNextCursor(page.nextCursor)
+      setSelectedId((current) => (
+        current && page.items.some((hold) => hold.hold_id === current)
+          ? current
+          : page.items[0]?.hold_id || ''
+      ))
+    } catch (error) {
+      if (!signal?.aborted && generation === loadGeneration.current) reportError(error)
+    }
+  }, [api, reportError, stateFilter])
+  useEffect(() => {
+    void load(cursor, listChannel.next())
+    return () => { loadGeneration.current += 1 }
+  }, [cursor, listChannel, load])
+  useEffect(() => {
+    const signal = detailChannel.next()
+    setSelectedDetail(undefined)
+    if (selectedId) {
+      void api.getLegalHold(selectedId, signal)
+        .then((hold) => { if (!signal.aborted) setSelectedDetail(hold) })
+        .catch((error) => { if (!signal.aborted) reportError(error) })
+    }
+  }, [api, detailChannel, reportError, selectedId])
+
+  const resetPage = () => {
+    setCursor(undefined)
+    setCursorHistory([])
+    setNextCursor(null)
+    setPageNumber(1)
+  }
+  const reloadFirstPage = async () => {
+    const alreadyFirstPage = cursor === undefined
+    resetPage()
+    if (alreadyFirstPage) await load(undefined, listChannel.next())
+  }
 
   const place = (event: FormEvent) => {
     event.preventDefault()
@@ -146,11 +308,13 @@ export function LegalHoldAdmin(props: Props) {
       execute: async () => {
         const next = await api.placeLegalHold(dataClass, scope, target, placeReason.trim(), keyFor(intent, 'legal-hold-place'))
         clearKey(intent); setPlaceReason(''); setScopeId('')
-        setHolds((current) => [next, ...current]); setSelectedId(next.hold_id)
+        await reloadFirstPage()
+        setSelectedId(next.hold_id)
       },
     })
   }
-  const selected = holds.find((hold) => hold.hold_id === selectedId)
+  const selectedSummary = holds.find((hold) => hold.hold_id === selectedId)
+  const selected = selectedDetail?.hold_id === selectedId ? selectedDetail : selectedSummary
   const releaseRequest = () => {
     if (!selected || !releaseReason.trim()) return
     const intent = `hold-release-request:${selected.hold_id}:${selected.version}:${releaseReason}`
@@ -158,7 +322,9 @@ export function LegalHoldAdmin(props: Props) {
       title: messages.requestRelease, summary: [selected.hold_id, `v${selected.version}`, releaseReason],
       execute: async () => {
         const next = await api.requestLegalHoldRelease(selected, releaseReason.trim(), keyFor(intent, 'legal-hold-release-request'))
-        clearKey(intent); setReleaseReason(''); replaceHold(next)
+        clearKey(intent); setReleaseReason('')
+        await reloadFirstPage()
+        setSelectedId(next.hold_id)
       },
     })
   }
@@ -169,11 +335,12 @@ export function LegalHoldAdmin(props: Props) {
       title: `${messages.releaseDecision}: ${decision}`, summary: [selected.hold_id, `v${selected.version}`, selected.payload_hash],
       execute: async () => {
         const next = await api.decideLegalHoldRelease(selected, decision, releaseReason.trim(), keyFor(intent, 'legal-hold-release-decision'))
-        clearKey(intent); setReleaseReason(''); replaceHold(next)
+        clearKey(intent); setReleaseReason('')
+        await reloadFirstPage()
+        setSelectedId(next.hold_id)
       },
     })
   }
-  const replaceHold = (next: LegalHold) => setHolds((current) => current.map((hold) => hold.hold_id === next.hold_id ? next : hold))
   const canRequestRelease = canRelease && selected && ['ACTIVE', 'RELEASE_REJECTED'].includes(selected.state)
   const canDecideRelease = Boolean(
     canRelease
@@ -192,8 +359,26 @@ export function LegalHoldAdmin(props: Props) {
         <label>{messages.reason}<textarea value={placeReason} onChange={(event) => setPlaceReason(event.target.value)} maxLength={4000} required /></label>
         <button className="button">{messages.placeHold}</button>
       </form>}
-      <section className="panel"><div className="section-heading"><h3>{messages.holdHistory}</h3><button className="button button-secondary" onClick={() => void load()}>{messages.refresh}</button></div>
+      <section className="panel"><div className="section-heading"><h3>{messages.holdHistory}</h3><button className="button button-secondary" onClick={() => void load(cursor, listChannel.next())}>{messages.refresh}</button></div>
+        <label>상태 필터<select value={stateFilter} onChange={(event) => { setStateFilter(event.target.value as LegalHoldState | ''); resetPage() }}><option value="">전체</option><option>ACTIVE</option><option>RELEASE_REQUESTED</option><option>RELEASE_REJECTED</option><option>RELEASED</option></select></label>
         <div className="compact-list">{holds.map((hold) => <button key={hold.hold_id} className={selectedId === hold.hold_id ? 'selected' : ''} onClick={() => setSelectedId(hold.hold_id)}><span><strong>{hold.data_class}</strong><small>{hold.scope} · {hold.scope_id ?? 'workspace'}</small></span><span className="badge">{hold.state}</span></button>)}</div>
+        <PageNavigation
+          page={pageNumber}
+          canPrevious={cursorHistory.length > 0}
+          canNext={Boolean(nextCursor)}
+          onPrevious={() => {
+            const previous = cursorHistory.at(-1) ?? null
+            setCursorHistory((history) => history.slice(0, -1))
+            setCursor(previous ?? undefined)
+            setPageNumber((page) => Math.max(1, page - 1))
+          }}
+          onNext={() => {
+            if (!nextCursor) return
+            setCursorHistory((history) => [...history.slice(-49), cursor ?? null])
+            setCursor(nextCursor)
+            setPageNumber((page) => page + 1)
+          }}
+        />
       </section>
     </div>
     {selected && <section className="result-card governance-detail form-stack">
@@ -205,8 +390,29 @@ export function LegalHoldAdmin(props: Props) {
         {canDecideRelease && <><button className="button" disabled={!releaseReason.trim()} onClick={() => releaseDecision('APPROVED')}>{messages.approve}</button><button className="button button-secondary" disabled={!releaseReason.trim()} onClick={() => releaseDecision('REJECTED')}>{messages.reject}</button></>}
         {selected.state === 'RELEASE_REQUESTED' && !canDecideRelease && <p className="callout">{messages.makerCannotCheck}</p>}
       </div>
+      {selected.action_history_truncated && <p className="callout">작업 이력은 서버에서 최근 100건으로 제한되어 표시됩니다.</p>}
       <div className="audit-grid"><div><h4>Actions</h4>{selected.actions.map((action) => <p key={action.action_id}><strong>{action.action}</strong><br /><small>{action.actor_id} · v{action.hold_version}</small></p>)}</div></div>
     </section>}
     <p className="notice notice-error" role="note">{messages.noErasure}</p>
   </>
+}
+
+function PageNavigation({
+  page,
+  canPrevious,
+  canNext,
+  onPrevious,
+  onNext,
+}: {
+  page: number
+  canPrevious: boolean
+  canNext: boolean
+  onPrevious: () => void
+  onNext: () => void
+}) {
+  return <nav className="action-row" aria-label="서버 페이지 탐색">
+    <button type="button" className="button button-secondary" disabled={!canPrevious} onClick={onPrevious}>이전</button>
+    <span>페이지 {page}</span>
+    <button type="button" className="button button-secondary" disabled={!canNext} onClick={onNext}>다음</button>
+  </nav>
 }

@@ -180,6 +180,7 @@ def upgrade() -> None:
         sa.UniqueConstraint('issuer', 'external_subject', name=op.f('uq_subjects_issuer_external_subject')),
         schema='iam'
         )
+        op.create_index('ix_subjects_display_name_lower_id', 'subjects', [sa.literal_column('lower(display_name)'), 'id'], unique=False, schema='iam')
         op.create_table('idempotency_keys',
         sa.Column('workspace_id', sa.Uuid(), nullable=False),
         sa.Column('operation', sa.String(length=100), nullable=False),
@@ -993,6 +994,7 @@ def upgrade() -> None:
         sa.UniqueConstraint('workspace_id', 'profile_key', 'profile_version', name='uq_inference_profile_versions_key_version'),
         schema='integration'
         )
+        op.create_index('ix_inference_profile_versions_workspace_order', 'inference_provider_profile_versions', ['workspace_id', 'profile_key', sa.literal_column('profile_version DESC'), 'id'], unique=False, schema='integration')
         op.create_index('ix_inference_profile_versions_workspace_state', 'inference_provider_profile_versions', ['workspace_id', 'state', 'profile_key'], unique=False, schema='integration')
         op.execute('ALTER TABLE integration.inference_provider_profile_versions ENABLE ROW LEVEL SECURITY')
         op.execute('ALTER TABLE integration.inference_provider_profile_versions FORCE ROW LEVEL SECURITY')
@@ -1156,6 +1158,7 @@ def upgrade() -> None:
         sa.UniqueConstraint('workspace_id', 'system_id', 'subject_id', 'responsibility', name=op.f('uq_system_assignees_workspace_id_system_id_subject_id_responsibility')),
         schema='platform'
         )
+        op.create_index('ix_system_assignees_workspace_system_id', 'system_assignees', ['workspace_id', 'system_id', 'id'], unique=False, schema='platform')
         op.create_index('ix_system_assignees_workspace_system_priority', 'system_assignees', ['workspace_id', 'system_id', 'priority'], unique=False, schema='platform')
         op.execute('ALTER TABLE platform.system_assignees ENABLE ROW LEVEL SECURITY')
         op.execute('ALTER TABLE platform.system_assignees FORCE ROW LEVEL SECURITY')
@@ -1224,6 +1227,7 @@ def upgrade() -> None:
         schema='retention'
         )
         op.create_index('ix_legal_holds_workspace_blocking_scope', 'legal_holds', ['workspace_id', 'data_class', 'scope', 'scope_id'], unique=False, schema='retention', postgresql_where=sa.text("state <> 'RELEASED'"))
+        op.create_index('ix_legal_holds_workspace_created_id', 'legal_holds', ['workspace_id', sa.literal_column('created_at DESC'), 'id'], unique=False, schema='retention')
         op.create_index('ix_legal_holds_workspace_state', 'legal_holds', ['workspace_id', 'state', 'updated_at'], unique=False, schema='retention')
         op.execute('ALTER TABLE retention.legal_holds ENABLE ROW LEVEL SECURITY')
         op.execute('ALTER TABLE retention.legal_holds FORCE ROW LEVEL SECURITY')
@@ -1383,6 +1387,7 @@ def upgrade() -> None:
         )
         op.create_index('ix_restricted_search_grants_scope_active', 'restricted_search_grants', ['workspace_id', 'scope', 'scope_id', 'state', 'expires_at'], unique=False, schema='authz')
         op.create_index('ix_restricted_search_grants_subject_active', 'restricted_search_grants', ['workspace_id', 'subject_id', 'state', 'expires_at'], unique=False, schema='authz')
+        op.create_index('ix_restricted_search_grants_workspace_created_id', 'restricted_search_grants', ['workspace_id', sa.literal_column('created_at DESC'), 'id'], unique=False, schema='authz')
         op.execute('ALTER TABLE authz.restricted_search_grants ENABLE ROW LEVEL SECURITY')
         op.execute('ALTER TABLE authz.restricted_search_grants FORCE ROW LEVEL SECURITY')
         op.execute("CREATE POLICY workspace_isolation ON authz.restricted_search_grants USING (workspace_id = NULLIF(current_setting('app.workspace_id', true), '')::uuid) WITH CHECK (workspace_id = NULLIF(current_setting('app.workspace_id', true), '')::uuid)")
@@ -1781,7 +1786,7 @@ def upgrade() -> None:
         sa.Column('updated_at', sa.DateTime(timezone=True), server_default=sa.text('CURRENT_TIMESTAMP'), nullable=False),
         sa.CheckConstraint("(activated_at IS NULL AND activated_by IS NULL) OR (activated_at IS NOT NULL AND activated_by IS NOT NULL AND test_status = 'AVAILABLE')", name=op.f('ck_external_service_profile_versions_activation_evidence_shape')),
         sa.CheckConstraint("configuration_hash ~ '^[0-9a-f]{64}$'", name=op.f('ck_external_service_profile_versions_configuration_hash_sha256')),
-        sa.CheckConstraint("test_scope IS NULL OR test_scope IN ('HTTP_HEALTH', 'MODEL_DISCOVERY', 'MODEL_INFERENCE', 'EMBEDDING_INFERENCE', 'AUTHENTICATED_QUERY', 'REDIS_PING')", name=op.f('ck_external_service_profile_versions_test_scope_vocabulary')),
+        sa.CheckConstraint("test_scope IS NULL OR test_scope IN ('HTTP_HEALTH', 'MODEL_DISCOVERY', 'MODEL_INFERENCE', 'EMBEDDING_INFERENCE', 'AUTHENTICATED_QUERY', 'REDIS_PING', 'REDIS_POLICY', 'S3_HEAD_BUCKET')", name=op.f('ck_external_service_profile_versions_test_scope_vocabulary')),
         sa.CheckConstraint("test_status IS NULL OR test_status IN ('AVAILABLE', 'AUTHENTICATION_REQUIRED', 'UNAVAILABLE')", name=op.f('ck_external_service_profile_versions_test_status_vocabulary')),
         sa.CheckConstraint('(test_status IS NULL AND test_scope IS NULL AND test_latency_ms IS NULL AND tested_at IS NULL AND tested_by IS NULL) OR (test_status IS NOT NULL AND test_scope IS NOT NULL AND test_latency_ms IS NOT NULL AND tested_at IS NOT NULL AND tested_by IS NOT NULL)', name=op.f('ck_external_service_profile_versions_test_evidence_shape')),
         sa.CheckConstraint('configuration_version > 0', name=op.f('ck_external_service_profile_versions_configuration_version_positive')),
@@ -1847,6 +1852,7 @@ def upgrade() -> None:
         sa.UniqueConstraint('workspace_id', 'requester_id', 'payload_hash', name='uq_erasure_requests_idempotent_payload'),
         schema='retention'
         )
+        op.create_index('ix_erasure_requests_workspace_created_id', 'erasure_requests', ['workspace_id', sa.literal_column('created_at DESC'), 'id'], unique=False, schema='retention')
         op.create_index('ix_erasure_requests_workspace_state_expiry', 'erasure_requests', ['workspace_id', 'state', 'expires_at'], unique=False, schema='retention')
         op.create_index('ix_erasure_requests_workspace_target', 'erasure_requests', ['workspace_id', 'target_type', 'target_id', 'created_at'], unique=False, schema='retention')
         op.execute('ALTER TABLE retention.erasure_requests ENABLE ROW LEVEL SECURITY')

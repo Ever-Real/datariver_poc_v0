@@ -1,10 +1,46 @@
 import pytest
 
+from datariver.config import Settings
 from datariver.domain.common import canonical_json_hash
 from datariver.infrastructure.system_configuration_runtime import (
     _document,
     _runtime_updates,
+    validate_runtime_system_configuration,
 )
+
+
+def _settings() -> Settings:
+    return Settings(
+        _env_file=None,
+        database_url="postgresql+asyncpg://u@localhost/db",
+        database_secret_ref="file:/run/secrets/postgres_password",
+        migration_database_url="postgresql+asyncpg://owner@localhost/db",
+        migration_database_secret_ref="file:/run/secrets/postgres_owner_password",
+        relay_database_url="postgresql+asyncpg://relay@localhost/db",
+        relay_database_secret_ref="file:/run/secrets/postgres_relay_password",
+        upload_database_url="postgresql+asyncpg://upload@localhost/db",
+        upload_database_secret_ref="file:/run/secrets/postgres_upload_password",
+        governance_database_url="postgresql+asyncpg://governance@localhost/db",
+        governance_database_secret_ref="file:/run/secrets/postgres_governance_password",
+        bootstrap_database_url="postgresql+asyncpg://bootstrap@localhost/db",
+        bootstrap_database_secret_ref="file:/run/secrets/postgres_bootstrap_password",
+        oidc_issuer="http://idp/realms/test",
+        oidc_audience="datariver-api",
+        oidc_jwks_url="http://idp/jwks",
+        datahub_base_url="http://datahub",
+        datahub_secret_ref="file:/run/secrets/datahub_token",
+        datahub_expected_version="v1.6.0",
+        redis_cache_url="redis://cache:6379/0",
+        redis_delivery_url="redis://queue:6379/0",
+        redis_cache_secret_ref="file:/run/secrets/redis_cache_password",
+        redis_delivery_secret_ref="file:/run/secrets/redis_delivery_password",
+        s3_endpoint_url="http://s3",
+        s3_public_endpoint_url="http://localhost:8333",
+        s3_bucket_quarantine="quarantine",
+        s3_bucket_accepted="accepted",
+        s3_access_key_file="/run/secrets/s3_access_key",
+        s3_secret_key_file="/run/secrets/s3_secret_key",
+    )
 
 
 def test_datahub_activation_maps_only_validated_runtime_and_secret_references() -> None:
@@ -59,6 +95,18 @@ def test_redis_activation_maps_cache_and_delivery_to_separate_settings() -> None
         "redis_delivery_url": "rediss://redis-delivery.example:6379/0",
         "redis_delivery_secret_ref": "file:/run/secrets/redis_delivery_password",
     }
+
+    with pytest.raises(ValueError, match="canonical operator-managed secret"):
+        _runtime_updates(
+            "REDIS_CACHE",
+            {
+                "url": "rediss://redis-cache.example:6379/0",
+                "secret_references": {
+                    "password": "file:/run/secrets/keycloak_identity_admin_client_secret"
+                },
+                "options": {},
+            },
+        )
 
 
 def test_local_ollama_activation_requires_openai_compatible_style_and_no_api_key() -> None:
@@ -140,3 +188,24 @@ def test_activated_yaml_hash_is_revalidated_before_process_configuration() -> No
 
     with pytest.raises(ValueError, match="hash evidence"):
         _document(yaml_document, "0" * 64)
+
+
+def test_activation_preflight_uses_the_same_settings_contract_as_process_startup() -> None:
+    current = _settings()
+    invalid_local_ollama = {
+        "base_url": "http://another-host:11434/v1",
+        "model": "llama3.1:latest",
+        "secret_references": {},
+        "options": {
+            "api_style": "openai_compatible",
+            "context_tokens": 8192,
+            "timeout_seconds": 60,
+        },
+    }
+
+    with pytest.raises(ValueError, match=r"host\.docker\.internal"):
+        validate_runtime_system_configuration(
+            current,
+            service_key="LLM_CHAT_MODEL",
+            document=invalid_local_ollama,
+        )

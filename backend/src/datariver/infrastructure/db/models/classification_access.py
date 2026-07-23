@@ -274,6 +274,12 @@ class RestrictedSearchGrantModel(Base, UuidPrimaryKeyMixin, TimestampMixin, Vers
             "state",
             "expires_at",
         ),
+        Index(
+            "ix_restricted_search_grants_workspace_created_id",
+            "workspace_id",
+            text("created_at DESC"),
+            "id",
+        ),
         {"schema": "authz"},
     )
 

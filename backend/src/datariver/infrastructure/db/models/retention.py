@@ -292,6 +292,12 @@ class LegalHoldModel(Base, UuidPrimaryKeyMixin, TimestampMixin, VersionMixin):
             postgresql_where=text("state <> 'RELEASED'"),
         ),
         Index("ix_legal_holds_workspace_state", "workspace_id", "state", "updated_at"),
+        Index(
+            "ix_legal_holds_workspace_created_id",
+            "workspace_id",
+            text("created_at DESC"),
+            "id",
+        ),
         {"schema": "retention"},
     )
 
@@ -468,6 +474,12 @@ class ErasureRequestModel(Base, UuidPrimaryKeyMixin, TimestampMixin, VersionMixi
             "target_type",
             "target_id",
             "created_at",
+        ),
+        Index(
+            "ix_erasure_requests_workspace_created_id",
+            "workspace_id",
+            text("created_at DESC"),
+            "id",
         ),
         {"schema": "retention"},
     )

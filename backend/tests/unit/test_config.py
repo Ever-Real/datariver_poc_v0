@@ -149,6 +149,32 @@ def test_identity_administration_is_opt_in_and_requires_a_file_secret() -> None:
     assert configured.identity_admin_enabled is True
     assert configured.identity_password_change_action_enabled is True
 
+    with pytest.raises(ValidationError, match="HTTPS"):
+        settings(
+            app_env="production",
+            app_public_origin="https://catalog.example.com",
+            app_cors_origins=("https://catalog.example.com",),
+            app_trusted_hosts=("catalog.example.com",),
+            oidc_issuer="https://idp.example.com/realms/data",
+            oidc_jwks_url="https://idp.example.com/realms/data/certs",
+            datahub_base_url="https://datahub.example.com",
+            datahub_version_enforcement="enforce",
+            s3_public_endpoint_url="https://objects.example.com",
+            identity_admin_enabled=True,
+            identity_admin_base_url="http://keycloak.example.com",
+            identity_admin_client_secret_ref=(
+                "file:/run/secrets/keycloak_identity_admin_client_secret"
+            ),
+        )
+    with pytest.raises(ValidationError, match="local origin"):
+        settings(
+            identity_admin_enabled=True,
+            identity_admin_base_url="http://keycloak.example.internal:8080",
+            identity_admin_client_secret_ref=(
+                "file:/run/secrets/keycloak_identity_admin_client_secret"
+            ),
+        )
+
 
 def test_platform_security_switches_are_explicit_and_fail_closed_by_default() -> None:
     configured = settings(
@@ -268,13 +294,13 @@ def test_local_ollama_chat_is_development_only_and_host_gateway_bound() -> None:
 def test_neo4j_projection_accepts_only_explicit_deployment_hosts() -> None:
     configured = settings(
         neo4j_projection_enabled=True,
-        neo4j_uri="bolt://graph.internal.example:7687",
+        neo4j_uri="neo4j+s://graph.internal.example:7687",
         neo4j_allowed_hosts=("graph.internal.example",),
         neo4j_auth_secret_ref="file:/run/secrets/neo4j_auth",
     )
 
-    assert configured.neo4j_uri == "bolt://graph.internal.example:7687"
-    with pytest.raises(ValidationError, match="explicitly allowlisted"):
+    assert configured.neo4j_uri == "neo4j+s://graph.internal.example:7687"
+    with pytest.raises(ValidationError, match="TLS for an allowlisted"):
         settings(
             neo4j_projection_enabled=True,
             neo4j_uri="bolt://unreviewed.internal.example:7687",

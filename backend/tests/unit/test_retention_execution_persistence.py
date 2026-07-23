@@ -134,6 +134,7 @@ def test_phase2_roles_and_migration_have_no_destructive_privilege_or_state() -> 
     assert "ordinal_position" not in migration
     assert "e7d66e854560db29c126f3768a3eb2d3b635c9a1f6b291bf7255b72149b75478" in migration
     assert "0dcf7a560a9c9ccd090b4178c63af942283df77e1eae5e6f6841e9976dc16ae2" in migration
+    assert "0a6f12b6ee2ffbb7b6e7d11ba22aa651cdc9831b22194fa34b83922a578986d4" in migration
     assert "_ARCHIVE_SOURCE_LEGACY_DEFINITION" in migration
     assert 'op.f("ck_immutable_archive_receipts_source")' in migration
     assert "/docker-entrypoint-initdb.d/010_roles.sh" in reconcile_sh

@@ -1,15 +1,16 @@
 from __future__ import annotations
 
 import re
-from collections.abc import Mapping
-from typing import Annotated, Any
+from collections.abc import Mapping, Sequence
+from typing import Annotated, Any, Literal
 from urllib.parse import urlsplit
 from uuid import UUID
 
 import yaml  # type: ignore[import-untyped]
 from fastapi import APIRouter, Header, Query, Request, Response
-from sqlalchemy import func, select, text, tuple_
+from sqlalchemy import exists, func, or_, select, text, tuple_
 from sqlalchemy.ext.asyncio import AsyncSession
+from yaml.tokens import AliasToken, AnchorToken  # type: ignore[import-untyped]
 
 from datariver.application.dto import MembershipRenewalRecord
 from datariver.application.identity_admin import IdentityUserDraft
@@ -21,6 +22,8 @@ from datariver.domain.admin_access import (
     AdminAccessDecision,
     AdminAccessRequestState,
     MembershipAccessUpdate,
+    SystemAssigneeKey,
+    SystemAssigneePatchCommand,
     SystemAssigneeUpdate,
     SystemAssigneeUpdateCommand,
 )
@@ -43,9 +46,15 @@ from datariver.domain.membership_renewal import (
     MembershipRenewalDecision,
     MembershipRenewalState,
 )
+from datariver.domain.system_configuration import (
+    canonical_secret_references,
+    require_canonical_secret_references,
+)
 from datariver.infrastructure.db.admin_access import (
     SqlAdminAccessUnitOfWork,
     SqlMembershipAccessRepository,
+    decode_admin_list_cursor,
+    encode_admin_list_cursor,
 )
 from datariver.infrastructure.db.authz import SqlDecisionWriter
 from datariver.infrastructure.db.governance import SqlOutboxWriter
@@ -60,6 +69,9 @@ from datariver.infrastructure.db.models.platform import (
 from datariver.infrastructure.db.rls import set_security_context
 from datariver.infrastructure.secrets import SecretResolver
 from datariver.infrastructure.system_configuration_probe import probe_system_configuration
+from datariver.infrastructure.system_configuration_runtime import (
+    validate_runtime_system_configuration,
+)
 from datariver.interfaces.http.dependencies import ContextDep, get_container
 from datariver.interfaces.http.presenters import (
     admin_access_request_response,
@@ -89,6 +101,9 @@ from datariver.interfaces.http.schemas import (
     MembershipRenewalResponse,
     MembershipRoleAssignmentRequest,
     MembershipRoleAssignmentResponse,
+    PageMeta,
+    SystemAssigneeListResponse,
+    SystemAssigneePatchRequest,
     SystemAssigneeUpdateListRequest,
     SystemAssigneeUpdateResponse,
     SystemConfigurationEntryResponse,
@@ -170,7 +185,7 @@ _RUNTIME_RESTART_SCOPE = {
 _SYSTEM_CONFIGURATION_TEMPLATES: dict[str, dict[str, Any]] = {
     "DATAHUB_GMS": {
         "base_url": "",
-        "secret_references": {"token": "file:/run/secrets/datahub_token"},
+        "secret_references": dict(canonical_secret_references("DATAHUB_GMS")),
         "options": {
             "allowed_versions": [],
             "circuit_failure_threshold": 5,
@@ -195,12 +210,12 @@ _SYSTEM_CONFIGURATION_TEMPLATES: dict[str, dict[str, Any]] = {
     },
     "REDIS_CACHE": {
         "url": "redis://redis-cache.example.internal:6379/0",
-        "secret_references": {"password": "file:/run/secrets/redis_cache_password"},
+        "secret_references": dict(canonical_secret_references("REDIS_CACHE")),
         "options": {"role": "CACHE", "required_policy": "allkeys-lfu"},
     },
     "REDIS_DELIVERY": {
         "url": "redis://redis-delivery.example.internal:6379/0",
-        "secret_references": {"password": "file:/run/secrets/redis_delivery_password"},
+        "secret_references": dict(canonical_secret_references("REDIS_DELIVERY")),
         "options": {"role": "DELIVERY", "required_policy": "noeviction+aof"},
     },
     "S3_STORAGE": {
@@ -215,10 +230,7 @@ _SYSTEM_CONFIGURATION_TEMPLATES: dict[str, dict[str, Any]] = {
             "quarantine": "",
         },
         "options": {"presigned_url_ttl_seconds": 900},
-        "secret_references": {
-            "access_key": "file:/run/secrets/s3_access_key",
-            "secret_key": "file:/run/secrets/s3_secret_key",
-        },
+        "secret_references": dict(canonical_secret_references("S3_STORAGE")),
     },
     "LLM_CHAT_MODEL": {
         "connection_mode": "LOCAL_OLLAMA",
@@ -246,7 +258,7 @@ _SYSTEM_CONFIGURATION_TEMPLATES: dict[str, dict[str, Any]] = {
     },
     "NEO4J": {
         "database": "neo4j",
-        "secret_references": {"credential": "file:/run/secrets/neo4j_auth"},
+        "secret_references": dict(canonical_secret_references("NEO4J")),
         "uri": "",
         "options": {"connection_timeout_seconds": 30, "maximum_connection_pool_size": 50},
     },
@@ -374,19 +386,61 @@ _SYSTEM_METADATA: dict[str, dict[str, Any]] = {
     },
 }
 _SENSITIVE_CONFIGURATION_KEY = re.compile(
-    r"(?:^|[_-])(?:password|secret|token|api[_-]?key|private[_-]?key)(?:$|[_-])",
+    r"(?:^|[_-])(?:password|secret|token|credential|authorization|bearer|cookie|"
+    r"api[_-]?key|private[_-]?key)(?:$|[_-])",
     re.IGNORECASE,
 )
 _MASKED_VALUE = "********"
+_MAX_CONFIGURATION_BYTES = 65_536
+_MAX_CONFIGURATION_DEPTH = 12
+_MAX_CONFIGURATION_NODES = 512
+_MAX_CONFIGURATION_SCALAR_BYTES = 32_768
 
 
 def _yaml_document(value: str) -> dict[str, Any]:
+    if len(value.encode("utf-8")) > _MAX_CONFIGURATION_BYTES:
+        raise ValidationError("System configuration YAML exceeds the 64 KiB limit.")
     try:
+        if any(isinstance(token, AliasToken | AnchorToken) for token in yaml.scan(value)):
+            raise ValidationError("System configuration YAML aliases and anchors are forbidden.")
         document = yaml.safe_load(value)
     except yaml.YAMLError as error:
         raise ValidationError("System configuration must be valid YAML.") from error
     if not isinstance(document, dict):
         raise ValidationError("System configuration YAML must contain one mapping document.")
+    pending: list[tuple[object, int]] = [(document, 1)]
+    seen: set[int] = set()
+    node_count = 0
+    scalar_bytes = 0
+    while pending:
+        current, depth = pending.pop()
+        node_count += 1
+        if node_count > _MAX_CONFIGURATION_NODES:
+            raise ValidationError("System configuration YAML exceeds the node limit.")
+        if depth > _MAX_CONFIGURATION_DEPTH:
+            raise ValidationError("System configuration YAML exceeds the nesting depth limit.")
+        if isinstance(current, Mapping):
+            identity = id(current)
+            if identity in seen:
+                raise ValidationError("System configuration YAML cannot contain recursive values.")
+            seen.add(identity)
+            for item_key, item_value in current.items():
+                if not isinstance(item_key, str):
+                    raise ValidationError("System configuration mapping keys must be strings.")
+                scalar_bytes += len(item_key.encode("utf-8"))
+                pending.append((item_value, depth + 1))
+        elif isinstance(current, list):
+            identity = id(current)
+            if identity in seen:
+                raise ValidationError("System configuration YAML cannot contain recursive values.")
+            seen.add(identity)
+            pending.extend((item, depth + 1) for item in current)
+        elif isinstance(current, str):
+            scalar_bytes += len(current.encode("utf-8"))
+        elif current is not None and not isinstance(current, bool | int | float):
+            raise ValidationError("System configuration YAML contains an unsupported value type.")
+        if scalar_bytes > _MAX_CONFIGURATION_SCALAR_BYTES:
+            raise ValidationError("System configuration YAML exceeds the scalar data limit.")
     return dict(document)
 
 
@@ -441,6 +495,22 @@ def _secret_references(value: object) -> dict[str, str]:
             )
         references[name] = raw_reference
     return references
+
+
+def _require_canonical_secret_contract(
+    system_id: str,
+    references: Mapping[str, str],
+    *,
+    connection_mode: object = None,
+) -> None:
+    try:
+        require_canonical_secret_references(
+            system_id,
+            references,
+            connection_mode=connection_mode,
+        )
+    except ValueError as error:
+        raise ValidationError(str(error)) from error
 
 
 def _validate_configuration_submission(
@@ -536,6 +606,98 @@ def _require_non_empty_string(document: Mapping[str, Any], key: str) -> str:
     return value.strip()
 
 
+def _validate_option_value(key: str, value: object, template: object) -> None:
+    if isinstance(template, bool):
+        if not isinstance(value, bool):
+            raise ValidationError(f"System configuration option {key} must be boolean.")
+        return
+    if isinstance(template, int):
+        if not isinstance(value, int) or isinstance(value, bool):
+            raise ValidationError(f"System configuration option {key} must be an integer.")
+        limits = {
+            "circuit_failure_threshold": (1, 100),
+            "circuit_open_seconds": (1, 3_600),
+            "context_tokens": (256, 262_144),
+            "maximum_concurrency": (1, 200),
+            "maximum_connection_pool_size": (1, 200),
+            "presigned_url_ttl_seconds": (60, 86_400),
+            "queue_timeout_seconds": (1, 300),
+            "stale_ttl_seconds": (1, 86_400),
+            "timeout_seconds": (1, 300),
+            "top_n": (1, 100),
+            "version_probe_ttl_seconds": (1, 86_400),
+            "connection_timeout_seconds": (1, 30),
+        }
+        lower, upper = limits.get(key, (0, 1_000_000))
+        if value < lower or value > upper:
+            raise ValidationError(
+                f"System configuration option {key} must be between {lower} and {upper}."
+            )
+        return
+    if isinstance(template, str):
+        if not isinstance(value, str) or len(value) > 512:
+            raise ValidationError(f"System configuration option {key} must be a short string.")
+        fixed_values = {
+            "api_style": "openai_compatible",
+            "required_policy": template,
+            "role": template,
+        }
+        if key in fixed_values and value != fixed_values[key]:
+            raise ValidationError(f"System configuration option {key} is server-controlled.")
+        if key == "version_enforcement" and value not in {"report", "strict"}:
+            raise ValidationError("System configuration version_enforcement is invalid.")
+        return
+    if isinstance(template, list):
+        if (
+            not isinstance(value, list)
+            or len(value) > 20
+            or any(not isinstance(item, str) or len(item) > 128 for item in value)
+        ):
+            raise ValidationError(
+                f"System configuration option {key} must be a bounded string list."
+            )
+        return
+    raise ValidationError(f"System configuration option {key} has no supported schema.")
+
+
+def _validate_nested_configuration_schema(system_id: str, document: Mapping[str, Any]) -> None:
+    template = _SYSTEM_CONFIGURATION_TEMPLATES[system_id]
+    options = document.get("options")
+    if not isinstance(options, Mapping):
+        raise ValidationError("System configuration options must be one mapping.")
+    option_template = template.get("options")
+    if not isinstance(option_template, Mapping):
+        raise ValidationError("The server-owned system configuration schema is invalid.")
+    unknown_options = sorted(set(options) - set(option_template))
+    if unknown_options:
+        raise ValidationError(
+            "System configuration contains unsupported option keys: "
+            + ", ".join(str(value) for value in unknown_options)
+        )
+    for option_key, option_value in options.items():
+        _validate_option_value(
+            str(option_key),
+            option_value,
+            option_template[option_key],
+        )
+    buckets = document.get("buckets")
+    bucket_template = template.get("buckets")
+    if buckets is not None:
+        if not isinstance(buckets, Mapping) or not isinstance(bucket_template, Mapping):
+            raise ValidationError("System configuration buckets must be one mapping.")
+        unknown_buckets = sorted(set(buckets) - set(bucket_template))
+        if unknown_buckets:
+            raise ValidationError(
+                "System configuration contains unsupported bucket keys: "
+                + ", ".join(str(value) for value in unknown_buckets)
+            )
+        for bucket_key, bucket_value in buckets.items():
+            if not isinstance(bucket_value, str) or len(bucket_value) > 255:
+                raise ValidationError(
+                    f"System configuration bucket {bucket_key} must be a short string."
+                )
+
+
 def _validate_system_configuration(system_id: str, document: Mapping[str, Any]) -> str | None:
     allowed_top_level = set(_SYSTEM_CONFIGURATION_TEMPLATES[system_id]) | {"auth_principal"}
     unknown_keys = sorted(set(document) - allowed_top_level)
@@ -544,17 +706,23 @@ def _validate_system_configuration(system_id: str, document: Mapping[str, Any]) 
             "System configuration contains unsupported top-level keys: " + ", ".join(unknown_keys)
         )
     _secret_references(document.get("secret_references", {}))
-    options = document.get("options")
-    if not isinstance(options, Mapping):
-        raise ValidationError("System configuration options must be one mapping.")
+    _validate_nested_configuration_schema(system_id, document)
+    options = document["options"]
+    assert isinstance(options, Mapping)
     if system_id == "NEO4J":
         uri = _require_non_empty_string(document, "uri")
         parsed = urlsplit(uri)
-        if parsed.scheme not in {"bolt", "neo4j"} or parsed.hostname is None:
-            raise ValidationError("Neo4j URI values must use bolt:// or neo4j://.")
+        if parsed.scheme not in {"bolt", "neo4j", "bolt+s", "neo4j+s"} or parsed.hostname is None:
+            raise ValidationError(
+                "Neo4j URI values must use bolt://, neo4j:// or their +s TLS variants."
+            )
         if parsed.username is not None or parsed.password is not None:
             raise ValidationError("Credentials must not be embedded in the Neo4j URI.")
         _require_non_empty_string(document, "database")
+        _require_canonical_secret_contract(
+            system_id,
+            _secret_references(document.get("secret_references", {})),
+        )
         return None
     if system_id in {"REDIS_CACHE", "REDIS_DELIVERY"}:
         url = _require_non_empty_string(document, "url")
@@ -570,6 +738,7 @@ def _validate_system_configuration(system_id: str, document: Mapping[str, Any]) 
             raise ValidationError(
                 "Redis configuration requires exactly one password secret reference."
             )
+        _require_canonical_secret_contract(system_id, secret_references)
         return url
     endpoint = _configuration_endpoint(document)
     if endpoint is None:
@@ -602,6 +771,11 @@ def _validate_system_configuration(system_id: str, document: Mapping[str, Any]) 
                     "Intranet OpenAI-compatible LLM configuration requires "
                     "api_style=openai_compatible."
                 )
+        _require_canonical_secret_contract(
+            system_id,
+            secret_references,
+            connection_mode=connection_mode,
+        )
     if system_id == "S3_STORAGE":
         _require_non_empty_string(document, "region")
         buckets = document.get("buckets")
@@ -609,6 +783,11 @@ def _validate_system_configuration(system_id: str, document: Mapping[str, Any]) 
             raise ValidationError("S3 configuration requires one buckets mapping.")
         for bucket_key in ("accepted", "exports", "quarantine"):
             _require_non_empty_string(buckets, bucket_key)
+    if not system_id.startswith("LLM_") or system_id == "LLM_RERANKER":
+        _require_canonical_secret_contract(
+            system_id,
+            _secret_references(document.get("secret_references", {})),
+        )
     return endpoint
 
 
@@ -709,6 +888,11 @@ async def _role_assigned_count(
         .where(
             WorkspaceMembershipModel.workspace_id == workspace_id,
             WorkspaceMembershipModel.attributes["groups"].contains([marker]),
+            ~exists().where(
+                AccessRoleAssignmentModel.workspace_id == workspace_id,
+                AccessRoleAssignmentModel.subject_id == WorkspaceMembershipModel.subject_id,
+                AccessRoleAssignmentModel.active.is_(True),
+            ),
         )
         .union(
             select(AccessRoleAssignmentModel.subject_id).where(
@@ -736,6 +920,13 @@ async def _role_assigned_counts(session: AsyncSession, *, workspace_id: UUID) ->
                     ) AS marker(value)
                     WHERE membership.workspace_id = :workspace_id
                       AND marker.value LIKE 'datariver-role-%'
+                      AND NOT EXISTS (
+                          SELECT 1
+                          FROM iam.access_role_assignments AS current_assignment
+                          WHERE current_assignment.workspace_id = membership.workspace_id
+                            AND current_assignment.subject_id = membership.subject_id
+                            AND current_assignment.active IS TRUE
+                      )
                     UNION
                     SELECT role.role_key, assignment.subject_id
                     FROM iam.access_role_assignments AS assignment
@@ -1015,6 +1206,17 @@ def _system_configuration_entries(
     return entries
 
 
+def _system_configuration_revision_keys(
+    profiles: Sequence[ExternalServiceProfileModel],
+) -> set[tuple[UUID, int]]:
+    return {
+        (profile.id, configuration_version)
+        for profile in profiles
+        for configuration_version in (profile.version, profile.activated_version)
+        if configuration_version is not None
+    }
+
+
 def _require_system_configuration_runtime_activation(settings: Settings) -> None:
     if settings.app_env != "development":
         raise ForbiddenError(
@@ -1105,6 +1307,38 @@ def _system_assignee_command(
         raise ValidationError("The system-assignee document is invalid.") from error
 
 
+def _system_assignee_patch_command(
+    *,
+    workspace_id: UUID,
+    system_id: UUID,
+    expected_system_version: int,
+    payload: SystemAssigneePatchRequest,
+) -> SystemAssigneePatchCommand:
+    try:
+        return SystemAssigneePatchCommand(
+            workspace_id=workspace_id,
+            system_id=system_id,
+            expected_system_version=expected_system_version,
+            upserts=tuple(
+                SystemAssigneeUpdate(
+                    subject_id=item.subject_id,
+                    responsibility=item.responsibility,
+                    priority=item.priority,
+                )
+                for item in payload.upserts
+            ),
+            removals=tuple(
+                SystemAssigneeKey(
+                    subject_id=item.subject_id,
+                    responsibility=item.responsibility,
+                )
+                for item in payload.removals
+            ),
+        )
+    except (TypeError, ValueError) as error:
+        raise ValidationError("The system-assignee patch document is invalid.") from error
+
+
 @router.get("/me", response_model=AdminReadContextResponse)
 async def get_admin_context(
     request: Request,
@@ -1124,16 +1358,23 @@ async def list_workspace_memberships(
     request: Request,
     context: ContextDep,
     limit: Annotated[int, Query(ge=1, le=100)] = 50,
+    q: Annotated[str | None, Query(min_length=1, max_length=200)] = None,
+    status: Literal["ACTIVE", "INACTIVE"] | None = None,
+    cursor: Annotated[str | None, Query(max_length=2000)] = None,
 ) -> WorkspaceMembershipListResponse:
-    values = await _service(request).list_workspace_memberships(
+    page = await _service(request).list_workspace_memberships(
         workspace_id=context.workspace_id,
         limit=limit,
+        query=q,
+        active=(status == "ACTIVE" if status is not None else None),
+        cursor=cursor,
         subject=context.subject,
         environment=context.environment,
         request_id=context.request_id,
     )
     return WorkspaceMembershipListResponse(
-        items=[workspace_membership_summary_response(value) for value in values]
+        items=[workspace_membership_summary_response(value) for value in page.items],
+        page=PageMeta(next_cursor=page.next_cursor, limit=limit),
     )
 
 
@@ -1210,6 +1451,10 @@ async def provision_identity_user(
 async def list_access_roles(
     request: Request,
     context: ContextDep,
+    limit: Annotated[int, Query(ge=1, le=100)] = 50,
+    q: Annotated[str | None, Query(min_length=1, max_length=200)] = None,
+    status: Literal["ACTIVE", "INACTIVE"] | None = None,
+    cursor: Annotated[str | None, Query(max_length=2000)] = None,
 ) -> AccessRoleListResponse:
     admin_context = await _service(request).get_admin_read_context(
         workspace_id=context.workspace_id,
@@ -1219,6 +1464,9 @@ async def list_access_roles(
     )
     if "MEMBERSHIP_ACCESS_READ" not in admin_context.allowed_operations:
         raise ForbiddenError("Access-role definitions are not available for this administrator.")
+    normalized_query = q.strip().lower() if q and q.strip() else None
+    active = status == "ACTIVE" if status is not None else None
+    filters = {"query": normalized_query, "active": active}
     container = get_container(request)
     async with container.database.session_factory() as session:
         async with session.begin():
@@ -1227,18 +1475,36 @@ async def list_access_roles(
                 workspace_id=context.workspace_id,
                 subject_id=context.subject.subject_id,
             )
-            roles = (
-                await session.scalars(
-                    select(AccessRoleModel)
-                    .where(AccessRoleModel.workspace_id == context.workspace_id)
-                    .order_by(
-                        AccessRoleModel.active.desc(),
-                        AccessRoleModel.name,
-                        AccessRoleModel.id,
-                    )
-                    .limit(100)
+            statement = (
+                select(AccessRoleModel)
+                .where(AccessRoleModel.workspace_id == context.workspace_id)
+                .order_by(AccessRoleModel.id.desc())
+                .limit(limit + 1)
+            )
+            if normalized_query is not None:
+                escaped_query = (
+                    normalized_query.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
                 )
-            ).all()
+                pattern = f"%{escaped_query}%"
+                statement = statement.where(
+                    or_(
+                        AccessRoleModel.name.ilike(pattern, escape="\\"),
+                        AccessRoleModel.role_key.ilike(pattern, escape="\\"),
+                    )
+                )
+            if active is not None:
+                statement = statement.where(AccessRoleModel.active.is_(active))
+            if cursor is not None:
+                boundary_id = decode_admin_list_cursor(
+                    cursor,
+                    scope="ACCESS_ROLES",
+                    workspace_id=context.workspace_id,
+                    filters=filters,
+                )
+                statement = statement.where(AccessRoleModel.id < boundary_id)
+            rows = (await session.scalars(statement)).all()
+            has_more = len(rows) > limit
+            roles = rows[:limit]
             role_ids = [role.id for role in roles]
             current_role_versions = [(role.id, role.version) for role in roles]
             stored_rules = (
@@ -1270,7 +1536,22 @@ async def list_access_roles(
                 )
                 for role in roles
             ]
-    return AccessRoleListResponse(items=items)
+    return AccessRoleListResponse(
+        items=items,
+        page=PageMeta(
+            next_cursor=(
+                encode_admin_list_cursor(
+                    scope="ACCESS_ROLES",
+                    workspace_id=context.workspace_id,
+                    filters=filters,
+                    boundary_id=roles[-1].id,
+                )
+                if has_more
+                else None
+            ),
+            limit=limit,
+        ),
+    )
 
 
 @router.post("/access-roles", response_model=AccessRoleResponse, status_code=201)
@@ -1585,11 +1866,17 @@ async def deactivate_access_role(
 async def list_systems(
     request: Request,
     context: ContextDep,
-    limit: Annotated[int, Query(ge=1, le=100)] = 100,
+    limit: Annotated[int, Query(ge=1, le=100)] = 50,
+    q: Annotated[str | None, Query(min_length=1, max_length=200)] = None,
+    status: Literal["ACTIVE", "INACTIVE"] | None = None,
+    cursor: Annotated[str | None, Query(max_length=2000)] = None,
 ) -> SystemDirectoryListResponse:
-    values = await _service(request).list_systems(
+    page = await _service(request).list_systems(
         workspace_id=context.workspace_id,
         limit=limit,
+        query=q,
+        active=(status == "ACTIVE" if status is not None else None),
+        cursor=cursor,
         subject=context.subject,
         environment=context.environment,
         request_id=context.request_id,
@@ -1603,6 +1890,7 @@ async def list_systems(
                 description=value.description,
                 active=value.active,
                 version=value.version,
+                assignee_count=value.assignee_count,
                 assignees=[
                     {
                         "subject_id": assignee.subject_id,
@@ -1614,8 +1902,45 @@ async def list_systems(
                     for assignee in value.assignees
                 ],
             )
-            for value in values
-        ]
+            for value in page.items
+        ],
+        page=PageMeta(next_cursor=page.next_cursor, limit=limit),
+    )
+
+
+@router.get(
+    "/systems/{system_id}/assignees",
+    response_model=SystemAssigneeListResponse,
+)
+async def list_system_assignees(
+    system_id: UUID,
+    request: Request,
+    context: ContextDep,
+    limit: Annotated[int, Query(ge=1, le=100)] = 25,
+    cursor: Annotated[str | None, Query(max_length=2000)] = None,
+) -> SystemAssigneeListResponse:
+    page = await _service(request).list_system_assignees(
+        workspace_id=context.workspace_id,
+        system_id=system_id,
+        limit=limit,
+        cursor=cursor,
+        subject=context.subject,
+        environment=context.environment,
+        request_id=context.request_id,
+    )
+    return SystemAssigneeListResponse(
+        system_version=page.system_version,
+        items=[
+            {
+                "subject_id": assignee.subject_id,
+                "display_name": assignee.display_name,
+                "responsibility": assignee.responsibility,
+                "priority": assignee.priority,
+                "active": assignee.active,
+            }
+            for assignee in page.items
+        ],
+        page=PageMeta(next_cursor=page.next_cursor, limit=limit),
     )
 
 
@@ -1667,6 +1992,54 @@ async def update_system_assignees(
     )
 
 
+@router.patch(
+    "/systems/{system_id}/assignees",
+    response_model=SystemAssigneeUpdateResponse,
+    responses={
+        200: {
+            "headers": {
+                "ETag": {
+                    "description": "Current system version after the assignment patch.",
+                    "schema": {"type": "string"},
+                }
+            }
+        }
+    },
+)
+async def patch_system_assignees(
+    system_id: UUID,
+    payload: SystemAssigneePatchRequest,
+    request: Request,
+    response: Response,
+    context: ContextDep,
+    if_match: Annotated[str, Header(alias="If-Match", max_length=100)],
+    idempotency_key: Annotated[str, Header(alias="Idempotency-Key", min_length=16, max_length=200)],
+) -> SystemAssigneeUpdateResponse:
+    command = _system_assignee_patch_command(
+        workspace_id=context.workspace_id,
+        system_id=system_id,
+        expected_system_version=_expected_version(if_match),
+        payload=payload,
+    )
+    request_hash = canonical_json_hash(
+        {"operation": "admin.system.assignees.patch", "command": command.command_document()}
+    )
+    system_version = await _service(request).patch_system_assignees_with_hardware_key(
+        command=command,
+        subject=context.subject,
+        environment=context.environment,
+        request_id=context.request_id,
+        idempotency_key=idempotency_key,
+        request_hash=request_hash,
+    )
+    response.headers["ETag"] = f'"{system_version}"'
+    return SystemAssigneeUpdateResponse(
+        system_id=system_id,
+        system_version=system_version,
+        payload_hash=command.payload_hash,
+    )
+
+
 @router.get("/system-configuration", response_model=SystemConfigurationListResponse)
 async def list_system_configuration(
     request: Request,
@@ -1699,13 +2072,21 @@ async def list_system_configuration(
                     )
                 ).all()
                 profiles = {profile.service_key: profile for profile in profile_items}
-                revision_items = (
-                    await session.scalars(
-                        select(ExternalServiceProfileVersionModel).where(
-                            ExternalServiceProfileVersionModel.workspace_id == context.workspace_id
+                revision_keys = _system_configuration_revision_keys(profile_items)
+                revision_items: list[ExternalServiceProfileVersionModel] = []
+                if revision_keys:
+                    revision_items = list(
+                        await session.scalars(
+                            select(ExternalServiceProfileVersionModel).where(
+                                ExternalServiceProfileVersionModel.workspace_id
+                                == context.workspace_id,
+                                tuple_(
+                                    ExternalServiceProfileVersionModel.profile_id,
+                                    ExternalServiceProfileVersionModel.configuration_version,
+                                ).in_(revision_keys),
+                            )
                         )
                     )
-                ).all()
                 versions = {
                     (revision.profile_id, revision.configuration_version): revision
                     for revision in revision_items
@@ -2029,12 +2410,15 @@ async def test_system_configuration(
         raise ValidationError("Save this system configuration before testing it.")
     tested_version = profile.version
     tested_yaml = profile.configuration_yaml
+    tested_document = _yaml_document(tested_yaml)
+    _validate_system_configuration(system_id, tested_document)
     result = await probe_system_configuration(
         system_id=system_id,
-        document=_yaml_document(tested_yaml),
+        document=tested_document,
         secret_resolver=SecretResolver(
             virtual_secret_root=container.settings.system_configuration_secret_root
         ),
+        allowed_hosts=container.settings.system_configuration_probe_allowed_hosts,
     )
     tested_at = utc_now()
     async with container.database.session_factory() as session:
@@ -2169,6 +2553,20 @@ async def activate_system_configuration(
             ).one_or_none()
             if revision is None or revision.test_status != "AVAILABLE":
                 raise ConflictError("Only the current TEST-passed configuration can be activated.")
+            activation_document = _yaml_document(revision.configuration_yaml)
+            _validate_system_configuration(system_id, activation_document)
+            try:
+                validate_runtime_system_configuration(
+                    container.settings,
+                    service_key=service_key,
+                    document=activation_document,
+                )
+            except ValueError as error:
+                raise ValidationError(
+                    "The tested system configuration cannot satisfy the process startup contract."
+                ) from error
+            if canonical_json_hash(activation_document) != revision.configuration_hash:
+                raise ConflictError("The activation revision failed its integrity check.")
             if profile.activated_version != profile.version:
                 activated_at = utc_now()
                 profile.activated_version = profile.version
@@ -2251,19 +2649,22 @@ async def list_own_membership_renewals(
     request: Request,
     context: ContextDep,
     limit: Annotated[int, Query(ge=1, le=100)] = 50,
+    cursor: Annotated[str | None, Query(max_length=2000)] = None,
 ) -> MembershipRenewalListResponse:
-    values = await _service(request).list_membership_renewals(
+    page = await _service(request).list_membership_renewals(
         workspace_id=context.workspace_id,
         subject_id=context.subject.subject_id,
         state=None,
         limit=limit,
+        cursor=cursor,
         subject=context.subject,
         environment=context.environment,
         request_id=context.request_id,
         administrator=False,
     )
     return MembershipRenewalListResponse(
-        items=[_membership_renewal_response(value) for value in values]
+        items=[_membership_renewal_response(value) for value in page.items],
+        page=PageMeta(next_cursor=page.next_cursor, limit=limit),
     )
 
 
@@ -2272,24 +2673,27 @@ async def list_membership_renewals_for_admin(
     request: Request,
     context: ContextDep,
     state: Annotated[str | None, Query(max_length=20)] = "PENDING",
-    limit: Annotated[int, Query(ge=1, le=100)] = 100,
+    limit: Annotated[int, Query(ge=1, le=100)] = 50,
+    cursor: Annotated[str | None, Query(max_length=2000)] = None,
 ) -> MembershipRenewalListResponse:
     try:
         parsed_state = MembershipRenewalState(state) if state is not None else None
     except ValueError as error:
         raise ValidationError("The membership renewal state filter is invalid.") from error
-    values = await _service(request).list_membership_renewals(
+    page = await _service(request).list_membership_renewals(
         workspace_id=context.workspace_id,
         subject_id=None,
         state=parsed_state,
         limit=limit,
+        cursor=cursor,
         subject=context.subject,
         environment=context.environment,
         request_id=context.request_id,
         administrator=True,
     )
     return MembershipRenewalListResponse(
-        items=[_membership_renewal_response(value) for value in values]
+        items=[_membership_renewal_response(value) for value in page.items],
+        page=PageMeta(next_cursor=page.next_cursor, limit=limit),
     )
 
 
@@ -2452,6 +2856,7 @@ async def assign_membership_role(
         request_hash=request_hash,
         role_id=payload.role_id,
         role_version=assigned_role_version,
+        role_transition=True,
     )
     response.headers["ETag"] = f'"{membership_version}"'
     return MembershipRoleAssignmentResponse(
@@ -2509,21 +2914,24 @@ async def list_fallback_requests(
     context: ContextDep,
     state: Annotated[str | None, Query(max_length=20)] = None,
     limit: Annotated[int, Query(ge=1, le=100)] = 50,
+    cursor: Annotated[str | None, Query(max_length=2000)] = None,
 ) -> AdminAccessRequestListResponse:
     try:
         parsed_state = AdminAccessRequestState(state) if state is not None else None
     except ValueError as error:
         raise ValidationError("The administrator fallback state filter is invalid.") from error
-    requests = await _service(request).list_fallback_requests(
+    page = await _service(request).list_fallback_requests(
         workspace_id=context.workspace_id,
         state=parsed_state,
         limit=limit,
+        cursor=cursor,
         subject=context.subject,
         environment=context.environment,
         request_id=context.request_id,
     )
     return AdminAccessRequestListResponse(
-        items=[admin_access_request_response(value) for value in requests]
+        items=[admin_access_request_response(value) for value in page.items],
+        page=PageMeta(next_cursor=page.next_cursor, limit=limit),
     )
 
 

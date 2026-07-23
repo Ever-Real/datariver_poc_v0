@@ -1,4 +1,5 @@
 import { useMemo, useState } from 'react'
+import { useRovingTabs } from '../../components/common/useRovingTabs'
 import { ErasureAdmin } from './ErasureAdmin'
 import type { AdminSectionProps } from './MembershipAdmin'
 import { LegalHoldAdmin, RetentionPolicyAdmin } from './RetentionAdmin'
@@ -30,6 +31,12 @@ export function RetentionGovernanceAdmin(props: AdminSectionProps) {
     url.searchParams.set('adminView', next)
     window.history.replaceState({}, '', `${url.pathname}${url.search}${url.hash}`)
   }
+  const tabs = useRovingTabs({
+    ids: views.map((item) => item.id),
+    activeId: active,
+    idPrefix: 'admin-retention',
+    onSelect: select,
+  })
 
   return <div className="grid gap-3">
     <section className="panel border-l-4 border-l-blue-700 bg-slate-50">
@@ -57,10 +64,10 @@ export function RetentionGovernanceAdmin(props: AdminSectionProps) {
       <p className="callout m-0">외부 Oracle·PostgreSQL·Snowflake 등의 원본 테이블 수명주기 실행은 아직 계약에 없습니다. 원본 테이블명이나 SQL을 브라우저에서 받아 삭제하지 않으며, 향후 각 Connector의 정본 ID와 실행 증거를 갖춘 별도 Workflow가 필요합니다.</p>
     </section>
     <div className="flex flex-wrap gap-1 border-b border-slate-300 pb-2" role="tablist" aria-label="보존·파기 업무">
-      {views.map((item) => <button key={item.id} type="button" role="tab" aria-selected={active === item.id} className={`button ${active === item.id ? '' : 'button-secondary'}`} onClick={() => select(item.id)}>{item.label}</button>)}
+      {views.map((item) => <button key={item.id} {...tabs.tabProps(item.id)} type="button" className={`button ${active === item.id ? '' : 'button-secondary'}`} onClick={() => select(item.id)}>{item.label}</button>)}
     </div>
-    {active === 'policy' && <RetentionPolicyAdmin {...props} />}
-    {active === 'holds' && <LegalHoldAdmin {...props} />}
-    {active === 'erasure' && <ErasureAdmin {...props} />}
+    {active === 'policy' && <div {...tabs.panelProps('policy')}><RetentionPolicyAdmin {...props} /></div>}
+    {active === 'holds' && <div {...tabs.panelProps('holds')}><LegalHoldAdmin {...props} /></div>}
+    {active === 'erasure' && <div {...tabs.panelProps('erasure')}><ErasureAdmin {...props} /></div>}
   </div>
 }

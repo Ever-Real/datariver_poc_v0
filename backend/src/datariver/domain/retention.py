@@ -535,6 +535,7 @@ class LegalHold:
     version: int = 1
     actions: list[LegalHoldAction] = field(default_factory=list)
     events: list[DomainEvent] = field(default_factory=list)
+    action_history_truncated: bool = False
 
     @classmethod
     def create(
@@ -753,6 +754,7 @@ class ErasureRequest:
     version: int = 1
     approvals: list[ErasureApproval] = field(default_factory=list)
     events: list[DomainEvent] = field(default_factory=list)
+    approval_history_truncated: bool = False
 
     @classmethod
     def create(

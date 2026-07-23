@@ -1,19 +1,29 @@
 from __future__ import annotations
 
+import base64
+import binascii
+import json
+from collections.abc import Mapping, Sequence
 from datetime import datetime, timedelta
 from types import TracebackType
 from uuid import UUID
 
-from sqlalchemy import and_, cast, delete, func, or_, select, text
+from sqlalchemy import and_, cast, func, or_, select, text, tuple_
 from sqlalchemy.dialects import postgresql
 from sqlalchemy.exc import DBAPIError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from datariver.application.dto import (
+    AdminAccessRequestPage,
+    MembershipRenewalPage,
     MembershipRenewalRecord,
+    MembershipRoleAssignmentEvidence,
+    SystemAssigneePage,
     SystemDirectoryAssignee,
     SystemDirectoryEntry,
+    SystemDirectoryPage,
     WorkspaceMembershipAccessRecord,
+    WorkspaceMembershipPage,
     WorkspaceMembershipSummary,
 )
 from datariver.application.identity_admin import ProvisionedWorkspaceUser
@@ -31,6 +41,7 @@ from datariver.domain.admin_access import (
     AdminAccessRequest,
     AdminAccessRequestState,
     MembershipAccessUpdate,
+    SystemAssigneePatchCommand,
     SystemAssigneeUpdateCommand,
 )
 from datariver.domain.authz import Action, Classification
@@ -59,6 +70,84 @@ from datariver.infrastructure.db.models.platform import (
     WorkspaceMembershipModel,
 )
 from datariver.infrastructure.db.rls import set_security_context
+
+_ADMIN_LIST_CURSOR_KEYS = frozenset({"v", "scope", "workspace_id", "filters", "boundary_id"})
+_MEMBERSHIP_CURSOR_KEYS = frozenset(
+    {"v", "workspace_id", "query", "active", "display_name", "subject_id"}
+)
+
+
+def _validate_admin_list_limit(limit: int) -> None:
+    if limit < 1 or limit > 100:
+        raise ValidationError("An administrator list page must contain between 1 and 100 items.")
+
+
+def encode_admin_list_cursor(
+    *,
+    scope: str,
+    workspace_id: UUID,
+    filters: Mapping[str, str | bool | None],
+    boundary_id: UUID,
+) -> str:
+    payload = json.dumps(
+        {
+            "v": 1,
+            "scope": scope,
+            "workspace_id": str(workspace_id),
+            "filters": dict(filters),
+            "boundary_id": str(boundary_id),
+        },
+        separators=(",", ":"),
+        sort_keys=True,
+    ).encode()
+    return base64.urlsafe_b64encode(payload).decode().rstrip("=")
+
+
+def decode_admin_list_cursor(
+    cursor: str,
+    *,
+    scope: str,
+    workspace_id: UUID,
+    filters: Mapping[str, str | bool | None],
+) -> UUID:
+    try:
+        if not cursor or len(cursor) > 2_000:
+            raise ValueError
+        payload = base64.b64decode(
+            cursor + "=" * (-len(cursor) % 4),
+            altchars=b"-_",
+            validate=True,
+        )
+        document = json.loads(payload)
+        if (
+            not isinstance(document, dict)
+            or frozenset(document) != _ADMIN_LIST_CURSOR_KEYS
+            or document.get("v") != 1
+            or document.get("scope") != scope
+            or document.get("workspace_id") != str(workspace_id)
+            or document.get("filters") != dict(filters)
+        ):
+            raise ValueError
+        boundary_id = UUID(str(document["boundary_id"]))
+        if cursor != encode_admin_list_cursor(
+            scope=scope,
+            workspace_id=workspace_id,
+            filters=filters,
+            boundary_id=boundary_id,
+        ):
+            raise ValueError
+        return boundary_id
+    except (
+        ValueError,
+        TypeError,
+        KeyError,
+        UnicodeDecodeError,
+        json.JSONDecodeError,
+        binascii.Error,
+    ) as error:
+        raise ValidationError(
+            "The administrator list cursor is stale or does not match this request."
+        ) from error
 
 
 class SqlAdminAccessRequestRepository(AdminAccessRequestRepository):
@@ -97,23 +186,78 @@ class SqlAdminAccessRequestRepository(AdminAccessRequestRepository):
         return await self._hydrate(model)
 
     async def list(
-        self, *, workspace_id: UUID, state: str | None, limit: int
-    ) -> tuple[AdminAccessRequest, ...]:
+        self,
+        *,
+        workspace_id: UUID,
+        state: str | None,
+        limit: int,
+        cursor: str | None = None,
+    ) -> AdminAccessRequestPage:
+        _validate_admin_list_limit(limit)
         statement = (
             select(AdminAccessRequestModel)
             .where(AdminAccessRequestModel.workspace_id == workspace_id)
-            .order_by(AdminAccessRequestModel.created_at.desc())
-            .limit(limit)
+            .order_by(AdminAccessRequestModel.id.desc())
+            .limit(limit + 1)
         )
         if state is not None:
             statement = statement.where(AdminAccessRequestModel.state == state)
+        if cursor is not None:
+            boundary_id = decode_admin_list_cursor(
+                cursor,
+                scope="ADMIN_FALLBACK_REQUESTS",
+                workspace_id=workspace_id,
+                filters={"state": state},
+            )
+            statement = statement.where(AdminAccessRequestModel.id < boundary_id)
         models = (await self._session.scalars(statement)).all()
-        values: list[AdminAccessRequest] = []
-        for model in models:
-            hydrated = await self._hydrate(model)
-            if hydrated is not None:
-                values.append(hydrated)
-        return tuple(values)
+        has_more = len(models) > limit
+        visible_models = models[:limit]
+        approvals_by_request: dict[UUID, list[AdminAccessApprovalModel]] = {
+            model.id: [] for model in visible_models
+        }
+        if visible_models:
+            approval_models = (
+                await self._session.scalars(
+                    select(AdminAccessApprovalModel)
+                    .where(
+                        AdminAccessApprovalModel.workspace_id == workspace_id,
+                        AdminAccessApprovalModel.access_request_id.in_(
+                            [model.id for model in visible_models]
+                        ),
+                    )
+                    .order_by(
+                        AdminAccessApprovalModel.access_request_id,
+                        AdminAccessApprovalModel.occurred_at,
+                    )
+                )
+            ).all()
+            for approval in approval_models:
+                approvals_by_request[approval.access_request_id].append(approval)
+        values = [
+            value
+            for model in visible_models
+            if (
+                value := await self._hydrate(
+                    model,
+                    approval_models=approvals_by_request[model.id],
+                )
+            )
+            is not None
+        ]
+        return AdminAccessRequestPage(
+            items=tuple(values),
+            next_cursor=(
+                encode_admin_list_cursor(
+                    scope="ADMIN_FALLBACK_REQUESTS",
+                    workspace_id=workspace_id,
+                    filters={"state": state},
+                    boundary_id=visible_models[-1].id,
+                )
+                if has_more
+                else None
+            ),
+        )
 
     async def save(self, request: AdminAccessRequest) -> None:
         model = await self._session.get(AdminAccessRequestModel, request.access_request_id)
@@ -154,7 +298,12 @@ class SqlAdminAccessRequestRepository(AdminAccessRequestRepository):
             ]
         )
 
-    async def _hydrate(self, model: AdminAccessRequestModel | None) -> AdminAccessRequest | None:
+    async def _hydrate(
+        self,
+        model: AdminAccessRequestModel | None,
+        *,
+        approval_models: Sequence[AdminAccessApprovalModel] | None = None,
+    ) -> AdminAccessRequest | None:
         if model is None:
             return None
         command = MembershipAccessUpdate.from_command_document(model.command_document)
@@ -165,16 +314,17 @@ class SqlAdminAccessRequestRepository(AdminAccessRequestRepository):
             raise ConflictError(
                 "The stored administrator fallback command failed integrity checks."
             )
-        approval_models = (
-            await self._session.scalars(
-                select(AdminAccessApprovalModel)
-                .where(
-                    AdminAccessApprovalModel.workspace_id == model.workspace_id,
-                    AdminAccessApprovalModel.access_request_id == model.id,
+        if approval_models is None:
+            approval_models = (
+                await self._session.scalars(
+                    select(AdminAccessApprovalModel)
+                    .where(
+                        AdminAccessApprovalModel.workspace_id == model.workspace_id,
+                        AdminAccessApprovalModel.access_request_id == model.id,
+                    )
+                    .order_by(AdminAccessApprovalModel.occurred_at)
                 )
-                .order_by(AdminAccessApprovalModel.occurred_at)
-            )
-        ).all()
+            ).all()
         if command.workspace_id != model.workspace_id or command.target_subject_id != (
             model.target_subject_id
         ):
@@ -284,12 +434,14 @@ class SqlMembershipRenewalRepository(MembershipRenewalRepository):
         subject_id: UUID | None,
         state: str | None,
         limit: int,
-    ) -> tuple[MembershipRenewalRecord, ...]:
+        cursor: str | None = None,
+    ) -> MembershipRenewalPage:
+        _validate_admin_list_limit(limit)
         statement = (
             select(MembershipRenewalRequestModel)
             .where(MembershipRenewalRequestModel.workspace_id == workspace_id)
-            .order_by(MembershipRenewalRequestModel.created_at.desc())
-            .limit(limit)
+            .order_by(MembershipRenewalRequestModel.id.desc())
+            .limit(limit + 1)
         )
         if subject_id is not None:
             statement = statement.where(
@@ -297,7 +449,54 @@ class SqlMembershipRenewalRepository(MembershipRenewalRepository):
             )
         if state is not None:
             statement = statement.where(MembershipRenewalRequestModel.state == state)
+        filters = {
+            "subject_id": str(subject_id) if subject_id is not None else None,
+            "state": state,
+        }
+        if cursor is not None:
+            boundary_id = decode_admin_list_cursor(
+                cursor,
+                scope="MEMBERSHIP_RENEWALS",
+                workspace_id=workspace_id,
+                filters=filters,
+            )
+            statement = statement.where(MembershipRenewalRequestModel.id < boundary_id)
         models = (await self._session.scalars(statement)).all()
+        has_more = len(models) > limit
+        visible_models = models[:limit]
+        return MembershipRenewalPage(
+            items=await self._records(visible_models),
+            next_cursor=(
+                encode_admin_list_cursor(
+                    scope="MEMBERSHIP_RENEWALS",
+                    workspace_id=workspace_id,
+                    filters=filters,
+                    boundary_id=visible_models[-1].id,
+                )
+                if has_more
+                else None
+            ),
+        )
+
+    async def get_record(
+        self, *, workspace_id: UUID, renewal_request_id: UUID
+    ) -> MembershipRenewalRecord | None:
+        model = (
+            await self._session.scalars(
+                select(MembershipRenewalRequestModel).where(
+                    MembershipRenewalRequestModel.workspace_id == workspace_id,
+                    MembershipRenewalRequestModel.id == renewal_request_id,
+                )
+            )
+        ).one_or_none()
+        if model is None:
+            return None
+        records = await self._records([model])
+        return records[0]
+
+    async def _records(
+        self, models: Sequence[MembershipRenewalRequestModel]
+    ) -> tuple[MembershipRenewalRecord, ...]:
         if not models:
             return ()
         subject_ids = {
@@ -368,28 +567,135 @@ def _membership_renewal(model: MembershipRenewalRequestModel) -> MembershipRenew
     )
 
 
+def _encode_membership_cursor(
+    *,
+    workspace_id: UUID,
+    query: str | None,
+    active: bool | None,
+    display_name: str,
+    subject_id: UUID,
+) -> str:
+    payload = json.dumps(
+        {
+            "v": 1,
+            "workspace_id": str(workspace_id),
+            "query": query,
+            "active": active,
+            "display_name": display_name,
+            "subject_id": str(subject_id),
+        },
+        separators=(",", ":"),
+        sort_keys=True,
+    ).encode()
+    return base64.urlsafe_b64encode(payload).decode().rstrip("=")
+
+
+def _decode_membership_cursor(
+    cursor: str,
+    *,
+    workspace_id: UUID,
+    query: str | None,
+    active: bool | None,
+) -> tuple[str, UUID]:
+    try:
+        if not cursor or len(cursor) > 2_000:
+            raise ValueError
+        payload = base64.b64decode(
+            cursor + "=" * (-len(cursor) % 4),
+            altchars=b"-_",
+            validate=True,
+        )
+        document = json.loads(payload)
+        if not isinstance(document, dict) or frozenset(document) != _MEMBERSHIP_CURSOR_KEYS:
+            raise ValueError
+        display_name = document.get("display_name")
+        if (
+            document.get("v") != 1
+            or document.get("workspace_id") != str(workspace_id)
+            or document.get("query") != query
+            or document.get("active") is not active
+            or not isinstance(display_name, str)
+            or not display_name
+        ):
+            raise ValueError
+        subject_id = UUID(str(document["subject_id"]))
+        if cursor != _encode_membership_cursor(
+            workspace_id=workspace_id,
+            query=query,
+            active=active,
+            display_name=display_name,
+            subject_id=subject_id,
+        ):
+            raise ValueError
+        return display_name, subject_id
+    except (
+        ValueError,
+        TypeError,
+        KeyError,
+        UnicodeDecodeError,
+        json.JSONDecodeError,
+        binascii.Error,
+    ) as error:
+        raise ValidationError(
+            "The membership cursor is stale or does not match this request."
+        ) from error
+
+
 class SqlMembershipAccessRepository(MembershipAccessRepository):
     def __init__(self, session: AsyncSession) -> None:
         self._session = session
 
     async def list(
-        self, *, workspace_id: UUID, limit: int
-    ) -> tuple[WorkspaceMembershipSummary, ...]:
-        rows = (
-            await self._session.execute(
-                select(SubjectModel, WorkspaceMembershipModel)
-                .join(
-                    WorkspaceMembershipModel,
-                    WorkspaceMembershipModel.subject_id == SubjectModel.id,
-                )
-                .where(WorkspaceMembershipModel.workspace_id == workspace_id)
-                .order_by(func.lower(SubjectModel.display_name), SubjectModel.id)
-                .limit(limit)
+        self,
+        *,
+        workspace_id: UUID,
+        limit: int,
+        query: str | None = None,
+        active: bool | None = None,
+        cursor: str | None = None,
+    ) -> WorkspaceMembershipPage:
+        _validate_admin_list_limit(limit)
+        statement = (
+            select(SubjectModel, WorkspaceMembershipModel)
+            .join(
+                WorkspaceMembershipModel,
+                WorkspaceMembershipModel.subject_id == SubjectModel.id,
             )
-        ).all()
+            .where(WorkspaceMembershipModel.workspace_id == workspace_id)
+            .order_by(func.lower(SubjectModel.display_name), SubjectModel.id)
+            .limit(limit + 1)
+        )
+        if query is not None:
+            escaped_query = query.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+            pattern = f"%{escaped_query}%"
+            statement = statement.where(
+                or_(
+                    SubjectModel.display_name.ilike(pattern, escape="\\"),
+                    SubjectModel.email.ilike(pattern, escape="\\"),
+                )
+            )
+        if active is not None:
+            statement = statement.where(WorkspaceMembershipModel.active.is_(active))
+        if cursor is not None:
+            cursor_name, cursor_id = _decode_membership_cursor(
+                cursor,
+                workspace_id=workspace_id,
+                query=query,
+                active=active,
+            )
+            normalized_name = func.lower(SubjectModel.display_name)
+            statement = statement.where(
+                or_(
+                    normalized_name > cursor_name,
+                    and_(normalized_name == cursor_name, SubjectModel.id > cursor_id),
+                )
+            )
+        rows = (await self._session.execute(statement)).all()
         if not rows:
-            return ()
-        subject_ids = [subject.id for subject, _ in rows]
+            return WorkspaceMembershipPage(items=(), next_cursor=None)
+        has_more = len(rows) > limit
+        visible_rows = rows[:limit]
+        subject_ids = [subject.id for subject, _ in visible_rows]
         pending_renewals: dict[UUID, UUID] = {
             subject_id: renewal_request_id
             for subject_id, renewal_request_id in (
@@ -418,7 +724,7 @@ class SqlMembershipAccessRepository(MembershipAccessRepository):
         ).all():
             change_request_counts[subject_id] = int(count)
         owner_subjects = {
-            f"urn:li:corpuser:{subject.external_subject}": subject.id for subject, _ in rows
+            f"urn:li:corpuser:{subject.external_subject}": subject.id for subject, _ in visible_rows
         }
         owned_table_counts = {subject_id: 0 for subject_id in subject_ids}
         if owner_subjects:
@@ -435,7 +741,7 @@ class SqlMembershipAccessRepository(MembershipAccessRepository):
             ).all():
                 if owner_ref in owner_subjects:
                     owned_table_counts[owner_subjects[owner_ref]] = int(count)
-        return tuple(
+        items = tuple(
             _membership_summary(
                 subject,
                 membership,
@@ -443,8 +749,20 @@ class SqlMembershipAccessRepository(MembershipAccessRepository):
                 change_request_count=int(change_request_counts.get(subject.id, 0)),
                 pending_renewal_request_id=pending_renewals.get(subject.id),
             )
-            for subject, membership in rows
+            for subject, membership in visible_rows
         )
+        next_cursor = (
+            _encode_membership_cursor(
+                workspace_id=workspace_id,
+                query=query,
+                active=active,
+                display_name=visible_rows[-1][0].display_name.lower(),
+                subject_id=visible_rows[-1][0].id,
+            )
+            if has_more
+            else None
+        )
+        return WorkspaceMembershipPage(items=items, next_cursor=next_cursor)
 
     async def get_access(
         self, *, workspace_id: UUID, subject_id: UUID
@@ -465,7 +783,31 @@ class SqlMembershipAccessRepository(MembershipAccessRepository):
         if row is None:
             return None
         subject, membership = row
-        return _membership_access_record(subject, membership)
+        assignment = (
+            await self._session.scalars(
+                select(AccessRoleAssignmentModel).where(
+                    AccessRoleAssignmentModel.workspace_id == workspace_id,
+                    AccessRoleAssignmentModel.subject_id == subject_id,
+                    AccessRoleAssignmentModel.active.is_(True),
+                )
+            )
+        ).one_or_none()
+        evidence = (
+            MembershipRoleAssignmentEvidence(
+                workspace_id=assignment.workspace_id,
+                subject_id=assignment.subject_id,
+                role_id=assignment.role_id,
+                role_version=assignment.role_version,
+                membership_version=assignment.membership_version,
+                access_payload_hash=assignment.access_payload_hash,
+                assigned_by=assignment.assigned_by,
+                assignment_version=assignment.version,
+                updated_at=assignment.updated_at,
+            )
+            if assignment is not None
+            else None
+        )
+        return _membership_access_record(subject, membership, role_assignment=evidence)
 
     async def provision_identity_membership(
         self,
@@ -741,6 +1083,40 @@ class SqlMembershipAccessRepository(MembershipAccessRepository):
     async def assert_current_version(self, command: MembershipAccessUpdate) -> None:
         await self._membership_for_update(command)
 
+    async def assert_manual_access_update_allowed(
+        self, *, workspace_id: UUID, subject_id: UUID
+    ) -> None:
+        membership = (
+            await self._session.scalars(
+                select(WorkspaceMembershipModel)
+                .where(
+                    WorkspaceMembershipModel.workspace_id == workspace_id,
+                    WorkspaceMembershipModel.subject_id == subject_id,
+                )
+                .with_for_update()
+            )
+        ).one_or_none()
+        if membership is None:
+            raise NotFoundError("The workspace membership does not exist.")
+        groups = _string_set(membership.attributes, "groups")
+        if groups is None:
+            raise ConflictError("The workspace membership access document is malformed.")
+        assignment = (
+            await self._session.scalars(
+                select(AccessRoleAssignmentModel)
+                .where(
+                    AccessRoleAssignmentModel.workspace_id == workspace_id,
+                    AccessRoleAssignmentModel.subject_id == subject_id,
+                    AccessRoleAssignmentModel.active.is_(True),
+                )
+                .with_for_update()
+            )
+        ).one_or_none()
+        if assignment is not None or any(group.startswith("datariver-role-") for group in groups):
+            raise ConflictError(
+                "Role-bound access must be changed through the dedicated Role assignment route."
+            )
+
     async def get_expiration_for_update(self, *, workspace_id: UUID, subject_id: UUID) -> datetime:
         membership = (
             await self._session.scalars(
@@ -856,43 +1232,137 @@ class SqlSystemDirectoryRepository(SystemDirectoryRepository):
     def __init__(self, session: AsyncSession) -> None:
         self._session = session
 
-    async def list(self, *, workspace_id: UUID, limit: int) -> tuple[SystemDirectoryEntry, ...]:
-        systems = (
+    async def list(
+        self,
+        *,
+        workspace_id: UUID,
+        limit: int,
+        query: str | None = None,
+        active: bool | None = None,
+        cursor: str | None = None,
+    ) -> SystemDirectoryPage:
+        _validate_admin_list_limit(limit)
+        assignment_count = (
+            select(func.count(SystemAssigneeModel.id))
+            .where(
+                SystemAssigneeModel.workspace_id == workspace_id,
+                SystemAssigneeModel.system_id == DataSystemModel.id,
+            )
+            .correlate(DataSystemModel)
+            .scalar_subquery()
+        )
+        statement = (
+            select(DataSystemModel, assignment_count)
+            .where(DataSystemModel.workspace_id == workspace_id)
+            .order_by(DataSystemModel.id.desc())
+            .limit(limit + 1)
+        )
+        if query is not None:
+            escaped_query = query.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+            pattern = f"%{escaped_query}%"
+            statement = statement.where(
+                or_(
+                    DataSystemModel.name.ilike(pattern, escape="\\"),
+                    DataSystemModel.code.ilike(pattern, escape="\\"),
+                )
+            )
+        if active is not None:
+            statement = statement.where(DataSystemModel.active.is_(active))
+        filters = {"query": query, "active": active}
+        if cursor is not None:
+            boundary_id = decode_admin_list_cursor(
+                cursor,
+                scope="SYSTEM_DIRECTORY",
+                workspace_id=workspace_id,
+                filters=filters,
+            )
+            statement = statement.where(DataSystemModel.id < boundary_id)
+        system_rows = (await self._session.execute(statement)).all()
+        has_more = len(system_rows) > limit
+        systems = system_rows[:limit]
+        if not systems:
+            return SystemDirectoryPage(items=(), next_cursor=None)
+        return SystemDirectoryPage(
+            items=tuple(
+                SystemDirectoryEntry(
+                    system_id=system.id,
+                    code=system.code,
+                    name=system.name,
+                    description=system.description,
+                    active=system.active,
+                    version=system.version,
+                    assignee_count=int(count),
+                )
+                for system, count in systems
+            ),
+            next_cursor=(
+                encode_admin_list_cursor(
+                    scope="SYSTEM_DIRECTORY",
+                    workspace_id=workspace_id,
+                    filters=filters,
+                    boundary_id=systems[-1][0].id,
+                )
+                if has_more
+                else None
+            ),
+        )
+
+    async def list_assignees(
+        self,
+        *,
+        workspace_id: UUID,
+        system_id: UUID,
+        limit: int,
+        cursor: str | None = None,
+    ) -> SystemAssigneePage:
+        _validate_admin_list_limit(limit)
+        system = (
             await self._session.scalars(
                 select(DataSystemModel)
-                .where(DataSystemModel.workspace_id == workspace_id)
-                .order_by(func.lower(DataSystemModel.name), DataSystemModel.id)
-                .limit(limit)
-            )
-        ).all()
-        if not systems:
-            return ()
-        rows = (
-            await self._session.execute(
-                select(SystemAssigneeModel, SubjectModel, WorkspaceMembershipModel)
-                .join(SubjectModel, SubjectModel.id == SystemAssigneeModel.subject_id)
-                .join(
-                    WorkspaceMembershipModel,
-                    and_(
-                        WorkspaceMembershipModel.workspace_id == SystemAssigneeModel.workspace_id,
-                        WorkspaceMembershipModel.subject_id == SystemAssigneeModel.subject_id,
-                    ),
-                )
                 .where(
-                    SystemAssigneeModel.workspace_id == workspace_id,
-                    SystemAssigneeModel.system_id.in_([system.id for system in systems]),
+                    DataSystemModel.workspace_id == workspace_id,
+                    DataSystemModel.id == system_id,
                 )
-                .order_by(
-                    SystemAssigneeModel.system_id,
-                    SystemAssigneeModel.responsibility,
-                    SystemAssigneeModel.priority,
-                    func.lower(SubjectModel.display_name),
-                )
+                .with_for_update(read=True)
             )
-        ).all()
-        assignees: dict[UUID, list[SystemDirectoryAssignee]] = {system.id: [] for system in systems}
-        for assignment, subject, membership in rows:
-            assignees.setdefault(assignment.system_id, []).append(
+        ).one_or_none()
+        if system is None:
+            raise NotFoundError("The data system does not exist.")
+        filters: dict[str, str | bool | None] = {
+            "system_id": str(system_id),
+            "system_version": str(system.version),
+        }
+        statement = (
+            select(SystemAssigneeModel, SubjectModel, WorkspaceMembershipModel)
+            .join(SubjectModel, SubjectModel.id == SystemAssigneeModel.subject_id)
+            .join(
+                WorkspaceMembershipModel,
+                and_(
+                    WorkspaceMembershipModel.workspace_id == SystemAssigneeModel.workspace_id,
+                    WorkspaceMembershipModel.subject_id == SystemAssigneeModel.subject_id,
+                ),
+            )
+            .where(
+                SystemAssigneeModel.workspace_id == workspace_id,
+                SystemAssigneeModel.system_id == system_id,
+                SystemAssigneeModel.active.is_(True),
+            )
+            .order_by(SystemAssigneeModel.id.desc())
+            .limit(limit + 1)
+        )
+        if cursor is not None:
+            boundary_id = decode_admin_list_cursor(
+                cursor,
+                scope="SYSTEM_ASSIGNEES",
+                workspace_id=workspace_id,
+                filters=filters,
+            )
+            statement = statement.where(SystemAssigneeModel.id < boundary_id)
+        rows = (await self._session.execute(statement)).all()
+        has_more = len(rows) > limit
+        visible_rows = rows[:limit]
+        return SystemAssigneePage(
+            items=tuple(
                 SystemDirectoryAssignee(
                     subject_id=subject.id,
                     display_name=subject.display_name,
@@ -908,43 +1378,219 @@ class SqlSystemDirectoryRepository(SystemDirectoryRepository):
                         )
                     ),
                 )
-            )
-        return tuple(
-            SystemDirectoryEntry(
-                system_id=system.id,
-                code=system.code,
-                name=system.name,
-                description=system.description,
-                active=system.active,
-                version=system.version,
-                assignees=tuple(assignees.get(system.id, ())),
-            )
-            for system in systems
+                for assignment, subject, membership in visible_rows
+            ),
+            system_version=system.version,
+            next_cursor=(
+                encode_admin_list_cursor(
+                    scope="SYSTEM_ASSIGNEES",
+                    workspace_id=workspace_id,
+                    filters=filters,
+                    boundary_id=visible_rows[-1][0].id,
+                )
+                if has_more
+                else None
+            ),
         )
 
+    async def patch_assignees(self, command: SystemAssigneePatchCommand) -> int:
+        system = await self._system_for_update(
+            workspace_id=command.workspace_id,
+            system_id=command.system_id,
+            expected_version=command.expected_system_version,
+        )
+        await self._assert_assignable_subjects(
+            workspace_id=command.workspace_id,
+            subject_ids=frozenset(item.subject_id for item in command.upserts),
+        )
+        removal_keys = [(item.subject_id, item.responsibility) for item in command.removals]
+        upsert_keys = [(item.subject_id, item.responsibility) for item in command.upserts]
+        target_keys = removal_keys + upsert_keys
+        existing = {
+            (item.subject_id, item.responsibility): item
+            for item in (
+                await self._session.scalars(
+                    select(SystemAssigneeModel)
+                    .where(
+                        SystemAssigneeModel.workspace_id == command.workspace_id,
+                        SystemAssigneeModel.system_id == command.system_id,
+                        tuple_(
+                            SystemAssigneeModel.subject_id,
+                            SystemAssigneeModel.responsibility,
+                        ).in_(target_keys),
+                    )
+                    .with_for_update()
+                )
+            ).all()
+        }
+        missing_removals = [
+            key for key in removal_keys if key not in existing or not existing[key].active
+        ]
+        if missing_removals:
+            raise ConflictError(
+                "A system assignee selected for removal no longer exists.",
+                details={
+                    "missing": [
+                        {"subject_id": str(subject_id), "responsibility": responsibility}
+                        for subject_id, responsibility in missing_removals
+                    ]
+                },
+            )
+        effective_upserts = [
+            item
+            for item in command.upserts
+            if (current := existing.get((item.subject_id, item.responsibility))) is None
+            or current.priority != item.priority
+            or not current.active
+        ]
+        if not removal_keys and not effective_upserts:
+            raise ConflictError("The system-assignee patch contains no effective changes.")
+        for removal_key in removal_keys:
+            current = existing[removal_key]
+            current.active = False
+            current.version += 1
+        for item in effective_upserts:
+            current = existing.get((item.subject_id, item.responsibility))
+            if current is None:
+                self._session.add(
+                    SystemAssigneeModel(
+                        workspace_id=command.workspace_id,
+                        system_id=command.system_id,
+                        subject_id=item.subject_id,
+                        responsibility=item.responsibility,
+                        priority=item.priority,
+                        active=True,
+                    )
+                )
+            else:
+                current.priority = item.priority
+                current.active = True
+                current.version += 1
+        await self._session.flush()
+        lane_rows = (
+            await self._session.execute(
+                select(
+                    SystemAssigneeModel.responsibility,
+                    func.count(SystemAssigneeModel.id),
+                    func.min(SystemAssigneeModel.priority),
+                    func.count(func.distinct(SystemAssigneeModel.priority)),
+                )
+                .where(
+                    SystemAssigneeModel.workspace_id == command.workspace_id,
+                    SystemAssigneeModel.system_id == command.system_id,
+                    SystemAssigneeModel.active.is_(True),
+                )
+                .group_by(SystemAssigneeModel.responsibility)
+            )
+        ).all()
+        lanes = {
+            responsibility: (int(count), int(minimum_priority), int(distinct_priorities))
+            for responsibility, count, minimum_priority, distinct_priorities in lane_rows
+        }
+        if set(lanes) != {"DEVELOPER", "DATA_STEWARD"} or any(
+            count < 1 or minimum_priority != 1 or distinct_priorities != count
+            for count, minimum_priority, distinct_priorities in lanes.values()
+        ):
+            raise ValidationError(
+                "Every system must retain both responsibility lanes with unique priorities "
+                "starting at 1."
+            )
+        system.version += 1
+        await self._session.flush()
+        return system.version
+
     async def replace_assignees(self, command: SystemAssigneeUpdateCommand) -> int:
+        system = await self._system_for_update(
+            workspace_id=command.workspace_id,
+            system_id=command.system_id,
+            expected_version=command.expected_system_version,
+        )
+        subject_ids = frozenset(item.subject_id for item in command.assignees)
+        await self._assert_assignable_subjects(
+            workspace_id=command.workspace_id,
+            subject_ids=subject_ids,
+        )
+        existing = {
+            (item.subject_id, item.responsibility): item
+            for item in (
+                await self._session.scalars(
+                    select(SystemAssigneeModel)
+                    .where(
+                        SystemAssigneeModel.workspace_id == command.workspace_id,
+                        SystemAssigneeModel.system_id == command.system_id,
+                    )
+                    .with_for_update()
+                )
+            ).all()
+        }
+        desired = {(item.subject_id, item.responsibility): item for item in command.assignees}
+        for key, current in existing.items():
+            replacement = desired.get(key)
+            if replacement is None:
+                if current.active:
+                    current.active = False
+                    current.version += 1
+                continue
+            if current.priority != replacement.priority or not current.active:
+                current.priority = replacement.priority
+                current.active = True
+                current.version += 1
+        self._session.add_all(
+            [
+                SystemAssigneeModel(
+                    workspace_id=command.workspace_id,
+                    system_id=command.system_id,
+                    subject_id=item.subject_id,
+                    responsibility=item.responsibility,
+                    priority=item.priority,
+                    active=True,
+                )
+                for key, item in desired.items()
+                if key not in existing
+            ]
+        )
+        system.version += 1
+        await self._session.flush()
+        return system.version
+
+    async def _system_for_update(
+        self,
+        *,
+        workspace_id: UUID,
+        system_id: UUID,
+        expected_version: int,
+    ) -> DataSystemModel:
         system = (
             await self._session.scalars(
                 select(DataSystemModel)
                 .where(
-                    DataSystemModel.workspace_id == command.workspace_id,
-                    DataSystemModel.id == command.system_id,
+                    DataSystemModel.workspace_id == workspace_id,
+                    DataSystemModel.id == system_id,
                 )
                 .with_for_update()
             )
         ).one_or_none()
         if system is None:
             raise NotFoundError("The data system does not exist.")
-        if system.version != command.expected_system_version:
+        if system.version != expected_version:
             raise ConflictError("The data system was modified by another operation.")
-        subject_ids = frozenset(item.subject_id for item in command.assignees)
+        return system
+
+    async def _assert_assignable_subjects(
+        self,
+        *,
+        workspace_id: UUID,
+        subject_ids: frozenset[UUID],
+    ) -> None:
+        if not subject_ids:
+            return
         active_subject_ids = set(
             (
                 await self._session.scalars(
                     select(WorkspaceMembershipModel.subject_id)
                     .join(SubjectModel, SubjectModel.id == WorkspaceMembershipModel.subject_id)
                     .where(
-                        WorkspaceMembershipModel.workspace_id == command.workspace_id,
+                        WorkspaceMembershipModel.workspace_id == workspace_id,
                         WorkspaceMembershipModel.subject_id.in_(subject_ids),
                         WorkspaceMembershipModel.active.is_(True),
                         SubjectModel.active.is_(True),
@@ -962,28 +1608,6 @@ class SqlSystemDirectoryRepository(SystemDirectoryRepository):
         )
         if active_subject_ids != subject_ids:
             raise ValidationError("Every system assignee must be an active human workspace member.")
-        await self._session.execute(
-            delete(SystemAssigneeModel).where(
-                SystemAssigneeModel.workspace_id == command.workspace_id,
-                SystemAssigneeModel.system_id == command.system_id,
-            )
-        )
-        self._session.add_all(
-            [
-                SystemAssigneeModel(
-                    workspace_id=command.workspace_id,
-                    system_id=command.system_id,
-                    subject_id=item.subject_id,
-                    responsibility=item.responsibility,
-                    priority=item.priority,
-                    active=True,
-                )
-                for item in command.assignees
-            ]
-        )
-        system.version += 1
-        await self._session.flush()
-        return system.version
 
 
 class SqlAdminAccessUnitOfWork(AdminAccessUnitOfWork):
@@ -1147,7 +1771,10 @@ def _membership_summary(
 
 
 def _membership_access_record(
-    subject: SubjectModel, membership: WorkspaceMembershipModel
+    subject: SubjectModel,
+    membership: WorkspaceMembershipModel,
+    *,
+    role_assignment: MembershipRoleAssignmentEvidence | None = None,
 ) -> WorkspaceMembershipAccessRecord:
     attributes = membership.attributes
     groups = _string_set(attributes, "groups")
@@ -1185,4 +1812,5 @@ def _membership_access_record(
         denied_actions=command.denied_actions,
         allowed_system_ids=command.allowed_system_ids,
         allowed_domain_ids=command.allowed_domain_ids,
+        role_assignment=role_assignment,
     )

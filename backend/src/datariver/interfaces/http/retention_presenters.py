@@ -1,3 +1,6 @@
+from uuid import UUID
+
+from datariver.application.dto import RetentionExecutionEvidence
 from datariver.domain.retention import (
     AUTOMATION_DISABLED,
     ErasureRequest,
@@ -9,7 +12,12 @@ from datariver.interfaces.http.retention_schemas import (
     ErasureRequestResponse,
     LegalHoldActionResponse,
     LegalHoldResponse,
+    RetentionArchiveReceiptEvidenceResponse,
     RetentionClassRuleRequest,
+    RetentionExecutionAttemptResponse,
+    RetentionExecutionEventResponse,
+    RetentionExecutionEvidenceResponse,
+    RetentionExecutionJobResponse,
     RetentionPolicyContractRequest,
     RetentionPolicyResponse,
     RetentionRulesRequest,
@@ -86,6 +94,7 @@ def legal_hold_response(hold: LegalHold) -> LegalHoldResponse:
             )
             for action in hold.actions
         ],
+        action_history_truncated=hold.action_history_truncated,
         deletion_effect="BLOCKED_BY_LEGAL_HOLD" if hold.active else AUTOMATION_DISABLED,
     )
 
@@ -124,5 +133,94 @@ def erasure_request_response(request: ErasureRequest) -> ErasureRequestResponse:
             )
             for approval in request.approvals
         ],
+        approval_history_truncated=request.approval_history_truncated,
         execution_state=request.execution_state,
+    )
+
+
+def retention_execution_evidence_response(
+    erasure_request_id: UUID,
+    evidence: RetentionExecutionEvidence | None,
+) -> RetentionExecutionEvidenceResponse:
+    if evidence is None:
+        return RetentionExecutionEvidenceResponse(
+            erasure_request_id=erasure_request_id,
+            availability="NOT_PLANNED",
+            archive_only=True,
+            deletion_automation_state=AUTOMATION_DISABLED,
+            job=None,
+        )
+    receipt = evidence.receipt
+    return RetentionExecutionEvidenceResponse(
+        erasure_request_id=erasure_request_id,
+        availability="AVAILABLE",
+        archive_only=True,
+        deletion_automation_state=AUTOMATION_DISABLED,
+        job=RetentionExecutionJobResponse(
+            job_id=evidence.job_id,
+            erasure_request_version=evidence.erasure_request_version,
+            erasure_request_payload_hash=evidence.erasure_request_payload_hash,
+            target_type=evidence.target_type,
+            target_id=evidence.target_id,
+            target_version=evidence.target_version,
+            classification=evidence.classification.name,
+            retention_policy_id=evidence.retention_policy_id,
+            retention_policy_hash=evidence.retention_policy_hash,
+            policy_number=evidence.policy_number,
+            execution_authorization_valid_until=evidence.execution_authorization_valid_until,
+            archive_disposition=evidence.archive_disposition,
+            command_hash=evidence.command_hash,
+            archive_retain_until=evidence.archive_retain_until,
+            state=evidence.state,
+            next_attempt_at=evidence.next_attempt_at,
+            attempt_count=evidence.attempt_count,
+            maximum_attempts=evidence.maximum_attempts,
+            archive_manifest_hash=evidence.archive_manifest_hash,
+            destructive_state=evidence.destructive_state,
+            separation_of_duties_verified=evidence.separation_of_duties_verified,
+            version=evidence.version,
+            created_at=evidence.created_at,
+            updated_at=evidence.updated_at,
+            attempts=[
+                RetentionExecutionAttemptResponse(
+                    attempt_no=attempt.attempt_no,
+                    state=attempt.state,
+                    stage=attempt.stage,
+                    evidence_hash=attempt.evidence_hash,
+                    destructive_effect_count=attempt.destructive_effect_count,
+                    started_at=attempt.started_at,
+                    finished_at=attempt.finished_at,
+                )
+                for attempt in evidence.attempts
+            ],
+            attempts_truncated=evidence.attempts_truncated,
+            events=[
+                RetentionExecutionEventResponse(
+                    sequence=event.sequence,
+                    event_type=event.event_type,
+                    attempt_no=event.attempt_no,
+                    evidence_hash=event.evidence_hash,
+                    occurred_at=event.occurred_at,
+                )
+                for event in evidence.events
+            ],
+            events_truncated=evidence.events_truncated,
+            receipt=(
+                RetentionArchiveReceiptEvidenceResponse(
+                    receipt_id=receipt.receipt_id,
+                    manifest_hash=receipt.manifest_hash,
+                    content_sha256=receipt.content_sha256,
+                    row_count=receipt.row_count,
+                    byte_count=receipt.byte_count,
+                    retention_until=receipt.retention_until,
+                    legal_hold=receipt.legal_hold,
+                    content_verified_at=receipt.content_verified_at,
+                    retention_verified_at=receipt.retention_verified_at,
+                    verified_at=receipt.verified_at,
+                    payload_hash=receipt.payload_hash,
+                )
+                if receipt is not None
+                else None
+            ),
+        ),
     )

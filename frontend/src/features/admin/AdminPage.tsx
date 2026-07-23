@@ -3,6 +3,8 @@ import { newIdempotencyKey, type ApiClient } from '../../api/client'
 import type { AdminReadContext } from '../../api/types'
 import { AssuranceNotice, type AssuranceActions } from '../../components/AssuranceNotice'
 import { ErrorNotice } from '../../components/ErrorNotice'
+import { GovernedUnavailable } from '../../components/common/GovernedUnavailable'
+import { useRovingTabs } from '../../components/common/useRovingTabs'
 import { PageTitle } from '../../components/layout/PageTitle'
 import { AdminApi } from './adminApi'
 import { AccountAccessAdmin } from './AccountAccessAdmin'
@@ -10,7 +12,6 @@ import { AdminMutationConfirmDialog, type PendingAdminMutation } from './AdminMu
 import { RetentionGovernanceAdmin } from './RetentionGovernanceAdmin'
 import { SystemConfigurationAdmin } from './SystemConfigurationAdmin'
 import { getAdminMessages } from './messages'
-import { AuditLogsAdmin, DictionaryAdmin } from './AdminReadOnlySurfaces'
 import { adminSectionFromLocation, allowedAdminSections, type AdminSection } from './adminSections'
 
 export function AdminPage({
@@ -25,14 +26,48 @@ export function AdminPage({
   const [error, setError] = useState<unknown>()
   const [mutation, setMutation] = useState<PendingAdminMutation>()
   const [busy, setBusy] = useState(false)
-  const keys = useRef(new Map<string, string>())
+  const contextRequest = useRef<{ generation: number; controller?: AbortController }>({
+    generation: 0,
+  })
+  const contextEpoch = context
+    ? [
+        context.workspace_id,
+        context.subject_id,
+        context.authentication_assurance,
+        String(context.fallback_enabled),
+        [...context.allowed_operations].sort().join(','),
+        [...context.action_vocabulary].sort().join(','),
+      ].join('|')
+    : ''
+  const keys = useRef({ epoch: contextEpoch, values: new Map<string, string>() })
 
   const reportError = useCallback((next: unknown) => setError(next), [])
   const loadContext = useCallback(async () => {
-    try { setContext(await api.getContext()) } catch (next) { reportError(next) }
+    contextRequest.current.controller?.abort()
+    const controller = new AbortController()
+    const generation = contextRequest.current.generation + 1
+    contextRequest.current = { generation, controller }
+    try {
+      const next = await api.getContext(controller.signal)
+      if (!controller.signal.aborted && contextRequest.current.generation === generation) {
+        setContext(next)
+      }
+    } catch (next) {
+      if (!controller.signal.aborted) reportError(next)
+    }
   }, [api, reportError])
   useEffect(() => { if (!initialContext) void loadContext() }, [initialContext, loadContext])
-  useEffect(() => { if (initialContext) setContext(initialContext) }, [initialContext])
+  useEffect(() => {
+    if (!initialContext) return
+    contextRequest.current.controller?.abort()
+    contextRequest.current = { generation: contextRequest.current.generation + 1 }
+    setContext(initialContext)
+  }, [initialContext])
+  useEffect(() => () => contextRequest.current.controller?.abort(), [])
+  useEffect(() => {
+    keys.current = { epoch: contextEpoch, values: new Map() }
+    setMutation(undefined)
+  }, [contextEpoch])
   useEffect(() => {
     const restore = () => setSection(adminSectionFromLocation())
     window.addEventListener('popstate', restore)
@@ -48,6 +83,12 @@ export function AdminPage({
   }
   const visibleSections = useMemo(() => context ? allowedAdminSections(context) : [], [context])
   const activeSection = visibleSections.includes(section) ? section : visibleSections[0]
+  const primaryTabs = useRovingTabs({
+    ids: visibleSections,
+    activeId: activeSection,
+    idPrefix: 'admin',
+    onSelect: navigate,
+  })
   useEffect(() => {
     if (!activeSection || activeSection === section) return
     const url = new URL(window.location.href)
@@ -57,22 +98,37 @@ export function AdminPage({
     setSection(activeSection)
   }, [activeSection, section])
   const keyFor = (intent: string, prefix: string) => {
-    const existing = keys.current.get(intent)
+    if (keys.current.epoch !== contextEpoch) {
+      keys.current = { epoch: contextEpoch, values: new Map() }
+    }
+    const existing = keys.current.values.get(intent)
     if (existing) return existing
     const created = newIdempotencyKey(prefix)
-    keys.current.set(intent, created)
+    if (keys.current.values.size >= 100) {
+      const oldest = keys.current.values.keys().next().value
+      if (oldest) keys.current.values.delete(oldest)
+    }
+    keys.current.values.set(intent, created)
     return created
   }
-  const clearKey = (intent: string) => keys.current.delete(intent)
+  const clearKey = (intent: string) => keys.current.values.delete(intent)
+  const requestConfirmation = (pending: PendingAdminMutation) => {
+    setMutation({ ...pending, contextEpoch })
+  }
   const confirmMutation = async () => {
     if (!mutation || busy) return
+    if (mutation.contextEpoch !== contextEpoch) {
+      setMutation(undefined)
+      setError(new Error('관리자 인증 또는 권한 컨텍스트가 변경되었습니다. 작업을 다시 검토하세요.'))
+      return
+    }
     setBusy(true); setError(undefined)
     try { await mutation.execute() } catch (next) { setError(next) } finally {
       setBusy(false); setMutation(undefined)
     }
   }
   const shared = {
-    api, context, messages, requestConfirmation: setMutation, keyFor, clearKey, reportError,
+    api, context, messages, requestConfirmation, keyFor, clearKey, reportError,
     ...assurance,
   }
   const locationParameters = new URL(window.location.href).searchParams
@@ -89,7 +145,7 @@ export function AdminPage({
       description="서버가 허용한 관리 기능만 노출하며 고위험 변경은 보안키 인증과 독립 승인을 요구합니다."
       actions={<button className="button button-secondary" onClick={() => void loadContext()}>{messages.refresh}</button>}
     />
-    <div className="admin-tabs" role="tablist" aria-label={messages.title}>{visibleSections.map((id) => <button key={id} id={`admin-tab-${id}`} role="tab" type="button" className={activeSection === id ? 'active' : ''} aria-selected={activeSection === id} aria-controls={`admin-panel-${id}`} onClick={() => navigate(id)}>{messages[id]}</button>)}</div>
+    <div className="admin-tabs" role="tablist" aria-label={messages.title}>{visibleSections.map((id) => <button key={id} {...primaryTabs.tabProps(id)} type="button" className={activeSection === id ? 'active' : ''} onClick={() => navigate(id)}>{messages[id]}</button>)}</div>
     {context && <section className="panel admin-context" aria-label={messages.adminContext}>
       <div><strong>{context.display_name}</strong><code>{context.subject_id}</code></div>
       <div><small>{messages.currentAssurance}</small><span className="badge">{context.authentication_assurance}</span></div>
@@ -97,13 +153,16 @@ export function AdminPage({
     </section>}
     <AssuranceNotice error={error} requiredAssurance={assuranceType} {...assurance} />
     <ErrorNotice error={error} />
-    {activeSection && <div role="tabpanel" id={`admin-panel-${activeSection}`} aria-labelledby={`admin-tab-${activeSection}`}>
+    {activeSection && <div {...primaryTabs.panelProps(activeSection)}>
       {activeSection === 'memberships' && <AccountAccessAdmin {...shared} />}
       {activeSection === 'systemSettings' && <SystemConfigurationAdmin {...shared} />}
       {activeSection === 'retention' && <RetentionGovernanceAdmin {...shared} />}
-      {activeSection === 'auditLogs' && <AuditLogsAdmin />}
-      {activeSection === 'dictionary' && <DictionaryAdmin client={client} />}
     </div>}
+    <GovernedUnavailable
+      compact
+      title="Audit/Log·전사 용어사전 관리자 API 미구현"
+      description="레거시 관리자 URL은 실제 로그나 용어 데이터를 조회하지 않습니다. 민감 필드 마스킹·전용 읽기 권한·서버 페이지·감사 가능한 내보내기와 용어 정본 승인 계약이 추가되기 전까지 기능을 명시적으로 비활성화합니다."
+    />
     <AdminMutationConfirmDialog mutation={mutation} busy={busy} messages={messages} onCancel={() => setMutation(undefined)} onConfirm={() => void confirmMutation()} />
   </section>
 }

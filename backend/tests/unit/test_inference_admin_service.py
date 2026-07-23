@@ -13,6 +13,7 @@ from datariver.application.services.authorization import AuthorizationService
 from datariver.application.services.inference_admin import (
     InferenceAdminService,
     InferenceAdminUnitOfWork,
+    InferenceProviderProfilePage,
 )
 from datariver.domain.authz import (
     Action,
@@ -73,15 +74,16 @@ class _Profiles:
         profile_key: str | None = None,
         state: InferenceProviderProfileState | None = None,
         limit: int = 100,
-    ) -> tuple[InferenceProviderProfileVersion, ...]:
-        del limit
+        cursor: str | None = None,
+    ) -> InferenceProviderProfilePage:
+        del limit, cursor
         if workspace_id != self.profile.workspace_id:
-            return ()
+            return InferenceProviderProfilePage(items=(), next_cursor=None)
         if profile_key is not None and profile_key != self.profile.profile.profile_key:
-            return ()
+            return InferenceProviderProfilePage(items=(), next_cursor=None)
         if state is not None and state is not self.profile.state:
-            return ()
-        return (self.profile,)
+            return InferenceProviderProfilePage(items=(), next_cursor=None)
+        return InferenceProviderProfilePage(items=(self.profile,), next_cursor=None)
 
     async def approve(self, profile: InferenceProviderProfileVersion) -> None:
         assert profile is self.profile
@@ -251,11 +253,12 @@ async def test_list_and_get_require_hardware_admin_and_revalidate_db_membership(
     service, uow, writer = _service(profile)
     subject = _subject(profile.workspace_id)
 
-    values = await service.list_profiles(
+    page = await service.list_profiles(
         workspace_id=profile.workspace_id,
         profile_key=None,
         state=None,
         limit=20,
+        cursor=None,
         subject=subject,
         environment=_environment(),
         request_id="list-profiles",
@@ -268,7 +271,8 @@ async def test_list_and_get_require_hardware_admin_and_revalidate_db_membership(
         request_id="get-profile",
     )
 
-    assert values == (profile,)
+    assert page.items == (profile,)
+    assert page.next_cursor is None
     assert value is profile
     assert uow.memberships.checks == [
         frozenset({subject.subject_id}),

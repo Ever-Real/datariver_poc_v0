@@ -166,18 +166,83 @@ async def test_get_and_list_are_workspace_scoped_and_hydrate_domain_aggregates()
 
     list_session = _Session(scalar_rows=(model,))
     repository = SqlInferenceProviderProfileRepository(cast(AsyncSession, list_session))
-    values = await repository.list(
+    page = await repository.list(
         workspace_id=proposal.workspace_id,
         profile_key=proposal.profile.profile_key,
         state=InferenceProviderProfileState.PROPOSED,
         limit=20,
     )
-    assert len(values) == 1
+    assert len(page.items) == 1
+    assert page.items[0].payload_hash == proposal.payload_hash
+    assert page.next_cursor is None
     list_statement = cast(ClauseElement, list_session.scalars_statements[0])
     parameter_values = set(list_statement.compile().params.values())
     assert proposal.workspace_id in parameter_values
     assert proposal.profile.profile_key in parameter_values
     assert InferenceProviderProfileState.PROPOSED.value in parameter_values
+
+
+@pytest.mark.asyncio
+async def test_list_uses_limit_plus_one_and_filter_bound_composite_cursor() -> None:
+    proposal = _proposal()
+    model = _profile_model(proposal)
+    first_session = _Session(scalar_rows=(model, model))
+    repository = SqlInferenceProviderProfileRepository(cast(AsyncSession, first_session))
+
+    page = await repository.list(
+        workspace_id=proposal.workspace_id,
+        profile_key=None,
+        state=None,
+        limit=1,
+    )
+
+    assert len(page.items) == 1
+    assert page.next_cursor is not None
+    first_statement = cast(ClauseElement, first_session.scalars_statements[0])
+    assert first_statement.compile().params["param_1"] == 2
+
+    next_session = _Session()
+    repository = SqlInferenceProviderProfileRepository(cast(AsyncSession, next_session))
+    empty = await repository.list(
+        workspace_id=proposal.workspace_id,
+        profile_key=None,
+        state=None,
+        limit=1,
+        cursor=page.next_cursor,
+    )
+    assert empty.items == ()
+    sql = str(cast(ClauseElement, next_session.scalars_statements[0]).compile())
+    assert "profile_key >" in sql
+    assert "profile_version <" in sql
+    assert "id >" in sql
+
+    with pytest.raises(ValidationError, match="stale"):
+        await repository.list(
+            workspace_id=uuid4(),
+            profile_key=None,
+            state=None,
+            limit=1,
+            cursor=page.next_cursor,
+        )
+    with pytest.raises(ValidationError, match="stale"):
+        await repository.list(
+            workspace_id=proposal.workspace_id,
+            profile_key=proposal.profile.profile_key,
+            state=None,
+            limit=1,
+            cursor=page.next_cursor,
+        )
+
+
+@pytest.mark.asyncio
+async def test_list_rejects_pages_larger_than_one_hundred() -> None:
+    proposal = _proposal()
+    repository = SqlInferenceProviderProfileRepository(cast(AsyncSession, _Session()))
+    with pytest.raises(ValidationError, match="limit"):
+        await repository.list(
+            workspace_id=proposal.workspace_id,
+            limit=101,
+        )
 
 
 @pytest.mark.asyncio

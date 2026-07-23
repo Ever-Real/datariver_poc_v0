@@ -282,7 +282,9 @@ credential column or direct IAM-table write grant. SQLAlchemy metadata, the rege
 baseline and these incremental migrations must remain deterministic equivalents.
 
 Alembic `0040` extends only the bounded external-service and probe vocabularies for separate Redis
-cache/delivery profiles, `redis://`/`rediss://` endpoints and authenticated `REDIS_PING` evidence. It
+cache/delivery profiles, `redis://`/`rediss://` endpoints and authenticated `REDIS_POLICY`
+evidence. S3 connector tests persist `S3_HEAD_BUCKET`; `REDIS_PING` remains a read-compatible
+legacy evidence value for revisions created before migration `0043`. It
 adds no credential column: profiles continue to persist only mounted-secret references and immutable
 version/test/activation history.
 
@@ -297,10 +299,35 @@ archive-only execution job, fenced attempt and append-only event tables. It crea
 constrains destructive effects to zero and has no delete state or privilege. Existing V1 policies
 remain unchanged. The compatibility migration accepts a complete legacy `0008` table with later
 additive columns, repairs only absent `0042` objects and rejects partial/malformed Phase 2 state.
-It compares exact PostgreSQL 17 semantic catalog fingerprints for both independently rehearsed fresh
-baseline and stripped-`0041` additive paths; physical column ordinal is not treated as a logical API.
+It compares exact PostgreSQL 17 semantic catalog fingerprints for the independently rehearsed
+original fresh baseline, stripped-`0041` additive path and current canonical baseline containing
+only the reviewed `0044` Legal-Hold/erasure cursor indexes; physical column ordinal is not treated
+as a logical API and arbitrary future indexes are not accepted.
 The archive source CHECK is widened only from the exact validated legacy definition, so a same-token
 `OR TRUE`, unvalidated or otherwise malformed constraint is rejected.
+
+Alembic `0043` aligns the persisted connector TEST-scope vocabulary with the fixed Redis policy and
+S3 bucket-head probes. It no-ops only on the exact current PostgreSQL CHECK definition, replaces only
+the exact legacy definition and rejects a missing or malformed same-name constraint. This preserves
+existing evidence while preventing a compatibility migration from normalizing arbitrary drift.
+
+Alembic `0044` adds only the missing physical indexes for the bounded administrator keyset
+contracts. The membership directory follows `lower(display_name), id`; System assignees follow
+`workspace_id, system_id, id`; Legal Hold, erasure and RESTRICTED-grant histories follow
+`workspace_id, created_at DESC, id`; and inference profiles follow
+`workspace_id, profile_key, profile_version DESC, id`. Renewal, fallback-request, Role and System
+histories already use their workspace/UUID uniqueness indexes, while retention and classification
+policy histories already use their workspace/policy-number indexes. Optional status and subject
+filters remain cursor-bound and page-limited; `0044` deliberately does not add a combinatorial
+index for every filter permutation. The regenerated canonical `0001` already owns the same six
+indexes. Revision `0044` therefore reads each same-name PostgreSQL catalog object before acting and
+accepts only the exact valid/ready, plain non-unique B-tree definition: canonical key terms and sort
+options, default opclasses/collation, no predicate, INCLUDE columns, primary/exclusion/constraint
+ownership or alternate access method. A mismatched same-name object fails closed. An exact but
+invalid interrupted build is dropped and rebuilt with PostgreSQL `CONCURRENTLY` inside an Alembic
+autocommit block, then rechecked as valid/ready before the revision stamps. The non-atomic operation
+must still be rehearsed for target lock, disk and elapsed-time impact. Downgrade never removes an
+index that may have been created by the canonical baseline.
 
 `EVENT_RETENTION_DAYS` is a target online-retention input, not a deletion switch. The Phase 2 worker
 archives only minimal erasure approval/execution evidence and stops at

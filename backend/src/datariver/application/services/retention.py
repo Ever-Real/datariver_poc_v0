@@ -1,11 +1,18 @@
 from __future__ import annotations
 
-from collections.abc import Callable, Sequence
+from collections.abc import Callable
 from datetime import timedelta
 from uuid import UUID
 
-from datariver.application.ports import RetentionUnitOfWork
+from datariver.application.dto import RetentionExecutionEvidence
+from datariver.application.ports import (
+    ErasureRequestPage,
+    LegalHoldPage,
+    RetentionPolicyPage,
+    RetentionUnitOfWork,
+)
 from datariver.application.services.authorization import AuthorizationService
+from datariver.domain.admin_access import AdminFallbackStage
 from datariver.domain.authz import (
     Action,
     Classification,
@@ -210,10 +217,11 @@ class RetentionGovernanceService:
         workspace_id: UUID,
         state: RetentionPolicyState | None,
         limit: int,
+        cursor: str | None,
         subject: SubjectAttributes,
         environment: EnvironmentAttributes,
         request_id: str,
-    ) -> Sequence[RetentionPolicyVersion]:
+    ) -> RetentionPolicyPage:
         await self._authorize(
             workspace_id=workspace_id,
             resource_id=workspace_id,
@@ -228,6 +236,7 @@ class RetentionGovernanceService:
                 workspace_id=workspace_id,
                 state=state.value if state is not None else None,
                 limit=limit,
+                cursor=cursor,
             )
 
     async def get_active_policy(
@@ -333,10 +342,11 @@ class RetentionGovernanceService:
         workspace_id: UUID,
         state: LegalHoldState | None,
         limit: int,
+        cursor: str | None,
         subject: SubjectAttributes,
         environment: EnvironmentAttributes,
         request_id: str,
-    ) -> Sequence[LegalHold]:
+    ) -> LegalHoldPage:
         await self._authorize(
             workspace_id=workspace_id,
             resource_id=workspace_id,
@@ -351,7 +361,38 @@ class RetentionGovernanceService:
                 workspace_id=workspace_id,
                 state=state.value if state is not None else None,
                 limit=limit,
+                cursor=cursor,
             )
+
+    async def get_legal_hold(
+        self,
+        *,
+        workspace_id: UUID,
+        hold_id: UUID,
+        subject: SubjectAttributes,
+        environment: EnvironmentAttributes,
+        request_id: str,
+    ) -> LegalHold:
+        await self._authorize(
+            workspace_id=workspace_id,
+            resource_id=hold_id,
+            action=Action.RETENTION_READ,
+            subject=subject,
+            environment=environment,
+            request_id=request_id,
+        )
+        async with self._uow_factory() as uow:
+            await uow.set_security_context(
+                workspace_id=workspace_id,
+                subject_id=subject.subject_id,
+            )
+            hold = await uow.legal_holds.get(
+                workspace_id=workspace_id,
+                hold_id=hold_id,
+            )
+            if hold is None:
+                raise NotFoundError("The Legal Hold does not exist.")
+            return hold
 
     async def request_legal_hold_release(
         self,
@@ -527,10 +568,11 @@ class RetentionGovernanceService:
         workspace_id: UUID,
         state: ErasureRequestState | None,
         limit: int,
+        cursor: str | None,
         subject: SubjectAttributes,
         environment: EnvironmentAttributes,
         request_id: str,
-    ) -> Sequence[ErasureRequest]:
+    ) -> ErasureRequestPage:
         await self._authorize(
             workspace_id=workspace_id,
             resource_id=workspace_id,
@@ -545,6 +587,7 @@ class RetentionGovernanceService:
                 workspace_id=workspace_id,
                 state=state.value if state is not None else None,
                 limit=limit,
+                cursor=cursor,
             )
 
     async def get_erasure_request(
@@ -573,6 +616,56 @@ class RetentionGovernanceService:
             if value is None:
                 raise NotFoundError("The erasure request does not exist.")
             return value
+
+    async def get_erasure_execution_evidence(
+        self,
+        *,
+        workspace_id: UUID,
+        erasure_request_id: UUID,
+        subject: SubjectAttributes,
+        environment: EnvironmentAttributes,
+        request_id: str,
+    ) -> RetentionExecutionEvidence | None:
+        resource = ResourceAttributes(
+            resource_id=erasure_request_id,
+            workspace_id=workspace_id,
+            resource_type="retention_execution_evidence",
+            owner_department_id=None,
+            system_id=None,
+            domain_id=None,
+            classification=Classification.RESTRICTED,
+            lifecycle="ACTIVE",
+        )
+        await self._authorization.authorize_admin_fallback(
+            subject=subject,
+            resource=resource,
+            stage=AdminFallbackStage.READ,
+            environment=environment,
+            request_id=request_id,
+        )
+        await self._authorization.authorize(
+            subject=subject,
+            resource=resource,
+            action=Action.RETENTION_READ,
+            environment=environment,
+            request_id=request_id,
+        )
+        async with self._uow_factory() as uow:
+            await uow.set_security_context(workspace_id=workspace_id, subject_id=subject.subject_id)
+            await uow.execution_evidence.assert_admin_reader_eligible(
+                workspace_id=workspace_id,
+                subject_id=subject.subject_id,
+            )
+            request = await uow.erasure_requests.get(
+                workspace_id=workspace_id,
+                erasure_request_id=erasure_request_id,
+            )
+            if request is None:
+                raise NotFoundError("The erasure request does not exist.")
+            return await uow.execution_evidence.get_for_erasure_request(
+                workspace_id=workspace_id,
+                erasure_request_id=erasure_request_id,
+            )
 
     async def decide_erasure(
         self,

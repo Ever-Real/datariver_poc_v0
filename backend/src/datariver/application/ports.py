@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import AsyncIterator, Sequence
+from dataclasses import dataclass
 from datetime import datetime
 from types import TracebackType
 from typing import Any, Protocol, Self, runtime_checkable
@@ -13,6 +14,7 @@ from datariver.application.assistant_inference import (
 )
 from datariver.application.classification_access import ClassificationAccessSnapshot
 from datariver.application.dto import (
+    AdminAccessRequestPage,
     ApiProductRecord,
     ApiProductVersionRecord,
     ArchiveCapabilityEvidence,
@@ -49,21 +51,25 @@ from datariver.application.dto import (
     KnowledgeEvidenceCandidate,
     KnowledgeGraphRecord,
     KnowledgeReleaseRecord,
+    MembershipRenewalPage,
     MembershipRenewalRecord,
     MultipartUpload,
     ObjectMetadata,
     RetentionArchiveVerification,
     RetentionExecutionClaim,
-    SystemDirectoryEntry,
+    RetentionExecutionEvidence,
+    SystemAssigneePage,
+    SystemDirectoryPage,
     UploadPreparationReceiptEvidence,
     UploadRegistrationCandidateEvidence,
     WorkspaceMembershipAccessRecord,
-    WorkspaceMembershipSummary,
+    WorkspaceMembershipPage,
 )
 from datariver.application.identity_admin import ProvisionedWorkspaceUser
 from datariver.domain.admin_access import (
     AdminAccessRequest,
     MembershipAccessUpdate,
+    SystemAssigneePatchCommand,
     SystemAssigneeUpdateCommand,
 )
 from datariver.domain.authz import Decision, SubjectAttributes
@@ -83,6 +89,24 @@ from datariver.domain.retention import (
     LegalHold,
     RetentionPolicyVersion,
 )
+
+
+@dataclass(frozen=True, slots=True)
+class RetentionPolicyPage:
+    items: tuple[RetentionPolicyVersion, ...]
+    next_cursor: str | None
+
+
+@dataclass(frozen=True, slots=True)
+class LegalHoldPage:
+    items: tuple[LegalHold, ...]
+    next_cursor: str | None
+
+
+@dataclass(frozen=True, slots=True)
+class ErasureRequestPage:
+    items: tuple[ErasureRequest, ...]
+    next_cursor: str | None
 
 
 class DecisionWriter(Protocol):
@@ -463,8 +487,13 @@ class RetentionPolicyRepository(Protocol):
     ) -> RetentionPolicyVersion | None: ...
 
     async def list(
-        self, *, workspace_id: UUID, state: str | None, limit: int
-    ) -> Sequence[RetentionPolicyVersion]: ...
+        self,
+        *,
+        workspace_id: UUID,
+        state: str | None,
+        limit: int,
+        cursor: str | None = None,
+    ) -> RetentionPolicyPage: ...
 
     async def next_policy_number(self, *, workspace_id: UUID) -> int: ...
 
@@ -479,8 +508,13 @@ class LegalHoldRepository(Protocol):
     async def get_for_update(self, *, workspace_id: UUID, hold_id: UUID) -> LegalHold | None: ...
 
     async def list(
-        self, *, workspace_id: UUID, state: str | None, limit: int
-    ) -> Sequence[LegalHold]: ...
+        self,
+        *,
+        workspace_id: UUID,
+        state: str | None,
+        limit: int,
+        cursor: str | None = None,
+    ) -> LegalHoldPage: ...
 
     async def save(self, hold: LegalHold) -> None: ...
 
@@ -506,8 +540,13 @@ class ErasureRequestRepository(Protocol):
     ) -> ErasureRequest | None: ...
 
     async def list(
-        self, *, workspace_id: UUID, state: str | None, limit: int
-    ) -> Sequence[ErasureRequest]: ...
+        self,
+        *,
+        workspace_id: UUID,
+        state: str | None,
+        limit: int,
+        cursor: str | None = None,
+    ) -> ErasureRequestPage: ...
 
     async def save(self, request: ErasureRequest) -> None: ...
 
@@ -522,11 +561,28 @@ class ErasureTargetReader(Protocol):
     ) -> ErasureTargetSnapshot | None: ...
 
 
+class RetentionExecutionEvidenceReader(Protocol):
+    async def assert_admin_reader_eligible(
+        self,
+        *,
+        workspace_id: UUID,
+        subject_id: UUID,
+    ) -> None: ...
+
+    async def get_for_erasure_request(
+        self,
+        *,
+        workspace_id: UUID,
+        erasure_request_id: UUID,
+    ) -> RetentionExecutionEvidence | None: ...
+
+
 class RetentionUnitOfWork(Protocol):
     policies: RetentionPolicyRepository
     legal_holds: LegalHoldRepository
     erasure_requests: ErasureRequestRepository
     erasure_targets: ErasureTargetReader
+    execution_evidence: RetentionExecutionEvidenceReader
     outbox: OutboxWriter
     idempotency: IdempotencyStore
 
@@ -558,16 +614,27 @@ class AdminAccessRequestRepository(Protocol):
     ) -> AdminAccessRequest | None: ...
 
     async def list(
-        self, *, workspace_id: UUID, state: str | None, limit: int
-    ) -> Sequence[AdminAccessRequest]: ...
+        self,
+        *,
+        workspace_id: UUID,
+        state: str | None,
+        limit: int,
+        cursor: str | None = None,
+    ) -> AdminAccessRequestPage: ...
 
     async def save(self, request: AdminAccessRequest) -> None: ...
 
 
 class MembershipAccessRepository(Protocol):
     async def list(
-        self, *, workspace_id: UUID, limit: int
-    ) -> Sequence[WorkspaceMembershipSummary]: ...
+        self,
+        *,
+        workspace_id: UUID,
+        limit: int,
+        query: str | None = None,
+        active: bool | None = None,
+        cursor: str | None = None,
+    ) -> WorkspaceMembershipPage: ...
 
     async def get_access(
         self, *, workspace_id: UUID, subject_id: UUID
@@ -589,6 +656,10 @@ class MembershipAccessRepository(Protocol):
     ) -> None: ...
 
     async def assert_current_version(self, command: MembershipAccessUpdate) -> None: ...
+
+    async def assert_manual_access_update_allowed(
+        self, *, workspace_id: UUID, subject_id: UUID
+    ) -> None: ...
 
     async def assert_eligible_human_administrators(
         self, *, workspace_id: UUID, subject_ids: frozenset[UUID]
@@ -633,13 +704,37 @@ class MembershipRenewalRepository(Protocol):
         subject_id: UUID | None,
         state: str | None,
         limit: int,
-    ) -> Sequence[MembershipRenewalRecord]: ...
+        cursor: str | None = None,
+    ) -> MembershipRenewalPage: ...
+
+    async def get_record(
+        self, *, workspace_id: UUID, renewal_request_id: UUID
+    ) -> MembershipRenewalRecord | None: ...
 
     async def save(self, request: MembershipRenewalRequest) -> None: ...
 
 
 class SystemDirectoryRepository(Protocol):
-    async def list(self, *, workspace_id: UUID, limit: int) -> Sequence[SystemDirectoryEntry]: ...
+    async def list(
+        self,
+        *,
+        workspace_id: UUID,
+        limit: int,
+        query: str | None = None,
+        active: bool | None = None,
+        cursor: str | None = None,
+    ) -> SystemDirectoryPage: ...
+
+    async def list_assignees(
+        self,
+        *,
+        workspace_id: UUID,
+        system_id: UUID,
+        limit: int,
+        cursor: str | None = None,
+    ) -> SystemAssigneePage: ...
+
+    async def patch_assignees(self, command: SystemAssigneePatchCommand) -> int: ...
 
     async def replace_assignees(self, command: SystemAssigneeUpdateCommand) -> int: ...
 

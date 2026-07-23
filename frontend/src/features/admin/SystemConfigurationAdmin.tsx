@@ -1,6 +1,7 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { SystemConfigurationEntry, SystemConfigurationTestResult } from '../../api/types'
 import { ErrorNotice } from '../../components/ErrorNotice'
+import { useRovingTabs } from '../../components/common/useRovingTabs'
 import type { AdminSectionProps } from './MembershipAdmin'
 
 const llmSystemIds = new Set<SystemConfigurationEntry['system_id']>([
@@ -8,6 +9,7 @@ const llmSystemIds = new Set<SystemConfigurationEntry['system_id']>([
   'LLM_EMBEDDING',
   'LLM_RERANKER',
 ])
+type SystemTabId = SystemConfigurationEntry['system_id'] | 'LLM_MODELS'
 
 function llmTabLabel(systemId: SystemConfigurationEntry['system_id']) {
   if (systemId === 'LLM_CHAT_MODEL') return 'Chat Model'
@@ -52,18 +54,35 @@ export function SystemConfigurationAdmin(props: AdminSectionProps) {
   const [testing, setTesting] = useState(false)
   const [testResult, setTestResult] = useState<SystemConfigurationTestResult>()
   const [error, setError] = useState<unknown>()
+  const loadRequest = useRef<{ generation: number; controller?: AbortController }>({
+    generation: 0,
+  })
 
   const load = useCallback(async () => {
+    loadRequest.current.controller?.abort()
+    const controller = new AbortController()
+    const generation = loadRequest.current.generation + 1
+    loadRequest.current = { generation, controller }
     setLoading(true); setError(undefined)
     try {
-      const next = await api.listSystemConfiguration()
+      const next = await api.listSystemConfiguration(controller.signal)
+      if (controller.signal.aborted || loadRequest.current.generation !== generation) return
       setItems(next)
       setSelectedId((current) => current && next.some((item) => item.system_id === current)
         ? current : next[0]?.system_id)
-    } catch (next) { setError(next); reportError(next) } finally { setLoading(false) }
+    } catch (next) {
+      if (!controller.signal.aborted) { setError(next); reportError(next) }
+    } finally {
+      if (!controller.signal.aborted && loadRequest.current.generation === generation) {
+        setLoading(false)
+      }
+    }
   }, [api, reportError])
 
-  useEffect(() => { void load() }, [load])
+  useEffect(() => {
+    void load()
+    return () => loadRequest.current.controller?.abort()
+  }, [load])
   const selected = useMemo(
     () => items.find((item) => item.system_id === selectedId),
     [items, selectedId],
@@ -77,6 +96,22 @@ export function SystemConfigurationAdmin(props: AdminSectionProps) {
     [items],
   )
   const llmSelected = selected ? llmSystemIds.has(selected.system_id) : false
+  const systemTabIds = useMemo<SystemTabId[]>(() => [
+    ...ordinaryItems.map((item) => item.system_id),
+    ...(llmItems.length > 0 ? ['LLM_MODELS' as const] : []),
+  ], [llmItems.length, ordinaryItems])
+  const activeSystemTab: SystemTabId | undefined = llmSelected
+    ? 'LLM_MODELS'
+    : selected?.system_id
+  const selectSystemTab = (id: SystemTabId) => {
+    setSelectedId(id === 'LLM_MODELS' ? llmItems[0]?.system_id : id)
+  }
+  const systemTabs = useRovingTabs({
+    ids: systemTabIds,
+    activeId: activeSystemTab,
+    idPrefix: 'admin-system-config',
+    onSelect: selectSystemTab,
+  })
   useEffect(() => {
     setDraft(selected?.configuration_yaml || selected?.template_yaml || '')
     setTestResult(undefined)
@@ -145,15 +180,15 @@ export function SystemConfigurationAdmin(props: AdminSectionProps) {
     <div className="section-heading"><div><h3>시스템 설정</h3><p className="muted">개발 환경의 시스템별 주소·모델·비민감 옵션을 YAML로 관리합니다. 실행 시크릿은 운영자 관리 영역에 남습니다.</p></div><button className="button button-secondary" onClick={() => void load()} type="button">새로고침</button></div>
     <div className="admin-system-settings-workspace">
       <nav aria-label="설정 시스템 목록" className="admin-system-settings-list" role="tablist">
-        {ordinaryItems.map((item) => <button aria-selected={selected?.system_id === item.system_id} className={selected?.system_id === item.system_id ? 'active' : ''} key={item.system_id} onClick={() => setSelectedId(item.system_id)} role="tab" type="button"><span className={`badge ${item.state === 'CONFIGURED' ? '' : 'badge-soft'}`}>{item.state}</span><strong>{item.label}</strong></button>)}
-        {llmItems.length > 0 && <button aria-selected={llmSelected} className={llmSelected ? 'active' : ''} onClick={() => setSelectedId((llmSelected ? selectedId : llmItems[0]?.system_id) ?? llmItems[0]?.system_id)} role="tab" type="button"><span className={`badge ${llmItems.every((item) => item.state === 'CONFIGURED') ? '' : 'badge-soft'}`}>{llmItems.filter((item) => item.state === 'CONFIGURED').length}/{llmItems.length}</span><strong>LLM Models</strong></button>}
+        {ordinaryItems.map((item) => <button {...systemTabs.tabProps(item.system_id)} className={selected?.system_id === item.system_id ? 'active' : ''} key={item.system_id} onClick={() => setSelectedId(item.system_id)} type="button"><span className={`badge ${item.state === 'CONFIGURED' ? '' : 'badge-soft'}`}>{item.state}</span><strong>{item.label}</strong></button>)}
+        {llmItems.length > 0 && <button {...systemTabs.tabProps('LLM_MODELS')} className={llmSelected ? 'active' : ''} onClick={() => selectSystemTab('LLM_MODELS')} type="button"><span className={`badge ${llmItems.every((item) => item.state === 'CONFIGURED') ? '' : 'badge-soft'}`}>{llmItems.filter((item) => item.state === 'CONFIGURED').length}/{llmItems.length}</span><strong>LLM Models</strong></button>}
         {!loading && items.length === 0 && <p>표시 가능한 설정 항목이 없습니다.</p>}
       </nav>
-      <section aria-live="polite" className="admin-system-settings-detail">
+      <section {...(activeSystemTab ? systemTabs.panelProps(activeSystemTab) : {})} aria-live="polite" className="admin-system-settings-detail">
         {loading ? <p className="muted">서버 구성 상태를 불러오는 중입니다.</p> : !selected ? <p className="muted">왼쪽에서 시스템을 선택하세요.</p> : <>
           <header className="flex items-start justify-between gap-3"><div><span className="eyebrow">{selected.system_id}</span><h4>{selected.label}</h4></div>{canUpdate && <button className="button button-secondary" disabled={!selected.template_yaml} onClick={() => setDraft(selected.template_yaml)} type="button">샘플 양식 복원</button>}</header>
-          {llmSelected && <div className="admin-system-llm-tabs" role="tablist" aria-label="LLM 모델 설정">
-            {llmItems.map((item) => <button key={item.system_id} type="button" role="tab" aria-selected={selected.system_id === item.system_id} className={`button ${selected.system_id === item.system_id ? '' : 'button-secondary'}`} onClick={() => setSelectedId(item.system_id)}>{llmTabLabel(item.system_id)}</button>)}
+          {llmSelected && <div className="admin-system-llm-tabs" role="group" aria-label="LLM 모델 설정">
+            {llmItems.map((item) => <button key={item.system_id} type="button" aria-pressed={selected.system_id === item.system_id} className={`button ${selected.system_id === item.system_id ? '' : 'button-secondary'}`} onClick={() => setSelectedId(item.system_id)}>{llmTabLabel(item.system_id)}</button>)}
           </div>}
           {(selected.system_id === 'LLM_CHAT_MODEL' || selected.system_id === 'LLM_EMBEDDING') && <p className="muted">개발 환경에서는 <code>connection_mode: LOCAL_OLLAMA</code> 또는 사내 HTTPS 모델 서버용 <code>INTRANET_OPENAI_COMPATIBLE</code>을 선택할 수 있습니다. 후자는 운영자 allowlist와 <code>file:/run/secrets/...</code> API-key 참조가 모두 필요하며, 상용 외부 API는 지원하지 않습니다.</p>}
           <dl className="summary-list">

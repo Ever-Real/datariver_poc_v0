@@ -29,9 +29,73 @@ const access: WorkspaceMembershipAccess = {
     active: true, clearance: 'INTERNAL', groups: ['engineers'], allowed_actions: ['catalog.read'],
     denied_actions: [], allowed_system_ids: [], allowed_domain_ids: [],
   },
+  role_assignment: {
+    status: 'MANUAL', role_id: null, role_version: null, assignment_version: null,
+    membership_version: null, access_payload_hash: null, assigned_by: null, updated_at: null,
+    legacy_markers: [],
+  },
 }
 
 describe('AdminApi', () => {
+  it('binds administrator cursor pages to their filters and forwards cancellation', async () => {
+    const { api, request } = mockClient()
+    const controller = new AbortController()
+    request.mockResolvedValue({ items: [], page: { next_cursor: 'next-page', limit: 25 } })
+
+    await expect(api.listMembershipRenewalPage({
+      state: 'PENDING', cursor: 'renewal-cursor', signal: controller.signal,
+    })).resolves.toMatchObject({ items: [], nextCursor: 'next-page', limit: 25 })
+    await api.listAccessRolePage({
+      query: 'reader', status: 'ACTIVE', cursor: 'role-cursor', signal: controller.signal,
+    })
+    await api.listSystemPage({
+      query: 'warehouse', status: 'ACTIVE', cursor: 'system-cursor', signal: controller.signal,
+    })
+    await api.listFallbackRequestPage({
+      state: 'APPROVED', cursor: 'fallback-cursor', signal: controller.signal,
+    })
+    await api.listRetentionPolicyPage({
+      state: 'DRAFT', cursor: 'retention-cursor', signal: controller.signal,
+    })
+    await api.listLegalHoldPage({
+      state: 'ACTIVE', cursor: 'hold-cursor', signal: controller.signal,
+    })
+    await api.listErasureRequestPage({
+      state: 'PENDING', cursor: 'erasure-cursor', signal: controller.signal,
+    })
+    await api.listClassificationAccessPolicyPage({
+      state: 'PROPOSED', cursor: 'classification-cursor', signal: controller.signal,
+    })
+    await api.listInferenceProviderProfilePage({
+      profileKey: 'internal-chat',
+      state: 'APPROVED',
+      cursor: 'provider-cursor',
+      signal: controller.signal,
+    })
+    await api.listRestrictedSearchGrantPage({
+      state: 'ACTIVE',
+      subjectId: 'subject-one',
+      cursor: 'grant-cursor',
+      signal: controller.signal,
+    })
+
+    expect(request.mock.calls.map((call) => String(call[0]))).toEqual([
+      '/admin/membership-renewals?limit=25&state=PENDING&cursor=renewal-cursor',
+      '/admin/access-roles?limit=25&q=reader&status=ACTIVE&cursor=role-cursor',
+      '/admin/systems?limit=25&q=warehouse&status=ACTIVE&cursor=system-cursor',
+      '/admin/fallback/workspace-membership-access-requests?limit=25&state=APPROVED&cursor=fallback-cursor',
+      '/admin/retention/policies?limit=25&state=DRAFT&cursor=retention-cursor',
+      '/admin/retention/legal-holds?limit=25&state=ACTIVE&cursor=hold-cursor',
+      '/admin/retention/erasure-requests?limit=25&state=PENDING&cursor=erasure-cursor',
+      '/admin/classification-access/policies?limit=25&state=PROPOSED&cursor=classification-cursor',
+      '/admin/inference/provider-profiles?limit=25&profile_key=internal-chat&state=APPROVED&cursor=provider-cursor',
+      '/admin/classification-access/restricted-search-grants?limit=25&state=ACTIVE&subject_id=subject-one&cursor=grant-cursor',
+    ])
+    for (const call of request.mock.calls) {
+      expect(call[1]).toEqual({ signal: controller.signal })
+    }
+  })
+
   it('requires the membership ETag to match the body version', async () => {
     const { api, requestWithMeta } = mockClient()
     requestWithMeta.mockResolvedValueOnce({ data: access, etag: '"3"' })
@@ -77,17 +141,47 @@ describe('AdminApi', () => {
     const hold = { hold_id: 'hold-one', version: 1 } as LegalHold
     request.mockResolvedValue({})
 
-    await api.proposeRetentionPolicy({ completed_operation_days: 1, chat_content_days: 1, audit_online_months: 1, immutable_archive_years: 1 }, 'reason', 'policy-key')
+    await api.proposeRetentionPolicy(
+      { completed_operation_days: 1, chat_content_days: 1, audit_online_months: 1, immutable_archive_years: 1 },
+      {
+        effective_from: '2026-07-23T00:00:00.000Z',
+        effective_until: null,
+        execution_authorization_hours: 24,
+        class_rules: [
+          { data_class: 'COMPLETED_OPERATIONS', unit: 'DAYS', minimum: 1, maximum: 30, archive_disposition: 'NO_ARCHIVE' },
+          { data_class: 'CHAT_CONTENT', unit: 'DAYS', minimum: 1, maximum: 30, archive_disposition: 'NO_ARCHIVE' },
+          { data_class: 'AUDIT_EVIDENCE', unit: 'MONTHS', minimum: 1, maximum: 12, archive_disposition: 'CONTENT_WORM' },
+          { data_class: 'OBJECT_DATA', unit: 'DAYS', minimum: 1, maximum: 365, archive_disposition: 'CONTENT_WORM' },
+        ],
+      },
+      'reason',
+      'policy-key',
+    )
     await api.decideRetentionPolicy(policy, 'APPROVED', 'reason', 'policy-decision-key')
     await api.placeLegalHold('AUDIT_EVIDENCE', 'WORKSPACE', null, 'reason', 'hold-key')
+    await api.getLegalHold('hold-one')
     await api.requestLegalHoldRelease(hold, 'reason', 'hold-release-key')
     await api.decideLegalHoldRelease(hold, 'APPROVED', 'reason', 'hold-decision-key')
 
+    const proposalBody = JSON.parse(
+      String((request.mock.calls[0]?.[1] as { body?: string }).body),
+    ) as {
+      contract: {
+        class_rules: Array<{ archive_disposition: string }>
+      }
+    }
+    expect(proposalBody.contract.class_rules.map((rule) => rule.archive_disposition)).toEqual([
+      'NO_ARCHIVE',
+      'NO_ARCHIVE',
+      'CONTENT_WORM',
+      'CONTENT_WORM',
+    ])
     const paths = request.mock.calls.map((call) => String(call[0]))
     expect(paths).toEqual([
       '/admin/retention/policies',
       '/admin/retention/policies/policy-one/decisions',
       '/admin/retention/legal-holds',
+      '/admin/retention/legal-holds/hold-one',
       '/admin/retention/legal-holds/hold-one/release-requests',
       '/admin/retention/legal-holds/hold-one/release-decisions',
     ])
@@ -100,7 +194,10 @@ describe('AdminApi', () => {
       erasure_request_id: 'request-one', target_type: 'UPLOAD_OBJECT', target_id: 'target-one',
       version: 1, state: 'PENDING', execution_state: 'DISABLED_NOT_READY',
     } as ErasureRequest
-    request.mockResolvedValue({ items: [erasure] })
+    request.mockResolvedValue({
+      items: [erasure],
+      page: { next_cursor: null, limit: 100 },
+    })
     requestWithMeta.mockResolvedValue({ data: erasure, etag: '"1"' })
 
     await api.listErasureRequests()
@@ -122,6 +219,24 @@ describe('AdminApi', () => {
     expect(requestWithMeta.mock.calls.at(-1)?.[1]).toMatchObject({
       ifMatch: '"1"', idempotencyKey: 'erasure-decision-key',
     })
+  })
+
+  it('reads sanitized archive-only execution evidence without a mutation route', async () => {
+    const { api, request } = mockClient()
+    request.mockResolvedValue({
+      erasure_request_id: 'request-one',
+      availability: 'NOT_PLANNED',
+      archive_only: true,
+      deletion_automation_state: 'DISABLED_NOT_READY',
+      job: null,
+    })
+
+    await api.getErasureExecutionEvidence('request-one')
+
+    expect(request).toHaveBeenCalledWith(
+      '/admin/retention/erasure-requests/request-one/execution-evidence',
+      { signal: undefined },
+    )
   })
 
   it('binds classification, provider, and RESTRICTED grant mutations to versions', async () => {

@@ -17,6 +17,7 @@ from neo4j import AsyncGraphDatabase
 from redis.asyncio import Redis
 
 from datariver.domain.common import ValidationError
+from datariver.domain.system_configuration import require_canonical_secret_references
 from datariver.infrastructure.secrets import SecretResolver
 
 ProbeStatus = Literal["AVAILABLE", "AUTHENTICATION_REQUIRED", "UNAVAILABLE"]
@@ -48,6 +49,24 @@ _HTTP_PROBE_PATHS: dict[str, tuple[str, ProbeScope]] = {
     "GRAFANA_DASHBOARD": ("/api/health", "HTTP_HEALTH"),
 }
 
+_PLAINTEXT_DEVELOPMENT_HOSTS = frozenset(
+    {
+        "127.0.0.1",
+        "localhost",
+        "host.docker.internal",
+        "datahub-gms",
+        "datahub-frontend",
+        "airflow",
+        "redis-cache",
+        "redis-delivery",
+        "s3",
+        "minio",
+        "neo4j",
+        "prometheus",
+        "grafana",
+    }
+)
+
 
 def _endpoint(document: Mapping[str, Any]) -> str:
     for key in ("base_url", "endpoint", "url", "uri"):
@@ -66,21 +85,38 @@ def _validated_url(endpoint: str, *, schemes: set[str]) -> tuple[str, str, int]:
     if parsed.query or parsed.fragment:
         raise ValidationError("A system endpoint must not contain a query or fragment.")
     default_port = 443 if parsed.scheme == "https" else 80
-    if parsed.scheme in {"bolt", "neo4j"}:
+    if parsed.scheme in {"bolt", "neo4j", "bolt+s", "neo4j+s"}:
         default_port = 7687
     if parsed.scheme in {"redis", "rediss"}:
         default_port = 6379
     return endpoint, parsed.hostname, parsed.port or default_port
 
 
-async def _reject_unsafe_destination(host: str, port: int) -> None:
-    try:
-        addresses = await asyncio.get_running_loop().getaddrinfo(
-            host,
-            port,
-            type=0,
+def _require_tls_for_nonlocal_endpoint(endpoint: str) -> None:
+    parsed = urlsplit(endpoint)
+    host = (parsed.hostname or "").rstrip(".").lower()
+    if parsed.scheme in {"https", "rediss", "bolt+s", "neo4j+s"}:
+        return
+    if host not in _PLAINTEXT_DEVELOPMENT_HOSTS:
+        raise ValidationError(
+            "Plaintext system probes are restricted to fixed local development hosts."
         )
-    except OSError as error:
+
+
+async def _reject_unsafe_destination(
+    host: str,
+    port: int,
+    *,
+    allowed_hosts: tuple[str, ...],
+) -> None:
+    try:
+        async with asyncio.timeout(2.0):
+            addresses = await asyncio.get_running_loop().getaddrinfo(
+                host,
+                port,
+                type=0,
+            )
+    except (TimeoutError, OSError) as error:
         raise ValidationError("The saved system host could not be resolved.") from error
     if not addresses:
         raise ValidationError("The saved system host could not be resolved.")
@@ -94,14 +130,18 @@ async def _reject_unsafe_destination(host: str, port: int) -> None:
             ) from error
         if value.is_link_local or value.is_multicast or value.is_unspecified or value.is_reserved:
             raise ValidationError("The saved system host resolves to a forbidden network range.")
+    normalized_host = host.rstrip(".").lower()
+    if normalized_host not in allowed_hosts:
+        raise ValidationError("The saved system host is not in the operator probe allowlist.")
 
 
 async def _require_private_intranet_destination(host: str, port: int) -> None:
     """Require an operator-selected LLM endpoint to stay inside the private network."""
 
     try:
-        addresses = await asyncio.get_running_loop().getaddrinfo(host, port, type=0)
-    except OSError as error:
+        async with asyncio.timeout(2.0):
+            addresses = await asyncio.get_running_loop().getaddrinfo(host, port, type=0)
+    except (TimeoutError, OSError) as error:
         raise ValidationError("The intranet LLM host could not be resolved.") from error
     if not addresses:
         raise ValidationError("The intranet LLM host could not be resolved.")
@@ -214,6 +254,50 @@ def _validated_chat_completion(payload: object) -> bool:
     return isinstance(content, dict) and set(content) == {"status"} and content["status"] == "ok"
 
 
+async def _bounded_http_request(
+    client: httpx.AsyncClient,
+    method: str,
+    url: str,
+    *,
+    timeout_seconds: float,
+    headers: Mapping[str, str] | None = None,
+    json_document: object = None,
+) -> httpx.Response:
+    maximum_bytes = 1024 * 1024
+    async with asyncio.timeout(timeout_seconds):
+        async with client.stream(
+            method,
+            url,
+            headers=headers,
+            json=json_document,
+        ) as response:
+            raw_length = response.headers.get("content-length")
+            if raw_length is not None:
+                try:
+                    content_length = int(raw_length)
+                except ValueError as error:
+                    raise ValidationError(
+                        "The saved system endpoint returned an invalid response length."
+                    ) from error
+                if content_length > maximum_bytes:
+                    raise ValidationError(
+                        "The saved system endpoint response exceeded the one MiB limit."
+                    )
+            body = bytearray()
+            async for chunk in response.aiter_bytes():
+                body.extend(chunk)
+                if len(body) > maximum_bytes:
+                    raise ValidationError(
+                        "The saved system endpoint response exceeded the one MiB limit."
+                    )
+            return httpx.Response(
+                response.status_code,
+                headers=response.headers,
+                content=bytes(body),
+                request=response.request,
+            )
+
+
 async def _authenticated_neo4j_probe(
     endpoint: str,
     username: str,
@@ -238,7 +322,11 @@ async def _authenticated_neo4j_probe(
         async with driver.session(database=database) as session:
             return await session.execute_read(query)
     finally:
-        await driver.close()
+        try:
+            async with asyncio.timeout(min(timeout_seconds, 1.0)):
+                await driver.close()
+        except TimeoutError:
+            pass
 
 
 async def _authenticated_s3_head_bucket(
@@ -282,6 +370,7 @@ async def probe_system_configuration(
     s3_head_bucket: Callable[[str, str, str, str, str, float], Awaitable[None]] = (
         _authenticated_s3_head_bucket
     ),
+    allowed_hosts: tuple[str, ...] = (),
 ) -> SystemConfigurationProbeResult:
     """Probe one saved, allowlisted development profile without accepting a request URL.
 
@@ -292,9 +381,31 @@ async def probe_system_configuration(
 
     started = time.monotonic()
     endpoint = _endpoint(document)
+    connection_mode: object = (
+        document.get("connection_mode", "LOCAL_OLLAMA")
+        if system_id in {"LLM_CHAT_MODEL", "LLM_EMBEDDING"}
+        else None
+    )
+    references = document.get("secret_references", {})
+    if not isinstance(references, Mapping):
+        raise ValidationError("The saved system secret references are invalid.")
+    try:
+        require_canonical_secret_references(
+            system_id,
+            {str(key): str(value) for key, value in references.items()},
+            connection_mode=connection_mode,
+        )
+    except ValueError as error:
+        raise ValidationError(str(error)) from error
+    normalized_allowed_hosts = tuple(value.rstrip(".").lower() for value in allowed_hosts)
     if system_id in {"REDIS_CACHE", "REDIS_DELIVERY"}:
         _, host, port = _validated_url(endpoint, schemes={"redis", "rediss"})
-        await _reject_unsafe_destination(host, port)
+        await _reject_unsafe_destination(
+            host,
+            port,
+            allowed_hosts=normalized_allowed_hosts,
+        )
+        _require_tls_for_nonlocal_endpoint(endpoint)
         password = (secret_resolver or SecretResolver()).resolve(
             _secret_reference(document, "password")
         )
@@ -335,7 +446,12 @@ async def probe_system_configuration(
         )
     if system_id == "S3_STORAGE":
         _, host, port = _validated_url(endpoint, schemes={"http", "https"})
-        await _reject_unsafe_destination(host, port)
+        await _reject_unsafe_destination(
+            host,
+            port,
+            allowed_hosts=normalized_allowed_hosts,
+        )
+        _require_tls_for_nonlocal_endpoint(endpoint)
         region = document.get("region")
         buckets = document.get("buckets")
         if not isinstance(region, str) or not region.strip():
@@ -379,8 +495,16 @@ async def probe_system_configuration(
             detail="S3 accepted the mounted credential for the fixed quarantine bucket probe.",
         )
     if system_id == "NEO4J":
-        _, host, port = _validated_url(endpoint, schemes={"bolt", "neo4j"})
-        await _reject_unsafe_destination(host, port)
+        _, host, port = _validated_url(
+            endpoint,
+            schemes={"bolt", "neo4j", "bolt+s", "neo4j+s"},
+        )
+        await _reject_unsafe_destination(
+            host,
+            port,
+            allowed_hosts=normalized_allowed_hosts,
+        )
+        _require_tls_for_nonlocal_endpoint(endpoint)
         resolver = secret_resolver or SecretResolver()
         username, password = _neo4j_credentials(
             resolver.resolve(_secret_reference(document, "credential"))
@@ -395,13 +519,14 @@ async def probe_system_configuration(
         if not isinstance(database, str) or not database.strip():
             raise ValidationError("The saved Neo4j configuration has no database name.")
         try:
-            result = await neo4j_query(
-                endpoint,
-                username,
-                password,
-                database.strip(),
-                timeout,
-            )
+            async with asyncio.timeout(timeout):
+                result = await neo4j_query(
+                    endpoint,
+                    username,
+                    password,
+                    database.strip(),
+                    timeout,
+                )
             if result != 1:
                 raise ValidationError("The authenticated Neo4j probe returned invalid data.")
         except ValidationError:
@@ -431,7 +556,12 @@ async def probe_system_configuration(
         raise ValidationError("The system configuration identifier is not probeable.")
     path, scope = path_and_scope
     _, host, port = _validated_url(endpoint, schemes={"http", "https"})
-    await _reject_unsafe_destination(host, port)
+    await _reject_unsafe_destination(
+        host,
+        port,
+        allowed_hosts=normalized_allowed_hosts,
+    )
+    _require_tls_for_nonlocal_endpoint(endpoint)
     connection_mode = _llm_connection_mode(document) if inference_probe else "LOCAL_OLLAMA"
     api_key: str | None = None
     if connection_mode == "INTRANET_OPENAI_COMPATIBLE":
@@ -463,10 +593,13 @@ async def probe_system_configuration(
     try:
         model = _configured_model(document)
         if system_id == "LLM_CHAT_MODEL":
-            response = await active_client.post(
+            response = await _bounded_http_request(
+                active_client,
+                "POST",
                 request_url,
+                timeout_seconds=timeout_seconds,
                 headers={"Authorization": f"Bearer {api_key}"} if api_key else None,
-                json={
+                json_document={
                     "model": model,
                     "temperature": 0,
                     "messages": [
@@ -492,14 +625,22 @@ async def probe_system_configuration(
                 },
             )
         elif system_id == "LLM_EMBEDDING":
-            response = await active_client.post(
+            response = await _bounded_http_request(
+                active_client,
+                "POST",
                 request_url,
+                timeout_seconds=timeout_seconds,
                 headers={"Authorization": f"Bearer {api_key}"} if api_key else None,
-                json={"model": model, "input": ["DataRiver connectivity probe"]},
+                json_document={"model": model, "input": ["DataRiver connectivity probe"]},
             )
         else:
-            response = await active_client.get(request_url)
-    except httpx.HTTPError as error:
+            response = await _bounded_http_request(
+                active_client,
+                "GET",
+                request_url,
+                timeout_seconds=timeout_seconds,
+            )
+    except (TimeoutError, httpx.HTTPError) as error:
         raise ValidationError("The saved system endpoint is not reachable.") from error
     finally:
         if owns_client:

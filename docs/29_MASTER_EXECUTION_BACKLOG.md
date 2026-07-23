@@ -14,9 +14,9 @@ an unsafe bypass, or a historical result from another commit.
 | Ledger field | Value |
 |---|---|
 | Created | 2026-07-23, Asia/Seoul |
-| Baseline branch / HEAD | `codex/admin-policy-rbac` / `51d7eac` |
-| Remote comparison at creation | `origin/main` at `313e59a`; current branch later published through Phase 2 commit `ca24c07`, not merged |
-| Current controlled phase | Policy Book Phase 2 local exit/focused commit; Phase 3 has not started |
+| Baseline branch / working-tree base | `codex/admin-policy-rbac` / `b8ab2dd` |
+| Remote comparison at creation | `origin/main` at `313e59a`; current branch is published through Phase 2 record `b8ab2dd`, not merged |
+| Current controlled phase | Policy Book Phase 3 local exit complete; focused publication record pending |
 | Final artifact order | Feature → API → Data/ERD → Screen → `README.md` → `ARCHITECTURE.md` |
 
 ## Status language
@@ -45,8 +45,11 @@ an unsafe bypass, or a historical result from another commit.
   only normalized requirements, decisions, checks and evidence belong in this ledger.
 - [x] Phase 2 source and local exit gates pass, including actual PostgreSQL and independent P0/P1
   review. The focused Phase 2 commit establishes this boundary; target activation gates remain open.
-- [ ] Phase 3 starts only after the Phase 2 evidence is independently reviewed, committed and
-  reported. It must not be mixed into the Phase 2 commit.
+- [x] Phase 3 started after the independently reviewed Phase 2 implementation and publication record
+  at `b8ab2dd`; its changes are isolated in the current focused work package.
+- [x] Phase 3 current-source local gates and independent P0/P1 reviews pass. The focused commit and
+  publication record close the repository boundary; browser/WSL/provider gates remain explicit
+  rather than blocking safe source continuation.
 - [ ] Request groups 3 through 6 retain their stated dependency on earlier work. External gates are
   reported explicitly if the required machine or accountable human identities are unavailable.
 
@@ -97,9 +100,9 @@ merged, released, or available to the preparation PC until publication actually 
 | R2-08 | Archive through a dedicated least-privilege port and verify immutable read-back receipts | `DONE_LOCAL` + `EXTERNAL_GATE` | The capability attestation is DB-committed before conditional `If-None-Match` create, its UUID is provider metadata, SDK retries are disabled, and cold-restart lookup binds exact attestation/full read-back with zero provider write. Policy lifecycle/V2 effectiveness, execution authorisation and capability must cover the full `[LastModified, LastModified+1s)` interval; target conformance and provider-principal attribution remain external. |
 | R2-09 | Consume approved erasure intent with maker/checker/executor separation | `DONE_LOCAL` | Domain plus DB actor inequalities, fixed executor service-principal FK/config binding and SQL constraint negative pass. Physical deletion remains absent. |
 | R2-10 | Add kill switch, bounded metrics and crash/restart/duplicate/hold-race tests | `DONE_LOCAL` + `EXTERNAL_GATE` | Deployment flag plus reloadable exact-value control file, fixed-label outcomes, atomic duplicate prevention, every-lease read-only recovery, three-fence transient recovery and cold-process exact receipt linkage are tested; full WSL/provider crash/soak remains external. |
-| R2-11 | Connect four-class data rules and exact Role evidence to Admin UI | `PENDING` | Starts only after Phase 2 exit; generic editing of Role-bound membership must remain disabled. |
-| R2-12 | Resolve every Admin inventory row honestly | `PENDING` | Implement bounded APIs/UI or show an explicit unavailable reason; no fabricated rows or silent controls. |
-| R2-13 | Govern user registration and membership lifecycle | `PARTIAL` | Track optional Keycloak provisioning versus external-IdP unavailable state, expiring membership/renewal, exact Role evidence, disablement and audit as a dedicated Phase 3 journey. |
+| R2-11 | Connect four-class data rules and exact Role evidence to Admin UI | `DONE_LOCAL` | The Role editor covers all four classes, displays exact assignment evidence and disables manual/fallback editing for Role-bound or unverifiable legacy state. |
+| R2-12 | Resolve every Admin inventory row honestly | `DONE_LOCAL` + `EXTERNAL_GATE` | Displayed collections use bounded server cursors and stale-response guards; missing audit/dictionary/profile/drill-down APIs are explicit governed-unavailable states. Actual OIDC/WebAuthn browser acceptance remains external. |
+| R2-13 | Govern user registration and membership lifecycle | `DONE_LOCAL` + `EXTERNAL_GATE` | Optional Keycloak provisioning, active Role search, expiring membership/renewal and normalized evidence are wired and tested. Real IdP rollback/ceremony and multi-human acceptance remain external. |
 
 ## Request group 3 — Search, Registration, Manual/Bulk and CR
 

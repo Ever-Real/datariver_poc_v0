@@ -2,9 +2,12 @@ from __future__ import annotations
 
 import base64
 import binascii
+import json
 import re
+from collections.abc import Mapping
 from datetime import datetime, timedelta
 from types import TracebackType
+from typing import cast
 from uuid import UUID
 
 from sqlalchemy import and_, func, or_, select, text, update
@@ -14,17 +17,25 @@ from datariver.application.dto import (
     ArchiveCapabilityEvidence,
     ArchiveCapabilityRecord,
     ArchiveReceiptEvidence,
+    RetentionArchiveReceiptEvidenceSummary,
+    RetentionExecutionAttemptEvidence,
+    RetentionExecutionEventEvidence,
+    RetentionExecutionEvidence,
 )
 from datariver.application.ports import (
+    ErasureRequestPage,
     ErasureRequestRepository,
     ErasureTargetReader,
+    LegalHoldPage,
     LegalHoldRepository,
+    RetentionPolicyPage,
     RetentionPolicyRepository,
     RetentionUnitOfWork,
 )
 from datariver.domain.authz import Classification
 from datariver.domain.common import (
     ConflictError,
+    ForbiddenError,
     ValidationError,
     canonical_json_hash,
     utc_now,
@@ -58,7 +69,7 @@ from datariver.domain.retention import (
 from datariver.infrastructure.db.governance import SqlIdempotencyStore, SqlOutboxWriter
 from datariver.infrastructure.db.models.assistant import ChatSessionModel
 from datariver.infrastructure.db.models.integration import ObjectManifestModel
-from datariver.infrastructure.db.models.platform import WorkspaceMembershipModel
+from datariver.infrastructure.db.models.platform import SubjectModel, WorkspaceMembershipModel
 from datariver.infrastructure.db.models.retention import (
     ArchiveCapabilityAttestationModel,
     ErasureRequestEventModel,
@@ -66,12 +77,136 @@ from datariver.infrastructure.db.models.retention import (
     ImmutableArchiveReceiptModel,
     LegalHoldEventModel,
     LegalHoldModel,
+    RetentionExecutionAttemptModel,
+    RetentionExecutionEventModel,
+    RetentionExecutionJobModel,
     RetentionPolicyClassRuleModel,
     RetentionPolicyVersionModel,
 )
 from datariver.infrastructure.db.rls import set_security_context
 
 MAXIMUM_ARCHIVE_CAPABILITY_LIFETIME = timedelta(hours=24)
+_RETENTION_LIST_CURSOR_KEYS = frozenset({"v", "scope", "workspace_id", "state", "boundary"})
+_RETENTION_LIST_CURSOR_MAX_LENGTH = 2_000
+
+
+def _validate_retention_list_limit(limit: int) -> None:
+    if limit < 1 or limit > 100:
+        raise ValidationError("A retention list page must contain between 1 and 100 items.")
+
+
+def _encode_retention_list_cursor(
+    *,
+    scope: str,
+    workspace_id: UUID,
+    state: str | None,
+    boundary: Mapping[str, str | int],
+) -> str:
+    payload = json.dumps(
+        {
+            "v": 1,
+            "scope": scope,
+            "workspace_id": str(workspace_id),
+            "state": state,
+            "boundary": dict(boundary),
+        },
+        separators=(",", ":"),
+        sort_keys=True,
+    ).encode()
+    return base64.urlsafe_b64encode(payload).decode().rstrip("=")
+
+
+def _decode_retention_list_cursor(
+    cursor: str,
+    *,
+    scope: str,
+    workspace_id: UUID,
+    state: str | None,
+) -> Mapping[str, str | int]:
+    try:
+        if not cursor or len(cursor) > _RETENTION_LIST_CURSOR_MAX_LENGTH:
+            raise ValueError
+        payload = base64.b64decode(
+            cursor + "=" * (-len(cursor) % 4),
+            altchars=b"-_",
+            validate=True,
+        )
+        document = json.loads(payload)
+        if (
+            not isinstance(document, dict)
+            or frozenset(document) != _RETENTION_LIST_CURSOR_KEYS
+            or document.get("v") != 1
+            or document.get("scope") != scope
+            or document.get("workspace_id") != str(workspace_id)
+            or document.get("state") != state
+            or not isinstance(document.get("boundary"), dict)
+        ):
+            raise ValueError
+        boundary = cast(dict[str, str | int], document["boundary"])
+        if cursor != _encode_retention_list_cursor(
+            scope=scope,
+            workspace_id=workspace_id,
+            state=state,
+            boundary=boundary,
+        ):
+            raise ValueError
+        return boundary
+    except (
+        ValueError,
+        TypeError,
+        KeyError,
+        UnicodeDecodeError,
+        json.JSONDecodeError,
+        binascii.Error,
+    ) as error:
+        raise ValidationError(
+            "The retention list cursor is stale or does not match this request."
+        ) from error
+
+
+def _policy_cursor_boundary(
+    cursor: str,
+    *,
+    workspace_id: UUID,
+    state: str | None,
+) -> int:
+    boundary = _decode_retention_list_cursor(
+        cursor,
+        scope="retention-policies",
+        workspace_id=workspace_id,
+        state=state,
+    )
+    if frozenset(boundary) != {"policy_number"}:
+        raise ValidationError("The retention list cursor has an invalid boundary.")
+    policy_number = boundary.get("policy_number")
+    if not isinstance(policy_number, int) or isinstance(policy_number, bool) or policy_number < 1:
+        raise ValidationError("The retention list cursor has an invalid boundary.")
+    return policy_number
+
+
+def _temporal_cursor_boundary(
+    cursor: str,
+    *,
+    scope: str,
+    workspace_id: UUID,
+    state: str | None,
+) -> tuple[datetime, UUID]:
+    boundary = _decode_retention_list_cursor(
+        cursor,
+        scope=scope,
+        workspace_id=workspace_id,
+        state=state,
+    )
+    try:
+        if frozenset(boundary) != {"created_at", "id"}:
+            raise ValueError
+        created_at = datetime.fromisoformat(str(boundary["created_at"]))
+        if created_at.tzinfo is None or created_at.utcoffset() is None:
+            raise ValueError
+        boundary_id = UUID(str(boundary["id"]))
+    except (ValueError, TypeError, KeyError) as error:
+        raise ValidationError("The retention list cursor has an invalid boundary.") from error
+    return created_at, boundary_id
 
 
 class SqlRetentionPolicyRepository(RetentionPolicyRepository):
@@ -136,19 +271,36 @@ class SqlRetentionPolicyRepository(RetentionPolicyRepository):
         return await self._hydrate(model)
 
     async def list(
-        self, *, workspace_id: UUID, state: str | None, limit: int
-    ) -> tuple[RetentionPolicyVersion, ...]:
+        self,
+        *,
+        workspace_id: UUID,
+        state: str | None,
+        limit: int,
+        cursor: str | None = None,
+    ) -> RetentionPolicyPage:
+        _validate_retention_list_limit(limit)
         statement = (
             select(RetentionPolicyVersionModel)
             .where(RetentionPolicyVersionModel.workspace_id == workspace_id)
             .order_by(RetentionPolicyVersionModel.policy_number.desc())
-            .limit(limit)
+            .limit(limit + 1)
         )
         if state is not None:
             statement = statement.where(RetentionPolicyVersionModel.state == state)
-        models = tuple(await self._session.scalars(statement))
+        if cursor is not None:
+            statement = statement.where(
+                RetentionPolicyVersionModel.policy_number
+                < _policy_cursor_boundary(
+                    cursor,
+                    workspace_id=workspace_id,
+                    state=state,
+                )
+            )
+        fetched = tuple(await self._session.scalars(statement))
+        has_more = len(fetched) > limit
+        models = fetched[:limit]
         if not models:
-            return ()
+            return RetentionPolicyPage(items=(), next_cursor=None)
         rules = tuple(
             await self._session.scalars(
                 select(RetentionPolicyClassRuleModel).where(
@@ -160,8 +312,21 @@ class SqlRetentionPolicyRepository(RetentionPolicyRepository):
         by_policy: dict[UUID, list[RetentionPolicyClassRuleModel]] = {}
         for rule in rules:
             by_policy.setdefault(rule.policy_id, []).append(rule)
-        return tuple(
+        items = tuple(
             _required_policy(model, tuple(by_policy.get(model.id, ()))) for model in models
+        )
+        return RetentionPolicyPage(
+            items=items,
+            next_cursor=(
+                _encode_retention_list_cursor(
+                    scope="retention-policies",
+                    workspace_id=workspace_id,
+                    state=state,
+                    boundary={"policy_number": models[-1].policy_number},
+                )
+                if has_more
+                else None
+            ),
         )
 
     async def next_policy_number(self, *, workspace_id: UUID) -> int:
@@ -248,24 +413,58 @@ class SqlLegalHoldRepository(LegalHoldRepository):
         return await self._hydrate(model)
 
     async def list(
-        self, *, workspace_id: UUID, state: str | None, limit: int
-    ) -> tuple[LegalHold, ...]:
+        self,
+        *,
+        workspace_id: UUID,
+        state: str | None,
+        limit: int,
+        cursor: str | None = None,
+    ) -> LegalHoldPage:
+        _validate_retention_list_limit(limit)
         statement = (
             select(LegalHoldModel)
             .where(LegalHoldModel.workspace_id == workspace_id)
-            .order_by(LegalHoldModel.updated_at.desc(), LegalHoldModel.id)
-            .limit(limit)
+            .order_by(LegalHoldModel.created_at.desc(), LegalHoldModel.id)
+            .limit(limit + 1)
         )
         if state is not None:
             statement = statement.where(LegalHoldModel.state == state)
-        models = tuple(await self._session.scalars(statement))
-        values: list[LegalHold] = []
-        for model in models:
-            hold = await self._hydrate(model)
-            if hold is None:
-                raise ConflictError("A stored Legal Hold disappeared during hydration.")
-            values.append(hold)
-        return tuple(values)
+        if cursor is not None:
+            boundary_at, boundary_id = _temporal_cursor_boundary(
+                cursor,
+                scope="legal-holds",
+                workspace_id=workspace_id,
+                state=state,
+            )
+            statement = statement.where(
+                or_(
+                    LegalHoldModel.created_at < boundary_at,
+                    and_(
+                        LegalHoldModel.created_at == boundary_at,
+                        LegalHoldModel.id > boundary_id,
+                    ),
+                )
+            )
+        fetched = tuple(await self._session.scalars(statement))
+        has_more = len(fetched) > limit
+        models = fetched[:limit]
+        values = [_hydrate_hold(model, (), history_summary=True) for model in models]
+        return LegalHoldPage(
+            items=tuple(values),
+            next_cursor=(
+                _encode_retention_list_cursor(
+                    scope="legal-holds",
+                    workspace_id=workspace_id,
+                    state=state,
+                    boundary={
+                        "created_at": models[-1].created_at.isoformat(),
+                        "id": str(models[-1].id),
+                    },
+                )
+                if has_more
+                else None
+            ),
+        )
 
     async def save(self, hold: LegalHold) -> None:
         result = await self._session.execute(
@@ -333,17 +532,23 @@ class SqlLegalHoldRepository(LegalHoldRepository):
     async def _hydrate(self, model: LegalHoldModel | None) -> LegalHold | None:
         if model is None:
             return None
-        events = tuple(
+        fetched = tuple(
             await self._session.scalars(
                 select(LegalHoldEventModel)
                 .where(
                     LegalHoldEventModel.workspace_id == model.workspace_id,
                     LegalHoldEventModel.hold_id == model.id,
                 )
-                .order_by(LegalHoldEventModel.hold_version)
+                .order_by(LegalHoldEventModel.hold_version.desc())
+                .limit(101)
             )
         )
-        return _hydrate_hold(model, events)
+        events = tuple(reversed(fetched[:100]))
+        return _hydrate_hold(
+            model,
+            events,
+            history_truncated=len(fetched) > 100,
+        )
 
 
 class SqlErasureRequestRepository(ErasureRequestRepository):
@@ -381,23 +586,58 @@ class SqlErasureRequestRepository(ErasureRequestRepository):
         return await self._hydrate(model)
 
     async def list(
-        self, *, workspace_id: UUID, state: str | None, limit: int
-    ) -> tuple[ErasureRequest, ...]:
+        self,
+        *,
+        workspace_id: UUID,
+        state: str | None,
+        limit: int,
+        cursor: str | None = None,
+    ) -> ErasureRequestPage:
+        _validate_retention_list_limit(limit)
         statement = (
             select(ErasureRequestModel)
             .where(ErasureRequestModel.workspace_id == workspace_id)
             .order_by(ErasureRequestModel.created_at.desc(), ErasureRequestModel.id)
-            .limit(limit)
+            .limit(limit + 1)
         )
         if state is not None:
             statement = statement.where(ErasureRequestModel.state == state)
-        values: list[ErasureRequest] = []
-        for model in await self._session.scalars(statement):
-            request = await self._hydrate(model)
-            if request is None:
-                raise ConflictError("A stored erasure request disappeared during hydration.")
-            values.append(request)
-        return tuple(values)
+        if cursor is not None:
+            boundary_at, boundary_id = _temporal_cursor_boundary(
+                cursor,
+                scope="erasure-requests",
+                workspace_id=workspace_id,
+                state=state,
+            )
+            statement = statement.where(
+                or_(
+                    ErasureRequestModel.created_at < boundary_at,
+                    and_(
+                        ErasureRequestModel.created_at == boundary_at,
+                        ErasureRequestModel.id > boundary_id,
+                    ),
+                )
+            )
+        fetched = tuple(await self._session.scalars(statement))
+        has_more = len(fetched) > limit
+        models = fetched[:limit]
+        values = [_hydrate_erasure_request(model, (), history_summary=True) for model in models]
+        return ErasureRequestPage(
+            items=tuple(values),
+            next_cursor=(
+                _encode_retention_list_cursor(
+                    scope="erasure-requests",
+                    workspace_id=workspace_id,
+                    state=state,
+                    boundary={
+                        "created_at": models[-1].created_at.isoformat(),
+                        "id": str(models[-1].id),
+                    },
+                )
+                if has_more
+                else None
+            ),
+        )
 
     async def save(self, request: ErasureRequest) -> None:
         result = await self._session.execute(
@@ -769,6 +1009,257 @@ class SqlArchiveEvidenceRepository:
         return _hydrate_archive_receipt(model)
 
 
+class SqlRetentionExecutionEvidenceReader:
+    """SELECT-only, sanitized projection for the Admin archive-evidence surface."""
+
+    _ATTEMPT_LIMIT = 20
+    _EVENT_LIMIT = 100
+
+    def __init__(self, session: AsyncSession) -> None:
+        self._session = session
+
+    async def assert_admin_reader_eligible(
+        self,
+        *,
+        workspace_id: UUID,
+        subject_id: UUID,
+    ) -> None:
+        row = (
+            await self._session.execute(
+                select(SubjectModel.active, WorkspaceMembershipModel)
+                .join(
+                    WorkspaceMembershipModel,
+                    WorkspaceMembershipModel.subject_id == SubjectModel.id,
+                )
+                .where(
+                    WorkspaceMembershipModel.workspace_id == workspace_id,
+                    WorkspaceMembershipModel.subject_id == subject_id,
+                )
+                .with_for_update(read=True)
+            )
+        ).one_or_none()
+        if row is None:
+            raise ForbiddenError("The administrator membership is no longer available.")
+        subject_active, membership = row
+        groups = _bounded_string_set(membership.attributes, "groups")
+        allowed = _bounded_string_set(membership.attributes, "allowed_actions")
+        denied = _bounded_string_set(membership.attributes, "denied_actions")
+        if (
+            not subject_active
+            or not membership.active
+            or (
+                membership.access_expires_at is not None
+                and membership.access_expires_at <= utc_now()
+            )
+            or membership.job_function == "SERVICE_ACCOUNT"
+            or groups is None
+            or allowed is None
+            or denied is None
+            or "security-administrators" not in groups
+            or "service-accounts" in groups
+            or "admin.manage" not in allowed
+            or "admin.manage" in denied
+            or "retention.read" not in allowed
+            or "retention.read" in denied
+            or membership.clearance < int(Classification.RESTRICTED)
+        ):
+            raise ForbiddenError("The administrator is no longer eligible to read this evidence.")
+
+    async def get_for_erasure_request(
+        self,
+        *,
+        workspace_id: UUID,
+        erasure_request_id: UUID,
+    ) -> RetentionExecutionEvidence | None:
+        job = (
+            await self._session.execute(
+                select(
+                    RetentionExecutionJobModel.id.label("job_id"),
+                    RetentionExecutionJobModel.erasure_request_id,
+                    RetentionExecutionJobModel.erasure_request_version,
+                    RetentionExecutionJobModel.erasure_request_payload_hash,
+                    RetentionExecutionJobModel.target_type,
+                    RetentionExecutionJobModel.target_id,
+                    RetentionExecutionJobModel.target_version,
+                    RetentionExecutionJobModel.classification,
+                    RetentionExecutionJobModel.retention_policy_id,
+                    RetentionExecutionJobModel.retention_policy_hash,
+                    RetentionExecutionJobModel.policy_number,
+                    RetentionExecutionJobModel.requester_id,
+                    RetentionExecutionJobModel.checker_id,
+                    RetentionExecutionJobModel.executor_id,
+                    RetentionExecutionJobModel.target_owner_id,
+                    RetentionExecutionJobModel.execution_authorization_valid_until,
+                    RetentionExecutionJobModel.archive_disposition,
+                    RetentionExecutionJobModel.command_hash,
+                    RetentionExecutionJobModel.archive_retain_until,
+                    RetentionExecutionJobModel.state,
+                    RetentionExecutionJobModel.next_attempt_at,
+                    RetentionExecutionJobModel.attempt_count,
+                    RetentionExecutionJobModel.maximum_attempts,
+                    RetentionExecutionJobModel.archive_receipt_id,
+                    RetentionExecutionJobModel.archive_manifest_hash,
+                    RetentionExecutionJobModel.destructive_state,
+                    RetentionExecutionJobModel.version,
+                    RetentionExecutionJobModel.created_at,
+                    RetentionExecutionJobModel.updated_at,
+                )
+                .where(
+                    RetentionExecutionJobModel.workspace_id == workspace_id,
+                    RetentionExecutionJobModel.erasure_request_id == erasure_request_id,
+                )
+                .with_for_update(read=True)
+            )
+        ).one_or_none()
+        if job is None:
+            return None
+
+        attempts = (
+            await self._session.execute(
+                select(
+                    RetentionExecutionAttemptModel.attempt_no,
+                    RetentionExecutionAttemptModel.state,
+                    RetentionExecutionAttemptModel.stage,
+                    RetentionExecutionAttemptModel.evidence_hash,
+                    RetentionExecutionAttemptModel.destructive_effect_count,
+                    RetentionExecutionAttemptModel.started_at,
+                    RetentionExecutionAttemptModel.finished_at,
+                )
+                .where(
+                    RetentionExecutionAttemptModel.workspace_id == workspace_id,
+                    RetentionExecutionAttemptModel.execution_job_id == job.job_id,
+                )
+                .order_by(RetentionExecutionAttemptModel.attempt_no.desc())
+                .limit(self._ATTEMPT_LIMIT + 1)
+            )
+        ).all()
+        events = (
+            await self._session.execute(
+                select(
+                    RetentionExecutionEventModel.sequence,
+                    RetentionExecutionEventModel.event_type,
+                    RetentionExecutionEventModel.attempt_no,
+                    RetentionExecutionEventModel.evidence_hash,
+                    RetentionExecutionEventModel.occurred_at,
+                )
+                .where(
+                    RetentionExecutionEventModel.workspace_id == workspace_id,
+                    RetentionExecutionEventModel.execution_job_id == job.job_id,
+                )
+                .order_by(RetentionExecutionEventModel.sequence.desc())
+                .limit(self._EVENT_LIMIT + 1)
+            )
+        ).all()
+
+        receipt: RetentionArchiveReceiptEvidenceSummary | None = None
+        if (job.archive_receipt_id is None) is not (job.archive_manifest_hash is None):
+            raise ConflictError("The archive evidence link is incomplete.")
+        if job.archive_receipt_id is not None and job.archive_manifest_hash is not None:
+            receipt_row = (
+                await self._session.execute(
+                    select(
+                        ImmutableArchiveReceiptModel.id.label("receipt_id"),
+                        ImmutableArchiveReceiptModel.manifest_hash,
+                        ImmutableArchiveReceiptModel.content_sha256,
+                        ImmutableArchiveReceiptModel.row_count,
+                        ImmutableArchiveReceiptModel.byte_count,
+                        ImmutableArchiveReceiptModel.retention_until,
+                        ImmutableArchiveReceiptModel.legal_hold,
+                        ImmutableArchiveReceiptModel.content_verified_at,
+                        ImmutableArchiveReceiptModel.retention_verified_at,
+                        ImmutableArchiveReceiptModel.verified_at,
+                        ImmutableArchiveReceiptModel.payload_hash,
+                    ).where(
+                        ImmutableArchiveReceiptModel.workspace_id == workspace_id,
+                        ImmutableArchiveReceiptModel.id == job.archive_receipt_id,
+                        ImmutableArchiveReceiptModel.manifest_hash == job.archive_manifest_hash,
+                    )
+                )
+            ).one_or_none()
+            if receipt_row is None:
+                raise ConflictError("The exact immutable archive receipt is unavailable.")
+            receipt = RetentionArchiveReceiptEvidenceSummary(
+                receipt_id=receipt_row.receipt_id,
+                manifest_hash=receipt_row.manifest_hash,
+                content_sha256=receipt_row.content_sha256,
+                row_count=int(receipt_row.row_count),
+                byte_count=int(receipt_row.byte_count),
+                retention_until=receipt_row.retention_until,
+                legal_hold=receipt_row.legal_hold,
+                content_verified_at=receipt_row.content_verified_at,
+                retention_verified_at=receipt_row.retention_verified_at,
+                verified_at=receipt_row.verified_at,
+                payload_hash=receipt_row.payload_hash,
+            )
+        if job.state == "ARCHIVE_VERIFIED_DESTRUCTIVE_DISABLED" and receipt is None:
+            raise ConflictError("The terminal archive evidence is incomplete.")
+        if job.state not in {"ARCHIVE_VERIFIED_DESTRUCTIVE_DISABLED", "BLOCKED"} and (
+            receipt is not None
+        ):
+            raise ConflictError("The archive evidence state is inconsistent.")
+
+        separation_verified = (
+            job.requester_id != job.checker_id
+            and job.checker_id != job.target_owner_id
+            and job.executor_id not in {job.requester_id, job.checker_id, job.target_owner_id}
+        )
+        if not separation_verified:
+            raise ConflictError("The execution separation-of-duties evidence is invalid.")
+
+        return RetentionExecutionEvidence(
+            job_id=job.job_id,
+            erasure_request_id=job.erasure_request_id,
+            erasure_request_version=job.erasure_request_version,
+            erasure_request_payload_hash=job.erasure_request_payload_hash,
+            target_type=job.target_type,
+            target_id=job.target_id,
+            target_version=job.target_version,
+            classification=Classification(job.classification),
+            retention_policy_id=job.retention_policy_id,
+            retention_policy_hash=job.retention_policy_hash,
+            policy_number=job.policy_number,
+            execution_authorization_valid_until=job.execution_authorization_valid_until,
+            archive_disposition=job.archive_disposition,
+            command_hash=job.command_hash,
+            archive_retain_until=job.archive_retain_until,
+            state=job.state,
+            next_attempt_at=job.next_attempt_at,
+            attempt_count=job.attempt_count,
+            maximum_attempts=job.maximum_attempts,
+            archive_manifest_hash=job.archive_manifest_hash,
+            destructive_state=job.destructive_state,
+            separation_of_duties_verified=separation_verified,
+            version=job.version,
+            created_at=job.created_at,
+            updated_at=job.updated_at,
+            attempts=tuple(
+                RetentionExecutionAttemptEvidence(
+                    attempt_no=row.attempt_no,
+                    state=row.state,
+                    stage=row.stage,
+                    evidence_hash=row.evidence_hash,
+                    destructive_effect_count=row.destructive_effect_count,
+                    started_at=row.started_at,
+                    finished_at=row.finished_at,
+                )
+                for row in attempts[: self._ATTEMPT_LIMIT]
+            ),
+            attempts_truncated=len(attempts) > self._ATTEMPT_LIMIT,
+            events=tuple(
+                RetentionExecutionEventEvidence(
+                    sequence=row.sequence,
+                    event_type=row.event_type,
+                    attempt_no=row.attempt_no,
+                    evidence_hash=row.evidence_hash,
+                    occurred_at=row.occurred_at,
+                )
+                for row in events[: self._EVENT_LIMIT]
+            ),
+            events_truncated=len(events) > self._EVENT_LIMIT,
+            receipt=receipt,
+        )
+
+
 class SqlRetentionUnitOfWork(RetentionUnitOfWork):
     def __init__(self, session_factory: async_sessionmaker[AsyncSession]) -> None:
         self._session_factory = session_factory
@@ -777,6 +1268,7 @@ class SqlRetentionUnitOfWork(RetentionUnitOfWork):
         self.legal_holds: SqlLegalHoldRepository
         self.erasure_requests: SqlErasureRequestRepository
         self.erasure_targets: SqlErasureTargetReader
+        self.execution_evidence: SqlRetentionExecutionEvidenceReader
         self.outbox: SqlOutboxWriter
         self.idempotency: SqlIdempotencyStore
         self._committed = False
@@ -787,6 +1279,7 @@ class SqlRetentionUnitOfWork(RetentionUnitOfWork):
         self.legal_holds = SqlLegalHoldRepository(self._session)
         self.erasure_requests = SqlErasureRequestRepository(self._session)
         self.erasure_targets = SqlErasureTargetReader(self._session)
+        self.execution_evidence = SqlRetentionExecutionEvidenceReader(self._session)
         self.outbox = SqlOutboxWriter(self._session)
         self.idempotency = SqlIdempotencyStore(self._session)
         return self
@@ -1002,12 +1495,18 @@ def _hold_event_model(hold: LegalHold, action: LegalHoldAction) -> LegalHoldEven
     )
 
 
-def _hydrate_hold(model: LegalHoldModel, events: tuple[LegalHoldEventModel, ...]) -> LegalHold:
+def _hydrate_hold(
+    model: LegalHoldModel,
+    events: tuple[LegalHoldEventModel, ...],
+    *,
+    history_summary: bool = False,
+    history_truncated: bool = False,
+) -> LegalHold:
     try:
         data_class = RetentionDataClass(model.data_class)
         scope = LegalHoldScope(model.scope)
         state = LegalHoldState(model.state)
-        actions = [_hydrate_action(model, event) for event in events]
+        actions = [] if history_summary else [_hydrate_action(model, event) for event in events]
     except (ValueError, ValidationError) as error:
         raise ConflictError("The stored Legal Hold is invalid.") from error
     placement_document = {
@@ -1019,17 +1518,19 @@ def _hydrate_hold(model: LegalHoldModel, events: tuple[LegalHoldEventModel, ...]
     }
     if canonical_json_hash(placement_document) != model.payload_hash:
         raise ConflictError("The stored Legal Hold payload failed its integrity check.")
-    expected_versions = list(range(1, model.version + 1))
-    if [action.hold_version for action in actions] != expected_versions:
-        raise ConflictError("The stored Legal Hold action history is incomplete.")
-    expected_last_action = {
-        LegalHoldState.ACTIVE: LegalHoldActionType.PLACED,
-        LegalHoldState.RELEASE_REQUESTED: LegalHoldActionType.RELEASE_REQUESTED,
-        LegalHoldState.RELEASE_REJECTED: LegalHoldActionType.RELEASE_REJECTED,
-        LegalHoldState.RELEASED: LegalHoldActionType.RELEASE_APPROVED,
-    }[state]
-    if not actions or actions[-1].action is not expected_last_action:
-        raise ConflictError("The stored Legal Hold state and history do not match.")
+    if not history_summary:
+        expected_first_version = model.version - len(actions) + 1 if history_truncated else 1
+        expected_versions = list(range(expected_first_version, model.version + 1))
+        if [action.hold_version for action in actions] != expected_versions:
+            raise ConflictError("The stored Legal Hold action history is incomplete.")
+        expected_last_action = {
+            LegalHoldState.ACTIVE: LegalHoldActionType.PLACED,
+            LegalHoldState.RELEASE_REQUESTED: LegalHoldActionType.RELEASE_REQUESTED,
+            LegalHoldState.RELEASE_REJECTED: LegalHoldActionType.RELEASE_REJECTED,
+            LegalHoldState.RELEASED: LegalHoldActionType.RELEASE_APPROVED,
+        }[state]
+        if not actions or actions[-1].action is not expected_last_action:
+            raise ConflictError("The stored Legal Hold state and history do not match.")
     return LegalHold(
         hold_id=model.id,
         workspace_id=model.workspace_id,
@@ -1050,6 +1551,7 @@ def _hydrate_hold(model: LegalHoldModel, events: tuple[LegalHoldEventModel, ...]
         released_at=model.released_at,
         version=model.version,
         actions=actions,
+        action_history_truncated=history_summary or history_truncated,
     )
 
 
@@ -1138,7 +1640,10 @@ def _erasure_approval_event_model(
 
 
 def _hydrate_erasure_request(
-    model: ErasureRequestModel, events: tuple[ErasureRequestEventModel, ...]
+    model: ErasureRequestModel,
+    events: tuple[ErasureRequestEventModel, ...],
+    *,
+    history_summary: bool = False,
 ) -> ErasureRequest:
     try:
         target_type = ErasureTargetType(model.target_type)
@@ -1162,19 +1667,21 @@ def _hydrate_erasure_request(
     }
     if canonical_json_hash(document) != model.payload_hash:
         raise ConflictError("The stored erasure request payload failed its integrity check.")
-    if [event.request_version for event in events] != list(range(1, model.version + 1)):
-        raise ConflictError("The stored erasure request event history is incomplete.")
-    if not events or not _created_event_matches(model, events[0]):
-        raise ConflictError("The stored erasure request creation event is invalid.")
+    approvals: list[ErasureApproval] = []
+    if not history_summary:
+        if [event.request_version for event in events] != list(range(1, model.version + 1)):
+            raise ConflictError("The stored erasure request event history is incomplete.")
+        if not events or not _created_event_matches(model, events[0]):
+            raise ConflictError("The stored erasure request creation event is invalid.")
 
-    approvals = [_approval_from_event(model, event) for event in events[1:]]
-    expected_action = {
-        ErasureRequestState.PENDING: "CREATED",
-        ErasureRequestState.APPROVED: GovernanceDecision.APPROVED.value,
-        ErasureRequestState.REJECTED: GovernanceDecision.REJECTED.value,
-    }[state]
-    if events[-1].action != expected_action:
-        raise ConflictError("The stored erasure request state and history do not match.")
+        approvals = [_approval_from_event(model, event) for event in events[1:]]
+        expected_action = {
+            ErasureRequestState.PENDING: "CREATED",
+            ErasureRequestState.APPROVED: GovernanceDecision.APPROVED.value,
+            ErasureRequestState.REJECTED: GovernanceDecision.REJECTED.value,
+        }[state]
+        if events[-1].action != expected_action:
+            raise ConflictError("The stored erasure request state and history do not match.")
     return ErasureRequest(
         erasure_request_id=model.id,
         workspace_id=model.workspace_id,
@@ -1197,6 +1704,7 @@ def _hydrate_erasure_request(
         decided_at=model.decided_at,
         version=model.version,
         approvals=approvals,
+        approval_history_truncated=history_summary,
     )
 
 
@@ -1701,3 +2209,14 @@ def _require_archive_bucket(value: str) -> None:
 def _require_archive_timestamp(value: datetime, name: str) -> None:
     if value.tzinfo is None or value.utcoffset() is None:
         raise ValidationError(f"The {name} timestamp must include a timezone.")
+
+
+def _bounded_string_set(document: object, key: str) -> frozenset[str] | None:
+    if not isinstance(document, dict):
+        return None
+    values = document.get(key)
+    if not isinstance(values, list) or len(values) > 100:
+        return None
+    if any(not isinstance(value, str) or not value or len(value) > 200 for value in values):
+        return None
+    return frozenset(values)

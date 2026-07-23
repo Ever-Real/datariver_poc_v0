@@ -1,7 +1,8 @@
 from __future__ import annotations
 
+import asyncio
 from typing import Any
-from urllib.parse import quote
+from urllib.parse import quote, urlsplit
 
 import httpx
 
@@ -17,6 +18,10 @@ from datariver.domain.common import ConflictError
 class KeycloakIdentityAdministration(IdentityAdministration):
     """A least-privilege Keycloak user adapter with no generic admin pass-through."""
 
+    _MAXIMUM_RESPONSE_BYTES = 256 * 1024
+    _MAXIMUM_TOKEN_LENGTH = 16 * 1024
+    _MAXIMUM_EXTERNAL_SUBJECT_LENGTH = 255
+
     def __init__(
         self,
         *,
@@ -30,11 +35,18 @@ class KeycloakIdentityAdministration(IdentityAdministration):
         self._realm = realm
         self._client_id = client_id
         self._client_secret = client_secret
+        self._timeout_seconds = timeout_seconds
         self._client = httpx.AsyncClient(
             base_url=base_url.rstrip("/"),
-            timeout=timeout_seconds,
+            timeout=httpx.Timeout(
+                timeout_seconds,
+                connect=min(timeout_seconds, 5.0),
+                pool=min(timeout_seconds, 5.0),
+            ),
             transport=transport,
             follow_redirects=False,
+            trust_env=False,
+            limits=httpx.Limits(max_connections=10, max_keepalive_connections=5),
         )
 
     async def close(self) -> None:
@@ -64,8 +76,8 @@ class KeycloakIdentityAdministration(IdentityAdministration):
             )
             created = True
             location = response.headers.get("location", "")
-            external_subject = location.rstrip("/").rsplit("/", 1)[-1]
-            if not external_subject:
+            external_subject = self._subject_from_location(location)
+            if external_subject is None:
                 existing = await self._exact_user(draft.username)
                 if existing is None:
                     raise self._dependency_error(
@@ -114,7 +126,12 @@ class KeycloakIdentityAdministration(IdentityAdministration):
             params={"username": username, "exact": "true", "max": "2"},
             expected={200},
         )
-        value = response.json()
+        try:
+            value = response.json()
+        except ValueError as error:
+            raise self._dependency_error(
+                "The authentication system returned an invalid user list.", retryable=False
+            ) from error
         if not isinstance(value, list):
             raise self._dependency_error(
                 "The authentication system returned an invalid user list.", retryable=False
@@ -154,13 +171,13 @@ class KeycloakIdentityAdministration(IdentityAdministration):
     ) -> httpx.Response:
         token = await self._access_token()
         try:
-            response = await self._client.request(
+            response = await self._send_bounded(
                 method,
                 path,
                 headers={"Authorization": f"Bearer {token}"},
                 **kwargs,
             )
-        except httpx.HTTPError as error:
+        except (TimeoutError, httpx.HTTPError) as error:
             raise self._dependency_error(
                 "Identity administration is temporarily unavailable.", retryable=True
             ) from error
@@ -177,7 +194,8 @@ class KeycloakIdentityAdministration(IdentityAdministration):
 
     async def _access_token(self) -> str:
         try:
-            response = await self._client.post(
+            response = await self._send_bounded(
+                "POST",
                 f"/realms/{quote(self._realm, safe='')}/protocol/openid-connect/token",
                 data={
                     "grant_type": "client_credentials",
@@ -185,23 +203,71 @@ class KeycloakIdentityAdministration(IdentityAdministration):
                     "client_secret": self._client_secret,
                 },
             )
-        except httpx.HTTPError as error:
+        except (TimeoutError, httpx.HTTPError) as error:
             raise self._dependency_error(
                 "Identity-administration authentication is unavailable.", retryable=True
             ) from error
         if response.status_code != 200:
             raise self._dependency_error(
                 "The authentication system rejected the administration credential.",
-                retryable=response.status_code >= 500,
+                retryable=response.status_code >= 500 or response.status_code in {408, 429},
                 provider_code=str(response.status_code),
             )
-        value = response.json()
+        try:
+            value = response.json()
+        except ValueError as error:
+            raise self._dependency_error(
+                "The authentication system returned an invalid service token.", retryable=False
+            ) from error
         token = value.get("access_token") if isinstance(value, dict) else None
-        if not isinstance(token, str) or not token:
+        if not isinstance(token, str) or not token or len(token) > self._MAXIMUM_TOKEN_LENGTH:
             raise self._dependency_error(
                 "The authentication system returned an invalid service token.", retryable=False
             )
         return token
+
+    async def _send_bounded(
+        self,
+        method: str,
+        path: str,
+        **kwargs: Any,
+    ) -> httpx.Response:
+        request = self._client.build_request(method, path, **kwargs)
+        response: httpx.Response | None = None
+        try:
+            async with asyncio.timeout(self._timeout_seconds):
+                response = await self._client.send(request, stream=True)
+                raw_length = response.headers.get("content-length")
+                if raw_length is not None:
+                    try:
+                        content_length = int(raw_length)
+                    except ValueError as error:
+                        raise self._dependency_error(
+                            "The authentication system returned an invalid response.",
+                            retryable=False,
+                        ) from error
+                    if content_length > self._MAXIMUM_RESPONSE_BYTES:
+                        raise self._dependency_error(
+                            "The authentication system response exceeded its size limit.",
+                            retryable=False,
+                        )
+                body = bytearray()
+                async for chunk in response.aiter_bytes():
+                    body.extend(chunk)
+                    if len(body) > self._MAXIMUM_RESPONSE_BYTES:
+                        raise self._dependency_error(
+                            "The authentication system response exceeded its size limit.",
+                            retryable=False,
+                        )
+                return httpx.Response(
+                    response.status_code,
+                    headers=response.headers,
+                    content=bytes(body),
+                    request=request,
+                )
+        finally:
+            if response is not None:
+                await response.aclose()
 
     def _admin_path(self, suffix: str) -> str:
         return f"/admin/realms/{quote(self._realm, safe='')}/{suffix}"
@@ -209,10 +275,29 @@ class KeycloakIdentityAdministration(IdentityAdministration):
     @staticmethod
     def _user_id(value: dict[str, Any]) -> str:
         external_subject = value.get("id")
-        if not isinstance(external_subject, str) or not external_subject:
+        if (
+            not isinstance(external_subject, str)
+            or not external_subject
+            or len(external_subject)
+            > KeycloakIdentityAdministration._MAXIMUM_EXTERNAL_SUBJECT_LENGTH
+        ):
             raise KeycloakIdentityAdministration._dependency_error(
                 "The authentication system returned a user without an identity.", retryable=False
             )
+        return external_subject
+
+    def _subject_from_location(self, location: str) -> str | None:
+        if not location:
+            return None
+        path = urlsplit(location).path.rstrip("/")
+        expected_prefix = self._admin_path("users/")
+        if not path.startswith(expected_prefix):
+            return None
+        external_subject = path.removeprefix(expected_prefix)
+        if "/" in external_subject:
+            return None
+        if not external_subject or len(external_subject) > self._MAXIMUM_EXTERNAL_SUBJECT_LENGTH:
+            return None
         return external_subject
 
     @staticmethod

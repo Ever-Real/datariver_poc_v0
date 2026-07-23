@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import inspect
 import runpy
 from collections.abc import Callable
 from pathlib import Path
@@ -17,8 +18,22 @@ from datariver.infrastructure.db.models.platform import (
     AccessRoleModel,
 )
 from datariver.infrastructure.db.revision import REQUIRED_DATABASE_REVISION
+from datariver.interfaces.http.routes.admin import (
+    _role_assigned_count,
+    _role_assigned_counts,
+)
 
 POSTGRES_DIALECT = cast(Callable[[], Dialect], postgresql.dialect)()
+
+
+def test_role_assignment_counts_do_not_treat_stale_legacy_markers_as_authority() -> None:
+    single_source = inspect.getsource(_role_assigned_count)
+    batch_source = inspect.getsource(_role_assigned_counts)
+
+    assert "AccessRoleAssignmentModel.active.is_(True)" in single_source
+    assert "~exists().where" in single_source
+    assert "NOT EXISTS" in batch_source
+    assert "current_assignment.active IS TRUE" in batch_source
 
 
 class MetadataInspector:
@@ -169,7 +184,7 @@ def test_access_role_migration_installs_rls_and_bounded_app_privileges() -> None
     )
     initial = (root / "backend/alembic/versions/0001_initial_schema.py").read_text(encoding="utf-8")
 
-    assert REQUIRED_DATABASE_REVISION == "0042"
+    assert REQUIRED_DATABASE_REVISION == "0044"
     for table_name in (
         "access_role_data_rules",
         "access_role_assignments",

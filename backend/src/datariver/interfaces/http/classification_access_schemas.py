@@ -17,6 +17,7 @@ from datariver.domain.inference_provider import (
     InferenceProviderProfileState,
     ProviderKind,
 )
+from datariver.interfaces.http.schemas import PageMeta
 
 
 class StrictClassificationAccessRequest(BaseModel):
@@ -80,6 +81,7 @@ class ClassificationPolicyResponse(BaseModel):
 
 class ClassificationPolicyListResponse(BaseModel):
     items: list[ClassificationPolicyResponse]
+    page: PageMeta
 
 
 class RestrictedSearchGrantProposalRequest(StrictClassificationAccessRequest):
@@ -120,6 +122,7 @@ class RestrictedSearchGrantResponse(BaseModel):
 
 class RestrictedSearchGrantListResponse(BaseModel):
     items: list[RestrictedSearchGrantResponse]
+    page: PageMeta
 
 
 class ProviderAttestationResponse(BaseModel):
@@ -161,3 +164,4 @@ class InferenceProviderProfileResponse(BaseModel):
 
 class InferenceProviderProfileListResponse(BaseModel):
     items: list[InferenceProviderProfileResponse]
+    page: PageMeta

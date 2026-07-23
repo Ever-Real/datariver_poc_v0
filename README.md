@@ -559,7 +559,7 @@ environment's secrets or volumes.
    overlays. For an existing PostgreSQL volume, run `scripts/reconcile-postgres-roles.sh` (or the
    PowerShell equivalent) before and after applying `alembic upgrade head` through the migration
    service; the second idempotent pass repairs Phase 2 grants when roles were created after an older
-   migration. Readiness requires revision `0042`.
+   migration. Readiness requires revision `0044`.
 4. Start the API, relay, workers and web service using either the container profile or the
    host-development commands below. Check `/api/v1/health/live`, `/api/v1/health/ready`,
    `/api/v1/capabilities` and the APISIX/Vite proxy before using application workflows.
@@ -588,12 +588,13 @@ See the
 [ADR-0036](docs/adr/0036-policy-book-rbac-and-admin-approval-gates.md) plus
 [ADR-0037](docs/adr/0037-retention-execution-control-plane.md). On a new or upgraded database,
 run `alembic upgrade head` and verify `/api/v1/health/ready` reports required/current revision
-`0042`. Legacy Role markers remain usable by the existing ABAC document but are not normalized audit
+`0044`. Legacy Role markers remain usable by the existing ABAC document but are not normalized audit
 evidence until an Admin explicitly reassigns the Role. Manual/fallback edits cannot submit a
 `datariver-role-*` marker; the dedicated assignment path matches it to the locked Role row and
 rejects exact same Role/version/canonical-access no-ops even when only the optimistic expected version
-changes. Until the Phase 3 editor guard is approved, remove a
-Role through that dedicated path before making a generic access-document edit. Migration `0041`
+changes. The Phase 3 editor and both generic/fallback backend paths now reject a Role-bound or
+unverifiable marker state; remove the Role through that dedicated path before making a generic
+access-document edit. Migration `0041`
 also fails closed when a same-name CHECK/FK/index or forced-RLS policy has a non-canonical
 definition; the executed evidence and the remaining Windows/WSL gate are recorded in the checklist.
 The archive profile additionally requires both `RETENTION_ARCHIVE_EXECUTION_ENABLED=true` and the
@@ -1096,7 +1097,7 @@ docker compose -f compose.yaml build --pull
 ```
 
 애플리케이션을 올리기 전에 권한이 분리된 `migrate` 서비스로 Alembic을 실행한다. 이
-릴리스의 필수 revision은 `0042`이다. 호스트의 임의 DB 계정으로 `alembic`을 직접 실행하지
+릴리스의 필수 revision은 `0044`이다. 호스트의 임의 DB 계정으로 `alembic`을 직접 실행하지
 않는다.
 
 ```bash

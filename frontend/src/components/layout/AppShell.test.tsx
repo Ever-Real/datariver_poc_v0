@@ -80,7 +80,7 @@ describe('application shell contracts', () => {
       allowed_operations: ['RETENTION_POLICY_READ', 'RETENTION_POLICY_MANAGE', 'ERASURE_REQUEST'],
       action_vocabulary: [],
     }
-    expect(allowedAdminSections(context)).toEqual(['retention', 'auditLogs', 'dictionary'])
+    expect(allowedAdminSections(context)).toEqual(['retention'])
   })
 
   it('collapses leaf administration capabilities into stable grouped sections', () => {
@@ -96,7 +96,7 @@ describe('application shell contracts', () => {
     }
 
     expect(allowedAdminSections(context)).toEqual([
-      'memberships', 'systemSettings', 'retention', 'auditLogs', 'dictionary',
+      'memberships', 'systemSettings', 'retention',
     ])
   })
 

@@ -9,6 +9,7 @@ from datariver.application.dto import (
     WorkspaceMembershipSummary,
 )
 from datariver.domain.admin_access import AdminAccessRequest
+from datariver.domain.common import canonical_json_hash
 from datariver.domain.governance import ChangeRequest
 from datariver.interfaces.http.schemas import (
     AdminAccessApprovalResponse,
@@ -27,6 +28,7 @@ from datariver.interfaces.http.schemas import (
     MembershipAccessCommandResponse,
     MembershipAccessDocumentRequest,
     MembershipAccessDocumentResponse,
+    MembershipRoleAssignmentEvidenceResponse,
     TransitionResponse,
     WorkspaceMembershipAccessResponse,
     WorkspaceMembershipSummaryResponse,
@@ -102,6 +104,41 @@ def workspace_membership_access_response(
     membership: WorkspaceMembershipAccessRecord,
 ) -> WorkspaceMembershipAccessResponse:
     summary = membership.summary
+    access_document = {
+        "active": summary.membership_active,
+        "clearance": summary.clearance.name,
+        "groups": sorted(membership.groups),
+        "allowed_actions": sorted(action.value for action in membership.allowed_actions),
+        "denied_actions": sorted(action.value for action in membership.denied_actions),
+        "allowed_system_ids": sorted(str(value) for value in membership.allowed_system_ids),
+        "allowed_domain_ids": sorted(str(value) for value in membership.allowed_domain_ids),
+    }
+    assignment = membership.role_assignment
+    legacy_markers = sorted(
+        group for group in membership.groups if group.startswith("datariver-role-")
+    )
+    if assignment is None:
+        assignment_response = MembershipRoleAssignmentEvidenceResponse(
+            status="LEGACY_UNVERIFIED" if legacy_markers else "MANUAL",
+            legacy_markers=legacy_markers,
+        )
+    else:
+        evidence_matches = (
+            assignment.subject_id == summary.subject_id
+            and assignment.membership_version == summary.membership_version
+            and assignment.access_payload_hash == canonical_json_hash(access_document)
+        )
+        assignment_response = MembershipRoleAssignmentEvidenceResponse(
+            status="VERIFIED" if evidence_matches else "EVIDENCE_MISMATCH",
+            role_id=assignment.role_id,
+            role_version=assignment.role_version,
+            assignment_version=assignment.assignment_version,
+            membership_version=assignment.membership_version,
+            access_payload_hash=assignment.access_payload_hash,
+            assigned_by=assignment.assigned_by,
+            updated_at=assignment.updated_at,
+            legacy_markers=legacy_markers,
+        )
     return WorkspaceMembershipAccessResponse(
         subject_id=summary.subject_id,
         display_name=summary.display_name,
@@ -118,6 +155,7 @@ def workspace_membership_access_response(
             allowed_system_ids=sorted(membership.allowed_system_ids, key=str),
             allowed_domain_ids=sorted(membership.allowed_domain_ids, key=str),
         ),
+        role_assignment=assignment_response,
     )
 
 

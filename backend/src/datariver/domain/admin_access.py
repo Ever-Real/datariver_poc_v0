@@ -197,6 +197,75 @@ class SystemAssigneeUpdate:
 
 
 @dataclass(frozen=True, slots=True)
+class SystemAssigneeKey:
+    subject_id: UUID
+    responsibility: str
+
+    def __post_init__(self) -> None:
+        if self.responsibility not in {"DEVELOPER", "DATA_STEWARD"}:
+            raise ValidationError("The system-assignee responsibility is invalid.")
+
+    def document(self) -> dict[str, object]:
+        return {
+            "subject_id": str(self.subject_id),
+            "responsibility": self.responsibility,
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class SystemAssigneePatchCommand:
+    workspace_id: UUID
+    system_id: UUID
+    expected_system_version: int
+    upserts: tuple[SystemAssigneeUpdate, ...]
+    removals: tuple[SystemAssigneeKey, ...]
+
+    def __post_init__(self) -> None:
+        if self.expected_system_version < 1:
+            raise ValidationError("The expected system version must be positive.")
+        if not self.upserts and not self.removals:
+            raise ValidationError("A system-assignee patch cannot be empty.")
+        if len(self.upserts) + len(self.removals) > 100:
+            raise ValidationError(
+                "A system-assignee patch is limited to 100 changes per operation."
+            )
+        upsert_keys = {(item.subject_id, item.responsibility) for item in self.upserts}
+        removal_keys = {(item.subject_id, item.responsibility) for item in self.removals}
+        if len(upsert_keys) != len(self.upserts) or len(removal_keys) != len(self.removals):
+            raise ValidationError("A system-assignee patch contains a duplicate responsibility.")
+        if upsert_keys & removal_keys:
+            raise ValidationError(
+                "A system-assignee patch cannot update and remove the same entry."
+            )
+
+    def command_document(self) -> dict[str, object]:
+        return {
+            "command_type": f"{SYSTEM_ASSIGNMENT_UPDATE_COMMAND}.patch",
+            "workspace_id": str(self.workspace_id),
+            "system_id": str(self.system_id),
+            "expected_system_version": self.expected_system_version,
+            "upserts": [
+                item.document()
+                for item in sorted(
+                    self.upserts,
+                    key=lambda item: (item.responsibility, item.priority, str(item.subject_id)),
+                )
+            ],
+            "removals": [
+                item.document()
+                for item in sorted(
+                    self.removals,
+                    key=lambda item: (item.responsibility, str(item.subject_id)),
+                )
+            ],
+        }
+
+    @property
+    def payload_hash(self) -> str:
+        return canonical_json_hash(self.command_document())
+
+
+@dataclass(frozen=True, slots=True)
 class SystemAssigneeUpdateCommand:
     workspace_id: UUID
     system_id: UUID

@@ -259,8 +259,8 @@ Access Role write documents accept optional `data_access_rules`, with no more th
 classification. A granted rule requires non-empty residency and processing-purpose scope; Partial
 requires exactly one MASK/REDACT/TOKENIZE treatment; No Access accepts neither treatment nor scope.
 Responses return the exact current Role-version rules. Omitting a classification is a fail-closed
-missing rule, not inheritance. For compatibility until the Phase 3 editor is deployed, omitting the
-entire `data_access_rules` field on Role update preserves the exact current rules; an explicit empty
+missing rule, not inheritance. For compatibility with existing typed clients, omitting the entire
+`data_access_rules` field on Role update preserves the exact current rules; an explicit empty
 array creates a new Role version with no rules and therefore default denial. Explicit `null` is
 rejected. Rule arrays are normalized before both storage and canonical hashing, so semantically
 identical region/purpose permutations produce identical evidence. Existing catalog authorization remains the intersection of ABAC,
@@ -269,20 +269,22 @@ classification policy and RLS; this contract does not expose source-row data or 
 | Method/path | Assurance/authorization | Purpose |
 |---|---|---|
 | `GET /admin/me` | eligible human security administrator with a valid current OIDC identity | internal subject identity, current-assurance operations, fallback availability and the supported action vocabulary; read discovery never grants mutation authority |
-| `GET /admin/workspace-memberships?limit=` | eligible human security administrator with a valid current OIDC identity | bounded workspace membership display/version summaries, maximum 100 |
+| `GET /admin/workspace-memberships?q=&status=&limit=&cursor=` | eligible human security administrator with a valid current OIDC identity | workspace/filter-bound keyset page of membership display/version summaries, maximum 100 |
 | `POST /admin/identity-users` | eligible human security administrator + recent hardware WebAuthn + enabled governed Keycloak adapter | idempotently create a disabled marked Keycloak identity, temporary `UPDATE_PASSWORD` credential and canonical six-month Workspace membership, optionally from an active Role, then enable the identity. The password is excluded from request hash, DB, outbox and response. |
 | `GET /admin/workspace-memberships/me/summary` | current active member | server-calculated membership expiry, renewal opening and pending-request facts; browser time is not authorization input |
 | `POST /admin/membership-renewals/me` | current member during the final 30 days + `Idempotency-Key` | request exactly six calendar months beyond the observed current expiry; one pending request per member |
-| `GET /admin/membership-renewals/me?limit=` | current member | bounded own renewal history |
-| `GET /admin/membership-renewals?state=&subject_id=&limit=` | eligible global administrator | shared pending/history queue for all eligible administrators |
+| `GET /admin/membership-renewals/me?limit=&cursor=` | current member | bounded own renewal keyset history |
+| `GET /admin/membership-renewals?state=&limit=&cursor=` | eligible global administrator | bounded shared pending/history keyset queue for all eligible administrators |
 | `POST /admin/membership-renewals/{request_id}/decisions` | independent eligible global administrator + recent hardware WebAuthn + `If-Match`/`Idempotency-Key` | approve/reject; approval atomically verifies and extends the membership expiry |
-| `GET /admin/access-roles` | eligible human security administrator with membership-read capability | bounded workspace Role definitions and their current assignment counts |
+| `GET /admin/access-roles?q=&status=&limit=&cursor=` | eligible human security administrator with membership-read capability | bounded workspace/filter-bound Role page with current assignment counts and exact four-class rules |
 | `POST /admin/access-roles` | `admin.manage` + recent hardware WebAuthn | create one workspace Role from the typed action vocabulary and bounded System/Domain UUID scopes; credentials and arbitrary policy expressions are not accepted |
 | `PUT /admin/access-roles/{role_id}` | `admin.manage` + recent hardware WebAuthn + quoted `If-Match` | update display metadata or an unused Role's security definition; the Role key is immutable and security changes fail while assigned |
 | `DELETE /admin/access-roles/{role_id}` | `admin.manage` + recent hardware WebAuthn + quoted `If-Match` | deactivate an unassigned Role; no row or audit evidence is deleted |
 | `PUT /admin/workspace-memberships/{subject_id}/role` | `admin.manage` + recent hardware WebAuthn | assign one active Role, or remove it, by materializing the governed membership access document; requires `If-Match` and `Idempotency-Key` and prohibits self-change |
-| `GET /admin/systems?limit=` | eligible human security administrator with a valid current OIDC identity | bounded canonical System master list with current Developer/Data Steward names, active state, priority and system version |
-| `PUT /admin/systems/{system_id}/assignees` | `admin.manage` + recent hardware WebAuthn | complete Developer/Data Steward assignment replacement; requires `If-Match` and `Idempotency-Key`, preserves at least one active human Workspace member for each responsibility with unique role-local priorities starting at one, emits audit evidence and returns the new system version/`ETag` |
+| `GET /admin/systems?q=&status=&limit=&cursor=` | eligible human security administrator with a valid current OIDC identity | bounded canonical System page with active state, System version and set-based assignee count; assignment rows are not embedded |
+| `GET /admin/systems/{system_id}/assignees?limit=&cursor=` | eligible human security administrator with a valid current OIDC identity | System-version-bound keyset page of Developer/Data Steward assignments |
+| `PATCH /admin/systems/{system_id}/assignees` | `admin.manage` + recent hardware WebAuthn | apply disjoint assignment `upserts`/`removals`, maximum 100 combined; requires `If-Match` and `Idempotency-Key`, locks the System/targets, rejects missing or identical-only changes, validates the complete resulting lanes, emits one audit event and returns the new System version/`ETag` |
+| `PUT /admin/systems/{system_id}/assignees` | `admin.manage` + recent hardware WebAuthn | compatibility complete replacement under the same lane, version, idempotency and audit invariants; the Admin browser uses `PATCH` |
 | `GET /admin/system-configuration` | eligible human security administrator with a valid current OIDC identity | fixed server-owned inventory for PostgreSQL, OIDC, separate Redis cache/delivery, S3, DataHub and feature connectors. Every item includes `category`, `requirement` (`BOOTSTRAP_REQUIRED`, `CORE_CONNECTOR`, `FEATURE_CONNECTOR`), description, ordered `connection_requirements[{key,label,required,secret,example}]`, management plane, exact saved/TEST/activated/API-loaded versions and restart scope. Deployment-managed bootstrap entries are read-only. Development templates contain only non-secret values and strict mounted-secret reference names. |
 | `GET /admin/system-configuration/{system_id}/versions?limit=` | eligible human security administrator in development, `SYSTEM_CONFIGURATION_READ` | newest-first bounded revision history (maximum 100) containing configuration hash, creator, fixed TEST evidence and activation evidence. It returns no endpoint, YAML document or credential value. Deployment-managed bootstrap entries have no database history route. |
 | `PUT /admin/system-configuration/{system_id}` | eligible human security administrator in development, `SYSTEM_CONFIGURATION_UPDATE`, quoted `If-Match` | save a new immutable YAML revision. Literal sensitive values are rejected; only `file:/run/secrets/<name>` references are accepted. This route is unavailable outside development. |
@@ -290,7 +292,7 @@ classification policy and RLS; this contract does not expose source-row data or 
 | `POST /admin/system-configuration/{system_id}/activate` | eligible human administrator in development, recent hardware WebAuthn, `SYSTEM_CONFIGURATION_ACTIVATE`, quoted `If-Match` | select the current AVAILABLE revision for next startup. Fails when no typed runtime consumer exists; never hot-reloads or restarts API/workers. |
 | `GET /admin/workspace-memberships/{subject_id}/access` | eligible human security administrator with a valid current OIDC identity | exact typed full access document plus display metadata, membership version and matching `ETag` |
 | `PUT /admin/workspace-memberships/{subject_id}/access` | `admin.manage` + recent hardware WebAuthn | exact full access-document replacement for another subject |
-| `GET /admin/fallback/workspace-membership-access-requests?state=&limit=` | eligible human security administrator with a valid current OIDC identity | bounded workspace fallback queue |
+| `GET /admin/fallback/workspace-membership-access-requests?state=&limit=&cursor=` | eligible human security administrator with a valid current OIDC identity | bounded workspace/state-bound fallback keyset queue |
 | `POST /admin/fallback/workspace-membership-access-requests` | eligible human security administrator + recent password reauth | create a five-minute typed maker request |
 | `POST .../{request_id}/decisions` | independent eligible human checker + recent password reauth or hardware WebAuthn | append approve/reject evidence |
 | `POST .../{request_id}/consume` | original maker + recent password reauth | atomically apply the approved command once |
@@ -308,8 +310,9 @@ must match the locked Role row; an exact same Role/version/canonical-access requ
 no-op rather than recorded as `REASSIGNED`. The assignment access hash is
 the canonical materialized access document and deliberately excludes the optimistic
 `expected_membership_version`; changing only the expected version cannot manufacture a new Role
-assignment. Until the Phase 3 editor guard is approved, a generic manual or fallback edit of a
-Role-bound member fails closed and the Role must be removed through the dedicated route first.
+assignment. The Phase 3 editor displays the normalized assignment status and disables generic
+manual/fallback editing for Role-bound or unverifiable legacy evidence. The Role must be removed or
+repaired through the dedicated route first; the backend retains the same fail-closed enforcement.
 Unknown fields and unknown actions are rejected. Maker, checker and target must be
 distinct; self-access mutation is forbidden.
 The server rechecks both human administrators, the unchanged target version and at least two
@@ -338,17 +341,17 @@ operation-specific authorization and maker/checker/target validation.
 
 | Method/path | Assurance/authorization | Purpose |
 |---|---|---|
-| `GET /admin/classification-access/policies?state=&limit=` | eligible human security administrator | list bounded policy versions |
+| `GET /admin/classification-access/policies?state=&limit=&cursor=` | eligible human security administrator | list bounded state-bound policy versions |
 | `GET /admin/classification-access/policies/current` | eligible human security administrator | return the active four-class policy or null |
 | `GET /admin/classification-access/policies/{policy_id}` | eligible human security administrator | return one exact policy version and `ETag` |
 | `POST /admin/classification-access/policies` | recent hardware WebAuthn | propose exactly four Search/Chat rules |
 | `POST /admin/classification-access/policies/{policy_id}/decisions` | independent checker + recent hardware WebAuthn | approve/activate or reject a policy |
-| `GET /admin/classification-access/restricted-search-grants?state=&subject_id=&limit=` | eligible human security administrator | list bounded policy-bound grants |
+| `GET /admin/classification-access/restricted-search-grants?state=&subject_id=&limit=&cursor=` | eligible human security administrator | list bounded policy-bound grants |
 | `GET /admin/classification-access/restricted-search-grants/{grant_id}` | eligible human security administrator | return an exact grant and `ETag` |
 | `POST /admin/classification-access/restricted-search-grants` | recent hardware WebAuthn | propose a typed resource/system/domain grant; the server binds the active policy ID/hash |
 | `POST /admin/classification-access/restricted-search-grants/{grant_id}/decisions` | independent checker + recent hardware WebAuthn | approve or reject the bound grant |
 | `POST /admin/classification-access/restricted-search-grants/{grant_id}/revocations` | recent hardware WebAuthn | revoke a grant immediately |
-| `GET /admin/inference/provider-profiles?profile_key=&state=&limit=` | eligible human security administrator | list server-registered immutable profile versions |
+| `GET /admin/inference/provider-profiles?profile_key=&state=&limit=&cursor=` | eligible human security administrator | list server-registered immutable profile versions; `profile_key` is exact |
 | `GET /admin/inference/provider-profiles/{profile_version_id}` | eligible human security administrator | return an exact profile version and `ETag` |
 | `POST /admin/inference/provider-profiles/{profile_version_id}/decisions` | independent checker + recent hardware WebAuthn | approve or reject a server-registered profile |
 | `POST /admin/inference/provider-profiles/{profile_version_id}/revocations` | recent hardware WebAuthn | revoke a profile immediately |
@@ -364,16 +367,18 @@ workspace, clearance and system/domain authorization.
 
 | Method/path | Action | Purpose |
 |---|---|---|
-| `GET /admin/retention/policies?state=&limit=` | `retention.read` | list bounded policy versions and explicit disabled automation state |
+| `GET /admin/retention/policies?state=&limit=&cursor=` | `retention.read` | list bounded policy versions and explicit disabled automation state |
 | `GET /admin/retention/policies/current` | `retention.read` | return the workspace ACTIVE version or null |
 | `POST /admin/retention/policies` | `retention.manage` + recent hardware WebAuthn | propose typed durations as runtime policy data |
 | `POST .../policies/{policy_id}/decisions` | independent `retention.manage` checker + recent hardware WebAuthn | approve/activate or reject; atomically supersede the previous ACTIVE version |
-| `GET /admin/retention/legal-holds?state=&limit=` | `retention.read` | list holds with append-only action history |
+| `GET /admin/retention/legal-holds?state=&limit=&cursor=` | `retention.read` | list bounded hold summaries; action arrays are omitted and `action_history_truncated=true` states that detail is required |
+| `GET /admin/retention/legal-holds/{hold_id}` | `retention.read` | return the exact hold with at most the newest 100 append-only actions and an explicit truncation flag |
 | `POST /admin/retention/legal-holds` | `legal_hold.place` + recent hardware WebAuthn | place a typed hold immediately |
 | `POST .../legal-holds/{hold_id}/release-requests` | `legal_hold.release` + recent hardware WebAuthn | create a version-bound release request |
 | `POST .../legal-holds/{hold_id}/release-decisions` | independent `legal_hold.release` checker + recent hardware WebAuthn | approve or reject release |
-| `GET /admin/retention/erasure-requests?state=&limit=` | `retention.read` | list bounded Maker-Checker requests; approval is not execution |
+| `GET /admin/retention/erasure-requests?state=&limit=&cursor=` | `retention.read` | list bounded Maker-Checker requests; approval is not execution |
 | `GET /admin/retention/erasure-requests/{erasure_request_id}` | `retention.read` | return the exact request snapshot and quoted version |
+| `GET /admin/retention/erasure-requests/{erasure_request_id}/execution-evidence` | `retention.read` | return private/no-store archive-only command, attempt, receipt and event evidence without provider credentials or implying deletion |
 | `POST /admin/retention/erasure-requests` | `erasure.request` + recent hardware WebAuthn | request review for a typed canonical target; the server resolves owner, version and classification |
 | `POST .../erasure-requests/{erasure_request_id}/decisions` | independent `erasure.approve` checker + recent hardware WebAuthn | approve or reject after re-reading target, policy and applicable Legal Holds |
 
@@ -390,6 +395,10 @@ For `POLICY_BOOK_V2`, legacy `rules.chat_content_days` is the default session sc
 must be inside the V2 `CHAT_CONTENT` minimum/maximum bounds. Execution eligibility uses the V2 Chat
 minimum; immutable execution evidence uses the V2 `AUDIT_EVIDENCE` maximum from the frozen planning
 basis. No numeric field is interpreted as deletion authority.
+
+List responses never expand per-row Legal Hold or erasure approval history. Exact detail reads return
+at most the newest 100 actions/approvals in chronological order and set the corresponding
+`*_history_truncated` flag when older evidence exists.
 
 Policy durations have no source default and are covered by a canonical payload hash. Legal Hold
 placement and every release action have separate canonical hashes. Placement is

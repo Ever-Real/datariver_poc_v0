@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState, type FormEvent } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from 'react'
 import type { ColumnDef } from '@tanstack/react-table'
 import type {
   AdminReadContext,
@@ -6,17 +6,21 @@ import type {
   Classification,
   ClassificationAccessPolicy,
   ClassificationAccessRule,
+  ClassificationAccessPolicyState,
   ClassificationChatMode,
   ClassificationSearchMode,
   InferenceProviderProfile,
+  InferenceProviderProfileState,
   RestrictedSearchGrant,
   RestrictedSearchGrantProposal,
   RestrictedSearchScope,
+  RestrictedSearchGrantState,
   SystemDirectoryEntry,
   WorkspaceMembershipSummary,
 } from '../../api/types'
 import type { AssuranceActions } from '../../components/AssuranceNotice'
 import { DenseDataTable } from '../../components/common/DenseDataTable'
+import { useAbortSignalChannel } from '../../components/common/useAbortSignalChannel'
 import type { AdminApi } from './adminApi'
 import type { PendingAdminMutation } from './AdminMutationConfirmDialog'
 import type { AdminMessages } from './messages'
@@ -79,21 +83,110 @@ export function ClassificationPolicyAdmin(props: Props) {
   const [rules, setRules] = useState<RuleDraft[]>(emptyPolicyRules)
   const [proposalReason, setProposalReason] = useState('')
   const [decisionReason, setDecisionReason] = useState('')
+  const [stateFilter, setStateFilter] = useState<ClassificationAccessPolicyState | ''>('')
+  const [cursor, setCursor] = useState<string>()
+  const [cursorHistory, setCursorHistory] = useState<Array<string | null>>([])
+  const [nextCursor, setNextCursor] = useState<string | null>(null)
+  const [pageNumber, setPageNumber] = useState(1)
+  const [profilesTruncated, setProfilesTruncated] = useState(false)
+  const [providerKeyQuery, setProviderKeyQuery] = useState('')
+  const [appliedProviderKeyQuery, setAppliedProviderKeyQuery] = useState('')
+  const [providerCursor, setProviderCursor] = useState<string>()
+  const [providerCursorHistory, setProviderCursorHistory] = useState<Array<string | null>>([])
+  const [providerNextCursor, setProviderNextCursor] = useState<string | null>(null)
+  const [providerPageNumber, setProviderPageNumber] = useState(1)
+  const [selectedProfiles, setSelectedProfiles] = useState<
+    Record<string, InferenceProviderProfile>
+  >({})
+  const loadGeneration = useRef(0)
+  const auxiliaryGeneration = useRef(0)
+  const listChannel = useAbortSignalChannel()
+  const auxiliaryChannel = useAbortSignalChannel()
+  const canPropose = context?.allowed_operations.includes(
+    'CLASSIFICATION_POLICY_PROPOSE',
+  ) ?? false
+  const canDecide = context?.allowed_operations.includes(
+    'CLASSIFICATION_POLICY_DECIDE',
+  ) ?? false
 
-  const load = useCallback(async () => {
+  const load = useCallback(async (pageCursor: string | undefined, signal?: AbortSignal) => {
+    const generation = ++loadGeneration.current
     try {
-      const [nextPolicies, nextCurrent, nextProfiles] = await Promise.all([
-        api.listClassificationAccessPolicies(),
-        api.getCurrentClassificationAccessPolicy(),
-        api.listInferenceProviderProfiles('APPROVED'),
+      const policyPage = await api.listClassificationAccessPolicyPage({
+        state: stateFilter || undefined,
+        cursor: pageCursor,
+        limit: 25,
+        signal,
+      })
+      if (generation !== loadGeneration.current) return
+      setPolicies(policyPage.items)
+      setNextCursor(policyPage.nextCursor)
+      setSelectedId((selected) => (
+        selected && policyPage.items.some((policy) => policy.policy_id === selected)
+          ? selected
+          : policyPage.items[0]?.policy_id || ''
+      ))
+    } catch (error) {
+      if (!signal?.aborted && generation === loadGeneration.current) reportError(error)
+    }
+  }, [api, reportError, stateFilter])
+
+  const loadAuxiliary = useCallback(async (signal?: AbortSignal) => {
+    const generation = ++auxiliaryGeneration.current
+    try {
+      const [nextCurrent, profilePage] = await Promise.all([
+        api.getCurrentClassificationAccessPolicy(signal),
+        api.listInferenceProviderProfilePage({
+          profileKey: appliedProviderKeyQuery || undefined,
+          state: 'APPROVED',
+          cursor: providerCursor,
+          limit: 25,
+          signal,
+        }),
       ])
-      setPolicies(nextPolicies)
+      if (generation !== auxiliaryGeneration.current) return
       setCurrentPolicy(nextCurrent)
-      setProfiles(nextProfiles)
-      setSelectedId((selected) => selected || nextCurrent?.policy_id || nextPolicies[0]?.policy_id || '')
-    } catch (error) { reportError(error) }
-  }, [api, reportError])
-  useEffect(() => { void load() }, [load])
+      setProfiles(profilePage.items)
+      setProfilesTruncated(Boolean(profilePage.nextCursor))
+      setProviderNextCursor(profilePage.nextCursor)
+    } catch (error) {
+      if (!signal?.aborted && generation === auxiliaryGeneration.current) reportError(error)
+    }
+  }, [api, appliedProviderKeyQuery, providerCursor, reportError])
+
+  useEffect(() => {
+    void load(cursor, listChannel.next())
+    return () => { loadGeneration.current += 1 }
+  }, [cursor, listChannel, load])
+  useEffect(() => {
+    void loadAuxiliary(auxiliaryChannel.next())
+    return () => { auxiliaryGeneration.current += 1 }
+  }, [auxiliaryChannel, loadAuxiliary])
+  useEffect(() => {
+    const timer = window.setTimeout(
+      () => {
+        setAppliedProviderKeyQuery(providerKeyQuery.trim())
+        setProviderCursor(undefined)
+        setProviderCursorHistory([])
+        setProviderNextCursor(null)
+        setProviderPageNumber(1)
+      },
+      250,
+    )
+    return () => window.clearTimeout(timer)
+  }, [providerKeyQuery])
+
+  const resetPage = () => {
+    setCursor(undefined)
+    setCursorHistory([])
+    setNextCursor(null)
+    setPageNumber(1)
+  }
+  const reloadFirstPage = async () => {
+    const alreadyFirstPage = cursor === undefined
+    resetPage()
+    if (alreadyFirstPage) await load(undefined, listChannel.next())
+  }
 
   const changeJurisdiction = (value: string) => {
     setRequiredJurisdiction(value)
@@ -107,7 +200,14 @@ export function ClassificationPolicyAdmin(props: Props) {
   const changeChatMode = (classification: Classification, chatMode: ClassificationChatMode) => {
     changeRule(classification, { chat_mode: chatMode, provider_profile_version_id: '' })
   }
-  const eligibleProfiles = (rule: RuleDraft) => profiles.filter((profile) => (
+  const eligibleProfiles = (rule: RuleDraft) => [
+    ...profiles,
+    ...Object.values(selectedProfiles).filter((selectedProfile) => (
+      !profiles.some((profile) => (
+        profile.provider_profile_version_id === selectedProfile.provider_profile_version_id
+      ))
+    )),
+  ].filter((profile) => (
     profile.state === 'APPROVED'
     && requiredJurisdiction.trim() !== ''
     && profile.jurisdiction === requiredJurisdiction.trim()
@@ -146,7 +246,19 @@ export function ClassificationPolicyAdmin(props: Props) {
               <option value="INTERNAL_APPROVED_ONLY">INTERNAL_APPROVED_ONLY</option>
               {rule.classification !== 'CONFIDENTIAL' && <option value="APPROVED_PROVIDER_ONLY">APPROVED_PROVIDER_ONLY</option>}
             </select>}
-          {rule.chat_mode !== 'DENY' && <><select aria-label={`${rule.classification} ${messages.providerProfile}`} value={rule.provider_profile_version_id} onChange={(event) => changeRule(rule.classification, { provider_profile_version_id: event.target.value })} required>
+          {rule.chat_mode !== 'DENY' && <><select aria-label={`${rule.classification} ${messages.providerProfile}`} value={rule.provider_profile_version_id} onChange={(event) => {
+            const providerProfileVersionId = event.target.value
+            const selectedProfile = candidates.find((profile) => (
+              profile.provider_profile_version_id === providerProfileVersionId
+            ))
+            if (selectedProfile) {
+              setSelectedProfiles((current) => ({
+                ...current,
+                [selectedProfile.provider_profile_version_id]: selectedProfile,
+              }))
+            }
+            changeRule(rule.classification, { provider_profile_version_id: providerProfileVersionId })
+          }} required>
             <option value="">{messages.chooseProvider}</option>
             {candidates.map((profile) => <option key={profile.provider_profile_version_id} value={profile.provider_profile_version_id}>{profile.profile_key} v{profile.profile_version} · {profile.kind} · {profile.region}</option>)}
           </select>{candidates.length === 0 && <small>{messages.noEligibleProvider}</small>}</>}
@@ -165,6 +277,7 @@ export function ClassificationPolicyAdmin(props: Props) {
 
   const propose = (event: FormEvent) => {
     event.preventDefault()
+    if (!canPropose) return
     const jurisdiction = requiredJurisdiction.trim()
     const maximumDays = Number(grantMaximumDays)
     const invalidProviderBinding = rules.some((rule) => (
@@ -203,14 +316,18 @@ export function ClassificationPolicyAdmin(props: Props) {
         clearKey(intent)
         setRequiredJurisdiction(''); setGrantMaximumDays('')
         setRules(emptyPolicyRules()); setProposalReason('')
-        setPolicies((current) => [next, ...current]); setSelectedId(next.policy_id)
+        await Promise.all([
+          reloadFirstPage(),
+          loadAuxiliary(auxiliaryChannel.next()),
+        ])
+        setSelectedId(next.policy_id)
       },
     })
   }
 
   const selected = policies.find((policy) => policy.policy_id === selectedId)
   const decide = (decision: 'APPROVED' | 'REJECTED') => {
-    if (!selected || !decisionReason.trim()) return
+    if (!canDecide || !selected || !decisionReason.trim()) return
     const intent = `classification-policy-decision:${selected.policy_id}:${selected.version}:${decision}:${decisionReason}`
     requestConfirmation({
       title: `${messages.classificationPolicyProposal}: ${decision}`,
@@ -227,12 +344,19 @@ export function ClassificationPolicyAdmin(props: Props) {
           decisionReason.trim(),
           keyFor(intent, 'classification-policy-decision'),
         )
-        clearKey(intent); setDecisionReason(''); await load()
+        clearKey(intent); setDecisionReason('')
+        await Promise.all([
+          reloadFirstPage(),
+          loadAuxiliary(auxiliaryChannel.next()),
+        ])
       },
     })
   }
   const canCheck = Boolean(
-    selected?.state === 'PROPOSED' && context && context.subject_id !== selected.requester_id,
+    canDecide
+    && selected?.state === 'PROPOSED'
+    && context
+    && context.subject_id !== selected.requester_id,
   )
 
   return <>
@@ -245,6 +369,8 @@ export function ClassificationPolicyAdmin(props: Props) {
     <div className="admin-two-column">
       <form className="panel form-stack" onSubmit={propose}>
         <h3>{messages.classificationPolicyProposal}</h3>
+        {!canPropose && <p className="callout">최근 WebAuthn 인증 후 정책을 제안할 수 있습니다. 인증 후 작업은 자동으로 실행되지 않습니다.</p>}
+        <fieldset className="contents" disabled={!canPropose}>
         <p className="callout">네 등급의 계약은 유지하며, 현재 운영 프로파일은 CONFIDENTIAL(대외비)과 RESTRICTED(극비)를 중심으로 사용합니다. PUBLIC·INTERNAL을 삭제하거나 다른 등급으로 자동 변환하지 않습니다.</p>
         <label>{messages.jurisdiction}
           <input
@@ -262,15 +388,53 @@ export function ClassificationPolicyAdmin(props: Props) {
           <legend className="mb-2 text-xs font-black text-navy-900">{messages.classificationMatrix}</legend>
           <DenseDataTable caption="데이터 분류 접근 정책" columns={ruleColumns} data={rules} getRowId={(rule) => rule.classification} emptyMessage="분류 정책 행이 없습니다." />
           <small>등급 행 삭제 대신 Search/Chat 모드를 DENY로 설정합니다. 네 등급과 RESTRICTED Chat 차단은 서버 보안 계약이며 정책 제안·독립 승인 후에만 활성화됩니다.</small>
+          <label>승인 Provider profile key 검색<input type="search" value={providerKeyQuery} onChange={(event) => setProviderKeyQuery(event.target.value)} placeholder="정확한 profile key" /></label>
+          <small>승인 Provider 선택지는 정확한 key 검색 결과를 서버 페이지 단위로 조회합니다.{profilesTruncated ? ' 다음 페이지에서 나머지 버전을 확인할 수 있습니다.' : ''}</small>
+          <PageNavigation
+            page={providerPageNumber}
+            canPrevious={providerCursorHistory.length > 0}
+            canNext={Boolean(providerNextCursor)}
+            onPrevious={() => {
+              const previous = providerCursorHistory.at(-1) ?? null
+              setProviderCursorHistory((history) => history.slice(0, -1))
+              setProviderCursor(previous ?? undefined)
+              setProviderPageNumber((page) => Math.max(1, page - 1))
+            }}
+            onNext={() => {
+              if (!providerNextCursor) return
+              setProviderCursorHistory((history) => [...history.slice(-49), providerCursor ?? null])
+              setProviderCursor(providerNextCursor)
+              setProviderPageNumber((page) => page + 1)
+            }}
+          />
         </fieldset>
         <label>{messages.reason}<textarea value={proposalReason} onChange={(event) => setProposalReason(event.target.value)} maxLength={4000} required /></label>
         <button className="button">{messages.propose}</button>
+        </fieldset>
       </form>
       <section className="panel">
-        <div className="section-heading"><h3>{messages.classificationPolicyHistory}</h3><button className="button button-secondary" onClick={() => void load()}>{messages.refresh}</button></div>
+        <div className="section-heading"><h3>{messages.classificationPolicyHistory}</h3><button className="button button-secondary" onClick={() => void Promise.all([load(cursor, listChannel.next()), loadAuxiliary(auxiliaryChannel.next())])}>{messages.refresh}</button></div>
+        <label>상태 필터<select value={stateFilter} onChange={(event) => { setStateFilter(event.target.value as ClassificationAccessPolicyState | ''); resetPage() }}><option value="">전체</option><option>PROPOSED</option><option>ACTIVE</option><option>REJECTED</option><option>SUPERSEDED</option></select></label>
         <div className="compact-list">{policies.map((policy) => <button key={policy.policy_id} className={selectedId === policy.policy_id ? 'selected' : ''} onClick={() => setSelectedId(policy.policy_id)}>
           <span><strong>#{policy.policy_number} · {policy.required_jurisdiction}</strong><small>{policy.request_reason}</small></span><span className="badge">{policy.state}</span>
         </button>)}</div>
+        <PageNavigation
+          page={pageNumber}
+          canPrevious={cursorHistory.length > 0}
+          canNext={Boolean(nextCursor)}
+          onPrevious={() => {
+            const previous = cursorHistory.at(-1) ?? null
+            setCursorHistory((history) => history.slice(0, -1))
+            setCursor(previous ?? undefined)
+            setPageNumber((page) => Math.max(1, page - 1))
+          }}
+          onNext={() => {
+            if (!nextCursor) return
+            setCursorHistory((history) => [...history.slice(-49), cursor ?? null])
+            setCursor(nextCursor)
+            setPageNumber((page) => page + 1)
+          }}
+        />
       </section>
     </div>
     {selected && <section className="result-card governance-detail form-stack">
@@ -279,7 +443,7 @@ export function ClassificationPolicyAdmin(props: Props) {
         <label>{messages.reason}<textarea value={decisionReason} onChange={(event) => setDecisionReason(event.target.value)} maxLength={4000} /></label>
         <div className="action-row">{canCheck
           ? <><button className="button" disabled={!decisionReason.trim()} onClick={() => decide('APPROVED')}>{messages.approve}</button><button className="button button-secondary" disabled={!decisionReason.trim()} onClick={() => decide('REJECTED')}>{messages.reject}</button></>
-          : <p className="callout">{messages.makerCannotCheck}</p>}
+          : <p className="callout">{canDecide ? messages.makerCannotCheck : '최근 WebAuthn 인증 후 독립 승인할 수 있습니다.'}</p>}
         </div>
       </>}
     </section>}
@@ -292,22 +456,64 @@ export function InferenceProviderProfileAdmin(props: Props) {
   const [selectedId, setSelectedId] = useState('')
   const [decisionReason, setDecisionReason] = useState('')
   const [revocationReason, setRevocationReason] = useState('')
+  const [profileKeyInput, setProfileKeyInput] = useState('')
+  const [profileKey, setProfileKey] = useState('')
+  const [stateFilter, setStateFilter] = useState<InferenceProviderProfileState | ''>('')
+  const [cursor, setCursor] = useState<string>()
+  const [cursorHistory, setCursorHistory] = useState<Array<string | null>>([])
+  const [nextCursor, setNextCursor] = useState<string | null>(null)
+  const [pageNumber, setPageNumber] = useState(1)
+  const loadGeneration = useRef(0)
+  const listChannel = useAbortSignalChannel()
+  const canDecide = context?.allowed_operations.includes(
+    'INFERENCE_PROVIDER_PROFILE_DECIDE',
+  ) ?? false
+  const canRevoke = context?.allowed_operations.includes(
+    'INFERENCE_PROVIDER_PROFILE_REVOKE',
+  ) ?? false
 
-  const load = useCallback(async () => {
+  const load = useCallback(async (pageCursor: string | undefined, signal?: AbortSignal) => {
+    const generation = ++loadGeneration.current
     try {
-      const next = await api.listInferenceProviderProfiles()
-      setProfiles(next)
-      setSelectedId((current) => current || next[0]?.provider_profile_version_id || '')
-    } catch (error) { reportError(error) }
-  }, [api, reportError])
-  useEffect(() => { void load() }, [load])
+      const page = await api.listInferenceProviderProfilePage({
+        profileKey: profileKey.trim() || undefined,
+        state: stateFilter || undefined,
+        cursor: pageCursor,
+        limit: 25,
+        signal,
+      })
+      if (generation !== loadGeneration.current) return
+      setProfiles(page.items)
+      setNextCursor(page.nextCursor)
+      setSelectedId((current) => (
+        current && page.items.some((profile) => profile.provider_profile_version_id === current)
+          ? current
+          : page.items[0]?.provider_profile_version_id || ''
+      ))
+    } catch (error) {
+      if (!signal?.aborted && generation === loadGeneration.current) reportError(error)
+    }
+  }, [api, profileKey, reportError, stateFilter])
+  useEffect(() => {
+    void load(cursor, listChannel.next())
+    return () => { loadGeneration.current += 1 }
+  }, [cursor, listChannel, load])
+
+  const resetPage = () => {
+    setCursor(undefined)
+    setCursorHistory([])
+    setNextCursor(null)
+    setPageNumber(1)
+  }
+  const reloadFirstPage = async () => {
+    const alreadyFirstPage = cursor === undefined
+    resetPage()
+    if (alreadyFirstPage) await load(undefined, listChannel.next())
+  }
 
   const selected = profiles.find((profile) => profile.provider_profile_version_id === selectedId)
-  const replace = (next: InferenceProviderProfile) => setProfiles((current) => current.map((profile) => (
-    profile.provider_profile_version_id === next.provider_profile_version_id ? next : profile
-  )))
   const decide = (decision: 'APPROVED' | 'REJECTED') => {
-    if (!selected || !decisionReason.trim()) return
+    if (!canDecide || !selected || !decisionReason.trim()) return
     const intent = `provider-profile-decision:${selected.provider_profile_version_id}:${selected.version}:${decision}:${decisionReason}`
     requestConfirmation({
       title: `${messages.providerDecision}: ${decision}`,
@@ -316,12 +522,14 @@ export function InferenceProviderProfileAdmin(props: Props) {
         const next = await api.decideInferenceProviderProfile(
           selected, decision, decisionReason.trim(), keyFor(intent, 'provider-profile-decision'),
         )
-        clearKey(intent); setDecisionReason(''); replace(next)
+        clearKey(intent); setDecisionReason('')
+        await reloadFirstPage()
+        setSelectedId(next.provider_profile_version_id)
       },
     })
   }
   const revoke = () => {
-    if (!selected || !revocationReason.trim()) return
+    if (!canRevoke || !selected || !revocationReason.trim()) return
     const intent = `provider-profile-revoke:${selected.provider_profile_version_id}:${selected.version}:${revocationReason}`
     requestConfirmation({
       title: messages.revoke,
@@ -330,20 +538,55 @@ export function InferenceProviderProfileAdmin(props: Props) {
         const next = await api.revokeInferenceProviderProfile(
           selected, revocationReason.trim(), keyFor(intent, 'provider-profile-revoke'),
         )
-        clearKey(intent); setRevocationReason(''); replace(next)
+        clearKey(intent); setRevocationReason('')
+        await reloadFirstPage()
+        setSelectedId(next.provider_profile_version_id)
       },
     })
   }
-  const canCheck = Boolean(selected?.state === 'PROPOSED' && context && context.subject_id !== selected.maker_id)
+  const canCheck = Boolean(
+    canDecide
+    && selected?.state === 'PROPOSED'
+    && context
+    && context.subject_id !== selected.maker_id,
+  )
 
   return <>
     <p className="callout">{messages.providerReadOnly}</p>
     <div className="admin-two-column">
       <section className="panel">
-        <div className="section-heading"><h3>{messages.providerHistory}</h3><button className="button button-secondary" onClick={() => void load()}>{messages.refresh}</button></div>
+        <div className="section-heading"><h3>{messages.providerHistory}</h3><button className="button button-secondary" onClick={() => void load(cursor, listChannel.next())}>{messages.refresh}</button></div>
+        <form className="action-row" onSubmit={(event) => {
+          event.preventDefault()
+          const normalized = profileKeyInput.trim()
+          resetPage()
+          if (normalized === profileKey) void load(undefined, listChannel.next())
+          else setProfileKey(normalized)
+        }}>
+          <label>프로파일 키 검색<input type="search" value={profileKeyInput} onChange={(event) => setProfileKeyInput(event.target.value)} placeholder="정확한 profile key" /></label>
+          <button type="submit" className="button button-secondary">검색</button>
+        </form>
+        <label>상태 필터<select value={stateFilter} onChange={(event) => { setStateFilter(event.target.value as InferenceProviderProfileState | ''); resetPage() }}><option value="">전체</option><option>PROPOSED</option><option>APPROVED</option><option>REJECTED</option><option>REVOKED</option></select></label>
         <div className="compact-list">{profiles.map((profile) => <button key={profile.provider_profile_version_id} className={selectedId === profile.provider_profile_version_id ? 'selected' : ''} onClick={() => setSelectedId(profile.provider_profile_version_id)}>
           <span><strong>{profile.profile_key} · v{profile.profile_version}</strong><small>{profile.kind} · {profile.region} · {profile.jurisdiction}</small></span><span className="badge">{profile.state}</span>
         </button>)}</div>
+        <PageNavigation
+          page={pageNumber}
+          canPrevious={cursorHistory.length > 0}
+          canNext={Boolean(nextCursor)}
+          onPrevious={() => {
+            const previous = cursorHistory.at(-1) ?? null
+            setCursorHistory((history) => history.slice(0, -1))
+            setCursor(previous ?? undefined)
+            setPageNumber((page) => Math.max(1, page - 1))
+          }}
+          onNext={() => {
+            if (!nextCursor) return
+            setCursorHistory((history) => [...history.slice(-49), cursor ?? null])
+            setCursor(nextCursor)
+            setPageNumber((page) => page + 1)
+          }}
+        />
       </section>
       <section className="panel form-stack">{selected ? <>
         <h3>{selected.profile_key} · v{selected.profile_version}</h3>
@@ -365,13 +608,14 @@ export function InferenceProviderProfileAdmin(props: Props) {
           <label>{messages.reason}<textarea value={decisionReason} onChange={(event) => setDecisionReason(event.target.value)} maxLength={4000} /></label>
           <div className="action-row">{canCheck
             ? <><button className="button" disabled={!decisionReason.trim()} onClick={() => decide('APPROVED')}>{messages.approve}</button><button className="button button-secondary" disabled={!decisionReason.trim()} onClick={() => decide('REJECTED')}>{messages.reject}</button></>
-            : <p className="callout">{messages.makerCannotCheck}</p>}
+            : <p className="callout">{canDecide ? messages.makerCannotCheck : '최근 WebAuthn 인증 후 Provider 결정을 수행할 수 있습니다.'}</p>}
           </div>
         </>}
-        {selected.state === 'APPROVED' && <>
+        {selected.state === 'APPROVED' && canRevoke && <>
           <label>{messages.revocationReason}<textarea value={revocationReason} onChange={(event) => setRevocationReason(event.target.value)} maxLength={4000} /></label>
           <button className="button button-secondary" disabled={!revocationReason.trim()} onClick={revoke}>{messages.revoke}</button>
         </>}
+        {selected.state === 'APPROVED' && !canRevoke && <p className="callout">최근 WebAuthn 인증 후 Provider 승인을 철회할 수 있습니다.</p>}
       </> : <p className="muted">{messages.empty}</p>}</section>
     </div>
   </>
@@ -396,42 +640,144 @@ export function RestrictedSearchGrantAdmin(props: Props) {
   const [proposalReason, setProposalReason] = useState('')
   const [decisionReason, setDecisionReason] = useState('')
   const [revocationReason, setRevocationReason] = useState('')
+  const [stateFilter, setStateFilter] = useState<RestrictedSearchGrantState | ''>('')
+  const [cursor, setCursor] = useState<string>()
+  const [cursorHistory, setCursorHistory] = useState<Array<string | null>>([])
+  const [nextCursor, setNextCursor] = useState<string | null>(null)
+  const [pageNumber, setPageNumber] = useState(1)
+  const [memberSelectorTruncated, setMemberSelectorTruncated] = useState(false)
+  const [systemSelectorTruncated, setSystemSelectorTruncated] = useState(false)
+  const [memberSelectorQuery, setMemberSelectorQuery] = useState('')
+  const [appliedMemberSelectorQuery, setAppliedMemberSelectorQuery] = useState('')
+  const [systemSelectorQuery, setSystemSelectorQuery] = useState('')
+  const [appliedSystemSelectorQuery, setAppliedSystemSelectorQuery] = useState('')
+  const loadGeneration = useRef(0)
+  const auxiliaryGeneration = useRef(0)
+  const listChannel = useAbortSignalChannel()
+  const auxiliaryChannel = useAbortSignalChannel()
   const timeZone = useMemo(() => Intl.DateTimeFormat().resolvedOptions().timeZone, [])
+  const canPropose = context?.allowed_operations.includes(
+    'RESTRICTED_SEARCH_GRANT_PROPOSE',
+  ) ?? false
+  const canDecide = context?.allowed_operations.includes(
+    'RESTRICTED_SEARCH_GRANT_DECIDE',
+  ) ?? false
+  const canRevoke = context?.allowed_operations.includes(
+    'RESTRICTED_SEARCH_GRANT_REVOKE',
+  ) ?? false
 
-  const load = useCallback(async () => {
+  const load = useCallback(async (pageCursor: string | undefined, signal?: AbortSignal) => {
+    const generation = ++loadGeneration.current
     try {
-      const [nextGrants, nextMembers, nextSystems, nextPolicy] = await Promise.all([
-        api.listRestrictedSearchGrants(),
-        api.listMemberships(),
-        api.listSystems(),
-        api.getCurrentClassificationAccessPolicy(),
+      const grantPage = await api.listRestrictedSearchGrantPage({
+        state: stateFilter || undefined,
+        cursor: pageCursor,
+        limit: 25,
+        signal,
+      })
+      if (generation !== loadGeneration.current) return
+      setGrants(grantPage.items)
+      setNextCursor(grantPage.nextCursor)
+      setSelectedId((current) => (
+        current && grantPage.items.some((grant) => grant.grant_id === current)
+          ? current
+          : grantPage.items[0]?.grant_id || ''
+      ))
+    } catch (error) {
+      if (!signal?.aborted && generation === loadGeneration.current) reportError(error)
+    }
+  }, [api, reportError, stateFilter])
+
+  const loadAuxiliary = useCallback(async (signal?: AbortSignal) => {
+    const generation = ++auxiliaryGeneration.current
+    try {
+      const [memberPage, systemPage, nextPolicy] = await Promise.all([
+        api.listMembershipPage({
+          query: appliedMemberSelectorQuery || undefined,
+          status: 'ACTIVE',
+          limit: 25,
+          signal,
+        }),
+        api.listSystemPage({
+          query: appliedSystemSelectorQuery || undefined,
+          status: 'ACTIVE',
+          limit: 25,
+          signal,
+        }),
+        api.getCurrentClassificationAccessPolicy(signal),
       ])
-      setGrants(nextGrants); setMembers(nextMembers); setSystems(nextSystems); setCurrentPolicy(nextPolicy)
-      setSelectedId((current) => current || nextGrants[0]?.grant_id || '')
-    } catch (error) { reportError(error) }
-  }, [api, reportError])
-  useEffect(() => { void load() }, [load])
+      if (generation !== auxiliaryGeneration.current) return
+      setMembers(memberPage.items)
+      setSystems(systemPage.items)
+      setMemberSelectorTruncated(Boolean(memberPage.nextCursor))
+      setSystemSelectorTruncated(Boolean(systemPage.nextCursor))
+      setCurrentPolicy(nextPolicy)
+    } catch (error) {
+      if (!signal?.aborted && generation === auxiliaryGeneration.current) reportError(error)
+    }
+  }, [
+    api,
+    appliedMemberSelectorQuery,
+    appliedSystemSelectorQuery,
+    reportError,
+  ])
+
+  useEffect(() => {
+    void load(cursor, listChannel.next())
+    return () => { loadGeneration.current += 1 }
+  }, [cursor, listChannel, load])
+  useEffect(() => {
+    void loadAuxiliary(auxiliaryChannel.next())
+    return () => { auxiliaryGeneration.current += 1 }
+  }, [auxiliaryChannel, loadAuxiliary])
+  useEffect(() => {
+    const timer = window.setTimeout(
+      () => setAppliedMemberSelectorQuery(memberSelectorQuery.trim()),
+      250,
+    )
+    return () => window.clearTimeout(timer)
+  }, [memberSelectorQuery])
+  useEffect(() => {
+    const timer = window.setTimeout(
+      () => setAppliedSystemSelectorQuery(systemSelectorQuery.trim()),
+      250,
+    )
+    return () => window.clearTimeout(timer)
+  }, [systemSelectorQuery])
+
+  const resetPage = () => {
+    setCursor(undefined)
+    setCursorHistory([])
+    setNextCursor(null)
+    setPageNumber(1)
+  }
+  const reloadFirstPage = async () => {
+    const alreadyFirstPage = cursor === undefined
+    resetPage()
+    if (alreadyFirstPage) await load(undefined, listChannel.next())
+  }
   const restrictedRule = currentPolicy?.rules.find((rule) => rule.classification === 'RESTRICTED')
   const grantEnabled = currentPolicy?.state === 'ACTIVE'
     && restrictedRule?.search_mode === 'EXPLICIT_GRANT_ONLY'
+  const grantFormEnabled = grantEnabled && canPropose
   useEffect(() => {
     const normalized = targetQuery.trim()
-    if (scope !== 'RESOURCE' || normalized.length < 2 || !grantEnabled) {
+    if (scope !== 'RESOURCE' || normalized.length < 2 || !grantFormEnabled) {
       setTargetResults([]); setTargetSearching(false); return
     }
-    let active = true
+    const controller = new AbortController()
     const timer = window.setTimeout(() => {
       setTargetSearching(true)
-      void api.searchRestrictedGrantTargets(normalized)
-        .then((items) => { if (active) setTargetResults(items) })
-        .catch((error) => { if (active) reportError(error) })
-        .finally(() => { if (active) setTargetSearching(false) })
+      void api.searchRestrictedGrantTargets(normalized, controller.signal)
+        .then((items) => { if (!controller.signal.aborted) setTargetResults(items) })
+        .catch((error) => { if (!controller.signal.aborted) reportError(error) })
+        .finally(() => { if (!controller.signal.aborted) setTargetSearching(false) })
     }, 220)
-    return () => { active = false; window.clearTimeout(timer) }
-  }, [api, grantEnabled, reportError, scope, targetQuery])
+    return () => { controller.abort(); window.clearTimeout(timer) }
+  }, [api, grantFormEnabled, reportError, scope, targetQuery])
   const propose = (event: FormEvent) => {
     event.preventDefault()
-    if (!currentPolicy || !grantEnabled || !subjectId || !scope || !scopeId.trim()
+    if (!canPropose || !currentPolicy || !grantEnabled || !subjectId || !scope || !scopeId.trim()
       || !purpose.trim() || !validFrom || !expiresAt || !proposalReason.trim()) return
     const validFromValue = Date.parse(validFrom)
     const expiresAtValue = Date.parse(expiresAt)
@@ -461,17 +807,15 @@ export function RestrictedSearchGrantAdmin(props: Props) {
         )
         clearKey(intent); setSubjectId(''); setScope(''); setScopeId(''); setTargetQuery(''); setTargetResults([]); setPurpose('')
         setValidFrom(''); setExpiresAt(''); setProposalReason('')
-        setGrants((current) => [next, ...current]); setSelectedId(next.grant_id)
+        await reloadFirstPage()
+        setSelectedId(next.grant_id)
       },
     })
   }
 
   const selected = grants.find((grant) => grant.grant_id === selectedId)
-  const replace = (next: RestrictedSearchGrant) => setGrants((current) => current.map((grant) => (
-    grant.grant_id === next.grant_id ? next : grant
-  )))
   const decide = (decision: 'APPROVED' | 'REJECTED') => {
-    if (!selected || !decisionReason.trim()) return
+    if (!canDecide || !selected || !decisionReason.trim()) return
     const intent = `restricted-search-grant-decision:${selected.grant_id}:${selected.version}:${decision}:${decisionReason}`
     requestConfirmation({
       title: `${messages.restrictedGrantProposal}: ${decision}`,
@@ -480,12 +824,14 @@ export function RestrictedSearchGrantAdmin(props: Props) {
         const next = await api.decideRestrictedSearchGrant(
           selected, decision, decisionReason.trim(), keyFor(intent, 'restricted-search-grant-decision'),
         )
-        clearKey(intent); setDecisionReason(''); replace(next)
+        clearKey(intent); setDecisionReason('')
+        await reloadFirstPage()
+        setSelectedId(next.grant_id)
       },
     })
   }
   const revoke = () => {
-    if (!selected || !revocationReason.trim()) return
+    if (!canRevoke || !selected || !revocationReason.trim()) return
     const intent = `restricted-search-grant-revoke:${selected.grant_id}:${selected.version}:${revocationReason}`
     requestConfirmation({
       title: messages.revoke,
@@ -494,12 +840,14 @@ export function RestrictedSearchGrantAdmin(props: Props) {
         const next = await api.revokeRestrictedSearchGrant(
           selected, revocationReason.trim(), keyFor(intent, 'restricted-search-grant-revoke'),
         )
-        clearKey(intent); setRevocationReason(''); replace(next)
+        clearKey(intent); setRevocationReason('')
+        await reloadFirstPage()
+        setSelectedId(next.grant_id)
       },
     })
   }
   const canCheck = Boolean(
-    selected?.state === 'PENDING' && context
+    canDecide && selected?.state === 'PENDING' && context
     && context.subject_id !== selected.requester_id
     && context.subject_id !== selected.subject_id,
   )
@@ -507,32 +855,55 @@ export function RestrictedSearchGrantAdmin(props: Props) {
   return <>
     {!currentPolicy && <p className="callout">{messages.activePolicyRequired}</p>}
     {currentPolicy && !grantEnabled && <p className="callout">{messages.restrictedGrantDisabled}</p>}
+    {grantEnabled && !canPropose && <p className="callout">최근 WebAuthn 인증 후 RESTRICTED Search Grant를 제안할 수 있습니다.</p>}
     <div className="admin-two-column">
       <form className="panel form-stack" onSubmit={propose}>
         <h3>{messages.restrictedGrantProposal}</h3>
         {currentPolicy && <p className="callout">{messages.grantMaximumHint}: {currentPolicy.restricted_search_grant_maximum_days} days · #{currentPolicy.policy_number}</p>}
-        <label>{messages.subject}<select value={subjectId} onChange={(event) => setSubjectId(event.target.value)} required disabled={!grantEnabled}>
+        <label>대상 사용자 검색<input type="search" value={memberSelectorQuery} onChange={(event) => setMemberSelectorQuery(event.target.value)} placeholder="이름 또는 이메일" disabled={!grantFormEnabled} /></label>
+        <label>{messages.subject}<select value={subjectId} onChange={(event) => setSubjectId(event.target.value)} required disabled={!grantFormEnabled}>
           <option value="">{messages.select}</option>
+          {subjectId && !members.some((member) => member.subject_id === subjectId) && <option value={subjectId}>{subjectId} · 현재 검색 결과 외 선택</option>}
           {members.filter((member) => member.subject_active && member.membership_active).map((member) => <option key={member.subject_id} value={member.subject_id}>{member.display_name} · {member.subject_id}</option>)}
         </select></label>
-        <label>{messages.scope}<select value={scope} onChange={(event) => { setScope(event.target.value as RestrictedSearchScope | ''); setScopeId(''); setTargetQuery(''); setTargetResults([]) }} required disabled={!grantEnabled}>
+        <small>대상 사용자는 활성 멤버십 검색 결과 첫 25건입니다.{memberSelectorTruncated ? ' 결과가 더 있으면 이름 또는 이메일을 더 정확히 입력하세요.' : ''}</small>
+        <label>{messages.scope}<select value={scope} onChange={(event) => { setScope(event.target.value as RestrictedSearchScope | ''); setScopeId(''); setTargetQuery(''); setTargetResults([]) }} required disabled={!grantFormEnabled}>
           <option value="">{messages.select}</option><option value="RESOURCE">RESOURCE</option><option value="SYSTEM">SYSTEM</option><option value="DOMAIN">DOMAIN</option>
         </select></label>
-        {scope === 'RESOURCE' ? <div className="grid gap-2"><label>스키마·테이블 검색<input type="search" value={targetQuery} onChange={(event) => { setTargetQuery(event.target.value); setScopeId('') }} placeholder="플랫폼, 스키마 또는 테이블명" disabled={!grantEnabled} /></label>{targetSearching && <small>권한 범위의 카탈로그를 검색하는 중입니다.</small>}<div className="compact-list" aria-label="극비 접근 대상 검색 결과">{targetResults.map((asset) => <button type="button" key={asset.id} className={scopeId === asset.id ? 'selected' : ''} onClick={() => { setScopeId(asset.id); setTargetQuery(`${asset.platform ?? '—'} · ${asset.schema_name ?? '—'} · ${asset.name}`); setTargetResults([]) }}><span><strong>{asset.name}</strong><small>{asset.platform ?? '—'} · {asset.database_name ?? '—'} · {asset.schema_name ?? '—'} · {asset.asset_type}</small></span><span className="badge badge-soft">{asset.classification}</span></button>)}</div>{targetQuery.trim().length >= 2 && !targetSearching && targetResults.length === 0 && !scopeId && <small>현재 권한 범위에 일치하는 스키마·테이블이 없습니다.</small>}<input type="hidden" name="restricted-resource-id" value={scopeId} required /></div>
-          : scope === 'SYSTEM' ? <label>{messages.scopeId}<select value={scopeId} onChange={(event) => setScopeId(event.target.value)} required disabled={!grantEnabled}><option value="">시스템 선택</option>{systems.filter((system) => system.active).map((system) => <option key={system.system_id} value={system.system_id}>{system.name} · {system.code}</option>)}</select></label>
-            : <label>{messages.scopeId}<input value={scopeId} onChange={(event) => setScopeId(event.target.value)} required pattern="[0-9a-fA-F-]{36}" disabled={!grantEnabled} /><small>DOMAIN 정본 ID 조회 UI는 아직 제공되지 않습니다. UUID를 임의 생성하지 마세요.</small></label>}
-        <label>{messages.purpose}<textarea value={purpose} onChange={(event) => setPurpose(event.target.value)} maxLength={4000} required disabled={!grantEnabled} /></label>
-        <label>{messages.validFrom}<input type="datetime-local" value={validFrom} onChange={(event) => setValidFrom(event.target.value)} required disabled={!grantEnabled} /></label>
-        <label>{messages.expiresAt}<input type="datetime-local" value={expiresAt} onChange={(event) => setExpiresAt(event.target.value)} required disabled={!grantEnabled} /></label>
+        {scope === 'RESOURCE' ? <div className="grid gap-2"><label>스키마·테이블 검색<input type="search" value={targetQuery} onChange={(event) => { setTargetQuery(event.target.value); setScopeId('') }} placeholder="플랫폼, 스키마 또는 테이블명" disabled={!grantFormEnabled} /></label>{targetSearching && <small>권한 범위의 카탈로그를 검색하는 중입니다.</small>}<div className="compact-list" aria-label="극비 접근 대상 검색 결과">{targetResults.map((asset) => <button type="button" key={asset.id} className={scopeId === asset.id ? 'selected' : ''} onClick={() => { setScopeId(asset.id); setTargetQuery(`${asset.platform ?? '—'} · ${asset.schema_name ?? '—'} · ${asset.name}`); setTargetResults([]) }}><span><strong>{asset.name}</strong><small>{asset.platform ?? '—'} · {asset.database_name ?? '—'} · {asset.schema_name ?? '—'} · {asset.asset_type}</small></span><span className="badge badge-soft">{asset.classification}</span></button>)}</div>{targetQuery.trim().length >= 2 && !targetSearching && targetResults.length === 0 && !scopeId && <small>현재 권한 범위에 일치하는 스키마·테이블이 없습니다.</small>}<input type="hidden" name="restricted-resource-id" value={scopeId} required /></div>
+          : scope === 'SYSTEM' ? <><label>시스템 검색<input type="search" value={systemSelectorQuery} onChange={(event) => setSystemSelectorQuery(event.target.value)} placeholder="시스템명 또는 코드" disabled={!grantFormEnabled} /></label><label>{messages.scopeId}<select value={scopeId} onChange={(event) => setScopeId(event.target.value)} required disabled={!grantFormEnabled}><option value="">시스템 선택</option>{scopeId && !systems.some((system) => system.system_id === scopeId) && <option value={scopeId}>{scopeId} · 현재 검색 결과 외 선택</option>}{systems.filter((system) => system.active).map((system) => <option key={system.system_id} value={system.system_id}>{system.name} · {system.code}</option>)}</select></label></>
+            : <label>{messages.scopeId}<input value={scopeId} onChange={(event) => setScopeId(event.target.value)} required pattern="[0-9a-fA-F-]{36}" disabled={!grantFormEnabled} /><small>DOMAIN 정본 ID 조회 UI는 아직 제공되지 않습니다. UUID를 임의 생성하지 마세요.</small></label>}
+        <label>{messages.purpose}<textarea value={purpose} onChange={(event) => setPurpose(event.target.value)} maxLength={4000} required disabled={!grantFormEnabled} /></label>
+        <label>{messages.validFrom}<input type="datetime-local" value={validFrom} onChange={(event) => setValidFrom(event.target.value)} required disabled={!grantFormEnabled} /></label>
+        <label>{messages.expiresAt}<input type="datetime-local" value={expiresAt} onChange={(event) => setExpiresAt(event.target.value)} required disabled={!grantFormEnabled} /></label>
         <small>{messages.browserTimezone}: {timeZone}</small>
-        <label>{messages.reason}<textarea value={proposalReason} onChange={(event) => setProposalReason(event.target.value)} maxLength={4000} required disabled={!grantEnabled} /></label>
-        <button className="button" disabled={!grantEnabled}>{messages.propose}</button>
+        <label>{messages.reason}<textarea value={proposalReason} onChange={(event) => setProposalReason(event.target.value)} maxLength={4000} required disabled={!grantFormEnabled} /></label>
+        <button className="button" disabled={!grantFormEnabled}>{messages.propose}</button>
+        <small>시스템 선택지는 활성 시스템 검색 결과 첫 25건입니다.{systemSelectorTruncated ? ' 결과가 더 있으면 시스템명 또는 코드를 더 정확히 입력하세요.' : ''}</small>
       </form>
       <section className="panel">
-        <div className="section-heading"><h3>{messages.restrictedGrantHistory}</h3><button className="button button-secondary" onClick={() => void load()}>{messages.refresh}</button></div>
+        <div className="section-heading"><h3>{messages.restrictedGrantHistory}</h3><button className="button button-secondary" onClick={() => void Promise.all([load(cursor, listChannel.next()), loadAuxiliary(auxiliaryChannel.next())])}>{messages.refresh}</button></div>
+        <label>상태 필터<select value={stateFilter} onChange={(event) => { setStateFilter(event.target.value as RestrictedSearchGrantState | ''); resetPage() }}><option value="">전체</option><option>PENDING</option><option>ACTIVE</option><option>REJECTED</option><option>REVOKED</option></select></label>
         <div className="compact-list">{grants.map((grant) => <button key={grant.grant_id} className={selectedId === grant.grant_id ? 'selected' : ''} onClick={() => setSelectedId(grant.grant_id)}>
           <span><strong>{grant.subject_id}</strong><small>{grant.scope}: {grant.scope_id} · {formatDate(grant.expires_at)}</small></span><span className="badge">{grant.state}</span>
         </button>)}</div>
+        <PageNavigation
+          page={pageNumber}
+          canPrevious={cursorHistory.length > 0}
+          canNext={Boolean(nextCursor)}
+          onPrevious={() => {
+            const previous = cursorHistory.at(-1) ?? null
+            setCursorHistory((history) => history.slice(0, -1))
+            setCursor(previous ?? undefined)
+            setPageNumber((page) => Math.max(1, page - 1))
+          }}
+          onNext={() => {
+            if (!nextCursor) return
+            setCursorHistory((history) => [...history.slice(-49), cursor ?? null])
+            setCursor(nextCursor)
+            setPageNumber((page) => page + 1)
+          }}
+        />
       </section>
     </div>
     {selected && <section className="result-card governance-detail form-stack">
@@ -551,13 +922,14 @@ export function RestrictedSearchGrantAdmin(props: Props) {
         <label>{messages.reason}<textarea value={decisionReason} onChange={(event) => setDecisionReason(event.target.value)} maxLength={4000} /></label>
         <div className="action-row">{canCheck
           ? <><button className="button" disabled={!decisionReason.trim()} onClick={() => decide('APPROVED')}>{messages.approve}</button><button className="button button-secondary" disabled={!decisionReason.trim()} onClick={() => decide('REJECTED')}>{messages.reject}</button></>
-          : <p className="callout">{messages.makerCannotCheck}</p>}
+          : <p className="callout">{canDecide ? messages.makerCannotCheck : '최근 WebAuthn 인증 후 Grant를 독립 승인할 수 있습니다.'}</p>}
         </div>
       </>}
-      {selected.state === 'ACTIVE' && <>
+      {selected.state === 'ACTIVE' && canRevoke && <>
         <label>{messages.revocationReason}<textarea value={revocationReason} onChange={(event) => setRevocationReason(event.target.value)} maxLength={4000} /></label>
         <button className="button button-secondary" disabled={!revocationReason.trim()} onClick={revoke}>{messages.revoke}</button>
       </>}
+      {selected.state === 'ACTIVE' && !canRevoke && <p className="callout">최근 WebAuthn 인증 후 Grant를 철회할 수 있습니다.</p>}
     </section>}
   </>
 }
@@ -609,4 +981,24 @@ function ruleSummary(rule: ClassificationAccessRule): string {
 function formatDate(value: string): string {
   const timestamp = Date.parse(value)
   return Number.isFinite(timestamp) ? new Date(timestamp).toLocaleString() : value
+}
+
+function PageNavigation({
+  page,
+  canPrevious,
+  canNext,
+  onPrevious,
+  onNext,
+}: {
+  page: number
+  canPrevious: boolean
+  canNext: boolean
+  onPrevious: () => void
+  onNext: () => void
+}) {
+  return <nav className="action-row" aria-label="서버 페이지 탐색">
+    <button type="button" className="button button-secondary" disabled={!canPrevious} onClick={onPrevious}>이전</button>
+    <span>페이지 {page}</span>
+    <button type="button" className="button button-secondary" disabled={!canNext} onClick={onNext}>다음</button>
+  </nav>
 }

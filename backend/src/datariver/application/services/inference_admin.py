@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Sequence
+from dataclasses import dataclass
 from types import TracebackType
 from typing import Protocol, Self
 from uuid import UUID
@@ -40,6 +41,12 @@ _FORBIDDEN_AUDIT_KEY_FRAGMENTS = (
 )
 
 
+@dataclass(frozen=True, slots=True)
+class InferenceProviderProfilePage:
+    items: tuple[InferenceProviderProfileVersion, ...]
+    next_cursor: str | None
+
+
 class InferenceProviderProfileRepository(Protocol):
     async def get(
         self, *, workspace_id: UUID, profile_version_id: UUID
@@ -52,7 +59,8 @@ class InferenceProviderProfileRepository(Protocol):
         profile_key: str | None = None,
         state: InferenceProviderProfileState | None = None,
         limit: int = 100,
-    ) -> tuple[InferenceProviderProfileVersion, ...]: ...
+        cursor: str | None = None,
+    ) -> InferenceProviderProfilePage: ...
 
     async def approve(self, profile: InferenceProviderProfileVersion) -> None: ...
 
@@ -113,10 +121,11 @@ class InferenceAdminService:
         profile_key: str | None,
         state: InferenceProviderProfileState | None,
         limit: int,
+        cursor: str | None,
         subject: SubjectAttributes,
         environment: EnvironmentAttributes,
         request_id: str,
-    ) -> Sequence[InferenceProviderProfileVersion]:
+    ) -> InferenceProviderProfilePage:
         await self._authorize(
             workspace_id=workspace_id,
             resource_id=workspace_id,
@@ -134,6 +143,7 @@ class InferenceAdminService:
                 profile_key=profile_key,
                 state=state,
                 limit=limit,
+                cursor=cursor,
             )
 
     async def get_profile(

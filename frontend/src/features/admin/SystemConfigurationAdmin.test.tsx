@@ -206,9 +206,9 @@ describe('SystemConfigurationAdmin', () => {
 
     expect(await screen.findByRole('tab', { name: /LLM Models/ })).toBeInTheDocument()
     expect(screen.queryByRole('tab', { name: 'LLM · Chat model' })).not.toBeInTheDocument()
-    expect(screen.getByRole('tab', { name: 'Chat Model' })).toHaveAttribute('aria-selected', 'true')
-    fireEvent.click(screen.getByRole('tab', { name: 'Reranker' }))
-    expect(screen.getByRole('tab', { name: 'Reranker' })).toHaveAttribute('aria-selected', 'true')
+    expect(screen.getByRole('button', { name: 'Chat Model' })).toHaveAttribute('aria-pressed', 'true')
+    fireEvent.click(screen.getByRole('button', { name: 'Reranker' }))
+    expect(screen.getByRole('button', { name: 'Reranker' })).toHaveAttribute('aria-pressed', 'true')
     expect(screen.getByRole('heading', { name: 'LLM · Reranker' })).toBeInTheDocument()
   })
 

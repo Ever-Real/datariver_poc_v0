@@ -1,12 +1,16 @@
 from __future__ import annotations
 
+import base64
+import binascii
+import json
 import re
 from datetime import datetime
 from uuid import UUID
 
-from sqlalchemy import func, select, text, update
+from sqlalchemy import and_, func, or_, select, text, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from datariver.application.services.inference_admin import InferenceProviderProfilePage
 from datariver.domain.authz import Classification
 from datariver.domain.common import ConflictError, ValidationError, utc_now
 from datariver.domain.inference_provider import (
@@ -19,6 +23,97 @@ from datariver.domain.inference_provider import (
 from datariver.infrastructure.db.models.inference import InferenceProviderProfileVersionModel
 
 _PROFILE_KEY_PATTERN = re.compile(r"[a-z0-9](?:[a-z0-9._-]{0,126}[a-z0-9])?")
+_PROFILE_LIST_CURSOR_KEYS = frozenset(
+    {"v", "scope", "workspace_id", "filters", "profile_key", "profile_version", "id"}
+)
+
+
+def _profile_cursor_filters(
+    *,
+    profile_key: str | None,
+    state: InferenceProviderProfileState | None,
+) -> dict[str, str | None]:
+    return {
+        "profile_key": profile_key,
+        "state": state.value if state is not None else None,
+    }
+
+
+def _encode_profile_cursor(
+    *,
+    workspace_id: UUID,
+    filters: dict[str, str | None],
+    profile_key: str,
+    profile_version: int,
+    profile_version_id: UUID,
+) -> str:
+    payload = json.dumps(
+        {
+            "v": 1,
+            "scope": "inference-provider-profile-history",
+            "workspace_id": str(workspace_id),
+            "filters": filters,
+            "profile_key": profile_key,
+            "profile_version": profile_version,
+            "id": str(profile_version_id),
+        },
+        separators=(",", ":"),
+        sort_keys=True,
+    ).encode()
+    return base64.urlsafe_b64encode(payload).decode().rstrip("=")
+
+
+def _decode_profile_cursor(
+    cursor: str,
+    *,
+    workspace_id: UUID,
+    filters: dict[str, str | None],
+) -> tuple[str, int, UUID]:
+    try:
+        if not cursor or len(cursor) > 2_000:
+            raise ValueError
+        payload = base64.b64decode(
+            cursor + "=" * (-len(cursor) % 4),
+            altchars=b"-_",
+            validate=True,
+        )
+        document = json.loads(payload)
+        if (
+            not isinstance(document, dict)
+            or frozenset(document) != _PROFILE_LIST_CURSOR_KEYS
+            or document.get("v") != 1
+            or document.get("scope") != "inference-provider-profile-history"
+            or document.get("workspace_id") != str(workspace_id)
+            or document.get("filters") != filters
+            or not isinstance(document.get("profile_key"), str)
+            or not isinstance(document.get("profile_version"), int)
+        ):
+            raise ValueError
+        boundary_key = str(document["profile_key"])
+        boundary_version = int(document["profile_version"])
+        boundary_id = UUID(str(document["id"]))
+        _validate_profile_key(boundary_key)
+        if boundary_version < 1 or cursor != _encode_profile_cursor(
+            workspace_id=workspace_id,
+            filters=filters,
+            profile_key=boundary_key,
+            profile_version=boundary_version,
+            profile_version_id=boundary_id,
+        ):
+            raise ValueError
+        return boundary_key, boundary_version, boundary_id
+    except (
+        ValueError,
+        TypeError,
+        KeyError,
+        UnicodeDecodeError,
+        json.JSONDecodeError,
+        binascii.Error,
+        ValidationError,
+    ) as error:
+        raise ValidationError(
+            "The provider profile cursor is stale or does not match this request."
+        ) from error
 
 
 class SqlInferenceProviderProfileRepository:
@@ -47,17 +142,20 @@ class SqlInferenceProviderProfileRepository:
         profile_key: str | None = None,
         state: InferenceProviderProfileState | None = None,
         limit: int = 100,
-    ) -> tuple[InferenceProviderProfileVersion, ...]:
-        if not 1 <= limit <= 200:
+        cursor: str | None = None,
+    ) -> InferenceProviderProfilePage:
+        if not 1 <= limit <= 100:
             raise ValidationError("The provider profile list limit is invalid.")
+        filters = _profile_cursor_filters(profile_key=profile_key, state=state)
         statement = (
             select(InferenceProviderProfileVersionModel)
             .where(InferenceProviderProfileVersionModel.workspace_id == workspace_id)
             .order_by(
                 InferenceProviderProfileVersionModel.profile_key,
                 InferenceProviderProfileVersionModel.profile_version.desc(),
+                InferenceProviderProfileVersionModel.id,
             )
-            .limit(limit)
+            .limit(limit + 1)
         )
         if profile_key is not None:
             _validate_profile_key(profile_key)
@@ -68,8 +166,44 @@ class SqlInferenceProviderProfileRepository:
             if not isinstance(state, InferenceProviderProfileState):
                 raise ValidationError("The provider profile state filter is invalid.")
             statement = statement.where(InferenceProviderProfileVersionModel.state == state.value)
+        if cursor is not None:
+            boundary_key, boundary_version, boundary_id = _decode_profile_cursor(
+                cursor,
+                workspace_id=workspace_id,
+                filters=filters,
+            )
+            statement = statement.where(
+                or_(
+                    InferenceProviderProfileVersionModel.profile_key > boundary_key,
+                    and_(
+                        InferenceProviderProfileVersionModel.profile_key == boundary_key,
+                        or_(
+                            InferenceProviderProfileVersionModel.profile_version < boundary_version,
+                            and_(
+                                InferenceProviderProfileVersionModel.profile_version
+                                == boundary_version,
+                                InferenceProviderProfileVersionModel.id > boundary_id,
+                            ),
+                        ),
+                    ),
+                )
+            )
         models = (await self._session.scalars(statement)).all()
-        return tuple(_required_profile(model) for model in models)
+        visible = models[:limit]
+        return InferenceProviderProfilePage(
+            items=tuple(_required_profile(model) for model in visible),
+            next_cursor=(
+                _encode_profile_cursor(
+                    workspace_id=workspace_id,
+                    filters=filters,
+                    profile_key=visible[-1].profile_key,
+                    profile_version=visible[-1].profile_version,
+                    profile_version_id=visible[-1].id,
+                )
+                if len(models) > limit
+                else None
+            ),
+        )
 
     async def get_approved_exact(
         self,

@@ -1,4 +1,5 @@
 import { useMemo, useState } from 'react'
+import { useRovingTabs } from '../../components/common/useRovingTabs'
 import {
   ClassificationPolicyAdmin,
   InferenceProviderProfileAdmin,
@@ -71,6 +72,15 @@ export function AccountAccessAdmin(props: AdminSectionProps) {
   const [userView, setUserView] = useState<UserView>(initialUserView)
   const [policyView, setPolicyView] = useState<PolicyView>(initialPolicyView)
   const view = views.some((item) => item.id === requestedView) ? requestedView : views[0]?.id
+  const userViews = [
+    { id: 'directory' as const, label: '사용자' },
+    { id: 'roles' as const, label: 'Role 정의·할당' },
+    operations.has('MEMBERSHIP_RENEWAL_READ')
+      && { id: 'renewals' as const, label: '계정 갱신 승인' },
+  ].filter((item): item is { id: UserView; label: string } => Boolean(item))
+  const activeUserView = userViews.some((item) => item.id === userView)
+    ? userView
+    : userViews[0]?.id
   const policyViews = [
     operations.has('CLASSIFICATION_POLICY_READ') && { id: 'classification' as const, label: messages.classification },
     operations.has('RESTRICTED_SEARCH_GRANT_READ') && { id: 'restrictedGrants' as const, label: messages.restrictedGrants },
@@ -82,7 +92,7 @@ export function AccountAccessAdmin(props: AdminSectionProps) {
 
   const selectView = (next: AccessView) => {
     setRequestedView(next)
-    updateLocation(next, next === 'users' ? userView : next === 'policies' ? activePolicyView : undefined)
+    updateLocation(next, next === 'users' ? activeUserView : next === 'policies' ? activePolicyView : undefined)
   }
   const selectUserView = (next: UserView) => {
     setUserView(next); updateLocation('users', next)
@@ -90,6 +100,24 @@ export function AccountAccessAdmin(props: AdminSectionProps) {
   const selectPolicyView = (next: PolicyView) => {
     setPolicyView(next); updateLocation('policies', next)
   }
+  const accessTabs = useRovingTabs({
+    ids: views.map((item) => item.id),
+    activeId: view,
+    idPrefix: 'admin-access',
+    onSelect: selectView,
+  })
+  const userTabs = useRovingTabs({
+    ids: userViews.map((item) => item.id),
+    activeId: activeUserView,
+    idPrefix: 'admin-users',
+    onSelect: selectUserView,
+  })
+  const policyTabs = useRovingTabs({
+    ids: policyViews.map((item) => item.id),
+    activeId: activePolicyView,
+    idPrefix: 'admin-policies',
+    onSelect: selectPolicyView,
+  })
 
   return <div className="grid gap-3">
     <section className="panel border-l-4 border-l-blue-700 bg-slate-50">
@@ -98,26 +126,26 @@ export function AccountAccessAdmin(props: AdminSectionProps) {
       <p className="m-0 text-xs leading-5 text-slate-600">사용자, 시스템 담당자, 간편 Role과 필수 보안정책을 한 곳에서 관리합니다. 실제 접근 판단은 계속 서버 ABAC와 현재 Workspace 범위가 수행합니다.</p>
     </section>
     <div className="flex flex-wrap gap-1 border-b border-slate-300" role="tablist" aria-label="계정/권한 관리 영역">
-      {views.map((item) => <button key={item.id} type="button" role="tab" aria-label={item.label} aria-selected={view === item.id} className={`min-w-40 border border-b-0 px-3 py-2 text-left text-xs font-black ${view === item.id ? 'border-blue-700 bg-blue-700 text-white' : 'border-slate-300 bg-slate-100 text-slate-600'}`} onClick={() => selectView(item.id)}><span className="block">{item.label}</span><small className="mt-0.5 block text-[9px] font-bold opacity-75">{item.description}</small></button>)}
+      {views.map((item) => <button key={item.id} {...accessTabs.tabProps(item.id)} type="button" aria-label={item.label} className={`min-w-40 border border-b-0 px-3 py-2 text-left text-xs font-black ${view === item.id ? 'border-blue-700 bg-blue-700 text-white' : 'border-slate-300 bg-slate-100 text-slate-600'}`} onClick={() => selectView(item.id)}><span className="block">{item.label}</span><small className="mt-0.5 block text-[9px] font-bold opacity-75">{item.description}</small></button>)}
     </div>
-    {view === 'users' && <section role="tabpanel" className="grid gap-3">
+    {view === 'users' && <section {...accessTabs.panelProps('users')} className="grid gap-3">
       <div className="flex gap-1" role="tablist" aria-label="사용자 권한 관리 방식">
-        <button type="button" role="tab" aria-selected={userView === 'directory'} className={`button ${userView === 'directory' ? '' : 'button-secondary'}`} onClick={() => selectUserView('directory')}>사용자</button>
-        <button type="button" role="tab" aria-selected={userView === 'roles'} className={`button ${userView === 'roles' ? '' : 'button-secondary'}`} onClick={() => selectUserView('roles')}>Role 정의·할당</button>
-        {operations.has('MEMBERSHIP_RENEWAL_READ') && <button type="button" role="tab" aria-selected={userView === 'renewals'} className={`button ${userView === 'renewals' ? '' : 'button-secondary'}`} onClick={() => selectUserView('renewals')}>계정 갱신 승인</button>}
+        {userViews.map((item) => <button key={item.id} {...userTabs.tabProps(item.id)} type="button" className={`button ${activeUserView === item.id ? '' : 'button-secondary'}`} onClick={() => selectUserView(item.id)}>{item.label}</button>)}
       </div>
-      {userView === 'directory' ? <MembershipAccessAdmin {...props} /> : userView === 'roles' ? <RoleAccessAdmin {...props} /> : <MembershipRenewalAdmin {...props} />}
+      {activeUserView === 'directory' && <div {...userTabs.panelProps('directory')}><MembershipAccessAdmin {...props} /></div>}
+      {activeUserView === 'roles' && <div {...userTabs.panelProps('roles')}><RoleAccessAdmin {...props} /></div>}
+      {activeUserView === 'renewals' && <div {...userTabs.panelProps('renewals')}><MembershipRenewalAdmin {...props} /></div>}
     </section>}
-    {view === 'systems' && <section role="tabpanel"><SystemDirectoryAdmin {...props} /></section>}
-    {view === 'policies' && <section role="tabpanel" className="grid gap-3">
+    {view === 'systems' && <section {...accessTabs.panelProps('systems')}><SystemDirectoryAdmin {...props} /></section>}
+    {view === 'policies' && <section {...accessTabs.panelProps('policies')} className="grid gap-3">
       <p className="callout m-0">분류정책은 기본 접근 경계를, RESTRICTED 예외 승인은 Search에만 적용되는 기간 제한 승인을 관리합니다. AI Provider 승인은 접속정보가 아니라 운영 적격성 증거와 철회 이력이며 시스템 설정과 분리됩니다.</p>
       <div className="flex flex-wrap gap-1" role="tablist" aria-label="보안정책 종류">
-        {policyViews.map((item) => <button key={item.id} type="button" role="tab" aria-selected={activePolicyView === item.id} className={`button ${activePolicyView === item.id ? '' : 'button-secondary'}`} onClick={() => selectPolicyView(item.id)}>{item.label}</button>)}
+        {policyViews.map((item) => <button key={item.id} {...policyTabs.tabProps(item.id)} type="button" className={`button ${activePolicyView === item.id ? '' : 'button-secondary'}`} onClick={() => selectPolicyView(item.id)}>{item.label}</button>)}
       </div>
-      {activePolicyView === 'classification' && <ClassificationPolicyAdmin {...props} />}
-      {activePolicyView === 'restrictedGrants' && <RestrictedSearchGrantAdmin {...props} />}
-      {activePolicyView === 'providers' && <InferenceProviderProfileAdmin {...props} />}
+      {activePolicyView === 'classification' && <div {...policyTabs.panelProps('classification')}><ClassificationPolicyAdmin {...props} /></div>}
+      {activePolicyView === 'restrictedGrants' && <div {...policyTabs.panelProps('restrictedGrants')}><RestrictedSearchGrantAdmin {...props} /></div>}
+      {activePolicyView === 'providers' && <div {...policyTabs.panelProps('providers')}><InferenceProviderProfileAdmin {...props} /></div>}
     </section>}
-    {view === 'recovery' && <section role="tabpanel" className="grid gap-3"><p className="callout m-0">보안키를 사용할 수 없는 검증된 예외 상황에서만 Maker와 Checker가 분리된 일회성 변경을 처리합니다.</p><FallbackQueueAdmin {...props} /></section>}
+    {view === 'recovery' && <section {...accessTabs.panelProps('recovery')} className="grid gap-3"><p className="callout m-0">보안키를 사용할 수 없는 검증된 예외 상황에서만 Maker와 Checker가 분리된 일회성 변경을 처리합니다.</p><FallbackQueueAdmin {...props} /></section>}
   </div>
 }

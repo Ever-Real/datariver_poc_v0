@@ -1,14 +1,18 @@
 from __future__ import annotations
 
-from collections.abc import Callable, Sequence
+from collections.abc import Callable
 from datetime import timedelta
 from uuid import UUID
 
 from datariver.application.dto import (
+    AdminAccessRequestPage,
     AdminReadContext,
+    MembershipRenewalPage,
     MembershipRenewalRecord,
-    SystemDirectoryEntry,
+    SystemAssigneePage,
+    SystemDirectoryPage,
     WorkspaceMembershipAccessRecord,
+    WorkspaceMembershipPage,
     WorkspaceMembershipSummary,
 )
 from datariver.application.ports import AdminAccessUnitOfWork
@@ -20,6 +24,7 @@ from datariver.domain.admin_access import (
     AdminFallbackStage,
     AdminOperation,
     MembershipAccessUpdate,
+    SystemAssigneePatchCommand,
     SystemAssigneeUpdateCommand,
 )
 from datariver.domain.authz import (
@@ -68,10 +73,14 @@ class AdminAccessService:
         *,
         workspace_id: UUID,
         limit: int,
+        query: str | None = None,
+        active: bool | None = None,
+        cursor: str | None = None,
         subject: SubjectAttributes,
         environment: EnvironmentAttributes,
         request_id: str,
-    ) -> Sequence[WorkspaceMembershipSummary]:
+    ) -> WorkspaceMembershipPage:
+        _validate_admin_page_limit(limit)
         await self._authorize_read(
             workspace_id=workspace_id,
             resource_id=workspace_id,
@@ -84,17 +93,28 @@ class AdminAccessService:
             await uow.memberships.assert_eligible_human_administrators(
                 workspace_id=workspace_id, subject_ids=frozenset({subject.subject_id})
             )
-            return await uow.memberships.list(workspace_id=workspace_id, limit=limit)
+            normalized_query = query.strip().casefold() if query and query.strip() else None
+            return await uow.memberships.list(
+                workspace_id=workspace_id,
+                limit=limit,
+                query=normalized_query,
+                active=active,
+                cursor=cursor,
+            )
 
     async def list_systems(
         self,
         *,
         workspace_id: UUID,
         limit: int,
+        query: str | None = None,
+        active: bool | None = None,
+        cursor: str | None = None,
         subject: SubjectAttributes,
         environment: EnvironmentAttributes,
         request_id: str,
-    ) -> Sequence[SystemDirectoryEntry]:
+    ) -> SystemDirectoryPage:
+        _validate_admin_page_limit(limit)
         await self._authorize_read(
             workspace_id=workspace_id,
             resource_id=workspace_id,
@@ -107,7 +127,45 @@ class AdminAccessService:
             await uow.memberships.assert_eligible_human_administrators(
                 workspace_id=workspace_id, subject_ids=frozenset({subject.subject_id})
             )
-            return await uow.systems.list(workspace_id=workspace_id, limit=limit)
+            normalized_query = query.strip().lower() if query and query.strip() else None
+            return await uow.systems.list(
+                workspace_id=workspace_id,
+                limit=limit,
+                query=normalized_query,
+                active=active,
+                cursor=cursor,
+            )
+
+    async def list_system_assignees(
+        self,
+        *,
+        workspace_id: UUID,
+        system_id: UUID,
+        limit: int,
+        cursor: str | None,
+        subject: SubjectAttributes,
+        environment: EnvironmentAttributes,
+        request_id: str,
+    ) -> SystemAssigneePage:
+        _validate_admin_page_limit(limit)
+        await self._authorize_read(
+            workspace_id=workspace_id,
+            resource_id=system_id,
+            subject=subject,
+            environment=environment,
+            request_id=request_id,
+        )
+        async with self._uow_factory() as uow:
+            await uow.set_security_context(workspace_id=workspace_id, subject_id=subject.subject_id)
+            await uow.memberships.assert_eligible_human_administrators(
+                workspace_id=workspace_id, subject_ids=frozenset({subject.subject_id})
+            )
+            return await uow.systems.list_assignees(
+                workspace_id=workspace_id,
+                system_id=system_id,
+                limit=limit,
+                cursor=cursor,
+            )
 
     async def get_workspace_membership_access(
         self,
@@ -306,16 +364,13 @@ class AdminAccessService:
                     existing.result.get("actor_id"),
                     subject.subject_id,
                 )
-                records = await uow.renewals.list_records(
-                    workspace_id=workspace_id,
-                    subject_id=subject.subject_id,
-                    state=None,
-                    limit=100,
-                )
                 renewal_id = UUID(str(existing.result["renewal_request_id"]))
-                for record in records:
-                    if record.renewal_request_id == renewal_id:
-                        return record
+                record = await uow.renewals.get_record(
+                    workspace_id=workspace_id,
+                    renewal_request_id=renewal_id,
+                )
+                if record is not None and record.target_subject_id == subject.subject_id:
+                    return record
                 raise ConflictError("The idempotent membership renewal result is unavailable.")
             current_expires_at = await uow.memberships.get_expiration_for_update(
                 workspace_id=workspace_id, subject_id=subject.subject_id
@@ -341,19 +396,14 @@ class AdminAccessService:
             )
             await uow.commit()
         renewal.events.clear()
-        records = await self.list_membership_renewals(
+        record = await self._get_membership_renewal_record(
             workspace_id=workspace_id,
-            subject_id=subject.subject_id,
-            state=None,
-            limit=100,
-            subject=subject,
-            environment=environment,
-            request_id="membership-renewal-self-read",
-            administrator=False,
+            renewal_request_id=renewal.renewal_request_id,
+            actor_id=subject.subject_id,
         )
-        return next(
-            record for record in records if record.renewal_request_id == renewal.renewal_request_id
-        )
+        if record is None:
+            raise ConflictError("The created membership renewal result is unavailable.")
+        return record
 
     async def list_membership_renewals(
         self,
@@ -362,11 +412,13 @@ class AdminAccessService:
         subject_id: UUID | None,
         state: MembershipRenewalState | None,
         limit: int,
+        cursor: str | None = None,
         subject: SubjectAttributes,
         environment: EnvironmentAttributes,
         request_id: str,
         administrator: bool,
-    ) -> Sequence[MembershipRenewalRecord]:
+    ) -> MembershipRenewalPage:
+        _validate_admin_page_limit(limit)
         target_subject_id = subject_id
         if administrator:
             await self._authorize_read(
@@ -391,6 +443,21 @@ class AdminAccessService:
                 subject_id=target_subject_id,
                 state=state.value if state is not None else None,
                 limit=limit,
+                cursor=cursor,
+            )
+
+    async def _get_membership_renewal_record(
+        self,
+        *,
+        workspace_id: UUID,
+        renewal_request_id: UUID,
+        actor_id: UUID,
+    ) -> MembershipRenewalRecord | None:
+        async with self._uow_factory() as uow:
+            await uow.set_security_context(workspace_id=workspace_id, subject_id=actor_id)
+            return await uow.renewals.get_record(
+                workspace_id=workspace_id,
+                renewal_request_id=renewal_request_id,
             )
 
     async def decide_membership_renewal(
@@ -437,13 +504,13 @@ class AdminAccessService:
                     existing.result.get("actor_id"),
                     subject.subject_id,
                 )
-                records = await uow.renewals.list_records(
-                    workspace_id=workspace_id, subject_id=None, state=None, limit=100
+                record = await uow.renewals.get_record(
+                    workspace_id=workspace_id,
+                    renewal_request_id=renewal_request_id,
                 )
-                for record in records:
-                    if record.renewal_request_id == renewal_request_id:
-                        stored_version = existing.result.get("membership_version")
-                        return record, int(stored_version) if stored_version is not None else None
+                if record is not None:
+                    stored_version = existing.result.get("membership_version")
+                    return record, int(stored_version) if stored_version is not None else None
                 raise ConflictError("The idempotent membership renewal result is unavailable.")
             current_expires_at = await uow.memberships.get_expiration_for_update(
                 workspace_id=workspace_id, subject_id=renewal.target_subject_id
@@ -479,18 +546,15 @@ class AdminAccessService:
             )
             await uow.commit()
         renewal.events.clear()
-        records = await self.list_membership_renewals(
+        record = await self._get_membership_renewal_record(
             workspace_id=workspace_id,
-            subject_id=None,
-            state=None,
-            limit=100,
-            subject=subject,
-            environment=environment,
-            request_id=f"{request_id}:read-result",
-            administrator=True,
+            renewal_request_id=renewal_request_id,
+            actor_id=subject.subject_id,
         )
+        if record is None:
+            raise ConflictError("The decided membership renewal result is unavailable.")
         return (
-            next(record for record in records if record.renewal_request_id == renewal_request_id),
+            record,
             membership_version,
         )
 
@@ -505,7 +569,14 @@ class AdminAccessService:
         request_hash: str,
         role_id: UUID | None = None,
         role_version: int | None = None,
+        role_transition: bool = False,
     ) -> int:
+        if not role_transition and (role_id is not None or role_version is not None):
+            raise ValidationError("Role evidence requires the dedicated Role assignment route.")
+        if role_transition and role_id is None and role_version is not None:
+            raise ValidationError("A Role removal cannot include a Role version.")
+        if role_transition and role_id is not None and role_version is None:
+            raise ValidationError("A Role assignment requires an exact Role version.")
         role_marker = _assert_role_marker_binding(command=command, role_id=role_id)
         if subject.subject_id == command.target_subject_id:
             raise ValidationError("An administrator cannot change their own access.")
@@ -539,18 +610,26 @@ class AdminAccessService:
                     subject.subject_id,
                 )
                 return int(existing.result["membership_version"])
-            await uow.memberships.assert_current_version(command)
+            if role_transition:
+                await uow.memberships.assert_current_version(command)
+            else:
+                await uow.memberships.assert_manual_access_update_allowed(
+                    workspace_id=command.workspace_id,
+                    subject_id=command.target_subject_id,
+                )
+                await uow.memberships.assert_current_version(command)
             membership_version = await uow.memberships.apply(command)
-            await uow.memberships.record_role_assignment(
-                workspace_id=command.workspace_id,
-                subject_id=command.target_subject_id,
-                role_id=role_id,
-                role_version=role_version,
-                role_marker=role_marker,
-                membership_version=membership_version,
-                access_payload_hash=canonical_json_hash(command.access_document()),
-                actor_id=subject.subject_id,
-            )
+            if role_transition:
+                await uow.memberships.record_role_assignment(
+                    workspace_id=command.workspace_id,
+                    subject_id=command.target_subject_id,
+                    role_id=role_id,
+                    role_version=role_version,
+                    role_marker=role_marker,
+                    membership_version=membership_version,
+                    access_payload_hash=canonical_json_hash(command.access_document()),
+                    actor_id=subject.subject_id,
+                )
             await uow.outbox.add_events(
                 [
                     DomainEvent.create(
@@ -652,6 +731,77 @@ class AdminAccessService:
             await uow.commit()
             return system_version
 
+    async def patch_system_assignees_with_hardware_key(
+        self,
+        *,
+        command: SystemAssigneePatchCommand,
+        subject: SubjectAttributes,
+        environment: EnvironmentAttributes,
+        request_id: str,
+        idempotency_key: str,
+        request_hash: str,
+    ) -> int:
+        decision = await self._authorization.authorize(
+            subject=subject,
+            resource=self._resource(command.workspace_id, command.system_id),
+            action=Action.ADMIN_MANAGE,
+            environment=environment,
+            request_id=request_id,
+        )
+        operation = f"admin.system.assignees.patch:{command.system_id}"
+        async with self._uow_factory() as uow:
+            await uow.set_security_context(
+                workspace_id=command.workspace_id, subject_id=subject.subject_id
+            )
+            await uow.lock_workspace_access(workspace_id=command.workspace_id)
+            await uow.memberships.assert_eligible_human_administrators(
+                workspace_id=command.workspace_id,
+                subject_ids=frozenset({subject.subject_id}),
+            )
+            existing = await uow.idempotency.get_result(
+                workspace_id=command.workspace_id,
+                key=idempotency_key,
+                operation=operation,
+            )
+            if existing is not None:
+                _verify_idempotency(
+                    existing.request_hash,
+                    request_hash,
+                    existing.result.get("actor_id"),
+                    subject.subject_id,
+                )
+                return int(existing.result["system_version"])
+            system_version = await uow.systems.patch_assignees(command)
+            await uow.outbox.add_events(
+                [
+                    DomainEvent.create(
+                        event_type="platform.data_system.assignees_patched.v1",
+                        aggregate_type="data_system",
+                        aggregate_id=command.system_id,
+                        workspace_id=command.workspace_id,
+                        payload={
+                            "actor_id": str(subject.subject_id),
+                            "payload_hash": command.payload_hash,
+                            "system_version": system_version,
+                            "policy_decision_id": str(decision.decision_id),
+                            "assurance": "HARDWARE_WEBAUTHN",
+                        },
+                    )
+                ]
+            )
+            await uow.idempotency.save_result(
+                workspace_id=command.workspace_id,
+                key=idempotency_key,
+                operation=operation,
+                request_hash=request_hash,
+                result={
+                    "actor_id": str(subject.subject_id),
+                    "system_version": system_version,
+                },
+            )
+            await uow.commit()
+            return system_version
+
     async def create_fallback_request(
         self,
         *,
@@ -709,6 +859,10 @@ class AdminAccessService:
                 if stored is None:
                     raise ConflictError("The idempotent fallback request is unavailable.")
                 return stored
+            await uow.memberships.assert_manual_access_update_allowed(
+                workspace_id=command.workspace_id,
+                subject_id=command.target_subject_id,
+            )
             await uow.memberships.assert_current_version(command)
             await uow.requests.add(request)
             await uow.outbox.add_events(request.events)
@@ -732,10 +886,12 @@ class AdminAccessService:
         workspace_id: UUID,
         state: AdminAccessRequestState | None,
         limit: int,
+        cursor: str | None = None,
         subject: SubjectAttributes,
         environment: EnvironmentAttributes,
         request_id: str,
-    ) -> Sequence[AdminAccessRequest]:
+    ) -> AdminAccessRequestPage:
+        _validate_admin_page_limit(limit)
         self._require_fallback_enabled()
         await self._authorization.authorize_admin_fallback(
             subject=subject,
@@ -753,6 +909,7 @@ class AdminAccessService:
                 workspace_id=workspace_id,
                 state=state.value if state is not None else None,
                 limit=limit,
+                cursor=cursor,
             )
 
     async def decide_fallback_request(
@@ -878,17 +1035,11 @@ class AdminAccessService:
                 workspace_id=workspace_id,
                 subject_ids=frozenset({subject.subject_id, request.checker_id}),
             )
-            membership_version = await uow.memberships.apply(request.command)
-            await uow.memberships.record_role_assignment(
+            await uow.memberships.assert_manual_access_update_allowed(
                 workspace_id=request.command.workspace_id,
                 subject_id=request.command.target_subject_id,
-                role_id=None,
-                role_version=None,
-                role_marker=None,
-                membership_version=membership_version,
-                access_payload_hash=canonical_json_hash(request.command.access_document()),
-                actor_id=subject.subject_id,
             )
+            membership_version = await uow.memberships.apply(request.command)
             request.consume(
                 actor_id=subject.subject_id,
                 policy_decision_id=decision.decision_id,
@@ -980,6 +1131,11 @@ def _verify_idempotency(
         raise ConflictError("The idempotency key was used with a different request.")
     if stored_actor != str(actor_id):
         raise ConflictError("The idempotency key belongs to another subject.")
+
+
+def _validate_admin_page_limit(limit: int) -> None:
+    if limit < 1 or limit > 100:
+        raise ValidationError("An administrator list page must contain between 1 and 100 items.")
 
 
 def _assert_role_marker_binding(

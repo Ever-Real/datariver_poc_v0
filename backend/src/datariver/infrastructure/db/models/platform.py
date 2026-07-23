@@ -42,6 +42,11 @@ class SubjectModel(Base, UuidPrimaryKeyMixin, TimestampMixin):
     __tablename__ = "subjects"
     __table_args__ = (
         UniqueConstraint("issuer", "external_subject"),
+        Index(
+            "ix_subjects_display_name_lower_id",
+            text("lower(display_name)"),
+            "id",
+        ),
         {"schema": "iam"},
     )
 
@@ -484,6 +489,12 @@ class SystemAssigneeModel(Base, UuidPrimaryKeyMixin, TimestampMixin, VersionMixi
             "system_id",
             "priority",
         ),
+        Index(
+            "ix_system_assignees_workspace_system_id",
+            "workspace_id",
+            "system_id",
+            "id",
+        ),
         {"schema": "platform"},
     )
 
@@ -588,7 +599,8 @@ class ExternalServiceProfileVersionModel(Base, UuidPrimaryKeyMixin, TimestampMix
         CheckConstraint(
             "test_scope IS NULL OR test_scope IN "
             "('HTTP_HEALTH', 'MODEL_DISCOVERY', 'MODEL_INFERENCE', "
-            "'EMBEDDING_INFERENCE', 'AUTHENTICATED_QUERY', 'REDIS_PING')",
+            "'EMBEDDING_INFERENCE', 'AUTHENTICATED_QUERY', 'REDIS_PING', "
+            "'REDIS_POLICY', 'S3_HEAD_BUCKET')",
             name="test_scope_vocabulary",
         ),
         CheckConstraint(

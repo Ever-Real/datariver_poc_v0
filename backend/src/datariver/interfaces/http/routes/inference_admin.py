@@ -22,6 +22,7 @@ from datariver.interfaces.http.classification_access_schemas import (
     RevocationRequest,
 )
 from datariver.interfaces.http.dependencies import ContextDep, get_container
+from datariver.interfaces.http.schemas import PageMeta
 
 router = APIRouter(prefix="/admin/inference/provider-profiles", tags=["inference-governance"])
 
@@ -48,18 +49,21 @@ async def list_provider_profiles(
     profile_key: Annotated[str | None, Query(min_length=1, max_length=128)] = None,
     state: InferenceProviderProfileState | None = None,
     limit: Annotated[int, Query(ge=1, le=100)] = 50,
+    cursor: Annotated[str | None, Query(max_length=2000)] = None,
 ) -> InferenceProviderProfileListResponse:
-    values = await _service(request).list_profiles(
+    page = await _service(request).list_profiles(
         workspace_id=context.workspace_id,
         profile_key=profile_key,
         state=state,
         limit=limit,
+        cursor=cursor,
         subject=context.subject,
         environment=context.environment,
         request_id=context.request_id,
     )
     return InferenceProviderProfileListResponse(
-        items=[inference_provider_profile_response(value) for value in values]
+        items=[inference_provider_profile_response(value) for value in page.items],
+        page=PageMeta(next_cursor=page.next_cursor, limit=limit),
     )
 
 

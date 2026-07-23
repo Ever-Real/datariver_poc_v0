@@ -21,6 +21,7 @@ from datariver.interfaces.http.retention_presenters import (
     legal_hold_response,
     retention_policy_response,
 )
+from datariver.interfaces.http.retention_schemas import RetentionPolicyProposalRequest
 from datariver.interfaces.http.router import api_router
 from datariver.interfaces.http.routes.retention import _expected_version
 
@@ -36,6 +37,7 @@ def test_retention_openapi_exposes_only_governed_commands() -> None:
         "/api/v1/admin/retention/policies/current",
         "/api/v1/admin/retention/policies/{policy_id}/decisions",
         "/api/v1/admin/retention/legal-holds",
+        "/api/v1/admin/retention/legal-holds/{hold_id}",
         "/api/v1/admin/retention/legal-holds/{hold_id}/release-requests",
         "/api/v1/admin/retention/legal-holds/{hold_id}/release-decisions",
         "/api/v1/admin/retention/erasure-requests",
@@ -52,6 +54,82 @@ def test_retention_openapi_exposes_only_governed_commands() -> None:
         "audit_online_months",
         "immutable_archive_years",
     }
+    for path in (
+        "/api/v1/admin/retention/policies",
+        "/api/v1/admin/retention/legal-holds",
+        "/api/v1/admin/retention/erasure-requests",
+    ):
+        parameters = {
+            parameter["name"]: parameter["schema"] for parameter in paths[path]["get"]["parameters"]
+        }
+        assert parameters["limit"]["maximum"] == 100
+        assert parameters["cursor"]["anyOf"][0]["maxLength"] == 2000
+
+    for response_schema in (
+        "RetentionPolicyListResponse",
+        "LegalHoldListResponse",
+        "ErasureRequestListResponse",
+    ):
+        assert {"items", "page"} <= set(
+            schema["components"]["schemas"][response_schema]["properties"]
+        )
+
+
+def test_policy_book_v2_admin_wire_contract_accepts_canonical_archive_dispositions() -> None:
+    request = RetentionPolicyProposalRequest.model_validate(
+        {
+            "rules": {
+                "completed_operation_days": 30,
+                "chat_content_days": 30,
+                "audit_online_months": 12,
+                "immutable_archive_years": 7,
+            },
+            "contract": {
+                "effective_from": "2026-07-23T00:00:00Z",
+                "effective_until": None,
+                "execution_authorization_hours": 24,
+                "class_rules": [
+                    {
+                        "data_class": "COMPLETED_OPERATIONS",
+                        "unit": "DAYS",
+                        "minimum": 30,
+                        "maximum": 365,
+                        "archive_disposition": "NO_ARCHIVE",
+                    },
+                    {
+                        "data_class": "CHAT_CONTENT",
+                        "unit": "DAYS",
+                        "minimum": 7,
+                        "maximum": 365,
+                        "archive_disposition": "NO_ARCHIVE",
+                    },
+                    {
+                        "data_class": "AUDIT_EVIDENCE",
+                        "unit": "MONTHS",
+                        "minimum": 12,
+                        "maximum": 84,
+                        "archive_disposition": "CONTENT_WORM",
+                    },
+                    {
+                        "data_class": "OBJECT_DATA",
+                        "unit": "DAYS",
+                        "minimum": 30,
+                        "maximum": 3650,
+                        "archive_disposition": "CONTENT_WORM",
+                    },
+                ],
+            },
+            "reason": "Reviewed enterprise policy",
+        }
+    )
+
+    assert request.contract is not None
+    assert [rule.archive_disposition.value for rule in request.contract.class_rules] == [
+        "NO_ARCHIVE",
+        "NO_ARCHIVE",
+        "CONTENT_WORM",
+        "CONTENT_WORM",
+    ]
 
 
 def test_retention_presenters_keep_every_destructive_effect_disabled() -> None:

@@ -11,10 +11,16 @@ from uuid import UUID, uuid4
 import pytest
 
 from datariver.application.dto import (
+    AdminAccessRequestPage,
     IdempotencyRecord,
+    MembershipRenewalPage,
+    MembershipRenewalRecord,
+    SystemAssigneePage,
     SystemDirectoryAssignee,
     SystemDirectoryEntry,
+    SystemDirectoryPage,
     WorkspaceMembershipAccessRecord,
+    WorkspaceMembershipPage,
     WorkspaceMembershipSummary,
 )
 from datariver.application.ports import AdminAccessUnitOfWork
@@ -26,6 +32,8 @@ from datariver.domain.admin_access import (
     AdminAccessRequestState,
     AdminOperation,
     MembershipAccessUpdate,
+    SystemAssigneeKey,
+    SystemAssigneePatchCommand,
     SystemAssigneeUpdate,
     SystemAssigneeUpdateCommand,
 )
@@ -86,13 +94,23 @@ class MemoryRequests:
         )
 
     async def list(
-        self, *, workspace_id: UUID, state: str | None, limit: int
-    ) -> Sequence[AdminAccessRequest]:
-        return tuple(
+        self,
+        *,
+        workspace_id: UUID,
+        state: str | None,
+        limit: int,
+        cursor: str | None = None,
+    ) -> AdminAccessRequestPage:
+        values = tuple(
             value
             for value in self.values.values()
             if value.workspace_id == workspace_id and (state is None or value.state.value == state)
-        )[:limit]
+        )
+        start = int(cursor) if cursor is not None else 0
+        return AdminAccessRequestPage(
+            items=values[start : start + limit],
+            next_cursor=str(start + limit) if len(values) > start + limit else None,
+        )
 
     async def save(self, request: AdminAccessRequest) -> None:
         self.values[request.access_request_id] = request
@@ -102,16 +120,33 @@ class MemoryMemberships:
     def __init__(self, state: dict[str, object]) -> None:
         self.state = state
 
-    async def list(self, *, workspace_id: UUID, limit: int) -> Sequence[WorkspaceMembershipSummary]:
+    async def list(
+        self,
+        *,
+        workspace_id: UUID,
+        limit: int,
+        query: str | None = None,
+        active: bool | None = None,
+        cursor: str | None = None,
+    ) -> WorkspaceMembershipPage:
         assert workspace_id == self.state["workspace_id"]
+        assert cursor is None
         self.state["membership_read_count"] = cast(int, self.state["membership_read_count"]) + 1
         records = cast(
             dict[UUID, WorkspaceMembershipAccessRecord], self.state["membership_records"]
         )
-        return tuple(
+        values = tuple(
             record.summary
             for record in sorted(records.values(), key=lambda value: value.summary.display_name)
-        )[:limit]
+            if (
+                (query is None or query in record.summary.display_name.casefold())
+                and (active is None or record.summary.membership_active is active)
+            )
+        )
+        return WorkspaceMembershipPage(
+            items=values[:limit],
+            next_cursor="next-page" if len(values) > limit else None,
+        )
 
     async def get_access(
         self, *, workspace_id: UUID, subject_id: UUID
@@ -165,6 +200,16 @@ class MemoryMemberships:
         if versions.get(command.target_subject_id) != command.expected_membership_version:
             raise ConflictError("membership version mismatch")
 
+    async def assert_manual_access_update_allowed(
+        self, *, workspace_id: UUID, subject_id: UUID
+    ) -> None:
+        assert workspace_id == self.state["workspace_id"]
+        blocked = cast(set[UUID], self.state["role_bound_subjects"])
+        if subject_id in blocked:
+            raise ConflictError(
+                "Role-bound access must be changed through the dedicated Role assignment route."
+            )
+
     async def assert_eligible_human_administrators(
         self, *, workspace_id: UUID, subject_ids: frozenset[UUID]
     ) -> None:
@@ -182,13 +227,159 @@ class MemoryOutbox:
         self.values.extend(events)
 
 
+class MemoryRenewals:
+    def __init__(self, state: dict[str, object]) -> None:
+        self.state = state
+
+    async def list_records(
+        self,
+        *,
+        workspace_id: UUID,
+        subject_id: UUID | None,
+        state: str | None,
+        limit: int,
+        cursor: str | None = None,
+    ) -> MembershipRenewalPage:
+        assert workspace_id == self.state["workspace_id"]
+        records = tuple(
+            record
+            for record in cast(list[MembershipRenewalRecord], self.state["renewals"])
+            if (
+                (subject_id is None or record.target_subject_id == subject_id)
+                and (state is None or record.state == state)
+            )
+        )
+        start = int(cursor) if cursor is not None else 0
+        return MembershipRenewalPage(
+            items=records[start : start + limit],
+            next_cursor=str(start + limit) if len(records) > start + limit else None,
+        )
+
+    async def get_record(
+        self, *, workspace_id: UUID, renewal_request_id: UUID
+    ) -> MembershipRenewalRecord | None:
+        assert workspace_id == self.state["workspace_id"]
+        return next(
+            (
+                record
+                for record in cast(list[MembershipRenewalRecord], self.state["renewals"])
+                if record.renewal_request_id == renewal_request_id
+            ),
+            None,
+        )
+
+
 class MemorySystems:
     def __init__(self, state: dict[str, object]) -> None:
         self.state = state
 
-    async def list(self, *, workspace_id: UUID, limit: int) -> Sequence[SystemDirectoryEntry]:
+    async def list(
+        self,
+        *,
+        workspace_id: UUID,
+        limit: int,
+        query: str | None = None,
+        active: bool | None = None,
+        cursor: str | None = None,
+    ) -> SystemDirectoryPage:
         assert workspace_id == self.state["workspace_id"]
-        return tuple(cast(list[SystemDirectoryEntry], self.state["systems"]))[:limit]
+        systems = tuple(
+            system
+            for system in cast(list[SystemDirectoryEntry], self.state["systems"])
+            if (
+                (query is None or query in system.name.lower() or query in system.code.lower())
+                and (active is None or system.active is active)
+            )
+        )
+        start = int(cursor) if cursor is not None else 0
+        return SystemDirectoryPage(
+            items=systems[start : start + limit],
+            next_cursor=str(start + limit) if len(systems) > start + limit else None,
+        )
+
+    async def list_assignees(
+        self,
+        *,
+        workspace_id: UUID,
+        system_id: UUID,
+        limit: int,
+        cursor: str | None = None,
+    ) -> SystemAssigneePage:
+        assert workspace_id == self.state["workspace_id"]
+        system = next(
+            (
+                value
+                for value in cast(list[SystemDirectoryEntry], self.state["systems"])
+                if value.system_id == system_id
+            ),
+            None,
+        )
+        if system is None:
+            raise NotFoundError("data system missing")
+        start = int(cursor) if cursor is not None else 0
+        return SystemAssigneePage(
+            items=system.assignees[start : start + limit],
+            system_version=system.version,
+            next_cursor=(str(start + limit) if len(system.assignees) > start + limit else None),
+        )
+
+    async def patch_assignees(self, command: SystemAssigneePatchCommand) -> int:
+        systems = cast(list[SystemDirectoryEntry], self.state["systems"])
+        index = next(
+            (
+                position
+                for position, system in enumerate(systems)
+                if system.system_id == command.system_id
+            ),
+            None,
+        )
+        if index is None:
+            raise NotFoundError("data system missing")
+        system = systems[index]
+        if system.version != command.expected_system_version:
+            raise ConflictError("system version mismatch")
+        assignable = cast(set[UUID], self.state["assignable_subjects"])
+        if not {item.subject_id for item in command.upserts}.issubset(assignable):
+            raise ValidationError("assigned member is inactive")
+        assignments = {(item.subject_id, item.responsibility): item for item in system.assignees}
+        removal_keys = {(item.subject_id, item.responsibility) for item in command.removals}
+        missing = removal_keys - set(assignments)
+        if missing:
+            raise ConflictError("selected for removal no longer exists")
+        effective = False
+        for key in removal_keys:
+            del assignments[key]
+            effective = True
+        for item in command.upserts:
+            key = (item.subject_id, item.responsibility)
+            current = assignments.get(key)
+            if current is not None and current.priority == item.priority and current.active:
+                continue
+            assignments[key] = SystemDirectoryAssignee(
+                subject_id=item.subject_id,
+                display_name=f"User {item.subject_id}",
+                responsibility=item.responsibility,
+                priority=item.priority,
+                active=True,
+            )
+            effective = True
+        if not effective:
+            raise ConflictError("no effective changes")
+        for responsibility in ("DEVELOPER", "DATA_STEWARD"):
+            priorities = [
+                item.priority
+                for item in assignments.values()
+                if item.responsibility == responsibility
+            ]
+            if not priorities or min(priorities) != 1 or len(priorities) != len(set(priorities)):
+                raise ValidationError("invalid responsibility lane")
+        systems[index] = replace(
+            system,
+            version=system.version + 1,
+            assignees=tuple(assignments.values()),
+            assignee_count=len(assignments),
+        )
+        return systems[index].version
 
     async def replace_assignees(self, command: SystemAssigneeUpdateCommand) -> int:
         systems = cast(list[SystemDirectoryEntry], self.state["systems"])
@@ -253,6 +444,7 @@ class MemoryAdminAccessUnitOfWork:
         self.state = state
         self.requests = MemoryRequests(cast(dict[UUID, AdminAccessRequest], state["requests"]))
         self.memberships = MemoryMemberships(state)
+        self.renewals = MemoryRenewals(state)
         self.systems = MemorySystems(state)
         self.outbox = MemoryOutbox(cast(list[DomainEvent], state["outbox"]))
         self.idempotency = MemoryIdempotency(
@@ -351,6 +543,23 @@ def _system_command(
     )
 
 
+def _system_patch_command(
+    workspace_id: UUID,
+    system_id: UUID,
+    *,
+    expected_version: int = 1,
+    upserts: tuple[SystemAssigneeUpdate, ...] = (),
+    removals: tuple[SystemAssigneeKey, ...] = (),
+) -> SystemAssigneePatchCommand:
+    return SystemAssigneePatchCommand(
+        workspace_id=workspace_id,
+        system_id=system_id,
+        expected_system_version=expected_version,
+        upserts=upserts,
+        removals=removals,
+    )
+
+
 def _state(
     workspace_id: UUID, target_id: UUID, maker_id: UUID, checker_id: UUID
 ) -> dict[str, object]:
@@ -361,6 +570,7 @@ def _state(
         "idempotency": {},
         "membership_versions": {target_id: 1},
         "membership_records": {},
+        "renewals": [],
         "membership_read_count": 0,
         "systems": [],
         "assignable_subjects": {target_id, maker_id, checker_id},
@@ -368,6 +578,7 @@ def _state(
         "remaining_admin_count": 2,
         "role_assignment_records": [],
         "role_assignment_failure": False,
+        "role_bound_subjects": set(),
         "lock_count": 0,
     }
 
@@ -491,8 +702,9 @@ async def test_membership_reads_reuse_admin_read_assurance_when_fallback_is_disa
         request_id="membership-detail",
     )
 
-    assert len(items) == 1
-    assert items[0].display_name == "Administrator"
+    assert len(items.items) == 1
+    assert items.items[0].display_name == "Administrator"
+    assert items.next_cursor == "next-page"
     assert access == target_record
     assert access.summary.membership_version == 1
     assert access.allowed_actions == frozenset({Action.ADMIN_MANAGE, Action.CATALOG_READ})
@@ -519,7 +731,7 @@ async def test_system_directory_read_requires_an_eligible_workspace_administrato
         )
     ]
 
-    items = await _service(state, enabled=False).list_systems(
+    page = await _service(state, enabled=False).list_systems(
         workspace_id=workspace_id,
         limit=100,
         subject=_administrator(
@@ -532,7 +744,164 @@ async def test_system_directory_read_requires_an_eligible_workspace_administrato
         request_id="system-directory",
     )
 
-    assert [(item.system_id, item.code) for item in items] == [(system_id, "FAB")]
+    assert [(item.system_id, item.code) for item in page.items] == [(system_id, "FAB")]
+    assert page.next_cursor is None
+
+
+@pytest.mark.asyncio
+async def test_system_directory_read_forwards_normalized_filters_and_cursor_pages() -> None:
+    workspace_id, target_id, administrator_id, other_admin_id = (uuid4() for _ in range(4))
+    now = datetime.now(UTC)
+    state = _state(workspace_id, target_id, administrator_id, other_admin_id)
+    state["systems"] = [
+        SystemDirectoryEntry(
+            system_id=uuid4(),
+            code=code,
+            name=name,
+            description="",
+            active=active,
+            version=1,
+            assignees=(),
+        )
+        for code, name, active in (
+            ("FAB-A", "Fabrication Alpha", True),
+            ("FAB-B", "Fabrication Beta", True),
+            ("OLD", "Legacy", False),
+        )
+    ]
+    service = _service(state, enabled=False)
+    subject = _administrator(
+        workspace_id,
+        administrator_id,
+        assurance=AuthenticationAssurance.PASSWORD,
+        now=now,
+    )
+    environment = EnvironmentAttributes(requested_at=now)
+
+    first = await service.list_systems(
+        workspace_id=workspace_id,
+        limit=1,
+        query="  FAB  ",
+        active=True,
+        subject=subject,
+        environment=environment,
+        request_id="system-directory-first",
+    )
+    second = await service.list_systems(
+        workspace_id=workspace_id,
+        limit=1,
+        query="fab",
+        active=True,
+        cursor=first.next_cursor,
+        subject=subject,
+        environment=environment,
+        request_id="system-directory-second",
+    )
+
+    assert [item.code for item in first.items] == ["FAB-A"]
+    assert first.next_cursor == "1"
+    assert [item.code for item in second.items] == ["FAB-B"]
+    assert second.next_cursor is None
+
+
+@pytest.mark.asyncio
+async def test_admin_list_services_reject_a_page_larger_than_one_hundred() -> None:
+    workspace_id, target_id, administrator_id, other_admin_id = (uuid4() for _ in range(4))
+    now = datetime.now(UTC)
+    state = _state(workspace_id, target_id, administrator_id, other_admin_id)
+
+    with pytest.raises(ValidationError, match="between 1 and 100"):
+        await _service(state, enabled=False).list_systems(
+            workspace_id=workspace_id,
+            limit=101,
+            subject=_administrator(
+                workspace_id,
+                administrator_id,
+                assurance=AuthenticationAssurance.PASSWORD,
+                now=now,
+            ),
+            environment=EnvironmentAttributes(requested_at=now),
+            request_id="system-directory-oversized-page",
+        )
+
+
+@pytest.mark.asyncio
+async def test_system_assignee_read_is_cursor_paged_and_capped_at_one_hundred() -> None:
+    workspace_id, developer_id, administrator_id, steward_id = (uuid4() for _ in range(4))
+    now = datetime.now(UTC)
+    state = _state(workspace_id, developer_id, administrator_id, steward_id)
+    system_id = uuid4()
+    state["systems"] = [
+        SystemDirectoryEntry(
+            system_id=system_id,
+            code="FAB",
+            name="Fabrication",
+            description="",
+            active=True,
+            version=3,
+            assignees=(
+                SystemDirectoryAssignee(
+                    subject_id=developer_id,
+                    display_name="Developer",
+                    responsibility="DEVELOPER",
+                    priority=1,
+                    active=True,
+                ),
+                SystemDirectoryAssignee(
+                    subject_id=steward_id,
+                    display_name="Steward",
+                    responsibility="DATA_STEWARD",
+                    priority=1,
+                    active=True,
+                ),
+            ),
+            assignee_count=2,
+        )
+    ]
+    service = _service(state, enabled=False)
+    subject = _administrator(
+        workspace_id,
+        administrator_id,
+        assurance=AuthenticationAssurance.PASSWORD,
+        now=now,
+    )
+    environment = EnvironmentAttributes(requested_at=now)
+
+    first = await service.list_system_assignees(
+        workspace_id=workspace_id,
+        system_id=system_id,
+        limit=1,
+        cursor=None,
+        subject=subject,
+        environment=environment,
+        request_id="system-assignee-first",
+    )
+    second = await service.list_system_assignees(
+        workspace_id=workspace_id,
+        system_id=system_id,
+        limit=1,
+        cursor=first.next_cursor,
+        subject=subject,
+        environment=environment,
+        request_id="system-assignee-second",
+    )
+
+    assert first.system_version == second.system_version == 3
+    assert [item.responsibility for item in first.items] == ["DEVELOPER"]
+    assert first.next_cursor == "1"
+    assert [item.responsibility for item in second.items] == ["DATA_STEWARD"]
+    assert second.next_cursor is None
+
+    with pytest.raises(ValidationError, match="between 1 and 100"):
+        await service.list_system_assignees(
+            workspace_id=workspace_id,
+            system_id=system_id,
+            limit=101,
+            cursor=None,
+            subject=subject,
+            environment=environment,
+            request_id="system-assignee-oversized",
+        )
 
 
 @pytest.mark.asyncio
@@ -589,6 +958,297 @@ async def test_system_assignment_requires_hardware_and_writes_versioned_audit_ev
     assert len(outbox) == 1
     assert outbox[0].event_type == "platform.data_system.assignees_updated.v1"
     assert outbox[0].payload["payload_hash"] == command.payload_hash
+
+
+@pytest.mark.asyncio
+async def test_system_assignee_patch_requires_hardware_and_rejects_a_stale_version() -> None:
+    workspace_id, developer_id, administrator_id, steward_id = (uuid4() for _ in range(4))
+    now = datetime.now(UTC)
+    state = _state(workspace_id, developer_id, administrator_id, steward_id)
+    system_id = uuid4()
+    state["systems"] = [
+        SystemDirectoryEntry(
+            system_id=system_id,
+            code="FAB",
+            name="Fabrication",
+            description="",
+            active=True,
+            version=2,
+            assignees=(
+                SystemDirectoryAssignee(
+                    subject_id=developer_id,
+                    display_name="Developer",
+                    responsibility="DEVELOPER",
+                    priority=1,
+                    active=True,
+                ),
+                SystemDirectoryAssignee(
+                    subject_id=steward_id,
+                    display_name="Steward",
+                    responsibility="DATA_STEWARD",
+                    priority=1,
+                    active=True,
+                ),
+            ),
+            assignee_count=2,
+        )
+    ]
+    command = _system_patch_command(
+        workspace_id,
+        system_id,
+        expected_version=1,
+        upserts=(
+            SystemAssigneeUpdate(
+                subject_id=developer_id,
+                responsibility="DEVELOPER",
+                priority=2,
+            ),
+        ),
+    )
+    service = _service(state, enabled=False)
+    environment = EnvironmentAttributes(requested_at=now)
+
+    with pytest.raises(ForbiddenError) as denied:
+        await service.patch_system_assignees_with_hardware_key(
+            command=command,
+            subject=_administrator(
+                workspace_id,
+                administrator_id,
+                assurance=AuthenticationAssurance.PASSWORD,
+                now=now,
+            ),
+            environment=environment,
+            request_id="system-patch-password",
+            idempotency_key="system-patch-password-0001",
+            request_hash=command.payload_hash,
+        )
+    assert "PHISHING_RESISTANT_AUTH_REQUIRED" in denied.value.details["reason_codes"]
+
+    with pytest.raises(ConflictError, match="system version mismatch"):
+        await service.patch_system_assignees_with_hardware_key(
+            command=command,
+            subject=_administrator(
+                workspace_id,
+                administrator_id,
+                assurance=AuthenticationAssurance.HARDWARE_WEBAUTHN,
+                now=now,
+            ),
+            environment=environment,
+            request_id="system-patch-stale",
+            idempotency_key="system-patch-stale-0001",
+            request_hash=command.payload_hash,
+        )
+
+    assert cast(list[SystemDirectoryEntry], state["systems"])[0].version == 2
+    assert cast(list[DomainEvent], state["outbox"]) == []
+    assert cast(dict[tuple[UUID, str, str], IdempotencyRecord], state["idempotency"]) == {}
+
+
+@pytest.mark.asyncio
+async def test_system_assignee_patch_is_idempotent_and_writes_one_bounded_audit_event() -> None:
+    workspace_id, developer_id, administrator_id, steward_id, second_developer_id = (
+        uuid4() for _ in range(5)
+    )
+    now = datetime.now(UTC)
+    state = _state(workspace_id, developer_id, administrator_id, steward_id)
+    cast(set[UUID], state["assignable_subjects"]).add(second_developer_id)
+    system_id = uuid4()
+    state["systems"] = [
+        SystemDirectoryEntry(
+            system_id=system_id,
+            code="FAB",
+            name="Fabrication",
+            description="",
+            active=True,
+            version=1,
+            assignees=(
+                SystemDirectoryAssignee(
+                    subject_id=developer_id,
+                    display_name="Developer",
+                    responsibility="DEVELOPER",
+                    priority=1,
+                    active=True,
+                ),
+                SystemDirectoryAssignee(
+                    subject_id=steward_id,
+                    display_name="Steward",
+                    responsibility="DATA_STEWARD",
+                    priority=1,
+                    active=True,
+                ),
+            ),
+            assignee_count=2,
+        )
+    ]
+    command = _system_patch_command(
+        workspace_id,
+        system_id,
+        upserts=(
+            SystemAssigneeUpdate(
+                subject_id=second_developer_id,
+                responsibility="DEVELOPER",
+                priority=2,
+            ),
+        ),
+    )
+    service = _service(state, enabled=False)
+    subject = _administrator(
+        workspace_id,
+        administrator_id,
+        assurance=AuthenticationAssurance.HARDWARE_WEBAUTHN,
+        now=now,
+    )
+    environment = EnvironmentAttributes(requested_at=now)
+    idempotency_key = "system-patch-idempotency-0001"
+
+    version = await service.patch_system_assignees_with_hardware_key(
+        command=command,
+        subject=subject,
+        environment=environment,
+        request_id="system-patch",
+        idempotency_key=idempotency_key,
+        request_hash=command.payload_hash,
+    )
+    replayed = await service.patch_system_assignees_with_hardware_key(
+        command=command,
+        subject=subject,
+        environment=environment,
+        request_id="system-patch-replay",
+        idempotency_key=idempotency_key,
+        request_hash=command.payload_hash,
+    )
+
+    assert version == replayed == 2
+    stored = cast(list[SystemDirectoryEntry], state["systems"])[0]
+    assert stored.version == 2
+    assert stored.assignee_count == 3
+    assert [(item.responsibility, item.priority) for item in stored.assignees] == [
+        ("DEVELOPER", 1),
+        ("DATA_STEWARD", 1),
+        ("DEVELOPER", 2),
+    ]
+    outbox = cast(list[DomainEvent], state["outbox"])
+    assert len(outbox) == 1
+    assert outbox[0].event_type == "platform.data_system.assignees_patched.v1"
+    assert outbox[0].payload == {
+        "actor_id": str(administrator_id),
+        "payload_hash": command.payload_hash,
+        "system_version": 2,
+        "policy_decision_id": outbox[0].payload["policy_decision_id"],
+        "assurance": "HARDWARE_WEBAUTHN",
+    }
+    assert len(str(outbox[0].payload["policy_decision_id"])) == 36
+
+    with pytest.raises(ConflictError, match="different request"):
+        await service.patch_system_assignees_with_hardware_key(
+            command=command,
+            subject=subject,
+            environment=environment,
+            request_id="system-patch-hash-conflict",
+            idempotency_key=idempotency_key,
+            request_hash="f" * 64,
+        )
+    with pytest.raises(ConflictError, match="belongs to another subject"):
+        await service.patch_system_assignees_with_hardware_key(
+            command=command,
+            subject=_administrator(
+                workspace_id,
+                steward_id,
+                assurance=AuthenticationAssurance.HARDWARE_WEBAUTHN,
+                now=now,
+            ),
+            environment=environment,
+            request_id="system-patch-actor-conflict",
+            idempotency_key=idempotency_key,
+            request_hash=command.payload_hash,
+        )
+    assert len(cast(list[DomainEvent], state["outbox"])) == 1
+
+
+@pytest.mark.asyncio
+async def test_system_assignee_patch_noop_or_missing_removal_writes_no_evidence() -> None:
+    workspace_id, developer_id, administrator_id, steward_id = (uuid4() for _ in range(4))
+    now = datetime.now(UTC)
+    state = _state(workspace_id, developer_id, administrator_id, steward_id)
+    system_id = uuid4()
+    current = SystemDirectoryEntry(
+        system_id=system_id,
+        code="FAB",
+        name="Fabrication",
+        description="",
+        active=True,
+        version=1,
+        assignees=(
+            SystemDirectoryAssignee(
+                subject_id=developer_id,
+                display_name="Developer",
+                responsibility="DEVELOPER",
+                priority=1,
+                active=True,
+            ),
+            SystemDirectoryAssignee(
+                subject_id=steward_id,
+                display_name="Steward",
+                responsibility="DATA_STEWARD",
+                priority=1,
+                active=True,
+            ),
+        ),
+        assignee_count=2,
+    )
+    state["systems"] = [current]
+    service = _service(state, enabled=False)
+    subject = _administrator(
+        workspace_id,
+        administrator_id,
+        assurance=AuthenticationAssurance.HARDWARE_WEBAUTHN,
+        now=now,
+    )
+    environment = EnvironmentAttributes(requested_at=now)
+    noop = _system_patch_command(
+        workspace_id,
+        system_id,
+        upserts=(
+            SystemAssigneeUpdate(
+                subject_id=developer_id,
+                responsibility="DEVELOPER",
+                priority=1,
+            ),
+        ),
+    )
+    missing = _system_patch_command(
+        workspace_id,
+        system_id,
+        removals=(
+            SystemAssigneeKey(
+                subject_id=uuid4(),
+                responsibility="DEVELOPER",
+            ),
+        ),
+    )
+
+    with pytest.raises(ConflictError, match="no effective changes"):
+        await service.patch_system_assignees_with_hardware_key(
+            command=noop,
+            subject=subject,
+            environment=environment,
+            request_id="system-patch-noop",
+            idempotency_key="system-patch-noop-0001",
+            request_hash=noop.payload_hash,
+        )
+    with pytest.raises(ConflictError, match="selected for removal no longer exists"):
+        await service.patch_system_assignees_with_hardware_key(
+            command=missing,
+            subject=subject,
+            environment=environment,
+            request_id="system-patch-missing",
+            idempotency_key="system-patch-missing-0001",
+            request_hash=missing.payload_hash,
+        )
+
+    assert cast(list[SystemDirectoryEntry], state["systems"]) == [current]
+    assert cast(list[DomainEvent], state["outbox"]) == []
+    assert cast(dict[tuple[UUID, str, str], IdempotencyRecord], state["idempotency"]) == {}
 
 
 def test_system_assignment_requires_one_ranked_developer_and_steward() -> None:
@@ -826,6 +1486,7 @@ async def test_direct_role_assignment_records_exact_role_and_membership_versions
         request_hash="a" * 64,
         role_id=role_id,
         role_version=7,
+        role_transition=True,
     )
     replayed_version = await _service(state).update_membership_with_hardware_key(
         command=command,
@@ -841,6 +1502,7 @@ async def test_direct_role_assignment_records_exact_role_and_membership_versions
         request_hash="a" * 64,
         role_id=role_id,
         role_version=7,
+        role_transition=True,
     )
 
     assert membership_version == replayed_version == 2
@@ -886,6 +1548,7 @@ async def test_role_assignment_evidence_failure_rolls_back_membership_and_side_e
             request_hash="e" * 64,
             role_id=role_id,
             role_version=7,
+            role_transition=True,
         )
 
     assert cast(dict[UUID, int], state["membership_versions"])[target_id] == 1
@@ -1008,6 +1671,84 @@ async def test_unbound_manual_membership_update_rejects_reserved_role_marker() -
 
 
 @pytest.mark.asyncio
+async def test_manual_membership_update_rejects_role_bound_subject_without_side_effects() -> None:
+    workspace_id, target_id, administrator_id, other_admin_id = (uuid4() for _ in range(4))
+    now = datetime.now(UTC)
+    state = _state(workspace_id, target_id, administrator_id, other_admin_id)
+    cast(set[UUID], state["role_bound_subjects"]).add(target_id)
+
+    with pytest.raises(ConflictError, match="dedicated Role assignment route"):
+        await _service(state).update_membership_with_hardware_key(
+            command=_command(workspace_id, target_id),
+            subject=_administrator(
+                workspace_id,
+                administrator_id,
+                assurance=AuthenticationAssurance.HARDWARE_WEBAUTHN,
+                now=now,
+            ),
+            environment=EnvironmentAttributes(requested_at=now),
+            request_id="manual-role-bound-rejection",
+            idempotency_key="manual-role-bound-rejection-0001",
+            request_hash="8" * 64,
+        )
+
+    assert cast(dict[UUID, int], state["membership_versions"])[target_id] == 1
+    assert cast(list[DomainEvent], state["outbox"]) == []
+    assert cast(dict[tuple[UUID, str, str], IdempotencyRecord], state["idempotency"]) == {}
+
+
+@pytest.mark.asyncio
+async def test_manual_membership_update_does_not_emit_role_assignment_evidence() -> None:
+    workspace_id, target_id, administrator_id, other_admin_id = (uuid4() for _ in range(4))
+    now = datetime.now(UTC)
+    state = _state(workspace_id, target_id, administrator_id, other_admin_id)
+
+    version = await _service(state).update_membership_with_hardware_key(
+        command=_command(workspace_id, target_id),
+        subject=_administrator(
+            workspace_id,
+            administrator_id,
+            assurance=AuthenticationAssurance.HARDWARE_WEBAUTHN,
+            now=now,
+        ),
+        environment=EnvironmentAttributes(requested_at=now),
+        request_id="manual-unbound",
+        idempotency_key="manual-unbound-update-0001",
+        request_hash="9" * 64,
+    )
+
+    assert version == 2
+    assert cast(list[dict[str, object]], state["role_assignment_records"]) == []
+
+
+@pytest.mark.asyncio
+async def test_fallback_creation_rejects_role_bound_subject_without_request() -> None:
+    workspace_id, target_id, maker_id, checker_id = (uuid4() for _ in range(4))
+    now = datetime.now(UTC)
+    state = _state(workspace_id, target_id, maker_id, checker_id)
+    cast(set[UUID], state["role_bound_subjects"]).add(target_id)
+
+    with pytest.raises(ConflictError, match="dedicated Role assignment route"):
+        await _service(state).create_fallback_request(
+            command=_command(workspace_id, target_id),
+            reason="Attempt a generic fallback change",
+            subject=_administrator(
+                workspace_id,
+                maker_id,
+                assurance=AuthenticationAssurance.PASSWORD_REAUTH,
+                now=now,
+            ),
+            environment=EnvironmentAttributes(requested_at=now),
+            request_id="fallback-role-bound-create",
+            idempotency_key="fallback-role-bound-create-0001",
+            request_hash="7" * 64,
+        )
+
+    assert cast(dict[UUID, AdminAccessRequest], state["requests"]) == {}
+    assert cast(list[DomainEvent], state["outbox"]) == []
+
+
+@pytest.mark.asyncio
 async def test_fallback_is_disabled_by_default_and_has_no_side_effects() -> None:
     workspace_id, target_id, maker_id, checker_id = (uuid4() for _ in range(4))
     now = datetime.now(UTC)
@@ -1104,19 +1845,7 @@ async def test_fallback_full_flow_is_two_person_one_time_and_data_minimized() ->
     assert replayed.state is AdminAccessRequestState.CONSUMED
     assert membership_version == replayed_version == 2
     assert cast(dict[UUID, int], state["membership_versions"])[target_id] == 2
-    assignment_records = cast(list[dict[str, object]], state["role_assignment_records"])
-    assert assignment_records == [
-        {
-            "workspace_id": workspace_id,
-            "subject_id": target_id,
-            "role_id": None,
-            "role_version": None,
-            "role_marker": None,
-            "membership_version": 2,
-            "access_payload_hash": canonical_json_hash(request.command.access_document()),
-            "actor_id": maker_id,
-        }
-    ]
+    assert cast(list[dict[str, object]], state["role_assignment_records"]) == []
     events = cast(list[DomainEvent], state["outbox"])
     assert [event.event_type for event in events] == [
         "iam.admin_access_request.created.v1",
@@ -1128,6 +1857,66 @@ async def test_fallback_full_flow_is_two_person_one_time_and_data_minimized() ->
     assert "engineers" not in serialized_payloads
     assert "catalog.read" not in serialized_payloads
     assert "Correct a locked membership" not in serialized_payloads
+
+
+@pytest.mark.asyncio
+async def test_fallback_consumption_rejects_role_assigned_after_approval() -> None:
+    workspace_id, target_id, maker_id, checker_id = (uuid4() for _ in range(4))
+    now = datetime.now(UTC)
+    state = _state(workspace_id, target_id, maker_id, checker_id)
+    service = _service(state)
+    environment = EnvironmentAttributes(requested_at=now)
+    maker = _administrator(
+        workspace_id,
+        maker_id,
+        assurance=AuthenticationAssurance.PASSWORD_REAUTH,
+        now=now,
+    )
+    checker = _administrator(
+        workspace_id,
+        checker_id,
+        assurance=AuthenticationAssurance.PASSWORD_REAUTH,
+        now=now,
+    )
+    request = await service.create_fallback_request(
+        command=_command(workspace_id, target_id),
+        reason="Correct access",
+        subject=maker,
+        environment=environment,
+        request_id="fallback-role-race-create",
+        idempotency_key="fallback-role-race-create-0001",
+        request_hash="4" * 64,
+    )
+    approved = await service.decide_fallback_request(
+        workspace_id=workspace_id,
+        access_request_id=request.access_request_id,
+        approval_decision=AdminAccessDecision.APPROVED,
+        reason="Independent review",
+        expected_version=1,
+        subject=checker,
+        environment=environment,
+        request_id="fallback-role-race-approve",
+        idempotency_key="fallback-role-race-approve-0001",
+        request_hash="5" * 64,
+    )
+    cast(set[UUID], state["role_bound_subjects"]).add(target_id)
+
+    with pytest.raises(ConflictError, match="dedicated Role assignment route"):
+        await service.consume_fallback_request(
+            workspace_id=workspace_id,
+            access_request_id=approved.access_request_id,
+            confirmed_payload_hash=approved.payload_hash,
+            expected_version=2,
+            subject=maker,
+            environment=environment,
+            request_id="fallback-role-race-consume",
+            idempotency_key="fallback-role-race-consume-0001",
+            request_hash="6" * 64,
+        )
+
+    assert cast(dict[UUID, int], state["membership_versions"])[target_id] == 1
+    stored = cast(dict[UUID, AdminAccessRequest], state["requests"])[approved.access_request_id]
+    assert stored.state is AdminAccessRequestState.APPROVED
 
 
 @pytest.mark.asyncio

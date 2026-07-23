@@ -1,7 +1,7 @@
 import type { AdminOperation, AdminReadContext } from '../../api/types'
 
 const primarySections = [
-  'memberships', 'systemSettings', 'retention', 'auditLogs', 'dictionary',
+  'memberships', 'systemSettings', 'retention',
 ] as const satisfies readonly AdminSection[]
 
 export type AdminSection =
@@ -40,9 +40,6 @@ export function allowedAdminSections(context: AdminReadContext): AdminSection[] 
     if (section === 'retention') {
       return ['RETENTION_POLICY_READ', 'LEGAL_HOLD_READ', 'ERASURE_READ']
         .some((operation) => allowed.has(operation as AdminOperation))
-    }
-    if (section === 'auditLogs' || section === 'dictionary') {
-      return context.allowed_operations.length > 0
     }
     const readOperation = sectionOperations[section][0]
     return readOperation ? allowed.has(readOperation) : false

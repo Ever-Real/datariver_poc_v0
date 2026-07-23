@@ -149,6 +149,21 @@ class Settings(BaseSettings):
     # activated versions once at startup, so applying a change always requires restart.
     system_configuration_runtime_activation_enabled: bool = False
     system_configuration_runtime_workspace_id: UUID | None = None
+    system_configuration_probe_allowed_hosts: tuple[str, ...] = (
+        "127.0.0.1",
+        "localhost",
+        "host.docker.internal",
+        "datahub-gms",
+        "datahub-frontend",
+        "airflow",
+        "redis-cache",
+        "redis-delivery",
+        "s3",
+        "minio",
+        "neo4j",
+        "prometheus",
+        "grafana",
+    )
     # System configuration YAML always stores a portable Docker-secret
     # reference. Source-host development maps that virtual root to its private
     # checkout secrets directory; the mapping itself remains operator-owned.
@@ -303,6 +318,7 @@ class Settings(BaseSettings):
         "datahub_allowed_versions",
         "intranet_openai_compatible_allowed_hosts",
         "neo4j_allowed_hosts",
+        "system_configuration_probe_allowed_hosts",
         "retention_workspace_ids",
         mode="before",
     )
@@ -342,6 +358,23 @@ class Settings(BaseSettings):
             raise ValueError("Neo4j host allowlist values are invalid.")
         if len(set(normalized)) != len(normalized):
             raise ValueError("Neo4j host allowlist values must be unique.")
+        return normalized
+
+    @field_validator("system_configuration_probe_allowed_hosts")
+    @classmethod
+    def normalize_system_configuration_probe_allowed_hosts(
+        cls, values: tuple[str, ...]
+    ) -> tuple[str, ...]:
+        normalized = tuple(value.strip().rstrip(".").lower() for value in values)
+        if not normalized or len(normalized) > 64:
+            raise ValueError("System configuration probes require 1 to 64 allowlisted hosts.")
+        if any(
+            not value or re.fullmatch(r"[a-z0-9](?:[a-z0-9.:-]{0,251}[a-z0-9])?", value) is None
+            for value in normalized
+        ):
+            raise ValueError("System configuration probe host allowlist values are invalid.")
+        if len(set(normalized)) != len(normalized):
+            raise ValueError("System configuration probe host allowlist values must be unique.")
         return normalized
 
     @field_validator("s3_endpoint_url", "s3_public_endpoint_url", "s3_archive_endpoint_url")
@@ -589,6 +622,17 @@ class Settings(BaseSettings):
             ):
                 raise ValueError(
                     "The identity-administration URL must be one origin without a path or query."
+                )
+            identity_host = (parsed_identity_url.hostname or "").rstrip(".").lower()
+            if self.app_env == "production" and parsed_identity_url.scheme != "https":
+                raise ValueError("Production identity administration requires HTTPS.")
+            if parsed_identity_url.scheme == "http" and identity_host not in {
+                "keycloak",
+                "localhost",
+                "127.0.0.1",
+            }:
+                raise ValueError(
+                    "Plain HTTP identity administration is restricted to an explicit local origin."
                 )
         if self.export_database_secret_ref is not None:
             references["export_database"] = self.export_database_secret_ref
@@ -869,9 +913,21 @@ class Settings(BaseSettings):
                 neo4j_host in self.neo4j_allowed_hosts and parsed_neo4j_uri.port == 7687
             )
             source_host_neo4j = neo4j_host == "127.0.0.1" and parsed_neo4j_uri.port == 17687
+            local_container_neo4j = (
+                neo4j_host == "neo4j"
+                and parsed_neo4j_uri.port == 7687
+                and parsed_neo4j_uri.scheme in {"bolt", "neo4j"}
+            )
+            secure_allowlisted_neo4j = allowlisted_neo4j and parsed_neo4j_uri.scheme in {
+                "bolt+s",
+                "neo4j+s",
+            }
             if (
-                parsed_neo4j_uri.scheme != "bolt"
-                or not (allowlisted_neo4j or source_host_neo4j)
+                not (
+                    secure_allowlisted_neo4j
+                    or local_container_neo4j
+                    or (source_host_neo4j and parsed_neo4j_uri.scheme == "bolt")
+                )
                 or parsed_neo4j_uri.path not in {"", "/"}
                 or parsed_neo4j_uri.query
                 or parsed_neo4j_uri.fragment
@@ -879,8 +935,8 @@ class Settings(BaseSettings):
                 or parsed_neo4j_uri.password is not None
             ):
                 raise ValueError(
-                    "Neo4j projection must use an explicitly allowlisted host on port 7687 or "
-                    "the source-host bolt://127.0.0.1:17687 endpoint."
+                    "Neo4j projection must use TLS for an allowlisted port-7687 host, the local "
+                    "Neo4j container, or the source-host bolt://127.0.0.1:17687 endpoint."
                 )
             if source_host_neo4j:
                 if not self.neo4j_auth_secret_ref.startswith("file:"):
@@ -920,6 +976,11 @@ class Settings(BaseSettings):
                 "oidc_jwks_url": self.oidc_jwks_url,
                 "datahub_base_url": self.datahub_base_url,
                 "s3_public_endpoint_url": self.s3_public_endpoint_url,
+                **(
+                    {"identity_admin_base_url": str(self.identity_admin_base_url)}
+                    if self.identity_admin_base_url is not None
+                    else {}
+                ),
                 **{
                     name: str(url)
                     for name, url in {

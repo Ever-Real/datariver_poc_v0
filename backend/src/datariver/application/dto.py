@@ -8,7 +8,7 @@ from typing import Any
 from uuid import UUID
 
 from datariver.application.classification_access import ClassificationAccessSnapshot
-from datariver.domain.admin_access import AdminOperation
+from datariver.domain.admin_access import AdminAccessRequest, AdminOperation
 from datariver.domain.authz import (
     Action,
     AuthenticationAssurance,
@@ -523,6 +523,12 @@ class WorkspaceMembershipSummary:
 
 
 @dataclass(frozen=True, slots=True)
+class WorkspaceMembershipPage:
+    items: tuple[WorkspaceMembershipSummary, ...]
+    next_cursor: str | None
+
+
+@dataclass(frozen=True, slots=True)
 class MembershipRenewalRecord:
     renewal_request_id: UUID
     workspace_id: UUID
@@ -542,6 +548,25 @@ class MembershipRenewalRecord:
 
 
 @dataclass(frozen=True, slots=True)
+class MembershipRenewalPage:
+    items: tuple[MembershipRenewalRecord, ...]
+    next_cursor: str | None
+
+
+@dataclass(frozen=True, slots=True)
+class MembershipRoleAssignmentEvidence:
+    workspace_id: UUID
+    subject_id: UUID
+    role_id: UUID
+    role_version: int
+    membership_version: int
+    access_payload_hash: str
+    assigned_by: UUID
+    assignment_version: int
+    updated_at: datetime
+
+
+@dataclass(frozen=True, slots=True)
 class WorkspaceMembershipAccessRecord:
     summary: WorkspaceMembershipSummary
     groups: frozenset[str]
@@ -549,6 +574,7 @@ class WorkspaceMembershipAccessRecord:
     denied_actions: frozenset[Action]
     allowed_system_ids: frozenset[UUID]
     allowed_domain_ids: frozenset[UUID]
+    role_assignment: MembershipRoleAssignmentEvidence | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -568,7 +594,27 @@ class SystemDirectoryEntry:
     description: str
     active: bool
     version: int
-    assignees: tuple[SystemDirectoryAssignee, ...]
+    assignees: tuple[SystemDirectoryAssignee, ...] = ()
+    assignee_count: int = 0
+
+
+@dataclass(frozen=True, slots=True)
+class SystemDirectoryPage:
+    items: tuple[SystemDirectoryEntry, ...]
+    next_cursor: str | None
+
+
+@dataclass(frozen=True, slots=True)
+class SystemAssigneePage:
+    items: tuple[SystemDirectoryAssignee, ...]
+    system_version: int
+    next_cursor: str | None
+
+
+@dataclass(frozen=True, slots=True)
+class AdminAccessRequestPage:
+    items: tuple[AdminAccessRequest, ...]
+    next_cursor: str | None
 
 
 @dataclass(frozen=True, slots=True)
@@ -812,6 +858,75 @@ class RetentionExecutionClaim:
     archive_prefix: str
     correlation_id: str
     recovery_only: bool = False
+
+
+@dataclass(frozen=True, slots=True)
+class RetentionExecutionAttemptEvidence:
+    attempt_no: int
+    state: str
+    stage: str
+    evidence_hash: str
+    destructive_effect_count: int
+    started_at: datetime
+    finished_at: datetime | None
+
+
+@dataclass(frozen=True, slots=True)
+class RetentionExecutionEventEvidence:
+    sequence: int
+    event_type: str
+    attempt_no: int | None
+    evidence_hash: str
+    occurred_at: datetime
+
+
+@dataclass(frozen=True, slots=True)
+class RetentionArchiveReceiptEvidenceSummary:
+    receipt_id: UUID
+    manifest_hash: str
+    content_sha256: str
+    row_count: int
+    byte_count: int
+    retention_until: datetime
+    legal_hold: bool
+    content_verified_at: datetime
+    retention_verified_at: datetime
+    verified_at: datetime
+    payload_hash: str
+
+
+@dataclass(frozen=True, slots=True)
+class RetentionExecutionEvidence:
+    job_id: UUID
+    erasure_request_id: UUID
+    erasure_request_version: int
+    erasure_request_payload_hash: str
+    target_type: str
+    target_id: UUID
+    target_version: int
+    classification: Classification
+    retention_policy_id: UUID
+    retention_policy_hash: str
+    policy_number: int
+    execution_authorization_valid_until: datetime
+    archive_disposition: str
+    command_hash: str
+    archive_retain_until: datetime
+    state: str
+    next_attempt_at: datetime
+    attempt_count: int
+    maximum_attempts: int
+    archive_manifest_hash: str | None
+    destructive_state: str
+    separation_of_duties_verified: bool
+    version: int
+    created_at: datetime
+    updated_at: datetime
+    attempts: tuple[RetentionExecutionAttemptEvidence, ...]
+    attempts_truncated: bool
+    events: tuple[RetentionExecutionEventEvidence, ...]
+    events_truncated: bool
+    receipt: RetentionArchiveReceiptEvidenceSummary | None
 
 
 @dataclass(frozen=True, slots=True)

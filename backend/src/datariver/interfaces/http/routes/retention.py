@@ -23,6 +23,7 @@ from datariver.interfaces.http.dependencies import ContextDep, get_container
 from datariver.interfaces.http.retention_presenters import (
     erasure_request_response,
     legal_hold_response,
+    retention_execution_evidence_response,
     retention_policy_response,
 )
 from datariver.interfaces.http.retention_schemas import (
@@ -34,10 +35,12 @@ from datariver.interfaces.http.retention_schemas import (
     LegalHoldPlaceRequest,
     LegalHoldReleaseRequest,
     LegalHoldResponse,
+    RetentionExecutionEvidenceResponse,
     RetentionPolicyListResponse,
     RetentionPolicyProposalRequest,
     RetentionPolicyResponse,
 )
+from datariver.interfaces.http.schemas import PageMeta
 
 router = APIRouter(prefix="/admin/retention", tags=["retention-governance"])
 
@@ -63,16 +66,21 @@ async def list_retention_policies(
     context: ContextDep,
     state: RetentionPolicyState | None = None,
     limit: Annotated[int, Query(ge=1, le=100)] = 50,
+    cursor: Annotated[str | None, Query(max_length=2000)] = None,
 ) -> RetentionPolicyListResponse:
-    values = await _service(request).list_policies(
+    page = await _service(request).list_policies(
         workspace_id=context.workspace_id,
         state=state,
         limit=limit,
+        cursor=cursor,
         subject=context.subject,
         environment=context.environment,
         request_id=context.request_id,
     )
-    return RetentionPolicyListResponse(items=[retention_policy_response(value) for value in values])
+    return RetentionPolicyListResponse(
+        items=[retention_policy_response(value) for value in page.items],
+        page=PageMeta(next_cursor=page.next_cursor, limit=limit),
+    )
 
 
 @router.get("/policies/current", response_model=RetentionPolicyResponse | None)
@@ -180,16 +188,39 @@ async def list_legal_holds(
     context: ContextDep,
     state: LegalHoldState | None = None,
     limit: Annotated[int, Query(ge=1, le=100)] = 50,
+    cursor: Annotated[str | None, Query(max_length=2000)] = None,
 ) -> LegalHoldListResponse:
-    values = await _service(request).list_legal_holds(
+    page = await _service(request).list_legal_holds(
         workspace_id=context.workspace_id,
         state=state,
         limit=limit,
+        cursor=cursor,
         subject=context.subject,
         environment=context.environment,
         request_id=context.request_id,
     )
-    return LegalHoldListResponse(items=[legal_hold_response(value) for value in values])
+    return LegalHoldListResponse(
+        items=[legal_hold_response(value) for value in page.items],
+        page=PageMeta(next_cursor=page.next_cursor, limit=limit),
+    )
+
+
+@router.get("/legal-holds/{hold_id}", response_model=LegalHoldResponse)
+async def get_legal_hold(
+    hold_id: UUID,
+    request: Request,
+    response: Response,
+    context: ContextDep,
+) -> LegalHoldResponse:
+    value = await _service(request).get_legal_hold(
+        workspace_id=context.workspace_id,
+        hold_id=hold_id,
+        subject=context.subject,
+        environment=context.environment,
+        request_id=context.request_id,
+    )
+    response.headers["ETag"] = f'"{value.version}"'
+    return legal_hold_response(value)
 
 
 @router.post("/legal-holds", status_code=201, response_model=LegalHoldResponse)
@@ -307,16 +338,21 @@ async def list_erasure_requests(
     context: ContextDep,
     state: ErasureRequestState | None = None,
     limit: Annotated[int, Query(ge=1, le=100)] = 50,
+    cursor: Annotated[str | None, Query(max_length=2000)] = None,
 ) -> ErasureRequestListResponse:
-    values = await _service(request).list_erasure_requests(
+    page = await _service(request).list_erasure_requests(
         workspace_id=context.workspace_id,
         state=state,
         limit=limit,
+        cursor=cursor,
         subject=context.subject,
         environment=context.environment,
         request_id=context.request_id,
     )
-    return ErasureRequestListResponse(items=[erasure_request_response(value) for value in values])
+    return ErasureRequestListResponse(
+        items=[erasure_request_response(value) for value in page.items],
+        page=PageMeta(next_cursor=page.next_cursor, limit=limit),
+    )
 
 
 @router.get("/erasure-requests/{erasure_request_id}", response_model=ErasureRequestResponse)
@@ -335,6 +371,27 @@ async def get_erasure_request(
     )
     response.headers["ETag"] = f'"{value.version}"'
     return erasure_request_response(value)
+
+
+@router.get(
+    "/erasure-requests/{erasure_request_id}/execution-evidence",
+    response_model=RetentionExecutionEvidenceResponse,
+)
+async def get_erasure_execution_evidence(
+    erasure_request_id: UUID,
+    request: Request,
+    response: Response,
+    context: ContextDep,
+) -> RetentionExecutionEvidenceResponse:
+    response.headers["Cache-Control"] = "private, no-store"
+    value = await _service(request).get_erasure_execution_evidence(
+        workspace_id=context.workspace_id,
+        erasure_request_id=erasure_request_id,
+        subject=context.subject,
+        environment=context.environment,
+        request_id=context.request_id,
+    )
+    return retention_execution_evidence_response(erasure_request_id, value)
 
 
 @router.post("/erasure-requests", status_code=201, response_model=ErasureRequestResponse)

@@ -36,6 +36,7 @@ from datariver.interfaces.http.classification_access_schemas import (
     RevocationRequest,
 )
 from datariver.interfaces.http.dependencies import ContextDep, get_container
+from datariver.interfaces.http.schemas import PageMeta
 
 router = APIRouter(
     prefix="/admin/classification-access",
@@ -64,17 +65,20 @@ async def list_classification_policies(
     context: ContextDep,
     state: ClassificationAccessPolicyState | None = None,
     limit: Annotated[int, Query(ge=1, le=100)] = 50,
+    cursor: Annotated[str | None, Query(max_length=2000)] = None,
 ) -> ClassificationPolicyListResponse:
-    values = await _service(request).list_policies(
+    page = await _service(request).list_policies(
         workspace_id=context.workspace_id,
         state=state,
         limit=limit,
+        cursor=cursor,
         subject=context.subject,
         environment=context.environment,
         request_id=context.request_id,
     )
     return ClassificationPolicyListResponse(
-        items=[classification_policy_response(value) for value in values]
+        items=[classification_policy_response(value) for value in page.items],
+        page=PageMeta(next_cursor=page.next_cursor, limit=limit),
     )
 
 
@@ -206,18 +210,21 @@ async def list_restricted_search_grants(
     state: RestrictedSearchGrantState | None = None,
     subject_id: UUID | None = None,
     limit: Annotated[int, Query(ge=1, le=100)] = 50,
+    cursor: Annotated[str | None, Query(max_length=2000)] = None,
 ) -> RestrictedSearchGrantListResponse:
-    values = await _service(request).list_grants(
+    page = await _service(request).list_grants(
         workspace_id=context.workspace_id,
         target_subject_id=subject_id,
         state=state,
         limit=limit,
+        cursor=cursor,
         subject=context.subject,
         environment=context.environment,
         request_id=context.request_id,
     )
     return RestrictedSearchGrantListResponse(
-        items=[restricted_search_grant_response(value) for value in values]
+        items=[restricted_search_grant_response(value) for value in page.items],
+        page=PageMeta(next_cursor=page.next_cursor, limit=limit),
     )
 
 

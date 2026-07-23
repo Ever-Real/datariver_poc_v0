@@ -1,12 +1,15 @@
 from __future__ import annotations
 
+import base64
+import binascii
+import json
 from collections.abc import Sequence
 from datetime import datetime
 from types import TracebackType
 from typing import Any, cast
 from uuid import UUID
 
-from sqlalchemy import and_, func, select, text, update
+from sqlalchemy import and_, func, or_, select, text, update
 from sqlalchemy.engine import CursorResult
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
@@ -16,7 +19,11 @@ from datariver.application.classification_access import (
     ProviderProfileRecord,
     RestrictedGrantRecord,
 )
-from datariver.application.classification_access_admin import ClassificationAccessAdminUnitOfWork
+from datariver.application.classification_access_admin import (
+    ClassificationAccessAdminUnitOfWork,
+    ClassificationPolicyPage,
+    RestrictedSearchGrantPage,
+)
 from datariver.domain.authz import Classification
 from datariver.domain.classification_access import (
     ChatMode,
@@ -30,6 +37,7 @@ from datariver.domain.classification_access import (
 )
 from datariver.domain.common import (
     ConflictError,
+    ValidationError,
     canonical_json_hash,
     uuid7,
 )
@@ -44,6 +52,77 @@ from datariver.infrastructure.db.models.classification_access import (
 )
 from datariver.infrastructure.db.models.inference import InferenceProviderProfileVersionModel
 from datariver.infrastructure.db.rls import set_security_context
+
+_LIST_CURSOR_MAX_LENGTH = 2_000
+
+
+def _encode_list_cursor(
+    *,
+    scope: str,
+    workspace_id: UUID,
+    filters: dict[str, str | None],
+    boundary: dict[str, object],
+) -> str:
+    payload = json.dumps(
+        {
+            "v": 1,
+            "scope": scope,
+            "workspace_id": str(workspace_id),
+            "filters": filters,
+            "boundary": boundary,
+        },
+        separators=(",", ":"),
+        sort_keys=True,
+    ).encode()
+    return base64.urlsafe_b64encode(payload).decode().rstrip("=")
+
+
+def _decode_list_cursor(
+    cursor: str,
+    *,
+    scope: str,
+    workspace_id: UUID,
+    filters: dict[str, str | None],
+) -> dict[str, object]:
+    try:
+        if not cursor or len(cursor) > _LIST_CURSOR_MAX_LENGTH:
+            raise ValueError
+        payload = base64.b64decode(
+            cursor + "=" * (-len(cursor) % 4),
+            altchars=b"-_",
+            validate=True,
+        )
+        document = json.loads(payload)
+        if (
+            not isinstance(document, dict)
+            or frozenset(document)
+            != frozenset({"v", "scope", "workspace_id", "filters", "boundary"})
+            or document.get("v") != 1
+            or document.get("scope") != scope
+            or document.get("workspace_id") != str(workspace_id)
+            or document.get("filters") != filters
+            or not isinstance(document.get("boundary"), dict)
+        ):
+            raise ValueError
+        boundary = cast(dict[str, object], document["boundary"])
+        if cursor != _encode_list_cursor(
+            scope=scope,
+            workspace_id=workspace_id,
+            filters=filters,
+            boundary=boundary,
+        ):
+            raise ValueError
+        return boundary
+    except (
+        ValueError,
+        TypeError,
+        UnicodeDecodeError,
+        json.JSONDecodeError,
+        binascii.Error,
+    ) as error:
+        raise ValidationError(
+            "The classification governance cursor is stale or does not match this request."
+        ) from error
 
 
 class SqlClassificationAccessSnapshotReader:
@@ -311,11 +390,70 @@ class SqlClassificationPolicyRepository:
         return policies[0] if policies else None
 
     async def list(
-        self, *, workspace_id: UUID, state: str | None, limit: int
-    ) -> tuple[ClassificationAccessPolicy, ...]:
-        if limit < 1 or limit > 500:
-            raise ConflictError("The classification policy list limit is invalid.")
-        return await self._load(workspace_id=workspace_id, state=state, limit=limit, lock=False)
+        self,
+        *,
+        workspace_id: UUID,
+        state: str | None,
+        limit: int,
+        cursor: str | None,
+    ) -> ClassificationPolicyPage:
+        if limit < 1 or limit > 100:
+            raise ValidationError("The classification policy list limit is invalid.")
+        filters = {"state": state}
+        boundary_number: int | None = None
+        if cursor is not None:
+            boundary = _decode_list_cursor(
+                cursor,
+                scope="classification-policy-history",
+                workspace_id=workspace_id,
+                filters=filters,
+            )
+            boundary_value = boundary.get("policy_number")
+            if frozenset(boundary) != frozenset({"policy_number"}) or not isinstance(
+                boundary_value, int
+            ):
+                raise ValidationError(
+                    "The classification governance cursor is stale or does not match this request."
+                )
+            boundary_number = boundary_value
+            if boundary_number < 1:
+                raise ValidationError(
+                    "The classification governance cursor is stale or does not match this request."
+                )
+
+        policy_ids = select(ClassificationAccessPolicyVersionModel.id).where(
+            ClassificationAccessPolicyVersionModel.workspace_id == workspace_id
+        )
+        if state is not None:
+            policy_ids = policy_ids.where(ClassificationAccessPolicyVersionModel.state == state)
+        if boundary_number is not None:
+            policy_ids = policy_ids.where(
+                ClassificationAccessPolicyVersionModel.policy_number < boundary_number
+            )
+        policy_ids = policy_ids.order_by(
+            ClassificationAccessPolicyVersionModel.policy_number.desc()
+        ).limit(limit + 1)
+        selected_ids = tuple((await self._session.scalars(policy_ids)).all())
+        if not selected_ids:
+            return ClassificationPolicyPage(items=(), next_cursor=None)
+        visible_ids = selected_ids[:limit]
+        statement = _policy_rows_statement(workspace_id=workspace_id).where(
+            ClassificationAccessPolicyVersionModel.id.in_(visible_ids)
+        )
+        items = _policies_from_rows((await self._session.execute(statement)).all())
+        return ClassificationPolicyPage(
+            items=items,
+            next_cursor=(
+                _encode_list_cursor(
+                    scope="classification-policy-history",
+                    workspace_id=workspace_id,
+                    filters=filters,
+                    boundary={"policy_number": items[-1].policy_number},
+                )
+                if len(selected_ids) > limit
+                else None
+            ),
+        )
 
     async def next_policy_number(self, *, workspace_id: UUID) -> int:
         maximum = await self._session.scalar(
@@ -445,21 +583,72 @@ class SqlRestrictedSearchGrantRepository:
         subject_id: UUID | None,
         state: str | None,
         limit: int,
-    ) -> tuple[RestrictedSearchGrant, ...]:
-        if limit < 1 or limit > 500:
-            raise ConflictError("The RESTRICTED Search grant list limit is invalid.")
+        cursor: str | None,
+    ) -> RestrictedSearchGrantPage:
+        if limit < 1 or limit > 100:
+            raise ValidationError("The RESTRICTED Search grant list limit is invalid.")
+        filters = {
+            "state": state,
+            "subject_id": str(subject_id) if subject_id is not None else None,
+        }
         statement = (
             select(RestrictedSearchGrantModel)
             .where(RestrictedSearchGrantModel.workspace_id == workspace_id)
-            .order_by(RestrictedSearchGrantModel.created_at.desc())
-            .limit(limit)
+            .order_by(
+                RestrictedSearchGrantModel.created_at.desc(),
+                RestrictedSearchGrantModel.id,
+            )
+            .limit(limit + 1)
         )
         if subject_id is not None:
             statement = statement.where(RestrictedSearchGrantModel.subject_id == subject_id)
         if state is not None:
             statement = statement.where(RestrictedSearchGrantModel.state == state)
-        return tuple(
-            _hydrate_grant(model) for model in (await self._session.scalars(statement)).all()
+        if cursor is not None:
+            boundary = _decode_list_cursor(
+                cursor,
+                scope="restricted-search-grant-history",
+                workspace_id=workspace_id,
+                filters=filters,
+            )
+            try:
+                if frozenset(boundary) != frozenset({"created_at", "id"}):
+                    raise ValueError
+                boundary_created_at = datetime.fromisoformat(str(boundary["created_at"]))
+                boundary_id = UUID(str(boundary["id"]))
+                if boundary_created_at.tzinfo is None or boundary_created_at.utcoffset() is None:
+                    raise ValueError
+            except (KeyError, TypeError, ValueError) as error:
+                raise ValidationError(
+                    "The classification governance cursor is stale or does not match this request."
+                ) from error
+            statement = statement.where(
+                or_(
+                    RestrictedSearchGrantModel.created_at < boundary_created_at,
+                    and_(
+                        RestrictedSearchGrantModel.created_at == boundary_created_at,
+                        RestrictedSearchGrantModel.id > boundary_id,
+                    ),
+                )
+            )
+        models = tuple((await self._session.scalars(statement)).all())
+        visible = models[:limit]
+        items = tuple(_hydrate_grant(model) for model in visible)
+        return RestrictedSearchGrantPage(
+            items=items,
+            next_cursor=(
+                _encode_list_cursor(
+                    scope="restricted-search-grant-history",
+                    workspace_id=workspace_id,
+                    filters=filters,
+                    boundary={
+                        "created_at": visible[-1].created_at.isoformat(),
+                        "id": str(visible[-1].id),
+                    },
+                )
+                if len(models) > limit
+                else None
+            ),
         )
 
     async def _one(

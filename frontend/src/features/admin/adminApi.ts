@@ -24,7 +24,9 @@ import type {
   MembershipRenewalRequest,
   MembershipRoleAssignmentResult,
   RetentionDataClass,
+  RetentionExecutionEvidence,
   RetentionPolicy,
+  RetentionPolicyContract,
   RetentionPolicyState,
   RetentionRules,
   RestrictedSearchGrant,
@@ -33,6 +35,8 @@ import type {
   WorkspaceMembershipAccess,
   WorkspaceMembershipSummary,
   SystemDirectoryEntry,
+  SystemAssigneeKey,
+  SystemAssigneePage,
   SystemAssigneeUpdate,
   SystemAssigneeUpdateResult,
   SystemConfigurationEntry,
@@ -50,17 +54,59 @@ export interface VersionedErasureRequest extends ErasureRequest {
   etag: string
 }
 
+export interface AdminCursorPage<T> {
+  items: T[]
+  nextCursor: string | null
+  limit: number
+}
+
+interface AdminPageResponse<T> {
+  items: T[]
+  page: { next_cursor: string | null; limit: number }
+}
+
 export class AdminApi {
   constructor(private readonly client: AdminApiClient) {}
 
-  getContext() {
-    return this.client.request<AdminReadContext>('/admin/me')
+  getContext(signal?: AbortSignal) {
+    return this.client.request<AdminReadContext>('/admin/me', { signal })
   }
 
   async listMemberships() {
-    return (await this.client.request<{ items: WorkspaceMembershipSummary[] }>(
+    return (await this.client.request<{
+      items: WorkspaceMembershipSummary[]
+      page: { next_cursor: string | null; limit: number }
+    }>(
       '/admin/workspace-memberships?limit=100',
     )).items
+  }
+
+  async listMembershipPage({
+    query,
+    status,
+    cursor,
+    limit = 25,
+    signal,
+  }: {
+    query?: string
+    status?: 'ACTIVE' | 'INACTIVE'
+    cursor?: string
+    limit?: number
+    signal?: AbortSignal
+  } = {}): Promise<AdminCursorPage<WorkspaceMembershipSummary>> {
+    const parameters = new URLSearchParams({ limit: String(limit) })
+    if (query) parameters.set('q', query)
+    if (status) parameters.set('status', status)
+    if (cursor) parameters.set('cursor', cursor)
+    const response = await this.client.request<{
+      items: WorkspaceMembershipSummary[]
+      page: { next_cursor: string | null; limit: number }
+    }>(`/admin/workspace-memberships?${parameters.toString()}`, { signal })
+    return {
+      items: response.items,
+      nextCursor: response.page.next_cursor,
+      limit: response.page.limit,
+    }
   }
 
   provisionIdentityUser(payload: IdentityUserProvisionInput, idempotencyKey: string) {
@@ -69,11 +115,28 @@ export class AdminApi {
     })
   }
 
+  async listMembershipRenewalPage({
+    state,
+    cursor,
+    limit = 25,
+    signal,
+  }: {
+    state?: MembershipRenewalRequest['state']
+    cursor?: string
+    limit?: number
+    signal?: AbortSignal
+  } = {}): Promise<AdminCursorPage<MembershipRenewalRequest>> {
+    const parameters = new URLSearchParams({ limit: String(limit) })
+    if (state) parameters.set('state', state)
+    if (cursor) parameters.set('cursor', cursor)
+    return adminCursorPage(await this.client.request<AdminPageResponse<MembershipRenewalRequest>>(
+      `/admin/membership-renewals?${parameters.toString()}`,
+      { signal },
+    ))
+  }
+
   async listMembershipRenewals(state?: MembershipRenewalRequest['state']) {
-    const query = state ? `?state=${state}&limit=100` : '?limit=100'
-    return (await this.client.request<{ items: MembershipRenewalRequest[] }>(
-      `/admin/membership-renewals${query}`,
-    )).items
+    return (await this.listMembershipRenewalPage({ state, limit: 100 })).items
   }
 
   decideMembershipRenewal(
@@ -105,8 +168,31 @@ export class AdminApi {
     )).items
   }
 
+  async listAccessRolePage({
+    query,
+    status,
+    cursor,
+    limit = 25,
+    signal,
+  }: {
+    query?: string
+    status?: 'ACTIVE' | 'INACTIVE'
+    cursor?: string
+    limit?: number
+    signal?: AbortSignal
+  } = {}): Promise<AdminCursorPage<AccessRole>> {
+    const parameters = new URLSearchParams({ limit: String(limit) })
+    if (query) parameters.set('q', query)
+    if (status) parameters.set('status', status)
+    if (cursor) parameters.set('cursor', cursor)
+    return adminCursorPage(await this.client.request<AdminPageResponse<AccessRole>>(
+      `/admin/access-roles?${parameters.toString()}`,
+      { signal },
+    ))
+  }
+
   async listAccessRoles() {
-    return (await this.client.request<{ items: AccessRole[] }>('/admin/access-roles')).items
+    return (await this.listAccessRolePage({ limit: 100 })).items
   }
 
   createAccessRole(payload: AccessRoleWrite) {
@@ -146,13 +232,57 @@ export class AdminApi {
     )
   }
 
-  async listSystems() {
-    return (await this.client.request<{ items: SystemDirectoryEntry[] }>('/admin/systems?limit=100')).items
+  async listSystemPage({
+    query,
+    status,
+    cursor,
+    limit = 25,
+    signal,
+  }: {
+    query?: string
+    status?: 'ACTIVE' | 'INACTIVE'
+    cursor?: string
+    limit?: number
+    signal?: AbortSignal
+  } = {}): Promise<AdminCursorPage<SystemDirectoryEntry>> {
+    const parameters = new URLSearchParams({ limit: String(limit) })
+    if (query) parameters.set('q', query)
+    if (status) parameters.set('status', status)
+    if (cursor) parameters.set('cursor', cursor)
+    return adminCursorPage(await this.client.request<AdminPageResponse<SystemDirectoryEntry>>(
+      `/admin/systems?${parameters.toString()}`,
+      { signal },
+    ))
   }
 
-  async searchRestrictedGrantTargets(query: string) {
+  async listSystems() {
+    return (await this.listSystemPage({ limit: 100 })).items
+  }
+
+  async listSystemAssigneePage(
+    systemId: string,
+    {
+      cursor,
+      limit = 25,
+      signal,
+    }: {
+      cursor?: string
+      limit?: number
+      signal?: AbortSignal
+    } = {},
+  ) {
+    const parameters = new URLSearchParams({ limit: String(limit) })
+    if (cursor) parameters.set('cursor', cursor)
+    return this.client.request<SystemAssigneePage>(
+      `/admin/systems/${encodeURIComponent(systemId)}/assignees?${parameters.toString()}`,
+      { signal },
+    )
+  }
+
+  async searchRestrictedGrantTargets(query: string, signal?: AbortSignal) {
     return (await this.client.request<CatalogSearch>(
       `/catalog/assets?q=${encodeURIComponent(query)}&limit=20`,
+      { signal },
     )).items
   }
 
@@ -173,8 +303,29 @@ export class AdminApi {
     )
   }
 
-  async listSystemConfiguration() {
-    return (await this.client.request<{ items: SystemConfigurationEntry[] }>('/admin/system-configuration')).items
+  patchSystemAssignees(
+    systemId: string,
+    upserts: SystemAssigneeUpdate[],
+    removals: SystemAssigneeKey[],
+    version: number,
+    idempotencyKey: string,
+  ) {
+    return this.client.request<SystemAssigneeUpdateResult>(
+      `/admin/systems/${encodeURIComponent(systemId)}/assignees`,
+      {
+        method: 'PATCH',
+        ifMatch: quotedVersion(version),
+        idempotencyKey,
+        body: JSON.stringify({ upserts, removals }),
+      },
+    )
+  }
+
+  async listSystemConfiguration(signal?: AbortSignal) {
+    return (await this.client.request<{ items: SystemConfigurationEntry[] }>(
+      '/admin/system-configuration',
+      { signal },
+    )).items
   }
 
   updateSystemConfiguration(systemId: string, configurationYaml: string, version: number) {
@@ -202,9 +353,13 @@ export class AdminApi {
     )
   }
 
-  async getMembershipAccess(subjectId: string): Promise<VersionedMembershipAccess> {
+  async getMembershipAccess(
+    subjectId: string,
+    signal?: AbortSignal,
+  ): Promise<VersionedMembershipAccess> {
     const response = await this.client.requestWithMeta<WorkspaceMembershipAccess>(
       `/admin/workspace-memberships/${encodeURIComponent(subjectId)}/access`,
+      { signal },
     )
     const expected = quotedVersion(response.data.membership_version)
     if (response.etag !== expected) {
@@ -230,11 +385,28 @@ export class AdminApi {
     )
   }
 
+  async listFallbackRequestPage({
+    state,
+    cursor,
+    limit = 25,
+    signal,
+  }: {
+    state?: AdminAccessRequestState
+    cursor?: string
+    limit?: number
+    signal?: AbortSignal
+  } = {}): Promise<AdminCursorPage<AdminAccessRequest>> {
+    const parameters = new URLSearchParams({ limit: String(limit) })
+    if (state) parameters.set('state', state)
+    if (cursor) parameters.set('cursor', cursor)
+    return adminCursorPage(await this.client.request<AdminPageResponse<AdminAccessRequest>>(
+      `/admin/fallback/workspace-membership-access-requests?${parameters.toString()}`,
+      { signal },
+    ))
+  }
+
   async listFallbackRequests(state?: AdminAccessRequestState) {
-    const query = state ? `?state=${state}&limit=100` : '?limit=100'
-    return (await this.client.request<{ items: AdminAccessRequest[] }>(
-      `/admin/fallback/workspace-membership-access-requests${query}`,
-    )).items
+    return (await this.listFallbackRequestPage({ state, limit: 100 })).items
   }
 
   createFallbackRequest(
@@ -284,18 +456,40 @@ export class AdminApi {
     )
   }
 
-  async listRetentionPolicies(state?: RetentionPolicyState) {
-    const query = state ? `?state=${state}&limit=100` : '?limit=100'
-    return (await this.client.request<{ items: RetentionPolicy[] }>(
-      `/admin/retention/policies${query}`,
-    )).items
+  async listRetentionPolicyPage({
+    state,
+    cursor,
+    limit = 25,
+    signal,
+  }: {
+    state?: RetentionPolicyState
+    cursor?: string
+    limit?: number
+    signal?: AbortSignal
+  } = {}): Promise<AdminCursorPage<RetentionPolicy>> {
+    const parameters = new URLSearchParams({ limit: String(limit) })
+    if (state) parameters.set('state', state)
+    if (cursor) parameters.set('cursor', cursor)
+    return adminCursorPage(await this.client.request<AdminPageResponse<RetentionPolicy>>(
+      `/admin/retention/policies?${parameters.toString()}`,
+      { signal },
+    ))
   }
 
-  proposeRetentionPolicy(rules: RetentionRules, reason: string, idempotencyKey: string) {
+  async listRetentionPolicies(state?: RetentionPolicyState) {
+    return (await this.listRetentionPolicyPage({ state, limit: 100 })).items
+  }
+
+  proposeRetentionPolicy(
+    rules: RetentionRules,
+    contract: RetentionPolicyContract,
+    reason: string,
+    idempotencyKey: string,
+  ) {
     return this.client.request<RetentionPolicy>('/admin/retention/policies', {
       method: 'POST',
       idempotencyKey,
-      body: JSON.stringify({ rules, reason }),
+      body: JSON.stringify({ rules, contract, reason }),
     })
   }
 
@@ -316,16 +510,34 @@ export class AdminApi {
     )
   }
 
-  async listClassificationAccessPolicies(state?: ClassificationAccessPolicyState) {
-    const query = state ? `?state=${state}&limit=100` : '?limit=100'
-    return (await this.client.request<{ items: ClassificationAccessPolicy[] }>(
-      `/admin/classification-access/policies${query}`,
-    )).items
+  async listClassificationAccessPolicyPage({
+    state,
+    cursor,
+    limit = 25,
+    signal,
+  }: {
+    state?: ClassificationAccessPolicyState
+    cursor?: string
+    limit?: number
+    signal?: AbortSignal
+  } = {}): Promise<AdminCursorPage<ClassificationAccessPolicy>> {
+    const parameters = new URLSearchParams({ limit: String(limit) })
+    if (state) parameters.set('state', state)
+    if (cursor) parameters.set('cursor', cursor)
+    return adminCursorPage(await this.client.request<AdminPageResponse<ClassificationAccessPolicy>>(
+      `/admin/classification-access/policies?${parameters.toString()}`,
+      { signal },
+    ))
   }
 
-  getCurrentClassificationAccessPolicy() {
+  async listClassificationAccessPolicies(state?: ClassificationAccessPolicyState) {
+    return (await this.listClassificationAccessPolicyPage({ state, limit: 100 })).items
+  }
+
+  getCurrentClassificationAccessPolicy(signal?: AbortSignal) {
     return this.client.request<ClassificationAccessPolicy | null>(
       '/admin/classification-access/policies/current',
+      { signal },
     )
   }
 
@@ -360,11 +572,31 @@ export class AdminApi {
     )
   }
 
+  async listInferenceProviderProfilePage({
+    profileKey,
+    state,
+    cursor,
+    limit = 25,
+    signal,
+  }: {
+    profileKey?: string
+    state?: InferenceProviderProfileState
+    cursor?: string
+    limit?: number
+    signal?: AbortSignal
+  } = {}): Promise<AdminCursorPage<InferenceProviderProfile>> {
+    const parameters = new URLSearchParams({ limit: String(limit) })
+    if (profileKey) parameters.set('profile_key', profileKey)
+    if (state) parameters.set('state', state)
+    if (cursor) parameters.set('cursor', cursor)
+    return adminCursorPage(await this.client.request<AdminPageResponse<InferenceProviderProfile>>(
+      `/admin/inference/provider-profiles?${parameters.toString()}`,
+      { signal },
+    ))
+  }
+
   async listInferenceProviderProfiles(state?: InferenceProviderProfileState) {
-    const query = state ? `?state=${state}&limit=100` : '?limit=100'
-    return (await this.client.request<{ items: InferenceProviderProfile[] }>(
-      `/admin/inference/provider-profiles${query}`,
-    )).items
+    return (await this.listInferenceProviderProfilePage({ state, limit: 100 })).items
   }
 
   decideInferenceProviderProfile(
@@ -400,16 +632,38 @@ export class AdminApi {
     )
   }
 
+  async listRestrictedSearchGrantPage({
+    state,
+    subjectId,
+    cursor,
+    limit = 25,
+    signal,
+  }: {
+    state?: RestrictedSearchGrantState
+    subjectId?: string
+    cursor?: string
+    limit?: number
+    signal?: AbortSignal
+  } = {}): Promise<AdminCursorPage<RestrictedSearchGrant>> {
+    const parameters = new URLSearchParams({ limit: String(limit) })
+    if (state) parameters.set('state', state)
+    if (subjectId) parameters.set('subject_id', subjectId)
+    if (cursor) parameters.set('cursor', cursor)
+    return adminCursorPage(await this.client.request<AdminPageResponse<RestrictedSearchGrant>>(
+      `/admin/classification-access/restricted-search-grants?${parameters.toString()}`,
+      { signal },
+    ))
+  }
+
   async listRestrictedSearchGrants(
     state?: RestrictedSearchGrantState,
     subjectId?: string,
   ) {
-    const query = new URLSearchParams({ limit: '100' })
-    if (state) query.set('state', state)
-    if (subjectId) query.set('subject_id', subjectId)
-    return (await this.client.request<{ items: RestrictedSearchGrant[] }>(
-      `/admin/classification-access/restricted-search-grants?${query.toString()}`,
-    )).items
+    return (await this.listRestrictedSearchGrantPage({
+      state,
+      subjectId,
+      limit: 100,
+    })).items
   }
 
   proposeRestrictedSearchGrant(
@@ -459,11 +713,35 @@ export class AdminApi {
     )
   }
 
+  async listLegalHoldPage({
+    state,
+    cursor,
+    limit = 25,
+    signal,
+  }: {
+    state?: LegalHoldState
+    cursor?: string
+    limit?: number
+    signal?: AbortSignal
+  } = {}): Promise<AdminCursorPage<LegalHold>> {
+    const parameters = new URLSearchParams({ limit: String(limit) })
+    if (state) parameters.set('state', state)
+    if (cursor) parameters.set('cursor', cursor)
+    return adminCursorPage(await this.client.request<AdminPageResponse<LegalHold>>(
+      `/admin/retention/legal-holds?${parameters.toString()}`,
+      { signal },
+    ))
+  }
+
   async listLegalHolds(state?: LegalHoldState) {
-    const query = state ? `?state=${state}&limit=100` : '?limit=100'
-    return (await this.client.request<{ items: LegalHold[] }>(
-      `/admin/retention/legal-holds${query}`,
-    )).items
+    return (await this.listLegalHoldPage({ state, limit: 100 })).items
+  }
+
+  getLegalHold(holdId: string, signal?: AbortSignal) {
+    return this.client.request<LegalHold>(
+      `/admin/retention/legal-holds/${encodeURIComponent(holdId)}`,
+      { signal },
+    )
   }
 
   placeLegalHold(
@@ -509,22 +787,50 @@ export class AdminApi {
     )
   }
 
-  async listErasureRequests(state?: ErasureRequestState) {
-    const query = state ? `?state=${state}&limit=100` : '?limit=100'
-    return (await this.client.request<{ items: ErasureRequest[] }>(
-      `/admin/retention/erasure-requests${query}`,
-    )).items
+  async listErasureRequestPage({
+    state,
+    cursor,
+    limit = 25,
+    signal,
+  }: {
+    state?: ErasureRequestState
+    cursor?: string
+    limit?: number
+    signal?: AbortSignal
+  } = {}): Promise<AdminCursorPage<ErasureRequest>> {
+    const parameters = new URLSearchParams({ limit: String(limit) })
+    if (state) parameters.set('state', state)
+    if (cursor) parameters.set('cursor', cursor)
+    return adminCursorPage(await this.client.request<AdminPageResponse<ErasureRequest>>(
+      `/admin/retention/erasure-requests?${parameters.toString()}`,
+      { signal },
+    ))
   }
 
-  async getErasureRequest(requestId: string): Promise<VersionedErasureRequest> {
+  async listErasureRequests(state?: ErasureRequestState) {
+    return (await this.listErasureRequestPage({ state, limit: 100 })).items
+  }
+
+  async getErasureRequest(
+    requestId: string,
+    signal?: AbortSignal,
+  ): Promise<VersionedErasureRequest> {
     const response = await this.client.requestWithMeta<ErasureRequest>(
       `/admin/retention/erasure-requests/${encodeURIComponent(requestId)}`,
+      { signal },
     )
     const expected = quotedVersion(response.data.version)
     if (response.etag !== expected) {
       throw new Error('파기 요청 버전 ETag를 검증하지 못했습니다. 새로고침 후 다시 시도하세요.')
     }
     return { ...response.data, etag: response.etag }
+  }
+
+  getErasureExecutionEvidence(requestId: string, signal?: AbortSignal) {
+    return this.client.request<RetentionExecutionEvidence>(
+      `/admin/retention/erasure-requests/${encodeURIComponent(requestId)}/execution-evidence`,
+      { signal },
+    )
   }
 
   async requestErasure(
@@ -584,4 +890,12 @@ function versionedErasure(value: ErasureRequest, etag?: string): VersionedErasur
     throw new Error('파기 요청 버전 ETag를 검증하지 못했습니다. 새로고침 후 다시 시도하세요.')
   }
   return { ...value, etag }
+}
+
+function adminCursorPage<T>(response: AdminPageResponse<T>): AdminCursorPage<T> {
+  return {
+    items: response.items,
+    nextCursor: response.page.next_cursor,
+    limit: response.page.limit,
+  }
 }

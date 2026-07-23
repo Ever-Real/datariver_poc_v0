@@ -1,11 +1,13 @@
 from __future__ import annotations
 
-from collections.abc import Callable, Sequence
+from collections.abc import Callable
 from datetime import datetime, timedelta
 from uuid import UUID
 
 from datariver.application.classification_access_admin import (
     ClassificationAccessAdminUnitOfWork,
+    ClassificationPolicyPage,
+    RestrictedSearchGrantPage,
 )
 from datariver.application.services.authorization import AuthorizationService
 from datariver.domain.authz import (
@@ -103,10 +105,11 @@ class ClassificationAccessAdminService:
         workspace_id: UUID,
         state: ClassificationAccessPolicyState | None,
         limit: int,
+        cursor: str | None,
         subject: SubjectAttributes,
         environment: EnvironmentAttributes,
         request_id: str,
-    ) -> Sequence[ClassificationAccessPolicy]:
+    ) -> ClassificationPolicyPage:
         await self._authorize(workspace_id, workspace_id, subject, environment, request_id)
         async with self._uow_factory() as uow:
             await self._prepare(uow, workspace_id=workspace_id, subject=subject, lock=False)
@@ -114,6 +117,7 @@ class ClassificationAccessAdminService:
                 workspace_id=workspace_id,
                 state=state.value if state is not None else None,
                 limit=limit,
+                cursor=cursor,
             )
 
     async def get_policy(
@@ -354,10 +358,11 @@ class ClassificationAccessAdminService:
         target_subject_id: UUID | None,
         state: RestrictedSearchGrantState | None,
         limit: int,
+        cursor: str | None,
         subject: SubjectAttributes,
         environment: EnvironmentAttributes,
         request_id: str,
-    ) -> Sequence[RestrictedSearchGrant]:
+    ) -> RestrictedSearchGrantPage:
         await self._authorize(workspace_id, workspace_id, subject, environment, request_id)
         async with self._uow_factory() as uow:
             await self._prepare(uow, workspace_id=workspace_id, subject=subject, lock=False)
@@ -366,6 +371,7 @@ class ClassificationAccessAdminService:
                 subject_id=target_subject_id,
                 state=state.value if state is not None else None,
                 limit=limit,
+                cursor=cursor,
             )
 
     async def get_grant(

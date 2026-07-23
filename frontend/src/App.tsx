@@ -41,13 +41,15 @@ export function App() {
   const [catalogExportWorkerEnabled, setCatalogExportWorkerEnabled] = useState(false)
   const [adminAccess, setAdminAccess] = useState<{
     workspace: string
+    subject: string
     status: 'checking' | 'allowed' | 'denied' | 'reauth_required'
     context?: AdminReadContext
-  }>({ workspace: '', status: 'checking' })
+  }>({ workspace: '', subject: '', status: 'checking' })
   const workspaceSelectionEnabled = auth.profile?.workspace_selection_enabled !== false
   const activeWorkspace = workspaceSelectionEnabled
     ? workspace
     : auth.profile?.default_workspace_id ?? ''
+  const authenticatedSubject = auth.profile?.subject ?? auth.user?.profile.sub ?? ''
   const client = useStableApiClient(
     runtimeConfig.apiBaseUrl,
     auth.user?.access_token,
@@ -83,14 +85,19 @@ export function App() {
   useEffect(() => {
     let active = true
     if (!activeWorkspace) {
-      setAdminAccess({ workspace: activeWorkspace, status: 'denied' })
+      setAdminAccess({
+        workspace: activeWorkspace, subject: authenticatedSubject, status: 'denied',
+      })
       return () => { active = false }
     }
-    setAdminAccess({ workspace: activeWorkspace, status: 'checking' })
+    setAdminAccess({
+      workspace: activeWorkspace, subject: authenticatedSubject, status: 'checking',
+    })
     void client.request<AdminReadContext>('/admin/me')
       .then((context) => {
         if (active) setAdminAccess({
           workspace: activeWorkspace,
+          subject: authenticatedSubject,
           status: context.allowed_operations.length > 0 ? 'allowed' : 'denied',
           context,
         })
@@ -99,18 +106,19 @@ export function App() {
         if (!active) return
         setAdminAccess({
           workspace: activeWorkspace,
+          subject: authenticatedSubject,
           status: remediationKind(error) === 'REAUTH_REQUIRED' ? 'reauth_required' : 'denied',
         })
       })
     return () => { active = false }
-  }, [activeWorkspace, client])
+  }, [activeWorkspace, authenticatedSubject, client])
 
   useEffect(() => {
     let active = true
+    setExternalSystemLinks([])
+    setCapabilities([])
+    setDeploymentTier('SINGLE_NODE_PILOT')
     if (!activeWorkspace) {
-      setExternalSystemLinks([])
-      setCapabilities([])
-      setDeploymentTier('SINGLE_NODE_PILOT')
       return () => { active = false }
     }
     void client.request<CapabilitiesResponse>('/capabilities')
@@ -125,9 +133,9 @@ export function App() {
         setExternalSystemLinks([])
         setCapabilities([])
         setDeploymentTier('SINGLE_NODE_PILOT')
-      })
+    })
     return () => { active = false }
-  }, [activeWorkspace, client])
+  }, [activeWorkspace, authenticatedSubject, client])
 
   useEffect(() => {
     let active = true
@@ -136,7 +144,7 @@ export function App() {
     void catalogExportCapabilityEnabled(client)
       .then((enabled) => { if (active) setCatalogExportWorkerEnabled(enabled) })
     return () => { active = false }
-  }, [activeWorkspace, client])
+  }, [activeWorkspace, authenticatedSubject, client])
 
   const navigate = (next: Page) => {
     window.history.pushState({}, '', pageUrl(next))
@@ -197,10 +205,14 @@ export function App() {
     setWorkspace(normalized)
   }
 
-  const currentAdminContext = adminAccess.workspace === activeWorkspace && adminAccess.status === 'allowed'
+  const currentAdminAccessMatches = (
+    adminAccess.workspace === activeWorkspace
+    && adminAccess.subject === authenticatedSubject
+  )
+  const currentAdminContext = currentAdminAccessMatches && adminAccess.status === 'allowed'
     ? adminAccess.context
     : undefined
-  const currentAdminStatus = adminAccess.workspace === activeWorkspace ? adminAccess.status : 'checking'
+  const currentAdminStatus = currentAdminAccessMatches ? adminAccess.status : 'checking'
   const policyReadOperations: AdminOperation[] = [
     'CLASSIFICATION_POLICY_READ', 'RETENTION_POLICY_READ', 'LEGAL_HOLD_READ',
   ]

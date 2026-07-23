@@ -809,6 +809,36 @@ export interface WorkspaceMembershipAccess {
   job_function: string | null
   membership_version: number
   access: MembershipAccessDocument
+  role_assignment: MembershipRoleAssignmentEvidence
+}
+
+export type DataAccessLevel = 'NO_ACCESS' | 'PARTIAL_ACCESS' | 'FULL_ACCESS'
+export type PartialAccessTreatment = 'MASK' | 'REDACT' | 'TOKENIZE'
+export type DataProcessingPurpose =
+  | 'METADATA_READ'
+  | 'DATA_READ'
+  | 'EXPORT'
+  | 'ANALYTICS'
+  | 'MODEL_TRAINING'
+
+export interface AccessRoleDataRule {
+  classification: Classification
+  access_level: DataAccessLevel
+  partial_treatment: PartialAccessTreatment | null
+  allowed_residency_regions: string[]
+  allowed_processing_purposes: DataProcessingPurpose[]
+}
+
+export interface MembershipRoleAssignmentEvidence {
+  status: 'VERIFIED' | 'MANUAL' | 'LEGACY_UNVERIFIED' | 'EVIDENCE_MISMATCH'
+  role_id: string | null
+  role_version: number | null
+  assignment_version: number | null
+  membership_version: number | null
+  access_payload_hash: string | null
+  assigned_by: string | null
+  updated_at: string | null
+  legacy_markers: string[]
 }
 
 export interface AccessRole {
@@ -822,6 +852,7 @@ export interface AccessRole {
   denied_actions: string[]
   allowed_system_ids: string[]
   allowed_domain_ids: string[]
+  data_access_rules: AccessRoleDataRule[]
   active: boolean
   assigned_count: number
   version: number
@@ -839,6 +870,7 @@ export interface AccessRoleWrite {
   denied_actions: string[]
   allowed_system_ids: string[]
   allowed_domain_ids: string[]
+  data_access_rules: AccessRoleDataRule[]
   active: boolean
 }
 
@@ -878,19 +910,33 @@ export interface SystemDirectoryEntry {
   description: string
   active: boolean
   version: number
-  assignees: Array<{
-    subject_id: string
-    display_name: string
-    responsibility: 'DEVELOPER' | 'DATA_STEWARD'
-    priority: number
-    active: boolean
-  }>
+  assignee_count: number
+  assignees: SystemDirectoryAssignee[]
+}
+
+export interface SystemDirectoryAssignee {
+  subject_id: string
+  display_name: string
+  responsibility: 'DEVELOPER' | 'DATA_STEWARD'
+  priority: number
+  active: boolean
 }
 
 export interface SystemAssigneeUpdate {
   subject_id: string
-  responsibility: 'DEVELOPER' | 'DATA_STEWARD'
+  responsibility: SystemDirectoryAssignee['responsibility']
   priority: number
+}
+
+export interface SystemAssigneeKey {
+  subject_id: string
+  responsibility: SystemDirectoryAssignee['responsibility']
+}
+
+export interface SystemAssigneePage {
+  system_version: number
+  items: SystemDirectoryAssignee[]
+  page: { next_cursor: string | null; limit: number }
 }
 
 export interface SystemAssigneeUpdateResult {
@@ -935,7 +981,8 @@ export interface SystemConfigurationEntry {
 export interface SystemConfigurationTestResult {
   system_id: SystemConfigurationEntry['system_id']
   status: 'AVAILABLE' | 'AUTHENTICATION_REQUIRED' | 'UNAVAILABLE'
-  scope: 'HTTP_HEALTH' | 'MODEL_DISCOVERY' | 'MODEL_INFERENCE' | 'EMBEDDING_INFERENCE' | 'AUTHENTICATED_QUERY'
+  scope: 'HTTP_HEALTH' | 'MODEL_DISCOVERY' | 'MODEL_INFERENCE' | 'EMBEDDING_INFERENCE'
+    | 'AUTHENTICATED_QUERY' | 'REDIS_PING' | 'REDIS_POLICY' | 'S3_HEAD_BUCKET'
   latency_ms: number
   detail: string
   configuration_version: number
@@ -997,12 +1044,32 @@ export interface RetentionRules {
   immutable_archive_years: number
 }
 
+export type RetentionPeriodUnit = 'DAYS' | 'MONTHS' | 'YEARS'
+export type RetentionArchiveDisposition = 'NO_ARCHIVE' | 'EVIDENCE_ONLY' | 'CONTENT_WORM'
+
+export interface RetentionClassRule {
+  data_class: RetentionDataClass
+  unit: RetentionPeriodUnit
+  minimum: number
+  maximum: number
+  archive_disposition: RetentionArchiveDisposition
+}
+
+export interface RetentionPolicyContract {
+  effective_from: string
+  effective_until: string | null
+  execution_authorization_hours: number
+  class_rules: RetentionClassRule[]
+}
+
 export type RetentionPolicyState = 'DRAFT' | 'ACTIVE' | 'REJECTED' | 'SUPERSEDED'
 
 export interface RetentionPolicy {
   policy_id: string
   policy_number: number
   rules: RetentionRules
+  contract_version: 'SINGLE_DEADLINE_V1' | 'POLICY_BOOK_V2'
+  contract: RetentionPolicyContract | null
   payload_hash: string
   requester_id: string
   request_reason: string
@@ -1039,6 +1106,7 @@ export interface LegalHold {
   released_at: string | null
   version: number
   deletion_effect: string
+  action_history_truncated: boolean
   actions: Array<{
     action_id: string
     action: 'PLACED' | 'RELEASE_REQUESTED' | 'RELEASE_APPROVED' | 'RELEASE_REJECTED'
@@ -1074,6 +1142,7 @@ export interface ErasureRequest {
   decided_at: string | null
   version: number
   execution_state: 'DISABLED_NOT_READY'
+  approval_history_truncated: boolean
   approvals: Array<{
     approval_id: string
     decision: 'APPROVED' | 'REJECTED'
@@ -1084,6 +1153,73 @@ export interface ErasureRequest {
     request_version: number
     occurred_at: string
   }>
+}
+
+export interface RetentionExecutionEvidence {
+  erasure_request_id: string
+  availability: 'NOT_PLANNED' | 'AVAILABLE'
+  archive_only: true
+  deletion_automation_state: 'DISABLED_NOT_READY'
+  job: {
+    job_id: string
+    erasure_request_version: number
+    erasure_request_payload_hash: string
+    target_type: 'CHAT_SESSION'
+    target_id: string
+    target_version: number
+    classification: Classification
+    retention_policy_id: string
+    retention_policy_hash: string
+    policy_number: number
+    execution_authorization_valid_until: string
+    archive_disposition: 'EVIDENCE_ONLY'
+    command_hash: string
+    archive_retain_until: string
+    state: 'PLANNED' | 'LEASED' | 'RETRY_WAIT' | 'BLOCKED'
+      | 'ARCHIVE_VERIFIED_DESTRUCTIVE_DISABLED'
+    next_attempt_at: string
+    attempt_count: number
+    maximum_attempts: number
+    archive_manifest_hash: string | null
+    destructive_state: 'DISABLED_NOT_READY'
+    separation_of_duties_verified: true
+    version: number
+    created_at: string
+    updated_at: string
+    attempts: Array<{
+      attempt_no: number
+      state: 'RUNNING' | 'RETRY_WAIT' | 'BLOCKED'
+        | 'ARCHIVE_VERIFIED_DESTRUCTIVE_DISABLED' | 'SUPERSEDED'
+      stage: string
+      evidence_hash: string
+      destructive_effect_count: 0
+      started_at: string
+      finished_at: string | null
+    }>
+    attempts_truncated: boolean
+    events: Array<{
+      sequence: number
+      event_type: 'PLANNED' | 'LEASED' | 'RETRY_WAIT' | 'BLOCKED'
+        | 'ARCHIVE_VERIFIED_DESTRUCTIVE_DISABLED'
+      attempt_no: number | null
+      evidence_hash: string
+      occurred_at: string
+    }>
+    events_truncated: boolean
+    receipt: {
+      receipt_id: string
+      manifest_hash: string
+      content_sha256: string
+      row_count: number
+      byte_count: number
+      retention_until: string
+      legal_hold: boolean
+      content_verified_at: string
+      retention_verified_at: string
+      verified_at: string
+      payload_hash: string
+    } | null
+  } | null
 }
 
 export type ClassificationSearchMode = 'ABAC' | 'DENY' | 'EXPLICIT_GRANT_ONLY'

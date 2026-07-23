@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import Sequence
+from dataclasses import dataclass
 from datetime import datetime
 from types import TracebackType
 from typing import Protocol, Self
@@ -15,6 +15,18 @@ from datariver.domain.classification_access import (
     ClassificationAccessPolicy,
     RestrictedSearchGrant,
 )
+
+
+@dataclass(frozen=True, slots=True)
+class ClassificationPolicyPage:
+    items: tuple[ClassificationAccessPolicy, ...]
+    next_cursor: str | None
+
+
+@dataclass(frozen=True, slots=True)
+class RestrictedSearchGrantPage:
+    items: tuple[RestrictedSearchGrant, ...]
+    next_cursor: str | None
 
 
 class ClassificationPolicyRepository(Protocol):
@@ -37,8 +49,13 @@ class ClassificationPolicyRepository(Protocol):
     ) -> ClassificationAccessPolicy | None: ...
 
     async def list(
-        self, *, workspace_id: UUID, state: str | None, limit: int
-    ) -> Sequence[ClassificationAccessPolicy]: ...
+        self,
+        *,
+        workspace_id: UUID,
+        state: str | None,
+        limit: int,
+        cursor: str | None,
+    ) -> ClassificationPolicyPage: ...
 
     async def next_policy_number(self, *, workspace_id: UUID) -> int: ...
 
@@ -65,7 +82,8 @@ class RestrictedSearchGrantRepository(Protocol):
         subject_id: UUID | None,
         state: str | None,
         limit: int,
-    ) -> Sequence[RestrictedSearchGrant]: ...
+        cursor: str | None,
+    ) -> RestrictedSearchGrantPage: ...
 
 
 class ClassificationAccessAdminUnitOfWork(Protocol):

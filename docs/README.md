@@ -18,7 +18,7 @@
 | 13 | [Operations runbook](13_OPERATIONS_RUNBOOK.md) | backup, restore, recovery and incident procedures | Baseline |
 | 14 | [Production hardening](14_PRODUCTION_HARDENING.md) | scale assumptions, P0-P3 disposition and decision gates | Active |
 | 15 | [Legacy UX parity](15_LEGACY_UX_PARITY_PLAN.md) | v0.3 visual/workflow traceability, safe substitutions and staged acceptance | Active |
-| 16 | [Phase execution checklist](16_PHASE_EXECUTION_CHECKLIST.md) | current Phase 1/2 work and paused Phase 3 parity continuation | Active |
+| 16 | [Phase execution checklist](16_PHASE_EXECUTION_CHECKLIST.md) | historical Phase 1/2 work and parity continuation record | Active historical scope |
 | 17 | [Semiconductor seed workflow](17_SEMICONDUCTOR_SEED_WORKFLOW.md) | restartable external schema, DataHub lineage and Airflow operation | Implemented baseline |
 | 18 | [Semiconductor governance taxonomy](18_SEMICONDUCTOR_GOVERNANCE_TAXONOMY.md) | DataHub glossary/tag hierarchy and deterministic enrichment workflow | Implemented baseline |
 | 19 | [Two-person CR browser acceptance](19_CR_E2E_ACCEPTANCE.md) | target-environment OIDC/WebAuthn intake, independent review and completion evidence | Active acceptance gate |
@@ -29,9 +29,9 @@
 | 24 | [Low-resource multi-architecture deployment PRD](24_LOW_RESOURCE_MULTIARCH_DEPLOYMENT_PRD.md) | arm64/amd64 parity, dependency placement, configuration and migration acceptance | Active |
 | 25 | [Low-resource multi-architecture execution checklist](25_LOW_RESOURCE_MULTIARCH_EXECUTION_CHECKLIST.md) | phased implementation and target-environment evidence | Active |
 | 26 | [Mac arm64 to WSL amd64 migration runbook](26_MAC_TO_WSL_MIGRATION_RUNBOOK.md) | exact-source/image transfer, object reconciliation, logical restore and rollback | Active target gate |
-| 27 | [Policy Book and Admin governance PRD](27_POLICY_BOOK_ADMIN_GOVERNANCE_PRD.md) | access levels, assignment evidence, retention and approval-gated Admin completion | Active; Phase 2 local exit complete |
-| 28 | [Policy Book execution checklist](28_POLICY_BOOK_EXECUTION_CHECKLIST.md) | phase gates and exhaustive Admin function inventory | Phase 2 local exit complete; target activation gates open |
-| 29 | [Master execution backlog](29_MASTER_EXECUTION_BACKLOG.md) | current delivery checklist, risk status and final artifact order | Active; Phase 3 not started |
+| 27 | [Policy Book and Admin governance PRD](27_POLICY_BOOK_ADMIN_GOVERNANCE_PRD.md) | access levels, assignment evidence, retention and approval-gated Admin completion | Active; Phase 3 local source complete |
+| 28 | [Policy Book execution checklist](28_POLICY_BOOK_EXECUTION_CHECKLIST.md) | phase gates and exhaustive Admin function inventory | Phase 3 local source complete; target acceptance gates open |
+| 29 | [Master execution backlog](29_MASTER_EXECUTION_BACKLOG.md) | current delivery checklist, risk status and final artifact order | Active; request group 3 next |
 
 Independent review records: [Data Architect](reviews/2026-07-14_DATA_ARCHITECT_REVIEW.md) and [Data Engineer/SRE](reviews/2026-07-14_DATA_ENGINEER_REVIEW.md).
 
@@ -56,6 +56,8 @@ Current multi-architecture release decision: [runtime configuration and release 
 Current low-resource client and preparation Chat decision: [bounded client state and preparation Chat provider](adr/0035-bounded-client-state-and-preparation-chat-provider.md).
 
 Current Policy Book decision: [normalized RBAC rules and Admin approval gates](adr/0036-policy-book-rbac-and-admin-approval-gates.md).
+
+Current bounded Admin decision: [bounded navigation and delta assignment](adr/0038-bounded-admin-navigation-and-delta-assignment.md).
 
 ## Change control
 

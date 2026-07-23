@@ -13,6 +13,7 @@ from sqlalchemy import (
     String,
     UniqueConstraint,
     Uuid,
+    text,
 )
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -103,6 +104,13 @@ class InferenceProviderProfileVersionModel(Base, UuidPrimaryKeyMixin, TimestampM
             "workspace_id",
             "state",
             "profile_key",
+        ),
+        Index(
+            "ix_inference_profile_versions_workspace_order",
+            "workspace_id",
+            "profile_key",
+            text("profile_version DESC"),
+            "id",
         ),
         {"schema": "integration"},
     )

@@ -9,7 +9,7 @@ target-environment production evidence.
 |---|---|---|---|
 | 1 | RBAC/data-policy DB model and backend contract | DONE | all Phase 1 gates passed; user approved on 2026-07-23 |
 | 2 | Retention scheduler/executor boundary | DONE | local source/DB gates and independent P0/P1 reviews pass; target activation gates remain blocked |
-| 3 | Admin UI integration and placeholder closure | PENDING | Phase 2 exit report, all Admin rows below resolved and browser tests pass |
+| 3 | Admin UI integration and placeholder closure | DONE | current-source local gates and independent final P0/P1 reviews pass; target browser/provider/WSL acceptance remains external |
 
 ## Phase 1 checklist
 
@@ -144,43 +144,75 @@ Phase 2 implementation was committed as `ca24c07` and published on
 `origin/codex/admin-policy-rbac`. This is source publication only; it is not a PR, merge, release or
 target-profile activation.
 
-## Admin function inventory and Phase 3 plan
+## Admin function inventory and Phase 3 disposition
 
-| Area / function | Current backend | Current UI | Planned validation or implementation |
+| Area / function | Backend disposition | UI disposition | Phase 3 evidence or explicit boundary |
 |---|---|---|---|
-| Admin eligibility and `/admin/me` | Implemented | Implemented | negative tests for non-admin, expired/service/weak assurance |
-| User bounded list/search | Implemented | Implemented | cursor/page bound and no cross-workspace counts |
-| Governed Keycloak user creation | Implemented, optional | Implemented | provider rollback/retry and normalized Role evidence |
-| User detail/access document | Implemented | Implemented | stale ETag, self-edit and last-two-admin negative tests |
-| Role list/create/update/deactivate | Phase 1 contract implemented | Existing editor lacks new rules | add four-class rule editor and missing-rule warning |
-| Role assignment/removal | Phase 1 normalized evidence | Existing selector | display exact Role version and evidence status |
-| Manual/fallback edit of a Role-bound member | Backend deliberately rejects reserved markers | Existing editor can submit the marker and receive a fail-closed error | Phase 3 must disable the manual form, explain that Role removal is required first and regression-test the transition |
-| User profile edit from Admin | No dedicated contract | Placeholder | define bounded identity/profile contract or explicit unavailable state |
-| User-owned table drill-down | Summary count only | Placeholder | server-paged authorized table endpoint; never load all rows |
-| User change-request drill-down | Summary count only | Placeholder | server-paged authorized CR endpoint |
-| Membership renewal | Implemented | Implemented | requester/checker/expiry race regression |
-| System Developer/Steward assignments | Implemented | Implemented | full replacement, priorities and lane-separation regression |
-| Classification Search/Chat policy | Implemented | Implemented | policy generation/cache revocation negative tests |
-| RESTRICTED explicit grants | Implemented | Implemented | scope/expiry/revocation and no-Chat regression |
-| Inference provider approval/revoke | Implemented | Implemented | immutable profile and credential non-disclosure regression |
-| Password fallback workflow | Implemented, optional | Implemented | two-person, five-minute, one-use and self-change negative tests |
-| System Settings inventory/versions | Implemented | Implemented | deployment-managed versus development-write state clarity |
-| System Settings SAVE/TEST/ACTIVATE | Development only | Implemented | fixed probe, secret-reference and restart-required states |
-| Retention policy | Implemented review only | Implemented | Phase 2 execution status/evidence; no implied deletion |
-| Legal Hold place/release | Implemented | Implemented | hold precedence and independent release evidence |
-| Erasure request/review | Implemented, non-executing | Implemented | Phase 2 consume/execution evidence kept separate |
-| Metadata change audit search/export | Missing bounded API | Disabled placeholder | define masked, paged, immutable evidence query/export |
-| Security audit search/export | Missing bounded API | Disabled placeholder | define separately authorized masked query/export |
-| Enterprise dictionary projection | Read vocabulary exists | Read/client export only | define canonical mapping CRUD, approval and server export or mark out of scope |
-| Monitoring links | Implemented via settings | Implemented | URL allowlist/sandbox/degraded state tests |
+| Admin eligibility and `/admin/me` | Implemented | Implemented | expired/service/weak-assurance negatives and exact operation-derived navigation |
+| User bounded list/search | Cursor/filter page, maximum 100 | Default 25; cursor history capped at 50 | workspace/query/status-bound cursor and late-response discard |
+| Governed Keycloak user creation | Optional fixed adapter | Implemented when operation is present | redirect/proxy/body bounds, rollback/retry and normalized Role evidence; password never persisted |
+| User detail/access document | Exact detail/ETag and normalized Role evidence | Implemented | stale selection is discarded; selected member and loaded evidence cannot be combined |
+| Role list/create/update/deactivate | Cursor page plus exact four-class rules | Four-class editor and missing-rule warning | Role search is server-bounded; current out-of-page selection remains explicit |
+| Role assignment/removal | Normalized current/event evidence | Exact version/evidence status displayed | no marker-only claim; same exact assignment is rejected |
+| Manual/fallback edit of a Role-bound member | Reserved marker/evidence mismatch denied | Form disabled with repair/removal guidance | verified and unverifiable evidence paths both fail closed |
+| User profile edit from Admin | No dedicated contract | Governed unavailable | no fabricated update control; external IdP remains canonical |
+| User-owned table drill-down | Summary count only | Governed unavailable | no row list until an authorized server cursor contract exists |
+| User change-request drill-down | Summary count only | Governed unavailable | no row list until an authorized server cursor contract exists |
+| Membership renewal | Cursor page | Implemented | requester/checker/expiry and cursor-bound state regression |
+| System Developer/Steward assignments | Separate cursor page and bounded delta PATCH; PUT retained | Default 25; delta editor | System-version cursor, combined 100-operation cap, missing/no-op/stale/lane negatives |
+| Classification Search/Chat policy | Cursor page | Four-class page/filter | activation/revocation and stale-response tests |
+| RESTRICTED explicit grants | Cursor page | Bounded active member/System selectors | scope/expiry/revocation/no-Chat and out-of-page selection evidence |
+| Inference provider approval/revoke | Exact-key cursor page | Exact-key search and page controls | immutable profile and credential non-disclosure regression |
+| Password fallback workflow | Cursor page, optional | Implemented when enabled | two-person, five-minute, one-use and self-change negatives |
+| System Settings inventory/versions | Redacted current/activated evidence only | Management-plane and restart states explicit | inventory avoids all-history reads |
+| System Settings SAVE/TEST/ACTIVATE | Development only; exact mounted-secret names and fixed probes | Implemented | Redis policy/S3 head scope, bounded probe and runtime-consumer validation |
+| Retention policy | Cursor page; review and archive-only evidence read | Implemented | approval is not deletion; execution evidence is private/no-store |
+| Legal Hold place/release | Cursor page | Implemented | hold precedence and independent release evidence |
+| Erasure request/review | Cursor page plus separate execution-evidence read | Implemented | request, approval and archive receipt remain separate; no physical-delete state |
+| Metadata change audit search/export | Missing bounded masked API | Governed unavailable | separately authorized future contract; no placeholder rows |
+| Security audit search/export | Missing bounded masked API | Governed unavailable | separately authorized future contract; no placeholder rows |
+| Enterprise dictionary projection | Canonical CRUD/approval/export absent | Governed unavailable | existing vocabulary browse is not represented as an enterprise dictionary |
+| Monitoring links | Implemented via settings | Implemented | fixed allowlist/sandbox/degraded behavior retained |
 
 ## Phase 3 UI rules
 
-- Every table is server-paged/cursor-bounded; closing or changing a filter aborts and discards stale
-  requests. The browser never accumulates the enterprise catalog or audit history.
-- Disabled functionality names its missing API/assurance/configuration. It never displays fabricated
+- [x] Every displayed mutable collection is server-paged/cursor-bounded; refresh, mutation reload,
+  filter/page changes and unmount abort the prior channel request and discard stale responses. The
+  browser never accumulates the enterprise catalog or audit history.
+- [x] Disabled functionality names its missing API/assurance/configuration. It never displays fabricated
   rows or a control that silently closes.
-- Mutation controls are rendered from server operations but still rely on backend authorization.
-- Credentials remain mounted secrets; UI forms accept only approved secret reference names.
-- Each row above ends as implemented with tests, explicitly unavailable with reason, or a separately
+- [x] Mutation controls are rendered from server operations but still rely on backend authorization.
+- [x] Credentials remain mounted secrets; UI forms accept only approved secret reference names.
+- [x] Each row above ends as implemented with tests, explicitly unavailable with reason, or a separately
   approved backlog decision.
+
+Current local-exit evidence on 2026-07-23: Ruff format/lint passed over 305 files, strict mypy passed
+over 298 source/test files, static verification passed and the default backend suite passed
+953 tests with 28 explicitly isolated-PostgreSQL retention/Role cases skipped. The frontend passed
+strict TypeScript, zero-warning ESLint, 43 files/194 tests and the production build. Canonical
+`0001` regenerated twice without a diff at SHA-256
+`72237a82d08cebb45e5337c66031486139e9760b5a882d0a9f84c75141c17972`, and Alembic reports one
+head at `0044`.
+
+Isolated PostgreSQL 17.10 rehearsals exposed and corrected compatibility defects that source tests
+had missed: the `0042` exact fingerprint recognizes only the reviewed current-canonical
+cursor-index baseline, `0043` no-ops on the exact current probe CHECK or replaces only the exact
+legacy CHECK, and `0044` no longer treats a name as proof of a canonical index. The final run passed
+`0001 -> 0043 -> 0044`, rejected a same-name `text_pattern_ops` index without dropping it, then
+dropped/rebuilt an exact `indisvalid=false`/`indisready=false` interrupted index. All six final
+indexes were plain B-tree, had no INCLUDE columns and reported
+`indisvalid=true`/`indisready=true`. Application-role soft deactivate/reactivate of System
+assignees also passed while physical DELETE remained denied. Disposable databases/containers were
+removed; no user data was copied into them.
+
+Independent security and contract reviewers initially reported Role-evidence bypass, physical
+assignee deletion, nested-secret/YAML limits, provider timeout, index retry, retention wire-contract,
+unbounded history/N+1, provider selection and request-cancellation issues. Each accepted finding was
+corrected and rerun. Their final read-only reviews report no remaining Phase 3 P0/P1.
+
+Actual OIDC/WebAuthn multi-human browser acceptance, representative production-size
+`EXPLAIN (ANALYZE, BUFFERS)`, live-development `0041 -> 0044` cutover, WSL `linux/amd64` migration,
+external provider checks and operations-owner acceptance remain external gates. The running Mac
+development database was intentionally left at `0041` during source work so its older API image
+would not fail exact-revision readiness; current-source runtime promotion belongs to the controlled
+deployment phase.

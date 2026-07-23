@@ -2,22 +2,29 @@
 
 ## Current verification status
 
-The remediated Phase 2 source passed the full current-source gate: `865` default backend tests passed
-with `28` explicitly environment-gated PostgreSQL cases skipped, and those cases separately passed
-as Phase 1 `1/1` plus Phase 2 `27/27` against disposable PostgreSQL 17 using the application,
-scheduler, archive and owner roles. The final retention persistence/execution regression subset
-passed `110/110`. Ruff format covered `299` files, Ruff lint passed, strict mypy covered `292` source
-files, and static architecture/role/Compose verification passed. The frontend passed TypeScript,
-zero-warning ESLint, `39` files / `170` tests and the production build.
+The Policy Book Phase 3 local-exit source passed `953` backend tests with `28` explicitly
+environment-gated PostgreSQL cases skipped. Ruff format/lint passed over `305` files, strict mypy
+passed over `298` source/test files, and static architecture/role/Compose verification passed. The
+frontend passed strict TypeScript, zero-warning ESLint, `43` files / `194` tests and the production
+build. Base, local-identity and default-off `retention-archive` Compose configurations parsed.
+Canonical `0001` generation was byte-identical across two runs at SHA-256
+`72237a82d08cebb45e5337c66031486139e9760b5a882d0a9f84c75141c17972`; Alembic has the single head
+`0044`.
 
-Fresh `0001 -> 0042` and stripped additive `0041 -> 0042` rehearsals passed. A same-vocabulary
-malformed source CHECK was rejected. Canonical `0001` generation was byte-identical across two
-runs at SHA-256 `24bbb8c8d895ab20d65dffb39783ee62562e7ea3b140477eee418dd3277fcc7a`.
-Base and `retention-archive` Compose parsing plus POSIX shell syntax passed. This Mac host has no
-`pwsh`, so the PowerShell parser was not rerun in the final gate. Maintained-provider WORM
-conformance, off-host restore, Windows/WSL `linux/amd64` runtime/crash/low-resource acceptance and
-accountable operations approval remain target gates; no local result authorizes destructive action
-or activation of the default-off archive profile.
+A disposable PostgreSQL 17.10 ran `0001 -> 0043 -> 0044`. The test replaced one canonical index
+with the same name and non-default `text_pattern_ops`; `0044` failed closed and did not normalize
+the drift. It then marked an exact definition invalid/not-ready, and `0044` concurrently
+dropped/rebuilt only that interrupted index. All six final cursor indexes were valid/ready plain
+B-trees without INCLUDE columns. Earlier rehearsals also verified the `0042` current-canonical
+fingerprint, the `0043` exact CHECK bridge and application-role System-assignee soft
+deactivate/reactivate with DELETE denied.
+
+Independent security and contract reviewers report no remaining Phase 3 P0/P1 after final
+remediation. Actual multi-human OIDC/WebAuthn browser acceptance, production-size
+`EXPLAIN (ANALYZE, BUFFERS)`, maintained-provider WORM conformance, off-host restore,
+Windows/WSL `linux/amd64` runtime/crash/low-resource acceptance and accountable operations approval
+remain target gates. No local result authorizes destructive action or activation of the default-off
+archive profile.
 
 The final recovery regression uses an exact pre-write capability-attestation UUID in S3 metadata,
 requires provider `LastModified` on lookup, treats its whole-second precision as the conservative
@@ -50,7 +57,7 @@ scheduler, archive and owner roles. Base Compose and the `retention-archive` pro
 `config --quiet`. The generated `0001` was byte-identical across two runs at SHA-256
 `8d4d2f36c8f01af3a7694eadac022d6517078ecc20d9fc55f1f7273c958e2ef7`.
 
-A completely empty volume migrated through every revision from `0001` to the sole head `0042`.
+A completely empty volume migrated through every revision from `0001` to the then-current sole head `0042`.
 The additive `0041 -> 0042` compatibility path also passed after simulating a complete Phase 1
 schema without Phase 2 objects. Read-back verified the four Phase 2 tables use forced workspace
 RLS, scheduler/archive roles are `NOBYPASSRLS`, event evidence is append-only, worker mutation is

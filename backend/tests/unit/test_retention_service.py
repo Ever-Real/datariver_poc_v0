@@ -11,7 +11,12 @@ from uuid import UUID, uuid4
 import pytest
 
 from datariver.application.dto import IdempotencyRecord
-from datariver.application.ports import RetentionUnitOfWork
+from datariver.application.ports import (
+    ErasureRequestPage,
+    LegalHoldPage,
+    RetentionPolicyPage,
+    RetentionUnitOfWork,
+)
 from datariver.application.services.authorization import AuthorizationService
 from datariver.application.services.retention import RetentionGovernanceService
 from datariver.domain.authz import (
@@ -30,6 +35,7 @@ from datariver.domain.retention import (
     ErasureTargetType,
     GovernanceDecision,
     LegalHold,
+    LegalHoldActionType,
     LegalHoldScope,
     LegalHoldState,
     RetentionDataClass,
@@ -94,13 +100,23 @@ class MemoryPolicies:
         )
 
     async def list(
-        self, *, workspace_id: UUID, state: str | None, limit: int
-    ) -> Sequence[RetentionPolicyVersion]:
-        return tuple(
-            value
-            for value in sorted(self.values.values(), key=lambda item: item.policy_number)
-            if value.workspace_id == workspace_id and (state is None or value.state.value == state)
-        )[:limit]
+        self,
+        *,
+        workspace_id: UUID,
+        state: str | None,
+        limit: int,
+        cursor: str | None = None,
+    ) -> RetentionPolicyPage:
+        del cursor
+        return RetentionPolicyPage(
+            items=tuple(
+                value
+                for value in sorted(self.values.values(), key=lambda item: item.policy_number)
+                if value.workspace_id == workspace_id
+                and (state is None or value.state.value == state)
+            )[:limit],
+            next_cursor=None,
+        )
 
     async def next_policy_number(self, *, workspace_id: UUID) -> int:
         return (
@@ -135,13 +151,23 @@ class MemoryLegalHolds:
         return await self.get(workspace_id=workspace_id, hold_id=hold_id)
 
     async def list(
-        self, *, workspace_id: UUID, state: str | None, limit: int
-    ) -> Sequence[LegalHold]:
-        return tuple(
-            value
-            for value in self.values.values()
-            if value.workspace_id == workspace_id and (state is None or value.state.value == state)
-        )[:limit]
+        self,
+        *,
+        workspace_id: UUID,
+        state: str | None,
+        limit: int,
+        cursor: str | None = None,
+    ) -> LegalHoldPage:
+        del cursor
+        return LegalHoldPage(
+            items=tuple(
+                value
+                for value in self.values.values()
+                if value.workspace_id == workspace_id
+                and (state is None or value.state.value == state)
+            )[:limit],
+            next_cursor=None,
+        )
 
     async def save(self, hold: LegalHold) -> None:
         self.values[hold.hold_id] = hold
@@ -176,13 +202,23 @@ class MemoryErasureRequests:
         return await self.get(workspace_id=workspace_id, erasure_request_id=erasure_request_id)
 
     async def list(
-        self, *, workspace_id: UUID, state: str | None, limit: int
-    ) -> Sequence[ErasureRequest]:
-        return tuple(
-            value
-            for value in self.values.values()
-            if value.workspace_id == workspace_id and (state is None or value.state.value == state)
-        )[:limit]
+        self,
+        *,
+        workspace_id: UUID,
+        state: str | None,
+        limit: int,
+        cursor: str | None = None,
+    ) -> ErasureRequestPage:
+        del cursor
+        return ErasureRequestPage(
+            items=tuple(
+                value
+                for value in self.values.values()
+                if value.workspace_id == workspace_id
+                and (state is None or value.state.value == state)
+            )[:limit],
+            next_cursor=None,
+        )
 
     async def save(self, request: ErasureRequest) -> None:
         self.values[request.erasure_request_id] = request
@@ -234,6 +270,33 @@ class MemoryIdempotency:
         )
 
 
+class MemoryExecutionEvidence:
+    def __init__(self, state: dict[str, object]) -> None:
+        self.state = state
+
+    async def assert_admin_reader_eligible(
+        self,
+        *,
+        workspace_id: UUID,
+        subject_id: UUID,
+    ) -> None:
+        assert workspace_id == self.state["workspace_id"]
+        assert isinstance(subject_id, UUID)
+        self.state["execution_reader_checked"] = True
+
+    async def get_for_erasure_request(
+        self,
+        *,
+        workspace_id: UUID,
+        erasure_request_id: UUID,
+    ) -> None:
+        assert workspace_id == self.state["workspace_id"]
+        assert erasure_request_id in cast(
+            dict[UUID, ErasureRequest], self.state["erasure_requests"]
+        )
+        return None
+
+
 class MemoryRetentionUnitOfWork:
     def __init__(self, state: dict[str, object]) -> None:
         self.state = state
@@ -248,6 +311,7 @@ class MemoryRetentionUnitOfWork:
                 state["erasure_targets"],
             )
         )
+        self.execution_evidence = MemoryExecutionEvidence(state)
         self.outbox = MemoryOutbox(cast(list[DomainEvent], state["outbox"]))
         self.idempotency = MemoryIdempotency(
             cast(dict[tuple[UUID, str, str], IdempotencyRecord], state["idempotency"])
@@ -294,6 +358,7 @@ def _state(workspace_id: UUID) -> dict[str, object]:
         "outbox": [],
         "idempotency": {},
         "lock_count": 0,
+        "execution_reader_checked": False,
     }
 
 
@@ -483,6 +548,18 @@ async def test_legal_hold_release_requires_independent_checker_and_keeps_history
         idempotency_key="retention-hold-place",
         request_hash="1" * 64,
     )
+    detail = await service.get_legal_hold(
+        workspace_id=workspace_id,
+        hold_id=hold.hold_id,
+        subject=_subject(
+            workspace_id,
+            actions=frozenset({Action.RETENTION_READ}),
+            now=now,
+        ),
+        environment=environment,
+        request_id="hold-detail",
+    )
+    assert [action.action for action in detail.actions] == [LegalHoldActionType.PLACED]
     hold = await service.request_legal_hold_release(
         workspace_id=workspace_id,
         hold_id=hold.hold_id,
@@ -648,6 +725,64 @@ async def test_erasure_request_binds_canonical_target_and_active_policy() -> Non
     assert request.retention_policy_hash == policy.payload_hash
     assert request.execution_state == "DISABLED_NOT_READY"
     assert request.state is ErasureRequestState.PENDING
+
+
+@pytest.mark.asyncio
+async def test_execution_evidence_requires_current_human_admin_and_retention_read() -> None:
+    workspace_id = uuid4()
+    now = datetime.now(UTC)
+    state = _state(workspace_id)
+    request = ErasureRequest.create(
+        workspace_id=workspace_id,
+        target_type=ErasureTargetType.CHAT_SESSION,
+        target_id=uuid4(),
+        target_version=1,
+        target_owner_id=uuid4(),
+        classification=Classification.RESTRICTED,
+        retention_policy_id=uuid4(),
+        retention_policy_hash="a" * 64,
+        requester_id=uuid4(),
+        reason="Archive-only erasure evidence review",
+        policy_decision_id=uuid4(),
+        now=now,
+        expires_at=now + timedelta(hours=1),
+    )
+    cast(dict[UUID, ErasureRequest], state["erasure_requests"])[request.erasure_request_id] = (
+        request
+    )
+    service = _service(state)
+    admin = _subject(
+        workspace_id,
+        actions=frozenset({Action.ADMIN_MANAGE, Action.RETENTION_READ}),
+        now=now,
+    )
+
+    result = await service.get_erasure_execution_evidence(
+        workspace_id=workspace_id,
+        erasure_request_id=request.erasure_request_id,
+        subject=admin,
+        environment=EnvironmentAttributes(requested_at=now),
+        request_id="read-execution-evidence",
+    )
+
+    assert result is None
+
+    for denied in (
+        replace(admin, subject_id=uuid4(), groups=frozenset()),
+        replace(
+            admin,
+            subject_id=uuid4(),
+            allowed_actions=frozenset({Action.ADMIN_MANAGE}),
+        ),
+    ):
+        with pytest.raises(ForbiddenError):
+            await service.get_erasure_execution_evidence(
+                workspace_id=workspace_id,
+                erasure_request_id=request.erasure_request_id,
+                subject=denied,
+                environment=EnvironmentAttributes(requested_at=now),
+                request_id="denied-execution-evidence",
+            )
 
 
 @pytest.mark.asyncio

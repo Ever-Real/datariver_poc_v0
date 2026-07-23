@@ -49,9 +49,11 @@ display hints, not evidence and not authority; an administrator must explicitly 
 to create normalized evidence. Manual and fallback access documents cannot submit reserved markers;
 only the Role-assignment path changes them together with normalized current/event evidence. That
 path compares the marker against the locked Role key and rejects exact same
-Role/version/materialized-access-hash reaffirmation. Before Phase 3, a Role-bound member's generic
-access form therefore fails closed; the
-approved Phase 3 UI must disable it and direct administrators to remove the Role first.
+Role/version/materialized-access-hash reaffirmation. The Phase 3 generic and password-fallback
+access paths lock and reject both normalized Role assignments and unverifiable reserved legacy
+markers before any request, approval or membership mutation can be persisted. The Admin UI disables
+that form and directs administrators to remove the Role through the dedicated version-bound path
+first.
 
 ## Administration and separation of duties
 
@@ -72,7 +74,7 @@ approved Phase 3 UI must disable it and direct administrators to remove the Role
 - PostgreSQL and the application remain architecture-neutral. The same source revision and lockfiles
   build separate `linux/arm64` and `linux/amd64` images.
 - Redis and S3/MinIO are external connector choices and never canonical RBAC/retention stores.
-- A clean environment bootstraps secrets locally, applies Alembic through required revision `0042`,
+- A clean environment bootstraps secrets locally, applies Alembic through required revision `0044`,
   and never copies another machine's `.env`, secrets or volumes.
 
 ## Phase acceptance
