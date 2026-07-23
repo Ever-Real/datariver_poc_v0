@@ -805,6 +805,24 @@ def _mutable_json_object(value: Mapping[str, Any]) -> dict[str, Any]:
     return result
 
 
+def prepare_dataset_description_document(
+    *,
+    asset: CatalogAssetIndex,
+    snapshot: DataHubAspectSnapshot,
+    proposed_description: str,
+) -> tuple[str | None, dict[str, Any]]:
+    """Shared typed merge contract for Manual and BULK description proposals."""
+    CatalogDescriptionService._validate_snapshot(
+        asset=asset,
+        snapshot=snapshot,
+        aspect_name=DATASET_PROPERTIES_ASPECT,
+    )
+    return CatalogDescriptionService._proposed_document(
+        snapshot=snapshot,
+        proposed_description=proposed_description,
+    )
+
+
 def _mutable_json(value: Any) -> Any:
     if isinstance(value, Mapping):
         if any(not isinstance(key, str) for key in value):

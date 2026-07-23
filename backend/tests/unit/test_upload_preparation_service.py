@@ -199,7 +199,7 @@ def _accepted_manifest() -> UploadManifest:
         actual_mime="text/csv",
         actual_sha256="a" * 64,
         validation_summary={
-            "validator_version": "integrity-format-v1",
+            "validator_version": "integrity-format-v2-low-resource",
             "size_bytes": 2048,
             "sha256": "a" * 64,
             "content_type": "text/csv",

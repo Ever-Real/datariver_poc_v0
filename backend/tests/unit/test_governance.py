@@ -3,6 +3,7 @@ from uuid import uuid4
 
 import pytest
 
+import datariver.domain.governance as governance_module
 from datariver.domain.authz import Classification
 from datariver.domain.common import ConflictError, ValidationError
 from datariver.domain.governance import (
@@ -60,6 +61,74 @@ def make_request() -> ChangeRequest:
             )
         ],
     )
+
+
+def test_change_request_histories_fail_before_exceeding_governed_capacity(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    request = make_request()
+    actor_id = uuid4()
+    policy_decision_id = uuid4()
+
+    monkeypatch.setattr(governance_module, "MAX_CHANGE_TRANSITIONS", 0)
+    with pytest.raises(
+        ConflictError,
+        match="transition history reached its governed capacity",
+    ):
+        request.transition(
+            target=ChangeState.IN_REVIEW,
+            actor_id=actor_id,
+            reason="Start review.",
+            policy_decision_id=policy_decision_id,
+            expected_version=request.version,
+        )
+    assert request.state is ChangeState.REGISTERED
+
+    monkeypatch.setattr(governance_module, "MAX_CHANGE_APPROVALS", 0)
+    with pytest.raises(
+        ConflictError,
+        match="approval history reached its governed capacity",
+    ):
+        request.add_approval(
+            stage="REVIEW",
+            decision=ApprovalDecision.APPROVED,
+            actor_id=actor_id,
+            reason="Approve.",
+            policy_decision_id=policy_decision_id,
+            expected_version=request.version,
+            authorities=(),
+        )
+
+    monkeypatch.setattr(governance_module, "MAX_CHANGE_TEST_RUNS", 0)
+    with pytest.raises(
+        ConflictError,
+        match="test history reached its governed capacity",
+    ):
+        request.record_test_run(
+            system_id=next(iter(request.required_system_ids())),
+            attachment_id=uuid4(),
+            state=ChangeTestRunState.PASSED,
+            plan_hash="a" * 64,
+            result_hash="b" * 64,
+            bounded_summary={},
+            actor_id=actor_id,
+            expected_version=request.version,
+        )
+
+    monkeypatch.setattr(governance_module, "MAX_CHANGE_ROUNDS", 1)
+    request.state = ChangeState.CHANGES_REQUESTED
+    with pytest.raises(
+        ConflictError,
+        match="revision history reached its governed capacity",
+    ):
+        request.transition(
+            target=ChangeState.REGISTERED,
+            actor_id=request.requester_id,
+            reason="Resubmit.",
+            policy_decision_id=policy_decision_id,
+            expected_version=request.version,
+        )
+    assert len(request.rounds) == 1
 
 
 def move_to_final_review(request: ChangeRequest) -> None:

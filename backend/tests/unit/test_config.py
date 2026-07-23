@@ -1,6 +1,7 @@
 import pytest
 from pydantic import ValidationError
 
+from datariver.bootstrap import LOCAL_AIRFLOW_SUBJECT_ID
 from datariver.config import Settings
 
 
@@ -45,6 +46,28 @@ def settings(**overrides: object) -> Settings:
 def test_rejects_shared_cache_and_queue_endpoint() -> None:
     with pytest.raises(ValidationError):
         settings(valkey_queue_url="redis://cache:6379/0")
+
+
+def test_governance_lease_covers_one_provider_call_and_renewal_margin() -> None:
+    configured = settings(
+        datahub_timeout_seconds=15,
+        datahub_queue_timeout_seconds=5,
+        worker_database_pool_timeout_seconds=10,
+        governance_apply_lease_seconds=56,
+    )
+    assert configured.governance_apply_lease_seconds == 56
+
+    with pytest.raises(ValidationError, match="governance apply lease"):
+        settings(
+            datahub_timeout_seconds=15,
+            datahub_queue_timeout_seconds=5,
+            worker_database_pool_timeout_seconds=10,
+            governance_apply_lease_seconds=55,
+        )
+
+
+def test_default_governance_worker_is_the_seeded_airflow_service_subject() -> None:
+    assert settings().governance_worker_subject_id == LOCAL_AIRFLOW_SUBJECT_ID
 
 
 def test_rejects_shared_redis_service_even_when_database_numbers_differ() -> None:

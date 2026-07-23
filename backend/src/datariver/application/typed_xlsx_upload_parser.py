@@ -1,10 +1,14 @@
 from __future__ import annotations
 
+import asyncio
+import gzip
 import hashlib
+import json
 import re
 import tempfile
 import zipfile
-from collections.abc import AsyncIterable, Awaitable, Callable, Iterator
+from collections.abc import AsyncIterable, Awaitable, Callable, Generator, Iterator
+from itertools import islice
 from pathlib import PurePosixPath
 from typing import IO
 from uuid import UUID
@@ -37,13 +41,16 @@ _SHARED_STRINGS = "xl/sharedStrings.xml"
 _CELL_REFERENCE = re.compile(r"^([A-Z]{1,3})([1-9][0-9]*)$")
 _SAFE_ZIP_METHODS = frozenset({zipfile.ZIP_STORED, zipfile.ZIP_DEFLATED})
 _MAXIMUM_ZIP_ENTRIES = 512
-_MAXIMUM_UNCOMPRESSED_BYTES = 512 * 1024 * 1024
-_MAXIMUM_SINGLE_ENTRY_BYTES = 256 * 1024 * 1024
+_MAXIMUM_UNCOMPRESSED_BYTES = 64 * 1024 * 1024
+_MAXIMUM_SINGLE_ENTRY_BYTES = 32 * 1024 * 1024
 _MAXIMUM_COMPRESSION_RATIO = 100
-_MAXIMUM_SHARED_STRINGS = 300_000
-_MAXIMUM_SHARED_STRING_BYTES = 64 * 1024 * 1024
+_MAXIMUM_SHARED_STRINGS = 20_000
+_MAXIMUM_SHARED_STRING_BYTES = 16 * 1024 * 1024
 _MAXIMUM_METADATA_XML_BYTES = 2 * 1024 * 1024
 _MEMORY_SPOOL_BYTES = 8 * 1024 * 1024
+_CANDIDATE_MEMORY_SPOOL_BYTES = 256 * 1024
+_MAXIMUM_CANDIDATE_SPOOL_BYTES = 64 * 1024 * 1024
+_CANDIDATE_REPLAY_BATCH_SIZE = 16
 _FORBIDDEN_XML_MARKERS = (b"<!doctype", b"<!entity")
 
 CandidateConsumer = Callable[[DatasetDescriptionCandidateDraft], Awaitable[None]]
@@ -97,52 +104,24 @@ async def parse_dataset_description_xlsx(
                 "The XLSX upload bytes do not match the accepted source hash.",
             )
         package_file.seek(0)
-        try:
-            with zipfile.ZipFile(package_file) as package:
-                entries = _validate_package(package)
-                shared_strings = _read_shared_strings(package, entries)
-                worksheet_name = _resolve_single_visible_worksheet(package, entries)
-                item_count = 0
-                seen_assets: set[UUID] = set()
-                candidate_root = dataset_description_candidate_root_seed()
-                for row_number, fields in _iter_worksheet_rows(
-                    package,
-                    worksheet_name=worksheet_name,
-                    shared_strings=shared_strings,
-                    maximum_rows=definition.maximum_rows,
+        item_count, candidate_root, candidates = await asyncio.to_thread(
+            _parse_xlsx_package,
+            package_file,
+            workspace_id,
+            definition,
+        )
+        with candidates:
+            replay = candidates.replay()
+            try:
+                while batch := await asyncio.to_thread(
+                    _read_candidate_batch,
+                    replay,
+                    _CANDIDATE_REPLAY_BATCH_SIZE,
                 ):
-                    if row_number == 1:
-                        if tuple(fields) != definition.headers:
-                            raise TypedUploadParseError(
-                                TypedUploadParseFailureCode.INVALID_HEADER,
-                                "The XLSX header does not match the registered schema.",
-                            )
-                        continue
-                    item_count += 1
-                    candidate = dataset_description_candidate_from_values(
-                        workspace_id=workspace_id,
-                        ordinal=item_count,
-                        values=fields,
-                        definition=definition,
-                    )
-                    if candidate.target_asset_id in seen_assets:
-                        raise TypedUploadParseError(
-                            TypedUploadParseFailureCode.DUPLICATE_ASSET,
-                            "The XLSX upload contains more than one row for the same asset.",
-                            ordinal=item_count,
-                        )
-                    seen_assets.add(candidate.target_asset_id)
-                    candidate_root = advance_dataset_description_candidate_root(
-                        current=candidate_root,
-                        ordinal=item_count,
-                        candidate_hash=candidate.candidate_hash,
-                    )
-                    await consume_candidate(candidate)
-        except (zipfile.BadZipFile, zipfile.LargeZipFile) as error:
-            raise TypedUploadParseError(
-                TypedUploadParseFailureCode.INVALID_XLSX_PACKAGE,
-                "The XLSX package is not a valid ZIP container.",
-            ) from error
+                    for candidate in batch:
+                        await consume_candidate(candidate)
+            finally:
+                replay.close()
 
     if item_count == 0:
         raise TypedUploadParseError(
@@ -159,6 +138,201 @@ async def parse_dataset_description_xlsx(
         schema_version=definition.schema_version,
         configuration_hash=definition.configuration_hash,
     )
+
+
+def _parse_xlsx_package(
+    package_file: IO[bytes],
+    workspace_id: UUID,
+    definition: TypedUploadProfileDefinition,
+) -> tuple[int, bytes, _ReplayableCandidateSpool]:
+    """Run ZIP/XML work off the API event loop within strict decompression/object budgets."""
+
+    candidates = _ReplayableCandidateSpool()
+    try:
+        with zipfile.ZipFile(package_file) as package:
+            entries = _validate_package(package)
+            shared_strings = _read_shared_strings(package, entries)
+            worksheet_name = _resolve_single_visible_worksheet(package, entries)
+            item_count = 0
+            seen_assets: set[UUID] = set()
+            candidate_root = dataset_description_candidate_root_seed()
+            for row_number, fields in _iter_worksheet_rows(
+                package,
+                worksheet_name=worksheet_name,
+                shared_strings=shared_strings,
+                maximum_rows=definition.maximum_rows,
+            ):
+                if row_number == 1:
+                    if tuple(fields) != definition.headers:
+                        raise TypedUploadParseError(
+                            TypedUploadParseFailureCode.INVALID_HEADER,
+                            "The XLSX header does not match the registered schema.",
+                        )
+                    continue
+                item_count += 1
+                candidate = dataset_description_candidate_from_values(
+                    workspace_id=workspace_id,
+                    ordinal=item_count,
+                    values=fields,
+                    definition=definition,
+                )
+                if candidate.target_asset_id in seen_assets:
+                    raise TypedUploadParseError(
+                        TypedUploadParseFailureCode.DUPLICATE_ASSET,
+                        "The XLSX upload contains more than one row for the same asset.",
+                        ordinal=item_count,
+                    )
+                seen_assets.add(candidate.target_asset_id)
+                candidate_root = advance_dataset_description_candidate_root(
+                    current=candidate_root,
+                    ordinal=item_count,
+                    candidate_hash=candidate.candidate_hash,
+                )
+                candidates.append(candidate)
+        candidates.finalize()
+    except (zipfile.BadZipFile, zipfile.LargeZipFile) as error:
+        candidates.close()
+        raise TypedUploadParseError(
+            TypedUploadParseFailureCode.INVALID_XLSX_PACKAGE,
+            "The XLSX package is not a valid ZIP container.",
+        ) from error
+    except BaseException:
+        candidates.close()
+        raise
+    return item_count, candidate_root, candidates
+
+
+class _ReplayableCandidateSpool:
+    """Attempt-local, repeatable candidate storage with a small fixed RAM threshold."""
+
+    def __init__(self) -> None:
+        self._file = tempfile.SpooledTemporaryFile(
+            max_size=_CANDIDATE_MEMORY_SPOOL_BYTES,
+            mode="w+b",
+        )
+        self._writer: gzip.GzipFile | None = gzip.GzipFile(
+            fileobj=self._file,
+            mode="wb",
+            compresslevel=1,
+        )
+        self._finalized = False
+        self._closed = False
+        self._storage_bytes = 0
+
+    def __enter__(self) -> _ReplayableCandidateSpool:
+        if self._closed:
+            raise RuntimeError("The XLSX candidate spool is closed.")
+        return self
+
+    def __exit__(self, *_error: object) -> None:
+        self.close()
+
+    @property
+    def rolled_to_disk(self) -> bool:
+        return bool(getattr(self._file, "_rolled", False))
+
+    @property
+    def storage_bytes(self) -> int:
+        if not self._finalized:
+            raise RuntimeError("The XLSX candidate spool has not been finalized.")
+        return self._storage_bytes
+
+    def append(self, candidate: DatasetDescriptionCandidateDraft) -> None:
+        if self._finalized or self._closed or self._writer is None:
+            raise RuntimeError("The XLSX candidate spool is not writable.")
+        record = json.dumps(
+            [
+                str(candidate.workspace_id),
+                candidate.ordinal,
+                str(candidate.target_asset_id),
+                candidate.platform,
+                candidate.database_name,
+                candidate.schema_name,
+                candidate.table_name,
+                candidate.proposed_description,
+                candidate.submitted_identity_hash,
+                candidate.candidate_hash,
+                candidate.candidate_kind,
+                candidate.evidence_version,
+            ],
+            ensure_ascii=False,
+            separators=(",", ":"),
+        ).encode("utf-8")
+        self._writer.write(record)
+        self._writer.write(b"\n")
+
+    def finalize(self) -> None:
+        if self._closed or self._writer is None:
+            raise RuntimeError("The XLSX candidate spool is closed.")
+        if self._finalized:
+            return
+        self._writer.close()
+        self._writer = None
+        self._file.seek(0, 2)
+        self._storage_bytes = self._file.tell()
+        if self._storage_bytes > _MAXIMUM_CANDIDATE_SPOOL_BYTES:
+            self.close()
+            raise _xlsx_error("The XLSX candidate spool exceeds its bounded storage limit.")
+        self._finalized = True
+
+    def replay(self) -> Generator[DatasetDescriptionCandidateDraft, None, None]:
+        if not self._finalized or self._closed:
+            raise RuntimeError("The XLSX candidate spool is not available for replay.")
+        self._file.seek(0)
+        with gzip.GzipFile(fileobj=self._file, mode="rb") as reader:
+            while record := reader.readline():
+                yield _candidate_from_spool_record(record)
+
+    def close(self) -> None:
+        if self._closed:
+            return
+        if self._writer is not None:
+            self._writer.close()
+            self._writer = None
+        self._file.close()
+        self._closed = True
+
+
+def _read_candidate_batch(
+    candidates: Iterator[DatasetDescriptionCandidateDraft],
+    maximum_items: int,
+) -> tuple[DatasetDescriptionCandidateDraft, ...]:
+    return tuple(islice(candidates, maximum_items))
+
+
+def _candidate_from_spool_record(record: bytes) -> DatasetDescriptionCandidateDraft:
+    try:
+        decoded: object = json.loads(record)
+    except (UnicodeDecodeError, json.JSONDecodeError) as error:
+        raise RuntimeError("The XLSX candidate spool is corrupt.") from error
+    if not isinstance(decoded, list) or len(decoded) != 12:
+        raise RuntimeError("The XLSX candidate spool has an invalid record.")
+    return DatasetDescriptionCandidateDraft(
+        workspace_id=UUID(_spooled_string(decoded[0])),
+        ordinal=_spooled_ordinal(decoded[1]),
+        target_asset_id=UUID(_spooled_string(decoded[2])),
+        platform=_spooled_string(decoded[3]),
+        database_name=_spooled_string(decoded[4]),
+        schema_name=_spooled_string(decoded[5]),
+        table_name=_spooled_string(decoded[6]),
+        proposed_description=_spooled_string(decoded[7]),
+        submitted_identity_hash=_spooled_string(decoded[8]),
+        candidate_hash=_spooled_string(decoded[9]),
+        candidate_kind=_spooled_string(decoded[10]),
+        evidence_version=_spooled_string(decoded[11]),
+    )
+
+
+def _spooled_string(value: object) -> str:
+    if not isinstance(value, str):
+        raise RuntimeError("The XLSX candidate spool has an invalid string field.")
+    return value
+
+
+def _spooled_ordinal(value: object) -> int:
+    if not isinstance(value, int) or isinstance(value, bool) or value < 1:
+        raise RuntimeError("The XLSX candidate spool has an invalid ordinal.")
+    return value
 
 
 def _validate_package(package: zipfile.ZipFile) -> dict[str, zipfile.ZipInfo]:

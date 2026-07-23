@@ -218,7 +218,25 @@ def test_xlsx_validation_emits_the_registered_profile_validator_version() -> Non
         ),
     )
 
-    assert summary["validator_version"] == "integrity-xlsx-v1"
+    assert summary["validator_version"] == "integrity-xlsx-v2-low-resource"
+
+
+def test_typed_csv_validation_emits_the_registered_profile_validator_version() -> None:
+    content = b"asset_id,platform,database_name,schema_name,table_name,description\n"
+    upload = manifest(content)
+    upload.content_profile = UploadContentProfile.DATASET_DESCRIPTION_CSV_V1
+    summary = UploadValidationWorker._validate_format(
+        upload,
+        Inspection(
+            size_bytes=len(content),
+            sha256=hashlib.sha256(content).hexdigest(),
+            prefix=content,
+            tail=content[-8:],
+            contains_vba=False,
+        ),
+    )
+
+    assert summary["validator_version"] == "integrity-format-v2-low-resource"
 
 
 @pytest.mark.asyncio

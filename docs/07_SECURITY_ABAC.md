@@ -56,13 +56,32 @@ legacy or identity-drifted row fails the complete page through the same existenc
 the API never reveals the failing ordinal or falls back to DataHub/object storage.
 
 Manual metadata submission requires fresh `catalog.read` and `registration.create` decisions on the
-selected current DATASET, then creates an append-only PostgreSQL record and a server-authored CSV
-receipt in the deployment-configured InfoSchema bucket.  The storage coordinate, Airflow service
+selected current DATASET. It compares both the authorization-pruned projection version and the
+fresh provider canonical version before any DB/object write, rehydrates the full provider schema
+server-side and accepts only sparse editable field values from the browser. It then creates an
+append-only PostgreSQL record and a server-authored CSV receipt in the deployment-configured
+InfoSchema bucket. The storage coordinate, Airflow service
 identity and DataHub service credential are never returned to the browser.  Only the Airflow service
 identity with `catalog.sync` may claim an apply lease; it calls the typed internal boundary, which
 streams and hash-verifies the private CSV before DataHub read–merge–read-back.  Vocabulary
 suggestions are catalog discovery reads under the same authorization scope; entering an absent
 Tag/Term/Domain only creates typed intent and never calls a provider from the browser.
+
+Every Manual/BULK browser route first enforces an active human security administrator or a
+canonical Data Steward and then performs the route-specific authorization. The page capability is
+private/no-store and reveals only a fixed eligibility/reason/role contract; it does not echo OIDC
+claims, group sets, tokens or provider credentials. A Data Steward can read only submissions whose
+requester is the current subject. Workspace history is security-Admin-only. PostgreSQL repeats that
+owner/Admin/purpose-bound-worker split through restrictive forced-RLS reader policies, so a missed
+HTTP filter cannot widen evidence reads.
+
+The accountable actor for a registration write is the initiating DataRiver human stored on the
+intent, candidate binding and authorization audit. Provider mutation is executed by a separate
+least-privilege DataHub service principal. DataRiver never accepts a DataHub credential or delegated
+browser token in a registration request. Five ordered aspect hash read-backs, not the service
+principal's successful response, establish Manual completion. BULK candidate creation similarly
+requires the immutable receipt/object-locator SHA-256, a fresh current-target read and the exact
+preview ETag before the candidate binding, Change Request item and outbox event commit atomically.
 
 ## Mandatory policies
 

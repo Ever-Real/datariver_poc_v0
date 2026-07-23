@@ -5,8 +5,10 @@ import type { CatalogAsset, CatalogAssetDetail, CatalogSearch, ChangeRequestReco
 import { ErrorNotice } from '../../components/ErrorNotice'
 import { Dialog } from '../../components/common/Dialog'
 import { schemaDescriptionFields } from '../registration/RegistrationColumnDescriptionEditor'
-
-const MAXIMUM_ATTACHMENT_BYTES = 10 * 1024 * 1024
+import {
+  attachmentSelectionError,
+  uploadAndFinalizeAttachment,
+} from './attachmentUploads'
 
 type ColumnDraft = {
   field_path: string
@@ -118,6 +120,8 @@ export function ChangeRequestCreateDialog({
   const [error, setError] = useState<unknown>()
   const searchController = useRef<AbortController | undefined>(undefined)
   const submitController = useRef<AbortController | undefined>(undefined)
+  const registeredRequest = useRef<ChangeRequestRecord | undefined>(undefined)
+  const registrationReported = useRef(false)
 
   useEffect(() => {
     if (!open) return
@@ -180,11 +184,15 @@ export function ChangeRequestCreateDialog({
     setCreated(undefined)
     setSubmitting(false)
     setError(undefined)
+    registeredRequest.current = undefined
+    registrationReported.current = false
   }
 
   const requestClose = () => {
-    if (submitting) return
+    const registered = registeredRequest.current
+    const mustReport = Boolean(registered) && !registrationReported.current
     reset()
+    if (registered && mustReport) onCreated(registered)
     onClose()
   }
 
@@ -258,12 +266,14 @@ export function ChangeRequestCreateDialog({
   }
   const addFiles = (event: ChangeEvent<HTMLInputElement>) => {
     const next = Array.from(event.target.files ?? [])
-    if (next.some((file) => file.size > MAXIMUM_ATTACHMENT_BYTES)) {
-      setError(new Error('첨부파일은 파일당 10 MiB 이하만 등록할 수 있습니다.'))
+    const combined = [...files, ...next]
+    const selectionError = attachmentSelectionError(combined)
+    if (selectionError) {
+      setError(selectionError)
       event.target.value = ''
       return
     }
-    setFiles((current) => [...current, ...next])
+    setFiles(combined)
     event.target.value = ''
   }
   const canSubmit = title.trim() && systemId && requestSummary.trim() && targets.length > 0
@@ -279,8 +289,9 @@ export function ChangeRequestCreateDialog({
     submitController.current = controller
     setSubmitting(true)
     setError(undefined)
+    let changeRequest: ChangeRequestRecord | undefined
     try {
-      const changeRequest = await client.request<ChangeRequestRecord>('/change-requests/intake', {
+      changeRequest = await client.request<ChangeRequestRecord>('/change-requests/intake', {
         method: 'POST',
         signal: controller.signal,
         idempotencyKey: newIdempotencyKey('change-request-intake'),
@@ -291,23 +302,36 @@ export function ChangeRequestCreateDialog({
           targets: targets.map(targetPayload),
         }),
       })
+      if (!controller.signal.aborted) {
+        registeredRequest.current = changeRequest
+        setCreated(changeRequest)
+      }
       for (const file of files) {
-        const body = new FormData()
-        body.set('kind', 'REQUEST')
-        body.set('file', file)
-        await client.request(`/change-requests/${changeRequest.id}/attachments`, {
-          method: 'POST', signal: controller.signal, body,
-        })
+        await uploadAndFinalizeAttachment(
+          client,
+          changeRequest.id,
+          'REQUEST',
+          file,
+          { signal: controller.signal },
+        )
       }
       if (!controller.signal.aborted) {
-        setCreated(changeRequest)
+        registrationReported.current = true
         onCreated(changeRequest)
       }
     } catch (next) {
       if (!controller.signal.aborted) {
-        setError(next instanceof ApiError && next.problem.status === 412
-          ? new Error('대상 원본이 변경되었습니다. 다시 선택 후 재시도하세요.')
-          : next)
+        if (changeRequest) {
+          const detail = next instanceof Error ? next.message : '알 수 없는 오류'
+          setError(new Error(
+            `${changeRequest.number} 변경 요청은 등록되었지만 첨부파일 처리가 완료되지 않았습니다. `
+              + `상세 화면에서 상태를 다시 확인하세요. (${detail})`,
+          ))
+        } else {
+          setError(next instanceof ApiError && next.problem.status === 412
+            ? new Error('대상 원본이 변경되었습니다. 다시 선택 후 재시도하세요.')
+            : next)
+        }
       }
     } finally {
       if (!controller.signal.aborted) setSubmitting(false)
@@ -330,7 +354,7 @@ export function ChangeRequestCreateDialog({
 
   return <Dialog
     description="기존 테이블은 서버가 현재 DataHub 원본을 재검증하고, 신규 테이블은 감사 가능한 제안으로 기록합니다."
-    footer={<><button className="button button-secondary" disabled={submitting} onClick={requestClose} type="button">취소</button>{!created && <button className="button" disabled={submitting || !canSubmit} form="change-request-create-form" type="submit">{submitting ? '제출 중…' : 'CR 제출'}</button>}</>}
+    footer={<><button className="button button-secondary" onClick={requestClose} type="button">취소</button>{!created && <button className="button" disabled={submitting || !canSubmit} form="change-request-create-form" type="submit">{submitting ? '제출 중…' : 'CR 제출'}</button>}</>}
     onRequestClose={requestClose}
     open={open}
     size="workspace"

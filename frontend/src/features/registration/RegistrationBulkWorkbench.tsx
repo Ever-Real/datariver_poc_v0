@@ -18,14 +18,19 @@ import {
 } from 'react'
 import { newIdempotencyKey, type ApiClient } from '../../api/client'
 import type {
+  ChangeRequestRecord,
+  TypedBulkCandidatePreview,
   UploadContentProfile,
   UploadPreparation,
+  UploadRegistrationCandidate,
   UploadRegistrationCandidatePage,
   UploadRecord,
 } from '../../api/types'
 import { ErrorNotice } from '../../components/ErrorNotice'
 
 const HASH_CHUNK_SIZE = 4 * 1024 * 1024
+const PREPARATION_POLL_MAX_ATTEMPTS = 20
+const PREPARATION_POLL_MAX_ELAPSED_MS = 120_000
 const TERMINAL_STATES = new Set(['ACCEPTED', 'REJECTED', 'ABORTED', 'EXPIRED'])
 const TYPED_DESCRIPTION_PROFILES = new Set<UploadContentProfile>([
   'DATASET_DESCRIPTION_CSV_V1',
@@ -49,8 +54,17 @@ export function RegistrationBulkWorkbench({ client }: { client: ApiClient }) {
   const [preparation, setPreparation] = useState<UploadPreparation>()
   const [preparationLoaded, setPreparationLoaded] = useState(false)
   const [preparationBusy, setPreparationBusy] = useState(false)
+  const [preparationPollingStopped, setPreparationPollingStopped] = useState(false)
   const [candidatePage, setCandidatePage] = useState<UploadRegistrationCandidatePage>()
+  const [candidateCursorStack, setCandidateCursorStack] = useState<string[]>([])
   const [candidatesBusy, setCandidatesBusy] = useState(false)
+  const [selectedCandidate, setSelectedCandidate] = useState<UploadRegistrationCandidate>()
+  const [candidatePreview, setCandidatePreview] = useState<TypedBulkCandidatePreview>()
+  const [candidatePreviewBusy, setCandidatePreviewBusy] = useState(false)
+  const [candidateCreateBusy, setCandidateCreateBusy] = useState(false)
+  const [candidateTitle, setCandidateTitle] = useState('')
+  const [candidateReason, setCandidateReason] = useState('')
+  const [createdChangeRequest, setCreatedChangeRequest] = useState<ChangeRequestRecord>()
   const [error, setError] = useState<unknown>()
   const [busy, setBusy] = useState(false)
   const generation = useRef(0)
@@ -58,6 +72,11 @@ export function RegistrationBulkWorkbench({ client }: { client: ApiClient }) {
   const loadIntent = useRef(0)
   const preparationIntent = useRef(0)
   const candidateIntent = useRef(0)
+  const candidatePreviewIntent = useRef(0)
+  const candidatePreviewController = useRef<AbortController | undefined>(undefined)
+  const preparationPollDelay = useRef(1_000)
+  const preparationPollAttempts = useRef(0)
+  const preparationPollStartedAt = useRef(0)
 
   const beginOperation = useCallback(() => {
     const controller = new AbortController()
@@ -67,6 +86,19 @@ export function RegistrationBulkWorkbench({ client }: { client: ApiClient }) {
 
   const finishOperation = useCallback((controller: AbortController) => {
     controllers.current.delete(controller)
+  }, [])
+
+  const clearCandidateCommand = useCallback(() => {
+    candidatePreviewController.current?.abort()
+    candidatePreviewController.current = undefined
+    candidatePreviewIntent.current += 1
+    setSelectedCandidate(undefined)
+    setCandidatePreview(undefined)
+    setCandidatePreviewBusy(false)
+    setCandidateCreateBusy(false)
+    setCandidateTitle('')
+    setCandidateReason('')
+    setCreatedChangeRequest(undefined)
   }, [])
 
   const load = useCallback(async () => {
@@ -98,10 +130,16 @@ export function RegistrationBulkWorkbench({ client }: { client: ApiClient }) {
   const loadPreparations = useCallback(async (upload: UploadRecord) => {
     const expectedIntent = preparationIntent.current + 1
     preparationIntent.current = expectedIntent
+    preparationPollDelay.current = 1_000
+    preparationPollAttempts.current = 0
+    preparationPollStartedAt.current = Date.now()
+    setPreparationPollingStopped(false)
     setPreparation(undefined)
     setPreparationLoaded(false)
     setCandidatePage(undefined)
+    setCandidateCursorStack([])
     setCandidatesBusy(false)
+    clearCandidateCommand()
     candidateIntent.current += 1
     if (upload.state !== 'ACCEPTED' || !isTypedDescriptionProfile(upload.content_profile)) {
       setPreparationBusy(false)
@@ -134,7 +172,7 @@ export function RegistrationBulkWorkbench({ client }: { client: ApiClient }) {
         && expectedIntent === preparationIntent.current
       ) setPreparationBusy(false)
     }
-  }, [beginOperation, client, finishOperation])
+  }, [beginOperation, clearCandidateCommand, client, finishOperation])
 
   useEffect(() => {
     const activeControllers = controllers.current
@@ -145,7 +183,13 @@ export function RegistrationBulkWorkbench({ client }: { client: ApiClient }) {
     setProgress(0)
     setStatus('파일을 선택하세요.'); setRecord(undefined); setRecords([])
     setPreparation(undefined); setPreparationLoaded(false); setPreparationBusy(false)
+    setPreparationPollingStopped(false)
+    preparationPollDelay.current = 1_000
+    preparationPollAttempts.current = 0
+    preparationPollStartedAt.current = 0
     setCandidatePage(undefined); setCandidatesBusy(false)
+    setCandidateCursorStack([])
+    clearCandidateCommand()
     setError(undefined); setBusy(false); loadIntent.current += 1; preparationIntent.current += 1; candidateIntent.current += 1
     void load()
     return () => {
@@ -153,7 +197,64 @@ export function RegistrationBulkWorkbench({ client }: { client: ApiClient }) {
       activeControllers.forEach((controller) => controller.abort())
       activeControllers.clear()
     }
-  }, [client, load])
+  }, [clearCandidateCommand, client, load])
+
+  useEffect(() => {
+    if (
+      !record
+      || !preparation
+      || !['QUEUED', 'PREPARING'].includes(preparation.state)
+    ) {
+      preparationPollDelay.current = 1_000
+      preparationPollAttempts.current = 0
+      preparationPollStartedAt.current = 0
+      setPreparationPollingStopped(false)
+      return
+    }
+    if (
+      preparationPollAttempts.current >= PREPARATION_POLL_MAX_ATTEMPTS
+      || (
+        preparationPollStartedAt.current > 0
+        && Date.now() - preparationPollStartedAt.current >= PREPARATION_POLL_MAX_ELAPSED_MS
+      )
+      || document.visibilityState === 'hidden'
+    ) {
+      setPreparationPollingStopped(true)
+      return
+    }
+    if (preparationPollStartedAt.current === 0) {
+      preparationPollStartedAt.current = Date.now()
+    }
+    const { controller, expectedGeneration } = beginOperation()
+    const uploadId = record.id
+    const preparationId = preparation.id
+    const delay = preparationPollDelay.current
+    preparationPollAttempts.current += 1
+    void abortableDelay(delay, controller.signal).then(async () => {
+      const value = await client.request<{ items: UploadPreparation[] }>(
+        `/uploads/${uploadId}/preparations?limit=20`,
+        { signal: controller.signal },
+      )
+      if (controller.signal.aborted || expectedGeneration !== generation.current) return
+      const current = value.items.find((item) => item.id === preparationId)
+      if (!current || current.upload_id !== uploadId) return
+      preparationPollDelay.current = Math.min(delay * 2, 10_000)
+      setPreparation(current)
+      setPreparationLoaded(true)
+    }).catch((next: unknown) => {
+      if (!controller.signal.aborted && expectedGeneration === generation.current) setError(next)
+    }).finally(() => finishOperation(controller))
+    return () => {
+      controller.abort()
+      finishOperation(controller)
+    }
+  }, [
+    beginOperation,
+    client,
+    finishOperation,
+    preparation,
+    record,
+  ])
 
   const poll = async (
     uploadId: string,
@@ -253,6 +354,11 @@ export function RegistrationBulkWorkbench({ client }: { client: ApiClient }) {
     preparationIntent.current += 1
     setFile(next); setProgress(0); setRecord(undefined)
     setPreparation(undefined); setPreparationLoaded(false); setPreparationBusy(false)
+    setPreparationPollingStopped(false)
+    preparationPollDelay.current = 1_000
+    preparationPollAttempts.current = 0
+    preparationPollStartedAt.current = 0
+    clearCandidateCommand()
     setStatus(next ? `${next.name} 업로드 준비됨` : '파일을 선택하세요.')
   }
 
@@ -284,18 +390,29 @@ export function RegistrationBulkWorkbench({ client }: { client: ApiClient }) {
     void loadPreparations(next)
   }
 
-  const loadCandidates = async () => {
+  const loadCandidates = async (cursor?: string) => {
     if (!record || !preparation || preparation.state !== 'READY' || candidatesBusy) return
+    clearCandidateCommand()
     const expectedIntent = candidateIntent.current + 1
     candidateIntent.current = expectedIntent
     const { controller, expectedGeneration } = beginOperation()
     setCandidatesBusy(true)
     setError(undefined)
     try {
+      const query = new URLSearchParams({ limit: '20' })
+      if (cursor) query.set('cursor', cursor)
       const value = await client.request<UploadRegistrationCandidatePage>(
-        `/uploads/${record.id}/preparations/${preparation.id}/candidates?limit=20`,
+        `/uploads/${record.id}/preparations/${preparation.id}/candidates?${query.toString()}`,
         { signal: controller.signal },
       )
+      if (
+        candidatePage
+        && (
+          value.receipt.id !== candidatePage.receipt.id
+          || value.receipt.receipt_hash !== candidatePage.receipt.receipt_hash
+          || value.receipt.candidate_root_hash !== candidatePage.receipt.candidate_root_hash
+        )
+      ) throw new Error('후보 receipt가 페이지 이동 중 변경되었습니다. 준비 상태를 다시 확인하세요.')
       if (
         expectedGeneration === generation.current
         && expectedIntent === candidateIntent.current
@@ -313,6 +430,127 @@ export function RegistrationBulkWorkbench({ client }: { client: ApiClient }) {
         expectedGeneration === generation.current
         && expectedIntent === candidateIntent.current
       ) setCandidatesBusy(false)
+    }
+  }
+
+  const nextCandidatePage = () => {
+    const cursor = candidatePage?.page.next_cursor
+    if (!cursor || candidatesBusy) return
+    const stack = [...candidateCursorStack, cursor].slice(-50)
+    setCandidateCursorStack(stack)
+    void loadCandidates(stack.at(-1))
+  }
+
+  const previousCandidatePage = () => {
+    if (!candidateCursorStack.length || candidatesBusy) return
+    const stack = candidateCursorStack.slice(0, -1)
+    setCandidateCursorStack(stack)
+    void loadCandidates(stack.at(-1))
+  }
+
+  const resetCandidatePages = () => {
+    if (candidatesBusy) return
+    setCandidateCursorStack([])
+    void loadCandidates()
+  }
+
+  const openCandidatePreview = async (candidate: UploadRegistrationCandidate) => {
+    if (!record || !preparation || candidatePreviewBusy || candidateCreateBusy) return
+    clearCandidateCommand()
+    const intent = candidatePreviewIntent.current + 1
+    candidatePreviewIntent.current = intent
+    const { controller, expectedGeneration } = beginOperation()
+    candidatePreviewController.current = controller
+    setSelectedCandidate(candidate)
+    setCandidateTitle(`${candidate.submitted_identity.table_name} Dataset 설명 변경`)
+    setCandidateReason('검증된 BULK 업로드 후보를 변경관리 검토 대상으로 등록합니다.')
+    setCandidatePreviewBusy(true)
+    setError(undefined)
+    try {
+      const value = await client.request<TypedBulkCandidatePreview>(
+        `/uploads/${record.id}/preparations/${preparation.id}/candidates/${candidate.id}/preview`,
+        { signal: controller.signal },
+      )
+      if (
+        controller.signal.aborted
+        || expectedGeneration !== generation.current
+        || intent !== candidatePreviewIntent.current
+        || value.candidate_id !== candidate.id
+        || value.target_asset_id !== candidate.current_target.id
+        || value.source_version.trim().length === 0
+      ) return
+      setCandidatePreview(value)
+    } catch (next) {
+      if (
+        !controller.signal.aborted
+        && expectedGeneration === generation.current
+        && intent === candidatePreviewIntent.current
+      ) setError(next)
+    } finally {
+      finishOperation(controller)
+      if (candidatePreviewController.current === controller) {
+        candidatePreviewController.current = undefined
+      }
+      if (
+        expectedGeneration === generation.current
+        && intent === candidatePreviewIntent.current
+      ) setCandidatePreviewBusy(false)
+    }
+  }
+
+  const createCandidateChangeRequest = async () => {
+    if (
+      !record
+      || !preparation
+      || !selectedCandidate
+      || !candidatePreview
+      || candidateCreateBusy
+      || !candidateTitle.trim()
+      || !candidateReason.trim()
+    ) return
+    const intent = candidatePreviewIntent.current + 1
+    candidatePreviewIntent.current = intent
+    const { controller, expectedGeneration } = beginOperation()
+    candidatePreviewController.current = controller
+    setCandidateCreateBusy(true)
+    setError(undefined)
+    try {
+      const value = await client.request<ChangeRequestRecord>(
+        `/uploads/${record.id}/preparations/${preparation.id}/candidates/${selectedCandidate.id}/change-request`,
+        {
+          method: 'POST',
+          idempotencyKey: newIdempotencyKey('typed-bulk-change'),
+          ifMatch: candidatePreview.preview_etag,
+          signal: controller.signal,
+          body: JSON.stringify({
+            title: candidateTitle.trim(),
+            reason: candidateReason.trim(),
+          }),
+        },
+      )
+      if (
+        controller.signal.aborted
+        || expectedGeneration !== generation.current
+        || intent !== candidatePreviewIntent.current
+        || value.items.length !== 1
+        || value.items[0]?.target_asset_id !== candidatePreview.target_asset_id
+      ) return
+      setCreatedChangeRequest(value)
+    } catch (next) {
+      if (
+        !controller.signal.aborted
+        && expectedGeneration === generation.current
+        && intent === candidatePreviewIntent.current
+      ) setError(next)
+    } finally {
+      finishOperation(controller)
+      if (candidatePreviewController.current === controller) {
+        candidatePreviewController.current = undefined
+      }
+      if (
+        expectedGeneration === generation.current
+        && intent === candidatePreviewIntent.current
+      ) setCandidateCreateBusy(false)
     }
   }
 
@@ -342,8 +580,15 @@ export function RegistrationBulkWorkbench({ client }: { client: ApiClient }) {
         expectedGeneration === generation.current
         && expectedIntent === preparationIntent.current
       ) {
+        preparationPollDelay.current = 1_000
+        preparationPollAttempts.current = 0
+        preparationPollStartedAt.current = Date.now()
+        setPreparationPollingStopped(false)
         setPreparation(created)
         setPreparationLoaded(true)
+        setCandidatePage(undefined)
+        setCandidateCursorStack([])
+        clearCandidateCommand()
       }
     } catch (next) {
       if (
@@ -449,11 +694,26 @@ export function RegistrationBulkWorkbench({ client }: { client: ApiClient }) {
             preparation={preparation}
             loaded={preparationLoaded}
             busy={preparationBusy}
+            pollingStopped={preparationPollingStopped}
             onCreate={() => void createPreparation()}
             onRefresh={() => void loadPreparations(record)}
             candidatePage={candidatePage}
             candidatesBusy={candidatesBusy}
-            onLoadCandidates={() => void loadCandidates()}
+            candidateHasPrevious={candidateCursorStack.length > 0}
+            onLoadCandidates={resetCandidatePages}
+            onNextCandidates={nextCandidatePage}
+            onPreviousCandidates={previousCandidatePage}
+            selectedCandidate={selectedCandidate}
+            candidatePreview={candidatePreview}
+            candidatePreviewBusy={candidatePreviewBusy}
+            candidateCreateBusy={candidateCreateBusy}
+            candidateTitle={candidateTitle}
+            candidateReason={candidateReason}
+            createdChangeRequest={createdChangeRequest}
+            onSelectCandidate={(candidate) => { void openCandidatePreview(candidate) }}
+            onCandidateTitleChange={setCandidateTitle}
+            onCandidateReasonChange={setCandidateReason}
+            onCreateCandidateChangeRequest={() => { void createCandidateChangeRequest() }}
           />
         )}
         {record?.state === 'ACCEPTED' && isTypedDescriptionProfile(record.content_profile) && (
@@ -474,20 +734,50 @@ function PreparationPanel({
   preparation,
   loaded,
   busy,
+  pollingStopped,
   onCreate,
   onRefresh,
   candidatePage,
   candidatesBusy,
+  candidateHasPrevious,
   onLoadCandidates,
+  onNextCandidates,
+  onPreviousCandidates,
+  selectedCandidate,
+  candidatePreview,
+  candidatePreviewBusy,
+  candidateCreateBusy,
+  candidateTitle,
+  candidateReason,
+  createdChangeRequest,
+  onSelectCandidate,
+  onCandidateTitleChange,
+  onCandidateReasonChange,
+  onCreateCandidateChangeRequest,
 }: {
   preparation?: UploadPreparation
   loaded: boolean
   busy: boolean
+  pollingStopped: boolean
   onCreate: () => void
   onRefresh: () => void
   candidatePage?: UploadRegistrationCandidatePage
   candidatesBusy: boolean
+  candidateHasPrevious: boolean
   onLoadCandidates: () => void
+  onNextCandidates: () => void
+  onPreviousCandidates: () => void
+  selectedCandidate?: UploadRegistrationCandidate
+  candidatePreview?: TypedBulkCandidatePreview
+  candidatePreviewBusy: boolean
+  candidateCreateBusy: boolean
+  candidateTitle: string
+  candidateReason: string
+  createdChangeRequest?: ChangeRequestRecord
+  onSelectCandidate: (candidate: UploadRegistrationCandidate) => void
+  onCandidateTitleChange: (value: string) => void
+  onCandidateReasonChange: (value: string) => void
+  onCreateCandidateChangeRequest: () => void
 }) {
   return (
     <section
@@ -534,6 +824,11 @@ function PreparationPanel({
               {busy ? '확인 중…' : '상태 새로고침'}
             </button>
           </div>
+          {pollingStopped && ['QUEUED', 'PREPARING'].includes(preparation.state) && (
+            <p className="notice" role="status">
+              자동 상태 확인을 중단했습니다. 최신 상태는 위 버튼으로 명시적으로 확인하세요.
+            </p>
+          )}
           {preparation.last_error_code && (
             <p className="notice notice-error" role="alert">
               준비 실패 코드: {preparation.last_error_code}
@@ -543,7 +838,21 @@ function PreparationPanel({
             <CandidatePreviewPanel
               page={candidatePage}
               busy={candidatesBusy}
+              hasPrevious={candidateHasPrevious}
               onLoad={onLoadCandidates}
+              onNext={onNextCandidates}
+              onPrevious={onPreviousCandidates}
+              selectedCandidate={selectedCandidate}
+              preview={candidatePreview}
+              previewBusy={candidatePreviewBusy}
+              createBusy={candidateCreateBusy}
+              title={candidateTitle}
+              reason={candidateReason}
+              createdChangeRequest={createdChangeRequest}
+              onSelect={onSelectCandidate}
+              onTitleChange={onCandidateTitleChange}
+              onReasonChange={onCandidateReasonChange}
+              onCreate={onCreateCandidateChangeRequest}
             />
           )}
           {['FAILED', 'CANCELLED', 'STALE'].includes(preparation.state) && (
@@ -561,11 +870,39 @@ function PreparationPanel({
 function CandidatePreviewPanel({
   page,
   busy,
+  hasPrevious,
   onLoad,
+  onNext,
+  onPrevious,
+  selectedCandidate,
+  preview,
+  previewBusy,
+  createBusy,
+  title,
+  reason,
+  createdChangeRequest,
+  onSelect,
+  onTitleChange,
+  onReasonChange,
+  onCreate,
 }: {
   page?: UploadRegistrationCandidatePage
   busy: boolean
+  hasPrevious: boolean
   onLoad: () => void
+  onNext: () => void
+  onPrevious: () => void
+  selectedCandidate?: UploadRegistrationCandidate
+  preview?: TypedBulkCandidatePreview
+  previewBusy: boolean
+  createBusy: boolean
+  title: string
+  reason: string
+  createdChangeRequest?: ChangeRequestRecord
+  onSelect: (candidate: UploadRegistrationCandidate) => void
+  onTitleChange: (value: string) => void
+  onReasonChange: (value: string) => void
+  onCreate: () => void
 }) {
   return (
     <section className="registration-candidate-preview" aria-label="등록 후보 미리보기" aria-busy={busy}>
@@ -588,7 +925,7 @@ function CandidatePreviewPanel({
           <div className="registration-candidate-table-frame">
             <table>
               <caption>권한이 확인된 Dataset 설명 후보</caption>
-              <thead><tr><th scope="col">#</th><th scope="col">대상</th><th scope="col">제안 설명</th><th scope="col">등급</th><th scope="col">Source version</th></tr></thead>
+              <thead><tr><th scope="col">#</th><th scope="col">대상</th><th scope="col">제안 설명</th><th scope="col">등급</th><th scope="col">Source version</th><th scope="col">검토</th></tr></thead>
               <tbody>
                 {page.items.map((candidate) => <tr key={candidate.id}>
                   <td>{candidate.ordinal}</td>
@@ -596,8 +933,19 @@ function CandidatePreviewPanel({
                   <td title={candidate.proposed_description}>{candidate.proposed_description || '(설명 삭제)'}</td>
                   <td><span className="badge">{candidate.current_target.classification}</span></td>
                   <td title={candidate.current_target.source_version}><code>{candidate.current_target.source_version}</code></td>
+                  <td>
+                    <button
+                      className="button button-secondary"
+                      type="button"
+                      disabled={busy || previewBusy || createBusy}
+                      aria-pressed={selectedCandidate?.id === candidate.id}
+                      onClick={() => onSelect(candidate)}
+                    >
+                      검토 및 변경요청
+                    </button>
+                  </td>
                 </tr>)}
-                {!page.items.length && <tr><td colSpan={5}>현재 권한 범위에서 표시할 후보가 없습니다.</td></tr>}
+                {!page.items.length && <tr><td colSpan={6}>현재 권한 범위에서 표시할 후보가 없습니다.</td></tr>}
               </tbody>
             </table>
           </div>
@@ -605,9 +953,75 @@ function CandidatePreviewPanel({
             <div><dt>Receipt SHA-256</dt><dd><code>{page.receipt.receipt_hash}</code></dd></div>
             <div><dt>Candidate root</dt><dd><code>{page.receipt.candidate_root_hash}</code></dd></div>
           </dl>
-          <p className="notice registration-binding-pending" role="status">
-            후보별 변경요청 생성은 receipt·candidate hash·현재 provider snapshot을 함께 고정하는 typed 서버 명령으로만 열립니다. 현재 화면은 해당 증거를 검토하는 읽기 전용 단계입니다.
-          </p>
+          <div className="registration-preparation-actions" aria-label="후보 페이지 이동">
+            <button className="button button-secondary" type="button" disabled={busy || !hasPrevious} onClick={onPrevious}>이전 후보</button>
+            <button className="button button-secondary" type="button" disabled={busy} onClick={onLoad}>처음부터</button>
+            <button className="button button-secondary" type="button" disabled={busy || !page.page.next_cursor} onClick={onNext}>다음 후보</button>
+          </div>
+          {selectedCandidate && (
+            <section className="registration-candidate-command" aria-label="선택 후보 변경요청">
+              <header>
+                <div>
+                  <span className="eyebrow">Fresh server preview</span>
+                  <h5>{selectedCandidate.submitted_identity.table_name}</h5>
+                </div>
+                {previewBusy && <span className="badge">미리보기 확인 중</span>}
+              </header>
+              {preview && (
+                <>
+                  <dl className="summary-list">
+                    <div><dt>현재 설명</dt><dd>{preview.current_description || '(없음)'}</dd></div>
+                    <div><dt>제안 설명</dt><dd>{preview.proposed_description || '(설명 삭제)'}</dd></div>
+                    <div><dt>Provider source</dt><dd><code>{preview.source_version}</code></dd></div>
+                    <div><dt>Read-back hash</dt><dd><code>{preview.after_hash}</code></dd></div>
+                  </dl>
+                  {!createdChangeRequest ? (
+                    <div className="registration-candidate-command-form">
+                      <label>
+                        변경요청 제목
+                        <input
+                          value={title}
+                          maxLength={500}
+                          disabled={createBusy}
+                          onChange={(event) => onTitleChange(event.target.value)}
+                        />
+                      </label>
+                      <label>
+                        등록 사유
+                        <textarea
+                          value={reason}
+                          maxLength={10_000}
+                          rows={3}
+                          disabled={createBusy}
+                          onChange={(event) => onReasonChange(event.target.value)}
+                        />
+                      </label>
+                      <button
+                        className="button"
+                        type="button"
+                        disabled={createBusy || !title.trim() || !reason.trim()}
+                        onClick={onCreate}
+                      >
+                        {createBusy ? '변경요청 생성 중…' : '검증된 후보로 변경요청 생성'}
+                      </button>
+                    </div>
+                  ) : (
+                    <p className="notice notice-success" role="status">
+                      변경요청 <strong>{createdChangeRequest.number}</strong>이 {createdChangeRequest.state}
+                      상태로 생성되었습니다. 이후 검토·승인·DataHub read-back은 변경관리에서 진행됩니다.
+                      이 후보를 수정하지 말고 정정이 필요하면 새 파일을 업로드하세요.
+                    </p>
+                  )}
+                </>
+              )}
+            </section>
+          )}
+          {!selectedCandidate && (
+            <p className="notice registration-binding-pending" role="status">
+              한 후보를 선택하면 서버가 receipt·candidate hash·현재 provider snapshot을 다시 고정합니다.
+              브라우저는 URN, Aspect 문서, 분류 또는 스토리지 좌표를 제출하지 않습니다.
+            </p>
+          )}
         </>
       )}
     </section>

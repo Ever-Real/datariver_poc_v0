@@ -65,6 +65,16 @@ MIGRATIONS: tuple[MigrationCase, ...] = (
         "add_column",
         "_install_security_contract",
     ),
+    (
+        "0046_registration_execution_controls.py",
+        "get_bind",
+        "_install_security_contract",
+    ),
+    (
+        "0047_registration_worker_call_receipts.py",
+        "create_table",
+        "_install_security_contract",
+    ),
 )
 
 
@@ -147,6 +157,8 @@ def test_post_baseline_upgrade_accepts_complete_canonical_schema(
     monkeypatch.setattr(module, "_existing_object_count", lambda: _expected_count(module))
     monkeypatch.setattr(module, "op", _RejectingOperations())
     installer_calls = 0
+    secondary_installer_calls = 0
+    assertion_calls = 0
 
     if installer_name is not None:
 
@@ -156,9 +168,43 @@ def test_post_baseline_upgrade_accepts_complete_canonical_schema(
 
         monkeypatch.setattr(module, installer_name, record_installer)
 
+    if filename in {
+        "0046_registration_execution_controls.py",
+        "0047_registration_worker_call_receipts.py",
+    }:
+
+        def record_secondary_installer() -> None:
+            nonlocal secondary_installer_calls
+            secondary_installer_calls += 1
+
+        def record_assertion() -> None:
+            nonlocal assertion_calls
+            assertion_calls += 1
+
+        if filename == "0046_registration_execution_controls.py":
+            monkeypatch.setattr(
+                module,
+                "_install_typed_bulk_binding_contract",
+                record_secondary_installer,
+            )
+        monkeypatch.setattr(module, "_assert_existing_contract", record_assertion)
+        monkeypatch.setattr(module, "_assert_runtime_contract", record_assertion)
+
     _callable(module, "upgrade")()
 
     assert installer_calls == (1 if installer_name is not None else 0)
+    assert secondary_installer_calls == (
+        1 if filename == "0046_registration_execution_controls.py" else 0
+    )
+    assert assertion_calls == (
+        2
+        if filename
+        in {
+            "0046_registration_execution_controls.py",
+            "0047_registration_worker_call_receipts.py",
+        }
+        else 0
+    )
 
 
 @pytest.mark.parametrize(("filename", "first_operation", "installer_name"), MIGRATIONS)
@@ -215,3 +261,27 @@ def test_complete_schema_reinstalls_mutable_security_contracts_idempotently() ->
 
     assert "CREATE OR REPLACE FUNCTION" in candidate_evidence
     assert "DROP TRIGGER IF EXISTS" in candidate_evidence
+
+
+def test_registration_execution_bridge_validates_definitions_not_only_names() -> None:
+    source = (
+        Path(__file__).resolve().parents[3]
+        / "backend/alembic/versions/0046_registration_execution_controls.py"
+    ).read_text(encoding="utf-8")
+
+    assert "_assert_existing_contract()" in source
+    assert "actual.data_type <> expected.data_type" in source
+    assert "pg_get_constraintdef(oid)" in source
+    assert "relforcerowsecurity IS NOT TRUE" in source
+    assert "manual_metadata_attempt_reader_scope" in source
+    assert "policy.qual IS DISTINCT FROM" in source
+    assert "pg_get_expr(" in source
+    assert "expected_predicate" in source
+    assert "tgtype = 31" in source
+    assert "OLD.provider_source_version <> NEW.provider_source_version" in source
+    assert "ck_manual_metadata_submissions_provider_source_version_valid" in source
+    assert "'governance.manual_metadata_submissions'," in source
+    assert "policy.with_check IS DISTINCT FROM" in source
+    assert "BEFORE INSERT OR UPDATE OR DELETE" in source
+    assert "manual aspect report requires the current running attempt" in source
+    assert "has_table_privilege(" in source

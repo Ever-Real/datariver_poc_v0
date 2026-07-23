@@ -156,7 +156,7 @@ async def bootstrap_local_identity() -> dict[str, object]:
                 {"workspace_id": workspace.id, "subject_id": airflow_subject.id},
             )
             airflow_attributes = {
-                "groups": ["service-accounts"],
+                "groups": ["service-accounts", "registration-workers"],
                 "allowed_actions": [
                     Action.CATALOG_READ.value,
                     Action.CATALOG_SEARCH.value,
@@ -165,7 +165,7 @@ async def bootstrap_local_identity() -> dict[str, object]:
                 "denied_actions": [],
                 "allowed_system_ids": [],
                 "allowed_domain_ids": [],
-                "bootstrap": "local-airflow-service-v1",
+                "bootstrap": "local-airflow-service-v2",
             }
             if airflow_membership is None:
                 session.add(

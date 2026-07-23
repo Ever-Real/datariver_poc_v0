@@ -2,14 +2,27 @@
 
 ## Current verification status
 
-The current Search/Registration-query local-exit source passed `1,002` backend tests with `29`
-explicitly environment-gated PostgreSQL cases skipped. Ruff format passed over `309` files, Ruff
-lint passed, strict mypy passed over `301` source/test files, and static
-architecture/role/Compose verification passed. The frontend passed strict TypeScript, zero-warning
-ESLint, `43` files / `200` tests and the production build. Canonical `0001` generation was
-byte-identical across two runs at SHA-256
-`b55018c082eab700a80edf749ade7abdd3b6b8f5be4268319210c5f33ea5466e`; Alembic has the single head
-`0045`.
+The current Search/Registration local-exit candidate passed `1,152` backend tests with `46`
+explicitly environment-gated integration cases skipped. The exact README Ruff command passed,
+strict mypy passed over `333` source/test files, and static
+architecture/role/Compose/documentation verification passed. The frontend passed strict
+TypeScript, zero-warning ESLint, `44` files / `230` tests and the production build. Canonical `0001`
+generation was byte-identical across two runs at SHA-256
+`1ca5b11f1c78ae6a193b2beca9f5ef19d252a2c59b32f955be0d10cf298ebbce`; Alembic has the single head
+`0050`.
+
+The current network-free JavaScript gates do not include `npm audit`: that command sends the
+dependency manifest to the external npm service, and explicit disclosure permission was not
+available for this run. This is recorded as an external permission gate, not as a zero-vulnerability
+result.
+
+The first whole-suite run intentionally failed five stale contract fixtures after the executable
+typed profile was reduced to 16 MiB/10,000 rows and its validator advanced to the registered
+low-resource version. That run exposed a real boundary mismatch: the upload-validation worker still
+emitted the legacy validator identifier, making every newly accepted typed upload ineligible for
+preparation. A typed CSV/XLSX regression was added, the worker now emits the exact server-owned
+profile version, all 24 focused registration/validation tests pass, and the full result above is the
+post-fix rerun.
 
 A disposable native-arm64 PostgreSQL 17.10 ran the full `0001 -> 0045` chain. A separate simulated
 `0044` state held 12,000 description characters, 105 tags/terms and 1,005 column names; `0045`
@@ -33,6 +46,28 @@ tested to cancel and roll back before the runtime 15-second statement and 30-sec
 timeouts; a value above ten seconds is rejected. These are correctness and small-fixture smoke results;
 representative target-volume `EXPLAIN (ANALYZE, BUFFERS)` and DataHub deployment-specific
 scroll/point-in-time conformance remain external gates.
+
+For ADR-0041, a disposable native-arm64 PostgreSQL 17.10 exercised blank/current
+`0001 -> 0046`, additive `0045 -> 0046`, complete-generated-schema re-entry and malformed-column
+fail-closed paths. Read-back verified forced RLS, the four expected permissive/restrictive policies,
+append-only triggers and absence of broad application-role UPDATE. The additive rehearsal also
+proved the bootstrap prerequisites: canonical roles must exist before migration and revision `0025`
+requires its mounted export-password secret. The generated baseline and bridge use identical
+constraint names through `op.f(...)`; the migration issues one asyncpg-compatible statement at a
+time. The disposable database was removed.
+
+An isolated live MinIO test concurrently wrote the same previously absent key. Exactly one writer
+created the immutable receipt, the other received a conflict, and complete byte read-back matched;
+the test bucket was then removed. This closes the local conditional-create behavior only. Current
+source/unit tests additionally cover active-human operator gating, owner/Admin Manual history,
+service-only workers, DB-time leases, at most 20 attempts, five-aspect completion, typed-candidate
+ETag/object-locator evidence, atomic binding/idempotency, Change Request aggregate caps and
+private/no-store reports.
+
+Actual multi-human OIDC journeys, external Airflow client credentials, target MinIO permission,
+real DataHub five-aspect mutation/read-back, WSL `linux/amd64`, representative-volume query plans
+and crash/soak remain external gates. The local results do not establish production HA or authorize
+browser/provider credentials.
 
 The preceding Policy Book rehearsal ran `0001 -> 0043 -> 0044`. It replaced one canonical index
 with the same name and non-default `text_pattern_ops`; `0044` failed closed and did not normalize
@@ -434,6 +469,60 @@ External enablement still requires a durable atomic reserve/settle
 ledger, pre-call and post-call live policy/profile/attestation revalidation, durable delivery and
 idempotency, independently timed SSE/cancellation tests, provider/grounding metrics and the scaled
 red-team corpus.
+
+## Governed Registration execution gates
+
+- Manual SAVE tests must prove fresh projection/provider version checks happen before DB/MinIO
+  writes, sparse edits rehydrate the complete non-truncated provider schema, request order is
+  canonical and a committed idempotent result is returned before a later provider call.
+- Receipt tests require one conditional create, full byte/hash/metadata read-back and no unsafe
+  delete after an ambiguous commit. The filename remains
+  `UPLOAD_METADATA_MANUAL_YYMMDD_SERIAL.csv`.
+- Manual execution tests cover database time, lease epoch/token/owner fencing, expired-attempt
+  supersession, per-asset FIFO, 20-attempt exhaustion and ordered evidence for every success and
+  failure path. Actual PostgreSQL recovery tests prove exhausted Manual, BULK and CR work is
+  terminalized, flushed and skipped before the same claim scans onward. Only five distinct
+  successful Aspect reports with expected/observed hash equality permit APPLIED; a direct terminal
+  attempt INSERT is rejected.
+- Typed BULK tests cover 16 MiB/10,000-row input limits, CSV and XLSX deterministic roots, ZIP/XML
+  event-loop isolation, expansion/shared-string budgets, disk rollover at the 256 KiB candidate
+  threshold, bounded replay batches, kill/reclaim, complete-publication fences, cursor-bounded
+  candidates and one candidate/one CR/outbox transaction. The 10,000-row XLSX memory regression
+  remains below the explicit 8 MiB test ceiling.
+- Manual and BULK route tests prove that the same authenticated Airflow run ID/call ordinal takes
+  the worker effect once and replays the committed response. `0047` creates that receipt in the
+  same transaction as the canonical claim, rejects attempts-only fabricated supersession and
+  proactively completes an older expired receipt when a newer claim wins. DAG tests require stable
+  headers and terminal business failures remain non-retryable.
+- The read-only Manual receipt reconciler tests exact DB/S3 matches, missing objects, integrity
+  mismatch, unreferenced exact-metadata candidates, malformed/ambiguous objects and fail-closed
+  database/S3 truncation and byte limits. Its SQL manifest was executed against PostgreSQL 17 and
+  the emitted file parsed as pure JSON.
+- Actual PostgreSQL tests cover blank, previous-release additive and canonical re-entry migrations;
+  deliberate nullability, FK, RLS and same-name index drift must fail closed. Run the
+  environment-gated registration RLS matrix for no context, wrong workspace, Admin, owner/other
+  Data Steward, service worker, inactive/expired memberships and immutable mutation negatives.
+- Governed apply tests require `0048` exact constraint, trigger and column-ACL fingerprints;
+  completed jobs cannot return to RUNNING, APPLIED/APPLY_FAILED requests cannot be rewound, and a
+  corrupt completed-job/request pair blocks migration re-entry.
+- Attachment tests require `0049` global object identity and `0050` two-principal evidence. The app
+  may insert only a current STARTED precommit and cannot attest or directly insert the finalized
+  attachment. The existing BYPASSRLS upload role has zero direct intent-table privileges and
+  acquires one bounded claim only through a SECURITY DEFINER `FOR UPDATE SKIP LOCKED` function,
+  then independently verifies HEAD metadata and the full provider byte hash before STORED. The
+  actual-PostgreSQL negative enables BYPASSRLS and still requires direct SELECT to fail.
+  Finalization must reauthorize the current human and exact CR round/version/state; the browser
+  handles `202 STARTED`, exact upload-UUID response-loss recovery, finalized-response replay,
+  hidden-tab pause/resume, 20-read and 120-second limits. A manual recovery query requires the
+  current round, filters STORED before its ten-row SQL limit, refreshes successful finalizations
+  and still reports any partial failure.
+- Frontend fake-provider tests retain only one Manual schema page plus sparse edits, abort stale
+  requests, ignore a late Save after draft/page/asset revision, abort an attachment upload after a
+  CR switch, reset attachment cursors after upload, stop polling while hidden and after 20 checks or
+  120 seconds, and require explicit refresh after the bound or a version conflict.
+- External release acceptance still requires the exact target commit on WSL, external MinIO
+  conditional-write permission, real Airflow OIDC execution, DataHub 1.6 five-Aspect read-back,
+  multiple Keycloak humans and representative crash/load/soak evidence.
 
 ## Core correctness scenarios
 

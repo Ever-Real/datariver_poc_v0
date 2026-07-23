@@ -14,9 +14,9 @@ an unsafe bypass, or a historical result from another commit.
 | Ledger field | Value |
 |---|---|
 | Created | 2026-07-23, Asia/Seoul |
-| Baseline branch / working-tree base | `codex/admin-policy-rbac` / `b8ab2dd` |
-| Remote comparison at creation | `origin/main` at `313e59a`; current branch is published through Phase 3 implementation `2a0ae82`, not merged |
-| Current controlled phase | Request group 3 — Search, Registration, Manual/Bulk and CR |
+| Baseline branch / working-tree base | `codex/admin-policy-rbac` / `a683a93` |
+| Remote comparison at current Phase entry | `origin/main` at `313e59a`; `origin/codex/admin-policy-rbac` is published through `a683a93`, not merged |
+| Current controlled phase | Request group 3 — governed Registration execution and evidence (`0046`–`0050`) |
 | Final artifact order | Feature → API → Data/ERD → Screen → `README.md` → `ARCHITECTURE.md` |
 
 ## Status language
@@ -50,6 +50,9 @@ an unsafe bypass, or a historical result from another commit.
 - [x] Phase 3 current-source local gates and independent P0/P1 reviews pass. The focused commit and
   publication at `2a0ae82` close the repository boundary; browser/WSL/provider gates remain explicit
   rather than blocking safe source continuation.
+- [x] The follow-on Registration execution/evidence package over `a683a93` passes the current local
+  source, deterministic migration, actual-PostgreSQL and independent P0/P1 gates through `0050`.
+  Its focused commit/publication record is written only after the commit and push actually succeed.
 - [ ] Request groups 3 through 6 retain their stated dependency on earlier work. External gates are
   reported explicitly if the required machine or accountable human identities are unavailable.
 
@@ -115,13 +118,13 @@ merged, released, or available to the preparation PC until publication actually 
 | R3-05 | Hydrate logical name and description for table/columns | `DONE_LOCAL` + `EXTERNAL_GATE` | The fixed DataHub query now reads bounded `SchemaField.label`; UI displays it read-only as Logical Name separately from editable merged Description. Live target-version verification remains external. |
 | R3-05A | Bound provider-controlled catalog projection and browser response size | `DONE_LOCAL` + `EXTERNAL_GATE` | ADR-0039, Alembic `0045`, per-source truncation evidence, workspace/limit-bound cache schema invalidation and PostgreSQL 17.10 migration/JSONB semantic smoke tests pass. Representative target-volume `EXPLAIN (ANALYZE, BUFFERS)` remains external. |
 | R3-05B | Make full DataHub reconciliation deletion-safe and million-row capable | `DONE_LOCAL` + `EXTERNAL_GATE` | ADR-0040 replaces provider offsets with a fixed server-owned scroll cursor, pre-provider workspace reservation, lock-inside idempotency replay, stable-total/distinct-seen completion, adaptive response-bounded pages, server-progress retry resume and default-off tombstones. Exact target DataHub PIT/search-backend configuration plus concurrent-mutation/expiry/replay acceptance remains external; until accepted, completion reports deletion suppressed. |
-| R3-06 | Manual: server-authored CSV → MinIO → Airflow → DataHub read-back | `PARTIAL` | Source/unit contracts exist and migrated CSV objects were storage-verified; no current-HEAD Manual submission→Airflow→DataHub read-back/report run has been accepted. |
-| R3-07 | Bulk: parse candidates and apply governed row additions to DataHub | `PARTIAL` | Preparation/candidate pipeline exists; governed DataHub mutation, correction/retry and report flow do not. |
-| R3-08 | Restrict Manual/Bulk to Admin/Data Steward and validate DataRiver OIDC | `PARTIAL` | DataRiver authorization exists. Reconfirm route matrix and negative cases after role changes. |
+| R3-06 | Manual: server-authored CSV → MinIO → Airflow → DataHub read-back | `DONE_LOCAL` + `EXTERNAL_GATE` | Sparse browser edits are rehydrated from a fresh complete provider snapshot, written once as an immutable legacy-named CSV receipt and applied through database-time leases. Five ordered Aspect writes require full hash read-back and append-only success/failure evidence. `0047` atomically binds every authenticated Airflow run-call replay to a canonical claim receipt and proactively closes an older expired receipt when a newer claim wins. Local S3 conditional-create and source/DB tests pass; external MinIO, Airflow OIDC and DataHub 1.6 end-to-end acceptance remain external. |
+| R3-07 | Bulk: parse candidates and apply governed row additions to DataHub | `PARTIAL` + `EXTERNAL_GATE` | CSV/XLSX preparation is database-time fenced, bounded to 16 MiB/10,000 rows, reconciles immutable candidate/root evidence and creates one ETag-fenced server-authored CR for a dataset-description candidate. That approved CR uses the existing governed apply/report path. Additional typed table/column/domain/term/tag row profiles, external Airflow execution and live DataHub correction/retry acceptance remain open; raw direct writes stay forbidden. |
+| R3-08 | Restrict Manual/Bulk to Admin/Data Steward and validate DataRiver OIDC | `DONE_LOCAL` + `EXTERNAL_GATE` | Active-human Admin/Data Steward authorization precedes every registration read/mutation; owner/Admin history and actual PostgreSQL Admin/Steward/service/inactive/expired/cross-workspace RLS negatives pass. Real Keycloak multi-human and external Airflow client-credential journeys remain external. |
 | R3-09 | Require individual DataHub authentication for writes | `CONFLICT` | Accepted architecture uses a scoped server service principal and forbids provider credentials in the browser. Resolve desired federated user evidence versus service authorization in a new ADR. |
 | R3-10 | Create `datariver-infoschema` and preserve the approved legacy filename contract | `DONE_LOCAL` + `EXTERNAL_GATE` | Storage init and `UPLOAD_METADATA_MANUAL_YYMMDD_SERIAL.csv` contract exist; verify external provider permission. |
-| R3-11 | Show final enrichment/read-back report | `PARTIAL` | Backend read-back/hash exists; add bounded history/status/report API and UI rather than only `QUEUED`. |
-| R3-12 | Diagnose preparation-PC Change Management and run development use cases | `PARTIAL` + `EXTERNAL_GATE` | Source/unit/historical Mac evidence exists; WSL logs, DB connectivity and authenticated multi-actor journeys are open. |
+| R3-11 | Show final enrichment/read-back report | `DONE_LOCAL` + `EXTERNAL_GATE` | Cursor-bounded owner/Admin history and an exact submission report expose ordered attempts and five Aspect outcomes without raw provider responses. Polling is bounded and hidden-tab aware. Live DataHub enrichment acceptance remains external. |
+| R3-12 | Diagnose preparation-PC Change Management and run development use cases | `DONE_LOCAL` + `EXTERNAL_GATE` | CR lists use server state filters, keyset summaries and bounded selected detail/attachment/apply evidence; typed candidates atomically bind one item/outbox. `0048` prevents completed DataHub apply jobs from being reclaimed or their APPLIED/APPLY_FAILED request from being rewound. `0049`/`0050` precommit globally unique object identity; return `202 STARTED`; give the BYPASSRLS upload role zero direct ledger privileges and require its bounded `FOR UPDATE SKIP LOCKED` function to claim, HEAD and fully hash the provider bytes; then reauthorize the current human before finalization. Lost POST/finalize responses recover only by the exact client upload UUID and private status endpoint. Operator recovery is server-filtered to the current round and STORED state before a ten-row limit, pauses while the browser is hidden and surfaces partial failure. Current source and Mac PostgreSQL gates pass. WSL DB/network logs, target S3 consistency and authenticated multi-actor journeys remain external. |
 
 ## Request group 4 — Knowledge, Chat, catalog API and MCP
 

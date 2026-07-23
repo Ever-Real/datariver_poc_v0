@@ -9,8 +9,9 @@ from pathlib import PurePath
 
 from datariver.application.errors import ExternalDependencyError
 from datariver.application.ports import ObjectStore, UploadValidationStore
+from datariver.application.typed_upload_profiles import typed_profile_definition
 from datariver.domain.common import DomainError, ValidationError
-from datariver.domain.registration import UploadManifest
+from datariver.domain.registration import UploadContentProfile, UploadManifest
 
 PREVIEW_LIMIT = 8 * 1024 * 1024
 
@@ -198,12 +199,17 @@ class UploadValidationWorker:
                 "Filename extension does not match the declared content type.",
                 details={"code": "EXTENSION_MISMATCH"},
             )
-        base: dict[str, object] = {
-            "validator_version": (
+        validator_version = (
+            (
                 "integrity-xlsx-v1"
                 if mime == "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
                 else "integrity-format-v1"
-            ),
+            )
+            if manifest.content_profile is UploadContentProfile.FORMAT_ONLY_V1
+            else typed_profile_definition(manifest.content_profile).acceptance_validator_version
+        )
+        base: dict[str, object] = {
+            "validator_version": validator_version,
             "size_bytes": inspection.size_bytes,
             "sha256": inspection.sha256,
             "content_type": mime,

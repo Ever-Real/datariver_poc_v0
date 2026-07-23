@@ -869,6 +869,20 @@ def verify_database_roles() -> None:
     for role in ("datariver_retention_scheduler", "datariver_archive"):
         if re.search(rf"ALTER ROLE {role}[^;]*NOBYPASSRLS;", combined) is None:
             raise AssertionError(f"{role} must remain subject to workspace RLS")
+    attachment_migration = (
+        ROOT
+        / "backend/alembic/versions/0050_change_request_attachment_upload_intents.py"
+    ).read_text(encoding="utf-8")
+    if re.search(
+        r"GRANT\s+SELECT\s+ON\s+governance"
+        r"\.change_request_attachment_upload_intents\s+TO\s+datariver_upload",
+        attachment_migration,
+    ):
+        raise AssertionError(
+            "the BYPASSRLS upload role cannot directly read attachment upload intents"
+        )
+    if "claim_attachment_upload_reconciliation" not in attachment_migration:
+        raise AssertionError("attachment reconciliation requires a bounded claim function")
     if "retention.execution_events TO datariver_retention_scheduler;" not in generator:
         raise AssertionError("the retention scheduler cannot append execution evidence")
     if "retention.immutable_archive_receipts TO datariver_archive;" not in generator:

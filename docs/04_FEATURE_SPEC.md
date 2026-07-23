@@ -39,6 +39,13 @@ DB/S3 principal gate. The browser must not crawl result pages as a substitute.
 
 ## Registration management
 
+Registration fails closed at the page boundary. Before either workbench loads an upload,
+submission, candidate or report, the browser requests a private/no-store capability for the current
+DataRiver session. Only an active human security administrator or canonical Data Steward is
+eligible; inactive, service and all other identities render an unavailable state and cause no
+Registration resource request. A Data Steward sees only their Manual history, while a security
+administrator may explicitly switch to bounded workspace history.
+
 Manual metadata registration is a distinct workflow, not a Change Request.  After an authorized
 user selects one DataHub dataset, the browser receives current table and field metadata through the
 catalog detail facade and may edit Description, one Domain, Tags and Terms for the table and each
@@ -46,15 +53,27 @@ field. Existing controlled values remain on one horizontally scrollable badge li
 previous/next controls. A compact far-right `+` opens a small floating search/input surface directly
 below that same input. A user may select a permission-pruned existing-vocabulary suggestion first,
 or add a comma/Enter/Tab-delimited new Tag/Term as governed proposal intent when no suitable value
-exists. A badge exposes its remove action only on hover or keyboard focus. On Save, the server
-rechecks the active target, source version, complete/non-truncated schema field set and
-`catalog.read` plus `registration.create`, then records immutable typed intent and a server-written
-CSV receipt.  The browser receives only an opaque submission ID, status and serial; it never sees a
-MinIO object key, an Airflow endpoint or a DataHub credential.  The configured InfoSchema bucket is
-deployment-owned and has no source-code fallback.  The paused Airflow worker streams and hash-checks
-that private CSV, then performs typed DataHub read–merge–read-back for table/column metadata.  Save
-is shown as `QUEUED`; only a complete provider read-back becomes `APPLIED`.  Deployment activation
-and a real Airflow/object-store/DataHub acceptance run remain separate runtime gates.
+exists. A badge exposes its remove action only on hover or keyboard focus. The browser retains only
+the current provider page (at most 100 fields) plus a sparse map of changed field values. On Save,
+the server rechecks the active target, the catalog projection version and the provider canonical
+version, reads a fresh complete/non-truncated provider schema, overlays only the sparse edits and
+reauthorizes `catalog.read` plus `registration.create`. It then records the complete final snapshot
+as immutable typed intent and a server-written CSV receipt using conditional object creation. The
+browser receives only an opaque submission ID,
+status and serial; it never sees a MinIO object key, an Airflow endpoint or a DataHub credential.
+The configured InfoSchema bucket is deployment-owned and has no source-code fallback. The paused
+Airflow worker invokes DataRiver with a purpose-bound service identity; DataRiver streams and
+hash-checks the private CSV, then performs typed DataHub read–merge–read-back for five fixed aspects.
+Database-time leases, a maximum of 20 attempts and one active apply per asset fence retries. Save is
+shown as `QUEUED`; only five matching read-backs become `APPLIED`. The workbench polls a bounded
+status/history page for at most 20 checks/120 seconds, stops while hidden, aborts stale requests and
+displays append-only attempt/aspect evidence without provider credentials or object coordinates.
+A later edit, provider-page move or asset switch invalidates an in-flight Save result, so a late
+response cannot be presented as applying the current draft. Expired final Manual attempts are
+terminalized before the claimant scans onward, and older work for the same asset remains FIFO ahead
+of newer edits.
+Deployment activation and a real
+Airflow/object-store/DataHub acceptance run remain separate runtime gates.
 
 1. Request a multipart upload session after `registration.create` authorization.
 2. Browser uploads directly to a quarantine object key.
@@ -65,23 +84,32 @@ and a real Airflow/object-store/DataHub acceptance run remain separate runtime g
 
 Uploads can be aborted, expire automatically, and cannot be downloaded with an old authorization decision. Validation never equals approval.
 
-The first typed BULK profile is an all-or-nothing dataset-description CSV. Its source-only parser
-uses bounded async chunks, strict UTF-8 and CSV states, exact ordered headers, canonical lowercase
-asset UUIDs, projection-compatible identity limits, duplicate rejection and exact source/candidate
-hashes. It preserves description content, including an empty clear proposal and quoted newlines.
-No runtime worker is wired. A separately published `READY` receipt can be inspected through a
-bounded read-only candidate API: it revalidates V2 receipt/hash invariants, resolves the page of
-targets in one authorization-pruned ACTIVE DATASET batch and exposes immutable submitted identity
-separately from the current projection. Any legacy, missing, denied or identity-drifted target makes
-the whole page unavailable without disclosing which row failed. Attempt-local staging must still be
-atomically fenced before a receipt or candidate can become visible.
+The typed BULK dataset-description CSV/XLSX profiles are all-or-nothing, limited to 16 MiB and
+10,000 rows. Their parsers use bounded reads, canonical lowercase asset UUIDs,
+projection-compatible identity limits, duplicate rejection and exact source/candidate hashes. CSV
+additionally enforces strict UTF-8/CSV states and exact ordered headers. Description content,
+including an empty clear proposal and quoted CSV newlines, is preserved. A purpose-bound Airflow
+call claims one preparation under database-time lease/retry fencing and atomically publishes a
+`READY` receipt/candidate set only after accepted-object identity and full-input hash verification.
+XLSX ZIP/XML parsing and candidate serialization run off the event loop; candidates replay from a
+gzip attempt-local spool with a 256 KiB memory threshold, 64 MiB hard cap and 16-row delivery
+batches instead of retaining the 10,000-row set in browser or API memory. Expired final
+preparations are failed and flushed before the worker scans onward.
+The bounded candidate API revalidates V2 receipt/hash invariants, resolves the page of targets in one
+authorization-pruned ACTIVE DATASET batch and exposes immutable submitted identity separately from
+the current projection. Any legacy, missing, denied or identity-drifted target makes the whole page
+unavailable without disclosing which row failed.
 
 The BULK browser preserves the v0.3 300-pixel upload panel and dark workflow tracker while replacing
 client-side parsing and simulated updates with server truth. It sends the explicitly selected profile
 on upload initiation, lists/creates preparation only for an `ACCEPTED` typed source, uses the exact
 quoted manifest `If-Match` and a fresh idempotency key, and displays indeterminate progress until the
-server reports a row count. `READY` enables read-only candidate evidence only; no raw Aspect,
-change-request or DataHub mutation action is exposed until the governed command contracts exist.
+server reports a row count. `READY` enables candidate paging and an exact one-candidate preview. The
+server re-reads and safely merges the current `datasetProperties` document, preserves unknown fields
+and returns an opaque ETag. With `If-Match` and an idempotency key, the browser may create one
+governed Change Request whose single server-authored description item and immutable candidate
+binding commit atomically. No raw Aspect, provider document, object coordinate, new table/column or
+direct DataHub mutation action is exposed.
 
 ## Change management
 
@@ -113,11 +141,19 @@ Any pre-apply review state → REJECTED or CANCELLED under policy
 - Requester cannot be final approver; high-classification changes require two distinct approvers and strong authentication.
 - Optimistic `version` prevents lost updates.
 - `APPLIED` requires target aspect re-read and content-hash match.
+- Lists return scalar summaries through keyset pagination; exact details are fetched only after
+  selection and are hard-capped at 200 items, 600 approvals, 200 transitions, 50 rounds and 200
+  test runs. Apply reports expose at most 200 item results and 20 attempts.
 - The v0.3-shaped multi-target CR intake re-reads each selected existing dataset on the server and
   records requested table/column metadata as `DATAHUB_INTAKE`; new tables are server-minted manual
   proposals. These non-executable records can become `COMPLETED` only after independent final
   approval. `COMPLETED` is a human workflow outcome, not a DataHub mutation/read-back claim.
-- Every attachment download and transition receives a fresh ABAC decision and audit event.
+- Every attachment download, upload finalization and transition receives a fresh ABAC decision and
+  audit event. Uploads first return `202 STARTED`; a separate least-privilege worker proves provider
+  HEAD metadata and the full byte hash before the current human may finalize. Ambiguous network,
+  408 and 5xx responses recover by the exact client-generated upload UUID. The browser pauses
+  polling while hidden, retains the same ID across a bounded retry and can explicitly recover at
+  most ten server-filtered current-round STORED intents while reporting any partial failure.
 
 ## Monitoring and operations
 

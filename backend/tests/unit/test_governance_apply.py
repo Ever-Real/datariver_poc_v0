@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import AsyncIterator, Sequence
+from contextlib import asynccontextmanager
 from datetime import UTC, datetime
 from typing import Any
 from uuid import UUID, uuid4
@@ -30,6 +31,7 @@ class MemoryApplyStore:
         self.claim: GovernanceApplyClaim | None = claim
         self.applied: tuple[str, str] | None = None
         self.failed: tuple[str, bool] | None = None
+        self.lease_renewals = 0
 
     async def claim_next(
         self,
@@ -66,6 +68,20 @@ class MemoryApplyStore:
     ) -> None:
         del claim, system_actor_id, maximum_attempts
         self.failed = (error_code, retryable)
+
+    async def renew_lease(self, **_: object) -> bool:
+        self.lease_renewals += 1
+        return True
+
+
+class MemoryProviderMutationLock:
+    def __init__(self) -> None:
+        self.calls: list[dict[str, object]] = []
+
+    @asynccontextmanager
+    async def hold(self, **kwargs: object) -> AsyncIterator[None]:
+        self.calls.append(kwargs)
+        yield
 
 
 class MemoryDataHub:
@@ -156,7 +172,7 @@ def make_claim() -> tuple[GovernanceApplyClaim, str]:
             )
         ],
     )
-    return GovernanceApplyClaim(request, uuid4(), uuid4(), 1), expected_hash
+    return GovernanceApplyClaim(request, uuid4(), uuid4(), 1, "lease-token", uuid4()), expected_hash
 
 
 @pytest.mark.asyncio
@@ -164,9 +180,11 @@ async def test_worker_only_marks_applied_after_equal_reread_hash() -> None:
     claim, expected_hash = make_claim()
     store = MemoryApplyStore(claim)
     gateway = MemoryDataHub(observed_hash=expected_hash)
+    provider_lock = MemoryProviderMutationLock()
     worker = GovernanceApplyWorker(
         store=store,
         datahub=gateway,
+        provider_mutation_lock=provider_lock,
         worker_id="worker-1",
         system_actor_id=uuid4(),
     )
@@ -176,6 +194,15 @@ async def test_worker_only_marks_applied_after_equal_reread_hash() -> None:
     assert store.applied is not None
     assert store.applied[0] == store.applied[1]
     assert store.failed is None
+    assert store.lease_renewals >= 5
+    assert len(provider_lock.calls) == 1
+    assert {key: value for key, value in provider_lock.calls[0].items() if key != "on_wait"} == {
+        "workspace_id": claim.change_request.workspace_id,
+        "provider": "DATAHUB",
+        "target_ref": claim.change_request.items[0].target_ref,
+        "aspect_name": "*",
+    }
+    assert callable(provider_lock.calls[0]["on_wait"])
 
 
 @pytest.mark.asyncio
@@ -185,6 +212,7 @@ async def test_worker_fails_closed_on_reconciliation_mismatch() -> None:
     worker = GovernanceApplyWorker(
         store=store,
         datahub=MemoryDataHub(observed_hash="0" * 64),
+        provider_mutation_lock=MemoryProviderMutationLock(),
         worker_id="worker-1",
         system_actor_id=uuid4(),
     )
@@ -202,6 +230,7 @@ async def test_worker_reconciles_provider_success_after_lost_completion_record()
     worker = GovernanceApplyWorker(
         store=store,
         datahub=gateway,
+        provider_mutation_lock=MemoryProviderMutationLock(),
         worker_id="worker-1",
         system_actor_id=uuid4(),
     )
@@ -222,6 +251,7 @@ async def test_worker_rejects_legacy_multi_item_claim_before_provider_read() -> 
     worker = GovernanceApplyWorker(
         store=store,
         datahub=gateway,
+        provider_mutation_lock=MemoryProviderMutationLock(),
         worker_id="worker-1",
         system_actor_id=uuid4(),
     )
@@ -251,6 +281,7 @@ async def test_worker_revalidates_legacy_queued_item_contract() -> None:
     worker = GovernanceApplyWorker(
         store=store,
         datahub=gateway,
+        provider_mutation_lock=MemoryProviderMutationLock(),
         worker_id="worker-1",
         system_actor_id=uuid4(),
     )
@@ -280,6 +311,7 @@ async def test_worker_rejects_legacy_unbound_item_before_provider_read() -> None
     worker = GovernanceApplyWorker(
         store=store,
         datahub=gateway,
+        provider_mutation_lock=MemoryProviderMutationLock(),
         worker_id="worker-1",
         system_actor_id=uuid4(),
     )

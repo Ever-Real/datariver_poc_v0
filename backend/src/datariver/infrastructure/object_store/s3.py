@@ -21,7 +21,7 @@ from datariver.application.dto import (
     ObjectMetadata,
 )
 from datariver.application.errors import ExternalDependencyError
-from datariver.domain.common import ValidationError
+from datariver.domain.common import ConflictError, ValidationError
 from datariver.domain.registration import CompletedUploadPart
 
 
@@ -276,6 +276,211 @@ class S3ObjectStore:
             size_bytes=total,
             content_sha256=digest.hexdigest(),
             provider_checksum=(f"etag:{object_metadata.etag}" if object_metadata.etag else None),
+        )
+
+    async def write_immutable_receipt(
+        self,
+        *,
+        bucket: str,
+        object_key: str,
+        content: bytes,
+        metadata: dict[str, str],
+        maximum_bytes: int,
+        content_type: str = "text/csv; charset=utf-8",
+    ) -> CatalogExportArtifact:
+        """Create a small private receipt without ever replacing an existing key.
+
+        S3's ``If-None-Match: *`` makes the object key a create-only namespace. Existing keys
+        fail closed because this port cannot prove ownership strongly enough to delete or adopt
+        an earlier object.
+        """
+
+        if not 1 <= maximum_bytes <= 5 * 1024 * 1024:
+            raise ValueError("Immutable receipt byte limit is outside the safe range.")
+        if len(content) > maximum_bytes:
+            raise ValidationError(
+                "The immutable receipt exceeds the configured byte limit.",
+                details={"code": "RECEIPT_BYTE_LIMIT"},
+            )
+        digest = hashlib.sha256(content).hexdigest()
+        expected_metadata = {**metadata, "content-sha256": digest}
+        try:
+            await asyncio.to_thread(
+                self._client.put_object,
+                Bucket=bucket,
+                Key=object_key,
+                Body=content,
+                ContentLength=len(content),
+                ContentType=content_type,
+                IfNoneMatch="*",
+                Metadata=expected_metadata,
+            )
+        except ClientError as error:
+            provider_code = str(error.response.get("Error", {}).get("Code", ""))
+            status = int(error.response.get("ResponseMetadata", {}).get("HTTPStatusCode", 0))
+            conflict_codes = {"PreconditionFailed", "ConditionalRequestConflict"}
+            if provider_code not in conflict_codes and status not in {409, 412}:
+                raise self._error("Immutable receipt could not be created.", error) from error
+            raise ConflictError(
+                "The immutable receipt key already exists.",
+                details={"code": "OBJECT_KEY_ALREADY_EXISTS"},
+            ) from error
+        except BotoCoreError as error:
+            raise self._error("Immutable receipt could not be created.", error) from error
+
+        created = await self.head_object(bucket=bucket, object_key=object_key)
+        if not self._immutable_receipt_matches(
+            existing=created,
+            expected_size=len(content),
+            expected_content_type=content_type,
+            expected_metadata=expected_metadata,
+        ):
+            raise ExternalDependencyError(
+                "Immutable receipt integrity did not reconcile.",
+                dependency="object_store",
+                retryable=True,
+                provider_code="RECEIPT_INTEGRITY_MISMATCH",
+            )
+        readback_digest = hashlib.sha256()
+        readback_size = 0
+        async for chunk in self.iter_object_chunks(
+            bucket=bucket,
+            object_key=object_key,
+            chunk_size=64 * 1024,
+        ):
+            readback_size += len(chunk)
+            if readback_size > len(content):
+                break
+            readback_digest.update(chunk)
+        if readback_size != len(content) or readback_digest.hexdigest() != digest:
+            raise ExternalDependencyError(
+                "Immutable receipt content did not reconcile.",
+                dependency="object_store",
+                retryable=True,
+                provider_code="RECEIPT_READBACK_MISMATCH",
+            )
+        return CatalogExportArtifact(
+            size_bytes=created.size_bytes,
+            content_sha256=digest,
+            provider_checksum=(f"etag:{created.etag}" if created.etag else None),
+        )
+
+    async def write_create_only(
+        self,
+        *,
+        bucket: str,
+        object_key: str,
+        chunks: AsyncIterator[bytes],
+        metadata: dict[str, str],
+        maximum_bytes: int,
+        content_type: str = "application/octet-stream",
+    ) -> CatalogExportArtifact:
+        """Write one bounded object with S3 conditional-create semantics.
+
+        This path intentionally buffers the bounded input so the durable write is a single
+        ``PutObject`` guarded by ``If-None-Match: *``. A collision can therefore never replace an
+        earlier attachment, and a provider/read-back ambiguity leaves the object for reconciliation
+        rather than issuing an unsafe delete.
+        """
+
+        if not 1 <= maximum_bytes <= 64 * 1024 * 1024:
+            raise ValueError("Create-only object byte limit is outside the safe range.")
+        content = bytearray()
+        digest = hashlib.sha256()
+        async for chunk in chunks:
+            if len(content) + len(chunk) > maximum_bytes:
+                raise ValidationError(
+                    "The create-only object exceeds the configured byte limit.",
+                    details={"code": "OBJECT_BYTE_LIMIT"},
+                )
+            content.extend(chunk)
+            digest.update(chunk)
+        if not content:
+            raise ValidationError(
+                "The create-only object cannot be empty.",
+                details={"code": "OBJECT_EMPTY"},
+            )
+        content_bytes = bytes(content)
+        content_sha256 = digest.hexdigest()
+        expected_metadata = {**metadata, "content-sha256": content_sha256}
+        try:
+            await asyncio.to_thread(
+                self._client.put_object,
+                Bucket=bucket,
+                Key=object_key,
+                Body=content_bytes,
+                ContentLength=len(content_bytes),
+                ContentType=content_type,
+                IfNoneMatch="*",
+                Metadata=expected_metadata,
+            )
+        except ClientError as error:
+            provider_code = str(error.response.get("Error", {}).get("Code", ""))
+            status = int(error.response.get("ResponseMetadata", {}).get("HTTPStatusCode", 0))
+            if provider_code not in {
+                "PreconditionFailed",
+                "ConditionalRequestConflict",
+            } and status not in {409, 412}:
+                raise self._error("Create-only object could not be written.", error) from error
+            raise ConflictError(
+                "The create-only object key already exists.",
+                details={"code": "OBJECT_KEY_ALREADY_EXISTS"},
+            ) from error
+        except BotoCoreError as error:
+            raise self._error("Create-only object could not be written.", error) from error
+
+        created = await self.head_object(bucket=bucket, object_key=object_key)
+        if not self._immutable_receipt_matches(
+            existing=created,
+            expected_size=len(content_bytes),
+            expected_content_type=content_type,
+            expected_metadata=expected_metadata,
+        ):
+            raise ExternalDependencyError(
+                "Create-only object integrity did not reconcile.",
+                dependency="object_store",
+                retryable=True,
+                provider_code="OBJECT_INTEGRITY_MISMATCH",
+            )
+        readback_digest = hashlib.sha256()
+        readback_size = 0
+        async for chunk in self.iter_object_chunks(
+            bucket=bucket,
+            object_key=object_key,
+            chunk_size=64 * 1024,
+        ):
+            readback_size += len(chunk)
+            if readback_size > len(content_bytes):
+                break
+            readback_digest.update(chunk)
+        if readback_size != len(content_bytes) or readback_digest.hexdigest() != content_sha256:
+            raise ExternalDependencyError(
+                "Create-only object content did not reconcile.",
+                dependency="object_store",
+                retryable=True,
+                provider_code="OBJECT_READBACK_MISMATCH",
+            )
+        return CatalogExportArtifact(
+            size_bytes=created.size_bytes,
+            content_sha256=content_sha256,
+            provider_checksum=(f"etag:{created.etag}" if created.etag else None),
+        )
+
+    @staticmethod
+    def _immutable_receipt_matches(
+        *,
+        existing: ObjectMetadata,
+        expected_size: int,
+        expected_content_type: str,
+        expected_metadata: dict[str, str],
+    ) -> bool:
+        return (
+            existing.size_bytes == expected_size
+            and existing.content_type == expected_content_type
+            and all(
+                existing.user_metadata.get(key.lower()) == value
+                for key, value in expected_metadata.items()
+            )
         )
 
     async def delete_export(self, *, bucket: str, object_key: str) -> None:

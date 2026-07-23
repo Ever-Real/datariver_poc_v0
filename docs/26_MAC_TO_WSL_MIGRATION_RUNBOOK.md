@@ -141,6 +141,12 @@ scripts/compose.sh --env-file .env.mac-development \
   api web outbox-relay upload-worker upload-validation-worker governance-apply-worker
 ```
 
+The database role initializer and every mounted migration secret are prerequisites, not optional
+post-migration hardening. In particular, revision `0025` must be able to read the configured
+`POSTGRES_EXPORT_PASSWORD_FILE`, and revision `0046` must observe the canonical application roles
+before validating grants/RLS. Stop Manual/BULK execution before migration; `0046` deliberately
+rejects an unresolved `APPLYING` Manual row or a partially present execution schema.
+
 The Keycloak host-development helper preserves unrelated client attributes and never changes an
 existing user's password. Realm-import credentials apply only when the realm is first created;
 subsequent password recovery or rotation is an explicit identity-administration operation.
@@ -148,6 +154,13 @@ subsequent password recovery or rotation is an explicit identity-administration 
 Verify readiness, OIDC login/refresh/logout, catalog paging at 25/50/100, a small upload through
 presign/CORS/validation, DataHub read-only behavior and native Ollama chat separately. Keep Airflow,
 APISIX, Neo4j and telemetry stopped unless the current Mac test explicitly requires them.
+
+For Registration activation, additionally prove an Admin positive journey, Data Steward
+owner-positive/workspace-history-negative journey and inactive/service/ordinary-user negatives.
+Then run one exact-commit Manual submission through external Airflow and require all five DataHub
+aspect read-backs in its report. Run one typed BULK preparation/candidate preview/CR creation and
+verify one immutable candidate binding. Local unit tests, a standalone MinIO conditional-create
+probe and an arm64 PostgreSQL migration rehearsal do not close these WSL/external-provider gates.
 
 ## 6. Freeze and export exact source/images
 

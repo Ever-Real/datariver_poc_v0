@@ -1,21 +1,26 @@
 # ruff: noqa: E501 -- OOXML fixture URIs are protocol literals and must not be wrapped.
 from __future__ import annotations
 
+import asyncio
+import gc
 import hashlib
 import io
+import tracemalloc
 import zipfile
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Callable
 from html import escape
 from uuid import UUID, uuid4
 
 import pytest
 
+from datariver.application import typed_xlsx_upload_parser
 from datariver.application.typed_upload_parser import (
     DatasetDescriptionCandidateDraft,
     DatasetDescriptionParseSummary,
     TypedUploadParseError,
     TypedUploadParseFailureCode,
 )
+from datariver.application.typed_upload_profiles import DATASET_DESCRIPTION_XLSX_V1
 from datariver.application.typed_xlsx_upload_parser import parse_dataset_description_xlsx
 
 HEADERS = (
@@ -194,3 +199,78 @@ async def test_xlsx_parser_rejects_zip_bomb_compression_ratio() -> None:
         await _parse(value)
 
     assert captured.value.failure_code is TypedUploadParseFailureCode.INVALID_XLSX_PACKAGE
+
+
+@pytest.mark.asyncio
+async def test_xlsx_zip_and_xml_parsing_runs_off_the_api_event_loop(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    value = _xlsx(
+        [
+            list(HEADERS),
+            [str(uuid4()), "postgres", "fab", "public", "wafer", "description"],
+        ]
+    )
+    delegated: list[object] = []
+
+    async def to_thread(function: Callable[..., object], *args: object) -> object:
+        delegated.append(function)
+        return function(*args)
+
+    monkeypatch.setattr(asyncio, "to_thread", to_thread)
+
+    candidates, summary = await _parse(value)
+
+    assert delegated[0] is typed_xlsx_upload_parser._parse_xlsx_package
+    assert set(delegated[1:]) == {typed_xlsx_upload_parser._read_candidate_batch}
+    assert len(candidates) == 1
+    assert summary.item_count == 1
+
+
+def test_xlsx_expansion_and_shared_string_budgets_are_low_resource_bounded() -> None:
+    assert typed_xlsx_upload_parser._MAXIMUM_UNCOMPRESSED_BYTES == 64 * 1024 * 1024
+    assert typed_xlsx_upload_parser._MAXIMUM_SINGLE_ENTRY_BYTES == 32 * 1024 * 1024
+    assert typed_xlsx_upload_parser._MAXIMUM_SHARED_STRINGS == 20_000
+    assert typed_xlsx_upload_parser._MAXIMUM_SHARED_STRING_BYTES == 16 * 1024 * 1024
+
+
+def test_xlsx_candidate_spool_bounds_memory_and_replays_at_maximum_profile() -> None:
+    definition = DATASET_DESCRIPTION_XLSX_V1
+    workspace_id = uuid4()
+    rows = [list(HEADERS)]
+    rows.extend(
+        [
+            str(UUID(int=ordinal)),
+            "postgres",
+            "fabrication",
+            "public",
+            f"wafer_{ordinal}",
+            "bounded-description-" * 16,
+        ]
+        for ordinal in range(1, definition.maximum_rows + 1)
+    )
+    value = _xlsx(rows)
+    del rows
+    gc.collect()
+
+    tracemalloc.start()
+    try:
+        item_count, _candidate_root, candidates = typed_xlsx_upload_parser._parse_xlsx_package(
+            io.BytesIO(value),
+            workspace_id,
+            definition,
+        )
+        with candidates:
+            first_count = sum(1 for _candidate in candidates.replay())
+            repeated_count = sum(1 for _candidate in candidates.replay())
+            _current_bytes, peak_bytes = tracemalloc.get_traced_memory()
+
+            assert item_count == definition.maximum_rows
+            assert first_count == repeated_count == definition.maximum_rows
+            assert candidates.rolled_to_disk is True
+            assert (
+                candidates.storage_bytes <= typed_xlsx_upload_parser._MAXIMUM_CANDIDATE_SPOOL_BYTES
+            )
+            assert peak_bytes < 8 * 1024 * 1024
+    finally:
+        tracemalloc.stop()

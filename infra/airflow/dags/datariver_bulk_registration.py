@@ -9,8 +9,12 @@ from datariver_auth import datariver_api_base_url, service_token
 _ALLOWED_STATES = frozenset({"READY", "QUEUED", "FAILED", "SUPERSEDED"})
 
 
+class TerminalBulkRegistrationFailure(RuntimeError):
+    """A durable business failure that Airflow must not retry into an empty success."""
+
+
 def prepare_bulk_registration_receipts(
-    *, run_id: str, maximum_preparations: int = 20
+    *, run_id: str, maximum_preparations: int = 8
 ) -> dict[str, object]:
     """Ask DataRiver to execute bounded, lease-fenced BULK preparations.
 
@@ -18,14 +22,14 @@ def prepare_bulk_registration_receipts(
     DataHub credentials remain inside DataRiver-owned API/worker boundaries.
     """
 
-    if not 1 <= maximum_preparations <= 50:
-        raise ValueError("maximum_preparations must be between 1 and 50")
+    if not 1 <= maximum_preparations <= 8:
+        raise ValueError("maximum_preparations must be between 1 and 8")
     workspace_id = os.environ["DATARIVER_WORKSPACE_ID"]
     api_base_url = datariver_api_base_url()
     states: dict[str, int] = {}
     processed = 0
     item_count = 0
-    for _ordinal in range(maximum_preparations):
+    for ordinal in range(1, maximum_preparations + 1):
         request = urllib.request.Request(  # noqa: S310 - deployment-owned validated origin
             f"{api_base_url}/api/v1/registration/bulk-preparations/execute",
             method="POST",
@@ -35,11 +39,12 @@ def prepare_bulk_registration_receipts(
                 "X-Workspace-Id": workspace_id,
                 "X-Purpose": "scheduled-bulk-registration-prepare",
                 "X-Run-Id": run_id[:200],
+                "X-Run-Call": str(ordinal),
                 "Content-Type": "application/json",
                 "Accept": "application/json",
             },
         )
-        with urllib.request.urlopen(request, timeout=900) as response:  # noqa: S310
+        with urllib.request.urlopen(request, timeout=300) as response:  # noqa: S310
             if response.status != 200:
                 raise RuntimeError("DataRiver rejected the BULK preparation request.")
             document = json.load(response)
@@ -55,5 +60,7 @@ def prepare_bulk_registration_receipts(
         item_count += count or 0
         states[state] = states.get(state, 0) + 1
     if states.get("FAILED", 0) > 0:
-        raise RuntimeError("One or more BULK preparation jobs reached FAILED state.")
+        raise TerminalBulkRegistrationFailure(
+            "One or more BULK preparation jobs reached FAILED state."
+        )
     return {"processed": processed, "item_count": item_count, "states": states}

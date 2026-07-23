@@ -27,7 +27,7 @@ from datariver.application.ports import (
 from datariver.application.services.authorization import AuthorizationService
 from datariver.application.services.manual_metadata import ManualMetadataSubmissionService
 from datariver.domain.authz import Action, Classification, EnvironmentAttributes, SubjectAttributes
-from datariver.domain.common import ConflictError, DomainEvent, ForbiddenError
+from datariver.domain.common import ConflictError, DomainEvent, ForbiddenError, ValidationError
 from datariver.domain.manual_metadata import ManualColumnMetadata, ManualMetadataSubmission
 
 
@@ -66,7 +66,7 @@ class _DataHub:
                 {"fieldPath": "measured_at", "nativeDataType": "timestamp"},
             ),
             quality={},
-            raw_version="provider-v1",
+            raw_version="b" * 64,
             observed_at=datetime.now(UTC),
         )
 
@@ -88,14 +88,68 @@ class _TruncatedDataHub(_DataHub):
         )
 
 
+class _BaselineDataHub(_DataHub):
+    def __init__(self) -> None:
+        self.calls = 0
+        self.fail = False
+
+    async def get_asset(self, _: str) -> DataHubAssetEnrichment:
+        self.calls += 1
+        if self.fail:
+            raise AssertionError("idempotent recovery must not call DataHub")
+        return DataHubAssetEnrichment(
+            ownership=(),
+            glossary_terms=(),
+            tags=(),
+            schema_fields=(
+                {
+                    "fieldPath": "wafer_id",
+                    "nativeDataType": "uuid",
+                    "description": "provider identifier",
+                    "globalTags": {"tags": [{"tag": "urn:li:tag:provider"}]},
+                    "glossaryTerms": {"terms": [{"term": "urn:li:glossaryTerm:provider"}]},
+                },
+                {
+                    "fieldPath": "measured_at",
+                    "nativeDataType": "timestamp",
+                    "description": "provider time",
+                    "globalTags": {"tags": []},
+                    "glossaryTerms": {"terms": []},
+                },
+            ),
+            quality={},
+            raw_version="c" * 64,
+            observed_at=datetime.now(UTC),
+        )
+
+
+class _OversizedDataHub(_DataHub):
+    async def get_asset(self, _: str) -> DataHubAssetEnrichment:
+        return DataHubAssetEnrichment(
+            ownership=(),
+            glossary_terms=(),
+            tags=(),
+            schema_fields=tuple(
+                {
+                    "fieldPath": f"column_{index:04d}",
+                    "nativeDataType": "varchar",
+                    "description": "x" * 10_000,
+                }
+                for index in range(600)
+            ),
+            quality={},
+            raw_version="b" * 64,
+            observed_at=datetime.now(UTC),
+        )
+
+
 class _Store:
     def __init__(self) -> None:
         self.writes: list[tuple[str, str, bytes, dict[str, str]]] = []
         self.deleted: list[tuple[str, str]] = []
 
-    async def write_export(self, **kwargs: Any) -> CatalogExportArtifact:
-        chunks = [chunk async for chunk in kwargs["chunks"]]
-        value = b"".join(chunks)
+    async def write_immutable_receipt(self, **kwargs: Any) -> CatalogExportArtifact:
+        value = cast(bytes, kwargs["content"])
         self.writes.append((kwargs["bucket"], kwargs["object_key"], value, kwargs["metadata"]))
         import hashlib
 
@@ -137,6 +191,9 @@ class _Idempotency:
     def __init__(self) -> None:
         self.records: dict[tuple[object, str, str], IdempotencyRecord] = {}
 
+    async def acquire_key_lock(self, **_: object) -> None:
+        return None
+
     async def get_result(
         self, *, workspace_id: object, key: str, operation: str
     ) -> IdempotencyRecord | None:
@@ -158,11 +215,18 @@ class _Idempotency:
 
 
 class _Uow:
-    def __init__(self) -> None:
+    def __init__(
+        self,
+        *,
+        commit_error: Exception | None = None,
+        flush_error: Exception | None = None,
+    ) -> None:
         self.manual_metadata_submissions = _ManualRepository()
         self.outbox = _Outbox()
         self.idempotency = _Idempotency()
         self.committed = False
+        self.commit_error = commit_error
+        self.flush_error = flush_error
 
     async def __aenter__(self) -> _Uow:
         return self
@@ -175,6 +239,13 @@ class _Uow:
 
     async def commit(self) -> None:
         self.committed = True
+        if self.commit_error is not None:
+            raise self.commit_error
+
+    async def flush(self) -> None:
+        if self.flush_error is not None:
+            raise self.flush_error
+        return None
 
     async def rollback(self) -> None:
         return None
@@ -249,6 +320,7 @@ async def test_manual_submission_writes_server_owned_csv_and_queues_an_independe
     submission = await service.submit(
         asset_id=asset_id,
         source_version="source-v1",
+        provider_source_version="b" * 64,
         description="Updated wafer metadata",
         domain="Semiconductor",
         tags=("quality:gold",),
@@ -275,8 +347,126 @@ async def test_manual_submission_writes_server_owned_csv_and_queues_an_independe
     assert bucket == "datariver-infoschema"
     assert object_key == "UPLOAD_METADATA_MANUAL_260718_000042.csv"
     assert metadata["asset-id"] == str(submission.asset_id)
+    assert metadata["submission-id"] == str(submission.submission_id)
+    assert metadata["serial-number"] == str(submission.serial_number)
+    assert metadata["content-sha256"] == submission.csv_sha256
+    assert metadata["content-size"] == str(submission.csv_size_bytes)
     assert b"urn:li:tag:quality%3Agold" in document
     assert b"urn:li:glossaryTerm:wafer" in document
+
+
+@pytest.mark.asyncio
+async def test_ambiguous_commit_failure_never_deletes_the_created_receipt() -> None:
+    service, store, uow, subject, environment, _, asset_id = _fixture()
+    uow.commit_error = ConnectionError("commit acknowledgement lost")
+
+    with pytest.raises(ConnectionError, match="acknowledgement lost"):
+        await service.submit(
+            asset_id=asset_id,
+            source_version="source-v1",
+            provider_source_version="b" * 64,
+            description="Updated wafer metadata",
+            domain=None,
+            tags=(),
+            terms=(),
+            columns=(
+                ManualColumnMetadata("wafer_id", "Identifier", (), ()),
+                ManualColumnMetadata("measured_at", "Observed time", (), ()),
+            ),
+            subject=subject,
+            environment=environment,
+            request_id="manual-ambiguous-commit",
+            idempotency_key="manual-ambiguous-commit-key",
+            request_hash="a" * 64,
+        )
+
+    assert uow.committed is True
+    assert len(store.writes) == 1
+    assert store.deleted == []
+
+
+@pytest.mark.asyncio
+async def test_deterministic_database_failure_occurs_before_receipt_creation() -> None:
+    service, store, uow, subject, environment, _, asset_id = _fixture()
+    uow.flush_error = ConflictError("duplicate idempotency result")
+
+    with pytest.raises(ConflictError, match="duplicate idempotency"):
+        await service.submit(
+            asset_id=asset_id,
+            source_version="source-v1",
+            provider_source_version="b" * 64,
+            description="Updated wafer metadata",
+            domain=None,
+            tags=(),
+            terms=(),
+            columns=(
+                ManualColumnMetadata("wafer_id", "Identifier", (), ()),
+                ManualColumnMetadata("measured_at", "Observed time", (), ()),
+            ),
+            subject=subject,
+            environment=environment,
+            request_id="manual-pre-write-failure",
+            idempotency_key="manual-pre-write-failure-key",
+            request_hash="b" * 64,
+        )
+
+    assert uow.committed is False
+    assert store.writes == []
+    assert store.deleted == []
+
+
+@pytest.mark.asyncio
+async def test_receipt_size_limit_fails_before_database_or_object_write() -> None:
+    service, store, uow, subject, environment, _, asset_id = _fixture(
+        datahub=cast(DataHubGateway, _OversizedDataHub())
+    )
+
+    with pytest.raises(ValidationError) as captured:
+        await service.submit(
+            asset_id=asset_id,
+            source_version="source-v1",
+            provider_source_version="b" * 64,
+            description="updated",
+            domain=None,
+            tags=(),
+            terms=(),
+            columns=(),
+            subject=subject,
+            environment=environment,
+            request_id="manual-receipt-limit",
+            idempotency_key="manual-receipt-limit-key",
+            request_hash="1" * 64,
+        )
+
+    assert captured.value.details == {"code": "MANUAL_METADATA_RECEIPT_TOO_LARGE"}
+    assert uow.manual_metadata_submissions.values == {}
+    assert store.writes == []
+    assert uow.committed is False
+
+
+@pytest.mark.asyncio
+async def test_normalized_controlled_reference_limit_fails_before_provider_or_write() -> None:
+    service, store, uow, subject, environment, _, asset_id = _fixture()
+
+    with pytest.raises(ValidationError, match="exceeds the limit"):
+        await service.submit(
+            asset_id=asset_id,
+            source_version="source-v1",
+            provider_source_version="b" * 64,
+            description="updated",
+            domain=None,
+            tags=("한" * 1_000,),
+            terms=(),
+            columns=(),
+            subject=subject,
+            environment=environment,
+            request_id="manual-ref-limit",
+            idempotency_key="manual-ref-limit-key",
+            request_hash="2" * 64,
+        )
+
+    assert uow.manual_metadata_submissions.values == {}
+    assert store.writes == []
 
 
 @pytest.mark.asyncio
@@ -289,6 +479,7 @@ async def test_manual_submission_denial_never_writes_the_csv() -> None:
         await service.submit(
             asset_id=asset_id,
             source_version="source-v1",
+            provider_source_version="b" * 64,
             description="updated",
             domain=None,
             tags=(),
@@ -308,6 +499,125 @@ async def test_manual_submission_denial_never_writes_the_csv() -> None:
 
 
 @pytest.mark.asyncio
+async def test_sparse_column_edits_rehydrate_the_complete_fresh_provider_schema() -> None:
+    datahub = _BaselineDataHub()
+    service, store, _, subject, environment, _, asset_id = _fixture(
+        datahub=cast(DataHubGateway, datahub)
+    )
+
+    submission = await service.submit(
+        asset_id=asset_id,
+        source_version="source-v1",
+        provider_source_version="c" * 64,
+        description="table-only update",
+        domain=None,
+        tags=(),
+        terms=(),
+        columns=(ManualColumnMetadata("wafer_id", "edited identifier", (), ()),),
+        subject=subject,
+        environment=environment,
+        request_id="manual-sparse",
+        idempotency_key="manual-sparse-idempotency",
+        request_hash="d" * 64,
+    )
+
+    assert [(column.field_path, column.description) for column in submission.columns] == [
+        ("wafer_id", "edited identifier"),
+        ("measured_at", "provider time"),
+    ]
+    assert submission.columns[1].tags == ()
+    assert submission.provider_source_version == "c" * 64
+    assert store.writes[0][3]["provider-source-version"] == "c" * 64
+
+
+@pytest.mark.asyncio
+async def test_legacy_request_without_provider_version_pins_the_fresh_provider_version() -> None:
+    service, store, _, subject, environment, _, asset_id = _fixture()
+
+    submission = await service.submit(
+        asset_id=asset_id,
+        source_version="source-v1",
+        provider_source_version=None,
+        description="legacy-compatible",
+        domain=None,
+        tags=(),
+        terms=(),
+        columns=(
+            ManualColumnMetadata("wafer_id", "Identifier", (), ()),
+            ManualColumnMetadata("measured_at", "Observed time", (), ()),
+        ),
+        subject=subject,
+        environment=environment,
+        request_id="manual-legacy-compatible",
+        idempotency_key="manual-legacy-compatible-key",
+        request_hash="3" * 64,
+    )
+
+    assert submission.provider_source_version == "b" * 64
+    assert store.writes[0][3]["provider-source-version"] == "b" * 64
+
+
+@pytest.mark.asyncio
+async def test_successful_idempotent_retry_recovers_before_provider_read() -> None:
+    datahub = _BaselineDataHub()
+    service, store, _, subject, environment, _, asset_id = _fixture(
+        datahub=cast(DataHubGateway, datahub)
+    )
+    command: dict[str, Any] = {
+        "asset_id": asset_id,
+        "source_version": "source-v1",
+        "provider_source_version": "c" * 64,
+        "description": "table-only update",
+        "domain": None,
+        "tags": (),
+        "terms": (),
+        "columns": (),
+        "subject": subject,
+        "environment": environment,
+        "request_id": "manual-replay",
+        "idempotency_key": "manual-replay-idempotency",
+        "request_hash": "e" * 64,
+    }
+
+    first = await service.submit(**command)
+    datahub.fail = True
+    second = await service.submit(**command)
+
+    assert second.submission_id == first.submission_id
+    assert datahub.calls == 1
+    assert len(store.writes) == 1
+
+
+@pytest.mark.asyncio
+async def test_provider_source_drift_fails_before_database_or_object_write() -> None:
+    datahub = _BaselineDataHub()
+    service, store, uow, subject, environment, _, asset_id = _fixture(
+        datahub=cast(DataHubGateway, datahub)
+    )
+
+    with pytest.raises(ConflictError) as captured:
+        await service.submit(
+            asset_id=asset_id,
+            source_version="source-v1",
+            provider_source_version="f" * 64,
+            description="stale",
+            domain=None,
+            tags=(),
+            terms=(),
+            columns=(),
+            subject=subject,
+            environment=environment,
+            request_id="manual-provider-drift",
+            idempotency_key="manual-provider-drift-key",
+            request_hash="f" * 64,
+        )
+
+    assert captured.value.details == {"code": "PROVIDER_SOURCE_VERSION_MISMATCH"}
+    assert store.writes == []
+    assert uow.committed is False
+
+
+@pytest.mark.asyncio
 async def test_manual_submission_rejects_a_truncated_provider_schema() -> None:
     service, store, uow, subject, environment, _, asset_id = _fixture(
         datahub=cast(DataHubGateway, _TruncatedDataHub())
@@ -317,6 +627,7 @@ async def test_manual_submission_rejects_a_truncated_provider_schema() -> None:
         await service.submit(
             asset_id=asset_id,
             source_version="source-v1",
+            provider_source_version="b" * 64,
             description="updated",
             domain=None,
             tags=(),
@@ -332,6 +643,6 @@ async def test_manual_submission_rejects_a_truncated_provider_schema() -> None:
             request_hash="c" * 64,
         )
 
-    assert captured.value.details == {"code": "SCHEMA_FIELDS_TRUNCATED"}
+    assert captured.value.details == {"code": "PROVIDER_METADATA_TRUNCATED"}
     assert store.writes == []
     assert uow.committed is False

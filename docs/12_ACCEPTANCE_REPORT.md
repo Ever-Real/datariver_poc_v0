@@ -1,14 +1,34 @@
 # Acceptance report — development/integration baseline
 
 Report date: 2026-07-17 (Asia/Seoul)
-Artifact: current local `datariver_v1` branch
+Artifact: historical Windows/WSL development baseline; later addenda identify their exact source
+boundary
 Environment: Windows + WSL2 Ubuntu 22.04, Docker Engine 29.6.0, Compose 5.2.0  
 Toolchain: Python 3.12.12, uv 0.9.17, Node.js 22.19.0, npm 10.9.3  
 Decision: **development and local integration baseline accepted; production release not accepted**
 
-This report supersedes the source-only report and the runtime-open statements in the 2026-07-14 independent reviews. It records repeatable evidence from the current working tree, not a signed release artifact or production environment.
+This historical report superseded the source-only report and the runtime-open statements in the
+2026-07-14 independent reviews at the time it was written. It is not evidence for the current
+working tree, a signed release artifact or production. Current status is controlled by the dated
+addenda and `docs/29_MASTER_EXECUTION_BACKLOG.md`.
 
 P0–P3 foundation addendum, updated 2026-07-16: current source checks additionally include the stable DataHub v1.6.0 release contract and typed OIDC assurance. Hardware WebAuthn requires an exact approved ACR+AMR combination and `auth_time`; OTP, generic MFA and refreshed-token `iat` cannot satisfy high-risk authorization. Browser remediation is bounded to typed authentication actions, rejects unsafe return locations, and never automatically replays a denied mutation after an authentication redirect. Compatibility migrations and the current hybrid runtime have separate live evidence below.
+
+## Governed Registration execution addendum — 2026-07-23
+
+This addendum covers the uncommitted Registration execution/evidence candidate over base
+`a683a93`. It does not convert source evidence into WSL, external-provider or production evidence.
+
+| Gate | Result | Current executed evidence |
+|---|---|---|
+| Backend source | PASS | exact README Ruff gate including the receipt reconciler, strict mypy over 333 source/test files, static verification and 1,152 pytest passes; 46 explicitly environment-gated tests skipped |
+| Frontend | PASS | TypeScript, zero-warning ESLint, 44 files / 230 Vitest tests and the production Vite build |
+| PostgreSQL `0046`–`0050` | PASS (isolated local) | deterministic canonical `0001` SHA-256 `1ca5b11f1c78ae6a193b2beca9f5ef19d252a2c59b32f955be0d10cf298ebbce` matched across consecutive generation; PostgreSQL 17 blank `0001 -> 0050`, clean `0047 -> 0050` re-entry and exact-contract checks passed. A deliberately corrupted COMPLETED apply job bound to an APPLY_QUEUED request caused `0048` re-entry to fail closed as required |
+| Registration RLS/recovery | PASS (isolated local) | 16 actual PostgreSQL tests cover `datariver_app` no-context/cross-workspace, Admin, owner-only Data Steward, service worker, inactive and expired membership reads, immutable mutation/direct-terminal-attempt negatives, expired-final Manual/BULK/CR scan-onward recovery, provider target serialization, worker-call receipt recovery and attachment principal separation |
+| Manual/BULK safety | PASS (source/local) | immutable conditional receipt plus live isolated MinIO concurrent-create/read-back, projection/provider lost-update checks, DB-time leases, five-Aspect success/failure evidence, atomic 24-hour Airflow run-call receipts with proactive stale-call closure, disk-spooled XLSX parsing, read-only DB/S3 orphan classification and bounded/hidden-tab polling are tested |
+| Governed apply and attachments | PASS (source/isolated PostgreSQL) | a completed DataHub apply job is not reclaimable and APPLIED/APPLY_FAILED cannot be rewound. Attachment upload returns `202 STARTED`; the existing BYPASSRLS upload principal has zero direct intent-table privileges and can acquire only one server-function claim using `FOR UPDATE SKIP LOCKED`, then HEAD plus full-byte SHA evidence is required for STORED. Actual PostgreSQL denied direct SELECT even with BYPASSRLS enabled. The app and upload roles cannot directly UPDATE an intent or INSERT an attachment; finalization rechecks current membership, action/deny rules, System/Domain/classification, TEST assignment, target binding, CR version/round/state and monotonic time and supports exact idempotent response-loss replay. Browser recovery treats network/408/5xx as ambiguous, reuses the exact upload ID, pauses while hidden, and lists only current-round STORED rows after server filtering and before a ten-row limit; partial recovery remains visible |
+| JavaScript dependency audit | EXTERNAL_GATE | Type/lint/test/build passed without network. The current `npm audit` was not executed because it transmits the dependency manifest to the external npm service and no explicit disclosure approval was available; no zero-vulnerability claim is made for this source boundary |
+| External acceptance | OPEN | exact WSL image/startup, external MinIO permission/immutability, Airflow OIDC DAG, DataHub 1.6 five-Aspect read-back, real Keycloak multi-human journey and representative load/crash/soak remain `EXTERNAL_GATE` |
 
 ## Mac development policy addendum — 2026-07-20
 

@@ -275,7 +275,7 @@ class Settings(BaseSettings):
     bulk_preparation_maximum_attempts: int = Field(default=4, ge=1, le=20)
     governance_apply_lease_seconds: int = Field(default=120, ge=30, le=900)
     governance_apply_maximum_attempts: int = Field(default=8, ge=1, le=20)
-    governance_worker_subject_id: UUID = UUID("00000000-0000-7000-8000-000000000001")
+    governance_worker_subject_id: UUID = UUID("00000000-0000-4000-8000-000000000102")
     export_worker_subject_id: UUID = UUID("00000000-0000-7000-8000-000000000002")
     retention_worker_subject_id: UUID = UUID("00000000-0000-7000-8000-000000000003")
     retention_archive_execution_enabled: bool = False
@@ -495,6 +495,19 @@ class Settings(BaseSettings):
             raise ValueError("Cache and delivery must use separate Redis service origins.")
         if self.datahub_stale_ttl_seconds < self.cache_default_ttl_seconds:
             raise ValueError("The DataHub stale TTL cannot be shorter than the fresh cache TTL.")
+        minimum_governance_lease = (
+            (2 * (self.datahub_queue_timeout_seconds + self.datahub_timeout_seconds))
+            + max(
+                self.database_pool_timeout_seconds,
+                self.worker_database_pool_timeout_seconds,
+            )
+            + 5
+        )
+        if self.governance_apply_lease_seconds <= minimum_governance_lease:
+            raise ValueError(
+                "The governance apply lease must cover a cold DataHub version probe, one provider "
+                "request, the longest database-pool wait and the five-second renewal margin."
+            )
         if self.datahub_catalog_pit_verified and not (
             self.datahub_catalog_pit_evidence_reference
             and self.datahub_catalog_pit_evidence_reference.strip()

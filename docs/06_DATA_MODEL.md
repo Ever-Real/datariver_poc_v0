@@ -111,10 +111,14 @@ continues to read the typed DataHub enrichment through the server anti-corruptio
 |---|---|---|
 | `governance.change_requests` | `id`, `workspace_id + number UQ`, type/title/description/state/requester/classification, nullable requested due date/priority/urgency vocabulary, `version`, timestamps | change aggregate/state machine |
 | `governance.change_request_items` | `id`, `change_request_id + ordinal UQ`, typed provider or intake target/aspect/operation, before/after hashes/document, nullable historical target binding and canonical `routing_system_id` | immutable executable item or typed multi-target intake evidence; every new item routes workflow authority through an active canonical System |
-| `governance.registration_content_bindings` | candidate/hash UQ, change item UQ, request/item/creator composite workspace FKs, created time | append-only candidate-to-governed-item provenance; no ordinary update/delete grant |
-| `governance.manual_metadata_submissions` | workspace/asset/requester FKs, per-workspace serial UQ, immutable typed table/field payload, private bucket/key UQ, CSV SHA-256/size/row count, state/attempt/lease/version/timestamps | independent MANUAL registration audit/CSV receipt; payload and receipt identity are immutable, while a leased Airflow-owned worker may advance controlled state after CSV and provider read-back verification |
+| `governance.registration_content_bindings` | candidate/hash UQ, Change Request UQ, change item UQ, request/item/creator composite workspace FKs, created time | append-only one-candidate/one-request/one-item provenance committed with the governed command; no ordinary update/delete grant |
+| `governance.manual_metadata_submissions` | workspace/asset/requester/lease-owner FKs, per-workspace serial UQ, catalog `source_version` plus mandatory 64-hex `provider_source_version`, immutable complete typed table/field payload, private bucket/key UQ, CSV SHA-256/size/row count, state, DB-time retry/lease epoch/token, at most 20 attempts, version/timestamps; one APPLYING row per workspace/asset | independent MANUAL registration intent/CSV receipt and lost-update evidence; ordinary writes may update only fenced execution columns after receipt verification |
+| `governance.manual_metadata_apply_attempts` | submission/attempt and submission/lease-epoch UQ, worker membership FK, token hash, RUNNING→terminal shape, failure/report-root hashes and times | append-only attempt identity with one bounded terminal transition; INSERT is trigger-gated to RUNNING evidence matching the persisted current APPLYING lease, and APPLIED is trigger-gated on five matching aspect reports |
+| `governance.manual_metadata_aspect_reports` | attempt/aspect UQ, fixed aspect ordinal/name mapping, optional before/expected/observed hashes, typed success/failure outcome, write flag, sanitized failure code and provider hashes/version | append-only reached-aspect DataHub evidence; `ALREADY_MATCHED`/`APPLIED_VERIFIED` require matching expected/observed hashes, failure retains only the reached ordered prefix, and only APPLIED requires exactly five verified rows |
 | `governance.approvals` | `id`, `change_request_id + stage + actor_id UQ`, REVIEW/TEST/FINAL decision/reason/actor/policy/time and JSON authority snapshot | append-only decision plus immutable System Developer/Data Steward/global Admin authority evidence used by stage-completeness checks |
 | `governance.state_transitions` | `id`, request, from/to, actor, reason, policy decision, occurrence | append-only state history |
+| `governance.change_request_attachments` | workspace/request/current-round identity, globally unique `bucket + object_key`, kind/name/serial UQ, MIME/size/SHA-256 and uploader | finalized immutable private REQUEST/TEST evidence; bytes remain only in the configured object store |
+| `governance.change_request_attachment_upload_intents` | attachment UUID, workspace/request/round/uploader FKs, globally unique object identity, expected size/SHA-256, monotonic `STARTED -> STORED -> FINALIZED` or proven create-rejection `FAILED` state, provider checksum/timestamps/version | precommitted upload authorization and queryable orphan/recovery ledger; current membership, Role-derived attributes, System assignment, target binding and CR round are locked and re-evaluated before STARTED/finalization, while ambiguous provider/DB outcomes remain STARTED or STORED and never trigger blind deletion |
 
 ### Integration, jobs and objects
 
@@ -124,9 +128,9 @@ continues to read the typed DataHub enrichment through the server anti-corruptio
 | `integration.job_attempts` | `id`, `job_id + attempt_no UQ`, worker/state/error/external hash/start/finish | worker attempt evidence |
 | `integration.outbox_events` | event PK, workspace/aggregate/type/schema/payload/time, publish/dead-letter/lease/attempt/error | transactional event recovery source and isolated poison-event evidence; relay deletion is revoked |
 | `integration.inbox_messages` | PK `consumer + event_id`, workspace/received/completed/result hash | consumer deduplication; relay deletion is revoked |
-| `integration.idempotency_keys` | PK `workspace + operation + key_hash`, request hash/result/expiry | HTTP/command replay control |
+| `integration.idempotency_keys` | PK `workspace + operation + key_hash`, request hash/result/expiry | HTTP/command replay control, including 24-hour Airflow Manual/BULK run-ID/call-ordinal response replay after fresh authentication/authorization |
 | `integration.object_manifests` | `id`, `workspace + id UQ`, `bucket + object_key UQ`, declared/actual size-MIME-SHA, explicit allowlisted content profile, multipart/parts, state/classification/owner, completion/validation attempts, lease/error/summary, expiry/retention, `version`, timestamps | quarantine-to-accepted lifecycle; filename/MIME never implies proposal capability |
-| `integration.upload_preparation_jobs` | upload/requester composite FKs, exact source-evidence identity UQ, source configuration UQ, typed state, lease token/time, attempts/progress/error, optimistic version | durable typed preparation claim; execution role access is deliberately not granted by `0016` |
+| `integration.upload_preparation_jobs` | upload/requester composite FKs, exact source-evidence identity UQ, source configuration UQ, typed state, DB-time retry schedule, lease token/time, attempts/progress/error, optimistic version | durable typed preparation claim with bounded retry/lease fencing |
 | `integration.upload_preparation_receipts` | exact job source-evidence/upload composite FKs and UQs, source/accepted SHA equality, locator hash, optional ETag/VersionId, parser/scanner/schema/config versions, counts/root/receipt hashes | append-only full-input preparation receipt |
 | `integration.upload_registration_candidates` | receipt/ordinal UQ, receipt/asset UQ, local asset ID, evidence version, submitted platform/database/schema/table plus identity hash, typed description operation/value and candidate hash | append-only server-prepared candidate; submitted evidence remains distinct from the current catalog target; no URN, Aspect, classification, provider document or object coordinate |
 | `integration.seed_runs` | `id`, `workspace + namespace + pack_version UQ`, content hash/state/counts/apply/remove time | optional pack ownership/audit |
@@ -232,9 +236,9 @@ must be re-resolved under the same workspace before proposal creation. The exist
 role receives no access to the new tables; a workspace/correlation-bound execution boundary remains
 an activation prerequisite. The API now persists and reads authorized `upload_preparation_jobs`
 through ordinary forced-RLS sessions after locking and verifying the exact accepted manifest,
-immutable content profile, promoted-byte SHA-256 evidence and server configuration hash. It cannot
-claim a lease, write a receipt/candidate or create candidate provenance. No parser worker or typed
-proposal capability is enabled.
+immutable content profile, promoted-byte SHA-256 evidence and server configuration hash. At revision
+`0016` it could not claim a lease, write a receipt/candidate or create candidate provenance; those
+disabled-first activation prerequisites are implemented by `0036` and fenced further by `0046`.
 
 Alembic `0017` closes the submitted-identity evidence gap without rewriting history. Existing
 candidate rows become `LEGACY_V1` with no fabricated hierarchy; new rows must be
@@ -243,8 +247,9 @@ hash. Parser/configuration and ordered-root contracts advance to V2, and a trigg
 rows plus every candidate update/delete. No new role grant is introduced. The read-only candidate
 API accepts only READY receipt evidence, recomputes V2 identity/candidate invariants and resolves a
 page through one current authorization-pruned ACTIVE DATASET lookup. It never reads object storage or
-DataHub and exposes no raw provider/object coordinates. Candidate publication, preview commands and
-proposal creation remain disabled until fenced publish and execution authorization are proven.
+DataHub and exposes no raw provider/object coordinates. At revision `0017`, publication, preview and
+proposal creation remained disabled; `0036` and `0046` later provide the fenced worker and
+ADR-0041 one-candidate/one-Change-Request command.
 
 Alembic `0018` removes the fixed Chat retention duration. Existing sessions are honestly marked
 `LEGACY_UNBOUND_V1`; new sessions require an exact `ACTIVE_POLICY_V1` binding to the workspace's
@@ -340,6 +345,38 @@ invalid interrupted build is dropped and rebuilt with PostgreSQL `CONCURRENTLY` 
 autocommit block, then rechecked as valid/ready before the revision stamps. The non-atomic operation
 must still be rehearsed for target lock, disk and elapsed-time impact. Downgrade never removes an
 index that may have been created by the canonical baseline.
+
+Alembic `0045` bounds the provider-controlled catalog projection, records truncation/provenance
+facts and adds server-owned DataHub scroll reconciliation evidence. Its deletion inference remains
+disabled unless the exact point-in-time provider contract is independently accepted under
+ADR-0040.
+
+Alembic `0046` implements ADR-0041. It adds Manual retry scheduling and monotonic claim fields,
+append-only apply-attempt/five-aspect report tables, preparation retry scheduling,
+one-Change-Request-per-typed-candidate binding uniqueness and Change Request keyset indexes. The two
+new evidence tables use forced workspace RLS plus restrictive owner/Admin/purpose-bound-worker read
+policies. Ordinary application grants cannot broadly update or delete them; an APPLIED attempt
+requires five matching aspect reports. Upgrade fails when the contract is partial, definition
+drifted or Manual rows remain `QUEUED`/`APPLYING`. The same installer is idempotent for a canonical generated
+baseline and the additive `0045 -> 0046` path.
+
+Alembic `0047` adds `integration.registration_worker_call_receipts`. It stores only hashed
+run-call/request identities. RUNNING is created with the canonical Manual/Bulk claim, terminal
+result is completed in the same transaction as canonical state, and no-work calls are also durable.
+Forced workspace/worker RLS, column-limited grants, immutable completion and raw-token trigger
+fencing protect the receipt; raw run ids and claim tokens are never persisted.
+
+Alembic `0049` enforces the finalized attachment table's global bucket/object-key identity.
+Alembic `0050` adds the forced-RLS attachment upload-intent ledger, restrictive uploader policy,
+zero direct upload-role table privileges and database transition/identity guards. The application
+may insert only a current STARTED precommit using the browser's exact upload UUID and has no direct
+UPDATE or finalized-attachment INSERT grant. The BYPASSRLS upload role can obtain only one due row
+through a SECURITY DEFINER `FOR UPDATE SKIP LOCKED` claim, then records STORED only after HEAD and
+full-byte SHA-256 read-back. The current human is reauthorized before the typed function atomically
+inserts the finalized attachment plus FINALIZED state; a finalized replay returns the same row
+after the same current authorization check. Provider success followed by HEAD/readback failure,
+cancellation or ambiguous commit remains operator-queryable evidence and is never converted into
+an automatic object delete.
 
 `EVENT_RETENTION_DAYS` is a target online-retention input, not a deletion switch. The Phase 2 worker
 archives only minimal erasure approval/execution evidence and stops at

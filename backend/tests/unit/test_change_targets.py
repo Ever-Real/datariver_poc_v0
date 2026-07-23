@@ -29,11 +29,13 @@ class MemoryCatalogIndex:
     def __init__(self, assets: tuple[CatalogAssetIndex, ...]) -> None:
         self.assets = assets
         self.calls = 0
+        self.requested_external_urns: list[tuple[str, ...]] = []
 
     async def get_authorized_assets_by_external_urns(
         self, *, external_urns: tuple[str, ...], **_: object
     ) -> tuple[CatalogAssetIndex, ...]:
         self.calls += 1
+        self.requested_external_urns.append(external_urns)
         allowed = set(external_urns)
         return tuple(asset for asset in self.assets if asset.external_urn in allowed)
 
@@ -243,6 +245,81 @@ async def test_list_resolves_targets_once_and_omits_any_request_outside_current_
     )
     assert visible == (requests[0],)
     assert index.calls == 1
+
+
+@pytest.mark.asyncio
+async def test_approval_authorization_reads_only_the_actors_system_targets() -> None:
+    workspace_id = uuid4()
+    first_system = uuid4()
+    second_system = uuid4()
+    first_asset = asset(
+        workspace_id=workspace_id,
+        system_id=first_system,
+        external_urn="urn:li:dataset:first-approval",
+    )
+    second_asset = asset(
+        workspace_id=workspace_id,
+        system_id=second_system,
+        external_urn="urn:li:dataset:second-approval",
+    )
+    index = MemoryCatalogIndex((first_asset, second_asset))
+    service = CatalogChangeTargetAuthorizer(
+        index=index,  # type: ignore[arg-type]
+        classification_access=ClassificationAccessResolver(NoPolicySnapshot()),
+        authorization=AuthorizationService(decision_writer=NullDecisionWriter()),
+    )
+    maker = replace(
+        subject(workspace_id=workspace_id, system_id=first_system),
+        allowed_system_ids=frozenset({first_system, second_system}),
+    )
+    bindings = await service.authorize_targets(
+        workspace_id=workspace_id,
+        subject=maker,
+        items=(
+            item(target_ref=first_asset.external_urn),
+            item(target_ref=second_asset.external_urn),
+        ),
+        request_classification=Classification.INTERNAL,
+        environment=EnvironmentAttributes(requested_at=datetime.now(UTC)),
+        request_id="bind-approval-targets",
+    )
+    request = ChangeRequest.create(
+        workspace_id=workspace_id,
+        number="CR-APPROVAL-SCOPE",
+        request_type="CHANGE_INTAKE",
+        title="Scoped approval",
+        description="",
+        requester_id=uuid4(),
+        items=[
+            replace(
+                binding,
+                target_type="DATAHUB_INTAKE",
+                operation="REVIEW",
+                aspect_name="changeIntake",
+            )
+            for binding in bindings
+        ],
+    )
+    index.calls = 0
+    index.requested_external_urns.clear()
+    actor = subject(
+        workspace_id=workspace_id,
+        system_id=first_system,
+        action=Action.CHANGE_REVIEW,
+    )
+
+    visible_item_ids = await service.authorize_approval_targets(
+        workspace_id=workspace_id,
+        subject=actor,
+        change_request=request,
+        action=Action.CHANGE_REVIEW,
+        approval_system_ids=frozenset({first_system}),
+        environment=EnvironmentAttributes(requested_at=datetime.now(UTC)),
+        request_id="approve-first-system",
+    )
+
+    assert visible_item_ids == frozenset({request.items[0].item_id})
+    assert index.requested_external_urns == [(first_asset.external_urn,)]
 
 
 @pytest.mark.asyncio

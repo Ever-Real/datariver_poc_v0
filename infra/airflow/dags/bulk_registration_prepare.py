@@ -2,8 +2,12 @@ from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
 
+from airflow.exceptions import AirflowFailException
 from airflow.sdk import dag, get_current_context, task
-from datariver_bulk_registration import prepare_bulk_registration_receipts
+from datariver_bulk_registration import (
+    TerminalBulkRegistrationFailure,
+    prepare_bulk_registration_receipts,
+)
 
 
 @dag(
@@ -21,7 +25,10 @@ from datariver_bulk_registration import prepare_bulk_registration_receipts
 def bulk_registration_prepare() -> None:
     @task(retries=2, retry_delay=timedelta(seconds=60), execution_timeout=timedelta(minutes=45))
     def prepare_receipts() -> dict[str, object]:
-        return prepare_bulk_registration_receipts(run_id=str(get_current_context()["run_id"]))
+        try:
+            return prepare_bulk_registration_receipts(run_id=str(get_current_context()["run_id"]))
+        except TerminalBulkRegistrationFailure as error:
+            raise AirflowFailException(str(error)) from error
 
     prepare_receipts()
 

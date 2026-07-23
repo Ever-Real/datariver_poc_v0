@@ -2,8 +2,12 @@ from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
 
+from airflow.exceptions import AirflowFailException
 from airflow.sdk import dag, get_current_context, task
-from datariver_manual_metadata import apply_manual_metadata_receipts
+from datariver_manual_metadata import (
+    TerminalManualMetadataFailure,
+    apply_manual_metadata_receipts,
+)
 
 
 @dag(
@@ -23,7 +27,10 @@ from datariver_manual_metadata import apply_manual_metadata_receipts
 def manual_metadata_apply() -> None:
     @task(retries=2, retry_delay=timedelta(seconds=60), execution_timeout=timedelta(minutes=15))
     def apply_receipts() -> dict[str, object]:
-        return apply_manual_metadata_receipts(run_id=str(get_current_context()["run_id"]))
+        try:
+            return apply_manual_metadata_receipts(run_id=str(get_current_context()["run_id"]))
+        except TerminalManualMetadataFailure as error:
+            raise AirflowFailException(str(error)) from error
 
     apply_receipts()
 

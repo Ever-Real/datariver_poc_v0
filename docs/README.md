@@ -31,7 +31,7 @@
 | 26 | [Mac arm64 to WSL amd64 migration runbook](26_MAC_TO_WSL_MIGRATION_RUNBOOK.md) | exact-source/image transfer, object reconciliation, logical restore and rollback | Active target gate |
 | 27 | [Policy Book and Admin governance PRD](27_POLICY_BOOK_ADMIN_GOVERNANCE_PRD.md) | access levels, assignment evidence, retention and approval-gated Admin completion | Active; Phase 3 local source complete |
 | 28 | [Policy Book execution checklist](28_POLICY_BOOK_EXECUTION_CHECKLIST.md) | phase gates and exhaustive Admin function inventory | Phase 3 local source complete; target acceptance gates open |
-| 29 | [Master execution backlog](29_MASTER_EXECUTION_BACKLOG.md) | current delivery checklist, risk status and final artifact order | Active; request group 3 next |
+| 29 | [Master execution backlog](29_MASTER_EXECUTION_BACKLOG.md) | current delivery checklist, risk status and final artifact order | Active; request group 3 local exit in progress |
 
 Independent review records: [Data Architect](reviews/2026-07-14_DATA_ARCHITECT_REVIEW.md) and [Data Engineer/SRE](reviews/2026-07-14_DATA_ENGINEER_REVIEW.md).
 
@@ -58,6 +58,8 @@ Current low-resource client and preparation Chat decision: [bounded client state
 Current Policy Book decision: [normalized RBAC rules and Admin approval gates](adr/0036-policy-book-rbac-and-admin-approval-gates.md).
 
 Current bounded Admin decision: [bounded navigation and delta assignment](adr/0038-bounded-admin-navigation-and-delta-assignment.md).
+
+Current Registration execution decision: [accountable execution and bounded provider evidence](adr/0041-accountable-registration-execution-and-evidence.md).
 
 ## Change control
 

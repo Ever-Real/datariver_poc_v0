@@ -5,6 +5,7 @@ import hashlib
 import io
 import zipfile
 from collections.abc import AsyncIterator, Callable, Iterator
+from dataclasses import replace
 from uuid import uuid4
 
 import pytest
@@ -21,14 +22,20 @@ from datariver.application.typed_upload_parser import (
 )
 from datariver.application.typed_upload_profiles import DATASET_DESCRIPTION_XLSX_V1
 from datariver.domain.registration import UploadContentProfile
+from datariver.domain.registration_worker import (
+    RegistrationWorkerCallIdentity,
+    RegistrationWorkerCallReplay,
+)
 
 
 class FakeObjectStore:
     def __init__(self, value: bytes, *, unavailable: bool = False) -> None:
         self.value = value
         self.unavailable = unavailable
+        self.head_calls = 0
 
     async def head_object(self, *, bucket: str, object_key: str) -> ObjectMetadata:
+        self.head_calls += 1
         if self.unavailable:
             raise ExternalDependencyError(
                 "unavailable",
@@ -60,6 +67,7 @@ class FakeStore:
         self.publish_current = publish_current
         self.published: tuple[DatasetDescriptionCandidateDraft, ...] = ()
         self.failure: tuple[str, bool] | None = None
+        self.worker_results: dict[str, dict[str, object]] = {}
 
     async def claim_next(
         self,
@@ -68,9 +76,23 @@ class FakeStore:
         worker_subject_id: object,
         lease_seconds: int,
         maximum_attempts: int,
-    ) -> BulkPreparationClaim | None:
+        run_call: RegistrationWorkerCallIdentity | None = None,
+    ) -> BulkPreparationClaim | RegistrationWorkerCallReplay | None:
         del workspace_id, worker_subject_id, lease_seconds, maximum_attempts
+        if run_call is not None and run_call.key_hash in self.worker_results:
+            return RegistrationWorkerCallReplay(result=dict(self.worker_results[run_call.key_hash]))
         value, self.claim = self.claim, None
+        if value is None and run_call is not None:
+            result: dict[str, object] = {
+                "processed": False,
+                "preparation_id": None,
+                "state": None,
+                "item_count": None,
+            }
+            self.worker_results[run_call.key_hash] = result
+            return RegistrationWorkerCallReplay(result=result)
+        if value is not None and run_call is not None:
+            value = replace(value, run_call=run_call)
         return value
 
     async def publish(
@@ -81,8 +103,15 @@ class FakeStore:
         summary: DatasetDescriptionParseSummary,
         candidates: Callable[[], Iterator[DatasetDescriptionCandidateDraft]],
     ) -> bool:
-        del claim, object_metadata, summary
+        del object_metadata
         self.published = tuple(candidates())
+        if claim.run_call is not None:
+            self.worker_results[claim.run_call.key_hash] = {
+                "processed": True,
+                "preparation_id": str(claim.preparation_id),
+                "state": "READY" if self.publish_current else "SUPERSEDED",
+                "item_count": summary.item_count if self.publish_current else None,
+            }
         return self.publish_current
 
     async def mark_failed(
@@ -93,8 +122,15 @@ class FakeStore:
         retryable: bool,
         maximum_attempts: int,
     ) -> bool:
-        del claim, maximum_attempts
+        del maximum_attempts
         self.failure = (error_code, retryable)
+        if claim.run_call is not None:
+            self.worker_results[claim.run_call.key_hash] = {
+                "processed": True,
+                "preparation_id": str(claim.preparation_id),
+                "state": "QUEUED" if retryable else "FAILED",
+                "item_count": None,
+            }
         return True
 
 
@@ -243,3 +279,71 @@ async def test_service_reports_superseded_fence_without_ready_claim() -> None:
 
     assert result.state == "SUPERSEDED"
     assert result.item_count is None
+
+
+@pytest.mark.asyncio
+async def test_completed_bulk_worker_call_replays_without_a_second_parse() -> None:
+    value = _xlsx()
+    object_store = FakeObjectStore(value)
+    store = FakeStore(_claim(value))
+    service = BulkRegistrationPreparationService(
+        store=store,
+        object_store=object_store,
+        lease_seconds=300,
+        maximum_attempts=4,
+    )
+    call = RegistrationWorkerCallIdentity(
+        operation="registration.bulk-preparation.execute-run.v1",
+        key_hash="5" * 64,
+        request_hash="6" * 64,
+        worker_subject_id=uuid4(),
+    )
+
+    first = await service.run_once(
+        workspace_id=uuid4(),
+        worker_subject_id=call.worker_subject_id,
+        run_call=call,
+    )
+    replay = await service.run_once(
+        workspace_id=uuid4(),
+        worker_subject_id=call.worker_subject_id,
+        run_call=call,
+    )
+
+    assert replay == first
+    assert object_store.head_calls == 1
+    assert len(store.published) == 1
+
+
+@pytest.mark.asyncio
+async def test_no_work_bulk_call_does_not_consume_later_work_on_replay() -> None:
+    value = _xlsx()
+    store = FakeStore(None)
+    service = BulkRegistrationPreparationService(
+        store=store,
+        object_store=FakeObjectStore(value),
+        lease_seconds=300,
+        maximum_attempts=4,
+    )
+    call = RegistrationWorkerCallIdentity(
+        operation="registration.bulk-preparation.execute-run.v1",
+        key_hash="7" * 64,
+        request_hash="8" * 64,
+        worker_subject_id=uuid4(),
+    )
+
+    empty = await service.run_once(
+        workspace_id=uuid4(),
+        worker_subject_id=call.worker_subject_id,
+        run_call=call,
+    )
+    store.claim = _claim(value)
+    replay = await service.run_once(
+        workspace_id=uuid4(),
+        worker_subject_id=call.worker_subject_id,
+        run_call=call,
+    )
+
+    assert replay == empty
+    assert empty.processed is False
+    assert store.claim is not None

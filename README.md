@@ -572,7 +572,7 @@ environment's secrets or volumes.
    overlays. For an existing PostgreSQL volume, run `scripts/reconcile-postgres-roles.sh` (or the
    PowerShell equivalent) before and after applying `alembic upgrade head` through the migration
    service; the second idempotent pass repairs Phase 2 grants when roles were created after an older
-   migration. Readiness requires revision `0045`.
+   migration. Readiness requires revision `0046`.
 4. Start the API, relay, workers and web service using either the container profile or the
    host-development commands below. Check `/api/v1/health/live`, `/api/v1/health/ready`,
    `/api/v1/capabilities` and the APISIX/Vite proxy before using application workflows.
@@ -601,7 +601,7 @@ See the
 [ADR-0036](docs/adr/0036-policy-book-rbac-and-admin-approval-gates.md) plus
 [ADR-0037](docs/adr/0037-retention-execution-control-plane.md). On a new or upgraded database,
 run `alembic upgrade head` and verify `/api/v1/health/ready` reports required/current revision
-`0045`. Legacy Role markers remain usable by the existing ABAC document but are not normalized audit
+`0046`. Legacy Role markers remain usable by the existing ABAC document but are not normalized audit
 evidence until an Admin explicitly reassigns the Role. Manual/fallback edits cannot submit a
 `datariver-role-*` marker; the dedicated assignment path matches it to the locked Role row and
 rejects exact same Role/version/canonical-access no-ops even when only the optimistic expected version
@@ -783,6 +783,14 @@ read-only interaction reference and is never imported into the v1 runtime.
   request-item edits and generated SQL result presentation remain disabled until version-fenced
   server contracts exist. System selection and Developer/Data Steward/global Admin approval lanes
   come from canonical server routing and immutable authority snapshots, never UI fixtures.
+  Attachment POSTs return `202 STARTED`: a separate upload worker claims one intent through a
+  bounded database function, verifies S3/MinIO HEAD metadata and the complete byte SHA-256, and
+  records STORED before the current human can finalize it. The browser sends an exact upload UUID,
+  so a network/408/5xx-lost POST or finalize response is recovered without matching by filename or
+  content alone. Polling stops after 20 reads or 120 seconds, pauses while a tab is hidden and
+  aborts on context cancellation. The detail screen can recheck at most ten current-round STORED
+  intents selected by the server before its SQL limit, refresh successes and retain a partial
+  failure warning. One selection is capped at 10 files, 10 MiB each and 32 MiB total.
 - Knowledge Registry and releases use the canonical graph APIs. The visual ontology editor and its
   local `CREATE (alias:Label)`/relationship subset produce typed provenance-bearing changeset
   operations; arbitrary Cypher is rejected and no Cypher string is sent to the server. Integrity-
@@ -1110,7 +1118,7 @@ docker compose -f compose.yaml build --pull
 ```
 
 애플리케이션을 올리기 전에 권한이 분리된 `migrate` 서비스로 Alembic을 실행한다. 이
-릴리스의 필수 revision은 `0045`이다. 호스트의 임의 DB 계정으로 `alembic`을 직접 실행하지
+릴리스의 필수 revision은 `0050`이다. 호스트의 임의 DB 계정으로 `alembic`을 직접 실행하지
 않는다.
 
 ```bash
@@ -1119,7 +1127,7 @@ docker compose -f compose.yaml run --rm migrate \
   /app/.venv/bin/alembic -c backend/alembic.ini current
 ```
 
-두 번째 명령의 현재 revision이 `0045 (head)`인지 확인한다. 마이그레이션 실패 시 서비스를
+두 번째 명령의 현재 revision이 `0050 (head)`인지 확인한다. 마이그레이션 실패 시 서비스를
 재기동하거나 downgrade를 추측 실행하지 말고, 로그와 DB 상태를 보존한 채 배포를 중단한다.
 
 ### 3. API·Worker·Web 재기동과 상태 확인
@@ -1177,7 +1185,26 @@ service token의 FINAL 호출은 `401` 또는 `403`으로 차단되어야 한다
 ## Main functional flows
 
 - Catalog: an authorized local projection serves cursor-bound ALL-term search, facets, autocomplete and a lazy `platform -> database -> schema -> asset` Resource Tree before selected details are enriched through a fixed DataHub adapter. Global and catalog autocomplete use the same Schema/Table/Column/Tag/Term/Description semantics and return bounded plain-text match evidence; Workspace switching remounts the global search boundary so prior-tenant queries and late responses cannot remain visible. The rebuildable projection and HTTP response both have explicit description/tag/term/column bounds; `description_truncated`, `tags_truncated` and `terms_truncated` are rendered so a clipped summary is never presented as complete. Search avoids a full exact-count scan: `total_exact=false` marks a lower bound and cursor presence controls navigation. Facets apply the same search fields through one server-ranked PostgreSQL grouping-set query. The result table shows source-backed Terms and Tags beside the asset identity, exposes a horizontal scroll region, and offers per-column ascending/descending sorting and text filtering over the currently loaded page. Page sizes are 25/50/100; one page action makes one bounded asset request and the browser never walks every cursor page. Facets refresh only when the query/filter/authorization scope changes. Collapsing a tree branch evicts its descendants, and one expanded branch retains at most 200 nodes. Database/schema hierarchy comes only from typed DataHub browse containers; the platform never invents it by splitting URNs. Tag/Term entry suggestions come only from the authorization-pruned workspace projection; global provider vocabulary is not merged because DataHub's provider search has no workspace/classification predicate. Authorized detail keeps `Table Details` and a fixed-height, authorization-pruned local `Lineage` graph. The graph fits its detail-panel viewport, wraps each stage after three nodes without omitting nodes, and supports pan, node positioning and zoom. Selecting a tree or lineage node opens its authorized detail directly instead of rescanning search pages; the external DataHub Lineage iframe is not invoked by this UI. DataHub column `label` is shown as read-only Logical Name separately from editable Description. A `sync_id`-bound full reconciliation is sequential and single-writer, stores its opaque provider cursor only on the server, proves stable total/distinct coverage, and tombstones missing DataHub-owned assets only with accepted point-in-time evidence; otherwise it completes with deletion suppressed. Governed CSV/XLSX export is a server-managed, owner-scoped job bound to the exact query/filter, permission/classification-policy snapshot and projection watermark; toolbar buttons never synthesize a browser-side file. Export excludes RESTRICTED assets unconditionally, neutralizes spreadsheet formula injection, reauthorizes every download, and issues only a 60-second URL after object metadata reconciliation.
-- Registration: browser multipart upload goes directly to quarantine storage. Table/column Tag and Term values remain on a one-line scrollable badge control with thin previous/next buttons; the compact `+` opens its vocabulary/new-proposal input directly below that control. Workers complete the object, stream SHA-256/size/format checks with bounded memory, copy to a validation-attempt-scoped accepted key, fully re-read the promoted bytes and delete quarantine only after the version-fenced database acceptance commits. The MANUAL workbench creates a dataset-description proposal only after a live DataHub preview, an opaque target/source-bound `If-Match`, server-side classification and a same-transaction target share lock. The BULK workbench explicitly separates format-only uploads from the bounded `DATASET_DESCRIPTION_CSV_V1` profile, can queue/read a server-configured preparation only from exact `ACCEPTED` byte evidence and renders real preparation state in the v0.3-style status tracker. A source-only bounded parser contract exists, but the isolated parser worker, candidate read/preview and proposal creation remain disabled, so READY preparation evidence is not presented as a change request or DataHub update and the browser exposes no raw proposal form.
+- Registration: browser multipart upload goes directly to quarantine storage. Table/column Tag and
+  Term values remain on a one-line scrollable badge control with thin previous/next buttons; the
+  compact `+` opens its vocabulary/new-proposal input directly below that control. Workers complete
+  the object, stream SHA-256/size/format checks with bounded memory, copy to a
+  validation-attempt-scoped accepted key, fully re-read the promoted bytes and delete quarantine
+  only after the version-fenced database acceptance commits. Manual editing keeps at most one
+  100-column provider page plus sparse edits in the browser. SAVE reauthorizes the current asset,
+  checks both projection and provider versions, rehydrates the complete non-truncated schema
+  server-side, creates one immutable `UPLOAD_METADATA_MANUAL_YYMMDD_SERIAL.csv` receipt and queues
+  a database-time/lease-fenced execution. The worker applies exactly five typed DataHub aspects and
+  marks APPLIED only after full read-back hash equality; owner/Admin history exposes append-only
+  attempt and per-aspect success/failure evidence. Typed BULK CSV/XLSX is limited to 16 MiB and
+  10,000 rows, parses ZIP/XML off the API event loop and replays candidates from a bounded
+  attempt-local spool, publishes candidates only after complete source/root reconciliation, and
+  permits one ETag-fenced server-authored Change Request per dataset-description candidate.
+  Airflow retries reuse a stable run ID/call ordinal and DataRiver replays a committed response
+  without a second effect. A read-only bounded DB/S3 reconciler classifies missing, mismatched and
+  unreferenced Manual receipt evidence but never deletes either side. The browser never receives
+  MinIO, Airflow or DataHub credentials, automatic status polling stops after a bounded window or
+  while hidden, and raw provider mutation forms remain unavailable.
 - Change management: typed DataHub aspect UPSERT requests are server-bound to an authorized local dataset identity and scope, then move through legal transitions and distinct final approval. In new-CR intake, each Tag/Term `+` uses only the bounded authorization-pruned workspace projection; provider-wide `*` vocabulary is excluded because it cannot carry the same Workspace/classification predicate. Keyword input narrows that projection before a comma-aware new proposal is offered. Column input reserves the table Schema track, so column item/Type/Description/Term/Tag/requested-change/management align with Table/Owner/description/Terms/Tags/requested-change/column-addition above it. Reads use the current authorized target; approval and forward transitions reject identity, revision or authorization-scope drift. REVIEW and TEST require every routed System's Developer evidence, while FINAL requires every routed System's Developer and Data Steward plus one role-separated global Admin. Every FINAL decision also requires recent hardware-WebAuthn assurance. Generic raw Aspect creation and the legacy upload-derived raw proposal API additionally require the deny-by-default, hardware-human-only `change.raw.create` action and are not exposed in the ordinary UI. A leased worker applies each aspect idempotently and only marks `APPLIED` after re-read hash equality. Apply-time requester/policy reauthorization, DataRiver target serialization and external provider CAS remain explicit production gates.
 - Classification access administration: eligible human security administrators can review and independently approve versioned four-class Search/Chat policies, review or revoke immutable inference-provider profile versions, and govern policy-bound RESTRICTED Search grants. ADR-0020 additionally permits an audited, read-only same-workspace catalog review of non-deleted quarantined DataHub projections for classification remediation, including the fixed typed DataHub metadata detail; it never enables export, Chat, arbitrary provider access or mutation. The Admin UI never accepts provider endpoints or credentials, and RESTRICTED evidence is never eligible for Chat.
 - Knowledge graph: create a graph/ontology, author typed node/edge changesets, validate, independently review, publish or roll back immutable releases, export governed views and call bounded analysis. Raw SQL/Cypher is never accepted.
@@ -1273,9 +1300,9 @@ is intentionally a MOCK metadata manifest.
 
 ```bash
 uv sync --frozen --all-extras
-uv run ruff format --check backend/src backend/tests infra/airflow/dags
-uv run ruff check backend/src backend/tests infra/airflow/dags scripts/configure_keycloak_assurance.py scripts/generate_initial_migration.py scripts/generate_semiconductor_seed.py scripts/migrate_s3_objects.py scripts/probe_pgbouncer_rls.py scripts/probe_policy_revocation.py scripts/probe_s3_contract.py scripts/verify_datahub_contract.py scripts/verify_datahub_image_inventory.py scripts/verify_static.py
-uv run mypy backend/src backend/tests scripts/migrate_s3_objects.py scripts/probe_s3_contract.py
+uv run ruff format --check backend/src backend/tests infra/airflow/dags scripts/reconcile_manual_receipts.py
+uv run ruff check backend/src backend/tests infra/airflow/dags scripts/configure_keycloak_assurance.py scripts/generate_initial_migration.py scripts/generate_semiconductor_seed.py scripts/migrate_s3_objects.py scripts/probe_pgbouncer_rls.py scripts/probe_policy_revocation.py scripts/probe_s3_contract.py scripts/reconcile_manual_receipts.py scripts/verify_datahub_contract.py scripts/verify_datahub_image_inventory.py scripts/verify_static.py
+uv run mypy backend/src backend/tests scripts/migrate_s3_objects.py scripts/probe_s3_contract.py scripts/reconcile_manual_receipts.py
 uv run pytest backend/tests -q
 uv run python scripts/verify_static.py
 

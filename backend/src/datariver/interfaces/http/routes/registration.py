@@ -17,8 +17,20 @@ from datariver.application.services.change_targets import CatalogChangeTargetAut
 from datariver.application.services.governance import GovernanceService
 from datariver.application.services.registration import RegistrationService
 from datariver.application.services.registration_candidates import RegistrationCandidateQueryService
+from datariver.application.services.registration_worker import (
+    require_registration_operator_identity,
+)
+from datariver.application.services.typed_bulk_registration import (
+    TypedBulkRegistrationService,
+)
 from datariver.domain.authz import BuiltinPolicyEngine, Classification
-from datariver.domain.common import ConflictError, ValidationError, canonical_json_hash, uuid7
+from datariver.domain.common import (
+    ConflictError,
+    ForbiddenError,
+    ValidationError,
+    canonical_json_hash,
+    uuid7,
+)
 from datariver.domain.governance import ChangeItem
 from datariver.domain.registration import (
     CompletedUploadPart,
@@ -45,6 +57,9 @@ from datariver.interfaces.http.presenters import change_request_response
 from datariver.interfaces.http.schemas import (
     ChangeRequestResponse,
     PageMeta,
+    RegistrationOperatorCapabilityResponse,
+    TypedBulkCandidatePreviewResponse,
+    TypedBulkChangeRequestCreate,
     UploadCandidateCurrentTargetResponse,
     UploadCandidatePolicyMetaResponse,
     UploadCandidateReceiptResponse,
@@ -115,6 +130,17 @@ def _candidate_service(
             decision_writer=SqlDecisionWriter(container.database.session_factory)
         ),
         policy_version=BuiltinPolicyEngine.policy_version,
+    )
+
+
+def _typed_bulk_service(
+    request: Request,
+    session: AsyncSession,
+) -> TypedBulkRegistrationService:
+    return TypedBulkRegistrationService(
+        candidates=_candidate_service(request, session),
+        datahub=get_container(request).datahub,
+        governance=_governance_service(request, session),
     )
 
 
@@ -258,13 +284,42 @@ def _expected_version(if_match: str) -> int:
     return int(match.group(1))
 
 
+@router.get(
+    "/operator-capability",
+    response_model=RegistrationOperatorCapabilityResponse,
+)
+async def get_registration_operator_capability(
+    response: Response,
+    context: ContextDep,
+) -> RegistrationOperatorCapabilityResponse:
+    try:
+        require_registration_operator_identity(context.subject)
+    except ForbiddenError:
+        eligible = False
+        reason_code = "ACTIVE_HUMAN_ADMIN_OR_DATA_STEWARD_REQUIRED"
+    else:
+        eligible = True
+        reason_code = "ELIGIBLE"
+    response.headers["Cache-Control"] = "private, no-store"
+    return RegistrationOperatorCapabilityResponse(
+        eligible=eligible,
+        can_view_workspace_history=(
+            eligible and "security-administrators" in context.subject.groups
+        ),
+        reason_code=reason_code,
+        allowed_roles=("ADMIN", "DATA_STEWARD"),
+    )
+
+
 @router.get("", response_model=UploadListResponse)
 async def list_uploads(
     request: Request,
+    response: Response,
     context: ContextDep,
     state: Annotated[str | None, Query(max_length=32)] = None,
     limit: Annotated[int, Query(ge=1, le=100)] = 50,
 ) -> UploadListResponse:
+    require_registration_operator_identity(context.subject)
     try:
         parsed_state = UploadState(state) if state else None
     except ValueError as error:
@@ -277,6 +332,7 @@ async def list_uploads(
         environment=context.environment,
         request_id=context.request_id,
     )
+    response.headers["Cache-Control"] = "private, no-store"
     return UploadListResponse(items=[_response(value) for value in values])
 
 
@@ -284,8 +340,10 @@ async def list_uploads(
 async def get_upload(
     upload_id: UUID,
     request: Request,
+    response: Response,
     context: ContextDep,
 ) -> UploadResponse:
+    require_registration_operator_identity(context.subject)
     manifest = await _service(request).get_manifest(
         workspace_id=context.workspace_id,
         upload_id=upload_id,
@@ -293,6 +351,7 @@ async def get_upload(
         environment=context.environment,
         request_id=context.request_id,
     )
+    response.headers["Cache-Control"] = "private, no-store"
     return _response(manifest)
 
 
@@ -303,6 +362,7 @@ async def initiate_upload(
     context: ContextDep,
     idempotency_key: Annotated[str, Header(alias="Idempotency-Key", min_length=16, max_length=200)],
 ) -> UploadResponse:
+    require_registration_operator_identity(context.subject)
     request_hash = hashlib.sha256(
         orjson.dumps(payload.model_dump(mode="json"), option=orjson.OPT_SORT_KEYS)
     ).hexdigest()
@@ -336,6 +396,7 @@ async def create_upload_preparation(
     if_match: Annotated[str, Header(alias="If-Match", min_length=3, max_length=100)],
     idempotency_key: Annotated[str, Header(alias="Idempotency-Key", min_length=16, max_length=200)],
 ) -> UploadPreparationResponse:
+    require_registration_operator_identity(context.subject)
     preparation = await _service(request).create_preparation(
         workspace_id=context.workspace_id,
         upload_id=upload_id,
@@ -365,6 +426,7 @@ async def list_upload_preparations(
     state: Annotated[str | None, Query(max_length=32)] = None,
     limit: Annotated[int, Query(ge=1, le=20)] = 20,
 ) -> UploadPreparationListResponse:
+    require_registration_operator_identity(context.subject)
     try:
         parsed_state = UploadPreparationState(state) if state else None
     except ValueError as error:
@@ -393,6 +455,7 @@ async def get_upload_preparation(
     response: Response,
     context: ContextDep,
 ) -> UploadPreparationResponse:
+    require_registration_operator_identity(context.subject)
     preparation = await _service(request).get_preparation(
         workspace_id=context.workspace_id,
         upload_id=upload_id,
@@ -423,6 +486,7 @@ async def list_upload_registration_candidates(
     cursor: Annotated[str | None, Query(min_length=1, max_length=2048)] = None,
     limit: Annotated[int, Query(ge=1, le=50)] = 20,
 ) -> UploadRegistrationCandidateListResponse:
+    require_registration_operator_identity(context.subject)
     page = await _candidate_service(request, session).list_candidates(
         workspace_id=context.workspace_id,
         upload_id=upload_id,
@@ -437,6 +501,102 @@ async def list_upload_registration_candidates(
     return _candidate_list_response(page, limit=limit)
 
 
+@router.get(
+    "/{upload_id}/preparations/{preparation_id}/candidates/{candidate_id}/preview",
+    response_model=TypedBulkCandidatePreviewResponse,
+)
+async def preview_upload_registration_candidate(
+    upload_id: UUID,
+    preparation_id: UUID,
+    candidate_id: UUID,
+    request: Request,
+    response: Response,
+    context: ContextDep,
+    session: SessionDep,
+) -> TypedBulkCandidatePreviewResponse:
+    require_registration_operator_identity(context.subject)
+    preview = await _typed_bulk_service(request, session).preview(
+        workspace_id=context.workspace_id,
+        upload_id=upload_id,
+        preparation_id=preparation_id,
+        candidate_id=candidate_id,
+        subject=context.subject,
+        environment=context.environment,
+        request_id=context.request_id,
+    )
+    response.headers["ETag"] = preview.preview_etag
+    response.headers["Cache-Control"] = "private, no-store"
+    return TypedBulkCandidatePreviewResponse(
+        candidate_id=preview.candidate_id,
+        target_asset_id=preview.target_asset_id,
+        target_ref=preview.target_ref,
+        platform=preview.platform,
+        database_name=preview.database_name,
+        schema_name=preview.schema_name,
+        table_name=preview.table_name,
+        current_description=preview.current_description,
+        proposed_description=preview.proposed_description,
+        before_hash=preview.before_hash,
+        after_hash=preview.after_hash,
+        source_version=preview.source_version,
+        observed_at=preview.observed_at,
+        preview_etag=preview.preview_etag,
+    )
+
+
+@router.post(
+    "/{upload_id}/preparations/{preparation_id}/candidates/{candidate_id}/change-request",
+    response_model=ChangeRequestResponse,
+    status_code=201,
+)
+async def create_upload_registration_candidate_change_request(
+    upload_id: UUID,
+    preparation_id: UUID,
+    candidate_id: UUID,
+    payload: TypedBulkChangeRequestCreate,
+    request: Request,
+    response: Response,
+    context: ContextDep,
+    session: SessionDep,
+    if_match: Annotated[str, Header(alias="If-Match", min_length=66, max_length=66)],
+    idempotency_key: Annotated[str, Header(alias="Idempotency-Key", min_length=16, max_length=200)],
+) -> ChangeRequestResponse:
+    require_registration_operator_identity(context.subject)
+    if re.fullmatch(r'"[0-9a-f]{64}"', if_match) is None:
+        raise ValidationError("If-Match must contain the quoted typed preview ETag.")
+    request_hash = hashlib.sha256(
+        orjson.dumps(
+            {
+                "candidate_id": str(candidate_id),
+                "expected_preview_etag": if_match,
+                "operation": "typed-bulk-candidate-change-request.v1",
+                "preparation_id": str(preparation_id),
+                "reason": payload.reason,
+                "title": payload.title,
+                "upload_id": str(upload_id),
+                "workspace_id": str(context.workspace_id),
+            },
+            option=orjson.OPT_SORT_KEYS,
+        )
+    ).hexdigest()
+    change_request = await _typed_bulk_service(request, session).create_change_request(
+        workspace_id=context.workspace_id,
+        upload_id=upload_id,
+        preparation_id=preparation_id,
+        candidate_id=candidate_id,
+        expected_preview_etag=if_match,
+        title=payload.title,
+        reason=payload.reason,
+        subject=context.subject,
+        environment=context.environment,
+        request_id=context.request_id,
+        idempotency_key=idempotency_key,
+        request_hash=request_hash,
+    )
+    response.headers["Cache-Control"] = "private, no-store"
+    return change_request_response(change_request)
+
+
 @router.post("/{upload_id}/parts", response_model=UploadPartResponse)
 async def presign_part(
     upload_id: UUID,
@@ -444,6 +604,7 @@ async def presign_part(
     request: Request,
     context: ContextDep,
 ) -> UploadPartResponse:
+    require_registration_operator_identity(context.subject)
     url, lifetime = await _service(request).presign_part(
         workspace_id=context.workspace_id,
         upload_id=upload_id,
@@ -465,6 +626,7 @@ async def complete_upload(
     if_match: Annotated[str, Header(alias="If-Match", max_length=100)],
     idempotency_key: Annotated[str, Header(alias="Idempotency-Key", min_length=16, max_length=200)],
 ) -> UploadResponse:
+    require_registration_operator_identity(context.subject)
     expected_version = _expected_version(if_match)
     request_hash = hashlib.sha256(
         orjson.dumps(
@@ -510,6 +672,7 @@ async def create_registration_proposal(
     session: SessionDep,
     idempotency_key: Annotated[str, Header(alias="Idempotency-Key", min_length=16, max_length=200)],
 ) -> ChangeRequestResponse:
+    require_registration_operator_identity(context.subject)
     manifest = await _service(request).get_manifest(
         workspace_id=context.workspace_id,
         upload_id=upload_id,

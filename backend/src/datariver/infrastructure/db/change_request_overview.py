@@ -4,17 +4,19 @@ from collections import defaultdict
 from collections.abc import Sequence
 from uuid import UUID
 
-from sqlalchemy import and_, select
+from sqlalchemy import and_, select, tuple_
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from datariver.application.classification_access import ClassificationAccessSnapshot
 from datariver.application.dto import (
     ChangeRequestAssigneeRecord,
     ChangeRequestSchemaOverview,
+    ChangeRequestSummaryRecord,
+    ChangeRequestSummaryTarget,
 )
 from datariver.application.ports import ChangeRequestOverviewReader
 from datariver.domain.authz import SubjectAttributes
-from datariver.domain.governance import ChangeRequest, ChangeState
+from datariver.domain.governance import ChangeItem, ChangeRequest, ChangeState
 from datariver.infrastructure.db.catalog import SqlCatalogIndexReader
 from datariver.infrastructure.db.models.catalog import AssetProjectionModel
 from datariver.infrastructure.db.models.platform import (
@@ -27,6 +29,9 @@ from datariver.infrastructure.db.models.platform import (
 from datariver.infrastructure.db.rls import set_security_context
 
 SchemaKey = tuple[str, str, str]
+ChangeRequestOverviewSource = ChangeRequest | ChangeRequestSummaryRecord
+_ASSIGNEES_PER_SYSTEM = 20
+_ASSIGNEE_QUERY_LIMIT = 2_001
 
 
 class SqlChangeRequestOverviewReader(ChangeRequestOverviewReader):
@@ -39,14 +44,19 @@ class SqlChangeRequestOverviewReader(ChangeRequestOverviewReader):
 
     def __init__(self, session: AsyncSession) -> None:
         self._session = session
+        self.truncated = False
 
     async def list_schema_overview(
         self,
         *,
         subject: SubjectAttributes,
         access: ClassificationAccessSnapshot,
-        change_requests: Sequence[ChangeRequest],
+        change_requests: Sequence[ChangeRequestOverviewSource],
+        limit: int,
     ) -> Sequence[ChangeRequestSchemaOverview]:
+        if not 1 <= limit <= 101:
+            raise ValueError("The Change Request overview limit is outside the safe range.")
+        self.truncated = False
         await set_security_context(
             self._session,
             workspace_id=subject.workspace_id,
@@ -75,6 +85,13 @@ class SqlChangeRequestOverviewReader(ChangeRequestOverviewReader):
                     AssetProjectionModel.schema_name,
                     AssetProjectionModel.system_id,
                 )
+                .order_by(
+                    AssetProjectionModel.platform,
+                    AssetProjectionModel.database_name,
+                    AssetProjectionModel.schema_name,
+                    AssetProjectionModel.system_id,
+                )
+                .limit(limit)
             )
         ).all()
 
@@ -84,23 +101,74 @@ class SqlChangeRequestOverviewReader(ChangeRequestOverviewReader):
                 continue
             schemas[(platform, database_name, schema_name)] = system_id
 
+        target_ids = {
+            item.target_asset_id
+            for change_request in change_requests
+            for item in _overview_targets(change_request)
+            if item.target_asset_id is not None
+        }
+        asset_schemas: dict[UUID, SchemaKey] = {}
+        target_schema_keys: set[SchemaKey] = set()
+        if target_ids:
+            target_rows = (
+                await self._session.execute(
+                    select(
+                        AssetProjectionModel.id,
+                        AssetProjectionModel.platform,
+                        AssetProjectionModel.database_name,
+                        AssetProjectionModel.schema_name,
+                    ).where(
+                        AssetProjectionModel.id.in_(target_ids),
+                        and_(*visible_conditions),
+                    )
+                )
+            ).all()
+            for asset_id, platform, database_name, schema_name in target_rows:
+                if platform is None or database_name is None or schema_name is None:
+                    continue
+                key = (platform, database_name, schema_name)
+                schemas.setdefault(key, None)
+                asset_schemas[asset_id] = key
+                target_schema_keys.add(key)
+
+        retained_schema_keys, schema_window_truncated = _bounded_schema_keys(
+            schemas=tuple(schemas),
+            target_schema_keys=frozenset(target_schema_keys),
+            limit=limit,
+            catalog_window_full=len(schema_rows) == limit,
+        )
+        if schema_window_truncated:
+            self.truncated = True
+        schemas = {key: schemas[key] for key in retained_schema_keys}
+
+        schema_keys = tuple(schemas)
         scope_rows = (
-            await self._session.execute(
-                select(SystemSchemaScopeModel, DataSystemModel)
-                .join(
-                    DataSystemModel,
-                    and_(
-                        DataSystemModel.workspace_id == SystemSchemaScopeModel.workspace_id,
-                        DataSystemModel.id == SystemSchemaScopeModel.system_id,
-                    ),
+            (
+                await self._session.execute(
+                    select(SystemSchemaScopeModel, DataSystemModel)
+                    .join(
+                        DataSystemModel,
+                        and_(
+                            DataSystemModel.workspace_id == SystemSchemaScopeModel.workspace_id,
+                            DataSystemModel.id == SystemSchemaScopeModel.system_id,
+                        ),
+                    )
+                    .where(
+                        SystemSchemaScopeModel.workspace_id == subject.workspace_id,
+                        SystemSchemaScopeModel.active.is_(True),
+                        DataSystemModel.active.is_(True),
+                        tuple_(
+                            SystemSchemaScopeModel.platform,
+                            SystemSchemaScopeModel.database_name,
+                            SystemSchemaScopeModel.schema_name,
+                        ).in_(schema_keys),
+                    )
+                    .limit(limit)
                 )
-                .where(
-                    SystemSchemaScopeModel.workspace_id == subject.workspace_id,
-                    SystemSchemaScopeModel.active.is_(True),
-                    DataSystemModel.active.is_(True),
-                )
-            )
-        ).all()
+            ).all()
+            if schema_keys
+            else []
+        )
         systems: dict[UUID, DataSystemModel] = {}
         for scope, system in scope_rows:
             scope_key = (scope.platform, scope.database_name, scope.schema_name)
@@ -152,10 +220,17 @@ class SqlChangeRequestOverviewReader(ChangeRequestOverviewReader):
                         SubjectModel.display_name,
                         SubjectModel.id,
                     )
+                    .limit(_ASSIGNEE_QUERY_LIMIT)
                 )
             ).all()
+            if len(assignee_rows) == _ASSIGNEE_QUERY_LIMIT:
+                self.truncated = True
             for assignment, subject_model in assignee_rows:
-                assignees_by_system[assignment.system_id].append(
+                values = assignees_by_system[assignment.system_id]
+                if len(values) >= _ASSIGNEES_PER_SYSTEM:
+                    self.truncated = True
+                    continue
+                values.append(
                     ChangeRequestAssigneeRecord(
                         subject_id=subject_model.id,
                         display_name=subject_model.display_name,
@@ -164,37 +239,9 @@ class SqlChangeRequestOverviewReader(ChangeRequestOverviewReader):
                     )
                 )
 
-        target_ids = {
-            item.target_asset_id
-            for change_request in change_requests
-            for item in change_request.items
-            if item.target_asset_id is not None
-        }
-        asset_schemas: dict[UUID, SchemaKey] = {}
-        if target_ids:
-            target_rows = (
-                await self._session.execute(
-                    select(
-                        AssetProjectionModel.id,
-                        AssetProjectionModel.platform,
-                        AssetProjectionModel.database_name,
-                        AssetProjectionModel.schema_name,
-                    ).where(
-                        AssetProjectionModel.id.in_(target_ids),
-                        and_(*visible_conditions),
-                    )
-                )
-            ).all()
-            for asset_id, platform, database_name, schema_name in target_rows:
-                if platform is None or database_name is None or schema_name is None:
-                    continue
-                key = (platform, database_name, schema_name)
-                schemas.setdefault(key, None)
-                asset_schemas[asset_id] = key
-
         counts: dict[SchemaKey, dict[str, int]] = defaultdict(lambda: defaultdict(int))
         for change_request in change_requests:
-            for item in change_request.items:
+            for item in _overview_targets(change_request):
                 if item.target_asset_id is None:
                     continue
                 schema_key = asset_schemas.get(item.target_asset_id)
@@ -248,3 +295,33 @@ class SqlChangeRequestOverviewReader(ChangeRequestOverviewReader):
                 )
             )
         return tuple(rows)
+
+
+def _overview_targets(
+    change_request: ChangeRequestOverviewSource,
+) -> Sequence[ChangeItem | ChangeRequestSummaryTarget]:
+    if isinstance(change_request, ChangeRequestSummaryRecord):
+        return change_request.targets
+    return change_request.items
+
+
+def _bounded_schema_keys(
+    *,
+    schemas: Sequence[SchemaKey],
+    target_schema_keys: frozenset[SchemaKey],
+    limit: int,
+    catalog_window_full: bool,
+) -> tuple[tuple[SchemaKey, ...], bool]:
+    """Retain current-page target schemas first within the limit+1 truncation contract."""
+
+    ordered = tuple(
+        sorted(
+            schemas,
+            key=lambda value: (
+                value not in target_schema_keys,
+                *(part.casefold() for part in value),
+            ),
+        )
+    )
+    truncated = catalog_window_full or len(ordered) >= limit
+    return ordered[: max(limit - 1, 0)], truncated

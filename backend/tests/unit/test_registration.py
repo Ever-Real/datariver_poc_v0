@@ -166,7 +166,8 @@ def test_typed_profile_definition_is_bounded_and_hashes_exact_schema() -> None:
         "table_name",
         "description",
     )
-    assert definition.maximum_rows == 50_000
+    assert definition.maximum_file_bytes == 16 * 1024 * 1024
+    assert definition.maximum_rows == 10_000
     assert (
         definition.maximum_platform_characters,
         definition.maximum_database_name_characters,
@@ -175,7 +176,7 @@ def test_typed_profile_definition_is_bounded_and_hashes_exact_schema() -> None:
     ) == (100, 255, 255, 500)
     assert (
         definition.configuration_hash
-        == "17f0dfc313b5ca93ed8beee80a1be1a51a82196489a3be97dca5bd8b096ef5bb"
+        == "e840ab65b7c3c1fc89e5b4fc68bafedc2426ac8be2f57b381c07c4569e602ad5"
     )
     validate_upload_profile(
         content_profile=UploadContentProfile.DATASET_DESCRIPTION_CSV_V1,

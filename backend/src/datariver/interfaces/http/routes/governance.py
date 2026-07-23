@@ -1,15 +1,18 @@
 from __future__ import annotations
 
+import base64
+import binascii
 import hashlib
 import re
 from collections.abc import AsyncIterator
+from datetime import datetime
 from pathlib import Path
 from typing import Annotated, Any
 from uuid import UUID
 
 import orjson
-from fastapi import APIRouter, File, Form, Header, Query, Request, UploadFile
-from sqlalchemy import func, select
+from fastapi import APIRouter, File, Form, Header, Query, Request, Response, UploadFile
+from sqlalchemy import and_, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from datariver.application.change_numbers import change_request_number
@@ -18,8 +21,20 @@ from datariver.application.services.authorization import AuthorizationService
 from datariver.application.services.catalog import CatalogService
 from datariver.application.services.change_targets import CatalogChangeTargetAuthorizer
 from datariver.application.services.governance import GovernanceService
+from datariver.application.services.governance_attachments import (
+    AttachmentUploadIntent,
+    FinalizedAttachment,
+    GovernanceAttachmentUploadService,
+)
 from datariver.domain.authz import BuiltinPolicyEngine, Classification
-from datariver.domain.common import NotFoundError, ValidationError, canonical_json_hash, uuid7
+from datariver.domain.common import (
+    ConflictError,
+    NotFoundError,
+    ValidationError,
+    canonical_json_hash,
+    utc_now,
+    uuid7,
+)
 from datariver.domain.governance import (
     CHANGE_INTAKE_ASPECT,
     DATAHUB_INTAKE_TARGET,
@@ -38,6 +53,12 @@ from datariver.infrastructure.db.classification_access import (
     SqlClassificationAccessSnapshotReader,
 )
 from datariver.infrastructure.db.governance import SqlGovernanceUnitOfWork
+from datariver.infrastructure.db.governance_apply_report import (
+    SqlGovernanceApplyReportReader,
+)
+from datariver.infrastructure.db.governance_attachments import (
+    SqlGovernanceAttachmentUploadIntentStore,
+)
 from datariver.infrastructure.db.models.governance import (
     ChangeRequestAttachmentModel,
     ChangeRequestModel,
@@ -52,22 +73,81 @@ from datariver.interfaces.http.presenters import (
 from datariver.interfaces.http.schemas import (
     ApprovalRequest,
     ChangeRequestAttachmentListResponse,
+    ChangeRequestAttachmentPageResponse,
     ChangeRequestAttachmentResponse,
+    ChangeRequestAttachmentUploadListResponse,
+    ChangeRequestAttachmentUploadResponse,
     ChangeRequestCreate,
     ChangeRequestIntakeCreate,
     ChangeRequestListResponse,
     ChangeRequestResponse,
+    ChangeRequestSummaryItemResponse,
+    ChangeRequestSummaryListResponse,
+    ChangeRequestSummaryResponse,
     ChangeRequestSystemListResponse,
     ChangeRequestSystemResponse,
     ChangeTestRunRequest,
+    GovernanceApplyAttemptResponse,
+    GovernanceApplyItemResponse,
+    GovernanceApplyReportResponse,
     IntakeCompletionRequest,
+    PageMeta,
     TransitionRequest,
 )
 
 router = APIRouter(prefix="/change-requests", tags=["governance"])
 
 _MAXIMUM_ATTACHMENT_BYTES = 10 * 1024 * 1024
+_MAXIMUM_LEGACY_ATTACHMENTS = 200
 _FILE_NAME_DISALLOWED = re.compile(r"[^A-Za-z0-9._-]+")
+
+
+def _attachment_cursor(
+    *,
+    change_request_id: UUID,
+    created_at: datetime,
+    attachment_id: UUID,
+) -> str:
+    payload = orjson.dumps(
+        {
+            "attachment_id": str(attachment_id),
+            "change_request_id": str(change_request_id),
+            "created_at": created_at.isoformat(),
+            "v": 1,
+        },
+        option=orjson.OPT_SORT_KEYS,
+    )
+    return base64.urlsafe_b64encode(payload).decode().rstrip("=")
+
+
+def _parse_attachment_cursor(
+    cursor: str | None,
+    *,
+    change_request_id: UUID,
+) -> tuple[datetime | None, UUID | None]:
+    if cursor is None:
+        return None, None
+    try:
+        document = orjson.loads(base64.urlsafe_b64decode(cursor + "=" * (-len(cursor) % 4)))
+        if (
+            not isinstance(document, dict)
+            or set(document)
+            != {
+                "attachment_id",
+                "change_request_id",
+                "created_at",
+                "v",
+            }
+            or document.get("v") != 1
+            or document.get("change_request_id") != str(change_request_id)
+        ):
+            raise ValueError
+        created_at = datetime.fromisoformat(str(document["created_at"]))
+        if created_at.tzinfo is None:
+            raise ValueError
+        return created_at, UUID(str(document["attachment_id"]))
+    except (ValueError, TypeError, binascii.Error, orjson.JSONDecodeError) as error:
+        raise ValidationError("The attachment cursor is stale or invalid.") from error
 
 
 def _service(request: Request, session: AsyncSession | None = None) -> GovernanceService:
@@ -91,6 +171,31 @@ def _service(request: Request, session: AsyncSession | None = None) -> Governanc
             )
             if session is not None
             else None
+        ),
+    )
+
+
+def _attachment_service(
+    request: Request,
+    session: AsyncSession,
+) -> GovernanceAttachmentUploadService:
+    container = get_container(request)
+    authorization = AuthorizationService(
+        decision_writer=SqlDecisionWriter(container.database.session_factory)
+    )
+    return GovernanceAttachmentUploadService(
+        lambda: SqlGovernanceUnitOfWork(
+            container.database.session_factory,
+            session=session,
+        ),
+        authorization,
+        store=SqlGovernanceAttachmentUploadIntentStore(session),
+        target_authorizer=CatalogChangeTargetAuthorizer(
+            index=SqlCatalogIndexReader(session),
+            classification_access=ClassificationAccessResolver(
+                SqlClassificationAccessSnapshotReader(session)
+            ),
+            authorization=authorization,
         ),
     )
 
@@ -148,11 +253,13 @@ def _expected_version(if_match: str) -> int:
 @router.get("", response_model=ChangeRequestListResponse)
 async def list_change_requests(
     request: Request,
+    response: Response,
     context: ContextDep,
     session: SessionDep,
     state: Annotated[str | None, Query(max_length=32)] = None,
     limit: Annotated[int, Query(ge=1, le=100)] = 50,
 ) -> ChangeRequestListResponse:
+    """Preserve the published v1 full-record list contract for existing clients."""
     try:
         parsed_state = ChangeState(state) if state else None
     except ValueError as error:
@@ -160,6 +267,54 @@ async def list_change_requests(
     values = await _service(request, session).list_change_requests(
         workspace_id=context.workspace_id,
         state=parsed_state,
+        limit=limit,
+        subject=context.subject,
+        environment=context.environment,
+        request_id=context.request_id,
+    )
+    await set_security_context(
+        session,
+        workspace_id=context.workspace_id,
+        subject_id=context.subject.subject_id,
+    )
+    access = await ClassificationAccessResolver(
+        SqlClassificationAccessSnapshotReader(session)
+    ).resolve(
+        workspace_id=context.workspace_id,
+        subject_id=context.subject.subject_id,
+        now=context.environment.requested_at,
+    )
+    overview = await SqlChangeRequestOverviewReader(session).list_schema_overview(
+        subject=context.subject,
+        access=access,
+        change_requests=values,
+        limit=100,
+    )
+    response.headers["Cache-Control"] = "private, no-store"
+    return ChangeRequestListResponse(
+        items=[change_request_response(value) for value in values],
+        overview=[change_request_schema_overview_response(value) for value in overview],
+    )
+
+
+@router.get("/summaries", response_model=ChangeRequestSummaryListResponse)
+async def list_change_request_summaries(
+    request: Request,
+    response: Response,
+    context: ContextDep,
+    session: SessionDep,
+    state: Annotated[str | None, Query(max_length=32)] = None,
+    cursor: Annotated[str | None, Query(min_length=1, max_length=2048)] = None,
+    limit: Annotated[int, Query(ge=1, le=50)] = 25,
+) -> ChangeRequestSummaryListResponse:
+    try:
+        parsed_state = ChangeState(state) if state else None
+    except ValueError as error:
+        raise ValidationError("The change-request state filter is invalid.") from error
+    page = await _service(request, session).list_change_request_summaries(
+        workspace_id=context.workspace_id,
+        state=parsed_state,
+        cursor=cursor,
         limit=limit,
         subject=context.subject,
         environment=context.environment,
@@ -179,14 +334,43 @@ async def list_change_requests(
         subject_id=context.subject.subject_id,
         now=context.environment.requested_at,
     )
-    overview = await SqlChangeRequestOverviewReader(session).list_schema_overview(
+    overview_reader = SqlChangeRequestOverviewReader(session)
+    overview = await overview_reader.list_schema_overview(
         subject=context.subject,
         access=access,
-        change_requests=values,
+        change_requests=page.items,
+        limit=101,
     )
-    return ChangeRequestListResponse(
-        items=[change_request_response(value) for value in values],
+    response.headers["Cache-Control"] = "private, no-store"
+    return ChangeRequestSummaryListResponse(
+        items=[
+            ChangeRequestSummaryResponse(
+                id=value.change_request_id,
+                number=value.number,
+                request_type=value.request_type,
+                title=value.title,
+                state=value.state.value,
+                requester_id=value.requester_id,
+                requester_department_id=value.requester_department_id,
+                current_round_number=value.current_round_number,
+                created_at=value.created_at,
+                requested_due_date=value.requested_due_date,
+                priority=value.priority,
+                urgency=value.urgency,
+                classification=value.classification.name,
+                version=value.version,
+                item_count=len(value.targets),
+                first_item=ChangeRequestSummaryItemResponse(
+                    target_ref=value.targets[0].target_ref,
+                    aspect_name=value.targets[0].aspect_name,
+                    operation=value.targets[0].operation,
+                ),
+            )
+            for value in page.items
+        ],
         overview=[change_request_schema_overview_response(value) for value in overview],
+        overview_truncated=overview_reader.truncated,
+        page=PageMeta(next_cursor=page.next_cursor, limit=limit),
     )
 
 
@@ -216,6 +400,7 @@ async def list_change_request_systems(
 async def get_change_request(
     change_request_id: UUID,
     request: Request,
+    response: Response,
     context: ContextDep,
     session: SessionDep,
 ) -> ChangeRequestResponse:
@@ -226,10 +411,77 @@ async def get_change_request(
         environment=context.environment,
         request_id=context.request_id,
     )
+    response.headers["Cache-Control"] = "private, no-store"
     return change_request_response(value)
 
 
-def _attachment_response(value: ChangeRequestAttachmentModel) -> ChangeRequestAttachmentResponse:
+@router.get(
+    "/{change_request_id}/apply-report",
+    response_model=GovernanceApplyReportResponse,
+)
+async def get_change_request_apply_report(
+    change_request_id: UUID,
+    request: Request,
+    response: Response,
+    context: ContextDep,
+    session: SessionDep,
+) -> GovernanceApplyReportResponse:
+    change_request = await _service(request, session).get_change_request(
+        workspace_id=context.workspace_id,
+        change_request_id=change_request_id,
+        subject=context.subject,
+        environment=context.environment,
+        request_id=context.request_id,
+    )
+    await set_security_context(
+        session,
+        workspace_id=context.workspace_id,
+        subject_id=context.subject.subject_id,
+    )
+    report = await SqlGovernanceApplyReportReader(session).get(
+        workspace_id=context.workspace_id,
+        change_request=change_request,
+    )
+    response.headers["Cache-Control"] = "private, no-store"
+    return GovernanceApplyReportResponse(
+        change_request_id=report.change_request_id,
+        job_id=report.job_id,
+        state=report.state,
+        attempt_count=report.attempt_count,
+        last_error_code=report.last_error_code,
+        expected_hash=report.expected_hash,
+        observed_hash=report.observed_hash,
+        reconciled=report.reconciled,
+        created_at=report.created_at,
+        updated_at=report.updated_at,
+        items=[
+            GovernanceApplyItemResponse(
+                item_id=item.item_id,
+                expected_hash=item.expected_hash,
+                observed_hash=item.observed_hash,
+                source_version=item.source_version,
+                provider_version=item.provider_version,
+            )
+            for item in report.items
+        ],
+        attempts=[
+            GovernanceApplyAttemptResponse(
+                id=attempt.attempt_id,
+                attempt_no=attempt.attempt_no,
+                state=attempt.state,
+                failure_code=attempt.failure_code,
+                external_response_hash=attempt.external_response_hash,
+                started_at=attempt.started_at,
+                finished_at=attempt.finished_at,
+            )
+            for attempt in report.attempts
+        ],
+    )
+
+
+def _attachment_response(
+    value: ChangeRequestAttachmentModel | FinalizedAttachment,
+) -> ChangeRequestAttachmentResponse:
     return ChangeRequestAttachmentResponse(
         id=value.id,
         kind=value.kind,
@@ -243,9 +495,54 @@ def _attachment_response(value: ChangeRequestAttachmentModel) -> ChangeRequestAt
     )
 
 
+def _attachment_upload_response(
+    *,
+    intent: AttachmentUploadIntent,
+) -> ChangeRequestAttachmentUploadResponse:
+    base_path = (
+        f"/change-requests/{intent.change_request_id}/attachment-uploads/{intent.attachment_id}"
+    )
+    return ChangeRequestAttachmentUploadResponse(
+        id=intent.attachment_id,
+        change_request_id=intent.change_request_id,
+        round_id=intent.round_id,
+        kind=intent.kind,
+        original_name=intent.original_name,
+        state=intent.state,
+        expected_size_bytes=intent.expected_size_bytes,
+        expected_content_sha256=intent.expected_content_sha256,
+        provider_checksum=intent.provider_checksum,
+        failure_code=intent.failure_code,
+        status_url=base_path,
+        finalize_url=f"{base_path}/finalize",
+    )
+
+
 async def _upload_chunks(upload: UploadFile) -> AsyncIterator[bytes]:
     while chunk := await upload.read(1024 * 1024):
         yield chunk
+
+
+async def _bounded_attachment_content(upload: UploadFile) -> bytes:
+    content = bytearray()
+    async for chunk in _upload_chunks(upload):
+        if len(content) + len(chunk) > _MAXIMUM_ATTACHMENT_BYTES:
+            raise ValidationError(
+                "The attachment exceeds the configured byte limit.",
+                details={"code": "OBJECT_BYTE_LIMIT"},
+            )
+        content.extend(chunk)
+    if not content:
+        raise ValidationError(
+            "The attachment cannot be empty.",
+            details={"code": "OBJECT_EMPTY"},
+        )
+    return bytes(content)
+
+
+async def _content_chunks(content: bytes) -> AsyncIterator[bytes]:
+    for offset in range(0, len(content), 1024 * 1024):
+        yield content[offset : offset + 1024 * 1024]
 
 
 def _safe_attachment_name(name: str | None) -> tuple[str, str, str]:
@@ -258,13 +555,26 @@ def _safe_attachment_name(name: str | None) -> tuple[str, str, str]:
     return safe, stem, suffix
 
 
+def _attachment_object_key(
+    *,
+    workspace_id: UUID,
+    change_request_id: UUID,
+    attachment_id: UUID,
+) -> str:
+    return (
+        f"governance/change-request-attachments/{workspace_id}/{change_request_id}/{attachment_id}"
+    )
+
+
 @router.get("/{change_request_id}/attachments", response_model=ChangeRequestAttachmentListResponse)
 async def list_change_request_attachments(
     change_request_id: UUID,
     request: Request,
+    response: Response,
     context: ContextDep,
     session: SessionDep,
 ) -> ChangeRequestAttachmentListResponse:
+    """Preserve the published v1 full-list response within its explicit safe bound."""
     await _service(request, session).get_change_request(
         workspace_id=context.workspace_id,
         change_request_id=change_request_id,
@@ -285,33 +595,45 @@ async def list_change_request_attachments(
                     ChangeRequestAttachmentModel.workspace_id == context.workspace_id,
                     ChangeRequestAttachmentModel.change_request_id == change_request_id,
                 )
-                .order_by(ChangeRequestAttachmentModel.created_at, ChangeRequestAttachmentModel.id)
+                .order_by(
+                    ChangeRequestAttachmentModel.created_at,
+                    ChangeRequestAttachmentModel.id,
+                )
+                .limit(_MAXIMUM_LEGACY_ATTACHMENTS + 1)
             )
         ).all()
     )
-    return ChangeRequestAttachmentListResponse(items=[_attachment_response(row) for row in rows])
+    if len(rows) > _MAXIMUM_LEGACY_ATTACHMENTS:
+        raise ValidationError(
+            "The attachment collection exceeds the legacy safe list limit.",
+            details={
+                "code": "ATTACHMENT_LEGACY_LIST_LIMIT_EXCEEDED",
+                "maximum": _MAXIMUM_LEGACY_ATTACHMENTS,
+                "page_path": f"/change-requests/{change_request_id}/attachments/page",
+            },
+        )
+    response.headers["Cache-Control"] = "private, no-store"
+    return ChangeRequestAttachmentListResponse(
+        items=[_attachment_response(row) for row in rows],
+    )
 
 
-@router.post("/{change_request_id}/attachments", response_model=ChangeRequestAttachmentResponse)
-async def upload_change_request_attachment(
+@router.get(
+    "/{change_request_id}/attachments/page",
+    response_model=ChangeRequestAttachmentPageResponse,
+)
+async def list_change_request_attachment_page(
     change_request_id: UUID,
     request: Request,
+    response: Response,
     context: ContextDep,
     session: SessionDep,
-    file: Annotated[UploadFile, File()],
-    kind: Annotated[str, Form(pattern="^(REQUEST|TEST)$")] = "REQUEST",
-) -> ChangeRequestAttachmentResponse:
-    container = get_container(request)
-    bucket = container.settings.s3_bucket_filefolder
-    if not bucket:
-        raise ValidationError(
-            "Change-request attachment storage is not configured.",
-            details={"code": "FILEFOLDER_BUCKET_NOT_CONFIGURED"},
-        )
-    change_request = await _service(request, session).authorize_attachment(
+    cursor: Annotated[str | None, Query(min_length=1, max_length=2048)] = None,
+    limit: Annotated[int, Query(ge=1, le=50)] = 25,
+) -> ChangeRequestAttachmentPageResponse:
+    await _service(request, session).get_change_request(
         workspace_id=context.workspace_id,
         change_request_id=change_request_id,
-        kind=kind,
         subject=context.subject,
         environment=context.environment,
         request_id=context.request_id,
@@ -321,71 +643,199 @@ async def upload_change_request_attachment(
         workspace_id=context.workspace_id,
         subject_id=context.subject.subject_id,
     )
-    original_name, stem, suffix = _safe_attachment_name(file.filename)
-    locked = (
-        await session.scalars(
-            select(ChangeRequestModel)
-            .where(
-                ChangeRequestModel.workspace_id == context.workspace_id,
-                ChangeRequestModel.id == change_request_id,
-            )
-            .with_for_update()
-        )
-    ).one_or_none()
-    if locked is None:
-        raise NotFoundError("The change request does not exist.")
-    serial = (
-        int(
-            await session.scalar(
-                select(
-                    func.coalesce(func.max(ChangeRequestAttachmentModel.serial_number), 0)
-                ).where(
-                    ChangeRequestAttachmentModel.workspace_id == context.workspace_id,
-                    ChangeRequestAttachmentModel.change_request_id == change_request_id,
-                    ChangeRequestAttachmentModel.kind == kind,
-                    ChangeRequestAttachmentModel.original_name == original_name,
-                )
-            )
-            or 0
-        )
-        + 1
+    after_created_at, after_id = _parse_attachment_cursor(
+        cursor,
+        change_request_id=change_request_id,
     )
-    object_key = f"{change_request.number}-{kind}-{stem}-{serial:02d}{suffix}"
+    statement = select(ChangeRequestAttachmentModel).where(
+        ChangeRequestAttachmentModel.workspace_id == context.workspace_id,
+        ChangeRequestAttachmentModel.change_request_id == change_request_id,
+    )
+    if after_created_at is not None and after_id is not None:
+        statement = statement.where(
+            or_(
+                ChangeRequestAttachmentModel.created_at > after_created_at,
+                and_(
+                    ChangeRequestAttachmentModel.created_at == after_created_at,
+                    ChangeRequestAttachmentModel.id > after_id,
+                ),
+            )
+        )
+    rows = list(
+        (
+            await session.scalars(
+                statement.order_by(
+                    ChangeRequestAttachmentModel.created_at,
+                    ChangeRequestAttachmentModel.id,
+                ).limit(limit + 1)
+            )
+        ).all()
+    )
+    visible = rows[:limit]
+    next_cursor = (
+        _attachment_cursor(
+            change_request_id=change_request_id,
+            created_at=visible[-1].created_at,
+            attachment_id=visible[-1].id,
+        )
+        if len(rows) > limit and visible
+        else None
+    )
+    response.headers["Cache-Control"] = "private, no-store"
+    return ChangeRequestAttachmentPageResponse(
+        items=[_attachment_response(row) for row in visible],
+        page=PageMeta(next_cursor=next_cursor, limit=limit),
+    )
+
+
+@router.post(
+    "/{change_request_id}/attachments",
+    response_model=ChangeRequestAttachmentUploadResponse,
+    status_code=202,
+)
+async def upload_change_request_attachment(
+    change_request_id: UUID,
+    request: Request,
+    context: ContextDep,
+    session: SessionDep,
+    file: Annotated[UploadFile, File()],
+    kind: Annotated[str, Form(pattern="^(REQUEST|TEST)$")] = "REQUEST",
+    upload_id: Annotated[UUID | None, Form()] = None,
+) -> ChangeRequestAttachmentUploadResponse:
+    container = get_container(request)
+    bucket = container.settings.s3_bucket_filefolder
+    if not bucket:
+        raise ValidationError(
+            "Change-request attachment storage is not configured.",
+            details={"code": "FILEFOLDER_BUCKET_NOT_CONFIGURED"},
+        )
+    original_name, _, _ = _safe_attachment_name(file.filename)
+    content = await _bounded_attachment_content(file)
+    attachment_id = upload_id or uuid7()
+    object_key = _attachment_object_key(
+        workspace_id=context.workspace_id,
+        change_request_id=change_request_id,
+        attachment_id=attachment_id,
+    )
     content_type = (file.content_type or "application/octet-stream")[:255]
-    artifact = await container.object_store.write_export(
+    service = _attachment_service(request, session)
+    intent = await service.start(
+        attachment_id=attachment_id,
+        workspace_id=context.workspace_id,
+        change_request_id=change_request_id,
+        kind=kind,
+        original_name=original_name,
         bucket=bucket,
         object_key=object_key,
-        chunks=_upload_chunks(file),
-        metadata={
-            "workspace-id": str(context.workspace_id),
-            "change-request-id": str(change_request_id),
-            "attachment-kind": kind,
-        },
-        maximum_bytes=_MAXIMUM_ATTACHMENT_BYTES,
         content_type=content_type,
+        expected_size_bytes=len(content),
+        expected_content_sha256=hashlib.sha256(content).hexdigest(),
+        subject=context.subject,
+        environment=context.environment,
+        request_id=context.request_id,
     )
     try:
-        row = ChangeRequestAttachmentModel(
-            id=uuid7(),
-            workspace_id=context.workspace_id,
-            change_request_id=change_request_id,
-            round_id=change_request.current_round_id,
-            kind=kind,
-            original_name=original_name,
-            serial_number=serial,
+        await container.object_store.write_create_only(
             bucket=bucket,
             object_key=object_key,
+            chunks=_content_chunks(content),
+            metadata={
+                "workspace-id": str(context.workspace_id),
+                "change-request-id": str(change_request_id),
+                "attachment-id": str(attachment_id),
+                "attachment-kind": kind,
+                "content-sha256": intent.expected_content_sha256,
+            },
+            maximum_bytes=_MAXIMUM_ATTACHMENT_BYTES,
             content_type=content_type,
-            size_bytes=artifact.size_bytes,
-            content_sha256=artifact.content_sha256,
-            uploaded_by=context.subject.subject_id,
         )
-        session.add(row)
-        await session.commit()
-    except Exception:
-        await container.object_store.delete_export(bucket=bucket, object_key=object_key)
+    except ConflictError as error:
+        if error.details.get("code") == "OBJECT_KEY_ALREADY_EXISTS":
+            await service.record_known_create_rejection(
+                workspace_id=context.workspace_id,
+                attachment_id=attachment_id,
+                subject_id=context.subject.subject_id,
+                failure_code="OBJECT_KEY_ALREADY_EXISTS",
+                occurred_at=utc_now(),
+            )
         raise
-    return _attachment_response(row)
+    return _attachment_upload_response(intent=intent)
+
+
+@router.get(
+    "/{change_request_id}/attachment-uploads",
+    response_model=ChangeRequestAttachmentUploadListResponse,
+)
+async def list_change_request_attachment_uploads(
+    change_request_id: UUID,
+    request: Request,
+    response: Response,
+    context: ContextDep,
+    session: SessionDep,
+    round_id: Annotated[UUID, Query()],
+    limit: Annotated[int, Query(ge=1, le=10)] = 10,
+) -> ChangeRequestAttachmentUploadListResponse:
+    intents = await _attachment_service(request, session).list_reconcilable(
+        workspace_id=context.workspace_id,
+        subject_id=context.subject.subject_id,
+        change_request_id=change_request_id,
+        round_id=round_id,
+        states=frozenset({"STORED"}),
+        before_or_at=utc_now(),
+        limit=limit,
+    )
+    response.headers["Cache-Control"] = "private, no-store"
+    return ChangeRequestAttachmentUploadListResponse(
+        items=[_attachment_upload_response(intent=intent) for intent in intents]
+    )
+
+
+@router.get(
+    "/{change_request_id}/attachment-uploads/{attachment_id}",
+    response_model=ChangeRequestAttachmentUploadResponse,
+)
+async def get_change_request_attachment_upload(
+    change_request_id: UUID,
+    attachment_id: UUID,
+    request: Request,
+    response: Response,
+    context: ContextDep,
+    session: SessionDep,
+) -> ChangeRequestAttachmentUploadResponse:
+    intent = await _attachment_service(request, session).get_upload_intent(
+        workspace_id=context.workspace_id,
+        attachment_id=attachment_id,
+        subject_id=context.subject.subject_id,
+    )
+    if intent.change_request_id != change_request_id:
+        raise NotFoundError("The attachment upload intent does not exist.")
+    response.headers["Cache-Control"] = "private, no-store"
+    return _attachment_upload_response(intent=intent)
+
+
+@router.post(
+    "/{change_request_id}/attachment-uploads/{attachment_id}/finalize",
+    response_model=ChangeRequestAttachmentResponse,
+)
+async def finalize_change_request_attachment_upload(
+    change_request_id: UUID,
+    attachment_id: UUID,
+    request: Request,
+    context: ContextDep,
+    session: SessionDep,
+) -> ChangeRequestAttachmentResponse:
+    finalized = await _attachment_service(request, session).finalize(
+        workspace_id=context.workspace_id,
+        change_request_id=change_request_id,
+        attachment_id=attachment_id,
+        subject=context.subject,
+        environment=context.environment,
+        request_id=context.request_id,
+        occurred_at=utc_now(),
+    )
+    if finalized.id != attachment_id:
+        raise ConflictError("The finalized attachment identity does not match its upload.")
+    return _attachment_response(finalized)
 
 
 @router.get("/{change_request_id}/attachments/{attachment_id}/download")
@@ -393,6 +843,7 @@ async def download_change_request_attachment(
     change_request_id: UUID,
     attachment_id: UUID,
     request: Request,
+    response: Response,
     context: ContextDep,
     session: SessionDep,
 ) -> dict[str, str]:
@@ -420,6 +871,7 @@ async def download_change_request_attachment(
     ).one_or_none()
     if row is None:
         raise NotFoundError("The attachment does not exist.")
+    response.headers["Cache-Control"] = "private, no-store"
     return {
         "url": await container.object_store.presign_download(
             bucket=row.bucket,

@@ -9,7 +9,12 @@ from uuid import UUID, uuid4
 
 import pytest
 
-from datariver.application.dto import IdempotencyRecord
+from datariver.application.dto import (
+    ChangeRequestSummaryRecord,
+    ChangeRequestSummaryTarget,
+    IdempotencyRecord,
+    RegistrationCandidateBindingCommand,
+)
 from datariver.application.ports import GovernanceUnitOfWork
 from datariver.application.services.authorization import AuthorizationService
 from datariver.application.services.governance import GovernanceService
@@ -21,7 +26,7 @@ from datariver.domain.authz import (
     EnvironmentAttributes,
     SubjectAttributes,
 )
-from datariver.domain.common import DomainEvent, ForbiddenError
+from datariver.domain.common import ConflictError, DomainEvent, ForbiddenError, ValidationError
 from datariver.domain.governance import (
     ApprovalAuthority,
     ApprovalAuthorityKind,
@@ -38,6 +43,10 @@ class MemoryTargetAuthorizer:
     def __init__(self) -> None:
         self.calls = 0
         self.system_id = uuid4()
+        self.systems_by_target: dict[str, UUID] = {}
+        self.approval_scopes: list[frozenset[UUID]] = []
+        self.enforce_full_scope = False
+        self.filter_calls = 0
 
     async def authorize_targets(
         self,
@@ -57,7 +66,7 @@ class MemoryTargetAuthorizer:
                 item,
                 target_asset_id=asset_id,
                 target_asset_type="DATASET",
-                target_system_id=self.system_id,
+                target_system_id=self.systems_by_target.get(item.target_ref, self.system_id),
                 target_classification=request_classification,
                 target_lifecycle="ACTIVE",
                 target_source_version="1",
@@ -66,21 +75,67 @@ class MemoryTargetAuthorizer:
                     target_ref=item.target_ref,
                     asset_id=asset_id,
                     asset_type="DATASET",
-                    system_id=self.system_id,
+                    system_id=self.systems_by_target.get(item.target_ref, self.system_id),
                     domain_id=None,
                     owner_department_id=None,
                     classification=request_classification,
                     lifecycle="ACTIVE",
                 ),
-                routing_system_id=self.system_id,
+                routing_system_id=self.systems_by_target.get(item.target_ref, self.system_id),
             )
             for item in items
         )
 
     async def filter_authorized_change_requests(
-        self, *, change_requests: Sequence[ChangeRequest], **_: object
+        self,
+        *,
+        subject: SubjectAttributes,
+        change_requests: Sequence[ChangeRequest],
+        **_: object,
     ) -> tuple[ChangeRequest, ...]:
-        return tuple(change_requests)
+        self.filter_calls += 1
+        if not self.enforce_full_scope:
+            return tuple(change_requests)
+        return tuple(
+            change_request
+            for change_request in change_requests
+            if change_request.required_system_ids() <= subject.allowed_system_ids
+        )
+
+    async def filter_authorized_summaries(
+        self,
+        *,
+        subject: SubjectAttributes,
+        summaries: Sequence[ChangeRequestSummaryRecord],
+        **_: object,
+    ) -> tuple[ChangeRequestSummaryRecord, ...]:
+        self.filter_calls += 1
+        if not self.enforce_full_scope:
+            return tuple(summaries)
+        return tuple(
+            summary
+            for summary in summaries
+            if {
+                target.routing_system_id
+                for target in summary.targets
+                if target.routing_system_id is not None
+            }
+            <= subject.allowed_system_ids
+        )
+
+    async def authorize_approval_targets(
+        self,
+        *,
+        change_request: ChangeRequest,
+        approval_system_ids: frozenset[UUID],
+        **_: object,
+    ) -> frozenset[UUID]:
+        self.approval_scopes.append(approval_system_ids)
+        return frozenset(
+            item.item_id
+            for item in change_request.items
+            if item.routing_system_id in approval_system_ids
+        )
 
 
 class MemoryDecisionWriter:
@@ -104,8 +159,14 @@ class MemoryDecisionWriter:
 
 
 class MemoryChangeRequests:
-    def __init__(self, values: dict[UUID, ChangeRequest]) -> None:
+    def __init__(
+        self,
+        values: dict[UUID, ChangeRequest],
+        summaries: Sequence[ChangeRequestSummaryRecord] = (),
+    ) -> None:
         self.values = values
+        self.summaries = tuple(summaries)
+        self.summary_calls: list[dict[str, object]] = []
 
     async def add(self, change_request: ChangeRequest) -> None:
         self.values[change_request.change_request_id] = change_request
@@ -119,6 +180,46 @@ class MemoryChangeRequests:
     async def save(self, change_request: ChangeRequest) -> None:
         self.values[change_request.change_request_id] = change_request
 
+    async def list_summaries(
+        self,
+        *,
+        workspace_id: UUID,
+        maximum_classification: int,
+        state: str | None,
+        before_created_at: datetime | None,
+        before_id: UUID | None,
+        limit: int,
+    ) -> Sequence[ChangeRequestSummaryRecord]:
+        self.summary_calls.append(
+            {
+                "workspace_id": workspace_id,
+                "maximum_classification": maximum_classification,
+                "state": state,
+                "before_created_at": before_created_at,
+                "before_id": before_id,
+                "limit": limit,
+            }
+        )
+        values = [
+            value
+            for value in self.summaries
+            if value.classification <= Classification(maximum_classification)
+            and (state is None or value.state.value == state)
+        ]
+        if before_created_at is not None and before_id is not None:
+            values = [
+                value
+                for value in values
+                if (value.created_at, value.change_request_id) < (before_created_at, before_id)
+            ]
+        return tuple(
+            sorted(
+                values,
+                key=lambda value: (value.created_at, value.change_request_id),
+                reverse=True,
+            )[:limit]
+        )
+
 
 class MemoryOutbox:
     def __init__(self, values: list[DomainEvent]) -> None:
@@ -128,9 +229,20 @@ class MemoryOutbox:
         self.values.extend(events)
 
 
+class MemoryRegistrationBindings:
+    def __init__(self, values: list[dict[str, object]]) -> None:
+        self.values = values
+
+    async def verify_and_add(self, **values: object) -> None:
+        self.values.append(values)
+
+
 class MemoryIdempotency:
     def __init__(self, values: dict[tuple[UUID, str, str], IdempotencyRecord]) -> None:
         self.values = values
+
+    async def acquire_key_lock(self, **_: object) -> None:
+        return None
 
     async def get_result(
         self, *, workspace_id: UUID, key: str, operation: str
@@ -152,6 +264,9 @@ class MemoryIdempotency:
 
 
 class MemoryWorkflowAuthorities:
+    def __init__(self, state: dict[str, object]) -> None:
+        self._state = state
+
     async def get_authorities(
         self,
         *,
@@ -159,7 +274,13 @@ class MemoryWorkflowAuthorities:
         subject_id: UUID,
         system_ids: frozenset[UUID],
     ) -> tuple[ApprovalAuthority, ...]:
-        del workspace_id, subject_id
+        del workspace_id
+        configured = cast(
+            dict[UUID, tuple[ApprovalAuthority, ...]],
+            self._state.get("workflow_authorities", {}),
+        )
+        if subject_id in configured:
+            return configured[subject_id]
         return tuple(
             ApprovalAuthority(ApprovalAuthorityKind.SYSTEM_DEVELOPER, system_id)
             for system_id in system_ids
@@ -168,10 +289,16 @@ class MemoryWorkflowAuthorities:
 
 class MemoryUnitOfWork:
     def __init__(self, state: dict[str, object]) -> None:
-        self.change_requests = MemoryChangeRequests(state["requests"])  # type: ignore[arg-type]
+        self.change_requests = MemoryChangeRequests(
+            state["requests"],  # type: ignore[arg-type]
+            cast(Sequence[ChangeRequestSummaryRecord], state.get("summaries", ())),
+        )
+        self.registration_content_bindings = MemoryRegistrationBindings(
+            cast(list[dict[str, object]], state.setdefault("bindings", []))
+        )
         self.outbox = MemoryOutbox(state["outbox"])  # type: ignore[arg-type]
         self.idempotency = MemoryIdempotency(state["idempotency"])  # type: ignore[arg-type]
-        self.workflow_authorities = MemoryWorkflowAuthorities()
+        self.workflow_authorities = MemoryWorkflowAuthorities(state)
         self.committed = False
 
     async def __aenter__(self) -> Self:
@@ -208,6 +335,117 @@ def subject(workspace_id: UUID) -> SubjectAttributes:
         authentication_time=datetime.now(UTC),
         authentication_assurance=AuthenticationAssurance.HARDWARE_WEBAUTHN,
     )
+
+
+def change_request_summary(
+    *,
+    created_at: datetime,
+    system_id: UUID,
+) -> ChangeRequestSummaryRecord:
+    change_request_id = uuid4()
+    asset_id = uuid4()
+    return ChangeRequestSummaryRecord(
+        change_request_id=change_request_id,
+        number=f"CR-{str(change_request_id)[:8]}",
+        request_type="CATALOG_METADATA",
+        title="Bounded summary",
+        state=ChangeState.REGISTERED,
+        requester_id=uuid4(),
+        requester_department_id=None,
+        current_round_number=1,
+        created_at=created_at,
+        requested_due_date=None,
+        priority=None,
+        urgency=None,
+        classification=Classification.INTERNAL,
+        version=1,
+        targets=(
+            ChangeRequestSummaryTarget(
+                item_id=uuid4(),
+                target_type="DATAHUB_ASPECT",
+                target_ref="urn:li:dataset:bounded",
+                aspect_name="datasetProperties",
+                operation="UPSERT",
+                target_asset_id=asset_id,
+                target_asset_type="DATASET",
+                target_system_id=system_id,
+                target_domain_id=None,
+                target_owner_department_id=None,
+                target_classification=Classification.INTERNAL,
+                target_lifecycle="ACTIVE",
+                target_source_version="projection-1",
+                target_observed_at=created_at,
+                target_binding_hash="a" * 64,
+                routing_system_id=system_id,
+            ),
+        ),
+    )
+
+
+@pytest.mark.asyncio
+async def test_change_request_summary_cursor_is_bounded_and_subject_scoped() -> None:
+    workspace_id = uuid4()
+    system_id = uuid4()
+    actor = replace(
+        subject(workspace_id),
+        allowed_actions=frozenset({Action.CHANGE_READ}),
+        allowed_system_ids=frozenset({system_id}),
+    )
+    values = tuple(
+        change_request_summary(
+            created_at=datetime(2026, 7, 23, 10, minute, tzinfo=UTC),
+            system_id=system_id,
+        )
+        for minute in (3, 2, 1)
+    )
+    state: dict[str, object] = {
+        "requests": {},
+        "summaries": values,
+        "outbox": [],
+        "idempotency": {},
+    }
+    target_authorizer = MemoryTargetAuthorizer()
+    service = GovernanceService(
+        cast(Callable[[], GovernanceUnitOfWork], lambda: MemoryUnitOfWork(state)),
+        AuthorizationService(decision_writer=MemoryDecisionWriter()),
+        target_authorizer=target_authorizer,
+    )
+
+    first = await service.list_change_request_summaries(
+        workspace_id=workspace_id,
+        state=None,
+        cursor=None,
+        limit=2,
+        subject=actor,
+        environment=EnvironmentAttributes(requested_at=datetime.now(UTC)),
+        request_id="summary-page-1",
+    )
+    assert first.items == values[:2]
+    assert first.next_cursor is not None
+
+    second = await service.list_change_request_summaries(
+        workspace_id=workspace_id,
+        state=None,
+        cursor=first.next_cursor,
+        limit=2,
+        subject=actor,
+        environment=EnvironmentAttributes(requested_at=datetime.now(UTC)),
+        request_id="summary-page-2",
+    )
+    assert second.items == values[2:]
+    assert second.next_cursor is None
+
+    other_actor = replace(actor, subject_id=uuid4())
+    with pytest.raises(ValidationError, match="stale or invalid"):
+        await service.list_change_request_summaries(
+            workspace_id=workspace_id,
+            state=None,
+            cursor=first.next_cursor,
+            limit=2,
+            subject=other_actor,
+            environment=EnvironmentAttributes(requested_at=datetime.now(UTC)),
+            request_id="summary-page-other-subject",
+        )
 
 
 @pytest.mark.asyncio
@@ -258,6 +496,72 @@ async def test_create_is_idempotent_and_writes_one_outbox_event() -> None:
     assert len(state["outbox"]) == 1  # type: ignore[arg-type]
     assert len(writer.decisions) == 2
     assert target_authorizer.calls == 2
+
+
+@pytest.mark.asyncio
+async def test_typed_bulk_create_appends_binding_in_same_unit_of_work() -> None:
+    workspace_id = uuid4()
+    actor = subject(workspace_id)
+    state: dict[str, object] = {
+        "requests": {},
+        "outbox": [],
+        "idempotency": {},
+        "bindings": [],
+    }
+    service = GovernanceService(
+        cast(Callable[[], GovernanceUnitOfWork], lambda: MemoryUnitOfWork(state)),
+        AuthorizationService(decision_writer=MemoryDecisionWriter()),
+        target_authorizer=MemoryTargetAuthorizer(),
+    )
+    candidate_id = uuid4()
+    candidate_hash = "b" * 64
+    binding = RegistrationCandidateBindingCommand(
+        workspace_id=workspace_id,
+        upload_id=uuid4(),
+        preparation_id=uuid4(),
+        receipt_id=uuid4(),
+        receipt_hash="c" * 64,
+        candidate_id=candidate_id,
+        candidate_hash=candidate_hash,
+        target_asset_id=uuid4(),
+        target_source_version="projection-1",
+        target_binding_hash="d" * 64,
+    )
+
+    created = await service.create_change_request(
+        workspace_id=workspace_id,
+        number="CR-BULK-1",
+        request_type="BULK_DATASET_DESCRIPTION",
+        title="Typed BULK update",
+        description="Immutable candidate evidence",
+        requester_id=actor.subject_id,
+        items=[
+            ChangeItem(
+                uuid4(),
+                "DATAHUB_ASPECT",
+                "urn:li:dataset:bulk",
+                "UPSERT",
+                {"description": "updated"},
+                "datasetProperties",
+                "a" * 64,
+            )
+        ],
+        subject=actor,
+        classification=Classification.INTERNAL,
+        environment=EnvironmentAttributes(requested_at=datetime.now(UTC)),
+        request_id="typed-bulk-create",
+        idempotency_key="typed-bulk-create-0001",
+        request_hash="e" * 64,
+        require_raw_operator_gate=False,
+        registration_candidate_binding=binding,
+    )
+
+    values = cast(list[dict[str, object]], state["bindings"])
+    assert len(values) == 1
+    assert values[0]["command"] == binding
+    assert values[0]["change_request_id"] == created.change_request_id
+    assert values[0]["change_item_id"] == created.items[0].item_id
+    assert values[0]["created_by"] == actor.subject_id
 
 
 @pytest.mark.asyncio
@@ -567,3 +871,294 @@ async def test_resubmission_requires_the_requester_and_uses_change_edit_authoriz
 
     assert result.state is ChangeState.REGISTERED
     assert writer.actions == [Action.CHANGE_EDIT.value]
+
+
+@pytest.mark.asyncio
+async def test_complete_intake_replay_is_bound_to_the_original_actor() -> None:
+    workspace_id = uuid4()
+    target_authorizer = MemoryTargetAuthorizer()
+    original_actor = replace(
+        subject(workspace_id),
+        allowed_actions=frozenset({Action.CHANGE_REVIEW}),
+        allowed_system_ids=frozenset({target_authorizer.system_id}),
+    )
+    replay_actor = replace(original_actor, subject_id=uuid4())
+    bound = await target_authorizer.authorize_targets(
+        workspace_id=workspace_id,
+        subject=original_actor,
+        items=(
+            ChangeItem(
+                uuid4(),
+                "DATAHUB_INTAKE",
+                "urn:li:dataset:intake-replay",
+                "REVIEW",
+                {"description": "reviewed"},
+                "changeIntake",
+                "b" * 64,
+            ),
+        ),
+        request_classification=Classification.INTERNAL,
+        environment=EnvironmentAttributes(requested_at=datetime.now(UTC)),
+        request_id="bind-intake-replay",
+    )
+    change_request = ChangeRequest.create(
+        workspace_id=workspace_id,
+        number="CR-INTAKE-REPLAY",
+        request_type="CHANGE_INTAKE",
+        title="Intake replay",
+        description="Bind completion replay to the original actor.",
+        requester_id=uuid4(),
+        items=list(bound),
+    )
+    key = "complete-intake-replay-0001"
+    operation = f"change_request.complete_intake:{change_request.change_request_id}"
+    state: dict[str, object] = {
+        "requests": {change_request.change_request_id: change_request},
+        "outbox": [],
+        "idempotency": {
+            (workspace_id, key, operation): IdempotencyRecord(
+                request_hash="a" * 64,
+                result={
+                    "change_request_id": str(change_request.change_request_id),
+                    "actor_id": str(original_actor.subject_id),
+                },
+            )
+        },
+    }
+    service = GovernanceService(
+        cast(Callable[[], GovernanceUnitOfWork], lambda: MemoryUnitOfWork(state)),
+        AuthorizationService(decision_writer=MemoryDecisionWriter()),
+        target_authorizer=target_authorizer,
+    )
+
+    with pytest.raises(ConflictError, match="another subject"):
+        await service.complete_intake(
+            workspace_id=workspace_id,
+            change_request_id=change_request.change_request_id,
+            actor_id=replay_actor.subject_id,
+            reason="Replay",
+            expected_version=change_request.version,
+            subject=replay_actor,
+            environment=EnvironmentAttributes(requested_at=datetime.now(UTC)),
+            request_id="complete-intake-replay",
+            idempotency_key=key,
+            request_hash="a" * 64,
+        )
+
+
+@pytest.mark.asyncio
+async def test_complete_intake_replay_rechecks_current_developer_authority() -> None:
+    workspace_id = uuid4()
+    target_authorizer = MemoryTargetAuthorizer()
+    actor = replace(
+        subject(workspace_id),
+        allowed_actions=frozenset({Action.CHANGE_REVIEW}),
+        allowed_system_ids=frozenset({target_authorizer.system_id}),
+    )
+    bound = await target_authorizer.authorize_targets(
+        workspace_id=workspace_id,
+        subject=actor,
+        items=(
+            ChangeItem(
+                uuid4(),
+                "DATAHUB_INTAKE",
+                "urn:li:dataset:intake-revoked",
+                "REVIEW",
+                {"description": "reviewed"},
+                "changeIntake",
+                "b" * 64,
+            ),
+        ),
+        request_classification=Classification.INTERNAL,
+        environment=EnvironmentAttributes(requested_at=datetime.now(UTC)),
+        request_id="bind-intake-revoked",
+    )
+    change_request = ChangeRequest.create(
+        workspace_id=workspace_id,
+        number="CR-INTAKE-REVOKED",
+        request_type="CHANGE_INTAKE",
+        title="Revoked intake replay",
+        description="Fresh authority is required for a replay.",
+        requester_id=uuid4(),
+        items=list(bound),
+    )
+    key = "complete-intake-revoked-0001"
+    operation = f"change_request.complete_intake:{change_request.change_request_id}"
+    state: dict[str, object] = {
+        "requests": {change_request.change_request_id: change_request},
+        "outbox": [],
+        "idempotency": {
+            (workspace_id, key, operation): IdempotencyRecord(
+                request_hash="a" * 64,
+                result={
+                    "change_request_id": str(change_request.change_request_id),
+                    "actor_id": str(actor.subject_id),
+                },
+            )
+        },
+        "workflow_authorities": {actor.subject_id: ()},
+    }
+    service = GovernanceService(
+        cast(Callable[[], GovernanceUnitOfWork], lambda: MemoryUnitOfWork(state)),
+        AuthorizationService(decision_writer=MemoryDecisionWriter()),
+        target_authorizer=target_authorizer,
+    )
+
+    with pytest.raises(ForbiddenError, match="Developer assignment"):
+        await service.complete_intake(
+            workspace_id=workspace_id,
+            change_request_id=change_request.change_request_id,
+            actor_id=actor.subject_id,
+            reason="Replay",
+            expected_version=change_request.version,
+            subject=actor,
+            environment=EnvironmentAttributes(requested_at=datetime.now(UTC)),
+            request_id="complete-intake-revoked",
+            idempotency_key=key,
+            request_hash="a" * 64,
+        )
+    assert target_authorizer.filter_calls == 1
+
+
+@pytest.mark.asyncio
+async def test_multi_system_review_approval_is_scoped_without_leaking_unrelated_targets() -> None:
+    workspace_id = uuid4()
+    first_system = uuid4()
+    second_system = uuid4()
+    target_authorizer = MemoryTargetAuthorizer()
+    target_authorizer.systems_by_target = {
+        "urn:li:dataset:first": first_system,
+        "urn:li:dataset:second": second_system,
+    }
+    target_authorizer.enforce_full_scope = True
+    requester = subject(workspace_id)
+    bound = await target_authorizer.authorize_targets(
+        workspace_id=workspace_id,
+        subject=requester,
+        items=(
+            ChangeItem(
+                uuid4(),
+                "DATAHUB_INTAKE",
+                "urn:li:dataset:first",
+                "REVIEW",
+                {"description": "first"},
+                "changeIntake",
+                "1" * 64,
+            ),
+            ChangeItem(
+                uuid4(),
+                "DATAHUB_INTAKE",
+                "urn:li:dataset:second",
+                "REVIEW",
+                {"description": "second"},
+                "changeIntake",
+                "2" * 64,
+            ),
+        ),
+        request_classification=Classification.INTERNAL,
+        environment=EnvironmentAttributes(requested_at=datetime.now(UTC)),
+        request_id="bind-multi-system-review",
+    )
+    change_request = ChangeRequest.create(
+        workspace_id=workspace_id,
+        number="CR-MULTI-SYSTEM",
+        request_type="CHANGE_INTAKE",
+        title="Multi-system review",
+        description="Each developer approves only their own system.",
+        requester_id=requester.subject_id,
+        items=list(bound),
+    )
+    change_request.transition(
+        target=ChangeState.IN_REVIEW,
+        actor_id=uuid4(),
+        reason="Review started.",
+        policy_decision_id=uuid4(),
+        expected_version=change_request.version,
+    )
+    first_actor = replace(
+        subject(workspace_id),
+        allowed_actions=frozenset({Action.CHANGE_REVIEW}),
+        allowed_system_ids=frozenset({first_system}),
+    )
+    second_actor = replace(
+        subject(workspace_id),
+        allowed_actions=frozenset({Action.CHANGE_REVIEW}),
+        allowed_system_ids=frozenset({second_system}),
+    )
+    state: dict[str, object] = {
+        "requests": {change_request.change_request_id: change_request},
+        "outbox": [],
+        "idempotency": {},
+        "workflow_authorities": {
+            first_actor.subject_id: (
+                ApprovalAuthority(ApprovalAuthorityKind.SYSTEM_DEVELOPER, first_system),
+            ),
+            second_actor.subject_id: (
+                ApprovalAuthority(ApprovalAuthorityKind.SYSTEM_DEVELOPER, second_system),
+            ),
+        },
+    }
+    service = GovernanceService(
+        cast(Callable[[], GovernanceUnitOfWork], lambda: MemoryUnitOfWork(state)),
+        AuthorizationService(decision_writer=MemoryDecisionWriter()),
+        target_authorizer=target_authorizer,
+    )
+
+    first_response = await service.add_approval(
+        workspace_id=workspace_id,
+        change_request_id=change_request.change_request_id,
+        stage="REVIEW",
+        approval_decision=ApprovalDecision.APPROVED,
+        reason="First system reviewed.",
+        expected_version=change_request.version,
+        subject=first_actor,
+        environment=EnvironmentAttributes(requested_at=datetime.now(UTC)),
+        request_id="approve-first-system",
+        idempotency_key="approve-first-system-0001",
+        request_hash="3" * 64,
+    )
+    stored = cast(dict[UUID, ChangeRequest], state["requests"])[change_request.change_request_id]
+    second_response = await service.add_approval(
+        workspace_id=workspace_id,
+        change_request_id=change_request.change_request_id,
+        stage="REVIEW",
+        approval_decision=ApprovalDecision.APPROVED,
+        reason="Second system reviewed.",
+        expected_version=stored.version,
+        subject=second_actor,
+        environment=EnvironmentAttributes(requested_at=datetime.now(UTC)),
+        request_id="approve-second-system",
+        idempotency_key="approve-second-system-0001",
+        request_hash="4" * 64,
+    )
+
+    assert [item.routing_system_id for item in first_response.items] == [first_system]
+    assert [item.routing_system_id for item in second_response.items] == [second_system]
+    assert target_authorizer.approval_scopes == [
+        frozenset({first_system}),
+        frozenset({second_system}),
+    ]
+    assert stored.required_system_ids() == frozenset({first_system, second_system})
+    assert [approval.authorities for approval in stored.approvals] == [
+        (ApprovalAuthority(ApprovalAuthorityKind.SYSTEM_DEVELOPER, first_system),),
+        (ApprovalAuthority(ApprovalAuthorityKind.SYSTEM_DEVELOPER, second_system),),
+    ]
+    coordinator = replace(
+        subject(workspace_id),
+        allowed_actions=frozenset({Action.CHANGE_REVIEW}),
+        allowed_system_ids=frozenset({first_system, second_system}),
+    )
+    testing = await service.transition(
+        workspace_id=workspace_id,
+        change_request_id=change_request.change_request_id,
+        target=ChangeState.TESTING,
+        actor_id=coordinator.subject_id,
+        reason="All server-side system approvals are complete.",
+        expected_version=stored.version,
+        subject=coordinator,
+        environment=EnvironmentAttributes(requested_at=datetime.now(UTC)),
+        request_id="advance-complete-multi-system-review",
+        idempotency_key="advance-complete-multi-system-review-0001",
+        request_hash="5" * 64,
+    )
+    assert testing.state is ChangeState.TESTING

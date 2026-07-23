@@ -43,6 +43,21 @@ class Database:
                 },
             },
         )
+        self.provider_lock_engine: AsyncEngine = create_async_engine(
+            database_url,
+            pool_pre_ping=True,
+            pool_size=max(1, min(pool_size, 4)),
+            max_overflow=0,
+            pool_timeout=pool_timeout_seconds,
+            connect_args={
+                "password": password,
+                "server_settings": {
+                    "application_name": f"{application_name}-provider-lock",
+                    "statement_timeout": "15000",
+                    "idle_in_transaction_session_timeout": "30000",
+                },
+            },
+        )
         self.session_factory = async_sessionmaker(
             self.engine,
             expire_on_commit=False,
@@ -54,6 +69,7 @@ class Database:
             yield session
 
     async def close(self) -> None:
+        await self.provider_lock_engine.dispose()
         await self.engine.dispose()
 
     def pool_snapshot(self) -> DatabasePoolSnapshot:

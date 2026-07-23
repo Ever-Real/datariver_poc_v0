@@ -163,3 +163,54 @@ replaced source is retained only under `.legacy_archive/`.
   user/system/config routers): subject/membership master, system/schema/assignee priority, and
   redacted approved service-profile administration.  Password provisioning, arbitrary URLs,
   raw YAML and browser-controlled connection tests remain out of scope by design.
+
+## Phase 3.6 — governed Registration execution and evidence
+
+This package implements ADR-0041 without converting arm64/local checks into WSL or production
+claims.
+
+- [x] REG-01 Fail closed before Manual/BULK resource reads unless the DataRiver session is an active
+  human security administrator or canonical Data Steward; expose no raw claim/token evidence.
+- [x] REG-02 Make Manual CSV receipt creation conditional and immutable; preserve the approved
+  `UPLOAD_METADATA_MANUAL_YYMMDD_SERIAL.csv` naming contract.
+- [x] REG-03 Fence Manual execution with database time, monotonic lease evidence, at most 20
+  attempts and one APPLYING row per asset.
+- [x] REG-04 Record append-only attempt and five-aspect read-back reports; require matching hashes
+  before APPLIED.
+- [x] REG-05 Provide bounded owner/Admin history, exact report polling, stale-request cancellation
+  and explicit terminal/retry UI states.
+- [x] REG-06 Fence BULK preparation by database time, cap typed files at 16 MiB/10,000 rows and
+  publish only complete immutable receipt/candidate evidence.
+- [x] REG-07 Re-read one current ACTIVE DATASET, preserve unknown provider fields and bind a V2
+  candidate/receipt/object-locator SHA-256 into an ETag-fenced preview.
+- [x] REG-08 Commit one candidate binding, one server-authored Change Request item and outbox
+  evidence atomically; deny no-op, stale and duplicate creation.
+- [x] REG-09 Replace unbounded Change Request hydration with keyset summaries, selected detail and
+  hard aggregate/apply-report caps.
+- [x] REG-10 Install Alembic `0046` fail-closed compatibility, forced RLS, restrictive reader
+  policies, append-only evidence triggers and column-bounded grants.
+- [x] REG-11 Prove a real isolated MinIO concurrent same-key conditional create and complete byte
+  read-back; remove the test bucket afterward.
+- [x] REG-12 Prove PostgreSQL 17 blank/current, additive `0045 -> 0046`, generated-baseline re-entry
+  and malformed-column fail-closed paths; remove the disposable database afterward.
+- [x] REG-13 Pass repository-wide backend/frontend/static/deterministic-migration gates on the final
+  source candidate.
+- [x] REG-14 Resolve all independent security/data/SRE/UI P0/P1 findings and rerun affected gates.
+- [ ] REG-15 Create and publish the focused Phase commit; report WSL, multi-human OIDC,
+  external-Airflow and real-DataHub acceptance as `EXTERNAL_GATE`.
+- [x] REG-16 Add `0047` atomic worker call receipts, exact state history and proactive closure of
+  superseded expired Manual/BULK calls; reject attempts-only fabricated supersession.
+- [x] REG-17 Add `0048` exact apply-job/attempt/CR lease and privilege fencing; completed work cannot
+  restart and APPLIED/APPLY_FAILED cannot be rewound by a non-governance role.
+- [x] REG-18 Add `0049`/`0050` globally collision-safe attachment identities and a two-principal
+  `202 STARTED -> worker claim/HEAD/full-SHA STORED -> current-human finalize` flow. Direct
+  app/upload mutation and attachment INSERT are denied, and lost responses use a private bounded
+  exact-ID status route or a server-filtered current-round STORED recovery list.
+- [x] REG-19 Prove deterministic canonical `0001` SHA-256
+  `1ca5b11f1c78ae6a193b2beca9f5ef19d252a2c59b32f955be0d10cf298ebbce`,
+  blank `0001 -> 0050`, clean `0047 -> 0050` re-entry, 16 actual PostgreSQL security/recovery
+  cases, and fail-closed `0048` rejection of a deliberately corrupted completed-job/request pair.
+- [x] REG-20 Pass the final local gate set: backend 1,152 passed / 46 explicit external skips,
+  strict mypy over 333 files, Ruff/static verification, frontend 44 files / 230 tests,
+  TypeScript/ESLint and production build. `npm audit` remains an explicit external manifest-
+  disclosure permission gate and is not represented as executed.

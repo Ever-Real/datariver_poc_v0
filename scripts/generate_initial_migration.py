@@ -205,16 +205,28 @@ BEGIN
     END IF;
 
     IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'datariver_governance') THEN
-        GRANT USAGE ON SCHEMA platform, authz, governance, integration TO datariver_governance;
+        GRANT USAGE ON SCHEMA platform, iam, authz, governance, integration
+            TO datariver_governance;
         GRANT SELECT ON platform.external_service_profiles,
             platform.external_service_profile_versions TO datariver_governance;
         GRANT SELECT, INSERT ON authz.policy_decisions TO datariver_governance;
-        GRANT SELECT, UPDATE ON governance.change_requests TO datariver_governance;
+        GRANT SELECT ON governance.change_requests TO datariver_governance;
+        GRANT UPDATE (state, version, updated_at)
+            ON governance.change_requests TO datariver_governance;
         GRANT SELECT ON governance.change_request_items, governance.approvals,
-            governance.state_transitions TO datariver_governance;
+            governance.state_transitions, governance.change_request_rounds,
+            governance.change_test_runs TO datariver_governance;
         GRANT INSERT ON governance.state_transitions TO datariver_governance;
-        GRANT SELECT, INSERT, UPDATE ON integration.jobs,
-            integration.job_attempts, integration.inbox_messages TO datariver_governance;
+        GRANT SELECT, INSERT ON integration.jobs, integration.job_attempts
+            TO datariver_governance;
+        GRANT UPDATE (state, progress, result_ref, lease_until, attempts,
+            attempt_cycle, cycle_attempts, lease_token_hash, lease_owner_id,
+            last_error_code, version, updated_at)
+            ON integration.jobs TO datariver_governance;
+        GRANT UPDATE (state, error_class, external_response_hash, finished_at)
+            ON integration.job_attempts TO datariver_governance;
+        GRANT SELECT, INSERT, UPDATE ON integration.inbox_messages
+            TO datariver_governance;
         GRANT SELECT, INSERT ON integration.outbox_events TO datariver_governance;
     END IF;
 

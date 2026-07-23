@@ -1,8 +1,8 @@
 from __future__ import annotations
 
 import csv
+import hashlib
 import io
-from collections.abc import AsyncIterator
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Protocol
@@ -10,7 +10,7 @@ from urllib.parse import quote
 from uuid import UUID
 
 from datariver.application.classification_access import ClassificationAccessResolver
-from datariver.application.dto import CatalogAssetIndex
+from datariver.application.dto import CatalogAssetIndex, IdempotencyRecord
 from datariver.application.ports import (
     CatalogExportObjectStore,
     CatalogIndexReader,
@@ -32,6 +32,28 @@ from datariver.domain.manual_metadata import (
 )
 
 MAXIMUM_CSV_BYTES = 5 * 1024 * 1024
+
+
+class _BoundedTextBuffer:
+    """Accumulate a UTF-8 CSV only while it remains inside the accepted receipt budget."""
+
+    def __init__(self, *, maximum_bytes: int) -> None:
+        self._buffer = io.StringIO(newline="")
+        self._maximum_bytes = maximum_bytes
+        self._size_bytes = 0
+
+    def write(self, value: str) -> int:
+        size_bytes = len(value.encode("utf-8"))
+        if self._size_bytes + size_bytes > self._maximum_bytes:
+            raise ValidationError(
+                "Manual metadata CSV exceeds the accepted receipt size.",
+                details={"code": "MANUAL_METADATA_RECEIPT_TOO_LARGE"},
+            )
+        self._size_bytes += size_bytes
+        return self._buffer.write(value)
+
+    def getvalue(self) -> str:
+        return self._buffer.getvalue()
 
 
 class ManualMetadataUowFactory(Protocol):
@@ -79,6 +101,7 @@ class ManualMetadataSubmissionService:
         *,
         asset_id: UUID,
         source_version: str,
+        provider_source_version: str | None,
         description: str,
         domain: str | None,
         tags: tuple[str, ...],
@@ -146,43 +169,81 @@ class ManualMetadataSubmissionService:
             environment=environment,
             request_id=request_id,
         )
-        enrichment = await self._datahub.get_asset(asset.external_urn)
-        if enrichment.schema_fields_truncated or not enrichment.schema_fields_total_exact:
-            raise ConflictError(
-                "The provider schema exceeds the safe editable boundary.",
-                details={"code": "SCHEMA_FIELDS_TRUNCATED"},
+        operation = f"manual-metadata.submit:{asset_id}"
+        async with self._uow_factory() as replay_uow:
+            await replay_uow.set_security_context(
+                workspace_id=subject.workspace_id,
+                subject_id=subject.subject_id,
             )
-        schema = self._schema_fields(enrichment.schema_fields)
-        if set(column.field_path for column in normalized.columns) != set(schema):
-            raise ConflictError(
-                "The provider schema changed. Reload its metadata before saving.",
-                details={"code": "SCHEMA_FIELD_DRIFT"},
+            await replay_uow.idempotency.acquire_key_lock(
+                workspace_id=subject.workspace_id,
+                key=idempotency_key,
+                operation=operation,
             )
+            existing = await replay_uow.idempotency.get_result(
+                workspace_id=subject.workspace_id,
+                key=idempotency_key,
+                operation=operation,
+            )
+            if existing is not None:
+                return await self._existing_submission(
+                    uow=replay_uow,
+                    workspace_id=subject.workspace_id,
+                    requester_id=subject.subject_id,
+                    request_hash=request_hash,
+                    existing=existing,
+                )
 
-        artifact_written = False
+        enrichment = await self._datahub.get_asset(asset.external_urn)
+        if (
+            provider_source_version is not None
+            and enrichment.raw_version != provider_source_version
+        ):
+            raise ConflictError(
+                "The provider metadata changed. Reload it before saving.",
+                details={"code": "PROVIDER_SOURCE_VERSION_MISMATCH"},
+            )
+        resolved_provider_source_version = enrichment.raw_version
+        if (
+            enrichment.schema_fields_truncated
+            or not enrichment.schema_fields_total_exact
+            or enrichment.description_truncated
+            or enrichment.tags_truncated
+            or enrichment.glossary_terms_truncated
+        ):
+            raise ConflictError(
+                "The provider metadata exceeds the safe editable boundary.",
+                details={"code": "PROVIDER_METADATA_TRUNCATED"},
+            )
+        schema, final_columns = self._rehydrate_columns(
+            fields=enrichment.schema_fields,
+            edits=normalized.columns,
+        )
+
         object_key = ""
         async with self._uow_factory() as uow:
             await uow.set_security_context(
                 workspace_id=subject.workspace_id,
                 subject_id=subject.subject_id,
             )
-            operation = f"manual-metadata.submit:{asset_id}"
+            await uow.idempotency.acquire_key_lock(
+                workspace_id=subject.workspace_id,
+                key=idempotency_key,
+                operation=operation,
+            )
             existing = await uow.idempotency.get_result(
                 workspace_id=subject.workspace_id,
                 key=idempotency_key,
                 operation=operation,
             )
             if existing is not None:
-                if existing.request_hash != request_hash:
-                    raise ConflictError("The idempotency key was used with a different request.")
-                submission_id = UUID(str(existing.result["submission_id"]))
-                stored = await uow.manual_metadata_submissions.get(
+                return await self._existing_submission(
+                    uow=uow,
                     workspace_id=subject.workspace_id,
-                    submission_id=submission_id,
+                    requester_id=subject.subject_id,
+                    request_hash=request_hash,
+                    existing=existing,
                 )
-                if stored is None or stored.requester_id != subject.subject_id:
-                    raise ConflictError("The idempotent manual submission is unavailable.")
-                return stored
 
             serial_number = await uow.manual_metadata_submissions.allocate_serial_number()
             object_key = self._object_key(serial_number=serial_number, now=environment.requested_at)
@@ -193,61 +254,92 @@ class ManualMetadataSubmissionService:
                 domain=normalized.domain,
                 tags=normalized.tags,
                 terms=normalized.terms,
-                columns=normalized.columns,
+                columns=final_columns,
             )
-            artifact = await self._object_store.write_export(
-                bucket=self._infoschema_bucket,
-                object_key=object_key,
-                chunks=self._one_chunk(csv_bytes),
-                metadata={
-                    "workspace-id": str(subject.workspace_id),
-                    "asset-id": str(asset.asset_id),
-                    "source-version": asset.source_version,
-                    "content-kind": "manual-metadata-csv-v1",
-                },
-                maximum_bytes=MAXIMUM_CSV_BYTES,
-            )
-            artifact_written = True
-            if artifact.size_bytes != len(csv_bytes):
-                raise ConflictError("Manual metadata CSV receipt did not reconcile.")
+            if len(csv_bytes) > MAXIMUM_CSV_BYTES:
+                raise ValidationError(
+                    "Manual metadata CSV exceeds the accepted receipt size.",
+                    details={"code": "MANUAL_METADATA_RECEIPT_TOO_LARGE"},
+                )
+            csv_sha256 = hashlib.sha256(csv_bytes).hexdigest()
             submission = ManualMetadataSubmission.queue(
                 workspace_id=subject.workspace_id,
                 asset_id=asset.asset_id,
                 external_urn=asset.external_urn,
                 requester_id=subject.subject_id,
                 source_version=asset.source_version,
+                provider_source_version=resolved_provider_source_version,
                 serial_number=serial_number,
                 description=normalized.description,
                 domain=normalized.domain,
                 tags=normalized.tags,
                 terms=normalized.terms,
-                columns=normalized.columns,
+                columns=final_columns,
                 bucket=self._infoschema_bucket,
                 object_key=object_key,
-                csv_sha256=artifact.content_sha256,
-                csv_size_bytes=artifact.size_bytes,
+                csv_sha256=csv_sha256,
+                csv_size_bytes=len(csv_bytes),
                 row_count=row_count,
             )
-            try:
-                await uow.manual_metadata_submissions.add(submission)
-                await uow.outbox.add_events(submission.events)
-                await uow.idempotency.save_result(
-                    workspace_id=subject.workspace_id,
-                    key=idempotency_key,
-                    operation=operation,
-                    request_hash=request_hash,
-                    result={"submission_id": str(submission.submission_id)},
-                )
-                await uow.commit()
-            except Exception:
-                if artifact_written:
-                    await self._delete_or_raise(
-                        bucket=self._infoschema_bucket,
-                        object_key=object_key,
-                    )
-                raise
+            await uow.manual_metadata_submissions.add(submission)
+            await uow.outbox.add_events(submission.events)
+            await uow.idempotency.save_result(
+                workspace_id=subject.workspace_id,
+                key=idempotency_key,
+                operation=operation,
+                request_hash=request_hash,
+                result={"submission_id": str(submission.submission_id)},
+            )
+            # Flush every deterministic database constraint before creating the external
+            # immutable object. After the create begins, deletion is never a safe compensation
+            # because commit outcome and object replacement can be ambiguous.
+            await uow.flush()
+            artifact = await self._object_store.write_immutable_receipt(
+                bucket=self._infoschema_bucket,
+                object_key=object_key,
+                content=csv_bytes,
+                metadata={
+                    "workspace-id": str(subject.workspace_id),
+                    "asset-id": str(asset.asset_id),
+                    "submission-id": str(submission.submission_id),
+                    "serial-number": str(serial_number),
+                    "content-sha256": csv_sha256,
+                    "content-size": str(len(csv_bytes)),
+                    "source-version": asset.source_version,
+                    "provider-source-version": resolved_provider_source_version,
+                    "content-kind": "manual-metadata-csv-v1",
+                },
+                maximum_bytes=MAXIMUM_CSV_BYTES,
+            )
+            if artifact.size_bytes != len(csv_bytes) or artifact.content_sha256 != csv_sha256:
+                raise ConflictError("Manual metadata CSV receipt did not reconcile.")
+            # A COMMIT transport error is outcome-ambiguous: PostgreSQL may already have
+            # committed the row. Never delete the receipt after commit has been attempted,
+            # because doing so could corrupt that durable submission. An unreferenced object is
+            # reconciled by operations instead.
+            await uow.commit()
         submission.events.clear()
         return submission
+
+    @staticmethod
+    async def _existing_submission(
+        *,
+        uow: GovernanceUnitOfWork,
+        workspace_id: UUID,
+        requester_id: UUID,
+        request_hash: str,
+        existing: IdempotencyRecord,
+    ) -> ManualMetadataSubmission:
+        if existing.request_hash != request_hash:
+            raise ConflictError("The idempotency key was used with a different request.")
+        submission_id = UUID(str(existing.result["submission_id"]))
+        stored = await uow.manual_metadata_submissions.get(
+            workspace_id=workspace_id,
+            submission_id=submission_id,
+        )
+        if stored is None or stored.requester_id != requester_id:
+            raise ConflictError("The idempotent manual submission is unavailable.")
+        return stored
 
     @staticmethod
     def _normalize(
@@ -291,20 +383,109 @@ class ManualMetadataSubmissionService:
                     raise ValidationError("A controlled metadata reference has the wrong type.")
             else:
                 candidate = prefix + quote(candidate, safe="._-~")
+            if len(candidate) > 1_000:
+                raise ValidationError("A controlled metadata reference exceeds the limit.")
             if candidate not in normalized:
                 normalized.append(candidate)
         return tuple(normalized)
 
     @staticmethod
-    def _schema_fields(fields: tuple[dict[str, object], ...]) -> dict[str, str]:
-        values: dict[str, str] = {}
+    def _rehydrate_columns(
+        *,
+        fields: tuple[dict[str, object], ...],
+        edits: tuple[ManualColumnMetadata, ...],
+    ) -> tuple[dict[str, str], tuple[ManualColumnMetadata, ...]]:
+        schema: dict[str, str] = {}
+        baseline: dict[str, ManualColumnMetadata] = {}
         for field in fields:
             field_path = field.get("fieldPath")
-            if not isinstance(field_path, str) or not field_path:
-                continue
+            if (
+                not isinstance(field_path, str)
+                or not field_path
+                or len(field_path) > 2_000
+                or field_path in schema
+            ):
+                raise ConflictError(
+                    "The provider schema contains an invalid field path.",
+                    details={"code": "SCHEMA_FIELD_INVALID"},
+                )
+            if any(
+                field.get(flag) is True
+                for flag in (
+                    "type_truncated",
+                    "nativeDataType_truncated",
+                    "label_truncated",
+                    "description_truncated",
+                    "tags_truncated",
+                    "terms_truncated",
+                )
+            ):
+                raise ConflictError(
+                    "A provider schema field exceeds the safe editable boundary.",
+                    details={"code": "SCHEMA_FIELD_TRUNCATED"},
+                )
             data_type = field.get("nativeDataType")
-            values[field_path] = data_type if isinstance(data_type, str) else ""
-        return values
+            schema[field_path] = data_type if isinstance(data_type, str) else ""
+            description = field.get("description")
+            baseline[field_path] = ManualColumnMetadata(
+                field_path=field_path,
+                description=description if isinstance(description, str) else "",
+                tags=ManualMetadataSubmissionService._field_refs(
+                    field.get("globalTags"),
+                    collection="tags",
+                    nested="tag",
+                    prefix="urn:li:tag:",
+                ),
+                terms=ManualMetadataSubmissionService._field_refs(
+                    field.get("glossaryTerms"),
+                    collection="terms",
+                    nested="term",
+                    prefix="urn:li:glossaryTerm:",
+                ),
+            )
+        edit_paths = {edit.field_path for edit in edits}
+        if len(edit_paths) != len(edits) or not edit_paths.issubset(schema):
+            raise ConflictError(
+                "The provider schema changed. Reload its metadata before saving.",
+                details={"code": "SCHEMA_FIELD_DRIFT"},
+            )
+        by_path = {edit.field_path: edit for edit in edits}
+        final_columns = tuple(
+            by_path.get(field_path, baseline[field_path]) for field_path in schema
+        )
+        return schema, final_columns
+
+    @staticmethod
+    def _field_refs(
+        value: object,
+        *,
+        collection: str,
+        nested: str,
+        prefix: str,
+    ) -> tuple[str, ...]:
+        document = value if isinstance(value, dict) else {}
+        items = document.get(collection)
+        if items is None:
+            return ()
+        if not isinstance(items, list) or len(items) > 100:
+            raise ConflictError(
+                "A provider controlled metadata field is invalid.",
+                details={"code": "SCHEMA_FIELD_METADATA_INVALID"},
+            )
+        references: list[str] = []
+        for item in items:
+            candidate = item.get(nested) if isinstance(item, dict) else None
+            if isinstance(candidate, dict):
+                candidate = candidate.get("urn") or candidate.get("name")
+            if not isinstance(candidate, str) or not candidate:
+                raise ConflictError(
+                    "A provider controlled metadata reference is invalid.",
+                    details={"code": "SCHEMA_FIELD_METADATA_INVALID"},
+                )
+            normalized = ManualMetadataSubmissionService._refs((candidate,), prefix)[0]
+            if normalized not in references:
+                references.append(normalized)
+        return tuple(references)
 
     @staticmethod
     def _object_key(*, serial_number: int, now: datetime) -> str:
@@ -327,7 +508,7 @@ class ManualMetadataSubmissionService:
         database_name = asset.database_name or ""
         schema_name = asset.schema_name or ""
         table_name = asset.name
-        buffer = io.StringIO(newline="")
+        buffer = _BoundedTextBuffer(maximum_bytes=MAXIMUM_CSV_BYTES)
         fieldnames = (
             "record_kind",
             "external_urn",
@@ -381,16 +562,3 @@ class ManualMetadataSubmissionService:
                 }
             )
         return buffer.getvalue().encode("utf-8"), len(columns) + 1
-
-    @staticmethod
-    async def _one_chunk(value: bytes) -> AsyncIterator[bytes]:
-        yield value
-
-    async def _delete_or_raise(self, *, bucket: str, object_key: str) -> None:
-        try:
-            await self._object_store.delete_export(bucket=bucket, object_key=object_key)
-        except Exception as error:
-            raise ConflictError(
-                "Manual metadata persistence failed and its private CSV could not be cleaned up.",
-                details={"code": "MANUAL_METADATA_ORPHANED", "cause": type(error).__name__},
-            ) from error

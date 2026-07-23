@@ -132,7 +132,8 @@ or reconciling a change.
 
 | Method/path | Action | Purpose |
 |---|---|---|
-| `GET /uploads?state=&limit=` | `registration.read` | caller-owned manifests; security administrators may see workspace scope |
+| `GET /uploads/operator-capability` | authenticated DataRiver session | private/no-store page gate; returns only eligible/reason/fixed role labels and Admin workspace-history capability, never token or raw group evidence |
+| `GET /uploads?state=&limit=` | `registration.read` | bounded caller-authorized manifests after active-human Admin/Data Steward identity enforcement |
 | `GET /uploads/{upload_id}` | `registration.read` | manifest, worker state, validation summary/failure code |
 | `POST /uploads` | `registration.create` | create private multipart quarantine intent with explicit format-only or bounded dataset-description content profile |
 | `POST /uploads/{upload_id}/parts` | `registration.create` | issue short-lived part URL |
@@ -141,16 +142,22 @@ or reconciling a change.
 | `GET /uploads/{upload_id}/preparations?state=&limit=` | `registration.read` | list bounded typed preparation state/progress without object coordinates or parser payload |
 | `GET /uploads/{upload_id}/preparations/{preparation_id}` | `registration.read` | read one upload-scoped typed preparation with private no-store response |
 | `GET /uploads/{upload_id}/preparations/{preparation_id}/candidates?cursor=&limit=` | `registration.read` + `catalog.read` + `change.create` | page immutable V2 submitted evidence and separately authorized current ACTIVE DATASET targets; private no-store, opaque cursor, no total or provider/object coordinates |
+| `GET /uploads/{upload_id}/preparations/{preparation_id}/candidates/{candidate_id}/preview` | `registration.read` + `catalog.read` + `change.create` | revalidate exact candidate/receipt/object identity and current target, safely merge live `datasetProperties`, return only typed before/after evidence plus quoted preview ETag |
+| `POST /uploads/{upload_id}/preparations/{preparation_id}/candidates/{candidate_id}/change-request` | `registration.read` + `catalog.read` + `change.create` | require preview `If-Match` and `Idempotency-Key`; atomically create one server-authored dataset-description CR item, outbox event and immutable candidate binding |
 | `POST /uploads/{upload_id}/registration-proposals` | `registration.read` + `change.create` + `change.raw.create` | operator/recovery-only raw proposal from an `ACCEPTED` upload; not exposed in the ordinary UI and not accepted as typed-content binding |
-| `POST /registration/manual-submissions` | `catalog.read` + `registration.create` | typed table/field Description, Domain, Tag and Term submission for exactly one current dataset; requires `Idempotency-Key`, validates the current source/schema and creates immutable DB/CSV receipt without exposing storage coordinates |
-| `POST /registration/manual-submissions/apply` | `catalog.sync` service account only | claim at most one durable MANUAL receipt, verify its private CSV hash/shape, typed DataHub apply/read-back and report only opaque processing state; scheduled only by the paused Airflow DAG |
+| `POST /registration/bulk-preparations/execute` | `catalog.sync` purpose-bound service account only | claim and execute at most one due typed preparation under DB-time lease/retry fencing; requires Airflow-owned `X-Run-Id` plus ordinal `X-Run-Call` 1..8. The hashed call receipt is atomic with canonical claim/terminal state, so response-loss replay cannot consume later work; returns only opaque processing state/count |
+| `POST /registration/manual-submissions` | `catalog.read` + `registration.create` | additive v1 contract for exactly one current dataset: legacy clients send the complete non-empty `columns` array, while current clients send sparse `column_edits` (including an empty array); exactly one shape is allowed. Both require `Idempotency-Key` and projection `source_version`; current clients also pin the 64-hex `provider_source_version`, while a legacy omission is resolved from the same fresh provider read. The server rehydrates the complete non-truncated provider schema before creating the immutable DB/CSV receipt; storage coordinates are never exposed |
+| `GET /registration/manual-submissions?scope=mine|workspace&state=&cursor=&limit=` | `registration.read` active human Admin/Data Steward | private/no-store keyset history; Data Steward is owner-only, workspace scope is security-Admin-only; default 25, maximum 100 |
+| `GET /registration/manual-submissions/{submission_id}` | `registration.read` active human Admin/Data Steward | exact owner/Admin report with at most 20 immutable attempts and five ordered aspect results per attempt |
+| `POST /registration/manual-submissions/apply` | `catalog.sync` service account only | claim at most one durable MANUAL receipt, verify its private CSV hash/shape and provider source version, then hold one entity-wide DataHub mutation lock across all five typed apply/read-backs; requires Airflow-owned `X-Run-Id` plus ordinal `X-Run-Call` 1..10. The hashed call receipt is atomic with claim/terminal state and exact replay performs no second provider call; scheduled only by the paused Airflow DAG |
 | `GET /catalog/vocabulary?kind=TAG|TERM|DOMAIN&q=&limit=` | `catalog.search` | bounded suggestions come only from the authorization-pruned synchronized workspace projection. An entered query may be one normalized character (unlike general catalog search's two-character minimum). Global DataHub vocabulary search is not unioned because its provider contract has no workspace/classification predicate; canonical provider-ref selection remains a governed server-side registration contract. |
 
 Completion does not mean accepted. Durable states are `INITIATED → COMPLETION_QUEUED → COMPLETING → QUARANTINED → VALIDATING → ACCEPTED`, with terminal `REJECTED/ABORTED/EXPIRED`. Workers stream object bytes, compare declared size/SHA-256, apply bounded format rules, copy to the accepted bucket, commit canonical location, then best-effort clean quarantine.
 
-The first typed profile is `DATASET_DESCRIPTION_CSV_V1`: UTF-8-with-BOM-compatible CSV with the exact
-ordered headers `asset_id,platform,database_name,schema_name,table_name,description`, maximum 512 MiB,
-50,000 rows, 64 KiB per logical row and 10,000 description characters. Platform is bounded to 100,
+The typed profiles are `DATASET_DESCRIPTION_CSV_V1` and `DATASET_DESCRIPTION_XLSX_V1`, each limited
+to 16 MiB, 10,000 rows, 64 KiB per logical row and 10,000 description characters. CSV is
+UTF-8-with-BOM-compatible with exact ordered headers
+`asset_id,platform,database_name,schema_name,table_name,description`. Platform is bounded to 100,
 database/schema to 255 and table name to 500 characters. The API derives the parser/schema/
 validator configuration hash server-side and creates at most one preparation for an upload version
 and configuration. It rejects non-`ACCEPTED`, stale-version, format-only and incomplete promoted-byte
@@ -162,21 +169,29 @@ proof. Candidate reads require a current classification snapshot and one set-bas
 lookup; a legacy candidate or any missing, denied or identity-drifted target fails the whole page with
 a non-disclosing response. The opaque cursor binds upload/preparation/receipt, subject permission
 scope, policy/classification snapshot, projection watermark and limit. The parser worker, fenced
-staging/finalize path and candidate-to-change command are not enabled; a `QUEUED` preparation is not
-an executable proposal.
+staging/finalize path and typed candidate-to-change command use server-owned contracts. A `QUEUED`
+preparation is still not an executable proposal; only a fenced `READY` V2 candidate can be previewed
+and bound to one governed Change Request.
 
 The current BULK UI sends `content_profile` explicitly rather than relying on the server default.
-Only an `ACCEPTED` `DATASET_DESCRIPTION_CSV_V1` upload exposes preparation controls. It first reads
+Only an `ACCEPTED` typed dataset-description upload exposes preparation controls. It first reads
 the no-store preparation list, then sends a bodyless create request with the exact quoted upload
-manifest version and a new idempotency key. Format-only, failed/stale and `READY` preparation views
-do not expose raw proposal, candidate execution or DataHub update actions.
+manifest version and a new idempotency key. Format-only and failed/stale views expose no execution.
+`READY` pages candidates at 20 (maximum 50), previews one current target and creates only the
+ETag-fenced typed Change Request; it never exposes the raw proposal or direct DataHub update path.
 
 ### Change management
 
 | Method/path | Action | Purpose |
 |---|---|---|
-| `GET /change-requests?state=&limit=` | `change.read` | clearance-filtered candidates followed by one grouped current-target authorization; hidden, deleted and legacy-unbound targets are omitted |
-| `GET /change-requests/{id}` | `change.read` | items, immutable server target binding, approvals and transition audit; current-target denial is existence-hiding 404 |
+| `GET /change-requests?state=&limit=` | `change.read` | compatibility route retaining the published v1 full-record list and overview envelope for existing consumers; private/no-store, maximum 100 |
+| `GET /change-requests/summaries?state=&cursor=&limit=` | `change.read` | additive low-resource route used by the current UI: keyset-paged scalar summaries followed by one grouped current-target authorization; hidden, deleted and legacy-unbound targets are omitted; maximum 50 |
+| `GET /change-requests/{id}` | `change.read` | exact selected aggregate only; hard caps are 200 items, 600 approvals, 200 transitions, 50 rounds and 200 test runs; current-target denial is existence-hiding 404 |
+| `GET /change-requests/{id}/apply-report` | `change.read` | private/no-store fresh-authorized provider reconciliation evidence; at most 200 item results and 20 attempts, hashes/versions only |
+| `POST /change-requests/{id}/attachments` | current `change.edit` target authorization | multipart upload with optional client-generated `upload_id`; precommits the exact ID, writes create-only provider bytes and returns private `202 STARTED`, never bucket/object key |
+| `GET /change-requests/{id}/attachment-uploads/{upload_id}` | initiating current subject | private/no-store exact intent status for ambiguous response recovery |
+| `GET /change-requests/{id}/attachment-uploads?round_id=&limit=` | initiating current subject | `round_id` required, limit 1–10; server filters the exact CR, round and STORED state before ordering/limit so historical rounds cannot starve recovery |
+| `POST /change-requests/{id}/attachment-uploads/{upload_id}/finalize` | current `change.edit` target authorization | rechecks membership, deny rules, classification, System/Domain, TEST assignment, target binding and current CR round/version/state; FINALIZED replay repeats authorization and returns the same immutable attachment |
 | `POST /change-requests` | `change.raw.create` + `change.create` | hardware-human operator/recovery raw DataHub Aspect proposal; absent from the ordinary UI |
 | `POST /change-requests/intake` | `change.create` | ordinary v0.3-shaped CR registration: server re-reads authorized existing table/column identity, records typed multi-target intake evidence including a separate bounded `requested_change` note at table/column level, and server-mints any new-table proposal identifier; no provider mutation occurs |
 | `POST /change-requests/{id}/approvals` | `change.review` / `change.approve` | append immutable decision |

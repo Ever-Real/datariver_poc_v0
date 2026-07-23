@@ -1,12 +1,13 @@
 from __future__ import annotations
 
 import hashlib
+import io
 from collections.abc import AsyncIterator
 from typing import Any, cast
 
 import pytest
 
-from datariver.domain.common import ValidationError
+from datariver.domain.common import ConflictError, ValidationError
 from datariver.infrastructure.object_store.s3 import S3ObjectStore
 
 
@@ -24,6 +25,13 @@ class FakeS3Client:
         self.object_content_type = str(kwargs["ContentType"])
         self.object_metadata = cast(dict[str, str], kwargs["Metadata"])
         return {"UploadId": "export-upload-1"}
+
+    def put_object(self, **kwargs: object) -> dict[str, str]:
+        self.calls.append(("put_object", kwargs))
+        self.object_content = cast(bytes, kwargs["Body"])
+        self.object_content_type = str(kwargs["ContentType"])
+        self.object_metadata = cast(dict[str, str], kwargs["Metadata"])
+        return {"ETag": self.object_etag}
 
     def upload_part(self, **kwargs: object) -> dict[str, str]:
         self.calls.append(("upload_part", kwargs))
@@ -52,6 +60,10 @@ class FakeS3Client:
             "ChecksumSHA256": "provider-sha256",
             "Metadata": self.object_metadata,
         }
+
+    def get_object(self, **kwargs: object) -> dict[str, object]:
+        self.calls.append(("get_object", kwargs))
+        return {"Body": io.BytesIO(self.object_content)}
 
     def delete_object(self, **kwargs: object) -> dict[str, object]:
         self.calls.append(("delete_object", kwargs))
@@ -145,6 +157,76 @@ async def test_write_export_streams_bounded_parts_and_returns_integrity_receipt(
     assert artifact.size_bytes == len(payload)
     assert artifact.content_sha256 == hashlib.sha256(payload).hexdigest()
     assert artifact.provider_checksum == "etag:completed-etag"
+
+
+@pytest.mark.asyncio
+async def test_write_immutable_receipt_uses_create_only_put_and_verifies_head() -> None:
+    client = FakeS3Client()
+    store = object_store(client)
+    payload = b"record_kind,description\nTABLE,controlled\n"
+
+    artifact = await store.write_immutable_receipt(
+        bucket="datariver-infoschema",
+        object_key="UPLOAD_METADATA_MANUAL_260718_000042.csv",
+        content=payload,
+        metadata={"content-kind": "manual-metadata-csv-v1"},
+        maximum_bytes=5 * 1024 * 1024,
+    )
+
+    digest = hashlib.sha256(payload).hexdigest()
+    assert client.calls[0] == (
+        "put_object",
+        {
+            "Bucket": "datariver-infoschema",
+            "Key": "UPLOAD_METADATA_MANUAL_260718_000042.csv",
+            "Body": payload,
+            "ContentLength": len(payload),
+            "ContentType": "text/csv; charset=utf-8",
+            "IfNoneMatch": "*",
+            "Metadata": {
+                "content-kind": "manual-metadata-csv-v1",
+                "content-sha256": digest,
+            },
+        },
+    )
+    assert [name for name, _ in client.calls] == ["put_object", "head_object", "get_object"]
+    assert artifact.size_bytes == len(payload)
+    assert artifact.content_sha256 == digest
+    assert artifact.provider_checksum == "etag:completed-etag"
+
+
+@pytest.mark.asyncio
+async def test_write_immutable_receipt_rejects_existing_key_without_delete() -> None:
+    from botocore.exceptions import ClientError
+
+    class ExistingKeyClient(FakeS3Client):
+        def put_object(self, **kwargs: object) -> dict[str, str]:
+            self.calls.append(("put_object", kwargs))
+            raise ClientError(
+                cast(
+                    Any,
+                    {
+                        "Error": {"Code": "PreconditionFailed", "Message": "exists"},
+                        "ResponseMetadata": {"HTTPStatusCode": 412},
+                    },
+                ),
+                "PutObject",
+            )
+
+    client = ExistingKeyClient()
+    store = object_store(client)
+
+    with pytest.raises(ConflictError) as captured:
+        await store.write_immutable_receipt(
+            bucket="datariver-infoschema",
+            object_key="existing.csv",
+            content=b"private",
+            metadata={},
+            maximum_bytes=1024,
+        )
+
+    assert captured.value.details == {"code": "OBJECT_KEY_ALREADY_EXISTS"}
+    assert [name for name, _ in client.calls] == ["put_object"]
 
 
 @pytest.mark.asyncio

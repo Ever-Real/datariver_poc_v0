@@ -2,7 +2,14 @@ import { useCallback, useEffect, useMemo, useRef, useState, type ChangeEvent } f
 import type { ColumnDef } from '@tanstack/react-table'
 import { CheckCircle2, FileCheck2, RotateCcw, ShieldCheck } from 'lucide-react'
 import { newIdempotencyKey, type ApiClient } from '../../api/client'
-import type { CatalogLineage, ChangeRequestAttachment, ChangeRequestRecord, ChangeRequestState } from '../../api/types'
+import type {
+  CatalogLineage,
+  ChangeRequestAttachment,
+  ChangeRequestRecord,
+  ChangeRequestState,
+  GovernanceApplyReport,
+} from '../../api/types'
+import { attachmentSelectionError } from './attachmentUploads'
 import { AssuranceNotice, type AssuranceActions } from '../../components/AssuranceNotice'
 import { ErrorNotice } from '../../components/ErrorNotice'
 import { DenseDataTable } from '../../components/common/DenseDataTable'
@@ -26,11 +33,19 @@ interface ChangeRequestDetailDialogProps extends AssuranceActions {
   attachmentLoading: boolean
   attachmentBusy: boolean
   attachmentError?: unknown
+  attachmentHasNext: boolean
+  attachmentHasPrevious: boolean
+  applyReport?: GovernanceApplyReport
+  applyReportLoading: boolean
+  applyReportError?: unknown
   onClose: () => void
   onRefresh: () => void
   onAction: (action: ChangeActionHint, reason?: string) => void
   onDownloadAttachment: (attachment: ChangeRequestAttachment) => void
+  onNextAttachmentPage: () => void
+  onPreviousAttachmentPage: () => void
   onUploadAttachments: (kind: ChangeRequestAttachment['kind'], files: File[]) => Promise<void>
+  onResumePendingAttachments: () => Promise<void>
 }
 
 interface ChangeTargetRow {
@@ -187,11 +202,19 @@ export function ChangeRequestDetailDialog({
   attachmentLoading,
   attachmentBusy,
   attachmentError,
+  attachmentHasNext,
+  attachmentHasPrevious,
+  applyReport,
+  applyReportLoading,
+  applyReportError,
   onClose,
   onRefresh,
   onAction,
   onDownloadAttachment,
+  onNextAttachmentPage,
+  onPreviousAttachmentPage,
   onUploadAttachments,
+  onResumePendingAttachments,
   onStepUp,
   onPasswordReauth,
   onEnroll,
@@ -214,6 +237,9 @@ export function ChangeRequestDetailDialog({
   const [testSaving, setTestSaving] = useState(false)
   const [testError, setTestError] = useState<unknown>()
   const busyRef = useRef(busy)
+  const uploadIntent = useRef(0)
+  const testMutationIntent = useRef(0)
+  const testMutationController = useRef<AbortController | undefined>(undefined)
   const visibleError = actionError ?? error
   const hints = useMemo(() => value ? changeActionHints(value) : [], [value])
   const rows = useMemo(() => value ? targetRows(value) : [], [value])
@@ -227,6 +253,10 @@ export function ChangeRequestDetailDialog({
 
   useEffect(() => { busyRef.current = busy }, [busy])
   useEffect(() => {
+    uploadIntent.current += 1
+    testMutationIntent.current += 1
+    testMutationController.current?.abort()
+    testMutationController.current = undefined
     setSelectedStage(current ? currentStage(current) : 0)
     setReviewComment('')
     setPendingFiles([])
@@ -235,8 +265,14 @@ export function ChangeRequestDetailDialog({
     setTestSystemId('')
     setTestAttachmentId('')
     setTestSummary('')
+    setTestSaving(false)
     setTestError(undefined)
   }, [current])
+  useEffect(() => () => {
+    uploadIntent.current += 1
+    testMutationIntent.current += 1
+    testMutationController.current?.abort()
+  }, [])
 
   useEffect(() => {
     if (!open || !value || selectedStage !== 1) return
@@ -283,30 +319,42 @@ export function ChangeRequestDetailDialog({
   const addFiles = (event: ChangeEvent<HTMLInputElement>, kind: ChangeRequestAttachment['kind']) => {
     const files = Array.from(event.target.files ?? [])
     event.target.value = ''
-    if (files.some((file) => file.size > 10 * 1024 * 1024)) {
-      setUploadError(new Error('첨부파일은 파일당 10 MiB 이하만 등록할 수 있습니다.'))
+    const selectionError = attachmentSelectionError(files)
+    if (selectionError) {
+      setUploadError(selectionError)
       return
     }
+    uploadIntent.current += 1
     setUploadKind(kind)
     setPendingFiles(files)
     setUploadError(undefined)
   }
   const upload = async () => {
     if (!pendingFiles.length || attachmentBusy) return
+    const intent = uploadIntent.current
+    const files = pendingFiles
     try {
-      await onUploadAttachments(uploadKind, pendingFiles)
-      setPendingFiles([])
+      await onUploadAttachments(uploadKind, files)
+      if (intent !== uploadIntent.current) return
+      setPendingFiles((currentFiles) => currentFiles === files ? [] : currentFiles)
     } catch (next) {
-      setUploadError(next)
+      if (intent === uploadIntent.current) setUploadError(next)
     }
   }
   const recordTestEvidence = useCallback(async () => {
     if (!value || !testSystemId || !testAttachmentId || !testSummary.trim()) return
+    testMutationController.current?.abort()
+    const controller = new AbortController()
+    testMutationController.current = controller
+    const intent = ++testMutationIntent.current
+    const changeRequestId = value.id
+    const changeRequestVersion = value.version
     setTestSaving(true)
     setTestError(undefined)
     try {
-      await client.request<ChangeRequestRecord>(`/change-requests/${value.id}/test-runs`, {
+      await client.request<ChangeRequestRecord>(`/change-requests/${changeRequestId}/test-runs`, {
         method: 'POST',
+        signal: controller.signal,
         body: JSON.stringify({
           system_id: testSystemId,
           attachment_id: testAttachmentId,
@@ -314,14 +362,33 @@ export function ChangeRequestDetailDialog({
           bounded_summary: { summary: testSummary.trim() },
         }),
         idempotencyKey: newIdempotencyKey('change-test-run'),
-        ifMatch: `"${value.version}"`,
+        ifMatch: `"${changeRequestVersion}"`,
       })
+      if (
+        controller.signal.aborted
+        || intent !== testMutationIntent.current
+        || value.id !== changeRequestId
+        || value.version !== changeRequestVersion
+      ) return
       setTestSummary('')
       onRefresh()
     } catch (next) {
-      setTestError(next)
+      if (
+        !controller.signal.aborted
+        && intent === testMutationIntent.current
+        && value.id === changeRequestId
+        && value.version === changeRequestVersion
+      ) setTestError(next)
     } finally {
-      setTestSaving(false)
+      if (testMutationController.current === controller) {
+        testMutationController.current = undefined
+      }
+      if (
+        !controller.signal.aborted
+        && intent === testMutationIntent.current
+        && value.id === changeRequestId
+        && value.version === changeRequestVersion
+      ) setTestSaving(false)
     }
   }, [client, onRefresh, testAttachmentId, testState, testSummary, testSystemId, value])
   const stageHints = selectedStage === activeStage ? hints : []
@@ -451,9 +518,57 @@ export function ChangeRequestDetailDialog({
               <h4 className="mt-0 mb-3 text-xs font-black text-navy-900">상태 전이 이력</h4>
               {value.transitions.length === 0 ? <p className="m-0 text-xs text-slate-500">기록된 상태 전이가 없습니다.</p> : <ol className="m-0 grid list-none gap-2 p-0">{value.transitions.map((transition) => <li className="flex flex-wrap items-center gap-2 border-b border-slate-200 pb-2 text-xs" key={transition.id}><strong>{changeStateLabel(transition.from_state)} → {changeStateLabel(transition.to_state)}</strong><span className="min-w-0 flex-1 truncate text-slate-600">{transition.reason}</span><time dateTime={transition.occurred_at} className="text-[10px] text-slate-500">{eventTime(transition.occurred_at)}</time></li>)}</ol>}
             </section>
+            <section className="rounded-enterprise border border-slate-300 bg-white p-4 shadow-sm" aria-label="DataHub 적용 리포트">
+              <h4 className="mt-0 mb-3 text-xs font-black text-navy-900">DATAHUB APPLY / READ-BACK</h4>
+              {applyReportLoading && <p role="status" className="m-0 text-xs text-slate-500">적용 증거를 확인하는 중입니다.</p>}
+              <ErrorNotice error={applyReportError} />
+              {applyReport && !applyReportLoading && <>
+                <dl className="grid gap-2 text-xs md:grid-cols-3">
+                  <div><dt className="text-[10px] font-black text-slate-500 uppercase">Job state</dt><dd className="m-0 mt-1"><span className="badge">{applyReport.state}</span></dd></div>
+                  <div><dt className="text-[10px] font-black text-slate-500 uppercase">Attempts</dt><dd className="m-0 mt-1">{applyReport.attempt_count}</dd></div>
+                  <div><dt className="text-[10px] font-black text-slate-500 uppercase">Read-back</dt><dd className="m-0 mt-1">{applyReport.reconciled ? 'HASH MATCH · VERIFIED' : '미완료 또는 불일치'}</dd></div>
+                </dl>
+                {applyReport.last_error_code && <p className="notice notice-error">실패 코드: {applyReport.last_error_code}</p>}
+                <div className="mt-3 grid gap-2">
+                  {applyReport.items.map((item) => <article key={item.item_id} className="grid gap-1 border-t border-slate-200 pt-2 text-[11px]">
+                    <strong>{item.item_id}</strong>
+                    <span>Expected <code>{item.expected_hash}</code></span>
+                    <span>Observed <code>{item.observed_hash ?? '—'}</code></span>
+                    <span>Source {item.source_version ?? '—'} · Provider {item.provider_version ?? '—'}</span>
+                  </article>)}
+                </div>
+                {applyReport.attempts.length > 0 && <ol className="mt-3 grid list-none gap-1 p-0 text-[11px]">{applyReport.attempts.map((attempt) => <li key={attempt.id} className="flex flex-wrap gap-2"><strong>#{attempt.attempt_no} {attempt.state}</strong><span>{attempt.failure_code ?? 'failure 없음'}</span><time dateTime={attempt.started_at}>{eventTime(attempt.started_at)}</time></li>)}</ol>}
+              </>}
+            </section>
             <div className="flex flex-wrap justify-end gap-2">{stageHints.map((hint) => <button key={hint.id} type="button" className={`button ${hint.tone === 'danger' ? 'button-danger' : hint.tone === 'primary' ? '' : 'button-secondary'}`} disabled={busy} onClick={() => onAction(hint)}>{hint.label}</button>)}</div>
           </section>}
           <ErrorNotice error={attachmentError ?? uploadError} />
+          <div className="flex flex-wrap justify-end gap-2" aria-label="첨부파일 페이지 이동">
+            <button
+              type="button"
+              className="button button-secondary"
+              disabled={attachmentBusy || attachmentLoading}
+              onClick={() => void onResumePendingAttachments()}
+            >
+              미완료 첨부 다시 확인
+            </button>
+            <button
+              type="button"
+              className="button button-secondary"
+              disabled={attachmentLoading || !attachmentHasPrevious}
+              onClick={onPreviousAttachmentPage}
+            >
+              이전
+            </button>
+            <button
+              type="button"
+              className="button button-secondary"
+              disabled={attachmentLoading || !attachmentHasNext}
+              onClick={onNextAttachmentPage}
+            >
+              다음
+            </button>
+          </div>
         </>}
       </div>
     </Dialog>

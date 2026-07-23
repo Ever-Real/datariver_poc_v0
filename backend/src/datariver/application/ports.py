@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from collections.abc import AsyncIterator, Sequence
+from collections.abc import AsyncIterator, Awaitable, Callable, Sequence
+from contextlib import AbstractAsyncContextManager
 from dataclasses import dataclass
 from datetime import datetime
 from types import TracebackType
@@ -35,6 +36,7 @@ from datariver.application.dto import (
     CatalogTreePage,
     CatalogVocabulary,
     ChangeRequestSchemaOverview,
+    ChangeRequestSummaryRecord,
     ChatDraft,
     ChatEvidence,
     ChatExchange,
@@ -54,10 +56,12 @@ from datariver.application.dto import (
     KnowledgeEvidenceCandidate,
     KnowledgeGraphRecord,
     KnowledgeReleaseRecord,
+    ManualMetadataApplyAttemptEvidence,
     MembershipRenewalPage,
     MembershipRenewalRecord,
     MultipartUpload,
     ObjectMetadata,
+    RegistrationCandidateBindingCommand,
     RetentionArchiveVerification,
     RetentionExecutionClaim,
     RetentionExecutionEvidence,
@@ -79,9 +83,17 @@ from datariver.domain.authz import Decision, SubjectAttributes
 from datariver.domain.common import DomainEvent
 from datariver.domain.governance import ApprovalAuthority, ChangeRequest
 from datariver.domain.knowledge import ChangeSetState, GraphChangeOperation, GraphSnapshot
-from datariver.domain.manual_metadata import ManualMetadataSubmission
+from datariver.domain.manual_metadata import (
+    ManualMetadataApplyClaim,
+    ManualMetadataAspectReport,
+    ManualMetadataSubmission,
+)
 from datariver.domain.membership_renewal import MembershipRenewalRequest
 from datariver.domain.registration import CompletedUploadPart, UploadManifest, UploadPreparation
+from datariver.domain.registration_worker import (
+    RegistrationWorkerCallIdentity,
+    RegistrationWorkerCallReplay,
+)
 from datariver.domain.retention import (
     ArchiveCapability,
     ArchiveRetentionObservation,
@@ -321,6 +333,17 @@ class CatalogExportWorkerStore(Protocol):
 
 
 class CatalogExportObjectStore(Protocol):
+    async def write_immutable_receipt(
+        self,
+        *,
+        bucket: str,
+        object_key: str,
+        content: bytes,
+        metadata: dict[str, str],
+        maximum_bytes: int,
+        content_type: str = "text/csv; charset=utf-8",
+    ) -> CatalogExportArtifact: ...
+
     async def write_export(
         self,
         *,
@@ -452,7 +475,29 @@ class ChangeRequestRepository(Protocol):
         limit: int,
     ) -> Sequence[ChangeRequest]: ...
 
+    async def list_summaries(
+        self,
+        *,
+        workspace_id: UUID,
+        maximum_classification: int,
+        state: str | None,
+        before_created_at: datetime | None,
+        before_id: UUID | None,
+        limit: int,
+    ) -> Sequence[ChangeRequestSummaryRecord]: ...
+
     async def save(self, change_request: ChangeRequest) -> None: ...
+
+
+class RegistrationContentBindingRepository(Protocol):
+    async def verify_and_add(
+        self,
+        *,
+        command: RegistrationCandidateBindingCommand,
+        change_request_id: UUID,
+        change_item_id: UUID,
+        created_by: UUID,
+    ) -> None: ...
 
 
 class ChangeRequestOverviewReader(Protocol):
@@ -461,7 +506,8 @@ class ChangeRequestOverviewReader(Protocol):
         *,
         subject: SubjectAttributes,
         access: ClassificationAccessSnapshot,
-        change_requests: Sequence[ChangeRequest],
+        change_requests: Sequence[ChangeRequest | ChangeRequestSummaryRecord],
+        limit: int,
     ) -> Sequence[ChangeRequestSchemaOverview]: ...
 
 
@@ -481,6 +527,7 @@ class OutboxWriter(Protocol):
 
 class GovernanceUnitOfWork(Protocol):
     change_requests: ChangeRequestRepository
+    registration_content_bindings: RegistrationContentBindingRepository
     workflow_authorities: ChangeWorkflowAuthorityReader
     manual_metadata_submissions: ManualMetadataSubmissionRepository
     outbox: OutboxWriter
@@ -496,6 +543,8 @@ class GovernanceUnitOfWork(Protocol):
     ) -> None: ...
 
     async def commit(self) -> None: ...
+
+    async def flush(self) -> None: ...
 
     async def rollback(self) -> None: ...
 
@@ -515,12 +564,61 @@ class ManualMetadataSubmissionRepository(Protocol):
         self,
         *,
         workspace_id: UUID,
+        worker_subject_id: UUID,
         now: datetime,
         lease_seconds: int,
         maximum_attempts: int,
-    ) -> ManualMetadataSubmission | None: ...
+        run_call: RegistrationWorkerCallIdentity | None = None,
+    ) -> ManualMetadataApplyClaim | RegistrationWorkerCallReplay | None: ...
 
     async def save(self, submission: ManualMetadataSubmission) -> None: ...
+
+    async def record_aspect_report(
+        self,
+        *,
+        claim: ManualMetadataApplyClaim,
+        report: ManualMetadataAspectReport,
+    ) -> bool: ...
+
+    async def renew_lease(
+        self,
+        *,
+        claim: ManualMetadataApplyClaim,
+        lease_seconds: int,
+    ) -> bool: ...
+
+    async def complete(
+        self, *, claim: ManualMetadataApplyClaim, now: datetime
+    ) -> ManualMetadataSubmission | None: ...
+
+    async def fail(
+        self,
+        *,
+        claim: ManualMetadataApplyClaim,
+        now: datetime,
+        error_code: str,
+        retryable: bool,
+        maximum_attempts: int,
+    ) -> str | None: ...
+
+    async def list(
+        self,
+        *,
+        workspace_id: UUID,
+        requester_id: UUID | None,
+        state: str | None,
+        before_created_at: datetime | None,
+        before_id: UUID | None,
+        limit: int,
+    ) -> Sequence[ManualMetadataSubmission]: ...
+
+    async def list_attempts(
+        self,
+        *,
+        workspace_id: UUID,
+        submission_id: UUID,
+        limit: int,
+    ) -> Sequence[ManualMetadataApplyAttemptEvidence]: ...
 
 
 class RetentionPolicyRepository(Protocol):
@@ -847,12 +945,33 @@ class GovernanceApplyStore(Protocol):
         maximum_attempts: int,
     ) -> None: ...
 
+    async def renew_lease(
+        self,
+        *,
+        claim: GovernanceApplyClaim,
+        lease_seconds: int,
+    ) -> bool: ...
+
+
+class ProviderMutationLock(Protocol):
+    def hold(
+        self,
+        *,
+        workspace_id: UUID,
+        provider: str,
+        target_ref: str,
+        aspect_name: str,
+        on_wait: Callable[[], Awaitable[None]] | None = None,
+    ) -> AbstractAsyncContextManager[None]: ...
+
 
 class JobDelivery(Protocol):
     async def publish_job_id(self, *, event_id: UUID, job_id: UUID) -> None: ...
 
 
 class IdempotencyStore(Protocol):
+    async def acquire_key_lock(self, *, workspace_id: UUID, key: str, operation: str) -> None: ...
+
     async def get_result(
         self, *, workspace_id: UUID, key: str, operation: str
     ) -> IdempotencyRecord | None: ...
@@ -1070,6 +1189,14 @@ class UploadCandidateReader(Protocol):
         upload_id: UUID,
         preparation_id: UUID,
     ) -> UploadPreparationReceiptEvidence | None: ...
+
+    async def get_candidate(
+        self,
+        *,
+        workspace_id: UUID,
+        receipt_id: UUID,
+        candidate_id: UUID,
+    ) -> UploadRegistrationCandidateEvidence | None: ...
 
     async def list_candidates(
         self,

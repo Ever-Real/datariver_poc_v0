@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import inspect
 from pathlib import Path
 from typing import cast
 
-from sqlalchemy import CheckConstraint, ForeignKeyConstraint, Table
+from sqlalchemy import CheckConstraint, ForeignKeyConstraint, Table, UniqueConstraint
 
+from datariver.infrastructure.db.governance import SqlRegistrationContentBindingRepository
 from datariver.infrastructure.db.models.governance import RegistrationContentBindingModel
 from datariver.infrastructure.db.models.integration import (
     ObjectManifestModel,
@@ -33,6 +35,8 @@ def test_typed_bulk_models_keep_profile_rows_and_provider_coordinates_server_own
     assert "content_profile" in manifest.c
     assert "ck_object_manifests_content_profile_allowlist" in _check_names(manifest)
     assert "ck_upload_preparation_jobs_lease_shape" in _check_names(jobs)
+    assert "next_attempt_at" in jobs.c
+    assert "ck_upload_preparation_jobs_retry_schedule_shape" in _check_names(jobs)
     assert "ck_upload_preparation_receipts_accepted_source_sha256_equal" in _check_names(receipts)
     assert "ck_upload_registration_candidates_candidate_kind_allowlist" in _check_names(candidates)
     assert "ck_upload_registration_candidates_submitted_identity_evidence_shape" in _check_names(
@@ -123,6 +127,16 @@ def test_typed_bulk_bindings_pin_exact_source_candidate_and_change_item() -> Non
         ("change_request_id", "change_request_id"),
         ("change_item_id", "id"),
     }
+    unique_columns = {
+        tuple(column.name for column in constraint.columns)
+        for constraint in bindings.constraints
+        if isinstance(constraint, UniqueConstraint)
+    }
+    assert {
+        ("workspace_id", "candidate_id"),
+        ("workspace_id", "change_request_id"),
+        ("workspace_id", "change_item_id"),
+    } <= unique_columns
 
 
 def test_typed_bulk_migration_forces_rls_and_limits_mutation_grants() -> None:
@@ -131,7 +145,7 @@ def test_typed_bulk_migration_forces_rls_and_limits_mutation_grants() -> None:
         root / "backend/alembic/versions/0016_typed_bulk_registration_foundation.py"
     ).read_text(encoding="utf-8")
 
-    assert REQUIRED_DATABASE_REVISION == "0045"
+    assert REQUIRED_DATABASE_REVISION == "0050"
     assert "_enable_workspace_rls(schema, table)" in migration
     for schema, table in (
         ("integration", "upload_preparation_jobs"),
@@ -174,6 +188,33 @@ def test_candidate_identity_evidence_migration_preserves_legacy_and_requires_v2(
         in migration
     )
     assert "GRANT" not in migration
+
+
+def test_registration_execution_bridge_adds_one_candidate_per_change_request_constraint() -> None:
+    root = Path(__file__).resolve().parents[3]
+    migration = (
+        root / "backend/alembic/versions/0046_registration_execution_controls.py"
+    ).read_text(encoding="utf-8")
+    assert "UNIQUE (workspace_id, change_request_id)" in migration
+    assert "duplicate typed BULK bindings" in migration
+
+
+def test_typed_bulk_command_store_locks_evidence_in_canonical_order() -> None:
+    source = inspect.getsource(SqlRegistrationContentBindingRepository.verify_and_add)
+    positions = [
+        source.index(model)
+        for model in (
+            "ObjectManifestModel",
+            "UploadPreparationJobModel",
+            "UploadPreparationReceiptModel",
+            "UploadRegistrationCandidateModel",
+            "AssetProjectionModel",
+            "RegistrationContentBindingModel",
+        )
+    ]
+    assert positions == sorted(positions)
+    assert source.count(".with_for_update") >= 6
+    assert "TYPED_BULK_CANDIDATE_STALE" in source
 
 
 def test_initial_schema_generator_preserves_typed_bulk_role_boundary() -> None:

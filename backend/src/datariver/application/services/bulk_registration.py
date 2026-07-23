@@ -21,6 +21,10 @@ from datariver.application.typed_upload_profiles import typed_profile_definition
 from datariver.application.typed_xlsx_upload_parser import parse_dataset_description_xlsx
 from datariver.domain.common import DomainError
 from datariver.domain.registration import UploadContentProfile
+from datariver.domain.registration_worker import (
+    RegistrationWorkerCallIdentity,
+    RegistrationWorkerCallReplay,
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -40,6 +44,7 @@ class BulkPreparationClaim:
     scanner_version: str
     lease_token: UUID
     attempt: int
+    run_call: RegistrationWorkerCallIdentity | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -66,7 +71,8 @@ class BulkPreparationExecutionStore(Protocol):
         worker_subject_id: UUID,
         lease_seconds: int,
         maximum_attempts: int,
-    ) -> BulkPreparationClaim | None: ...
+        run_call: RegistrationWorkerCallIdentity | None = None,
+    ) -> BulkPreparationClaim | RegistrationWorkerCallReplay | None: ...
 
     async def publish(
         self,
@@ -117,15 +123,42 @@ class BulkRegistrationPreparationService:
         *,
         workspace_id: UUID,
         worker_subject_id: UUID,
+        run_call: RegistrationWorkerCallIdentity | None = None,
     ) -> BulkPreparationRunResult:
-        claim = await self._store.claim_next(
-            workspace_id=workspace_id,
-            worker_subject_id=worker_subject_id,
-            lease_seconds=self._lease_seconds,
-            maximum_attempts=self._maximum_attempts,
-        )
+        if run_call is None:
+            claim = await self._store.claim_next(
+                workspace_id=workspace_id,
+                worker_subject_id=worker_subject_id,
+                lease_seconds=self._lease_seconds,
+                maximum_attempts=self._maximum_attempts,
+            )
+        else:
+            claim = await self._store.claim_next(
+                workspace_id=workspace_id,
+                worker_subject_id=worker_subject_id,
+                lease_seconds=self._lease_seconds,
+                maximum_attempts=self._maximum_attempts,
+                run_call=run_call,
+            )
         if claim is None:
             return BulkPreparationRunResult(processed=False)
+        if isinstance(claim, RegistrationWorkerCallReplay):
+            return BulkPreparationRunResult(
+                processed=bool(claim.result["processed"]),
+                preparation_id=(
+                    UUID(str(claim.result["preparation_id"]))
+                    if claim.result.get("preparation_id") is not None
+                    else None
+                ),
+                state=(
+                    str(claim.result["state"]) if claim.result.get("state") is not None else None
+                ),
+                item_count=(
+                    int(claim.result["item_count"])
+                    if claim.result.get("item_count") is not None
+                    else None
+                ),
+            )
         definition = typed_profile_definition(claim.content_profile)
         maximum_spool_bytes = min(definition.maximum_file_bytes * 2, 1024 * 1024 * 1024)
         try:

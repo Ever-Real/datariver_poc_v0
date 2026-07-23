@@ -44,7 +44,7 @@ async def run() -> None:
         await store.ensure_bucket(
             bucket=settings.s3_bucket_infoschema,
             allowed_origins=allowed_origins,
-            manage_cors=manage_cors,
+            manage_cors=False,
         )
 
 

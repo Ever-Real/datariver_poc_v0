@@ -5,7 +5,11 @@ from dataclasses import replace
 from uuid import UUID
 
 from datariver.application.classification_access import ClassificationAccessResolver
-from datariver.application.dto import CatalogAssetIndex
+from datariver.application.dto import (
+    CatalogAssetIndex,
+    ChangeRequestSummaryRecord,
+    ChangeRequestSummaryTarget,
+)
 from datariver.application.ports import CatalogChangeTargetReader
 from datariver.application.services.authorization import AuthorizationService
 from datariver.domain.authz import (
@@ -241,6 +245,230 @@ class CatalogChangeTargetAuthorizer:
             if all(resource.resource_id in authorized_ids for resource in resources)
         )
 
+    async def filter_authorized_summaries(
+        self,
+        *,
+        workspace_id: UUID,
+        subject: SubjectAttributes,
+        summaries: Sequence[ChangeRequestSummaryRecord],
+        action: Action,
+        environment: EnvironmentAttributes,
+        request_id: str,
+    ) -> tuple[ChangeRequestSummaryRecord, ...]:
+        """Authorize a bounded list projection without hydrating provider documents."""
+
+        if not summaries:
+            return ()
+        external_urns = tuple(
+            dict.fromkeys(
+                target.target_ref
+                for summary in summaries
+                for target in summary.targets
+                if target.target_type in {"DATAHUB_ASPECT", DATAHUB_INTAKE_TARGET}
+            )
+        )
+        access = await self._classification_access.resolve(
+            workspace_id=workspace_id,
+            subject_id=subject.subject_id,
+            now=environment.requested_at,
+        )
+        assets = tuple(
+            await self._index.get_authorized_assets_by_external_urns(
+                subject=subject,
+                access=access,
+                external_urns=external_urns,
+                lock_for_share=False,
+            )
+        )
+        assets_by_urn = {asset.external_urn: asset for asset in assets}
+        candidates: list[tuple[ChangeRequestSummaryRecord, tuple[ResourceAttributes, ...]]] = []
+        for summary in summaries:
+            resources: list[ResourceAttributes] = []
+            for target in summary.targets:
+                if target.target_type == MANUAL_DATASET_INTAKE_TARGET:
+                    if target.routing_system_id is None:
+                        resources = []
+                        break
+                    resources.append(
+                        ResourceAttributes(
+                            resource_id=target.item_id,
+                            workspace_id=workspace_id,
+                            resource_type="manual_change_target",
+                            owner_department_id=None,
+                            system_id=target.routing_system_id,
+                            domain_id=None,
+                            classification=summary.classification,
+                            lifecycle=summary.state.value,
+                            requester_id=summary.requester_id,
+                        )
+                    )
+                    continue
+                asset = assets_by_urn.get(target.target_ref)
+                if (
+                    asset is None
+                    or not self._summary_binding_is_current(
+                        workspace_id=workspace_id,
+                        target=target,
+                        asset=asset,
+                    )
+                    or summary.classification < asset.classification
+                ):
+                    resources = []
+                    break
+                resources.append(
+                    ResourceAttributes(
+                        resource_id=asset.asset_id,
+                        workspace_id=workspace_id,
+                        resource_type="catalog_asset_change_target",
+                        owner_department_id=asset.owner_department_id,
+                        system_id=asset.system_id,
+                        domain_id=asset.domain_id,
+                        classification=asset.classification,
+                        lifecycle=asset.lifecycle,
+                        requester_id=summary.requester_id,
+                    )
+                )
+            if resources and len(resources) == len(summary.targets):
+                candidates.append((summary, tuple(resources)))
+
+        flattened = tuple(resource for _, resources in candidates for resource in resources)
+        authorized = await self._authorization.filter_authorized(
+            subject=subject,
+            resources=flattened,
+            action=action,
+            environment=environment,
+            request_id=request_id,
+            parent_resource_id=workspace_id,
+        )
+        authorized_ids = {resource.resource_id for resource in authorized}
+        return tuple(
+            summary
+            for summary, resources in candidates
+            if all(resource.resource_id in authorized_ids for resource in resources)
+        )
+
+    async def authorize_approval_targets(
+        self,
+        *,
+        workspace_id: UUID,
+        subject: SubjectAttributes,
+        change_request: ChangeRequest,
+        action: Action,
+        approval_system_ids: frozenset[UUID],
+        environment: EnvironmentAttributes,
+        request_id: str,
+    ) -> frozenset[UUID]:
+        """Authorize only the targets covered by the actor's current workflow authority.
+
+        Multi-system approval is deliberately different from aggregate CR access. The
+        workflow authority reader establishes which systems the actor can represent;
+        this method then verifies and authorizes only those target resources. It never
+        reads unrelated provider URNs, so a system-scoped approver cannot infer them
+        through an approval response or authorization side effect.
+        """
+
+        if not approval_system_ids:
+            return frozenset()
+        scoped_items = tuple(
+            item
+            for item in change_request.items
+            if (item.routing_system_id or item.target_system_id) in approval_system_ids
+        )
+        if not scoped_items:
+            raise ForbiddenError("No change target is covered by the actor's authority.")
+        external_urns = tuple(
+            dict.fromkeys(
+                item.target_ref
+                for item in scoped_items
+                if item.target_type in {"DATAHUB_ASPECT", DATAHUB_INTAKE_TARGET}
+            )
+        )
+        assets: tuple[CatalogAssetIndex, ...] = ()
+        if external_urns:
+            access = await self._classification_access.resolve(
+                workspace_id=workspace_id,
+                subject_id=subject.subject_id,
+                now=environment.requested_at,
+            )
+            assets = tuple(
+                await self._index.get_authorized_assets_by_external_urns(
+                    subject=subject,
+                    access=access,
+                    external_urns=external_urns,
+                    lock_for_share=True,
+                )
+            )
+            if (
+                len(assets) != len(external_urns)
+                or {asset.external_urn for asset in assets} != set(external_urns)
+                or any(asset.workspace_id != workspace_id for asset in assets)
+                or any(not is_dataset_asset_type(asset.asset_type) for asset in assets)
+            ):
+                raise ConflictError(
+                    "The catalog target binding changed after this request was prepared.",
+                    details={"code": "TARGET_BINDING_DRIFT"},
+                )
+        assets_by_urn = {asset.external_urn: asset for asset in assets}
+        resources: list[ResourceAttributes] = []
+        for item in scoped_items:
+            if item.target_type == MANUAL_DATASET_INTAKE_TARGET:
+                if item.routing_system_id not in approval_system_ids:
+                    raise ForbiddenError("The change target is not available.")
+                resources.append(
+                    ResourceAttributes(
+                        resource_id=item.item_id,
+                        workspace_id=workspace_id,
+                        resource_type="manual_change_target",
+                        owner_department_id=None,
+                        system_id=item.routing_system_id,
+                        domain_id=None,
+                        classification=change_request.classification,
+                        lifecycle=change_request.state.value,
+                        requester_id=change_request.requester_id,
+                    )
+                )
+                continue
+            asset = assets_by_urn.get(item.target_ref)
+            if asset is None or not self._binding_is_current(
+                workspace_id=workspace_id,
+                item=item,
+                asset=asset,
+                strict_binding=True,
+            ):
+                raise ConflictError(
+                    "The catalog target binding changed after this request was prepared.",
+                    details={"code": "TARGET_BINDING_DRIFT"},
+                )
+            if change_request.classification < asset.classification:
+                raise ConflictError(
+                    "The catalog target binding changed after this request was prepared.",
+                    details={"code": "TARGET_BINDING_DRIFT"},
+                )
+            resources.append(
+                ResourceAttributes(
+                    resource_id=asset.asset_id,
+                    workspace_id=workspace_id,
+                    resource_type="catalog_asset_change_target",
+                    owner_department_id=asset.owner_department_id,
+                    system_id=asset.system_id,
+                    domain_id=asset.domain_id,
+                    classification=asset.classification,
+                    lifecycle=asset.lifecycle,
+                    requester_id=change_request.requester_id,
+                )
+            )
+        authorized = await self._authorization.filter_authorized(
+            subject=subject,
+            resources=resources,
+            action=action,
+            environment=environment,
+            request_id=request_id,
+            parent_resource_id=workspace_id,
+        )
+        if len(authorized) != len(resources):
+            raise ForbiddenError("The change target is not available.")
+        return frozenset(item.item_id for item in scoped_items)
+
     @staticmethod
     def _bind(item: ChangeItem, asset: CatalogAssetIndex) -> ChangeItem:
         binding_hash = change_target_binding_hash(
@@ -295,3 +523,37 @@ class CatalogChangeTargetAuthorizer:
             lifecycle=asset.lifecycle,
         )
         return current_hash == item.target_binding_hash
+
+    @staticmethod
+    def _summary_binding_is_current(
+        *,
+        workspace_id: UUID,
+        target: ChangeRequestSummaryTarget,
+        asset: CatalogAssetIndex,
+    ) -> bool:
+        if (
+            target.target_asset_id is None
+            or target.target_asset_type is None
+            or target.target_classification is None
+            or target.target_lifecycle is None
+            or target.target_source_version is None
+            or target.target_observed_at is None
+            or target.target_binding_hash is None
+            or asset.workspace_id != workspace_id
+            or asset.asset_id != target.target_asset_id
+            or not is_dataset_asset_type(asset.asset_type)
+            or asset.external_urn != target.target_ref
+            or asset.lifecycle != "ACTIVE"
+        ):
+            return False
+        expected = change_target_binding_hash(
+            target_ref=target.target_ref,
+            asset_id=target.target_asset_id,
+            asset_type=target.target_asset_type,
+            system_id=target.target_system_id,
+            domain_id=target.target_domain_id,
+            owner_department_id=target.target_owner_department_id,
+            classification=target.target_classification,
+            lifecycle=target.target_lifecycle,
+        )
+        return expected == target.target_binding_hash

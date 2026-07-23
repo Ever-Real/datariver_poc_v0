@@ -3,11 +3,12 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { ApiClient, RequestOptions } from '../../api/client'
 import type {
   CatalogAssetDetail,
+  RegistrationOperatorCapability,
   UploadContentProfile,
   UploadPreparation,
   UploadRecord,
 } from '../../api/types'
-import { loadCompleteAssetDetail, RegistrationPage } from './RegistrationPage'
+import { loadAssetDetailPage, RegistrationPage } from './RegistrationPage'
 import { supportedContentType } from './RegistrationBulkWorkbench'
 import { RegistrationManualWorkbench } from './RegistrationManualWorkbench'
 
@@ -23,8 +24,20 @@ const emptyTree = {
 
 function clientWith(
   request: (path: string, options?: RequestOptions) => Promise<unknown>,
+  capability: RegistrationOperatorCapability = {
+    eligible: true,
+    can_view_workspace_history: true,
+    reason_code: 'ELIGIBLE',
+    allowed_roles: ['ADMIN', 'DATA_STEWARD'],
+  },
 ): ApiClient {
-  return { request: vi.fn(request) } as unknown as ApiClient
+  return {
+    request: vi.fn((path: string, options?: RequestOptions) => (
+      path === '/uploads/operator-capability'
+        ? Promise.resolve(capability)
+        : request(path, options)
+    )),
+  } as unknown as ApiClient
 }
 
 function uploadRecord(
@@ -70,11 +83,124 @@ function preparationRecord(
   }
 }
 
+function manualAsset(): CatalogAssetDetail {
+  return {
+    id: 'asset-polling',
+    external_urn: 'urn:li:dataset:registration-polling',
+    asset_type: 'TABLE',
+    name: 'registration_polling',
+    description: 'Polling test asset.',
+    platform: 'postgres',
+    database_name: 'datariver',
+    schema_name: 'public',
+    domain: null,
+    tags: [],
+    terms: [],
+    classification: 'INTERNAL',
+    lifecycle: 'ACTIVE',
+    observed_at: '2026-01-01T00:00:00Z',
+    matches: [],
+    ownership: [],
+    glossary_terms: [],
+    schema_fields: [{
+      fieldPath: 'id',
+      nativeDataType: 'uuid',
+      description: 'Identifier',
+    }],
+    schema_fields_total: 1,
+    schema_fields_available: 1,
+    schema_fields_truncated: false,
+    schema_fields_total_exact: true,
+    schema_fields_offset: 0,
+    schema_fields_limit: 100,
+    schema_fields_has_more: false,
+    quality: {},
+    projection_source_version: 'projection-polling',
+    source_version: 'a'.repeat(64),
+  }
+}
+
 afterEach(() => {
   vi.unstubAllGlobals()
+  vi.restoreAllMocks()
+  vi.useRealTimers()
 })
 
 describe('Registration workbench', () => {
+  it('does not render registration reads or mutations for an ineligible identity', async () => {
+    const request = vi.fn(() => Promise.reject(
+      new Error('ineligible clients must not reach registration resources'),
+    ))
+
+    render(<RegistrationPage client={clientWith(request, {
+      eligible: false,
+      can_view_workspace_history: false,
+      reason_code: 'ACTIVE_HUMAN_ADMIN_OR_DATA_STEWARD_REQUIRED',
+      allowed_roles: ['ADMIN', 'DATA_STEWARD'],
+    })} />)
+
+    expect(await screen.findByText('등록 작업 권한이 없습니다')).toBeInTheDocument()
+    expect(screen.queryByRole('tab', { name: /MANUAL/ })).not.toBeInTheDocument()
+    expect(screen.queryByRole('tab', { name: /BULK/ })).not.toBeInTheDocument()
+    expect(request).not.toHaveBeenCalled()
+  })
+
+  it('lets an administrator request workspace Manual history through the server scope', async () => {
+    const request = vi.fn((path: string, options?: RequestOptions) => {
+      void options
+      return Promise.resolve(
+        path.startsWith('/registration/manual-submissions')
+          ? { items: [], page: { limit: 25 } }
+          : emptyTree,
+      )
+    })
+
+    render(<RegistrationManualWorkbench
+      client={clientWith(request)}
+      asset={{
+        id: 'asset-history',
+        external_urn: 'urn:li:dataset:history',
+        asset_type: 'DATASET',
+        name: 'history',
+        description: null,
+        platform: 'postgres',
+        database_name: 'warehouse',
+        schema_name: 'public',
+        domain: null,
+        tags: [],
+        terms: [],
+        classification: 'INTERNAL',
+        lifecycle: 'ACTIVE',
+        observed_at: '2026-01-01T00:00:00Z',
+        matches: [],
+        ownership: [],
+        glossary_terms: [],
+        quality: {},
+        projection_source_version: 'projection-1',
+        source_version: 'provider-1',
+        schema_fields: [],
+        schema_fields_total: 0,
+        schema_fields_available: 0,
+        schema_fields_truncated: false,
+        schema_fields_total_exact: true,
+        schema_fields_offset: 0,
+        schema_fields_limit: 0,
+        schema_fields_has_more: false,
+      }}
+      loading={false}
+      canViewWorkspaceHistory
+      onClose={() => undefined}
+    />)
+
+    fireEvent.change(await screen.findByLabelText('Manual 실행 조회 범위'), {
+      target: { value: 'workspace' },
+    })
+    await waitFor(() => expect(request.mock.calls.some(([path, options]) => (
+      path === '/registration/manual-submissions?scope=workspace&limit=25'
+      && options?.signal instanceof AbortSignal
+    ))).toBe(true))
+  })
+
   it('accepts PDF as a format-only Knowledge source media type', () => {
     expect(supportedContentType({ name: 'semiconductor-outlook.pdf', type: '' }))
       .toBe('application/pdf')
@@ -89,7 +215,7 @@ describe('Registration workbench', () => {
 
     render(<RegistrationPage client={clientWith(request)} />)
 
-    expect(screen.getByRole('tab', { name: /MANUAL/ })).toHaveAttribute('aria-selected', 'true')
+    expect(await screen.findByRole('tab', { name: /MANUAL/ })).toHaveAttribute('aria-selected', 'true')
     expect(screen.getByText('GOVERNED')).toBeInTheDocument()
     expect(screen.getByText(/Resource Tree에서 테이블을 선택하세요/)).toBeInTheDocument()
     expect(screen.getByText('Metadata Registration')).toBeInTheDocument()
@@ -99,7 +225,7 @@ describe('Registration workbench', () => {
     ))).toBe(true))
   })
 
-  it('loads every version-bound schema page before manual editing', async () => {
+  it('loads only one bounded schema page for manual editing', async () => {
     const fields = Array.from({ length: 450 }, (_, index) => ({
       fieldPath: `column_${index}`,
       nativeDataType: 'varchar',
@@ -132,32 +258,33 @@ describe('Registration workbench', () => {
     } satisfies Partial<CatalogAssetDetail>
     const request = vi.fn((path: string) => {
       const offset = Number(new URL(`https://example.test${path}`).searchParams.get('field_offset'))
-      const pageFields = fields.slice(offset, offset + 200)
+      const pageFields = fields.slice(offset, offset + 100)
       return Promise.resolve({
         ...base,
         schema_fields: pageFields,
         schema_fields_offset: offset,
-        schema_fields_limit: 200,
+        schema_fields_limit: 100,
         schema_fields_has_more: offset + pageFields.length < fields.length,
       } as CatalogAssetDetail)
     })
 
-    const detail = await loadCompleteAssetDetail(
+    const detail = await loadAssetDetailPage(
       clientWith(request),
       'asset-many-fields',
+      0,
+      undefined,
+      undefined,
       new AbortController().signal,
     )
 
-    expect(detail.schema_fields).toHaveLength(450)
-    expect(detail.schema_fields[449]?.fieldPath).toBe('column_449')
+    expect(detail.schema_fields).toHaveLength(100)
+    expect(detail.schema_fields[99]?.fieldPath).toBe('column_99')
     expect(request.mock.calls.map(([path]) => path)).toEqual([
-      '/catalog/assets/asset-many-fields?field_offset=0&field_limit=200',
-      '/catalog/assets/asset-many-fields?field_offset=200&field_limit=200&field_source_version=source-7',
-      '/catalog/assets/asset-many-fields?field_offset=400&field_limit=200&field_source_version=source-7',
+      '/catalog/assets/asset-many-fields?field_offset=0&field_limit=100',
     ])
   })
 
-  it('rejects a provider-version change while loading schema pages', async () => {
+  it('rejects a provider-version change on the next schema page', async () => {
     const request = vi.fn((path: string) => Promise.resolve({
       id: 'asset-version-drift',
       external_urn: 'urn:li:dataset:version-drift',
@@ -189,9 +316,20 @@ describe('Registration workbench', () => {
       schema_fields_has_more: path.includes('field_offset=0'),
     } as CatalogAssetDetail))
 
-    await expect(loadCompleteAssetDetail(
+    const first = await loadAssetDetailPage(
       clientWith(request),
       'asset-version-drift',
+      0,
+      undefined,
+      undefined,
+      new AbortController().signal,
+    )
+    await expect(loadAssetDetailPage(
+      clientWith(request),
+      'asset-version-drift',
+      1,
+      first.source_version,
+      first.projection_source_version,
       new AbortController().signal,
     )).rejects.toThrow(/원본 버전/)
     expect(request.mock.calls[1]?.[0]).toContain('field_source_version=provider-v1')
@@ -230,7 +368,7 @@ describe('Registration workbench', () => {
       schema_fields_has_more: false,
       quality: {},
       projection_source_version: 'projection-1',
-      source_version: 'source-1',
+      source_version: 'a'.repeat(64),
     }
     const submissions: RequestOptions[] = []
     const request = vi.fn((path: string, options?: RequestOptions) => {
@@ -241,7 +379,8 @@ describe('Registration workbench', () => {
         submissions.push(options)
         return Promise.resolve({
           id: 'submission-1', state: 'QUEUED', serial_number: 3, row_count: 2,
-          source_version: 'source-1', created_at: '2026-01-01T00:00:00Z', version: 1,
+          source_version: 'projection-1', provider_source_version: 'a'.repeat(64),
+          created_at: '2026-01-01T00:00:00Z', version: 1,
         })
       }
       return Promise.resolve({ items: [], meta: emptyTree.meta })
@@ -294,6 +433,8 @@ describe('Registration workbench', () => {
     expect(JSON.parse(submittedBody)).toMatchObject({
       asset_id: 'asset-1',
       source_version: 'projection-1',
+      provider_source_version: 'a'.repeat(64),
+      column_edits: [],
     })
     expect(screen.getByText(/제출 #3이 2개 행으로 저장되었습니다/)).toBeInTheDocument()
 
@@ -303,7 +444,7 @@ describe('Registration workbench', () => {
       loading={false}
       onClose={vi.fn()}
     />)
-    expect(screen.getByRole('alert')).toHaveTextContent(/응답 상한으로 잘려/)
+    expect(screen.getByRole('alert')).toHaveTextContent(/원본 메타데이터가 잘렸거나 stale/)
     expect(screen.getByRole('button', { name: 'SAVE' })).toBeDisabled()
 
     view.rerender(<RegistrationManualWorkbench
@@ -318,8 +459,232 @@ describe('Registration workbench', () => {
       loading={false}
       onClose={vi.fn()}
     />)
-    expect(screen.getByRole('alert')).toHaveTextContent(/응답 상한으로 잘려/)
+    expect(screen.getByRole('alert')).toHaveTextContent(/원본 메타데이터가 잘렸거나 stale/)
     expect(screen.getByRole('button', { name: 'SAVE' })).toBeDisabled()
+  })
+
+  it('retains only sparse edits while replacing the current schema page', async () => {
+    const base: CatalogAssetDetail = {
+      id: 'asset-paged',
+      external_urn: 'urn:li:dataset:paged',
+      asset_type: 'DATASET',
+      name: 'paged',
+      description: 'Paged table',
+      platform: 'postgres',
+      database_name: 'warehouse',
+      schema_name: 'public',
+      domain: null,
+      tags: [],
+      terms: [],
+      classification: 'INTERNAL',
+      lifecycle: 'ACTIVE',
+      observed_at: '2026-01-01T00:00:00Z',
+      matches: [],
+      ownership: [],
+      glossary_terms: [],
+      quality: {},
+      projection_source_version: 'projection-paged',
+      source_version: 'a'.repeat(64),
+      schema_fields: [{ fieldPath: 'first_column', description: 'first baseline' }],
+      schema_fields_total: 2,
+      schema_fields_available: 2,
+      schema_fields_truncated: false,
+      schema_fields_total_exact: true,
+      schema_fields_offset: 0,
+      schema_fields_limit: 1,
+      schema_fields_has_more: true,
+    }
+    let submittedBody: string | undefined
+    const request = vi.fn((path: string, options?: RequestOptions) => {
+      if (path === '/registration/manual-submissions' && options?.method === 'POST') {
+        submittedBody = typeof options.body === 'string' ? options.body : undefined
+        return Promise.resolve({
+          id: 'submission-paged',
+          state: 'QUEUED',
+          serial_number: 7,
+          row_count: 3,
+          source_version: base.projection_source_version,
+          provider_source_version: base.source_version,
+          created_at: '2026-01-01T00:00:00Z',
+          version: 1,
+        })
+      }
+      return Promise.resolve({ items: [], page: { limit: 25 } })
+    })
+    const props = {
+      client: clientWith(request),
+      loading: false,
+      onClose: vi.fn(),
+    }
+    const view = render(<RegistrationManualWorkbench {...props} asset={base} />)
+
+    fireEvent.change(screen.getByLabelText('first_column Description'), {
+      target: { value: 'first edited' },
+    })
+    view.rerender(<RegistrationManualWorkbench
+      {...props}
+      asset={{
+        ...base,
+        schema_fields: [{ fieldPath: 'second_column', description: 'second baseline' }],
+        schema_fields_offset: 1,
+        schema_fields_has_more: false,
+      }}
+    />)
+    expect(screen.queryByText('first_column')).not.toBeInTheDocument()
+    fireEvent.change(screen.getByLabelText('second_column Description'), {
+      target: { value: 'second edited' },
+    })
+    fireEvent.click(screen.getByRole('button', { name: 'SAVE' }))
+    await waitFor(() => expect(submittedBody).toBeDefined())
+    const parsed = JSON.parse(submittedBody ?? '{}') as { column_edits: unknown }
+    expect(parsed.column_edits).toEqual([
+      { field_path: 'first_column', description: 'first edited', tags: [], terms: [] },
+      { field_path: 'second_column', description: 'second edited', tags: [], terms: [] },
+    ])
+
+    view.rerender(<RegistrationManualWorkbench {...props} asset={base} />)
+    expect(screen.getByLabelText('first_column Description')).toHaveValue('first edited')
+    expect(screen.queryByText('second_column')).not.toBeInTheDocument()
+  })
+
+  it('aborts and discards a late manual submission after the selected asset changes', async () => {
+    const asset = (id: string, sourceVersion: string): CatalogAssetDetail => ({
+      id,
+      external_urn: `urn:li:dataset:(urn:li:dataPlatform:postgres,${id},DEV)`,
+      asset_type: 'TABLE',
+      name: id,
+      description: `${id} description`,
+      platform: 'postgres',
+      database_name: 'datariver',
+      schema_name: 'public',
+      domain: null,
+      tags: [],
+      terms: [],
+      classification: 'INTERNAL',
+      lifecycle: 'ACTIVE',
+      observed_at: '2026-01-01T00:00:00Z',
+      matches: [],
+      ownership: [],
+      glossary_terms: [],
+      schema_fields: [{ fieldPath: 'id', nativeDataType: 'uuid' }],
+      schema_fields_total: 1,
+      schema_fields_available: 1,
+      schema_fields_truncated: false,
+      schema_fields_total_exact: true,
+      schema_fields_offset: 0,
+      schema_fields_limit: 100,
+      schema_fields_has_more: false,
+      quality: {},
+      projection_source_version: sourceVersion,
+      source_version: sourceVersion,
+    })
+    let submissionSignal: AbortSignal | undefined
+    let resolveSubmission: ((value: unknown) => void) | undefined
+    const pendingSubmission = new Promise<unknown>((resolve) => {
+      resolveSubmission = resolve
+    })
+    const request = vi.fn((path: string, options?: RequestOptions) => {
+      if (path === '/registration/manual-submissions' && options?.method === 'POST') {
+        submissionSignal = options.signal ?? undefined
+        return pendingSubmission
+      }
+      if (path.startsWith('/registration/manual-submissions?')) {
+        return Promise.resolve({ items: [], page: { limit: 25, next_cursor: null } })
+      }
+      return Promise.resolve({ items: [] })
+    })
+    const client = clientWith(request)
+    const view = render(<RegistrationManualWorkbench
+      client={client}
+      asset={asset('asset-a', 'source-a')}
+      loading={false}
+      onClose={vi.fn()}
+    />)
+
+    fireEvent.click(screen.getByRole('button', { name: 'SAVE' }))
+    await waitFor(() => expect(submissionSignal).toBeInstanceOf(AbortSignal))
+
+    view.rerender(<RegistrationManualWorkbench
+      client={client}
+      asset={asset('asset-b', 'source-b')}
+      loading={false}
+      onClose={vi.fn()}
+    />)
+    expect(submissionSignal?.aborted).toBe(true)
+    resolveSubmission?.({
+      id: 'late-a',
+      state: 'QUEUED',
+      serial_number: 9,
+      row_count: 2,
+      source_version: 'source-a',
+      created_at: '2026-01-01T00:00:00Z',
+      version: 1,
+    })
+
+    await waitFor(() => expect(screen.getByLabelText('테이블 Description')).toHaveValue(
+      'asset-b description',
+    ))
+    expect(screen.queryByText(/제출 #9/)).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'SAVE' })).toHaveTextContent('SAVE')
+  })
+
+  it('does not present a late save as the result of newer edits or field-page navigation', async () => {
+    let resolveSubmission: ((value: unknown) => void) | undefined
+    const pendingSubmission = new Promise<unknown>((resolve) => {
+      resolveSubmission = resolve
+    })
+    const request = vi.fn((path: string, options?: RequestOptions) => {
+      if (path === '/registration/manual-submissions' && options?.method === 'POST') {
+        return pendingSubmission
+      }
+      if (path.startsWith('/registration/manual-submissions?')) {
+        return Promise.resolve({ items: [], page: { limit: 25, next_cursor: null } })
+      }
+      return Promise.resolve({ items: [] })
+    })
+    const onNextFieldPage = vi.fn()
+    const asset = {
+      ...manualAsset(),
+      schema_fields_total: 2,
+      schema_fields_available: 2,
+      schema_fields_has_more: true,
+    }
+
+    render(<RegistrationManualWorkbench
+      client={clientWith(request)}
+      asset={asset}
+      loading={false}
+      onClose={vi.fn()}
+      onNextFieldPage={onNextFieldPage}
+    />)
+
+    fireEvent.click(screen.getByRole('button', { name: 'SAVE' }))
+    await waitFor(() => expect(request.mock.calls.some(([path, options]) => (
+      path === '/registration/manual-submissions' && options?.method === 'POST'
+    ))).toBe(true))
+
+    fireEvent.change(screen.getByLabelText('테이블 Description'), {
+      target: { value: 'A newer unsaved description.' },
+    })
+    fireEvent.click(within(
+      screen.getByRole('region', { name: 'Column Schema Specifications' }),
+    ).getByRole('button', { name: '다음' }))
+    expect(onNextFieldPage).toHaveBeenCalledOnce()
+
+    resolveSubmission?.({
+      id: 'stale-submission',
+      state: 'QUEUED',
+      serial_number: 99,
+      row_count: 2,
+      source_version: asset.projection_source_version,
+      provider_source_version: asset.source_version,
+      created_at: '2026-01-01T00:00:00Z',
+      version: 1,
+    })
+
+    await waitFor(() => expect(screen.getByRole('button', { name: 'SAVE' })).toBeEnabled())
+    expect(screen.getByLabelText('테이블 Description')).toHaveValue('A newer unsaved description.')
+    expect(screen.queryByText(/제출 #99/)).not.toBeInTheDocument()
   })
 
   it('loads upload history only after the bulk workbench is selected', async () => {
@@ -331,9 +696,9 @@ describe('Registration workbench', () => {
     })
 
     render(<RegistrationPage client={clientWith(request)} />)
-    fireEvent.click(screen.getByRole('tab', { name: /BULK/ }))
+    fireEvent.click(await screen.findByRole('tab', { name: /BULK/ }))
 
-    expect(screen.getByRole('tab', { name: /BULK/ })).toHaveAttribute('aria-selected', 'true')
+    expect(await screen.findByRole('tab', { name: /BULK/ })).toHaveAttribute('aria-selected', 'true')
     await waitFor(() => expect(calls.some(([path, options]) => (
       path === '/uploads?limit=50' && options?.signal instanceof AbortSignal
     ))).toBe(true))
@@ -356,7 +721,7 @@ describe('Registration workbench', () => {
       path.startsWith('/uploads') ? { items: [] } : emptyTree,
     ))
     const view = render(<RegistrationPage client={firstClient} />)
-    fireEvent.click(screen.getByRole('tab', { name: /BULK/ }))
+    fireEvent.click(await screen.findByRole('tab', { name: /BULK/ }))
     await waitFor(() => expect(priorSignal).toBeDefined())
 
     view.rerender(<RegistrationPage client={secondClient} />)
@@ -393,7 +758,7 @@ describe('Registration workbench', () => {
     ))
 
     const view = render(<RegistrationPage client={firstClient} />)
-    fireEvent.click(screen.getByRole('tab', { name: /BULK/ }))
+    fireEvent.click(await screen.findByRole('tab', { name: /BULK/ }))
     fireEvent.click(await screen.findByRole('button', { name: /dataset-description.csv/ }))
     await waitFor(() => expect(preparationSignal).toBeDefined())
 
@@ -413,7 +778,7 @@ describe('Registration workbench', () => {
     })
 
     render(<RegistrationPage client={clientWith(request)} />)
-    fireEvent.click(screen.getByRole('tab', { name: /BULK/ }))
+    fireEvent.click(await screen.findByRole('tab', { name: /BULK/ }))
     const historyItem = await screen.findByRole('button', { name: /catalog.csv/ })
     fireEvent.click(historyItem)
 
@@ -451,7 +816,7 @@ describe('Registration workbench', () => {
     }))
 
     render(<RegistrationPage client={clientWith(request)} />)
-    fireEvent.click(screen.getByRole('tab', { name: /BULK/ }))
+    fireEvent.click(await screen.findByRole('tab', { name: /BULK/ }))
     fireEvent.change(screen.getByLabelText('등록 프로파일'), {
       target: { value: 'DATASET_DESCRIPTION_CSV_V1' },
     })
@@ -494,7 +859,7 @@ describe('Registration workbench', () => {
     })
 
     render(<RegistrationPage client={clientWith(request)} />)
-    fireEvent.click(screen.getByRole('tab', { name: /BULK/ }))
+    fireEvent.click(await screen.findByRole('tab', { name: /BULK/ }))
     fireEvent.click(await screen.findByRole('button', { name: /dataset-description.csv/ }))
     fireEvent.click(await screen.findByRole('button', { name: '미리보기 준비' }))
 
@@ -512,6 +877,131 @@ describe('Registration workbench', () => {
     expect(bindingStage).not.toBeNull()
     expect(within(bindingStage as HTMLElement).getByText('진행 중')).toBeInTheDocument()
     expect(request.mock.calls.some(([path]) => path.includes('/registration-proposals'))).toBe(false)
+  })
+
+  it('stops manual submission polling while the browser is hidden', async () => {
+    vi.spyOn(document, 'visibilityState', 'get').mockReturnValue('hidden')
+    const request = vi.fn((path: string, options?: RequestOptions) => {
+      if (path.startsWith('/registration/manual-submissions?')) {
+        return Promise.resolve({ items: [], page: { limit: 25 } })
+      }
+      if (path === '/registration/manual-submissions' && options?.method === 'POST') {
+        return Promise.resolve({
+          id: 'submission-hidden',
+          state: 'QUEUED',
+          serial_number: 1,
+          row_count: 2,
+          source_version: 'projection-polling',
+          provider_source_version: 'a'.repeat(64),
+          created_at: '2026-01-01T00:00:00Z',
+          version: 1,
+        })
+      }
+      throw new Error(`unexpected request: ${path}`)
+    })
+
+    render(<RegistrationManualWorkbench
+      client={clientWith(request)}
+      asset={manualAsset()}
+      loading={false}
+      onClose={vi.fn()}
+    />)
+    fireEvent.click(screen.getByRole('button', { name: 'SAVE' }))
+
+    expect(await screen.findByRole('button', { name: '상태 새로고침' })).toBeInTheDocument()
+    expect(request.mock.calls.some(([path]) => (
+      path === '/registration/manual-submissions/submission-hidden'
+    ))).toBe(false)
+  })
+
+  it('keeps the current Manual submission poll alive while an older history report opens', async () => {
+    const status = (
+      id: string,
+      serialNumber: number,
+      state: 'QUEUED' | 'APPLIED',
+    ) => ({
+      id,
+      state,
+      serial_number: serialNumber,
+      row_count: 2,
+      source_version: 'projection-polling',
+      provider_source_version: 'a'.repeat(64),
+      created_at: '2026-01-01T00:00:00Z',
+      updated_at: '2026-01-01T00:00:01Z',
+      applied_at: state === 'APPLIED' ? '2026-01-01T00:00:02Z' : null,
+      attempts: state === 'APPLIED' ? 1 : 0,
+      next_attempt_at: null,
+      last_error_code: null,
+      version: state === 'APPLIED' ? 2 : 1,
+    })
+    const historySubmission = status('submission-history', 41, 'APPLIED')
+    const currentQueued = status('submission-current', 42, 'QUEUED')
+    const currentApplied = status('submission-current', 42, 'APPLIED')
+    const request = vi.fn((path: string, options?: RequestOptions): Promise<unknown> => {
+      if (path.startsWith('/registration/manual-submissions?')) {
+        return Promise.resolve({
+          items: [historySubmission],
+          page: { limit: 25, next_cursor: null },
+        })
+      }
+      if (path === '/registration/manual-submissions' && options?.method === 'POST') {
+        return Promise.resolve(currentQueued)
+      }
+      if (path === '/registration/manual-submissions/submission-history') {
+        return Promise.resolve({ submission: historySubmission, attempts: [] })
+      }
+      if (path === '/registration/manual-submissions/submission-current') {
+        return Promise.resolve({ submission: currentApplied, attempts: [] })
+      }
+      throw new Error(`unexpected request: ${path}`)
+    })
+
+    render(<RegistrationManualWorkbench
+      client={clientWith(request)}
+      asset={manualAsset()}
+      loading={false}
+      onClose={vi.fn()}
+    />)
+    expect(await screen.findByRole('button', { name: '#41' })).toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('button', { name: 'SAVE' }))
+    expect(await screen.findByText(/제출 #42.*상태: QUEUED/)).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: '#41' }))
+    expect(await screen.findByRole('heading', { name: '제출 #41 적용 증거' })).toBeInTheDocument()
+
+    expect(await screen.findByText(/제출 #42.*상태: APPLIED/, {}, { timeout: 2_500 })).toBeInTheDocument()
+    const currentPoll = request.mock.calls.find(([path]) => (
+      path === '/registration/manual-submissions/submission-current'
+    ))
+    expect(currentPoll?.[1]?.signal).toBeInstanceOf(AbortSignal)
+    expect(currentPoll?.[1]?.signal?.aborted).toBe(false)
+  })
+
+  it('stops bulk preparation polling while the browser is hidden', async () => {
+    vi.spyOn(document, 'visibilityState', 'get').mockReturnValue('hidden')
+    const upload = uploadRecord(
+      'ACCEPTED',
+      'dataset-description.csv',
+      'DATASET_DESCRIPTION_CSV_V1',
+    )
+    const preparing = preparationRecord('PREPARING')
+    const request = vi.fn((path: string) => {
+      if (path.startsWith('/catalog/tree')) return Promise.resolve(emptyTree)
+      if (path === '/uploads?limit=50') return Promise.resolve({ items: [upload] })
+      if (path === '/uploads/upload-1/preparations?limit=20') {
+        return Promise.resolve({ items: [preparing] })
+      }
+      throw new Error(`unexpected request: ${path}`)
+    })
+
+    render(<RegistrationPage client={clientWith(request)} />)
+    fireEvent.click(await screen.findByRole('tab', { name: /BULK/ }))
+    fireEvent.click(await screen.findByRole('button', { name: /dataset-description.csv/ }))
+
+    expect(await screen.findByText(/자동 상태 확인을 중단했습니다/)).toBeInTheDocument()
+    expect(request.mock.calls.filter(([path]) => (
+      path === '/uploads/upload-1/preparations?limit=20'
+    ))).toHaveLength(1)
   })
 
   it('refreshes the selected upload detail with the latest server state', async () => {
@@ -535,7 +1025,7 @@ describe('Registration workbench', () => {
     })
 
     render(<RegistrationPage client={clientWith(request)} />)
-    fireEvent.click(screen.getByRole('tab', { name: /BULK/ }))
+    fireEvent.click(await screen.findByRole('tab', { name: /BULK/ }))
     fireEvent.click(await screen.findByRole('button', { name: /dataset-description.xlsx/ }))
     expect(screen.getByText('Version').nextElementSibling).toHaveTextContent('3')
 
@@ -567,7 +1057,7 @@ describe('Registration workbench', () => {
     })
 
     render(<RegistrationPage client={clientWith(request)} />)
-    fireEvent.click(screen.getByRole('tab', { name: /BULK/ }))
+    fireEvent.click(await screen.findByRole('tab', { name: /BULK/ }))
     fireEvent.click(await screen.findByRole('button', { name: /dataset-description.csv/ }))
 
     const progress = await screen.findByRole('progressbar', { name: '후보 준비 진행률' })
@@ -578,7 +1068,7 @@ describe('Registration workbench', () => {
     expect(bindingStage).toHaveClass('pending')
   })
 
-  it('renders only server-authorized typed candidates as read-only evidence', async () => {
+  it('creates one server-authored governed change request from an authorized typed candidate', async () => {
     const upload = uploadRecord(
       'ACCEPTED',
       'dataset-description.csv',
@@ -605,31 +1095,123 @@ describe('Registration workbench', () => {
           id: 'asset-1', asset_type: 'DATASET', name: 'wafer_events', platform: 'postgres', database_name: 'fab', schema_name: 'quality', classification: 'INTERNAL', lifecycle: 'ACTIVE', source_version: 'source-v3', observed_at: '2026-01-01T00:00:00Z',
         },
       }],
-      page: { limit: 20 },
+      page: { limit: 20, next_cursor: 'cursor-page-2' },
       receipt: {
         id: 'receipt-1', preparation_id: 'preparation-1', manifest_version: 3, source_sha256: 'c'.repeat(64), content_profile: 'DATASET_DESCRIPTION_CSV_V1', parser_version: 'parser-v1', scanner_version: 'scanner-v1', schema_version: 'schema-v1', configuration_hash: 'd'.repeat(64), candidate_root_hash: 'e'.repeat(64), receipt_hash: 'f'.repeat(64), observed_at: '2026-01-01T00:00:00Z', created_at: '2026-01-01T00:00:00Z',
       },
       meta: { projection_version: 3, policy_version: 'test', classification_policy_version: 1, authorization_generation: 2 },
     }
-    const request = vi.fn((path: string) => {
+    const request = vi.fn((path: string, options?: RequestOptions) => {
       if (path.startsWith('/catalog/tree')) return Promise.resolve(emptyTree)
       if (path === '/uploads?limit=50') return Promise.resolve({ items: [upload] })
       if (path === '/uploads/upload-1/preparations?limit=20') return Promise.resolve({ items: [ready] })
-      if (path === '/uploads/upload-1/preparations/preparation-1/candidates?limit=20') return Promise.resolve(candidates)
+      if (path === '/uploads/upload-1/preparations/preparation-1/candidates?limit=20') {
+        return Promise.resolve(candidates)
+      }
+      if (
+        path
+        === '/uploads/upload-1/preparations/preparation-1/candidates?limit=20&cursor=cursor-page-2'
+      ) {
+        return Promise.resolve({
+          ...candidates,
+          items: [{
+            ...candidates.items[0],
+            id: 'candidate-2',
+            ordinal: 2,
+            proposed_description: 'Second bounded candidate page.',
+          }],
+          page: { limit: 20 },
+        })
+      }
+      if (
+        path
+        === '/uploads/upload-1/preparations/preparation-1/candidates/candidate-1/preview'
+      ) {
+        return Promise.resolve({
+          candidate_id: 'candidate-1',
+          target_asset_id: 'asset-1',
+          target_ref: 'urn:li:dataset:asset-1',
+          platform: 'postgres',
+          database_name: 'fab',
+          schema_name: 'quality',
+          table_name: 'wafer_events',
+          current_description: 'Current description',
+          proposed_description: 'Clarify the event identifier.',
+          before_hash: '1'.repeat(64),
+          after_hash: '2'.repeat(64),
+          source_version: 'provider-v7',
+          observed_at: '2026-01-01T00:00:00Z',
+          preview_etag: `"${'3'.repeat(64)}"`,
+        })
+      }
+      if (
+        path
+        === '/uploads/upload-1/preparations/preparation-1/candidates/candidate-1/change-request'
+        && options?.method === 'POST'
+      ) {
+        return Promise.resolve({
+          id: 'change-1',
+          number: 'CR-POSTGRES-260101-ABCD',
+          request_type: 'BULK_DATASET_DESCRIPTION',
+          title: 'wafer_events Dataset 설명 변경',
+          description: '검증된 BULK 업로드 후보를 변경관리 검토 대상으로 등록합니다.',
+          state: 'REGISTERED',
+          requester_id: 'subject-1',
+          requester_department_id: null,
+          current_round_id: 'round-1',
+          current_round_number: 1,
+          created_at: '2026-01-01T00:00:00Z',
+          requested_due_date: null,
+          priority: null,
+          urgency: null,
+          classification: 'INTERNAL',
+          version: 1,
+          items: [{
+            id: 'item-1',
+            target_type: 'DATAHUB_ASPECT',
+            target_ref: 'urn:li:dataset:asset-1',
+            aspect_name: 'datasetProperties',
+            operation: 'UPSERT',
+            target_asset_id: 'asset-1',
+          }],
+          approvals: [],
+          transitions: [],
+          rounds: [],
+          test_runs: [],
+        })
+      }
       throw new Error(`unexpected request: ${path}`)
     })
 
     render(<RegistrationPage client={clientWith(request)} />)
-    fireEvent.click(screen.getByRole('tab', { name: /BULK/ }))
+    fireEvent.click(await screen.findByRole('tab', { name: /BULK/ }))
     fireEvent.click(await screen.findByRole('button', { name: /dataset-description.csv/ }))
     fireEvent.click(await screen.findByRole('button', { name: '후보 조회' }))
 
     const preview = await screen.findByRole('region', { name: '등록 후보 미리보기' })
     expect(within(preview).getByText('wafer_events')).toBeInTheDocument()
     expect(within(preview).getByText('Clarify the event identifier.')).toBeInTheDocument()
-    expect(within(preview).getByText(/typed 서버 명령으로만 열립니다/)).toBeInTheDocument()
-    expect(screen.queryByRole('button', { name: /변경요청 생성/ })).not.toBeInTheDocument()
+    fireEvent.click(within(preview).getByRole('button', { name: '검토 및 변경요청' }))
+    expect(await within(preview).findByText('Current description')).toBeInTheDocument()
+    expect(within(preview).getAllByText('Clarify the event identifier.')).toHaveLength(2)
+    fireEvent.click(within(preview).getByRole('button', { name: '검증된 후보로 변경요청 생성' }))
+    expect(await within(preview).findByText(/CR-POSTGRES-260101-ABCD/)).toBeInTheDocument()
+    const createCall = request.mock.calls.find(([path]) => (
+      path
+      === '/uploads/upload-1/preparations/preparation-1/candidates/candidate-1/change-request'
+    ))
+    expect(createCall?.[1]?.ifMatch).toBe(`"${'3'.repeat(64)}"`)
+    expect(createCall?.[1]?.idempotencyKey).toMatch(/^typed-bulk-change-/)
+    expect(JSON.parse(createCall?.[1]?.body as string)).toEqual({
+      title: 'wafer_events Dataset 설명 변경',
+      reason: '검증된 BULK 업로드 후보를 변경관리 검토 대상으로 등록합니다.',
+    })
     expect(request.mock.calls.some(([path]) => path.includes('/registration-proposals'))).toBe(false)
+
+    fireEvent.click(within(preview).getByRole('button', { name: '다음 후보' }))
+    expect(await within(preview).findByText('Second bounded candidate page.')).toBeInTheDocument()
+    fireEvent.click(within(preview).getByRole('button', { name: '이전 후보' }))
+    expect(await within(preview).findByText('Clarify the event identifier.')).toBeInTheDocument()
   })
 
   it.each(['READY', 'FAILED', 'STALE'] as const)(
@@ -656,7 +1238,7 @@ describe('Registration workbench', () => {
       })
 
       render(<RegistrationPage client={clientWith(request)} />)
-      fireEvent.click(screen.getByRole('tab', { name: /BULK/ }))
+      fireEvent.click(await screen.findByRole('tab', { name: /BULK/ }))
       fireEvent.click(await screen.findByRole('button', { name: /dataset-description.csv/ }))
 
       expect((await screen.findAllByText(state)).length).toBeGreaterThan(0)
@@ -677,7 +1259,7 @@ describe('Registration workbench', () => {
       path.startsWith('/uploads') ? { items: [secondUpload] } : emptyTree,
     ))
     const view = render(<RegistrationPage client={firstClient} />)
-    fireEvent.click(screen.getByRole('tab', { name: /BULK/ }))
+    fireEvent.click(await screen.findByRole('tab', { name: /BULK/ }))
     fireEvent.click(await screen.findByRole('button', { name: /catalog-a.csv/ }))
     fireEvent.change(screen.getByLabelText('분류등급'), {
       target: { value: 'CONFIDENTIAL' },
@@ -700,7 +1282,7 @@ describe('Registration workbench', () => {
       return Promise.resolve(path.startsWith('/uploads') ? { items: [rejected] } : emptyTree)
     })
     render(<RegistrationPage client={clientWith(request)} />)
-    fireEvent.click(screen.getByRole('tab', { name: /BULK/ }))
+    fireEvent.click(await screen.findByRole('tab', { name: /BULK/ }))
     fireEvent.click(await screen.findByRole('button', { name: /rejected.csv/ }))
 
     const validationStage = screen.getByText('Validation').closest('li')

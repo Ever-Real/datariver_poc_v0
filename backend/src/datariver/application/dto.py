@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import date, datetime
 from types import MappingProxyType
 from typing import Any
 from uuid import UUID
@@ -16,7 +16,7 @@ from datariver.domain.authz import (
     Decision,
     SubjectAttributes,
 )
-from datariver.domain.governance import ChangeRequest
+from datariver.domain.governance import ChangeRequest, ChangeState
 from datariver.domain.retention import ArchiveCapability, ImmutableArchiveReceipt
 
 MAX_CATALOG_SCHEMA_FIELDS = 1_000
@@ -319,6 +319,9 @@ class UploadPreparationReceiptEvidence:
     first_ordinal: int | None
     last_ordinal: int | None
     legacy_candidate_count: int
+    object_locator_hash: str | None = None
+    accepted_etag: str | None = None
+    accepted_version_id: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -355,6 +358,41 @@ class UploadRegistrationCandidatePage:
     policy_version: str
     classification_policy_version: int | None
     authorization_generation: int | None
+
+
+@dataclass(frozen=True, slots=True)
+class RegistrationCandidateBindingCommand:
+    workspace_id: UUID
+    upload_id: UUID
+    preparation_id: UUID
+    receipt_id: UUID
+    receipt_hash: str
+    candidate_id: UUID
+    candidate_hash: str
+    target_asset_id: UUID
+    target_source_version: str
+    target_binding_hash: str
+
+
+@dataclass(frozen=True, slots=True)
+class TypedBulkCandidatePreview:
+    candidate_id: UUID
+    target_asset_id: UUID
+    target_ref: str
+    platform: str
+    database_name: str
+    schema_name: str
+    table_name: str
+    classification: Classification
+    current_description: str | None
+    proposed_description: str
+    before_hash: str
+    after_hash: str
+    source_version: str
+    observed_at: datetime
+    preview_etag: str
+    binding: RegistrationCandidateBindingCommand
+    proposed_document: Mapping[str, Any]
 
 
 @dataclass(frozen=True, slots=True)
@@ -517,11 +555,94 @@ class ChangeRequestSchemaOverview:
 
 
 @dataclass(frozen=True, slots=True)
+class ChangeRequestSummaryTarget:
+    item_id: UUID
+    target_type: str
+    target_ref: str
+    aspect_name: str
+    operation: str
+    target_asset_id: UUID | None
+    target_asset_type: str | None
+    target_system_id: UUID | None
+    target_domain_id: UUID | None
+    target_owner_department_id: UUID | None
+    target_classification: Classification | None
+    target_lifecycle: str | None
+    target_source_version: str | None
+    target_observed_at: datetime | None
+    target_binding_hash: str | None
+    routing_system_id: UUID | None
+
+
+@dataclass(frozen=True, slots=True)
+class ChangeRequestSummaryRecord:
+    change_request_id: UUID
+    number: str
+    request_type: str
+    title: str
+    state: ChangeState
+    requester_id: UUID
+    requester_department_id: UUID | None
+    current_round_number: int
+    created_at: datetime
+    requested_due_date: date | None
+    priority: str | None
+    urgency: str | None
+    classification: Classification
+    version: int
+    targets: tuple[ChangeRequestSummaryTarget, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class ChangeRequestSummaryPage:
+    items: tuple[ChangeRequestSummaryRecord, ...]
+    next_cursor: str | None
+
+
+@dataclass(frozen=True, slots=True)
 class GovernanceApplyClaim:
     change_request: ChangeRequest
     job_id: UUID
     attempt_id: UUID
     attempt_no: int
+    lease_token: str
+    worker_subject_id: UUID
+
+
+@dataclass(frozen=True, slots=True)
+class GovernanceApplyAttemptEvidence:
+    attempt_id: UUID
+    attempt_no: int
+    state: str
+    failure_code: str | None
+    external_response_hash: str | None
+    started_at: datetime
+    finished_at: datetime | None
+
+
+@dataclass(frozen=True, slots=True)
+class GovernanceApplyItemEvidence:
+    item_id: UUID
+    expected_hash: str
+    observed_hash: str | None
+    source_version: str | None
+    provider_version: str | None
+
+
+@dataclass(frozen=True, slots=True)
+class GovernanceApplyReport:
+    change_request_id: UUID
+    job_id: UUID | None
+    state: str
+    attempt_count: int
+    last_error_code: str | None
+    expected_hash: str | None
+    observed_hash: str | None
+    reconciled: bool
+    created_at: datetime | None
+    updated_at: datetime | None
+    items: tuple[GovernanceApplyItemEvidence, ...]
+    attempts: tuple[GovernanceApplyAttemptEvidence, ...]
 
 
 @dataclass(frozen=True, slots=True)
@@ -1020,3 +1141,31 @@ class RetentionArchiveVerification:
     capability_evidence: ArchiveCapabilityEvidence
     receipt: ImmutableArchiveReceipt
     evidence: ArchiveReceiptEvidence
+
+
+@dataclass(frozen=True, slots=True)
+class ManualMetadataAspectReportEvidence:
+    aspect_name: str
+    aspect_ordinal: int
+    outcome: str
+    before_hash: str | None
+    expected_hash: str | None
+    observed_hash: str | None
+    write_attempted: bool
+    failure_code: str | None
+    provider_version: str | None
+    provider_response_hash: str | None
+    observed_at: datetime
+
+
+@dataclass(frozen=True, slots=True)
+class ManualMetadataApplyAttemptEvidence:
+    attempt_id: UUID
+    attempt_no: int
+    lease_epoch: int
+    state: str
+    failure_code: str | None
+    report_root_hash: str | None
+    started_at: datetime
+    finished_at: datetime | None
+    aspects: tuple[ManualMetadataAspectReportEvidence, ...]

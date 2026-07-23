@@ -175,8 +175,59 @@ export interface ManualMetadataSubmission {
   serial_number: number
   row_count: number
   source_version: string
+  provider_source_version: string
   created_at: string
   version: number
+}
+
+export interface ManualMetadataSubmissionStatus extends ManualMetadataSubmission {
+  updated_at: string
+  applied_at: string | null
+  attempts: number
+  next_attempt_at: string | null
+  last_error_code: string | null
+}
+
+export interface ManualMetadataAspectReport {
+  aspect_name: 'datasetProperties' | 'domains' | 'globalTags' | 'glossaryTerms' | 'schemaMetadata'
+  aspect_ordinal: number
+  outcome:
+    | 'ALREADY_MATCHED'
+    | 'APPLIED_VERIFIED'
+    | 'FAILED_BEFORE_WRITE'
+    | 'WRITE_REJECTED'
+    | 'READBACK_FAILED'
+    | 'READBACK_MISMATCH'
+  before_hash: string | null
+  expected_hash: string | null
+  observed_hash: string | null
+  write_attempted: boolean
+  failure_code: string | null
+  provider_version: string | null
+  provider_response_hash: string | null
+  observed_at: string
+}
+
+export interface ManualMetadataApplyAttempt {
+  id: string
+  attempt_no: number
+  lease_epoch: number
+  state: 'RUNNING' | 'APPLIED' | 'RETRY_WAIT' | 'FAILED' | 'SUPERSEDED'
+  failure_code: string | null
+  report_root_hash: string | null
+  started_at: string
+  finished_at: string | null
+  aspects: ManualMetadataAspectReport[]
+}
+
+export interface ManualMetadataSubmissionReport {
+  submission: ManualMetadataSubmissionStatus
+  attempts: ManualMetadataApplyAttempt[]
+}
+
+export interface ManualMetadataSubmissionList {
+  items: ManualMetadataSubmissionStatus[]
+  page: { next_cursor?: string | null; limit: number }
 }
 
 export interface CatalogDescriptionPreview {
@@ -395,6 +446,23 @@ export interface UploadRegistrationCandidatePage {
   }
 }
 
+export interface TypedBulkCandidatePreview {
+  candidate_id: string
+  target_asset_id: string
+  target_ref: string
+  platform: string
+  database_name: string
+  schema_name: string
+  table_name: string
+  current_description: string | null
+  proposed_description: string
+  before_hash: string
+  after_hash: string
+  source_version: string
+  observed_at: string
+  preview_etag: string
+}
+
 export type ChangeRequestState =
   | 'REGISTERED'
   | 'IN_REVIEW'
@@ -491,6 +559,74 @@ export interface ChangeRequestRecord {
   }>
 }
 
+export interface GovernanceApplyReport {
+  change_request_id: string
+  job_id: string | null
+  state: string
+  attempt_count: number
+  last_error_code: string | null
+  expected_hash: string | null
+  observed_hash: string | null
+  reconciled: boolean
+  created_at: string | null
+  updated_at: string | null
+  items: Array<{
+    item_id: string
+    expected_hash: string
+    observed_hash: string | null
+    source_version: string | null
+    provider_version: string | null
+  }>
+  attempts: Array<{
+    id: string
+    attempt_no: number
+    state: string
+    failure_code: string | null
+    external_response_hash: string | null
+    started_at: string
+    finished_at: string | null
+  }>
+}
+
+export interface RegistrationOperatorCapability {
+  eligible: boolean
+  can_view_workspace_history: boolean
+  reason_code:
+    | 'ELIGIBLE'
+    | 'ACTIVE_HUMAN_ADMIN_OR_DATA_STEWARD_REQUIRED'
+  allowed_roles: ['ADMIN', 'DATA_STEWARD']
+}
+
+export interface ChangeRequestSummary {
+  id: string
+  number: string
+  request_type: string
+  title: string
+  state: ChangeRequestState
+  requester_id: string
+  requester_department_id: string | null
+  current_round_number: number
+  created_at: string
+  requested_due_date: string | null
+  priority: 'LOW' | 'NORMAL' | 'HIGH' | 'CRITICAL' | null
+  urgency: 'NORMAL' | 'URGENT' | 'EMERGENCY' | null
+  classification: string
+  version: number
+  item_count: number
+  first_item: {
+    target_ref: string
+    aspect_name: string
+    operation: string
+  }
+}
+
+export interface ChangeRequestSummaryList {
+  items: ChangeRequestSummary[]
+  overview: ChangeRequestSchemaOverview[]
+  overview_truncated: boolean
+  page: { next_cursor?: string | null; limit: number }
+}
+
 export interface ChangeRequestAttachment {
   id: string
   kind: 'REQUEST' | 'TEST'
@@ -505,6 +641,26 @@ export interface ChangeRequestAttachment {
 
 export interface ChangeRequestAttachmentList {
   items: ChangeRequestAttachment[]
+  page: { next_cursor?: string | null; limit: number }
+}
+
+export interface ChangeRequestAttachmentUpload {
+  id: string
+  change_request_id: string
+  round_id: string
+  kind: 'REQUEST' | 'TEST'
+  original_name: string
+  state: 'STARTED' | 'STORED' | 'FINALIZED' | 'FAILED'
+  expected_size_bytes: number
+  expected_content_sha256: string
+  provider_checksum: string | null
+  failure_code: string | null
+  status_url: string
+  finalize_url: string
+}
+
+export interface ChangeRequestAttachmentUploadList {
+  items: ChangeRequestAttachmentUpload[]
 }
 
 export interface ChangeRequestSchemaOverview {

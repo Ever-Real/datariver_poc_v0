@@ -5,8 +5,14 @@ import socket
 
 import structlog
 
+from datariver.application.services.governance_attachments import (
+    AttachmentReconciliationWorker,
+)
 from datariver.application.services.upload_completion import UploadCompletionWorker
 from datariver.config import get_settings
+from datariver.infrastructure.db.governance_attachments import (
+    SqlGovernanceAttachmentReconciliationStore,
+)
 from datariver.infrastructure.db.outbox import SqlInboxStore
 from datariver.infrastructure.db.registration import SqlUploadCompletionStore
 from datariver.infrastructure.system_configuration_runtime import (
@@ -27,6 +33,10 @@ async def run() -> None:
         lease_seconds=settings.upload_lease_seconds,
         maximum_attempts=settings.upload_maximum_attempts,
     )
+    attachment_worker = AttachmentReconciliationWorker(
+        store=SqlGovernanceAttachmentReconciliationStore(container.database.session_factory),
+        object_store=container.object_store,
+    )
     signals = EventSignalConsumer(
         delivery=container.event_delivery,
         inbox=SqlInboxStore(container.database.session_factory),
@@ -38,8 +48,9 @@ async def run() -> None:
     try:
         while True:
             try:
-                processed = await worker.run_once()
-                if not processed:
+                upload_processed = await worker.run_once()
+                attachment_processed = await attachment_worker.run_once()
+                if not upload_processed and not attachment_processed:
                     await signals.wait_and_trigger(
                         timeout_seconds=settings.worker_poll_seconds,
                         handler=worker.run_once,

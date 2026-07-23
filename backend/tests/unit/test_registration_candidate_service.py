@@ -109,6 +109,14 @@ class FakeCandidates:
         self.page_reads += 1
         return tuple(value for value in self.candidates if value.ordinal > after_ordinal)[:limit]
 
+    async def get_candidate(
+        self, *, candidate_id: UUID, **_: object
+    ) -> UploadRegistrationCandidateEvidence | None:
+        return next(
+            (value for value in self.candidates if value.candidate_id == candidate_id),
+            None,
+        )
+
 
 class FakeCatalog:
     def __init__(self, targets: tuple[CatalogAssetIndex, ...]) -> None:

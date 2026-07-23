@@ -185,7 +185,9 @@ def upgrade() -> None:
         sa.UniqueConstraint('workspace_id', 'number', name=op.f('uq_change_requests_workspace_id_number')),
         schema='governance'
         )
+        op.create_index('ix_change_requests_workspace_created_id', 'change_requests', ['workspace_id', 'created_at', 'id'], unique=False, schema='governance')
         op.create_index('ix_change_requests_workspace_state', 'change_requests', ['workspace_id', 'state', 'created_at'], unique=False, schema='governance')
+        op.create_index('ix_change_requests_workspace_state_created_id', 'change_requests', ['workspace_id', 'state', 'created_at', 'id'], unique=False, schema='governance')
         op.execute('ALTER TABLE governance.change_requests ENABLE ROW LEVEL SECURITY')
         op.execute('ALTER TABLE governance.change_requests FORCE ROW LEVEL SECURITY')
         op.execute("CREATE POLICY workspace_isolation ON governance.change_requests USING (workspace_id = NULLIF(current_setting('app.workspace_id', true), '')::uuid) WITH CHECK (workspace_id = NULLIF(current_setting('app.workspace_id', true), '')::uuid)")
@@ -232,30 +234,6 @@ def upgrade() -> None:
         op.execute('ALTER TABLE integration.inbox_messages ENABLE ROW LEVEL SECURITY')
         op.execute('ALTER TABLE integration.inbox_messages FORCE ROW LEVEL SECURITY')
         op.execute("CREATE POLICY workspace_isolation ON integration.inbox_messages USING (workspace_id = NULLIF(current_setting('app.workspace_id', true), '')::uuid) WITH CHECK (workspace_id = NULLIF(current_setting('app.workspace_id', true), '')::uuid)")
-        op.create_table('jobs',
-        sa.Column('workspace_id', sa.Uuid(), nullable=False),
-        sa.Column('job_type', sa.String(length=100), nullable=False),
-        sa.Column('causation_id', sa.Uuid(), nullable=False),
-        sa.Column('state', sa.String(length=32), nullable=False),
-        sa.Column('requested_by', sa.Uuid(), nullable=False),
-        sa.Column('progress', sa.JSON().with_variant(postgresql.JSONB(none_as_null=True, astext_type=Text()), 'postgresql'), nullable=False),
-        sa.Column('result_ref', sa.Text(), nullable=True),
-        sa.Column('lease_until', sa.DateTime(timezone=True), nullable=True),
-        sa.Column('attempts', sa.Integer(), nullable=False),
-        sa.Column('last_error_code', sa.String(length=100), nullable=True),
-        sa.Column('id', sa.Uuid(), nullable=False),
-        sa.Column('created_at', sa.DateTime(timezone=True), server_default=sa.text('CURRENT_TIMESTAMP'), nullable=False),
-        sa.Column('updated_at', sa.DateTime(timezone=True), server_default=sa.text('CURRENT_TIMESTAMP'), nullable=False),
-        sa.Column('version', sa.Integer(), nullable=False),
-        sa.PrimaryKeyConstraint('id', name=op.f('pk_jobs')),
-        sa.UniqueConstraint('job_type', 'causation_id', name=op.f('uq_jobs_job_type_causation_id')),
-        sa.UniqueConstraint('workspace_id', 'id', name=op.f('uq_jobs_workspace_id_id')),
-        schema='integration'
-        )
-        op.create_index('ix_jobs_workspace_state', 'jobs', ['workspace_id', 'state', 'created_at'], unique=False, schema='integration')
-        op.execute('ALTER TABLE integration.jobs ENABLE ROW LEVEL SECURITY')
-        op.execute('ALTER TABLE integration.jobs FORCE ROW LEVEL SECURITY')
-        op.execute("CREATE POLICY workspace_isolation ON integration.jobs USING (workspace_id = NULLIF(current_setting('app.workspace_id', true), '')::uuid) WITH CHECK (workspace_id = NULLIF(current_setting('app.workspace_id', true), '')::uuid)")
         op.create_table('object_manifests',
         sa.Column('workspace_id', sa.Uuid(), nullable=False),
         sa.Column('bucket', sa.String(length=255), nullable=False),
@@ -445,25 +423,6 @@ def upgrade() -> None:
         op.execute('ALTER TABLE integration.inference_provider_generations ENABLE ROW LEVEL SECURITY')
         op.execute('ALTER TABLE integration.inference_provider_generations FORCE ROW LEVEL SECURITY')
         op.execute("CREATE POLICY workspace_isolation ON integration.inference_provider_generations USING (workspace_id = NULLIF(current_setting('app.workspace_id', true), '')::uuid) WITH CHECK (workspace_id = NULLIF(current_setting('app.workspace_id', true), '')::uuid)")
-        op.create_table('job_attempts',
-        sa.Column('workspace_id', sa.Uuid(), nullable=False),
-        sa.Column('job_id', sa.Uuid(), nullable=False),
-        sa.Column('attempt_no', sa.Integer(), nullable=False),
-        sa.Column('worker_id', sa.String(length=255), nullable=False),
-        sa.Column('state', sa.String(length=32), nullable=False),
-        sa.Column('error_class', sa.String(length=100), nullable=True),
-        sa.Column('external_response_hash', sa.String(length=64), nullable=True),
-        sa.Column('started_at', sa.DateTime(timezone=True), nullable=False),
-        sa.Column('finished_at', sa.DateTime(timezone=True), nullable=True),
-        sa.Column('id', sa.Uuid(), nullable=False),
-        sa.ForeignKeyConstraint(['workspace_id', 'job_id'], ['integration.jobs.workspace_id', 'integration.jobs.id'], name=op.f('fk_job_attempts_workspace_id_job_id_jobs'), ondelete='CASCADE'),
-        sa.PrimaryKeyConstraint('id', name=op.f('pk_job_attempts')),
-        sa.UniqueConstraint('job_id', 'attempt_no', name=op.f('uq_job_attempts_job_id_attempt_no')),
-        schema='integration'
-        )
-        op.execute('ALTER TABLE integration.job_attempts ENABLE ROW LEVEL SECURITY')
-        op.execute('ALTER TABLE integration.job_attempts FORCE ROW LEVEL SECURITY')
-        op.execute("CREATE POLICY workspace_isolation ON integration.job_attempts USING (workspace_id = NULLIF(current_setting('app.workspace_id', true), '')::uuid) WITH CHECK (workspace_id = NULLIF(current_setting('app.workspace_id', true), '')::uuid)")
         op.create_table('ontology_versions',
         sa.Column('workspace_id', sa.Uuid(), nullable=False),
         sa.Column('graph_id', sa.Uuid(), nullable=False),
@@ -724,6 +683,53 @@ def upgrade() -> None:
         op.execute('ALTER TABLE governance.approvals ENABLE ROW LEVEL SECURITY')
         op.execute('ALTER TABLE governance.approvals FORCE ROW LEVEL SECURITY')
         op.execute("CREATE POLICY workspace_isolation ON governance.approvals USING (workspace_id = NULLIF(current_setting('app.workspace_id', true), '')::uuid) WITH CHECK (workspace_id = NULLIF(current_setting('app.workspace_id', true), '')::uuid)")
+        op.create_table('change_request_attachment_upload_intents',
+        sa.Column('workspace_id', sa.Uuid(), nullable=False),
+        sa.Column('change_request_id', sa.Uuid(), nullable=False),
+        sa.Column('round_id', sa.Uuid(), nullable=False),
+        sa.Column('kind', sa.String(length=16), nullable=False),
+        sa.Column('original_name', sa.String(length=500), nullable=False),
+        sa.Column('serial_number', sa.Integer(), nullable=False),
+        sa.Column('bucket', sa.String(length=255), nullable=False),
+        sa.Column('object_key', sa.Text(), nullable=False),
+        sa.Column('content_type', sa.String(length=255), nullable=False),
+        sa.Column('expected_size_bytes', sa.Integer(), nullable=False),
+        sa.Column('expected_content_sha256', sa.String(length=64), nullable=False),
+        sa.Column('state', sa.String(length=16), nullable=False),
+        sa.Column('size_bytes', sa.Integer(), nullable=True),
+        sa.Column('content_sha256', sa.String(length=64), nullable=True),
+        sa.Column('provider_checksum', sa.String(length=255), nullable=True),
+        sa.Column('uploaded_by', sa.Uuid(), nullable=False),
+        sa.Column('stored_at', sa.DateTime(timezone=True), nullable=True),
+        sa.Column('finalized_at', sa.DateTime(timezone=True), nullable=True),
+        sa.Column('failed_at', sa.DateTime(timezone=True), nullable=True),
+        sa.Column('failure_code', sa.String(length=100), nullable=True),
+        sa.Column('id', sa.Uuid(), nullable=False),
+        sa.Column('created_at', sa.DateTime(timezone=True), server_default=sa.text('CURRENT_TIMESTAMP'), nullable=False),
+        sa.Column('updated_at', sa.DateTime(timezone=True), server_default=sa.text('CURRENT_TIMESTAMP'), nullable=False),
+        sa.Column('version', sa.Integer(), nullable=False),
+        sa.CheckConstraint("(state = 'STARTED' AND size_bytes IS NULL AND content_sha256 IS NULL AND provider_checksum IS NULL AND stored_at IS NULL AND finalized_at IS NULL AND failed_at IS NULL AND failure_code IS NULL) OR (state = 'STORED' AND size_bytes = expected_size_bytes AND content_sha256 = expected_content_sha256 AND stored_at IS NOT NULL AND finalized_at IS NULL AND failed_at IS NULL AND failure_code IS NULL) OR (state = 'FINALIZED' AND size_bytes = expected_size_bytes AND content_sha256 = expected_content_sha256 AND stored_at IS NOT NULL AND finalized_at IS NOT NULL AND failed_at IS NULL AND failure_code IS NULL) OR (state = 'FAILED' AND size_bytes IS NULL AND content_sha256 IS NULL AND provider_checksum IS NULL AND stored_at IS NULL AND finalized_at IS NULL AND failed_at IS NOT NULL AND failure_code IS NOT NULL)", name=op.f('ck_cr_attachment_intent_shape')),
+        sa.CheckConstraint("content_sha256 IS NULL OR content_sha256 ~ '^[0-9a-f]{64}$'", name=op.f('ck_cr_attachment_intent_sha')),
+        sa.CheckConstraint("expected_content_sha256 ~ '^[0-9a-f]{64}$'", name=op.f('ck_cr_attachment_intent_expected_sha')),
+        sa.CheckConstraint("kind IN ('REQUEST', 'TEST')", name=op.f('ck_cr_attachment_intent_kind')),
+        sa.CheckConstraint("state IN ('STARTED', 'STORED', 'FINALIZED', 'FAILED')", name=op.f('ck_cr_attachment_intent_state')),
+        sa.CheckConstraint('expected_size_bytes BETWEEN 1 AND 10485760', name=op.f('ck_cr_attachment_intent_expected_size')),
+        sa.CheckConstraint('serial_number BETWEEN 1 AND 999999', name=op.f('ck_cr_attachment_intent_serial')),
+        sa.CheckConstraint('size_bytes IS NULL OR size_bytes BETWEEN 1 AND 10485760', name=op.f('ck_cr_attachment_intent_size')),
+        sa.ForeignKeyConstraint(['workspace_id', 'change_request_id', 'round_id'], ['governance.change_request_rounds.workspace_id', 'governance.change_request_rounds.change_request_id', 'governance.change_request_rounds.id'], name='fk_change_request_attachment_upload_intents_round', ondelete='RESTRICT'),
+        sa.ForeignKeyConstraint(['workspace_id', 'change_request_id'], ['governance.change_requests.workspace_id', 'governance.change_requests.id'], name='fk_change_request_attachment_upload_intents_request', ondelete='CASCADE'),
+        sa.ForeignKeyConstraint(['workspace_id', 'uploaded_by'], ['iam.workspace_memberships.workspace_id', 'iam.workspace_memberships.subject_id'], name='fk_change_request_attachment_upload_intents_uploader', ondelete='RESTRICT'),
+        sa.PrimaryKeyConstraint('id', name=op.f('pk_change_request_attachment_upload_intents')),
+        sa.UniqueConstraint('bucket', 'object_key', name='uq_change_request_attachment_upload_intent_object'),
+        sa.UniqueConstraint('workspace_id', 'change_request_id', 'kind', 'original_name', 'serial_number', name='uq_change_request_attachment_upload_intent_serial'),
+        sa.UniqueConstraint('workspace_id', 'id', name=op.f('uq_change_request_attachment_upload_intents_workspace_id_id')),
+        schema='governance'
+        )
+        op.create_index('ix_change_request_attachment_upload_intents_reconcile', 'change_request_attachment_upload_intents', ['state', 'updated_at', 'id'], unique=False, schema='governance')
+        op.create_index('ix_change_request_attachment_upload_intents_request', 'change_request_attachment_upload_intents', ['workspace_id', 'change_request_id'], unique=False, schema='governance')
+        op.execute('ALTER TABLE governance.change_request_attachment_upload_intents ENABLE ROW LEVEL SECURITY')
+        op.execute('ALTER TABLE governance.change_request_attachment_upload_intents FORCE ROW LEVEL SECURITY')
+        op.execute("CREATE POLICY workspace_isolation ON governance.change_request_attachment_upload_intents USING (workspace_id = NULLIF(current_setting('app.workspace_id', true), '')::uuid) WITH CHECK (workspace_id = NULLIF(current_setting('app.workspace_id', true), '')::uuid)")
         op.create_table('change_request_attachments',
         sa.Column('workspace_id', sa.Uuid(), nullable=False),
         sa.Column('change_request_id', sa.Uuid(), nullable=False),
@@ -747,6 +753,7 @@ def upgrade() -> None:
         sa.ForeignKeyConstraint(['workspace_id', 'change_request_id', 'round_id'], ['governance.change_request_rounds.workspace_id', 'governance.change_request_rounds.change_request_id', 'governance.change_request_rounds.id'], name='fk_change_request_attachments_round', ondelete='RESTRICT'),
         sa.ForeignKeyConstraint(['workspace_id', 'change_request_id'], ['governance.change_requests.workspace_id', 'governance.change_requests.id'], name='fk_change_request_attachments_request', ondelete='CASCADE'),
         sa.PrimaryKeyConstraint('id', name=op.f('pk_change_request_attachments')),
+        sa.UniqueConstraint('bucket', 'object_key', name='uq_change_request_attachment_object'),
         sa.UniqueConstraint('workspace_id', 'change_request_id', 'kind', 'original_name', 'serial_number', name='uq_change_request_attachment_serial'),
         sa.UniqueConstraint('workspace_id', 'change_request_id', 'round_id', 'id', name='uq_change_request_attachment_round_identity'),
         sa.UniqueConstraint('workspace_id', 'id', name=op.f('uq_change_request_attachments_workspace_id_id')),
@@ -801,6 +808,7 @@ def upgrade() -> None:
         sa.Column('requester_id', sa.Uuid(), nullable=False),
         sa.Column('external_urn', sa.Text(), nullable=False),
         sa.Column('source_version', sa.String(length=255), nullable=False),
+        sa.Column('provider_source_version', sa.String(length=64), nullable=False),
         sa.Column('serial_number', sa.Integer(), nullable=False),
         sa.Column('payload', sa.JSON().with_variant(postgresql.JSONB(none_as_null=True, astext_type=Text()), 'postgresql'), nullable=False),
         sa.Column('bucket', sa.String(length=255), nullable=False),
@@ -812,19 +820,32 @@ def upgrade() -> None:
         sa.Column('applied_at', sa.DateTime(timezone=True), nullable=True),
         sa.Column('last_error_code', sa.String(length=100), nullable=True),
         sa.Column('attempts', sa.Integer(), nullable=False),
+        sa.Column('next_attempt_at', sa.DateTime(timezone=True), nullable=True),
+        sa.Column('lease_epoch', sa.Integer(), nullable=False),
+        sa.Column('lease_token_hash', sa.String(length=64), nullable=True),
+        sa.Column('lease_owner_id', sa.Uuid(), nullable=True),
+        sa.Column('lease_started_at', sa.DateTime(timezone=True), nullable=True),
         sa.Column('lease_expires_at', sa.DateTime(timezone=True), nullable=True),
         sa.Column('id', sa.Uuid(), nullable=False),
         sa.Column('created_at', sa.DateTime(timezone=True), server_default=sa.text('CURRENT_TIMESTAMP'), nullable=False),
         sa.Column('updated_at', sa.DateTime(timezone=True), server_default=sa.text('CURRENT_TIMESTAMP'), nullable=False),
         sa.Column('version', sa.Integer(), nullable=False),
+        sa.CheckConstraint("(state = 'APPLIED' AND applied_at IS NOT NULL) OR (state <> 'APPLIED' AND applied_at IS NULL)", name=op.f('ck_manual_metadata_submissions_applied_at_shape')),
+        sa.CheckConstraint("(state = 'APPLYING' AND lease_token_hash IS NOT NULL AND lease_owner_id IS NOT NULL AND lease_started_at IS NOT NULL AND lease_expires_at IS NOT NULL AND lease_expires_at > lease_started_at) OR (state <> 'APPLYING' AND lease_token_hash IS NULL AND lease_owner_id IS NULL AND lease_started_at IS NULL AND lease_expires_at IS NULL)", name=op.f('ck_manual_metadata_submissions_lease_shape')),
+        sa.CheckConstraint("(state = 'QUEUED' AND next_attempt_at IS NOT NULL) OR (state <> 'QUEUED' AND next_attempt_at IS NULL)", name=op.f('ck_manual_metadata_submissions_retry_schedule_shape')),
         sa.CheckConstraint("csv_sha256 ~ '^[0-9a-f]{64}$'", name=op.f('ck_manual_metadata_submissions_csv_sha256_valid')),
         sa.CheckConstraint("jsonb_typeof(payload) = 'object'", name=op.f('ck_manual_metadata_submissions_payload_object')),
+        sa.CheckConstraint("lease_token_hash IS NULL OR lease_token_hash ~ '^[0-9a-f]{64}$'", name=op.f('ck_manual_metadata_submissions_lease_token_hash_valid')),
+        sa.CheckConstraint("provider_source_version ~ '^[0-9a-f]{64}$'", name=op.f('ck_manual_metadata_submissions_provider_source_version_valid')),
         sa.CheckConstraint("state IN ('QUEUED', 'APPLYING', 'APPLIED', 'FAILED')", name=op.f('ck_manual_metadata_submissions_state_vocabulary')),
+        sa.CheckConstraint('attempts <= 20', name=op.f('ck_manual_metadata_submissions_attempts_maximum')),
         sa.CheckConstraint('attempts >= 0', name=op.f('ck_manual_metadata_submissions_attempts_nonnegative')),
         sa.CheckConstraint('csv_size_bytes > 0', name=op.f('ck_manual_metadata_submissions_csv_size_bytes_positive')),
+        sa.CheckConstraint('lease_epoch = attempts', name=op.f('ck_manual_metadata_submissions_lease_epoch_matches_attempts')),
         sa.CheckConstraint('row_count > 0', name=op.f('ck_manual_metadata_submissions_row_count_positive')),
         sa.CheckConstraint('serial_number > 0', name=op.f('ck_manual_metadata_submissions_serial_number_positive')),
         sa.ForeignKeyConstraint(['workspace_id', 'asset_id'], ['catalog.assets_projection.workspace_id', 'catalog.assets_projection.id'], name='fk_manual_metadata_submissions_asset', ondelete='RESTRICT'),
+        sa.ForeignKeyConstraint(['workspace_id', 'lease_owner_id'], ['iam.workspace_memberships.workspace_id', 'iam.workspace_memberships.subject_id'], name='fk_manual_metadata_submissions_lease_owner', ondelete='RESTRICT'),
         sa.ForeignKeyConstraint(['workspace_id', 'requester_id'], ['iam.workspace_memberships.workspace_id', 'iam.workspace_memberships.subject_id'], name='fk_manual_metadata_submissions_requester', ondelete='RESTRICT'),
         sa.PrimaryKeyConstraint('id', name=op.f('pk_manual_metadata_submissions')),
         sa.UniqueConstraint('bucket', 'object_key', name=op.f('uq_manual_metadata_submissions_bucket_object_key')),
@@ -832,7 +853,10 @@ def upgrade() -> None:
         sa.UniqueConstraint('workspace_id', 'serial_number', name=op.f('uq_manual_metadata_submissions_workspace_id_serial_number')),
         schema='governance'
         )
+        op.create_index('ix_manual_metadata_submissions_claim', 'manual_metadata_submissions', ['workspace_id', 'next_attempt_at', 'created_at', 'id'], unique=False, schema='governance', postgresql_where=sa.text("state = 'QUEUED'"))
+        op.create_index('ix_manual_metadata_submissions_requester', 'manual_metadata_submissions', ['workspace_id', 'requester_id', 'created_at', 'id'], unique=False, schema='governance')
         op.create_index('ix_manual_metadata_submissions_workspace_state', 'manual_metadata_submissions', ['workspace_id', 'state', 'created_at'], unique=False, schema='governance')
+        op.create_index('uq_manual_metadata_submissions_active_asset', 'manual_metadata_submissions', ['workspace_id', 'asset_id'], unique=True, schema='governance', postgresql_where=sa.text("state = 'APPLYING'"))
         op.execute('ALTER TABLE governance.manual_metadata_submissions ENABLE ROW LEVEL SECURITY')
         op.execute('ALTER TABLE governance.manual_metadata_submissions FORCE ROW LEVEL SECURITY')
         op.execute("CREATE POLICY workspace_isolation ON governance.manual_metadata_submissions USING (workspace_id = NULLIF(current_setting('app.workspace_id', true), '')::uuid) WITH CHECK (workspace_id = NULLIF(current_setting('app.workspace_id', true), '')::uuid)")
@@ -1023,6 +1047,67 @@ def upgrade() -> None:
         op.execute('ALTER TABLE integration.inference_provider_profile_versions ENABLE ROW LEVEL SECURITY')
         op.execute('ALTER TABLE integration.inference_provider_profile_versions FORCE ROW LEVEL SECURITY')
         op.execute("CREATE POLICY workspace_isolation ON integration.inference_provider_profile_versions USING (workspace_id = NULLIF(current_setting('app.workspace_id', true), '')::uuid) WITH CHECK (workspace_id = NULLIF(current_setting('app.workspace_id', true), '')::uuid)")
+        op.create_table('jobs',
+        sa.Column('workspace_id', sa.Uuid(), nullable=False),
+        sa.Column('job_type', sa.String(length=100), nullable=False),
+        sa.Column('causation_id', sa.Uuid(), nullable=False),
+        sa.Column('state', sa.String(length=32), nullable=False),
+        sa.Column('requested_by', sa.Uuid(), nullable=False),
+        sa.Column('progress', sa.JSON().with_variant(postgresql.JSONB(none_as_null=True, astext_type=Text()), 'postgresql'), nullable=False),
+        sa.Column('result_ref', sa.Text(), nullable=True),
+        sa.Column('lease_until', sa.DateTime(timezone=True), nullable=True),
+        sa.Column('attempts', sa.Integer(), nullable=False),
+        sa.Column('attempt_cycle', sa.Integer(), server_default='1', nullable=False),
+        sa.Column('cycle_attempts', sa.Integer(), server_default='0', nullable=False),
+        sa.Column('lease_token_hash', sa.String(length=64), nullable=True),
+        sa.Column('lease_owner_id', sa.Uuid(), nullable=True),
+        sa.Column('last_error_code', sa.String(length=100), nullable=True),
+        sa.Column('id', sa.Uuid(), nullable=False),
+        sa.Column('created_at', sa.DateTime(timezone=True), server_default=sa.text('CURRENT_TIMESTAMP'), nullable=False),
+        sa.Column('updated_at', sa.DateTime(timezone=True), server_default=sa.text('CURRENT_TIMESTAMP'), nullable=False),
+        sa.Column('version', sa.Integer(), nullable=False),
+        sa.CheckConstraint("job_type <> 'DATAHUB_CHANGE_APPLY' OR ((state = 'RUNNING' AND lease_token_hash IS NOT NULL AND lease_owner_id IS NOT NULL AND lease_until IS NOT NULL) OR (state <> 'RUNNING' AND lease_token_hash IS NULL AND lease_owner_id IS NULL))", name=op.f('ck_jobs_governance_apply_lease_shape')),
+        sa.CheckConstraint("lease_token_hash IS NULL OR lease_token_hash ~ '^[0-9a-f]{64}$'", name=op.f('ck_jobs_lease_token_hash_valid')),
+        sa.CheckConstraint('attempt_cycle > 0 AND cycle_attempts >= 0 AND attempts >= cycle_attempts', name=op.f('ck_jobs_attempt_counters_valid')),
+        sa.ForeignKeyConstraint(['workspace_id', 'lease_owner_id'], ['iam.workspace_memberships.workspace_id', 'iam.workspace_memberships.subject_id'], name='fk_jobs_workspace_lease_owner', ondelete='RESTRICT'),
+        sa.PrimaryKeyConstraint('id', name=op.f('pk_jobs')),
+        sa.UniqueConstraint('job_type', 'causation_id', name=op.f('uq_jobs_job_type_causation_id')),
+        sa.UniqueConstraint('workspace_id', 'id', name=op.f('uq_jobs_workspace_id_id')),
+        schema='integration'
+        )
+        op.create_index('ix_jobs_workspace_state', 'jobs', ['workspace_id', 'state', 'created_at'], unique=False, schema='integration')
+        op.execute('ALTER TABLE integration.jobs ENABLE ROW LEVEL SECURITY')
+        op.execute('ALTER TABLE integration.jobs FORCE ROW LEVEL SECURITY')
+        op.execute("CREATE POLICY workspace_isolation ON integration.jobs USING (workspace_id = NULLIF(current_setting('app.workspace_id', true), '')::uuid) WITH CHECK (workspace_id = NULLIF(current_setting('app.workspace_id', true), '')::uuid)")
+        op.create_table('registration_worker_call_receipts',
+        sa.Column('workspace_id', sa.Uuid(), nullable=False),
+        sa.Column('operation', sa.String(length=100), nullable=False),
+        sa.Column('key_hash', sa.String(length=64), nullable=False),
+        sa.Column('request_hash', sa.String(length=64), nullable=False),
+        sa.Column('worker_subject_id', sa.Uuid(), nullable=False),
+        sa.Column('state', sa.String(length=32), nullable=False),
+        sa.Column('work_kind', sa.String(length=16), nullable=True),
+        sa.Column('work_id', sa.Uuid(), nullable=True),
+        sa.Column('claim_attempt', sa.Integer(), nullable=True),
+        sa.Column('claim_token_hash', sa.String(length=64), nullable=True),
+        sa.Column('lease_expires_at', sa.DateTime(timezone=True), nullable=True),
+        sa.Column('processed', sa.Boolean(), nullable=True),
+        sa.Column('result', sa.JSON().with_variant(postgresql.JSONB(none_as_null=True, astext_type=Text()), 'postgresql'), nullable=True),
+        sa.Column('created_at', sa.DateTime(timezone=True), nullable=False),
+        sa.Column('updated_at', sa.DateTime(timezone=True), nullable=False),
+        sa.CheckConstraint("(state = 'RUNNING' AND processed IS NULL AND result IS NULL AND work_kind IN ('MANUAL', 'BULK') AND work_id IS NOT NULL AND claim_attempt IS NOT NULL AND claim_attempt > 0 AND claim_token_hash IS NOT NULL AND lease_expires_at IS NOT NULL) OR (state = 'COMPLETED' AND processed IS NOT NULL AND result IS NOT NULL AND claim_token_hash IS NULL AND lease_expires_at IS NULL)", name=op.f('ck_registration_worker_call_receipts_state_shape')),
+        sa.CheckConstraint("claim_token_hash IS NULL OR claim_token_hash ~ '^[0-9a-f]{64}$'", name=op.f('ck_registration_worker_call_receipts_claim_token_hash_valid')),
+        sa.CheckConstraint("operation IN ('registration.manual-metadata.apply-run.v1', 'registration.bulk-preparation.execute-run.v1')", name=op.f('ck_registration_worker_call_receipts_operation_allowlist')),
+        sa.CheckConstraint("request_hash ~ '^[0-9a-f]{64}$' AND key_hash ~ '^[0-9a-f]{64}$'", name=op.f('ck_registration_worker_call_receipts_identity_hashes_valid')),
+        sa.CheckConstraint("state IN ('RUNNING', 'COMPLETED')", name=op.f('ck_registration_worker_call_receipts_state_allowlist')),
+        sa.ForeignKeyConstraint(['workspace_id', 'worker_subject_id'], ['iam.workspace_memberships.workspace_id', 'iam.workspace_memberships.subject_id'], name='fk_registration_worker_call_receipts_subject', ondelete='RESTRICT'),
+        sa.PrimaryKeyConstraint('workspace_id', 'operation', 'key_hash', name=op.f('pk_registration_worker_call_receipts')),
+        schema='integration'
+        )
+        op.create_index('ix_registration_worker_call_receipts_running_lease', 'registration_worker_call_receipts', ['lease_expires_at'], unique=False, schema='integration', postgresql_where=sa.text("state = 'RUNNING'"))
+        op.execute('ALTER TABLE integration.registration_worker_call_receipts ENABLE ROW LEVEL SECURITY')
+        op.execute('ALTER TABLE integration.registration_worker_call_receipts FORCE ROW LEVEL SECURITY')
+        op.execute("CREATE POLICY workspace_isolation ON integration.registration_worker_call_receipts USING (workspace_id = NULLIF(current_setting('app.workspace_id', true), '')::uuid) WITH CHECK (workspace_id = NULLIF(current_setting('app.workspace_id', true), '')::uuid)")
         op.create_table('upload_preparation_jobs',
         sa.Column('workspace_id', sa.Uuid(), nullable=False),
         sa.Column('upload_id', sa.Uuid(), nullable=False),
@@ -1032,6 +1117,7 @@ def upgrade() -> None:
         sa.Column('source_sha256', sa.String(length=64), nullable=False),
         sa.Column('configuration_hash', sa.String(length=64), nullable=False),
         sa.Column('state', sa.String(length=32), nullable=False),
+        sa.Column('next_attempt_at', sa.DateTime(timezone=True), nullable=True),
         sa.Column('lease_token', sa.Uuid(), nullable=True),
         sa.Column('lease_until', sa.DateTime(timezone=True), nullable=True),
         sa.Column('attempts', sa.Integer(), nullable=False),
@@ -1043,6 +1129,7 @@ def upgrade() -> None:
         sa.Column('updated_at', sa.DateTime(timezone=True), server_default=sa.text('CURRENT_TIMESTAMP'), nullable=False),
         sa.Column('version', sa.Integer(), nullable=False),
         sa.CheckConstraint("(state = 'PREPARING' AND lease_token IS NOT NULL AND lease_until IS NOT NULL) OR (state <> 'PREPARING' AND lease_token IS NULL AND lease_until IS NULL)", name=op.f('ck_upload_preparation_jobs_lease_shape')),
+        sa.CheckConstraint("(state = 'QUEUED' AND next_attempt_at IS NOT NULL) OR (state <> 'QUEUED' AND next_attempt_at IS NULL)", name=op.f('ck_upload_preparation_jobs_retry_schedule_shape')),
         sa.CheckConstraint("configuration_hash ~ '^[0-9a-f]{64}$'", name=op.f('ck_upload_preparation_jobs_configuration_hash_valid')),
         sa.CheckConstraint("content_profile IN ('DATASET_DESCRIPTION_CSV_V1', 'DATASET_DESCRIPTION_XLSX_V1')", name=op.f('ck_upload_preparation_jobs_typed_profile_allowlist')),
         sa.CheckConstraint("source_sha256 ~ '^[0-9a-f]{64}$'", name=op.f('ck_upload_preparation_jobs_source_sha256_valid')),
@@ -1059,7 +1146,7 @@ def upgrade() -> None:
         sa.UniqueConstraint('workspace_id', 'upload_id', 'source_manifest_version', 'content_profile', 'configuration_hash', name='uq_upload_preparation_job_source_configuration'),
         schema='integration'
         )
-        op.create_index('ix_upload_preparation_jobs_claim', 'upload_preparation_jobs', ['state', 'lease_until', 'created_at'], unique=False, schema='integration')
+        op.create_index('ix_upload_preparation_jobs_claim', 'upload_preparation_jobs', ['state', 'next_attempt_at', 'lease_until', 'created_at'], unique=False, schema='integration')
         op.execute('ALTER TABLE integration.upload_preparation_jobs ENABLE ROW LEVEL SECURITY')
         op.execute('ALTER TABLE integration.upload_preparation_jobs FORCE ROW LEVEL SECURITY')
         op.execute("CREATE POLICY workspace_isolation ON integration.upload_preparation_jobs USING (workspace_id = NULLIF(current_setting('app.workspace_id', true), '')::uuid) WITH CHECK (workspace_id = NULLIF(current_setting('app.workspace_id', true), '')::uuid)")
@@ -1443,6 +1530,36 @@ def upgrade() -> None:
         op.execute('ALTER TABLE governance.change_test_runs ENABLE ROW LEVEL SECURITY')
         op.execute('ALTER TABLE governance.change_test_runs FORCE ROW LEVEL SECURITY')
         op.execute("CREATE POLICY workspace_isolation ON governance.change_test_runs USING (workspace_id = NULLIF(current_setting('app.workspace_id', true), '')::uuid) WITH CHECK (workspace_id = NULLIF(current_setting('app.workspace_id', true), '')::uuid)")
+        op.create_table('manual_metadata_apply_attempts',
+        sa.Column('workspace_id', sa.Uuid(), nullable=False),
+        sa.Column('submission_id', sa.Uuid(), nullable=False),
+        sa.Column('attempt_no', sa.Integer(), nullable=False),
+        sa.Column('lease_epoch', sa.Integer(), nullable=False),
+        sa.Column('lease_token_hash', sa.String(length=64), nullable=False),
+        sa.Column('worker_subject_id', sa.Uuid(), nullable=False),
+        sa.Column('state', sa.String(length=32), nullable=False),
+        sa.Column('failure_code', sa.String(length=100), nullable=True),
+        sa.Column('report_root_hash', sa.String(length=64), nullable=True),
+        sa.Column('started_at', sa.DateTime(timezone=True), nullable=False),
+        sa.Column('finished_at', sa.DateTime(timezone=True), nullable=True),
+        sa.Column('id', sa.Uuid(), nullable=False),
+        sa.CheckConstraint("(state = 'RUNNING' AND finished_at IS NULL AND report_root_hash IS NULL AND failure_code IS NULL) OR (state <> 'RUNNING' AND finished_at IS NOT NULL AND finished_at >= started_at AND report_root_hash ~ '^[0-9a-f]{64}$' AND ((state = 'APPLIED' AND failure_code IS NULL) OR (state <> 'APPLIED' AND failure_code IS NOT NULL)))", name=op.f('ck_manual_metadata_apply_attempts_terminal_shape')),
+        sa.CheckConstraint("lease_token_hash ~ '^[0-9a-f]{64}$'", name=op.f('ck_manual_metadata_apply_attempts_lease_token_hash_valid')),
+        sa.CheckConstraint("state IN ('RUNNING', 'APPLIED', 'RETRY_WAIT', 'FAILED', 'SUPERSEDED')", name=op.f('ck_manual_metadata_apply_attempts_state_vocabulary')),
+        sa.CheckConstraint('attempt_no > 0 AND lease_epoch > 0', name=op.f('ck_manual_metadata_apply_attempts_attempt_fence_positive')),
+        sa.ForeignKeyConstraint(['workspace_id', 'submission_id'], ['governance.manual_metadata_submissions.workspace_id', 'governance.manual_metadata_submissions.id'], name='fk_manual_apply_attempts_submission', ondelete='RESTRICT'),
+        sa.ForeignKeyConstraint(['workspace_id', 'worker_subject_id'], ['iam.workspace_memberships.workspace_id', 'iam.workspace_memberships.subject_id'], name='fk_manual_apply_attempts_worker', ondelete='RESTRICT'),
+        sa.PrimaryKeyConstraint('id', name=op.f('pk_manual_metadata_apply_attempts')),
+        sa.UniqueConstraint('workspace_id', 'id', name=op.f('uq_manual_metadata_apply_attempts_workspace_id_id')),
+        sa.UniqueConstraint('workspace_id', 'submission_id', 'attempt_no', name=op.f('uq_manual_metadata_apply_attempts_workspace_id_submission_id_attempt_no')),
+        sa.UniqueConstraint('workspace_id', 'submission_id', 'id', name=op.f('uq_manual_metadata_apply_attempts_workspace_id_submission_id_id')),
+        sa.UniqueConstraint('workspace_id', 'submission_id', 'lease_epoch', name=op.f('uq_manual_metadata_apply_attempts_workspace_id_submission_id_lease_epoch')),
+        schema='governance'
+        )
+        op.create_index('ix_manual_apply_attempts_submission', 'manual_metadata_apply_attempts', ['workspace_id', 'submission_id', 'attempt_no'], unique=False, schema='governance')
+        op.execute('ALTER TABLE governance.manual_metadata_apply_attempts ENABLE ROW LEVEL SECURITY')
+        op.execute('ALTER TABLE governance.manual_metadata_apply_attempts FORCE ROW LEVEL SECURITY')
+        op.execute("CREATE POLICY workspace_isolation ON governance.manual_metadata_apply_attempts USING (workspace_id = NULLIF(current_setting('app.workspace_id', true), '')::uuid) WITH CHECK (workspace_id = NULLIF(current_setting('app.workspace_id', true), '')::uuid)")
         op.create_table('access_role_assignment_events',
         sa.Column('workspace_id', sa.Uuid(), nullable=False),
         sa.Column('subject_id', sa.Uuid(), nullable=False),
@@ -1563,6 +1680,25 @@ def upgrade() -> None:
         op.execute('ALTER TABLE iam.admin_access_approvals ENABLE ROW LEVEL SECURITY')
         op.execute('ALTER TABLE iam.admin_access_approvals FORCE ROW LEVEL SECURITY')
         op.execute("CREATE POLICY workspace_isolation ON iam.admin_access_approvals USING (workspace_id = NULLIF(current_setting('app.workspace_id', true), '')::uuid) WITH CHECK (workspace_id = NULLIF(current_setting('app.workspace_id', true), '')::uuid)")
+        op.create_table('job_attempts',
+        sa.Column('workspace_id', sa.Uuid(), nullable=False),
+        sa.Column('job_id', sa.Uuid(), nullable=False),
+        sa.Column('attempt_no', sa.Integer(), nullable=False),
+        sa.Column('worker_id', sa.String(length=255), nullable=False),
+        sa.Column('state', sa.String(length=32), nullable=False),
+        sa.Column('error_class', sa.String(length=100), nullable=True),
+        sa.Column('external_response_hash', sa.String(length=64), nullable=True),
+        sa.Column('started_at', sa.DateTime(timezone=True), nullable=False),
+        sa.Column('finished_at', sa.DateTime(timezone=True), nullable=True),
+        sa.Column('id', sa.Uuid(), nullable=False),
+        sa.ForeignKeyConstraint(['workspace_id', 'job_id'], ['integration.jobs.workspace_id', 'integration.jobs.id'], name=op.f('fk_job_attempts_workspace_id_job_id_jobs'), ondelete='CASCADE'),
+        sa.PrimaryKeyConstraint('id', name=op.f('pk_job_attempts')),
+        sa.UniqueConstraint('job_id', 'attempt_no', name=op.f('uq_job_attempts_job_id_attempt_no')),
+        schema='integration'
+        )
+        op.execute('ALTER TABLE integration.job_attempts ENABLE ROW LEVEL SECURITY')
+        op.execute('ALTER TABLE integration.job_attempts FORCE ROW LEVEL SECURITY')
+        op.execute("CREATE POLICY workspace_isolation ON integration.job_attempts USING (workspace_id = NULLIF(current_setting('app.workspace_id', true), '')::uuid) WITH CHECK (workspace_id = NULLIF(current_setting('app.workspace_id', true), '')::uuid)")
         op.create_table('upload_preparation_receipts',
         sa.Column('workspace_id', sa.Uuid(), nullable=False),
         sa.Column('preparation_job_id', sa.Uuid(), nullable=False),
@@ -2098,6 +2234,39 @@ def upgrade() -> None:
         op.execute('ALTER TABLE authz.restricted_search_grant_events ENABLE ROW LEVEL SECURITY')
         op.execute('ALTER TABLE authz.restricted_search_grant_events FORCE ROW LEVEL SECURITY')
         op.execute("CREATE POLICY workspace_isolation ON authz.restricted_search_grant_events USING (workspace_id = NULLIF(current_setting('app.workspace_id', true), '')::uuid) WITH CHECK (workspace_id = NULLIF(current_setting('app.workspace_id', true), '')::uuid)")
+        op.create_table('manual_metadata_aspect_reports',
+        sa.Column('workspace_id', sa.Uuid(), nullable=False),
+        sa.Column('submission_id', sa.Uuid(), nullable=False),
+        sa.Column('attempt_id', sa.Uuid(), nullable=False),
+        sa.Column('aspect_name', sa.String(length=64), nullable=False),
+        sa.Column('aspect_ordinal', sa.Integer(), nullable=False),
+        sa.Column('outcome', sa.String(length=32), nullable=False),
+        sa.Column('before_hash', sa.String(length=64), nullable=True),
+        sa.Column('expected_hash', sa.String(length=64), nullable=True),
+        sa.Column('observed_hash', sa.String(length=64), nullable=True),
+        sa.Column('write_attempted', sa.Boolean(), nullable=False),
+        sa.Column('failure_code', sa.String(length=100), nullable=True),
+        sa.Column('provider_operation_id_hash', sa.String(length=64), nullable=True),
+        sa.Column('provider_version', sa.String(length=255), nullable=True),
+        sa.Column('provider_response_hash', sa.String(length=64), nullable=True),
+        sa.Column('observed_at', sa.DateTime(timezone=True), nullable=False),
+        sa.Column('created_at', sa.DateTime(timezone=True), nullable=False),
+        sa.Column('id', sa.Uuid(), nullable=False),
+        sa.CheckConstraint("(aspect_name = 'datasetProperties' AND aspect_ordinal = 1) OR (aspect_name = 'domains' AND aspect_ordinal = 2) OR (aspect_name = 'globalTags' AND aspect_ordinal = 3) OR (aspect_name = 'glossaryTerms' AND aspect_ordinal = 4) OR (aspect_name = 'schemaMetadata' AND aspect_ordinal = 5)", name=op.f('ck_manual_metadata_aspect_reports_aspect_ordinal_contract')),
+        sa.CheckConstraint("(before_hash IS NULL OR before_hash ~ '^[0-9a-f]{64}$') AND (expected_hash IS NULL OR expected_hash ~ '^[0-9a-f]{64}$') AND (observed_hash IS NULL OR observed_hash ~ '^[0-9a-f]{64}$') AND (failure_code IS NULL OR char_length(failure_code) BETWEEN 1 AND 100)", name=op.f('ck_manual_metadata_aspect_reports_content_hashes_valid')),
+        sa.CheckConstraint("(outcome = 'ALREADY_MATCHED' AND write_attempted = false AND before_hash = expected_hash AND expected_hash = observed_hash AND failure_code IS NULL AND provider_operation_id_hash IS NULL AND provider_version IS NULL AND provider_response_hash IS NULL) OR (outcome = 'APPLIED_VERIFIED' AND write_attempted = true AND expected_hash = observed_hash AND failure_code IS NULL AND provider_operation_id_hash ~ '^[0-9a-f]{64}$' AND char_length(provider_version) BETWEEN 1 AND 255 AND provider_response_hash ~ '^[0-9a-f]{64}$') OR (outcome = 'FAILED_BEFORE_WRITE' AND write_attempted = false AND before_hash IS NULL AND expected_hash IS NULL AND observed_hash IS NULL AND failure_code IS NOT NULL AND provider_operation_id_hash IS NULL AND provider_version IS NULL AND provider_response_hash IS NULL) OR (outcome = 'WRITE_REJECTED' AND write_attempted = true AND before_hash IS NOT NULL AND expected_hash IS NOT NULL AND observed_hash IS NULL AND failure_code IS NOT NULL AND provider_operation_id_hash IS NULL AND provider_version IS NULL AND provider_response_hash IS NULL) OR (outcome = 'READBACK_FAILED' AND write_attempted = true AND before_hash IS NOT NULL AND expected_hash IS NOT NULL AND observed_hash IS NULL AND failure_code IS NOT NULL AND provider_operation_id_hash ~ '^[0-9a-f]{64}$' AND char_length(provider_version) BETWEEN 1 AND 255 AND provider_response_hash ~ '^[0-9a-f]{64}$') OR (outcome = 'READBACK_MISMATCH' AND write_attempted = true AND before_hash IS NOT NULL AND expected_hash IS NOT NULL AND observed_hash IS NOT NULL AND expected_hash <> observed_hash AND failure_code IS NOT NULL AND provider_operation_id_hash ~ '^[0-9a-f]{64}$' AND char_length(provider_version) BETWEEN 1 AND 255 AND provider_response_hash ~ '^[0-9a-f]{64}$')", name=op.f('ck_manual_metadata_aspect_reports_verified_outcome_shape')),
+        sa.CheckConstraint("outcome IN ('ALREADY_MATCHED', 'APPLIED_VERIFIED', 'FAILED_BEFORE_WRITE', 'WRITE_REJECTED', 'READBACK_FAILED', 'READBACK_MISMATCH')", name=op.f('ck_manual_metadata_aspect_reports_outcome_vocabulary')),
+        sa.ForeignKeyConstraint(['workspace_id', 'submission_id', 'attempt_id'], ['governance.manual_metadata_apply_attempts.workspace_id', 'governance.manual_metadata_apply_attempts.submission_id', 'governance.manual_metadata_apply_attempts.id'], name='fk_manual_aspect_reports_attempt', ondelete='RESTRICT'),
+        sa.ForeignKeyConstraint(['workspace_id', 'submission_id'], ['governance.manual_metadata_submissions.workspace_id', 'governance.manual_metadata_submissions.id'], name='fk_manual_aspect_reports_submission', ondelete='RESTRICT'),
+        sa.PrimaryKeyConstraint('id', name=op.f('pk_manual_metadata_aspect_reports')),
+        sa.UniqueConstraint('workspace_id', 'attempt_id', 'aspect_name', name=op.f('uq_manual_metadata_aspect_reports_workspace_id_attempt_id_aspect_name')),
+        sa.UniqueConstraint('workspace_id', 'id', name=op.f('uq_manual_metadata_aspect_reports_workspace_id_id')),
+        schema='governance'
+        )
+        op.create_index('ix_manual_aspect_reports_attempt', 'manual_metadata_aspect_reports', ['workspace_id', 'attempt_id', 'aspect_ordinal'], unique=False, schema='governance')
+        op.execute('ALTER TABLE governance.manual_metadata_aspect_reports ENABLE ROW LEVEL SECURITY')
+        op.execute('ALTER TABLE governance.manual_metadata_aspect_reports FORCE ROW LEVEL SECURITY')
+        op.execute("CREATE POLICY workspace_isolation ON governance.manual_metadata_aspect_reports USING (workspace_id = NULLIF(current_setting('app.workspace_id', true), '')::uuid) WITH CHECK (workspace_id = NULLIF(current_setting('app.workspace_id', true), '')::uuid)")
         op.create_table('upload_registration_candidates',
         sa.Column('workspace_id', sa.Uuid(), nullable=False),
         sa.Column('receipt_id', sa.Uuid(), nullable=False),
@@ -2300,6 +2469,7 @@ def upgrade() -> None:
         sa.PrimaryKeyConstraint('id', name=op.f('pk_registration_content_bindings')),
         sa.UniqueConstraint('workspace_id', 'candidate_id', name=op.f('uq_registration_content_bindings_workspace_id_candidate_id')),
         sa.UniqueConstraint('workspace_id', 'change_item_id', name=op.f('uq_registration_content_bindings_workspace_id_change_item_id')),
+        sa.UniqueConstraint('workspace_id', 'change_request_id', name=op.f('uq_registration_content_bindings_workspace_id_change_request_id')),
         sa.UniqueConstraint('workspace_id', 'id', name=op.f('uq_registration_content_bindings_workspace_id_id')),
         schema='governance'
         )
@@ -2434,7 +2604,7 @@ def upgrade() -> None:
         op.create_foreign_key(op.f('fk_changesets_workspace_id_graph_id_base_release_id_releases'), 'changesets', 'releases', ['workspace_id', 'graph_id', 'base_release_id'], ['workspace_id', 'graph_id', 'id'], source_schema='knowledge', referent_schema='knowledge', use_alter=True)
         op.create_foreign_key(op.f('fk_changesets_workspace_id_graph_id_published_release_id_releases'), 'changesets', 'releases', ['workspace_id', 'graph_id', 'published_release_id'], ['workspace_id', 'graph_id', 'id'], source_schema='knowledge', referent_schema='knowledge', use_alter=True)
         op.create_foreign_key(op.f('fk_graphs_workspace_id_id_active_release_id_releases'), 'graphs', 'releases', ['workspace_id', 'id', 'active_release_id'], ['workspace_id', 'graph_id', 'id'], source_schema='knowledge', referent_schema='knowledge', use_alter=True)
-        op.execute("DO $datariver$\nBEGIN\n    IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'datariver_app') THEN\n        GRANT USAGE ON SCHEMA platform, iam, authz, catalog, governance, integration, knowledge, assistant, sharing, retention TO datariver_app;\n        GRANT USAGE ON SCHEMA public TO datariver_app;\n        GRANT SELECT ON public.alembic_version TO datariver_app;\n        GRANT SELECT ON platform.workspaces, iam.subjects TO datariver_app;\n        GRANT UPDATE (email, last_login_at, last_login_ip, updated_at)\n            ON iam.subjects TO datariver_app;\n        GRANT SELECT ON iam.workspace_memberships TO datariver_app;\n        GRANT SELECT, INSERT, UPDATE ON iam.membership_renewal_requests TO datariver_app;\n        GRANT SELECT, INSERT ON iam.access_roles TO datariver_app;\n        GRANT UPDATE (name, description, clearance, groups, allowed_actions, denied_actions,\n            allowed_system_ids, allowed_domain_ids, active, updated_by, version, updated_at)\n            ON iam.access_roles TO datariver_app;\n        GRANT SELECT, INSERT ON iam.access_role_data_rules,\n            iam.access_role_assignment_events TO datariver_app;\n        GRANT SELECT, INSERT ON iam.access_role_assignments TO datariver_app;\n        GRANT UPDATE (role_id, role_version, membership_version, access_payload_hash,\n            assigned_by, active, version, updated_at)\n            ON iam.access_role_assignments TO datariver_app;\n        GRANT EXECUTE ON FUNCTION iam.resolve_default_workspace(text, text) TO datariver_app;\n        GRANT EXECUTE ON FUNCTION iam.provision_workspace_identity(uuid, uuid, text, text, text, text, uuid, text, uuid, timestamptz) TO datariver_app;\n        GRANT UPDATE (active, clearance, attributes, version, updated_at)\n            ON iam.workspace_memberships TO datariver_app;\n        GRANT UPDATE (access_expires_at, version, updated_at)\n            ON iam.workspace_memberships TO datariver_app;\n        GRANT SELECT, INSERT ON iam.admin_access_requests TO datariver_app;\n        GRANT UPDATE (state, checker_id, consumed_by, consumed_at,\n            consume_policy_decision_id, version, updated_at)\n            ON iam.admin_access_requests TO datariver_app;\n        GRANT SELECT, INSERT ON iam.admin_access_approvals TO datariver_app;\n        GRANT INSERT ON authz.policy_decisions TO datariver_app;\n        GRANT SELECT, INSERT, UPDATE ON catalog.assets_projection,\n            catalog.sync_runs, catalog.projection_watermarks TO datariver_app;\n        GRANT SELECT, INSERT ON catalog.export_requests TO datariver_app;\n        GRANT SELECT, INSERT ON governance.change_request_items,\n            governance.approvals, governance.state_transitions TO datariver_app;\n        GRANT SELECT, INSERT ON governance.change_request_attachments TO datariver_app;\n        GRANT SELECT, INSERT, UPDATE ON governance.change_request_rounds TO datariver_app;\n        GRANT SELECT, INSERT ON governance.change_test_runs TO datariver_app;\n        GRANT SELECT, INSERT ON governance.registration_content_bindings TO datariver_app;\n        GRANT SELECT, INSERT, UPDATE ON governance.change_requests TO datariver_app;\n        GRANT SELECT, INSERT, UPDATE ON platform.data_systems, platform.system_schema_scopes,\n            platform.system_assignees, platform.external_service_profiles TO datariver_app;\n        GRANT SELECT, INSERT, UPDATE ON platform.external_service_profile_versions\n            TO datariver_app;\n        GRANT SELECT ON integration.jobs, integration.job_attempts TO datariver_app;\n        GRANT INSERT ON integration.jobs TO datariver_app;\n        GRANT SELECT, INSERT, UPDATE ON integration.object_manifests TO datariver_app;\n        GRANT SELECT, INSERT ON integration.upload_preparation_jobs TO datariver_app;\n        GRANT UPDATE (state, lease_token, lease_until, attempts, rows_processed,\n            total_rows, last_error_code, version, updated_at)\n            ON integration.upload_preparation_jobs TO datariver_app;\n        GRANT SELECT ON integration.upload_preparation_receipts,\n            integration.upload_registration_candidates TO datariver_app;\n        GRANT INSERT ON integration.upload_preparation_receipts,\n            integration.upload_registration_candidates TO datariver_app;\n        GRANT SELECT, INSERT ON integration.idempotency_keys,\n            integration.outbox_events TO datariver_app;\n        GRANT SELECT ON knowledge.graphs, knowledge.ontology_versions,\n            knowledge.releases, knowledge.release_nodes, knowledge.release_edges,\n            knowledge.changesets, knowledge.change_operations,\n            knowledge.validation_results, knowledge.projection_deployments,\n            knowledge.source_snapshots, knowledge.source_pages,\n            knowledge.source_page_embeddings, knowledge.extraction_runs,\n            knowledge.graphrag_audits TO datariver_app;\n        GRANT INSERT ON knowledge.graphs, knowledge.ontology_versions,\n            knowledge.releases, knowledge.release_nodes, knowledge.release_edges,\n            knowledge.changesets, knowledge.change_operations,\n            knowledge.validation_results, knowledge.projection_deployments,\n            knowledge.source_snapshots, knowledge.source_pages,\n            knowledge.source_page_embeddings, knowledge.extraction_runs,\n            knowledge.graphrag_audits TO datariver_app;\n        GRANT UPDATE ON knowledge.graphs, knowledge.changesets,\n            knowledge.projection_deployments, knowledge.source_snapshots TO datariver_app;\n        GRANT DELETE ON knowledge.validation_results TO datariver_app;\n        GRANT SELECT, INSERT ON assistant.chat_sessions, assistant.chat_messages,\n            assistant.assistant_runs, assistant.evidence_citations TO datariver_app;\n        GRANT UPDATE (version, updated_at) ON assistant.chat_sessions TO datariver_app;\n        GRANT SELECT, INSERT ON retention.policy_versions,\n            retention.policy_class_rules TO datariver_app;\n        GRANT UPDATE (state, checker_id, decision_reason,\n            decision_policy_decision_id, decided_at, superseded_by, supersede_reason,\n            supersede_policy_decision_id, superseded_at, version, updated_at)\n            ON retention.policy_versions TO datariver_app;\n        GRANT SELECT, INSERT ON retention.legal_holds TO datariver_app;\n        GRANT UPDATE (state, release_requested_by, release_request_reason,\n            release_request_policy_decision_id, release_checker_id,\n            release_decision_reason, release_decision_policy_decision_id,\n            released_at, version, updated_at)\n            ON retention.legal_holds TO datariver_app;\n        GRANT SELECT, INSERT ON retention.legal_hold_events TO datariver_app;\n        GRANT SELECT, INSERT ON retention.erasure_requests TO datariver_app;\n        GRANT UPDATE (state, checker_id, decision_reason,\n            decision_policy_decision_id, decided_at, version, updated_at)\n            ON retention.erasure_requests TO datariver_app;\n        GRANT SELECT, INSERT ON retention.erasure_request_events TO datariver_app;\n        GRANT SELECT ON retention.archive_capability_attestations,\n            retention.immutable_archive_receipts TO datariver_app;\n        GRANT SELECT ON retention.execution_jobs TO datariver_app;\n        GRANT SELECT ON retention.execution_attempts,\n            retention.execution_events TO datariver_app;\n        GRANT SELECT, INSERT, UPDATE ON sharing.api_products,\n            sharing.api_product_versions, sharing.consumer_grants TO datariver_app;\n        GRANT SELECT, INSERT ON sharing.api_invocations TO datariver_app;\n    END IF;\n\n    IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'datariver_relay') THEN\n        GRANT USAGE ON SCHEMA platform, integration TO datariver_relay;\n        GRANT SELECT ON platform.external_service_profiles,\n            platform.external_service_profile_versions TO datariver_relay;\n        GRANT SELECT, UPDATE ON integration.outbox_events TO datariver_relay;\n        GRANT SELECT ON integration.inbox_messages TO datariver_relay;\n    END IF;\n\n    IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'datariver_upload') THEN\n        GRANT USAGE ON SCHEMA platform, integration TO datariver_upload;\n        GRANT SELECT ON platform.external_service_profiles,\n            platform.external_service_profile_versions TO datariver_upload;\n        GRANT SELECT, UPDATE ON integration.object_manifests TO datariver_upload;\n        GRANT SELECT, INSERT ON integration.outbox_events TO datariver_upload;\n        GRANT SELECT, INSERT, UPDATE ON integration.inbox_messages TO datariver_upload;\n    END IF;\n\n    IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'datariver_governance') THEN\n        GRANT USAGE ON SCHEMA platform, authz, governance, integration TO datariver_governance;\n        GRANT SELECT ON platform.external_service_profiles,\n            platform.external_service_profile_versions TO datariver_governance;\n        GRANT SELECT, INSERT ON authz.policy_decisions TO datariver_governance;\n        GRANT SELECT, UPDATE ON governance.change_requests TO datariver_governance;\n        GRANT SELECT ON governance.change_request_items, governance.approvals,\n            governance.state_transitions TO datariver_governance;\n        GRANT INSERT ON governance.state_transitions TO datariver_governance;\n        GRANT SELECT, INSERT, UPDATE ON integration.jobs,\n            integration.job_attempts, integration.inbox_messages TO datariver_governance;\n        GRANT SELECT, INSERT ON integration.outbox_events TO datariver_governance;\n    END IF;\n\n    IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'datariver_export') THEN\n        GRANT USAGE ON SCHEMA platform, iam, authz, catalog, integration TO datariver_export;\n        GRANT SELECT ON platform.workspaces, iam.subjects,\n            iam.workspace_memberships TO datariver_export;\n        GRANT SELECT ON platform.external_service_profiles,\n            platform.external_service_profile_versions TO datariver_export;\n        GRANT SELECT ON authz.classification_access_policy_versions,\n            authz.classification_access_policy_rules, authz.classification_access_generations,\n            authz.restricted_search_grants TO datariver_export;\n        GRANT INSERT ON authz.policy_decisions TO datariver_export;\n        GRANT SELECT ON catalog.assets_projection, catalog.projection_watermarks,\n            catalog.export_requests TO datariver_export;\n        GRANT UPDATE (object_bucket, object_key, row_count, size_bytes, content_sha256,\n            provider_checksum, completed_at, version, updated_at)\n            ON catalog.export_requests TO datariver_export;\n        GRANT SELECT ON integration.inference_provider_profile_versions,\n            integration.jobs, integration.job_attempts TO datariver_export;\n        GRANT SELECT, INSERT, UPDATE ON integration.inbox_messages TO datariver_export;\n        GRANT UPDATE (state, progress, result_ref, lease_until, attempts, last_error_code,\n            version, updated_at) ON integration.jobs TO datariver_export;\n        GRANT INSERT, UPDATE (state, error_class, external_response_hash, finished_at)\n            ON integration.job_attempts TO datariver_export;\n    END IF;\n\n    IF EXISTS (\n        SELECT 1 FROM pg_roles WHERE rolname = 'datariver_retention_scheduler'\n    ) THEN\n        GRANT USAGE ON SCHEMA platform, iam, authz, assistant, retention\n            TO datariver_retention_scheduler;\n        GRANT SELECT ON platform.workspaces, iam.subjects,\n            iam.workspace_memberships, iam.access_roles,\n            iam.access_role_assignments, authz.policy_decisions,\n            retention.policy_versions, retention.policy_class_rules,\n            retention.legal_holds, retention.erasure_requests,\n            retention.erasure_request_events,\n            assistant.chat_sessions TO datariver_retention_scheduler;\n        GRANT SELECT, INSERT ON retention.execution_jobs,\n            retention.execution_events TO datariver_retention_scheduler;\n    END IF;\n\n    IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'datariver_archive') THEN\n        GRANT USAGE ON SCHEMA platform, iam, authz, assistant, retention\n            TO datariver_archive;\n        GRANT SELECT ON platform.workspaces, iam.subjects,\n            iam.workspace_memberships, iam.access_roles,\n            iam.access_role_assignments, authz.policy_decisions,\n            retention.policy_versions, retention.policy_class_rules,\n            retention.legal_holds, retention.erasure_requests,\n            retention.erasure_request_events,\n            assistant.chat_sessions, retention.execution_jobs,\n            retention.execution_attempts,\n            retention.archive_capability_attestations,\n            retention.immutable_archive_receipts TO datariver_archive;\n        GRANT INSERT ON retention.archive_capability_attestations,\n            retention.immutable_archive_receipts,\n            retention.execution_attempts TO datariver_archive;\n        GRANT SELECT, INSERT ON retention.execution_events TO datariver_archive;\n        GRANT UPDATE (state, next_attempt_at, attempt_count, lease_epoch,\n            lease_token_hash, lease_owner_fingerprint, lease_until,\n            archive_receipt_id, archive_manifest_hash, last_failure_code,\n            version, updated_at) ON retention.execution_jobs TO datariver_archive;\n        GRANT UPDATE (state, stage, evidence_hash, external_response_hash,\n            failure_code, finished_at) ON retention.execution_attempts TO datariver_archive;\n    END IF;\n\n    IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'datariver_bootstrap') THEN\n        GRANT USAGE ON SCHEMA platform, iam TO datariver_bootstrap;\n        GRANT SELECT, INSERT, UPDATE ON platform.workspaces, iam.subjects,\n            iam.workspace_memberships TO datariver_bootstrap;\n    END IF;\nEND\n$datariver$")
+        op.execute("DO $datariver$\nBEGIN\n    IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'datariver_app') THEN\n        GRANT USAGE ON SCHEMA platform, iam, authz, catalog, governance, integration, knowledge, assistant, sharing, retention TO datariver_app;\n        GRANT USAGE ON SCHEMA public TO datariver_app;\n        GRANT SELECT ON public.alembic_version TO datariver_app;\n        GRANT SELECT ON platform.workspaces, iam.subjects TO datariver_app;\n        GRANT UPDATE (email, last_login_at, last_login_ip, updated_at)\n            ON iam.subjects TO datariver_app;\n        GRANT SELECT ON iam.workspace_memberships TO datariver_app;\n        GRANT SELECT, INSERT, UPDATE ON iam.membership_renewal_requests TO datariver_app;\n        GRANT SELECT, INSERT ON iam.access_roles TO datariver_app;\n        GRANT UPDATE (name, description, clearance, groups, allowed_actions, denied_actions,\n            allowed_system_ids, allowed_domain_ids, active, updated_by, version, updated_at)\n            ON iam.access_roles TO datariver_app;\n        GRANT SELECT, INSERT ON iam.access_role_data_rules,\n            iam.access_role_assignment_events TO datariver_app;\n        GRANT SELECT, INSERT ON iam.access_role_assignments TO datariver_app;\n        GRANT UPDATE (role_id, role_version, membership_version, access_payload_hash,\n            assigned_by, active, version, updated_at)\n            ON iam.access_role_assignments TO datariver_app;\n        GRANT EXECUTE ON FUNCTION iam.resolve_default_workspace(text, text) TO datariver_app;\n        GRANT EXECUTE ON FUNCTION iam.provision_workspace_identity(uuid, uuid, text, text, text, text, uuid, text, uuid, timestamptz) TO datariver_app;\n        GRANT UPDATE (active, clearance, attributes, version, updated_at)\n            ON iam.workspace_memberships TO datariver_app;\n        GRANT UPDATE (access_expires_at, version, updated_at)\n            ON iam.workspace_memberships TO datariver_app;\n        GRANT SELECT, INSERT ON iam.admin_access_requests TO datariver_app;\n        GRANT UPDATE (state, checker_id, consumed_by, consumed_at,\n            consume_policy_decision_id, version, updated_at)\n            ON iam.admin_access_requests TO datariver_app;\n        GRANT SELECT, INSERT ON iam.admin_access_approvals TO datariver_app;\n        GRANT INSERT ON authz.policy_decisions TO datariver_app;\n        GRANT SELECT, INSERT, UPDATE ON catalog.assets_projection,\n            catalog.sync_runs, catalog.projection_watermarks TO datariver_app;\n        GRANT SELECT, INSERT ON catalog.export_requests TO datariver_app;\n        GRANT SELECT, INSERT ON governance.change_request_items,\n            governance.approvals, governance.state_transitions TO datariver_app;\n        GRANT SELECT, INSERT ON governance.change_request_attachments TO datariver_app;\n        GRANT SELECT, INSERT, UPDATE ON governance.change_request_rounds TO datariver_app;\n        GRANT SELECT, INSERT ON governance.change_test_runs TO datariver_app;\n        GRANT SELECT, INSERT ON governance.registration_content_bindings TO datariver_app;\n        GRANT SELECT, INSERT, UPDATE ON governance.change_requests TO datariver_app;\n        GRANT SELECT, INSERT, UPDATE ON platform.data_systems, platform.system_schema_scopes,\n            platform.system_assignees, platform.external_service_profiles TO datariver_app;\n        GRANT SELECT, INSERT, UPDATE ON platform.external_service_profile_versions\n            TO datariver_app;\n        GRANT SELECT ON integration.jobs, integration.job_attempts TO datariver_app;\n        GRANT INSERT ON integration.jobs TO datariver_app;\n        GRANT SELECT, INSERT, UPDATE ON integration.object_manifests TO datariver_app;\n        GRANT SELECT, INSERT ON integration.upload_preparation_jobs TO datariver_app;\n        GRANT UPDATE (state, lease_token, lease_until, attempts, rows_processed,\n            total_rows, last_error_code, version, updated_at)\n            ON integration.upload_preparation_jobs TO datariver_app;\n        GRANT SELECT ON integration.upload_preparation_receipts,\n            integration.upload_registration_candidates TO datariver_app;\n        GRANT INSERT ON integration.upload_preparation_receipts,\n            integration.upload_registration_candidates TO datariver_app;\n        GRANT SELECT, INSERT ON integration.idempotency_keys,\n            integration.outbox_events TO datariver_app;\n        GRANT SELECT ON knowledge.graphs, knowledge.ontology_versions,\n            knowledge.releases, knowledge.release_nodes, knowledge.release_edges,\n            knowledge.changesets, knowledge.change_operations,\n            knowledge.validation_results, knowledge.projection_deployments,\n            knowledge.source_snapshots, knowledge.source_pages,\n            knowledge.source_page_embeddings, knowledge.extraction_runs,\n            knowledge.graphrag_audits TO datariver_app;\n        GRANT INSERT ON knowledge.graphs, knowledge.ontology_versions,\n            knowledge.releases, knowledge.release_nodes, knowledge.release_edges,\n            knowledge.changesets, knowledge.change_operations,\n            knowledge.validation_results, knowledge.projection_deployments,\n            knowledge.source_snapshots, knowledge.source_pages,\n            knowledge.source_page_embeddings, knowledge.extraction_runs,\n            knowledge.graphrag_audits TO datariver_app;\n        GRANT UPDATE ON knowledge.graphs, knowledge.changesets,\n            knowledge.projection_deployments, knowledge.source_snapshots TO datariver_app;\n        GRANT DELETE ON knowledge.validation_results TO datariver_app;\n        GRANT SELECT, INSERT ON assistant.chat_sessions, assistant.chat_messages,\n            assistant.assistant_runs, assistant.evidence_citations TO datariver_app;\n        GRANT UPDATE (version, updated_at) ON assistant.chat_sessions TO datariver_app;\n        GRANT SELECT, INSERT ON retention.policy_versions,\n            retention.policy_class_rules TO datariver_app;\n        GRANT UPDATE (state, checker_id, decision_reason,\n            decision_policy_decision_id, decided_at, superseded_by, supersede_reason,\n            supersede_policy_decision_id, superseded_at, version, updated_at)\n            ON retention.policy_versions TO datariver_app;\n        GRANT SELECT, INSERT ON retention.legal_holds TO datariver_app;\n        GRANT UPDATE (state, release_requested_by, release_request_reason,\n            release_request_policy_decision_id, release_checker_id,\n            release_decision_reason, release_decision_policy_decision_id,\n            released_at, version, updated_at)\n            ON retention.legal_holds TO datariver_app;\n        GRANT SELECT, INSERT ON retention.legal_hold_events TO datariver_app;\n        GRANT SELECT, INSERT ON retention.erasure_requests TO datariver_app;\n        GRANT UPDATE (state, checker_id, decision_reason,\n            decision_policy_decision_id, decided_at, version, updated_at)\n            ON retention.erasure_requests TO datariver_app;\n        GRANT SELECT, INSERT ON retention.erasure_request_events TO datariver_app;\n        GRANT SELECT ON retention.archive_capability_attestations,\n            retention.immutable_archive_receipts TO datariver_app;\n        GRANT SELECT ON retention.execution_jobs TO datariver_app;\n        GRANT SELECT ON retention.execution_attempts,\n            retention.execution_events TO datariver_app;\n        GRANT SELECT, INSERT, UPDATE ON sharing.api_products,\n            sharing.api_product_versions, sharing.consumer_grants TO datariver_app;\n        GRANT SELECT, INSERT ON sharing.api_invocations TO datariver_app;\n    END IF;\n\n    IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'datariver_relay') THEN\n        GRANT USAGE ON SCHEMA platform, integration TO datariver_relay;\n        GRANT SELECT ON platform.external_service_profiles,\n            platform.external_service_profile_versions TO datariver_relay;\n        GRANT SELECT, UPDATE ON integration.outbox_events TO datariver_relay;\n        GRANT SELECT ON integration.inbox_messages TO datariver_relay;\n    END IF;\n\n    IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'datariver_upload') THEN\n        GRANT USAGE ON SCHEMA platform, integration TO datariver_upload;\n        GRANT SELECT ON platform.external_service_profiles,\n            platform.external_service_profile_versions TO datariver_upload;\n        GRANT SELECT, UPDATE ON integration.object_manifests TO datariver_upload;\n        GRANT SELECT, INSERT ON integration.outbox_events TO datariver_upload;\n        GRANT SELECT, INSERT, UPDATE ON integration.inbox_messages TO datariver_upload;\n    END IF;\n\n    IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'datariver_governance') THEN\n        GRANT USAGE ON SCHEMA platform, iam, authz, governance, integration\n            TO datariver_governance;\n        GRANT SELECT ON platform.external_service_profiles,\n            platform.external_service_profile_versions TO datariver_governance;\n        GRANT SELECT, INSERT ON authz.policy_decisions TO datariver_governance;\n        GRANT SELECT ON governance.change_requests TO datariver_governance;\n        GRANT UPDATE (state, version, updated_at)\n            ON governance.change_requests TO datariver_governance;\n        GRANT SELECT ON governance.change_request_items, governance.approvals,\n            governance.state_transitions, governance.change_request_rounds,\n            governance.change_test_runs TO datariver_governance;\n        GRANT INSERT ON governance.state_transitions TO datariver_governance;\n        GRANT SELECT, INSERT ON integration.jobs, integration.job_attempts\n            TO datariver_governance;\n        GRANT UPDATE (state, progress, result_ref, lease_until, attempts,\n            attempt_cycle, cycle_attempts, lease_token_hash, lease_owner_id,\n            last_error_code, version, updated_at)\n            ON integration.jobs TO datariver_governance;\n        GRANT UPDATE (state, error_class, external_response_hash, finished_at)\n            ON integration.job_attempts TO datariver_governance;\n        GRANT SELECT, INSERT, UPDATE ON integration.inbox_messages\n            TO datariver_governance;\n        GRANT SELECT, INSERT ON integration.outbox_events TO datariver_governance;\n    END IF;\n\n    IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'datariver_export') THEN\n        GRANT USAGE ON SCHEMA platform, iam, authz, catalog, integration TO datariver_export;\n        GRANT SELECT ON platform.workspaces, iam.subjects,\n            iam.workspace_memberships TO datariver_export;\n        GRANT SELECT ON platform.external_service_profiles,\n            platform.external_service_profile_versions TO datariver_export;\n        GRANT SELECT ON authz.classification_access_policy_versions,\n            authz.classification_access_policy_rules, authz.classification_access_generations,\n            authz.restricted_search_grants TO datariver_export;\n        GRANT INSERT ON authz.policy_decisions TO datariver_export;\n        GRANT SELECT ON catalog.assets_projection, catalog.projection_watermarks,\n            catalog.export_requests TO datariver_export;\n        GRANT UPDATE (object_bucket, object_key, row_count, size_bytes, content_sha256,\n            provider_checksum, completed_at, version, updated_at)\n            ON catalog.export_requests TO datariver_export;\n        GRANT SELECT ON integration.inference_provider_profile_versions,\n            integration.jobs, integration.job_attempts TO datariver_export;\n        GRANT SELECT, INSERT, UPDATE ON integration.inbox_messages TO datariver_export;\n        GRANT UPDATE (state, progress, result_ref, lease_until, attempts, last_error_code,\n            version, updated_at) ON integration.jobs TO datariver_export;\n        GRANT INSERT, UPDATE (state, error_class, external_response_hash, finished_at)\n            ON integration.job_attempts TO datariver_export;\n    END IF;\n\n    IF EXISTS (\n        SELECT 1 FROM pg_roles WHERE rolname = 'datariver_retention_scheduler'\n    ) THEN\n        GRANT USAGE ON SCHEMA platform, iam, authz, assistant, retention\n            TO datariver_retention_scheduler;\n        GRANT SELECT ON platform.workspaces, iam.subjects,\n            iam.workspace_memberships, iam.access_roles,\n            iam.access_role_assignments, authz.policy_decisions,\n            retention.policy_versions, retention.policy_class_rules,\n            retention.legal_holds, retention.erasure_requests,\n            retention.erasure_request_events,\n            assistant.chat_sessions TO datariver_retention_scheduler;\n        GRANT SELECT, INSERT ON retention.execution_jobs,\n            retention.execution_events TO datariver_retention_scheduler;\n    END IF;\n\n    IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'datariver_archive') THEN\n        GRANT USAGE ON SCHEMA platform, iam, authz, assistant, retention\n            TO datariver_archive;\n        GRANT SELECT ON platform.workspaces, iam.subjects,\n            iam.workspace_memberships, iam.access_roles,\n            iam.access_role_assignments, authz.policy_decisions,\n            retention.policy_versions, retention.policy_class_rules,\n            retention.legal_holds, retention.erasure_requests,\n            retention.erasure_request_events,\n            assistant.chat_sessions, retention.execution_jobs,\n            retention.execution_attempts,\n            retention.archive_capability_attestations,\n            retention.immutable_archive_receipts TO datariver_archive;\n        GRANT INSERT ON retention.archive_capability_attestations,\n            retention.immutable_archive_receipts,\n            retention.execution_attempts TO datariver_archive;\n        GRANT SELECT, INSERT ON retention.execution_events TO datariver_archive;\n        GRANT UPDATE (state, next_attempt_at, attempt_count, lease_epoch,\n            lease_token_hash, lease_owner_fingerprint, lease_until,\n            archive_receipt_id, archive_manifest_hash, last_failure_code,\n            version, updated_at) ON retention.execution_jobs TO datariver_archive;\n        GRANT UPDATE (state, stage, evidence_hash, external_response_hash,\n            failure_code, finished_at) ON retention.execution_attempts TO datariver_archive;\n    END IF;\n\n    IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'datariver_bootstrap') THEN\n        GRANT USAGE ON SCHEMA platform, iam TO datariver_bootstrap;\n        GRANT SELECT, INSERT, UPDATE ON platform.workspaces, iam.subjects,\n            iam.workspace_memberships TO datariver_bootstrap;\n    END IF;\nEND\n$datariver$")
 
 
 def downgrade() -> None:
@@ -2464,6 +2634,7 @@ def downgrade() -> None:
         op.drop_table('execution_jobs', schema='retention')
         op.drop_table('erasure_request_events', schema='retention')
         op.drop_table('upload_registration_candidates', schema='integration')
+        op.drop_table('manual_metadata_aspect_reports', schema='governance')
         op.drop_table('restricted_search_grant_events', schema='authz')
         op.drop_table('chat_messages', schema='assistant')
         op.drop_table('api_product_versions', schema='sharing')
@@ -2481,10 +2652,12 @@ def downgrade() -> None:
         op.drop_table('extraction_runs', schema='knowledge')
         op.drop_table('change_operations', schema='knowledge')
         op.drop_table('upload_preparation_receipts', schema='integration')
+        op.drop_table('job_attempts', schema='integration')
         op.drop_table('admin_access_approvals', schema='iam')
         op.drop_table('access_role_data_rules', schema='iam')
         op.drop_table('access_role_assignments', schema='iam')
         op.drop_table('access_role_assignment_events', schema='iam')
+        op.drop_table('manual_metadata_apply_attempts', schema='governance')
         op.drop_table('change_test_runs', schema='governance')
         op.drop_table('restricted_search_grants', schema='authz')
         op.drop_table('classification_access_policy_rules', schema='authz')
@@ -2498,6 +2671,8 @@ def downgrade() -> None:
         op.drop_table('releases', schema='knowledge')
         op.drop_table('changesets', schema='knowledge')
         op.drop_table('upload_preparation_jobs', schema='integration')
+        op.drop_table('registration_worker_call_receipts', schema='integration')
+        op.drop_table('jobs', schema='integration')
         op.drop_table('inference_provider_profile_versions', schema='integration')
         op.drop_table('membership_renewal_requests', schema='iam')
         op.drop_table('admin_access_requests', schema='iam')
@@ -2506,6 +2681,7 @@ def downgrade() -> None:
         op.drop_table('manual_metadata_submissions', schema='governance')
         op.drop_table('change_request_items', schema='governance')
         op.drop_table('change_request_attachments', schema='governance')
+        op.drop_table('change_request_attachment_upload_intents', schema='governance')
         op.drop_table('approvals', schema='governance')
         op.drop_table('export_requests', schema='catalog')
         op.drop_table('classification_access_policy_versions', schema='authz')
@@ -2514,7 +2690,6 @@ def downgrade() -> None:
         op.drop_table('data_systems', schema='platform')
         op.drop_table('source_snapshots', schema='knowledge')
         op.drop_table('ontology_versions', schema='knowledge')
-        op.drop_table('job_attempts', schema='integration')
         op.drop_table('inference_provider_generations', schema='integration')
         op.drop_table('workspace_memberships', schema='iam')
         op.drop_table('change_request_rounds', schema='governance')
@@ -2525,7 +2700,6 @@ def downgrade() -> None:
         op.drop_table('seed_runs', schema='integration')
         op.drop_table('outbox_events', schema='integration')
         op.drop_table('object_manifests', schema='integration')
-        op.drop_table('jobs', schema='integration')
         op.drop_table('inbox_messages', schema='integration')
         op.drop_table('idempotency_keys', schema='integration')
         op.drop_table('subjects', schema='iam')

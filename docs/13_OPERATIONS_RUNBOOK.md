@@ -97,16 +97,20 @@ against the committed manifest ID/version/location and full SHA-256 evidence; re
 unreferenced attempt object through the reviewed incident procedure. Never infer canonical state
 from an object-key pattern or delete the quarantine source before the committed receipt is known.
 
-Typed upload preparation is currently control-plane only. An authorized API request may create or
-read a `QUEUED` job after exact accepted-byte verification, but no deployed worker may claim it and
-operators must not mark it `READY`, insert receipts/candidates or reuse the BYPASSRLS upload role.
-The checked-in parser is a source/unit contract only; invoking it without lease-token staging and a
-single fenced publish transaction is unsupported because final SHA or target validation can still
-fail after rows have been observed.
-Provisioning a parser requires an explicitly approved, separate NOBYPASSRLS database identity,
-workspace/correlation-scoped claim capability, object read limited to the verified source and no
-DataHub write credential. Until that gate passes, queue age is expected and is not a reason to edit
-job evidence manually.
+Typed upload preparation has a fenced runtime path, but the shipped Airflow DAG remains paused
+until the target identity and provider gates below are accepted. An authorized API request may
+create or read a `QUEUED` job only after exact accepted-byte verification. The purpose-bound
+registration worker claims one job with database time, parses into an attempt-local bounded spool
+and publishes the receipt/candidates in one lease-token-fenced transaction. Operators must never
+mark a job `READY`, insert receipts/candidates, reuse the BYPASSRLS upload role or invoke the parser
+outside this claim/publish boundary. Queue age while the DAG is paused is expected and is not a
+reason to edit evidence.
+
+Production activation requires a reviewed NOBYPASSRLS registration-worker database identity,
+workspace/correlation-scoped claim capability, object read limited to verified accepted sources and
+no DataHub write credential for BULK preparation. Manual apply separately uses the reviewed scoped
+DataHub service principal. The local source implementation and tests do not satisfy those
+target-principal gates.
 
 Administrator password fallback is also disabled by default. Before enabling it, query the canonical
 membership/subject stores and prove that at least two active, non-service-account,
@@ -128,6 +132,80 @@ Web Nginx and APISIX dynamically re-resolve the API service. After replacing the
 The shipped Airflow `SimpleAuthManager` password file is permitted only on loopback developer hosts. It is pre-created from a mounted secret so no generated password is printed. A production deployment must select and validate its supported enterprise/FAB SSO auth manager before exposure; the Keycloak auth-manager provider must not be adopted without its current stability and compatibility review.
 
 The Airflow API has a 90-second startup grace because provider imports and FastAPI initialization can take more than 50 seconds on modest developer PCs. Diagnose only after that window. Pass conditions are a healthy `/api/v2/monitor/health`, both included DAGs present and paused, and `dags list-import-errors` returning `[]`.
+
+### Registration execution
+
+Keep Manual/BULK DAGs paused until the DataRiver registration-worker client has a short-lived
+client-credentials token, MinIO/S3 bucket probes pass and the scoped DataHub service principal can
+read and write only the five reviewed aspects. Airflow receives neither storage nor DataHub
+credentials. Start with one worker call at a time and inspect DataRiver status/report APIs; never
+edit a submission, attempt, candidate or receipt row to force completion.
+
+Each Airflow task invocation supplies one stable `X-Run-Id` and an ordinal `X-Run-Call` (Manual
+1..10, BULK 1..8). DataRiver stores and replays the committed response for the same workspace,
+operation and run-call for 24 hours, so a lost HTTP response does not perform a second effect. A
+different DAG retry must reuse the same identifiers. Authentication and authorization still run
+before replay. A process loss before the result is committed is governed by the canonical
+submission/job lease, idempotent provider read-back and recovery evidence; do not synthesize an
+Airflow success.
+
+Before Alembic `0046`, stop registration worker calls and resolve every Manual row in `QUEUED` or
+`APPLYING`.
+On a blank host, run the repository database-role initializer before Alembic. The earlier `0025`
+revision also requires the mounted `POSTGRES_EXPORT_PASSWORD_FILE`; omitting either prerequisite is
+a bootstrap failure, not permission to stamp past the migration.
+
+A healthy Manual execution has five ordered aspect reports with
+`expected_hash == observed_hash`. A provider 2xx without read-back is not healthy. Retryable work
+returns to `QUEUED` with database-owned `next_attempt_at`; attempts stop at 20. Treat an unreferenced
+conditional-write object after an integrity failure as an incident/reconciliation item. Do not
+unconditionally delete the key because a concurrent writer may own the current version.
+`FAILED_BEFORE_WRITE`, `WRITE_REJECTED`, `READBACK_FAILED` and `READBACK_MISMATCH` are bounded,
+sanitized per-aspect evidence, not permission to mark the attempt successful. Airflow converts a
+terminal Manual/BULK business failure to a non-retryable failed task; only OIDC/transport failures
+use the configured retry budget. A later empty claim must never rewrite that terminal result as a
+successful run.
+
+For a suspected S3/DB receipt split, export a read-only, repeatable-read database manifest through a
+credential channel that does not place a password in shell history, then run the read-only
+reconciler. Use an exact workspace, configured bucket and
+`UPLOAD_METADATA_MANUAL_` prefix. Both sides are capped at 1,000 objects; the scanner defaults to
+64 MiB total and refuses classification if either side is truncated. Increase
+`--maximum-total-bytes` only within the reviewed 1 GiB hard cap.
+
+```bash
+psql "$READ_ONLY_DATABASE_URL" \
+  -v workspace_id="$WORKSPACE_ID" \
+  -v bucket=datariver-infoschema \
+  -v prefix=UPLOAD_METADATA_MANUAL_ \
+  -v maximum_references=1000 \
+  -f scripts/export_manual_receipt_reconciliation_manifest.sql \
+  -o /secure/manual-receipt-db-manifest.json
+
+uv run python scripts/reconcile_manual_receipts.py \
+  --database-manifest /secure/manual-receipt-db-manifest.json \
+  --endpoint https://s3.example.internal \
+  --access-key-file /secure/read-only-s3-access-key \
+  --secret-key-file /secure/read-only-s3-secret-key \
+  --maximum-objects 1000
+```
+
+`DB_REFERENCE_PRESENT` is a full key/metadata/size/SHA match.
+`DB_REFERENCE_MISSING`, `DB_REFERENCE_INTEGRITY_MISMATCH`,
+`UNREFERENCED_EXACT_METADATA_CANDIDATE` and `MALFORMED_OR_AMBIGUOUS_OBJECT` are incident
+classifications only. The utility performs list/HEAD/streamed read and emits JSON; it never updates
+PostgreSQL or creates/deletes an object. No output authorizes deletion. Preserve the manifest,
+report, release SHA, endpoint identity and operator record for reviewed recovery.
+
+The executable BULK profiles are capped at 16 MiB and 10,000 rows. A `READY` receipt permits only a
+typed dataset-description preview and one ETag-fenced Change Request. New table/column, raw Aspect
+and direct provider writes are not recovery shortcuts.
+
+Manual and BULK browser polling stops after 20 checks or 120 seconds and while the tab is hidden.
+Use the explicit status-refresh control after inspecting the worker and provider health; do not
+increase polling or reload in a loop on low-resource hosts. XLSX ZIP/XML parsing is delegated off
+the API event loop and rejects packages above the documented 64 MiB total/32 MiB entry expansion
+budgets, 20,000 shared strings or 16 MiB shared-string bytes.
 
 ## Credential rotation
 

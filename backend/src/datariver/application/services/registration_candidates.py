@@ -242,6 +242,115 @@ class RegistrationCandidateQueryService:
             authorization_generation=access.authorization_generation,
         )
 
+    async def get_candidate(
+        self,
+        *,
+        workspace_id: UUID,
+        upload_id: UUID,
+        preparation_id: UUID,
+        candidate_id: UUID,
+        subject: SubjectAttributes,
+        environment: EnvironmentAttributes,
+        request_id: str,
+    ) -> UploadRegistrationCandidatePage:
+        """Resolve one immutable candidate under a fresh full authorization snapshot."""
+        manifest = await self._uploads.get(workspace_id=workspace_id, upload_id=upload_id)
+        if manifest is None:
+            raise UploadNotFound("The upload does not exist.")
+        await self._authorization.authorize(
+            subject=subject,
+            resource=self._upload_resource(manifest),
+            action=Action.REGISTRATION_READ,
+            environment=environment,
+            request_id=request_id,
+        )
+        preparation = await self._preparations.get(
+            workspace_id=workspace_id,
+            upload_id=upload_id,
+            preparation_id=preparation_id,
+        )
+        if preparation is None:
+            raise UploadPreparationNotFound("The upload preparation does not exist.")
+        if preparation.state is not UploadPreparationState.READY:
+            raise UploadPreparationNotReady("The upload preparation is not ready.")
+        receipt = await self._candidates.get_ready_receipt(
+            workspace_id=workspace_id,
+            upload_id=upload_id,
+            preparation_id=preparation_id,
+        )
+        if receipt is None or not self._receipt_is_consistent(
+            manifest=manifest,
+            preparation=preparation,
+            receipt=receipt,
+        ):
+            raise UploadPreparationEvidenceUnavailable(
+                "The upload preparation evidence is unavailable."
+            )
+        candidate = await self._candidates.get_candidate(
+            workspace_id=workspace_id,
+            receipt_id=receipt.receipt_id,
+            candidate_id=candidate_id,
+        )
+        if candidate is None or not self._candidate_page_is_consistent(
+            candidates=(candidate,),
+            receipt=receipt,
+            after_ordinal=candidate.ordinal - 1,
+            maximum_items=1,
+        ):
+            raise UploadCandidatePageUnavailable("The candidate is not available.")
+
+        access = await self._classification_access.resolve(
+            workspace_id=workspace_id,
+            subject_id=subject.subject_id,
+            now=environment.requested_at,
+        )
+        projection_version = await self._watermark.get_search_watermark(workspace_id=workspace_id)
+        targets = tuple(
+            await self._catalog.get_authorized_assets_by_ids(
+                subject=subject,
+                access=access,
+                asset_ids=(candidate.target_asset_id,),
+            )
+        )
+        if len(targets) != 1:
+            raise UploadCandidatePageUnavailable("The candidate is not available.")
+        target = targets[0]
+        resource = self._target_resource(target)
+        catalog_allowed = await self._authorization.filter_authorized(
+            subject=subject,
+            resources=(resource,),
+            action=Action.CATALOG_READ,
+            environment=environment,
+            request_id=request_id,
+            parent_resource_id=preparation_id,
+        )
+        change_allowed = await self._authorization.filter_authorized(
+            subject=subject,
+            resources=(resource,),
+            action=Action.CHANGE_CREATE,
+            environment=environment,
+            request_id=request_id,
+            parent_resource_id=preparation_id,
+        )
+        if (
+            len(catalog_allowed) != 1
+            or len(change_allowed) != 1
+            or not self._submitted_identity_matches_current(
+                candidate=candidate,
+                target=target,
+            )
+        ):
+            raise UploadCandidatePageUnavailable("The candidate is not available.")
+        return UploadRegistrationCandidatePage(
+            items=(UploadRegistrationCandidateView(evidence=candidate, current_target=target),),
+            next_cursor=None,
+            receipt=receipt,
+            projection_version=projection_version,
+            policy_version=self._policy_version,
+            classification_policy_version=access.policy_version,
+            authorization_generation=access.authorization_generation,
+        )
+
     @staticmethod
     def _receipt_is_consistent(
         *,

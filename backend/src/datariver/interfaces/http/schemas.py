@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import re
 from datetime import date, datetime
-from typing import Any, Literal
+from typing import Annotated, Any, Literal
 from uuid import UUID
 
 from pydantic import (
@@ -636,11 +636,11 @@ class ChangeRequestResponse(BaseModel):
     urgency: str | None
     classification: str
     version: int
-    items: list[ChangeItemResponse]
-    approvals: list[ApprovalResponse]
-    transitions: list[TransitionResponse]
-    rounds: list[ChangeRequestRoundResponse]
-    test_runs: list[ChangeTestRunResponse]
+    items: list[ChangeItemResponse] = Field(max_length=200)
+    approvals: list[ApprovalResponse] = Field(max_length=600)
+    transitions: list[TransitionResponse] = Field(max_length=200)
+    rounds: list[ChangeRequestRoundResponse] = Field(max_length=50)
+    test_runs: list[ChangeTestRunResponse] = Field(max_length=200)
 
 
 class ChangeRequestAttachmentResponse(BaseModel):
@@ -655,8 +655,32 @@ class ChangeRequestAttachmentResponse(BaseModel):
     created_at: datetime
 
 
+class ChangeRequestAttachmentUploadResponse(BaseModel):
+    id: UUID
+    change_request_id: UUID
+    round_id: UUID
+    kind: Literal["REQUEST", "TEST"]
+    original_name: str = Field(min_length=1, max_length=500)
+    state: Literal["STARTED", "STORED", "FINALIZED", "FAILED"]
+    expected_size_bytes: int = Field(ge=1, le=10 * 1024 * 1024)
+    expected_content_sha256: str = Field(pattern="^[0-9a-f]{64}$")
+    provider_checksum: str | None = Field(default=None, max_length=255)
+    failure_code: str | None = Field(default=None, max_length=100)
+    status_url: str
+    finalize_url: str
+
+
+class ChangeRequestAttachmentUploadListResponse(BaseModel):
+    items: list[ChangeRequestAttachmentUploadResponse] = Field(max_length=50)
+
+
 class ChangeRequestAttachmentListResponse(BaseModel):
-    items: list[ChangeRequestAttachmentResponse]
+    items: list[ChangeRequestAttachmentResponse] = Field(max_length=200)
+
+
+class ChangeRequestAttachmentPageResponse(BaseModel):
+    items: list[ChangeRequestAttachmentResponse] = Field(max_length=50)
+    page: PageMeta
 
 
 class ChangeRequestAssigneeResponse(BaseModel):
@@ -683,9 +707,79 @@ class ChangeRequestSchemaOverviewResponse(BaseModel):
     completed_count: int = Field(ge=0)
 
 
+class ChangeRequestSummaryItemResponse(BaseModel):
+    target_ref: str
+    aspect_name: str
+    operation: str
+
+
+class ChangeRequestSummaryResponse(BaseModel):
+    id: UUID
+    number: str
+    request_type: str
+    title: str
+    state: str
+    requester_id: UUID
+    requester_department_id: UUID | None
+    current_round_number: int = Field(ge=1)
+    created_at: datetime
+    requested_due_date: date | None
+    priority: str | None
+    urgency: str | None
+    classification: str
+    version: int = Field(ge=1)
+    item_count: int = Field(ge=1, le=200)
+    first_item: ChangeRequestSummaryItemResponse
+
+
+class ChangeRequestSummaryListResponse(BaseModel):
+    items: list[ChangeRequestSummaryResponse]
+    overview: list[ChangeRequestSchemaOverviewResponse] = Field(
+        default_factory=list,
+        max_length=100,
+    )
+    overview_truncated: bool = False
+    page: PageMeta
+
+
 class ChangeRequestListResponse(BaseModel):
+    """Stable `/api/v1/change-requests` compatibility envelope."""
+
     items: list[ChangeRequestResponse]
     overview: list[ChangeRequestSchemaOverviewResponse] = Field(default_factory=list)
+
+
+class GovernanceApplyAttemptResponse(BaseModel):
+    id: UUID
+    attempt_no: int = Field(ge=1)
+    state: str
+    failure_code: str | None
+    external_response_hash: str | None = Field(default=None, pattern="^[0-9a-f]{64}$")
+    started_at: datetime
+    finished_at: datetime | None
+
+
+class GovernanceApplyItemResponse(BaseModel):
+    item_id: UUID
+    expected_hash: str = Field(pattern="^[0-9a-f]{64}$")
+    observed_hash: str | None = Field(default=None, pattern="^[0-9a-f]{64}$")
+    source_version: str | None
+    provider_version: str | None
+
+
+class GovernanceApplyReportResponse(BaseModel):
+    change_request_id: UUID
+    job_id: UUID | None
+    state: str
+    attempt_count: int = Field(ge=0, le=20)
+    last_error_code: str | None
+    expected_hash: str | None = Field(default=None, pattern="^[0-9a-f]{64}$")
+    observed_hash: str | None = Field(default=None, pattern="^[0-9a-f]{64}$")
+    reconciled: bool
+    created_at: datetime | None
+    updated_at: datetime | None
+    items: list[GovernanceApplyItemResponse] = Field(max_length=200)
+    attempts: list[GovernanceApplyAttemptResponse] = Field(max_length=20)
 
 
 class ChangeRequestSystemResponse(BaseModel):
@@ -1385,6 +1479,16 @@ class UploadPreparationListResponse(BaseModel):
     items: list[UploadPreparationResponse]
 
 
+class RegistrationOperatorCapabilityResponse(BaseModel):
+    eligible: bool
+    can_view_workspace_history: bool
+    reason_code: Literal[
+        "ELIGIBLE",
+        "ACTIVE_HUMAN_ADMIN_OR_DATA_STEWARD_REQUIRED",
+    ]
+    allowed_roles: tuple[Literal["ADMIN"], Literal["DATA_STEWARD"]]
+
+
 class UploadCandidateSubmittedIdentityResponse(BaseModel):
     platform: str
     database_name: str
@@ -1448,6 +1552,37 @@ class UploadRegistrationCandidateListResponse(BaseModel):
     meta: UploadCandidatePolicyMetaResponse
 
 
+class TypedBulkCandidatePreviewResponse(BaseModel):
+    candidate_id: UUID
+    target_asset_id: UUID
+    target_ref: str
+    platform: str
+    database_name: str
+    schema_name: str
+    table_name: str
+    current_description: str | None
+    proposed_description: str
+    before_hash: str = Field(pattern="^[0-9a-f]{64}$")
+    after_hash: str = Field(pattern="^[0-9a-f]{64}$")
+    source_version: str
+    observed_at: datetime
+    preview_etag: str = Field(pattern='^"[0-9a-f]{64}"$')
+
+
+class TypedBulkChangeRequestCreate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    title: str = Field(min_length=1, max_length=500)
+    reason: str = Field(min_length=1, max_length=10_000)
+
+    @field_validator("title", "reason")
+    @classmethod
+    def require_auditable_text(cls, value: str) -> str:
+        if "\x00" in value or not value.strip():
+            raise ValueError("Typed BULK change fields must contain safe visible text.")
+        return value
+
+
 class UploadPartRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -1493,13 +1628,16 @@ class UploadRegistrationProposal(BaseModel):
     description: str = Field(default="", max_length=8000)
 
 
-class ManualMetadataColumnRequest(BaseModel):
+ControlledMetadataReference = Annotated[str, Field(min_length=1, max_length=1_000)]
+
+
+class ManualMetadataColumnEditRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     field_path: str = Field(min_length=1, max_length=2_000)
     description: str = Field(default="", max_length=10_000)
-    tags: list[str] = Field(default_factory=list, max_length=100)
-    terms: list[str] = Field(default_factory=list, max_length=100)
+    tags: list[ControlledMetadataReference] = Field(default_factory=list, max_length=100)
+    terms: list[ControlledMetadataReference] = Field(default_factory=list, max_length=100)
 
     @field_validator("field_path", "description", "tags", "terms")
     @classmethod
@@ -1515,13 +1653,31 @@ class ManualMetadataSubmissionRequest(BaseModel):
 
     asset_id: UUID
     source_version: str = Field(min_length=1, max_length=255)
+    provider_source_version: str | None = Field(default=None, pattern="^[0-9a-f]{64}$")
     description: str = Field(default="", max_length=10_000)
     domain: str | None = Field(default=None, max_length=1_000)
-    tags: list[str] = Field(default_factory=list, max_length=100)
-    terms: list[str] = Field(default_factory=list, max_length=100)
-    columns: list[ManualMetadataColumnRequest] = Field(min_length=1, max_length=2_000)
+    tags: list[ControlledMetadataReference] = Field(default_factory=list, max_length=100)
+    terms: list[ControlledMetadataReference] = Field(default_factory=list, max_length=100)
+    # `columns` preserves the original `/api/v1` full-schema request. New clients send sparse
+    # `column_edits`; accepting both shapes is an additive v1 evolution, not a replacement.
+    columns: list[ManualMetadataColumnEditRequest] | None = Field(
+        default=None,
+        min_length=1,
+        max_length=2_000,
+    )
+    column_edits: list[ManualMetadataColumnEditRequest] | None = Field(
+        default=None,
+        max_length=1_000,
+    )
 
-    @field_validator("source_version", "description", "domain", "tags", "terms")
+    @field_validator(
+        "source_version",
+        "provider_source_version",
+        "description",
+        "domain",
+        "tags",
+        "terms",
+    )
     @classmethod
     def reject_manual_submission_nul(cls, value: str | list[str] | None) -> str | list[str] | None:
         if value is None:
@@ -1531,6 +1687,14 @@ class ManualMetadataSubmissionRequest(BaseModel):
             raise ValueError("Manual metadata text must not contain NUL characters.")
         return value
 
+    @model_validator(mode="after")
+    def require_one_column_contract(self) -> ManualMetadataSubmissionRequest:
+        if self.columns is not None and self.column_edits is not None:
+            raise ValueError("Use either legacy columns or sparse column_edits, not both.")
+        if self.columns is None and self.column_edits is None:
+            raise ValueError("Manual metadata requires columns or column_edits.")
+        return self
+
 
 class ManualMetadataSubmissionResponse(BaseModel):
     id: UUID
@@ -1538,15 +1702,73 @@ class ManualMetadataSubmissionResponse(BaseModel):
     serial_number: int = Field(ge=1)
     row_count: int = Field(ge=1)
     source_version: str
+    provider_source_version: str = Field(pattern="^[0-9a-f]{64}$")
     created_at: datetime
     version: int = Field(ge=1)
+
+
+class ManualMetadataSubmissionStatusResponse(ManualMetadataSubmissionResponse):
+    updated_at: datetime
+    applied_at: datetime | None
+    attempts: int = Field(ge=0, le=20)
+    next_attempt_at: datetime | None
+    last_error_code: str | None
+
+
+class ManualMetadataSubmissionListResponse(BaseModel):
+    items: list[ManualMetadataSubmissionStatusResponse]
+    page: PageMeta
+
+
+class ManualMetadataAspectReportResponse(BaseModel):
+    aspect_name: Literal[
+        "datasetProperties",
+        "domains",
+        "globalTags",
+        "glossaryTerms",
+        "schemaMetadata",
+    ]
+    aspect_ordinal: int = Field(ge=1, le=5)
+    outcome: Literal[
+        "ALREADY_MATCHED",
+        "APPLIED_VERIFIED",
+        "FAILED_BEFORE_WRITE",
+        "WRITE_REJECTED",
+        "READBACK_FAILED",
+        "READBACK_MISMATCH",
+    ]
+    before_hash: str | None = Field(default=None, pattern="^[0-9a-f]{64}$")
+    expected_hash: str | None = Field(default=None, pattern="^[0-9a-f]{64}$")
+    observed_hash: str | None = Field(default=None, pattern="^[0-9a-f]{64}$")
+    write_attempted: bool
+    failure_code: str | None
+    provider_version: str | None
+    provider_response_hash: str | None
+    observed_at: datetime
+
+
+class ManualMetadataApplyAttemptResponse(BaseModel):
+    id: UUID
+    attempt_no: int = Field(ge=1, le=20)
+    lease_epoch: int = Field(ge=1)
+    state: Literal["RUNNING", "APPLIED", "RETRY_WAIT", "FAILED", "SUPERSEDED"]
+    failure_code: str | None
+    report_root_hash: str | None
+    started_at: datetime
+    finished_at: datetime | None
+    aspects: list[ManualMetadataAspectReportResponse]
+
+
+class ManualMetadataSubmissionReportResponse(BaseModel):
+    submission: ManualMetadataSubmissionStatusResponse
+    attempts: list[ManualMetadataApplyAttemptResponse]
 
 
 class ManualMetadataApplyResponse(BaseModel):
     processed: bool
     submission_id: UUID | None = None
     serial_number: int | None = Field(default=None, ge=1)
-    state: Literal["QUEUED", "FAILED", "APPLIED"] | None = None
+    state: Literal["QUEUED", "FAILED", "APPLIED", "SUPERSEDED"] | None = None
 
 
 class BulkPreparationExecuteResponse(BaseModel):

@@ -224,6 +224,7 @@ class SqlUploadPreparationRepository(UploadPreparationRepository):
                 source_sha256=preparation.source_sha256,
                 configuration_hash=preparation.configuration_hash,
                 state=preparation.state.value,
+                next_attempt_at=preparation.created_at,
                 lease_token=None,
                 lease_until=None,
                 attempts=preparation.attempts,
@@ -342,6 +343,9 @@ class SqlUploadCandidateReader(UploadCandidateReader):
                 receipts.manifest_version,
                 receipts.source_sha256,
                 receipts.accepted_sha256,
+                receipts.object_locator_hash,
+                receipts.accepted_etag,
+                receipts.accepted_version_id,
                 receipts.content_profile,
                 receipts.parser_version,
                 receipts.scanner_version,
@@ -403,7 +407,26 @@ class SqlUploadCandidateReader(UploadCandidateReader):
             first_ordinal=row["first_ordinal"],
             last_ordinal=row["last_ordinal"],
             legacy_candidate_count=row["legacy_candidate_count"],
+            object_locator_hash=row["object_locator_hash"],
+            accepted_etag=row["accepted_etag"],
+            accepted_version_id=row["accepted_version_id"],
         )
+
+    async def get_candidate(
+        self,
+        *,
+        workspace_id: UUID,
+        receipt_id: UUID,
+        candidate_id: UUID,
+    ) -> UploadRegistrationCandidateEvidence | None:
+        model = await self._session.scalar(
+            select(UploadRegistrationCandidateModel).where(
+                UploadRegistrationCandidateModel.workspace_id == workspace_id,
+                UploadRegistrationCandidateModel.receipt_id == receipt_id,
+                UploadRegistrationCandidateModel.id == candidate_id,
+            )
+        )
+        return _to_candidate(model) if model is not None else None
 
     async def list_candidates(
         self,

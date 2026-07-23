@@ -120,6 +120,12 @@ CHANGE_INTAKE_ASPECT = "changeIntake"
 DATAHUB_INTAKE_TARGET = "DATAHUB_INTAKE"
 MANUAL_DATASET_INTAKE_TARGET = "MANUAL_DATASET_INTAKE"
 
+MAX_CHANGE_ITEMS = 200
+MAX_CHANGE_APPROVALS = 600
+MAX_CHANGE_TRANSITIONS = 200
+MAX_CHANGE_ROUNDS = 50
+MAX_CHANGE_TEST_RUNS = 200
+
 
 @dataclass(frozen=True, slots=True)
 class ChangeItem:
@@ -312,7 +318,7 @@ class ChangeRequest:
     ) -> ChangeRequest:
         if not title.strip():
             raise ValidationError("Change request title is required.")
-        if not 1 <= len(items) <= 200:
+        if not 1 <= len(items) <= MAX_CHANGE_ITEMS:
             raise ValidationError("A change request must contain between one and 200 change items.")
         if len(items) != 1 and any(item.target_type == "DATAHUB_ASPECT" for item in items):
             raise ValidationError(
@@ -431,6 +437,11 @@ class ChangeRequest:
         authorities: tuple[ApprovalAuthority, ...],
     ) -> None:
         self._check_version(expected_version)
+        if len(self.approvals) >= MAX_CHANGE_APPROVALS:
+            raise ConflictError(
+                "The change-request approval history reached its governed capacity.",
+                details={"code": "CHANGE_REQUEST_APPROVAL_CAPACITY"},
+            )
         if stage not in {"REVIEW", "TEST", "FINAL"}:
             raise ValidationError("Approval stage must be REVIEW, TEST or FINAL.")
         if stage == "FINAL" and self.state is not ChangeState.FINAL_REVIEW:
@@ -557,6 +568,11 @@ class ChangeRequest:
         resubmitting = (
             self.state is ChangeState.CHANGES_REQUESTED and target is ChangeState.REGISTERED
         )
+        if resubmitting and len(self.rounds) >= MAX_CHANGE_ROUNDS:
+            raise ConflictError(
+                "The change-request revision history reached its governed capacity.",
+                details={"code": "CHANGE_REQUEST_ROUND_CAPACITY"},
+            )
         self._record_transition(target, actor_id, reason, policy_decision_id)
         if resubmitting:
             now = utc_now()
@@ -595,6 +611,11 @@ class ChangeRequest:
         expected_version: int,
     ) -> None:
         self._check_version(expected_version)
+        if len(self.test_runs) >= MAX_CHANGE_TEST_RUNS:
+            raise ConflictError(
+                "The change-request test history reached its governed capacity.",
+                details={"code": "CHANGE_REQUEST_TEST_CAPACITY"},
+            )
         if self.state is not ChangeState.TESTING:
             raise ValidationError("Test evidence is only accepted during TESTING.")
         if system_id not in self.required_system_ids():
@@ -783,6 +804,11 @@ class ChangeRequest:
         reason: str,
         policy_decision_id: UUID,
     ) -> None:
+        if len(self.transitions) >= MAX_CHANGE_TRANSITIONS:
+            raise ConflictError(
+                "The change-request transition history reached its governed capacity.",
+                details={"code": "CHANGE_REQUEST_TRANSITION_CAPACITY"},
+            )
         previous = self.state
         self.state = target
         self.version += 1

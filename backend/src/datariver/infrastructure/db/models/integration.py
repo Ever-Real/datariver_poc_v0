@@ -6,6 +6,7 @@ from uuid import UUID
 
 from sqlalchemy import (
     BigInteger,
+    Boolean,
     CheckConstraint,
     DateTime,
     ForeignKeyConstraint,
@@ -14,6 +15,9 @@ from sqlalchemy import (
     Text,
     UniqueConstraint,
     Uuid,
+)
+from sqlalchemy import (
+    text as sa_text,
 )
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -32,6 +36,28 @@ class JobModel(Base, UuidPrimaryKeyMixin, TimestampMixin, VersionMixin):
         Index("ix_jobs_workspace_state", "workspace_id", "state", "created_at"),
         UniqueConstraint("job_type", "causation_id"),
         UniqueConstraint("workspace_id", "id"),
+        CheckConstraint(
+            "lease_token_hash IS NULL OR lease_token_hash ~ '^[0-9a-f]{64}$'",
+            name="lease_token_hash_valid",
+        ),
+        CheckConstraint(
+            "attempt_cycle > 0 AND cycle_attempts >= 0 AND attempts >= cycle_attempts",
+            name="attempt_counters_valid",
+        ),
+        CheckConstraint(
+            "job_type <> 'DATAHUB_CHANGE_APPLY' OR "
+            "((state = 'RUNNING' AND lease_token_hash IS NOT NULL "
+            "AND lease_owner_id IS NOT NULL AND lease_until IS NOT NULL) "
+            "OR (state <> 'RUNNING' AND lease_token_hash IS NULL "
+            "AND lease_owner_id IS NULL))",
+            name="governance_apply_lease_shape",
+        ),
+        ForeignKeyConstraint(
+            ("workspace_id", "lease_owner_id"),
+            ("iam.workspace_memberships.workspace_id", "iam.workspace_memberships.subject_id"),
+            name="fk_jobs_workspace_lease_owner",
+            ondelete="RESTRICT",
+        ),
         {"schema": "integration"},
     )
 
@@ -44,6 +70,10 @@ class JobModel(Base, UuidPrimaryKeyMixin, TimestampMixin, VersionMixin):
     result_ref: Mapped[str | None] = mapped_column(Text)
     lease_until: Mapped[datetime | None]
     attempts: Mapped[int] = mapped_column(default=0, nullable=False)
+    attempt_cycle: Mapped[int] = mapped_column(default=1, server_default="1", nullable=False)
+    cycle_attempts: Mapped[int] = mapped_column(default=0, server_default="0", nullable=False)
+    lease_token_hash: Mapped[str | None] = mapped_column(String(64))
+    lease_owner_id: Mapped[UUID | None] = mapped_column(Uuid(as_uuid=True))
     last_error_code: Mapped[str | None] = mapped_column(String(100))
 
 
@@ -115,6 +145,68 @@ class IdempotencyKeyModel(Base):
     result: Mapped[dict[str, Any]] = mapped_column(JSON_DOCUMENT, nullable=False)
     created_at: Mapped[datetime] = mapped_column(nullable=False)
     expires_at: Mapped[datetime] = mapped_column(nullable=False)
+
+
+class RegistrationWorkerCallReceiptModel(Base):
+    __tablename__ = "registration_worker_call_receipts"
+    __table_args__ = (
+        CheckConstraint(
+            "operation IN ("
+            "'registration.manual-metadata.apply-run.v1', "
+            "'registration.bulk-preparation.execute-run.v1'"
+            ")",
+            name="operation_allowlist",
+        ),
+        CheckConstraint(
+            "state IN ('RUNNING', 'COMPLETED')",
+            name="state_allowlist",
+        ),
+        CheckConstraint(
+            "request_hash ~ '^[0-9a-f]{64}$' AND key_hash ~ '^[0-9a-f]{64}$'",
+            name="identity_hashes_valid",
+        ),
+        CheckConstraint(
+            "claim_token_hash IS NULL OR claim_token_hash ~ '^[0-9a-f]{64}$'",
+            name="claim_token_hash_valid",
+        ),
+        CheckConstraint(
+            "(state = 'RUNNING' AND processed IS NULL AND result IS NULL "
+            "AND work_kind IN ('MANUAL', 'BULK') AND work_id IS NOT NULL "
+            "AND claim_attempt IS NOT NULL AND claim_attempt > 0 "
+            "AND claim_token_hash IS NOT NULL AND lease_expires_at IS NOT NULL) "
+            "OR (state = 'COMPLETED' AND processed IS NOT NULL AND result IS NOT NULL "
+            "AND claim_token_hash IS NULL AND lease_expires_at IS NULL)",
+            name="state_shape",
+        ),
+        ForeignKeyConstraint(
+            ("workspace_id", "worker_subject_id"),
+            ("iam.workspace_memberships.workspace_id", "iam.workspace_memberships.subject_id"),
+            name="fk_registration_worker_call_receipts_subject",
+            ondelete="RESTRICT",
+        ),
+        Index(
+            "ix_registration_worker_call_receipts_running_lease",
+            "lease_expires_at",
+            postgresql_where=sa_text("state = 'RUNNING'"),
+        ),
+        {"schema": "integration"},
+    )
+
+    workspace_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True)
+    operation: Mapped[str] = mapped_column(String(100), primary_key=True)
+    key_hash: Mapped[str] = mapped_column(String(64), primary_key=True)
+    request_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    worker_subject_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), nullable=False)
+    state: Mapped[str] = mapped_column(String(32), nullable=False)
+    work_kind: Mapped[str | None] = mapped_column(String(16))
+    work_id: Mapped[UUID | None] = mapped_column(Uuid(as_uuid=True))
+    claim_attempt: Mapped[int | None]
+    claim_token_hash: Mapped[str | None] = mapped_column(String(64))
+    lease_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    processed: Mapped[bool | None] = mapped_column(Boolean)
+    result: Mapped[dict[str, Any] | None] = mapped_column(JSON_DOCUMENT)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
 
 class ObjectManifestModel(Base, UuidPrimaryKeyMixin, TimestampMixin, VersionMixin):
@@ -190,6 +282,7 @@ class UploadPreparationJobModel(Base, UuidPrimaryKeyMixin, TimestampMixin, Versi
         Index(
             "ix_upload_preparation_jobs_claim",
             "state",
+            "next_attempt_at",
             "lease_until",
             "created_at",
         ),
@@ -221,6 +314,11 @@ class UploadPreparationJobModel(Base, UuidPrimaryKeyMixin, TimestampMixin, Versi
             "OR (state <> 'PREPARING' AND lease_token IS NULL AND lease_until IS NULL)",
             name="lease_shape",
         ),
+        CheckConstraint(
+            "(state = 'QUEUED' AND next_attempt_at IS NOT NULL) "
+            "OR (state <> 'QUEUED' AND next_attempt_at IS NULL)",
+            name="retry_schedule_shape",
+        ),
         ForeignKeyConstraint(
             ("workspace_id", "upload_id"),
             ("integration.object_manifests.workspace_id", "integration.object_manifests.id"),
@@ -244,6 +342,7 @@ class UploadPreparationJobModel(Base, UuidPrimaryKeyMixin, TimestampMixin, Versi
     source_sha256: Mapped[str] = mapped_column(String(64), nullable=False)
     configuration_hash: Mapped[str] = mapped_column(String(64), nullable=False)
     state: Mapped[str] = mapped_column(String(32), nullable=False)
+    next_attempt_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     lease_token: Mapped[UUID | None] = mapped_column(Uuid(as_uuid=True))
     lease_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     attempts: Mapped[int] = mapped_column(default=0, nullable=False)

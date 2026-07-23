@@ -4,10 +4,13 @@ import { Search } from 'lucide-react'
 import { ApiError, newIdempotencyKey, type ApiClient } from '../../api/client'
 import type {
   ChangeRequestRecord,
+  ChangeRequestSummary,
+  ChangeRequestSummaryList,
   ChangeRequestAttachment,
   ChangeRequestAttachmentList,
   ChangeRequestSchemaOverview,
   ChangeRequestState,
+  GovernanceApplyReport,
 } from '../../api/types'
 import type { Page } from '../../app/navigation'
 import { AssuranceNotice, type AssuranceActions } from '../../components/AssuranceNotice'
@@ -19,6 +22,11 @@ import { ChangeActionConfirmDialog } from './ChangeActionConfirmDialog'
 import { ChangeRequestCreateDialog } from './ChangeRequestCreateDialog'
 import { ChangeRequestDetailDialog } from './ChangeRequestDetailDialog'
 import {
+  resumeAttachmentUpload,
+  resumeStoredAttachmentUploads,
+  uploadAndFinalizeAttachment,
+} from './attachmentUploads'
+import {
   changeStateLabel,
   changeStateOptions,
   type ChangeActionHint,
@@ -26,7 +34,7 @@ import {
 
 const DEFAULT_REASON = '검토 기준과 현재 대상 증거를 확인했습니다.'
 
-const columns: ColumnDef<ChangeRequestRecord>[] = [
+const columns: ColumnDef<ChangeRequestSummary>[] = [
   {
     accessorKey: 'number',
     header: 'CR-No',
@@ -52,28 +60,28 @@ const columns: ColumnDef<ChangeRequestRecord>[] = [
     header: '변경 Aspect',
     size: 145,
     enableSorting: false,
-    cell: ({ row }) => <TruncatedText value={row.original.items[0]?.aspect_name ?? '—'} />,
+    cell: ({ row }) => <TruncatedText value={row.original.first_item.aspect_name} />,
   },
   {
     id: 'target',
     header: '대상 데이터셋',
     size: 230,
     enableSorting: false,
-    cell: ({ row }) => <TruncatedText value={row.original.items[0]?.target_ref ?? '—'} />,
+    cell: ({ row }) => <TruncatedText value={row.original.first_item.target_ref} />,
   },
   {
     id: 'operation',
     header: '작업',
     size: 105,
     enableSorting: false,
-    cell: ({ row }) => <TruncatedText value={row.original.items[0]?.operation ?? '—'} />,
+    cell: ({ row }) => <TruncatedText value={row.original.first_item.operation} />,
   },
   {
     id: 'items',
     header: '항목',
     size: 65,
     enableSorting: false,
-    cell: ({ row }) => row.original.items.length.toLocaleString(),
+    cell: ({ row }) => row.original.item_count.toLocaleString(),
   },
   {
     accessorKey: 'state',
@@ -145,8 +153,9 @@ export function GovernancePage({
 }: { client: ApiClient; requesterName: string; requesterEmail?: string; onNavigate?: (page: Page) => void } & AssuranceActions) {
   const [stateFilter, setStateFilter] = useState<'' | ChangeRequestState>('')
   const [textFilter, setTextFilter] = useState('')
-  const [requests, setRequests] = useState<ChangeRequestRecord[]>([])
+  const [requests, setRequests] = useState<ChangeRequestSummary[]>([])
   const [overview, setOverview] = useState<ChangeRequestSchemaOverview[]>([])
+  const [overviewTruncated, setOverviewTruncated] = useState(false)
   const [expandedSchemas, setExpandedSchemas] = useState<Set<string>>(() => new Set())
   const [listLoading, setListLoading] = useState(true)
   const [listError, setListError] = useState<unknown>()
@@ -158,16 +167,27 @@ export function GovernancePage({
   const [attachmentLoading, setAttachmentLoading] = useState(false)
   const [attachmentBusy, setAttachmentBusy] = useState(false)
   const [attachmentError, setAttachmentError] = useState<unknown>()
+  const [attachmentNextCursor, setAttachmentNextCursor] = useState<string>()
+  const [attachmentCursorStack, setAttachmentCursorStack] = useState<string[]>([])
+  const [applyReport, setApplyReport] = useState<GovernanceApplyReport>()
+  const [applyReportLoading, setApplyReportLoading] = useState(false)
+  const [applyReportError, setApplyReportError] = useState<unknown>()
   const [actionError, setActionError] = useState<unknown>()
   const [pendingAction, setPendingAction] = useState<ChangeActionHint>()
   const [createOpen, setCreateOpen] = useState(false)
   const [reason, setReason] = useState(DEFAULT_REASON)
   const [busy, setBusy] = useState(false)
+  const [nextCursor, setNextCursor] = useState<string>()
+  const [cursorStack, setCursorStack] = useState<string[]>([])
   const generation = useRef(0)
   const listIntent = useRef(0)
   const detailIntent = useRef(0)
+  const attachmentMutationIntent = useRef(0)
   const controllers = useRef(new Set<AbortController>())
   const detailController = useRef<AbortController | undefined>(undefined)
+  const attachmentMutationController = useRef<AbortController | undefined>(undefined)
+  const attachmentUploadIds = useRef(new WeakMap<File, string>())
+  const selectedIdRef = useRef<string | undefined>(undefined)
 
   const beginOperation = useCallback(() => {
     const controller = new AbortController()
@@ -175,25 +195,25 @@ export function GovernancePage({
     return { controller, expectedGeneration: generation.current }
   }, [])
 
-  // Load one authorized server window, then apply the presentation-only badge filter.
-  // Fetching a state-specific list here would make the summary rows misleading.
-  const listPath = useMemo(() => '/change-requests?limit=100', [])
-
-  const loadRequests = useCallback(async () => {
+  // Load one bounded authorized summary window. Full documents are fetched only for one detail.
+  const loadRequests = useCallback(async (cursor?: string) => {
     const intent = ++listIntent.current
     const { controller, expectedGeneration } = beginOperation()
     setListLoading(true)
     setListError(undefined)
     try {
-      const value = await client.request<{
-        items: ChangeRequestRecord[]
-        overview?: ChangeRequestSchemaOverview[]
-      }>(listPath, {
+      const query = new URLSearchParams({ limit: '25' })
+      if (stateFilter) query.set('state', stateFilter)
+      if (cursor) query.set('cursor', cursor)
+      const value = await client.request<ChangeRequestSummaryList>(
+        `/change-requests/summaries?${query.toString()}`, {
         signal: controller.signal,
       })
       if (controller.signal.aborted || expectedGeneration !== generation.current || intent !== listIntent.current) return
       setRequests(value.items)
       setOverview(value.overview ?? [])
+      setOverviewTruncated(value.overview_truncated)
+      setNextCursor(value.page.next_cursor ?? undefined)
     } catch (error) {
       if (!controller.signal.aborted && expectedGeneration === generation.current && intent === listIntent.current) {
         setListError(error)
@@ -202,18 +222,24 @@ export function GovernancePage({
       controllers.current.delete(controller)
       if (expectedGeneration === generation.current && intent === listIntent.current) setListLoading(false)
     }
-  }, [beginOperation, client, listPath])
+  }, [beginOperation, client, stateFilter])
 
   useEffect(() => {
     const activeControllers = controllers.current
     generation.current += 1
     listIntent.current += 1
     detailIntent.current += 1
+    attachmentMutationIntent.current += 1
     activeControllers.forEach((controller) => controller.abort())
     activeControllers.clear()
     detailController.current = undefined
+    attachmentMutationController.current = undefined
+    selectedIdRef.current = undefined
     setRequests([])
+    setCursorStack([])
+    setNextCursor(undefined)
     setOverview([])
+    setOverviewTruncated(false)
     setExpandedSchemas(new Set())
     setListError(undefined)
     setListLoading(true)
@@ -224,6 +250,11 @@ export function GovernancePage({
     setAttachmentLoading(false)
     setAttachmentBusy(false)
     setAttachmentError(undefined)
+    setAttachmentNextCursor(undefined)
+    setAttachmentCursorStack([])
+    setApplyReport(undefined)
+    setApplyReportLoading(false)
+    setApplyReportError(undefined)
     setActionError(undefined)
     setPendingAction(undefined)
     setReason(DEFAULT_REASON)
@@ -233,17 +264,25 @@ export function GovernancePage({
       generation.current += 1
       listIntent.current += 1
       detailIntent.current += 1
+      attachmentMutationIntent.current += 1
       activeControllers.forEach((controller) => controller.abort())
       activeControllers.clear()
       detailController.current = undefined
+      attachmentMutationController.current = undefined
+      selectedIdRef.current = undefined
     }
-  }, [client, listPath, loadRequests])
+  }, [client, loadRequests])
 
   const loadDetail = useCallback(async (changeRequestId: string) => {
     detailController.current?.abort()
+    attachmentMutationController.current?.abort()
+    attachmentMutationController.current = undefined
+    attachmentMutationIntent.current += 1
+    setAttachmentBusy(false)
     const intent = ++detailIntent.current
     const { controller, expectedGeneration } = beginOperation()
     detailController.current = controller
+    selectedIdRef.current = changeRequestId
     setSelectedId(changeRequestId)
     setDetail(undefined)
     setDetailLoading(true)
@@ -251,24 +290,45 @@ export function GovernancePage({
     setAttachments([])
     setAttachmentLoading(true)
     setAttachmentError(undefined)
+    setAttachmentNextCursor(undefined)
+    setAttachmentCursorStack([])
+    setApplyReport(undefined)
+    setApplyReportLoading(true)
+    setApplyReportError(undefined)
     try {
       const value = await client.request<ChangeRequestRecord>(`/change-requests/${changeRequestId}`, {
         signal: controller.signal,
       })
       if (controller.signal.aborted || expectedGeneration !== generation.current || intent !== detailIntent.current) return
       setDetail(value)
-      setRequests((current) => current.map((item) => item.id === value.id ? value : item))
+      setRequests((current) => current.map((item) => item.id === value.id
+        ? { ...item, state: value.state, version: value.version, current_round_number: value.current_round_number }
+        : item))
       try {
         const attachmentList = await client.request<ChangeRequestAttachmentList>(
-          `/change-requests/${changeRequestId}/attachments`,
+          `/change-requests/${changeRequestId}/attachments/page?limit=25`,
           { signal: controller.signal },
         )
         if (!controller.signal.aborted && expectedGeneration === generation.current && intent === detailIntent.current) {
           setAttachments(attachmentList.items)
+          setAttachmentNextCursor(attachmentList.page.next_cursor ?? undefined)
         }
       } catch (error) {
         if (!controller.signal.aborted && expectedGeneration === generation.current && intent === detailIntent.current) {
           setAttachmentError(error)
+        }
+      }
+      try {
+        const report = await client.request<GovernanceApplyReport>(
+          `/change-requests/${changeRequestId}/apply-report`,
+          { signal: controller.signal },
+        )
+        if (!controller.signal.aborted && expectedGeneration === generation.current && intent === detailIntent.current) {
+          setApplyReport(report)
+        }
+      } catch (error) {
+        if (!controller.signal.aborted && expectedGeneration === generation.current && intent === detailIntent.current) {
+          setApplyReportError(error)
         }
       }
     } catch (error) {
@@ -281,11 +341,69 @@ export function GovernancePage({
       if (expectedGeneration === generation.current && intent === detailIntent.current) {
         setDetailLoading(false)
         setAttachmentLoading(false)
+        setApplyReportLoading(false)
       }
     }
   }, [beginOperation, client])
 
-  const openDetail = useCallback((changeRequest: ChangeRequestRecord) => {
+  const loadAttachmentPage = useCallback(async (
+    changeRequestId: string,
+    cursor?: string,
+  ) => {
+    const { controller, expectedGeneration } = beginOperation()
+    const expectedDetailIntent = detailIntent.current
+    setAttachmentLoading(true)
+    setAttachmentError(undefined)
+    try {
+      const query = new URLSearchParams({ limit: '25' })
+      if (cursor) query.set('cursor', cursor)
+      const value = await client.request<ChangeRequestAttachmentList>(
+        `/change-requests/${changeRequestId}/attachments/page?${query.toString()}`,
+        { signal: controller.signal },
+      )
+      if (
+        controller.signal.aborted
+        || expectedGeneration !== generation.current
+        || expectedDetailIntent !== detailIntent.current
+        || selectedIdRef.current !== changeRequestId
+      ) return
+      setAttachments(value.items)
+      setAttachmentNextCursor(value.page.next_cursor ?? undefined)
+    } catch (error) {
+      if (
+        !controller.signal.aborted
+        && expectedGeneration === generation.current
+        && expectedDetailIntent === detailIntent.current
+        && selectedIdRef.current === changeRequestId
+      ) {
+        setAttachmentError(error)
+      }
+    } finally {
+      controllers.current.delete(controller)
+      if (
+        expectedGeneration === generation.current
+        && expectedDetailIntent === detailIntent.current
+        && selectedIdRef.current === changeRequestId
+      ) setAttachmentLoading(false)
+    }
+  }, [beginOperation, client])
+
+  const nextAttachmentPage = useCallback(() => {
+    if (!selectedId || !attachmentNextCursor || attachmentLoading) return
+    setAttachmentCursorStack((current) => [...current, attachmentNextCursor].slice(-50))
+    void loadAttachmentPage(selectedId, attachmentNextCursor)
+  }, [attachmentLoading, attachmentNextCursor, loadAttachmentPage, selectedId])
+
+  const previousAttachmentPage = useCallback(() => {
+    if (!selectedId || attachmentCursorStack.length === 0 || attachmentLoading) return
+    const previousCursor = attachmentCursorStack.length > 1
+      ? attachmentCursorStack[attachmentCursorStack.length - 2]
+      : undefined
+    setAttachmentCursorStack((current) => current.slice(0, -1))
+    void loadAttachmentPage(selectedId, previousCursor)
+  }, [attachmentCursorStack, attachmentLoading, loadAttachmentPage, selectedId])
+
+  const openDetail = useCallback((changeRequest: ChangeRequestSummary) => {
     setActionError(undefined)
     setReason(DEFAULT_REASON)
     void loadDetail(changeRequest.id)
@@ -294,7 +412,11 @@ export function GovernancePage({
   const closeDetail = useCallback(() => {
     detailController.current?.abort()
     detailController.current = undefined
+    attachmentMutationController.current?.abort()
+    attachmentMutationController.current = undefined
+    attachmentMutationIntent.current += 1
     detailIntent.current += 1
+    selectedIdRef.current = undefined
     setSelectedId(undefined)
     setDetail(undefined)
     setDetailLoading(false)
@@ -303,6 +425,11 @@ export function GovernancePage({
     setAttachmentLoading(false)
     setAttachmentBusy(false)
     setAttachmentError(undefined)
+    setAttachmentNextCursor(undefined)
+    setAttachmentCursorStack([])
+    setApplyReport(undefined)
+    setApplyReportLoading(false)
+    setApplyReportError(undefined)
     setActionError(undefined)
     setPendingAction(undefined)
     setReason(DEFAULT_REASON)
@@ -332,26 +459,145 @@ export function GovernancePage({
   const uploadAttachments = useCallback(async (kind: ChangeRequestAttachment['kind'], files: File[]) => {
     const current = detail
     if (!current || files.length === 0 || attachmentBusy) return
+    attachmentMutationController.current?.abort()
+    const { controller, expectedGeneration } = beginOperation()
+    attachmentMutationController.current = controller
+    const intent = ++attachmentMutationIntent.current
+    const expectedDetailIntent = detailIntent.current
+    const changeRequestId = current.id
     setAttachmentBusy(true)
     setAttachmentError(undefined)
     try {
       for (const file of files) {
-        const body = new FormData()
-        body.set('kind', kind)
-        body.set('file', file)
-        await client.request(`/change-requests/${current.id}/attachments`, { method: 'POST', body })
+        const pendingUploadId = attachmentUploadIds.current.get(file)
+        if (pendingUploadId) {
+          try {
+            await resumeAttachmentUpload(
+              client,
+              changeRequestId,
+              pendingUploadId,
+              { signal: controller.signal },
+            )
+            attachmentUploadIds.current.delete(file)
+            continue
+          } catch (error) {
+            if (!(error instanceof ApiError && error.problem.status === 404)) throw error
+            attachmentUploadIds.current.delete(file)
+          }
+        }
+        const uploadId = crypto.randomUUID()
+        attachmentUploadIds.current.set(file, uploadId)
+        try {
+          await uploadAndFinalizeAttachment(
+            client,
+            changeRequestId,
+            kind,
+            file,
+            { signal: controller.signal, uploadId },
+          )
+          attachmentUploadIds.current.delete(file)
+        } catch (error) {
+          if (
+            error instanceof ApiError
+            && error.problem.status !== 408
+            && error.problem.status < 500
+          ) attachmentUploadIds.current.delete(file)
+          throw error
+        }
       }
       const value = await client.request<ChangeRequestAttachmentList>(
-        `/change-requests/${current.id}/attachments`,
+        `/change-requests/${changeRequestId}/attachments/page?limit=25`,
+        { signal: controller.signal },
       )
+      if (
+        controller.signal.aborted
+        || expectedGeneration !== generation.current
+        || intent !== attachmentMutationIntent.current
+        || expectedDetailIntent !== detailIntent.current
+        || selectedIdRef.current !== changeRequestId
+      ) return
       setAttachments(value.items)
+      setAttachmentNextCursor(value.page.next_cursor ?? undefined)
+      setAttachmentCursorStack([])
     } catch (error) {
-      setAttachmentError(error)
-      throw error
+      if (
+        !controller.signal.aborted
+        && expectedGeneration === generation.current
+        && intent === attachmentMutationIntent.current
+        && expectedDetailIntent === detailIntent.current
+        && selectedIdRef.current === changeRequestId
+      ) {
+        setAttachmentError(error)
+        throw error
+      }
     } finally {
-      setAttachmentBusy(false)
+      controllers.current.delete(controller)
+      if (attachmentMutationController.current === controller) {
+        attachmentMutationController.current = undefined
+      }
+      if (
+        expectedGeneration === generation.current
+        && intent === attachmentMutationIntent.current
+        && expectedDetailIntent === detailIntent.current
+        && selectedIdRef.current === changeRequestId
+      ) setAttachmentBusy(false)
     }
-  }, [attachmentBusy, client, detail])
+  }, [attachmentBusy, beginOperation, client, detail])
+
+  const resumePendingAttachments = useCallback(async () => {
+    const current = detail
+    if (!current || attachmentBusy) return
+    attachmentMutationController.current?.abort()
+    const { controller, expectedGeneration } = beginOperation()
+    attachmentMutationController.current = controller
+    const intent = ++attachmentMutationIntent.current
+    const expectedDetailIntent = detailIntent.current
+    const changeRequestId = current.id
+    setAttachmentBusy(true)
+    setAttachmentError(undefined)
+    try {
+      const recovery = await resumeStoredAttachmentUploads(
+        client,
+        changeRequestId,
+        current.current_round_id,
+        { signal: controller.signal },
+      )
+      const value = await client.request<ChangeRequestAttachmentList>(
+        `/change-requests/${changeRequestId}/attachments/page?limit=25`,
+        { signal: controller.signal },
+      )
+      if (
+        controller.signal.aborted
+        || expectedGeneration !== generation.current
+        || intent !== attachmentMutationIntent.current
+        || expectedDetailIntent !== detailIntent.current
+        || selectedIdRef.current !== changeRequestId
+      ) return
+      setAttachments(value.items)
+      setAttachmentNextCursor(value.page.next_cursor ?? undefined)
+      setAttachmentCursorStack([])
+      if (recovery.error) setAttachmentError(recovery.error)
+    } catch (error) {
+      if (
+        !controller.signal.aborted
+        && expectedGeneration === generation.current
+        && intent === attachmentMutationIntent.current
+        && expectedDetailIntent === detailIntent.current
+        && selectedIdRef.current === changeRequestId
+      ) setAttachmentError(error)
+    } finally {
+      controllers.current.delete(controller)
+      if (attachmentMutationController.current === controller) {
+        attachmentMutationController.current = undefined
+      }
+      if (
+        expectedGeneration === generation.current
+        && intent === attachmentMutationIntent.current
+        && expectedDetailIntent === detailIntent.current
+        && selectedIdRef.current === changeRequestId
+      ) setAttachmentBusy(false)
+    }
+  }, [attachmentBusy, beginOperation, client, detail])
 
   const confirmAction = async () => {
     const action = pendingAction
@@ -383,7 +629,9 @@ export function GovernancePage({
       setDetail(next)
       setRequests((values) => {
         if (stateFilter && next.state !== stateFilter) return values.filter((item) => item.id !== next.id)
-        return values.map((item) => item.id === next.id ? next : item)
+        return values.map((item) => item.id === next.id
+          ? { ...item, state: next.state, version: next.version, current_round_number: next.current_round_number }
+          : item)
       })
       setReason(DEFAULT_REASON)
     } catch (error) {
@@ -399,14 +647,13 @@ export function GovernancePage({
     }
   }
 
-  const fallback = selectedId ? requests.find((item) => item.id === selectedId) : undefined
   const visibleRequests = useMemo(() => {
     const query = textFilter.trim().toLocaleLowerCase()
     return requests.filter((request) => {
       if (stateFilter && request.state !== stateFilter) return false
       if (!query) return true
       return [
-      request.number, request.title, request.requester_id, request.items[0]?.aspect_name ?? '', request.classification,
+      request.number, request.title, request.requester_id, request.first_item.aspect_name, request.classification,
       ].some((value) => value.toLocaleLowerCase().includes(query))
     })
   }, [requests, stateFilter, textFilter])
@@ -431,6 +678,25 @@ export function GovernancePage({
     })
   }
 
+  const nextPage = () => {
+    if (!nextCursor || listLoading) return
+    const stack = [...cursorStack, nextCursor].slice(-50)
+    setCursorStack(stack)
+    void loadRequests(stack.at(-1))
+  }
+
+  const previousPage = () => {
+    if (!cursorStack.length || listLoading) return
+    const stack = cursorStack.slice(0, -1)
+    setCursorStack(stack)
+    void loadRequests(stack.at(-1))
+  }
+
+  const refreshFirstPage = () => {
+    setCursorStack([])
+    void loadRequests()
+  }
+
   return (
     <section className="governance-page">
       <PageTitle
@@ -438,13 +704,13 @@ export function GovernancePage({
         eyebrow="Four-eyes Governance"
         title="변경 요청과 승인"
         description="타입이 지정된 변경을 검토하고 Maker-Checker 상태 전이와 적용 증거를 관리합니다."
-        actions={<div className="page-title-actions"><button type="button" className="button button-secondary" disabled={listLoading} onClick={() => void loadRequests()}>새로고침</button><button type="button" className="button" onClick={() => setCreateOpen(true)}>신규 CR 신청</button></div>}
+        actions={<div className="page-title-actions"><button type="button" className="button button-secondary" disabled={listLoading} onClick={refreshFirstPage}>새로고침</button><button type="button" className="button" onClick={() => setCreateOpen(true)}>신규 CR 신청</button></div>}
       />
 
       <div className="governance-toolbar panel">
         <div className="governance-window-summary" aria-live="polite">
           <span className="governance-kicker">Authorized window</span>
-          <strong>현재 조회된 요청 · 최대 100건</strong>
+          <strong>현재 조회된 요청 · 페이지당 최대 25건</strong>
           <small>{listLoading ? '서버에서 권한 범위를 확인하는 중' : `${requests.length.toLocaleString()}건 표시`}</small>
         </div>
         <label className="governance-state-filter">
@@ -463,7 +729,7 @@ export function GovernancePage({
       </div>
 
       <section className="governance-status-overview" aria-label="현재 권한 창의 스키마별 변경요청 현황">
-        <header><span className="governance-kicker">CR Status Overview</span><small>현재 권한으로 열람 가능한 DataHub 스키마와 같은 서버 읽기 창의 요청을 결합합니다. 행을 클릭하면 시스템 담당자를 표시합니다.</small></header>
+        <header><span className="governance-kicker">CR Status Overview</span><small>현재 권한으로 열람 가능한 DataHub 스키마와 같은 서버 읽기 창의 요청을 결합합니다. 최대 100개 스키마와 시스템별 20명 담당자를 표시합니다.{overviewTruncated ? ' 추가 항목은 저사양 보호를 위해 생략되었습니다.' : ''}</small></header>
         <div className="governance-status-scroll"><table><thead><tr><th>스키마</th><th>시스템</th><th>담당자</th><th>데이터셋별 미진행</th><th>CR 전체</th><th>접수완료</th><th>재검토</th><th>변경 / TEST</th><th>완료검토</th><th>완료</th></tr></thead><tbody>
           {overview.length === 0 ? <tr><td colSpan={10}>{listLoading ? '스키마별 현황을 확인하는 중' : '현재 권한 범위에서 표시할 DataHub 스키마가 없습니다.'}</td></tr> : overview.map((row) => {
             const expanded = expandedSchemas.has(schemaKey(row))
@@ -509,12 +775,17 @@ export function GovernancePage({
           selectedRowId={selectedId}
           onRowActivate={openDetail}
         />
+        <div className="governance-list-pagination" aria-label="변경 요청 페이지 이동">
+          <button className="button button-secondary" type="button" disabled={listLoading || !cursorStack.length} onClick={previousPage}>이전</button>
+          <button className="button button-secondary" type="button" disabled={listLoading || !nextCursor} onClick={nextPage}>다음</button>
+        </div>
       </section>
 
       <ChangeRequestDetailDialog
+        key={selectedId ?? 'closed'}
         open={Boolean(selectedId)}
         client={client}
-        fallback={fallback}
+        fallback={undefined}
         value={detail}
         loading={detailLoading}
         busy={busy}
@@ -524,11 +795,19 @@ export function GovernancePage({
         attachmentLoading={attachmentLoading}
         attachmentBusy={attachmentBusy}
         attachmentError={attachmentError}
+        attachmentHasNext={Boolean(attachmentNextCursor)}
+        attachmentHasPrevious={attachmentCursorStack.length > 0}
+        applyReport={applyReport}
+        applyReportLoading={applyReportLoading}
+        applyReportError={applyReportError}
         onClose={closeDetail}
         onRefresh={() => { if (selectedId) void loadDetail(selectedId) }}
         onAction={openAction}
         onDownloadAttachment={(attachment) => { void downloadAttachment(attachment) }}
+        onNextAttachmentPage={nextAttachmentPage}
+        onPreviousAttachmentPage={previousAttachmentPage}
         onUploadAttachments={uploadAttachments}
+        onResumePendingAttachments={resumePendingAttachments}
         onStepUp={onStepUp}
         onPasswordReauth={onPasswordReauth}
         onEnroll={onEnroll}
@@ -541,8 +820,8 @@ export function GovernancePage({
         onClose={() => setCreateOpen(false)}
         onCreated={(value) => {
           setCreateOpen(false)
-          setRequests((current) => [value, ...current.filter((item) => item.id !== value.id)])
-          void loadRequests()
+          void value
+          refreshFirstPage()
         }}
       />
       <ChangeActionConfirmDialog

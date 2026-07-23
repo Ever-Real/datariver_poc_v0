@@ -9,6 +9,7 @@ from datariver.application.services.governance_apply import GovernanceApplyWorke
 from datariver.config import get_settings
 from datariver.infrastructure.db.governance_apply import SqlGovernanceApplyStore
 from datariver.infrastructure.db.outbox import SqlInboxStore
+from datariver.infrastructure.db.provider_mutation import SqlProviderMutationLock
 from datariver.infrastructure.system_configuration_runtime import (
     resolve_activated_system_configuration,
 )
@@ -27,6 +28,7 @@ async def run() -> None:
     worker = GovernanceApplyWorker(
         store=SqlGovernanceApplyStore(container.database.session_factory),
         datahub=container.datahub,
+        provider_mutation_lock=SqlProviderMutationLock(container.database.provider_lock_engine),
         worker_id=consumer_name,
         system_actor_id=settings.governance_worker_subject_id,
         lease_seconds=settings.governance_apply_lease_seconds,

@@ -1,8 +1,10 @@
+import inspect
 from pathlib import Path
 from typing import cast
 
 from sqlalchemy import CheckConstraint, Table
 
+from datariver.infrastructure.db.governance import SqlChangeRequestRepository
 from datariver.infrastructure.db.models.governance import ChangeItemModel
 from datariver.infrastructure.db.revision import REQUIRED_DATABASE_REVISION
 
@@ -40,7 +42,15 @@ def test_target_binding_migration_preserves_legacy_rows_without_backfill() -> No
     migration = (root / "backend/alembic/versions/0015_governance_target_bindings.py").read_text(
         encoding="utf-8"
     )
-    assert REQUIRED_DATABASE_REVISION == "0045"
+    assert REQUIRED_DATABASE_REVISION == "0050"
     assert "UPDATE governance.change_request_items" not in migration
     assert "target_binding_shape" in migration
     assert "pg_try_advisory_lock" not in migration
+
+
+def test_change_request_summary_query_never_selects_mutable_documents() -> None:
+    source = inspect.getsource(SqlChangeRequestRepository.list_summaries)
+    assert "after_document" not in source
+    assert ".limit(limit)" in source
+    assert "ChangeRequestModel.created_at.desc()" in source
+    assert "ChangeRequestModel.id.desc()" in source

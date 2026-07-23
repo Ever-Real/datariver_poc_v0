@@ -3,8 +3,9 @@ from __future__ import annotations
 from typing import Any
 from uuid import UUID
 
+from datariver.application.dto import GovernanceApplyClaim
 from datariver.application.errors import ExternalDependencyError
-from datariver.application.ports import DataHubGateway, GovernanceApplyStore
+from datariver.application.ports import DataHubGateway, GovernanceApplyStore, ProviderMutationLock
 from datariver.domain.common import ConflictError, DomainError, canonical_json_hash
 from datariver.domain.governance import ALLOWED_DATAHUB_ASPECTS
 
@@ -17,6 +18,7 @@ class GovernanceApplyWorker:
         *,
         store: GovernanceApplyStore,
         datahub: DataHubGateway,
+        provider_mutation_lock: ProviderMutationLock,
         worker_id: str,
         system_actor_id: UUID,
         lease_seconds: int = 120,
@@ -24,6 +26,7 @@ class GovernanceApplyWorker:
     ) -> None:
         self._store = store
         self._datahub = datahub
+        self._provider_mutation_lock = provider_mutation_lock
         self._worker_id = worker_id
         self._system_actor_id = system_actor_id
         self._lease_seconds = lease_seconds
@@ -39,7 +42,7 @@ class GovernanceApplyWorker:
         if claim is None:
             return False
         try:
-            expected, observed, item_results = await self._apply_items(claim.change_request.items)
+            expected, observed, item_results = await self._apply_items(claim)
             await self._store.mark_applied(
                 claim=claim,
                 system_actor_id=self._system_actor_id,
@@ -65,7 +68,10 @@ class GovernanceApplyWorker:
             )
         return True
 
-    async def _apply_items(self, items: list[Any]) -> tuple[str, str, list[dict[str, Any]]]:
+    async def _apply_items(
+        self, claim: GovernanceApplyClaim
+    ) -> tuple[str, str, list[dict[str, Any]]]:
+        items = claim.change_request.items
         if len(items) != 1:
             raise ConflictError(
                 "Multi-item apply is disabled until durable item checkpoints exist.",
@@ -93,35 +99,64 @@ class GovernanceApplyWorker:
                     details={"item_id": str(item.item_id), "code": "MISSING_BEFORE_HASH"},
                 )
             expected_hash = item.after_hash or canonical_json_hash(item.after_document)
+            expected_item, observed_item, result = await self._apply_one_item(
+                claim=claim,
+                item=item,
+                expected_hash=expected_hash,
+            )
+            expected_items.append(expected_item)
+            observed_items.append(observed_item)
+            results.append(result)
+        return (
+            canonical_json_hash(expected_items),
+            canonical_json_hash(observed_items),
+            results,
+        )
+
+    async def _apply_one_item(
+        self,
+        *,
+        claim: GovernanceApplyClaim,
+        item: Any,
+        expected_hash: str,
+    ) -> tuple[dict[str, str], dict[str, str], dict[str, Any]]:
+        await self._renew_lease(claim)
+        async with self._provider_mutation_lock.hold(
+            workspace_id=claim.change_request.workspace_id,
+            provider="DATAHUB",
+            target_ref=item.target_ref,
+            aspect_name="*",
+            on_wait=lambda: self._renew_lease(claim),
+        ):
+            await self._renew_lease(claim)
             current = await self._datahub.read_aspect(
                 external_urn=item.target_ref, aspect_name=item.aspect_name
             )
             if current.content_hash == expected_hash:
-                expected_items.append({"item_id": str(item.item_id), "content_hash": expected_hash})
-                observed_items.append(
-                    {"item_id": str(item.item_id), "content_hash": current.content_hash}
-                )
-                results.append(
+                return (
+                    {"item_id": str(item.item_id), "content_hash": expected_hash},
+                    {"item_id": str(item.item_id), "content_hash": current.content_hash},
                     {
                         "item_id": str(item.item_id),
                         "operation_id": "reconciled-existing",
                         "provider_version": current.source_version,
                         "source_version": current.source_version,
                         "content_hash": current.content_hash,
-                    }
+                    },
                 )
-                continue
             if current.content_hash != item.before_hash:
                 raise ConflictError(
                     "DataHub changed after this request was prepared.",
                     details={"item_id": str(item.item_id), "code": "BEFORE_HASH_MISMATCH"},
                 )
+            await self._renew_lease(claim)
             receipt = await self._datahub.apply_change(
                 external_urn=item.target_ref,
                 aspect_name=item.aspect_name,
                 document=item.after_document,
                 idempotency_key=f"{item.item_id}:{expected_hash}",
             )
+            await self._renew_lease(claim)
             snapshot = await self._datahub.read_aspect(
                 external_urn=item.target_ref, aspect_name=item.aspect_name
             )
@@ -130,24 +165,28 @@ class GovernanceApplyWorker:
                     "DataHub did not reconcile to the approved aspect content.",
                     details={"item_id": str(item.item_id), "code": "AFTER_HASH_MISMATCH"},
                 )
-            expected_items.append({"item_id": str(item.item_id), "content_hash": expected_hash})
-            observed_items.append(
-                {"item_id": str(item.item_id), "content_hash": snapshot.content_hash}
-            )
-            results.append(
+            await self._renew_lease(claim)
+            return (
+                {"item_id": str(item.item_id), "content_hash": expected_hash},
+                {"item_id": str(item.item_id), "content_hash": snapshot.content_hash},
                 {
                     "item_id": str(item.item_id),
                     "operation_id": receipt.operation_id,
                     "provider_version": receipt.provider_version,
                     "source_version": snapshot.source_version,
                     "content_hash": snapshot.content_hash,
-                }
+                },
             )
-        return (
-            canonical_json_hash(expected_items),
-            canonical_json_hash(observed_items),
-            results,
-        )
+
+    async def _renew_lease(self, claim: GovernanceApplyClaim) -> None:
+        if not await self._store.renew_lease(
+            claim=claim,
+            lease_seconds=self._lease_seconds,
+        ):
+            raise ConflictError(
+                "The governance apply lease was superseded.",
+                details={"code": "LEASE_SUPERSEDED"},
+            )
 
     @staticmethod
     def _retryable(error: DomainError) -> bool:

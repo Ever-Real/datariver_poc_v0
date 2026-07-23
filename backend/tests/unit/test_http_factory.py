@@ -173,11 +173,15 @@ def test_openapi_contains_all_required_product_modules() -> None:
         "/api/v1/catalog/assets/{asset_id}/controlled-metadata-previews",
         "/api/v1/catalog/assets/{asset_id}/controlled-metadata-change-requests",
         "/api/v1/uploads",
+        "/api/v1/uploads/operator-capability",
         "/api/v1/uploads/{upload_id}/preparations",
         "/api/v1/uploads/{upload_id}/preparations/{preparation_id}",
         "/api/v1/uploads/{upload_id}/preparations/{preparation_id}/candidates",
+        "/api/v1/uploads/{upload_id}/preparations/{preparation_id}/candidates/{candidate_id}/preview",
+        "/api/v1/uploads/{upload_id}/preparations/{preparation_id}/candidates/{candidate_id}/change-request",
         "/api/v1/uploads/{upload_id}/registration-proposals",
         "/api/v1/change-requests",
+        "/api/v1/change-requests/{change_request_id}/apply-report",
         "/api/v1/operations/summary",
         "/api/v1/operations/metrics",
         "/api/v1/knowledge/graphs",
@@ -668,6 +672,77 @@ def test_upload_candidate_openapi_is_bounded_read_only_and_non_disclosing() -> N
         "raw",
         "provider",
         "after_document",
+    ):
+        assert forbidden not in serialized
+
+
+def test_registration_operator_capability_is_read_only_and_server_owned() -> None:
+    factory = cast(Callable[[Settings], AppContainer], lambda _: LiveOnlyContainer())
+    document = create_app(settings(), container_factory=factory).openapi()
+
+    operation = document["paths"]["/api/v1/uploads/operator-capability"]["get"]
+    assert "requestBody" not in operation
+    response = document["components"]["schemas"]["RegistrationOperatorCapabilityResponse"]
+    assert set(response["properties"]) == {
+        "eligible",
+        "can_view_workspace_history",
+        "reason_code",
+        "allowed_roles",
+    }
+    serialized = str(response).lower()
+    for forbidden in ("groups", "job_function", "subject_id", "token", "credential"):
+        assert forbidden not in serialized
+
+
+def test_typed_bulk_candidate_command_accepts_no_provider_or_storage_document() -> None:
+    factory = cast(Callable[[Settings], AppContainer], lambda _: LiveOnlyContainer())
+    document = create_app(settings(), container_factory=factory).openapi()
+    base = "/api/v1/uploads/{upload_id}/preparations/{preparation_id}/candidates/{candidate_id}"
+    preview = document["paths"][f"{base}/preview"]["get"]
+    creation = document["paths"][f"{base}/change-request"]["post"]
+    assert "requestBody" not in preview
+    headers = {
+        parameter["name"] for parameter in creation["parameters"] if parameter.get("in") == "header"
+    }
+    assert {"If-Match", "Idempotency-Key"} <= headers
+    request_schema = document["components"]["schemas"]["TypedBulkChangeRequestCreate"]
+    assert set(request_schema["properties"]) == {"title", "reason"}
+    response_schema = document["components"]["schemas"]["TypedBulkCandidatePreviewResponse"]
+    serialized = str(
+        {
+            "request": request_schema,
+            "response": response_schema,
+        }
+    ).lower()
+    for forbidden in (
+        "after_document",
+        "object_key",
+        "bucket",
+        "accepted_etag",
+        "accepted_version_id",
+        "credential",
+        "token",
+    ):
+        assert forbidden not in serialized
+
+
+def test_governance_apply_report_is_bounded_and_exposes_only_sanitized_evidence() -> None:
+    factory = cast(Callable[[Settings], AppContainer], lambda _: LiveOnlyContainer())
+    document = create_app(settings(), container_factory=factory).openapi()
+
+    operation = document["paths"]["/api/v1/change-requests/{change_request_id}/apply-report"]["get"]
+    assert "requestBody" not in operation
+    report = document["components"]["schemas"]["GovernanceApplyReportResponse"]
+    assert report["properties"]["items"]["maxItems"] == 200
+    assert report["properties"]["attempts"]["maxItems"] == 20
+    serialized = str(report).lower()
+    for forbidden in (
+        "after_document",
+        "target_ref",
+        "operation_id",
+        "raw_response",
+        "credential",
+        "token",
     ):
         assert forbidden not in serialized
 
