@@ -159,7 +159,8 @@ BEGIN
         GRANT SELECT, INSERT ON assistant.chat_sessions, assistant.chat_messages,
             assistant.assistant_runs, assistant.evidence_citations TO datariver_app;
         GRANT UPDATE (version, updated_at) ON assistant.chat_sessions TO datariver_app;
-        GRANT SELECT, INSERT ON retention.policy_versions TO datariver_app;
+        GRANT SELECT, INSERT ON retention.policy_versions,
+            retention.policy_class_rules TO datariver_app;
         GRANT UPDATE (state, checker_id, decision_reason,
             decision_policy_decision_id, decided_at, superseded_by, supersede_reason,
             supersede_policy_decision_id, superseded_at, version, updated_at)
@@ -178,6 +179,9 @@ BEGIN
         GRANT SELECT, INSERT ON retention.erasure_request_events TO datariver_app;
         GRANT SELECT ON retention.archive_capability_attestations,
             retention.immutable_archive_receipts TO datariver_app;
+        GRANT SELECT ON retention.execution_jobs TO datariver_app;
+        GRANT SELECT ON retention.execution_attempts,
+            retention.execution_events TO datariver_app;
         GRANT SELECT, INSERT, UPDATE ON sharing.api_products,
             sharing.api_product_versions, sharing.consumer_grants TO datariver_app;
         GRANT SELECT, INSERT ON sharing.api_invocations TO datariver_app;
@@ -236,6 +240,47 @@ BEGIN
             version, updated_at) ON integration.jobs TO datariver_export;
         GRANT INSERT, UPDATE (state, error_class, external_response_hash, finished_at)
             ON integration.job_attempts TO datariver_export;
+    END IF;
+
+    IF EXISTS (
+        SELECT 1 FROM pg_roles WHERE rolname = 'datariver_retention_scheduler'
+    ) THEN
+        GRANT USAGE ON SCHEMA platform, iam, authz, assistant, retention
+            TO datariver_retention_scheduler;
+        GRANT SELECT ON platform.workspaces, iam.subjects,
+            iam.workspace_memberships, iam.access_roles,
+            iam.access_role_assignments, authz.policy_decisions,
+            retention.policy_versions, retention.policy_class_rules,
+            retention.legal_holds, retention.erasure_requests,
+            retention.erasure_request_events,
+            assistant.chat_sessions TO datariver_retention_scheduler;
+        GRANT SELECT, INSERT ON retention.execution_jobs,
+            retention.execution_events TO datariver_retention_scheduler;
+    END IF;
+
+    IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'datariver_archive') THEN
+        GRANT USAGE ON SCHEMA platform, iam, authz, assistant, retention
+            TO datariver_archive;
+        GRANT SELECT ON platform.workspaces, iam.subjects,
+            iam.workspace_memberships, iam.access_roles,
+            iam.access_role_assignments, authz.policy_decisions,
+            retention.policy_versions, retention.policy_class_rules,
+            retention.legal_holds, retention.erasure_requests,
+            retention.erasure_request_events,
+            assistant.chat_sessions, retention.execution_jobs,
+            retention.execution_attempts,
+            retention.archive_capability_attestations,
+            retention.immutable_archive_receipts TO datariver_archive;
+        GRANT INSERT ON retention.archive_capability_attestations,
+            retention.immutable_archive_receipts,
+            retention.execution_attempts TO datariver_archive;
+        GRANT SELECT, INSERT ON retention.execution_events TO datariver_archive;
+        GRANT UPDATE (state, next_attempt_at, attempt_count, lease_epoch,
+            lease_token_hash, lease_owner_fingerprint, lease_until,
+            archive_receipt_id, archive_manifest_hash, last_failure_code,
+            version, updated_at) ON retention.execution_jobs TO datariver_archive;
+        GRANT UPDATE (state, stage, evidence_hash, external_response_hash,
+            failure_code, finished_at) ON retention.execution_attempts TO datariver_archive;
     END IF;
 
     IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'datariver_bootstrap') THEN

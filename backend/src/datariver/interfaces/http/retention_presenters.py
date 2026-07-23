@@ -9,6 +9,8 @@ from datariver.interfaces.http.retention_schemas import (
     ErasureRequestResponse,
     LegalHoldActionResponse,
     LegalHoldResponse,
+    RetentionClassRuleRequest,
+    RetentionPolicyContractRequest,
     RetentionPolicyResponse,
     RetentionRulesRequest,
 )
@@ -19,6 +21,20 @@ def retention_policy_response(policy: RetentionPolicyVersion) -> RetentionPolicy
         policy_id=policy.policy_id,
         policy_number=policy.policy_number,
         rules=RetentionRulesRequest(**policy.rules.document()),
+        contract_version=policy.contract_version,
+        contract=(
+            RetentionPolicyContractRequest(
+                effective_from=policy.contract.effective_from,
+                effective_until=policy.contract.effective_until,
+                execution_authorization_hours=policy.contract.execution_authorization_hours,
+                class_rules=tuple(
+                    RetentionClassRuleRequest(**rule.document())
+                    for rule in policy.contract.class_rules
+                ),
+            )
+            if policy.contract is not None
+            else None
+        ),
         payload_hash=policy.payload_hash,
         requester_id=policy.requester_id,
         request_reason=policy.request_reason,

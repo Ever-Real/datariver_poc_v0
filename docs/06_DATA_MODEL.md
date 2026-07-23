@@ -125,19 +125,24 @@ typed DataHub enrichment through the server anti-corruption layer.
 
 | Table | Key columns and constraints | Purpose |
 |---|---|---|
-| `retention.policy_versions` | workspace/policy number UQ, typed duration fields, canonical payload hash, maker/checker decisions, state and optimistic version; one ACTIVE row per workspace | independently approved operating retention policy; activation never authorizes deletion by itself |
+| `retention.policy_versions` | workspace/policy number UQ, legacy typed duration fields, V1/V2 contract discriminator, effective interval, execution-authorisation hours, canonical payload hash, maker/checker decisions, state and optimistic version; one ACTIVE row per workspace | independently approved operating retention policy; activation never authorizes deletion by itself |
+| `retention.policy_class_rules` | exact policy ID/hash/number composite FK, one immutable row per governed data class, typed unit, minimum/maximum, archive disposition and canonical rule hash | complete `POLICY_BOOK_V2` class contract; legacy `SINGLE_DEADLINE_V1` policies have no fabricated rows and cannot produce execution commands |
 | `retention.legal_holds` | typed data class/scope, canonical payload hash, creator, governed release fields, blocking state and optimistic version | Legal Hold canonical state; every state except RELEASED blocks destructive eligibility |
 | `retention.legal_hold_events` | hold/version UQ, typed action, actor/reason/policy decision/time and action hash | append-only placement and release history |
 | `retention.erasure_requests` | typed canonical target snapshot, classification, policy ID/hash, maker/checker, bounded expiry, payload hash, terminal review state and optimistic version | independently reviewed erasure intent; APPROVED never grants an execution capability |
 | `retention.erasure_request_events` | request/version UQ, typed action, actor/reason/policy decision/time and request payload hash | append-only creation and decision history |
 | `retention.archive_capability_attestations` | configuration/encryption/runtime-principal fingerprints, probe contract/challenge, bucket, bounded observation window, seven verified controls, state/failure and canonical payload hash | append-only target conformance evidence; a provider label alone cannot create VERIFIED state |
-| `retention.immutable_archive_receipts` | exact source range and manifest, active policy ID/hash, typed full-object checksum, full content/retention read-back, object version, capability/encryption/principal binding and canonical payload hash | append-only proof for a verified archive object version; never a deletion capability |
+| `retention.immutable_archive_receipts` | exact source range and manifest, policy-active/effective-through-provider-write-interval ID/hash, typed full-object checksum, full content/retention read-back, object version, exact capability-attestation/encryption/principal binding and canonical payload hash | append-only proof for a verified archive object version; provider `LastModified` is the start of a conservative one-second interval that policy lifecycle, V2 effective interval, execution authorisation and the exact capability must fully cover; later policy supersession or capability expiry does not erase historical proof and never creates deletion authority |
+| `retention.execution_jobs` | one row per exact erasure request, frozen request/target/policy/maker-checker/executor hashes, archive configuration/deadline, deterministic claim order, bounded write attempts, monotonic lease epoch/token hash and terminal/orphan receipt FK | archive-only one-time execution command; destructive state is constrained to `DISABLED_NOT_READY`; verified post-write failures are BLOCKED with a linked receipt |
+| `retention.execution_attempts` | job/fence UQ, lease token hash, worker-principal fingerprint, bounded correlation/stage/failure, evidence hashes and destructive-effect count constrained to zero | fenced claim/reclaim history; every expired write attempt is superseded into read-only recovery before governance revalidation; recovery fences do not increment the write-attempt count and are bounded to three persisted attempt rows for the same write `attempt_no` |
+| `retention.execution_events` | job/sequence UQ, bounded state/reason, attempt number, canonical evidence hash and database time | append-only command transition evidence |
 
-All seven tables use forced workspace RLS and composite membership/aggregate foreign keys. Retention
+All eleven tables use forced workspace RLS and composite membership/aggregate foreign keys. Retention
 foreign keys do not cascade, the application role cannot delete these rows, and Legal Hold/erasure
-events cannot be updated. The application role has read-only access to archive evidence; no API or
-ordinary unit of work can create it. Archive export attempts, erasure execution claims/attempts and
-destructive completion tables remain unimplemented.
+or execution events cannot be updated. The application role has read-only access to archive and
+execution evidence; only the dedicated archive role can append verified archive evidence. Scheduler
+and archive roles are separate `NOBYPASSRLS` principals and receive no `DELETE` or `TRUNCATE`
+privilege. No API or ordinary application unit of work can claim or complete execution.
 
 ### Knowledge graph
 
@@ -259,9 +264,10 @@ the canonical `0001` contract, upgrades install it atomically, and partial schem
 Versioned general ABAC policies/bindings, catalog relationships/normalized hierarchy, connection registry,
 general audit export, durable production inference jobs, saved-query templates
 beyond the built-in surfaces and embedding partitions remain target tables. Governed retention
-policy versions, Legal Hold history, typed Maker-Checker erasure requests/decisions and immutable
-archive capability/receipt evidence are implemented. Erasure execution claims/attempts and archive
-export attempts remain target tables.
+policy versions, per-class minimum/maximum rules, Legal Hold history, typed Maker-Checker erasure
+requests/decisions, archive-only execution jobs/attempts/events and immutable archive
+capability/receipt evidence are implemented. General archive-range jobs and destructive completion
+records remain target tables.
 These future records remain PostgreSQL canonical state; object-store metadata is not a policy, hold
 or deletion authority. They require a later Alembic revision and updated API/retention/security
 tests; their mention in PRD/architecture is not permission to create ad-hoc columns.
@@ -285,7 +291,20 @@ forced RLS, append-only rule/event grants, bounded current-assignment and Role-c
 post-repair schema fingerprint. Its downgrade is intentionally non-destructive; rollback of
 application code does not erase access-policy evidence.
 
-`EVENT_RETENTION_DAYS` is a target online-retention input, not a deletion switch. Automatic event deletion remains disabled until immutable export has been written and read back from a verified Object-Lock store, Legal Hold precedence and Maker-Checker erasure approval are implemented, and a dedicated least-privilege retention worker is introduced.
+Alembic `0042` adds the `POLICY_BOOK_V2` contract columns and four-class rule table plus the
+archive-only execution job, fenced attempt and append-only event tables. It creates separate
+`datariver_retention_scheduler` and `datariver_archive` `NOBYPASSRLS` grants, forces workspace RLS,
+constrains destructive effects to zero and has no delete state or privilege. Existing V1 policies
+remain unchanged. The compatibility migration accepts a complete legacy `0008` table with later
+additive columns, repairs only absent `0042` objects and rejects partial/malformed Phase 2 state.
+It compares exact PostgreSQL 17 semantic catalog fingerprints for both independently rehearsed fresh
+baseline and stripped-`0041` additive paths; physical column ordinal is not treated as a logical API.
+The archive source CHECK is widened only from the exact validated legacy definition, so a same-token
+`OR TRUE`, unvalidated or otherwise malformed constraint is rejected.
+
+`EVENT_RETENTION_DAYS` is a target online-retention input, not a deletion switch. The Phase 2 worker
+archives only minimal erasure approval/execution evidence and stops at
+`ARCHIVE_VERIFIED_DESTRUCTIVE_DISABLED`; automatic event/content deletion remains disabled.
 
 ## Retention and deletion
 
@@ -304,22 +323,30 @@ history, not a mutable object-manifest boolean. It takes precedence over ordinar
 explicit erasure, row pruning and partition detach/drop. A release-pending hold is treated as active.
 The first partition implementation over-retains a whole partition when any applicable hold exists.
 
-Object deletion follows canonical manifest/session state through a retryable typed erasure workflow.
+Future object deletion must follow canonical manifest/session state through a retryable typed erasure workflow.
 The request binds workspace, target kind and UUID, target version/owner/classification, policy
 version ID and payload hash, request reason/decision evidence and canonical payload hash.
 Approval requires an independent checker, current policy and authorization plus a current
-hold/version check. A future destructive executor additionally requires one-time atomic consumption
-and a final authorization/hold/version check. Requests never carry raw
+hold/version check. The Phase 2 archive-only executor creates one command per approval and rechecks
+the current maker/checker Role evidence, target, policy and holds before claim, before archive write
+and before receipt commit. A future destructive executor requires a separate approval gate and final
+authorization/hold/version check. Requests never carry raw
 SQL, table names, object keys or provider operations. Immutable audit/release evidence is
 pseudonymized where legally allowed rather than edited; a completion receipt preserves only the
 minimum legally permitted evidence. Seed removal remains fixed namespace/run scoped and cannot match
 non-seed resources.
 
-The current implementation stops at APPROVED/REJECTED review evidence. APPROVED remains
-`DISABLED_NOT_READY`: there is no consumption, worker claim, provider delete or partition operation.
+The current implementation may consume an APPROVED Chat-session request only into an archive-only
+command. It can verify an immutable evidence receipt and then stops at
+`ARCHIVE_VERIFIED_DESTRUCTIVE_DISABLED`. APPROVED and every execution state retain
+`DISABLED_NOT_READY` for destructive effects: there is no provider delete or partition operation.
 
 Immutable archive storage is accessed through a port separate from the registration object store.
-The canonical receipt records deterministic manifest hash, row/byte counts, SHA-256, object version,
+The exact capability attestation is committed before a conditional object create and its UUID is
+stored in object metadata. Every expired write lease reconciles that exact provider version before
+governance revalidation; three recovery fences per write attempt are derived from persisted attempt
+rows without increasing the write-attempt count. The canonical receipt records deterministic
+manifest hash, row/byte counts, SHA-256, object version,
 retention mode and deadline, provider/configuration fingerprint and content/retention read-back time.
 A product name or S3-compatible response is insufficient: versioning, Object Lock, compliance-mode
 retention, checksum/version behavior and shortening/delete denial need target conformance evidence.

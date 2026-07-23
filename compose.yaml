@@ -31,6 +31,8 @@ services:
       - postgres_upload_password
       - postgres_governance_password
       - postgres_export_password
+      - postgres_retention_scheduler_password
+      - postgres_archive_password
       - postgres_bootstrap_password
       - keycloak_db_password
     volumes:
@@ -243,6 +245,51 @@ services:
     tmpfs:
       - /tmp:size=32m,noexec,nosuid
 
+  retention-scheduler:
+    <<: *backend
+    profiles: ["retention-archive"]
+    secrets:
+      - postgres_retention_scheduler_password
+    command: ["/app/.venv/bin/python", "-m", "datariver.workers.retention_scheduler"]
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    networks:
+      - data
+    volumes:
+      - ./runtime/retention-execution.enabled:/run/datariver/retention-execution.enabled:ro
+    expose:
+      - "${RETENTION_METRICS_PORT:-9102}"
+    mem_limit: 256m
+    cpus: 0.25
+    read_only: true
+    tmpfs:
+      - /tmp:size=16m,noexec,nosuid
+
+  retention-archive-worker:
+    <<: *backend
+    profiles: ["retention-archive"]
+    secrets:
+      - postgres_archive_password
+      - s3_archive_access_key
+      - s3_archive_secret_key
+    command: ["/app/.venv/bin/python", "-m", "datariver.workers.retention_archive"]
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    networks:
+      - data
+      - connectors
+    volumes:
+      - ./runtime/retention-execution.enabled:/run/datariver/retention-execution.enabled:ro
+    expose:
+      - "${RETENTION_METRICS_PORT:-9102}"
+    mem_limit: 384m
+    cpus: 0.5
+    read_only: true
+    tmpfs:
+      - /tmp:size=16m,noexec,nosuid
+
   web:
     build:
       context: .
@@ -305,6 +352,10 @@ secrets:
     file: ./secrets/postgres_governance_password
   postgres_export_password:
     file: ./secrets/postgres_export_password
+  postgres_retention_scheduler_password:
+    file: ./secrets/postgres_retention_scheduler_password
+  postgres_archive_password:
+    file: ./secrets/postgres_archive_password
   postgres_bootstrap_password:
     file: ./secrets/postgres_bootstrap_password
   keycloak_db_password:
@@ -341,5 +392,9 @@ secrets:
     file: ./secrets/s3_export_access_key
   s3_export_secret_key:
     file: ./secrets/s3_export_secret_key
+  s3_archive_access_key:
+    file: ./secrets/s3_archive_access_key
+  s3_archive_secret_key:
+    file: ./secrets/s3_archive_secret_key
   grafana_admin_password:
     file: ./secrets/grafana_admin_password

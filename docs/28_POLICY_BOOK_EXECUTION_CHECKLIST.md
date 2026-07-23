@@ -7,9 +7,9 @@ target-environment production evidence.
 
 | Phase | Scope | Status | Exit condition |
 |---|---|---|---|
-| 1 | RBAC/data-policy DB model and backend contract | READY FOR USER APPROVAL | all Phase 1 gates pass, commit is reviewable, user approves |
-| 2 | Retention scheduler/executor boundary | PENDING APPROVAL | Phase 1 approval, TDD implementation and destructive-safety evidence |
-| 3 | Admin UI integration and placeholder closure | PENDING APPROVAL | Phase 2 approval, all Admin rows below resolved and browser tests pass |
+| 1 | RBAC/data-policy DB model and backend contract | DONE | all Phase 1 gates passed; user approved on 2026-07-23 |
+| 2 | Retention scheduler/executor boundary | DONE | local source/DB gates and independent P0/P1 reviews pass; target activation gates remain blocked |
+| 3 | Admin UI integration and placeholder closure | PENDING | Phase 2 exit report, all Admin rows below resolved and browser tests pass |
 
 ## Phase 1 checklist
 
@@ -67,18 +67,77 @@ supported UoW; a future function-only write boundary can further limit damage fr
 credential. Additional positive HTTP/real-DB Role CRUD cases are retained in the Phase 3 validation
 row rather than overstated as current browser evidence.
 
-## Phase 2 planned checklist — do not execute before approval
+## Phase 2 exit checklist — local exit complete; target profile remains off
 
-- [ ] Write scheduler eligibility and lease tests before implementation.
-- [ ] Define bounded batches, deterministic ordering, lease fencing and idempotent retry.
-- [ ] Require exact ACTIVE policy/hash, expiry, classification, canonical target version and owner.
-- [ ] Recheck Workspace/resource/subject Legal Holds before claim, archive and destructive action.
-- [ ] Use a separate archive port, endpoint, bucket, secret and NOBYPASSRLS runtime principal.
-- [ ] Require full content checksum, object version and compliance-retention read-back receipt.
-- [ ] Atomically consume approved erasure intent; maker/checker/executor cannot collapse into one actor.
-- [ ] Prove crash/restart, duplicate delivery, lease expiry, hold race and stale target fail closed.
-- [ ] Keep physical delete/partition drop disabled until target restore and provider conformance pass.
-- [ ] Add operations metrics with bounded labels and a kill switch defaulting to disabled.
+- [x] Write scheduler eligibility and lease tests before implementation.
+- [x] Define bounded batches, deterministic ordering, starvation-free eligibility scanning, lease
+  fencing, read-only recovery before every expired-write-lease revalidation, a three-fence
+  persistent recovery budget and job-bound idempotent retry.
+- [x] Require exact ACTIVE policy/hash, expiry, classification, canonical target version and owner,
+  with an explicit V2 class-rule/legacy-deadline mapping.
+- [x] Recheck Workspace/resource/subject Legal Holds before claim, archive and final receipt; no
+  destructive action exists in Phase 2.
+- [x] Use a separate archive port, endpoint, bucket, secret and NOBYPASSRLS runtime principal;
+  reconcile roles for existing PostgreSQL volumes.
+- [x] Require full content checksum, object version and compliance-retention read-back receipt; fix
+  S3 Base64/DB HEX mismatch, bind the stored capability challenge to the actual probe bytes, and
+  reuse a command-deterministic locked version before or after an ambiguous PutObject response.
+- [x] Commit the exact capability attestation before evidence write, bind its UUID in object
+  metadata, require provider `LastModified`, use conditional create with SDK retries disabled and
+  prove cold-restart recovery performs no capability probe or PutObject.
+- [x] Treat provider `LastModified` as the uncertain whole-second interval `[t, t+1s)`; require the
+  exact capability, policy lifecycle, V2 effective interval and execution-authorisation deadline to
+  cover the complete interval and fail closed on same-second activation, supersession or expiry.
+- [x] Atomically consume approved erasure intent; enforce maker/checker/owner/executor separation in
+  both domain and DB evidence and classify the custom manifest as erasure-execution evidence.
+- [x] Prove duplicate planning/claim, expired and exhausted lease handling, stale fence, post-claim
+  hold race, Role revocation, inactive Subject/Workspace, membership-action drift and stale target
+  fail closed.
+- [x] Keep physical delete/partition drop disabled until target restore and provider conformance pass.
+- [x] Add container-internal operations metrics with bounded labels, distinguish success/retry/blocked
+  outcomes, and document and test the default-off switch through the final pre-receipt boundary.
+
+Superseded 2026-07-23 candidate evidence: `835` backend tests passed with the two explicitly gated PostgreSQL
+tests skipped by the default run; each gated test then passed against a disposable PostgreSQL 17
+database using its real least-privilege roles. The Phase 2 test proved concurrent planning and claim
+yield exactly one winner, lease expiry produces epoch 2, the epoch-1 claim loses authority, a hold
+placed after claim blocks revalidation, release restores it, and checker Role revocation blocks the
+job with destructive effect count zero. A fresh volume migrated `0001 -> 0042`; the additive
+`0041 -> 0042` compatibility path and forced-RLS/column-grant inspection also passed. Ruff format and
+lint passed over `307` files, strict mypy passed over `290` source/test files,
+`scripts/verify_static.py` passed, both base/profile Compose configurations validated, and canonical
+`0001` regenerated twice at SHA-256
+`8d4d2f36c8f01af3a7694eadac022d6517078ecc20d9fc55f1f7273c958e2ef7`.
+
+That evidence predates the reopened remediation and is not a current-source exit claim. The current
+source now passes `865` default backend tests with `28` explicitly gated PostgreSQL cases skipped;
+the gated Phase 1 case passes `1/1` and the gated Phase 2 cases pass `27/27` separately against
+PostgreSQL 17 with the application, scheduler, archive and owner roles. The final focused retention
+subset passes `110/110`. Ruff format covers `299` files, Ruff lint passes, strict mypy covers `292`
+source files, static verification passes, and the frontend passes TypeScript, zero-warning ESLint,
+`39` files / `170` tests and production build. Fresh `0001 -> 0042`, stripped additive
+`0041 -> 0042`, malformed same-vocabulary source-CHECK rejection, base/profile Compose parsing and
+POSIX shell syntax pass. Canonical `0001` regenerates twice at SHA-256
+`24bbb8c8d895ab20d65dffb39783ee62562e7ea3b140477eee418dd3277fcc7a`. A separate PostgreSQL 17
+existing-volume rehearsal applied `0042` before scheduler/archive roles existed, then ran the actual
+role reconciliation. It exposed and corrected a SQL-heredoc comment defect, after which NOBYPASSRLS,
+allowed SELECT/INSERT/bounded UPDATE, absent broad UPDATE/DELETE and direct DELETE denial all passed.
+The final PostgreSQL run additionally proves every expired lease enters reconciliation before
+governance drift, recovery lookup failures stop after three persisted fences, and a cold process
+links the exact pre-write attestation/receipt with zero additional provider writes.
+This Mac host has no
+`pwsh`, so final PowerShell parsing remains part of the Windows/WSL target gate.
+
+The profile remains OFF. No maintained WORM target was supplied, so real provider conformance,
+off-host restore, WSL `linux/amd64` crash/low-resource soak and operations-owner acceptance remain
+external gates. Source-level review can only approve the disabled archive-only code boundary; these
+gates still block activating the profile in that environment and can never authorize deletion.
+Independent security and contract reviews found no remaining P0/P1 after the recovery, exact-version
+read-back and whole-second policy-boundary remediations. The accepted local scope keeps separate
+aggregates/roles and the terminal `ARCHIVE_VERIFIED_DESTRUCTIVE_DISABLED` state. Before HA scale-out,
+operators must also bind the configured worker-principal fingerprint to independently verified
+provider identity evidence and rehearse simultaneous same-workspace capability probes; these are
+nonblocking local-source risks, not production acceptance.
 
 ## Admin function inventory and Phase 3 plan
 

@@ -10,7 +10,7 @@ evidence.
 
 | File/profile | Components | Boundary |
 |---|---|---|
-| `compose.yaml` | PostgreSQL 17.10, migration/optional external-storage init, API, UI, outbox relay, upload completion/validation and governance apply workers; explicit external connector network | portable DataRiver core; no Redis or object-store provider is bundled |
+| `compose.yaml` | PostgreSQL 17.10, migration/optional external-storage init, API, UI, outbox relay, upload completion/validation and governance apply workers; opt-in catalog-export and retention-archive workers; explicit external connector network | portable DataRiver core; no Redis or object-store provider is bundled |
 | `compose.identity.yaml` | Keycloak 26.7 and isolated Keycloak database/credentials | local identity only |
 | `compose.source-host.yaml` | loopback host port and a dedicated publication bridge for PostgreSQL | source-host development; does not publish external connector services |
 | `compose.airflow.yaml` | Airflow 3.3 API server, scheduler, DAG processor, triggerer and init using LocalExecutor/isolated DB role | scheduled scan/probe only |
@@ -272,6 +272,56 @@ has passed. Local bootstrap intentionally does not manufacture a second administ
   workspace identifiers before
   setting transaction-local workspace context, and receives no DataHub credential or egress. Each
   attempt uses a distinct object key; only the current unexpired lease can publish its receipt.
+- Retention archive execution is disabled by default and is not part of core startup. The
+  `retention-archive` profile creates a scheduler with only its dedicated PostgreSQL secret and a
+  separate archive worker with a different PostgreSQL secret plus dedicated immutable-store
+  credentials. Both use pool size 1/overflow 0, concurrency 1 and an explicit workspace allowlist.
+  The scheduler has no S3 credential. Set `RETENTION_ARCHIVE_EXECUTION_ENABLED=true` only after all
+  `S3_ARCHIVE_*` values, lower-case SHA-256 encryption/principal fingerprints and separate secret
+  files are accepted. This flag is necessary but not sufficient: both workers also reread
+  `RETENTION_EXECUTION_CONTROL_FILE`, which bootstrap creates as `DISABLED`. Start the processes
+  disabled, complete provider/restore/owner acceptance, then atomically replace the file with the
+  exact single line `ENABLED`:
+
+  ```bash
+  docker compose --profile retention-archive config --quiet
+  docker compose --profile retention-archive up -d --build retention-scheduler retention-archive-worker
+  umask 077
+  printf 'ENABLED\n' > runtime/retention-execution.enabled.tmp
+  mv runtime/retention-execution.enabled.tmp runtime/retention-execution.enabled
+  ```
+
+  Disable immediately by atomically replacing the same file with `DISABLED`; do not edit it in
+  place. Archive evidence uses a command-deterministic key and a precommitted capability-attestation
+  UUID in object metadata. The adapter probes before a write, creates with `If-None-Match: *` and no
+  SDK automatic retry, then probes again after an ambiguous response. A disable, governance change or DB
+  completion failure observed after full WORM verification blocks the job and records the exact
+  immutable receipt as reconcilable evidence. Every expired write lease first receives a read-only
+  recovery fence; a cold process loads the exact attestation using provider `LastModified`. Its
+  whole-second timestamp is treated as `[t, t+1s)`, and both the policy and exact capability must
+  cover that entire interval. For V2 this includes the contract effective interval and the execution
+  authorisation deadline. The recovery process
+  cannot run the capability probe or create another object. Transient reads have three persistent
+  fences per write attempt and never expand the stored write-attempt budget.
+  Provider checksum/retention mismatch remains fail-closed and must be reconciled by the operator
+  against the deterministic key. None of these paths authorizes deletion.
+
+  Each worker exposes a bounded Prometheus endpoint on container port
+  `RETENTION_METRICS_PORT` (default `9102`) without a host publication. A reviewed Prometheus
+  deployment must join an allowed internal scrape network; never publish this endpoint broadly.
+  Labels are limited to fixed worker/outcome vocabularies. The profile archives only a one-MiB-or-
+  smaller pseudonymised erasure-evidence manifest and always leaves deletion/partition operations
+  `DISABLED_NOT_READY`. Before activation, the real target must prove versioning, Object Lock
+  COMPLIANCE, full SHA-256 read-back, exact retention read-back, shortening denial, retained-version
+  delete denial and an off-host restore. Source/unit tests or an S3 product label do not close this
+  target gate.
+
+  `S3_ARCHIVE_WORKER_PRINCIPAL_FINGERPRINT` is audit attribution supplied by deployment
+  configuration, not provider-discovered caller identity. Before activating a real target, the
+  accountable operator must record evidence that this SHA-256 value identifies the exact access-key
+  principal mounted into the archive worker; a configured value alone is insufficient. HA scale-out
+  must also rehearse concurrent same-workspace capability probes against the target because cached
+  observations share a configuration/time uniqueness boundary.
 
 ## Airflow boundary
 
@@ -308,9 +358,14 @@ egress or a DataHub credential. The complete Linux/WSL boundary is
 
 ## Database and object operations
 
-- Alembic has one head at `0041`: the generated current initial schema plus conditional compatibility bridges for local databases that applied earlier revisions. Deployment runs migration before API/workers. The API role can only read `public.alembic_version` for readiness; migration ownership remains separate. After explicitly bounded compatibility repairs, the Policy Book bridge verifies exact column type/length/nullability/timezone/default, PK/UQ, CHECK SQL, FK columns/target/delete action, index columns/uniqueness and forced-RLS policy definitions; same-name malformed objects and every remaining partial schema are rejected.
+- Alembic has one head at `0042`: the generated current initial schema plus conditional compatibility bridges for local databases that applied earlier revisions. Deployment runs migration before API/workers. The API role can only read `public.alembic_version` for readiness; migration ownership remains separate. After explicitly bounded compatibility repairs, the Policy Book and retention-execution bridges verify exact column type/length/nullability/timezone/default, PK/UQ, CHECK SQL, FK columns/target/delete action, index columns/uniqueness and forced-RLS policy definitions; same-name malformed objects and every remaining partial schema are rejected.
+- Existing PostgreSQL volumes must reconcile runtime roles before migration so `0042` can grant the
+  new least-privilege capabilities. Run `scripts/reconcile-postgres-roles.sh` on macOS/Linux/WSL or
+  `scripts/reconcile-postgres-roles.ps1` on Windows, run the migration service, then run the same
+  reconciliation once more. The second pass is intentional: the idempotent init hook grants the
+  Phase 2 tables even when an old volume created the roles only after `0042` had already run.
 - PostgreSQL pool size/overflow/lease timeout, statement timeout, idle-transaction timeout and application names are explicit. Budget `API replicas × (API pool + overflow) + long-running workers × (worker pool + overflow) + one-shot/IdP/Airflow/admin reserve`; current one-API/four-worker defaults have a ceiling of 60 before reserve.
-- Liveness is process-only. Readiness leases the API pool and requires exactly packaged Alembic head `0041`; Compose and APISIX use readiness for upstream health.
+- Liveness is process-only. Readiness leases the API pool and requires exactly packaged Alembic head `0042`; Compose and APISIX use readiness for upstream health.
 - `scripts/probe_pgbouncer_rls.py` and its unit contract implement the pre-adoption transaction-pool leakage gate. No Compose profile currently deploys PgBouncer and no live pooler pass has been recorded; direct PostgreSQL remains the supported path until the isolated two-workspace probe succeeds.
 - Back up PostgreSQL and the selected external S3 store as a consistency set or record a watermark; restore into isolation and follow the drill in [operations runbook](13_OPERATIONS_RUNBOOK.md) before traffic.
 - Accepted-object retention/lifecycle is environment policy. Quarantine receives a shorter cleanup policy, but never delete an object whose manifest is actively leased.

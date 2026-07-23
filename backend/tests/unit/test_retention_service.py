@@ -651,7 +651,9 @@ async def test_erasure_request_binds_canonical_target_and_active_policy() -> Non
 
 
 @pytest.mark.asyncio
-async def test_erasure_approval_is_blocked_by_hold_then_succeeds_for_checker() -> None:
+async def test_erasure_approval_is_blocked_by_hold_then_succeeds_for_checker(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     workspace_id = uuid4()
     now = datetime.now(UTC)
     state = _state(workspace_id)
@@ -701,6 +703,10 @@ async def test_erasure_approval_is_blocked_by_hold_then_succeeds_for_checker() -
     assert stored.state is ErasureRequestState.PENDING
 
     state["hold_blocks"] = False
+    persisted_decision_time = now + timedelta(seconds=1)
+    monkeypatch.setattr(
+        "datariver.application.services.retention.utc_now", lambda: persisted_decision_time
+    )
     approved = await service.decide_erasure(
         workspace_id=workspace_id,
         erasure_request_id=request.erasure_request_id,
@@ -715,6 +721,8 @@ async def test_erasure_approval_is_blocked_by_hold_then_succeeds_for_checker() -
     )
     assert approved.state is ErasureRequestState.APPROVED
     assert approved.execution_state == "DISABLED_NOT_READY"
+    assert approved.decided_at == persisted_decision_time
+    assert approved.decided_at > now
 
 
 @pytest.mark.asyncio

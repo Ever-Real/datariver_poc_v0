@@ -13,7 +13,9 @@ from datariver.domain.retention import (
     LegalHoldActionType,
     LegalHoldScope,
     LegalHoldState,
+    RetentionArchiveDisposition,
     RetentionDataClass,
+    RetentionPeriodUnit,
     RetentionPolicyState,
 )
 
@@ -29,8 +31,24 @@ class RetentionRulesRequest(StrictRetentionRequest):
     immutable_archive_years: int = Field(ge=1, le=100)
 
 
+class RetentionClassRuleRequest(StrictRetentionRequest):
+    data_class: RetentionDataClass
+    unit: RetentionPeriodUnit
+    minimum: int = Field(ge=0, le=36_500)
+    maximum: int = Field(ge=1, le=36_500)
+    archive_disposition: RetentionArchiveDisposition
+
+
+class RetentionPolicyContractRequest(StrictRetentionRequest):
+    effective_from: datetime
+    effective_until: datetime | None = None
+    execution_authorization_hours: int = Field(ge=1, le=168)
+    class_rules: tuple[RetentionClassRuleRequest, ...] = Field(min_length=4, max_length=4)
+
+
 class RetentionPolicyProposalRequest(StrictRetentionRequest):
     rules: RetentionRulesRequest
+    contract: RetentionPolicyContractRequest | None = None
     reason: str = Field(min_length=1, max_length=4000)
 
 
@@ -43,6 +61,8 @@ class RetentionPolicyResponse(BaseModel):
     policy_id: UUID
     policy_number: int
     rules: RetentionRulesRequest
+    contract_version: str
+    contract: RetentionPolicyContractRequest | None
     payload_hash: str
     requester_id: UUID
     request_reason: str

@@ -12,6 +12,8 @@ from datariver.domain.common import ValidationError, canonical_json_hash
 from datariver.domain.retention import (
     ErasureRequestState,
     LegalHoldState,
+    RetentionClassRule,
+    RetentionPolicyContract,
     RetentionPolicyState,
     RetentionRules,
 )
@@ -100,16 +102,28 @@ async def propose_retention_policy(
     idempotency_key: Annotated[str, Header(alias="Idempotency-Key", min_length=16, max_length=200)],
 ) -> RetentionPolicyResponse:
     rules = RetentionRules(**payload.rules.model_dump())
+    contract = None
+    if payload.contract is not None:
+        contract = RetentionPolicyContract(
+            effective_from=payload.contract.effective_from,
+            effective_until=payload.contract.effective_until,
+            execution_authorization_hours=payload.contract.execution_authorization_hours,
+            class_rules=tuple(
+                RetentionClassRule(**rule.model_dump()) for rule in payload.contract.class_rules
+            ),
+        )
     request_hash = canonical_json_hash(
         {
             "operation": "retention.policy.propose",
             "rules": rules.document(),
+            "contract": contract.document() if contract is not None else None,
             "reason": payload.reason,
         }
     )
     value = await _service(request).propose_policy(
         workspace_id=context.workspace_id,
         rules=rules,
+        contract=contract,
         reason=payload.reason,
         subject=context.subject,
         environment=context.environment,

@@ -556,8 +556,10 @@ environment's secrets or volumes.
    topology.
 3. Validate the selected Compose overlay with `docker compose ... config --quiet`, then bring up
    the external Redis and S3 connectors, then PostgreSQL and the selected local Keycloak/APISIX
-   overlays. Apply `alembic upgrade head` through the migration service before API/workers;
-   readiness requires revision `0041`.
+   overlays. For an existing PostgreSQL volume, run `scripts/reconcile-postgres-roles.sh` (or the
+   PowerShell equivalent) before and after applying `alembic upgrade head` through the migration
+   service; the second idempotent pass repairs Phase 2 grants when roles were created after an older
+   migration. Readiness requires revision `0042`.
 4. Start the API, relay, workers and web service using either the container profile or the
    host-development commands below. Check `/api/v1/health/live`, `/api/v1/health/ready`,
    `/api/v1/capabilities` and the APISIX/Vite proxy before using application workflows.
@@ -570,13 +572,23 @@ environment's secrets or volumes.
 ### Administrator system configuration
 
 Policy Book/RBAC, retention execution and Admin UI completion use three explicit approval gates.
-The current Phase 1 adds Role-version No/Partial/Full data rules plus normalized assignment evidence;
-it does not start the retention executor or silently enable unfinished Admin controls. See the
+Phase 1 adds Role-version No/Partial/Full data rules plus normalized assignment evidence. Phase 2
+adds a disabled-first archive-only execution control plane with separate scheduler/archive DB roles,
+fenced leases, current-policy/Role/target/Hold revalidation and immutable full read-back evidence.
+Its exact capability attestation is committed before a conditional, non-auto-retried object create;
+every expired write lease is reconciled read-only and with a bounded persistent recovery budget. It
+interprets provider `LastModified` as `[t, t+1s)` and accepts a receipt only when the policy
+lifecycle/effective window, execution authorisation and exact capability cover that entire interval.
+The configured archive-principal fingerprint still requires
+operator evidence binding it to the provider access-key identity before target activation. It
+contains no deletion or partition-drop path and does not silently enable unfinished Admin controls.
+See the
 [Policy Book PRD](docs/27_POLICY_BOOK_ADMIN_GOVERNANCE_PRD.md),
 [execution checklist](docs/28_POLICY_BOOK_EXECUTION_CHECKLIST.md) and
-[ADR-0036](docs/adr/0036-policy-book-rbac-and-admin-approval-gates.md). On a new or upgraded database,
+[ADR-0036](docs/adr/0036-policy-book-rbac-and-admin-approval-gates.md) plus
+[ADR-0037](docs/adr/0037-retention-execution-control-plane.md). On a new or upgraded database,
 run `alembic upgrade head` and verify `/api/v1/health/ready` reports required/current revision
-`0041`. Legacy Role markers remain usable by the existing ABAC document but are not normalized audit
+`0042`. Legacy Role markers remain usable by the existing ABAC document but are not normalized audit
 evidence until an Admin explicitly reassigns the Role. Manual/fallback edits cannot submit a
 `datariver-role-*` marker; the dedicated assignment path matches it to the locked Role row and
 rejects exact same Role/version/canonical-access no-ops even when only the optimistic expected version
@@ -584,6 +596,10 @@ changes. Until the Phase 3 editor guard is approved, remove a
 Role through that dedicated path before making a generic access-document edit. Migration `0041`
 also fails closed when a same-name CHECK/FK/index or forced-RLS policy has a non-canonical
 definition; the executed evidence and the remaining Windows/WSL gate are recorded in the checklist.
+The archive profile additionally requires both `RETENTION_ARCHIVE_EXECUTION_ENABLED=true` and the
+mounted `runtime/retention-execution.enabled` file to contain exactly `ENABLED`. Bootstrap creates
+that file as `DISABLED`; activate or disable it only with an atomic temporary-file replacement after
+the WORM conformance, restore and accountable-owner gates are accepted.
 
 The profile menu presents grouped, server-authorized administration entries. **Accounts & access**
 contains Users, Systems, server-managed Role definitions/assignment and the applicable
@@ -1007,6 +1023,13 @@ docker compose -f compose.yaml -f compose.gateway.yaml up -d --build --wait
 # Prometheus :9090 and Alertmanager :9093. This is still Single-node Pilot.
 docker compose -f compose.yaml -f aux-compose.yml --profile observability up -d --wait
 
+# Archive-only Retention workers. Keep disabled until dedicated DB/S3 secrets, workspace allowlist,
+# Object Lock negative conformance and restore evidence have been accepted.
+docker compose --profile retention-archive config --quiet
+docker compose --profile retention-archive up -d --build \
+  retention-scheduler retention-archive-worker
+# After acceptance only: atomically replace runtime/retention-execution.enabled with exact ENABLED.
+
 # Entire local integration stack; all overlays compose together
 docker compose -f compose.yaml -f compose.identity.yaml \
   -f compose.airflow.yaml -f compose.gateway.yaml up -d --build --wait
@@ -1073,7 +1096,7 @@ docker compose -f compose.yaml build --pull
 ```
 
 애플리케이션을 올리기 전에 권한이 분리된 `migrate` 서비스로 Alembic을 실행한다. 이
-릴리스의 필수 revision은 `0041`이다. 호스트의 임의 DB 계정으로 `alembic`을 직접 실행하지
+릴리스의 필수 revision은 `0042`이다. 호스트의 임의 DB 계정으로 `alembic`을 직접 실행하지
 않는다.
 
 ```bash
@@ -1082,7 +1105,7 @@ docker compose -f compose.yaml run --rm migrate \
   /app/.venv/bin/alembic -c backend/alembic.ini current
 ```
 
-두 번째 명령의 현재 revision이 `0041 (head)`인지 확인한다. 마이그레이션 실패 시 서비스를
+두 번째 명령의 현재 revision이 `0042 (head)`인지 확인한다. 마이그레이션 실패 시 서비스를
 재기동하거나 downgrade를 추측 실행하지 말고, 로그와 DB 상태를 보존한 채 배포를 중단한다.
 
 ### 3. API·Worker·Web 재기동과 상태 확인

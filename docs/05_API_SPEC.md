@@ -378,8 +378,21 @@ workspace, clearance and system/domain authorization.
 | `POST .../erasure-requests/{erasure_request_id}/decisions` | independent `erasure.approve` checker + recent hardware WebAuthn | approve or reject after re-reading target, policy and applicable Legal Holds |
 
 Every mutation requires `Idempotency-Key`; decisions and release commands also require a quoted
-positive `If-Match`. Policy durations have no source default and are covered by a canonical payload
-hash. Legal Hold placement and every release action have separate canonical hashes. Placement is
+positive `If-Match`. Policy proposal input retains the legacy `rules` object for V1 compatibility
+and may add a strict `contract`. A V2 contract contains `effective_from`, optional
+`effective_until`, `execution_authorization_hours` from 1 through 168 and exactly four
+`class_rules`: one each for `COMPLETED_OPERATIONS`, `CHAT_CONTENT`, `AUDIT_EVIDENCE` and
+`OBJECT_DATA`. Each class rule supplies `unit` (`DAYS`, `MONTHS` or `YEARS`), non-negative
+`minimum`, positive `maximum >= minimum`, and `archive_disposition` (`NO_ARCHIVE`,
+`EVIDENCE_ONLY` or `CONTENT_WORM`). The response returns `contract_version` and the exact contract;
+legacy rows return `SINGLE_DEADLINE_V1` and `contract: null` and cannot enter execution.
+For `POLICY_BOOK_V2`, legacy `rules.chat_content_days` is the default session scheduling deadline and
+must be inside the V2 `CHAT_CONTENT` minimum/maximum bounds. Execution eligibility uses the V2 Chat
+minimum; immutable execution evidence uses the V2 `AUDIT_EVIDENCE` maximum from the frozen planning
+basis. No numeric field is interpreted as deletion authority.
+
+Policy durations have no source default and are covered by a canonical payload hash. Legal Hold
+placement and every release action have separate canonical hashes. Placement is
 conservative and immediate; release requires a different human checker. Service identities are
 denied. All responses expose `DISABLED_NOT_READY` for automatic partition/deletion effects, and
 there is no delete, execute, consume, partition-detach or archive-verification endpoint in this
@@ -387,6 +400,15 @@ slice. Erasure request input cannot contain classification, owner, target versio
 SQL or provider commands. Approval rechecks the canonical target version/owner/classification, the
 active policy ID and payload hash, and workspace/resource/subject Legal Holds. Rejection can close a
 stale or expired request, but it never enables execution.
+
+The optional internal `retention-archive` worker profile is not an HTTP capability. When explicitly
+enabled with dedicated principals and a verified WORM target, it may create one archive-only command
+for an approved Chat-session request under an effective `POLICY_BOOK_V2` contract. It records only
+minimal approval/execution evidence and can end at
+`ARCHIVE_VERIFIED_DESTRUCTIVE_DISABLED`, `BLOCKED` or `RETRY_WAIT`. There is no client-supplied
+object key, provider command, retry endpoint or destructive state. Capability attestation,
+conditional object create and expired-lease read-only reconciliation are internal worker contracts;
+no HTTP caller can supply an attestation ID or trigger a recovery fence.
 
 ## DataHub adapter contract
 
@@ -418,4 +440,11 @@ configuration-invalid; the checked-in local stack intentionally has no such cred
 
 ## Planned compatibility endpoints
 
-The remaining backlog, not present in current OpenAPI, is upload cancel/download and governed erasure execution/consumption; automated graph extraction and projection rebuild; Chat session history/SSE and production external-model adapters; immutable archive export/target-conformance workers; and job/audit browsing/retry. PostgreSQL can persist verified archive evidence, but no archive-export or deletion capability is exposed. The catalog-export source/API/UI contract exists but its isolated worker deployment remains disabled pending separately provisioned credentials. The disabled-first assistant inference source contract is not an HTTP route or deployed provider integration. Backlog features may not be emulated with generic provider or arbitrary query pass-through.
+The remaining backlog, not present in current OpenAPI, is upload cancel/download and any destructive
+erasure execution; automated graph extraction and projection rebuild; Chat session history/SSE and
+production external-model adapters; general archive-range export plus job/audit browsing/retry. The
+internal Phase 2 worker can persist verified approval evidence, but no archive or deletion capability
+is exposed to clients. The catalog-export source/API/UI contract exists but its isolated worker
+deployment remains disabled pending separately provisioned credentials. The disabled-first assistant
+inference source contract is not an HTTP route or deployed provider integration. Backlog features may
+not be emulated with generic provider or arbitrary query pass-through.

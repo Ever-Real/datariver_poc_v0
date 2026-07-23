@@ -12,9 +12,17 @@ $root = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot "..")).ProviderPath
 $secretsDirectory = Join-Path $root "secrets"
 $envFile = Join-Path $root ".env"
 $keycloakRuntimeDirectory = Join-Path $root "runtime/keycloak"
+$retentionControlFile = Join-Path $root "runtime/retention-execution.enabled"
 
 New-Item -ItemType Directory -Force -Path $secretsDirectory | Out-Null
 New-Item -ItemType Directory -Force -Path $keycloakRuntimeDirectory | Out-Null
+if (-not (Test-Path -LiteralPath $retentionControlFile)) {
+    [IO.File]::WriteAllText(
+        $retentionControlFile,
+        "DISABLED`n",
+        [Text.UTF8Encoding]::new($false)
+    )
+}
 
 if ($IsLinux -or $IsMacOS) {
     Get-ChildItem -LiteralPath $secretsDirectory -File | ForEach-Object {
@@ -96,6 +104,8 @@ $postgresRelayPassword = Get-OrCreateSecret "postgres_relay_password"
 $postgresUploadPassword = Get-OrCreateSecret "postgres_upload_password"
 $postgresGovernancePassword = Get-OrCreateSecret "postgres_governance_password"
 $postgresExportPassword = Get-OrCreateSecret "postgres_export_password"
+$postgresRetentionSchedulerPassword = Get-OrCreateSecret "postgres_retention_scheduler_password"
+$postgresArchivePassword = Get-OrCreateSecret "postgres_archive_password"
 $postgresBootstrapPassword = Get-OrCreateSecret "postgres_bootstrap_password"
 $keycloakDatabasePassword = Get-OrCreateSecret "keycloak_db_password"
 $airflowDatabasePassword = Get-OrCreateSecret "airflow_db_password"
@@ -140,6 +150,15 @@ if ((Test-Path -LiteralPath $s3ExportAccessKeyPath) -and
     Write-Secret "s3_export_access_key" $s3ExportAccessKey
 }
 $s3ExportSecretKey = Get-OrCreateSecret "s3_export_secret_key" 36
+$s3ArchiveAccessKeyPath = Join-Path $secretsDirectory "s3_archive_access_key"
+if ((Test-Path -LiteralPath $s3ArchiveAccessKeyPath) -and
+    (Get-Item -LiteralPath $s3ArchiveAccessKeyPath).Length -gt 0) {
+    $s3ArchiveAccessKey = [IO.File]::ReadAllText($s3ArchiveAccessKeyPath, [Text.Encoding]::UTF8)
+} else {
+    $s3ArchiveAccessKey = (New-RandomSecret 18).Replace("/", "A").Replace("+", "B").TrimEnd("=")
+    Write-Secret "s3_archive_access_key" $s3ArchiveAccessKey
+}
+$s3ArchiveSecretKey = Get-OrCreateSecret "s3_archive_secret_key" 36
 
 $dataHubTokenPath = Join-Path $secretsDirectory "datahub_token"
 if ($PSBoundParameters.ContainsKey("DataHubToken") -and $DataHubToken.Length -gt 0) {
@@ -217,6 +236,11 @@ if ($IsLinux -or $IsMacOS) {
     [IO.File]::SetUnixFileMode(
         (Join-Path $keycloakRuntimeDirectory "datariver-realm.json"),
         $readOnlyFileMode
+    )
+    [IO.File]::SetUnixFileMode(
+        $retentionControlFile,
+        [IO.UnixFileMode]::UserRead -bor [IO.UnixFileMode]::UserWrite -bor
+            [IO.UnixFileMode]::GroupRead -bor [IO.UnixFileMode]::OtherRead
     )
 }
 

@@ -1,6 +1,77 @@
 # Test and stabilization strategy
 
-## Latest executed baseline
+## Current verification status
+
+The remediated Phase 2 source passed the full current-source gate: `865` default backend tests passed
+with `28` explicitly environment-gated PostgreSQL cases skipped, and those cases separately passed
+as Phase 1 `1/1` plus Phase 2 `27/27` against disposable PostgreSQL 17 using the application,
+scheduler, archive and owner roles. The final retention persistence/execution regression subset
+passed `110/110`. Ruff format covered `299` files, Ruff lint passed, strict mypy covered `292` source
+files, and static architecture/role/Compose verification passed. The frontend passed TypeScript,
+zero-warning ESLint, `39` files / `170` tests and the production build.
+
+Fresh `0001 -> 0042` and stripped additive `0041 -> 0042` rehearsals passed. A same-vocabulary
+malformed source CHECK was rejected. Canonical `0001` generation was byte-identical across two
+runs at SHA-256 `24bbb8c8d895ab20d65dffb39783ee62562e7ea3b140477eee418dd3277fcc7a`.
+Base and `retention-archive` Compose parsing plus POSIX shell syntax passed. This Mac host has no
+`pwsh`, so the PowerShell parser was not rerun in the final gate. Maintained-provider WORM
+conformance, off-host restore, Windows/WSL `linux/amd64` runtime/crash/low-resource acceptance and
+accountable operations approval remain target gates; no local result authorizes destructive action
+or activation of the default-off archive profile.
+
+The final recovery regression uses an exact pre-write capability-attestation UUID in S3 metadata,
+requires provider `LastModified` on lookup, treats its whole-second precision as the conservative
+write interval `[LastModified, LastModified + 1 second)`, performs an atomic `If-None-Match: *` create with SDK
+automatic retries disabled, and proves a cold-process restart links the same receipt without another
+capability probe or evidence PutObject. Every expired write lease enters read-only reconciliation
+before governance revalidation. Missing evidence returns to a normal write attempt only when the
+stored write budget remains; transient lookup errors have three recovery fences per write attempt,
+derived from persisted attempt rows. A policy superseded after the original object write may still prove
+that historical receipt, while a policy activated, superseded, made effective or expired inside the
+uncertain provider-write interval is rejected. The exact capability attestation and the execution
+authorisation deadline must cover that complete interval as well.
+
+An additional PostgreSQL 17 existing-volume rehearsal applied `0042` while the scheduler/archive
+roles were absent, then ran the real `010_roles.sh` reconciliation. The first rehearsal exposed an
+invalid shell-style comment inside the SQL heredoc; after correction the same script completed
+idempotently. Read-back proved both roles are `NOBYPASSRLS`, scheduler SELECT/INSERT and archive
+SELECT/INSERT/bounded-column UPDATE work, broad UPDATE is absent, and a direct archive-role DELETE
+fails with `permission denied`. The refreshed fresh and additive semantic fingerprints are
+`e7d66e854560db29c126f3768a3eb2d3b635c9a1f6b291bf7255b72149b75478` and
+`0dcf7a560a9c9ccd090b4178c63af942283df77e1eae5e6f6841e9976dc16ae2`.
+
+### Superseded 2026-07-23 Policy Book Retention Phase 2 candidate
+
+The pre-remediation Phase 2 candidate passed Ruff format/lint over `307` files, strict mypy over
+`290` source/test files, `835` default backend tests with two explicitly gated PostgreSQL tests
+skipped, and `scripts/verify_static.py`. The existing Phase 1 PostgreSQL test and the new Phase 2
+test separately passed against a disposable PostgreSQL 17 database using the actual app,
+scheduler, archive and owner roles. Base Compose and the `retention-archive` profile both passed
+`config --quiet`. The generated `0001` was byte-identical across two runs at SHA-256
+`8d4d2f36c8f01af3a7694eadac022d6517078ecc20d9fc55f1f7273c958e2ef7`.
+
+A completely empty volume migrated through every revision from `0001` to the sole head `0042`.
+The additive `0041 -> 0042` compatibility path also passed after simulating a complete Phase 1
+schema without Phase 2 objects. Read-back verified the four Phase 2 tables use forced workspace
+RLS, scheduler/archive roles are `NOBYPASSRLS`, event evidence is append-only, worker mutation is
+column-bounded and no runtime role receives destructive privileges.
+
+The Phase 2 PostgreSQL test requires three separate URLs in
+`DATARIVER_RETENTION_TEST_SCHEDULER_DATABASE_URL`,
+`DATARIVER_RETENTION_TEST_ARCHIVE_DATABASE_URL` and
+`DATARIVER_RETENTION_TEST_ADMIN_DATABASE_URL`, their file-mounted secret references and
+`DATARIVER_RETENTION_TEST_CONFIRM_ISOLATED=1`. It creates and removes only its own fixture rows. Two
+concurrent planners create one command and two concurrent workers produce one claim. The test then
+expires the lease to simulate a crashed worker, reclaims epoch 2, rejects epoch 1, places a
+post-claim resource Legal Hold, verifies blocking, releases it, verifies eligibility, revokes the
+checker Role and proves the command becomes `BLOCKED` with destructive effects disabled.
+
+Unit negatives cover V1/V2 hash separation, exact four-class min/max rules, policy/target/owner/
+classification/Role/Hold drift, pre-write kill-switch recheck, full checksum and retention read-back
+mismatch, one-MiB archive bounds and fixed-cardinality metrics. The actual WORM endpoint was not
+configured: provider Object Lock conformance, off-host restore and WSL `linux/amd64` crash/soak are
+explicit target gates, and the profile remains disabled. This source evidence never authorizes
+physical deletion or partition drop.
 
 ### 2026-07-23 Policy Book RBAC Phase 1 verification
 

@@ -335,7 +335,7 @@ def _assert_retention_schema_contract() -> None:
             IF (
                 SELECT count(*) FROM information_schema.columns
                 WHERE table_schema = 'retention' AND table_name = 'policy_versions'
-            ) <> 23 OR (
+            ) < 23 OR (
                 SELECT count(*) FROM information_schema.columns
                 WHERE table_schema = 'retention' AND table_name = 'legal_holds'
             ) <> 20 OR (

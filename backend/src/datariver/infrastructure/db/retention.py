@@ -3,7 +3,6 @@ from __future__ import annotations
 import base64
 import binascii
 import re
-from dataclasses import dataclass
 from datetime import datetime, timedelta
 from types import TracebackType
 from uuid import UUID
@@ -11,6 +10,11 @@ from uuid import UUID
 from sqlalchemy import and_, func, or_, select, text, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from datariver.application.dto import (
+    ArchiveCapabilityEvidence,
+    ArchiveCapabilityRecord,
+    ArchiveReceiptEvidence,
+)
 from datariver.application.ports import (
     ErasureRequestRepository,
     ErasureTargetReader,
@@ -42,7 +46,11 @@ from datariver.domain.retention import (
     LegalHoldActionType,
     LegalHoldScope,
     LegalHoldState,
+    RetentionArchiveDisposition,
+    RetentionClassRule,
     RetentionDataClass,
+    RetentionPeriodUnit,
+    RetentionPolicyContract,
     RetentionPolicyState,
     RetentionPolicyVersion,
     RetentionRules,
@@ -58,48 +66,12 @@ from datariver.infrastructure.db.models.retention import (
     ImmutableArchiveReceiptModel,
     LegalHoldEventModel,
     LegalHoldModel,
+    RetentionPolicyClassRuleModel,
     RetentionPolicyVersionModel,
 )
 from datariver.infrastructure.db.rls import set_security_context
 
 MAXIMUM_ARCHIVE_CAPABILITY_LIFETIME = timedelta(hours=24)
-
-
-@dataclass(frozen=True, slots=True)
-class ArchiveCapabilityEvidence:
-    encryption_profile_fingerprint: str
-    runtime_principal_fingerprint: str
-    probe_contract_version: str
-    challenge_hash: str
-    object_bucket: str
-    failure_code: str | None = None
-
-
-@dataclass(frozen=True, slots=True)
-class ArchiveReceiptEvidence:
-    source_start: datetime
-    source_end: datetime
-    retention_policy_id: UUID
-    retention_policy_hash: str
-    manifest_hash: str
-    provider_checksum_algorithm: str
-    provider_checksum_encoding: str
-    provider_checksum_type: str
-    readback_sha256: str
-    readback_byte_count: int
-    requested_retention_until: datetime
-    readback_retention_until: datetime
-    written_at: datetime
-    content_verified_at: datetime
-    retention_verified_at: datetime
-    canonicalization_version: str
-    media_type: str
-    media_type_version: str
-    compression: str
-    compression_version: str
-    worker_principal_fingerprint: str
-    correlation_id: str
-    encryption_profile_fingerprint: str
 
 
 class SqlRetentionPolicyRepository(RetentionPolicyRepository):
@@ -108,6 +80,7 @@ class SqlRetentionPolicyRepository(RetentionPolicyRepository):
 
     async def add(self, policy: RetentionPolicyVersion) -> None:
         self._session.add(_policy_model(policy))
+        self._session.add_all(_policy_class_rule_models(policy))
 
     async def get(self, *, workspace_id: UUID, policy_id: UUID) -> RetentionPolicyVersion | None:
         model = (
@@ -118,7 +91,7 @@ class SqlRetentionPolicyRepository(RetentionPolicyRepository):
                 )
             )
         ).one_or_none()
-        return _hydrate_policy(model)
+        return await self._hydrate(model)
 
     async def get_for_update(
         self, *, workspace_id: UUID, policy_id: UUID
@@ -133,7 +106,7 @@ class SqlRetentionPolicyRepository(RetentionPolicyRepository):
                 .with_for_update()
             )
         ).one_or_none()
-        return _hydrate_policy(model)
+        return await self._hydrate(model)
 
     async def get_active(self, *, workspace_id: UUID) -> RetentionPolicyVersion | None:
         model = (
@@ -144,7 +117,7 @@ class SqlRetentionPolicyRepository(RetentionPolicyRepository):
                 )
             )
         ).one_or_none()
-        return _hydrate_policy(model)
+        return await self._hydrate(model)
 
     async def get_active_for_update(
         self, *, workspace_id: UUID, excluding_policy_id: UUID | None = None
@@ -160,7 +133,7 @@ class SqlRetentionPolicyRepository(RetentionPolicyRepository):
         if excluding_policy_id is not None:
             statement = statement.where(RetentionPolicyVersionModel.id != excluding_policy_id)
         model = (await self._session.scalars(statement)).one_or_none()
-        return _hydrate_policy(model)
+        return await self._hydrate(model)
 
     async def list(
         self, *, workspace_id: UUID, state: str | None, limit: int
@@ -173,7 +146,23 @@ class SqlRetentionPolicyRepository(RetentionPolicyRepository):
         )
         if state is not None:
             statement = statement.where(RetentionPolicyVersionModel.state == state)
-        return tuple(_required_policy(model) for model in await self._session.scalars(statement))
+        models = tuple(await self._session.scalars(statement))
+        if not models:
+            return ()
+        rules = tuple(
+            await self._session.scalars(
+                select(RetentionPolicyClassRuleModel).where(
+                    RetentionPolicyClassRuleModel.workspace_id == workspace_id,
+                    RetentionPolicyClassRuleModel.policy_id.in_(model.id for model in models),
+                )
+            )
+        )
+        by_policy: dict[UUID, list[RetentionPolicyClassRuleModel]] = {}
+        for rule in rules:
+            by_policy.setdefault(rule.policy_id, []).append(rule)
+        return tuple(
+            _required_policy(model, tuple(by_policy.get(model.id, ()))) for model in models
+        )
 
     async def next_policy_number(self, *, workspace_id: UUID) -> int:
         maximum = await self._session.scalar(
@@ -207,6 +196,23 @@ class SqlRetentionPolicyRepository(RetentionPolicyRepository):
         )
         if getattr(result, "rowcount", None) != 1:
             raise ConflictError("The retention policy was modified by another operation.")
+
+    async def _hydrate(
+        self, model: RetentionPolicyVersionModel | None
+    ) -> RetentionPolicyVersion | None:
+        if model is None:
+            return None
+        rules = tuple(
+            await self._session.scalars(
+                select(RetentionPolicyClassRuleModel)
+                .where(
+                    RetentionPolicyClassRuleModel.workspace_id == model.workspace_id,
+                    RetentionPolicyClassRuleModel.policy_id == model.id,
+                )
+                .order_by(RetentionPolicyClassRuleModel.data_class)
+            )
+        )
+        return _required_policy(model, rules)
 
 
 class SqlLegalHoldRepository(LegalHoldRepository):
@@ -466,6 +472,8 @@ class SqlErasureTargetReader(ErasureTargetReader):
                 version=membership.version,
                 owner_id=target_id,
                 classification=Classification.RESTRICTED,
+                retention_basis_at=None,
+                retention_until=None,
             )
 
         if target_type is ErasureTargetType.CHAT_SESSION:
@@ -485,6 +493,8 @@ class SqlErasureTargetReader(ErasureTargetReader):
                 version=session.version,
                 owner_id=session.owner_id,
                 classification=Classification.RESTRICTED,
+                retention_basis_at=session.retention_basis_at,
+                retention_until=session.retention_until,
             )
 
         manifest = (
@@ -503,6 +513,8 @@ class SqlErasureTargetReader(ErasureTargetReader):
             version=manifest.version,
             owner_id=manifest.owner_id,
             classification=_classification_or_restricted(manifest.classification),
+            retention_basis_at=manifest.created_at,
+            retention_until=manifest.retention_until,
         )
 
 
@@ -537,6 +549,36 @@ class SqlArchiveEvidenceRepository:
         self._session.add(model)
         return model.id
 
+    async def ensure_capability(
+        self,
+        *,
+        workspace_id: UUID,
+        capability: ArchiveCapability,
+        evidence: ArchiveCapabilityEvidence,
+    ) -> UUID:
+        existing = (
+            await self._session.scalars(
+                select(ArchiveCapabilityAttestationModel).where(
+                    ArchiveCapabilityAttestationModel.workspace_id == workspace_id,
+                    ArchiveCapabilityAttestationModel.configuration_fingerprint
+                    == capability.configuration_fingerprint,
+                    ArchiveCapabilityAttestationModel.observed_at == capability.observed_at,
+                )
+            )
+        ).one_or_none()
+        if existing is None:
+            return await self.add_capability(
+                workspace_id=workspace_id,
+                capability=capability,
+                evidence=evidence,
+            )
+        stored_capability, stored_evidence = _required_archive_capability_parts(existing)
+        if stored_capability != capability or stored_evidence != evidence:
+            raise ConflictError(
+                "An archive capability observation conflicts with its stored evidence."
+            )
+        return existing.id
+
     async def get_latest_capability(
         self, *, workspace_id: UUID, configuration_fingerprint: str
     ) -> ArchiveCapability | None:
@@ -558,9 +600,45 @@ class SqlArchiveEvidenceRepository:
         ).one_or_none()
         return _hydrate_archive_capability(model)
 
+    async def get_capability_for_write(
+        self,
+        *,
+        workspace_id: UUID,
+        attestation_id: UUID,
+        configuration_fingerprint: str,
+        encryption_profile_fingerprint: str,
+        runtime_principal_fingerprint: str,
+        object_bucket: str,
+        written_at: datetime,
+    ) -> ArchiveCapabilityRecord | None:
+        write_interval_end = written_at + timedelta(seconds=1)
+        model = (
+            await self._session.scalars(
+                select(ArchiveCapabilityAttestationModel)
+                .where(
+                    ArchiveCapabilityAttestationModel.workspace_id == workspace_id,
+                    ArchiveCapabilityAttestationModel.id == attestation_id,
+                    ArchiveCapabilityAttestationModel.configuration_fingerprint
+                    == configuration_fingerprint,
+                    ArchiveCapabilityAttestationModel.encryption_profile_fingerprint
+                    == encryption_profile_fingerprint,
+                    ArchiveCapabilityAttestationModel.runtime_principal_fingerprint
+                    == runtime_principal_fingerprint,
+                    ArchiveCapabilityAttestationModel.object_bucket == object_bucket,
+                    ArchiveCapabilityAttestationModel.state == "VERIFIED",
+                    ArchiveCapabilityAttestationModel.observed_at <= written_at,
+                    ArchiveCapabilityAttestationModel.expires_at >= write_interval_end,
+                )
+                .order_by(ArchiveCapabilityAttestationModel.observed_at.desc())
+                .limit(1)
+            )
+        ).one_or_none()
+        return _hydrate_archive_capability_record(model)
+
     async def add_receipt(
         self,
         *,
+        capability_attestation_id: UUID,
         receipt: ImmutableArchiveReceipt,
         evidence: ArchiveReceiptEvidence,
     ) -> None:
@@ -568,11 +646,12 @@ class SqlArchiveEvidenceRepository:
             raise ValidationError("Archive receipt verification cannot be in the future.")
         if receipt.object_version_id.strip().lower() == "null":
             raise ValidationError("The archive object version cannot be the literal null value.")
+        write_interval_end = evidence.written_at + timedelta(seconds=1)
         attestation = (
             await self._session.scalars(
-                select(ArchiveCapabilityAttestationModel)
-                .where(
+                select(ArchiveCapabilityAttestationModel).where(
                     ArchiveCapabilityAttestationModel.workspace_id == receipt.workspace_id,
+                    ArchiveCapabilityAttestationModel.id == capability_attestation_id,
                     ArchiveCapabilityAttestationModel.configuration_fingerprint
                     == receipt.capability_fingerprint,
                     ArchiveCapabilityAttestationModel.encryption_profile_fingerprint
@@ -581,19 +660,24 @@ class SqlArchiveEvidenceRepository:
                     == evidence.worker_principal_fingerprint,
                     ArchiveCapabilityAttestationModel.object_bucket == receipt.object_bucket,
                     ArchiveCapabilityAttestationModel.state == "VERIFIED",
-                    ArchiveCapabilityAttestationModel.observed_at <= receipt.verified_at,
-                    ArchiveCapabilityAttestationModel.expires_at > receipt.verified_at,
+                    ArchiveCapabilityAttestationModel.observed_at <= evidence.written_at,
+                    ArchiveCapabilityAttestationModel.expires_at >= write_interval_end,
                 )
-                .order_by(ArchiveCapabilityAttestationModel.observed_at.desc())
-                .limit(1)
             )
         ).one_or_none()
         if attestation is None:
             raise ConflictError(
-                "No current verified archive capability matches the receipt evidence."
+                "The exact archive capability does not match the receipt write evidence."
             )
         capability = _required_archive_capability(attestation)
-        capability.assert_usable(now=receipt.verified_at)
+        capability.assert_usable(now=evidence.written_at)
+        if (
+            capability.observed_at > evidence.written_at
+            or capability.expires_at < write_interval_end
+        ):
+            raise ConflictError(
+                "The exact archive capability does not cover the provider write-time interval."
+            )
 
         policy = (
             await self._session.scalars(
@@ -601,18 +685,67 @@ class SqlArchiveEvidenceRepository:
                     RetentionPolicyVersionModel.workspace_id == receipt.workspace_id,
                     RetentionPolicyVersionModel.id == evidence.retention_policy_id,
                     RetentionPolicyVersionModel.payload_hash == evidence.retention_policy_hash,
-                    RetentionPolicyVersionModel.state == RetentionPolicyState.ACTIVE.value,
+                    RetentionPolicyVersionModel.state.in_(
+                        (
+                            RetentionPolicyState.ACTIVE.value,
+                            RetentionPolicyState.SUPERSEDED.value,
+                        )
+                    ),
+                    RetentionPolicyVersionModel.decided_at <= evidence.written_at,
+                    or_(
+                        RetentionPolicyVersionModel.superseded_at.is_(None),
+                        RetentionPolicyVersionModel.superseded_at >= write_interval_end,
+                    ),
                 )
             )
         ).one_or_none()
         if policy is None:
-            raise ConflictError("The immutable archive receipt must bind the active policy.")
-        active_policy = _required_policy(policy)
-        minimum_retention_until = _advance_calendar_years(
-            evidence.source_end, active_policy.rules.immutable_archive_years
+            raise ConflictError(
+                "The immutable archive receipt must bind the policy active at write time."
+            )
+        if (
+            policy.decided_at is None
+            or policy.decided_at > evidence.written_at
+            or (policy.superseded_at is not None and policy.superseded_at < write_interval_end)
+        ):
+            raise ConflictError(
+                "The immutable archive receipt policy was not active at write time."
+            )
+        if policy.contract_version == "POLICY_BOOK_V2" and (
+            policy.effective_from is None
+            or policy.effective_from > evidence.written_at
+            or (policy.effective_until is not None and policy.effective_until < write_interval_end)
+        ):
+            raise ConflictError(
+                "The immutable archive receipt policy was not effective for the provider "
+                "write-time interval."
+            )
+        class_rules = tuple(
+            await self._session.scalars(
+                select(RetentionPolicyClassRuleModel).where(
+                    RetentionPolicyClassRuleModel.workspace_id == receipt.workspace_id,
+                    RetentionPolicyClassRuleModel.policy_id == policy.id,
+                )
+            )
         )
-        if receipt.retention_until < minimum_retention_until:
-            raise ConflictError("The archive retention deadline is shorter than the active policy.")
+        active_policy = _required_policy(policy, class_rules)
+        if active_policy.contract is None:
+            minimum_retention_until = _advance_calendar_years(
+                evidence.source_end, active_policy.rules.immutable_archive_years
+            )
+            if receipt.retention_until < minimum_retention_until:
+                raise ConflictError(
+                    "The archive retention deadline is shorter than the active policy."
+                )
+        else:
+            audit_rule = active_policy.contract.rule_for(RetentionDataClass.AUDIT_EVIDENCE)
+            if (
+                audit_rule.archive_disposition is not RetentionArchiveDisposition.EVIDENCE_ONLY
+                or receipt.retention_until != audit_rule.maximum_until(evidence.source_end)
+            ):
+                raise ConflictError(
+                    "The archive retention deadline does not match the V2 audit policy."
+                )
 
         self._session.add(
             _archive_receipt_model(
@@ -700,6 +833,12 @@ def _policy_model(policy: RetentionPolicyVersion) -> RetentionPolicyVersionModel
         chat_content_days=policy.rules.chat_content_days,
         audit_online_months=policy.rules.audit_online_months,
         immutable_archive_years=policy.rules.immutable_archive_years,
+        contract_version=policy.contract_version,
+        effective_from=(policy.contract.effective_from if policy.contract is not None else None),
+        effective_until=(policy.contract.effective_until if policy.contract is not None else None),
+        execution_authorization_hours=(
+            policy.contract.execution_authorization_hours if policy.contract is not None else None
+        ),
         payload_hash=policy.payload_hash,
         requester_id=policy.requester_id,
         request_reason=policy.request_reason,
@@ -717,13 +856,39 @@ def _policy_model(policy: RetentionPolicyVersion) -> RetentionPolicyVersionModel
     )
 
 
+def _policy_class_rule_models(
+    policy: RetentionPolicyVersion,
+) -> tuple[RetentionPolicyClassRuleModel, ...]:
+    if policy.contract is None:
+        return ()
+    return tuple(
+        RetentionPolicyClassRuleModel(
+            id=uuid7(),
+            workspace_id=policy.workspace_id,
+            policy_id=policy.policy_id,
+            policy_hash=policy.payload_hash,
+            policy_number=policy.policy_number,
+            data_class=rule.data_class.value,
+            unit=rule.unit.value,
+            minimum_value=rule.minimum,
+            maximum_value=rule.maximum,
+            archive_disposition=rule.archive_disposition.value,
+            payload_hash=canonical_json_hash(rule.document()),
+        )
+        for rule in policy.contract.class_rules
+    )
+
+
 def _hydrate_policy(model: RetentionPolicyVersionModel | None) -> RetentionPolicyVersion | None:
     if model is None:
         return None
     return _required_policy(model)
 
 
-def _required_policy(model: RetentionPolicyVersionModel) -> RetentionPolicyVersion:
+def _required_policy(
+    model: RetentionPolicyVersionModel,
+    class_rule_models: tuple[RetentionPolicyClassRuleModel, ...] = (),
+) -> RetentionPolicyVersion:
     try:
         rules = RetentionRules(
             completed_operation_days=model.completed_operation_days,
@@ -732,11 +897,10 @@ def _required_policy(model: RetentionPolicyVersionModel) -> RetentionPolicyVersi
             immutable_archive_years=model.immutable_archive_years,
         )
         state = RetentionPolicyState(model.state)
+        contract = _policy_contract(model, class_rule_models)
     except (ValueError, ValidationError) as error:
         raise ConflictError("The stored retention policy is invalid.") from error
-    if canonical_json_hash(rules.document()) != model.payload_hash:
-        raise ConflictError("The stored retention policy payload failed its integrity check.")
-    return RetentionPolicyVersion(
+    policy = RetentionPolicyVersion(
         policy_id=model.id,
         workspace_id=model.workspace_id,
         policy_number=model.policy_number,
@@ -745,6 +909,7 @@ def _required_policy(model: RetentionPolicyVersionModel) -> RetentionPolicyVersi
         requester_id=model.requester_id,
         request_reason=model.request_reason,
         request_policy_decision_id=model.request_policy_decision_id,
+        contract=contract,
         state=state,
         checker_id=model.checker_id,
         decision_reason=model.decision_reason,
@@ -755,6 +920,47 @@ def _required_policy(model: RetentionPolicyVersionModel) -> RetentionPolicyVersi
         supersede_policy_decision_id=model.supersede_policy_decision_id,
         superseded_at=model.superseded_at,
         version=model.version,
+    )
+    policy.assert_integrity()
+    return policy
+
+
+def _policy_contract(
+    model: RetentionPolicyVersionModel,
+    class_rule_models: tuple[RetentionPolicyClassRuleModel, ...],
+) -> RetentionPolicyContract | None:
+    contract_version = model.contract_version or "SINGLE_DEADLINE_V1"
+    if contract_version == "SINGLE_DEADLINE_V1":
+        if class_rule_models:
+            raise ConflictError("A legacy retention policy contains unexpected class rules.")
+        return None
+    if contract_version != "POLICY_BOOK_V2":
+        raise ConflictError("The retention policy contract version is unsupported.")
+    if model.effective_from is None or model.execution_authorization_hours is None:
+        raise ConflictError("The POLICY_BOOK_V2 contract metadata is incomplete.")
+    class_rules: list[RetentionClassRule] = []
+    for stored in class_rule_models:
+        rule = RetentionClassRule(
+            data_class=RetentionDataClass(stored.data_class),
+            unit=RetentionPeriodUnit(stored.unit),
+            minimum=stored.minimum_value,
+            maximum=stored.maximum_value,
+            archive_disposition=RetentionArchiveDisposition(stored.archive_disposition),
+        )
+        if (
+            stored.workspace_id != model.workspace_id
+            or stored.policy_id != model.id
+            or stored.policy_hash != model.payload_hash
+            or stored.policy_number != model.policy_number
+            or canonical_json_hash(rule.document()) != stored.payload_hash
+        ):
+            raise ConflictError("A stored retention class rule failed its integrity check.")
+        class_rules.append(rule)
+    return RetentionPolicyContract(
+        effective_from=model.effective_from,
+        effective_until=model.effective_until,
+        execution_authorization_hours=model.execution_authorization_hours,
+        class_rules=tuple(class_rules),
     )
 
 
@@ -1055,6 +1261,8 @@ def _archive_capability_model(
         evidence.runtime_principal_fingerprint, "archive runtime principal fingerprint"
     )
     _require_archive_hash(evidence.challenge_hash, "archive capability challenge")
+    if capability.challenge_hash != evidence.challenge_hash:
+        raise ValidationError("The archive capability challenge lost its probe binding.")
     _require_archive_text(evidence.probe_contract_version, 100, "probe contract version")
     _require_archive_bucket(evidence.object_bucket)
     controls_verified = all(
@@ -1145,14 +1353,35 @@ def _hydrate_archive_capability(
     return _required_archive_capability(model)
 
 
+def _hydrate_archive_capability_record(
+    model: ArchiveCapabilityAttestationModel | None,
+) -> ArchiveCapabilityRecord | None:
+    if model is None:
+        return None
+    capability, evidence = _required_archive_capability_parts(model)
+    return ArchiveCapabilityRecord(
+        attestation_id=model.id,
+        capability=capability,
+        evidence=evidence,
+    )
+
+
 def _required_archive_capability(
     model: ArchiveCapabilityAttestationModel,
 ) -> ArchiveCapability:
+    capability, _evidence = _required_archive_capability_parts(model)
+    return capability
+
+
+def _required_archive_capability_parts(
+    model: ArchiveCapabilityAttestationModel,
+) -> tuple[ArchiveCapability, ArchiveCapabilityEvidence]:
     if model.state != "VERIFIED" or model.failure_code is not None:
         raise ConflictError("The stored archive capability is not verified.")
     try:
         capability = ArchiveCapability(
             configuration_fingerprint=model.configuration_fingerprint,
+            challenge_hash=model.challenge_hash,
             observed_at=model.observed_at,
             expires_at=model.expires_at,
             versioning_enabled=model.versioning_enabled,
@@ -1182,7 +1411,7 @@ def _required_archive_capability(
     )
     if canonical_json_hash(document) != model.payload_hash:
         raise ConflictError("The stored archive capability failed its integrity check.")
-    return capability
+    return capability, evidence
 
 
 def _archive_receipt_model(

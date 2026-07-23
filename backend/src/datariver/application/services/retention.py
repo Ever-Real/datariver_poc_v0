@@ -14,7 +14,7 @@ from datariver.domain.authz import (
     ResourceAttributes,
     SubjectAttributes,
 )
-from datariver.domain.common import ConflictError, NotFoundError
+from datariver.domain.common import ConflictError, NotFoundError, utc_now
 from datariver.domain.retention import (
     ErasureRequest,
     ErasureRequestState,
@@ -25,6 +25,7 @@ from datariver.domain.retention import (
     LegalHoldScope,
     LegalHoldState,
     RetentionDataClass,
+    RetentionPolicyContract,
     RetentionPolicyState,
     RetentionPolicyVersion,
     RetentionRules,
@@ -45,6 +46,7 @@ class RetentionGovernanceService:
         *,
         workspace_id: UUID,
         rules: RetentionRules,
+        contract: RetentionPolicyContract | None = None,
         reason: str,
         subject: SubjectAttributes,
         environment: EnvironmentAttributes,
@@ -91,6 +93,7 @@ class RetentionGovernanceService:
                 workspace_id=workspace_id,
                 policy_number=await uow.policies.next_policy_number(workspace_id=workspace_id),
                 rules=rules,
+                contract=contract,
                 requester_id=subject.subject_id,
                 reason=reason,
                 policy_decision_id=decision.decision_id,
@@ -652,7 +655,11 @@ class RetentionGovernanceService:
                 reason=reason,
                 policy_decision_id=decision.decision_id,
                 expected_version=expected_version,
-                now=environment.requested_at,
+                # Authorization evidence is committed before this aggregate mutation. Use a
+                # fresh timestamp so the persisted governance timeline remains
+                # policy-decision <= request-decision even when the HTTP request context was
+                # created earlier.
+                now=utc_now(),
                 active_legal_hold=active_legal_hold,
                 current_target_version=authorization_target.version,
                 current_target_owner_id=authorization_target.owner_id,

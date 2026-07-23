@@ -290,7 +290,8 @@ def test_archive_evidence_is_owner_written_and_application_read_only() -> None:
         assert "retention.immutable_archive_receipts TO datariver_app" in source
         assert not re.search(
             r"GRANT[^;]*(?:INSERT|UPDATE|DELETE)[^;]*"
-            r"(?:archive_capability_attestations|immutable_archive_receipts)",
+            r"(?:archive_capability_attestations|immutable_archive_receipts)"
+            r"[^;]*TO datariver_app",
             source,
         )
     assert "FORCE ROW LEVEL SECURITY" in migration

@@ -7,17 +7,21 @@ may reside, why it may be processed, and how long it is retained. Canonical poli
 evidence belong in workspace-scoped PostgreSQL; DataHub, Redis, S3-compatible storage, Neo4j,
 Airflow and inference providers remain fallible external systems.
 
-Delivery is deliberately split into three approval-gated phases:
+Delivery is deliberately split into three evidence-gated phases:
 
 1. **RBAC database modelling**: normalized versioned Role data rules and exact assignment evidence.
 2. **Data Retention backend scheduler**: bounded eligibility/claim/archive/read-back/hold recheck
-   workflow under a dedicated least-privilege process. It remains disabled until Phase 2 approval.
+   workflow under separate least-privilege scheduler/archive processes. The implementation remains
+   disabled by default; physical deletion is not part of Phase 2.
 3. **Admin UI integration**: wire every accepted Admin API, replace placeholders with explicit
-   implemented or unavailable states, and expose policy evidence. It remains unchanged until Phase 3
-   approval.
+   implemented or unavailable states, and expose policy evidence. It remains unchanged until the
+   Phase 2 evidence, focused commit and exit report are complete.
 
-Completion of a phase does not authorize starting the next one. The accountable user must explicitly
-approve the preceding checklist and residual risks.
+The user's 2026-07-23 blanket authorization pre-authorizes entry to each next phase only after the
+preceding checklist, independent review, focused commit and exit report are complete. It does not
+turn pending work into completion, waive residual-risk reporting, authorize destructive execution,
+or close target-environment and accountable-operator gates. No Phase 3 code may be mixed into the
+Phase 2 commit.
 
 ## Policy model
 
@@ -68,7 +72,7 @@ approved Phase 3 UI must disable it and direct administrators to remove the Role
 - PostgreSQL and the application remain architecture-neutral. The same source revision and lockfiles
   build separate `linux/arm64` and `linux/amd64` images.
 - Redis and S3/MinIO are external connector choices and never canonical RBAC/retention stores.
-- A clean environment bootstraps secrets locally, applies Alembic through required revision `0041`,
+- A clean environment bootstraps secrets locally, applies Alembic through required revision `0042`,
   and never copies another machine's `.env`, secrets or volumes.
 
 ## Phase acceptance

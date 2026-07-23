@@ -29,14 +29,15 @@
 | 24 | [Low-resource multi-architecture deployment PRD](24_LOW_RESOURCE_MULTIARCH_DEPLOYMENT_PRD.md) | arm64/amd64 parity, dependency placement, configuration and migration acceptance | Active |
 | 25 | [Low-resource multi-architecture execution checklist](25_LOW_RESOURCE_MULTIARCH_EXECUTION_CHECKLIST.md) | phased implementation and target-environment evidence | Active |
 | 26 | [Mac arm64 to WSL amd64 migration runbook](26_MAC_TO_WSL_MIGRATION_RUNBOOK.md) | exact-source/image transfer, object reconciliation, logical restore and rollback | Active target gate |
-| 27 | [Policy Book and Admin governance PRD](27_POLICY_BOOK_ADMIN_GOVERNANCE_PRD.md) | access levels, assignment evidence, retention and approval-gated Admin completion | Active; Phase 1 |
-| 28 | [Policy Book execution checklist](28_POLICY_BOOK_EXECUTION_CHECKLIST.md) | phase gates and exhaustive Admin function inventory | Active; Phase 1 |
+| 27 | [Policy Book and Admin governance PRD](27_POLICY_BOOK_ADMIN_GOVERNANCE_PRD.md) | access levels, assignment evidence, retention and approval-gated Admin completion | Active; Phase 2 local exit complete |
+| 28 | [Policy Book execution checklist](28_POLICY_BOOK_EXECUTION_CHECKLIST.md) | phase gates and exhaustive Admin function inventory | Phase 2 local exit complete; target activation gates open |
+| 29 | [Master execution backlog](29_MASTER_EXECUTION_BACKLOG.md) | current delivery checklist, risk status and final artifact order | Active; Phase 3 not started |
 
 Independent review records: [Data Architect](reviews/2026-07-14_DATA_ARCHITECT_REVIEW.md) and [Data Engineer/SRE](reviews/2026-07-14_DATA_ENGINEER_REVIEW.md).
 
 Architecture decisions are immutable records under `adr/`. Superseded artifacts remain in Git and link to their replacement; they are not silently overwritten.
 
-Current retention decisions: [governed retention and immutable archive](adr/0010-governed-retention-and-immutable-archive.md), [maintained S3 and archive promotion](adr/0012-maintained-s3-and-immutable-archive-promotion.md), and [Chat active-policy binding](adr/0018-chat-retention-policy-binding.md).
+Current retention decisions: [governed retention and immutable archive](adr/0010-governed-retention-and-immutable-archive.md), [maintained S3 and archive promotion](adr/0012-maintained-s3-and-immutable-archive-promotion.md), [Chat active-policy binding](adr/0018-chat-retention-policy-binding.md), and [archive-only execution control plane](adr/0037-retention-execution-control-plane.md).
 
 Current administrator decisions: [hardware WebAuthn and governed password fallback](adr/0009-hardware-webauthn-and-governed-password-fallback.md), [workspace access roles and development connection probes](adr/0024-workspace-access-roles-and-development-connection-probes.md), and [operator security modes and stable authentication renewal](adr/0025-operator-security-modes-and-stable-auth-renewal.md).
 

@@ -813,6 +813,8 @@ def verify_database_roles() -> None:
         "datariver_upload",
         "datariver_governance",
         "datariver_export",
+        "datariver_retention_scheduler",
+        "datariver_archive",
         "datariver_bootstrap",
     }
     missing = {role for role in required_roles if role not in combined}
@@ -847,9 +849,13 @@ def verify_database_roles() -> None:
     if re.search(r"GRANT[^;]*UPDATE[^;]*iam\.admin_access_approvals", generator):
         raise AssertionError("administrator approvals must remain append-only")
     required_retention_grants = {
-        "GRANT SELECT, INSERT ON retention.policy_versions TO datariver_app;",
+        "GRANT SELECT, INSERT ON retention.policy_versions,\n"
+        "            retention.policy_class_rules TO datariver_app;",
         "GRANT SELECT, INSERT ON retention.legal_holds TO datariver_app;",
         "GRANT SELECT, INSERT ON retention.legal_hold_events TO datariver_app;",
+        "GRANT SELECT ON retention.execution_jobs TO datariver_app;",
+        "GRANT SELECT ON retention.execution_attempts,\n"
+        "            retention.execution_events TO datariver_app;",
     }
     missing_retention_grants = {
         grant for grant in required_retention_grants if grant not in generator
@@ -860,6 +866,29 @@ def verify_database_roles() -> None:
         raise AssertionError("the application role cannot delete retention governance evidence")
     if re.search(r"GRANT[^;]*UPDATE[^;]*retention\.legal_hold_events", generator):
         raise AssertionError("Legal Hold history must remain append-only")
+    for role in ("datariver_retention_scheduler", "datariver_archive"):
+        if re.search(rf"ALTER ROLE {role}[^;]*NOBYPASSRLS;", combined) is None:
+            raise AssertionError(f"{role} must remain subject to workspace RLS")
+    if "retention.execution_events TO datariver_retention_scheduler;" not in generator:
+        raise AssertionError("the retention scheduler cannot append execution evidence")
+    if "retention.immutable_archive_receipts TO datariver_archive;" not in generator:
+        raise AssertionError("the archive worker cannot read its immutable receipts")
+    for required_reconciliation_grant in (
+        "platform.workspaces, iam.subjects, iam.workspace_memberships",
+        "retention.execution_events TO datariver_retention_scheduler",
+        "retention.immutable_archive_receipts TO datariver_archive",
+        "to_regclass('retention.execution_jobs') IS NOT NULL",
+    ):
+        if required_reconciliation_grant not in role_init:
+            raise AssertionError(
+                "existing-volume retention role reconciliation grants are incomplete"
+            )
+    for reconciliation_script in (
+        ROOT / "scripts" / "reconcile-postgres-roles.sh",
+        ROOT / "scripts" / "reconcile-postgres-roles.ps1",
+    ):
+        if not reconciliation_script.is_file():
+            raise AssertionError("cross-platform PostgreSQL role reconciliation is incomplete")
     relay_configuration_grant = (
         "GRANT SELECT ON platform.external_service_profiles,\n"
         "            platform.external_service_profile_versions TO datariver_relay;"

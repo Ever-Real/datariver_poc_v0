@@ -33,7 +33,7 @@ flowchart LR
     W --> D
     W --> O
     W --> GP["Rebuildable graph projection"]
-    RW["Future governed retention worker"] --> P
+    RW["Optional archive-only retention scheduler / worker"] --> P
     RW --> IA["Separate immutable archive port"]
     AF["Airflow scheduled and bulk workflows"] --> A
     A -. "future durable dispatch; not wired" .-> IW["Typed assistant inference worker contract (disabled first)"]
@@ -63,7 +63,7 @@ an environment may claim HA.
 | Knowledge Studio | ontology, proposals, changesets, validation and releases | immutable graph releases/provenance |
 | Assistant | sessions, messages, runs and authorized evidence | chat audit/evidence metadata |
 | Sharing | release-pinned API products, contracts, grants and usage | sharing control plane |
-| Retention & Erasure | approved retention versions, Legal Hold and non-executing erasure Maker-Checker review; target archive verification and destructive execution | policy/hold/erasure review aggregates and append-only history now; future immutable archive receipts and execution claims in PostgreSQL |
+| Retention & Erasure | approved retention versions, Legal Hold, erasure Maker-Checker review and optional archive-only execution; destructive execution remains absent | policy/hold/erasure aggregates, fenced execution claims, immutable receipts and append-only evidence in PostgreSQL |
 | Operations | capability health and operator actions | connection/job snapshots, not raw telemetry |
 
 The API gateway is a deployment boundary, not an authorization context. It validates identity and coarse quotas; each use case resolves resource attributes and performs ABAC again.
@@ -85,7 +85,7 @@ The API gateway is a deployment boundary, not an authorization context. It valid
 ## Retention, Legal Hold and immutable archive boundary
 
 The existing S3 port is upload-oriented: it supports multipart registration, quarantine cleanup and
-accepted-object promotion. It is not a WORM boundary. A future `ImmutableArchiveStore` is a separate
+accepted-object promotion. It is not a WORM boundary. The optional `ImmutableArchiveStore` is a separate
 application port with a separate private endpoint, bucket and writer credential and no delete or
 retention-bypass operation. The API, relay and upload workers do not receive that credential.
 
@@ -93,11 +93,12 @@ retention-bypass operation. The API, relay and upload workers do not receive tha
 approved policy version + eligible immutable audit range
 → active/release-pending Legal Hold check
 → deterministic export manifest and SHA-256
-→ immutable archive write with object version
+→ exact capability attestation committed under the live lease
+→ conditional immutable archive create with attestation UUID and object version
 → full content and retention/Object-Lock read-back
 → verified PostgreSQL receipt
-→ destructive eligibility re-evaluation
-→ maker-checker consume, or remain retained
+→ terminal archive-only evidence state
+→ remain retained; destructive eligibility is a future, separately approved control plane
 ```
 
 Provider names do not establish capability. The target provider must prove versioning, Object Lock,
@@ -108,14 +109,18 @@ not source defaults; a duration or expired timestamp never acts as a deletion sw
 Legal Hold always wins over expiry. A UI toggle issues typed place/release commands and immutable
 history rather than editing a boolean. Explicit sensitive-data erasure is separate from automatic
 expiry and binds maker, independent checker, canonical target version/owner/classification, active
-policy ID/hash and a canonical payload hash. The current aggregate records only APPROVED/REJECTED
-review evidence and cannot be consumed or executed. A future executor additionally requires
-one-time atomic consumption and final authorization/hold/version/archive checks. Raw bucket keys,
-table names or provider operations are never client-supplied erasure commands.
+policy ID/hash and a canonical payload hash. The archive-only scheduler may consume an exact
+APPROVED Chat-session request once into a fenced command, revalidate current human
+eligibility/hold/target/policy state and attach a verified receipt. It cannot delete, purge or detach
+anything. An expired write lease first performs bounded read-only reconciliation against the exact
+attestation UUID and provider write time; it never runs a probe or PutObject. A future destructive
+executor requires a new ADR, separate approval and final
+authorization/hold/version/archive checks. Raw bucket keys, table names or provider operations are
+never client-supplied erasure commands.
 
 Automatic deletion and monthly-partition detach/drop are currently `DISABLED_NOT_READY`. They remain
-so until the dedicated least-privilege worker, approved policy aggregate, hold/erasure workflows,
-verified archive receipts and target restore/conformance evidence are implemented. A partition with
+so until approved policy/hold/erasure workflows, verified archive receipts, target
+restore/conformance evidence and a separately approved destructive design are accepted. A partition with
 any applicable active hold is conservatively retained in full.
 
 ## Change application sequence

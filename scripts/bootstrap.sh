@@ -64,8 +64,12 @@ case "$env_file_argument" in
 esac
 secrets_dir="$root/secrets"
 keycloak_runtime_dir="$root/runtime/keycloak"
+retention_control_file="$root/runtime/retention-execution.enabled"
 mkdir -p "$secrets_dir"
 mkdir -p "$keycloak_runtime_dir"
+if [ ! -f "$retention_control_file" ]; then
+  printf '%s\n' DISABLED > "$retention_control_file"
+fi
 umask 077
 
 for existing_file in "$secrets_dir"/* "$keycloak_runtime_dir"/datariver-realm.json; do
@@ -95,6 +99,8 @@ ensure_random_secret postgres_relay_password 32
 ensure_random_secret postgres_upload_password 32
 ensure_random_secret postgres_governance_password 32
 ensure_random_secret postgres_export_password 32
+ensure_random_secret postgres_retention_scheduler_password 32
+ensure_random_secret postgres_archive_password 32
 ensure_random_secret postgres_bootstrap_password 32
 ensure_random_secret keycloak_db_password 32
 ensure_random_secret airflow_db_password 32
@@ -144,6 +150,10 @@ if [ ! -s "$secrets_dir/s3_export_access_key" ]; then
   random_secret 18 | tr '/+' 'AB' | tr -d '=' > "$secrets_dir/s3_export_access_key"
 fi
 ensure_random_secret s3_export_secret_key 36
+if [ ! -s "$secrets_dir/s3_archive_access_key" ]; then
+  random_secret 18 | tr '/+' 'AB' | tr -d '=' > "$secrets_dir/s3_archive_access_key"
+fi
+ensure_random_secret s3_archive_secret_key 36
 demo_password=$(cat "$secrets_dir/keycloak_demo_password")
 airflow_client_secret=$(cat "$secrets_dir/airflow_client_secret")
 identity_admin_client_secret=$(cat "$secrets_dir/keycloak_identity_admin_client_secret")
@@ -282,5 +292,6 @@ fi
 # UIDs need read permission. Host access remains restricted by the 0700 parents.
 chmod 0700 "$secrets_dir" "$keycloak_runtime_dir"
 chmod 0444 "$secrets_dir"/* "$keycloak_runtime_dir/datariver-realm.json"
+chmod 0644 "$retention_control_file"
 
 echo "Bootstrap files created in $env_file. Keep the environment and secrets directory private and out of Git."

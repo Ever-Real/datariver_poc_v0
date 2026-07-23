@@ -121,3 +121,37 @@ def test_worker_container_passes_the_configured_pool_budget(
     assert captured["pool_size"] == 4
     assert captured["max_overflow"] == 2
     assert captured["pool_timeout_seconds"] == 8
+
+
+def test_retention_workers_use_the_isolated_one_connection_pool(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, Any] = {}
+
+    def database(url: str, **kwargs: Any) -> object:
+        captured.update(url=url, **kwargs)
+        return object()
+
+    configured = Settings(
+        **(
+            settings().model_dump()
+            | {
+                "retention_scheduler_database_url": (
+                    "postgresql+asyncpg://retention_scheduler@localhost/db"
+                ),
+                "retention_scheduler_database_secret_ref": (
+                    "file:/run/secrets/postgres_retention_scheduler_password"
+                ),
+                "retention_worker_database_pool_size": 1,
+                "retention_worker_database_pool_max_overflow": 0,
+            }
+        )
+    )
+    monkeypatch.setattr(worker_container, "SecretResolver", Resolver)
+    monkeypatch.setattr(worker_container, "Database", database)
+
+    worker_container._database(configured, role="retention_scheduler")
+
+    assert captured["pool_size"] == 1
+    assert captured["max_overflow"] == 0
+    assert captured["application_name"] == "datariver-next-retention_scheduler"

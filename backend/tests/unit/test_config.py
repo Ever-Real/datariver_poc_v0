@@ -497,6 +497,84 @@ def test_catalog_export_worker_rejects_reused_credentials(
         settings(**values)
 
 
+def test_retention_archive_is_disabled_first_and_requires_isolated_credentials() -> None:
+    defaults = settings()
+    assert defaults.retention_archive_execution_enabled is False
+    assert defaults.retention_workspace_ids == ()
+    assert defaults.retention_worker_database_pool_size == 1
+    assert defaults.retention_worker_database_pool_max_overflow == 0
+    assert defaults.retention_metrics_port == 9102
+
+    with pytest.raises(ValidationError, match="workspace allowlist"):
+        settings(retention_archive_execution_enabled=True)
+
+    enabled = settings(
+        retention_archive_execution_enabled=True,
+        retention_execution_control_file="/run/datariver/retention-execution.enabled",
+        retention_workspace_ids=("00000000-0000-7000-8000-000000000001",),
+        retention_scheduler_database_url=("postgresql+asyncpg://retention_scheduler@localhost/db"),
+        retention_scheduler_database_secret_ref=(
+            "file:/run/secrets/postgres_retention_scheduler_password"
+        ),
+        archive_database_url="postgresql+asyncpg://archive@localhost/db",
+        archive_database_secret_ref="file:/run/secrets/postgres_archive_password",
+        s3_archive_endpoint_url="https://archive.internal.example",
+        s3_archive_region="us-east-1",
+        s3_archive_bucket="datariver-immutable-evidence",
+        s3_archive_prefix="retention-evidence",
+        s3_archive_access_key_file="/run/secrets/s3_archive_access_key",
+        s3_archive_secret_key_file="/run/secrets/s3_archive_secret_key",
+        s3_archive_encryption_profile_fingerprint="a" * 64,
+        s3_archive_worker_principal_fingerprint="b" * 64,
+    )
+
+    assert enabled.retention_archive_execution_enabled is True
+    assert len(enabled.retention_workspace_ids) == 1
+
+
+@pytest.mark.parametrize(
+    "override",
+    (
+        {"archive_database_url": "postgresql+asyncpg://upload@localhost/db"},
+        {"retention_scheduler_database_secret_ref": ("file:/run/secrets/postgres_password")},
+        {"s3_archive_bucket": "accepted"},
+        {"s3_archive_access_key_file": "/run/secrets/s3_access_key"},
+        {"s3_archive_worker_principal_fingerprint": "not-a-fingerprint"},
+        {
+            "app_env": "production",
+            "s3_archive_endpoint_url": "http://archive.internal.example",
+        },
+    ),
+)
+def test_retention_archive_rejects_shared_or_unverifiable_credentials(
+    override: dict[str, object],
+) -> None:
+    values: dict[str, object] = {
+        "retention_archive_execution_enabled": True,
+        "retention_execution_control_file": "/run/datariver/retention-execution.enabled",
+        "retention_workspace_ids": ("00000000-0000-7000-8000-000000000001",),
+        "retention_scheduler_database_url": (
+            "postgresql+asyncpg://retention_scheduler@localhost/db"
+        ),
+        "retention_scheduler_database_secret_ref": (
+            "file:/run/secrets/postgres_retention_scheduler_password"
+        ),
+        "archive_database_url": "postgresql+asyncpg://archive@localhost/db",
+        "archive_database_secret_ref": "file:/run/secrets/postgres_archive_password",
+        "s3_archive_endpoint_url": "https://archive.internal.example",
+        "s3_archive_region": "us-east-1",
+        "s3_archive_bucket": "datariver-immutable-evidence",
+        "s3_archive_prefix": "retention-evidence",
+        "s3_archive_access_key_file": "/run/secrets/s3_archive_access_key",
+        "s3_archive_secret_key_file": "/run/secrets/s3_archive_secret_key",
+        "s3_archive_encryption_profile_fingerprint": "a" * 64,
+        "s3_archive_worker_principal_fingerprint": "b" * 64,
+    }
+    values.update(override)
+    with pytest.raises(ValidationError):
+        settings(**values)
+
+
 def test_rejects_ambiguous_or_unsafe_oidc_assurance_mappings() -> None:
     defaults = settings()
     assert defaults.high_risk_auth_max_age_seconds == 300

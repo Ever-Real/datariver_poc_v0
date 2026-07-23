@@ -3,9 +3,11 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from datariver.config import Settings
+from datariver.domain.common import canonical_json_hash
 from datariver.infrastructure.cache.redis import RedisEventDelivery
 from datariver.infrastructure.datahub.http import HttpDataHubGateway
 from datariver.infrastructure.db.session import Database
+from datariver.infrastructure.object_store.archive_s3 import S3ImmutableArchiveStore
 from datariver.infrastructure.object_store.s3 import S3ObjectStore
 from datariver.infrastructure.secrets import SecretResolver
 
@@ -39,17 +41,52 @@ class CatalogExportWorkerContainer(RelayWorkerContainer):
     object_store: S3ObjectStore
 
 
+@dataclass(slots=True)
+class RetentionSchedulerContainer:
+    database: Database
+
+    async def close(self) -> None:
+        await self.database.close()
+
+
+@dataclass(slots=True)
+class RetentionArchiveContainer(RetentionSchedulerContainer):
+    archive: S3ImmutableArchiveStore
+
+
+def retention_archive_configuration_fingerprint(settings: Settings) -> str:
+    return canonical_json_hash(
+        {
+            "contract": "S3_COMPLIANCE_ARCHIVE_V1",
+            "endpoint_url": str(settings.s3_archive_endpoint_url or "").rstrip("/"),
+            "region": settings.s3_archive_region,
+            "bucket": settings.s3_archive_bucket,
+            "prefix": str(settings.s3_archive_prefix or "").rstrip("/"),
+            "encryption_profile_fingerprint": (settings.s3_archive_encryption_profile_fingerprint),
+        }
+    )
+
+
 def _database(settings: Settings, *, role: str) -> Database:
     resolver = SecretResolver(virtual_secret_root=settings.system_configuration_secret_root)
     url = getattr(settings, f"{role}_database_url")
     secret_ref = getattr(settings, f"{role}_database_secret_ref")
     if not isinstance(url, str) or not isinstance(secret_ref, str):
         raise RuntimeError(f"Database credentials for worker role {role} are not configured.")
+    retention_role = role in {"retention_scheduler", "archive"}
     return Database(
         url,
         password=resolver.resolve(secret_ref),
-        pool_size=settings.worker_database_pool_size,
-        max_overflow=settings.worker_database_pool_max_overflow,
+        pool_size=(
+            settings.retention_worker_database_pool_size
+            if retention_role
+            else settings.worker_database_pool_size
+        ),
+        max_overflow=(
+            settings.retention_worker_database_pool_max_overflow
+            if retention_role
+            else settings.worker_database_pool_max_overflow
+        ),
         pool_timeout_seconds=settings.worker_database_pool_timeout_seconds,
         application_name=f"datariver-next-{role}",
     )
@@ -128,5 +165,62 @@ def build_catalog_export_container(settings: Settings) -> CatalogExportWorkerCon
             region=settings.s3_region,
             access_key=resolver.resolve(f"file:{settings.s3_export_access_key_file}"),
             secret_key=resolver.resolve(f"file:{settings.s3_export_secret_key_file}"),
+        ),
+    )
+
+
+def build_retention_scheduler_container(settings: Settings) -> RetentionSchedulerContainer:
+    if (
+        not settings.retention_archive_execution_enabled
+        or settings.retention_scheduler_database_url is None
+        or settings.retention_scheduler_database_secret_ref is None
+    ):
+        raise RuntimeError(
+            "Retention scheduler requires explicit archive-only enablement and credentials."
+        )
+    return RetentionSchedulerContainer(database=_database(settings, role="retention_scheduler"))
+
+
+def build_retention_archive_container(settings: Settings) -> RetentionArchiveContainer:
+    required = (
+        settings.archive_database_url,
+        settings.archive_database_secret_ref,
+        settings.s3_archive_endpoint_url,
+        settings.s3_archive_region,
+        settings.s3_archive_bucket,
+        settings.s3_archive_prefix,
+        settings.s3_archive_access_key_file,
+        settings.s3_archive_secret_key_file,
+        settings.s3_archive_encryption_profile_fingerprint,
+    )
+    if not settings.retention_archive_execution_enabled or any(value is None for value in required):
+        raise RuntimeError(
+            "Retention archive executor requires explicit enablement and isolated DB/S3 settings."
+        )
+    resolver = SecretResolver(virtual_secret_root=settings.system_configuration_secret_root)
+    endpoint = settings.s3_archive_endpoint_url
+    region = settings.s3_archive_region
+    bucket = settings.s3_archive_bucket
+    prefix = settings.s3_archive_prefix
+    access_file = settings.s3_archive_access_key_file
+    secret_file = settings.s3_archive_secret_key_file
+    encryption_fingerprint = settings.s3_archive_encryption_profile_fingerprint
+    assert isinstance(endpoint, str)
+    assert isinstance(region, str)
+    assert isinstance(bucket, str)
+    assert isinstance(prefix, str)
+    assert isinstance(access_file, str)
+    assert isinstance(secret_file, str)
+    assert isinstance(encryption_fingerprint, str)
+    return RetentionArchiveContainer(
+        database=_database(settings, role="archive"),
+        archive=S3ImmutableArchiveStore(
+            endpoint_url=endpoint,
+            region=region,
+            bucket=bucket,
+            prefix=prefix,
+            access_key=resolver.resolve(f"file:{access_file}"),
+            secret_key=resolver.resolve(f"file:{secret_file}"),
+            encryption_profile_fingerprint=encryption_fingerprint,
         ),
     )

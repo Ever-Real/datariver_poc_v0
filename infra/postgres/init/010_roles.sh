@@ -6,6 +6,8 @@ relay_password=$(cat /run/secrets/postgres_relay_password)
 upload_password=$(cat /run/secrets/postgres_upload_password)
 governance_password=$(cat /run/secrets/postgres_governance_password)
 export_password=$(cat /run/secrets/postgres_export_password)
+retention_scheduler_password=$(cat /run/secrets/postgres_retention_scheduler_password)
+archive_password=$(cat /run/secrets/postgres_archive_password)
 bootstrap_password=$(cat /run/secrets/postgres_bootstrap_password)
 keycloak_password=$(cat /run/secrets/keycloak_db_password)
 
@@ -16,6 +18,8 @@ psql --username "$POSTGRES_USER" --dbname "$POSTGRES_DB" \
   --set=upload_password="$upload_password" \
   --set=governance_password="$governance_password" \
   --set=export_password="$export_password" \
+  --set=retention_scheduler_password="$retention_scheduler_password" \
+  --set=archive_password="$archive_password" \
   --set=bootstrap_password="$bootstrap_password" \
   --set=keycloak_password="$keycloak_password" <<'SQL'
 SELECT format('CREATE ROLE datariver_app LOGIN PASSWORD %L', :'app_password')
@@ -28,6 +32,10 @@ SELECT format('CREATE ROLE datariver_governance LOGIN PASSWORD %L', :'governance
 WHERE NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'datariver_governance') \gexec
 SELECT format('CREATE ROLE datariver_export LOGIN PASSWORD %L', :'export_password')
 WHERE NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'datariver_export') \gexec
+SELECT format('CREATE ROLE datariver_retention_scheduler LOGIN PASSWORD %L', :'retention_scheduler_password')
+WHERE NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'datariver_retention_scheduler') \gexec
+SELECT format('CREATE ROLE datariver_archive LOGIN PASSWORD %L', :'archive_password')
+WHERE NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'datariver_archive') \gexec
 SELECT format('CREATE ROLE datariver_bootstrap LOGIN PASSWORD %L', :'bootstrap_password')
 WHERE NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'datariver_bootstrap') \gexec
 SELECT format('CREATE ROLE keycloak LOGIN PASSWORD %L', :'keycloak_password')
@@ -43,10 +51,37 @@ ALTER ROLE datariver_governance WITH LOGIN PASSWORD :'governance_password'
   NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION BYPASSRLS;
 ALTER ROLE datariver_export WITH LOGIN PASSWORD :'export_password'
   NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS;
+ALTER ROLE datariver_retention_scheduler WITH LOGIN PASSWORD :'retention_scheduler_password'
+  NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS;
+ALTER ROLE datariver_archive WITH LOGIN PASSWORD :'archive_password'
+  NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS;
 ALTER ROLE datariver_bootstrap WITH LOGIN PASSWORD :'bootstrap_password'
   NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION BYPASSRLS;
 ALTER ROLE keycloak WITH LOGIN PASSWORD :'keycloak_password'
   NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS;
+
+-- The init hook also serves as an idempotent existing-volume reconciliation command. Resolve
+-- grants only when the Phase 2 schema is already present; on a new volume Alembic grants them
+-- after migration, while on an upgraded old volume this repairs roles created after 0042 ran.
+SELECT 'GRANT USAGE ON SCHEMA platform, iam, authz, assistant, retention TO datariver_retention_scheduler'
+WHERE to_regclass('retention.execution_jobs') IS NOT NULL \gexec
+SELECT 'GRANT SELECT ON platform.workspaces, iam.subjects, iam.workspace_memberships, iam.access_roles, iam.access_role_assignments, authz.policy_decisions, retention.policy_versions, retention.policy_class_rules, retention.legal_holds, retention.erasure_requests, retention.erasure_request_events, assistant.chat_sessions TO datariver_retention_scheduler'
+WHERE to_regclass('retention.execution_jobs') IS NOT NULL \gexec
+SELECT 'GRANT SELECT, INSERT ON retention.execution_jobs, retention.execution_events TO datariver_retention_scheduler'
+WHERE to_regclass('retention.execution_jobs') IS NOT NULL \gexec
+
+SELECT 'GRANT USAGE ON SCHEMA platform, iam, authz, assistant, retention TO datariver_archive'
+WHERE to_regclass('retention.execution_jobs') IS NOT NULL \gexec
+SELECT 'GRANT SELECT ON platform.workspaces, iam.subjects, iam.workspace_memberships, iam.access_roles, iam.access_role_assignments, authz.policy_decisions, retention.policy_versions, retention.policy_class_rules, retention.legal_holds, retention.erasure_requests, retention.erasure_request_events, assistant.chat_sessions, retention.execution_jobs, retention.execution_attempts, retention.archive_capability_attestations, retention.immutable_archive_receipts TO datariver_archive'
+WHERE to_regclass('retention.execution_jobs') IS NOT NULL \gexec
+SELECT 'GRANT INSERT ON retention.archive_capability_attestations, retention.immutable_archive_receipts, retention.execution_attempts TO datariver_archive'
+WHERE to_regclass('retention.execution_jobs') IS NOT NULL \gexec
+SELECT 'GRANT SELECT, INSERT ON retention.execution_events TO datariver_archive'
+WHERE to_regclass('retention.execution_jobs') IS NOT NULL \gexec
+SELECT 'GRANT UPDATE (state, next_attempt_at, attempt_count, lease_epoch, lease_token_hash, lease_owner_fingerprint, lease_until, archive_receipt_id, archive_manifest_hash, last_failure_code, version, updated_at) ON retention.execution_jobs TO datariver_archive'
+WHERE to_regclass('retention.execution_jobs') IS NOT NULL \gexec
+SELECT 'GRANT UPDATE (state, stage, evidence_hash, external_response_hash, failure_code, finished_at) ON retention.execution_attempts TO datariver_archive'
+WHERE to_regclass('retention.execution_jobs') IS NOT NULL \gexec
 
 SELECT 'CREATE DATABASE keycloak OWNER keycloak'
 WHERE NOT EXISTS (SELECT 1 FROM pg_database WHERE datname = 'keycloak') \gexec

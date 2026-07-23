@@ -17,6 +17,7 @@ from datariver.domain.authz import (
     SubjectAttributes,
 )
 from datariver.domain.governance import ChangeRequest
+from datariver.domain.retention import ArchiveCapability, ImmutableArchiveReceipt
 
 MAX_CATALOG_SCHEMA_FIELDS = 1_000
 
@@ -778,3 +779,89 @@ class ChatExchange:
     answer: str
     evidence: tuple[ChatEvidence, ...]
     persistence: str = "PERSISTED"
+
+
+@dataclass(frozen=True, slots=True)
+class RetentionExecutionClaim:
+    job_id: UUID
+    attempt_id: UUID
+    workspace_id: UUID
+    erasure_request_id: UUID
+    erasure_request_version: int
+    erasure_request_payload_hash: str
+    command_hash: str
+    target_type: str
+    target_id: UUID
+    target_version: int
+    target_snapshot_hash: str
+    classification: str
+    retention_policy_id: UUID
+    retention_policy_hash: str
+    policy_number: int
+    request_decided_at: datetime
+    planned_at: datetime
+    archive_retain_until: datetime
+    lease_token: str
+    lease_epoch: int
+    attempt_count: int
+    maximum_attempts: int
+    worker_principal_fingerprint: str
+    archive_configuration_hash: str
+    encryption_profile_fingerprint: str
+    archive_bucket: str
+    archive_prefix: str
+    correlation_id: str
+    recovery_only: bool = False
+
+
+@dataclass(frozen=True, slots=True)
+class ArchiveCapabilityEvidence:
+    encryption_profile_fingerprint: str
+    runtime_principal_fingerprint: str
+    probe_contract_version: str
+    challenge_hash: str
+    object_bucket: str
+    failure_code: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class ArchiveCapabilityRecord:
+    attestation_id: UUID
+    capability: ArchiveCapability
+    evidence: ArchiveCapabilityEvidence
+
+
+@dataclass(frozen=True, slots=True)
+class ArchiveReceiptEvidence:
+    source_start: datetime
+    source_end: datetime
+    retention_policy_id: UUID
+    retention_policy_hash: str
+    manifest_hash: str
+    provider_checksum_algorithm: str
+    provider_checksum_encoding: str
+    provider_checksum_type: str
+    readback_sha256: str
+    readback_byte_count: int
+    requested_retention_until: datetime
+    readback_retention_until: datetime
+    written_at: datetime
+    content_verified_at: datetime
+    retention_verified_at: datetime
+    canonicalization_version: str
+    media_type: str
+    media_type_version: str
+    compression: str
+    compression_version: str
+    worker_principal_fingerprint: str
+    correlation_id: str
+    encryption_profile_fingerprint: str
+
+
+@dataclass(frozen=True, slots=True)
+class RetentionArchiveVerification:
+    capability_attestation_id: UUID
+    capability: ArchiveCapability
+    capability_evidence: ArchiveCapabilityEvidence
+    receipt: ImmutableArchiveReceipt
+    evidence: ArchiveReceiptEvidence

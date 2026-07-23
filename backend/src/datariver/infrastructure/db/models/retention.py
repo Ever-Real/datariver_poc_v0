@@ -38,6 +38,13 @@ class RetentionPolicyVersionModel(Base, UuidPrimaryKeyMixin, TimestampMixin, Ver
         ),
         UniqueConstraint(
             "workspace_id",
+            "id",
+            "payload_hash",
+            "policy_number",
+            name="uq_retention_policy_versions_workspace_id_hash_number",
+        ),
+        UniqueConstraint(
+            "workspace_id",
             "policy_number",
             name="uq_retention_policy_versions_workspace_number",
         ),
@@ -65,6 +72,15 @@ class RetentionPolicyVersionModel(Base, UuidPrimaryKeyMixin, TimestampMixin, Ver
             name="rules_supported_bounds",
         ),
         CheckConstraint("payload_hash ~ '^[0-9a-f]{64}$'", name="payload_hash_sha256"),
+        CheckConstraint(
+            "(contract_version = 'SINGLE_DEADLINE_V1' "
+            "AND effective_from IS NULL AND effective_until IS NULL "
+            "AND execution_authorization_hours IS NULL) OR "
+            "(contract_version = 'POLICY_BOOK_V2' AND effective_from IS NOT NULL "
+            "AND (effective_until IS NULL OR effective_until > effective_from) "
+            "AND execution_authorization_hours BETWEEN 1 AND 168)",
+            name="contract_shape",
+        ),
         CheckConstraint("state IN ('DRAFT', 'ACTIVE', 'REJECTED', 'SUPERSEDED')", name="state"),
         CheckConstraint("version > 0", name="version_positive"),
         CheckConstraint(
@@ -113,6 +129,12 @@ class RetentionPolicyVersionModel(Base, UuidPrimaryKeyMixin, TimestampMixin, Ver
     chat_content_days: Mapped[int] = mapped_column(Integer, nullable=False)
     audit_online_months: Mapped[int] = mapped_column(Integer, nullable=False)
     immutable_archive_years: Mapped[int] = mapped_column(Integer, nullable=False)
+    contract_version: Mapped[str] = mapped_column(
+        String(32), server_default=text("'SINGLE_DEADLINE_V1'"), nullable=False
+    )
+    effective_from: Mapped[datetime | None]
+    effective_until: Mapped[datetime | None]
+    execution_authorization_hours: Mapped[int | None] = mapped_column(Integer)
     payload_hash: Mapped[str] = mapped_column(String(64), nullable=False)
     requester_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), nullable=False)
     request_reason: Mapped[str] = mapped_column(String(4000), nullable=False)
@@ -126,6 +148,71 @@ class RetentionPolicyVersionModel(Base, UuidPrimaryKeyMixin, TimestampMixin, Ver
     supersede_reason: Mapped[str | None] = mapped_column(String(4000))
     supersede_policy_decision_id: Mapped[UUID | None] = mapped_column(Uuid(as_uuid=True))
     superseded_at: Mapped[datetime | None]
+
+
+class RetentionPolicyClassRuleModel(Base, UuidPrimaryKeyMixin, TimestampMixin):
+    __tablename__ = "policy_class_rules"
+    __table_args__ = (
+        UniqueConstraint(
+            "workspace_id", "id", name="uq_retention_policy_class_rules_workspace_id_id"
+        ),
+        UniqueConstraint(
+            "workspace_id",
+            "policy_id",
+            "data_class",
+            name="uq_retention_policy_class_rules_workspace_policy_class",
+        ),
+        ForeignKeyConstraint(
+            ["workspace_id", "policy_id", "policy_hash", "policy_number"],
+            [
+                "retention.policy_versions.workspace_id",
+                "retention.policy_versions.id",
+                "retention.policy_versions.payload_hash",
+                "retention.policy_versions.policy_number",
+            ],
+            name="fk_retention_policy_class_rules_policy",
+            ondelete="RESTRICT",
+        ),
+        CheckConstraint(
+            "data_class IN ('COMPLETED_OPERATIONS', 'CHAT_CONTENT', "
+            "'AUDIT_EVIDENCE', 'OBJECT_DATA')",
+            name="data_class",
+        ),
+        CheckConstraint("unit IN ('DAYS', 'MONTHS', 'YEARS')", name="unit"),
+        CheckConstraint(
+            "archive_disposition IN ('NO_ARCHIVE', 'EVIDENCE_ONLY', 'CONTENT_WORM')",
+            name="archive_disposition",
+        ),
+        CheckConstraint(
+            "minimum_value >= 0 AND maximum_value >= 1 "
+            "AND minimum_value <= maximum_value "
+            "AND ((unit = 'DAYS' AND maximum_value <= 36500) "
+            "OR (unit = 'MONTHS' AND maximum_value <= 1200) "
+            "OR (unit = 'YEARS' AND maximum_value <= 100))",
+            name="bounds",
+        ),
+        CheckConstraint("payload_hash ~ '^[0-9a-f]{64}$'", name="payload_hash_sha256"),
+        Index(
+            "ix_retention_policy_class_rules_workspace_policy",
+            "workspace_id",
+            "policy_id",
+            "data_class",
+        ),
+        {"schema": "retention"},
+    )
+
+    workspace_id: Mapped[UUID] = mapped_column(
+        Uuid(as_uuid=True), ForeignKey("platform.workspaces.id"), nullable=False
+    )
+    policy_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), nullable=False)
+    policy_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    policy_number: Mapped[int] = mapped_column(Integer, nullable=False)
+    data_class: Mapped[str] = mapped_column(String(32), nullable=False)
+    unit: Mapped[str] = mapped_column(String(16), nullable=False)
+    minimum_value: Mapped[int] = mapped_column(Integer, nullable=False)
+    maximum_value: Mapped[int] = mapped_column(Integer, nullable=False)
+    archive_disposition: Mapped[str] = mapped_column(String(24), nullable=False)
+    payload_hash: Mapped[str] = mapped_column(String(64), nullable=False)
 
 
 class LegalHoldModel(Base, UuidPrimaryKeyMixin, TimestampMixin, VersionMixin):
@@ -288,6 +375,13 @@ class ErasureRequestModel(Base, UuidPrimaryKeyMixin, TimestampMixin, VersionMixi
     __tablename__ = "erasure_requests"
     __table_args__ = (
         UniqueConstraint("workspace_id", "id", name="uq_erasure_requests_workspace_id_id"),
+        UniqueConstraint(
+            "workspace_id",
+            "id",
+            "version",
+            "payload_hash",
+            name="uq_erasure_requests_workspace_id_version_hash",
+        ),
         UniqueConstraint(
             "workspace_id",
             "requester_id",
@@ -550,6 +644,12 @@ class ImmutableArchiveReceiptModel(Base, UuidPrimaryKeyMixin):
         ),
         UniqueConstraint(
             "workspace_id",
+            "id",
+            "manifest_hash",
+            name="uq_immutable_archive_receipts_workspace_id_manifest",
+        ),
+        UniqueConstraint(
+            "workspace_id",
             "source",
             "source_start",
             "source_end",
@@ -589,7 +689,8 @@ class ImmutableArchiveReceiptModel(Base, UuidPrimaryKeyMixin):
             name="fk_immutable_archive_receipts_retention_policy",
         ),
         CheckConstraint(
-            "source IN ('OUTBOX_EVENTS', 'INBOX_MESSAGES', 'POLICY_DECISIONS', 'ASSISTANT_RUNS')",
+            "source IN ('OUTBOX_EVENTS', 'INBOX_MESSAGES', 'POLICY_DECISIONS', 'ASSISTANT_RUNS', "
+            "'ERASURE_EXECUTION_EVIDENCE')",
             name="source",
         ),
         CheckConstraint(
@@ -735,3 +836,297 @@ class ImmutableArchiveReceiptModel(Base, UuidPrimaryKeyMixin):
     recorded_at: Mapped[datetime] = mapped_column(
         nullable=False, server_default=text("CURRENT_TIMESTAMP")
     )
+
+
+class RetentionExecutionJobModel(Base, UuidPrimaryKeyMixin, TimestampMixin, VersionMixin):
+    __tablename__ = "execution_jobs"
+    __table_args__ = (
+        UniqueConstraint("workspace_id", "id", name="uq_retention_execution_jobs_workspace_id_id"),
+        UniqueConstraint(
+            "workspace_id",
+            "erasure_request_id",
+            name="uq_retention_execution_jobs_erasure_request",
+        ),
+        UniqueConstraint(
+            "workspace_id", "command_hash", name="uq_retention_execution_jobs_command_hash"
+        ),
+        ForeignKeyConstraint(
+            [
+                "workspace_id",
+                "erasure_request_id",
+                "erasure_request_version",
+                "erasure_request_payload_hash",
+            ],
+            [
+                "retention.erasure_requests.workspace_id",
+                "retention.erasure_requests.id",
+                "retention.erasure_requests.version",
+                "retention.erasure_requests.payload_hash",
+            ],
+            name="fk_retention_execution_jobs_erasure_request",
+            ondelete="RESTRICT",
+        ),
+        ForeignKeyConstraint(
+            ["workspace_id", "retention_policy_id", "retention_policy_hash", "policy_number"],
+            [
+                "retention.policy_versions.workspace_id",
+                "retention.policy_versions.id",
+                "retention.policy_versions.payload_hash",
+                "retention.policy_versions.policy_number",
+            ],
+            name="fk_retention_execution_jobs_policy",
+            ondelete="RESTRICT",
+        ),
+        ForeignKeyConstraint(
+            ["workspace_id", "archive_receipt_id", "archive_manifest_hash"],
+            [
+                "retention.immutable_archive_receipts.workspace_id",
+                "retention.immutable_archive_receipts.id",
+                "retention.immutable_archive_receipts.manifest_hash",
+            ],
+            name="fk_retention_execution_jobs_archive_receipt",
+            ondelete="RESTRICT",
+        ),
+        ForeignKeyConstraint(
+            ["executor_id"],
+            ["iam.subjects.id"],
+            name="fk_retention_execution_jobs_executor",
+            ondelete="RESTRICT",
+        ),
+        CheckConstraint("kind = 'EXPLICIT_ERASURE_EVIDENCE'", name="kind"),
+        CheckConstraint(
+            "target_type = 'CHAT_SESSION' AND target_version > 0 "
+            "AND target_owner_id IS NOT NULL AND classification BETWEEN 0 AND 3 "
+            "AND target_snapshot_hash ~ '^[0-9a-f]{64}$'",
+            name="target_shape",
+        ),
+        CheckConstraint(
+            "state IN ('PLANNED', 'LEASED', 'RETRY_WAIT', 'BLOCKED', "
+            "'ARCHIVE_VERIFIED_DESTRUCTIVE_DISABLED')",
+            name="state",
+        ),
+        CheckConstraint("destructive_state = 'DISABLED_NOT_READY'", name="destructive_disabled"),
+        CheckConstraint("archive_disposition = 'EVIDENCE_ONLY'", name="archive_disposition"),
+        CheckConstraint(
+            "command_hash ~ '^[0-9a-f]{64}$' "
+            "AND erasure_request_payload_hash ~ '^[0-9a-f]{64}$' "
+            "AND retention_policy_hash ~ '^[0-9a-f]{64}$' "
+            "AND archive_configuration_hash ~ '^[0-9a-f]{64}$' "
+            "AND (archive_manifest_hash IS NULL OR archive_manifest_hash ~ '^[0-9a-f]{64}$')",
+            name="hashes_sha256",
+        ),
+        CheckConstraint(
+            "attempt_count >= 0 AND attempt_count <= maximum_attempts "
+            "AND maximum_attempts BETWEEN 1 AND 20 "
+            "AND lease_epoch >= 0 AND version > 0",
+            name="counters",
+        ),
+        CheckConstraint(
+            "requester_id <> checker_id "
+            "AND checker_id <> target_owner_id "
+            "AND executor_id <> requester_id "
+            "AND executor_id <> checker_id "
+            "AND executor_id <> target_owner_id",
+            name="separation_of_duties",
+        ),
+        CheckConstraint("archive_retain_until > created_at", name="archive_retention_deadline"),
+        CheckConstraint(
+            "(state = 'LEASED' AND lease_token_hash IS NOT NULL "
+            "AND lease_owner_fingerprint IS NOT NULL AND lease_until IS NOT NULL) OR "
+            "(state <> 'LEASED' AND lease_token_hash IS NULL "
+            "AND lease_owner_fingerprint IS NULL AND lease_until IS NULL)",
+            name="lease_shape",
+        ),
+        CheckConstraint(
+            "lease_token_hash IS NULL OR lease_token_hash ~ '^[0-9a-f]{64}$'",
+            name="lease_token_hash_sha256",
+        ),
+        CheckConstraint(
+            "lease_owner_fingerprint IS NULL OR lease_owner_fingerprint ~ '^[0-9a-f]{64}$'",
+            name="lease_owner_fingerprint_sha256",
+        ),
+        CheckConstraint(
+            "(state = 'ARCHIVE_VERIFIED_DESTRUCTIVE_DISABLED' "
+            "AND archive_receipt_id IS NOT NULL AND archive_manifest_hash IS NOT NULL) OR "
+            "(state = 'BLOCKED' "
+            "AND (last_failure_code = 'KILL_SWITCH_DISABLED_AFTER_WRITE' "
+            "OR last_failure_code LIKE 'POST_WRITE_RECEIPT_%') "
+            "AND archive_receipt_id IS NOT NULL AND archive_manifest_hash IS NOT NULL) OR "
+            "(state <> 'ARCHIVE_VERIFIED_DESTRUCTIVE_DISABLED' "
+            "AND COALESCE(last_failure_code, '') <> 'KILL_SWITCH_DISABLED_AFTER_WRITE' "
+            "AND COALESCE(last_failure_code, '') NOT LIKE 'POST_WRITE_RECEIPT_%' "
+            "AND archive_receipt_id IS NULL AND archive_manifest_hash IS NULL)",
+            name="archive_receipt_shape",
+        ),
+        CheckConstraint(
+            "last_failure_code IS NULL OR length(last_failure_code) BETWEEN 1 AND 100",
+            name="failure_code",
+        ),
+        Index(
+            "ix_retention_execution_jobs_claim",
+            "workspace_id",
+            "next_attempt_at",
+            "created_at",
+            "id",
+            postgresql_where=text("state IN ('PLANNED', 'RETRY_WAIT')"),
+        ),
+        Index(
+            "ix_retention_execution_jobs_expired_lease",
+            "workspace_id",
+            "lease_until",
+            "id",
+            postgresql_where=text("state = 'LEASED'"),
+        ),
+        {"schema": "retention"},
+    )
+
+    workspace_id: Mapped[UUID] = mapped_column(
+        Uuid(as_uuid=True), ForeignKey("platform.workspaces.id"), nullable=False
+    )
+    kind: Mapped[str] = mapped_column(String(40), nullable=False)
+    erasure_request_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), nullable=False)
+    erasure_request_version: Mapped[int] = mapped_column(Integer, nullable=False)
+    erasure_request_payload_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    target_type: Mapped[str] = mapped_column(String(32), nullable=False)
+    target_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), nullable=False)
+    target_version: Mapped[int] = mapped_column(Integer, nullable=False)
+    target_owner_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), nullable=False)
+    classification: Mapped[int] = mapped_column(Integer, nullable=False)
+    target_snapshot_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    retention_policy_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), nullable=False)
+    retention_policy_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    policy_number: Mapped[int] = mapped_column(Integer, nullable=False)
+    requester_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), nullable=False)
+    checker_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), nullable=False)
+    executor_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), nullable=False)
+    execution_authorization_valid_until: Mapped[datetime] = mapped_column(nullable=False)
+    archive_disposition: Mapped[str] = mapped_column(String(24), nullable=False)
+    archive_configuration_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    command_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    archive_retain_until: Mapped[datetime] = mapped_column(nullable=False)
+    state: Mapped[str] = mapped_column(String(48), nullable=False)
+    next_attempt_at: Mapped[datetime] = mapped_column(nullable=False)
+    attempt_count: Mapped[int] = mapped_column(Integer, nullable=False)
+    maximum_attempts: Mapped[int] = mapped_column(Integer, nullable=False)
+    lease_epoch: Mapped[int] = mapped_column(Integer, nullable=False)
+    lease_token_hash: Mapped[str | None] = mapped_column(String(64))
+    lease_owner_fingerprint: Mapped[str | None] = mapped_column(String(64))
+    lease_until: Mapped[datetime | None]
+    archive_receipt_id: Mapped[UUID | None] = mapped_column(Uuid(as_uuid=True))
+    archive_manifest_hash: Mapped[str | None] = mapped_column(String(64))
+    last_failure_code: Mapped[str | None] = mapped_column(String(100))
+    destructive_state: Mapped[str] = mapped_column(String(32), nullable=False)
+
+
+class RetentionExecutionAttemptModel(Base, UuidPrimaryKeyMixin):
+    __tablename__ = "execution_attempts"
+    __table_args__ = (
+        UniqueConstraint(
+            "workspace_id", "id", name="uq_retention_execution_attempts_workspace_id_id"
+        ),
+        UniqueConstraint(
+            "workspace_id",
+            "execution_job_id",
+            "lease_epoch",
+            name="uq_retention_execution_attempts_job_fence",
+        ),
+        ForeignKeyConstraint(
+            ["workspace_id", "execution_job_id"],
+            ["retention.execution_jobs.workspace_id", "retention.execution_jobs.id"],
+            name="fk_retention_execution_attempts_job",
+            ondelete="RESTRICT",
+        ),
+        CheckConstraint("attempt_no > 0 AND lease_epoch > 0", name="positive_fence"),
+        CheckConstraint("lease_token_hash ~ '^[0-9a-f]{64}$'", name="lease_token_hash"),
+        CheckConstraint(
+            "worker_principal_fingerprint ~ '^[0-9a-f]{64}$'",
+            name="worker_principal_fingerprint_sha256",
+        ),
+        CheckConstraint(
+            "state IN ('RUNNING', 'RETRY_WAIT', 'BLOCKED', "
+            "'ARCHIVE_VERIFIED_DESTRUCTIVE_DISABLED', 'SUPERSEDED')",
+            name="state",
+        ),
+        CheckConstraint("destructive_effect_count = 0", name="destructive_effect_zero"),
+        CheckConstraint(
+            "length(correlation_id) BETWEEN 1 AND 100 "
+            "AND (failure_code IS NULL OR length(failure_code) BETWEEN 1 AND 100)",
+            name="bounded_text",
+        ),
+        CheckConstraint(
+            "evidence_hash ~ '^[0-9a-f]{64}$' "
+            "AND (external_response_hash IS NULL "
+            "OR external_response_hash ~ '^[0-9a-f]{64}$')",
+            name="evidence_hashes",
+        ),
+        CheckConstraint("finished_at IS NULL OR finished_at >= started_at", name="timeline"),
+        {"schema": "retention"},
+    )
+
+    workspace_id: Mapped[UUID] = mapped_column(
+        Uuid(as_uuid=True), ForeignKey("platform.workspaces.id"), nullable=False
+    )
+    execution_job_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), nullable=False)
+    attempt_no: Mapped[int] = mapped_column(Integer, nullable=False)
+    lease_epoch: Mapped[int] = mapped_column(Integer, nullable=False)
+    lease_token_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    worker_principal_fingerprint: Mapped[str] = mapped_column(String(64), nullable=False)
+    correlation_id: Mapped[str] = mapped_column(String(100), nullable=False)
+    state: Mapped[str] = mapped_column(String(48), nullable=False)
+    stage: Mapped[str] = mapped_column(String(40), nullable=False)
+    evidence_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    external_response_hash: Mapped[str | None] = mapped_column(String(64))
+    failure_code: Mapped[str | None] = mapped_column(String(100))
+    destructive_effect_count: Mapped[int] = mapped_column(Integer, nullable=False)
+    started_at: Mapped[datetime] = mapped_column(nullable=False)
+    finished_at: Mapped[datetime | None]
+
+
+class RetentionExecutionEventModel(Base, UuidPrimaryKeyMixin):
+    __tablename__ = "execution_events"
+    __table_args__ = (
+        UniqueConstraint(
+            "workspace_id", "id", name="uq_retention_execution_events_workspace_id_id"
+        ),
+        UniqueConstraint(
+            "workspace_id",
+            "execution_job_id",
+            "sequence",
+            name="uq_retention_execution_events_job_sequence",
+        ),
+        ForeignKeyConstraint(
+            ["workspace_id", "execution_job_id"],
+            ["retention.execution_jobs.workspace_id", "retention.execution_jobs.id"],
+            name="fk_retention_execution_events_job",
+            ondelete="RESTRICT",
+        ),
+        CheckConstraint("sequence > 0", name="sequence_positive"),
+        CheckConstraint(
+            "event_type IN ('PLANNED', 'LEASED', 'RETRY_WAIT', 'BLOCKED', "
+            "'ARCHIVE_VERIFIED_DESTRUCTIVE_DISABLED')",
+            name="event_type",
+        ),
+        CheckConstraint("evidence_hash ~ '^[0-9a-f]{64}$'", name="evidence_hash_sha256"),
+        CheckConstraint(
+            "reason_code IS NULL OR length(reason_code) BETWEEN 1 AND 100",
+            name="reason_code",
+        ),
+        Index(
+            "ix_retention_execution_events_workspace_job_time",
+            "workspace_id",
+            "execution_job_id",
+            "occurred_at",
+        ),
+        {"schema": "retention"},
+    )
+
+    workspace_id: Mapped[UUID] = mapped_column(
+        Uuid(as_uuid=True), ForeignKey("platform.workspaces.id"), nullable=False
+    )
+    execution_job_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), nullable=False)
+    sequence: Mapped[int] = mapped_column(Integer, nullable=False)
+    event_type: Mapped[str] = mapped_column(String(48), nullable=False)
+    attempt_no: Mapped[int | None] = mapped_column(Integer)
+    reason_code: Mapped[str | None] = mapped_column(String(100))
+    evidence_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    occurred_at: Mapped[datetime] = mapped_column(nullable=False)

@@ -15,6 +15,8 @@ from datariver.application.classification_access import ClassificationAccessSnap
 from datariver.application.dto import (
     ApiProductRecord,
     ApiProductVersionRecord,
+    ArchiveCapabilityEvidence,
+    ArchiveCapabilityRecord,
     CapabilityStatus,
     CatalogAssetDetail,
     CatalogAssetIndex,
@@ -50,6 +52,8 @@ from datariver.application.dto import (
     MembershipRenewalRecord,
     MultipartUpload,
     ObjectMetadata,
+    RetentionArchiveVerification,
+    RetentionExecutionClaim,
     SystemDirectoryEntry,
     UploadPreparationReceiptEvidence,
     UploadRegistrationCandidateEvidence,
@@ -772,6 +776,16 @@ class ImmutableArchiveStore(Protocol):
 
     async def verify_capability(self) -> ArchiveCapability: ...
 
+    async def find_archive(
+        self,
+        *,
+        object_key: str,
+        size_bytes: int,
+        sha256: str,
+        retain_until: datetime,
+        expected_metadata: dict[str, str],
+    ) -> ArchiveWriteReceipt | None: ...
+
     async def write_archive(
         self,
         *,
@@ -790,6 +804,60 @@ class ImmutableArchiveStore(Protocol):
     async def read_retention(
         self, *, object_key: str, version_id: str
     ) -> ArchiveRetentionObservation: ...
+
+
+class RetentionExecutionStore(Protocol):
+    async def plan_next(
+        self,
+        *,
+        workspace_id: UUID,
+        executor_id: UUID,
+        archive_configuration_hash: str,
+        maximum_attempts: int,
+    ) -> bool: ...
+
+    async def claim_next(
+        self,
+        *,
+        workspace_id: UUID,
+        worker_id: str,
+        worker_principal_fingerprint: str,
+        lease_seconds: int,
+    ) -> RetentionExecutionClaim | None: ...
+
+    async def revalidate_before_archive(self, *, claim: RetentionExecutionClaim) -> bool: ...
+
+    async def record_archive_capability(
+        self,
+        *,
+        claim: RetentionExecutionClaim,
+        capability: ArchiveCapability,
+        evidence: ArchiveCapabilityEvidence,
+    ) -> ArchiveCapabilityRecord: ...
+
+    async def get_archive_capability_for_write(
+        self,
+        *,
+        claim: RetentionExecutionClaim,
+        attestation_id: UUID,
+        written_at: datetime,
+    ) -> ArchiveCapabilityRecord | None: ...
+
+    async def complete_archive(
+        self,
+        *,
+        claim: RetentionExecutionClaim,
+        verification: RetentionArchiveVerification,
+    ) -> None: ...
+
+    async def mark_failed(
+        self,
+        *,
+        claim: RetentionExecutionClaim,
+        error_code: str,
+        retryable: bool,
+        orphan_verification: RetentionArchiveVerification | None = None,
+    ) -> str | None: ...
 
 
 class UploadRepository(Protocol):

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+from collections.abc import Iterator
 from datetime import UTC, datetime, timedelta
 from typing import cast
 from uuid import UUID, uuid4
@@ -8,6 +9,7 @@ from uuid import UUID, uuid4
 import pytest
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from datariver.application.dto import ArchiveCapabilityEvidence, ArchiveReceiptEvidence
 from datariver.domain.common import ConflictError, ValidationError
 from datariver.domain.retention import (
     ArchiveCapability,
@@ -18,10 +20,11 @@ from datariver.domain.retention import (
     RetentionPolicyVersion,
     RetentionRules,
 )
-from datariver.infrastructure.db.models.retention import RetentionPolicyVersionModel
+from datariver.infrastructure.db.models.retention import (
+    ImmutableArchiveReceiptModel,
+    RetentionPolicyVersionModel,
+)
 from datariver.infrastructure.db.retention import (
-    ArchiveCapabilityEvidence,
-    ArchiveReceiptEvidence,
     SqlArchiveEvidenceRepository,
     _archive_capability_model,
     _archive_receipt_model,
@@ -47,6 +50,13 @@ class _ScalarRows:
     def one_or_none(self) -> object | None:
         return self._value
 
+    def __iter__(self) -> Iterator[object]:
+        if self._value is None:
+            return iter(())
+        if isinstance(self._value, (list, tuple)):
+            return iter(self._value)
+        return iter((self._value,))
+
 
 class _SequenceSession(_AddSession):
     def __init__(self, values: list[object | None]) -> None:
@@ -61,6 +71,7 @@ class _SequenceSession(_AddSession):
 def _capability(*, now: datetime, enabled: bool = True) -> ArchiveCapability:
     return ArchiveCapability(
         configuration_fingerprint="a" * 64,
+        challenge_hash="d" * 64,
         observed_at=now,
         expires_at=now + timedelta(minutes=15),
         versioning_enabled=enabled,
@@ -167,6 +178,19 @@ def test_capability_hash_covers_runtime_and_encryption_evidence() -> None:
         _required_archive_capability(model)
 
 
+def test_capability_rejects_challenge_unrelated_to_actual_probe() -> None:
+    now = datetime.now(UTC) - timedelta(seconds=1)
+    capability = _capability(now=now)
+    object.__setattr__(capability, "challenge_hash", "9" * 64)
+
+    with pytest.raises(ValidationError, match="probe binding"):
+        _archive_capability_model(
+            workspace_id=uuid4(),
+            capability=capability,
+            evidence=_capability_evidence(),
+        )
+
+
 def test_failed_capability_is_recorded_but_cannot_be_hydrated_as_usable() -> None:
     now = datetime.now(UTC) - timedelta(seconds=1)
     model = _archive_capability_model(
@@ -201,6 +225,30 @@ async def test_capability_repository_rejects_future_or_excessive_attestation() -
 
 
 @pytest.mark.asyncio
+async def test_capability_repository_reuses_identical_cached_observation() -> None:
+    workspace_id = uuid4()
+    now = datetime.now(UTC) - timedelta(seconds=1)
+    capability = _capability(now=now)
+    evidence = _capability_evidence()
+    existing = _archive_capability_model(
+        workspace_id=workspace_id,
+        capability=capability,
+        evidence=evidence,
+    )
+    session = _SequenceSession([existing])
+    repository = SqlArchiveEvidenceRepository(cast(AsyncSession, session))
+
+    attestation_id = await repository.ensure_capability(
+        workspace_id=workspace_id,
+        capability=capability,
+        evidence=evidence,
+    )
+
+    assert attestation_id == existing.id
+    assert session.added == []
+
+
+@pytest.mark.asyncio
 async def test_receipt_rejects_a_different_runtime_principal() -> None:
     now = datetime.now(UTC) - timedelta(seconds=1)
     attestation = _archive_capability_model(
@@ -211,8 +259,12 @@ async def test_receipt_rejects_a_different_runtime_principal() -> None:
     session = _SequenceSession([None])
     repository = SqlArchiveEvidenceRepository(cast(AsyncSession, session))
 
-    with pytest.raises(ConflictError, match="capability matches"):
-        await repository.add_receipt(receipt=_receipt(now=now), evidence=_receipt_evidence(now=now))
+    with pytest.raises(ConflictError, match="exact archive capability"):
+        await repository.add_receipt(
+            capability_attestation_id=attestation.id,
+            receipt=_receipt(now=now),
+            evidence=_receipt_evidence(now=now),
+        )
     assert attestation.runtime_principal_fingerprint == "c" * 64
     assert _receipt_evidence(now=now).worker_principal_fingerprint == "2" * 64
     assert session.added == []
@@ -226,18 +278,201 @@ async def test_receipt_retention_must_cover_active_policy_calendar_years() -> No
     object.__setattr__(capability_evidence, "runtime_principal_fingerprint", "2" * 64)
     attestation = _archive_capability_model(
         workspace_id=receipt.workspace_id,
-        capability=_capability(now=now - timedelta(seconds=1)),
+        capability=_capability(now=now - timedelta(seconds=10)),
         evidence=capability_evidence,
     )
     policy = _active_policy_model(workspace_id=receipt.workspace_id, now=now)
     evidence = _receipt_evidence(now=now)
     object.__setattr__(evidence, "retention_policy_id", policy.id)
     object.__setattr__(evidence, "retention_policy_hash", policy.payload_hash)
-    session = _SequenceSession([attestation, policy])
+    session = _SequenceSession([attestation, policy, ()])
     repository = SqlArchiveEvidenceRepository(cast(AsyncSession, session))
 
     with pytest.raises(ConflictError, match="shorter than the active policy"):
-        await repository.add_receipt(receipt=receipt, evidence=evidence)
+        await repository.add_receipt(
+            capability_attestation_id=attestation.id,
+            receipt=receipt,
+            evidence=evidence,
+        )
+    assert session.added == []
+
+
+@pytest.mark.asyncio
+async def test_receipt_accepts_exact_capability_and_policy_superseded_after_write() -> None:
+    now = datetime.now(UTC) - timedelta(seconds=1)
+    receipt = _receipt(now=now)
+    evidence = _receipt_evidence(now=now)
+    capability_evidence = _capability_evidence()
+    object.__setattr__(capability_evidence, "runtime_principal_fingerprint", "2" * 64)
+    attestation = _archive_capability_model(
+        workspace_id=receipt.workspace_id,
+        capability=_capability(now=now - timedelta(seconds=10)),
+        evidence=capability_evidence,
+    )
+    policy = _active_policy_model(workspace_id=receipt.workspace_id, now=now)
+    policy.state = "SUPERSEDED"
+    policy.superseded_by = uuid4()
+    policy.supersede_reason = "Replaced after evidence write"
+    policy.supersede_policy_decision_id = uuid4()
+    policy.superseded_at = now - timedelta(seconds=1)
+    object.__setattr__(evidence, "retention_policy_id", policy.id)
+    object.__setattr__(evidence, "retention_policy_hash", policy.payload_hash)
+    long_retention = now + timedelta(days=365 * 4)
+    object.__setattr__(receipt, "retention_until", long_retention)
+    object.__setattr__(evidence, "requested_retention_until", long_retention)
+    object.__setattr__(evidence, "readback_retention_until", long_retention)
+    session = _SequenceSession([attestation, policy, ()])
+    repository = SqlArchiveEvidenceRepository(cast(AsyncSession, session))
+
+    await repository.add_receipt(
+        capability_attestation_id=attestation.id,
+        receipt=receipt,
+        evidence=evidence,
+    )
+
+    stored = next(
+        value for value in session.added if isinstance(value, ImmutableArchiveReceiptModel)
+    )
+    assert stored.capability_attestation_id == attestation.id
+
+
+@pytest.mark.asyncio
+async def test_receipt_rejects_policy_superseded_before_write() -> None:
+    now = datetime.now(UTC) - timedelta(seconds=1)
+    receipt = _receipt(now=now)
+    evidence = _receipt_evidence(now=now)
+    capability_evidence = _capability_evidence()
+    object.__setattr__(capability_evidence, "runtime_principal_fingerprint", "2" * 64)
+    attestation = _archive_capability_model(
+        workspace_id=receipt.workspace_id,
+        capability=_capability(now=now - timedelta(seconds=10)),
+        evidence=capability_evidence,
+    )
+    policy = _active_policy_model(workspace_id=receipt.workspace_id, now=now)
+    policy.state = "SUPERSEDED"
+    policy.superseded_by = uuid4()
+    policy.supersede_reason = "Replaced before evidence write"
+    policy.supersede_policy_decision_id = uuid4()
+    policy.superseded_at = evidence.written_at - timedelta(seconds=1)
+    object.__setattr__(evidence, "retention_policy_id", policy.id)
+    object.__setattr__(evidence, "retention_policy_hash", policy.payload_hash)
+    session = _SequenceSession([attestation, policy])
+    repository = SqlArchiveEvidenceRepository(cast(AsyncSession, session))
+
+    with pytest.raises(ConflictError, match="not active at write time"):
+        await repository.add_receipt(
+            capability_attestation_id=attestation.id,
+            receipt=receipt,
+            evidence=evidence,
+        )
+    assert session.added == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("boundary", ("activated", "superseded"))
+async def test_receipt_rejects_policy_transition_inside_provider_write_interval(
+    boundary: str,
+) -> None:
+    now = datetime.now(UTC).replace(microsecond=0)
+    receipt = _receipt(now=now)
+    evidence = _receipt_evidence(now=now)
+    capability_evidence = _capability_evidence()
+    object.__setattr__(capability_evidence, "runtime_principal_fingerprint", "2" * 64)
+    attestation = _archive_capability_model(
+        workspace_id=receipt.workspace_id,
+        capability=_capability(now=evidence.written_at - timedelta(seconds=10)),
+        evidence=capability_evidence,
+    )
+    policy = _active_policy_model(workspace_id=receipt.workspace_id, now=now)
+    transition_at = evidence.written_at + timedelta(milliseconds=500)
+    if boundary == "activated":
+        policy.decided_at = transition_at
+    else:
+        policy.state = "SUPERSEDED"
+        policy.superseded_by = uuid4()
+        policy.supersede_reason = "Replaced during provider write-time interval"
+        policy.supersede_policy_decision_id = uuid4()
+        policy.superseded_at = transition_at
+    object.__setattr__(evidence, "retention_policy_id", policy.id)
+    object.__setattr__(evidence, "retention_policy_hash", policy.payload_hash)
+    session = _SequenceSession([attestation, policy])
+    repository = SqlArchiveEvidenceRepository(cast(AsyncSession, session))
+
+    with pytest.raises(ConflictError, match="not active at write time"):
+        await repository.add_receipt(
+            capability_attestation_id=attestation.id,
+            receipt=receipt,
+            evidence=evidence,
+        )
+    assert session.added == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("boundary", ("effective_from", "effective_until"))
+async def test_receipt_rejects_v2_effective_boundary_inside_provider_write_interval(
+    boundary: str,
+) -> None:
+    now = datetime.now(UTC).replace(microsecond=0)
+    receipt = _receipt(now=now)
+    evidence = _receipt_evidence(now=now)
+    capability_evidence = _capability_evidence()
+    object.__setattr__(capability_evidence, "runtime_principal_fingerprint", "2" * 64)
+    attestation = _archive_capability_model(
+        workspace_id=receipt.workspace_id,
+        capability=_capability(now=evidence.written_at - timedelta(seconds=10)),
+        evidence=capability_evidence,
+    )
+    policy = _active_policy_model(workspace_id=receipt.workspace_id, now=now)
+    policy.contract_version = "POLICY_BOOK_V2"
+    policy.effective_from = evidence.written_at - timedelta(days=1)
+    policy.effective_until = None
+    policy.execution_authorization_hours = 24
+    transition_at = evidence.written_at + timedelta(milliseconds=500)
+    if boundary == "effective_from":
+        policy.effective_from = transition_at
+    else:
+        policy.effective_until = transition_at
+    object.__setattr__(evidence, "retention_policy_id", policy.id)
+    object.__setattr__(evidence, "retention_policy_hash", policy.payload_hash)
+    session = _SequenceSession([attestation, policy])
+    repository = SqlArchiveEvidenceRepository(cast(AsyncSession, session))
+
+    with pytest.raises(ConflictError, match=r"not effective.*write-time interval"):
+        await repository.add_receipt(
+            capability_attestation_id=attestation.id,
+            receipt=receipt,
+            evidence=evidence,
+        )
+    assert session.added == []
+
+
+@pytest.mark.asyncio
+async def test_receipt_rejects_capability_expiring_inside_provider_write_interval() -> None:
+    now = datetime.now(UTC).replace(microsecond=0)
+    receipt = _receipt(now=now)
+    evidence = _receipt_evidence(now=now)
+    capability_evidence = _capability_evidence()
+    object.__setattr__(capability_evidence, "runtime_principal_fingerprint", "2" * 64)
+    capability = _capability(now=evidence.written_at - timedelta(seconds=10))
+    object.__setattr__(
+        capability,
+        "expires_at",
+        evidence.written_at + timedelta(milliseconds=500),
+    )
+    attestation = _archive_capability_model(
+        workspace_id=receipt.workspace_id,
+        capability=capability,
+        evidence=capability_evidence,
+    )
+    session = _SequenceSession([attestation])
+    repository = SqlArchiveEvidenceRepository(cast(AsyncSession, session))
+
+    with pytest.raises(ConflictError, match="write-time interval"):
+        await repository.add_receipt(
+            capability_attestation_id=attestation.id,
+            receipt=receipt,
+            evidence=evidence,
+        )
     assert session.added == []
 
 
@@ -297,4 +532,8 @@ async def test_receipt_rejects_mismatched_readback_and_literal_null_version() ->
     repository = SqlArchiveEvidenceRepository(cast(AsyncSession, session))
     with pytest.raises(ValidationError, match="literal null"):
         # Rejection occurs before any database lookup or mutation.
-        await repository.add_receipt(receipt=literal_null, evidence=_receipt_evidence(now=now))
+        await repository.add_receipt(
+            capability_attestation_id=uuid4(),
+            receipt=literal_null,
+            evidence=_receipt_evidence(now=now),
+        )

@@ -49,6 +49,10 @@ class Settings(BaseSettings):
     governance_database_secret_ref: str
     export_database_url: str | None = None
     export_database_secret_ref: str | None = None
+    retention_scheduler_database_url: str | None = None
+    retention_scheduler_database_secret_ref: str | None = None
+    archive_database_url: str | None = None
+    archive_database_secret_ref: str | None = None
     bootstrap_database_url: str
     bootstrap_database_secret_ref: str
     database_pool_size: int = Field(default=10, ge=1, le=100)
@@ -58,6 +62,8 @@ class Settings(BaseSettings):
     worker_database_pool_size: int = Field(default=5, ge=1, le=50)
     worker_database_pool_max_overflow: int = Field(default=5, ge=0, le=50)
     worker_database_pool_timeout_seconds: float = Field(default=10.0, ge=0.1, le=60)
+    retention_worker_database_pool_size: int = Field(default=1, ge=1, le=4)
+    retention_worker_database_pool_max_overflow: int = Field(default=0, ge=0, le=2)
     oidc_issuer: str
     oidc_audience: str
     oidc_jwks_url: str
@@ -251,6 +257,14 @@ class Settings(BaseSettings):
     governance_apply_maximum_attempts: int = Field(default=8, ge=1, le=20)
     governance_worker_subject_id: UUID = UUID("00000000-0000-7000-8000-000000000001")
     export_worker_subject_id: UUID = UUID("00000000-0000-7000-8000-000000000002")
+    retention_worker_subject_id: UUID = UUID("00000000-0000-7000-8000-000000000003")
+    retention_archive_execution_enabled: bool = False
+    retention_execution_control_file: str | None = None
+    retention_workspace_ids: tuple[UUID, ...] = ()
+    retention_claim_batch_size: int = Field(default=10, ge=1, le=25)
+    retention_lease_seconds: int = Field(default=300, ge=60, le=900)
+    retention_maximum_attempts: int = Field(default=4, ge=1, le=20)
+    retention_metrics_port: int = Field(default=9102, ge=1024, le=65535)
 
     s3_endpoint_url: str
     s3_public_endpoint_url: str
@@ -265,6 +279,14 @@ class Settings(BaseSettings):
     s3_secret_key_file: str
     s3_export_access_key_file: str | None = None
     s3_export_secret_key_file: str | None = None
+    s3_archive_endpoint_url: str | None = None
+    s3_archive_region: str | None = None
+    s3_archive_bucket: str | None = None
+    s3_archive_prefix: str | None = None
+    s3_archive_access_key_file: str | None = None
+    s3_archive_secret_key_file: str | None = None
+    s3_archive_encryption_profile_fingerprint: str | None = None
+    s3_archive_worker_principal_fingerprint: str | None = None
     s3_cors_management_mode: Literal["bucket", "external"] = "bucket"
     presigned_url_ttl_seconds: int = Field(default=900, ge=60, le=900)
 
@@ -281,6 +303,7 @@ class Settings(BaseSettings):
         "datahub_allowed_versions",
         "intranet_openai_compatible_allowed_hosts",
         "neo4j_allowed_hosts",
+        "retention_workspace_ids",
         mode="before",
     )
     @classmethod
@@ -321,9 +344,11 @@ class Settings(BaseSettings):
             raise ValueError("Neo4j host allowlist values must be unique.")
         return normalized
 
-    @field_validator("s3_endpoint_url", "s3_public_endpoint_url")
+    @field_validator("s3_endpoint_url", "s3_public_endpoint_url", "s3_archive_endpoint_url")
     @classmethod
-    def validate_s3_origin(cls, value: str) -> str:
+    def validate_s3_origin(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
         parsed = urlsplit(value)
         if (
             parsed.scheme not in {"http", "https"}
@@ -521,6 +546,12 @@ class Settings(BaseSettings):
         }
         if self.export_database_url is not None:
             credential_urls["export_database_url"] = self.export_database_url
+        if self.retention_scheduler_database_url is not None:
+            credential_urls["retention_scheduler_database_url"] = (
+                self.retention_scheduler_database_url
+            )
+        if self.archive_database_url is not None:
+            credential_urls["archive_database_url"] = self.archive_database_url
         embedded_passwords = [
             name for name, url in credential_urls.items() if urlsplit(url).password is not None
         ]
@@ -561,6 +592,12 @@ class Settings(BaseSettings):
                 )
         if self.export_database_secret_ref is not None:
             references["export_database"] = self.export_database_secret_ref
+        if self.retention_scheduler_database_secret_ref is not None:
+            references["retention_scheduler_database"] = (
+                self.retention_scheduler_database_secret_ref
+            )
+        if self.archive_database_secret_ref is not None:
+            references["archive_database"] = self.archive_database_secret_ref
         invalid_references = [
             name for name, reference in references.items() if not reference.startswith("file:")
         ]
@@ -569,6 +606,135 @@ class Settings(BaseSettings):
                 "This deployment supports file-mounted secret references only: "
                 + ", ".join(sorted(invalid_references))
             )
+        if len(self.retention_workspace_ids) != len(set(self.retention_workspace_ids)):
+            raise ValueError("Retention workspace allowlist values must be unique.")
+        if len(self.retention_workspace_ids) > 32:
+            raise ValueError("At most 32 retention workspaces may be allowlisted per worker.")
+        if self.retention_archive_execution_enabled:
+            if self.retention_worker_subject_id != UUID("00000000-0000-7000-8000-000000000003"):
+                raise ValueError(
+                    "The retention executor must use the migration-provisioned service principal."
+                )
+            required_retention_settings = {
+                "retention scheduler database URL": self.retention_scheduler_database_url,
+                "retention scheduler database secret": (
+                    self.retention_scheduler_database_secret_ref
+                ),
+                "archive database URL": self.archive_database_url,
+                "archive database secret": self.archive_database_secret_ref,
+                "archive endpoint": self.s3_archive_endpoint_url,
+                "archive region": self.s3_archive_region,
+                "archive bucket": self.s3_archive_bucket,
+                "archive prefix": self.s3_archive_prefix,
+                "archive access key file": self.s3_archive_access_key_file,
+                "archive secret key file": self.s3_archive_secret_key_file,
+                "archive encryption fingerprint": (self.s3_archive_encryption_profile_fingerprint),
+                "archive worker principal fingerprint": (
+                    self.s3_archive_worker_principal_fingerprint
+                ),
+                "reloadable execution control file": self.retention_execution_control_file,
+            }
+            missing = sorted(
+                name for name, value in required_retention_settings.items() if not value
+            )
+            if missing or not self.retention_workspace_ids:
+                raise ValueError(
+                    "Enabled archive-only retention requires a workspace allowlist and all "
+                    "dedicated settings: " + ", ".join(missing)
+                )
+            if not str(self.retention_execution_control_file).startswith("/"):
+                raise ValueError("The retention execution control file must be an absolute path.")
+            other_database_urls = {
+                self.database_url,
+                self.migration_database_url,
+                self.relay_database_url,
+                self.upload_database_url,
+                self.governance_database_url,
+                self.bootstrap_database_url,
+                self.export_database_url,
+            }
+            retention_urls = {
+                self.retention_scheduler_database_url,
+                self.archive_database_url,
+            }
+            if len(retention_urls) != 2 or retention_urls & other_database_urls:
+                raise ValueError(
+                    "Retention scheduler and archive executor require separate database URLs."
+                )
+            principals = {
+                urlsplit(str(value)).username for value in retention_urls if value is not None
+            }
+            other_principals = {
+                urlsplit(str(value)).username for value in other_database_urls if value is not None
+            }
+            if len(principals) != 2 or principals & other_principals:
+                raise ValueError(
+                    "Retention scheduler and archive executor require separate DB principals."
+                )
+            retention_database_secrets = {
+                self.retention_scheduler_database_secret_ref,
+                self.archive_database_secret_ref,
+            }
+            other_database_secrets = {
+                self.database_secret_ref,
+                self.migration_database_secret_ref,
+                self.relay_database_secret_ref,
+                self.upload_database_secret_ref,
+                self.governance_database_secret_ref,
+                self.bootstrap_database_secret_ref,
+                self.export_database_secret_ref,
+            }
+            if (
+                len(retention_database_secrets) != 2
+                or retention_database_secrets & other_database_secrets
+            ):
+                raise ValueError(
+                    "Retention scheduler and archive executor require separate DB secret files."
+                )
+            fingerprints = (
+                self.s3_archive_encryption_profile_fingerprint,
+                self.s3_archive_worker_principal_fingerprint,
+            )
+            if any(
+                value is None or re.fullmatch(r"[0-9a-f]{64}", value) is None
+                for value in fingerprints
+            ):
+                raise ValueError("Archive fingerprints must be lowercase SHA-256 values.")
+            if (
+                self.app_env == "production"
+                and self.s3_archive_endpoint_url is not None
+                and urlsplit(self.s3_archive_endpoint_url).scheme != "https"
+            ):
+                raise ValueError("Production immutable archive endpoints require HTTPS.")
+            if (
+                self.s3_archive_bucket is None
+                or re.fullmatch(r"[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]", self.s3_archive_bucket) is None
+            ):
+                raise ValueError("The immutable archive bucket name is invalid.")
+            if self.s3_archive_bucket in {
+                self.s3_bucket_quarantine,
+                self.s3_bucket_accepted,
+                self.s3_bucket_exports,
+                self.s3_bucket_filefolder,
+                self.s3_bucket_infoschema,
+            }:
+                raise ValueError("The immutable archive bucket must be dedicated.")
+            if (
+                self.s3_archive_prefix is None
+                or re.fullmatch(r"[a-z0-9][a-z0-9/_-]{0,199}", self.s3_archive_prefix) is None
+            ):
+                raise ValueError("The immutable archive prefix is invalid.")
+            archive_files = {
+                self.s3_archive_access_key_file,
+                self.s3_archive_secret_key_file,
+            }
+            if len(archive_files) != 2 or archive_files & {
+                self.s3_access_key_file,
+                self.s3_secret_key_file,
+                self.s3_export_access_key_file,
+                self.s3_export_secret_key_file,
+            }:
+                raise ValueError("Immutable archive credentials must be separate secret files.")
         if self.catalog_export_worker_enabled:
             if (
                 self.export_database_url is None

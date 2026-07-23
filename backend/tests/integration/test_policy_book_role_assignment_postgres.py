@@ -163,7 +163,7 @@ async def _prepare_fixture(admin_engine: AsyncEngine, fixture: PolicyFixture) ->
     async with admin_engine.begin() as connection:
         await _set_fixture_security_context(connection, fixture)
         revision = await connection.scalar(text("SELECT version_num FROM alembic_version"))
-        assert revision == "0041"
+        assert revision == "0042"
         await connection.execute(
             text(
                 """

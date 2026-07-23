@@ -41,6 +41,26 @@ class RetentionDataClass(StrEnum):
     OBJECT_DATA = "OBJECT_DATA"
 
 
+class RetentionPeriodUnit(StrEnum):
+    DAYS = "DAYS"
+    MONTHS = "MONTHS"
+    YEARS = "YEARS"
+
+
+class RetentionArchiveDisposition(StrEnum):
+    NO_ARCHIVE = "NO_ARCHIVE"
+    EVIDENCE_ONLY = "EVIDENCE_ONLY"
+    CONTENT_WORM = "CONTENT_WORM"
+
+
+class RetentionExecutionState(StrEnum):
+    PLANNED = "PLANNED"
+    LEASED = "LEASED"
+    RETRY_WAIT = "RETRY_WAIT"
+    BLOCKED = "BLOCKED"
+    ARCHIVE_VERIFIED_DESTRUCTIVE_DISABLED = "ARCHIVE_VERIFIED_DESTRUCTIVE_DISABLED"
+
+
 class LegalHoldScope(StrEnum):
     WORKSPACE = "WORKSPACE"
     SUBJECT = "SUBJECT"
@@ -80,10 +100,22 @@ class ErasureTargetSnapshot:
     version: int
     owner_id: UUID | None
     classification: Classification
+    retention_basis_at: datetime | None = None
+    retention_until: datetime | None = None
 
     def __post_init__(self) -> None:
         if self.version < 1:
             raise ValidationError("The erasure target version must be positive.")
+        if self.retention_basis_at is not None:
+            _require_aware_datetime(self.retention_basis_at, "erasure target retention basis")
+        if self.retention_until is not None:
+            _require_aware_datetime(self.retention_until, "erasure target retention deadline")
+        if (
+            self.retention_basis_at is not None
+            and self.retention_until is not None
+            and self.retention_until <= self.retention_basis_at
+        ):
+            raise ValidationError("The erasure target retention deadline is invalid.")
 
 
 class ArchiveSource(StrEnum):
@@ -91,6 +123,7 @@ class ArchiveSource(StrEnum):
     INBOX_MESSAGES = "INBOX_MESSAGES"
     POLICY_DECISIONS = "POLICY_DECISIONS"
     ASSISTANT_RUNS = "ASSISTANT_RUNS"
+    ERASURE_EXECUTION_EVIDENCE = "ERASURE_EXECUTION_EVIDENCE"
 
 
 class ArchiveRetentionMode(StrEnum):
@@ -100,6 +133,7 @@ class ArchiveRetentionMode(StrEnum):
 @dataclass(frozen=True, slots=True)
 class ArchiveCapability:
     configuration_fingerprint: str
+    challenge_hash: str
     observed_at: datetime
     expires_at: datetime
     versioning_enabled: bool
@@ -113,6 +147,8 @@ class ArchiveCapability:
     def __post_init__(self) -> None:
         if not re.fullmatch(r"[0-9a-f]{64}", self.configuration_fingerprint):
             raise ValidationError("The archive capability fingerprint is invalid.")
+        if not re.fullmatch(r"[0-9a-f]{64}", self.challenge_hash):
+            raise ValidationError("The archive capability challenge hash is invalid.")
         _require_aware_datetime(self.observed_at, "archive capability observation")
         _require_aware_datetime(self.expires_at, "archive capability expiry")
         if self.expires_at <= self.observed_at:
@@ -122,6 +158,8 @@ class ArchiveCapability:
 
     def assert_usable(self, *, now: datetime) -> None:
         _require_aware_datetime(now, "archive capability evaluation")
+        if now < self.observed_at:
+            raise ConflictError("The archive capability was not yet observed.")
         if now >= self.expires_at:
             raise ConflictError("The archive capability attestation has expired.")
         checks = (
@@ -149,6 +187,7 @@ class ArchiveWriteReceipt:
     retention_until: datetime
     legal_hold: bool
     observed_at: datetime
+    capability_attestation_id: UUID | None = None
 
     def __post_init__(self) -> None:
         _validate_archive_object_location(
@@ -209,6 +248,95 @@ class RetentionRules:
         }
 
 
+@dataclass(frozen=True, slots=True)
+class RetentionClassRule:
+    data_class: RetentionDataClass
+    unit: RetentionPeriodUnit
+    minimum: int
+    maximum: int
+    archive_disposition: RetentionArchiveDisposition
+
+    def __post_init__(self) -> None:
+        upper = {
+            RetentionPeriodUnit.DAYS: 36_500,
+            RetentionPeriodUnit.MONTHS: 1_200,
+            RetentionPeriodUnit.YEARS: 100,
+        }[self.unit]
+        if self.minimum < 0 or self.maximum < 1 or self.maximum > upper:
+            raise ValidationError("Retention class bounds are outside the supported range.")
+        if self.minimum > self.maximum:
+            raise ValidationError("Retention class minimum cannot exceed its maximum.")
+
+    def document(self) -> dict[str, object]:
+        return {
+            "data_class": self.data_class.value,
+            "unit": self.unit.value,
+            "minimum": self.minimum,
+            "maximum": self.maximum,
+            "archive_disposition": self.archive_disposition.value,
+        }
+
+    def minimum_until(self, basis: datetime) -> datetime:
+        return _advance_retention_period(basis, unit=self.unit, value=self.minimum)
+
+    def maximum_until(self, basis: datetime) -> datetime:
+        return _advance_retention_period(basis, unit=self.unit, value=self.maximum)
+
+
+@dataclass(frozen=True, slots=True)
+class RetentionPolicyContract:
+    effective_from: datetime
+    effective_until: datetime | None
+    execution_authorization_hours: int
+    class_rules: tuple[RetentionClassRule, ...]
+
+    def __post_init__(self) -> None:
+        _require_aware_datetime(self.effective_from, "retention policy effective-from")
+        if self.effective_until is not None:
+            _require_aware_datetime(self.effective_until, "retention policy effective-until")
+            if self.effective_until <= self.effective_from:
+                raise ValidationError("The retention policy effective interval is invalid.")
+        if not 1 <= self.execution_authorization_hours <= 168:
+            raise ValidationError(
+                "The erasure execution authorisation window must be between one hour "
+                "and seven days."
+            )
+        data_classes = tuple(rule.data_class for rule in self.class_rules)
+        if len(data_classes) != len(set(data_classes)) or set(data_classes) != set(
+            RetentionDataClass
+        ):
+            raise ValidationError(
+                "A POLICY_BOOK_V2 contract requires exactly one rule for every data class."
+            )
+
+    def rule_for(self, data_class: RetentionDataClass) -> RetentionClassRule:
+        try:
+            return next(rule for rule in self.class_rules if rule.data_class is data_class)
+        except StopIteration as error:  # pragma: no cover - constructor proves completeness
+            raise ConflictError("The retention policy data-class rule is missing.") from error
+
+    def assert_effective(self, *, now: datetime) -> None:
+        _require_aware_datetime(now, "retention policy evaluation")
+        if now < self.effective_from or (
+            self.effective_until is not None and now >= self.effective_until
+        ):
+            raise ConflictError("The POLICY_BOOK_V2 retention contract is not effective.")
+
+    def document(self) -> dict[str, object]:
+        return {
+            "contract_version": "POLICY_BOOK_V2",
+            "effective_from": self.effective_from.isoformat(),
+            "effective_until": (
+                self.effective_until.isoformat() if self.effective_until is not None else None
+            ),
+            "execution_authorization_hours": self.execution_authorization_hours,
+            "class_rules": [
+                rule.document()
+                for rule in sorted(self.class_rules, key=lambda value: value.data_class.value)
+            ],
+        }
+
+
 @dataclass(slots=True)
 class RetentionPolicyVersion:
     policy_id: UUID
@@ -219,6 +347,7 @@ class RetentionPolicyVersion:
     requester_id: UUID
     request_reason: str
     request_policy_decision_id: UUID
+    contract: RetentionPolicyContract | None = None
     state: RetentionPolicyState = RetentionPolicyState.DRAFT
     checker_id: UUID | None = None
     decision_reason: str | None = None
@@ -238,22 +367,25 @@ class RetentionPolicyVersion:
         workspace_id: UUID,
         policy_number: int,
         rules: RetentionRules,
+        contract: RetentionPolicyContract | None = None,
         requester_id: UUID,
         reason: str,
         policy_decision_id: UUID,
     ) -> RetentionPolicyVersion:
         if policy_number < 1:
             raise ValidationError("The retention policy number must be positive.")
+        _assert_policy_contract_compatibility(rules=rules, contract=contract)
         cleaned_reason = _required_reason(reason, "A retention policy reason is required.")
         policy = cls(
             policy_id=uuid7(),
             workspace_id=workspace_id,
             policy_number=policy_number,
             rules=rules,
-            payload_hash=canonical_json_hash(rules.document()),
+            payload_hash=canonical_json_hash(_retention_policy_document(rules, contract)),
             requester_id=requester_id,
             request_reason=cleaned_reason,
             request_policy_decision_id=policy_decision_id,
+            contract=contract,
         )
         policy.events.append(
             _event(
@@ -286,8 +418,9 @@ class RetentionPolicyVersion:
             raise ConflictError("The retention policy proposal has already been decided.")
         if actor_id == self.requester_id:
             raise ValidationError("The retention policy maker cannot be its checker.")
-        if canonical_json_hash(self.rules.document()) != self.payload_hash:
-            raise ConflictError("The retention policy payload failed its integrity check.")
+        self.assert_integrity()
+        if decision is GovernanceDecision.APPROVED and self.contract is not None:
+            self.contract.assert_effective(now=now)
         cleaned_reason = _required_reason(reason, "A policy decision reason is required.")
         self.state = (
             RetentionPolicyState.ACTIVE
@@ -313,6 +446,18 @@ class RetentionPolicyVersion:
                 },
             )
         )
+
+    @property
+    def contract_version(self) -> str:
+        return "POLICY_BOOK_V2" if self.contract is not None else "SINGLE_DEADLINE_V1"
+
+    def assert_integrity(self) -> None:
+        _assert_policy_contract_compatibility(rules=self.rules, contract=self.contract)
+        if (
+            canonical_json_hash(_retention_policy_document(self.rules, self.contract))
+            != self.payload_hash
+        ):
+            raise ConflictError("The retention policy payload failed its integrity check.")
 
     def supersede(
         self,
@@ -791,6 +936,157 @@ class ErasureRequest:
 
 
 @dataclass(frozen=True, slots=True)
+class RetentionExecutionCommand:
+    command_id: UUID
+    workspace_id: UUID
+    erasure_request_id: UUID
+    erasure_request_version: int
+    erasure_request_payload_hash: str
+    target_type: ErasureTargetType
+    target_id: UUID
+    target_version: int
+    target_owner_id: UUID | None
+    classification: Classification
+    target_snapshot_hash: str
+    retention_policy_id: UUID
+    retention_policy_hash: str
+    retention_policy_number: int
+    requester_id: UUID
+    checker_id: UUID
+    executor_id: UUID
+    execution_authorization_valid_until: datetime
+    archive_disposition: RetentionArchiveDisposition
+    command_hash: str
+    planned_at: datetime
+    state: RetentionExecutionState = RetentionExecutionState.PLANNED
+    destructive_state: str = AUTOMATION_DISABLED
+
+    @classmethod
+    def plan(
+        cls,
+        *,
+        request: ErasureRequest,
+        policy: RetentionPolicyVersion,
+        target: ErasureTargetSnapshot,
+        executor_id: UUID,
+        active_legal_hold: bool,
+        maker_currently_eligible: bool,
+        checker_currently_eligible: bool,
+        now: datetime,
+    ) -> RetentionExecutionCommand:
+        _require_aware_datetime(now, "retention execution planning")
+        request.assert_integrity()
+        if request.state is not ErasureRequestState.APPROVED:
+            raise ConflictError("Only an approved erasure request can be consumed.")
+        if request.decided_at is None or request.checker_id is None:
+            raise ConflictError("The approved erasure request evidence is incomplete.")
+        if request.decided_at > now:
+            raise ConflictError("The erasure approval timestamp is in the future.")
+        if not maker_currently_eligible:
+            raise ConflictError("The erasure request maker is no longer eligible.")
+        if not checker_currently_eligible:
+            raise ConflictError("The erasure request checker is no longer eligible.")
+        if executor_id in {request.requester_id, request.checker_id, request.target_owner_id} or (
+            request.target_type is ErasureTargetType.SUBJECT_DATA
+            and executor_id == request.target_id
+        ):
+            raise ValidationError(
+                "The retention executor must be independent of maker, checker and target owner."
+            )
+        if policy.state is not RetentionPolicyState.ACTIVE:
+            raise ConflictError("The bound retention policy is not ACTIVE.")
+        if (
+            policy.policy_id != request.retention_policy_id
+            or policy.payload_hash != request.retention_policy_hash
+        ):
+            raise ConflictError("The active retention policy changed after erasure approval.")
+        if policy.contract is None:
+            raise ConflictError("Execution requires an effective POLICY_BOOK_V2 contract.")
+        policy.contract.assert_effective(now=now)
+        authorization_valid_until = request.decided_at + timedelta(
+            hours=policy.contract.execution_authorization_hours
+        )
+        if now >= authorization_valid_until:
+            raise ConflictError("The erasure execution authorisation has expired.")
+        if active_legal_hold:
+            raise ConflictError("An active Legal Hold blocks retention execution planning.")
+        if target.target_type is not ErasureTargetType.CHAT_SESSION:
+            raise ConflictError("The erasure target type is not supported by the Phase 2 worker.")
+        if (
+            target.target_type is not request.target_type
+            or target.target_id != request.target_id
+            or target.version != request.target_version
+            or target.owner_id != request.target_owner_id
+            or target.classification is not request.classification
+        ):
+            raise ConflictError("The erasure target changed after approval.")
+        if target.retention_basis_at is None:
+            raise ConflictError("The erasure target has no canonical retention basis.")
+        rule = policy.contract.rule_for(RetentionDataClass.CHAT_CONTENT)
+        if rule.archive_disposition is not RetentionArchiveDisposition.EVIDENCE_ONLY:
+            raise ConflictError(
+                "The Phase 2 worker requires an EVIDENCE_ONLY Chat archive disposition."
+            )
+        minimum_retention_until = rule.minimum_until(target.retention_basis_at)
+        if now < minimum_retention_until:
+            raise ConflictError("The target has not reached its minimum retention period.")
+        target_document = {
+            "target_type": target.target_type.value,
+            "target_id": str(target.target_id),
+            "target_version": target.version,
+            "target_owner_id": str(target.owner_id) if target.owner_id is not None else None,
+            "classification": target.classification.name,
+            "retention_basis_at": target.retention_basis_at.isoformat(),
+            "retention_until": (
+                target.retention_until.isoformat() if target.retention_until is not None else None
+            ),
+        }
+        target_snapshot_hash = canonical_json_hash(target_document)
+        command_id = uuid7()
+        command_document = {
+            "command_id": str(command_id),
+            "workspace_id": str(request.workspace_id),
+            "erasure_request_id": str(request.erasure_request_id),
+            "erasure_request_version": request.version,
+            "erasure_request_payload_hash": request.payload_hash,
+            "target_snapshot_hash": target_snapshot_hash,
+            "retention_policy_id": str(policy.policy_id),
+            "retention_policy_hash": policy.payload_hash,
+            "retention_policy_number": policy.policy_number,
+            "requester_id": str(request.requester_id),
+            "checker_id": str(request.checker_id),
+            "executor_id": str(executor_id),
+            "execution_authorization_valid_until": authorization_valid_until.isoformat(),
+            "archive_disposition": rule.archive_disposition.value,
+            "planned_at": now.isoformat(),
+            "destructive_state": AUTOMATION_DISABLED,
+        }
+        return cls(
+            command_id=command_id,
+            workspace_id=request.workspace_id,
+            erasure_request_id=request.erasure_request_id,
+            erasure_request_version=request.version,
+            erasure_request_payload_hash=request.payload_hash,
+            target_type=target.target_type,
+            target_id=target.target_id,
+            target_version=target.version,
+            target_owner_id=target.owner_id,
+            classification=target.classification,
+            target_snapshot_hash=target_snapshot_hash,
+            retention_policy_id=policy.policy_id,
+            retention_policy_hash=policy.payload_hash,
+            retention_policy_number=policy.policy_number,
+            requester_id=request.requester_id,
+            checker_id=request.checker_id,
+            executor_id=executor_id,
+            execution_authorization_valid_until=authorization_valid_until,
+            archive_disposition=rule.archive_disposition,
+            command_hash=canonical_json_hash(command_document),
+            planned_at=now,
+        )
+
+
+@dataclass(frozen=True, slots=True)
 class ImmutableArchiveReceipt:
     receipt_id: UUID
     workspace_id: UUID
@@ -831,6 +1127,59 @@ class ImmutableArchiveReceipt:
         )
         if not re.fullmatch(r"[0-9a-f]{64}", self.capability_fingerprint):
             raise ValidationError("The archive capability fingerprint is invalid.")
+
+
+def _retention_policy_document(
+    rules: RetentionRules, contract: RetentionPolicyContract | None
+) -> dict[str, object]:
+    document = rules.document()
+    if contract is not None:
+        document = {"legacy_deadlines": document, "policy_contract": contract.document()}
+    return document
+
+
+def _assert_policy_contract_compatibility(
+    *, rules: RetentionRules, contract: RetentionPolicyContract | None
+) -> None:
+    if contract is None:
+        return
+    chat_rule = contract.rule_for(RetentionDataClass.CHAT_CONTENT)
+    if (
+        chat_rule.unit is not RetentionPeriodUnit.DAYS
+        or not chat_rule.minimum <= rules.chat_content_days <= chat_rule.maximum
+    ):
+        raise ValidationError(
+            "The legacy Chat scheduling deadline must stay within the POLICY_BOOK_V2 "
+            "Chat-content bounds expressed in days."
+        )
+
+
+def _advance_retention_period(
+    basis: datetime, *, unit: RetentionPeriodUnit, value: int
+) -> datetime:
+    _require_aware_datetime(basis, "retention period basis")
+    if value < 0:
+        raise ValidationError("A retention period cannot be negative.")
+    if unit is RetentionPeriodUnit.DAYS:
+        return basis + timedelta(days=value)
+    if unit is RetentionPeriodUnit.YEARS:
+        try:
+            return basis.replace(year=basis.year + value)
+        except ValueError:
+            return basis.replace(year=basis.year + value, month=2, day=28)
+    month_index = basis.year * 12 + basis.month - 1 + value
+    year, zero_based_month = divmod(month_index, 12)
+    month = zero_based_month + 1
+    next_month_index = month_index + 1
+    next_year, next_zero_based_month = divmod(next_month_index, 12)
+    next_month = next_zero_based_month + 1
+    first_of_next_month = basis.replace(
+        year=next_year,
+        month=next_month,
+        day=1,
+    )
+    last_day = (first_of_next_month - timedelta(days=1)).day
+    return basis.replace(year=year, month=month, day=min(basis.day, last_day))
 
 
 def _required_reason(reason: str, message: str) -> str:

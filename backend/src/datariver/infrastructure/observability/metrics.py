@@ -1,6 +1,13 @@
 from __future__ import annotations
 
+from wsgiref.simple_server import WSGIServer
+
 from prometheus_client import CONTENT_TYPE_LATEST, CollectorRegistry, Counter, Gauge, Histogram
+
+_RETENTION_WORKERS = frozenset({"scheduler", "archive"})
+_RETENTION_OUTCOMES = frozenset(
+    {"disabled", "idle", "planned", "archived", "retry", "blocked", "lease_lost", "failed"}
+)
 
 
 class HttpMetrics:
@@ -129,6 +136,69 @@ class HttpMetrics:
         self._database_pool_connections.labels(state="checked_in").set(checked_in)
         self._database_pool_connections.labels(state="checked_out").set(checked_out)
         self._database_pool_connections.labels(state="overflow").set(overflow)
+
+    def render(self) -> bytes:
+        from prometheus_client import generate_latest
+
+        return generate_latest(self._registry)
+
+
+class RetentionWorkerMetrics:
+    """Process-local retention metrics with a closed, non-identifying label vocabulary."""
+
+    def __init__(self, *, worker: str) -> None:
+        if worker not in _RETENTION_WORKERS:
+            raise ValueError("The retention metrics worker label is not allowed.")
+        self._worker = worker
+        self._registry = CollectorRegistry(auto_describe=True)
+        self._cycles = Counter(
+            "datariver_retention_cycles_total",
+            "Completed retention worker cycles by bounded outcome.",
+            ("worker", "outcome"),
+            registry=self._registry,
+        )
+        self._commands = Counter(
+            "datariver_retention_commands_total",
+            "Retention commands observed by bounded worker and outcome.",
+            ("worker", "outcome"),
+            registry=self._registry,
+        )
+        self._duration = Histogram(
+            "datariver_retention_cycle_duration_seconds",
+            "Retention worker cycle duration by bounded worker and outcome.",
+            ("worker", "outcome"),
+            buckets=(0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10, 30),
+            registry=self._registry,
+        )
+        self._kill_switch = Gauge(
+            "datariver_retention_kill_switch_enabled",
+            "Archive-only retention kill switch state by bounded worker.",
+            ("worker",),
+            registry=self._registry,
+        )
+
+    def kill_switch_observed(self, *, enabled: bool) -> None:
+        self._kill_switch.labels(worker=self._worker).set(1 if enabled else 0)
+
+    def cycle_finished(self, *, outcome: str, duration_seconds: float, command_count: int) -> None:
+        if outcome not in _RETENTION_OUTCOMES:
+            raise ValueError("The retention metrics outcome label is not allowed.")
+        if duration_seconds < 0 or command_count < 0:
+            raise ValueError("Retention metric observations cannot be negative.")
+        labels = {"worker": self._worker, "outcome": outcome}
+        self._cycles.labels(**labels).inc()
+        self._commands.labels(**labels).inc(command_count)
+        self._duration.labels(**labels).observe(duration_seconds)
+
+    def start_http_server(self, *, port: int) -> WSGIServer:
+        from prometheus_client import start_http_server
+
+        server, _thread = start_http_server(
+            port=port,
+            addr="0.0.0.0",  # noqa: S104 - container-internal scrape endpoint only
+            registry=self._registry,
+        )
+        return server
 
     def render(self) -> bytes:
         from prometheus_client import generate_latest

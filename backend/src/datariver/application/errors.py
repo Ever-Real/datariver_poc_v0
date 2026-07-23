@@ -13,6 +13,7 @@ class ExternalDependencyError(DomainError):
         dependency: str,
         retryable: bool,
         provider_code: str | None = None,
+        ambiguous_commit: bool = False,
     ) -> None:
         super().__init__(
             message,
@@ -20,6 +21,7 @@ class ExternalDependencyError(DomainError):
                 "dependency": dependency,
                 "retryable": retryable,
                 "provider_code": provider_code,
+                "ambiguous_commit": ambiguous_commit,
             },
         )
 

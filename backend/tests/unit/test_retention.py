@@ -416,6 +416,7 @@ def test_archive_capability_requires_every_verified_control() -> None:
     now = datetime.now(UTC)
     capability = ArchiveCapability(
         configuration_fingerprint="c" * 64,
+        challenge_hash="d" * 64,
         observed_at=now,
         expires_at=now + timedelta(minutes=15),
         versioning_enabled=True,
