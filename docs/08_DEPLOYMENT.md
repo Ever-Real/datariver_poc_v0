@@ -361,7 +361,25 @@ has passed. Local bootstrap intentionally does not manufacture a second administ
 - APISIX standalone mode has no administration/control port and does not replace application ABAC.
 - APISIX and web run non-root with read-only root filesystems. APISIX renders configuration and request temp files only into bounded, non-executable tmpfs; its health check executes a real proxied HTTP request rather than trusting a process-only command. Its declarative upstream uses APISIX DNS discovery through Docker's embedded resolver, so replacement of the API container does not pin a stale startup address.
 - Web Nginx uses Docker's embedded DNS resolver for the API upstream. API container replacement therefore does not require web restart and must be included in recovery acceptance.
+- Web Nginx `1.30.3` uses recursive `add_header_inherit merge` so the canonical CSP, nosniff,
+  no-referrer, frame-denial and Permissions Policy headers survive every cache-defining location and
+  every response status. The API proxy replaces upstream copies of only those fields; upstream
+  cache/auth/retry/ETag/download/request-ID fields pass through. Run the native-image matrix below
+  after every template, base-image or edge change:
+
+  ```bash
+  docker build --pull=false -f frontend/Dockerfile -t datariver-next-web:header-gate .
+  uv run python scripts/verify_nginx_headers.py --web-image datariver-next-web:header-gate
+  ```
+
+  The verifier uses `--pull=never`, rejects daemon/image architecture mismatch and creates only an
+  internal temporary network. Run it separately on Mac arm64 and preparation-PC WSL amd64. It tests
+  empty and populated envsubst rendering, a real hashed asset, SPA/runtime/health routes, API
+  success/error, missing asset, conditional `304` and a removed-upstream `502/504`.
 - Production exposes only a TLS edge. Direct local API/identity ports must be removed or firewalled by the environment override.
+- The production HTTPS edge must preserve or intentionally strengthen these headers on every status,
+  emit exactly one approved HSTS value on HTTPS and never serve application content over plain
+  HTTP. Inner-container HTTP evidence does not satisfy this external acceptance gate.
 
 ## Worker correctness
 

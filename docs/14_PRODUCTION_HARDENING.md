@@ -86,6 +86,12 @@ Catalog normalized hierarchy/lineage, audit/job browsing, Chat history/SSE/exter
 automated KG extraction/projection rebuild and several upload lifecycle endpoints remain explicit API
 backlog.
 
+The local web Nginx now closes the known location-level header-shadowing P1: one recursive merge
+keeps canonical CSP/nosniff/referrer/frame/permissions values on static, SPA, runtime and proxy
+success/error responses, while API duplicates are normalized without hiding application headers.
+This is inner-container evidence only. Production promotion still requires the actual TLS/APISIX
+edge, HSTS, target browsers and the native WSL amd64 release image to pass the same status matrix.
+
 ## 4. Provisional capacity hypothesis
 
 These numbers create a reproducible load-test envelope; they are not a business SLA. Product,

@@ -565,6 +565,15 @@ Administrator Role and System Settings changes add the following focused gates:
   fetch even for an idempotency-key mutation. Shell/Admin tests prove same-Workspace epoch teardown,
   authorization-revision reload and fail-closed manual refresh. Real IdP/browser behavior remains a
   target gate.
+- Nginx header tests first prove the historical inheritance shadow: a child
+  `add_header Cache-Control` removed every server security header. Source/static checks require one
+  recursive merge rule, one exact `always` definition per canonical security field and exact API
+  upstream hiding, while rejecting any extra hidden application header or inner-server HSTS. The
+  offline native-container verifier then renders empty and sentinel origins and checks
+  health/runtime/SPA, asset `200/304/404`, API `200/503` and proxy-down `502/504`. It also proves
+  cache ownership, exact upstream ETag/Vary preservation and retry/auth/download/request-ID
+  preservation, plus HSTS absence on direct-inner responses. WSL amd64, browsers and the real
+  TLS/APISIX/HSTS edge remain separate acceptance gates.
 
 Audit/Log component tests verify the internal tab switch and zero fabricated rows while the typed
 audit read/export APIs remain absent. Retention UI tests and source review must preserve the policy
@@ -719,6 +728,8 @@ For each route, test no token, invalid issuer/audience/algorithm, inactive subje
 | DataHub concurrency saturated | bounded queue timeout and classified `OVERLOADED`; bulkhead rejection metric increments |
 | cache unavailable/evicted | correct uncached response, no secret leakage |
 | API container replaced | Nginx/APISIX re-resolve service DNS; no dependent restart or persistent 502 |
+| child Nginx location adds a cache header | all five canonical browser-security headers remain exactly once on success and error |
+| API upstream sends conflicting browser-security fields | web edge removes only those fields, supplies canonical values and preserves cache/auth/retry/trace/download headers |
 | queue unavailable | outbox age grows; automatic replay after recovery |
 | worker killed before/after external call | idempotent resume and reconcile, no duplicate result |
 | PostgreSQL unavailable | writes fail 503 and no message is published |

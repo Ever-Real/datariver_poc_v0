@@ -6,6 +6,10 @@ server {
     resolver 127.0.0.11 valid=10s ipv6=off;
     set $api_backend http://api:8000;
 
+    # nginx normally drops every parent add_header when a location declares
+    # even one local header. The pinned 1.30 runtime supports recursive merge,
+    # so cache policy can stay location-specific without losing this boundary.
+    add_header_inherit merge;
     add_header X-Content-Type-Options "nosniff" always;
     add_header Referrer-Policy "no-referrer" always;
     add_header X-Frame-Options "DENY" always;
@@ -15,6 +19,7 @@ server {
     location = /healthz {
         access_log off;
         default_type text/plain;
+        add_header Cache-Control "no-store" always;
         return 200 "healthy\n";
     }
 
@@ -33,6 +38,14 @@ server {
         proxy_set_header X-Real-IP $remote_addr;
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
         proxy_set_header X-Forwarded-Proto $scheme;
+        # The API emits the same defense-in-depth fields when reached directly.
+        # Hide only those names here so the web edge owns one canonical value;
+        # cache, auth, retry, request-id, ETag and download headers pass through.
+        proxy_hide_header Content-Security-Policy;
+        proxy_hide_header Permissions-Policy;
+        proxy_hide_header Referrer-Policy;
+        proxy_hide_header X-Content-Type-Options;
+        proxy_hide_header X-Frame-Options;
         proxy_connect_timeout 3s;
         proxy_read_timeout ${API_PROXY_READ_TIMEOUT_SECONDS}s;
         proxy_send_timeout 30s;
@@ -47,6 +60,6 @@ server {
 
     location / {
         try_files $uri $uri/ /index.html;
-        add_header Cache-Control "no-store";
+        add_header Cache-Control "no-store" always;
     }
 }

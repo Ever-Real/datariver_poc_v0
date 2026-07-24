@@ -180,7 +180,13 @@ drift. Physical deletion remains a separate governed retention operation.
   `/admin/me` discovery is `private, no-store`.
 - CSRF protection for cookie-authenticated mutations.
 - Request/body/file limits, rate limits by subject/workspace/product, and bounded decompression.
-- Security headers: CSP, frame ancestors, nosniff, referrer policy, HSTS at TLS edge.
+- The web Nginx edge owns one canonical CSP, frame denial, nosniff, no-referrer and restricted
+  Permissions Policy value. Each uses `always`, and recursive `add_header` merge prevents a
+  location-specific cache header from shadowing the security set on `2xx/3xx/4xx/5xx`. Proxied API
+  copies of those names are hidden before the edge values are added once; authorization and ABAC
+  remain authoritative rather than relying on browser headers.
+- HSTS is emitted and verified only by the externally reachable HTTPS termination edge. The inner
+  plain-HTTP web container is not TLS/HSTS evidence.
 - Outbound connector endpoints use approved schemes/hosts, DNS/IP revalidation and private/metadata address blocking to prevent SSRF.
 
 ## Secrets and encryption

@@ -648,6 +648,74 @@ def verify_runtime_hardening() -> None:
         raise AssertionError("web proxy contains a startup-only API resolution")
     if "${DATAHUB_EMBED_BASE_URL}" not in nginx_template:
         raise AssertionError("web CSP must allow only the deployment-approved DataHub embed origin")
+    if nginx_template.count("add_header_inherit merge;") != 1:
+        raise AssertionError(
+            "web Nginx must recursively merge server security headers into "
+            "header-defining locations"
+        )
+    required_web_headers = {
+        'add_header X-Content-Type-Options "nosniff" always;',
+        'add_header Referrer-Policy "no-referrer" always;',
+        'add_header X-Frame-Options "DENY" always;',
+        'add_header Permissions-Policy "camera=(), microphone=(), geolocation=()" always;',
+        (
+            "add_header Content-Security-Policy \"default-src 'self'; base-uri 'self'; "
+            "object-src 'none'; frame-ancestors 'none'; img-src 'self' data:; "
+            "style-src 'self' 'unsafe-inline'; script-src 'self'; connect-src 'self' "
+            "${S3_PUBLIC_ORIGIN} ${OIDC_PUBLIC_ORIGIN}; frame-src ${OIDC_PUBLIC_ORIGIN} "
+            "${DATAHUB_EMBED_BASE_URL} ${GRAFANA_EMBED_BASE_URL}; form-action 'self' "
+            '${OIDC_PUBLIC_ORIGIN}" always;'
+        ),
+    }
+    missing_web_headers = {
+        header for header in required_web_headers if nginx_template.count(header) != 1
+    }
+    if missing_web_headers:
+        raise AssertionError(
+            "web Nginx security headers must have one canonical always rule: "
+            f"{sorted(missing_web_headers)}"
+        )
+    api_location = re.search(
+        r"^\s*location /api/ \{(?P<body>.*?)^\s{4}\}",
+        nginx_template,
+        flags=re.MULTILINE | re.DOTALL,
+    )
+    if api_location is None:
+        raise AssertionError("web Nginx API location is missing")
+    required_hidden_headers = {
+        "Content-Security-Policy",
+        "Permissions-Policy",
+        "Referrer-Policy",
+        "X-Content-Type-Options",
+        "X-Frame-Options",
+    }
+    hidden_headers = re.findall(
+        r"proxy_hide_header\s+([^;]+);",
+        api_location.group("body"),
+        flags=re.IGNORECASE,
+    )
+    expected_hidden_headers = {name.casefold() for name in required_hidden_headers}
+    actual_hidden_headers = {name.casefold() for name in hidden_headers}
+    if (
+        len(hidden_headers) != len(required_hidden_headers)
+        or actual_hidden_headers != expected_hidden_headers
+    ):
+        missing_hidden_headers = expected_hidden_headers - actual_hidden_headers
+        unexpected_hidden_headers = actual_hidden_headers - expected_hidden_headers
+        raise AssertionError(
+            "web Nginx /api must hide exactly the canonical browser-security headers: "
+            f"missing={sorted(missing_hidden_headers)}, "
+            f"unexpected={sorted(unexpected_hidden_headers)}, count={len(hidden_headers)}"
+        )
+    if "strict-transport-security" in nginx_template.casefold():
+        raise AssertionError(
+            "the inner HTTP web container must not emit Strict-Transport-Security; "
+            "HSTS belongs to the approved external TLS edge"
+        )
+    if nginx_template.count('add_header Cache-Control "no-store" always;') != 3:
+        raise AssertionError("health, runtime config and SPA shell must remain no-store")
+    if nginx_template.count('add_header Cache-Control "public, immutable";') != 1:
+        raise AssertionError("only the hashed-asset location may add immutable cache policy")
     web_environment = documents["compose.yaml"]["services"]["web"].get("environment", {})
     if web_environment.get("DATAHUB_EMBED_BASE_URL") != "${DATAHUB_EMBED_BASE_URL:-}":
         raise AssertionError("web CSP must receive the same DataHub embed origin as the API")
@@ -1072,7 +1140,7 @@ def main() -> None:
     print(
         "static verification passed: compose, build/release context, DataHub release contract, "
         "identity assurance contract, "
-        "runtime hardening/readiness/browser storage, "
+        "runtime hardening/readiness/browser storage/web headers, "
         "CI supply chain, "
         "database roles, architecture, tenant foreign keys, seed, documentation"
     )

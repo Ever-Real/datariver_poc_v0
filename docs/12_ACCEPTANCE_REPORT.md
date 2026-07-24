@@ -14,6 +14,22 @@ addenda and `docs/29_MASTER_EXECUTION_BACKLOG.md`.
 
 P0–P3 foundation addendum, updated 2026-07-16: current source checks additionally include the stable DataHub v1.6.0 release contract and typed OIDC assurance. Hardware WebAuthn requires an exact approved ACR+AMR combination and `auth_time`; OTP, generic MFA and refreshed-token `iat` cannot satisfy high-risk authorization. Browser remediation is bounded to typed authentication actions, rejects unsafe return locations, and never automatically replays a denied mutation after an authentication redirect. Compatibility migrations and the current hybrid runtime have separate live evidence below.
 
+## Phase 6E web Nginx security-header addendum — 2026-07-24
+
+This addendum currently records the implementation, whole-source regression and focused runtime
+evidence for `R5-FE-03`. Local closure still requires final independent reviews and the focused
+commit. It does not accept the real TLS/APISIX edge, browsers or WSL `linux/amd64`.
+
+| Gate | Result | Current executed evidence |
+|---|---|---|
+| Inheritance defect | PASS (local source) | Nginx `1.30.3` recursively merges the five canonical server `always` rules into cache-defining locations. Static verification rejects a missing merge or noncanonical rule. |
+| API normalization | PASS (local runtime) | Static/unit gates require exactly the canonical five-name hide set. A fixture upstream supplied conflicting copies of all five fields; the web edge returned one canonical copy while preserving private/no-store cache, authentication, retry, exact ETag/Vary, content-disposition and request-ID fields. |
+| Route/status matrix | PASS (local arm64) | Current-source image `sha256:d61cabbcf73c731829476f09572ed2b5c9157fb0f44be0cdded4b862613ad88f` passed health/runtime/root/SPA/asset/API `200`, asset `304/404`, upstream `503` and proxy-down `504`, with exact header cardinality and cache semantics. Its embedded template/main/entrypoint hashes matched current source; no replacement bind mount supplied the tested configuration. |
+| Focused/static gates | PASS | New source/parser/safety tests `3/3`; empty and populated render `nginx -t/-T`; repository static verification passed. Static and live gates reject HSTS on the direct inner HTTP server while leaving approved HTTPS-edge HSTS as an external gate. |
+| Whole-source regression | PASS | Backend `1,424 passed / 97 skipped`; Ruff format over `384` files, Ruff lint, strict mypy over `377` files and static verification; frontend `47 files / 266 tests`, type/lint/build. Two pre-existing async Governance assertions exposed by concurrent runs now await server detail and attachment-control rendering; the file passed `18/18` in three concurrent processes before the whole rerun passed. |
+| Independent review | PASS (local source/runtime) | Final security, SRE/test and PM/traceability re-audits independently report `P0=0`, `P1=0`. Findings for exact API hide-set/application-header evidence, inner-HSTS absence, stale mounted-source evidence, document status and flaky async assertions were corrected before all applicable gates were rerun. |
+| External acceptance | OPEN | Native WSL amd64 release image, real TLS/HSTS/APISIX preservation, Chrome/Firefox/Safari, OIDC callback/renewal and approved DataHub/Grafana frame journeys remain `EXTERNAL_GATE`. |
+
 ## Phase 6D Admin/auth session-epoch addendum — 2026-07-24
 
 This addendum accepts local source closure of `R5-FE-02`. It does not accept real IdP session

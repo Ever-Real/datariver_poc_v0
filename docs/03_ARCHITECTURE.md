@@ -274,6 +274,14 @@ context resumes the mounted subtree and preserves its draft state; an epoch or A
 fingerprint change, mismatch or denial purges it. Neither counter is persisted, sent as authority or
 trusted by the backend.
 
+The browser-delivery edge has one canonical five-header policy: CSP, nosniff, no-referrer,
+frame denial and a restricted Permissions Policy. Nginx `1.30.3` recursively merges those
+server-level `always` rules into every location, including locations with their own cache header.
+The `/api/` proxy removes only upstream copies of those five fields before emitting the canonical
+edge values; application cache, authentication, retry, ETag, Vary, download and trace headers
+remain upstream-owned. HSTS is not emitted by the inner HTTP container and remains owned by the
+real TLS terminator.
+
 The optional Keycloak identity-administration adapter is a narrow anti-corruption boundary, not a
 generic IdP proxy. It owns only fixed user lookup/create, temporary-password and enable operations
 using a dedicated `manage-users` service account. A user remains disabled while the canonical

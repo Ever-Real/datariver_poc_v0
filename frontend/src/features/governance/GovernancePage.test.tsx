@@ -412,7 +412,9 @@ describe('GovernancePage', () => {
     fireEvent.change(within(secondDialog).getByLabelText('클릭하여 신규 파일 첨부'), {
       target: { files: [new File(['belongs to B'], 'belongs-to-b-new.txt', { type: 'text/plain' })] },
     })
-    expect(within(secondDialog).getByRole('button', { name: '1개 파일 저장' })).toBeInTheDocument()
+    expect(
+      await within(secondDialog).findByRole('button', { name: '1개 파일 저장' }),
+    ).toBeInTheDocument()
 
     act(() => upload.resolve({}))
     expect(await within(secondDialog).findByText(secondAttachment.original_name)).toBeInTheDocument()
@@ -999,7 +1001,7 @@ describe('GovernancePage', () => {
     renderPage(apiClient(request))
     const dialog = await openDetail(finalReview)
 
-    expect(within(dialog).getByText('Developer · system-1')).toBeInTheDocument()
+    expect(await within(dialog).findByText('Developer · system-1')).toBeInTheDocument()
     expect(within(dialog).getByText('Data Steward · system-1')).toBeInTheDocument()
     expect(within(dialog).getByText('전역 Admin')).toBeInTheDocument()
     expect(within(dialog).getAllByText('승인 대기 중')).toHaveLength(3)

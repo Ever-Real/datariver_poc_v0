@@ -1478,9 +1478,9 @@ is intentionally a MOCK metadata manifest.
 
 ```bash
 uv sync --frozen --all-extras
-uv run ruff format --check backend/src backend/tests infra/airflow/dags scripts/reconcile_manual_receipts.py
-uv run ruff check backend/src backend/tests infra/airflow/dags scripts/configure_keycloak_assurance.py scripts/generate_initial_migration.py scripts/generate_semiconductor_seed.py scripts/migrate_s3_objects.py scripts/probe_pgbouncer_rls.py scripts/probe_policy_revocation.py scripts/probe_s3_contract.py scripts/reconcile_manual_receipts.py scripts/verify_datahub_contract.py scripts/verify_datahub_image_inventory.py scripts/verify_static.py
-uv run mypy backend/src backend/tests scripts/migrate_s3_objects.py scripts/probe_s3_contract.py scripts/reconcile_manual_receipts.py
+uv run ruff format --check backend/src backend/tests infra/airflow/dags scripts/reconcile_manual_receipts.py scripts/verify_nginx_headers.py
+uv run ruff check backend/src backend/tests infra/airflow/dags scripts/configure_keycloak_assurance.py scripts/generate_initial_migration.py scripts/generate_semiconductor_seed.py scripts/migrate_s3_objects.py scripts/probe_pgbouncer_rls.py scripts/probe_policy_revocation.py scripts/probe_s3_contract.py scripts/reconcile_manual_receipts.py scripts/verify_datahub_contract.py scripts/verify_datahub_image_inventory.py scripts/verify_nginx_headers.py scripts/verify_static.py
+uv run mypy backend/src backend/tests scripts/migrate_s3_objects.py scripts/probe_s3_contract.py scripts/reconcile_manual_receipts.py scripts/verify_nginx_headers.py
 uv run pytest backend/tests -q
 uv run python scripts/verify_static.py
 
@@ -1491,6 +1491,22 @@ npm run lint
 npm run test -- --run
 npm run build
 ```
+
+The web security-header behavior gate requires Docker and an already-built native image. It never
+pulls during verification, rejects a daemon/image architecture mismatch and removes only the exact
+temporary containers/network it creates:
+
+```bash
+docker build --pull=false -f frontend/Dockerfile -t datariver-next-web:header-gate .
+uv run python scripts/verify_nginx_headers.py --web-image datariver-next-web:header-gate
+```
+
+It verifies the pinned Nginx parser with empty and populated origins, then checks the five canonical
+security fields exactly once across SPA/runtime/assets/API success and `304/404/503/502-or-504`.
+The API fixture also proves exact ETag/Vary and other application-header preservation, while every
+direct-inner response must omit HSTS. Run it natively on both Mac arm64 and preparation-PC WSL
+amd64; the Mac result is not WSL evidence. Approved HSTS presence remains a real TLS-edge
+acceptance check.
 
 For the atomic Sharing invocation contract, run the destructive-but-isolated PostgreSQL acceptance
 harness explicitly. It refuses to reuse an existing container, creates random mode-`0600` temporary

@@ -14,9 +14,9 @@ an unsafe bypass, or a historical result from another commit.
 | Ledger field | Value |
 |---|---|
 | Created | 2026-07-23, Asia/Seoul |
-| Branch / Phase 6D entry base / current local implementation | `codex/admin-policy-rbac` / `836b3a0` / `HEAD` (focused `R5-FE-02` worktree) |
+| Branch / Phase 6E entry base / current local implementation | `codex/admin-policy-rbac` / `dba1186` / `HEAD` (focused `R5-FE-03` worktree) |
 | Remote comparison at Phase 6A | local refs: `origin/main` at `313e59a`; `origin/codex/admin-policy-rbac` through `a683a93`; Phase 5 and later work are not yet published |
-| Current controlled phase | Phase 6D `R5-FE-02` local source, whole-source gates and final independent audits are complete; its focused commit is the package boundary before Phase 6E `R5-FE-03` |
+| Current controlled phase | Phase 6E `R5-FE-03` is locally closed after native arm64 runtime, whole-source and independent-review gates; Phase 6F `R5-FE-04` is next |
 | Final artifact order | Feature → API → Data/ERD → Screen → `README.md` → `ARCHITECTURE.md` |
 
 ## Status language
@@ -240,6 +240,25 @@ merged, released, or available to the preparation PC until publication actually 
 - [ ] Real IdP account/session transition, multi-tab/browser cache, edge-header preservation and
   WSL `linux/amd64` acceptance remain `EXTERNAL_GATE`.
 
+### Phase 6E web Nginx security-header closure — 2026-07-24
+
+- [x] Reproduced the historical inheritance defect: cache-defining runtime/SPA/asset locations lost
+  CSP, nosniff, referrer, frame and permissions headers while `/healthz` retained them.
+- [x] Pinned Nginx `1.30.3` recursively merges the canonical five `always` rules into every
+  location; static verification rejects missing merge, drifted values or missing API normalization.
+- [x] Static/unit gates require the API proxy hide set to contain exactly those five names. The
+  runtime matrix preserves cache, authentication, retry, exact ETag/Vary, content-disposition and
+  request-ID headers.
+- [x] Empty/populated renders and the native arm64 current-source image passed the offline
+  health/runtime/SPA/asset/API `200/304/404/503/504` matrix with exact header cardinality. Static
+  and live gates reject inner-server HSTS while real HTTPS-edge HSTS remains external.
+- [x] Whole backend passed `1,424 / 97 skipped`; whole frontend passed `47 files / 266 tests`;
+  Ruff, strict mypy, TypeScript, ESLint, production build and static verification passed.
+- [x] Final independent security/SRE/traceability re-audits report `P0=0`, `P1=0`; this checklist
+  and the accepted source/test changes form one isolated focused commit.
+- [ ] Native WSL `linux/amd64`, real TLS/HSTS/APISIX preservation, target browsers, OIDC and
+  approved embedded-provider journeys remain `EXTERNAL_GATE`.
+
 ## Request group 5 — platform audit, remediation and portability
 
 ### Completed audit evidence
@@ -263,7 +282,7 @@ merged, released, or available to the preparation PC until publication actually 
 | R5-BE-05H | P1 | Complete the extended atomic-Sharing hardening matrix: timeout/429, all grant-Subject negatives, injected persistence failures, full expiry/lineage drift and invoke/revoke/publish interleavings. | `DONE_LOCAL` + `EXTERNAL_GATE`; Phase 6C source/clean-room DB matrix passes. WSL, real Keycloak, target load/soak and physical purge remain external. |
 | R5-FE-01 | P0 | Bind global search requests/results to Workspace epoch and abort/discard cross-workspace responses. | `DONE_LOCAL`; Top Navigation keys the search component by Workspace and a late-response regression proves purge/discard. |
 | R5-FE-02 | P1 | Bind Admin context/auth hydration and renewal to subject/session epoch. | `DONE_LOCAL` + `EXTERNAL_GATE`; latest-only subject-matched hydration, opaque epoch request/retry fencing, Admin revision reload/teardown and private no-store discovery pass current source. Real IdP/browser/WSL journeys remain external. |
-| R5-FE-03 | P1 | Preserve CSP/security headers in every Nginx location. | `PENDING` |
+| R5-FE-03 | P1 | Preserve CSP/security headers in every Nginx location. | `DONE_LOCAL` + `EXTERNAL_GATE`; exact inheritance/API normalization, embedded-source native arm64 runtime, full regression and independent audits pass. Target edge/browser/WSL evidence remains external. |
 | R5-FE-04 | P1 | Validate runtime API/OIDC origins before any Bearer-bearing request. | `PENDING` |
 | R5-FE-05 | P1 | Bound Chat history/DOM and lineage concurrency/nodes; abort unmounted work. | `PENDING` |
 | R5-FE-06 | P1 | Render the actual selected Chat provider/model/external-use policy instead of a hard-coded local-only assurance. | `PENDING` |
