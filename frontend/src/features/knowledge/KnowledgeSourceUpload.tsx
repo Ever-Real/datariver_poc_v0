@@ -14,31 +14,42 @@ import type {
   KnowledgeGraph,
   KnowledgeProjectionReceipt,
   KnowledgeRelease,
-  KnowledgeSourceAnalyzeResult,
+  KnowledgeSourceJob,
+  KnowledgeSourceJobPage,
   UploadRecord,
 } from '../../api/types'
 import { ErrorNotice } from '../../components/ErrorNotice'
 
 const HASH_CHUNK_SIZE = 4 * 1024 * 1024
 const MAX_PDF_SIZE_BYTES = 50 * 1024 * 1024
+const ANALYSIS_HISTORY_PAGE_LIMIT = 100
 const TERMINAL_UPLOAD_STATES = new Set(['ACCEPTED', 'REJECTED', 'ABORTED', 'EXPIRED'])
+const TERMINAL_ANALYSIS_STATES = new Set(['SUCCEEDED', 'FAILED', 'STALE', 'CANCELLED'])
 
 interface KnowledgeSourceUploadProps {
   client: ApiClient
   graph?: KnowledgeGraph
-  onAnalysisCreated?: () => void | Promise<void>
+  onAnalysisCreated?: (changesetId: string) => void | Promise<void>
+  onOpenChangeset?: (changesetId: string) => void | Promise<void>
 }
 
 export function KnowledgeSourceUpload({
   client,
   graph,
   onAnalysisCreated,
+  onOpenChangeset,
 }: KnowledgeSourceUploadProps) {
   const inputId = useId()
   const [file, setFile] = useState<File>()
   const [title, setTitle] = useState('')
   const [record, setRecord] = useState<UploadRecord>()
-  const [analysis, setAnalysis] = useState<KnowledgeSourceAnalyzeResult>()
+  const [analysisJob, setAnalysisJob] = useState<KnowledgeSourceJob>()
+  const [analysisJobs, setAnalysisJobs] = useState<KnowledgeSourceJob[]>([])
+  const [analysisHistoryCursor, setAnalysisHistoryCursor] = useState<string | null>(null)
+  const [analysisHistoryNextCursor, setAnalysisHistoryNextCursor] = useState<string | null>(null)
+  const [analysisPollGeneration, setAnalysisPollGeneration] = useState(0)
+  const [analysisPollingExhausted, setAnalysisPollingExhausted] = useState(false)
+  const [cancelReason, setCancelReason] = useState('')
   const [releases, setReleases] = useState<KnowledgeRelease[]>([])
   const [selectedReleaseId, setSelectedReleaseId] = useState('')
   const [projection, setProjection] = useState<KnowledgeProjectionReceipt>()
@@ -51,6 +62,16 @@ export function KnowledgeSourceUpload({
   const [error, setError] = useState<unknown>()
   const generation = useRef(0)
   const controllers = useRef(new Set<AbortController>())
+  const analysisCreatedCallback = useRef(onAnalysisCreated)
+  const reportedAnalysisJobs = useRef(new Set<string>())
+  const graphId = graph?.id
+  const sourceAnalysisEligible = graph
+    ? graph.classification === 'PUBLIC' || graph.classification === 'INTERNAL'
+    : false
+
+  useEffect(() => {
+    analysisCreatedCallback.current = onAnalysisCreated
+  }, [onAnalysisCreated])
 
   const beginOperation = useCallback(() => {
     const controller = new AbortController()
@@ -100,7 +121,13 @@ export function KnowledgeSourceUpload({
     setFile(undefined)
     setTitle('')
     setRecord(undefined)
-    setAnalysis(undefined)
+    setAnalysisJob(undefined)
+    setAnalysisJobs([])
+    setAnalysisHistoryCursor(null)
+    setAnalysisHistoryNextCursor(null)
+    setAnalysisPollGeneration(0)
+    setAnalysisPollingExhausted(false)
+    setCancelReason('')
     setProjection(undefined)
     setProgress(0)
     setStatus(graph ? 'PDF 파일을 선택하세요.' : '대상 지식 에셋을 선택하세요.')
@@ -115,6 +142,93 @@ export function KnowledgeSourceUpload({
       activeControllers.clear()
     }
   }, [client, graph, loadReleases])
+
+  useEffect(() => {
+    if (!graphId) return
+    const { controller, expectedGeneration } = beginOperation()
+    void (async () => {
+      const cursorQuery = analysisHistoryCursor
+        ? `&cursor=${encodeURIComponent(analysisHistoryCursor)}`
+        : ''
+      const page = await client.request<KnowledgeSourceJobPage>(
+        `/knowledge/graphs/${graphId}/source-analysis-jobs?limit=${ANALYSIS_HISTORY_PAGE_LIMIT}${cursorQuery}`,
+        { signal: controller.signal },
+      )
+      if (expectedGeneration !== generation.current) return
+      setAnalysisJobs(page.items)
+      setAnalysisHistoryNextCursor(page.next_cursor)
+      if (!analysisHistoryCursor) {
+        setAnalysisJob((current) => (
+          page.items.find((item) => item.id === current?.id)
+          ?? page.items.find((item) => !TERMINAL_ANALYSIS_STATES.has(item.state))
+          ?? page.items[0]
+        ))
+      }
+    })().catch((next: unknown) => {
+      if (!controller.signal.aborted && expectedGeneration === generation.current) setError(next)
+    }).finally(() => finishOperation(controller))
+    return () => controller.abort()
+  }, [analysisHistoryCursor, beginOperation, client, finishOperation, graphId])
+
+  const analysisTerminal = analysisJob
+    ? TERMINAL_ANALYSIS_STATES.has(analysisJob.state)
+    : true
+
+  useEffect(() => {
+    const jobId = analysisJob?.id
+    if (!graphId || !jobId || analysisTerminal) return
+    const { controller, expectedGeneration } = beginOperation()
+    setAnalysisBusy(true)
+    setAnalysisPollingExhausted(false)
+    void (async () => {
+      for (let attempt = 0; attempt < 120; attempt += 1) {
+        await waitUntilVisible(controller.signal)
+        const current = await client.request<KnowledgeSourceJob>(
+          `/knowledge/graphs/${graphId}/source-analysis-jobs/${jobId}`,
+          { signal: controller.signal },
+        )
+        if (expectedGeneration !== generation.current) return
+        setAnalysisJob(current)
+        setAnalysisJobs((items) => (
+          items.some((item) => item.id === current.id)
+            ? items.map((item) => item.id === current.id ? current : item)
+            : items
+        ))
+        setStatus(analysisJobStateLabel(current))
+        if (TERMINAL_ANALYSIS_STATES.has(current.state)) {
+          const result = current.result
+          if (
+            current.state === 'SUCCEEDED'
+            && result
+            && !reportedAnalysisJobs.current.has(current.id)
+          ) {
+            reportedAnalysisJobs.current.add(current.id)
+            await analysisCreatedCallback.current?.(result.changeset_id)
+          }
+          return
+        }
+        await abortableDelay(1000, controller.signal)
+      }
+      if (expectedGeneration === generation.current) {
+        setStatus('분석 작업이 계속 진행 중입니다. 작업 목록에서 다시 이어서 확인할 수 있습니다.')
+        setAnalysisPollingExhausted(true)
+      }
+    })().catch((next: unknown) => {
+      if (!controller.signal.aborted && expectedGeneration === generation.current) setError(next)
+    }).finally(() => {
+      finishOperation(controller)
+      if (expectedGeneration === generation.current) setAnalysisBusy(false)
+    })
+    return () => controller.abort()
+  }, [
+    analysisJob?.id,
+    analysisPollGeneration,
+    analysisTerminal,
+    beginOperation,
+    client,
+    finishOperation,
+    graphId,
+  ])
 
   const pollUpload = async (
     uploadId: string,
@@ -143,7 +257,7 @@ export function KnowledgeSourceUpload({
     const { controller, expectedGeneration } = beginOperation()
     setUploadBusy(true)
     setError(undefined)
-    setAnalysis(undefined)
+    setAnalysisJob(undefined)
     setProjection(undefined)
     setProgress(0)
     try {
@@ -220,26 +334,56 @@ export function KnowledgeSourceUpload({
     const { controller, expectedGeneration } = beginOperation()
     setAnalysisBusy(true)
     setError(undefined)
-    setAnalysis(undefined)
+    setAnalysisJob(undefined)
     setProjection(undefined)
     try {
-      const result = await client.request<KnowledgeSourceAnalyzeResult>(
+      const result = await client.request<KnowledgeSourceJob>(
         `/knowledge/graphs/${graph.id}/sources/${record.id}/analyze`,
         {
           method: 'POST',
+          idempotencyKey: newIdempotencyKey('knowledge-source-analysis'),
           signal: controller.signal,
           body: JSON.stringify({ title: title.trim() }),
         },
       )
       if (expectedGeneration !== generation.current) return
-      setAnalysis(result)
-      setStatus('LLM 추출 제안이 DRAFT changeset으로 생성되었습니다.')
-      await onAnalysisCreated?.()
+      setAnalysisJob(result)
+      setAnalysisJobs((items) => (
+        [result, ...items.filter((item) => item.id !== result.id)]
+          .slice(0, ANALYSIS_HISTORY_PAGE_LIMIT)
+      ))
+      setStatus(analysisJobStateLabel(result))
     } catch (next) {
       if (!controller.signal.aborted && expectedGeneration === generation.current) setError(next)
     } finally {
       finishOperation(controller)
       if (expectedGeneration === generation.current) setAnalysisBusy(false)
+    }
+  }
+
+  const cancelAnalysis = async () => {
+    if (!graph || !analysisJob || analysisTerminal || !cancelReason.trim()) return
+    const { controller, expectedGeneration } = beginOperation()
+    setError(undefined)
+    try {
+      const current = await client.request<KnowledgeSourceJob>(
+        `/knowledge/graphs/${graph.id}/source-analysis-jobs/${analysisJob.id}/cancel`,
+        {
+          method: 'POST',
+          idempotencyKey: newIdempotencyKey('knowledge-source-analysis-cancel'),
+          ifMatch: `"${analysisJob.version}"`,
+          signal: controller.signal,
+          body: JSON.stringify({ reason: cancelReason.trim() }),
+        },
+      )
+      if (expectedGeneration !== generation.current) return
+      setAnalysisJob(current)
+      setAnalysisJobs((items) => items.map((item) => item.id === current.id ? current : item))
+      setStatus(analysisJobStateLabel(current))
+    } catch (next) {
+      if (!controller.signal.aborted && expectedGeneration === generation.current) setError(next)
+    } finally {
+      finishOperation(controller)
     }
   }
 
@@ -267,7 +411,7 @@ export function KnowledgeSourceUpload({
     if (uploadBusy || analysisBusy) return
     setError(undefined)
     setRecord(undefined)
-    setAnalysis(undefined)
+    setAnalysisJob(undefined)
     setProjection(undefined)
     setProgress(0)
     if (!next) {
@@ -289,8 +433,11 @@ export function KnowledgeSourceUpload({
 
   const dropFile = (event: DragEvent<HTMLLabelElement>) => {
     event.preventDefault()
+    if (!sourceAnalysisEligible) return
     selectFile(event.dataTransfer.files[0])
   }
+
+  const analysis = analysisJob?.result
 
   return <div className="grid gap-4">
     <section className="grid gap-4 rounded-enterprise border border-slate-300 bg-white p-4 shadow-sm lg:grid-cols-[minmax(0,1fr)_minmax(280px,0.65fr)]">
@@ -303,7 +450,7 @@ export function KnowledgeSourceUpload({
         <label
           className="grid min-h-36 place-items-center rounded-enterprise border border-dashed border-enterprise-blue bg-blue-50 p-5 text-center text-xs font-bold text-enterprise-blue"
           htmlFor={inputId}
-          aria-disabled={!graph || uploadBusy}
+          aria-disabled={!graph || !sourceAnalysisEligible || uploadBusy}
           onDragOver={(event) => event.preventDefault()}
           onDrop={dropFile}
         >
@@ -315,10 +462,10 @@ export function KnowledgeSourceUpload({
           aria-label="지식 PDF 소스"
           type="file"
           accept=".pdf,application/pdf"
-          disabled={!graph || uploadBusy}
+          disabled={!graph || !sourceAnalysisEligible || uploadBusy}
           onChange={(event) => selectFile(event.target.files?.[0])}
         />
-        <button className="button" disabled={!graph || !file || uploadBusy || analysisBusy}>
+        <button className="button" disabled={!graph || !sourceAnalysisEligible || !file || uploadBusy || analysisBusy}>
           {uploadBusy ? <LoaderCircle size={14} className="animate-spin" /> : <FileUp size={14} />}
           {uploadBusy ? '검증 중…' : 'PDF 검증 업로드 시작'}
         </button>
@@ -337,16 +484,50 @@ export function KnowledgeSourceUpload({
           <span className="text-[10px] font-black tracking-[.14em] text-enterprise-blue uppercase">Typed LLM proposal</span>
           <h3 className="my-1 text-base font-black text-navy-900">PDF 분석 및 Changeset 생성</h3>
         </header>
+        {graph && !sourceAnalysisEligible && <p className="notice notice-error" role="status">현재 추론 공급자 계약은 PUBLIC/INTERNAL 소스만 허용합니다. {graph.classification} 지식 에셋은 분류를 낮추지 않으며 PDF 업로드·분석을 실행하지 않습니다.</p>}
         <label className="grid gap-1 text-xs font-black text-navy-900">제안 제목<input maxLength={500} value={title} onChange={(event) => setTitle(event.target.value)} placeholder="분석 근거를 식별할 제목" /></label>
-        <button type="button" className="button" disabled={record?.state !== 'ACCEPTED' || !title.trim() || analysisBusy || uploadBusy} onClick={() => void analyze()}>
+        <button type="button" className="button" disabled={!sourceAnalysisEligible || record?.state !== 'ACCEPTED' || !title.trim() || analysisBusy || uploadBusy || Boolean(analysisJob && !analysisTerminal)} onClick={() => void analyze()}>
           {analysisBusy ? <LoaderCircle size={14} className="animate-spin" /> : <Sparkles size={14} />}
-          {analysisBusy ? 'LLM 분석 중…' : 'LLM 추출 제안 생성'}
+          {analysisBusy ? 'LLM 분석 작업 확인 중…' : 'LLM 추출 제안 생성'}
         </button>
+        {analysisJobs.length > 0 && <section className="grid gap-2 rounded-enterprise border border-slate-300 bg-white p-3" aria-label="최근 지식 소스 분석 작업">
+          <strong className="text-xs text-navy-900">내 최근 분석 작업 · 실행 중 우선</strong>
+          <div className="grid max-h-48 gap-1 overflow-y-auto">
+            {analysisJobs.map((job) => <button
+              key={job.id}
+              type="button"
+              aria-pressed={analysisJob?.id === job.id}
+              className={`flex items-center gap-2 rounded border px-2 py-1 text-left text-xs ${analysisJob?.id === job.id ? 'border-enterprise-blue bg-blue-50' : 'border-slate-200 bg-white'}`}
+              onClick={() => {
+                setAnalysisJob(job)
+                setCancelReason('')
+                if (!TERMINAL_ANALYSIS_STATES.has(job.state)) {
+                  setAnalysisPollGeneration((value) => value + 1)
+                }
+              }}
+            >
+              <span className="badge badge-soft">{job.state}</span>
+              <span className="min-w-0 flex-1 truncate">{job.title}</span>
+              <time dateTime={job.created_at}>{new Date(job.created_at).toLocaleString()}</time>
+            </button>)}
+          </div>
+          <div className="flex gap-2">
+            <button type="button" className="button button-secondary" disabled={!analysisHistoryCursor} onClick={() => setAnalysisHistoryCursor(null)}>실행 중·최신으로</button>
+            <button type="button" className="button button-secondary" disabled={!analysisHistoryNextCursor} onClick={() => setAnalysisHistoryCursor(analysisHistoryNextCursor)}>더 오래된 작업</button>
+          </div>
+        </section>}
+        {analysisJob && <section className="grid gap-2 rounded-enterprise border border-slate-300 bg-slate-50 p-3" aria-label="지식 소스 분석 작업">
+          <div className="flex flex-wrap items-center gap-2 text-xs"><strong>작업 상태</strong><span className="badge badge-soft">{analysisJob.state}</span><span>{analysisJob.stage}</span><span>시도 {analysisJob.attempt_count}/{analysisJob.maximum_attempts}</span></div>
+          {analysisJob.progress.total_pages !== undefined && <p className="m-0 text-xs text-slate-600">{analysisJob.progress.completed_pages ?? 0}/{analysisJob.progress.total_pages} pages</p>}
+          {analysisJob.last_failure_code && <p className="notice notice-error m-0" role="status">오류 코드: {analysisJob.last_failure_code}</p>}
+          {!analysisTerminal && analysisPollingExhausted && <button type="button" className="button button-secondary w-fit" onClick={() => setAnalysisPollGeneration((value) => value + 1)}>확인 다시 시작</button>}
+          {!analysisTerminal && <div className="flex flex-wrap items-end gap-2"><label className="grid min-w-64 flex-1 gap-1 text-xs font-black">취소 사유<input maxLength={1000} value={cancelReason} onChange={(event) => setCancelReason(event.target.value)} placeholder="감사 로그에 남을 사유" /></label><button type="button" className="button button-danger" disabled={!cancelReason.trim()} onClick={() => void cancelAnalysis()}>작업 취소</button></div>}
+        </section>}
         {record && record.state !== 'ACCEPTED' && TERMINAL_UPLOAD_STATES.has(record.state) && <p className="notice notice-error" role="status">검증 상태가 {record.state}이므로 분석을 실행하지 않습니다.{record.last_error_code ? ` 오류 코드: ${record.last_error_code}` : ''}</p>}
         {analysis && <section className="grid gap-3 rounded-enterprise border border-emerald-300 bg-emerald-50 p-3" aria-label="지식 소스 분석 증거">
           <div className="flex items-center gap-2 text-emerald-800"><CheckCircle2 size={18} /><strong>DRAFT changeset 생성 완료</strong></div>
           <dl className="grid gap-2 text-xs sm:grid-cols-2">
-            <div><dt className="font-black text-slate-500">Source snapshot</dt><dd className="m-0 break-all"><code>{analysis.source_snapshot_id}</code></dd></div>
+            <div><dt className="font-black text-slate-500">Source snapshot</dt><dd className="m-0 break-all"><code>{analysisJob?.source_snapshot_id}</code></dd></div>
             <div><dt className="font-black text-slate-500">Changeset</dt><dd className="m-0 break-all"><code>{analysis.changeset_id}</code></dd></div>
             <div><dt className="font-black text-slate-500">Pages</dt><dd className="m-0">{analysis.page_count.toLocaleString()}</dd></div>
             <div><dt className="font-black text-slate-500">Proposed graph</dt><dd className="m-0">{analysis.proposed_node_count.toLocaleString()} nodes · {analysis.proposed_edge_count.toLocaleString()} edges</dd></div>
@@ -355,6 +536,13 @@ export function KnowledgeSourceUpload({
             <div className="sm:col-span-2"><dt className="font-black text-slate-500">Evidence SHA-256</dt><dd className="m-0 break-all"><code>{analysis.evidence_hash}</code></dd></div>
           </dl>
           <p className="m-0 text-xs text-emerald-900">제안은 바로 Neo4j에 반영되지 않습니다. Mode A의 검토·릴리스 발행을 통과해야 합니다.</p>
+          {onOpenChangeset && <button
+            type="button"
+            className="button w-fit"
+            onClick={() => void onOpenChangeset(analysis.changeset_id)}
+          >
+            DRAFT 검토로 이동
+          </button>}
         </section>}
       </div>
     </section>
@@ -416,12 +604,54 @@ function uploadStateLabel(record: UploadRecord): string {
   return labels[record.state] ?? record.state
 }
 
-function abortableDelay(milliseconds: number, signal: AbortSignal): Promise<void> {
+function analysisJobStateLabel(job: KnowledgeSourceJob): string {
+  const labels: Record<KnowledgeSourceJob['state'], string> = {
+    QUEUED: 'PDF 분석 작업이 대기열에 등록되었습니다.',
+    RUNNING: `PDF 분석 진행 중 · ${job.stage}`,
+    RETRY_WAIT: `일시 오류로 재시도 대기 중 (${job.last_failure_code ?? '원인 미상'})`,
+    CANCEL_REQUESTED: '실행 중인 작업에 취소를 요청했습니다.',
+    SUCCEEDED: 'LLM 추출 제안이 DRAFT changeset으로 생성되었습니다.',
+    FAILED: `PDF 분석 실패 (${job.last_failure_code ?? '원인 미상'})`,
+    STALE: `고정된 입력 또는 권한이 변경되어 작업을 종료했습니다. (${job.last_failure_code ?? '원인 미상'})`,
+    CANCELLED: 'PDF 분석 작업이 취소되었습니다.',
+  }
+  return labels[job.state]
+}
+
+function waitUntilVisible(signal: AbortSignal): Promise<void> {
+  if (signal.aborted) {
+    return Promise.reject(new DOMException('The operation was aborted.', 'AbortError'))
+  }
+  if (document.visibilityState === 'visible') return Promise.resolve()
   return new Promise((resolve, reject) => {
-    const timeout = window.setTimeout(resolve, milliseconds)
-    signal.addEventListener('abort', () => {
+    const onAbort = () => {
+      document.removeEventListener('visibilitychange', onVisibility)
+      reject(new DOMException('The operation was aborted.', 'AbortError'))
+    }
+    const onVisibility = () => {
+      if (document.visibilityState !== 'visible') return
+      signal.removeEventListener('abort', onAbort)
+      document.removeEventListener('visibilitychange', onVisibility)
+      resolve()
+    }
+    signal.addEventListener('abort', onAbort, { once: true })
+    document.addEventListener('visibilitychange', onVisibility)
+  })
+}
+
+function abortableDelay(milliseconds: number, signal: AbortSignal): Promise<void> {
+  if (signal.aborted) {
+    return Promise.reject(new DOMException('The operation was aborted.', 'AbortError'))
+  }
+  return new Promise((resolve, reject) => {
+    const onAbort = () => {
       window.clearTimeout(timeout)
       reject(new DOMException('The operation was aborted.', 'AbortError'))
-    }, { once: true })
+    }
+    const timeout = window.setTimeout(() => {
+      signal.removeEventListener('abort', onAbort)
+      resolve()
+    }, milliseconds)
+    signal.addEventListener('abort', onAbort, { once: true })
   })
 }

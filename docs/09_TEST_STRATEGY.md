@@ -2,6 +2,29 @@
 
 ## Current verification status
 
+### Phase 5 durable Knowledge source jobs — 2026-07-24
+
+The current worktree's local Phase 5 gates passed with Alembic head `0054`. Ruff format/lint,
+strict mypy over 370 source/test files and static architecture/Compose/document verification
+passed. The whole backend suite reported `1,369 passed, 84 skipped`; the skips require explicit
+external/isolated environments and are not passes. The frontend passed TypeScript, zero-warning
+ESLint, `45` files / `243` Vitest tests and the production Vite build.
+
+An additive `0053 -> 0054` PostgreSQL 17 database and a completely empty database migrated from the
+regenerated canonical `0001` through `0054`; each passed `24` owner/app/worker and cross-service
+role tests for paging/capacity, claim fencing, recovery, cancellation, exact-claim RLS, atomic DRAFT
+finalization and event/outbox/policy evidence integrity. `alembic check` reported no new operations.
+A dirty-principal probe removed an intentionally added `DELETE` privilege. A temporary membership
+that allowed the worker to `SET ROLE` caused canonical migration to fail closed and was removed
+after the test. Upload/governance/relay namespace-forgery and mutation cases also failed closed.
+
+Canonical `0001` was regenerated twice with byte-identical SHA-256
+`a9978344ab90982c6d5f6c8929b8a976f34418d5fbcae2a8de6758171bda6f98`. Native and
+`DOCKER_DEFAULT_PLATFORM=linux/amd64` Compose rendering passed for core and local object-storage
+profiles. Target WSL image execution, private MinIO/S3 IAM, private Chat/Embedding DNS/TLS,
+distinct-human IdP/browser acceptance and representative queue/load/recovery telemetry remain
+external gates.
+
 The Phase 4 Knowledge entry implementation `bd0ee22`, based on `716fb6f`, passed the whole current
 backend suite:
 `1,328` tests passed and `60` target-environment integration cases were explicitly skipped. The

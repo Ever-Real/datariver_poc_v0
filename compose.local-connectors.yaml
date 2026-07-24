@@ -87,6 +87,65 @@ services:
     security_opt:
       - no-new-privileges:true
 
+  minio-knowledge-identity-init:
+    profiles: ["object-storage"]
+    image: ${MINIO_IMAGE:-quay.io/minio/minio:RELEASE.2025-09-07T16-13-09Z@sha256:14cea493d9a34af32f524e538b8346cf79f3321eff8e708c1e2960462bd8936e}
+    entrypoint: ["/bin/sh", "-ec"]
+    environment:
+      MC_CONFIG_DIR: /tmp/mc
+      S3_BUCKET_ACCEPTED: ${S3_BUCKET_ACCEPTED:?S3_BUCKET_ACCEPTED is required}
+    command:
+      - >-
+        accepted_bucket="$${S3_BUCKET_ACCEPTED}";
+        if [ "$${#accepted_bucket}" -lt 3 ] ||
+        [ "$${#accepted_bucket}" -gt 63 ];
+        then echo "S3_BUCKET_ACCEPTED is not a valid bucket name" >&2; exit 2; fi;
+        case "$$accepted_bucket" in
+        *[!a-z0-9.-]*|.*|-*|*.|*-|*..*|*.-*|*-.*)
+        echo "S3_BUCKET_ACCEPTED is not a valid bucket name" >&2; exit 2;; esac;
+        while IFS= read -r policy_line || [ -n "$$policy_line" ]; do
+        case "$$policy_line" in
+        *__S3_BUCKET_ACCEPTED__*)
+        policy_prefix="$${policy_line%%__S3_BUCKET_ACCEPTED__*}";
+        policy_suffix="$${policy_line#*__S3_BUCKET_ACCEPTED__}";
+        printf '%s%s%s\n' "$$policy_prefix" "$$accepted_bucket" "$$policy_suffix";;
+        *) printf '%s\n' "$$policy_line";; esac;
+        done < /config/knowledge-read-policy.template.json
+        > /tmp/knowledge-read-policy.json;
+        root_user="$$(cat /run/secrets/s3_access_key)";
+        root_secret="$$(cat /run/secrets/s3_secret_key)";
+        until printf '%s\n%s\n' "$$root_user" "$$root_secret" |
+        mc alias set local http://minio:9000 >/dev/null 2>&1;
+        do sleep 2; done;
+        unset root_user root_secret;
+        knowledge_user="$$(cat /run/secrets/s3_knowledge_access_key)";
+        knowledge_secret="$$(cat /run/secrets/s3_knowledge_secret_key)";
+        mc admin user info local "$$knowledge_user" >/dev/null 2>&1 ||
+        printf '%s\n%s\n' "$$knowledge_user" "$$knowledge_secret" |
+        mc admin user add local;
+        unset knowledge_secret;
+        mc admin policy create local datariver-knowledge-read
+        /tmp/knowledge-read-policy.json;
+        mc admin policy attach local datariver-knowledge-read --user "$$knowledge_user"
+    secrets:
+      - s3_access_key
+      - s3_secret_key
+      - s3_knowledge_access_key
+      - s3_knowledge_secret_key
+    volumes:
+      - ./infra/minio/knowledge-read-policy.template.json:/config/knowledge-read-policy.template.json:ro
+    depends_on:
+      minio:
+        condition: service_started
+    networks:
+      - connectors
+    restart: "no"
+    read_only: true
+    tmpfs:
+      - /tmp:size=8m,noexec,nosuid
+    security_opt:
+      - no-new-privileges:true
+
   neo4j:
     profiles: ["graph"]
     image: ${NEO4J_IMAGE:-neo4j:2026.06.0@sha256:ba2b859bdbe7017a9baa1a7b5681ac9732198753719b0a502e3645feddfdec72}
@@ -132,5 +191,9 @@ secrets:
     file: ./secrets/s3_access_key
   s3_secret_key:
     file: ./secrets/s3_secret_key
+  s3_knowledge_access_key:
+    file: ./secrets/s3_knowledge_access_key
+  s3_knowledge_secret_key:
+    file: ./secrets/s3_knowledge_secret_key
   neo4j_auth:
     file: ./secrets/neo4j_auth

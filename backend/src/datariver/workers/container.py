@@ -42,6 +42,11 @@ class CatalogExportWorkerContainer(RelayWorkerContainer):
 
 
 @dataclass(slots=True)
+class KnowledgeSourceWorkerContainer(RelayWorkerContainer):
+    object_store: S3ObjectStore
+
+
+@dataclass(slots=True)
 class RetentionSchedulerContainer:
     database: Database
 
@@ -169,6 +174,31 @@ def build_catalog_export_container(settings: Settings) -> CatalogExportWorkerCon
             region=settings.s3_region,
             access_key=resolver.resolve(f"file:{settings.s3_export_access_key_file}"),
             secret_key=resolver.resolve(f"file:{settings.s3_export_secret_key_file}"),
+        ),
+    )
+
+
+def build_knowledge_source_container(settings: Settings) -> KnowledgeSourceWorkerContainer:
+    if (
+        not settings.knowledge_source_worker_enabled
+        or settings.knowledge_database_url is None
+        or settings.knowledge_database_secret_ref is None
+        or settings.s3_knowledge_access_key_file is None
+        or settings.s3_knowledge_secret_key_file is None
+    ):
+        raise RuntimeError(
+            "Knowledge source worker requires explicit enablement and separate DB/S3 credentials."
+        )
+    resolver = SecretResolver(virtual_secret_root=settings.system_configuration_secret_root)
+    return KnowledgeSourceWorkerContainer(
+        database=_database(settings, role="knowledge"),
+        event_delivery=_delivery(settings, resolver),
+        object_store=S3ObjectStore(
+            endpoint_url=settings.s3_endpoint_url,
+            public_endpoint_url=settings.s3_public_endpoint_url,
+            region=settings.s3_region,
+            access_key=resolver.resolve(f"file:{settings.s3_knowledge_access_key_file}"),
+            secret_key=resolver.resolve(f"file:{settings.s3_knowledge_secret_key_file}"),
         ),
     )
 

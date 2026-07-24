@@ -193,8 +193,12 @@ class SqlSubjectReader(SubjectReader):
 
 
 def subject_attributes_from_models(
-    *, subject: SubjectModel, membership: WorkspaceMembershipModel
+    *,
+    subject: SubjectModel,
+    membership: WorkspaceMembershipModel,
+    observed_at: datetime | None = None,
 ) -> SubjectAttributes:
+    effective_observed_at = observed_at or utc_now()
     attributes = membership.attributes
     try:
         allowed_actions = frozenset(
@@ -217,7 +221,10 @@ def subject_attributes_from_models(
         active=(
             subject.active
             and membership.active
-            and (membership.access_expires_at is None or membership.access_expires_at > utc_now())
+            and (
+                membership.access_expires_at is None
+                or membership.access_expires_at > effective_observed_at
+            )
         ),
         department_id=membership.department_id,
         groups=groups,

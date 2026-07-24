@@ -29,8 +29,10 @@ Status values are `TODO`, `IN PROGRESS`, `DONE`, `BLOCKED API` and `EXTERNAL GAT
 - [x] `DONE` Mode A source/direct-definition layout and local safe-subset ontology draft editor.
 - [x] `DONE` Mode A visual graph editing, controls and generated non-executing Cypher preview.
 - [x] `DONE` Mode B existing-schema/dynamic-one-pass layout with asset/source selection.
-- [ ] `BLOCKED API` File/DB extraction, LLM proposal and A-Box job execution; typed proposal/job API
-  is absent.
+- [x] `DONE` PDF A-Box extraction uses an owner-scoped durable `202` job with resume, bounded
+  hidden-tab polling, cancellation and typed DRAFT result navigation for PUBLIC/INTERNAL graphs.
+- [ ] `BLOCKED API` Database-source and dynamic one-pass extraction remain absent; Mode A
+  source-driven ontology generation is a separate unimplemented contract.
 - [x] `DONE` Separate Knowledge GraphRAG Chat route and bounded graph analysis experience.
 - [ ] `BLOCKED API` General Chat asset-routing prompt administration; governed prompt/profile contract
   is absent.

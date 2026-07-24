@@ -7,6 +7,7 @@ host_development=false
 mac_development=false
 wsl_preparation=false
 source_host_airflow_bridge=false
+enable_knowledge_source_worker=false
 env_file_argument=.env
 while [ "$#" -gt 0 ]; do
   case "$1" in
@@ -26,6 +27,9 @@ while [ "$#" -gt 0 ]; do
       ;;
     --source-host-airflow-bridge)
       source_host_airflow_bridge=true
+      ;;
+    --enable-knowledge-source-worker)
+      enable_knowledge_source_worker=true
       ;;
     --datahub-base-url)
       shift
@@ -62,6 +66,68 @@ case "$env_file_argument" in
   /*) env_file=$env_file_argument ;;
   *) env_file="$root/$env_file_argument" ;;
 esac
+[ -f "$env_file" ] || cp "$root/.env.example" "$env_file"
+
+env_value() {
+  env_name=$1
+  sed -n "s/^${env_name}=//p" "$env_file" | tail -n 1 | tr -d '\r'
+}
+
+env_is_true() {
+  env_name=$1
+  env_current_value=$(env_value "$env_name" | tr '[:upper:]' '[:lower:]')
+  [ "$env_current_value" = true ]
+}
+
+env_is_nonempty() {
+  env_name=$1
+  [ -n "$(env_value "$env_name")" ]
+}
+
+local_knowledge_inference_is_ready() {
+  if [ "$mac_development" = true ]; then
+    env_is_true LOCAL_OLLAMA_EMBEDDING_ENABLED &&
+      env_is_nonempty LOCAL_OLLAMA_EMBEDDING_BASE_URL &&
+      env_is_nonempty LOCAL_OLLAMA_EMBEDDING_MODEL &&
+      ! env_is_true INTRANET_OPENAI_COMPATIBLE_CHAT_ENABLED &&
+      ! env_is_true INTRANET_OPENAI_COMPATIBLE_EMBEDDING_ENABLED
+    return
+  fi
+  env_is_true LOCAL_OLLAMA_CHAT_ENABLED &&
+    env_is_true LOCAL_OLLAMA_EMBEDDING_ENABLED &&
+    env_is_nonempty LOCAL_OLLAMA_CHAT_BASE_URL &&
+    env_is_nonempty LOCAL_OLLAMA_CHAT_MODEL &&
+    env_is_nonempty LOCAL_OLLAMA_EMBEDDING_BASE_URL &&
+    env_is_nonempty LOCAL_OLLAMA_EMBEDDING_MODEL
+}
+
+intranet_knowledge_inference_is_ready() {
+  env_is_true INTRANET_OPENAI_COMPATIBLE_CHAT_ENABLED &&
+    env_is_true INTRANET_OPENAI_COMPATIBLE_EMBEDDING_ENABLED &&
+    env_is_nonempty INTRANET_OPENAI_COMPATIBLE_ALLOWED_HOSTS &&
+    env_is_nonempty INTRANET_OPENAI_COMPATIBLE_CHAT_BASE_URL &&
+    env_is_nonempty INTRANET_OPENAI_COMPATIBLE_CHAT_MODEL &&
+    env_is_nonempty INTRANET_OPENAI_COMPATIBLE_CHAT_API_KEY_SECRET_REF &&
+    env_is_nonempty INTRANET_OPENAI_COMPATIBLE_EMBEDDING_BASE_URL &&
+    env_is_nonempty INTRANET_OPENAI_COMPATIBLE_EMBEDDING_MODEL &&
+    env_is_nonempty INTRANET_OPENAI_COMPATIBLE_EMBEDDING_API_KEY_SECRET_REF
+}
+
+knowledge_inference_is_ready() {
+  if [ "$wsl_preparation" = true ]; then
+    intranet_knowledge_inference_is_ready
+    return
+  fi
+  local_knowledge_inference_is_ready ||
+    intranet_knowledge_inference_is_ready
+}
+
+if [ "$enable_knowledge_source_worker" = true ] &&
+  ! knowledge_inference_is_ready; then
+  echo "--enable-knowledge-source-worker requires one complete Chat+Embedding pair in $env_file (local Ollama or intranet OpenAI-compatible)." >&2
+  exit 2
+fi
+
 secrets_dir="$root/secrets"
 keycloak_runtime_dir="$root/runtime/keycloak"
 retention_control_file="$root/runtime/retention-execution.enabled"
@@ -91,13 +157,12 @@ ensure_random_secret() {
   fi
 }
 
-[ -f "$env_file" ] || cp "$root/.env.example" "$env_file"
-
 ensure_random_secret postgres_password 32
 ensure_random_secret postgres_app_password 32
 ensure_random_secret postgres_relay_password 32
 ensure_random_secret postgres_upload_password 32
 ensure_random_secret postgres_governance_password 32
+ensure_random_secret postgres_knowledge_password 32
 ensure_random_secret postgres_export_password 32
 ensure_random_secret postgres_retention_scheduler_password 32
 ensure_random_secret postgres_archive_password 32
@@ -151,6 +216,10 @@ if [ ! -s "$secrets_dir/s3_export_access_key" ]; then
   random_secret 18 | tr '/+' 'AB' | tr -d '=' > "$secrets_dir/s3_export_access_key"
 fi
 ensure_random_secret s3_export_secret_key 36
+if [ ! -s "$secrets_dir/s3_knowledge_access_key" ]; then
+  random_secret 18 | tr '/+' 'AB' | tr -d '=' > "$secrets_dir/s3_knowledge_access_key"
+fi
+ensure_random_secret s3_knowledge_secret_key 36
 if [ ! -s "$secrets_dir/s3_archive_access_key" ]; then
   random_secret 18 | tr '/+' 'AB' | tr -d '=' > "$secrets_dir/s3_archive_access_key"
 fi
@@ -287,6 +356,13 @@ if [ "$wsl_preparation" = true ]; then
 fi
 if [ -n "$datahub_base_url" ]; then
   set_env_value DATAHUB_BASE_URL "$datahub_base_url"
+fi
+if [ "$enable_knowledge_source_worker" = true ]; then
+  set_env_value KNOWLEDGE_DATABASE_URL postgresql+asyncpg://datariver_knowledge@postgres:5432/datariver
+  set_env_value KNOWLEDGE_DATABASE_SECRET_REF file:/run/secrets/postgres_knowledge_password
+  set_env_value S3_KNOWLEDGE_ACCESS_KEY_FILE /run/secrets/s3_knowledge_access_key
+  set_env_value S3_KNOWLEDGE_SECRET_KEY_FILE /run/secrets/s3_knowledge_secret_key
+  set_env_value KNOWLEDGE_SOURCE_WORKER_ENABLED true
 fi
 
 # File-based Compose secrets are bind mounts, so container users with different

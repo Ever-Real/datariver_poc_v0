@@ -104,6 +104,15 @@ class OutboxEventModel(Base):
     __tablename__ = "outbox_events"
     __table_args__ = (
         Index("ix_outbox_unpublished", "published_at", "lease_until", "created_at"),
+        Index(
+            "ux_outbox_source_analysis_transition",
+            "workspace_id",
+            "aggregate_id",
+            "event_type",
+            sa_text("(payload ->> 'version')"),
+            unique=True,
+            postgresql_where=sa_text("aggregate_type = 'knowledge_source_analysis_job'"),
+        ),
         {"schema": "integration"},
     )
 

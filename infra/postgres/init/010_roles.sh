@@ -5,6 +5,7 @@ app_password=$(cat /run/secrets/postgres_app_password)
 relay_password=$(cat /run/secrets/postgres_relay_password)
 upload_password=$(cat /run/secrets/postgres_upload_password)
 governance_password=$(cat /run/secrets/postgres_governance_password)
+knowledge_password=$(cat /run/secrets/postgres_knowledge_password)
 export_password=$(cat /run/secrets/postgres_export_password)
 retention_scheduler_password=$(cat /run/secrets/postgres_retention_scheduler_password)
 archive_password=$(cat /run/secrets/postgres_archive_password)
@@ -17,6 +18,7 @@ psql --username "$POSTGRES_USER" --dbname "$POSTGRES_DB" \
   --set=relay_password="$relay_password" \
   --set=upload_password="$upload_password" \
   --set=governance_password="$governance_password" \
+  --set=knowledge_password="$knowledge_password" \
   --set=export_password="$export_password" \
   --set=retention_scheduler_password="$retention_scheduler_password" \
   --set=archive_password="$archive_password" \
@@ -30,6 +32,8 @@ SELECT format('CREATE ROLE datariver_upload LOGIN PASSWORD %L', :'upload_passwor
 WHERE NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'datariver_upload') \gexec
 SELECT format('CREATE ROLE datariver_governance LOGIN PASSWORD %L', :'governance_password')
 WHERE NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'datariver_governance') \gexec
+SELECT format('CREATE ROLE datariver_knowledge LOGIN PASSWORD %L', :'knowledge_password')
+WHERE NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'datariver_knowledge') \gexec
 SELECT format('CREATE ROLE datariver_export LOGIN PASSWORD %L', :'export_password')
 WHERE NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'datariver_export') \gexec
 SELECT format('CREATE ROLE datariver_retention_scheduler LOGIN PASSWORD %L', :'retention_scheduler_password')
@@ -49,6 +53,31 @@ ALTER ROLE datariver_upload WITH LOGIN PASSWORD :'upload_password'
   NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION BYPASSRLS;
 ALTER ROLE datariver_governance WITH LOGIN PASSWORD :'governance_password'
   NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION BYPASSRLS;
+ALTER ROLE datariver_knowledge WITH LOGIN PASSWORD :'knowledge_password'
+  NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS;
+DO $datariver$
+BEGIN
+  IF EXISTS (
+    SELECT 1
+    FROM pg_roles AS candidate
+    WHERE candidate.rolname <> 'datariver_knowledge'
+      AND pg_has_role('datariver_knowledge', candidate.oid, 'MEMBER')
+  ) THEN
+    RAISE EXCEPTION
+      'datariver_knowledge must not inherit or SET ROLE to another principal';
+  END IF;
+  IF EXISTS (
+    SELECT 1
+    FROM pg_roles AS candidate
+    WHERE candidate.rolname <> 'datariver_knowledge'
+      AND NOT candidate.rolsuper
+      AND pg_has_role(candidate.oid, 'datariver_knowledge', 'MEMBER')
+  ) THEN
+    RAISE EXCEPTION
+      'datariver_knowledge must not be assumable by another non-superuser principal';
+  END IF;
+END
+$datariver$;
 ALTER ROLE datariver_export WITH LOGIN PASSWORD :'export_password'
   NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS;
 ALTER ROLE datariver_retention_scheduler WITH LOGIN PASSWORD :'retention_scheduler_password'

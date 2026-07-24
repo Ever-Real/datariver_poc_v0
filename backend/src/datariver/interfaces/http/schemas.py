@@ -2117,8 +2117,7 @@ class KnowledgeSourceAnalyzeRequest(BaseModel):
     title: str = Field(min_length=1, max_length=500)
 
 
-class KnowledgeSourceAnalyzeResponse(BaseModel):
-    source_snapshot_id: UUID
+class KnowledgeSourceJobResultResponse(BaseModel):
     changeset_id: UUID
     page_count: int = Field(ge=1)
     proposed_node_count: int = Field(ge=0)
@@ -2126,6 +2125,54 @@ class KnowledgeSourceAnalyzeResponse(BaseModel):
     evidence_hash: str = Field(pattern="^[0-9a-f]{64}$")
     embedding_model: str
     extraction_model: str
+
+
+class KnowledgeSourceJobResponse(BaseModel):
+    id: UUID
+    graph_id: UUID
+    source_snapshot_id: UUID
+    upload_id: UUID
+    title: str
+    state: Literal[
+        "QUEUED",
+        "RUNNING",
+        "RETRY_WAIT",
+        "CANCEL_REQUESTED",
+        "SUCCEEDED",
+        "FAILED",
+        "STALE",
+        "CANCELLED",
+    ]
+    stage: Literal[
+        "QUEUED",
+        "SOURCE_READ",
+        "PARSED",
+        "EMBEDDED",
+        "EXTRACTED",
+        "FINALIZING",
+        "COMPLETED",
+    ]
+    progress: dict[str, int]
+    attempt_count: int = Field(ge=0)
+    maximum_attempts: int = Field(ge=1)
+    next_attempt_at: datetime
+    last_failure_code: str | None
+    version: int = Field(ge=1)
+    created_at: datetime
+    updated_at: datetime
+    completed_at: datetime | None
+    result: KnowledgeSourceJobResultResponse | None
+
+
+class KnowledgeSourceJobPageResponse(BaseModel):
+    items: list[KnowledgeSourceJobResponse]
+    next_cursor: str | None
+
+
+class KnowledgeSourceJobCancelRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    reason: str = Field(min_length=1, max_length=1000)
 
 
 class KnowledgeProjectionResponse(BaseModel):

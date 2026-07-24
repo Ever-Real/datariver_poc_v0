@@ -194,6 +194,7 @@ core_images=(
   datariver-next-upload-validation-worker:latest
   datariver-next-governance-apply-worker:latest
   datariver-next-catalog-export-worker:latest
+  datariver-next-knowledge-source-worker:latest
   datariver-next-web:latest
   datariver-keycloak:26.7.0
 )
@@ -315,7 +316,8 @@ build_cross_platform_images() {
     datariver-next-upload-worker:latest \
     datariver-next-upload-validation-worker:latest \
     datariver-next-governance-apply-worker:latest \
-    datariver-next-catalog-export-worker:latest; do
+    datariver-next-catalog-export-worker:latest \
+    datariver-next-knowledge-source-worker:latest; do
     docker image tag datariver-next-api:latest "$backend_image"
   done
 
@@ -383,7 +385,7 @@ if [ "$build_datariver" = true ]; then
     build_services=(
       migrate storage-init local-bootstrap semiconductor-seed api outbox-relay
       upload-worker upload-validation-worker governance-apply-worker
-      catalog-export-worker web keycloak
+      catalog-export-worker knowledge-source-worker web keycloak
     )
     compose_files=(-f "$root/compose.yaml" -f "$root/compose.identity.yaml")
     if [ "$include_airflow" = true ]; then

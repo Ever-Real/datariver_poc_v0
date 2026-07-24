@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+from collections.abc import Awaitable, Callable
 from uuid import UUID, uuid5
 
 from datariver.application.knowledge_pipeline_ports import (
@@ -25,6 +26,7 @@ from datariver.domain.knowledge import (
 from datariver.domain.knowledge_pipeline import (
     MAX_PDF_PAGES,
     MAX_QUESTION_CHARACTERS,
+    MAX_TOTAL_PAGE_CHARACTERS,
     CitedGraphRagAnswer,
     EmbeddingBatch,
     ExtractedEdgeDraft,
@@ -35,12 +37,17 @@ from datariver.domain.knowledge_pipeline import (
     KnowledgeSourceAnalysis,
     KnowledgeSourceSnapshot,
     ModelBinding,
+    PageEmbedding,
     PdfPage,
     ProjectionReceipt,
 )
 
 MAX_EXTRACTION_BATCH_PAGES = 6
 MAX_EXTRACTION_BATCH_CHARACTERS = 40_000
+MAX_EMBEDDING_BATCH_PAGES = 8
+MAX_EMBEDDING_BATCH_CHARACTERS = 40_000
+MAX_TYPED_PROPOSAL_OPERATIONS = 10_000
+PipelineCheckpoint = Callable[[str, dict[str, int]], Awaitable[None]]
 
 
 def _canonical_graph_evidence(
@@ -145,15 +152,48 @@ class KnowledgeSourcePipeline:
         payload = await self._reader.read_snapshot(source=source)
         source.verify(payload)
         pages = self._parser.parse(payload)
+        return await self.analyze_pages(
+            source=source,
+            pages=pages,
+            entity_types=entity_types,
+            edge_types=edge_types,
+            embedding_binding=embedding_binding,
+            extraction_binding=extraction_binding,
+        )
+
+    async def analyze_pages(
+        self,
+        *,
+        source: KnowledgeSourceSnapshot,
+        pages: tuple[PdfPage, ...],
+        entity_types: frozenset[str],
+        edge_types: frozenset[str],
+        embedding_binding: ModelBinding,
+        extraction_binding: ModelBinding,
+        checkpoint: PipelineCheckpoint | None = None,
+    ) -> KnowledgeSourceAnalysis:
+        if not entity_types:
+            raise ValidationError("A knowledge extraction requires an approved entity ontology.")
+        source.require_inference_eligible(maximum_classification=1)
+        embedding_binding.validate()
+        extraction_binding.validate()
         if not pages or len(pages) > MAX_PDF_PAGES:
             raise ValidationError("The PDF has no extractable pages or exceeds the page limit.")
         numbers = [page.page_number for page in pages]
         if len(numbers) != len(set(numbers)) or numbers != sorted(numbers):
             raise ValidationError("PDF parser output must contain unique ordered page numbers.")
+        if sum(len(page.text) for page in pages) > MAX_TOTAL_PAGE_CHARACTERS:
+            raise ValidationError("The PDF extracted text exceeds the total character limit.")
+        if checkpoint is not None:
+            await checkpoint(
+                "PARSED",
+                {"completed_pages": len(pages), "total_pages": len(pages)},
+            )
 
-        embeddings = await self._embedding.embed_pages(
+        embeddings = await self._embed_bounded_batches(
             pages=pages,
             binding=embedding_binding,
+            checkpoint=checkpoint,
         )
         self._validate_embeddings(pages=pages, batch=embeddings, expected=embedding_binding)
         extraction = await self._extract_bounded_batches(
@@ -161,6 +201,7 @@ class KnowledgeSourcePipeline:
             entity_types=entity_types,
             edge_types=edge_types,
             binding=extraction_binding,
+            checkpoint=checkpoint,
         )
         extraction.validate(
             entity_types=entity_types,
@@ -174,11 +215,61 @@ class KnowledgeSourcePipeline:
                 "Extracted graph content must inherit the immutable source classification."
             )
         self._verify_extraction_evidence(pages=pages, extraction=extraction)
+        if len(extraction.nodes) + len(extraction.edges) > MAX_TYPED_PROPOSAL_OPERATIONS:
+            raise ValidationError("The Knowledge source proposal exceeds the operation limit.")
         return KnowledgeSourceAnalysis(
             source=source,
             pages=pages,
             embeddings=embeddings,
             extraction=extraction,
+        )
+
+    async def _embed_bounded_batches(
+        self,
+        *,
+        pages: tuple[PdfPage, ...],
+        binding: ModelBinding,
+        checkpoint: PipelineCheckpoint | None,
+    ) -> EmbeddingBatch:
+        batches = self._page_batches(
+            pages=pages,
+            maximum_pages=MAX_EMBEDDING_BATCH_PAGES,
+            maximum_characters=MAX_EMBEDDING_BATCH_CHARACTERS,
+        )
+        values: list[PageEmbedding] = []
+        token_counts: list[int | None] = []
+        completed = 0
+        for batch_pages in batches:
+            if checkpoint is not None:
+                await checkpoint(
+                    "EMBEDDED",
+                    {"completed_pages": completed, "total_pages": len(pages)},
+                )
+            batch = await self._embedding.embed_pages(
+                pages=batch_pages,
+                binding=binding,
+            )
+            self._validate_embeddings(
+                pages=batch_pages,
+                batch=batch,
+                expected=binding,
+            )
+            values.extend(batch.embeddings)
+            token_counts.append(batch.input_tokens)
+            completed += len(batch_pages)
+            if checkpoint is not None:
+                await checkpoint(
+                    "EMBEDDED",
+                    {"completed_pages": completed, "total_pages": len(pages)},
+                )
+        return EmbeddingBatch(
+            binding=binding,
+            embeddings=tuple(values),
+            input_tokens=(
+                sum(value for value in token_counts if value is not None)
+                if all(value is not None for value in token_counts)
+                else None
+            ),
         )
 
     async def _extract_bounded_batches(
@@ -188,25 +279,22 @@ class KnowledgeSourcePipeline:
         entity_types: frozenset[str],
         edge_types: frozenset[str],
         binding: ModelBinding,
+        checkpoint: PipelineCheckpoint | None = None,
     ) -> ExtractionDraft:
-        batches: list[tuple[PdfPage, ...]] = []
-        current: list[PdfPage] = []
-        characters = 0
-        for page in pages:
-            if current and (
-                len(current) >= MAX_EXTRACTION_BATCH_PAGES
-                or characters + len(page.text) > MAX_EXTRACTION_BATCH_CHARACTERS
-            ):
-                batches.append(tuple(current))
-                current = []
-                characters = 0
-            current.append(page)
-            characters += len(page.text)
-        if current:
-            batches.append(tuple(current))
+        batches = self._page_batches(
+            pages=pages,
+            maximum_pages=MAX_EXTRACTION_BATCH_PAGES,
+            maximum_characters=MAX_EXTRACTION_BATCH_CHARACTERS,
+        )
 
         drafts: list[ExtractionDraft] = []
+        completed = 0
         for batch in batches:
+            if checkpoint is not None:
+                await checkpoint(
+                    "EXTRACTED",
+                    {"completed_pages": completed, "total_pages": len(pages)},
+                )
             draft = await self._extractor.propose(
                 pages=batch,
                 entity_types=entity_types,
@@ -220,6 +308,12 @@ class KnowledgeSourcePipeline:
                 page_numbers=frozenset(page.page_number for page in batch),
             )
             drafts.append(draft)
+            completed += len(batch)
+            if checkpoint is not None:
+                await checkpoint(
+                    "EXTRACTED",
+                    {"completed_pages": completed, "total_pages": len(pages)},
+                )
         nodes: dict[str, ExtractedNodeDraft] = {}
         edges: dict[str, ExtractedEdgeDraft] = {}
         for draft in drafts:
@@ -258,6 +352,33 @@ class KnowledgeSourcePipeline:
             input_tokens=summed([draft.input_tokens for draft in drafts]),
             output_tokens=summed([draft.output_tokens for draft in drafts]),
         )
+
+    @staticmethod
+    def _page_batches(
+        *,
+        pages: tuple[PdfPage, ...],
+        maximum_pages: int,
+        maximum_characters: int,
+    ) -> tuple[tuple[PdfPage, ...], ...]:
+        batches: list[tuple[PdfPage, ...]] = []
+        current: list[PdfPage] = []
+        characters = 0
+        for page in pages:
+            if len(page.text) > maximum_characters:
+                raise ValidationError(
+                    "A parsed PDF page exceeds the bounded provider request size."
+                )
+            if current and (
+                len(current) >= maximum_pages or characters + len(page.text) > maximum_characters
+            ):
+                batches.append(tuple(current))
+                current = []
+                characters = 0
+            current.append(page)
+            characters += len(page.text)
+        if current:
+            batches.append(tuple(current))
+        return tuple(batches)
 
     @staticmethod
     def to_typed_operations(analysis: KnowledgeSourceAnalysis) -> tuple[GraphChangeOperation, ...]:
@@ -333,7 +454,9 @@ class KnowledgeSourcePipeline:
         excerpt = normalize_evidence_excerpt(evidence_text)
         return Provenance(
             source_ref=f"knowledge-source:{analysis.source.snapshot_id}",
-            source_locator=f"{analysis.source.object_key}#page={page.page_number}",
+            source_locator=(
+                f"knowledge-source:{analysis.source.snapshot_id}#page={page.page_number}"
+            ),
             source_version=analysis.source.content_sha256,
             method=(
                 f"typed_pdf_extraction:{analysis.extraction.binding.provider}:"

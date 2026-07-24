@@ -25,6 +25,17 @@ _LEGACY_SCOPES = (
     "REDIS_PING",
 )
 _CURRENT_SCOPES = (*_LEGACY_SCOPES, "REDIS_POLICY", "S3_HEAD_BUCKET")
+_LATER_CANONICAL_SCOPES = (
+    "HTTP_HEALTH",
+    "MODEL_DISCOVERY",
+    "MODEL_INFERENCE",
+    "EMBEDDING_INFERENCE",
+    "RERANKING_INFERENCE",
+    "AUTHENTICATED_QUERY",
+    "REDIS_PING",
+    "REDIS_POLICY",
+    "S3_HEAD_BUCKET",
+)
 
 
 def _scope_sql(scopes: tuple[str, ...]) -> str:
@@ -87,7 +98,10 @@ def _replace_scope_constraint(
 
 def upgrade() -> None:
     definition = _constraint_definition()
-    if definition == _CURRENT_SCOPE_DEFINITION:
+    if definition in {
+        _CURRENT_SCOPE_DEFINITION,
+        _scope_definition(_LATER_CANONICAL_SCOPES),
+    }:
         return
     if definition != _LEGACY_SCOPE_DEFINITION:
         raise RuntimeError("The connector probe scope constraint is missing or malformed.")

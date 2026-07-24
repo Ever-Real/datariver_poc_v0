@@ -4,7 +4,7 @@ from datetime import datetime
 from typing import Any
 from uuid import UUID
 
-from sqlalchemy import Boolean, Index, String, UniqueConstraint, Uuid
+from sqlalchemy import Boolean, Index, String, UniqueConstraint, Uuid, text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from datariver.infrastructure.db.base import (
@@ -40,6 +40,16 @@ class PolicyDecisionModel(Base, UuidPrimaryKeyMixin):
     __tablename__ = "policy_decisions"
     __table_args__ = (
         Index("ix_policy_decisions_workspace_time", "workspace_id", "decided_at"),
+        Index(
+            "ux_policy_decisions_source_analysis_finalization",
+            "workspace_id",
+            "request_id",
+            "action",
+            unique=True,
+            postgresql_where=text(
+                "evaluation_context ->> 'kind' = 'knowledge_source_job_finalization'"
+            ),
+        ),
         {"schema": "authz"},
     )
 

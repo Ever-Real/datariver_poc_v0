@@ -6,6 +6,7 @@ from uuid import UUID
 
 from sqlalchemy import (
     BigInteger,
+    Boolean,
     CheckConstraint,
     ForeignKeyConstraint,
     Index,
@@ -14,6 +15,7 @@ from sqlalchemy import (
     Text,
     UniqueConstraint,
     Uuid,
+    text,
 )
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -110,6 +112,15 @@ class ChangeSetModel(Base, UuidPrimaryKeyMixin, TimestampMixin, VersionMixin):
             ),
             use_alter=True,
         ),
+        ForeignKeyConstraint(
+            ("workspace_id", "source_analysis_job_id"),
+            (
+                "knowledge.source_analysis_jobs.workspace_id",
+                "knowledge.source_analysis_jobs.id",
+            ),
+            ondelete="RESTRICT",
+            use_alter=True,
+        ),
         {"schema": "knowledge"},
     )
 
@@ -120,6 +131,7 @@ class ChangeSetModel(Base, UuidPrimaryKeyMixin, TimestampMixin, VersionMixin):
     title: Mapped[str] = mapped_column(String(500), nullable=False)
     state: Mapped[str] = mapped_column(String(32), default="DRAFT", nullable=False)
     author_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), nullable=False)
+    source_analysis_job_id: Mapped[UUID | None] = mapped_column(Uuid(as_uuid=True))
     reviewed_by: Mapped[UUID | None] = mapped_column(Uuid(as_uuid=True))
     reviewed_at: Mapped[datetime | None]
     review_reason: Mapped[str | None] = mapped_column(Text)
@@ -368,6 +380,321 @@ class KnowledgePageEmbeddingModel(Base, UuidPrimaryKeyMixin, TimestampMixin):
     content_sha256: Mapped[str] = mapped_column(String(64), nullable=False)
 
 
+class KnowledgeSourceAnalysisJobModel(
+    Base,
+    UuidPrimaryKeyMixin,
+    TimestampMixin,
+    VersionMixin,
+):
+    __tablename__ = "source_analysis_jobs"
+    __table_args__ = (
+        UniqueConstraint("workspace_id", "id"),
+        UniqueConstraint("workspace_id", "source_snapshot_id"),
+        ForeignKeyConstraint(
+            ("workspace_id", "graph_id"),
+            ("knowledge.graphs.workspace_id", "knowledge.graphs.id"),
+            ondelete="RESTRICT",
+        ),
+        ForeignKeyConstraint(
+            ("workspace_id", "source_snapshot_id"),
+            ("knowledge.source_snapshots.workspace_id", "knowledge.source_snapshots.id"),
+            ondelete="RESTRICT",
+        ),
+        ForeignKeyConstraint(
+            ("workspace_id", "graph_id", "base_release_id"),
+            (
+                "knowledge.releases.workspace_id",
+                "knowledge.releases.graph_id",
+                "knowledge.releases.id",
+            ),
+            ondelete="RESTRICT",
+            use_alter=True,
+        ),
+        ForeignKeyConstraint(
+            ("workspace_id", "graph_id", "ontology_version_id"),
+            (
+                "knowledge.ontology_versions.workspace_id",
+                "knowledge.ontology_versions.graph_id",
+                "knowledge.ontology_versions.id",
+            ),
+            ondelete="RESTRICT",
+        ),
+        ForeignKeyConstraint(
+            ("workspace_id", "graph_id", "result_changeset_id"),
+            (
+                "knowledge.changesets.workspace_id",
+                "knowledge.changesets.graph_id",
+                "knowledge.changesets.id",
+            ),
+            ondelete="RESTRICT",
+            use_alter=True,
+        ),
+        ForeignKeyConstraint(
+            ("workspace_id", "requested_by"),
+            ("iam.workspace_memberships.workspace_id", "iam.workspace_memberships.subject_id"),
+            ondelete="RESTRICT",
+        ),
+        ForeignKeyConstraint(
+            ("workspace_id", "cancel_requested_by"),
+            ("iam.workspace_memberships.workspace_id", "iam.workspace_memberships.subject_id"),
+            ondelete="RESTRICT",
+        ),
+        CheckConstraint(
+            "state IN ('QUEUED', 'RUNNING', 'RETRY_WAIT', 'CANCEL_REQUESTED', "
+            "'SUCCEEDED', 'FAILED', 'STALE', 'CANCELLED')",
+            name="state_vocabulary",
+        ),
+        CheckConstraint(
+            "stage IN ('QUEUED', 'SOURCE_READ', 'PARSED', 'EMBEDDED', 'EXTRACTED', "
+            "'FINALIZING', 'COMPLETED')",
+            name="stage_vocabulary",
+        ),
+        CheckConstraint(
+            "base_kind IN ('EMPTY', 'RELEASE') AND "
+            "((base_kind = 'EMPTY' AND base_release_id IS NULL AND base_release_hash IS NULL) "
+            "OR (base_kind = 'RELEASE' AND base_release_id IS NOT NULL "
+            "AND base_release_hash ~ '^[0-9a-f]{64}$'))",
+            name="base_binding_shape",
+        ),
+        CheckConstraint(
+            "source_content_sha256 ~ '^[0-9a-f]{64}$' AND "
+            "ontology_checksum ~ '^[0-9a-f]{64}$' AND "
+            "parser_config_hash ~ '^[0-9a-f]{64}$' AND "
+            "embedding_binding_hash ~ '^[0-9a-f]{64}$' AND "
+            "extraction_binding_hash ~ '^[0-9a-f]{64}$' AND "
+            "pin_hash ~ '^[0-9a-f]{64}$' AND "
+            "request_hash ~ '^[0-9a-f]{64}$' AND "
+            "requester_authorization_hash ~ '^[0-9a-f]{64}$'",
+            name="evidence_hashes",
+        ),
+        CheckConstraint("source_classification BETWEEN 0 AND 1", name="inference_classification"),
+        CheckConstraint(
+            "graph_version > 0 AND attempt_count >= 0 AND maximum_attempts > 0 "
+            "AND attempt_count <= maximum_attempts AND lease_epoch >= 0",
+            name="counters",
+        ),
+        CheckConstraint(
+            "lease_token_hash IS NULL OR lease_token_hash ~ '^[0-9a-f]{64}$'",
+            name="lease_token_hash",
+        ),
+        CheckConstraint(
+            "(state IN ('RUNNING', 'CANCEL_REQUESTED') "
+            "AND lease_token_hash IS NOT NULL AND lease_owner_fingerprint IS NOT NULL "
+            "AND lease_started_at IS NOT NULL AND lease_expires_at IS NOT NULL) OR "
+            "(state NOT IN ('RUNNING', 'CANCEL_REQUESTED') "
+            "AND lease_token_hash IS NULL AND lease_owner_fingerprint IS NULL "
+            "AND lease_started_at IS NULL AND lease_expires_at IS NULL)",
+            name="lease_shape",
+        ),
+        CheckConstraint(
+            "((state = 'SUCCEEDED') AND result_changeset_id IS NOT NULL "
+            "AND result_evidence_hash ~ '^[0-9a-f]{64}$' AND completed_at IS NOT NULL "
+            "AND last_failure_code IS NULL) OR "
+            "((state <> 'SUCCEEDED') AND result_changeset_id IS NULL "
+            "AND result_evidence_hash IS NULL) ",
+            name="result_shape",
+        ),
+        CheckConstraint(
+            "((state IN ('FAILED', 'STALE')) AND last_failure_code IS NOT NULL "
+            "AND completed_at IS NOT NULL) OR "
+            "(state = 'RETRY_WAIT' AND last_failure_code IS NOT NULL "
+            "AND completed_at IS NULL) OR "
+            "((state NOT IN ('FAILED', 'STALE', 'RETRY_WAIT')) "
+            "AND last_failure_code IS NULL)",
+            name="failure_shape",
+        ),
+        CheckConstraint(
+            "((state IN ('CANCEL_REQUESTED', 'CANCELLED')) "
+            "AND cancel_requested_by IS NOT NULL AND cancel_requested_at IS NOT NULL "
+            "AND cancel_reason IS NOT NULL) OR "
+            "((state NOT IN ('CANCEL_REQUESTED', 'CANCELLED')) "
+            "AND cancel_requested_by IS NULL AND cancel_requested_at IS NULL "
+            "AND cancel_reason IS NULL)",
+            name="cancel_shape",
+        ),
+        CheckConstraint(
+            "(state IN ('SUCCEEDED', 'FAILED', 'STALE', 'CANCELLED')) = (completed_at IS NOT NULL)",
+            name="terminal_completion",
+        ),
+        CheckConstraint(
+            "(state IN ('SUCCEEDED', 'FAILED', 'STALE', 'CANCELLED')) = (stage = 'COMPLETED')",
+            name="terminal_stage",
+        ),
+        CheckConstraint(
+            "(state IN ('QUEUED', 'RETRY_WAIT') AND stage = 'QUEUED') OR "
+            "(state IN ('RUNNING', 'CANCEL_REQUESTED') AND "
+            "stage IN ('SOURCE_READ', 'PARSED', 'EMBEDDED', 'EXTRACTED', 'FINALIZING')) OR "
+            "(state IN ('SUCCEEDED', 'FAILED', 'STALE', 'CANCELLED') "
+            "AND stage = 'COMPLETED')",
+            name="execution_stage_shape",
+        ),
+        Index(
+            "ix_source_analysis_jobs_claim",
+            "workspace_id",
+            "next_attempt_at",
+            "created_at",
+            "id",
+            postgresql_where=text("state IN ('QUEUED', 'RETRY_WAIT')"),
+        ),
+        Index(
+            "ix_source_analysis_jobs_expired",
+            "workspace_id",
+            "lease_expires_at",
+            "id",
+            postgresql_where=text("state IN ('RUNNING', 'CANCEL_REQUESTED')"),
+        ),
+        Index(
+            "ix_source_analysis_jobs_graph_created",
+            "workspace_id",
+            "graph_id",
+            "created_at",
+            "id",
+        ),
+        {"schema": "knowledge"},
+    )
+
+    workspace_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), nullable=False)
+    graph_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), nullable=False)
+    source_snapshot_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), nullable=False)
+    requested_by: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), nullable=False)
+    title: Mapped[str] = mapped_column(String(500), nullable=False)
+    request_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    requester_authorization_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    source_storage_version: Mapped[str] = mapped_column(String(255), nullable=False)
+    source_content_sha256: Mapped[str] = mapped_column(String(64), nullable=False)
+    source_classification: Mapped[int] = mapped_column(nullable=False)
+    graph_version: Mapped[int] = mapped_column(nullable=False)
+    base_kind: Mapped[str] = mapped_column(String(20), nullable=False)
+    base_release_id: Mapped[UUID | None] = mapped_column(Uuid(as_uuid=True))
+    base_release_hash: Mapped[str | None] = mapped_column(String(64))
+    ontology_version_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), nullable=False)
+    ontology_checksum: Mapped[str] = mapped_column(String(64), nullable=False)
+    parser_config_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    embedding_binding: Mapped[dict[str, Any]] = mapped_column(JSON_DOCUMENT, nullable=False)
+    embedding_binding_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    extraction_binding: Mapped[dict[str, Any]] = mapped_column(JSON_DOCUMENT, nullable=False)
+    extraction_binding_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    pin_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    prepared_at: Mapped[datetime] = mapped_column(nullable=False)
+    state: Mapped[str] = mapped_column(String(32), nullable=False)
+    stage: Mapped[str] = mapped_column(String(32), nullable=False)
+    progress: Mapped[dict[str, Any]] = mapped_column(JSON_DOCUMENT, nullable=False)
+    next_attempt_at: Mapped[datetime] = mapped_column(nullable=False)
+    attempt_count: Mapped[int] = mapped_column(nullable=False)
+    maximum_attempts: Mapped[int] = mapped_column(nullable=False)
+    lease_epoch: Mapped[int] = mapped_column(nullable=False)
+    lease_token_hash: Mapped[str | None] = mapped_column(String(64))
+    lease_owner_fingerprint: Mapped[str | None] = mapped_column(String(255))
+    lease_started_at: Mapped[datetime | None]
+    lease_expires_at: Mapped[datetime | None]
+    cancel_requested_by: Mapped[UUID | None] = mapped_column(Uuid(as_uuid=True))
+    cancel_requested_at: Mapped[datetime | None]
+    cancel_reason: Mapped[str | None] = mapped_column(String(1000))
+    result_changeset_id: Mapped[UUID | None] = mapped_column(Uuid(as_uuid=True))
+    result_evidence_hash: Mapped[str | None] = mapped_column(String(64))
+    last_failure_code: Mapped[str | None] = mapped_column(String(100))
+    completed_at: Mapped[datetime | None]
+
+
+class KnowledgeSourceAnalysisAttemptModel(Base, UuidPrimaryKeyMixin):
+    __tablename__ = "source_analysis_attempts"
+    __table_args__ = (
+        UniqueConstraint("workspace_id", "id"),
+        UniqueConstraint("workspace_id", "job_id", "attempt_no"),
+        UniqueConstraint("workspace_id", "job_id", "lease_epoch"),
+        ForeignKeyConstraint(
+            ("workspace_id", "job_id"),
+            ("knowledge.source_analysis_jobs.workspace_id", "knowledge.source_analysis_jobs.id"),
+            ondelete="RESTRICT",
+        ),
+        CheckConstraint("attempt_no > 0 AND lease_epoch > 0", name="counters"),
+        CheckConstraint(
+            "state IN ('RUNNING', 'SUCCEEDED', 'FAILED', 'STALE', 'CANCELLED', 'SUPERSEDED')",
+            name="state_vocabulary",
+        ),
+        CheckConstraint(
+            "stage IN ('SOURCE_READ', 'PARSED', 'EMBEDDED', 'EXTRACTED', "
+            "'FINALIZING', 'COMPLETED')",
+            name="stage_vocabulary",
+        ),
+        CheckConstraint("lease_token_hash ~ '^[0-9a-f]{64}$'", name="lease_token_hash"),
+        CheckConstraint(
+            "input_hash ~ '^[0-9a-f]{64}$' AND "
+            "(output_hash IS NULL OR output_hash ~ '^[0-9a-f]{64}$') AND "
+            "(external_response_hash IS NULL "
+            "OR external_response_hash ~ '^[0-9a-f]{64}$')",
+            name="evidence_hashes",
+        ),
+        CheckConstraint(
+            "(state = 'RUNNING' AND finished_at IS NULL) "
+            "OR (state <> 'RUNNING' AND finished_at IS NOT NULL)",
+            name="terminal_shape",
+        ),
+        Index("ix_source_analysis_attempts_job", "workspace_id", "job_id", "attempt_no"),
+        {"schema": "knowledge"},
+    )
+
+    workspace_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), nullable=False)
+    job_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), nullable=False)
+    attempt_no: Mapped[int] = mapped_column(nullable=False)
+    lease_epoch: Mapped[int] = mapped_column(nullable=False)
+    lease_token_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    worker_fingerprint: Mapped[str] = mapped_column(String(255), nullable=False)
+    state: Mapped[str] = mapped_column(String(32), nullable=False)
+    stage: Mapped[str] = mapped_column(String(32), nullable=False)
+    input_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    output_hash: Mapped[str | None] = mapped_column(String(64))
+    external_response_hash: Mapped[str | None] = mapped_column(String(64))
+    retryable: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    failure_code: Mapped[str | None] = mapped_column(String(100))
+    started_at: Mapped[datetime] = mapped_column(nullable=False)
+    finished_at: Mapped[datetime | None]
+
+
+class KnowledgeSourceAnalysisEventModel(Base):
+    __tablename__ = "source_analysis_events"
+    __table_args__ = (
+        UniqueConstraint("workspace_id", "job_id", "sequence"),
+        ForeignKeyConstraint(
+            ("workspace_id", "job_id"),
+            ("knowledge.source_analysis_jobs.workspace_id", "knowledge.source_analysis_jobs.id"),
+            ondelete="RESTRICT",
+        ),
+        ForeignKeyConstraint(
+            ("workspace_id", "attempt_id"),
+            (
+                "knowledge.source_analysis_attempts.workspace_id",
+                "knowledge.source_analysis_attempts.id",
+            ),
+            ondelete="RESTRICT",
+        ),
+        CheckConstraint("sequence > 0", name="sequence_positive"),
+        CheckConstraint("evidence_hash ~ '^[0-9a-f]{64}$'", name="evidence_hash"),
+        Index("ix_source_analysis_events_job", "workspace_id", "job_id", "sequence"),
+        Index(
+            "ux_source_analysis_events_transition_evidence",
+            "workspace_id",
+            "job_id",
+            "event_type",
+            "occurred_at",
+            unique=True,
+        ),
+        {"schema": "knowledge"},
+    )
+
+    id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True)
+    workspace_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), nullable=False)
+    job_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), nullable=False)
+    sequence: Mapped[int] = mapped_column(nullable=False)
+    attempt_id: Mapped[UUID | None] = mapped_column(Uuid(as_uuid=True))
+    event_type: Mapped[str] = mapped_column(String(100), nullable=False)
+    actor_ref: Mapped[str] = mapped_column(String(255), nullable=False)
+    reason_code: Mapped[str | None] = mapped_column(String(100))
+    evidence_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    details: Mapped[dict[str, Any]] = mapped_column(JSON_DOCUMENT, nullable=False)
+    occurred_at: Mapped[datetime] = mapped_column(nullable=False)
+
+
 class KnowledgeExtractionRunModel(Base, UuidPrimaryKeyMixin, TimestampMixin, VersionMixin):
     __tablename__ = "extraction_runs"
     __table_args__ = (
@@ -387,7 +714,28 @@ class KnowledgeExtractionRunModel(Base, UuidPrimaryKeyMixin, TimestampMixin, Ver
             ("knowledge.changesets.workspace_id", "knowledge.changesets.id"),
             ondelete="RESTRICT",
         ),
+        ForeignKeyConstraint(
+            ("workspace_id", "source_analysis_job_id"),
+            ("knowledge.source_analysis_jobs.workspace_id", "knowledge.source_analysis_jobs.id"),
+            ondelete="RESTRICT",
+        ),
+        ForeignKeyConstraint(
+            ("workspace_id", "source_analysis_attempt_id"),
+            (
+                "knowledge.source_analysis_attempts.workspace_id",
+                "knowledge.source_analysis_attempts.id",
+            ),
+            ondelete="RESTRICT",
+        ),
         CheckConstraint("state IN ('SUCCEEDED', 'FAILED')", name="state_vocabulary"),
+        CheckConstraint(
+            "contract_version IN ('LEGACY_SYNC_V1', 'DURABLE_SOURCE_V1') AND "
+            "((contract_version = 'LEGACY_SYNC_V1' AND source_analysis_job_id IS NULL "
+            "AND source_analysis_attempt_id IS NULL) OR "
+            "(contract_version = 'DURABLE_SOURCE_V1' AND source_analysis_job_id IS NOT NULL "
+            "AND source_analysis_attempt_id IS NOT NULL))",
+            name="contract_shape",
+        ),
         CheckConstraint("input_hash ~ '^[0-9a-f]{64}$'", name="input_hash"),
         CheckConstraint("output_hash ~ '^[0-9a-f]{64}$'", name="output_hash"),
         Index("ix_extraction_runs_graph_created", "graph_id", "created_at"),
@@ -398,6 +746,14 @@ class KnowledgeExtractionRunModel(Base, UuidPrimaryKeyMixin, TimestampMixin, Ver
     graph_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), nullable=False)
     source_snapshot_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), nullable=False)
     proposed_changeset_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), nullable=False)
+    source_analysis_job_id: Mapped[UUID | None] = mapped_column(Uuid(as_uuid=True))
+    source_analysis_attempt_id: Mapped[UUID | None] = mapped_column(Uuid(as_uuid=True))
+    contract_version: Mapped[str] = mapped_column(
+        String(32),
+        default="LEGACY_SYNC_V1",
+        server_default="LEGACY_SYNC_V1",
+        nullable=False,
+    )
     state: Mapped[str] = mapped_column(String(32), nullable=False)
     parser_config_hash: Mapped[str] = mapped_column(String(64), nullable=False)
     embedding_binding: Mapped[dict[str, Any]] = mapped_column(JSON_DOCUMENT, nullable=False)

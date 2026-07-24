@@ -30,6 +30,7 @@ services:
       - postgres_relay_password
       - postgres_upload_password
       - postgres_governance_password
+      - postgres_knowledge_password
       - postgres_export_password
       - postgres_retention_scheduler_password
       - postgres_archive_password
@@ -223,6 +224,33 @@ services:
     tmpfs:
       - /tmp:size=32m,noexec,nosuid
 
+  knowledge-source-worker:
+    <<: *backend
+    profiles: ["knowledge-source"]
+    secrets:
+      - postgres_knowledge_password
+      - redis_delivery_password
+      - source: redis_delivery_password
+        target: valkey_queue_password
+      - s3_knowledge_access_key
+      - s3_knowledge_secret_key
+      - intranet_llm_chat_api_key
+      - intranet_llm_embedding_api_key
+    command: ["/app/.venv/bin/python", "-m", "datariver.workers.knowledge_source"]
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    networks:
+      - data
+      - connectors
+    volumes:
+      - knowledge-spool:/var/spool/datariver-knowledge
+    mem_limit: 768m
+    cpus: 0.75
+    read_only: true
+    security_opt:
+      - no-new-privileges:true
+
   catalog-export-worker:
     <<: *backend
     profiles: ["catalog-export"]
@@ -339,6 +367,7 @@ networks:
 
 volumes:
   postgres-data:
+  knowledge-spool:
 
 secrets:
   postgres_password:
@@ -351,6 +380,8 @@ secrets:
     file: ./secrets/postgres_upload_password
   postgres_governance_password:
     file: ./secrets/postgres_governance_password
+  postgres_knowledge_password:
+    file: ./secrets/postgres_knowledge_password
   postgres_export_password:
     file: ./secrets/postgres_export_password
   postgres_retention_scheduler_password:
@@ -395,6 +426,10 @@ secrets:
     file: ./secrets/s3_export_access_key
   s3_export_secret_key:
     file: ./secrets/s3_export_secret_key
+  s3_knowledge_access_key:
+    file: ./secrets/s3_knowledge_access_key
+  s3_knowledge_secret_key:
+    file: ./secrets/s3_knowledge_secret_key
   s3_archive_access_key:
     file: ./secrets/s3_archive_access_key
   s3_archive_secret_key:

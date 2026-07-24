@@ -172,7 +172,7 @@ privilege. No API or ordinary application unit of work can claim or complete exe
 |---|---|---|
 | `knowledge.graphs` | `id`, `workspace + slug UQ`, name/type/status/classification/active release, `version`, timestamps | graph aggregate and active pointer |
 | `knowledge.ontology_versions` | `id`, graph/version/schema/checksum/status, timestamps | typed ontology versions |
-| `knowledge.changesets` | `id`, graph/base release/ontology/title/state/author/reviewer/published release, `version`, timestamps | incremental author/review/publish aggregate |
+| `knowledge.changesets` | `id`, graph/base release/ontology/title/state/author/reviewer/published release, nullable `source_analysis_job_id`, `version`, timestamps | incremental author/review/publish aggregate; a durable worker-created DRAFT is bound to exactly one source-analysis job |
 | `knowledge.change_operations` | `id`, `changeset_id + sequence UQ`, operation/kind/stable ID/document/provenance/confidence | ordered typed node/edge edits; model-proposed provenance includes verified excerpt/excerpt hash/page hash |
 | `knowledge.validation_results` | `id`, changeset/validator/version/severity/code/location/message/time | persisted submission validation evidence |
 | `knowledge.releases` | `id`, `graph_id + release_no UQ`, ontology/content hash/counts/publisher/time | immutable release manifest |
@@ -181,8 +181,11 @@ privilege. No API or ordinary application unit of work can claim or complete exe
 | `knowledge.projection_deployments` | `id`, graph/release/job, adapter/target/state/content and verification hashes/counts/verified time/error | exact canonical PostgreSQL or Neo4j shadow read-back evidence; verified state requires adapter-specific target, reconstructed content-hash and count equality |
 | `knowledge.source_snapshots` | graph/upload UQ, private object coordinate/version, PDF media/size/hash/classification/state/creator | immutable integrity-verified source binding; never an external URL |
 | `knowledge.source_pages` | source/page PK, page content hash and parsed text | reviewer-visible page-aware grounding source |
-| `knowledge.source_page_embeddings` | source/page/provider/model, dimension/vector and page hash | release-scoped semantic seed evidence for the exact parsed page |
-| `knowledge.extraction_runs` | source/changeset, parser hash, embedding/extraction bindings, input/output hashes/state/error | reproducible typed extraction execution and activated configuration revision evidence |
+| `knowledge.source_page_embeddings` | source/page/provider/model UQ, dimension `1..16384`, bounded JSON vector and page hash | source-scoped semantic evidence for the exact parsed page; PostgreSQL JSON is the current canonical storage contract, not pgvector or an external vector database claim |
+| `knowledge.source_analysis_jobs` | workspace/source UQ; graph/source/requester FKs; request/auth/source/base/graph/ontology/parser/model pin documents and hashes; state/stage/progress; retry counters; DB-time lease epoch and token hash; cancellation/result/failure/version/timestamps | durable PDF-to-DRAFT aggregate; one immutable source has at most one job and raw lease tokens, endpoints, credentials and private provider responses are not persisted |
+| `knowledge.source_analysis_attempts` | workspace/job/attempt and job/lease-epoch UQ; token hash, worker fingerprint, state/stage, input/output/external-response hashes, retry/failure and DB times | immutable attempt identity plus fenced terminal evidence; current/expired attempt state must agree with its parent job at commit |
+| `knowledge.source_analysis_events` | workspace/job/sequence UQ; optional same-job attempt, typed event/actor/reason, evidence hash, server-authored details and DB time | append-only API/worker transition ledger |
+| `knowledge.extraction_runs` | source/changeset, nullable durable job/attempt FKs, `LEGACY_SYNC_V1|DURABLE_SOURCE_V1`, parser hash, embedding/extraction bindings, input/output hashes/state/error | reproducible typed extraction evidence; `DURABLE_SOURCE_V1` requires both job and attempt while legacy synchronous rows require neither |
 | `knowledge.graphrag_audits` | graph/release/request UQ, actor, question hash, retrieved/cited IDs, model/prompt/tool and configuration source/version/hash, token counts | immutable citation-bounded inference audit without storing the raw question |
 
 The API supports changeset author/submit/independent-review/publish, PDF source extraction into a
@@ -198,9 +201,24 @@ selected identifiers are rehydrated from these immutable PostgreSQL rows before 
 PostgreSQL releases remain canonical; Neo4j can be deleted and rebuilt. Graph classification is a
 maximum envelope enforced on changeset operations, complete submission/review, publication,
 immutable source preparation, model-output persistence and release reads. Model operations inherit
-the immutable source classification exactly. The current Mac developer extraction call is
-synchronous and bounded. A leased durable inference worker remains a production promotion gate
-rather than an implemented production claim.
+the immutable source classification exactly. Durable PDF analysis is implemented as a separately
+credentialed worker for PUBLIC/INTERNAL sources. Enqueue pins the accepted manifest, graph/base,
+active ontology, parser and secret-free loaded deployment or activated System Configuration model
+bindings; finalization locks and rechecks those
+pins plus current requester authority before one transaction creates pages, JSON embeddings,
+`DURABLE_SOURCE_V1` extraction evidence, typed operations and a source-job-bound DRAFT. This is not
+evidence that a target WSL host or a production external model provider has passed acceptance.
+
+All three source-analysis ledger tables use forced workspace RLS. `datariver_app` can select only
+jobs/events owned by `app.subject_id`, can enqueue, and can perform only the column-bounded
+version-fenced cancellation transition; it cannot claim, create attempts or persist extraction
+results. The separate `datariver_knowledge` role must be `NOBYPASSRLS`. A worker-only
+`SECURITY DEFINER` function discovers at most 10,000 workspaces that contain currently eligible or
+expired work, after which ordinary workspace RLS is set for claim processing. Claim and finalization
+set a transaction-local raw lease token only long enough for PostgreSQL trigger checks; only its
+SHA-256 is stored. Triggers bind pages, embeddings, extraction runs, DRAFT/operations, source state,
+policy decisions and outbox rows to the current live job/attempt and reject an expired or
+superseded writer.
 
 Model-authored evidence text is never canonical input. The server whitespace-normalizes each parsed
 page into stable bounded evidence units, supplies only their opaque IDs to the model and resolves a
@@ -296,7 +314,7 @@ the canonical `0001` contract, upgrades install it atomically, and partial schem
 ## Backlog schema (not implemented)
 
 Versioned general ABAC policies/bindings, catalog relationships/normalized hierarchy, connection registry,
-general audit export, durable production inference jobs, saved-query templates
+general audit export, durable inference jobs beyond the implemented PDF-to-DRAFT capability, saved-query templates
 beyond the built-in surfaces and embedding partitions remain target tables. Governed retention
 policy versions, per-class minimum/maximum rules, Legal Hold history, typed Maker-Checker erasure
 requests/decisions, archive-only execution jobs/attempts/events and immutable archive
@@ -422,6 +440,19 @@ Alembic `0053` extends the persisted external-service TEST-scope CHECK by exactl
 does not rewrite historical rows and refuses downgrade while reranking inference evidence exists.
 The canonical `0001` contains the same vocabulary. A reranking TEST is connection evidence only;
 there is no reranker runtime activation or Chat consumer in this revision.
+
+Alembic `0054` implements ADR-0044's durable PDF-to-typed-DRAFT boundary. It adds the
+source-analysis job/attempt/event ledgers, the changeset job FK and the extraction
+`LEGACY_SYNC_V1|DURABLE_SOURCE_V1` discriminator/job/attempt FKs; installs forced RLS,
+owner-restrictive reads, a NOBYPASSRLS worker discovery function, DB-clock lease/token-hash/epoch
+fencing, deferred attempt/job terminal pairing and claim-scoped canonical/evidence triggers; and
+uses column-limited application/worker grants. Migration rejects a privileged worker or any
+membership that permits `SET ROLE`, revokes prior direct privileges across application schemas and
+reapplies the exact allowlist; DELETE fences remain even if a future grant drifts. The worker
+creates no release or governance
+approval. Downgrade refuses to erase durable job evidence. The generated `0001` must contain the
+same current schema and security objects; production provider-profile execution and target-host
+acceptance are separate gates.
 
 `EVENT_RETENTION_DAYS` is a target online-retention input, not a deletion switch. The Phase 2 worker
 archives only minimal erasure approval/execution evidence and stops at

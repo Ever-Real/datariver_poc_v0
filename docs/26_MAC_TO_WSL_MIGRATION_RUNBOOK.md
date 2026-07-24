@@ -43,6 +43,9 @@ scripts/compose.sh --env-file .env.mac-development \
   redis-cache redis-delivery minio
 scripts/compose.sh --env-file .env.mac-development \
   -f compose.yaml --profile object-storage-tools run --rm storage-init
+scripts/compose.sh --env-file .env.mac-development \
+  -f compose.local-connectors.yaml --profile object-storage \
+  run --rm minio-knowledge-identity-init
 ```
 
 Redis cache must report `appendonly=no` and `maxmemory-policy=allkeys-lfu`. Redis delivery must
@@ -66,6 +69,30 @@ uv run python scripts/probe_s3_contract.py \
   --accepted-bucket datariver-accepted \
   --allowed-origin http://localhost:38102
 ```
+
+`minio-knowledge-identity-init` renders its read policy from the configured
+`S3_BUCKET_ACCEPTED`; it does not assume `datariver-accepted`. It creates a non-admin identity with
+only accepted-bucket `GetBucketLocation` and `GetObject`. Record allowed object reads and denied
+anonymous, write, delete and other-bucket attempts with that identity. This is local-reference
+evidence only; target external S3 IAM remains `EXTERNAL_GATE`.
+
+Durable PDF analysis is optional and does not require Neo4j. To include it in the Mac acceptance,
+first configure and probe `LOCAL_OLLAMA_EMBEDDING_*` in `.env.mac-development`, then run:
+
+```bash
+scripts/bootstrap.sh --env-file .env.mac-development --mac-development \
+  --enable-knowledge-source-worker
+scripts/compose.sh --env-file .env.mac-development -f compose.yaml up -d --wait postgres
+DATARIVER_ENV_FILE=.env.mac-development scripts/reconcile-postgres-roles.sh
+scripts/compose.sh --env-file .env.mac-development -f compose.yaml run --rm migrate
+DATARIVER_ENV_FILE=.env.mac-development scripts/reconcile-postgres-roles.sh
+scripts/compose.sh --env-file .env.mac-development -f compose.yaml \
+  --profile knowledge-source up -d --wait api knowledge-source-worker
+```
+
+The bootstrap refuses the opt-in until Chat + Embedding are complete. It creates independent
+`datariver_knowledge` and `s3_knowledge_*` credentials; do not substitute the API/owner/general S3
+identity. The core remains usable and new PDF enqueue fails closed when the worker flag is false.
 
 ## 4. SeaweedFS to MinIO object cutover
 
@@ -155,6 +182,12 @@ Verify readiness, OIDC login/refresh/logout, catalog paging at 25/50/100, a smal
 presign/CORS/validation, DataHub read-only behavior and native Ollama chat separately. Keep Airflow,
 APISIX, Neo4j and telemetry stopped unless the current Mac test explicitly requires them.
 
+If durable PDF analysis is selected, also require Alembic `0054 (head)`, one job completing as a
+typed DRAFT, one version-fenced cancel, and a worker-kill/expired-lease recovery. The worker streams
+at most 50 MiB/500 pages, keeps only the configured memory threshold in RAM and spills into its
+worker-only `knowledge-spool` volume. Record peak memory and free-volume headroom; spool bytes are
+temporary and are not migration artifacts.
+
 For Registration activation, additionally prove an Admin positive journey, Data Steward
 owner-positive/workspace-history-negative journey and inactive/service/ordinary-user negatives.
 Then run one exact-commit Manual submission through external Airflow and require all five DataHub
@@ -190,6 +223,11 @@ Platform directories are immutable; options cannot be appended later. Prefer pul
 pinned connector digests directly on a connected WSL host. Never interpret an artifact-only check
 on Mac as WSL import evidence.
 
+The API and `knowledge-source-worker` use the same reviewed DataRiver backend image, so the core
+bundle contains the worker entry point without a separate mutable image. For both architecture
+bundles, require the exact same source commit and record every image platform. An arm64 execution
+pass or Mac cross-build is not an amd64/WSL runtime pass.
+
 ## 7. Final quiesced transfer boundary
 
 Create the final transfer only after the exact cut line: stop API producers; drain relay/workers;
@@ -200,6 +238,11 @@ evidence, not the final WSL transfer manifest. Use the checked-in helper so this
 gate rather than an operator assertion (add `--include-catalog-export` only when that worker was
 enabled):
 
+If Knowledge source analysis was enabled, stop new enqueue first and require every job terminal, or
+cancel it through the actor-owned version-fenced API and let the worker finish. A running lease,
+`CANCEL_REQUESTED` row or retry schedule is not a zero-work cut line and must not be repaired by
+editing PostgreSQL.
+
 ```bash
 scripts/compose.sh --env-file .env.mac-development \
   -f compose.yaml -f compose.identity.yaml stop api web
@@ -208,7 +251,8 @@ scripts/capture_cutover_state.sh \
   --output-dir runtime/migration/final/pre-stop-cutover-state
 scripts/compose.sh --env-file .env.mac-development \
   -f compose.yaml -f compose.identity.yaml stop \
-  outbox-relay upload-worker upload-validation-worker governance-apply-worker catalog-export-worker
+  outbox-relay upload-worker upload-validation-worker governance-apply-worker \
+  knowledge-source-worker catalog-export-worker
 scripts/capture_cutover_state.sh \
   --output-dir runtime/migration/final/cutover-state
 scripts/compose.sh --env-file .env.mac-development \
@@ -277,9 +321,18 @@ endpoint may be used within the existing adapter policy.
 For ordinary Chat through an approved private OpenAI-compatible server, set the exact host in
 `INTRANET_OPENAI_COMPATIBLE_ALLOWED_HOSTS`, enable Chat, set its HTTPS `/v1` base URL and model, and
 use `file:/run/secrets/intranet_llm_chat_api_key`. Replace that generated placeholder file through
-the secret channel. Keep Embedding and `KNOWLEDGE_PIPELINE_ENABLED` disabled unless the separately
-required Embedding and Neo4j contracts are selected. A public/SaaS endpoint is outside this
-development adapter's accepted boundary.
+the secret channel. Durable PDF analysis independently requires the matching private Embedding
+contract and key; it does **not** require `KNOWLEDGE_PIPELINE_ENABLED` or Neo4j. After configuring
+and probing both contracts, rerun the exact preparation bootstrap to opt in:
+
+```bash
+scripts/bootstrap.sh --env-file .env.wsl-preparation --wsl-preparation \
+  --enable-knowledge-source-worker
+```
+
+A public/SaaS endpoint is outside this development adapter's accepted boundary. Private
+OpenAI-compatible Chat/Embedding reachability, response conformance, secret handling and resource
+load on WSL are `EXTERNAL_GATE`.
 
 The wrapper creates the named connector network before a start operation. Choose one Redis branch:
 
@@ -346,10 +399,12 @@ docker exec -i datariver-next-postgres-1 sh -ec \
   'PGPASSWORD="$(tr -d "\r\n" </run/secrets/keycloak_db_password)" \
    exec pg_restore --single-transaction --exit-on-error --no-owner --no-acl \
    -U keycloak -d keycloak' < /transfer/migration/keycloak.dump
+DATARIVER_ENV_FILE=.env.wsl-preparation scripts/reconcile-postgres-roles.sh
 scripts/compose.sh --env-file .env.wsl-preparation \
   -f compose.yaml -f compose.identity.yaml \
   -f /transfer/datariver-RELEASE/amd64/offline-core.compose.yaml \
   run --rm --pull never migrate
+DATARIVER_ENV_FILE=.env.wsl-preparation scripts/reconcile-postgres-roles.sh
 scripts/compose.sh --env-file .env.wsl-preparation --profile tools \
   -f compose.yaml -f compose.identity.yaml \
   -f /transfer/datariver-RELEASE/amd64/offline-core.compose.yaml \
@@ -360,6 +415,12 @@ docker exec datariver-next-postgres-1 sh -ec \
    -c "SELECT count(*) FROM iam.subjects WHERE id IN ('\''00000000-0000-4000-8000-000000000101'\'', '\''00000000-0000-4000-8000-000000000102'\'') AND issuer = '\''http://localhost:8081/realms/datariver'\'';"'
 # The issuer query must print exactly 2 before Keycloak/API starts.
 ```
+
+Require `0054 (head)` after migration. Revision `0054` refuses a missing, privileged, BYPASSRLS or
+role-member `datariver_knowledge` principal, so role reconciliation and a reviewed membership
+inventory must happen before migration on the restored volume and again afterward. It revokes prior
+direct application-schema privileges before applying its exact allowlist. It also refuses downgrade
+after any durable analysis job exists; never delete its ledger or stamp around that evidence gate.
 
 If either restore fails, stop there. Preserve its logs and discard only the explicitly verified
 fresh target `datariver-next_postgres-data` volume before a clean retry; never retry into a
@@ -406,6 +467,12 @@ uv run python scripts/migrate_s3_objects.py \
   --target-secret-key-file secrets/s3_secret_key
 ```
 
+The WSL external storage owner must also provision the accepted-bucket identity represented by
+`S3_KNOWLEDGE_ACCESS_KEY_FILE` and `S3_KNOWLEDGE_SECRET_KEY_FILE`. Give it only
+`GetBucketLocation` plus `GetObject` under the exact configured `S3_BUCKET_ACCEPTED`; record
+anonymous, write, delete and other-bucket denials. Do not use the storage-initializer/API
+credentials in `knowledge-source-worker`. This target IAM proof remains `EXTERNAL_GATE`.
+
 Start Keycloak alone. Replace the target `keycloak_admin_password` with the securely transferred
 source value first, then reconcile the WSL redirect and the target-generated identity/Airflow
 client secrets. Supply the target Airflow client secret to the external Airflow owner:
@@ -430,6 +497,24 @@ scripts/compose.sh --env-file .env.wsl-preparation \
   api web outbox-relay upload-worker upload-validation-worker governance-apply-worker
 ```
 
+If durable PDF analysis passed its provider/S3 gates, add it explicitly; otherwise keep the flag
+false and leave this profile stopped:
+
+```bash
+scripts/compose.sh --env-file .env.wsl-preparation \
+  -f compose.yaml -f compose.identity.yaml \
+  -f /transfer/datariver-RELEASE/amd64/offline-core.compose.yaml \
+  --profile knowledge-source up -d --wait --no-build --pull never \
+  knowledge-source-worker
+```
+
+Disablement sets the flag false, recreates the API and stops the worker. It retains queued and
+terminal evidence. Use the actor-owned cancel endpoint with the current positive job version in
+`If-Match` plus a unique 16–200-character `Idempotency-Key`; never edit lease/job/attempt rows.
+After a crash, wait for the database-clock lease to expire and let a restarted worker supersede and
+recover the attempt. Keep at least one 50-MiB source per worker plus overhead free in the
+worker-only `knowledge-spool` volume.
+
 Redis cache is disposable. Delivery stream state is not copied: the source cut line requires it to
 be drained, and canonical PostgreSQL outbox state is checked before the target relay starts.
 
@@ -441,7 +526,14 @@ Do not route users until all are recorded:
 - PostgreSQL row counts, Alembic sole head, forced-RLS negative tests and Keycloak OIDC flows;
 - Redis cache/delivery policy, MinIO full-byte reconciliation, anonymous denial and CORS/presign;
 - catalog pagination/memory, upload, DataHub outage behavior and selected LLM/graph features;
+- when selected, durable PDF DRAFT creation, cancellation race, lease reclaim, worker-only spool
+  capacity/permissions and core behavior while enqueue is disabled;
 - peak RSS/CPU/disk during a representative bounded workload and a restart/restore rehearsal.
+
+The real WSL/browser/OIDC journey, external MinIO/S3 IAM and byte reconciliation, private
+OpenAI-compatible Chat/Embedding behavior, amd64 target-daemon execution and representative load
+are `EXTERNAL_GATE`. Local Mac tests, cross-builds and artifact-only verification do not close
+them.
 
 Rollback stops WSL writers, preserves the failed target and returns traffic to the untouched Mac.
 If WSL accepted new writes, do not reverse-copy automatically; reconcile that delta under a new

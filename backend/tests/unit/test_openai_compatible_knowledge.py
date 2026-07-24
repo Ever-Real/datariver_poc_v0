@@ -63,6 +63,16 @@ def test_model_binding_records_deployment_or_activated_configuration_revision() 
         configuration_hash="c" * 64,
         adapter_contract="openai-compatible-chat-json-schema-v1",
     )
+    routed_deployment = ModelBinding.activated(
+        provider="ollama",
+        model="gemma4:latest",
+        prompt_version="knowledge-v1",
+        tool_schema_version="knowledge-schema-v1",
+        configuration_version=None,
+        configuration_hash=None,
+        adapter_contract="openai-compatible-chat-json-schema-v1",
+        deployment_configuration_hash="d" * 64,
+    )
 
     assert deployment.configuration_source == "DEPLOYMENT"
     assert deployment.configuration_version is None
@@ -71,6 +81,7 @@ def test_model_binding_records_deployment_or_activated_configuration_revision() 
     assert activated.configuration_source == "SYSTEM_CONFIGURATION"
     assert activated.configuration_version == 7
     assert activated.configuration_hash == "c" * 64
+    assert routed_deployment.configuration_hash == "d" * 64
 
 
 @pytest.mark.asyncio

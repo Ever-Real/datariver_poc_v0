@@ -4,7 +4,8 @@ param(
     [string]$DataHubEmbedOrigin,
     [string]$WebPublicOrigin = "http://localhost:8080",
     [switch]$HostDevelopment,
-    [switch]$EnableCatalogExportWorker
+    [switch]$EnableCatalogExportWorker,
+    [switch]$EnableKnowledgeSourceWorker
 )
 
 $ErrorActionPreference = "Stop"
@@ -16,6 +17,56 @@ $retentionControlFile = Join-Path $root "runtime/retention-execution.enabled"
 $nativeWindows = [Runtime.InteropServices.RuntimeInformation]::IsOSPlatform(
     [Runtime.InteropServices.OSPlatform]::Windows
 )
+
+function Get-BootstrapEnvValue([string]$Name) {
+    $pattern = "^$([Regex]::Escape($Name))=(.*)$"
+    $value = $null
+    foreach ($line in [IO.File]::ReadAllLines($envFile, [Text.Encoding]::UTF8)) {
+        if ($line -match $pattern) {
+            $value = $Matches[1].Trim()
+        }
+    }
+    return $value
+}
+
+function Test-BootstrapEnvTrue([string]$Name) {
+    return [string]::Equals(
+        (Get-BootstrapEnvValue $Name),
+        "true",
+        [StringComparison]::OrdinalIgnoreCase
+    )
+}
+
+function Test-BootstrapEnvNonEmpty([string]$Name) {
+    return -not [string]::IsNullOrWhiteSpace((Get-BootstrapEnvValue $Name))
+}
+
+function Test-KnowledgeInferenceReady {
+    $localReady = (Test-BootstrapEnvTrue "LOCAL_OLLAMA_CHAT_ENABLED") -and
+        (Test-BootstrapEnvTrue "LOCAL_OLLAMA_EMBEDDING_ENABLED") -and
+        (Test-BootstrapEnvNonEmpty "LOCAL_OLLAMA_CHAT_BASE_URL") -and
+        (Test-BootstrapEnvNonEmpty "LOCAL_OLLAMA_CHAT_MODEL") -and
+        (Test-BootstrapEnvNonEmpty "LOCAL_OLLAMA_EMBEDDING_BASE_URL") -and
+        (Test-BootstrapEnvNonEmpty "LOCAL_OLLAMA_EMBEDDING_MODEL")
+    $intranetReady =
+        (Test-BootstrapEnvTrue "INTRANET_OPENAI_COMPATIBLE_CHAT_ENABLED") -and
+        (Test-BootstrapEnvTrue "INTRANET_OPENAI_COMPATIBLE_EMBEDDING_ENABLED") -and
+        (Test-BootstrapEnvNonEmpty "INTRANET_OPENAI_COMPATIBLE_ALLOWED_HOSTS") -and
+        (Test-BootstrapEnvNonEmpty "INTRANET_OPENAI_COMPATIBLE_CHAT_BASE_URL") -and
+        (Test-BootstrapEnvNonEmpty "INTRANET_OPENAI_COMPATIBLE_CHAT_MODEL") -and
+        (Test-BootstrapEnvNonEmpty "INTRANET_OPENAI_COMPATIBLE_CHAT_API_KEY_SECRET_REF") -and
+        (Test-BootstrapEnvNonEmpty "INTRANET_OPENAI_COMPATIBLE_EMBEDDING_BASE_URL") -and
+        (Test-BootstrapEnvNonEmpty "INTRANET_OPENAI_COMPATIBLE_EMBEDDING_MODEL") -and
+        (Test-BootstrapEnvNonEmpty "INTRANET_OPENAI_COMPATIBLE_EMBEDDING_API_KEY_SECRET_REF")
+    return $localReady -or $intranetReady
+}
+
+if (-not (Test-Path -LiteralPath $envFile)) {
+    Copy-Item -LiteralPath (Join-Path $root ".env.example") -Destination $envFile
+}
+if ($EnableKnowledgeSourceWorker -and -not (Test-KnowledgeInferenceReady)) {
+    throw "EnableKnowledgeSourceWorker requires one complete Chat+Embedding pair in .env (local Ollama or intranet OpenAI-compatible)."
+}
 
 function Set-OwnerOnlyWindowsAcl([string]$Path, [switch]$Directory) {
     if (-not $nativeWindows) {
@@ -151,15 +202,12 @@ function Set-EnvValue([string]$Name, [string]$Value) {
     [IO.File]::WriteAllLines($envFile, $lines, [Text.UTF8Encoding]::new($false))
 }
 
-if (-not (Test-Path -LiteralPath $envFile)) {
-    Copy-Item -LiteralPath (Join-Path $root ".env.example") -Destination $envFile
-}
-
 $postgresPassword = Get-OrCreateSecret "postgres_password"
 $postgresAppPassword = Get-OrCreateSecret "postgres_app_password"
 $postgresRelayPassword = Get-OrCreateSecret "postgres_relay_password"
 $postgresUploadPassword = Get-OrCreateSecret "postgres_upload_password"
 $postgresGovernancePassword = Get-OrCreateSecret "postgres_governance_password"
+$postgresKnowledgePassword = Get-OrCreateSecret "postgres_knowledge_password"
 $postgresExportPassword = Get-OrCreateSecret "postgres_export_password"
 $postgresRetentionSchedulerPassword = Get-OrCreateSecret "postgres_retention_scheduler_password"
 $postgresArchivePassword = Get-OrCreateSecret "postgres_archive_password"
@@ -224,6 +272,21 @@ if ((Test-Path -LiteralPath $s3ExportAccessKeyPath) -and
     Write-Secret "s3_export_access_key" $s3ExportAccessKey
 }
 $s3ExportSecretKey = Get-OrCreateSecret "s3_export_secret_key" 36
+$s3KnowledgeAccessKeyPath = Join-Path $secretsDirectory "s3_knowledge_access_key"
+if ((Test-Path -LiteralPath $s3KnowledgeAccessKeyPath) -and
+    (Get-Item -LiteralPath $s3KnowledgeAccessKeyPath).Length -gt 0) {
+    $s3KnowledgeAccessKey = [IO.File]::ReadAllText(
+        $s3KnowledgeAccessKeyPath,
+        [Text.Encoding]::UTF8
+    )
+} else {
+    $s3KnowledgeAccessKey = (New-RandomSecret 18).Replace(
+        "/",
+        "A"
+    ).Replace("+", "B").TrimEnd("=")
+    Write-Secret "s3_knowledge_access_key" $s3KnowledgeAccessKey
+}
+$s3KnowledgeSecretKey = Get-OrCreateSecret "s3_knowledge_secret_key" 36
 $s3ArchiveAccessKeyPath = Join-Path $secretsDirectory "s3_archive_access_key"
 if ((Test-Path -LiteralPath $s3ArchiveAccessKeyPath) -and
     (Get-Item -LiteralPath $s3ArchiveAccessKeyPath).Length -gt 0) {
@@ -280,6 +343,13 @@ if ($EnableCatalogExportWorker) {
     Set-EnvValue "S3_EXPORT_ACCESS_KEY_FILE" "/run/secrets/s3_export_access_key"
     Set-EnvValue "S3_EXPORT_SECRET_KEY_FILE" "/run/secrets/s3_export_secret_key"
     Set-EnvValue "CATALOG_EXPORT_WORKER_ENABLED" "true"
+}
+if ($EnableKnowledgeSourceWorker) {
+    Set-EnvValue "KNOWLEDGE_DATABASE_URL" "postgresql+asyncpg://datariver_knowledge@postgres:5432/datariver"
+    Set-EnvValue "KNOWLEDGE_DATABASE_SECRET_REF" "file:/run/secrets/postgres_knowledge_password"
+    Set-EnvValue "S3_KNOWLEDGE_ACCESS_KEY_FILE" "/run/secrets/s3_knowledge_access_key"
+    Set-EnvValue "S3_KNOWLEDGE_SECRET_KEY_FILE" "/run/secrets/s3_knowledge_secret_key"
+    Set-EnvValue "KNOWLEDGE_SOURCE_WORKER_ENABLED" "true"
 }
 
 $realmTemplate = [IO.File]::ReadAllText(

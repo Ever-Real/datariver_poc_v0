@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import importlib.util
 from pathlib import Path
+from types import ModuleType
 
 from alembic.autogenerate import render_python_code
 from alembic.operations import ops
@@ -19,6 +21,33 @@ from datariver.infrastructure.db.migration_scope import MANAGED_DATABASE_SCHEMAS
 SCHEMAS = MANAGED_DATABASE_SCHEMAS
 RLS_SETTING = "NULLIF(current_setting('app.workspace_id', true), '')::uuid"
 RUNTIME_SCHEMAS = ", ".join(SCHEMAS)
+_STATEMENT_BOUNDARY = "-- datariver-statement-boundary"
+
+
+def _load_phase5_revision() -> ModuleType:
+    """Load the self-contained Phase 5 SQL into the canonical baseline."""
+    revision_path = (
+        Path(__file__).resolve().parents[1]
+        / "backend"
+        / "alembic"
+        / "versions"
+        / "0054_add_durable_knowledge_source_jobs.py"
+    )
+    spec = importlib.util.spec_from_file_location(
+        "datariver_canonical_phase5_revision",
+        revision_path,
+    )
+    if spec is None or spec.loader is None:
+        raise RuntimeError("Unable to load the Phase 5 migration contract.")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def _sql_statements(sql: str) -> tuple[str, ...]:
+    return tuple(
+        statement.strip() for statement in sql.split(_STATEMENT_BOUNDARY) if statement.strip()
+    )
 
 
 def build_upgrade() -> ops.UpgradeOps:
@@ -57,6 +86,29 @@ def build_upgrade() -> ops.UpgradeOps:
                         "NULLIF(current_setting('app.subject_id', true), '')::uuid)"
                     )
                 )
+            if table.fullname == "knowledge.source_analysis_jobs":
+                operations.append(
+                    ops.ExecuteSQLOp(
+                        "CREATE POLICY source_analysis_job_owner_select "
+                        "ON knowledge.source_analysis_jobs "
+                        "AS RESTRICTIVE FOR SELECT TO datariver_app USING ("
+                        "requested_by = "
+                        "NULLIF(current_setting('app.subject_id', true), '')::uuid)"
+                    )
+                )
+            if table.fullname == "knowledge.source_analysis_events":
+                operations.append(
+                    ops.ExecuteSQLOp(
+                        "CREATE POLICY source_analysis_event_owner_select "
+                        "ON knowledge.source_analysis_events "
+                        "AS RESTRICTIVE FOR SELECT TO datariver_app USING ("
+                        "EXISTS (SELECT 1 FROM knowledge.source_analysis_jobs AS job "
+                        "WHERE job.workspace_id = source_analysis_events.workspace_id "
+                        "AND job.id = source_analysis_events.job_id "
+                        "AND job.requested_by = "
+                        "NULLIF(current_setting('app.subject_id', true), '')::uuid))"
+                    )
+                )
     operations.extend(
         ops.ExecuteSQLOp(statement) for statement in _manifest_content_profile_immutability_sql()
     )
@@ -74,6 +126,22 @@ def build_upgrade() -> ops.UpgradeOps:
         for constraint in _deferred_foreign_keys()
     )
     operations.append(ops.ExecuteSQLOp(_runtime_grants_sql()))
+    phase5 = _load_phase5_revision()
+    # Workspace RLS is generated generically above. Retain the exact principal
+    # assertion, then install the worker-only discovery/locking functions,
+    # database fences and least-privilege grants from the additive revision.
+    role_assertion = _sql_statements(phase5._RLS_SQL)[0]
+    operations.append(ops.ExecuteSQLOp(role_assertion))
+    for attribute in (
+        "_CLAIM_SCOPE_SQL",
+        "_EVIDENCE_INDEX_SQL",
+        "_WORKSPACE_DISCOVERY_SQL",
+        "_TRIGGER_SQL",
+        "_GRANTS_SQL",
+    ):
+        operations.extend(
+            ops.ExecuteSQLOp(statement) for statement in _sql_statements(getattr(phase5, attribute))
+        )
     return ops.UpgradeOps(ops=operations)
 
 
@@ -465,7 +533,9 @@ EXECUTE FUNCTION assistant.enforce_chat_message_retention_binding()
 
 
 def build_downgrade() -> ops.DowngradeOps:
+    phase5 = _load_phase5_revision()
     operations: list[ops.MigrateOperation] = [
+        *(ops.ExecuteSQLOp(statement) for statement in _sql_statements(phase5._DROP_TRIGGER_SQL)),
         ops.ExecuteSQLOp(f"DROP FUNCTION {IDENTITY_PROVISIONING_SIGNATURE}"),
         ops.ExecuteSQLOp("DROP FUNCTION iam.resolve_default_workspace(text, text)"),
         ops.ExecuteSQLOp(

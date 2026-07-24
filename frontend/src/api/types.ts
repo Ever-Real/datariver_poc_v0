@@ -903,8 +903,7 @@ export interface KnowledgeChangeSetPublish {
   release: KnowledgeRelease
 }
 
-export interface KnowledgeSourceAnalyzeResult {
-  source_snapshot_id: string
+export interface KnowledgeSourceJobResult {
   changeset_id: string
   page_count: number
   proposed_node_count: number
@@ -912,6 +911,49 @@ export interface KnowledgeSourceAnalyzeResult {
   evidence_hash: string
   embedding_model: string
   extraction_model: string
+}
+
+export interface KnowledgeSourceJob {
+  id: string
+  graph_id: string
+  source_snapshot_id: string
+  upload_id: string
+  title: string
+  state:
+    | 'QUEUED'
+    | 'RUNNING'
+    | 'RETRY_WAIT'
+    | 'CANCEL_REQUESTED'
+    | 'SUCCEEDED'
+    | 'FAILED'
+    | 'STALE'
+    | 'CANCELLED'
+  stage:
+    | 'QUEUED'
+    | 'SOURCE_READ'
+    | 'PARSED'
+    | 'EMBEDDED'
+    | 'EXTRACTED'
+    | 'FINALIZING'
+    | 'COMPLETED'
+  progress: {
+    completed_pages?: number
+    total_pages?: number
+  }
+  attempt_count: number
+  maximum_attempts: number
+  next_attempt_at: string
+  last_failure_code: string | null
+  version: number
+  created_at: string
+  updated_at: string
+  completed_at: string | null
+  result: KnowledgeSourceJobResult | null
+}
+
+export interface KnowledgeSourceJobPage {
+  items: KnowledgeSourceJob[]
+  next_cursor: string | null
 }
 
 export interface KnowledgeProjectionReceipt {

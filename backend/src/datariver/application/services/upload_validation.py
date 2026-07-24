@@ -10,6 +10,7 @@ from pathlib import PurePath
 from datariver.application.errors import ExternalDependencyError
 from datariver.application.ports import ObjectStore, UploadValidationStore
 from datariver.application.typed_upload_profiles import typed_profile_definition
+from datariver.domain.authz import Classification
 from datariver.domain.common import DomainError, ValidationError
 from datariver.domain.registration import UploadContentProfile, UploadManifest
 
@@ -52,8 +53,16 @@ class UploadValidationWorker:
             return False
         source_bucket = manifest.bucket
         source_key = manifest.object_key
+        destination_namespace = (
+            "knowledge-eligible"
+            if (
+                manifest.declared_mime == "application/pdf"
+                and manifest.classification <= Classification.INTERNAL
+            )
+            else "accepted"
+        )
         destination_key = (
-            f"accepted/{manifest.workspace_id}/{manifest.upload_id}/"
+            f"{destination_namespace}/{manifest.workspace_id}/{manifest.upload_id}/"
             f"validation-v{manifest.version}-attempt-{manifest.validation_attempts}"
         )
         destination_created = False

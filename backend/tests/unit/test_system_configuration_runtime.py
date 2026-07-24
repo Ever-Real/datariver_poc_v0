@@ -1,10 +1,20 @@
+from types import SimpleNamespace
+from typing import cast
+
 import pytest
 
 from datariver.config import Settings
 from datariver.domain.common import canonical_json_hash
+from datariver.domain.knowledge_pipeline import ModelBinding
+from datariver.infrastructure.db.models.platform import (
+    ExternalServiceProfileModel,
+    ExternalServiceProfileVersionModel,
+)
 from datariver.infrastructure.system_configuration_runtime import (
     _document,
+    _knowledge_system_bindings,
     _runtime_updates,
+    _settings_with_claim_activated_rows,
     validate_runtime_system_configuration,
 )
 
@@ -275,4 +285,144 @@ def test_activation_preflight_uses_the_same_settings_contract_as_process_startup
             current,
             service_key="LLM_CHAT_MODEL",
             document=invalid_local_ollama,
+        )
+
+
+def test_claim_configuration_rejects_mixed_sources_and_reconstructs_exact_pins() -> None:
+    chat_document = {
+        "connection_mode": "LOCAL_OLLAMA",
+        "base_url": "http://host.docker.internal:11434/v1",
+        "model": "claim-chat",
+        "secret_references": {},
+        "options": {
+            "api_style": "openai_compatible",
+            "context_tokens": 8192,
+            "timeout_seconds": 60,
+        },
+    }
+    embedding_document = {
+        "connection_mode": "LOCAL_OLLAMA",
+        "base_url": "http://host.docker.internal:11434/v1",
+        "model": "claim-embedding",
+        "secret_references": {},
+        "options": {
+            "api_style": "openai_compatible",
+            "timeout_seconds": 60,
+        },
+    }
+    chat_hash = canonical_json_hash(chat_document)
+    embedding_hash = canonical_json_hash(embedding_document)
+    system_chat = ModelBinding(
+        provider="ollama",
+        model="claim-chat",
+        prompt_version="knowledge-v1",
+        tool_schema_version="knowledge-schema-v1",
+        configuration_source="SYSTEM_CONFIGURATION",
+        configuration_version=1,
+        configuration_hash=chat_hash,
+    )
+    system_embedding = ModelBinding(
+        provider="ollama",
+        model="claim-embedding",
+        prompt_version="knowledge-v1",
+        tool_schema_version="knowledge-schema-v1",
+        configuration_source="SYSTEM_CONFIGURATION",
+        configuration_version=1,
+        configuration_hash=embedding_hash,
+    )
+    deployment_embedding = ModelBinding(
+        provider="ollama",
+        model="claim-embedding",
+        prompt_version="knowledge-v1",
+        tool_schema_version="knowledge-schema-v1",
+        configuration_source="DEPLOYMENT",
+        configuration_version=None,
+        configuration_hash="d" * 64,
+    )
+
+    with pytest.raises(ValueError, match="cannot mix"):
+        _knowledge_system_bindings(
+            extraction_binding=system_chat,
+            embedding_binding=deployment_embedding,
+        )
+
+    bindings = _knowledge_system_bindings(
+        extraction_binding=system_chat,
+        embedding_binding=system_embedding,
+    )
+    rows = (
+        (
+            cast(
+                ExternalServiceProfileModel,
+                SimpleNamespace(service_key="LLM_CHAT_MODEL"),
+            ),
+            cast(
+                ExternalServiceProfileVersionModel,
+                SimpleNamespace(
+                    configuration_version=1,
+                    configuration_hash=chat_hash,
+                    configuration_yaml=(
+                        "connection_mode: LOCAL_OLLAMA\n"
+                        "base_url: http://host.docker.internal:11434/v1\n"
+                        "model: claim-chat\n"
+                        "secret_references: {}\n"
+                        "options:\n"
+                        "  api_style: openai_compatible\n"
+                        "  context_tokens: 8192\n"
+                        "  timeout_seconds: 60\n"
+                    ),
+                ),
+            ),
+        ),
+        (
+            cast(
+                ExternalServiceProfileModel,
+                SimpleNamespace(service_key="LLM_EMBEDDING"),
+            ),
+            cast(
+                ExternalServiceProfileVersionModel,
+                SimpleNamespace(
+                    configuration_version=1,
+                    configuration_hash=embedding_hash,
+                    configuration_yaml=(
+                        "connection_mode: LOCAL_OLLAMA\n"
+                        "base_url: http://host.docker.internal:11434/v1\n"
+                        "model: claim-embedding\n"
+                        "secret_references: {}\n"
+                        "options:\n"
+                        "  api_style: openai_compatible\n"
+                        "  timeout_seconds: 60\n"
+                    ),
+                ),
+            ),
+        ),
+    )
+    resolved = _settings_with_claim_activated_rows(
+        _settings(),
+        bindings=bindings,
+        rows=rows,
+    )
+
+    assert resolved.local_ollama_chat_model == "claim-chat"
+    assert resolved.local_ollama_embedding_model == "claim-embedding"
+    assert resolved.system_configuration_runtime_versions == {
+        "LLM_CHAT_MODEL": 1,
+        "LLM_EMBEDDING": 1,
+    }
+    with pytest.raises(ValueError, match="drifted"):
+        _settings_with_claim_activated_rows(
+            _settings(),
+            bindings={
+                **bindings,
+                "LLM_EMBEDDING": ModelBinding(
+                    provider="ollama",
+                    model="claim-embedding",
+                    prompt_version="knowledge-v1",
+                    tool_schema_version="knowledge-schema-v1",
+                    configuration_source="SYSTEM_CONFIGURATION",
+                    configuration_version=1,
+                    configuration_hash="0" * 64,
+                ),
+            },
+            rows=rows,
         )

@@ -142,6 +142,35 @@ eligible administrators can SAVE → TEST → ACTIVATE versioned connector profi
 credentials remain mounted-secret references. Production activation remains deployment-managed
 until an approved secret backend, restart orchestration, rollback and audit procedure are accepted.
 
+Durable Knowledge PDF analysis is an independent opt-in capability. It requires Chat and Embedding
+readiness, but not Neo4j. The API continues to serve the core platform when
+`KNOWLEDGE_SOURCE_WORKER_ENABLED=false`; it reports the capability unavailable and rejects a new
+analysis enqueue before creating a permanent queue item. The `knowledge-source` Compose profile
+starts only the purpose-bound worker and does not activate a graph projection.
+
+Bootstrap validates inference settings before enabling the worker, so use two passes:
+
+```bash
+# Mac arm64: configure/probe LOCAL_OLLAMA_EMBEDDING_* after the first pass.
+./scripts/bootstrap.sh --env-file .env.mac-development --mac-development
+./scripts/bootstrap.sh --env-file .env.mac-development --mac-development \
+  --enable-knowledge-source-worker
+
+# WSL linux/amd64: configure/probe private INTRANET_OPENAI_COMPATIBLE_CHAT_* and
+# INTRANET_OPENAI_COMPATIBLE_EMBEDDING_* after the first pass.
+./scripts/bootstrap.sh --env-file .env.wsl-preparation --wsl-preparation
+./scripts/bootstrap.sh --env-file .env.wsl-preparation --wsl-preparation \
+  --enable-knowledge-source-worker
+
+# Native Windows PowerShell operates on .env.
+./scripts/bootstrap.ps1 -DataHubToken '<scoped-token>'
+./scripts/bootstrap.ps1 -EnableKnowledgeSourceWorker
+```
+
+The WSL/private OpenAI-compatible provider, external S3 IAM, real browser, representative load and
+target amd64 execution checks remain `EXTERNAL_GATE`; source/unit checks on the arm64 Mac cannot
+close them.
+
 ### Mac development topology
 
 Use `./scripts/bootstrap.sh --mac-development` only for the local Mac developer PC. It configures
@@ -182,9 +211,10 @@ ADR-0030 adds a separate development-only bridge for an authenticated model serv
 private corporate network. It is not an external commercial-provider route: the endpoint must be
 HTTPS `/v1`, match the operator's exact host allowlist, resolve only to private non-loopback
 addresses and use a mounted API-key secret. Chat, Embedding and Neo4j are configured and proven
-independently; a feature route checks only its declared capabilities. Compose mounts the optional
-API-key secrets into the API process only. Source-host loopback Ollama is accepted only with the
-explicit development source-host switch, while container mode keeps the
+independently; a feature route checks only its declared capabilities. Compose mounts each optional
+API-key secret only into the process that declares that provider capability: general interactive
+routes use the API mounts, while the opt-in PDF worker receives only its Chat and Embedding keys.
+Source-host loopback Ollama is accepted only with the explicit development source-host switch, while container mode keeps the
 `host.docker.internal:11434` boundary. Production keeps this bridge disabled, and no provider
 endpoint, credential or allowlist is browser-controlled.
 
@@ -342,6 +372,41 @@ has passed. Local bootstrap intentionally does not manufacture a second administ
   workspace identifiers before
   setting transaction-local workspace context, and receives no DataHub credential or egress. Each
   attempt uses a distinct object key; only the current unexpired lease can publish its receipt.
+- Durable Knowledge source analysis is disabled by default. Bootstrap creates
+  `postgres_knowledge_password` and `s3_knowledge_{access_key,secret_key}` separately from the API,
+  owner, upload, export and archive identities; `--enable-knowledge-source-worker` on Unix/WSL or
+  `-EnableKnowledgeSourceWorker` on PowerShell sets their references only after one complete Chat +
+  Embedding pair is configured. The worker role is `NOBYPASSRLS`, receives no migration/DDL
+  authority, and its S3 principal requires only `GetBucketLocation` plus `GetObject` in the exact
+  accepted bucket. It does not receive a DataHub token or Neo4j credential.
+
+  On a local MinIO reference deployment, first run `storage-init` so every configured bucket
+  exists, then run `minio-knowledge-identity-init` from `compose.local-connectors.yaml`. The latter
+  renders `infra/minio/knowledge-read-policy.template.json` with the configured
+  `S3_BUCKET_ACCEPTED`, creates the generated non-admin user and attaches that read-only policy.
+  An external S3/MinIO owner must perform the equivalent bucket/IAM work and record positive
+  accepted-object reads plus anonymous, write, delete and other-bucket negatives. That evidence is
+  an `EXTERNAL_GATE`; the local initialization is not evidence for the external target.
+
+  The API stores a pinned immutable-source/base/ontology/provider decision without calling an
+  external provider. The worker claims it with a database-clock lease, hash-only random token,
+  epoch and immutable attempt. It renews/checks the lease between bounded batches. A queued or
+  retry-wait cancellation is terminal immediately; a running cancellation becomes
+  `CANCEL_REQUESTED` and is linearized by the fenced final transaction. An expired attempt becomes
+  `SUPERSEDED`; the worker either requeues within the stored maximum-attempt limit or reaches a
+  terminal state. Operators must never edit job, attempt, lease, event or DRAFT rows.
+
+  Each source is capped at 50 MiB and 500 pages. Only
+  `KNOWLEDGE_SOURCE_MEMORY_SPOOL_BYTES` (default 1 MiB) is retained in memory; larger input spills
+  to the worker-only `knowledge-spool` volume at the absolute non-root
+  `KNOWLEDGE_SOURCE_SPOOL_DIRECTORY`. The directory must be writable by the worker and inaccessible
+  to API/web processes. Capacity must cover one 50-MiB source per concurrent worker plus temporary
+  and provider overhead; monitor volume free space and never treat spool bytes as durable evidence.
+
+  Emergency disablement sets `KNOWLEDGE_SOURCE_WORKER_ENABLED=false`, recreates the API so enqueue
+  fails closed, and stops `knowledge-source-worker`. It does not delete queued or terminal
+  evidence. Authorized users cancel through the version-fenced API/UI; on a later restart, the
+  worker safely reclaims an expired lease or completes the pending cancellation.
 - Retention archive execution is disabled by default and is not part of core startup. The
   `retention-archive` profile creates a scheduler with only its dedicated PostgreSQL secret and a
   separate archive worker with a different PostgreSQL secret plus dedicated immutable-store
@@ -428,7 +493,7 @@ egress or a DataHub credential. The complete Linux/WSL boundary is
 
 ## Database and object operations
 
-- Alembic has one head at `0053`: the generated current initial schema plus conditional
+- Alembic has one head at `0054`: the generated current initial schema plus conditional
   compatibility bridges for local databases that applied earlier revisions. Deployment runs
   migration before API/workers. The API role can only read `public.alembic_version` for readiness;
   migration ownership remains separate. After explicitly bounded compatibility repairs, the Policy
@@ -442,24 +507,37 @@ egress or a DataHub credential. The complete Linux/WSL boundary is
   guard validates the complete evidence column, constraint, RLS, trigger, grant and index contract
   and fails closed on nullability, FK or same-name index drift. Stop registration workers and
   resolve every Manual `QUEUED` or `APPLYING` row before an additive `0045 -> 0046` upgrade.
-- Existing PostgreSQL volumes must reconcile runtime roles before migration so `0042` can grant the
-  new least-privilege capabilities. Run `scripts/reconcile-postgres-roles.sh` on macOS/Linux/WSL or
-  `scripts/reconcile-postgres-roles.ps1` on Windows, run the migration service, then run the same
-  reconciliation once more. The second pass is intentional: the idempotent init hook grants the
-  Phase 2 tables even when an old volume created the roles only after `0042` had already run.
+  Revision `0054` adds the durable Knowledge source job/attempt/event ledger, the DRAFT and
+  extraction bindings, FORCE-RLS policies, fenced triggers and worker discovery/finalization
+  functions. It refuses to run unless `datariver_knowledge` is an unprivileged NOBYPASSRLS LOGIN
+  with no role membership that could permit `SET ROLE`. It removes prior direct privileges across
+  application schemas before applying the exact worker allowlist; canonical evidence DELETE
+  triggers provide a second fail-closed boundary against later grant drift.
+  Its downgrade refuses to erase the schema after any durable source-analysis job exists; preserve
+  the database and apply a forward fix rather than deleting audit evidence.
+- Existing PostgreSQL volumes must reconcile runtime roles before migration so `0042` and `0054`
+  can grant their least-privilege capabilities. Bootstrap first so the new Knowledge password file
+  exists, start PostgreSQL, run `DATARIVER_ENV_FILE=<file>
+  scripts/reconcile-postgres-roles.sh` on macOS/Linux/WSL or
+  `scripts/reconcile-postgres-roles.ps1 -EnvFile <file>` on Windows, run the migration service, then
+  run the same reconciliation once more. The second pass is intentional: the idempotent init hook
+  reasserts passwords/role attributes and its conditional compatibility grants after an old volume
+  has crossed the relevant revisions; `0054` itself owns the Knowledge worker grants. Never stamp
+  past a missing role or grant the worker BYPASSRLS.
 - PostgreSQL pool size/overflow/lease timeout, statement timeout, idle-transaction timeout and application names are explicit. Budget `API replicas × (API pool + overflow) + long-running workers × (worker pool + overflow) + one-shot/IdP/Airflow/admin reserve`; current one-API/four-worker defaults have a ceiling of 60 before reserve.
 - Liveness is process-only. Readiness leases the API pool and requires exactly packaged Alembic
-  head `0053`; Compose and APISIX use readiness for upstream health.
+  head `0054`; Compose and APISIX use readiness for upstream health.
 - `scripts/probe_pgbouncer_rls.py` and its unit contract implement the pre-adoption transaction-pool leakage gate. No Compose profile currently deploys PgBouncer and no live pooler pass has been recorded; direct PostgreSQL remains the supported path until the isolated two-workspace probe succeeds.
 - Back up PostgreSQL and the selected external S3 store as a consistency set or record a watermark; restore into isolation and follow the drill in [operations runbook](13_OPERATIONS_RUNBOOK.md) before traffic.
 - Accepted-object retention/lifecycle is environment policy. Quarantine receives a shorter cleanup policy, but never delete an object whose manifest is actively leased.
 - Initial recovery targets (RPO <= 5 minutes, RTO <= 60 minutes) are objectives until an environment drill records measured evidence.
 
-The assistant inference module is not a production runtime component. It has a disabled adapter and
-a typed pre-authorized input/output contract only; Compose creates no inference queue/job. The
-development-only exceptions in ADR-0023 and ADR-0030 use a fixed non-executable cited-answer
-contract, not a Chat production route. Provider integration, durable dispatch, SSE, pre/post-call
-live policy/profile revalidation and operational metrics remain promotion gates.
+The general Chat assistant provider is not a promoted production runtime component. The
+development-only exceptions in ADR-0023 and ADR-0030 use fixed non-executable contracts. Compose
+now has one opt-in durable queue/worker specifically for PDF-to-DRAFT Knowledge source analysis;
+it is not a general Chat queue and cannot publish a release or mutate DataHub. Production Chat
+provider integration, Chat dispatch/SSE, pre/post-call live policy/profile revalidation and scaled
+operational/red-team evidence remain promotion gates.
 
 ## Release gates
 
@@ -492,5 +570,6 @@ or Object Lock setting is treated as WORM acceptance.
 | Redis delivery | outbox accumulates; relay later recovers delivery |
 | object store | upload unavailable; catalog/change/KG remain |
 | Airflow | scheduled sync/probe delayed; interactive paths remain |
+| Knowledge source worker or Chat/Embedding provider | new analysis enqueue is disabled when capability is not ready; core catalog/governance and existing Knowledge reads remain |
 | Keycloak/OIDC | protected requests fail authentication; public liveness remains |
 | optional gateway | core loopback API remains available only where deployment policy allows |

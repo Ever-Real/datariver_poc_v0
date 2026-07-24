@@ -1123,17 +1123,49 @@ async def execute_knowledge_workflow(
     )
     analyze_response = await client.post(
         f"{api_base_url.rstrip('/')}/knowledge/graphs/{graph_id}/sources/{upload['id']}/analyze",
-        headers=request_headers(requester_token),
+        headers=request_headers(
+            requester_token,
+            idempotency_key=mutation_key("knowledge-source-analysis"),
+        ),
         json={"title": "PwC 반도체 전망 2026 PDF 추출 제안"},
-        timeout=900.0,
     )
-    if analyze_response.status_code != 201:
-        raise RuntimeError(f"Knowledge PDF analysis returned HTTP {analyze_response.status_code}.")
-    analysis = analyze_response.json()
+    if analyze_response.status_code != 202:
+        raise RuntimeError(
+            f"Knowledge PDF analysis enqueue returned HTTP {analyze_response.status_code}."
+        )
+    job = analyze_response.json()
+    if not isinstance(job, dict) or not isinstance(job.get("id"), str):
+        raise RuntimeError("Knowledge PDF analysis enqueue returned no durable job.")
+    job_id = str(job["id"])
+    for _ in range(900):
+        current_job = await api_json(
+            client,
+            api_base_url=api_base_url,
+            method="GET",
+            path=f"/knowledge/graphs/{graph_id}/source-analysis-jobs/{job_id}",
+            token=requester_token,
+            expected_status=200,
+        )
+        state = current_job.get("state")
+        if state == "SUCCEEDED":
+            job = current_job
+            break
+        if state in {"FAILED", "STALE", "CANCELLED"}:
+            raise RuntimeError(
+                f"Knowledge PDF analysis ended in {state}: {current_job.get('last_failure_code')}."
+            )
+        await asyncio.sleep(1)
+    else:
+        raise RuntimeError("Knowledge PDF analysis durable job did not finish in 900 seconds.")
+    raw_result = job.get("result")
+    if not isinstance(raw_result, dict):
+        raise RuntimeError("Knowledge PDF analysis completed without a typed result.")
+    analysis = dict(raw_result)
+    analysis["source_snapshot_id"] = job.get("source_snapshot_id")
     if (
-        not isinstance(analysis, dict)
-        or int(analysis.get("page_count", 0)) < 1
+        int(analysis.get("page_count", 0)) < 1
         or int(analysis.get("proposed_node_count", 0)) < 1
+        or not isinstance(analysis.get("source_snapshot_id"), str)
     ):
         raise RuntimeError("Knowledge PDF analysis returned no grounded proposal.")
     changeset_id = str(analysis["changeset_id"])

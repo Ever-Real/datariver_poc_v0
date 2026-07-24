@@ -272,21 +272,38 @@ cannot re-enter the ordinary workflow.
 | `POST .../changesets/{changeset_id}/submit` | `kg.edit` | materialize and persist validation evidence |
 | `POST .../changesets/{changeset_id}/reviews` | `kg.review` | independent approve/reject |
 | `POST .../changesets/{changeset_id}/publish` | `kg.publish` | publish an approved changeset as an immutable release |
-| `POST /knowledge/graphs/{graph_id}/releases` | `kg.publish` | validate and publish immutable snapshot |
+| `POST /knowledge/graphs/{graph_id}/releases` | retired | always returns `410 Gone` with the `direct-release-retired` problem; governed changeset publication is the only release-creation route |
 | `GET /knowledge/graphs/{graph_id}/releases` | `kg.read` | list immutable releases |
 | `POST .../releases/{release_id}/activate` | `kg.publish` | atomically select/roll back active release |
 | `GET /knowledge/graphs/{graph_id}/releases/{release_id}/snapshot?maximum_nodes=` | `kg.read` | ABAC-filtered release view |
 | `GET .../{release_id}/export?format=json-ld|edge-list` | `kg.export` | release-pinned governed export |
 | `POST .../{release_id}/analysis/neighbors` | `sharing.invoke` | typed bounded neighbor traversal |
-| `POST .../sources/{upload_id}/analyze` | `kg.edit` | integrity-verified PDF parsing, page embedding and source-grounded typed DRAFT changeset proposal |
+| `POST .../sources/{upload_id}/analyze` | `kg.edit` | require `Idempotency-Key`, validate and pin one eligible source/configuration, enqueue a durable job and return `202`; no parsing or inference occurs in the request |
+| `GET .../source-analysis-jobs?cursor=&limit=` | owner of the submitted job | active-first owner-scoped keyset page, `limit=1..100`; cursor binds workspace, graph, actor and ordering, no total is exposed, and enqueue caps non-terminal jobs at 20 per owner/graph |
+| `GET .../source-analysis-jobs/{job_id}` | owner of the submitted job | return bounded state/stage/progress, attempt limits, version/timestamps, sanitized failure code and a result only after success |
+| `POST .../source-analysis-jobs/{job_id}/cancel` | owner + `kg.edit` | require a positive-version `If-Match` and `Idempotency-Key`; queued/retry work cancels immediately, running work becomes `CANCEL_REQUESTED`, and terminal success is immutable |
 | `POST .../releases/{release_id}/project` | `kg.publish` | rebuild a release-scoped Neo4j shadow and verify its canonical read-back hash before recording `SHADOW_VERIFIED` |
 | `POST .../releases/{release_id}/graphrag` | `kg.read` + `chat.query` | bounded node/relationship evidence retrieval and citation-constrained local model answer |
 
 Neighbor request accepts only `node_id`, `direction=IN|OUT|BOTH`, an edge-type allowlist, `maximum_hops<=3` and `maximum_nodes<=500`. It cannot contain SQL, Cypher, labels or clauses. Every published node/edge requires ontology membership, valid endpoints, classification and provenance.
 
 PDF analysis accepts only an `ACCEPTED` `application/pdf` upload owned by the current actor, with
-declared and observed SHA-256/size equality. Model-proposed evidence must be an exact normalized
-substring of the referenced parsed page; the excerpt/hash/page hash survive review and release.
+declared and observed SHA-256/size equality, a 50 MiB hard limit and PUBLIC/INTERNAL classification
+within the graph envelope. The enqueue transaction pins source version/hash/classification, graph
+version, explicit empty or exact governed active-release base, active ontology ID/checksum, parser
+hash and secret-free loaded deployment or activated System Configuration Chat/Embedding binding
+documents and hashes. The same
+actor/key/request replays one job; key reuse with a changed actor, graph, upload or payload is a
+conflict. Submission is unavailable when the separately credentialed worker capability is disabled.
+
+Job states are `QUEUED`, `RUNNING`, `RETRY_WAIT`, `CANCEL_REQUESTED`, `SUCCEEDED`, `FAILED`,
+`STALE` and `CANCELLED`; terminal states use stage `COMPLETED`. The response never includes attempts,
+lease material, provider error bodies, secret references, endpoints, buckets or object keys.
+Successful result fields are the DRAFT `changeset_id`, page/node/edge counts, evidence hash and
+model identities. Model-proposed evidence must be an exact normalized substring of the referenced
+parsed page; the excerpt/hash/page hash survive review and release through an opaque
+`knowledge-source:<snapshot-id>#page=<n>` locator. The worker reauthorizes the requester and rejects
+source, graph/base, ontology or activated-binding drift atomically before proposal persistence.
 Projection and changeset publication are high-risk and retain the recent hardware-WebAuthn gate.
 GraphRAG requires a DB projection receipt whose release hash matches the immutable release and
 rejects citations outside the authorized node/relationship evidence package.
@@ -522,10 +539,13 @@ configuration-invalid; the checked-in local stack intentionally has no such cred
 ## Planned compatibility endpoints
 
 The remaining backlog, not present in current OpenAPI, is upload cancel/download and any destructive
-erasure execution; automated graph extraction and projection rebuild; Chat session history/SSE and
-production external-model adapters; general archive-range export plus job/audit browsing/retry. The
+erasure execution; Mode A ontology generation and database/dynamic one-pass source ingestion; Chat
+session history/SSE and production external-model adapters; general archive-range export plus
+job/audit browsing/retry. The
 internal Phase 2 worker can persist verified approval evidence, but no archive or deletion capability
 is exposed to clients. The catalog-export source/API/UI contract exists but its isolated worker
 deployment remains disabled pending separately provisioned credentials. The disabled-first assistant
-inference source contract is not an HTTP route or deployed provider integration. Backlog features may
-not be emulated with generic provider or arbitrary query pass-through.
+inference source contract is not a production external-provider claim. The durable PDF worker uses
+the fixed deployment/System Configuration bindings already loaded at startup; there is no
+browser-created provider profile, endpoint or credential route. Backlog features may not be emulated
+with generic provider or arbitrary query pass-through.

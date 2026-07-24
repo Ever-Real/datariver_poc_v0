@@ -168,6 +168,31 @@ Any pre-apply review state → REJECTED or CANCELLED under policy
 
 - Create graph and versioned ontology; import DataHub scope or uploaded sources.
 - Extraction produces proposals with provenance/confidence, never direct mutations.
+- PDF source analysis is a durable, owner-scoped capability rather than an HTTP-request-bound
+  inference call. Submission accepts only an integrity-verified `ACCEPTED` PDF owned by the current
+  actor and only PUBLIC/INTERNAL inference classification, pins the immutable source
+  version/hash, graph version, explicit empty or exact governed active-release base, active
+  ontology ID/checksum, parser contract and secret-free loaded deployment or activated System
+  Configuration Chat/Embedding bindings, and
+  returns `202 Accepted` with a job. A separately credentialed `datariver_knowledge` worker parses
+  and embeds at bounded page/batch sizes and may create only a typed `DRAFT` changeset. It cannot
+  submit, review, publish, activate or project a release.
+- The Data Ingestion UI resumes the current owner's active-first opaque-cursor job history, renders
+  at most 100 rows, polls only while visible, stops after a bounded window and can restart the same
+  selected job. Enqueue permits at most 20 non-terminal jobs per owner/graph, keeping all active
+  work on the first page. The UI exposes explicit queued/running/retry/cancel/stale/failure
+  states. Cancellation is optimistic-version fenced. Success links to the resulting DRAFT; neither
+  submission nor fabricated progress is presented as completion. CONFIDENTIAL/RESTRICTED graphs
+  remain visible according to ordinary authorization but do not offer this inference action.
+- Before source read and each bounded provider egress, and again before final persistence, the
+  worker reauthorizes the requester and revalidates every pinned source/base/graph/ontology/model
+  binding. Final persistence repeats the checks under one PostgreSQL transaction. Drift or revoked
+  authority produces a terminal `STALE` result with no pages, embeddings, extraction run,
+  operations or changeset. Successful pages, bounded JSON embeddings, `DURABLE_SOURCE_V1`
+  extraction evidence, typed operations, DRAFT, job/attempt/event, policy decision and outbox
+  evidence commit atomically. Browser-visible provenance uses only
+  `knowledge-source:<snapshot-id>#page=<n>` and never reveals a bucket, object key, endpoint,
+  credential or lease token.
 - Changeset editor supports node/edge add, update, remove, diff, comments and validation.
 - Validation checks ontology, referential integrity, duplicate identity, provenance, policy attributes and bounded quality rules.
 - Review and publish create immutable releases through one atomic PostgreSQL command; publication

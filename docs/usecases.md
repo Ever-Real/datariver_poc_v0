@@ -82,7 +82,7 @@ provider read-back을 함께 확인한다.
 | MANUAL 등록 | typed metadata, name-only Tag/Term lookup, immutable receipt, Airflow apply와 DataHub typed read-back | 다른 aspect/provider failure와 catalog sync 지연은 계속 명시적 실패/지연 상태로 처리 |
 | BULK 등록 | multipart quarantine/validation, CSV/XLSX typed parser, fenced preparation/receipt/candidate, Airflow DAG | candidate를 실제 변경으로 적용하는 단계는 일반 CR 권한·검토 흐름에 종속 |
 | 변경관리 | revision round, bound TEST attachment/result, 다중 System Developer/Data Steward/global Admin authority와 typed FINAL decision | 실제 FINAL 3인 승인은 각 사람의 WebAuthn step-up이 필요한 외부 보안 gate |
-| 지식관리 | 고정 left tree, typed graph/changeset/release, grounded PDF extraction, Neo4j canonical shadow verification, 별도 GraphRAG answer | publish/project는 WebAuthn gate이며 durable production inference worker는 production promotion gate |
+| 지식관리 | 고정 left tree, typed graph/changeset/release, durable owner-scoped PDF-to-DRAFT job/worker, Neo4j canonical shadow verification, 별도 GraphRAG answer | publish/project는 WebAuthn gate이고 target WSL/private-provider durable-worker acceptance는 외부 gate |
 
 ### 2.3 Search Terms/Tags 현재 데이터
 
@@ -384,6 +384,22 @@ teardown으로 제거하고, immutable policy decision만 감사 증거로 남�
 | `KG-B04` | accept/edit/reject | 사람이 candidate를 편집/선택해 typed changeset으로 승격한다. model은 승인자가 아니다. |
 | `KG-B05` | cancel/retry | source/config/model hash가 같은 idempotent run을 재사용하고 stale worker output은 publish하지 않는다. |
 
+`KG-B01/B03/B05`의 PDF 경로는 revision `0054`의 durable source-analysis job으로 구현됐다.
+`POST .../sources/{upload_id}/analyze`는 parsing/inference를 수행하지 않고 `202` job을 반환하며,
+브라우저는 owner-scoped list/detail을 bounded polling하고 positive-version `If-Match`와 새
+`Idempotency-Key`로 취소한다. 제출 시 accepted PDF version/hash/classification, graph version,
+explicit empty/exact active-release base, active ontology ID/checksum, parser hash와 loaded
+deployment 또는 activated System Configuration Chat/Embedding binding을 고정한다. 별도
+`datariver_knowledge` worker만 DB-clock lease/epoch/token-hash fence로 claim하고
+PUBLIC/INTERNAL source를 page/batch 제한 안에서 처리한다.
+
+성공 결과는 요청자를 author로 하는 source-job-bound `DRAFT` changeset뿐이다. 현재 요청자의
+`kg.edit` 권한 또는 source/base/graph/ontology/model binding이 finalization 시 달라졌으면
+`STALE`이며 proposal row는 0건이다. queued/retry 취소는 즉시 `CANCELLED`, running 취소는
+`CANCEL_REQUESTED` 뒤 현재 lease가 `CANCELLED`로 선형화한다. raw lease token, bucket/object key,
+endpoint, credential, provider error body는 API/event/evidence에 노출하지 않는다. `KG-B02`의
+ontology+instance dynamic one-pass와 database source ingestion은 아직 별도 backlog다.
+
 ### 7.4 Neo4j projection
 
 | ID | 유즈케이스 | 정상 흐름 |
@@ -425,6 +441,9 @@ Neo4j에는 constant `DRNode`와 `DR_EDGE`를 사용하고 ontology type은 prop
 | `KG-N08` | RESTRICTED evidence/clearance mismatch | retrieval 전에 deny; prompt/model/graph 결과에 포함하지 않음 |
 | `KG-N09` | retention policy 없음/expired session | persistent answer 저장 거부; 허용된 dev admin `EPHEMERAL_NO_STORE`만 별도 표시 |
 | `KG-N10` | publication 중 두 번째 DB commit 실패 | 단일 UoW rollback으로 release/changeset partial state 0건 |
+| `KG-N11` | durable job lease token/epoch/owner mismatch 또는 expiry | late worker의 renew/finalize/실패 기록 거부; expired attempt는 `SUPERSEDED` 후 bounded retry/terminal 처리 |
+| `KG-N12` | 제출 후 requester 권한, source manifest, active base, graph, ontology 또는 loaded model binding drift | final transaction에서 `STALE`; page/embedding/run/operation/DRAFT 0건 |
+| `KG-N13` | CONFIDENTIAL/RESTRICTED PDF inference 요청 | durable row/provider call 전에 거부; graph classification을 낮추거나 UI에서 실행 가능으로 표시하지 않음 |
 
 ### 7.6 구현 전 correctness 결함과 반영 결과
 
@@ -439,10 +458,12 @@ Neo4j에는 constant `DRNode`와 `DR_EDGE`를 사용하고 ontology type은 prop
    구현됐다. SAVE/TEST는 ACTIVATE 또는 재시작 적용으로 가장하지 않는다.
 7. Neo4j runtime과 Compose는 동일한 mounted `neo4j_auth` secret contract를 사용한다.
 
-2026-07-21 actual adapter E2E에서는 PwC PDF page 58의 server-owned evidence ID로 3 nodes/2 edges를
+2026-07-21 actual adapter E2E에서는 당시의 bounded adapter 경로로 PwC PDF page 58의
+server-owned evidence ID에서 3 nodes/2 edges를
 생성하고 Neo4j canonical hash read-back, citation 3개의 Gemma answer와 audit 생성까지 통과했다.
-이는 isolated adapter 검증이며 실제 사용자 graph의 independent review/WebAuthn publish를 대신하지
-않는다. 정확한 hash와 cleanup 증거는 `docs/test_checklist.md`에 기록한다.
+이는 isolated adapter 검증이며 revision `0054` durable worker의 target WSL/private-provider
+acceptance나 실제 사용자 graph의 independent review/WebAuthn publish를 대신하지 않는다. 정확한
+hash와 cleanup 증거는 `docs/test_checklist.md`에 기록한다.
 
 ## 8. PwC 반도체 PDF 기반 GraphRAG 설계
 
@@ -496,8 +517,9 @@ model/prompt revision, confidence와 classification을 가져야 한다. report�
 flowchart LR
     F["Operator-acquired PDF + SHA-256"] --> U["Private multipart upload"]
     U --> M["Accepted KNOWLEDGE_SOURCE_PDF_V1 manifest"]
-    M --> S["Immutable Knowledge source snapshot"]
-    S --> P["Sandboxed page-aware PDF parser"]
+    M --> J["202 durable source-analysis job + pinned bindings"]
+    J --> S["Immutable Knowledge source snapshot"]
+    S --> P["Fenced isolated page-aware PDF worker"]
     P --> C["Bounded chunks + page locators"]
     C --> E["Approved embedding adapter"]
     C --> X["Typed extraction worker"]
@@ -552,7 +574,7 @@ TTFT, token rate, total latency를 dataset/model/prompt/release hash와 함께 �
 
 ## 9. 적용 DB 변경과 ERD
 
-승인된 변경은 SQLAlchemy metadata, deterministic `0001`, Alembic `0035`~`0040`과
+승인된 변경은 SQLAlchemy metadata, deterministic `0001`, Alembic `0035`~`0054`와
 `docs/06_DATA_MODEL.md`에 반영한다. 실제 적용/재적용 증거는 테스트 체크리스트에 남긴다.
 
 ### 9.1 CR workflow delta
@@ -623,44 +645,76 @@ erDiagram
 erDiagram
     OBJECT_MANIFESTS ||--o{ KNOWLEDGE_SOURCE_SNAPSHOTS : binds
     GRAPHS ||--o{ KNOWLEDGE_SOURCE_SNAPSHOTS : owns
-    KNOWLEDGE_SOURCE_SNAPSHOTS ||--o{ KNOWLEDGE_SOURCE_CHUNKS : contains
-    KNOWLEDGE_SOURCE_SNAPSHOTS ||--o{ KNOWLEDGE_EXTRACTION_RUNS : feeds
-    KNOWLEDGE_EXTRACTION_RUNS ||--o| CHANGESETS : proposes
+    KNOWLEDGE_SOURCE_SNAPSHOTS ||--|| SOURCE_ANALYSIS_JOBS : schedules
+    SOURCE_ANALYSIS_JOBS ||--o{ SOURCE_ANALYSIS_ATTEMPTS : attempts
+    SOURCE_ANALYSIS_JOBS ||--o{ SOURCE_ANALYSIS_EVENTS : records
+    KNOWLEDGE_SOURCE_SNAPSHOTS ||--o{ KNOWLEDGE_SOURCE_PAGES : contains
+    KNOWLEDGE_SOURCE_PAGES ||--o{ SOURCE_PAGE_EMBEDDINGS : embeds
+    SOURCE_ANALYSIS_JOBS ||--o| CHANGESETS : proposes
+    SOURCE_ANALYSIS_ATTEMPTS ||--o| KNOWLEDGE_EXTRACTION_RUNS : proves
     CHANGESETS ||--o{ CHANGE_OPERATIONS : contains
     CHANGESETS ||--o| RELEASES : publishes
     RELEASES ||--o{ PROJECTION_DEPLOYMENTS : projects
-    KNOWLEDGE_SOURCE_CHUNKS ||--o{ SOURCE_CHUNK_EMBEDDINGS : embeds
     RELEASES ||--o{ ASSISTANT_RUNS : grounds
 
     KNOWLEDGE_SOURCE_SNAPSHOTS {
         uuid id PK
         uuid workspace_id FK
         uuid graph_id FK
-        uuid object_manifest_id
-        int object_manifest_version
-        string source_kind
-        string source_sha256
-        string parser_profile
+        uuid upload_id FK
+        string storage_version
+        string content_sha256
+        bigint byte_size
         int classification
-        datetime observed_at
+        string state
+    }
+    SOURCE_ANALYSIS_JOBS {
+        uuid id PK
+        uuid workspace_id FK
+        uuid graph_id FK
+        uuid source_snapshot_id FK
+        uuid requested_by FK
+        string pin_hash
+        string state
+        string stage
+        int attempt_count
+        int maximum_attempts
+        int lease_epoch
+        string lease_token_hash
+        uuid result_changeset_id FK
         int version
     }
-    KNOWLEDGE_SOURCE_CHUNKS {
+    SOURCE_ANALYSIS_ATTEMPTS {
         uuid id PK
+        uuid job_id FK
+        int attempt_no
+        int lease_epoch
+        string lease_token_hash
+        string state
+        string input_hash
+        string output_hash
+    }
+    SOURCE_ANALYSIS_EVENTS {
+        uuid id PK
+        uuid job_id FK
+        int sequence
+        uuid attempt_id FK
+        string event_type
+        string evidence_hash
+    }
+    KNOWLEDGE_SOURCE_PAGES {
         uuid source_snapshot_id FK
-        int ordinal
-        int page_from
-        int page_to
+        int page_number
         string content_sha256
         text content
-        int classification
     }
-    SOURCE_CHUNK_EMBEDDINGS {
-        uuid chunk_id FK
-        uuid provider_profile_version_id FK
+    SOURCE_PAGE_EMBEDDINGS {
+        uuid source_snapshot_id FK
+        int page_number
+        string provider
         string model_identity
         int dimension
-        vector embedding
+        jsonb embedding
         string content_sha256
     }
     KNOWLEDGE_EXTRACTION_RUNS {
@@ -669,11 +723,13 @@ erDiagram
         uuid graph_id FK
         uuid source_snapshot_id FK
         uuid proposed_changeset_id FK
-        string mode
+        uuid source_analysis_job_id FK
+        uuid source_analysis_attempt_id FK
+        string contract_version
         string state
         string parser_config_hash
-        string provider_config_hash
-        string prompt_schema_version
+        jsonb embedding_binding
+        jsonb extraction_binding
         string input_hash
         string output_hash
         string error_code
@@ -694,9 +750,11 @@ erDiagram
     }
 ```
 
-`knowledge.source_chunks`와 embeddings는 release/source에서 재구축 가능한 projection 성격을 명확히
-하고 canonical source hash를 유지한다. extraction worker는 proposal DRAFT changeset까지만 만들 수
-있으며 review/publish 권한이 없다. existing `assistant.chat_sessions`/`assistant_runs`/citations는 typed
+현재 canonical schema는 page-aware `knowledge.source_pages`와 bounded JSON
+`knowledge.source_page_embeddings`를 사용한다. 이 ERD는 pgvector, 별도 vector DB 또는
+`provider_profile_version_id` 저장을 구현 사실로 주장하지 않는다. `DURABLE_SOURCE_V1`
+extraction은 exact job/attempt와 source-job-bound DRAFT를 연결하며, extraction worker는 review,
+publish, activate 권한이 없다. existing `assistant.chat_sessions`/`assistant_runs`/citations는 typed
 `KNOWLEDGE_RELEASE` scope와 실제 model/config audit를 추가해 재사용한다.
 
 ### 9.3 Bulk XLSX delta
@@ -744,8 +802,9 @@ canonical candidate는 append-only를 유지한다.
    MANUAL history/backoff를 구현한다.
 3. **Bulk**: XLSX profile/parser, fenced preparation worker, proposed Airflow DAG와 service endpoint,
    history/negative files를 구현한다.
-4. **Knowledge pipeline**: source snapshot/extraction worker, model/embedding/reranker ports,
-   atomic release lifecycle, Neo4j shadow projection과 typed Knowledge query를 구현한다.
+4. **Knowledge pipeline**: durable PDF-to-DRAFT worker는 구현됐으며 Mode A ontology generation,
+   database/dynamic one-pass ingestion, production provider promotion, general Chat router/MCP를
+   다음 독립 capability로 진행한다.
 5. **Integrated E2E**: 실제 DataHub 1.6.0, Airflow, SeaweedFS, Neo4j, local Ollama와 OIDC personas로
    positive/negative/degradation을 실행하고 `docs/test_checklist.md`를 채운다.
 
@@ -797,8 +856,11 @@ API, component test는 수행할 수 있지만 실제 final approval browser E2E
 - CR revision/TEST/final authority 결함은 보완됐다. 승인된 임시 Keycloak identity로 actual workflow를
   `FINAL_REVIEW/v7`까지 실행했고, password/direct-grant 3종과 service token의 FINAL 접근이 모두
   403으로 차단됨을 확인했다. 실제 `COMPLETED`는 세 사람의 hardware WebAuthn 없이는 주장하지 않는다.
-- Knowledge PDF/embedding/extraction/projection/GraphRAG adapter는 actual PwC PDF와 local
-  Ollama/Neo4j로 검증됐다. source evidence ID와 Neo4j canonical read-back을 fail-closed 검증하며
-  사용자 graph의 independent review/publish에는 WebAuthn이 필요하다.
+- Knowledge PDF/embedding/extraction/projection/GraphRAG adapter의 2026-07-21 isolated 경로는
+  actual PwC PDF와 local Ollama/Neo4j로 검증됐다. durable PDF-to-DRAFT source job은 별도
+  PostgreSQL job/attempt/event, owner API, worker lease/fencing과 atomic DRAFT 계약으로 대체됐으며,
+  target WSL/private provider/human browser acceptance가 끝난 것으로 기록하지 않는다. source
+  evidence ID와 Neo4j canonical read-back은 fail-closed이며 사용자 graph의 independent
+  review/publish에는 WebAuthn이 필요하다.
 - 적용된 migration과 모든 실행 결과는 `docs/test_checklist.md`의 PASS/OPEN/BLOCKED 증거가 최종
   판정 기준이다. 코드 존재나 unit test를 외부 통합 성공으로 바꾸어 기록하지 않는다.

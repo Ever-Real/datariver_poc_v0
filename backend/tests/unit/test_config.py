@@ -566,6 +566,35 @@ def test_catalog_export_worker_rejects_reused_credentials(
         settings(**values)
 
 
+def test_knowledge_source_worker_is_independent_from_neo4j_projection() -> None:
+    with pytest.raises(ValidationError, match="Chat/Embedding"):
+        settings(
+            knowledge_source_worker_enabled=True,
+            knowledge_database_url="postgresql+asyncpg://knowledge@localhost/db",
+            knowledge_database_secret_ref=("file:/run/secrets/postgres_knowledge_password"),
+            s3_knowledge_access_key_file="/run/secrets/s3_knowledge_access_key",
+            s3_knowledge_secret_key_file="/run/secrets/s3_knowledge_secret_key",
+        )
+
+    configured = settings(
+        knowledge_source_worker_enabled=True,
+        knowledge_database_url="postgresql+asyncpg://knowledge@localhost/db",
+        knowledge_database_secret_ref="file:/run/secrets/postgres_knowledge_password",
+        s3_knowledge_access_key_file="/run/secrets/s3_knowledge_access_key",
+        s3_knowledge_secret_key_file="/run/secrets/s3_knowledge_secret_key",
+        local_ollama_chat_enabled=True,
+        local_ollama_chat_base_url="http://host.docker.internal:11434/v1",
+        local_ollama_chat_model="datariver-gemma4-dev:0.1",
+        local_ollama_embedding_enabled=True,
+        local_ollama_embedding_base_url="http://host.docker.internal:11434/v1",
+        local_ollama_embedding_model="bge-m3:latest",
+    )
+
+    assert configured.knowledge_source_worker_enabled is True
+    assert configured.knowledge_pipeline_enabled is False
+    assert configured.neo4j_projection_enabled is False
+
+
 def test_retention_archive_is_disabled_first_and_requires_isolated_credentials() -> None:
     defaults = settings()
     assert defaults.retention_archive_execution_enabled is False

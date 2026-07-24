@@ -14,15 +14,15 @@ from datariver.application.dto import (
     KnowledgeGraphRecord,
     KnowledgeReleaseRecord,
 )
+from datariver.application.knowledge_source_job_contracts import KnowledgeSourceJobRecord
 from datariver.application.services.authorization import AuthorizationService
 from datariver.application.services.knowledge import KnowledgeService
 from datariver.application.services.knowledge_pipeline import (
     KnowledgeGraphRagService,
-    KnowledgeSourcePipeline,
     VerifiedProjectionService,
 )
 from datariver.domain.authz import Action, Classification
-from datariver.domain.common import ConflictError, ValidationError
+from datariver.domain.common import ConflictError, ValidationError, canonical_json_hash
 from datariver.domain.knowledge import (
     ChangeOperationType,
     ChangeSetState,
@@ -33,26 +33,25 @@ from datariver.domain.knowledge import (
     GraphSnapshot,
     Provenance,
 )
-from datariver.domain.knowledge_pipeline import ModelBinding
 from datariver.infrastructure.db.authz import SqlDecisionWriter
 from datariver.infrastructure.db.knowledge import SqlKnowledgeStore
 from datariver.infrastructure.db.knowledge_pipeline import (
     SqlKnowledgePipelineRepository,
     SqlSemanticSeedSelector,
 )
+from datariver.infrastructure.db.knowledge_source_jobs import (
+    SqlKnowledgeSourceJobStore,
+    knowledge_requester_authorization_hash,
+)
 from datariver.infrastructure.knowledge.neo4j import (
     Neo4jKnowledgeProjectionAdapter,
     Neo4jScopedEvidenceRetriever,
 )
-from datariver.infrastructure.knowledge.object_store import ObjectStoreKnowledgeSourceReader
-from datariver.infrastructure.knowledge.openai_compatible import (
-    HttpxOpenAIJsonTransport,
-    OpenAICompatibleEmbeddingProvider,
-    OpenAICompatibleKnowledgeAnswerComposer,
-    OpenAICompatibleTypedKnowledgeExtractor,
+from datariver.infrastructure.knowledge.runtime import (
+    KnowledgeRuntimeAdapters,
+    build_knowledge_runtime_adapters,
+    resolve_knowledge_runtime_bindings,
 )
-from datariver.infrastructure.knowledge.pdf import PypdfPageAwareParser
-from datariver.infrastructure.secrets import SecretResolver
 from datariver.interfaces.http.dependencies import ContextDep, SessionDep, get_container
 from datariver.interfaces.http.schemas import (
     GraphEdgeResponse,
@@ -73,7 +72,10 @@ from datariver.interfaces.http.schemas import (
     KnowledgeReleaseResponse,
     KnowledgeSnapshotResponse,
     KnowledgeSourceAnalyzeRequest,
-    KnowledgeSourceAnalyzeResponse,
+    KnowledgeSourceJobCancelRequest,
+    KnowledgeSourceJobPageResponse,
+    KnowledgeSourceJobResponse,
+    KnowledgeSourceJobResultResponse,
     KnowledgeValidationResponse,
     NeighborAnalysisRequest,
     NeighborAnalysisResponse,
@@ -82,153 +84,9 @@ from datariver.interfaces.http.schemas import (
 
 router = APIRouter(prefix="/knowledge/graphs", tags=["knowledge"])
 
-_LOCAL_OLLAMA_PROVIDER = "ollama-openai-compatible"
-_INTRANET_OPENAI_COMPATIBLE_PROVIDER = "intranet-openai-compatible"
-_EXTRACTION_PROMPT_VERSION = "knowledge-pdf-extraction-v1"
-_EXTRACTION_SCHEMA_VERSION = "knowledge-extraction-schema-v1"
-_GRAPHRAG_PROMPT_VERSION = "knowledge-graphrag-v1"
-_GRAPHRAG_SCHEMA_VERSION = "knowledge-graphrag-schema-v1"
-_EMBEDDING_ADAPTER_CONTRACT = "openai-compatible-embeddings-v1"
-_CHAT_JSON_SCHEMA_ADAPTER_CONTRACT = "openai-compatible-chat-json-schema-v1"
 
-
-def _activated_model_binding(
-    *,
-    settings: object,
-    system_id: str,
-    provider: str,
-    model: str,
-    prompt_version: str,
-    tool_schema_version: str,
-    adapter_contract: str,
-) -> ModelBinding:
-    versions = getattr(settings, "system_configuration_runtime_versions", {})
-    hashes = getattr(settings, "system_configuration_runtime_hashes", {})
-    version = versions.get(system_id)
-    configuration_hash = hashes.get(system_id)
-    if version is not None and configuration_hash is None:
-        raise ConflictError(
-            "The activated model configuration is missing its immutable revision hash."
-        )
-    return ModelBinding.activated(
-        provider=provider,
-        model=model,
-        prompt_version=prompt_version,
-        tool_schema_version=tool_schema_version,
-        configuration_version=version,
-        configuration_hash=configuration_hash,
-        adapter_contract=adapter_contract,
-    )
-
-
-def _knowledge_adapters(
-    request: Request,
-) -> tuple[
-    OpenAICompatibleEmbeddingProvider,
-    OpenAICompatibleTypedKnowledgeExtractor,
-    OpenAICompatibleKnowledgeAnswerComposer,
-    ModelBinding,
-    ModelBinding,
-    ModelBinding,
-]:
-    settings = get_container(request).settings
-    if settings.local_ollama_chat_enabled and settings.local_ollama_embedding_enabled:
-        if (
-            settings.local_ollama_chat_base_url is None
-            or settings.local_ollama_chat_model is None
-            or settings.local_ollama_embedding_base_url is None
-            or settings.local_ollama_embedding_model is None
-        ):
-            raise ConflictError("The activated local Knowledge model bindings are incomplete.")
-        provider = _LOCAL_OLLAMA_PROVIDER
-        allowed_hosts = frozenset(
-            {"host.docker.internal", "127.0.0.1"}
-            if settings.local_inference_source_host_enabled
-            else {"host.docker.internal"}
-        )
-        chat_base_url = str(settings.local_ollama_chat_base_url)
-        chat_model = settings.local_ollama_chat_model
-        chat_api_key = None
-        chat_timeout_seconds = settings.local_ollama_chat_timeout_seconds
-        embedding_base_url = str(settings.local_ollama_embedding_base_url)
-        embedding_model = settings.local_ollama_embedding_model
-        embedding_api_key = None
-        embedding_timeout_seconds = settings.local_ollama_embedding_timeout_seconds
-    elif (
-        settings.intranet_openai_compatible_chat_enabled
-        and settings.intranet_openai_compatible_embedding_enabled
-    ):
-        if (
-            settings.intranet_openai_compatible_chat_base_url is None
-            or settings.intranet_openai_compatible_chat_model is None
-            or settings.intranet_openai_compatible_chat_api_key_secret_ref is None
-            or settings.intranet_openai_compatible_embedding_base_url is None
-            or settings.intranet_openai_compatible_embedding_model is None
-            or settings.intranet_openai_compatible_embedding_api_key_secret_ref is None
-        ):
-            raise ConflictError("The activated intranet Knowledge model bindings are incomplete.")
-        provider = _INTRANET_OPENAI_COMPATIBLE_PROVIDER
-        allowed_hosts = frozenset(settings.intranet_openai_compatible_allowed_hosts)
-        resolver = SecretResolver(virtual_secret_root=settings.system_configuration_secret_root)
-        chat_base_url = str(settings.intranet_openai_compatible_chat_base_url)
-        chat_model = settings.intranet_openai_compatible_chat_model
-        chat_api_key = resolver.resolve(settings.intranet_openai_compatible_chat_api_key_secret_ref)
-        chat_timeout_seconds = settings.intranet_openai_compatible_chat_timeout_seconds
-        embedding_base_url = str(settings.intranet_openai_compatible_embedding_base_url)
-        embedding_model = settings.intranet_openai_compatible_embedding_model
-        embedding_api_key = resolver.resolve(
-            settings.intranet_openai_compatible_embedding_api_key_secret_ref
-        )
-        embedding_timeout_seconds = settings.intranet_openai_compatible_embedding_timeout_seconds
-    else:
-        raise ConflictError("The activated Knowledge model bindings are incomplete.")
-    embedding_transport = HttpxOpenAIJsonTransport(
-        base_url=embedding_base_url,
-        allowed_hosts=allowed_hosts,
-        api_key=embedding_api_key,
-        timeout_seconds=embedding_timeout_seconds,
-    )
-    chat_transport = HttpxOpenAIJsonTransport(
-        base_url=chat_base_url,
-        allowed_hosts=allowed_hosts,
-        api_key=chat_api_key,
-        timeout_seconds=chat_timeout_seconds,
-    )
-    embedding_binding = _activated_model_binding(
-        settings=settings,
-        system_id="LLM_EMBEDDING",
-        provider=provider,
-        model=embedding_model,
-        prompt_version="embedding-v1",
-        tool_schema_version="openai-embeddings-v1",
-        adapter_contract=_EMBEDDING_ADAPTER_CONTRACT,
-    )
-    extraction_binding = _activated_model_binding(
-        settings=settings,
-        system_id="LLM_CHAT_MODEL",
-        provider=provider,
-        model=chat_model,
-        prompt_version=_EXTRACTION_PROMPT_VERSION,
-        tool_schema_version=_EXTRACTION_SCHEMA_VERSION,
-        adapter_contract=_CHAT_JSON_SCHEMA_ADAPTER_CONTRACT,
-    )
-    graphrag_binding = _activated_model_binding(
-        settings=settings,
-        system_id="LLM_CHAT_MODEL",
-        provider=provider,
-        model=chat_model,
-        prompt_version=_GRAPHRAG_PROMPT_VERSION,
-        tool_schema_version=_GRAPHRAG_SCHEMA_VERSION,
-        adapter_contract=_CHAT_JSON_SCHEMA_ADAPTER_CONTRACT,
-    )
-    return (
-        OpenAICompatibleEmbeddingProvider(transport=embedding_transport),
-        OpenAICompatibleTypedKnowledgeExtractor(transport=chat_transport),
-        OpenAICompatibleKnowledgeAnswerComposer(transport=chat_transport),
-        embedding_binding,
-        extraction_binding,
-        graphrag_binding,
-    )
+def _knowledge_adapters(request: Request) -> KnowledgeRuntimeAdapters:
+    return build_knowledge_runtime_adapters(get_container(request).settings)
 
 
 def _service(request: Request, session: SessionDep) -> KnowledgeService:
@@ -251,6 +109,41 @@ def _graph_response(graph: KnowledgeGraphRecord) -> KnowledgeGraphResponse:
         classification=graph.classification.name,
         active_release_id=graph.active_release_id,
         version=graph.version,
+    )
+
+
+def _source_job_response(job: KnowledgeSourceJobRecord) -> KnowledgeSourceJobResponse:
+    result = job.result
+    return KnowledgeSourceJobResponse(
+        id=job.job_id,
+        graph_id=job.graph_id,
+        source_snapshot_id=job.source_snapshot_id,
+        upload_id=job.upload_id,
+        title=job.title,
+        state=job.state.value,
+        stage=job.stage.value,
+        progress=job.progress,
+        attempt_count=job.attempt_count,
+        maximum_attempts=job.maximum_attempts,
+        next_attempt_at=job.next_attempt_at,
+        last_failure_code=job.last_failure_code,
+        version=job.version,
+        created_at=job.created_at,
+        updated_at=job.updated_at,
+        completed_at=job.completed_at,
+        result=(
+            KnowledgeSourceJobResultResponse(
+                changeset_id=result.changeset_id,
+                page_count=result.page_count,
+                proposed_node_count=result.proposed_node_count,
+                proposed_edge_count=result.proposed_edge_count,
+                evidence_hash=result.evidence_hash,
+                embedding_model=result.embedding_model,
+                extraction_model=result.extraction_model,
+            )
+            if result is not None
+            else None
+        ),
     )
 
 
@@ -921,8 +814,8 @@ async def analyze_neighbors(
 
 @router.post(
     "/{graph_id}/sources/{upload_id}/analyze",
-    status_code=201,
-    response_model=KnowledgeSourceAnalyzeResponse,
+    status_code=202,
+    response_model=KnowledgeSourceJobResponse,
 )
 async def analyze_knowledge_pdf_source(
     graph_id: UUID,
@@ -931,7 +824,8 @@ async def analyze_knowledge_pdf_source(
     request: Request,
     context: ContextDep,
     session: SessionDep,
-) -> KnowledgeSourceAnalyzeResponse | JSONResponse:
+    idempotency_key: Annotated[str, Header(alias="Idempotency-Key", min_length=16, max_length=200)],
+) -> KnowledgeSourceJobResponse | JSONResponse:
     service = _service(request, session)
     graph = await service.get_graph(
         workspace_id=context.workspace_id,
@@ -949,44 +843,158 @@ async def analyze_knowledge_pdf_source(
         environment=context.environment,
         request_id=context.request_id,
     )
-    repository = SqlKnowledgePipelineRepository(session)
-    source, entity_types, edge_types = await repository.prepare_source(
+    settings = get_container(request).settings
+    if not settings.knowledge_source_worker_enabled:
+        raise ConflictError(
+            "Knowledge source analysis is disabled until its separately credentialed "
+            "worker is provisioned."
+        )
+    bindings = resolve_knowledge_runtime_bindings(settings)
+    request_hash = canonical_json_hash(
+        {
+            "contract": "KNOWLEDGE_SOURCE_ANALYSIS_ENQUEUE_V1",
+            "workspace_id": str(context.workspace_id),
+            "actor_id": str(context.subject.subject_id),
+            "graph_id": str(graph_id),
+            "upload_id": str(upload_id),
+            "title": payload.title,
+        }
+    )
+    job = await SqlKnowledgeSourceJobStore(session).enqueue(
         workspace_id=context.workspace_id,
         graph_id=graph_id,
         upload_id=upload_id,
         actor_id=context.subject.subject_id,
-    )
-    source.require_inference_eligible(maximum_classification=int(Classification.INTERNAL))
-    source.require_graph_envelope(graph_classification=int(graph.classification))
-    embedding, extractor, _, embedding_binding, extraction_binding, _ = _knowledge_adapters(request)
-    pipeline = KnowledgeSourcePipeline(
-        reader=ObjectStoreKnowledgeSourceReader(object_store=get_container(request).object_store),
-        parser=PypdfPageAwareParser(),
-        embedding=embedding,
-        extractor=extractor,
-    )
-    analysis = await pipeline.analyze_pdf(
-        source=source,
-        entity_types=entity_types,
-        edge_types=edge_types,
-        embedding_binding=embedding_binding,
-        extraction_binding=extraction_binding,
-    )
-    changeset_id = await repository.persist_analysis_as_draft(
-        analysis=analysis,
         title=payload.title,
+        request_hash=request_hash,
+        requester_authorization_hash=knowledge_requester_authorization_hash(context.subject),
+        embedding_binding=bindings.embedding,
+        extraction_binding=bindings.extraction,
+        maximum_attempts=settings.knowledge_source_job_maximum_attempts,
+        idempotency_key=idempotency_key,
+    )
+    return _source_job_response(job)
+
+
+@router.get(
+    "/{graph_id}/source-analysis-jobs",
+    response_model=KnowledgeSourceJobPageResponse,
+)
+async def list_knowledge_source_jobs(
+    graph_id: UUID,
+    request: Request,
+    context: ContextDep,
+    session: SessionDep,
+    limit: Annotated[int, Query(ge=1, le=100)] = 20,
+    cursor: Annotated[str | None, Query(max_length=2000)] = None,
+) -> KnowledgeSourceJobPageResponse | JSONResponse:
+    graph = await _service(request, session).get_graph(
+        workspace_id=context.workspace_id,
+        graph_id=graph_id,
+        subject=context.subject,
+        environment=context.environment,
+        request_id=context.request_id,
+    )
+    if graph is None:
+        return _not_found(request, context.request_id)
+    page = await SqlKnowledgeSourceJobStore(session).list_owned(
+        workspace_id=context.workspace_id,
+        graph_id=graph_id,
+        actor_id=context.subject.subject_id,
+        limit=limit,
+        cursor=cursor,
+    )
+    return KnowledgeSourceJobPageResponse(
+        items=[_source_job_response(item) for item in page.items],
+        next_cursor=page.next_cursor,
+    )
+
+
+@router.get(
+    "/{graph_id}/source-analysis-jobs/{job_id}",
+    response_model=KnowledgeSourceJobResponse,
+)
+async def get_knowledge_source_job(
+    graph_id: UUID,
+    job_id: UUID,
+    request: Request,
+    context: ContextDep,
+    session: SessionDep,
+) -> KnowledgeSourceJobResponse | JSONResponse:
+    graph = await _service(request, session).get_graph(
+        workspace_id=context.workspace_id,
+        graph_id=graph_id,
+        subject=context.subject,
+        environment=context.environment,
+        request_id=context.request_id,
+    )
+    if graph is None:
+        return _not_found(request, context.request_id)
+    job = await SqlKnowledgeSourceJobStore(session).get_owned(
+        workspace_id=context.workspace_id,
+        graph_id=graph_id,
+        job_id=job_id,
         actor_id=context.subject.subject_id,
     )
-    return KnowledgeSourceAnalyzeResponse(
-        source_snapshot_id=source.snapshot_id,
-        changeset_id=changeset_id,
-        page_count=len(analysis.pages),
-        proposed_node_count=len(analysis.extraction.nodes),
-        proposed_edge_count=len(analysis.extraction.edges),
-        evidence_hash=analysis.evidence_hash(),
-        embedding_model=embedding_binding.model,
-        extraction_model=extraction_binding.model,
+    if job is None:
+        return _not_found(request, context.request_id)
+    return _source_job_response(job)
+
+
+@router.post(
+    "/{graph_id}/source-analysis-jobs/{job_id}/cancel",
+    response_model=KnowledgeSourceJobResponse,
+)
+async def cancel_knowledge_source_job(
+    graph_id: UUID,
+    job_id: UUID,
+    payload: KnowledgeSourceJobCancelRequest,
+    request: Request,
+    context: ContextDep,
+    session: SessionDep,
+    if_match: Annotated[str, Header(alias="If-Match", max_length=100)],
+    idempotency_key: Annotated[str, Header(alias="Idempotency-Key", min_length=16, max_length=200)],
+) -> KnowledgeSourceJobResponse | JSONResponse:
+    service = _service(request, session)
+    graph = await service.get_graph(
+        workspace_id=context.workspace_id,
+        graph_id=graph_id,
+        subject=context.subject,
+        environment=context.environment,
+        request_id=context.request_id,
     )
+    if graph is None:
+        return _not_found(request, context.request_id)
+    await service.authorize_source_analysis(
+        workspace_id=context.workspace_id,
+        graph=graph,
+        subject=context.subject,
+        environment=context.environment,
+        request_id=context.request_id,
+    )
+    expected_version = _expected_version(if_match)
+    request_hash = canonical_json_hash(
+        {
+            "contract": "KNOWLEDGE_SOURCE_ANALYSIS_CANCEL_V1",
+            "workspace_id": str(context.workspace_id),
+            "actor_id": str(context.subject.subject_id),
+            "graph_id": str(graph_id),
+            "job_id": str(job_id),
+            "expected_version": expected_version,
+            "reason": payload.reason,
+        }
+    )
+    job = await SqlKnowledgeSourceJobStore(session).cancel(
+        workspace_id=context.workspace_id,
+        graph_id=graph_id,
+        job_id=job_id,
+        actor_id=context.subject.subject_id,
+        expected_version=expected_version,
+        reason=payload.reason,
+        request_hash=request_hash,
+        idempotency_key=idempotency_key,
+    )
+    return _source_job_response(job)
 
 
 @router.post(
@@ -1101,18 +1109,18 @@ async def query_knowledge_release(
     )
     if container.knowledge_neo4j is None:
         raise ConflictError("The activated Neo4j query adapter is unavailable.")
-    embedding, _, composer, embedding_binding, _, graphrag_binding = _knowledge_adapters(request)
+    runtime = _knowledge_adapters(request)
     selector = SqlSemanticSeedSelector(
         session=session,
-        embedding=embedding,
-        binding=embedding_binding,
+        embedding=runtime.embedding,
+        binding=runtime.bindings.embedding,
     )
     answer = await KnowledgeGraphRagService(
         retriever=Neo4jScopedEvidenceRetriever(
             executor=container.knowledge_neo4j,
             semantic_selector=selector,
         ),
-        composer=composer,
+        composer=runtime.composer,
         audit_writer=repository,
     ).answer(
         request_id=context.request_id,
@@ -1131,7 +1139,7 @@ async def query_knowledge_release(
         maximum_hops=payload.maximum_hops,
         maximum_nodes=payload.maximum_nodes,
         canonical_snapshot=snapshot,
-        binding=graphrag_binding,
+        binding=runtime.bindings.graphrag,
     )
     cited_node_ids = {
         citation.entity_id for citation in answer.citations if citation.entity_kind == "NODE"

@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
-from typing import Protocol
+from dataclasses import dataclass
+from typing import BinaryIO, Protocol
 from uuid import UUID
 
 from datariver.domain.knowledge import GraphSnapshot
@@ -22,8 +23,31 @@ class KnowledgeSourceReader(Protocol):
     async def read_snapshot(self, *, source: KnowledgeSourceSnapshot) -> bytes: ...
 
 
+class SpooledKnowledgeSource(Protocol):
+    @property
+    def stream(self) -> BinaryIO: ...
+
+    @property
+    def size_bytes(self) -> int: ...
+
+    @property
+    def content_sha256(self) -> str: ...
+
+    def close(self) -> None: ...
+
+
+class KnowledgeSourceSpoolReader(KnowledgeSourceReader, Protocol):
+    async def spool_snapshot(
+        self, *, source: KnowledgeSourceSnapshot
+    ) -> SpooledKnowledgeSource: ...
+
+
 class PageAwarePdfParser(Protocol):
     def parse(self, payload: bytes) -> tuple[PdfPage, ...]: ...
+
+
+class StreamingPageAwarePdfParser(PageAwarePdfParser, Protocol):
+    def parse_stream(self, source: BinaryIO) -> tuple[PdfPage, ...]: ...
 
 
 class KnowledgeEmbeddingProvider(Protocol):
@@ -41,6 +65,24 @@ class TypedKnowledgeExtractor(Protocol):
         edge_types: frozenset[str],
         binding: ModelBinding,
     ) -> ExtractionDraft: ...
+
+
+@dataclass(frozen=True, slots=True)
+class KnowledgeRuntimeBindings:
+    embedding: ModelBinding
+    extraction: ModelBinding
+    graphrag: ModelBinding
+
+
+class KnowledgePipelineRuntime(Protocol):
+    @property
+    def embedding(self) -> KnowledgeEmbeddingProvider: ...
+
+    @property
+    def extractor(self) -> TypedKnowledgeExtractor: ...
+
+    @property
+    def bindings(self) -> KnowledgeRuntimeBindings: ...
 
 
 class VerifiedKnowledgeProjectionWriter(Protocol):

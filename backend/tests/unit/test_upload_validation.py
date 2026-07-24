@@ -201,6 +201,43 @@ async def test_streaming_csv_integrity_validation_promotes_then_cleans_quarantin
     assert ("accepted", destination_key) in objects.objects
 
 
+@pytest.mark.parametrize(
+    ("classification", "expected_namespace"),
+    (
+        (Classification.PUBLIC, "knowledge-eligible"),
+        (Classification.INTERNAL, "knowledge-eligible"),
+        (Classification.CONFIDENTIAL, "accepted"),
+        (Classification.RESTRICTED, "accepted"),
+    ),
+)
+@pytest.mark.asyncio
+async def test_only_low_classification_pdfs_use_the_knowledge_read_prefix(
+    classification: Classification,
+    expected_namespace: str,
+) -> None:
+    content = b"%PDF-1.7\nclassification boundary\n%%EOF"
+    upload = manifest(content)
+    upload.display_name = "source.pdf"
+    upload.declared_mime = "application/pdf"
+    upload.classification = classification
+    store = MemoryValidationStore(upload)
+    objects = MemoryObjectStore(
+        source_bucket=upload.bucket,
+        source_key=upload.object_key,
+        content=content,
+        content_type="application/pdf",
+    )
+
+    assert await worker(store=store, objects=objects).run_once() is True
+
+    destination_key = (
+        f"{expected_namespace}/{upload.workspace_id}/{upload.upload_id}/"
+        f"validation-v{upload.version}-attempt-{upload.validation_attempts}"
+    )
+    assert store.accepted_object_key == destination_key
+    assert objects.copy_destinations == [("accepted", destination_key)]
+
+
 def test_xlsx_validation_emits_the_registered_profile_validator_version() -> None:
     content = b"PK\x03\x04safe-xlsx-package"
     upload = manifest(content)

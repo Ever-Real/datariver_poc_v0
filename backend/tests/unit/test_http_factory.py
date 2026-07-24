@@ -1001,6 +1001,57 @@ def test_catalog_export_openapi_is_server_managed_and_does_not_expose_storage_co
     assert set(capability["properties"]) == {"enabled"}
 
 
+def test_knowledge_source_job_openapi_is_durable_bounded_and_non_disclosing() -> None:
+    factory = cast(Callable[[Settings], AppContainer], lambda _: LiveOnlyContainer())
+    document = create_app(settings(), container_factory=factory).openapi()
+
+    analyze = document["paths"]["/api/v1/knowledge/graphs/{graph_id}/sources/{upload_id}/analyze"][
+        "post"
+    ]
+    analyze_headers = {parameter["name"]: parameter for parameter in analyze["parameters"]}
+    assert set(analyze["responses"]) >= {"202", "422"}
+    assert "201" not in analyze["responses"]
+    assert analyze_headers["Idempotency-Key"]["required"] is True
+    assert analyze_headers["Idempotency-Key"]["schema"]["minLength"] == 16
+
+    collection = document["paths"]["/api/v1/knowledge/graphs/{graph_id}/source-analysis-jobs"][
+        "get"
+    ]
+    query = {parameter["name"]: parameter for parameter in collection["parameters"]}
+    assert query["limit"]["schema"]["minimum"] == 1
+    assert query["limit"]["schema"]["maximum"] == 100
+    assert query["cursor"]["schema"]["anyOf"][0]["maxLength"] == 2000
+
+    cancel = document["paths"][
+        "/api/v1/knowledge/graphs/{graph_id}/source-analysis-jobs/{job_id}/cancel"
+    ]["post"]
+    cancel_headers = {parameter["name"]: parameter for parameter in cancel["parameters"]}
+    assert cancel_headers["If-Match"]["required"] is True
+    assert cancel_headers["Idempotency-Key"]["required"] is True
+    assert cancel_headers["Idempotency-Key"]["schema"]["minLength"] == 16
+
+    job = document["components"]["schemas"]["KnowledgeSourceJobResponse"]
+    assert {
+        "bucket",
+        "object_key",
+        "endpoint",
+        "credential",
+        "lease_token",
+        "lease_token_hash",
+        "worker_fingerprint",
+    }.isdisjoint(job["properties"])
+    result = document["components"]["schemas"]["KnowledgeSourceJobResultResponse"]
+    assert set(result["properties"]) == {
+        "changeset_id",
+        "page_count",
+        "proposed_node_count",
+        "proposed_edge_count",
+        "evidence_hash",
+        "embedding_model",
+        "extraction_model",
+    }
+
+
 def test_change_write_contract_requires_source_hash_and_governed_aspect() -> None:
     factory = cast(Callable[[Settings], AppContainer], lambda _: LiveOnlyContainer())
     document = create_app(settings(), container_factory=factory).openapi()

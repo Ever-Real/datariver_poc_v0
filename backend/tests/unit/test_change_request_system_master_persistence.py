@@ -81,7 +81,7 @@ def test_system_master_migration_is_forced_rls_and_uses_redacted_connection_prof
         encoding="utf-8"
     )
 
-    assert REQUIRED_DATABASE_REVISION == "0053"
+    assert REQUIRED_DATABASE_REVISION == "0054"
     assert "FORCE ROW LEVEL SECURITY" in migration
     assert "GRANT SELECT, INSERT, UPDATE ON platform.data_systems" in migration
     assert "secret_reference" in migration
@@ -121,7 +121,8 @@ def test_connector_probe_scope_migration_matches_runtime_evidence() -> None:
     assert "S3_HEAD_BUCKET" in migration
     assert "REDIS_PING" in migration
     assert "_constraint_definition()" in migration
-    assert "if definition == _CURRENT_SCOPE_DEFINITION:" in migration
+    assert "_scope_definition(_LATER_CANONICAL_SCOPES)" in migration
+    assert "if definition in {" in migration
     assert "if definition != _LEGACY_SCOPE_DEFINITION:" in migration
     assert "op.drop_constraint(" in migration
     assert "op.f(_CONSTRAINT)" in migration

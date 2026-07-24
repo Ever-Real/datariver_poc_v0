@@ -71,6 +71,14 @@ EXPECTED_SERVICE_SECRETS = {
         "s3_export_access_key",
         "s3_export_secret_key",
     },
+    "knowledge-source-worker": {
+        "postgres_knowledge_password",
+        "redis_delivery_password",
+        "s3_knowledge_access_key",
+        "s3_knowledge_secret_key",
+        "intranet_llm_chat_api_key",
+        "intranet_llm_embedding_api_key",
+    },
 }
 DATAHUB_CONTRACT_DIRECTORY = ROOT / "infra" / "contracts"
 DATAHUB_COMPONENTS = {"actions", "frontend", "gms", "upgrade"}
@@ -165,6 +173,7 @@ def verify_compose() -> None:
         "upload-validation-worker",
         "governance-apply-worker",
         "catalog-export-worker",
+        "knowledge-source-worker",
     ):
         networks = set(base["services"][name].get("networks", []))
         if not networks:
@@ -295,6 +304,8 @@ def verify_multiarch_release_contract() -> None:
         "save_image=${image%@sha256:*}",
         "Saved archive omitted required image tag",
         "include_local_connectors",
+        "datariver-next-knowledge-source-worker:latest",
+        "catalog-export-worker knowledge-source-worker web keycloak",
         "compose.airflow.yaml infra/airflow/Dockerfile infra/postgres/init-airflow.sh",
         '"$output_dir"/*.bundle',
     ):
@@ -568,6 +579,7 @@ def verify_runtime_hardening() -> None:
             "upload-validation-worker",
             "governance-apply-worker",
             "catalog-export-worker",
+            "knowledge-source-worker",
             "web",
         },
         "compose.identity.yaml": {"keycloak"},
@@ -817,6 +829,7 @@ def verify_database_roles() -> None:
         "datariver_retention_scheduler",
         "datariver_archive",
         "datariver_bootstrap",
+        "datariver_knowledge",
     }
     missing = {role for role in required_roles if role not in combined}
     if missing:
@@ -867,7 +880,11 @@ def verify_database_roles() -> None:
         raise AssertionError("the application role cannot delete retention governance evidence")
     if re.search(r"GRANT[^;]*UPDATE[^;]*retention\.legal_hold_events", generator):
         raise AssertionError("Legal Hold history must remain append-only")
-    for role in ("datariver_retention_scheduler", "datariver_archive"):
+    for role in (
+        "datariver_retention_scheduler",
+        "datariver_archive",
+        "datariver_knowledge",
+    ):
         if re.search(rf"ALTER ROLE {role}[^;]*NOBYPASSRLS;", combined) is None:
             raise AssertionError(f"{role} must remain subject to workspace RLS")
     attachment_migration = (

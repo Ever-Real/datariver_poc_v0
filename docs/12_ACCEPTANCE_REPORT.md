@@ -14,6 +14,21 @@ addenda and `docs/29_MASTER_EXECUTION_BACKLOG.md`.
 
 P0–P3 foundation addendum, updated 2026-07-16: current source checks additionally include the stable DataHub v1.6.0 release contract and typed OIDC assurance. Hardware WebAuthn requires an exact approved ACR+AMR combination and `auth_time`; OTP, generic MFA and refreshed-token `iat` cannot satisfy high-risk authorization. Browser remediation is bounded to typed authentication actions, rejects unsafe return locations, and never automatically replays a denied mutation after an authentication redirect. Compatibility migrations and the current hybrid runtime have separate live evidence below.
 
+## Phase 5 durable Knowledge source-job addendum — 2026-07-24
+
+This addendum accepts the local pinned/fenced PDF-to-typed-DRAFT implementation at revision `0054`.
+It does not accept WSL/private providers, production IAM/TLS, human browser acceptance or target
+load/recovery.
+
+| Gate | Result | Current executed evidence |
+|---|---|---|
+| Durable job and security boundary | PASS (local) | Submission pins source/base/graph/ontology/parser/model facts. The separate worker reauthorizes before source/provider egress and final locked persistence; drift becomes `STALE` without proposal rows. API cannot claim/finalize and worker cannot review/publish/activate/project. |
+| Database | PASS (isolated PostgreSQL) | Additive `0053 -> 0054` and completely empty generated `0001 -> 0054` databases each passed `24` owner/app/worker/cross-service role tests. Dirty direct DELETE was removed; unsafe worker role membership failed canonical migration; app/worker/upload/governance/relay evidence-forgery cases failed closed. Generated `0001` was byte-identical twice at SHA-256 `a9978344ab90982c6d5f6c8929b8a976f34418d5fbcae2a8de6758171bda6f98`; `alembic check` was clean. |
+| Resource and browser bounds | PASS (local) | 50 MiB, 500-page, per-page/provider-batch/vector/operation limits fail closed. Browser keeps one active-first opaque-cursor page of at most 100 jobs; the transactional cap of 20 non-terminal jobs per owner/graph keeps active work discoverable. Hidden-tab polling pauses and the same job can resume after 120 attempts. |
+| Backend/frontend | PASS | Ruff, strict mypy over 370 source/test files and static verification passed; backend `1,369 passed / 84 environment-gated skipped`. TypeScript, zero-warning ESLint, frontend `45 files / 243 tests` and production build passed. |
+| Independent review | PASS (local code) | Final Application/UI/portability and DB/security reviews reported `P0=0`, `P1=0`. PM traceability P1 findings were closed by matching claims to executed evidence and synchronizing phase-control records. Residual P2 hardening and owners are recorded in the Phase checklist. |
+| External acceptance | OPEN | WSL `linux/amd64` image/runtime/migration, external MinIO/S3 policy, private OpenAI-compatible Chat/Embedding DNS/TLS/credentials, real IdP users and representative kill/retry/load/soak remain `EXTERNAL_GATE`. |
+
 ## Phase 4 Knowledge entry-gate addendum — 2026-07-24
 
 This addendum covers implementation commit `bd0ee22` over base `716fb6f`. It accepts the local

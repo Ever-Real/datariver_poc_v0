@@ -40,6 +40,7 @@ api_port=$(env_file_value API_PORT 38101)
 web_port=$(env_file_value WEB_PORT 38102)
 airflow_source_api_bridge_enabled=$(env_file_value AIRFLOW_SOURCE_API_BRIDGE_ENABLED false)
 airflow_source_api_bridge_port=$(env_file_value AIRFLOW_SOURCE_API_BRIDGE_PORT 38103)
+knowledge_source_worker_enabled=$(env_file_value KNOWLEDGE_SOURCE_WORKER_ENABLED false)
 enable_local_ollama=false
 enable_neo4j=false
 enable_airflow_source_bridge=$airflow_source_api_bridge_enabled
@@ -48,7 +49,8 @@ usage() {
   cat <<'EOF'
 Usage: scripts/dev_host.sh [start|stop|status|migrate|preflight] [options]
 
-Run the mutable DataRiver API, four workers and Vite from the checked-out source.
+Run the mutable DataRiver API, core workers, optional Knowledge source worker and Vite from
+the checked-out source.
 PostgreSQL and (when selected) Keycloak remain Docker services. Redis and
 MinIO/S3 are external services configured through .env or the options below.
 
@@ -222,7 +224,7 @@ stop_owned_vite_processes() {
 
 show_status() {
   local name
-  for name in api airflow-api-bridge outbox-relay upload-worker upload-validation-worker governance-apply-worker vite; do
+  for name in api airflow-api-bridge outbox-relay upload-worker upload-validation-worker governance-apply-worker knowledge-source-worker vite; do
     if is_running "$name"; then
       printf '%-25s running (pid %s)\n' "$name" "$(cat "$(pid_file "$name")")"
     else
@@ -237,7 +239,7 @@ case "$action" in
     exit 0
     ;;
   stop)
-    for process in vite governance-apply-worker upload-validation-worker upload-worker outbox-relay airflow-api-bridge api; do
+    for process in vite knowledge-source-worker governance-apply-worker upload-validation-worker upload-worker outbox-relay airflow-api-bridge api; do
       stop_process "$process"
     done
     stop_owned_vite_processes
@@ -270,10 +272,16 @@ required_secrets=(postgres_password)
 if [ "$action" = start ]; then
   required_secrets+=(
     postgres_app_password postgres_relay_password postgres_upload_password
-    postgres_governance_password redis_cache_password redis_delivery_password
+    postgres_governance_password
+    redis_cache_password redis_delivery_password
     datahub_token s3_access_key s3_secret_key
     keycloak_identity_admin_client_secret
   )
+  if [ "$knowledge_source_worker_enabled" = true ]; then
+    required_secrets+=(
+      postgres_knowledge_password s3_knowledge_access_key s3_knowledge_secret_key
+    )
+  fi
 fi
 for required in "${required_secrets[@]}"; do
   if [ ! -s "$root/secrets/$required" ]; then
@@ -308,7 +316,7 @@ if [ "$enable_neo4j" = true ] && [ ! -s "$root/secrets/neo4j_auth" ]; then
 fi
 mkdir -p "$runtime_dir"
 if [ "$action" = start ]; then
-  for process in api airflow-api-bridge outbox-relay upload-worker upload-validation-worker governance-apply-worker vite; do
+  for process in api airflow-api-bridge outbox-relay upload-worker upload-validation-worker governance-apply-worker knowledge-source-worker vite; do
     if is_running "$process"; then
       echo "DataRiver source-host process is already running: $process" >&2
       exit 2
@@ -355,6 +363,8 @@ export UPLOAD_DATABASE_URL="postgresql+asyncpg://datariver_upload@127.0.0.1:$pos
 export UPLOAD_DATABASE_SECRET_REF="$(secret_ref postgres_upload_password)"
 export GOVERNANCE_DATABASE_URL="postgresql+asyncpg://datariver_governance@127.0.0.1:$postgres_port/datariver"
 export GOVERNANCE_DATABASE_SECRET_REF="$(secret_ref postgres_governance_password)"
+export KNOWLEDGE_DATABASE_URL="postgresql+asyncpg://datariver_knowledge@127.0.0.1:$postgres_port/datariver"
+export KNOWLEDGE_DATABASE_SECRET_REF="$(secret_ref postgres_knowledge_password)"
 export REDIS_CACHE_URL="$redis_cache_url"
 export REDIS_DELIVERY_URL="$redis_delivery_url"
 export REDIS_CACHE_SECRET_REF="$(secret_ref redis_cache_password)"
@@ -363,6 +373,9 @@ export S3_ENDPOINT_URL="$s3_endpoint_url"
 export S3_PUBLIC_ENDPOINT_URL="$s3_public_endpoint_url"
 export S3_ACCESS_KEY_FILE="$root/secrets/s3_access_key"
 export S3_SECRET_KEY_FILE="$root/secrets/s3_secret_key"
+export S3_KNOWLEDGE_ACCESS_KEY_FILE="$root/secrets/s3_knowledge_access_key"
+export S3_KNOWLEDGE_SECRET_KEY_FILE="$root/secrets/s3_knowledge_secret_key"
+export KNOWLEDGE_SOURCE_SPOOL_DIRECTORY="$runtime_dir/knowledge-spool"
 export OIDC_ISSUER="http://localhost:$keycloak_port/realms/datariver"
 export OIDC_JWKS_URL="http://localhost:$keycloak_port/realms/datariver/protocol/openid-connect/certs"
 export IDENTITY_ADMIN_ENABLED=true
@@ -460,7 +473,7 @@ cleanup_needed=true
 cleanup_on_error() {
   local status=$?
   if [ "$cleanup_needed" = true ] && [ "$status" -ne 0 ]; then
-    for process in vite governance-apply-worker upload-validation-worker upload-worker outbox-relay airflow-api-bridge api; do
+    for process in vite knowledge-source-worker governance-apply-worker upload-validation-worker upload-worker outbox-relay airflow-api-bridge api; do
       stop_process "$process"
     done
   fi
@@ -521,6 +534,10 @@ start_process outbox-relay "$root" "$python" -m datariver.workers.outbox_relay
 start_process upload-worker "$root" "$python" -m datariver.workers.upload_worker
 start_process upload-validation-worker "$root" "$python" -m datariver.workers.upload_validation
 start_process governance-apply-worker "$root" "$python" -m datariver.workers.governance_apply
+if [ "${KNOWLEDGE_SOURCE_WORKER_ENABLED:-false}" = true ]; then
+  mkdir -p "$KNOWLEDGE_SOURCE_SPOOL_DIRECTORY"
+  start_process knowledge-source-worker "$root" "$python" -m datariver.workers.knowledge_source
+fi
 start_process vite "$root/frontend" "$node" "$vite_entry" \
   --host 127.0.0.1 --port "$web_port" --strictPort
 
@@ -531,6 +548,11 @@ for process in api airflow-api-bridge outbox-relay upload-worker upload-validati
     exit 1
   fi
 done
+if [ "${KNOWLEDGE_SOURCE_WORKER_ENABLED:-false}" = true ] &&
+   ! is_running knowledge-source-worker; then
+  echo "Source-host process failed during startup: knowledge-source-worker. Read $runtime_dir/knowledge-source-worker.err.log" >&2
+  exit 1
+fi
 cleanup_needed=false
 trap - EXIT
 show_status

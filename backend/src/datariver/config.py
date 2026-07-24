@@ -47,6 +47,8 @@ class Settings(BaseSettings):
     upload_database_secret_ref: str
     governance_database_url: str
     governance_database_secret_ref: str
+    knowledge_database_url: str | None = None
+    knowledge_database_secret_ref: str | None = None
     export_database_url: str | None = None
     export_database_secret_ref: str | None = None
     retention_scheduler_database_url: str | None = None
@@ -145,6 +147,14 @@ class Settings(BaseSettings):
     neo4j_connection_timeout_seconds: float = Field(default=30.0, ge=1.0, le=60.0)
     neo4j_maximum_connection_pool_size: int = Field(default=20, ge=1, le=100)
     knowledge_pipeline_enabled: bool = False
+    knowledge_source_job_maximum_attempts: int = Field(default=3, ge=1, le=20)
+    knowledge_source_worker_enabled: bool = False
+    knowledge_source_worker_lease_seconds: int = Field(default=300, ge=30, le=3600)
+    knowledge_source_worker_poll_seconds: float = Field(default=2.0, ge=0.1, le=30.0)
+    knowledge_source_memory_spool_bytes: int = Field(default=1_048_576, ge=4_096, le=52_428_800)
+    knowledge_source_spool_directory: str = Field(
+        default="/var/spool/datariver-knowledge", min_length=1, max_length=512
+    )
     # Development-only startup activation. The database stores versioned, non-secret
     # documents and file-mounted secret reference names; processes read the selected
     # activated versions once at startup, so applying a change always requires restart.
@@ -277,6 +287,7 @@ class Settings(BaseSettings):
     governance_apply_lease_seconds: int = Field(default=120, ge=30, le=900)
     governance_apply_maximum_attempts: int = Field(default=8, ge=1, le=20)
     governance_worker_subject_id: UUID = UUID("00000000-0000-4000-8000-000000000102")
+    knowledge_worker_subject_id: UUID = UUID("00000000-0000-7000-8000-000000000004")
     export_worker_subject_id: UUID = UUID("00000000-0000-7000-8000-000000000002")
     retention_worker_subject_id: UUID = UUID("00000000-0000-7000-8000-000000000003")
     retention_archive_execution_enabled: bool = False
@@ -300,6 +311,8 @@ class Settings(BaseSettings):
     s3_secret_key_file: str
     s3_export_access_key_file: str | None = None
     s3_export_secret_key_file: str | None = None
+    s3_knowledge_access_key_file: str | None = None
+    s3_knowledge_secret_key_file: str | None = None
     s3_archive_endpoint_url: str | None = None
     s3_archive_region: str | None = None
     s3_archive_bucket: str | None = None
@@ -855,6 +868,92 @@ class Settings(BaseSettings):
             }:
                 raise ValueError(
                     "Catalog export worker S3 credentials must use separate secret files."
+                )
+        if self.knowledge_source_worker_enabled:
+            source_inference_ready = (
+                self.local_ollama_chat_enabled and self.local_ollama_embedding_enabled
+            ) or (
+                self.intranet_openai_compatible_chat_enabled
+                and self.intranet_openai_compatible_embedding_enabled
+            )
+            if (
+                not source_inference_ready
+                or self.knowledge_database_url is None
+                or self.knowledge_database_secret_ref is None
+                or self.s3_knowledge_access_key_file is None
+                or self.s3_knowledge_secret_key_file is None
+            ):
+                raise ValueError(
+                    "Enabled Knowledge source worker requires activated Chat/Embedding "
+                    "adapters and separate DB/S3 credentials."
+                )
+            other_database_urls = {
+                self.database_url,
+                self.migration_database_url,
+                self.relay_database_url,
+                self.upload_database_url,
+                self.governance_database_url,
+                self.bootstrap_database_url,
+                self.export_database_url,
+                self.retention_scheduler_database_url,
+                self.archive_database_url,
+            }
+            other_database_principals = {
+                urlsplit(url).username for url in other_database_urls if url is not None
+            }
+            if (
+                self.knowledge_database_url in other_database_urls
+                or urlsplit(self.knowledge_database_url).username in other_database_principals
+                or self.knowledge_database_secret_ref
+                in {
+                    self.database_secret_ref,
+                    self.migration_database_secret_ref,
+                    self.relay_database_secret_ref,
+                    self.upload_database_secret_ref,
+                    self.governance_database_secret_ref,
+                    self.bootstrap_database_secret_ref,
+                    self.export_database_secret_ref,
+                    self.retention_scheduler_database_secret_ref,
+                    self.archive_database_secret_ref,
+                }
+            ):
+                raise ValueError(
+                    "Knowledge source worker database credentials must use a separate principal."
+                )
+            knowledge_s3_files = {
+                self.s3_knowledge_access_key_file,
+                self.s3_knowledge_secret_key_file,
+            }
+            if len(knowledge_s3_files) != 2 or knowledge_s3_files & {
+                self.s3_access_key_file,
+                self.s3_secret_key_file,
+                self.s3_export_access_key_file,
+                self.s3_export_secret_key_file,
+                self.s3_archive_access_key_file,
+                self.s3_archive_secret_key_file,
+            }:
+                raise ValueError(
+                    "Knowledge source worker S3 credentials must use separate secret files."
+                )
+            maximum_provider_timeout = max(
+                self.local_ollama_chat_timeout_seconds,
+                self.local_ollama_embedding_timeout_seconds,
+                self.intranet_openai_compatible_chat_timeout_seconds,
+                self.intranet_openai_compatible_embedding_timeout_seconds,
+            )
+            if self.knowledge_source_worker_lease_seconds < maximum_provider_timeout + 30:
+                raise ValueError(
+                    "Knowledge source worker lease must exceed one provider timeout by "
+                    "at least 30 seconds."
+                )
+            spool_path = PurePosixPath(self.knowledge_source_spool_directory)
+            if (
+                not spool_path.is_absolute()
+                or ".." in spool_path.parts
+                or spool_path == PurePosixPath("/")
+            ):
+                raise ValueError(
+                    "Knowledge source spool directory must be a bounded absolute path."
                 )
         if self.local_ollama_chat_enabled:
             if self.app_env != "development":

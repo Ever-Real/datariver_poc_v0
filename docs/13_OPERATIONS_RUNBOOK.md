@@ -39,7 +39,8 @@ Host-port overrides do not change an OIDC issuer. When browser-facing origins ch
 ## Safe restart order
 
 1. Verify the external OIDC, Redis cache/delivery and S3 endpoints required by enabled features.
-2. Start PostgreSQL and run Alembic exactly once with the migration identity.
+2. Start PostgreSQL. On an existing volume reconcile packaged runtime roles, run Alembic exactly
+   once with the migration identity, then reconcile roles again.
 3. Start the API and confirm schema-aware readiness.
 4. Start relay/workers only after Redis delivery recovery and the relevant external connectors pass.
 5. Start web/gateway and Keycloak/Airflow overlays where applicable; DAGs remain paused until probes pass.
@@ -126,6 +127,121 @@ a bounded connection/query failure. Responses never expose the DSN, observed rev
 exception. Do not route traffic to a live-but-not-ready replica.
 
 Web Nginx and APISIX dynamically re-resolve the API service. After replacing the API container, verify direct liveness plus web/gateway `/api/v1/health/ready`; do not restart the UI merely to mask a stale or schema-mismatched upstream.
+
+## Durable Knowledge source analysis
+
+This worker is optional and separately credentialed. Catalog/governance and existing Knowledge reads
+remain available when it is disabled; the API rejects a new analysis enqueue before persisting a
+queue item. Neo4j is independent and is not an activation prerequisite.
+
+For a new Mac arm64 environment, run the profile bootstrap once, configure/probe the local
+Embedding contract, and opt in on the second pass. For a WSL amd64 preparation environment,
+configure/probe both private OpenAI-compatible Chat and Embedding contracts before the second pass:
+
+```bash
+# Mac arm64
+./scripts/bootstrap.sh --env-file .env.mac-development --mac-development
+./scripts/bootstrap.sh --env-file .env.mac-development --mac-development \
+  --enable-knowledge-source-worker
+
+# WSL linux/amd64
+./scripts/bootstrap.sh --env-file .env.wsl-preparation --wsl-preparation
+./scripts/bootstrap.sh --env-file .env.wsl-preparation --wsl-preparation \
+  --enable-knowledge-source-worker
+```
+
+The second command in each pair intentionally fails until one complete Chat + Embedding pair is
+present. WSL/private model reachability, model identity/output conformance and credential handling
+are `EXTERNAL_GATE`; do not enable the flag merely to bypass the check. Native Windows PowerShell
+uses `.env`: run `./scripts/bootstrap.ps1 -DataHubToken '<scoped-token>'`, configure/probe the
+provider pair, then run `./scripts/bootstrap.ps1 -EnableKnowledgeSourceWorker`.
+
+On a blank PostgreSQL volume, the init hook creates `datariver_knowledge`. On an existing volume the
+role must be an unprivileged NOBYPASSRLS LOGIN and must not be a member of any role that it could
+adopt with `SET ROLE` before revision `0054`:
+
+```bash
+scripts/compose.sh --env-file .env.wsl-preparation -f compose.yaml up -d --wait postgres
+DATARIVER_ENV_FILE=.env.wsl-preparation ./scripts/reconcile-postgres-roles.sh
+scripts/compose.sh --env-file .env.wsl-preparation -f compose.yaml run --rm migrate
+DATARIVER_ENV_FILE=.env.wsl-preparation ./scripts/reconcile-postgres-roles.sh
+scripts/compose.sh --env-file .env.wsl-preparation -f compose.yaml run --rm migrate \
+  /app/.venv/bin/alembic -c backend/alembic.ini current
+# Require: 0054 (head)
+```
+
+For native Windows use
+`./scripts/reconcile-postgres-roles.ps1 -EnvFile .env` before and after the migration. Never reuse
+the owner/API password, add BYPASSRLS, stamp the revision or grant DDL to make migration proceed.
+Revision `0054` first removes prior direct application-schema privileges and then applies its exact
+allowlist. Treat a membership failure as principal contamination: review and explicitly revoke the
+unexpected membership rather than weakening the assertion.
+Revision `0054` refuses downgrade when the durable source-analysis ledger contains any job. That is
+an evidence-preservation gate: preserve backup/logs and use a reviewed forward fix; do not delete
+jobs to force downgrade.
+
+The local MinIO reference needs both general bucket initialization and the separate Knowledge user:
+
+```bash
+scripts/compose.sh --env-file .env.mac-development \
+  -f compose.local-connectors.yaml --profile object-storage up -d --wait minio
+scripts/compose.sh --env-file .env.mac-development \
+  -f compose.yaml --profile object-storage-tools run --rm storage-init
+scripts/compose.sh --env-file .env.mac-development \
+  -f compose.local-connectors.yaml --profile object-storage \
+  run --rm minio-knowledge-identity-init
+```
+
+The identity initializer renders the policy against the configured `S3_BUCKET_ACCEPTED`; it grants
+only `GetBucketLocation` and accepted-bucket `GetObject`. For external S3/MinIO, the storage owner
+creates the bucket and an equivalent non-admin principal, mounts its keys only through
+`S3_KNOWLEDGE_ACCESS_KEY_FILE`/`S3_KNOWLEDGE_SECRET_KEY_FILE`, and proves allowed reads plus
+anonymous, write, delete and other-bucket denials. External target IAM remains `EXTERNAL_GATE`.
+
+After database and S3 preparation, start and observe only the selected profile:
+
+```bash
+scripts/compose.sh --env-file .env.wsl-preparation -f compose.yaml \
+  --profile knowledge-source up -d --wait api knowledge-source-worker
+scripts/compose.sh --env-file .env.wsl-preparation -f compose.yaml \
+  logs --since=10m api knowledge-source-worker
+```
+
+The worker-owned `knowledge-spool` volume is temporary, not canonical. Inputs are capped at 50 MiB
+and 500 pages; the default first 1 MiB stays in memory and the remainder spills to disk. Alert
+before free space can no longer cover one maximum source per worker plus temporary/provider
+overhead. Keep `KNOWLEDGE_SOURCE_SPOOL_DIRECTORY` absolute, non-root and writable only by the
+worker. Do not mount the volume into API/web, back it up as evidence or manually reuse residue.
+The worker closes each spool after an attempt; a stopped-process residue may be inspected for
+capacity only and cleaned after the corresponding durable job/attempt state is understood.
+
+Operational states are `QUEUED`, `RUNNING`, `RETRY_WAIT`, `CANCEL_REQUESTED`, `SUCCEEDED`, `FAILED`,
+`STALE` and `CANCELLED`. `SUPERSEDED` is attempt evidence. A lost worker is not repaired in SQL:
+after the database-clock lease expires, a replacement worker supersedes the attempt and retries
+within the job's stored limit. A late worker cannot publish with the old token/epoch. Provider,
+source, graph/base, ontology, profile or requester-authority drift ends `STALE` and must be
+resubmitted after review rather than rebound.
+
+Cancellation is actor-owned and version fenced. Read
+`GET /knowledge/graphs/{graph_id}/source-analysis-jobs/{job_id}`, then POST to the same resource's
+`/cancel` suffix with the returned positive `version` as `If-Match`, a new 16–200-character
+`Idempotency-Key`, and a bounded reason. Queued/retry work cancels immediately; running work records
+`CANCEL_REQUESTED`, and only its fenced terminal transaction can become `CANCELLED`. Reuse the same
+idempotency key only for the exact same body/version. Never update job/attempt/event/DRAFT rows.
+
+Emergency disablement:
+
+1. Set `KNOWLEDGE_SOURCE_WORKER_ENABLED=false` in the deployment environment.
+2. Recreate the API and confirm new enqueue returns the disabled-capability conflict.
+3. Stop `knowledge-source-worker`; preserve its logs and PostgreSQL evidence.
+4. Cancel intended jobs through the authorized API. A running cancellation remains pending until a
+   worker safely observes it; on restart, expired-lease recovery finishes it.
+5. Restore only after the DB/S3/Chat/Embedding contracts pass again.
+
+Record a real WSL amd64 run, external S3 IAM negatives, private Chat/Embedding calls, two-user
+browser authorization/cancellation, worker kill/reclaim, provider outage, and representative
+50-MiB/resource load. These are all `EXTERNAL_GATE`; arm64 source/unit tests and Compose rendering do
+not close them.
 
 ## Airflow operating boundary
 

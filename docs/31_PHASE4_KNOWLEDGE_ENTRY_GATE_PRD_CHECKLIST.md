@@ -115,13 +115,14 @@ The dedicated audit role was synchronized to its test secret; the accepted rerun
 - [ ] Pin the actual System Settings probe connection to the vetted DNS address set while
   preserving original-host TLS verification. Pre-DNS allowlisting and address validation are
   implemented, but the default transport can resolve again at connect time.
-- [ ] Replace synchronous source analysis with a durable leased job that pins the prepared
+- [x] Phase 5 replaced synchronous source analysis with a durable leased job that pins the prepared
   base-release and ontology IDs, rejects eligibility before durable submission where possible,
-  and revalidates both bindings atomically before draft persistence.
+  and revalidates both bindings atomically before draft persistence. See
+  `32_DURABLE_KNOWLEDGE_SOURCE_JOBS_PRD_CHECKLIST.md`.
 
 ## External gates
 
-- [ ] WSL amd64 exact-source/image import and revision `0053` migration.
+- [ ] WSL amd64 exact-source/image import and revision `0054` migration.
 - [ ] Private Neo4j DNS/TLS/credential/query evidence if Neo4j is externalized.
 - [ ] Private Chat, Embedding and Reranking endpoint/model/credential/response evidence.
 - [ ] Repeat DNS/TLS/credential/rebinding negatives against the actual private endpoint after the

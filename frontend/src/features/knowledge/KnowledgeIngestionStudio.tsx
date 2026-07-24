@@ -86,6 +86,14 @@ export function KnowledgeIngestionStudio({ client }: { client: ApiClient }) {
   }, [client])
   useEffect(() => { void refreshChangesets(selectedGraphId) }, [refreshChangesets, selectedGraphId])
 
+  const openGeneratedChangeset = useCallback(async (changesetId: string) => {
+    if (!selectedGraphId) return
+    await refreshChangesets(selectedGraphId)
+    setSelectedChangesetId(changesetId)
+    setMode('A')
+    setModeATab('DIRECT')
+  }, [refreshChangesets, selectedGraphId])
+
   const createChangeset = async (event: FormEvent) => {
     event.preventDefault()
     if (!selectedGraphId || !changeTitle.trim()) return
@@ -216,7 +224,12 @@ export function KnowledgeIngestionStudio({ client }: { client: ApiClient }) {
           <div className="flex gap-2 border-b border-slate-200 pb-2" role="tablist" aria-label="A-Box 데이터 소스 연결"><button type="button" role="tab" aria-selected={sourceTab === 'FILE'} className={`button ${sourceTab === 'FILE' ? '' : 'button-secondary'}`} onClick={() => setSourceTab('FILE')}>파일 업로드</button><button type="button" role="tab" aria-selected={sourceTab === 'DB'} className={`button ${sourceTab === 'DB' ? '' : 'button-secondary'}`} onClick={() => setSourceTab('DB')}>DB 스키마</button></div>
           {sourceTab === 'DB' && <GovernedUnavailable title="DB 스키마 A-Box 적재 계약 미구현" description="연결된 시스템의 스키마 snapshot, 행 범위, 분류와 provenance를 고정하는 typed source 계약이 마련되기 전에는 DB 검색이나 적재 성공을 표시하지 않습니다." />}
         </section>
-        {sourceTab === 'FILE' && <KnowledgeSourceUpload client={client} graph={selectedGraph} onAnalysisCreated={() => refreshChangesets(selectedGraphId)} />}
+        {sourceTab === 'FILE' && <KnowledgeSourceUpload
+          client={client}
+          graph={selectedGraph}
+          onAnalysisCreated={() => refreshChangesets(selectedGraphId)}
+          onOpenChangeset={openGeneratedChangeset}
+        />}
       </> : <GovernedUnavailable title="동적 원패스 에셋 생성 계약 미구현" description="현재 구현된 PDF 파이프라인은 선택한 기존 에셋의 온톨로지에 맞춘 DRAFT changeset만 생성합니다. 새 에셋과 스키마를 모델 출력만으로 자동 발행하지 않습니다." />}
     </>}
   </div>

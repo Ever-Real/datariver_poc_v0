@@ -14,9 +14,9 @@ an unsafe bypass, or a historical result from another commit.
 | Ledger field | Value |
 |---|---|
 | Created | 2026-07-23, Asia/Seoul |
-| Branch / Phase 4 entry base / current local implementation | `codex/admin-policy-rbac` / `716fb6f` / `bd0ee22` |
-| Remote comparison at current Phase entry | `origin/main` at `313e59a`; `origin/codex/admin-policy-rbac` is published through `a683a93`, not merged |
-| Current controlled phase | Request group 4 — durable Knowledge source jobs |
+| Branch / Phase 5 entry base / current local implementation | `codex/admin-policy-rbac` / `c618dea` / `HEAD` (this focused Phase 5 change set) |
+| Remote comparison at Phase 5 close | local refs: `origin/main` at `313e59a`; `origin/codex/admin-policy-rbac` through `a683a93`; Phase 5 is not yet published |
+| Current controlled phase | Phase 5 closes at this focused commit; continue immediately with Request group 5 `R5-BE-05` and `R5-DEP-01` |
 | Final artifact order | Feature → API → Data/ERD → Screen → `README.md` → `ARCHITECTURE.md` |
 
 ## Status language
@@ -66,6 +66,9 @@ an unsafe bypass, or a historical result from another commit.
   Embedding and Reranking capability evidence. Whole-source and actual PostgreSQL gates pass;
   final independent review is `P0=0`, `P1=0`; focused implementation commit `bd0ee22` closes the
   local entry gate.
+- [x] Phase 5 replaces request-time PDF analysis with a pinned, fenced and recoverable worker path.
+  Whole-source, additive and empty-database PostgreSQL gates pass; final Application/UI/portability,
+  DB/security and PM traceability findings are `P0=0`, `P1=0`. Target-only gates remain open.
 - [ ] Request groups 3 through 6 retain their stated dependency on earlier work. External gates are
   reported explicitly if the required machine or accountable human identities are unavailable.
 
@@ -145,8 +148,8 @@ merged, released, or available to the preparation PC until publication actually 
 |---|---|---|---|
 | R4-01 | Probe Neo4j plus Chat, Embedding and Reranker adapters before feature execution | `DONE_LOCAL` + `EXTERNAL_GATE` | Current Mac evidence proves authenticated Neo4j `RETURN 1`, strict-JSON Chat and 1,024-dimensional Embedding inference. The installed local Ollama reranker honestly fails the fixed contract: `/v1/rerank` is absent. Revision `0053` adds a bounded fixed private reranking TEST without inventing runtime activation. WSL/private-provider DNS, TLS, credentials and responses remain unverified. |
 | R4-02 | Compare v0.3 code/docs and retain safe functional intent | `PARTIAL` | Registry, changesets, releases and typed studio exist; keep a traceable safe-substitution matrix. |
-| R4-03 | Define and manage Knowledge Graph/Ontology assets | `PARTIAL` | Schema/domain/ontology/changeset/release contracts and atomic independently reviewed publication/receipt-backed activation are implemented. Lifecycle UX, durable source jobs and target acceptance remain. |
-| R4-04 | Generate typed KG proposals from sources with provenance | `PARTIAL` | PDF development path exists. The next package must move it to a durable job, reject ineligible sources before durable submission where possible, pin prepared base-release/ontology IDs and revalidate them atomically before draft persistence; lease/retry/cancel, DB schema sources and evaluation remain open. |
+| R4-03 | Define and manage Knowledge Graph/Ontology assets | `PARTIAL` | Schema/domain/ontology/changeset/release contracts, durable PDF-to-DRAFT analysis and atomic independently reviewed publication/receipt-backed activation are implemented. Remaining Mode A lifecycle UX and target acceptance stay open. |
+| R4-04 | Generate typed KG proposals from sources with provenance | `DONE_LOCAL` + `EXTERNAL_GATE` | Revision `0054` provides pinned, fenced, retryable/cancellable PDF-to-typed-DRAFT jobs with pre-egress and final reauthorization, atomic evidence, active-first bounded owner history and a separately credentialed worker. DB schema sources, target WSL/private-provider IAM/TLS/recovery/load and human acceptance remain external or later scope. |
 | R4-05 | Populate, publish, project and evaluate graph assets | `PARTIAL` | Publication is one PostgreSQL UoW, canonical read-back is verified and activation is separate. Neo4j is only an ID-selecting rebuildable shadow: prompt evidence is rehydrated from PostgreSQL, and its receipt is bound to the exact adapter/target/hash/count. Releases without governed lineage are invisible to all release consumers. Durable projection worker/rebuild/drift/evaluation and target live acceptance remain. |
 | R4-06 | Search metadata and graph assets and run graph-grounded assistant tests | `PARTIAL` | Separate bounded Knowledge GraphRAG exists; current canonical/policy hardening and general Chat integration remain. |
 | R4-07 | Implement Chat `GENERAL` mode | `PARTIAL` | Grounded composer exists, but no public typed mode contract/session UX. |
@@ -156,6 +159,23 @@ merged, released, or available to the preparation PC until publication actually 
 | R4-11 | Let users select a governed Topic/Graph asset for deep answers | `PARTIAL` | Knowledge screen selects a release; general Chat topic routing is absent. |
 | R4-12 | Expose selected catalog capabilities through typed HTTP APIs | `PARTIAL` | Catalog and release-pinned Sharing APIs exist and revalidate governed release lineage on list/detail, replay, publish, grant and invocation. Atomic quota/result replay hardening under R5-BE-05 and target evidence remain. |
 | R4-13 | Implement official MCP JSON-RPC `tools/list` and `tools/call` | `PENDING` | No MCP route/server/test exists. Add ADR, threat model, allowlisted typed tools, pagination and authorization. |
+
+### Phase 5 durable Knowledge source job closure — 2026-07-24
+
+- [x] ADR-0044, PRD/checklist, SQLAlchemy metadata, generated `0001`, additive `0054`,
+  feature/API/data/deployment/operations/migration docs and README agree.
+- [x] Whole backend `1,369 passed / 84 environment-gated skipped`; whole frontend `45 files /
+  243 tests`, type/lint/build; Ruff, strict mypy and static verification passed.
+- [x] Additive `0053 -> 0054` and completely empty canonical `0001 -> 0054` PostgreSQL databases
+  each passed `24` app/worker/owner/cross-service role tests. Dirty DELETE privilege was reconciled;
+  unsafe worker role membership and shared evidence forgery failed closed; canonical `0001`
+  reproduced twice at SHA-256
+  `a9978344ab90982c6d5f6c8929b8a976f34418d5fbcae2a8de6758171bda6f98`.
+- [x] Application/UI/portability and DB/security independent audits reported `P0=0`, `P1=0`; PM
+  traceability P1 findings were corrected before close. Residual P2 hardening is owned in the Phase
+  checklist and Request group 5.
+- [ ] Target WSL `linux/amd64`, external MinIO/S3 IAM, private OpenAI-compatible provider,
+  distinct-human browser and target load/recovery evidence remain `EXTERNAL_GATE`.
 
 ## Request group 5 — platform audit, remediation and portability
 
@@ -186,18 +206,23 @@ merged, released, or available to the preparation PC until publication actually 
 | R5-FE-07 | P1 | Replace internal object/source locators with authorized opaque evidence references in browser responses and views. | `PENDING` |
 | R5-DATA-01 | P1 | Add cursor pagination/set-based reads to Governance, Knowledge, Sharing and Admin; remove identified N+1 paths. | `PENDING` |
 | R5-DATA-02 | P1 | Budget API/worker DB pools against replicas and PostgreSQL `max_connections`; cap Redis pools. | `PENDING` |
-| R5-DATA-03 | P1 | Move large PDF and XLSX work to bounded durable/spooled paths with explicit resource rejection. | `PENDING` |
+| R5-DATA-03 | P1 | Move large PDF and XLSX work to bounded durable/spooled paths with explicit resource rejection. | `DONE_LOCAL` + `EXTERNAL_GATE`; XLSX uses the bounded spool path and revision `0054` moves PDF-to-DRAFT into a separate bounded worker with 50 MiB/500-page/per-page/provider-batch rejection. Target kill/retry/load/RSS evidence remains open. |
+| R5-DATA-04 | P2 | Make durable same-transaction evidence fences robust to PostgreSQL XID wrap semantics. | `PENDING`; Phase 5 uses current-row `xmin`/XID equality and carries the hardening explicitly. |
+| R5-DATA-05 | P2 | Add positive generic outbox schema-version/attempt checks after auditing all trusted producers. | `PENDING`; Phase 5 Knowledge events are producer-fenced and relay-immutable outside delivery fields. |
 | R5-SEC-01 | P1 | Constrain System Settings probes against SSRF/DNS rebinding/localhost and response-size abuse. | `PARTIAL` + `EXTERNAL_GATE`; fixed routes/bodies, pre-DNS exact operator allowlists, resolved-address checks, nonlocal TLS/private-network enforcement, disabled redirects/environment proxies and decoded-response bounds pass. The default HTTP transport still resolves the hostname again at connect time, so vetted-address pinning with original-host TLS verification and a rebinding regression remain open before this item can close. |
 | R5-SEC-02 | P1 | Harden OIDC token type/authorized-party/size and unknown-key refresh behavior. | `PENDING` |
 | R5-SEC-03 | P1 | Harden the Keycloak Admin adapter proxy/TLS/environment/body-size boundary and prevent credential-bearing redirect or proxy inheritance. | `PENDING` |
 | R5-SEC-04 | P1 | Fail production startup unless TrustedHost, exact CORS and public-origin/TLS settings are coherent and non-wildcard. | `PENDING` |
-| R5-SEC-05 | P1 | Keep object keys, provider locators and internal endpoints out of ordinary API/UI payloads; add negative disclosure tests. | `PENDING` |
+| R5-SEC-05 | P1 | Keep object keys, provider locators and internal endpoints out of ordinary API/UI payloads; add negative disclosure tests. | `PARTIAL`; durable Knowledge jobs use opaque snapshot/page evidence and negative API/UI tests. The same review remains open across every other ordinary payload. |
 | R5-SEC-06 | P1 | Keep Keycloak realm roles/display markers non-authoritative; authorization remains exact Workspace membership, policy and RLS. | `PENDING` |
+| R5-SEC-07 | P2 | Measure and further narrow the authorization-to-provider-call window for inference egress. | `PENDING`; Phase 5 reauthorizes before each bounded call and before final persistence, but does not claim zero call-time TOCTOU. |
 | R5-DEP-01 | P0 | Fix blank WSL bootstrap token instructions and raw-Compose external-network failure. | `PENDING` |
 | R5-DEP-02 | P1 | Add env schema/version migration and Bash/PowerShell profile parity. | `PENDING` |
 | R5-DEP-03 | P1 | Resolve the literal `.env`/Compose `linux/amd64` request against ADR-0034: compose-wide amd64 forcing conflicts with native Mac runtime safety, so runtime stays native and validated while explicit `--platform` is restricted to release builds. Record the accepted substitution and never hardcode `FROM --platform=linux/amd64`. | `CONFLICT` |
 | R5-DEP-04 | P1 | Pin Airflow/APISIX/observability images and dependency hashes; reject unpinned production overrides. | `PENDING` |
-| R5-DEP-05 | P1 | Reduce Compose network, host-gateway, secret, writable-path and runtime-principal blast radius per process and verify no-new-privileges/read-only/capability boundaries. | `PENDING` |
+| R5-DEP-05 | P1 | Reduce Compose network, host-gateway, secret, writable-path and runtime-principal blast radius per process and verify no-new-privileges/read-only/capability boundaries. | `PARTIAL`; the Knowledge worker has a non-root read-only container, worker-only spool, process-specific DB/S3/LLM secrets and no Neo4j dependency. Cross-platform review of the remaining processes is still pending. |
+| R5-DEP-06 | P2 | Fingerprint controlled migration function bodies/owners during additive re-entry. | `PENDING`; current re-entry validates required object names, grants and policies but not every body hash. |
+| R5-TEST-01 | P2 | Complete the remaining durable Knowledge enqueue no-row and maximum-attempt exhaustion matrices. | `PENDING`; exact unclaimed cases are listed in the Phase 5 checklist. |
 | R5-ARCH-01 | P2 | Split high-complexity Admin/config/DataHub/catalog/knowledge modules only after behavior tests lock contracts. | `PENDING` |
 | R5-ARCH-02 | P2 | Consolidate duplicate upload/hash/polling state machines and clean only evidenced dead legacy code. | `PENDING` |
 

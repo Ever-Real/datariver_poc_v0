@@ -1,13 +1,15 @@
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from typing import Any, Literal
 
 import yaml  # type: ignore[import-untyped]
-from sqlalchemy import select
+from sqlalchemy import func, select
 
+from datariver.application.knowledge_source_job_contracts import KnowledgeSourceJobClaim
 from datariver.config import Settings
 from datariver.domain.common import canonical_json_hash
+from datariver.domain.knowledge_pipeline import ModelBinding
 from datariver.domain.system_configuration import require_canonical_secret_references
 from datariver.infrastructure.db.models.platform import (
     ExternalServiceProfileModel,
@@ -254,10 +256,75 @@ def validate_runtime_system_configuration(
     Settings.model_validate(values)
 
 
+def _settings_with_activated_rows(
+    settings: Settings,
+    rows: Sequence[tuple[ExternalServiceProfileModel, ExternalServiceProfileVersionModel]],
+) -> Settings:
+    updates: dict[str, object] = {}
+    versions: dict[str, int] = {}
+    hashes: dict[str, str] = {}
+    for profile, revision in rows:
+        document = _document(revision.configuration_yaml, revision.configuration_hash)
+        profile_updates = _runtime_updates(profile.service_key, document)
+        overlap = set(updates) & set(profile_updates)
+        if overlap:
+            raise ValueError(
+                "Activated system configurations overlap runtime settings: "
+                + ", ".join(sorted(overlap))
+            )
+        updates.update(profile_updates)
+        versions[profile.service_key] = revision.configuration_version
+        hashes[profile.service_key] = revision.configuration_hash
+    values = settings.model_dump()
+    values.update(updates)
+    if {"LLM_CHAT_MODEL", "LLM_EMBEDDING", "NEO4J"}.issubset(versions):
+        values["knowledge_pipeline_enabled"] = True
+    values["system_configuration_runtime_versions"] = versions
+    values["system_configuration_runtime_hashes"] = hashes
+    return Settings.model_validate(values)
+
+
+def _knowledge_system_bindings(
+    *,
+    extraction_binding: ModelBinding,
+    embedding_binding: ModelBinding,
+) -> dict[str, ModelBinding]:
+    bindings = {
+        "LLM_CHAT_MODEL": extraction_binding,
+        "LLM_EMBEDDING": embedding_binding,
+    }
+    system_bindings = {
+        service_key: binding
+        for service_key, binding in bindings.items()
+        if binding.configuration_source == "SYSTEM_CONFIGURATION"
+    }
+    if system_bindings and len(system_bindings) != len(bindings):
+        raise ValueError("Knowledge model bindings cannot mix deployment and system revisions.")
+    return system_bindings
+
+
+def _settings_with_claim_activated_rows(
+    settings: Settings,
+    *,
+    bindings: Mapping[str, ModelBinding],
+    rows: Sequence[tuple[ExternalServiceProfileModel, ExternalServiceProfileVersionModel]],
+) -> Settings:
+    if {profile.service_key for profile, _ in rows} != set(bindings):
+        raise ValueError("A pinned Knowledge model configuration is unavailable.")
+    for profile, revision in rows:
+        binding = bindings[profile.service_key]
+        if (
+            binding.configuration_version != revision.configuration_version
+            or binding.configuration_hash != revision.configuration_hash
+        ):
+            raise ValueError("A Knowledge model configuration drifted from its job pin.")
+    return _settings_with_activated_rows(settings, rows)
+
+
 async def resolve_activated_system_configuration(
     settings: Settings,
     *,
-    database_role: Literal["api", "relay", "upload", "governance", "export"] = "api",
+    database_role: Literal["api", "relay", "upload", "governance", "export", "knowledge"] = "api",
 ) -> Settings:
     """Load exact activated revisions once during API/worker startup.
 
@@ -293,52 +360,120 @@ async def resolve_activated_system_configuration(
                     workspace_id=workspace_id,
                     subject_id=workspace_id,
                 )
-                rows = (
-                    await session.execute(
-                        select(ExternalServiceProfileModel, ExternalServiceProfileVersionModel)
-                        .join(
-                            ExternalServiceProfileVersionModel,
-                            (
-                                ExternalServiceProfileVersionModel.workspace_id
-                                == ExternalServiceProfileModel.workspace_id
-                            )
-                            & (
-                                ExternalServiceProfileVersionModel.profile_id
-                                == ExternalServiceProfileModel.id
-                            )
-                            & (
-                                ExternalServiceProfileVersionModel.configuration_version
-                                == ExternalServiceProfileModel.activated_version
-                            ),
+                result = await session.execute(
+                    select(ExternalServiceProfileModel, ExternalServiceProfileVersionModel)
+                    .join(
+                        ExternalServiceProfileVersionModel,
+                        (
+                            ExternalServiceProfileVersionModel.workspace_id
+                            == ExternalServiceProfileModel.workspace_id
                         )
-                        .where(
-                            ExternalServiceProfileModel.workspace_id == workspace_id,
-                            ExternalServiceProfileModel.active.is_(True),
-                            ExternalServiceProfileVersionModel.test_status == "AVAILABLE",
+                        & (
+                            ExternalServiceProfileVersionModel.profile_id
+                            == ExternalServiceProfileModel.id
                         )
+                        & (
+                            ExternalServiceProfileVersionModel.configuration_version
+                            == ExternalServiceProfileModel.activated_version
+                        ),
                     )
-                ).all()
+                    .where(
+                        ExternalServiceProfileModel.workspace_id == workspace_id,
+                        ExternalServiceProfileModel.active.is_(True),
+                        ExternalServiceProfileVersionModel.test_status == "AVAILABLE",
+                    )
+                )
+                rows = tuple((row[0], row[1]) for row in result.all())
     finally:
         await database.close()
-    updates: dict[str, object] = {}
-    versions: dict[str, int] = {}
-    hashes: dict[str, str] = {}
-    for profile, revision in rows:
-        document = _document(revision.configuration_yaml, revision.configuration_hash)
-        profile_updates = _runtime_updates(profile.service_key, document)
-        overlap = set(updates) & set(profile_updates)
-        if overlap:
-            raise ValueError(
-                "Activated system configurations overlap runtime settings: "
-                + ", ".join(sorted(overlap))
-            )
-        updates.update(profile_updates)
-        versions[profile.service_key] = revision.configuration_version
-        hashes[profile.service_key] = revision.configuration_hash
-    values = settings.model_dump()
-    values.update(updates)
-    if {"LLM_CHAT_MODEL", "LLM_EMBEDDING", "NEO4J"}.issubset(versions):
-        values["knowledge_pipeline_enabled"] = True
-    values["system_configuration_runtime_versions"] = versions
-    values["system_configuration_runtime_hashes"] = hashes
-    return Settings.model_validate(values)
+    return _settings_with_activated_rows(settings, rows)
+
+
+async def resolve_claim_activated_knowledge_configuration(
+    settings: Settings,
+    *,
+    claim: KnowledgeSourceJobClaim,
+) -> Settings:
+    """Resolve only model revisions pinned to one live, fenced Knowledge claim."""
+
+    system_bindings = _knowledge_system_bindings(
+        extraction_binding=claim.pins.extraction_binding,
+        embedding_binding=claim.pins.embedding_binding,
+    )
+    if not system_bindings:
+        return settings
+    if not isinstance(settings.knowledge_database_url, str) or not isinstance(
+        settings.knowledge_database_secret_ref, str
+    ):
+        raise ValueError("The Knowledge worker database role is not configured.")
+    password = SecretResolver(
+        virtual_secret_root=settings.system_configuration_secret_root
+    ).resolve(settings.knowledge_database_secret_ref)
+    database = Database(
+        settings.knowledge_database_url,
+        password=password,
+        pool_size=1,
+        max_overflow=0,
+        pool_timeout_seconds=settings.database_pool_timeout_seconds,
+    )
+    try:
+        async with database.session_factory() as session:
+            async with session.begin():
+                await set_security_context(
+                    session,
+                    workspace_id=claim.job.workspace_id,
+                    subject_id=settings.knowledge_worker_subject_id,
+                )
+                await session.scalar(
+                    select(
+                        func.set_config(
+                            "app.knowledge_source_job_id",
+                            str(claim.job.job_id),
+                            True,
+                        )
+                    )
+                )
+                await session.scalar(
+                    select(
+                        func.set_config(
+                            "app.knowledge_source_lease_token",
+                            claim.lease_token,
+                            True,
+                        )
+                    )
+                )
+                result = await session.execute(
+                    select(
+                        ExternalServiceProfileModel,
+                        ExternalServiceProfileVersionModel,
+                    )
+                    .join(
+                        ExternalServiceProfileVersionModel,
+                        (
+                            ExternalServiceProfileVersionModel.workspace_id
+                            == ExternalServiceProfileModel.workspace_id
+                        )
+                        & (
+                            ExternalServiceProfileVersionModel.profile_id
+                            == ExternalServiceProfileModel.id
+                        )
+                        & (
+                            ExternalServiceProfileVersionModel.configuration_version
+                            == ExternalServiceProfileModel.activated_version
+                        ),
+                    )
+                    .where(
+                        ExternalServiceProfileModel.workspace_id == claim.job.workspace_id,
+                        ExternalServiceProfileModel.service_key.in_(tuple(system_bindings)),
+                        ExternalServiceProfileModel.active.is_(True),
+                        ExternalServiceProfileVersionModel.test_status == "AVAILABLE",
+                    )
+                )
+                rows = tuple((row[0], row[1]) for row in result.all())
+    finally:
+        await database.close()
+    return _settings_with_claim_activated_rows(
+        settings,
+        bindings=system_bindings,
+        rows=rows,
+    )

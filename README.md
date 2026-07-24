@@ -578,7 +578,7 @@ environment's secrets or volumes.
    overlays. For an existing PostgreSQL volume, run `scripts/reconcile-postgres-roles.sh` (or the
    PowerShell equivalent) before and after applying `alembic upgrade head` through the migration
    service; the second idempotent pass repairs Phase 2 grants when roles were created after an older
-   migration. Readiness requires revision `0053`.
+   migration. Readiness requires revision `0054`.
 4. Start the API, relay, workers and web service using either the container profile or the
    host-development commands below. Check `/api/v1/health/live`, `/api/v1/health/ready`,
    `/api/v1/capabilities` and the APISIX/Vite proxy before using application workflows.
@@ -607,7 +607,7 @@ See the
 [ADR-0036](docs/adr/0036-policy-book-rbac-and-admin-approval-gates.md) plus
 [ADR-0037](docs/adr/0037-retention-execution-control-plane.md). On a new or upgraded database,
 run `alembic upgrade head` and verify `/api/v1/health/ready` reports required/current revision
-`0053`. Legacy Role markers remain usable by the existing ABAC document but are not normalized audit
+`0054`. Legacy Role markers remain usable by the existing ABAC document but are not normalized audit
 evidence until an Admin explicitly reassigns the Role. Manual/fallback edits cannot submit a
 `datariver-role-*` marker; the dedicated assignment path matches it to the locked Role row and
 rejects exact same Role/version/canonical-access no-ops even when only the optimistic expected version
@@ -1099,6 +1099,100 @@ docker compose -f compose.yaml -f compose.identity.yaml \
   -f compose.airflow.yaml -f compose.gateway.yaml up -d --build --wait
 ```
 
+### Optional durable Knowledge PDF analysis
+
+The core platform does not require this capability. With
+`KNOWLEDGE_SOURCE_WORKER_ENABLED=false`, catalog, governance and existing Knowledge reads remain
+available, while a new PDF-analysis enqueue fails closed and no job is left permanently queued.
+Neo4j is not a prerequisite: the worker needs one complete Chat + Embedding provider pair, its own
+PostgreSQL login and a read-only object-store identity for the accepted-source bucket.
+
+Bootstrap must first create the ignored environment and secret files. Configure and probe the
+provider pair in that environment, then opt in on a second bootstrap pass:
+
+```bash
+# Mac arm64: first establish the Mac profile, then enable/probe the local Embedding contract.
+./scripts/bootstrap.sh --env-file .env.mac-development --mac-development
+# Edit .env.mac-development: set the reviewed LOCAL_OLLAMA_EMBEDDING_* values and
+# LOCAL_OLLAMA_EMBEDDING_ENABLED=true, then rerun:
+./scripts/bootstrap.sh --env-file .env.mac-development --mac-development \
+  --enable-knowledge-source-worker
+
+# Linux/WSL amd64: first create the preparation profile, then configure one private
+# INTRANET_OPENAI_COMPATIBLE_CHAT_* + EMBEDDING_* pair and its mounted key files.
+./scripts/bootstrap.sh --env-file .env.wsl-preparation --wsl-preparation
+./scripts/bootstrap.sh --env-file .env.wsl-preparation --wsl-preparation \
+  --enable-knowledge-source-worker
+
+# Native Windows PowerShell uses .env and does not provide the WSL preparation preset.
+./scripts/bootstrap.ps1 -DataHubToken '<scoped-token>'
+# Configure/probe Chat + Embedding in .env, then:
+./scripts/bootstrap.ps1 -EnableKnowledgeSourceWorker
+```
+
+The opt-in refuses an incomplete inference pair. It writes the dedicated
+`datariver_knowledge` DSN/secret reference, the separate `s3_knowledge_*` files and
+`KNOWLEDGE_SOURCE_WORKER_ENABLED=true`; it does not activate Neo4j or manufacture provider
+acceptance. For an existing PostgreSQL volume, reconcile the new NOBYPASSRLS role before and after
+Alembic. The role must also be an unprivileged LOGIN with no membership that permits `SET ROLE`;
+revision `0054` removes prior direct schema/table/function privileges and reapplies only its exact
+allowlist. With a custom environment file, the checked-in helper reads `DATARIVER_ENV_FILE`:
+
+```bash
+scripts/compose.sh --env-file .env.mac-development -f compose.yaml up -d --wait postgres
+DATARIVER_ENV_FILE=.env.mac-development ./scripts/reconcile-postgres-roles.sh
+scripts/compose.sh --env-file .env.mac-development -f compose.yaml run --rm migrate
+DATARIVER_ENV_FILE=.env.mac-development ./scripts/reconcile-postgres-roles.sh
+scripts/compose.sh --env-file .env.mac-development -f compose.yaml \
+  --profile knowledge-source up -d --wait api knowledge-source-worker
+scripts/compose.sh --env-file .env.mac-development -f compose.yaml run --rm migrate \
+  /app/.venv/bin/alembic -c backend/alembic.ini current
+# Required output: 0054 (head)
+```
+
+The local MinIO reference uses the configurable `S3_BUCKET_ACCEPTED`. Create the buckets with the
+general storage initializer, then create/attach the generated worker identity and its exact
+`GetBucketLocation` + accepted-bucket `GetObject` policy:
+
+```bash
+scripts/compose.sh --env-file .env.mac-development \
+  -f compose.local-connectors.yaml --profile object-storage up -d --wait minio
+scripts/compose.sh --env-file .env.mac-development \
+  -f compose.yaml --profile object-storage-tools run --rm storage-init
+scripts/compose.sh --env-file .env.mac-development \
+  -f compose.local-connectors.yaml --profile object-storage \
+  run --rm minio-knowledge-identity-init
+```
+
+For external S3/MinIO, its owner must create the accepted bucket and a non-admin principal with the
+same narrow read contract, place that principal's keys in the two `S3_KNOWLEDGE_*_FILE` mounts, and
+prove allowed reads plus anonymous, write, delete and other-bucket denials. This target proof is an
+`EXTERNAL_GATE`; the local initializer is not production IAM evidence.
+
+The worker streams and verifies at most 50 MiB/500 pages, retains only
+`KNOWLEDGE_SOURCE_MEMORY_SPOOL_BYTES` in RAM and spills the remainder into the worker-only
+`knowledge-spool` volume. Keep the directory absolute, non-root, writable only by the worker and
+budget at least one maximum source per concurrent worker plus temporary/provider overhead. Do not
+mount it into the API/web or use it as evidence storage.
+
+Each parsed page and provider batch is capped at 40,000 characters. A larger single page fails
+before either inference provider is called. The worker rechecks the pinned model configuration,
+source manifest, graph/base/ontology and current requester authorization before source read, again
+before inference, at every bounded provider checkpoint and in the final locked transaction.
+
+Owner job history is ordered with non-terminal work first and uses an owner/workspace/graph/order
+bound opaque cursor. The browser renders one page of at most 100 jobs, and the transactional enqueue
+path permits at most 20 non-terminal jobs for one owner/graph. This keeps every active job
+discoverable without accumulating unbounded history in browser memory. After the 120-poll visible
+window, the same job can be explicitly resumed without a page reload.
+
+Disable new work by setting `KNOWLEDGE_SOURCE_WORKER_ENABLED=false`, recreating the API, and stopping
+`knowledge-source-worker`. Existing durable rows are retained. Authorized cancellation uses the
+version-fenced API/UI; never edit state/lease columns. On restart the worker supersedes expired
+attempts and recovers or terminally cancels them under the stored retry limit. Alembic `0054`
+refuses downgrade once any durable Knowledge job evidence exists; preserve the database and use a
+forward fix instead of deleting the ledger.
+
 Overlays may be combined. Keep PostgreSQL and worker databases private, and permit Redis, S3 and
 DataHub only through the explicit connector network and target firewall policy. See
 [deployment operations](docs/08_DEPLOYMENT.md) before using a non-local environment.
@@ -1160,7 +1254,7 @@ docker compose -f compose.yaml build --pull
 ```
 
 애플리케이션을 올리기 전에 권한이 분리된 `migrate` 서비스로 Alembic을 실행한다. 이
-릴리스의 필수 revision은 `0053`이다. 호스트의 임의 DB 계정으로 `alembic`을 직접 실행하지
+릴리스의 필수 revision은 `0054`이다. 호스트의 임의 DB 계정으로 `alembic`을 직접 실행하지
 않는다.
 
 ```bash
@@ -1169,7 +1263,7 @@ docker compose -f compose.yaml run --rm migrate \
   /app/.venv/bin/alembic -c backend/alembic.ini current
 ```
 
-두 번째 명령의 현재 revision이 `0053 (head)`인지 확인한다. 마이그레이션 실패 시 서비스를
+두 번째 명령의 현재 revision이 `0054 (head)`인지 확인한다. 마이그레이션 실패 시 서비스를
 재기동하거나 downgrade를 추측 실행하지 말고, 로그와 DB 상태를 보존한 채 배포를 중단한다.
 
 ### 3. API·Worker·Web 재기동과 상태 확인

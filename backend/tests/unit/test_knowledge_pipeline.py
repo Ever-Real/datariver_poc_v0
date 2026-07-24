@@ -221,6 +221,278 @@ async def test_generated_pdf_becomes_page_aware_typed_operations_without_url_fet
     assert analysis.evidence_hash() == analysis.evidence_hash()
 
 
+@pytest.mark.asyncio
+async def test_analysis_evidence_hash_binds_full_typed_output_and_model_configuration() -> None:
+    payload = _generated_pdf_fixture()
+    source = KnowledgeSourceSnapshot(
+        snapshot_id=uuid4(),
+        workspace_id=uuid4(),
+        graph_id=uuid4(),
+        bucket="accepted",
+        object_key="knowledge/private/source.pdf",
+        storage_version="manifest-v7",
+        media_type="application/pdf",
+        byte_size=len(payload),
+        content_sha256=hashlib.sha256(payload).hexdigest(),
+        classification=1,
+    )
+    pipeline = KnowledgeSourcePipeline(
+        reader=_SourceReader(payload),
+        parser=PypdfPageAwareParser(
+            reader_factory=lambda _: _Reader([_Page("Wafer fab uses lithography tool")])
+        ),
+        embedding=_Embedding(),
+        extractor=_Extractor(),
+    )
+    embedding_binding = ModelBinding.activated(
+        provider="ollama",
+        model="bge-m3:latest",
+        prompt_version="embedding-v1",
+        tool_schema_version="openai-embeddings-v1",
+        configuration_version=3,
+        configuration_hash="a" * 64,
+        adapter_contract="openai-compatible-embeddings-v1",
+    )
+    extraction_binding = ModelBinding.activated(
+        provider="ollama",
+        model="gemma4:latest",
+        prompt_version="knowledge-v1",
+        tool_schema_version="typed-knowledge-v1",
+        configuration_version=4,
+        configuration_hash="b" * 64,
+        adapter_contract="openai-compatible-chat-json-schema-v1",
+    )
+    analysis = await pipeline.analyze_pdf(
+        source=source,
+        entity_types=frozenset({"Facility", "Tool"}),
+        edge_types=frozenset({"USES"}),
+        embedding_binding=embedding_binding,
+        extraction_binding=extraction_binding,
+    )
+    baseline_hash = analysis.evidence_hash()
+
+    changed_property = replace(
+        analysis,
+        extraction=replace(
+            analysis.extraction,
+            nodes=(
+                replace(
+                    analysis.extraction.nodes[0],
+                    properties={"name": "Different governed value"},
+                ),
+                *analysis.extraction.nodes[1:],
+            ),
+        ),
+    )
+    changed_endpoint = replace(
+        analysis,
+        extraction=replace(
+            analysis.extraction,
+            edges=(
+                replace(
+                    analysis.extraction.edges[0],
+                    target_key="WaferFab",
+                ),
+            ),
+        ),
+    )
+    changed_configuration = replace(
+        analysis,
+        extraction=replace(
+            analysis.extraction,
+            binding=replace(
+                analysis.extraction.binding,
+                configuration_hash="c" * 64,
+            ),
+        ),
+    )
+
+    assert baseline_hash != changed_property.evidence_hash()
+    assert baseline_hash != changed_endpoint.evidence_hash()
+    assert baseline_hash != changed_configuration.evidence_hash()
+
+
+@pytest.mark.asyncio
+async def test_generated_provenance_uses_opaque_source_urn_not_private_object_key() -> None:
+    payload = _generated_pdf_fixture()
+    source = KnowledgeSourceSnapshot(
+        snapshot_id=uuid4(),
+        workspace_id=uuid4(),
+        graph_id=uuid4(),
+        bucket="accepted-secret-bucket",
+        object_key="tenant/private/topology/source.pdf",
+        storage_version="manifest-v1",
+        media_type="application/pdf",
+        byte_size=len(payload),
+        content_sha256=hashlib.sha256(payload).hexdigest(),
+        classification=1,
+    )
+    pipeline = KnowledgeSourcePipeline(
+        reader=_SourceReader(payload),
+        parser=PypdfPageAwareParser(
+            reader_factory=lambda _: _Reader([_Page("Wafer fab uses lithography tool")])
+        ),
+        embedding=_Embedding(),
+        extractor=_Extractor(),
+    )
+
+    analysis = await pipeline.analyze_pdf(
+        source=source,
+        entity_types=frozenset({"Facility", "Tool"}),
+        edge_types=frozenset({"USES"}),
+        embedding_binding=_binding("bge-m3:latest"),
+        extraction_binding=_binding("gemma4:latest"),
+    )
+    operations = pipeline.to_typed_operations(analysis)
+
+    for operation in operations:
+        locator = operation.provenance[0].source_locator
+        assert locator == f"knowledge-source:{source.snapshot_id}#page=1"
+        assert source.bucket not in locator
+        assert source.object_key not in locator
+
+
+@pytest.mark.asyncio
+async def test_page_embeddings_are_sent_in_bounded_character_batches() -> None:
+    class TrackingEmbedding(_Embedding):
+        def __init__(self) -> None:
+            self.batch_sizes: list[int] = []
+            self.batch_characters: list[int] = []
+
+        async def embed_pages(
+            self, *, pages: Sequence[PdfPage], binding: ModelBinding
+        ) -> EmbeddingBatch:
+            self.batch_sizes.append(len(pages))
+            self.batch_characters.append(sum(len(page.text) for page in pages))
+            return await super().embed_pages(pages=pages, binding=binding)
+
+    class EmptyExtractor:
+        async def propose(
+            self,
+            *,
+            pages: Sequence[PdfPage],
+            entity_types: frozenset[str],
+            edge_types: frozenset[str],
+            binding: ModelBinding,
+        ) -> ExtractionDraft:
+            del pages, entity_types, edge_types
+            return ExtractionDraft(
+                binding=binding,
+                nodes=(),
+                edges=(),
+                input_tokens=0,
+                output_tokens=0,
+            )
+
+    tracking = TrackingEmbedding()
+    source = KnowledgeSourceSnapshot(
+        snapshot_id=uuid4(),
+        workspace_id=uuid4(),
+        graph_id=uuid4(),
+        bucket="accepted",
+        object_key="knowledge/private/source.pdf",
+        storage_version="manifest-v1",
+        media_type="application/pdf",
+        byte_size=1,
+        content_sha256="a" * 64,
+        classification=1,
+    )
+    pages = tuple(
+        PdfPage.create(
+            page_number=number,
+            text=("bounded text " * 1_000) + str(number),
+        )
+        for number in range(1, 11)
+    )
+    pipeline = KnowledgeSourcePipeline(
+        reader=_SourceReader(b"x"),
+        parser=PypdfPageAwareParser(reader_factory=lambda _: _Reader([])),
+        embedding=tracking,
+        extractor=EmptyExtractor(),
+    )
+
+    analysis = await pipeline.analyze_pages(
+        source=source,
+        pages=pages,
+        entity_types=frozenset({"Facility", "Tool"}),
+        edge_types=frozenset({"USES"}),
+        embedding_binding=_binding("bge-m3:latest"),
+        extraction_binding=_binding("gemma4:latest"),
+    )
+
+    assert len(tracking.batch_sizes) > 1
+    assert sum(tracking.batch_sizes) == len(pages)
+    assert max(tracking.batch_characters) <= 40_000
+    assert [item.page_number for item in analysis.embeddings.embeddings] == list(range(1, 11))
+
+
+@pytest.mark.asyncio
+async def test_single_oversized_page_fails_before_any_provider_call() -> None:
+    class TrackingEmbedding(_Embedding):
+        def __init__(self) -> None:
+            self.calls = 0
+
+        async def embed_pages(
+            self, *, pages: Sequence[PdfPage], binding: ModelBinding
+        ) -> EmbeddingBatch:
+            self.calls += 1
+            return await super().embed_pages(pages=pages, binding=binding)
+
+    class TrackingExtractor(_Extractor):
+        def __init__(self) -> None:
+            self.calls = 0
+
+        async def propose(
+            self,
+            *,
+            pages: Sequence[PdfPage],
+            entity_types: frozenset[str],
+            edge_types: frozenset[str],
+            binding: ModelBinding,
+        ) -> ExtractionDraft:
+            self.calls += 1
+            return await super().propose(
+                pages=pages,
+                entity_types=entity_types,
+                edge_types=edge_types,
+                binding=binding,
+            )
+
+    embedding = TrackingEmbedding()
+    extractor = TrackingExtractor()
+    source = KnowledgeSourceSnapshot(
+        snapshot_id=uuid4(),
+        workspace_id=uuid4(),
+        graph_id=uuid4(),
+        bucket="accepted",
+        object_key="knowledge/private/source.pdf",
+        storage_version="manifest-v1",
+        media_type="application/pdf",
+        byte_size=1,
+        content_sha256="a" * 64,
+        classification=1,
+    )
+    pipeline = KnowledgeSourcePipeline(
+        reader=_SourceReader(b"x"),
+        parser=PypdfPageAwareParser(reader_factory=lambda _: _Reader([])),
+        embedding=embedding,
+        extractor=extractor,
+    )
+
+    with pytest.raises(ValidationError, match="bounded provider request size"):
+        await pipeline.analyze_pages(
+            source=source,
+            pages=(PdfPage.create(page_number=1, text="x" * 40_001),),
+            entity_types=frozenset({"Facility"}),
+            edge_types=frozenset(),
+            embedding_binding=_binding("bge-m3:latest"),
+            extraction_binding=_binding("gemma4:latest"),
+        )
+
+    assert embedding.calls == 0
+    assert extractor.calls == 0
+
+
 class _FabricatingExtractor(_Extractor):
     async def propose(self, **kwargs: object) -> ExtractionDraft:
         draft = await super().propose(**kwargs)  # type: ignore[arg-type]

@@ -63,14 +63,17 @@ fallbacks and browser-held credentials are never copied.
   Flow preview. Graph creation uses the existing typed create API.
 - `UI-KG-003`: Data Ingestion exposes Mode A (T-Box ontology) and Mode B (A-Box enrichment), target
   asset selection and the requested source/direct-definition tabs.
-- `UI-KG-004`: file and database source controls remain visible but disabled with an exact missing
-  capability when no typed extraction proposal API exists. The UI does not upload a source to an
-  unrelated endpoint or claim an LLM proposal.
+- `UI-KG-004`: Mode B PDF source analysis uses the durable `202` source-analysis job contract,
+  resumes only owner-visible jobs and polls within a bounded, hidden-tab-aware window. Database
+  sources and Mode A source-driven ontology generation remain disabled with their exact missing
+  capability; the UI never routes them through an unrelated upload or fabricates an LLM proposal.
 - `UI-KG-005`: direct ontology definition is a local draft editor. A safe CREATE-only schema subset
   may be parsed into draft nodes/edges and edited in React Flow; raw Cypher is never sent to or run
   by the server. Persisting uses typed changeset operations with provenance.
-- `UI-KG-006`: Mode B execution and preview require a typed extraction proposal/job API. Until that
-  contract exists, controls are disabled and name the prerequisite.
+- `UI-KG-006`: Mode B PDF execution is available only for PUBLIC/INTERNAL graphs when the separately
+  credentialed Knowledge worker and a complete Chat+Embedding pair are enabled. It exposes durable
+  queue/run/retry/cancel/stale/failure states and navigates only a successful typed DRAFT result.
+  Database/dynamic one-pass execution remains unavailable.
 - `UI-KG-007`: Knowledge GraphRAG Chat is a separate page and conversation state. It can select only
   server-returned active graph releases and uses bounded analysis/evidence APIs; it never calls the
   general Chat route or submits raw Cypher.

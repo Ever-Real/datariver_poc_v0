@@ -3,7 +3,7 @@ from __future__ import annotations
 import importlib
 from collections.abc import Callable, Sequence
 from io import BytesIO
-from typing import Protocol, cast
+from typing import BinaryIO, Protocol, cast
 
 from datariver.domain.common import ValidationError
 from datariver.domain.knowledge_pipeline import MAX_PDF_PAGES, PdfPage
@@ -21,10 +21,10 @@ class PdfLibraryReader(Protocol):
     def pages(self) -> Sequence[PdfLibraryPage]: ...
 
 
-ReaderFactory = Callable[[BytesIO], PdfLibraryReader]
+ReaderFactory = Callable[[BinaryIO], PdfLibraryReader]
 
 
-def _pypdf_reader(source: BytesIO) -> PdfLibraryReader:
+def _pypdf_reader(source: BinaryIO) -> PdfLibraryReader:
     try:
         module = importlib.import_module("pypdf")
     except ModuleNotFoundError as error:
@@ -50,10 +50,15 @@ class PypdfPageAwareParser:
         self._maximum_pages = maximum_pages
 
     def parse(self, payload: bytes) -> tuple[PdfPage, ...]:
-        if not payload.startswith(b"%PDF-"):
+        return self.parse_stream(BytesIO(payload))
+
+    def parse_stream(self, source: BinaryIO) -> tuple[PdfPage, ...]:
+        source.seek(0)
+        if source.read(5) != b"%PDF-":
             raise ValidationError("The knowledge source is not a PDF document.")
+        source.seek(0)
         try:
-            reader = self._reader_factory(BytesIO(payload))
+            reader = self._reader_factory(source)
         except ValidationError:
             raise
         except Exception as error:

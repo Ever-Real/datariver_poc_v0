@@ -16,7 +16,8 @@ RUN apt-get update \
     && apt-get upgrade --yes \
     && rm -rf /var/lib/apt/lists/* \
     && groupadd --system --gid 10001 datariver \
-    && useradd --system --uid 10001 --gid datariver --home-dir /app datariver
+    && useradd --system --uid 10001 --gid datariver --home-dir /app datariver \
+    && install -d -o datariver -g datariver -m 0700 /var/spool/datariver-knowledge
 
 WORKDIR /app
 COPY pyproject.toml uv.lock README.md ./
