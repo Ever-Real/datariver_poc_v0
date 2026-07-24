@@ -170,6 +170,51 @@ release 디렉터리를 전달한다. 내부 Registry가 있으면 tar 대신 �
   --platform linux/amd64 --source-dir . --artifact-only
 ```
 
+### WSL 폐쇄망 반입 시 권한·환경·이미지 확인
+
+릴리스를 root 또는 다른 계정으로 압축 해제하면 exporter의 제한된 staging mode 때문에
+`amd64/`가 현재 운영 계정에 존재하지 않는 것처럼 보일 수 있다. 릴리스 디렉터리만 정확히
+지정해 소유권과 읽기 권한을 복구하고, 애플리케이션 checkout이나 Docker volume 전체에
+재귀 권한 변경을 적용하지 않는다.
+
+```bash
+RELEASE_DIR=/transfer/datariver-release/datariver-<12자리-commit>
+sudo chown -R "$(id -un):$(id -gn)" "$RELEASE_DIR"
+sudo find "$RELEASE_DIR" -type d -exec chmod 0755 {} +
+sudo find "$RELEASE_DIR" -type f -exec chmod 0644 {} +
+test -r "$RELEASE_DIR/amd64/datariver-core-amd64.tar"
+```
+
+`.env.wsl-preparation`과 secret 파일은 Git 관리 대상이 아니므로 `git pull`로 갱신되지 않는다.
+기존 파일에 bootstrap을 다시 적용한 뒤, Redis 전환 환경에서는 다음 네 canonical 설정이
+모두 존재하는지 확인한다. `VALKEY_*` 이름은 이전 환경을 읽기 위한 alias일 뿐 신규 설정에
+추가하지 않는다.
+
+```dotenv
+REDIS_CACHE_URL=redis://redis-cache:6379/0
+REDIS_DELIVERY_URL=redis://redis-delivery:6379/0
+REDIS_CACHE_SECRET_REF=file:/run/secrets/redis_cache_password
+REDIS_DELIVERY_SECRET_REF=file:/run/secrets/redis_delivery_password
+```
+
+Docker Desktop의 containerd image store가 기록한 OCI manifest ID와 WSL Docker가
+`docker image load` 후 표시하는 config ID는 다를 수 있다. `already exists`는 동일 layer
+재사용 메시지이며 실패가 아니다. Bundle checksum, `linux/amd64`, tar의 해당 tag가 가리키는
+config digest와 대상의 `docker image inspect .Id`가 모두 일치해야 한다. 엔진 간 표시 ID
+차이를 이유로 이미지를 반복 삭제하거나 volume을 제거하지 않는다. 실행 가능한 확인 명령은
+[Mac-to-WSL runbook](docs/26_MAC_TO_WSL_MIGRATION_RUNBOOK.md)에 둔다.
+
+Core-only release와 별도로 승인·반입한 Redis tar는 `redis:8.2.6-bookworm` tag로 load한 뒤
+offline Compose에 그 tag를 명시한다. 외부 Redis를 선택한 배포는 이 서비스를 시작하지 않고
+두 private `redis://` 또는 `rediss://` endpoint를 설정한다.
+
+```bash
+REDIS_IMAGE=redis:8.2.6-bookworm \
+scripts/compose.sh --env-file .env.wsl-preparation \
+  -f compose.local-connectors.yaml \
+  up -d --wait --no-build --pull never redis-cache redis-delivery
+```
+
 ### 폐쇄망 공통 사전조건
 
 1. Git mirror 또는 승인된 source bundle에서 이 repository의 동일 commit을 checkout한다.
@@ -1247,6 +1292,70 @@ scripts/compose.sh --env-file "$DATARIVER_ENV_FILE" -f compose.yaml run --rm mig
   /app/.venv/bin/alembic -c backend/alembic.ini current
 # Required output: 0055 (head)
 ```
+
+### WSL 준비 PC에서 Migration 이후
+
+Migration이 `0055 (head)`에 도달해도 API/Worker를 바로 시작하지 않는다. 역할을 한 번 더
+reconcile하고, 대상 issuer에 맞는 local identity를 bootstrap한 후 선택한 외부 connector를
+초기화한다. 아래 `RELEASE_DIR`은 checksum과 source commit을 확인한 실제 절대 경로다.
+
+```bash
+RELEASE_DIR=/transfer/datariver-release/datariver-<12자리-commit>
+OFFLINE_COMPOSE="$RELEASE_DIR/amd64/offline-core.compose.yaml"
+
+# 현재 release의 helper가 password를 전달하지 못하는 경우에도 동작하는 명시적 role reconcile.
+scripts/compose.sh --env-file .env.wsl-preparation -f compose.yaml \
+  exec -T postgres sh -ec \
+  'export PGPASSWORD="$(tr -d "\r\n" </run/secrets/postgres_password)"; exec sh /docker-entrypoint-initdb.d/010_roles.sh'
+
+scripts/compose.sh --env-file .env.wsl-preparation \
+  -f compose.yaml -f compose.identity.yaml -f "$OFFLINE_COMPOSE" \
+  run --rm --pull never migrate \
+  /app/.venv/bin/alembic -c backend/alembic.ini current
+
+scripts/compose.sh --env-file .env.wsl-preparation --profile tools \
+  -f compose.yaml -f compose.identity.yaml -f "$OFFLINE_COMPOSE" \
+  run --rm --pull never local-bootstrap
+```
+
+외부 MinIO/S3를 선택했다면 실제 private endpoint와 별도 secret을 먼저 설정하고
+`storage-init`을 한 번 실행한다. 외부 소유자가 bucket/IAM을 이미 관리하는 환경에서도
+DataRiver가 사용하는 bucket 계약과 최소 권한 probe는 통과해야 한다. S3 기능을 아직
+승인하지 않았다면 init을 억지로 통과시키지 말고 해당 기능을 비활성 상태로 둔다.
+`S3_ENDPOINT_URL`과 `S3_PUBLIC_ENDPOINT_URL`에는 MinIO Console/UI 포트가 아니라 S3 API
+origin을 넣는다. Kubernetes NodePort는 service의 `targetPort`가 MinIO API `9000`을 가리킬
+때만 사용할 수 있다. 외부 MinIO가 per-bucket `PutBucketCors`를 지원하지 않으면 운영자가
+exact-origin CORS를 별도로 구성하고 `S3_CORS_MANAGEMENT_MODE=external`을 선택한다.
+
+```bash
+scripts/compose.sh --env-file .env.wsl-preparation \
+  --profile object-storage-tools \
+  -f compose.yaml -f compose.identity.yaml -f "$OFFLINE_COMPOSE" \
+  run --rm --pull never storage-init
+
+scripts/compose.sh --env-file .env.wsl-preparation \
+  -f compose.yaml -f compose.identity.yaml -f "$OFFLINE_COMPOSE" \
+  up -d --wait --no-build --pull never keycloak
+
+# Keycloak health는 외부 8081이 아니라 컨테이너 내부 management port 9000에 있다.
+docker inspect --format '{{.State.Health.Status}}' datariver-next-keycloak-1
+curl -fsS \
+  http://127.0.0.1:8081/realms/datariver/.well-known/openid-configuration \
+  >/dev/null
+
+scripts/compose.sh --env-file .env.wsl-preparation \
+  -f compose.yaml -f compose.identity.yaml -f "$OFFLINE_COMPOSE" \
+  up -d --wait --no-build --pull never \
+  api web outbox-relay upload-worker upload-validation-worker governance-apply-worker
+
+curl -fsS http://127.0.0.1:8000/api/v1/health/live
+curl -fsS http://127.0.0.1:8000/api/v1/health/ready
+curl -fsS http://127.0.0.1:8080/healthz
+```
+
+Neo4j/Knowledge worker, APISIX, Airflow와 observability는 각각의 provider·image·secret gate가
+통과한 경우에만 profile/overlay로 추가한다. 기본 Catalog/Search/CR 운영을 위해 이들을
+강제로 시작하지 않는다.
 
 When the selected Mac or WSL profile intentionally uses the optional local MinIO reference, it uses
 the configurable `S3_BUCKET_ACCEPTED`. Create the buckets with the general storage initializer,

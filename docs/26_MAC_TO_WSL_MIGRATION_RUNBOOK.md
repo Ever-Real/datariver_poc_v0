@@ -310,6 +310,43 @@ scripts/verify_offline_release.sh /transfer/datariver-RELEASE \
   --platform linux/amd64 --load --source-dir "$PWD" --env-file .env.wsl-preparation
 ```
 
+If the archive was extracted by root or another account, the exporter staging mode can leave the
+`amd64` directory non-searchable by the preparation operator. Repair only the immutable release
+directory, then rerun verification as the normal Docker operator:
+
+```bash
+RELEASE_DIR=/transfer/datariver-RELEASE
+sudo chown -R "$(id -un):$(id -gn)" "$RELEASE_DIR"
+sudo find "$RELEASE_DIR" -type d -exec chmod 0755 {} +
+sudo find "$RELEASE_DIR" -type f -exec chmod 0644 {} +
+test -r "$RELEASE_DIR/amd64/datariver-core-amd64.tar"
+```
+
+Docker Desktop may record the exporter-side OCI manifest ID while a WSL Docker Engine reports the
+loaded single-platform config ID. `already exists` during `docker image load` means a content layer
+was reused. When the IDs differ, require the archive checksum, tag, config digest and target
+platform to agree instead of deleting images or volumes:
+
+```bash
+CORE_TAR="$RELEASE_DIR/amd64/datariver-core-amd64.tar"
+(cd "$RELEASE_DIR/amd64" && sha256sum -c datariver-core-amd64.tar.sha256)
+CONFIG_PATH=$(
+  tar -xOf "$CORE_TAR" manifest.json |
+  jq -r '.[] | select((.RepoTags // []) | index("datariver-next-migrate:latest")) | .Config'
+)
+ARCHIVE_CONFIG_ID="sha256:${CONFIG_PATH##*/}"
+LOADED_IMAGE_ID=$(
+  docker image inspect datariver-next-migrate:latest --format '{{.Id}}'
+)
+test "$ARCHIVE_CONFIG_ID" = "$LOADED_IMAGE_ID"
+test "$(docker image inspect datariver-next-migrate:latest \
+  --format '{{.Os}}/{{.Architecture}}')" = linux/amd64
+```
+
+The preparation checkout's ignored `.env.wsl-preparation` is not updated by `git pull`. Rerun
+bootstrap after source updates and require `REDIS_CACHE_URL`, `REDIS_DELIVERY_URL`,
+`REDIS_CACHE_SECRET_REF` and `REDIS_DELIVERY_SECRET_REF`; do not add new `VALKEY_*` settings.
+
 Set private DNS/TLS endpoints in `.env.wsl-preparation`. Loopback means the current container, so a
 remote MinIO/DataHub/LLM must never use `localhost`. For a Windows-host endpoint use the reviewed
 `host.docker.internal` bridge only when the service is intentionally host-bound.
@@ -352,6 +389,18 @@ The local command assumes `--include-local-connectors` was selected when exporti
 target that will pull the pinned digest instead, omit the offline connector override and the
 `--pull never` flag, then capture the resolved image ID before acceptance. A disconnected target
 must not fall back to a registry when the selected archive or override is absent.
+
+If Redis alone was approved and transferred as a separately checksummed Docker archive, load it and
+override the digest-qualified online reference with the verified offline tag:
+
+```bash
+gzip -dc /transfer/redis-8.2.6-bookworm-linux-amd64-RELEASE.tar.gz |
+  docker image load
+REDIS_IMAGE=redis:8.2.6-bookworm \
+scripts/compose.sh --env-file .env.wsl-preparation \
+  -f compose.local-connectors.yaml \
+  up -d --wait --no-build --pull never redis-cache redis-delivery
+```
 
 Neo4j follows the same explicit choice. For a connected WSL target, set
 `NEO4J_ALLOWED_HOSTS=neo4j` and `NEO4J_URI=bolt://neo4j:7687`, then pull/start the digest-pinned
@@ -401,12 +450,22 @@ docker exec -i datariver-next-postgres-1 sh -ec \
   'PGPASSWORD="$(tr -d "\r\n" </run/secrets/keycloak_db_password)" \
    exec pg_restore --single-transaction --exit-on-error --no-owner --no-acl \
    -U keycloak -d keycloak' < /transfer/migration/keycloak.dump
-DATARIVER_ENV_FILE=.env.wsl-preparation scripts/reconcile-postgres-roles.sh
+scripts/compose.sh --env-file .env.wsl-preparation -f compose.yaml \
+  exec -T postgres sh -ec \
+  'export PGPASSWORD="$(tr -d "\r\n" </run/secrets/postgres_password)"; exec sh /docker-entrypoint-initdb.d/010_roles.sh'
 scripts/compose.sh --env-file .env.wsl-preparation \
   -f compose.yaml -f compose.identity.yaml \
   -f /transfer/datariver-RELEASE/amd64/offline-core.compose.yaml \
   run --rm --pull never migrate
-DATARIVER_ENV_FILE=.env.wsl-preparation scripts/reconcile-postgres-roles.sh
+scripts/compose.sh --env-file .env.wsl-preparation -f compose.yaml \
+  exec -T postgres sh -ec \
+  'export PGPASSWORD="$(tr -d "\r\n" </run/secrets/postgres_password)"; exec sh /docker-entrypoint-initdb.d/010_roles.sh'
+scripts/compose.sh --env-file .env.wsl-preparation \
+  -f compose.yaml -f compose.identity.yaml \
+  -f /transfer/datariver-RELEASE/amd64/offline-core.compose.yaml \
+  run --rm --pull never migrate \
+  /app/.venv/bin/alembic -c backend/alembic.ini current
+# Require exactly: 0055 (head)
 scripts/compose.sh --env-file .env.wsl-preparation --profile tools \
   -f compose.yaml -f compose.identity.yaml \
   -f /transfer/datariver-RELEASE/amd64/offline-core.compose.yaml \
@@ -437,6 +496,12 @@ Initialize/probe the external MinIO, then copy the final object set from the Mac
 (not SeaweedFS) using `/transfer/migration/object-manifest.json`. Use distinct source and target
 credential files, run a dry pass, `--apply`, and a second dry pass requiring
 `verified_existing=object_count` and `planned=0`. Do this before API or workers can accept writes.
+The configured endpoint is the credential-free S3 API origin, never the Console/UI port. For a
+Kubernetes NodePort, require evidence that its service `targetPort` is the MinIO API port `9000`;
+a NodePort mapped to Console `9001` is not an S3 endpoint. The generated bootstrap credential is
+local-only and must be replaced by an externally provisioned access/secret key pair. If the owner
+pre-creates the buckets and manages exact-origin CORS outside S3, select
+`S3_CORS_MANAGEMENT_MODE=external`; `storage-init` still authenticates and checks every bucket.
 
 ```bash
 scripts/compose.sh --env-file .env.wsl-preparation --profile object-storage-tools \
@@ -490,11 +555,17 @@ scripts/compose.sh --env-file .env.wsl-preparation \
   -f /transfer/datariver-RELEASE/amd64/offline-core.compose.yaml \
   up -d --wait --no-build --pull never keycloak
 DATARIVER_WEB_ORIGIN=http://localhost:8080 scripts/configure_keycloak_host_dev.sh
+docker inspect --format '{{.State.Health.Status}}' datariver-next-keycloak-1
+curl -fsS \
+  http://127.0.0.1:8081/realms/datariver/.well-known/openid-configuration \
+  >/dev/null
 ```
 
 Verify the public issuer is exactly `http://localhost:8081/realms/datariver`, the API uses the
-private JWKS URL, and both confidential clients authenticate. Only then start API, web, relay and
-selected workers:
+private JWKS URL, and both confidential clients authenticate. Keycloak 26 serves health on its
+container-internal management port `9000`; only application port `8080` is published as host
+`8081`, so host request `http://127.0.0.1:8081/health/ready` returning `404` is not a health failure.
+Only then start API, web, relay and selected workers:
 
 ```bash
 scripts/compose.sh --env-file .env.wsl-preparation \
