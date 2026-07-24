@@ -120,6 +120,22 @@ chmod +x scripts/export_offline_images.sh scripts/dev_host.sh
 DataRiver source와 core image를 반출하고 대상이 별도로 운영하는 Redis/MinIO endpoint에
 연결할 수 있다.
 
+### 연결망 준비 PC: Python 의존성 캐시 반출
+
+`uv.lock`은 정확한 버전을 고정하지만 package artifact 자체를 Git에 넣지 않는다. 따라서
+새 lockfile을 반입하기 전에는 대상과 같은 OS·CPU·Python 3.12·`uv 0.9.17` 환경에서 아래
+명령으로 검증 가능한 cache archive를 만든다. 이 스크립트는 별도 임시 virtual environment에
+전체 dependency를 설치한 뒤, archive를 다시 풀어 `--offline` 설치까지 확인한다.
+
+```bash
+chmod +x scripts/export_offline_python_cache.sh
+./scripts/export_offline_python_cache.sh
+```
+
+출력되는 `offline_python/datariver-uv-cache-*.tar.gz`, 동일 이름의 `.sha256`, `.manifest.tsv`는
+Git에 commit하지 않는다. checksum과 manifest를 확인한 뒤 승인된 내부 artifact 저장소 또는
+외장 매체로 대상 Mac에 전달한다. 이 cache는 생성한 OS·CPU·Python·uv 버전에만 사용한다.
+
 관측성 profile을 사용하지 않는 대상은 `--include-observability`를 생략해도 된다. 반대로 이
 Mac에서 현재처럼 Grafana/Prometheus/OTel/Tempo/Loki/Alertmanager를 함께 사용할 경우
 `datariver-observability-pilot-arm64.tar`도 같은 방식으로 반입한다. 이 bundle은
@@ -159,9 +175,9 @@ release 디렉터리를 전달한다. 내부 Registry가 있으면 tar 대신 �
 1. Git mirror 또는 승인된 source bundle에서 이 repository의 동일 commit을 checkout한다.
 2. Docker Engine/Desktop와 Compose v2, Python 3.12, `uv 0.9.17`, Node.js 22.19/npm 10을
    대상 Mac에 설치한다. 호스트 소스 실행은 Git만으로 완료되지 않는다. 연결망 준비 PC에서
-   uv cache 또는 사내 PyPI mirror, npm cache 또는 사내 npm mirror도 함께 준비해야 한다.
-   폐쇄망에서는 `uv sync --offline` 및 `npm ci --offline`이 필요한 패키지를 찾지 못하면
-   의도적으로 실패한다.
+   `scripts/export_offline_python_cache.sh`로 만든 uv cache archive 또는 사내 PyPI mirror와
+   npm cache 또는 사내 npm mirror도 함께 준비해야 한다. 폐쇄망에서는 `uv sync --offline` 및
+   `npm ci --offline`이 필요한 패키지를 찾지 못하면 의도적으로 실패한다.
 3. 승인된 환경 설정과 비밀정보를 별도 보안 채널로 배포한다. 개발 PC의 비밀정보를 Git이나
    이미지 tar에 넣지 않는다. 새 환경에서는 최소한 DataHub service token, DB 역할별
    password, Redis password, S3 credential, OIDC client/issuer와 TLS·CA 신뢰 구성을
@@ -320,6 +336,11 @@ repository digest를 승인 목록과 비교한다. `docker load`가 외부 regi
 없다면 이 단계에서 멈추고 package artifact를 먼저 반입한다.
 
 ```bash
+# 연결망 준비 PC에서 만든 cache archive의 checksum을 먼저 확인한 뒤 실행한다.
+(cd <artifact-directory> && shasum -a 256 -c datariver-uv-cache-<os>-<arch>-<lock-hash>.tar.gz.sha256)
+mkdir -p "$HOME/.cache"
+tar -xzf datariver-uv-cache-<os>-<arch>-<lock-hash>.tar.gz -C "$HOME/.cache"
+
 uv sync --frozen --all-extras --offline
 (cd frontend && npm ci --offline --no-audit --no-fund)
 
