@@ -64,20 +64,23 @@ the repository root, run:
 ```
 
 For the validated Mac Compose topology, use its already-started Airflow service to run the same
-manual-only workflow. The explicit wrapper is required because `docker compose exec` bypasses a
+manual-only workflow. The Airflow entrypoint wrapper is required because Compose `exec` bypasses a
 service's configured entrypoint and Airflow obtains its database/API secrets there.
 
 ```bash
-docker compose -f compose.yaml -f compose.identity.yaml -f compose.airflow.yaml \
+scripts/compose.sh --env-file .env \
+  -f compose.yaml -f compose.identity.yaml -f compose.airflow.yaml \
   -f compose.gateway.yaml -f aux-compose.yml -f compose.graph.yaml \
   exec airflow-api-server /bin/bash /opt/datariver/airflow-entrypoint.sh \
   dags unpause datariver_semiconductor_seed_ingestion
-docker compose -f compose.yaml -f compose.identity.yaml -f compose.airflow.yaml \
+scripts/compose.sh --env-file .env \
+  -f compose.yaml -f compose.identity.yaml -f compose.airflow.yaml \
   -f compose.gateway.yaml -f aux-compose.yml -f compose.graph.yaml \
   exec airflow-api-server /bin/bash /opt/datariver/airflow-entrypoint.sh \
   dags trigger datariver_semiconductor_seed_ingestion
 # After the run is SUCCESS, return the manual-only DAG to its default pause state.
-docker compose -f compose.yaml -f compose.identity.yaml -f compose.airflow.yaml \
+scripts/compose.sh --env-file .env \
+  -f compose.yaml -f compose.identity.yaml -f compose.airflow.yaml \
   -f compose.gateway.yaml -f aux-compose.yml -f compose.graph.yaml \
   exec airflow-api-server /bin/bash /opt/datariver/airflow-entrypoint.sh \
   dags pause datariver_semiconductor_seed_ingestion
@@ -117,10 +120,13 @@ Build/start Airflow only after the core stack is healthy, then trigger the DAG f
 or its local CLI. The exact command follows the repository's overlay convention:
 
 ```bash
-docker compose -f compose.yaml -f compose.airflow.yaml up -d --build --wait
-docker compose -f compose.yaml -f compose.airflow.yaml exec airflow-api-server \
+scripts/compose.sh --env-file .env -f compose.yaml -f compose.airflow.yaml \
+  up -d --build --wait
+scripts/compose.sh --env-file .env -f compose.yaml -f compose.airflow.yaml \
+  exec airflow-api-server \
   airflow dags unpause datariver_semiconductor_seed_ingestion
-docker compose -f compose.yaml -f compose.airflow.yaml exec airflow-api-server \
+scripts/compose.sh --env-file .env -f compose.yaml -f compose.airflow.yaml \
+  exec airflow-api-server \
   airflow dags trigger datariver_semiconductor_seed_ingestion
 ```
 

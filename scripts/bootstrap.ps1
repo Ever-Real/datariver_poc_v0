@@ -1,5 +1,6 @@
 param(
     [string]$DataHubToken,
+    [string]$DataHubTokenFile,
     [string]$DataHubBaseUrl,
     [string]$DataHubEmbedOrigin,
     [string]$WebPublicOrigin = "http://localhost:8080",
@@ -12,11 +13,71 @@ $ErrorActionPreference = "Stop"
 $root = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot "..")).ProviderPath
 $secretsDirectory = Join-Path $root "secrets"
 $envFile = Join-Path $root ".env"
-$keycloakRuntimeDirectory = Join-Path $root "runtime/keycloak"
-$retentionControlFile = Join-Path $root "runtime/retention-execution.enabled"
+$runtimeDirectory = Join-Path $root "runtime"
+$keycloakRuntimeDirectory = Join-Path $runtimeDirectory "keycloak"
+$retentionControlFile = Join-Path $runtimeDirectory "retention-execution.enabled"
 $nativeWindows = [Runtime.InteropServices.RuntimeInformation]::IsOSPlatform(
     [Runtime.InteropServices.OSPlatform]::Windows
 )
+
+function Test-ReparsePoint([string]$Path) {
+    if (-not (Test-Path -LiteralPath $Path)) {
+        return $false
+    }
+    return [bool]((Get-Item -Force -LiteralPath $Path).Attributes -band
+        [IO.FileAttributes]::ReparsePoint)
+}
+
+$managedPaths = @(
+    $envFile,
+    $secretsDirectory,
+    $runtimeDirectory,
+    $keycloakRuntimeDirectory,
+    (Join-Path $keycloakRuntimeDirectory "datariver-realm.json"),
+    $retentionControlFile
+)
+foreach ($managedPath in $managedPaths) {
+    if (Test-ReparsePoint $managedPath) {
+        throw "Bootstrap refuses reparse points for managed paths."
+    }
+}
+if (Test-Path -LiteralPath $secretsDirectory -PathType Container) {
+    foreach ($existingSecret in Get-ChildItem -Force -LiteralPath $secretsDirectory) {
+        if ([bool]($existingSecret.Attributes -band [IO.FileAttributes]::ReparsePoint)) {
+            throw "Bootstrap refuses reparse points in the secrets directory."
+        }
+    }
+}
+
+$dataHubTokenPath = Join-Path $secretsDirectory "datahub_token"
+$dataHubTokenSourcePath = $null
+if ($PSBoundParameters.ContainsKey("DataHubToken")) {
+    throw "DataHub token values are not accepted as process arguments; use an approved token file."
+}
+if ($PSBoundParameters.ContainsKey("DataHubTokenFile")) {
+    if (-not (Test-Path -LiteralPath $DataHubTokenFile -PathType Leaf) -or
+        (Get-Item -LiteralPath $DataHubTokenFile).Length -eq 0) {
+        throw "DataHub token file must be an existing non-empty regular file."
+    }
+    if (Test-ReparsePoint $DataHubTokenFile) {
+        throw "DataHub token file must not be a reparse point."
+    }
+    $dataHubTokenSourcePath = (Resolve-Path -LiteralPath $DataHubTokenFile).ProviderPath
+    try {
+        $tokenProbe = [IO.File]::OpenRead($dataHubTokenSourcePath)
+        $tokenProbe.Dispose()
+    } catch {
+        throw "DataHub token file must be readable before bootstrap creates any state."
+    }
+    if ((Test-Path -LiteralPath $dataHubTokenPath -PathType Leaf) -and
+        $dataHubTokenSourcePath -eq
+            (Resolve-Path -LiteralPath $dataHubTokenPath).ProviderPath) {
+        $dataHubTokenSourcePath = $null
+    }
+} elseif (-not (Test-Path -LiteralPath $dataHubTokenPath -PathType Leaf) -or
+    (Get-Item -LiteralPath $dataHubTokenPath).Length -eq 0) {
+    throw "DataHub token file is required. Install it at secrets/datahub_token or use -DataHubTokenFile with an approved file path."
+}
 
 function Get-BootstrapEnvValue([string]$Name) {
     $pattern = "^$([Regex]::Escape($Name))=(.*)$"
@@ -161,17 +222,28 @@ function New-RandomSecret([int]$Bytes = 32) {
 
 function Write-Secret([string]$Name, [string]$Value) {
     $path = Join-Path $secretsDirectory $Name
+    $temporaryPath = Join-Path $secretsDirectory ".$Name.tmp.$([Guid]::NewGuid().ToString('N'))"
     if (Test-Path -LiteralPath $path) {
         (Get-Item -LiteralPath $path).IsReadOnly = $false
     }
-    [IO.File]::WriteAllText($path, $Value, [Text.UTF8Encoding]::new($false))
-    if ($IsLinux -or $IsMacOS) {
-        [IO.File]::SetUnixFileMode(
-            $path,
-            [IO.UnixFileMode]::UserRead -bor [IO.UnixFileMode]::UserWrite
-        )
-    } elseif ($nativeWindows) {
-        Set-OwnerOnlyWindowsAcl -Path $path
+    try {
+        [IO.File]::WriteAllText($temporaryPath, $Value, [Text.UTF8Encoding]::new($false))
+        if ((Get-Item -LiteralPath $temporaryPath).Length -eq 0) {
+            throw "Refusing to install an empty secret."
+        }
+        if ($IsLinux -or $IsMacOS) {
+            [IO.File]::SetUnixFileMode(
+                $temporaryPath,
+                [IO.UnixFileMode]::UserRead -bor [IO.UnixFileMode]::UserWrite
+            )
+        } elseif ($nativeWindows) {
+            Set-OwnerOnlyWindowsAcl -Path $temporaryPath
+        }
+        Move-Item -Force -LiteralPath $temporaryPath -Destination $path
+    } finally {
+        if (Test-Path -LiteralPath $temporaryPath) {
+            Remove-Item -Force -LiteralPath $temporaryPath
+        }
     }
 }
 
@@ -297,12 +369,10 @@ if ((Test-Path -LiteralPath $s3ArchiveAccessKeyPath) -and
 }
 $s3ArchiveSecretKey = Get-OrCreateSecret "s3_archive_secret_key" 36
 
-$dataHubTokenPath = Join-Path $secretsDirectory "datahub_token"
-if ($PSBoundParameters.ContainsKey("DataHubToken") -and $DataHubToken.Length -gt 0) {
-    Write-Secret "datahub_token" $DataHubToken
-} elseif (-not (Test-Path -LiteralPath $dataHubTokenPath) -or
-    (Get-Item -LiteralPath $dataHubTokenPath).Length -eq 0) {
-    throw "DataHubToken is required when secrets/datahub_token does not exist."
+if ($null -ne $dataHubTokenSourcePath) {
+    Write-Secret "datahub_token" (
+        [IO.File]::ReadAllText($dataHubTokenSourcePath, [Text.Encoding]::UTF8)
+    )
 }
 
 if ($HostDevelopment) {

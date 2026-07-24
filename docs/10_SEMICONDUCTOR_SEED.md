@@ -5,10 +5,13 @@
 The pack is deterministic synthetic reference data for discovery, graph analysis, Chat evidence and UI evaluation. It is disabled by default, rejected in production mode and uses a fixed namespace/run ID so verification and removal cannot select unrelated resources.
 
 ```bash
-docker compose --profile semiconductor-seed run --rm semiconductor-seed
-docker compose --profile semiconductor-seed run --rm semiconductor-seed \
+scripts/compose.sh --env-file .env --profile semiconductor-seed \
+  run --rm semiconductor-seed
+scripts/compose.sh --env-file .env --profile semiconductor-seed \
+  run --rm semiconductor-seed \
   /app/.venv/bin/python -m datariver.seed verify
-docker compose --profile semiconductor-seed run --rm semiconductor-seed \
+scripts/compose.sh --env-file .env --profile semiconductor-seed \
+  run --rm semiconductor-seed \
   /app/.venv/bin/python -m datariver.seed remove --confirm-synthetic-data
 ```
 

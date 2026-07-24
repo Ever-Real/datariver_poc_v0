@@ -45,28 +45,32 @@ DataRiver는 DataHub, Redis, MinIO/S3, 그래프 엔진, Airflow와 LLM을 생�
 2. bootstrap 스크립트로 `.env`와 로컬 비밀 파일을 생성합니다. 다른 환경의 `.env`, volume,
    secret 파일을 복사하지 않습니다.
 3. 사용할 Compose overlay의 정합성을 검사합니다.
-4. 인프라를 기동하고 migration 서비스로 DB를 `0041` 헤드까지 올립니다.
+4. 인프라를 기동하고 migration 서비스로 DB를 현재 Alembic 헤드까지 올립니다.
 5. API/worker/UI를 시작한 뒤 health, gateway, OIDC, DataHub capability를 확인합니다.
 6. 필요할 때만 합성 반도체 시드를 적용하고 검증합니다.
 
 Linux/macOS/WSL 예시:
 
 ```bash
-./scripts/bootstrap.sh '<datahub-service-token>'
+./scripts/bootstrap.sh --datahub-token-file /approved-secure-transfer/datahub_token
 # .env의 OIDC, REDIS_*, S3_* 및 사용할 외부 서비스 URL을 환경에 맞게 확인합니다.
-docker compose -f compose.yaml -f compose.identity.yaml config --quiet
-docker compose -f compose.yaml -f compose.identity.yaml up -d --build --wait
-docker compose --profile tools -f compose.yaml -f compose.identity.yaml \
+scripts/compose.sh --env-file .env -f compose.yaml -f compose.identity.yaml config --quiet
+scripts/compose.sh --env-file .env -f compose.yaml -f compose.identity.yaml \
+  up -d --build --wait
+scripts/compose.sh --env-file .env --profile tools \
+  -f compose.yaml -f compose.identity.yaml \
   run --rm local-bootstrap
 ```
 
 PowerShell 예시:
 
 ```powershell
-./scripts/bootstrap.ps1 -DataHubToken '<datahub-service-token>'
-docker compose -f compose.yaml -f compose.identity.yaml config --quiet
-docker compose -f compose.yaml -f compose.identity.yaml up -d --build --wait
-docker compose --profile tools -f compose.yaml -f compose.identity.yaml `
+./scripts/bootstrap.ps1 -DataHubTokenFile 'C:\approved-secure-transfer\datahub_token'
+./scripts/compose.ps1 -EnvFile .env -f compose.yaml -f compose.identity.yaml config --quiet
+./scripts/compose.ps1 -EnvFile .env -f compose.yaml -f compose.identity.yaml `
+  up -d --build --wait
+./scripts/compose.ps1 -EnvFile .env --profile tools `
+  -f compose.yaml -f compose.identity.yaml `
   run --rm local-bootstrap
 ```
 
@@ -77,13 +81,17 @@ Redis와 S3/MinIO는 별도 환경에서 운영합니다. API·relay·worker·Vi
 실행합니다.
 
 ```bash
-./scripts/bootstrap.sh --host-development \
+./scripts/bootstrap.sh --datahub-token-file /approved-secure-transfer/datahub_token \
+  --host-development \
   --datahub-base-url http://host.docker.internal:8080
-docker compose -f compose.yaml -f compose.identity.yaml -f compose.host-dev.yaml \
+scripts/compose.sh --env-file .env \
+  -f compose.yaml -f compose.identity.yaml -f compose.host-dev.yaml \
   config --quiet
-docker compose -f compose.yaml -f compose.identity.yaml -f compose.host-dev.yaml \
+scripts/compose.sh --env-file .env \
+  -f compose.yaml -f compose.identity.yaml -f compose.host-dev.yaml \
   up -d --build --wait postgres keycloak
-docker compose -f compose.yaml -f compose.identity.yaml -f compose.host-dev.yaml \
+scripts/compose.sh --env-file .env \
+  -f compose.yaml -f compose.identity.yaml -f compose.host-dev.yaml \
   run --rm migrate
 ./scripts/configure_keycloak_host_dev.sh
 ```
@@ -105,8 +113,9 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 status
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 stop
 ```
 
-DataRiver가 게시하는 개발 포트 기본값은 PostgreSQL `5432`, API `8000`, APISIX `9080`,
-Keycloak `18081`, Vite `5173`입니다. 외부 Redis와 S3/MinIO 포트는 해당 배포가 결정합니다.
+이 host-development 경로가 게시하는 기본값은 PostgreSQL `5432`, API `38101`,
+APISIX `9080`, Keycloak `18081`, Vite `38102`입니다. 외부 Redis와 S3/MinIO 포트는 해당
+배포가 결정합니다.
 
 ## 연결 정보와 환경 변수
 
@@ -165,9 +174,11 @@ uv run alembic -c backend/alembic.ini upgrade head
 선택적 합성 반도체 시드:
 
 ```bash
-docker compose --profile semiconductor-seed -f compose.yaml -f compose.identity.yaml \
+scripts/compose.sh --env-file .env --profile semiconductor-seed \
+  -f compose.yaml -f compose.identity.yaml \
   -f compose.host-dev.yaml run --rm semiconductor-seed
-docker compose --profile semiconductor-seed -f compose.yaml -f compose.identity.yaml \
+scripts/compose.sh --env-file .env --profile semiconductor-seed \
+  -f compose.yaml -f compose.identity.yaml \
   -f compose.host-dev.yaml run --rm semiconductor-seed \
   /app/.venv/bin/python -m datariver.seed verify
 ```
@@ -177,14 +188,15 @@ docker compose --profile semiconductor-seed -f compose.yaml -f compose.identity.
 ## 정상 상태 확인
 
 ```bash
-curl -fsS http://127.0.0.1:8000/api/v1/health/live
-curl -fsS http://127.0.0.1:8000/api/v1/health/ready
+curl -fsS http://127.0.0.1:38101/api/v1/health/live
+curl -fsS http://127.0.0.1:38101/api/v1/health/ready
 curl -fsS http://127.0.0.1:8080/
 ```
 
 - `/health/live`는 프로세스 실행 여부만 확인합니다.
-- `/health/ready`는 DB 연결과 Alembic `0041` 헤드를 확인합니다.
-- 브라우저에서는 `http://localhost:5173`(호스트 개발) 또는 `http://localhost:8080`을 열고,
+- `/health/ready`는 DB 연결과 현재 Alembic 헤드 `0054`를 확인합니다.
+- 브라우저에서는 `http://localhost:38102`(호스트 개발) 또는 container profile의
+  `http://localhost:8080`을 열고,
   로그인 후 workspace를 선택합니다.
 - Catalog에서 Tag/Term `+`를 열어 DataHub vocabulary가 표시되는지, 변경관리에서 일반 OIDC
   계정으로 CR 생성·검토 상태 흐름이 진행되는지 확인합니다.

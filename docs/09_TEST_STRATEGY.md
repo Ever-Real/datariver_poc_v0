@@ -2,6 +2,19 @@
 
 ## Current verification status
 
+### Phase 6A WSL bootstrap and connector network — 2026-07-24
+
+The current worktree adds fail-before-mutation blank-profile coverage, approved token-file
+preservation/non-disclosure, positional-secret rejection, same-file and symlink negatives,
+deterministic inspect/create/Compose ordering, config-only behavior and invalid-network negatives.
+The focused set passes `15` tests. The full source passes Ruff format over `377` files, Ruff
+lint, strict mypy over `370` source files, static verification and backend
+`1,380 passed / 84 environment-gated skipped`; frontend TypeScript, ESLint,
+`45 files / 243 tests` and production build pass.
+
+Native and `DOCKER_DEFAULT_PLATFORM=linux/amd64` Compose rendering is configuration-only evidence.
+`pwsh`, target WSL and target Docker/provider execution remain external.
+
 ### Phase 5 durable Knowledge source jobs — 2026-07-24
 
 The current worktree's local Phase 5 gates passed with Alembic head `0054`. Ruff format/lint,

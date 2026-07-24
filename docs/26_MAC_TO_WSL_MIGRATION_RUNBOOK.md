@@ -303,7 +303,8 @@ credential migration specifically requires it.
 ```bash
 git clone /transfer/datariver-RELEASE/datariver-source.bundle datariver_v1
 cd datariver_v1
-scripts/bootstrap.sh --env-file .env.wsl-preparation --wsl-preparation
+scripts/bootstrap.sh --env-file .env.wsl-preparation --wsl-preparation \
+  --datahub-token-file /approved-secure-transfer/datahub_token
 scripts/verify_offline_release.sh /transfer/datariver-RELEASE \
   --platform linux/amd64 --load --source-dir "$PWD" --env-file .env.wsl-preparation
 ```

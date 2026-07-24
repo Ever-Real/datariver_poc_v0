@@ -174,7 +174,7 @@ services:
 networks:
   connectors:
     name: ${DATARIVER_CONNECTOR_NETWORK:-datariver-connectors}
-    internal: false
+    external: true
 
 volumes:
   redis-delivery-data:

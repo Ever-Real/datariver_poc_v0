@@ -1,7 +1,7 @@
 #!/usr/bin/env sh
 set -eu
 
-datahub_token=
+datahub_token_file=
 datahub_base_url=
 host_development=false
 mac_development=false
@@ -36,9 +36,14 @@ while [ "$#" -gt 0 ]; do
       [ "$#" -gt 0 ] || { echo "--datahub-base-url requires a value" >&2; exit 2; }
       datahub_base_url=$1
       ;;
+    --datahub-token-file)
+      shift
+      [ "$#" -gt 0 ] || { echo "--datahub-token-file requires a path" >&2; exit 2; }
+      datahub_token_file=$1
+      ;;
     *)
-      [ -z "$datahub_token" ] || { echo "unexpected argument: $1" >&2; exit 2; }
-      datahub_token=$1
+      echo "unexpected argument; use a documented named option" >&2
+      exit 2
       ;;
   esac
   shift
@@ -66,6 +71,52 @@ case "$env_file_argument" in
   /*) env_file=$env_file_argument ;;
   *) env_file="$root/$env_file_argument" ;;
 esac
+
+secrets_dir="$root/secrets"
+runtime_dir="$root/runtime"
+keycloak_runtime_dir="$runtime_dir/keycloak"
+retention_control_file="$runtime_dir/retention-execution.enabled"
+datahub_token_path="$secrets_dir/datahub_token"
+for protected_path in \
+  "$env_file" \
+  "$secrets_dir" \
+  "$runtime_dir" \
+  "$keycloak_runtime_dir" \
+  "$keycloak_runtime_dir/datariver-realm.json" \
+  "$retention_control_file"; do
+  if [ -L "$protected_path" ]; then
+    echo "Bootstrap refuses symbolic links for managed paths." >&2
+    exit 2
+  fi
+done
+if [ -d "$secrets_dir" ]; then
+  for existing_secret in \
+    "$secrets_dir"/* \
+    "$secrets_dir"/.[!.]* \
+    "$secrets_dir"/..?*; do
+    if [ -L "$existing_secret" ]; then
+      echo "Bootstrap refuses symbolic links in the secrets directory." >&2
+      exit 2
+    fi
+  done
+fi
+if [ -n "$datahub_token_file" ]; then
+  [ ! -L "$datahub_token_file" ] &&
+    [ -f "$datahub_token_file" ] && [ -s "$datahub_token_file" ] &&
+    [ -r "$datahub_token_file" ] || {
+    echo "DataHub token file must be an existing, readable, non-empty regular file: $datahub_token_file" >&2
+    exit 2
+  }
+  if [ -e "$datahub_token_path" ] && [ "$datahub_token_file" -ef "$datahub_token_path" ]; then
+    datahub_token_file=
+  fi
+elif [ -s "$datahub_token_path" ] && [ -r "$datahub_token_path" ]; then
+  :
+elif [ "$mac_development" != true ]; then
+  echo "DataHub token file is required. Install it at secrets/datahub_token or use --datahub-token-file with an approved file path." >&2
+  exit 2
+fi
+
 [ -f "$env_file" ] || cp "$root/.env.example" "$env_file"
 
 env_value() {
@@ -128,21 +179,31 @@ if [ "$enable_knowledge_source_worker" = true ] &&
   exit 2
 fi
 
-secrets_dir="$root/secrets"
-keycloak_runtime_dir="$root/runtime/keycloak"
-retention_control_file="$root/runtime/retention-execution.enabled"
+umask 077
 mkdir -p "$secrets_dir"
 mkdir -p "$keycloak_runtime_dir"
 if [ ! -f "$retention_control_file" ]; then
   printf '%s\n' DISABLED > "$retention_control_file"
 fi
-umask 077
-
 for existing_file in "$secrets_dir"/* "$keycloak_runtime_dir"/datariver-realm.json; do
   if [ -f "$existing_file" ]; then
     chmod 0600 "$existing_file"
   fi
 done
+
+if [ -n "$datahub_token_file" ]; then
+  datahub_token_temp=$(mktemp "$secrets_dir/.datahub_token.tmp.XXXXXX")
+  trap 'rm -f "$datahub_token_temp"' 0 1 2 15
+  cp "$datahub_token_file" "$datahub_token_temp"
+  [ -s "$datahub_token_temp" ] || {
+    echo "DataHub token staging produced an empty file." >&2
+    exit 2
+  }
+  chmod 0600 "$datahub_token_temp"
+  mv -f "$datahub_token_temp" "$datahub_token_path"
+  datahub_token_temp=
+  trap - 0 1 2 15
+fi
 
 random_secret() {
   openssl rand -base64 "$1" | tr -d '\n'
@@ -195,16 +256,14 @@ if ! grep -Eq '^neo4j/[0-9a-f]{64}$' "$secrets_dir/neo4j_auth" 2>/dev/null; then
   # hexadecimal password rather than generic base64 output.
   printf 'neo4j/%s' "$(openssl rand -hex 32)" > "$secrets_dir/neo4j_auth"
 fi
-if [ -n "$datahub_token" ]; then
-  printf '%s' "$datahub_token" > "$secrets_dir/datahub_token"
-elif [ ! -s "$secrets_dir/datahub_token" ]; then
+if [ ! -s "$datahub_token_path" ]; then
   if [ "$mac_development" = true ]; then
     # The bundled local DataHub v1.6.0 topology has authentication disabled,
     # but the application still requires a non-empty provider credential file.
     # Keep the development-only placeholder out of Git and do not reuse it.
     random_secret 32 > "$secrets_dir/datahub_token"
   else
-    echo "datahub token is required when secrets/datahub_token does not exist" >&2
+    echo "DataHub token file preflight invariant failed." >&2
     exit 2
   fi
 fi

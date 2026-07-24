@@ -68,12 +68,17 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Generate ignored local-only configuration
-        run: bash scripts/bootstrap.sh local-ci-placeholder-token
+        run: |
+          install -d -m 700 secrets
+          printf '%s' local-ci-placeholder-token > secrets/datahub_token
+          chmod 600 secrets/datahub_token
+          bash scripts/bootstrap.sh
       - name: Validate shell entrypoints
         run: |
-          sh -n scripts/bootstrap.sh infra/postgres/init/010_roles.sh infra/airflow/entrypoint.sh \
+          sh -n scripts/bootstrap.sh scripts/ensure_connector_network.sh \
+            infra/postgres/init/010_roles.sh infra/airflow/entrypoint.sh \
             infra/apisix/docker-entrypoint.sh frontend/docker-entrypoint.sh
-          bash -n infra/apisix/healthcheck.sh
+          bash -n scripts/compose.sh infra/apisix/healthcheck.sh
       - name: Validate Compose profiles
         run: |
           docker compose -f compose.yaml config --quiet

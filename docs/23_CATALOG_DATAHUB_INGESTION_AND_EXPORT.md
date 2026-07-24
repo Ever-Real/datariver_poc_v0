@@ -98,9 +98,10 @@ references, then enable the flag for both API capability reporting and the
 worker. The local bootstrap/run command is documented in the project README:
 
 ```powershell
-./scripts/bootstrap.ps1 -DataHubToken '<scoped-service-token>' `
+./scripts/bootstrap.ps1 -DataHubTokenFile 'C:\approved-secure-transfer\datahub_token' `
   -DataHubEmbedOrigin 'http://127.0.0.1:9002' -EnableCatalogExportWorker
-docker compose --profile catalog-export -f compose.yaml -f compose.identity.yaml `
+./scripts/compose.ps1 -EnvFile .env --profile catalog-export `
+  -f compose.yaml -f compose.identity.yaml `
   up -d --build catalog-export-worker
 ```
 

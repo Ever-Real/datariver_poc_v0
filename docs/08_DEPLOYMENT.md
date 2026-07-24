@@ -113,8 +113,8 @@ Bootstrap generates ignored, permission-restricted secret files plus `.env` and 
 realm. A DataHub token is supplied when that connector is enabled:
 
 ```bash
-./scripts/bootstrap.sh '<datahub-token>'
-# or: ./scripts/bootstrap.ps1 -DataHubToken '<datahub-token>'
+./scripts/bootstrap.sh --datahub-token-file /approved-secure-transfer/datahub_token
+# PowerShell: ./scripts/bootstrap.ps1 -DataHubTokenFile 'C:\approved-secure-transfer\datahub_token'
 ```
 
 Bootstrap is idempotent for infrastructure credentials: an existing non-empty secret is preserved,
@@ -158,12 +158,13 @@ Bootstrap validates inference settings before enabling the worker, so use two pa
 
 # WSL linux/amd64: configure/probe private INTRANET_OPENAI_COMPATIBLE_CHAT_* and
 # INTRANET_OPENAI_COMPATIBLE_EMBEDDING_* after the first pass.
-./scripts/bootstrap.sh --env-file .env.wsl-preparation --wsl-preparation
+./scripts/bootstrap.sh --env-file .env.wsl-preparation --wsl-preparation \
+  --datahub-token-file /approved-secure-transfer/datahub_token
 ./scripts/bootstrap.sh --env-file .env.wsl-preparation --wsl-preparation \
   --enable-knowledge-source-worker
 
 # Native Windows PowerShell operates on .env.
-./scripts/bootstrap.ps1 -DataHubToken '<scoped-token>'
+./scripts/bootstrap.ps1 -DataHubTokenFile 'C:\approved-secure-transfer\datahub_token'
 ./scripts/bootstrap.ps1 -EnableKnowledgeSourceWorker
 ```
 
@@ -287,16 +288,16 @@ save, test or override either URL, so an unreviewed dashboard remains a new-wind
 Static validation and start:
 
 ```bash
-docker compose -f compose.yaml config --quiet
-docker compose -f compose.yaml up -d --build --wait
+scripts/compose.sh --env-file .env -f compose.yaml config --quiet
+scripts/compose.sh --env-file .env -f compose.yaml up -d --build --wait
 ```
 
 All local overlays can be validated and started as one model:
 
 ```bash
-docker compose -f compose.yaml -f compose.identity.yaml \
+scripts/compose.sh --env-file .env -f compose.yaml -f compose.identity.yaml \
   -f compose.airflow.yaml -f compose.gateway.yaml config --quiet
-docker compose -f compose.yaml -f compose.identity.yaml \
+scripts/compose.sh --env-file .env -f compose.yaml -f compose.identity.yaml \
   -f compose.airflow.yaml -f compose.gateway.yaml up -d --build --wait
 ```
 
@@ -305,8 +306,10 @@ only, generate the Grafana bootstrap password in the ignored `secrets/` director
 the API's OIDC token or DataHub secret:
 
 ```bash
-docker compose -f compose.yaml -f aux-compose.yml --profile observability config --quiet
-docker compose -f compose.yaml -f aux-compose.yml --profile observability up -d --wait
+scripts/compose.sh --env-file .env -f compose.yaml -f aux-compose.yml \
+  --profile observability config --quiet
+scripts/compose.sh --env-file .env -f compose.yaml -f aux-compose.yml \
+  --profile observability up -d --wait
 ```
 
 The overlay provides the approved telemetry backends and an OTLP intake boundary. It does **not**
@@ -419,8 +422,9 @@ has passed. Local bootstrap intentionally does not manufacture a second administ
   exact single line `ENABLED`:
 
   ```bash
-  docker compose --profile retention-archive config --quiet
-  docker compose --profile retention-archive up -d --build retention-scheduler retention-archive-worker
+  scripts/compose.sh --env-file .env --profile retention-archive config --quiet
+  scripts/compose.sh --env-file .env --profile retention-archive up -d --build \
+    retention-scheduler retention-archive-worker
   umask 077
   printf 'ENABLED\n' > runtime/retention-execution.enabled.tmp
   mv runtime/retention-execution.enabled.tmp runtime/retention-execution.enabled

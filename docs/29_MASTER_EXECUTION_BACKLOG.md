@@ -14,9 +14,9 @@ an unsafe bypass, or a historical result from another commit.
 | Ledger field | Value |
 |---|---|
 | Created | 2026-07-23, Asia/Seoul |
-| Branch / Phase 5 entry base / current local implementation | `codex/admin-policy-rbac` / `c618dea` / `HEAD` (this focused Phase 5 change set) |
-| Remote comparison at Phase 5 close | local refs: `origin/main` at `313e59a`; `origin/codex/admin-policy-rbac` through `a683a93`; Phase 5 is not yet published |
-| Current controlled phase | Phase 5 closes at this focused commit; continue immediately with Request group 5 `R5-BE-05` and `R5-DEP-01` |
+| Branch / Phase 6A entry base / current local implementation | `codex/admin-policy-rbac` / `0b31a5c` / `HEAD` (focused `R5-DEP-01` worktree) |
+| Remote comparison at Phase 6A | local refs: `origin/main` at `313e59a`; `origin/codex/admin-policy-rbac` through `a683a93`; Phase 5 and later work are not yet published |
+| Current controlled phase | Phase 6A closes `R5-DEP-01`; continue immediately with atomic Sharing invocation `R5-BE-05` after independent review and commit |
 | Final artifact order | Feature → API → Data/ERD → Screen → `README.md` → `ARCHITECTURE.md` |
 
 ## Status language
@@ -69,6 +69,10 @@ an unsafe bypass, or a historical result from another commit.
 - [x] Phase 5 replaces request-time PDF analysis with a pinned, fenced and recoverable worker path.
   Whole-source, additive and empty-database PostgreSQL gates pass; final Application/UI/portability,
   DB/security and PM traceability findings are `P0=0`, `P1=0`. Target-only gates remain open.
+- [x] Phase 6A locally corrects blank non-Mac token preflight and external connector-network
+  startup ownership. Full source/config regressions pass; actual WSL/PowerShell/amd64 execution
+  remains external. Independent security, portability and PM/traceability review reports
+  `P0=0`, `P1=0` before the focused commit.
 - [ ] Request groups 3 through 6 retain their stated dependency on earlier work. External gates are
   reported explicitly if the required machine or accountable human identities are unavailable.
 
@@ -97,7 +101,7 @@ an unsafe bypass, or a historical result from another commit.
 | R1-06 | Validate Mac development topology | `DONE_LOCAL` / `STALE_EVIDENCE` | Selective Mac evidence exists, but current-HEAD end-to-end feature runs must be repeated after remediation. |
 | R1-07 | Export exact source and architecture-specific images | `DONE_LOCAL` / `STALE_EVIDENCE` | Offline export/checksum/platform scripts exist; artifacts predating `51d7eac` are not current release artifacts. |
 | R1-08 | Import, restore and configure the WSL preparation PC | `EXTERNAL_GATE` | Exact bundle verification, PostgreSQL restore, Keycloak issuer, connectors, external providers, smoke/load/rollback remain open. |
-| R1-09 | Use PRDs, checklists, independent reviews and traceable commits | `PARTIAL` | Controlled artifacts and commits exist; this ledger is the continuation index. `origin/codex/admin-policy-rbac` is published, while PR review and merge remain open. |
+| R1-09 | Use PRDs, checklists, independent reviews and traceable commits | `PARTIAL` | Controlled artifacts and local commits exist; this ledger is the continuation index. The remote branch is published only through `a683a93`; Phase 5 and later local work, PR review and merge remain open. |
 | R1-10 | Produce an architecture-simplification decision record | `PENDING` | For every questioned dependency/process/store, record retain/remove/externalize, rationale, cost, availability and security consequences rather than treating refactoring alone as simplification. |
 
 When a push needs destination-trust or egress approval, request it and record the pending gate. Work
@@ -216,7 +220,7 @@ merged, released, or available to the preparation PC until publication actually 
 | R5-SEC-05 | P1 | Keep object keys, provider locators and internal endpoints out of ordinary API/UI payloads; add negative disclosure tests. | `PARTIAL`; durable Knowledge jobs use opaque snapshot/page evidence and negative API/UI tests. The same review remains open across every other ordinary payload. |
 | R5-SEC-06 | P1 | Keep Keycloak realm roles/display markers non-authoritative; authorization remains exact Workspace membership, policy and RLS. | `PENDING` |
 | R5-SEC-07 | P2 | Measure and further narrow the authorization-to-provider-call window for inference egress. | `PENDING`; Phase 5 reauthorizes before each bounded call and before final persistence, but does not claim zero call-time TOCTOU. |
-| R5-DEP-01 | P0 | Fix blank WSL bootstrap token instructions and raw-Compose external-network failure. | `PENDING` |
+| R5-DEP-01 | P0 | Fix blank WSL bootstrap token instructions and raw-Compose external-network failure. | `DONE_LOCAL` + `EXTERNAL_GATE`; token validation now precedes all persistent mutation, only approved file paths are accepted, Bash/PowerShell wrappers own validated idempotent network provisioning, operational docs use the wrappers, and native/amd64 Compose renders pass. Native PowerShell and target WSL/Docker/provider execution remain external. |
 | R5-DEP-02 | P1 | Add env schema/version migration and Bash/PowerShell profile parity. | `PENDING` |
 | R5-DEP-03 | P1 | Resolve the literal `.env`/Compose `linux/amd64` request against ADR-0034: compose-wide amd64 forcing conflicts with native Mac runtime safety, so runtime stays native and validated while explicit `--platform` is restricted to release builds. Record the accepted substitution and never hardcode `FROM --platform=linux/amd64`. | `CONFLICT` |
 | R5-DEP-04 | P1 | Pin Airflow/APISIX/observability images and dependency hashes; reject unpinned production overrides. | `PENDING` |

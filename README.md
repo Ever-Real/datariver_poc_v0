@@ -226,7 +226,7 @@ install -m 600 /approved-secure-transfer/datahub_token secrets/datahub_token
 별도 보안 반입 파일이 없고 DataHub 화면에서 token 원문만 복사한 경우에는, 위의 두 `install`
 명령 대신 같은 위치에서 아래를 한 줄씩 실행한다. 세 번째 명령을 실행한 뒤 token을 붙여넣고
 Enter를 한 번 더 누른다. 입력 내용은 터미널에 표시되지 않는다. `echo <token>` 또는
-`bootstrap.sh <token>`처럼 token을 명령행에 넣지 않는다.
+`bootstrap.sh`의 positional argument처럼 token을 명령행에 넣지 않는다.
 
 ```bash
 install -d -m 700 secrets
@@ -248,18 +248,22 @@ bootstrap은 이미 존재하는 `secrets/datahub_token`을 보존하므로, 다
   --datahub-base-url https://datahub.example.internal
 
 # 4. 상태 저장소와 로컬 identity만 container로 시작한다.
-docker compose -f compose.yaml -f compose.identity.yaml -f compose.source-host.yaml \
+scripts/compose.sh --env-file .env \
+  -f compose.yaml -f compose.identity.yaml -f compose.source-host.yaml \
   config --quiet
-docker compose -f compose.yaml -f compose.identity.yaml -f compose.source-host.yaml \
+scripts/compose.sh --env-file .env \
+  -f compose.yaml -f compose.identity.yaml -f compose.source-host.yaml \
   up -d --pull never --no-build --wait \
   postgres keycloak
 ./scripts/configure_keycloak_host_dev.sh
-docker compose -f compose.yaml -f compose.identity.yaml -f compose.source-host.yaml \
+scripts/compose.sh --env-file .env \
+  -f compose.yaml -f compose.identity.yaml -f compose.source-host.yaml \
   run --rm migrate
-docker compose --profile object-storage-tools \
+scripts/compose.sh --env-file .env --profile object-storage-tools \
   -f compose.yaml -f compose.identity.yaml -f compose.source-host.yaml \
   run --rm storage-init
-docker compose --profile tools -f compose.yaml -f compose.identity.yaml \
+scripts/compose.sh --env-file .env --profile tools \
+  -f compose.yaml -f compose.identity.yaml \
   -f compose.source-host.yaml run --rm local-bootstrap
 ```
 
@@ -340,7 +344,8 @@ Compose secret mount를 추가한 경우에는 source process를 시작하기 �
 ```bash
 ./scripts/bootstrap.sh --host-development \
   --datahub-base-url https://datahub.example.internal
-docker compose -f compose.yaml -f compose.identity.yaml -f compose.source-host.yaml \
+scripts/compose.sh --env-file .env \
+  -f compose.yaml -f compose.identity.yaml -f compose.source-host.yaml \
   up -d --pull never --no-build --wait keycloak
 ./scripts/configure_keycloak_host_dev.sh
 ```
@@ -356,7 +361,8 @@ TLS 검증을 끄지 않는다. Airflow까지 테스트할 때는 `bootstrap.sh`
 bridge의 `host.docker.internal:38103`을 사용한다.
 
 ```bash
-docker compose -f compose.yaml -f compose.identity.yaml -f compose.source-host.yaml \
+scripts/compose.sh --env-file .env \
+  -f compose.yaml -f compose.identity.yaml -f compose.source-host.yaml \
   -f compose.airflow.yaml up -d --pull never --no-build --wait \
   airflow-api-server airflow-scheduler airflow-dag-processor airflow-triggerer
 ```
@@ -403,11 +409,13 @@ scroll을 실제 동시 변경/만료/재시도 조건에서 검증하고 승인
 
 ```bash
 # local-bootstrap이 먼저 완료되어 Airflow service account의 catalog.sync 권한이 있어야 한다.
-docker compose -f compose.yaml -f compose.identity.yaml -f compose.source-host.yaml \
+scripts/compose.sh --env-file .env \
+  -f compose.yaml -f compose.identity.yaml -f compose.source-host.yaml \
   -f compose.airflow.yaml exec airflow-api-server \
   /bin/bash /opt/datariver/airflow-entrypoint.sh \
   dags unpause datariver_catalog_sync
-docker compose -f compose.yaml -f compose.identity.yaml -f compose.source-host.yaml \
+scripts/compose.sh --env-file .env \
+  -f compose.yaml -f compose.identity.yaml -f compose.source-host.yaml \
   -f compose.airflow.yaml exec airflow-api-server \
   /bin/bash /opt/datariver/airflow-entrypoint.sh \
   dags trigger datariver_catalog_sync
@@ -432,7 +440,8 @@ source-host에서 Airflow를 처음 시작할 때 API origin을 지정하지 않
   --datahub-base-url https://datahub.example.internal
 ./scripts/dev_host.sh stop
 ./scripts/dev_host.sh start
-docker compose -f compose.yaml -f compose.identity.yaml -f compose.source-host.yaml \
+scripts/compose.sh --env-file .env \
+  -f compose.yaml -f compose.identity.yaml -f compose.source-host.yaml \
   -f compose.airflow.yaml up -d --pull never --no-build --force-recreate --wait \
   airflow-api-server airflow-scheduler airflow-dag-processor airflow-triggerer
 ```
@@ -454,7 +463,7 @@ Ollama는 Docker image가 아니라 호스트 프로세스이므로 engine과
 ollama show gemma4:e2b-it-qat
 ollama show bge-m3:latest
 ./scripts/prepare_ollama_mac_dev.sh
-docker compose -f compose.yaml -f compose.graph.yaml \
+scripts/compose.sh --env-file .env -f compose.yaml -f compose.graph.yaml \
   up -d --pull never --no-build --wait neo4j
 ./scripts/dev_host.sh preflight \
   --enable-local-ollama --enable-neo4j
@@ -477,7 +486,7 @@ System Settings startup resolver가 세 profile을 함께 읽으므로 flag 없�
 재시작한다.
 
 ```bash
-docker compose -f compose.yaml -f compose.graph.yaml \
+scripts/compose.sh --env-file .env -f compose.yaml -f compose.graph.yaml \
   up -d --pull never --no-build --wait neo4j
 ./scripts/dev_host.sh stop
 ./scripts/dev_host.sh start
@@ -500,10 +509,9 @@ mkdir -p runtime
 git clone docker_imgs/datahub-v1.6.0-source.bundle runtime/datahub-v1.6.0
 git -C runtime/datahub-v1.6.0 checkout 059a36c0b035a6057de00114ccac0ea9003d6bc2
 
-# Local DataHub quickstart has no external service token; the non-empty value
-# satisfies DataRiver's private file contract and is never sent to a browser.
-./scripts/bootstrap.sh '<local-datahub-placeholder>' \
-  --host-development \
+# Local DataHub quickstart has no external service token. Use the explicit
+# development-only Mac placeholder generated by this profile.
+./scripts/bootstrap.sh --mac-development \
   --datahub-base-url http://host.docker.internal:8080
 ./scripts/start_datahub_mac_dev.sh start-offline
 ```
@@ -527,22 +535,25 @@ The first bootstrap generates a private local DataHub placeholder token, all Dat
 ./scripts/bootstrap.sh --mac-development
 ./scripts/start_datahub_mac_dev.sh start
 
-docker compose --profile observability \
+scripts/compose.sh --env-file .env --profile observability \
   -f compose.yaml -f compose.identity.yaml -f compose.airflow.yaml \
   -f compose.gateway.yaml -f aux-compose.yml -f compose.graph.yaml config --quiet
-docker compose --profile observability \
+scripts/compose.sh --env-file .env --profile observability \
   -f compose.yaml -f compose.identity.yaml -f compose.airflow.yaml \
   -f compose.gateway.yaml -f aux-compose.yml -f compose.graph.yaml \
   up -d --build --wait
-docker compose --profile tools -f compose.yaml -f compose.identity.yaml \
+scripts/compose.sh --env-file .env --profile tools \
+  -f compose.yaml -f compose.identity.yaml \
   -f compose.airflow.yaml -f compose.gateway.yaml -f aux-compose.yml \
   -f compose.graph.yaml run --rm local-bootstrap
 
 # Optional but recommended: deterministic catalog/KG test data.
-docker compose --profile semiconductor-seed -f compose.yaml -f compose.identity.yaml \
+scripts/compose.sh --env-file .env --profile semiconductor-seed \
+  -f compose.yaml -f compose.identity.yaml \
   -f compose.airflow.yaml -f compose.gateway.yaml -f aux-compose.yml \
   -f compose.graph.yaml run --rm semiconductor-seed
-docker compose --profile semiconductor-seed -f compose.yaml -f compose.identity.yaml \
+scripts/compose.sh --env-file .env --profile semiconductor-seed \
+  -f compose.yaml -f compose.identity.yaml \
   -f compose.airflow.yaml -f compose.gateway.yaml -f aux-compose.yml \
   -f compose.graph.yaml run --rm semiconductor-seed \
   /app/.venv/bin/python -m datariver.seed verify
@@ -671,7 +682,8 @@ maps the same canonical references to this checkout's ignored `secrets/` directo
 credential values in the env file. After ACTIVATE, recreate the API and relevant workers:
 
 ```bash
-docker compose -f compose.yaml -f compose.identity.yaml -f compose.airflow.yaml \
+scripts/compose.sh --env-file .env \
+  -f compose.yaml -f compose.identity.yaml -f compose.airflow.yaml \
   -f compose.gateway.yaml -f aux-compose.yml -f compose.graph.yaml \
   up -d --force-recreate api governance-apply-worker upload-worker upload-validation-worker
 ```
@@ -853,30 +865,35 @@ mock domain evidence.
 Linux/macOS/WSL:
 
 ```bash
-./scripts/bootstrap.sh '<datahub-service-token>'
+./scripts/bootstrap.sh --datahub-token-file /approved-secure-transfer/datahub_token
 # Set DATAHUB_BASE_URL in .env to the existing DataHub REST base URL.
 # With the host-development Compose profile, backend containers instead use
 # DATAHUB_CONTAINER_BASE_URL (default: http://datahub-gms:8080) through the
 # external DATAHUB_DOCKER_NETWORK (default: datahub_network).
-docker compose -f compose.yaml -f compose.identity.yaml config --quiet
-docker compose -f compose.yaml -f compose.identity.yaml up -d --build --wait
-docker compose --profile tools -f compose.yaml -f compose.identity.yaml \
+scripts/compose.sh --env-file .env -f compose.yaml -f compose.identity.yaml config --quiet
+scripts/compose.sh --env-file .env -f compose.yaml -f compose.identity.yaml \
+  up -d --build --wait
+scripts/compose.sh --env-file .env --profile tools \
+  -f compose.yaml -f compose.identity.yaml \
   run --rm local-bootstrap
 ```
 
 Bootstrap is safe to rerun: it preserves every existing infrastructure credential, migrates legacy
-Valkey secret filenames to their Redis aliases when needed, updates only a supplied DataHub token,
+Valkey secret filenames to their Redis aliases when needed, updates a token only from an explicitly
+supplied file path,
 and regenerates derived Keycloak configuration. Credential rotation is a separate deliberate
 operation followed by restart and dependency-specific verification.
 
 PowerShell:
 
 ```powershell
-./scripts/bootstrap.ps1 -DataHubToken '<datahub-service-token>'
+./scripts/bootstrap.ps1 -DataHubTokenFile 'C:\approved-secure-transfer\datahub_token'
 # Set DATAHUB_BASE_URL in .env.
-docker compose -f compose.yaml -f compose.identity.yaml config --quiet
-docker compose -f compose.yaml -f compose.identity.yaml up -d --build --wait
-docker compose --profile tools -f compose.yaml -f compose.identity.yaml `
+./scripts/compose.ps1 -EnvFile .env -f compose.yaml -f compose.identity.yaml config --quiet
+./scripts/compose.ps1 -EnvFile .env -f compose.yaml -f compose.identity.yaml `
+  up -d --build --wait
+./scripts/compose.ps1 -EnvFile .env --profile tools `
+  -f compose.yaml -f compose.identity.yaml `
   run --rm local-bootstrap
 ```
 
@@ -886,9 +903,10 @@ invoked by the UI, so DataRiver never depends on a browser DataHub session or fo
 credential. The export worker is an opt-in Compose profile with its own database and S3 credentials.
 
 ```powershell
-./scripts/bootstrap.ps1 -DataHubToken '<datahub-service-token>' `
+./scripts/bootstrap.ps1 -DataHubTokenFile 'C:\approved-secure-transfer\datahub_token' `
   -DataHubEmbedOrigin 'http://127.0.0.1:9002' -EnableCatalogExportWorker
-docker compose --profile catalog-export -f compose.yaml -f compose.identity.yaml `
+./scripts/compose.ps1 -EnvFile .env --profile catalog-export `
+  -f compose.yaml -f compose.identity.yaml `
   up -d --build catalog-export-worker
 ```
 
@@ -944,7 +962,7 @@ OIDC_HARDWARE_WEBAUTHN_ENABLED=false
 After changing either value, recreate the API process so it reloads configuration:
 
 ```bash
-docker compose -f compose.yaml up -d --force-recreate api
+scripts/compose.sh --env-file .env -f compose.yaml up -d --force-recreate api
 ```
 
 Silent access-token renewal keeps one API client and swaps only its request-time token. It no
@@ -969,32 +987,40 @@ The v1 repository still does not own DataHub. The example below reuses a DataHub
 
 Browser-visible auxiliary links are optional and independent of backend provider endpoints. Configure only the links that the deployment wants to expose with `UI_DATAHUB_URL`, `UI_AIRFLOW_URL`, `UI_GRAFANA_URL`, `UI_PROMETHEUS_URL`, and `UI_GRAPH_URL`. The API validates and publishes them through the authenticated capabilities response; it does not invent localhost defaults or return credentials. Production accepts HTTPS links only. Grafana remains a new-window link unless the deployment separately supplies matching exact-origin `GRAFANA_EMBED_BASE_URL`, explicitly enables `GRAFANA_EMBED_ENABLED`, records `GRAFANA_EMBED_EVIDENCE_REFERENCE`, and passes the same origin into the web CSP; the browser cannot enable embedding or provide a frame URL.
 
-For a native Windows checkout, bootstrap from PowerShell. First use includes `-DataHubToken '<scoped-token>'`; later runs preserve the existing token when omitted.
+For a native Windows checkout, bootstrap from PowerShell. First use supplies an approved token file
+path with `-DataHubTokenFile`; later runs preserve the installed token when omitted. A token value
+must never be placed in process arguments.
 The script disables inherited ACLs on the ignored secrets and Keycloak-runtime directories and
 grants full control only to the current Windows identity and `SYSTEM`; do not move generated files
 to a location that replaces those ACLs.
 
 ```powershell
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/bootstrap.ps1 `
+  -DataHubTokenFile 'C:\approved-secure-transfer\datahub_token' `
   -HostDevelopment -DataHubBaseUrl http://host.docker.internal:8080
 ```
 
 For a checkout stored inside WSL, bootstrap and run Docker commands in that WSL distribution so Linux file permissions are preserved:
 
 ```bash
-./scripts/bootstrap.sh --host-development \
+./scripts/bootstrap.sh --datahub-token-file /approved-secure-transfer/datahub_token \
+  --host-development \
   --datahub-base-url http://host.docker.internal:8080
-docker compose -f compose.yaml -f compose.identity.yaml -f compose.host-dev.yaml \
+scripts/compose.sh --env-file .env \
+  -f compose.yaml -f compose.identity.yaml -f compose.host-dev.yaml \
   config --quiet
-docker compose -f compose.yaml -f compose.identity.yaml -f compose.host-dev.yaml \
+scripts/compose.sh --env-file .env \
+  -f compose.yaml -f compose.identity.yaml -f compose.host-dev.yaml \
   up -d --build --wait postgres keycloak
 ./scripts/configure_keycloak_host_dev.sh
-docker compose -f compose.yaml -f compose.identity.yaml -f compose.host-dev.yaml \
+scripts/compose.sh --env-file .env \
+  -f compose.yaml -f compose.identity.yaml -f compose.host-dev.yaml \
   run --rm migrate
-docker compose --profile object-storage-tools \
+scripts/compose.sh --env-file .env --profile object-storage-tools \
   -f compose.yaml -f compose.identity.yaml -f compose.host-dev.yaml \
   run --rm storage-init
-docker compose --profile tools -f compose.yaml -f compose.identity.yaml \
+scripts/compose.sh --env-file .env --profile tools \
+  -f compose.yaml -f compose.identity.yaml \
   -f compose.host-dev.yaml run --rm local-bootstrap
 ```
 
@@ -1028,7 +1054,8 @@ services with the dedicated overlay after the gateway is ready. This keeps ordin
 validation independent of Airflow while routing DAG calls through APISIX:
 
 ```bash
-docker compose -f compose.yaml -f compose.identity.yaml -f compose.airflow.yaml \
+scripts/compose.sh --env-file .env \
+  -f compose.yaml -f compose.identity.yaml -f compose.airflow.yaml \
   -f compose.host-dev.yaml -f compose.airflow.host-dev.yaml \
   up -d --force-recreate airflow-api-server airflow-scheduler \
   airflow-dag-processor airflow-triggerer
@@ -1061,9 +1088,11 @@ pooler must pass the live two-workspace connection-reuse probe before adoption.
 Apply and verify the optional synthetic semiconductor reference data after migration and local identity bootstrap:
 
 ```bash
-docker compose --profile semiconductor-seed -f compose.yaml -f compose.identity.yaml \
+scripts/compose.sh --env-file .env --profile semiconductor-seed \
+  -f compose.yaml -f compose.identity.yaml \
   -f compose.host-dev.yaml run --rm semiconductor-seed
-docker compose --profile semiconductor-seed -f compose.yaml -f compose.identity.yaml \
+scripts/compose.sh --env-file .env --profile semiconductor-seed \
+  -f compose.yaml -f compose.identity.yaml \
   -f compose.host-dev.yaml run --rm semiconductor-seed \
   /app/.venv/bin/python -m datariver.seed verify
 ```
@@ -1072,30 +1101,34 @@ docker compose --profile semiconductor-seed -f compose.yaml -f compose.identity.
 
 ```bash
 # Core with external OIDC/DataHub
-docker compose up -d --build --wait
+scripts/compose.sh --env-file .env up -d --build --wait
 
 # Local identity
-docker compose -f compose.yaml -f compose.identity.yaml up -d --build --wait
+scripts/compose.sh --env-file .env -f compose.yaml -f compose.identity.yaml \
+  up -d --build --wait
 
 # Scheduled DataHub projection sync and probes (DAGs paused initially)
-docker compose -f compose.yaml -f compose.airflow.yaml up -d --build --wait
+scripts/compose.sh --env-file .env -f compose.yaml -f compose.airflow.yaml \
+  up -d --build --wait
 
 # Local API gateway on http://localhost:9080
-docker compose -f compose.yaml -f compose.gateway.yaml up -d --build --wait
+scripts/compose.sh --env-file .env -f compose.yaml -f compose.gateway.yaml \
+  up -d --build --wait
 
 # Optional local-only observability UI and OTLP backend on Grafana :3300,
 # Prometheus :9090 and Alertmanager :9093. This is still Single-node Pilot.
-docker compose -f compose.yaml -f aux-compose.yml --profile observability up -d --wait
+scripts/compose.sh --env-file .env -f compose.yaml -f aux-compose.yml \
+  --profile observability up -d --wait
 
 # Archive-only Retention workers. Keep disabled until dedicated DB/S3 secrets, workspace allowlist,
 # Object Lock negative conformance and restore evidence have been accepted.
-docker compose --profile retention-archive config --quiet
-docker compose --profile retention-archive up -d --build \
+scripts/compose.sh --env-file .env --profile retention-archive config --quiet
+scripts/compose.sh --env-file .env --profile retention-archive up -d --build \
   retention-scheduler retention-archive-worker
 # After acceptance only: atomically replace runtime/retention-execution.enabled with exact ENABLED.
 
 # Entire local integration stack; all overlays compose together
-docker compose -f compose.yaml -f compose.identity.yaml \
+scripts/compose.sh --env-file .env -f compose.yaml -f compose.identity.yaml \
   -f compose.airflow.yaml -f compose.gateway.yaml up -d --build --wait
 ```
 
@@ -1120,12 +1153,13 @@ provider pair in that environment, then opt in on a second bootstrap pass:
 
 # Linux/WSL amd64: first create the preparation profile, then configure one private
 # INTRANET_OPENAI_COMPATIBLE_CHAT_* + EMBEDDING_* pair and its mounted key files.
-./scripts/bootstrap.sh --env-file .env.wsl-preparation --wsl-preparation
+./scripts/bootstrap.sh --env-file .env.wsl-preparation --wsl-preparation \
+  --datahub-token-file /approved-secure-transfer/datahub_token
 ./scripts/bootstrap.sh --env-file .env.wsl-preparation --wsl-preparation \
   --enable-knowledge-source-worker
 
 # Native Windows PowerShell uses .env and does not provide the WSL preparation preset.
-./scripts/bootstrap.ps1 -DataHubToken '<scoped-token>'
+./scripts/bootstrap.ps1 -DataHubTokenFile 'C:\approved-secure-transfer\datahub_token'
 # Configure/probe Chat + Embedding in .env, then:
 ./scripts/bootstrap.ps1 -EnableKnowledgeSourceWorker
 ```
@@ -1139,27 +1173,32 @@ revision `0054` removes prior direct schema/table/function privileges and reappl
 allowlist. With a custom environment file, the checked-in helper reads `DATARIVER_ENV_FILE`:
 
 ```bash
-scripts/compose.sh --env-file .env.mac-development -f compose.yaml up -d --wait postgres
-DATARIVER_ENV_FILE=.env.mac-development ./scripts/reconcile-postgres-roles.sh
-scripts/compose.sh --env-file .env.mac-development -f compose.yaml run --rm migrate
-DATARIVER_ENV_FILE=.env.mac-development ./scripts/reconcile-postgres-roles.sh
-scripts/compose.sh --env-file .env.mac-development -f compose.yaml \
+# Choose exactly one for this shell:
+DATARIVER_ENV_FILE=.env.mac-development  # Mac
+# DATARIVER_ENV_FILE=.env.wsl-preparation  # Linux/WSL
+export DATARIVER_ENV_FILE
+scripts/compose.sh --env-file "$DATARIVER_ENV_FILE" -f compose.yaml up -d --wait postgres
+./scripts/reconcile-postgres-roles.sh
+scripts/compose.sh --env-file "$DATARIVER_ENV_FILE" -f compose.yaml run --rm migrate
+./scripts/reconcile-postgres-roles.sh
+scripts/compose.sh --env-file "$DATARIVER_ENV_FILE" -f compose.yaml \
   --profile knowledge-source up -d --wait api knowledge-source-worker
-scripts/compose.sh --env-file .env.mac-development -f compose.yaml run --rm migrate \
+scripts/compose.sh --env-file "$DATARIVER_ENV_FILE" -f compose.yaml run --rm migrate \
   /app/.venv/bin/alembic -c backend/alembic.ini current
 # Required output: 0054 (head)
 ```
 
-The local MinIO reference uses the configurable `S3_BUCKET_ACCEPTED`. Create the buckets with the
-general storage initializer, then create/attach the generated worker identity and its exact
-`GetBucketLocation` + accepted-bucket `GetObject` policy:
+When the selected Mac or WSL profile intentionally uses the optional local MinIO reference, it uses
+the configurable `S3_BUCKET_ACCEPTED`. Create the buckets with the general storage initializer,
+then create/attach the generated worker identity and its exact `GetBucketLocation` +
+accepted-bucket `GetObject` policy. Skip these commands for external S3/MinIO:
 
 ```bash
-scripts/compose.sh --env-file .env.mac-development \
+scripts/compose.sh --env-file "$DATARIVER_ENV_FILE" \
   -f compose.local-connectors.yaml --profile object-storage up -d --wait minio
-scripts/compose.sh --env-file .env.mac-development \
+scripts/compose.sh --env-file "$DATARIVER_ENV_FILE" \
   -f compose.yaml --profile object-storage-tools run --rm storage-init
-scripts/compose.sh --env-file .env.mac-development \
+scripts/compose.sh --env-file "$DATARIVER_ENV_FILE" \
   -f compose.local-connectors.yaml --profile object-storage \
   run --rm minio-knowledge-identity-init
 ```
@@ -1201,7 +1240,7 @@ If another local stack owns a default port, host bindings can be overridden for 
 
 ```bash
 WEB_PORT=18080 KEYCLOAK_PORT=18081 APISIX_PORT=19080 \
-  docker compose -f compose.yaml -f compose.identity.yaml \
+  scripts/compose.sh --env-file .env -f compose.yaml -f compose.identity.yaml \
   -f compose.airflow.yaml -f compose.gateway.yaml up -d --build --wait
 ```
 
@@ -1258,8 +1297,8 @@ docker compose -f compose.yaml build --pull
 않는다.
 
 ```bash
-docker compose -f compose.yaml run --rm migrate
-docker compose -f compose.yaml run --rm migrate \
+scripts/compose.sh --env-file .env -f compose.yaml run --rm migrate
+scripts/compose.sh --env-file .env -f compose.yaml run --rm migrate \
   /app/.venv/bin/alembic -c backend/alembic.ini current
 ```
 
@@ -1272,9 +1311,9 @@ docker compose -f compose.yaml run --rm migrate \
 요구하므로 이미 최신인 DB에서는 이 단계가 안전하게 재확인된다.
 
 ```bash
-docker compose -f compose.yaml up -d --wait
-docker compose -f compose.yaml ps
-docker compose -f compose.yaml logs --since=10m \
+scripts/compose.sh --env-file .env -f compose.yaml up -d --wait
+scripts/compose.sh --env-file .env -f compose.yaml ps
+scripts/compose.sh --env-file .env -f compose.yaml logs --since=10m \
   api outbox-relay upload-worker upload-validation-worker governance-apply-worker
 ```
 
@@ -1363,10 +1402,10 @@ OpenAPI is available at `http://localhost:38101/api/docs` in source-host develop
 The seed is deterministic synthetic reference data and never installs by default. It contains 12 catalog assets and a 257-node/279-edge semiconductor value-chain release, including 168 monthly facility-capacity and product-demand observations with assertion-level provenance. Apply records separate maker/checker and authorized-publisher evidence, 536 immutable changeset operations, a canonical PostgreSQL read-back receipt and the published lineage before setting the active release. Verify rechecks the active release, role permissions, the exact operation ledger and a canonical row reconstruction hash; seed data is not a governance bypass.
 
 ```bash
-docker compose --profile semiconductor-seed run --rm semiconductor-seed
-docker compose --profile semiconductor-seed run --rm semiconductor-seed \
+scripts/compose.sh --env-file .env --profile semiconductor-seed run --rm semiconductor-seed
+scripts/compose.sh --env-file .env --profile semiconductor-seed run --rm semiconductor-seed \
   /app/.venv/bin/python -m datariver.seed verify
-docker compose --profile semiconductor-seed run --rm semiconductor-seed \
+scripts/compose.sh --env-file .env --profile semiconductor-seed run --rm semiconductor-seed \
   /app/.venv/bin/python -m datariver.seed remove --confirm-synthetic-data
 ```
 
@@ -1390,16 +1429,19 @@ the service entrypoint automatically, so retain the wrapper below: it loads the 
 and API secrets from their mounted files without exposing them in the command or shell history.
 
 ```bash
-docker compose -f compose.yaml -f compose.identity.yaml -f compose.airflow.yaml \
+scripts/compose.sh --env-file .env \
+  -f compose.yaml -f compose.identity.yaml -f compose.airflow.yaml \
   -f compose.gateway.yaml -f aux-compose.yml -f compose.graph.yaml \
   exec airflow-api-server /bin/bash /opt/datariver/airflow-entrypoint.sh \
   dags unpause datariver_semiconductor_seed_ingestion
-docker compose -f compose.yaml -f compose.identity.yaml -f compose.airflow.yaml \
+scripts/compose.sh --env-file .env \
+  -f compose.yaml -f compose.identity.yaml -f compose.airflow.yaml \
   -f compose.gateway.yaml -f aux-compose.yml -f compose.graph.yaml \
   exec airflow-api-server /bin/bash /opt/datariver/airflow-entrypoint.sh \
   dags trigger datariver_semiconductor_seed_ingestion
 # After the run is SUCCESS, return the manual-only DAG to its default pause state.
-docker compose -f compose.yaml -f compose.identity.yaml -f compose.airflow.yaml \
+scripts/compose.sh --env-file .env \
+  -f compose.yaml -f compose.identity.yaml -f compose.airflow.yaml \
   -f compose.gateway.yaml -f aux-compose.yml -f compose.graph.yaml \
   exec airflow-api-server /bin/bash /opt/datariver/airflow-entrypoint.sh \
   dags pause datariver_semiconductor_seed_ingestion

@@ -20,12 +20,12 @@ Keycloak and Airflow credentials, migrates legacy Valkey secret filenames when n
 regenerates only derived realm files. Do not use bootstrap as a credential-rotation tool.
 
 ```bash
-./scripts/bootstrap.sh '<datahub-token>'
-docker compose -f compose.yaml -f compose.identity.yaml \
+./scripts/bootstrap.sh --datahub-token-file /approved-secure-transfer/datahub_token
+scripts/compose.sh --env-file .env -f compose.yaml -f compose.identity.yaml \
   -f compose.airflow.yaml -f compose.gateway.yaml config --quiet
-docker compose -f compose.yaml -f compose.identity.yaml \
+scripts/compose.sh --env-file .env -f compose.yaml -f compose.identity.yaml \
   -f compose.airflow.yaml -f compose.gateway.yaml up -d --build --wait
-docker compose -f compose.yaml -f compose.identity.yaml \
+scripts/compose.sh --env-file .env -f compose.yaml -f compose.identity.yaml \
   -f compose.airflow.yaml -f compose.gateway.yaml ps -a
 ```
 
@@ -145,7 +145,8 @@ configure/probe both private OpenAI-compatible Chat and Embedding contracts befo
   --enable-knowledge-source-worker
 
 # WSL linux/amd64
-./scripts/bootstrap.sh --env-file .env.wsl-preparation --wsl-preparation
+./scripts/bootstrap.sh --env-file .env.wsl-preparation --wsl-preparation \
+  --datahub-token-file /approved-secure-transfer/datahub_token
 ./scripts/bootstrap.sh --env-file .env.wsl-preparation --wsl-preparation \
   --enable-knowledge-source-worker
 ```
@@ -153,7 +154,9 @@ configure/probe both private OpenAI-compatible Chat and Embedding contracts befo
 The second command in each pair intentionally fails until one complete Chat + Embedding pair is
 present. WSL/private model reachability, model identity/output conformance and credential handling
 are `EXTERNAL_GATE`; do not enable the flag merely to bypass the check. Native Windows PowerShell
-uses `.env`: run `./scripts/bootstrap.ps1 -DataHubToken '<scoped-token>'`, configure/probe the
+uses `.env`: run
+`./scripts/bootstrap.ps1 -DataHubTokenFile 'C:\approved-secure-transfer\datahub_token'`,
+configure/probe the
 provider pair, then run `./scripts/bootstrap.ps1 -EnableKnowledgeSourceWorker`.
 
 On a blank PostgreSQL volume, the init hook creates `datariver_knowledge`. On an existing volume the
@@ -161,11 +164,15 @@ role must be an unprivileged NOBYPASSRLS LOGIN and must not be a member of any r
 adopt with `SET ROLE` before revision `0054`:
 
 ```bash
-scripts/compose.sh --env-file .env.wsl-preparation -f compose.yaml up -d --wait postgres
-DATARIVER_ENV_FILE=.env.wsl-preparation ./scripts/reconcile-postgres-roles.sh
-scripts/compose.sh --env-file .env.wsl-preparation -f compose.yaml run --rm migrate
-DATARIVER_ENV_FILE=.env.wsl-preparation ./scripts/reconcile-postgres-roles.sh
-scripts/compose.sh --env-file .env.wsl-preparation -f compose.yaml run --rm migrate \
+# Choose exactly one and keep it for every following Bash command in this procedure:
+DATARIVER_ENV_FILE=.env.mac-development  # Mac
+# DATARIVER_ENV_FILE=.env.wsl-preparation  # Linux/WSL
+export DATARIVER_ENV_FILE
+scripts/compose.sh --env-file "$DATARIVER_ENV_FILE" -f compose.yaml up -d --wait postgres
+./scripts/reconcile-postgres-roles.sh
+scripts/compose.sh --env-file "$DATARIVER_ENV_FILE" -f compose.yaml run --rm migrate
+./scripts/reconcile-postgres-roles.sh
+scripts/compose.sh --env-file "$DATARIVER_ENV_FILE" -f compose.yaml run --rm migrate \
   /app/.venv/bin/alembic -c backend/alembic.ini current
 # Require: 0054 (head)
 ```
@@ -180,14 +187,15 @@ Revision `0054` refuses downgrade when the durable source-analysis ledger contai
 an evidence-preservation gate: preserve backup/logs and use a reviewed forward fix; do not delete
 jobs to force downgrade.
 
-The local MinIO reference needs both general bucket initialization and the separate Knowledge user:
+When the selected Mac or WSL profile intentionally uses the optional local MinIO reference, choose
+that profile's environment file once. Skip this block for external S3/MinIO:
 
 ```bash
-scripts/compose.sh --env-file .env.mac-development \
+scripts/compose.sh --env-file "$DATARIVER_ENV_FILE" \
   -f compose.local-connectors.yaml --profile object-storage up -d --wait minio
-scripts/compose.sh --env-file .env.mac-development \
+scripts/compose.sh --env-file "$DATARIVER_ENV_FILE" \
   -f compose.yaml --profile object-storage-tools run --rm storage-init
-scripts/compose.sh --env-file .env.mac-development \
+scripts/compose.sh --env-file "$DATARIVER_ENV_FILE" \
   -f compose.local-connectors.yaml --profile object-storage \
   run --rm minio-knowledge-identity-init
 ```
@@ -201,9 +209,9 @@ anonymous, write, delete and other-bucket denials. External target IAM remains `
 After database and S3 preparation, start and observe only the selected profile:
 
 ```bash
-scripts/compose.sh --env-file .env.wsl-preparation -f compose.yaml \
+scripts/compose.sh --env-file "$DATARIVER_ENV_FILE" -f compose.yaml \
   --profile knowledge-source up -d --wait api knowledge-source-worker
-scripts/compose.sh --env-file .env.wsl-preparation -f compose.yaml \
+scripts/compose.sh --env-file "$DATARIVER_ENV_FILE" -f compose.yaml \
   logs --since=10m api knowledge-source-worker
 ```
 

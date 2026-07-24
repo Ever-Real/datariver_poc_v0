@@ -14,6 +14,21 @@ addenda and `docs/29_MASTER_EXECUTION_BACKLOG.md`.
 
 P0–P3 foundation addendum, updated 2026-07-16: current source checks additionally include the stable DataHub v1.6.0 release contract and typed OIDC assurance. Hardware WebAuthn requires an exact approved ACR+AMR combination and `auth_time`; OTP, generic MFA and refreshed-token `iat` cannot satisfy high-risk authorization. Browser remediation is bounded to typed authentication actions, rejects unsafe return locations, and never automatically replays a denied mutation after an authentication redirect. Compatibility migrations and the current hybrid runtime have separate live evidence below.
 
+## Phase 6A WSL bootstrap/network addendum — 2026-07-24
+
+This addendum accepts the local source-controlled correction for `R5-DEP-01`. It does not accept
+the preparation PC, native PowerShell, target Docker Desktop, external providers or an amd64
+runtime.
+
+| Gate | Result | Current executed evidence |
+|---|---|---|
+| Fail-fast bootstrap | PASS (local source/process) | A blank WSL-profile invocation without a token exits `2` before creating an environment, secret or runtime path. An existing token is byte-preserved and a token supplied through an approved file path is never printed; positional token values are rejected before mutation. |
+| Connector-network owner | PASS (local contract) | Bash and PowerShell wrappers validate one named external network and use inspect → conditional create → Compose for `up`, `run`, `create` and `start`. Core and optional connector models both declare it external. Deterministic fake-Docker tests prove order, repeat reuse and invalid-name rejection without changing the local daemon. |
+| Quality regression | PASS | Focused `15` tests; Ruff format over `377` files, Ruff lint, strict mypy over `370` source files, static verification and backend `1,380 passed / 84 skipped`; frontend TypeScript, zero-warning ESLint, `45 files / 243 tests` and production build. |
+| Architecture configuration | PASS (render only) | Native and `DOCKER_DEFAULT_PLATFORM=linux/amd64` base, local-connector and full-overlay Compose models pass `config --quiet`. This proves configuration resolution, not amd64 runtime behavior. |
+| Independent review | PASS (local source) | Security and operations/portability re-reviews report `P0=0`, `P1=0` after positional-secret, symlink/reparse, same-file, atomic staging, empty/option-like network, raw-command and profile/port documentation findings were corrected. PM traceability confirms normalized IDs and no raw legacy prompt/attachment content in the change set. |
+| External acceptance | OPEN | `pwsh` is absent locally. Native Windows parsing/ACL behavior, clean target WSL bootstrap, target Docker network/container attachment, amd64 image/import/migration and external Redis/S3/DataHub/Airflow/Neo4j/LLM evidence remain `EXTERNAL_GATE`. |
+
 ## Phase 5 durable Knowledge source-job addendum — 2026-07-24
 
 This addendum accepts the local pinned/fenced PDF-to-typed-DRAFT implementation at revision `0054`.
