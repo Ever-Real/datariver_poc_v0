@@ -2,6 +2,31 @@
 
 Generated OpenAPI at `/api/v1/openapi.json` is authoritative for implemented payload schemas. This document defines semantics, authorization and planned compatibility without implying that backlog endpoints already exist.
 
+## Current-source API map
+
+This summary is the reconstruction entry point; the detailed inventory below and generated OpenAPI
+remain authoritative. All protected routes require verified OIDC identity and, except `/auth/me`,
+an authorized `X-Workspace-Id`. PostgreSQL transaction context, ABAC and forced RLS remain
+authoritative even when APISIX is present.
+
+| Area | Route families | Cross-cutting contract |
+|---|---|---|
+| Identity/health | `/auth/me`, `/health/*`, `/ready/*`, `/capabilities` | profile discovery is private/no-store; health never discloses secrets |
+| Catalog | `/catalog/assets*`, `/catalog/tree*`, `/catalog/facets*`, `/catalog/exports*`, `/catalog/sync*` | cursor-bounded, authorization before enrichment, opaque provider state |
+| Registration | `/uploads*`, `/registration*` | typed profiles, idempotent intent, receipt/hash/version fencing, no object key in ordinary responses |
+| Governance | `/change-requests*` | optimistic `If-Match`, declared idempotency, actor separation, immutable transition/approval evidence |
+| Knowledge/Chat | `/knowledge*`, `/chat*` | governed release/source binding, classification/retention/provider checks, bounded evidence |
+| Sharing | `/api-products*` | published version + subject/issuer/client grant, atomic quota/result ledger and exact replay |
+| Administration | `/admin*` | eligible human administrator, operation-specific assurance, bounded keyset pages and typed commands |
+| Retention | `/admin/retention*`, Legal Hold and erasure-review families | maker-checker evidence; approval does not imply physical deletion |
+
+Common failure semantics are sanitized `application/problem+json`; `401` means invalid identity,
+`403` audited denial, `404` may conceal existence, `409` concurrency/idempotency conflict, `422`
+semantic rejection, `429` quota and `502/503` classified dependency failure. Mutations are retried
+only when their route declares durable idempotency; reads/results are discarded after Workspace or
+in-memory security-epoch drift. API/MCP surfaces not listed in the implemented inventory are backlog,
+not implied capabilities. Runtime API/OIDC Origin validation remains deferred as `R5-FE-04` P2.
+
 ## Conventions
 
 - Base path `/api/v1`; JSON UTF-8; RFC 3339 UTC timestamps.

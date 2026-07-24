@@ -16,7 +16,7 @@ an unsafe bypass, or a historical result from another commit.
 | Created | 2026-07-23, Asia/Seoul |
 | Branch / Phase 6E entry base / current local implementation | `codex/admin-policy-rbac` / `dba1186` / `HEAD` (focused `R5-FE-03` worktree) |
 | Remote comparison at Phase 6A | local refs: `origin/main` at `313e59a`; `origin/codex/admin-policy-rbac` through `a683a93`; Phase 5 and later work are not yet published |
-| Current controlled phase | Phase 6E `R5-FE-03` is locally closed after native arm64 runtime, whole-source and independent-review gates; Phase 6F `R5-FE-04` is next |
+| Current controlled phase | Owner-directed Phase 8 documentation. Phase 6F/6G and Phase 7 implementation/testing are skipped; their uncommitted work was rolled back. |
 | Final artifact order | Feature → API → Data/ERD → Screen → `README.md` → `ARCHITECTURE.md` |
 
 ## Status language
@@ -283,7 +283,7 @@ merged, released, or available to the preparation PC until publication actually 
 | R5-FE-01 | P0 | Bind global search requests/results to Workspace epoch and abort/discard cross-workspace responses. | `DONE_LOCAL`; Top Navigation keys the search component by Workspace and a late-response regression proves purge/discard. |
 | R5-FE-02 | P1 | Bind Admin context/auth hydration and renewal to subject/session epoch. | `DONE_LOCAL` + `EXTERNAL_GATE`; latest-only subject-matched hydration, opaque epoch request/retry fencing, Admin revision reload/teardown and private no-store discovery pass current source. Real IdP/browser/WSL journeys remain external. |
 | R5-FE-03 | P1 | Preserve CSP/security headers in every Nginx location. | `DONE_LOCAL` + `EXTERNAL_GATE`; exact inheritance/API normalization, embedded-source native arm64 runtime, full regression and independent audits pass. Target edge/browser/WSL evidence remains external. |
-| R5-FE-04 | P1 | Validate runtime API/OIDC origins before any Bearer-bearing request. | `PENDING` |
+| R5-FE-04 | P2 | Validate runtime API/OIDC origins before any Bearer-bearing request. | `DEFERRED_BY_OWNER`; current runtime configuration selection validates neither an API same-origin `/api/v1` boundary nor an exact OIDC redirect origin before constructing Bearer/OIDC flows. A later package should fail closed on malformed/non-string/cross-origin API values, require a fixed same-origin callback plus approved HTTPS IdP (loopback-only HTTP development exception), prevent redirect following on Bearer requests, provide a bounded configuration-error UI, align the IdP origin with CSP, and add negative token-exfiltration/callback tests. No Phase 6F code remains in the worktree. |
 | R5-FE-05 | P1 | Bound Chat history/DOM and lineage concurrency/nodes; abort unmounted work. | `PENDING` |
 | R5-FE-06 | P1 | Render the actual selected Chat provider/model/external-use policy instead of a hard-coded local-only assurance. | `PENDING` |
 | R5-FE-07 | P1 | Replace internal object/source locators with authorized opaque evidence references in browser responses and views. | `PENDING` |
@@ -311,9 +311,9 @@ merged, released, or available to the preparation PC until publication actually 
 
 ## Request group 6 — final controlled artifacts
 
-These files start only after every preceding implementation/remediation package and the required
-target WSL acceptance complete. If target access is unavailable, only an explicitly user-approved
-`target-gated draft` may be written; it cannot be accepted as final until target evidence is merged.
+The owner explicitly directed documentation to start after Phase 6E and deferred the remaining
+hardening/testing packages. Until target WSL acceptance is supplied, these deliverables are
+`target-gated` current-source summaries rather than production acceptance.
 Existing `docs/04_FEATURE_SPEC.md`, `docs/05_API_SPEC.md`, and `docs/06_DATA_MODEL.md` are useful
 baselines, but they are not accepted as the requested final deliverables until regenerated against
 the final source and audited.

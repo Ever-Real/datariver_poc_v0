@@ -1,5 +1,29 @@
 # Feature specification
 
+## Current-source implementation summary
+
+This is a `target-gated` specification of the source after Phase 6E, not production acceptance.
+PostgreSQL owns business truth; DataHub, object storage, Redis, Neo4j, Airflow and model providers
+are fallible external capabilities. Every protected workflow is Workspace-scoped and fails closed
+when identity, policy, source evidence or a required connector is unavailable.
+
+| Capability | Primary actors | Current source contract | Canonical owner / unavailable behavior |
+|---|---|---|---|
+| Identity and Workspace | OIDC user, service subject | OIDC profile hydration, mandatory Workspace, in-memory token/session epoch, no application password | OIDC + PostgreSQL IAM; deny or explicit sign-in state |
+| Catalog | authorized user, administrator review scope | bounded search/tree/detail/lineage, match evidence, cursor paging, authorized export jobs | PostgreSQL projection + DataHub detail; stale/degraded reads are explicit |
+| Registration | Administrator, Data Steward, service worker | typed Manual and Bulk intake, private object receipts, bounded parsing, governed CR creation | PostgreSQL intent/evidence; S3/DataHub/Airflow failure never reports applied |
+| Change management | requester, independent approver, worker | versioned CR rounds, maker-checker approvals, TEST evidence, queued application and read-back | PostgreSQL aggregate; provider acknowledgement alone is not completion |
+| Policy and retention | security administrator, independent checker, scheduler/archive roles | reusable Role rules, No/Partial/Full access, retention/hold/erasure approval evidence | PostgreSQL policy/evidence; no direct destructive completion claim |
+| Knowledge and Chat | steward, reviewer, authorized user | governed graph publication, bounded source jobs, grounded Chat/GraphRAG capability gates | PostgreSQL release/audit; Neo4j/LLM are optional projections/providers |
+| API sharing | product manager, service consumer | versioned product contracts, subject-bound grants, atomic quota/result/replay evidence | PostgreSQL; revoked/expired/drifted grants deny first call and replay |
+| Administration and operations | security administrator, operator | bounded membership/System/configuration views and typed commands; connector status is redacted | PostgreSQL + deployment config; secrets and provider coordinates stay server-side |
+
+Global UX rules are loading/empty/denied/degraded/error states, server paging rather than browser
+accumulation, explicit confirmation for high-risk actions, bounded polling, and no fabricated
+success. Remaining target gates include native WSL `linux/amd64`, real multi-human OIDC/WebAuthn,
+external provider read-back, target load/recovery and physical retention evidence. Runtime API/OIDC
+Origin validation is deliberately deferred as `R5-FE-04` P2 in the master backlog.
+
 ## Common interaction contract
 
 All screens expose loading, empty, success, stale/degraded, validation, unauthorized, forbidden, conflict, rate-limited, and retryable-failure states. Destructive or publish actions require an explicit summary confirmation. Long tasks return a job link and update through bounded polling or authorized SSE. UI state never invents successful backend state.

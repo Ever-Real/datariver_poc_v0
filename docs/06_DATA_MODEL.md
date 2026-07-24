@@ -2,6 +2,57 @@
 
 The SQLAlchemy metadata and generated `backend/alembic/versions/0001_initial_schema.py` are authoritative for implemented DDL. This document separates implemented tables from target/backlog tables.
 
+## Current-source schema map and core ERD
+
+This is a compact reconstruction map, not a substitute for the column/constraint inventory below.
+All protected aggregates carry `workspace_id`; cross-Workspace parent/child references use composite
+foreign keys and forced RLS. External provider IDs, object receipts and graph projections are
+evidence or projections, never substitutes for PostgreSQL business truth.
+
+| Schema | Ownership |
+|---|---|
+| `platform`, `iam`, `authz` | Workspace, System, identity, membership, Role/Policy Book and authorization evidence |
+| `catalog` | bounded DataHub-derived discovery projection, vocabulary, sync watermark and export intent |
+| `governance` | Change Request, approval/transition, Manual registration and attachment evidence |
+| `integration` | durable jobs, outbox/inbox, idempotency, object manifests and typed Bulk preparation |
+| `retention` | policy, class rule, Legal Hold, erasure review and archive-only execution evidence |
+| `knowledge`, `assistant` | canonical graph releases/source jobs and retention-bound Chat/citation audits |
+| `sharing` | API product versions, subject-bound grants and atomic invocation/quota/replay evidence |
+
+```mermaid
+erDiagram
+    WORKSPACE ||--o{ MEMBERSHIP : scopes
+    SUBJECT ||--o{ MEMBERSHIP : holds
+    WORKSPACE ||--o{ ACCESS_ROLE : defines
+    ACCESS_ROLE ||--o{ ROLE_DATA_RULE : constrains
+    MEMBERSHIP ||--o| ROLE_ASSIGNMENT : materializes
+    WORKSPACE ||--o{ CATALOG_ASSET : projects
+    WORKSPACE ||--o{ CHANGE_REQUEST : owns
+    CHANGE_REQUEST ||--|{ CHANGE_ITEM : contains
+    CHANGE_REQUEST ||--o{ APPROVAL : records
+    CHANGE_REQUEST ||--o{ STATE_TRANSITION : records
+    OBJECT_MANIFEST ||--o| PREPARATION_JOB : prepares
+    PREPARATION_JOB ||--o| PREPARATION_RECEIPT : proves
+    PREPARATION_RECEIPT ||--o{ REGISTRATION_CANDIDATE : yields
+    WORKSPACE ||--o{ RETENTION_POLICY : governs
+    RETENTION_POLICY ||--|{ RETENTION_CLASS_RULE : contains
+    ERASURE_REQUEST ||--o| RETENTION_EXECUTION_JOB : authorizes_archive_only
+    GRAPH ||--o{ CHANGESET : evolves
+    GRAPH ||--o{ GRAPH_RELEASE : publishes
+    GRAPH_RELEASE ||--o{ API_PRODUCT_VERSION : exposes
+    API_PRODUCT ||--o{ API_PRODUCT_VERSION : versions
+    API_PRODUCT_VERSION ||--o{ CONSUMER_GRANT : grants
+    CONSUMER_GRANT ||--o{ API_INVOCATION : meters
+    CHAT_SESSION ||--o{ CHAT_MESSAGE : contains
+    CHAT_SESSION ||--o{ ASSISTANT_RUN : executes
+    ASSISTANT_RUN ||--o{ EVIDENCE_CITATION : grounds
+```
+
+The diagram deliberately shows aggregate ownership rather than every compatibility/evidence table.
+The detailed tables below, SQLAlchemy metadata and deterministic Alembic schema define exact names,
+types, PK/FK/UQ/CHECK/index/RLS rules. Backlog tables are explicitly separated and require a new
+migration before use.
+
 ## Standards
 
 - Application-generated UUIDs (normally UUIDv7) and UTC `TIMESTAMPTZ`.

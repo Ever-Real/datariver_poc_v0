@@ -6,9 +6,9 @@
 | 01 | [PRD](01_PRD.md) | users, outcomes, requirements, acceptance | Baseline |
 | 02 | [Constraints](02_CONSTRAINTS.md) | legal, security, platform, operational limits | Baseline |
 | 03 | [Architecture](03_ARCHITECTURE.md) | contexts, ownership, runtime and data flows | Baseline |
-| 04 | [Feature specification](04_FEATURE_SPEC.md) | behavior by module | Target + baseline |
-| 05 | [API specification](05_API_SPEC.md) | implemented HTTP contracts and backlog | Implemented baseline |
-| 06 | [Data model](06_DATA_MODEL.md) | implemented DDL and backlog schemas | Implemented baseline |
+| 04 | [Feature specification](04_FEATURE_SPEC.md) | behavior by module | Current-source summary; target gates open |
+| 05 | [API specification](05_API_SPEC.md) | implemented HTTP contracts and backlog | Current-source summary; target gates open |
+| 06 | [Data model](06_DATA_MODEL.md) | implemented DDL, core ERD and backlog schemas | Current-source summary; target gates open |
 | 07 | [Security and ABAC](07_SECURITY_ABAC.md) | threat model, policy and enforcement | Baseline |
 | 08 | [Deployment](08_DEPLOYMENT.md) | implemented profiles and production gates | Implemented baseline |
 | 09 | [Test strategy](09_TEST_STRATEGY.md) | automated, performance, security and recovery gates | Baseline |
@@ -31,7 +31,7 @@
 | 26 | [Mac arm64 to WSL amd64 migration runbook](26_MAC_TO_WSL_MIGRATION_RUNBOOK.md) | exact-source/image transfer, object reconciliation, logical restore and rollback | Active target gate |
 | 27 | [Policy Book and Admin governance PRD](27_POLICY_BOOK_ADMIN_GOVERNANCE_PRD.md) | access levels, assignment evidence, retention and approval-gated Admin completion | Active; Phase 3 local source complete |
 | 28 | [Policy Book execution checklist](28_POLICY_BOOK_EXECUTION_CHECKLIST.md) | phase gates and exhaustive Admin function inventory | Phase 3 local source complete; target acceptance gates open |
-| 29 | [Master execution backlog](29_MASTER_EXECUTION_BACKLOG.md) | current delivery checklist, risk status and final artifact order | Active; Phase 6E local closure, Phase 6F next |
+| 29 | [Master execution backlog](29_MASTER_EXECUTION_BACKLOG.md) | current delivery checklist, risk status and final artifact order | Active; owner-directed Phase 8 summaries, remaining hardening deferred |
 | 30 | [Typed BULK catalog metadata rows PRD](30_TYPED_BULK_CATALOG_METADATA_PRD.md) | grouped table/column/domain/tag/term row contracts and TDD gates | Local source complete; external acceptance gates open |
 | 31 | [Phase 4 Knowledge entry gate](31_PHASE4_KNOWLEDGE_ENTRY_GATE_PRD_CHECKLIST.md) | atomic governed publication, classification envelope and independent provider preflight | Local implementation complete; external provider gates open |
 | 32 | [Phase 5 durable Knowledge source jobs](32_DURABLE_KNOWLEDGE_SOURCE_JOBS_PRD_CHECKLIST.md) | pinned, fenced and recoverable PDF-to-DRAFT execution | Local source/DB/audit complete; target gates open |

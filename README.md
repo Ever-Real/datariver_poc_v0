@@ -4,6 +4,45 @@ DataRiver Next is a secure catalog and knowledge-governance control plane around
 
 The runtime is a boundary-enforced modular monolith with independent relay and worker processes. PostgreSQL remains the business source of truth, while modules can later be extracted without sharing domain models or bypassing ports.
 
+## Current project snapshot
+
+This README describes the source after Phase 6E. It is a Single-node Pilot baseline, not an HA or
+production-acceptance claim. Mac development runs native `linux/arm64`; the preparation PC must use
+separately built/imported native `linux/amd64` artifacts from the same clean commit. Do not force one
+Compose-wide platform or copy Docker volumes between architectures.
+
+The smallest DataRiver-owned set is migrate/API/web plus PostgreSQL and an approved OIDC capability;
+the local Keycloak overlay is optional when an external IdP exists. DataHub, separate Redis
+cache/delivery, S3/MinIO, Neo4j, Airflow, APISIX, model providers and observability are selectable
+external capabilities. A feature reports unavailable or degraded when its required connector is
+absent; no connector becomes canonical business truth.
+
+For a blank environment:
+
+1. verify the native Docker platform and check out one clean reviewed commit;
+2. choose one ignored environment file, run `scripts/bootstrap.sh` or `scripts/bootstrap.ps1`, and
+   provide secrets only through the generated/mounted secret files;
+3. configure external endpoints and the named connector network, render Compose with
+   `scripts/compose.sh ... config --quiet`, then start only the required overlays;
+4. reconcile database roles, run the migration service through revision `0055`, and verify live,
+   ready and capability endpoints;
+5. apply optional synthetic seeds only in non-production environments and run their verification;
+6. execute target-specific OIDC, provider read-back, backup/restore and migration acceptance before
+   routing users.
+
+Detailed entry points:
+
+- [Feature specification](docs/04_FEATURE_SPEC.md)
+- [API specification](docs/05_API_SPEC.md)
+- [Table specification and core ERD](docs/06_DATA_MODEL.md)
+- [Architecture](docs/03_ARCHITECTURE.md)
+- [Deployment and migration](docs/08_DEPLOYMENT.md), [Mac-to-WSL runbook](docs/26_MAC_TO_WSL_MIGRATION_RUNBOOK.md)
+- [Security/ABAC](docs/07_SECURITY_ABAC.md), [master backlog](docs/29_MASTER_EXECUTION_BACKLOG.md)
+
+Remaining WSL/external-provider/browser/load/physical-retention checks are explicit external gates.
+Runtime API/OIDC Origin validation is intentionally deferred as backlog item `R5-FE-04` at P2; the
+source must not be represented as having that protection.
+
 ## Canonical ownership
 
 | State | Canonical owner |
