@@ -37,6 +37,19 @@ const access: WorkspaceMembershipAccess = {
 }
 
 describe('AdminApi', () => {
+  it('forces administrator context hydration through the no-store boundary', async () => {
+    const { api, request } = mockClient()
+    const controller = new AbortController()
+    request.mockResolvedValue({})
+
+    await api.getContext(controller.signal)
+
+    expect(request).toHaveBeenCalledWith('/admin/me', {
+      cache: 'no-store',
+      signal: controller.signal,
+    })
+  })
+
   it('binds administrator cursor pages to their filters and forwards cancellation', async () => {
     const { api, request } = mockClient()
     const controller = new AbortController()

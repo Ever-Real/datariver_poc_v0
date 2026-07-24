@@ -74,6 +74,7 @@ describe('AdminPage mutation safety', () => {
     const onStepUp = vi.fn(() => Promise.resolve())
     render(<AdminPage
       client={new ApiClient('/api/v1', () => 'token', () => 'workspace-one')}
+      workspace="workspace-one"
       onStepUp={onStepUp}
       onPasswordReauth={vi.fn(() => Promise.resolve())}
       onEnroll={vi.fn(() => Promise.resolve())}
@@ -166,7 +167,7 @@ describe('AdminPage mutation safety', () => {
       onEnroll: vi.fn(() => Promise.resolve()),
     }
     const view = render(
-      <AdminPage client={client} initialContext={initial} {...actions} />,
+      <AdminPage client={client} initialContext={initial} workspace="workspace-one" {...actions} />,
     )
 
     fireEvent.click(await screen.findByRole('button', { name: /보안키로 직접 변경|Update with security key/ }))
@@ -178,6 +179,7 @@ describe('AdminPage mutation safety', () => {
         fallback_enabled: true,
         action_vocabulary: ['admin.manage', 'catalog.read', 'catalog.search'],
       })}
+      workspace="workspace-one"
       {...actions}
     />)
 
@@ -200,6 +202,7 @@ describe('AdminPage mutation safety', () => {
     const view = render(<AdminPage
       client={client}
       initialContext={adminContext({ subject_id: 'admin-old', display_name: 'Old Admin' })}
+      workspace="workspace-one"
       {...actions}
     />)
 
@@ -207,12 +210,75 @@ describe('AdminPage mutation safety', () => {
     view.rerender(<AdminPage
       client={client}
       initialContext={adminContext({ subject_id: 'admin-new', display_name: 'New Admin' })}
+      workspace="workspace-one"
       {...actions}
     />)
     delayed.resolve(json(adminContext({ subject_id: 'admin-old', display_name: 'Old Admin' })))
 
     expect(await screen.findByText('New Admin')).toBeInTheDocument()
     await waitFor(() => expect(screen.queryByText('Old Admin')).not.toBeInTheDocument())
+  })
+
+  it('fails closed and removes the previous context when a manual refresh is denied', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(json({
+      type: 'urn:datariver:problem:forbidden',
+      title: 'Forbidden',
+      detail: 'access revoked',
+      code: 'forbidden',
+      request_id: 'request-revoked',
+    }, 403)))
+    const actions = {
+      onStepUp: vi.fn(() => Promise.resolve()),
+      onPasswordReauth: vi.fn(() => Promise.resolve()),
+      onEnroll: vi.fn(() => Promise.resolve()),
+    }
+    render(<AdminPage
+      client={new ApiClient('/api/v1', () => 'token', () => 'workspace-one')}
+      initialContext={adminContext({ display_name: 'Revoked Admin' })}
+      workspace="workspace-one"
+      {...actions}
+    />)
+    expect(screen.getByText('Revoked Admin')).toBeInTheDocument()
+
+    fireEvent.click(screen.getAllByRole('button', { name: /새로고침|Refresh/ })[0]!)
+
+    expect(await screen.findByText('서버가 403 상태를 반환했습니다.')).toBeInTheDocument()
+    expect(screen.queryByText('Revoked Admin')).not.toBeInTheDocument()
+    expect(screen.queryByRole('tab')).not.toBeInTheDocument()
+  })
+
+  it('rejects a manually refreshed context from a different workspace', async () => {
+    vi.stubGlobal('fetch', vi.fn((input: RequestInfo | URL) => {
+      const url = requestUrl(input)
+      if (url.endsWith('/admin/me')) {
+        return Promise.resolve(json({
+          ...adminContext({ display_name: 'Wrong Workspace Admin' }),
+          workspace_id: 'workspace-two',
+          allowed_operations: [],
+        }))
+      }
+      throw new Error(`unexpected request: ${url}`)
+    }))
+    const actions = {
+      onStepUp: vi.fn(() => Promise.resolve()),
+      onPasswordReauth: vi.fn(() => Promise.resolve()),
+      onEnroll: vi.fn(() => Promise.resolve()),
+    }
+    render(<AdminPage
+      client={new ApiClient('/api/v1', () => 'token', () => 'workspace-one')}
+      initialContext={{
+        ...adminContext({ display_name: 'Workspace One Admin' }),
+        allowed_operations: [],
+      }}
+      workspace="workspace-one"
+      {...actions}
+    />)
+
+    fireEvent.click(screen.getAllByRole('button', { name: /새로고침|Refresh/ })[0]!)
+
+    expect(await screen.findByText(/Workspace가 현재 선택과 일치하지 않습니다/)).toBeInTheDocument()
+    expect(screen.queryByText('Workspace One Admin')).not.toBeInTheDocument()
+    expect(screen.queryByText('Wrong Workspace Admin')).not.toBeInTheDocument()
   })
 })
 

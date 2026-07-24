@@ -75,6 +75,9 @@ Status values are `TODO`, `IN PROGRESS`, `DONE`, `BLOCKED API` and `EXTERNAL GAT
   assurance without creating a password downgrade.
 - [x] `DONE` Keep the API client stable across silent token renewal so feature load effects do not
   produce periodic screen-wide flicker; verify the client identity and latest request credentials.
+- [x] `DONE` Bind auth hydration and request/download results to the newest verified
+  subject/session security epoch; revalidate Admin on every accepted hydration and purge
+  same-Workspace feature/Admin state when its security boundary changes.
 - [ ] `BLOCKED API` Audit export, security-audit read/export and global dictionary mutation contracts
   are absent.
 - [x] `DONE` Add server-owned six-calendar-month human membership expiry, final-30-day self-request,

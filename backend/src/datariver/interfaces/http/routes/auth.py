@@ -3,7 +3,7 @@ from __future__ import annotations
 from collections.abc import Iterable
 from datetime import UTC, datetime
 
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, Request, Response
 
 from datariver.infrastructure.db.authz import SqlSubjectReader
 from datariver.interfaces.http.dependencies import AuthenticatedIdentityDep, get_container
@@ -23,7 +23,9 @@ def _roles(value: object) -> list[str]:
 
 @router.get("/me", response_model=AuthMeResponse)
 async def get_authenticated_profile(
-    request: Request, identity: AuthenticatedIdentityDep
+    request: Request,
+    response: Response,
+    identity: AuthenticatedIdentityDep,
 ) -> AuthMeResponse:
     """Hydrate browser memory from a freshly verified OIDC access token."""
     claims = identity.claims
@@ -45,6 +47,7 @@ async def get_authenticated_profile(
             observed_at=datetime.now(UTC),
         )
         await session.commit()
+    response.headers["Cache-Control"] = "private, no-store"
     return AuthMeResponse(
         subject=identity.subject,
         display_name=str(name),

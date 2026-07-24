@@ -14,12 +14,30 @@ describe('useStableApiClient', () => {
     const firstRenew = vi.fn().mockResolvedValue('first-renewed-token')
     const secondRenew = vi.fn().mockResolvedValue('second-renewed-token')
     const hook = renderHook(
-      ({ token, workspace, renew }) => useStableApiClient('/api/v1', token, workspace, renew),
-      { initialProps: { token: 'token-one', workspace: 'workspace-one', renew: firstRenew } },
+      ({ token, workspace, renew, readSecurityEpoch }) => useStableApiClient(
+        '/api/v1',
+        token,
+        workspace,
+        renew,
+        readSecurityEpoch,
+      ),
+      {
+        initialProps: {
+          token: 'token-one',
+          workspace: 'workspace-one',
+          renew: firstRenew,
+          readSecurityEpoch: () => 1,
+        },
+      },
     )
     const originalClient = hook.result.current
 
-    hook.rerender({ token: 'token-two', workspace: 'workspace-two', renew: secondRenew })
+    hook.rerender({
+      token: 'token-two',
+      workspace: 'workspace-two',
+      renew: secondRenew,
+      readSecurityEpoch: () => 2,
+    })
 
     expect(hook.result.current).toBe(originalClient)
     await act(async () => {

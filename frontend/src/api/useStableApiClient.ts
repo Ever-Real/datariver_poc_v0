@@ -5,29 +5,35 @@ class LatestApiClientInputs {
   private accessToken: string | undefined
   private workspaceId: string
   private renewAccessToken: AccessTokenRenewer
+  private securityEpoch: () => number
 
   constructor(
     accessToken: string | undefined,
     workspaceId: string,
     renewAccessToken: AccessTokenRenewer,
+    securityEpoch: () => number,
   ) {
     this.accessToken = accessToken
     this.workspaceId = workspaceId
     this.renewAccessToken = renewAccessToken
+    this.securityEpoch = securityEpoch
   }
 
   update(
     accessToken: string | undefined,
     workspaceId: string,
     renewAccessToken: AccessTokenRenewer,
+    securityEpoch: () => number,
   ) {
     this.accessToken = accessToken
     this.workspaceId = workspaceId
     this.renewAccessToken = renewAccessToken
+    this.securityEpoch = securityEpoch
   }
 
   readAccessToken = () => this.accessToken
   readWorkspaceId = () => this.workspaceId
+  readSecurityEpoch = () => this.securityEpoch()
   renew = () => this.renewAccessToken()
 }
 
@@ -42,21 +48,24 @@ export function useStableApiClient(
   accessToken: string | undefined,
   workspaceId: string,
   renewAccessToken: AccessTokenRenewer,
+  securityEpoch: () => number,
 ): ApiClient {
   const [inputs] = useState(() => new LatestApiClientInputs(
     accessToken,
     workspaceId,
     renewAccessToken,
+    securityEpoch,
   ))
 
   useLayoutEffect(() => {
-    inputs.update(accessToken, workspaceId, renewAccessToken)
-  }, [accessToken, inputs, renewAccessToken, workspaceId])
+    inputs.update(accessToken, workspaceId, renewAccessToken, securityEpoch)
+  }, [accessToken, inputs, renewAccessToken, securityEpoch, workspaceId])
 
   return useMemo(() => new ApiClient(
     baseUrl,
     inputs.readAccessToken,
     inputs.readWorkspaceId,
     inputs.renew,
+    inputs.readSecurityEpoch,
   ), [baseUrl, inputs])
 }

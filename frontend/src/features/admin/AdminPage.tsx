@@ -17,8 +17,15 @@ import { adminSectionFromLocation, allowedAdminSections, type AdminSection } fro
 export function AdminPage({
   client,
   initialContext,
+  workspace,
+  suspended = false,
   ...assurance
-}: { client: ApiClient; initialContext?: AdminReadContext } & AssuranceActions) {
+}: {
+  client: ApiClient
+  initialContext?: AdminReadContext
+  workspace: string
+  suspended?: boolean
+} & AssuranceActions) {
   const api = useMemo(() => new AdminApi(client), [client])
   const messages = useMemo(() => getAdminMessages(), [])
   const [section, setSection] = useState<AdminSection>(adminSectionFromLocation)
@@ -47,15 +54,24 @@ export function AdminPage({
     const controller = new AbortController()
     const generation = contextRequest.current.generation + 1
     contextRequest.current = { generation, controller }
+    setContext(undefined)
+    setMutation(undefined)
+    setError(undefined)
     try {
       const next = await api.getContext(controller.signal)
+      if (next.workspace_id !== workspace) {
+        throw new Error('관리자 컨텍스트의 Workspace가 현재 선택과 일치하지 않습니다.')
+      }
       if (!controller.signal.aborted && contextRequest.current.generation === generation) {
         setContext(next)
       }
     } catch (next) {
-      if (!controller.signal.aborted) reportError(next)
+      if (!controller.signal.aborted && contextRequest.current.generation === generation) {
+        setContext(undefined)
+        reportError(next)
+      }
     }
-  }, [api, reportError])
+  }, [api, reportError, workspace])
   useEffect(() => { if (!initialContext) void loadContext() }, [initialContext, loadContext])
   useEffect(() => {
     if (!initialContext) return
@@ -137,7 +153,7 @@ export function AdminPage({
     || locationParameters.get('adminSection') === 'fallback'
   ) ? 'PASSWORD' as const : 'HARDWARE' as const
 
-  return <section>
+  return <section hidden={suspended} aria-busy={suspended}>
     <PageTitle
       icon="AD"
       eyebrow={messages.eyebrow}

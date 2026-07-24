@@ -14,6 +14,21 @@ addenda and `docs/29_MASTER_EXECUTION_BACKLOG.md`.
 
 P0–P3 foundation addendum, updated 2026-07-16: current source checks additionally include the stable DataHub v1.6.0 release contract and typed OIDC assurance. Hardware WebAuthn requires an exact approved ACR+AMR combination and `auth_time`; OTP, generic MFA and refreshed-token `iat` cannot satisfy high-risk authorization. Browser remediation is bounded to typed authentication actions, rejects unsafe return locations, and never automatically replays a denied mutation after an authentication redirect. Compatibility migrations and the current hybrid runtime have separate live evidence below.
 
+## Phase 6D Admin/auth session-epoch addendum — 2026-07-24
+
+This addendum accepts local source closure of `R5-FE-02`. It does not accept real IdP session
+semantics, target-browser cache behavior or WSL `linux/amd64`.
+
+| Gate | Result | Current executed evidence |
+|---|---|---|
+| Identity hydration | PASS (local source) | Generation plus AbortController makes hydration latest-only; OIDC/server subjects must match; unload and sign-out invalidate memory first. A/B ordering, delayed unload, mismatch, cross-sub renewal, failed newer load and old-renewal/new-session races are tested. |
+| Request boundary | PASS (local source) | Every request/download captures Workspace plus opaque security epoch and rechecks after fetch, renewal, retry and body parsing. Epoch drift forbids a second request, including durable-idempotency mutation retry, and discards late JSON/blob results. |
+| Admin/UI teardown | PASS (local source) | Every accepted hydration suspends and rechecks Admin eligibility without remounting unrelated features. An unchanged context resumes the mounted subtree and preserves drafts; Workspace/epoch or Admin-context fingerprint change, mismatch or denial remounts/purges it. Manual refresh is no-store, validates Workspace, clears old context/confirmation/keys and remains empty on denial. |
+| Cache/storage | PASS (local source) | `/auth/me` request and `/admin/me` request use no-store; both successful backend responses are `private, no-store`. Static verification finds no browser-persistent token/profile/role/Admin/epoch state; PKCE transaction state remains the bounded exception. |
+| Regression | PASS | Focused `7 files / 69 tests`; backend `1,421 passed / 97 skipped`; Ruff format/lint, strict mypy over `375` files and static verification; frontend `47 files / 266 tests`, type/lint/build. No schema changed. |
+| Independent review | PASS (local source) | Final security, application/persistence and PM/traceability re-audits independently report `P0=0`, `P1=0`. The earlier renewal-event, synchronous-epoch, initial-load, Admin refresh and same-session draft-preservation findings were corrected before rerunning their applicable gates. |
+| External acceptance | OPEN | Real Keycloak/OIDC renewal, account/session switch, logout/rotation/revocation, multi-tab behavior, Chrome/Firefox/Safari and APISIX/Nginx cache preservation, two-human slow-response E2E and WSL `linux/amd64` remain `EXTERNAL_GATE`. |
+
 ## Phase 6C atomic Sharing hardening addendum — 2026-07-24
 
 This addendum accepts local source and isolated-PostgreSQL closure of `R5-BE-05H`. It retains

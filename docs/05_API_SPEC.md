@@ -18,7 +18,9 @@ Generated OpenAPI at `/api/v1/openapi.json` is authoritative for implemented pay
   rechecks the current database month, so the header is a backoff hint rather than a reset promise.
 - On one `401`, the browser may complete standard in-memory OIDC renewal and retry only a `GET`/`HEAD`
   request or a request with its declared `Idempotency-Key`. It never retries another mutation,
-  suppresses a policy `403`, or performs a redirect loop after renewal fails.
+  suppresses a policy `403`, or performs a redirect loop after renewal fails. Every request and
+  download captures the current Workspace and opaque in-memory security epoch; a response or retry
+  is discarded if either changes. The epoch never grants server permission.
 - High-risk authorization is fail-closed. `PHISHING_RESISTANT_AUTH_REQUIRED`,
   `AUTHENTICATION_TIME_REQUIRED`, `AUTHENTICATION_TIME_INVALID` and
   `AUTHENTICATION_TOO_OLD` are audited policy reason codes. Request fields and headers cannot assert
@@ -35,8 +37,8 @@ Generated OpenAPI at `/api/v1/openapi.json` is authoritative for implemented pay
 
 | Method/path | Authorization | Purpose |
 |---|---|---|
-| `GET /auth/me` | verified bearer identity; no Workspace header | sanitized subject, display name, email, realm roles, normalized assurance/authentication time, one server-selected active `default_workspace_id` and operator-owned capability flags including `password_change_supported`. No provider URL or credential is returned; every later request still verifies Workspace membership and assurance. |
-| `GET /admin/me` | read-only workspace administrator context | reports the current verified assurance (including ordinary `PASSWORD`/`OTHER_MFA`) and server-authorized administrator operations without triggering FIDO2/password reauthentication; each sensitive mutation applies its own assurance check |
+| `GET /auth/me` | verified bearer identity; no Workspace header | sanitized subject, display name, email, realm roles, normalized assurance/authentication time, one server-selected active `default_workspace_id` and operator-owned capability flags including `password_change_supported`. The OIDC `sub` must match the returned subject before the browser accepts the snapshot. No provider URL or credential is returned; every later request still verifies Workspace membership and assurance. Success is `private, no-store`. |
+| `GET /admin/me` | read-only workspace administrator context | reports the current verified assurance (including ordinary `PASSWORD`/`OTHER_MFA`) and server-authorized administrator operations without triggering FIDO2/password reauthentication; each sensitive mutation applies its own assurance check. The browser binds discovery to its verified subject, Workspace, epoch and accepted-hydration revision, requires the response Workspace to match and treats success as `private, no-store`. |
 
 ### Health and operations
 

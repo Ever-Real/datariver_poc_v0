@@ -1,5 +1,11 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { ApiClient, ApiError, newIdempotencyKey, parseProblem } from './client'
+import {
+  ApiClient,
+  ApiError,
+  StaleSecurityContextError,
+  newIdempotencyKey,
+  parseProblem,
+} from './client'
 
 afterEach(() => vi.unstubAllGlobals())
 
@@ -85,6 +91,81 @@ describe('API problem handling', () => {
     )
   })
 
+  it('does not retry after renewal changes the authenticated security epoch', async () => {
+    let securityEpoch = 7
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify({ detail: 'expired' }), { status: 401 }),
+    )
+    const renew = vi.fn().mockImplementation(() => {
+      securityEpoch = 8
+      return Promise.resolve('different-session-token')
+    })
+    vi.stubGlobal('fetch', fetchMock)
+    const client = new ApiClient(
+      '/api/v1',
+      () => 'expired-token',
+      () => 'workspace',
+      renew,
+      () => securityEpoch,
+    )
+
+    await expect(client.request('/catalog/assets')).rejects.toBeInstanceOf(
+      StaleSecurityContextError,
+    )
+    expect(renew).toHaveBeenCalledOnce()
+    expect(fetchMock).toHaveBeenCalledOnce()
+  })
+
+  it('does not replay an idempotent mutation under a newer authenticated session', async () => {
+    let securityEpoch = 3
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify({ detail: 'expired' }), { status: 401 }),
+    )
+    const renew = vi.fn().mockImplementation(() => {
+      securityEpoch = 4
+      return Promise.resolve('different-session-token')
+    })
+    vi.stubGlobal('fetch', fetchMock)
+    const client = new ApiClient(
+      '/api/v1',
+      () => 'expired-token',
+      () => 'workspace',
+      renew,
+      () => securityEpoch,
+    )
+
+    await expect(client.request('/admin/retention-policies', {
+      method: 'POST',
+      idempotencyKey: 'retention-00000000-0000-4000-8000-000000000001',
+      body: JSON.stringify({}),
+    })).rejects.toBeInstanceOf(StaleSecurityContextError)
+    expect(fetchMock).toHaveBeenCalledOnce()
+  })
+
+  it('discards a successful response that arrives after its security boundary changed', async () => {
+    let workspace = 'workspace-a'
+    let securityEpoch = 11
+    const response = deferred<Response>()
+    vi.stubGlobal('fetch', vi.fn().mockReturnValue(response.promise))
+    const client = new ApiClient(
+      '/api/v1',
+      () => 'token',
+      () => workspace,
+      undefined,
+      () => securityEpoch,
+    )
+
+    const request = client.request('/admin/me')
+    workspace = 'workspace-b'
+    securityEpoch = 12
+    response.resolve(new Response(JSON.stringify({ allowed_operations: [] }), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' },
+    }))
+
+    await expect(request).rejects.toBeInstanceOf(StaleSecurityContextError)
+  })
+
   it('does not retry a non-idempotent write after 401', async () => {
     const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({ detail: 'expired' }), {
       status: 401,
@@ -168,4 +249,32 @@ describe('API problem handling', () => {
     expect(headers.get('Authorization')).toBe('Bearer token')
     expect(headers.get('X-Workspace-Id')).toBe('workspace')
   })
+
+  it('discards a download whose security epoch changes before the body is returned', async () => {
+    let securityEpoch = 21
+    const response = deferred<Response>()
+    vi.stubGlobal('fetch', vi.fn().mockReturnValue(response.promise))
+    const client = new ApiClient(
+      '/api/v1',
+      () => 'token',
+      () => 'workspace',
+      undefined,
+      () => securityEpoch,
+    )
+
+    const download = client.download('/uploads/template')
+    securityEpoch = 22
+    response.resolve(new Response('sensitive', {
+      status: 200,
+      headers: { 'Content-Type': 'text/csv' },
+    }))
+
+    await expect(download).rejects.toBeInstanceOf(StaleSecurityContextError)
+  })
 })
+
+function deferred<T>() {
+  let resolve!: (value: T) => void
+  const promise = new Promise<T>((accept) => { resolve = accept })
+  return { promise, resolve }
+}

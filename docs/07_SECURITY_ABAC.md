@@ -172,6 +172,12 @@ drift. Physical deletion remains a separate governed retention operation.
   `GET`/`HEAD` request or a request carrying DataRiver's durable `Idempotency-Key`; a non-idempotent
   mutation is never replayed. Failed renewal clears in-memory identity and returns the existing
   custom login state without another automatic redirect loop.
+- OIDC hydration uses a generation and AbortController; only the newest response whose server
+  subject equals the OIDC `sub` may publish identity. Unload and sign-out invalidate memory before
+  the provider event or redirect completes. An opaque, non-persisted security epoch binds every
+  browser request/download to its Workspace; epoch drift discards late bodies and prevents even a
+  durable-idempotency retry from crossing authenticated sessions. Successful `/auth/me` and
+  `/admin/me` discovery is `private, no-store`.
 - CSRF protection for cookie-authenticated mutations.
 - Request/body/file limits, rate limits by subject/workspace/product, and bounded decompression.
 - Security headers: CSP, frame ancestors, nosniff, referrer policy, HSTS at TLS edge.

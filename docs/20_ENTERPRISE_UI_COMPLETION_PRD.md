@@ -147,6 +147,10 @@ fallbacks and browser-held credentials are never copied.
 - `UI-AUTH-001`: silent OIDC token renewal updates request-time credentials without recreating the
   application API client or retriggering every feature's load effect. A real Workspace change still
   resets workspace-scoped component state.
+- `UI-AUTH-002`: profile hydration, API responses and retries are bound to the newest verified
+  subject/session security epoch. Ordinary same-session renewal preserves unrelated feature state
+  but revalidates Admin context; subject/session/security changes purge same-Workspace feature and
+  global-search state before new data can render.
 
 ## Acceptance
 

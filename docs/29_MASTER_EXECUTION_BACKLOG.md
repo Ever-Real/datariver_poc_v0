@@ -14,9 +14,9 @@ an unsafe bypass, or a historical result from another commit.
 | Ledger field | Value |
 |---|---|
 | Created | 2026-07-23, Asia/Seoul |
-| Branch / Phase 6C entry base / current local implementation | `codex/admin-policy-rbac` / `b6fe662` / `HEAD` (focused `R5-BE-05H` worktree) |
+| Branch / Phase 6D entry base / current local implementation | `codex/admin-policy-rbac` / `836b3a0` / `HEAD` (focused `R5-FE-02` worktree) |
 | Remote comparison at Phase 6A | local refs: `origin/main` at `313e59a`; `origin/codex/admin-policy-rbac` through `a683a93`; Phase 5 and later work are not yet published |
-| Current controlled phase | Phase 6C `R5-BE-05H` locally closed with independent `P0=0`, `P1=0`; `R5-FE-02` follows its focused commit |
+| Current controlled phase | Phase 6D `R5-FE-02` local source, whole-source gates and final independent audits are complete; its focused commit is the package boundary before Phase 6E `R5-FE-03` |
 | Final artifact order | Feature → API → Data/ERD → Screen → `README.md` → `ARCHITECTURE.md` |
 
 ## Status language
@@ -221,6 +221,25 @@ merged, released, or available to the preparation PC until publication actually 
 - [ ] WSL `linux/amd64`, real Keycloak identity/rotation, target load/soak and physical purge remain
   `EXTERNAL_GATE`.
 
+### Phase 6D Admin/auth session-epoch closure — 2026-07-24
+
+- [x] OIDC and server profile subjects must match; generation/abort fencing makes the newest
+  hydration authoritative and unload/sign-out invalidates memory before completion.
+- [x] The opaque in-memory security epoch binds every request/download to its Workspace. Drift
+  discards late response bodies and prevents read or durable-idempotency retry across sessions.
+- [x] Ordinary same-session renewal keeps the stable API client and unrelated feature state while
+  an accepted-hydration revision hides and reloads Admin. An unchanged context resumes the mounted
+  subtree; epoch/context drift, mismatch or denial remounts/purges it.
+- [x] `/auth/me` and `/admin/me` use no-store request semantics and return
+  `Cache-Control: private, no-store`; no new persistent browser authority exists.
+- [x] Focused auth/API/shell/Admin tests passed `69`; whole backend passed
+  `1,421 / 97 skipped`; whole frontend passed `47 files / 266 tests`; Ruff, strict mypy,
+  TypeScript, ESLint, production build and static verification passed.
+- [x] Final independent security/application/traceability re-audits report `P0=0`, `P1=0`; this
+  checklist and the accepted source/test changes form one isolated focused commit.
+- [ ] Real IdP account/session transition, multi-tab/browser cache, edge-header preservation and
+  WSL `linux/amd64` acceptance remain `EXTERNAL_GATE`.
+
 ## Request group 5 — platform audit, remediation and portability
 
 ### Completed audit evidence
@@ -243,7 +262,7 @@ merged, released, or available to the preparation PC until publication actually 
 | R5-BE-05 | P0 | Make API-product idempotency, per-minute/monthly quota checks and invocation/result recording atomic; bind request hash and replayable response so retries cannot bypass quota or repeat work. | `DONE_LOCAL` + `EXTERNAL_GATE`; revision `0055`, subject/issuer/client grants, separate audit/body retention, fixed DB capabilities and the clean-room PostgreSQL harness pass. WSL/real Keycloak/target load/physical purge remain external. |
 | R5-BE-05H | P1 | Complete the extended atomic-Sharing hardening matrix: timeout/429, all grant-Subject negatives, injected persistence failures, full expiry/lineage drift and invoke/revoke/publish interleavings. | `DONE_LOCAL` + `EXTERNAL_GATE`; Phase 6C source/clean-room DB matrix passes. WSL, real Keycloak, target load/soak and physical purge remain external. |
 | R5-FE-01 | P0 | Bind global search requests/results to Workspace epoch and abort/discard cross-workspace responses. | `DONE_LOCAL`; Top Navigation keys the search component by Workspace and a late-response regression proves purge/discard. |
-| R5-FE-02 | P1 | Bind Admin context/auth hydration and renewal to subject/session epoch. | `PENDING` |
+| R5-FE-02 | P1 | Bind Admin context/auth hydration and renewal to subject/session epoch. | `DONE_LOCAL` + `EXTERNAL_GATE`; latest-only subject-matched hydration, opaque epoch request/retry fencing, Admin revision reload/teardown and private no-store discovery pass current source. Real IdP/browser/WSL journeys remain external. |
 | R5-FE-03 | P1 | Preserve CSP/security headers in every Nginx location. | `PENDING` |
 | R5-FE-04 | P1 | Validate runtime API/OIDC origins before any Bearer-bearing request. | `PENDING` |
 | R5-FE-05 | P1 | Bound Chat history/DOM and lineage concurrency/nodes; abort unmounted work. | `PENDING` |

@@ -69,7 +69,10 @@ export class AdminApi {
   constructor(private readonly client: AdminApiClient) {}
 
   getContext(signal?: AbortSignal) {
-    return this.client.request<AdminReadContext>('/admin/me', { signal })
+    return this.client.request<AdminReadContext>('/admin/me', {
+      cache: 'no-store',
+      signal,
+    })
   }
 
   async listMemberships() {

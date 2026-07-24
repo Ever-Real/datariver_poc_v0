@@ -31,13 +31,14 @@
 | 26 | [Mac arm64 to WSL amd64 migration runbook](26_MAC_TO_WSL_MIGRATION_RUNBOOK.md) | exact-source/image transfer, object reconciliation, logical restore and rollback | Active target gate |
 | 27 | [Policy Book and Admin governance PRD](27_POLICY_BOOK_ADMIN_GOVERNANCE_PRD.md) | access levels, assignment evidence, retention and approval-gated Admin completion | Active; Phase 3 local source complete |
 | 28 | [Policy Book execution checklist](28_POLICY_BOOK_EXECUTION_CHECKLIST.md) | phase gates and exhaustive Admin function inventory | Phase 3 local source complete; target acceptance gates open |
-| 29 | [Master execution backlog](29_MASTER_EXECUTION_BACKLOG.md) | current delivery checklist, risk status and final artifact order | Active; Phase 6C local close, frontend hardening follows |
+| 29 | [Master execution backlog](29_MASTER_EXECUTION_BACKLOG.md) | current delivery checklist, risk status and final artifact order | Active; Phase 6D local close, frontend hardening continues |
 | 30 | [Typed BULK catalog metadata rows PRD](30_TYPED_BULK_CATALOG_METADATA_PRD.md) | grouped table/column/domain/tag/term row contracts and TDD gates | Local source complete; external acceptance gates open |
 | 31 | [Phase 4 Knowledge entry gate](31_PHASE4_KNOWLEDGE_ENTRY_GATE_PRD_CHECKLIST.md) | atomic governed publication, classification envelope and independent provider preflight | Local implementation complete; external provider gates open |
 | 32 | [Phase 5 durable Knowledge source jobs](32_DURABLE_KNOWLEDGE_SOURCE_JOBS_PRD_CHECKLIST.md) | pinned, fenced and recoverable PDF-to-DRAFT execution | Local source/DB/audit complete; target gates open |
 | 33 | [Phase 6A WSL bootstrap and connector network](33_WSL_BOOTSTRAP_AND_CONNECTOR_NETWORK_PRD_CHECKLIST.md) | fail-fast secret intake and deterministic shared-network startup | Local source/audit complete; target WSL gate open |
 | 34 | [Phase 6B atomic Sharing invocation](34_ATOMIC_SHARING_INVOCATION_PRD_CHECKLIST.md) | subject-bound grants, exact replay, atomic quota/result evidence and retention binding | Local source/DB complete; target load/identity/retention gates open |
 | 35 | [Phase 6C atomic Sharing hardening](35_ATOMIC_SHARING_HARDENING_PRD_CHECKLIST.md) | failure rollback, Subject/context negatives, replay expiry and lock interleavings | Local source/DB complete; target load/identity/retention gates open |
+| 36 | [Phase 6D Admin/auth session epoch](36_ADMIN_AUTH_SESSION_EPOCH_PRD_CHECKLIST.md) | latest-only identity hydration, request boundary fencing and Admin context teardown | Local source/audit complete; target IdP/browser gates open |
 
 Independent review records: [Data Architect](reviews/2026-07-14_DATA_ARCHITECT_REVIEW.md) and [Data Engineer/SRE](reviews/2026-07-14_DATA_ENGINEER_REVIEW.md).
 

@@ -42,19 +42,28 @@ export function App() {
   const [adminAccess, setAdminAccess] = useState<{
     workspace: string
     subject: string
+    securityEpoch: number
+    authorizationRevision: number
     status: 'checking' | 'allowed' | 'denied' | 'reauth_required'
     context?: AdminReadContext
-  }>({ workspace: '', subject: '', status: 'checking' })
+  }>({
+    workspace: '',
+    subject: '',
+    securityEpoch: 0,
+    authorizationRevision: 0,
+    status: 'checking',
+  })
   const workspaceSelectionEnabled = auth.profile?.workspace_selection_enabled !== false
   const activeWorkspace = workspaceSelectionEnabled
     ? workspace
     : auth.profile?.default_workspace_id ?? ''
-  const authenticatedSubject = auth.profile?.subject ?? auth.user?.profile.sub ?? ''
+  const authenticatedSubject = auth.profile?.subject ?? ''
   const client = useStableApiClient(
     runtimeConfig.apiBaseUrl,
     auth.user?.access_token,
     activeWorkspace,
     auth.renewAccessToken,
+    auth.readSecurityEpoch,
   )
 
   useEffect(() => {
@@ -84,20 +93,43 @@ export function App() {
 
   useEffect(() => {
     let active = true
-    if (!activeWorkspace) {
-      setAdminAccess({
-        workspace: activeWorkspace, subject: authenticatedSubject, status: 'denied',
-      })
-      return () => { active = false }
+    const controller = new AbortController()
+    const accessKey = {
+      workspace: activeWorkspace,
+      subject: authenticatedSubject,
+      securityEpoch: auth.securityEpoch,
+      authorizationRevision: auth.authorizationRevision,
     }
-    setAdminAccess({
-      workspace: activeWorkspace, subject: authenticatedSubject, status: 'checking',
+    if (!activeWorkspace || !authenticatedSubject) {
+      setAdminAccess({
+        ...accessKey, status: 'denied',
+      })
+      return () => {
+        active = false
+        controller.abort()
+      }
+    }
+    setAdminAccess((current) => ({
+      ...accessKey,
+      status: 'checking',
+      context: (
+        current.workspace === activeWorkspace
+        && current.subject === authenticatedSubject
+        && current.securityEpoch === auth.securityEpoch
+      ) ? current.context : undefined,
+    }))
+    void client.request<AdminReadContext>('/admin/me', {
+      cache: 'no-store',
+      signal: controller.signal,
     })
-    void client.request<AdminReadContext>('/admin/me')
       .then((context) => {
-        if (active) setAdminAccess({
-          workspace: activeWorkspace,
-          subject: authenticatedSubject,
+        if (!active) return
+        if (context.workspace_id !== activeWorkspace) {
+          setAdminAccess({ ...accessKey, status: 'denied' })
+          return
+        }
+        setAdminAccess({
+          ...accessKey,
           status: context.allowed_operations.length > 0 ? 'allowed' : 'denied',
           context,
         })
@@ -105,13 +137,21 @@ export function App() {
       .catch((error: unknown) => {
         if (!active) return
         setAdminAccess({
-          workspace: activeWorkspace,
-          subject: authenticatedSubject,
+          ...accessKey,
           status: remediationKind(error) === 'REAUTH_REQUIRED' ? 'reauth_required' : 'denied',
         })
       })
-    return () => { active = false }
-  }, [activeWorkspace, authenticatedSubject, client])
+    return () => {
+      active = false
+      controller.abort()
+    }
+  }, [
+    activeWorkspace,
+    auth.authorizationRevision,
+    auth.securityEpoch,
+    authenticatedSubject,
+    client,
+  ])
 
   useEffect(() => {
     let active = true
@@ -135,7 +175,12 @@ export function App() {
         setDeploymentTier('SINGLE_NODE_PILOT')
     })
     return () => { active = false }
-  }, [activeWorkspace, authenticatedSubject, client])
+  }, [
+    activeWorkspace,
+    auth.securityEpoch,
+    authenticatedSubject,
+    client,
+  ])
 
   useEffect(() => {
     let active = true
@@ -144,7 +189,12 @@ export function App() {
     void catalogExportCapabilityEnabled(client)
       .then((enabled) => { if (active) setCatalogExportWorkerEnabled(enabled) })
     return () => { active = false }
-  }, [activeWorkspace, authenticatedSubject, client])
+  }, [
+    activeWorkspace,
+    auth.securityEpoch,
+    authenticatedSubject,
+    client,
+  ])
 
   const navigate = (next: Page) => {
     window.history.pushState({}, '', pageUrl(next))
@@ -205,10 +255,16 @@ export function App() {
     setWorkspace(normalized)
   }
 
-  const currentAdminAccessMatches = (
+  const cachedAdminAccessMatches = (
     adminAccess.workspace === activeWorkspace
     && adminAccess.subject === authenticatedSubject
+    && adminAccess.securityEpoch === auth.securityEpoch
   )
+  const currentAdminAccessMatches = (
+    cachedAdminAccessMatches
+    && adminAccess.authorizationRevision === auth.authorizationRevision
+  )
+  const cachedAdminContext = cachedAdminAccessMatches ? adminAccess.context : undefined
   const currentAdminContext = currentAdminAccessMatches && adminAccess.status === 'allowed'
     ? adminAccess.context
     : undefined
@@ -222,12 +278,23 @@ export function App() {
   const adminMenuItems = currentAdminContext
     ? allowedAdminSections(currentAdminContext).map((id) => ({ id, label: adminMessages[id] }))
     : []
+  const adminContextKey = cachedAdminContext
+    ? [
+        cachedAdminContext.workspace_id,
+        cachedAdminContext.subject_id,
+        cachedAdminContext.authentication_assurance,
+        String(cachedAdminContext.fallback_enabled),
+        [...cachedAdminContext.allowed_operations].sort().join(','),
+        [...cachedAdminContext.action_vocabulary].sort().join(','),
+      ].join('|')
+    : ''
 
   return (
     <AppShell
       page={page}
       client={client}
       workspace={activeWorkspace}
+      securityEpoch={auth.securityEpoch}
       workspaceSelectionEnabled={workspaceSelectionEnabled}
       hardwareWebauthnEnabled={auth.profile?.hardware_webauthn_enabled !== false}
       deploymentTier={deploymentTier}
@@ -261,7 +328,18 @@ export function App() {
         {page === 'chat' && <ChatPage client={client} />}
         {page === 'profile' && auth.profile && <ProfilePage client={client} profile={auth.profile} workspace={activeWorkspace} capabilities={capabilities} externalSystemLinks={externalSystemLinks} onPasswordChange={() => void auth.beginPasswordChange()} onPasswordReauth={() => void auth.beginPasswordReauth()} />}
         {page === 'profile' && !auth.profile && <PageTitle icon="ME" eyebrow="Verified identity profile" title="내 프로필" description="서버에서 검증된 프로필을 불러오지 못했습니다." />}
-        {page === 'admin' && currentAdminContext && <AdminPage client={client} initialContext={currentAdminContext} onStepUp={auth.beginStepUp} onPasswordReauth={auth.beginPasswordReauth} onEnroll={auth.beginWebAuthnEnrollment} />}
+        {page === 'admin' && cachedAdminContext && (
+          <AdminPage
+            key={adminContextKey}
+            client={client}
+            initialContext={cachedAdminContext}
+            workspace={activeWorkspace}
+            suspended={!currentAdminContext}
+            onStepUp={auth.beginStepUp}
+            onPasswordReauth={auth.beginPasswordReauth}
+            onEnroll={auth.beginWebAuthnEnrollment}
+          />
+        )}
         {page === 'admin' && !currentAdminContext && (
           <PageTitle
             icon="AD"

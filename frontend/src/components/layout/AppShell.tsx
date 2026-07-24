@@ -10,6 +10,7 @@ interface AppShellProps {
   page: Page
   client?: ApiClient
   workspace: string
+  securityEpoch?: number
   workspaceSelectionEnabled?: boolean
   hardwareWebauthnEnabled?: boolean
   deploymentTier?: 'SINGLE_NODE_PILOT' | 'HA_CANDIDATE' | 'HA_ACCEPTED'
@@ -35,6 +36,7 @@ export function AppShell({
   page,
   client,
   workspace,
+  securityEpoch = 0,
   workspaceSelectionEnabled = true,
   hardwareWebauthnEnabled = true,
   deploymentTier = 'SINGLE_NODE_PILOT',
@@ -55,10 +57,12 @@ export function AppShell({
   onSignOut,
   onClearNotice,
 }: AppShellProps) {
+  const securityBoundaryKey = `${workspace || 'workspace-unset'}:${securityEpoch}`
   return (
     <div className="app-shell">
       <a className="skip-link" href="#main-content">본문으로 건너뛰기</a>
       <TopNavigation
+        key={securityBoundaryKey}
         page={page}
         client={client}
         workspace={workspace}
@@ -86,7 +90,7 @@ export function AppShell({
             <button className="button button-secondary" type="button" onClick={onClearNotice}>확인</button>
           </div>
         )}
-        <div className="page-content" key={workspace || 'workspace-unset'}>{children}</div>
+        <div className="page-content" key={securityBoundaryKey}>{children}</div>
       </main>
       <footer className="deployment-footer">{deploymentTier === 'SINGLE_NODE_PILOT' ? '[Environment: Single-node Pilot]' : `[Environment: ${deploymentTier === 'HA_CANDIDATE' ? 'HA Candidate' : 'HA Accepted'}]`}</footer>
     </div>

@@ -76,7 +76,9 @@ version string alone is not production acceptance evidence.
 The frontend now has a governed enterprise shell with dense square-edge tokens, typed navigation,
 a URL-restored non-authoritative Workspace selection, a no-preload two-character global-search floor
 and server-scoped Admin visibility. OIDC user/profile/role state is hydrated into React memory via
-`/auth/me`; it is never persisted in browser storage. An ordinary eligible administrator may discover
+`/auth/me`; it is never persisted in browser storage. Hydration is latest-only, subject-matched and
+bound to an opaque in-memory security epoch; every API result/retry is discarded after
+Workspace/epoch drift. Successful auth/Admin discovery is private and non-cacheable. An ordinary eligible administrator may discover
 its menus, while each sensitive write/delete operation independently requires its configured
 password-reauthentication or hardware WebAuthn policy. It is not a completed enterprise UX. Classification policy,
 inference-profile review/revocation and RESTRICTED-grant administration are implemented.

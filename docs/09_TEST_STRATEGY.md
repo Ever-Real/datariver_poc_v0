@@ -559,6 +559,12 @@ Administrator Role and System Settings changes add the following focused gates:
 - the stable API-client hook test proves a token/Workspace update retains client object identity
   while the next request receives the latest Authorization and Workspace headers. This guards the
   periodic token-renewal flicker regression without suppressing a real Workspace remount.
+- authentication-race tests resolve profile requests out of order, unload/sign out during pending
+  work, reject OIDC/server subject mismatch and prove an old renewal failure cannot clear a newer
+  session. API tests prove Workspace/epoch drift discards late JSON/downloads and forbids a second
+  fetch even for an idempotency-key mutation. Shell/Admin tests prove same-Workspace epoch teardown,
+  authorization-revision reload and fail-closed manual refresh. Real IdP/browser behavior remains a
+  target gate.
 
 Audit/Log component tests verify the internal tab switch and zero fabricated rows while the typed
 audit read/export APIs remain absent. Retention UI tests and source review must preserve the policy

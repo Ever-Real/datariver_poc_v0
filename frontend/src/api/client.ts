@@ -26,6 +26,13 @@ export class ApiError extends Error {
   }
 }
 
+export class StaleSecurityContextError extends Error {
+  constructor() {
+    super('인증 또는 워크스페이스 컨텍스트가 변경되어 이전 요청 결과를 폐기했습니다.')
+    this.name = 'StaleSecurityContextError'
+  }
+}
+
 export interface RequestOptions extends RequestInit {
   idempotencyKey?: string
   ifMatch?: string
@@ -44,12 +51,18 @@ export interface ApiDownload {
 
 export type AccessTokenRenewer = () => Promise<string | undefined>
 
+interface SecurityBoundary {
+  workspace: string
+  securityEpoch: number
+}
+
 export class ApiClient {
   constructor(
     private readonly baseUrl: string,
     private readonly accessToken: () => string | undefined,
     private readonly workspaceId: () => string,
     private readonly renewAccessToken?: AccessTokenRenewer,
+    private readonly securityEpoch: () => number = () => 0,
   ) {}
 
   async request<T>(path: string, options: RequestOptions = {}): Promise<T> {
@@ -61,15 +74,24 @@ export class ApiClient {
     if (!token) throw new Error('로그인이 필요합니다.')
     const workspace = this.workspaceId()
     if (!workspace) throw new Error('워크스페이스 ID를 입력하세요.')
+    const boundary = { workspace, securityEpoch: this.securityEpoch() }
     let response = await this.fetchAuthorized(path, options, token, workspace)
+    this.assertCurrent(boundary)
     if (response.status === 401 && this.canRetryAfterRenewal(options) && this.renewAccessToken) {
       const renewedToken = await this.renewAccessToken()
-      if (renewedToken) response = await this.fetchAuthorized(path, options, renewedToken, workspace)
+      this.assertCurrent(boundary)
+      if (renewedToken) {
+        response = await this.fetchAuthorized(path, options, renewedToken, workspace)
+        this.assertCurrent(boundary)
+      }
     }
     if (!response.ok) {
-      throw new ApiError(await parseProblem(response))
+      const problem = await parseProblem(response)
+      this.assertCurrent(boundary)
+      throw new ApiError(problem)
     }
     const data = response.status === 204 ? undefined as T : await response.json() as T
+    this.assertCurrent(boundary)
     return { data, etag: response.headers.get('ETag') ?? undefined }
   }
 
@@ -81,6 +103,7 @@ export class ApiClient {
     if (!token) throw new Error('로그인이 필요합니다.')
     const workspace = this.workspaceId()
     if (!workspace) throw new Error('워크스페이스 ID를 입력하세요.')
+    const boundary = { workspace, securityEpoch: this.securityEpoch() }
     const requestOptions: RequestOptions = {
       method: 'GET',
       cache: 'no-store',
@@ -91,17 +114,35 @@ export class ApiClient {
       },
     }
     let response = await this.fetchAuthorized(path, requestOptions, token, workspace)
+    this.assertCurrent(boundary)
     if (response.status === 401 && this.renewAccessToken) {
       const renewedToken = await this.renewAccessToken()
+      this.assertCurrent(boundary)
       if (renewedToken) {
         response = await this.fetchAuthorized(path, requestOptions, renewedToken, workspace)
+        this.assertCurrent(boundary)
       }
     }
-    if (!response.ok) throw new ApiError(await parseProblem(response))
+    if (!response.ok) {
+      const problem = await parseProblem(response)
+      this.assertCurrent(boundary)
+      throw new ApiError(problem)
+    }
+    const blob = await response.blob()
+    this.assertCurrent(boundary)
     return {
-      blob: await response.blob(),
+      blob,
       filename: downloadFilename(response.headers.get('Content-Disposition')),
       etag: response.headers.get('ETag') ?? undefined,
+    }
+  }
+
+  private assertCurrent(expected: SecurityBoundary): void {
+    if (
+      this.workspaceId() !== expected.workspace
+      || this.securityEpoch() !== expected.securityEpoch
+    ) {
+      throw new StaleSecurityContextError()
     }
   }
 

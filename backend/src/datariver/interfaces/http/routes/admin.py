@@ -1377,6 +1377,7 @@ def _system_assignee_patch_command(
 @router.get("/me", response_model=AdminReadContextResponse)
 async def get_admin_context(
     request: Request,
+    response: Response,
     context: ContextDep,
 ) -> AdminReadContextResponse:
     value = await _service(request).get_admin_read_context(
@@ -1385,6 +1386,7 @@ async def get_admin_context(
         environment=context.environment,
         request_id=context.request_id,
     )
+    response.headers["Cache-Control"] = "private, no-store"
     return admin_read_context_response(value)
 
 

@@ -264,6 +264,16 @@ in React memory. Browser persistence is limited to the short-lived PKCE redirect
 which contains only a versioned intent and validated same-origin return path; no client-side role or
 administrator flag exists.
 
+That memory boundary is generation- and epoch-fenced. Only the newest `/auth/me` response whose
+subject matches the OIDC `sub` may publish an identity snapshot. An opaque `securityEpoch` changes
+on subject, provider-session or security-bearing profile transitions and is captured with Workspace
+by each request/download; drift discards late bodies and prevents `401` retry across contexts. A
+separate accepted-hydration revision suspends and rechecks Admin after ordinary same-session
+renewal without recreating the API client or unrelated feature state. An unchanged returned Admin
+context resumes the mounted subtree and preserves its draft state; an epoch or Admin-context
+fingerprint change, mismatch or denial purges it. Neither counter is persisted, sent as authority or
+trusted by the backend.
+
 The optional Keycloak identity-administration adapter is a narrow anti-corruption boundary, not a
 generic IdP proxy. It owns only fixed user lookup/create, temporary-password and enable operations
 using a dedicated `manage-users` service account. A user remains disabled while the canonical

@@ -27,6 +27,9 @@ export interface AuthNotice {
 interface AuthValue {
   user?: User
   profile?: AuthenticatedProfile
+  securityEpoch: number
+  authorizationRevision: number
+  readSecurityEpoch: () => number
   loading: boolean
   notice?: AuthNotice
   renewAccessToken: () => Promise<string | undefined>
@@ -40,6 +43,39 @@ interface AuthValue {
 }
 
 const AuthContext = createContext<AuthValue | undefined>(undefined)
+
+type HydrationResult = 'APPLIED' | 'STALE' | 'UNUSABLE'
+
+function oidcSubject(user: User): string | undefined {
+  const subject = user.profile.sub
+  return typeof subject === 'string' && subject.trim() ? subject : undefined
+}
+
+function oidcSessionFingerprint(user: User): string {
+  const claims = user.profile as Record<string, unknown>
+  const sessionMarker = user.session_state
+    ?? (typeof claims.sid === 'string' ? claims.sid : undefined)
+    ?? (typeof claims.auth_time === 'number' ? String(claims.auth_time) : undefined)
+    ?? 'provider-session-unavailable'
+  return JSON.stringify([
+    typeof claims.iss === 'string' ? claims.iss : '',
+    oidcSubject(user) ?? '',
+    sessionMarker,
+  ])
+}
+
+function securityFingerprint(user: User, profile: AuthenticatedProfile): string {
+  return JSON.stringify([
+    oidcSessionFingerprint(user),
+    [...profile.roles].sort(),
+    profile.authentication_assurance,
+    profile.authentication_time ?? '',
+    profile.default_workspace_id ?? '',
+    profile.workspace_selection_enabled !== false,
+    profile.hardware_webauthn_enabled !== false,
+    profile.password_change_supported !== false,
+  ])
+}
 
 function createManager(): UserManager {
   const config = publicRuntimeConfig()
@@ -80,40 +116,162 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const manager = useMemo(() => createManager(), [])
   const [user, setUser] = useState<User>()
   const [profile, setProfile] = useState<AuthenticatedProfile>()
+  const [securityEpoch, setSecurityEpoch] = useState(0)
+  const [authorizationRevision, setAuthorizationRevision] = useState(0)
   const [loading, setLoading] = useState(true)
   const [notice, setNotice] = useState<AuthNotice>()
   const mounted = useRef(false)
   const callbackInProgress = useRef(false)
   const ssoProbeStarted = useRef(false)
   const renewalInProgress = useRef<Promise<string | undefined> | undefined>(undefined)
+  const renewalAuthenticationGeneration = useRef<number | undefined>(undefined)
+  const renewalLoadedUser = useRef<User | undefined>(undefined)
+  const hydrationGeneration = useRef(0)
+  const hydrationController = useRef<AbortController | undefined>(undefined)
+  const securityEpochRef = useRef(0)
+  const authenticationGenerationRef = useRef(0)
+  const acceptedOidcSession = useRef<string | undefined>(undefined)
+  const acceptedFingerprint = useRef<string | undefined>(undefined)
+  const acceptedProfile = useRef<AuthenticatedProfile | undefined>(undefined)
 
-  const hydrate = useCallback(async (next: User): Promise<boolean> => {
-    if (!next.access_token || next.expired) return false
-    const response = await fetch(`${publicRuntimeConfig().apiBaseUrl}/auth/me`, {
-      headers: { Authorization: `Bearer ${next.access_token}`, Accept: 'application/json' },
-    })
-    if (!response.ok) throw new Error('서버가 현재 인증 세션을 확인하지 못했습니다.')
-    const value = await response.json() as AuthenticatedProfile
+  const advanceSecurityEpoch = useCallback(() => {
+    securityEpochRef.current += 1
+    if (mounted.current) setSecurityEpoch(securityEpochRef.current)
+  }, [])
+
+  const invalidateHydration = useCallback(() => {
+    hydrationGeneration.current += 1
+    hydrationController.current?.abort()
+    hydrationController.current = undefined
+  }, [])
+
+  const clearAuthenticatedMemory = useCallback(() => {
+    authenticationGenerationRef.current += 1
+    invalidateHydration()
+    acceptedOidcSession.current = undefined
+    acceptedFingerprint.current = undefined
+    acceptedProfile.current = undefined
+    advanceSecurityEpoch()
     if (mounted.current) {
+      setUser(undefined)
+      setProfile(undefined)
+    }
+  }, [advanceSecurityEpoch, invalidateHydration])
+
+  const hydrate = useCallback(async (
+    next: User,
+    expectedSubject?: string,
+  ): Promise<HydrationResult> => {
+    const subject = oidcSubject(next)
+    if (!next.access_token || next.expired || !subject) return 'UNUSABLE'
+    if (expectedSubject && subject !== expectedSubject) {
+      throw new Error('OIDC 갱신 주체가 현재 인증 주체와 일치하지 않습니다.')
+    }
+    hydrationController.current?.abort()
+    const controller = new AbortController()
+    const generation = hydrationGeneration.current + 1
+    hydrationGeneration.current = generation
+    hydrationController.current = controller
+    try {
+      const response = await fetch(`${publicRuntimeConfig().apiBaseUrl}/auth/me`, {
+        cache: 'no-store',
+        signal: controller.signal,
+        headers: { Authorization: `Bearer ${next.access_token}`, Accept: 'application/json' },
+      })
+      if (!response.ok) throw new Error('서버가 현재 인증 세션을 확인하지 못했습니다.')
+      const value = await response.json() as AuthenticatedProfile
+      if (value.subject !== subject || (expectedSubject && value.subject !== expectedSubject)) {
+        throw new Error('서버 인증 프로필의 주체가 OIDC 주체와 일치하지 않습니다.')
+      }
+      if (!mounted.current || hydrationGeneration.current !== generation) return 'STALE'
+      const fingerprint = securityFingerprint(next, value)
+      if (
+        acceptedFingerprint.current !== undefined
+        && acceptedFingerprint.current !== fingerprint
+      ) {
+        advanceSecurityEpoch()
+      }
+      acceptedOidcSession.current = oidcSessionFingerprint(next)
+      acceptedFingerprint.current = fingerprint
+      acceptedProfile.current = value
       setUser(next)
       setProfile(value)
+      setAuthorizationRevision((current) => current + 1)
+      return 'APPLIED'
+    } catch (error) {
+      if (!mounted.current || hydrationGeneration.current !== generation) return 'STALE'
+      throw error
+    } finally {
+      if (hydrationGeneration.current === generation) hydrationController.current = undefined
     }
-    return true
-  }, [])
+  }, [advanceSecurityEpoch])
+
+  const acceptExternalUser = useCallback(async (next: User) => {
+    clearAuthenticatedMemory()
+    try {
+      const result = await hydrate(next)
+      if (result === 'UNUSABLE') throw new Error('인증 이벤트에 사용할 access token이 없습니다.')
+    } catch {
+      if (mounted.current) {
+        setNotice({ kind: 'ERROR', message: '인증 응답을 검증하지 못했습니다. 다시 로그인하세요.' })
+      }
+    }
+  }, [clearAuthenticatedMemory, hydrate])
 
   const renewAccessToken = useCallback((): Promise<string | undefined> => {
     if (renewalInProgress.current) return renewalInProgress.current
+    const startedEpoch = securityEpochRef.current
+    const startedSubject = acceptedProfile.current?.subject
+    const startedAuthenticationGeneration = authenticationGenerationRef.current
+    if (!startedSubject) {
+      clearAuthenticatedMemory()
+      if (mounted.current) {
+        setNotice({
+          kind: 'INFO',
+          message: '검증된 인증 프로필이 없어 세션을 갱신하지 않았습니다. 다시 로그인하세요.',
+        })
+      }
+      return Promise.resolve(undefined)
+    }
+    renewalAuthenticationGeneration.current = startedAuthenticationGeneration
+    renewalLoadedUser.current = undefined
     const renewal = (async () => {
       try {
         const next = await manager.signinSilent()
-        if (!next || !next.access_token || next.expired || !await hydrate(next)) {
+        const queued = renewalLoadedUser.current
+        renewalLoadedUser.current = undefined
+        if (queued && queued.access_token !== next?.access_token) {
+          await acceptExternalUser(queued)
+          return undefined
+        }
+        if (
+          securityEpochRef.current !== startedEpoch
+          || acceptedProfile.current?.subject !== startedSubject
+        ) {
+          return undefined
+        }
+        if (
+          !next
+          || !next.access_token
+          || next.expired
+          || await hydrate(next, startedSubject) !== 'APPLIED'
+        ) {
           throw new Error('인증 갱신 응답에 사용할 access token이 없습니다.')
         }
         return next.access_token
       } catch {
-        if (mounted.current) {
-          setUser(undefined)
-          setProfile(undefined)
+        const queued = renewalLoadedUser.current
+        renewalLoadedUser.current = undefined
+        if (queued) {
+          await acceptExternalUser(queued)
+          return undefined
+        }
+        if (
+          securityEpochRef.current === startedEpoch
+          && acceptedProfile.current?.subject === startedSubject
+        ) {
+          clearAuthenticatedMemory()
+          if (!mounted.current) return undefined
           setNotice({
             kind: 'INFO',
             message: '인증 세션을 갱신하지 못했습니다. 계속하려면 Sign In을 선택하세요.',
@@ -121,16 +279,18 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         }
         return undefined
       } finally {
+        renewalAuthenticationGeneration.current = undefined
         renewalInProgress.current = undefined
       }
     })()
     renewalInProgress.current = renewal
     return renewal
-  }, [hydrate, manager])
+  }, [acceptExternalUser, clearAuthenticatedMemory, hydrate, manager])
 
   useEffect(() => {
     mounted.current = true
     const initialize = async () => {
+      const initializationEpoch = securityEpochRef.current
       try {
         const params = new URLSearchParams(window.location.search)
         const callback = params.has('state') && (params.has('code') || params.has('error'))
@@ -154,6 +314,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
           callbackInProgress.current = true
         }
         const next = callback ? await manager.signinRedirectCallback() : await manager.getUser()
+        if (securityEpochRef.current !== initializationEpoch) return
         if (callback && next) {
           const state = readRedirectState(next.state)
           const callbackPath = callbackReturnTo()
@@ -190,7 +351,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
             })
           }
         }
-        if (next && !next.expired && await hydrate(next)) return
+        if (next && !next.expired) {
+          const result = await hydrate(next)
+          if (result === 'APPLIED' || result === 'STALE') return
+        }
         if (!callback) {
           if (ssoProbeStarted.current) return
           ssoProbeStarted.current = true
@@ -203,18 +367,42 @@ export function AuthProvider({ children }: { children: ReactNode }) {
           return
         }
       } catch {
+        if (securityEpochRef.current !== initializationEpoch) return
         if (mounted.current) {
+          clearAuthenticatedMemory()
           setNotice({ kind: 'ERROR', message: '인증 응답을 검증하지 못했습니다. 다시 로그인하세요.' })
           window.history.replaceState({}, document.title, callbackReturnTo())
         }
       } finally {
+        callbackInProgress.current = false
         if (mounted.current) setLoading(false)
       }
     }
     const loaded = (next: User) => {
-      if (!renewalInProgress.current) void hydrate(next)
+      if (callbackInProgress.current) return
+      if (renewalInProgress.current) {
+        if (
+          renewalAuthenticationGeneration.current
+          !== authenticationGenerationRef.current
+        ) {
+          return
+        }
+        if (
+          acceptedOidcSession.current !== undefined
+          && oidcSessionFingerprint(next) === acceptedOidcSession.current
+        ) {
+          renewalLoadedUser.current = next
+          return
+        }
+        void acceptExternalUser(next)
+        return
+      }
+      void acceptExternalUser(next)
     }
-    const unloaded = () => { setUser(undefined); setProfile(undefined) }
+    const unloaded = () => {
+      renewalLoadedUser.current = undefined
+      clearAuthenticatedMemory()
+    }
     const expiring = () => { void renewAccessToken() }
     manager.events.addUserLoaded(loaded)
     manager.events.addUserUnloaded(unloaded)
@@ -222,11 +410,19 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     void initialize()
     return () => {
       mounted.current = false
+      invalidateHydration()
       manager.events.removeUserLoaded(loaded)
       manager.events.removeUserUnloaded(unloaded)
       manager.events.removeAccessTokenExpiring(expiring)
     }
-  }, [hydrate, manager, renewAccessToken])
+  }, [
+    acceptExternalUser,
+    clearAuthenticatedMemory,
+    hydrate,
+    invalidateHydration,
+    manager,
+    renewAccessToken,
+  ])
 
   const beginRedirect = useCallback(async (intent: AuthIntent) => {
     if (
@@ -261,20 +457,42 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     }
   }, [manager, profile?.hardware_webauthn_enabled])
 
+  const signOut = useCallback(async () => {
+    renewalLoadedUser.current = undefined
+    clearAuthenticatedMemory()
+    await manager.signoutRedirect()
+  }, [clearAuthenticatedMemory, manager])
+
+  const readSecurityEpoch = useCallback(() => securityEpochRef.current, [])
+
   const value = useMemo<AuthValue>(() => ({
     user,
     profile,
+    securityEpoch,
+    authorizationRevision,
+    readSecurityEpoch,
     renewAccessToken,
     loading,
     notice,
     signIn: () => beginRedirect('SIGN_IN'),
-    signOut: () => manager.signoutRedirect(),
+    signOut,
     beginWebAuthnEnrollment: () => beginRedirect('WEBAUTHN_ENROLLMENT'),
     beginStepUp: () => beginRedirect('STEP_UP'),
     beginPasswordReauth: () => beginRedirect('PASSWORD_REAUTH'),
     beginPasswordChange: () => beginRedirect('PASSWORD_CHANGE'),
     clearNotice: () => setNotice(undefined),
-  }), [beginRedirect, loading, manager, notice, profile, renewAccessToken, user])
+  }), [
+    authorizationRevision,
+    beginRedirect,
+    loading,
+    notice,
+    profile,
+    readSecurityEpoch,
+    renewAccessToken,
+    securityEpoch,
+    signOut,
+    user,
+  ])
 
   return <AuthContext value={value}>{children}</AuthContext>
 }

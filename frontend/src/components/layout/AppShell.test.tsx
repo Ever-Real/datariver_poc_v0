@@ -121,10 +121,34 @@ describe('application shell contracts', () => {
       onSignOut: vi.fn(),
       onClearNotice: vi.fn(),
     }
-    const view = render(<AppShell {...common} workspace="workspace-a"><WorkspaceScopedInput /></AppShell>)
+    const view = render(<AppShell {...common} workspace="workspace-a" securityEpoch={1}><WorkspaceScopedInput /></AppShell>)
     fireEvent.change(screen.getByRole('textbox', { name: 'Workspace scoped value' }), { target: { value: 'secret-a' } })
     expect(screen.getByRole('textbox', { name: 'Workspace scoped value' })).toHaveValue('secret-a')
-    view.rerender(<AppShell {...common} workspace="workspace-b"><WorkspaceScopedInput /></AppShell>)
+    view.rerender(<AppShell {...common} workspace="workspace-b" securityEpoch={1}><WorkspaceScopedInput /></AppShell>)
+    expect(screen.getByRole('textbox', { name: 'Workspace scoped value' })).toHaveValue('')
+  })
+
+  it('remounts workspace-scoped feature state on a same-workspace security epoch change', () => {
+    const common = {
+      page: 'dashboard' as const,
+      displayName: 'User',
+      adminMenuItems: [],
+      externalSystemLinks: [],
+      onNavigate: vi.fn(),
+      onNavigateAdmin: vi.fn(),
+      onSearch: vi.fn(),
+      onWorkspaceChange: vi.fn(),
+      onEnrollSecurityKey: vi.fn(),
+      onSignOut: vi.fn(),
+      onClearNotice: vi.fn(),
+    }
+    const view = render(<AppShell {...common} workspace="workspace-a" securityEpoch={4}><WorkspaceScopedInput /></AppShell>)
+    fireEvent.change(screen.getByRole('textbox', { name: 'Workspace scoped value' }), {
+      target: { value: 'subject-a-secret' },
+    })
+
+    view.rerender(<AppShell {...common} workspace="workspace-a" securityEpoch={5}><WorkspaceScopedInput /></AppShell>)
+
     expect(screen.getByRole('textbox', { name: 'Workspace scoped value' })).toHaveValue('')
   })
 
@@ -147,13 +171,13 @@ describe('application shell contracts', () => {
       onSignOut: vi.fn(),
       onClearNotice: vi.fn(),
     }
-    const view = render(<AppShell {...common} workspace="workspace-a"><div /></AppShell>)
+    const view = render(<AppShell {...common} workspace="workspace-a" securityEpoch={1}><div /></AppShell>)
     const input = screen.getByRole('combobox', { name: '카탈로그 검색' })
     fireEvent.focus(input)
     fireEvent.change(input, { target: { value: 'secret-a' } })
     await waitFor(() => expect(request).toHaveBeenCalledTimes(1))
 
-    view.rerender(<AppShell {...common} workspace="workspace-b"><div /></AppShell>)
+    view.rerender(<AppShell {...common} workspace="workspace-b" securityEpoch={1}><div /></AppShell>)
     expect(screen.getByRole('combobox', { name: '카탈로그 검색' })).toHaveValue('')
 
     resolveSuggestion?.({
@@ -168,6 +192,48 @@ describe('application shell contracts', () => {
     })
     await Promise.resolve()
     expect(screen.queryByText('secret-a', { selector: 'strong' })).not.toBeInTheDocument()
+  })
+
+  it('purges global search state on a same-workspace security epoch change', async () => {
+    let resolveSuggestion: ((value: unknown) => void) | undefined
+    const request = vi.fn(() => new Promise((resolve) => {
+      resolveSuggestion = resolve
+    }))
+    const common = {
+      page: 'catalog' as const,
+      client: { request } as unknown as ApiClient,
+      displayName: 'User',
+      adminMenuItems: [],
+      externalSystemLinks: [],
+      onNavigate: vi.fn(),
+      onNavigateAdmin: vi.fn(),
+      onSearch: vi.fn(),
+      onWorkspaceChange: vi.fn(),
+      onEnrollSecurityKey: vi.fn(),
+      onSignOut: vi.fn(),
+      onClearNotice: vi.fn(),
+    }
+    const view = render(<AppShell {...common} workspace="workspace-a" securityEpoch={1}><div /></AppShell>)
+    const input = screen.getByRole('combobox', { name: '카탈로그 검색' })
+    fireEvent.focus(input)
+    fireEvent.change(input, { target: { value: 'subject-a-secret' } })
+    await waitFor(() => expect(request).toHaveBeenCalledOnce())
+
+    view.rerender(<AppShell {...common} workspace="workspace-a" securityEpoch={2}><div /></AppShell>)
+    expect(screen.getByRole('combobox', { name: '카탈로그 검색' })).toHaveValue('')
+
+    resolveSuggestion?.({
+      items: [{
+        id: 'asset-a',
+        name: 'subject-a-secret',
+        asset_type: 'TABLE',
+        matches: [{ field: 'NAME', text: 'subject-a-secret', matched_terms: ['subject-a-secret'] }],
+      }],
+      meta: { projection_version: 1, policy_version: 'test' },
+      match_mode: 'ALL',
+    })
+    await Promise.resolve()
+    expect(screen.queryByText('subject-a-secret', { selector: 'strong' })).not.toBeInTheDocument()
   })
 
   it('derives administration tabs from exact server operations', () => {
