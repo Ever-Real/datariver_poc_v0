@@ -181,6 +181,7 @@ def create_app(
         response = JSONResponse(
             status_code=status, content=content, media_type="application/problem+json"
         )
+        response.headers["Cache-Control"] = "private, no-store"
         retry_after = error.details.get("retry_after_seconds")
         if isinstance(error, RateLimitError) and isinstance(retry_after, int):
             response.headers["Retry-After"] = str(retry_after)

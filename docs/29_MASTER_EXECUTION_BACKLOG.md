@@ -14,9 +14,9 @@ an unsafe bypass, or a historical result from another commit.
 | Ledger field | Value |
 |---|---|
 | Created | 2026-07-23, Asia/Seoul |
-| Branch / Phase 6B entry base / current local implementation | `codex/admin-policy-rbac` / `64f9175` / `HEAD` (focused `R5-BE-05` worktree) |
+| Branch / Phase 6C entry base / current local implementation | `codex/admin-policy-rbac` / `b6fe662` / `HEAD` (focused `R5-BE-05H` worktree) |
 | Remote comparison at Phase 6A | local refs: `origin/main` at `313e59a`; `origin/codex/admin-policy-rbac` through `a683a93`; Phase 5 and later work are not yet published |
-| Current controlled phase | Phase 6B `R5-BE-05` closed locally; focused commit then Phase 6C `R5-BE-05H` starts immediately |
+| Current controlled phase | Phase 6C `R5-BE-05H` locally closed with independent `P0=0`, `P1=0`; `R5-FE-02` follows its focused commit |
 | Final artifact order | Feature → API → Data/ERD → Screen → `README.md` → `ARCHITECTURE.md` |
 
 ## Status language
@@ -73,6 +73,9 @@ an unsafe bypass, or a historical result from another commit.
   startup ownership. Full source/config regressions pass; actual WSL/PowerShell/amd64 execution
   remains external. Independent security, portability and PM/traceability review reports
   `P0=0`, `P1=0` before the focused commit.
+- [x] Phase 6B closes the atomic Sharing invocation contract at local commit `b6fe662`. Phase 6C
+  retains ADR-0045/revision `0055` and adds the extended failure, identity, replay and lock matrix
+  without treating WSL, real identity, target load or physical purge as local evidence.
 - [ ] Request groups 3 through 6 retain their stated dependency on earlier work. External gates are
   reported explicitly if the required machine or accountable human identities are unavailable.
 
@@ -199,6 +202,25 @@ merged, released, or available to the preparation PC until publication actually 
 - [ ] WSL `linux/amd64`, real Keycloak service identity, target load/lock/soak and physical purge
   remain `EXTERNAL_GATE`.
 
+### Phase 6C atomic Sharing hardening closure — 2026-07-24
+
+- [x] Contract timeout, canonical serialization and three precommit persistence fault points leave
+  invocation, result and monthly usage at zero; stable `429` responses carry `Retry-After` and
+  `private, no-store`.
+- [x] Every ineligible consumer Subject shape and missing/wrong fixed-function security context is
+  denied without grant, idempotency, outbox or invocation side effects.
+- [x] Permission, current-version, grant-expiry, governed-lineage, active-policy and result-deadline
+  drift deny replay without invoking the result builder.
+- [x] Invoke-first and mutation-first revoke/publish interleavings use observed PostgreSQL blockers,
+  terminate without deadlock and expose only an old-valid success or new-valid denial.
+- [x] Clean-room PostgreSQL 17 passed `13` tests; whole backend passed `1,419 / 97 skipped`, whole
+  frontend passed `46 files / 244 tests`, and canonical migration SHA-256 remains
+  `ffc0abb58b3f4550bcc5d1524ffd9cd954076d0bf73112cab19fc7b3252e7c2f`.
+- [x] Final independent SQL/security, persistence/test and traceability audits report `P0=0`,
+  `P1=0`; the focused Phase 6C commit closes this package before the next work item.
+- [ ] WSL `linux/amd64`, real Keycloak identity/rotation, target load/soak and physical purge remain
+  `EXTERNAL_GATE`.
+
 ## Request group 5 — platform audit, remediation and portability
 
 ### Completed audit evidence
@@ -219,7 +241,7 @@ merged, released, or available to the preparation PC until publication actually 
 | R5-BE-03 | P0 | Prevent direct release publication from bypassing independent changeset review. | `DONE_LOCAL`; direct route is `410`, legacy unlineaged releases are hidden from all consumers and activation requires one exact reviewed lineage. |
 | R5-BE-04 | P0 | Record the actual Chat provider/model/external-use audit facts. | `DONE_LOCAL` + `EXTERNAL_GATE`; current Mac Neo4j/Chat/Embedding pass, local reranking is unavailable, and WSL/private-provider facts remain target evidence. |
 | R5-BE-05 | P0 | Make API-product idempotency, per-minute/monthly quota checks and invocation/result recording atomic; bind request hash and replayable response so retries cannot bypass quota or repeat work. | `DONE_LOCAL` + `EXTERNAL_GATE`; revision `0055`, subject/issuer/client grants, separate audit/body retention, fixed DB capabilities and the clean-room PostgreSQL harness pass. WSL/real Keycloak/target load/physical purge remain external. |
-| R5-BE-05H | P1 | Complete the extended atomic-Sharing hardening matrix: timeout/429, all grant-Subject negatives, injected persistence failures, full expiry/lineage drift and invoke/revoke/publish interleavings. | `AUTHORIZED`; Phase 6C follows the focused Phase 6B commit. |
+| R5-BE-05H | P1 | Complete the extended atomic-Sharing hardening matrix: timeout/429, all grant-Subject negatives, injected persistence failures, full expiry/lineage drift and invoke/revoke/publish interleavings. | `DONE_LOCAL` + `EXTERNAL_GATE`; Phase 6C source/clean-room DB matrix passes. WSL, real Keycloak, target load/soak and physical purge remain external. |
 | R5-FE-01 | P0 | Bind global search requests/results to Workspace epoch and abort/discard cross-workspace responses. | `DONE_LOCAL`; Top Navigation keys the search component by Workspace and a late-response regression proves purge/discard. |
 | R5-FE-02 | P1 | Bind Admin context/auth hydration and renewal to subject/session epoch. | `PENDING` |
 | R5-FE-03 | P1 | Preserve CSP/security headers in every Nginx location. | `PENDING` |

@@ -12,6 +12,10 @@ Generated OpenAPI at `/api/v1/openapi.json` is authoritative for implemented pay
 - Errors are sanitized `application/problem+json` with
   `type,title,status,detail,instance,code,request_id,violations?,remediation?`.
 - `401` is invalid identity, `403` audited policy denial, `404` may conceal forbidden existence, `409` version/idempotency conflict, `422` semantic validation, `429` grant/gateway quota, and `502/503` a classified dependency failure.
+- Sanitized domain-error responses use `Cache-Control: private, no-store`. A `429` includes an
+  integer advisory `Retry-After`; Sharing per-minute exhaustion returns `60`, while monthly
+  exhaustion uses the pre-completion database UTC boundary with a 60-second floor. Admission always
+  rechecks the current database month, so the header is a backoff hint rather than a reset promise.
 - On one `401`, the browser may complete standard in-memory OIDC renewal and retry only a `GET`/`HEAD`
   request or a request with its declared `Idempotency-Key`. It never retries another mutation,
   suppresses a policy `403`, or performs a redirect loop after renewal fails.
@@ -328,7 +332,8 @@ secrets. `Idempotency-Key` is 16..200 characters and persisted only as SHA-256. 
 the caller permission fingerprint, product/version/release/contract, surface/scope and canonical
 payload. A completed exact replay returns the same invocation ID and body without quota; changed
 binding conflicts. Result JSON is at most 1 MiB and all three result routes send
-`Cache-Control: private, no-store`.
+`Cache-Control: private, no-store`. Concurrent per-minute or monthly admission permits only the
+bounded winner; a rejected call records no ledger, result or aggregate increment.
 
 ### Chat
 

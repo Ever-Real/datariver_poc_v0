@@ -2,6 +2,27 @@
 
 ## Current verification status
 
+### Phase 6C atomic Sharing hardening — 2026-07-24
+
+Phase 6C closes local backlog item `R5-BE-05H` without changing Alembic head `0055`. Ruff
+format/lint, strict mypy over `374` source/test files, static verification and the whole backend
+suite passed: `1,419 passed / 97 environment-gated skipped`. The frontend regression passed
+TypeScript, zero-warning ESLint, `46 files / 244 tests` and the production build.
+
+The focused source set passed `39` tests. The isolated PostgreSQL 17 clean-room harness passed
+`13` tests, adding contract-timeout rollback, canonical-serialization rejection, result/monthly/
+deferred-commit fault injection, the complete ineligible grant-Subject matrix, absent and
+mismatched fixed-function context, expired-body and current-state replay denial, and observed-lock
+invoke/revoke/publish interleavings in both directions. The revoke/publish and membership
+linearization tests use PostgreSQL backend PIDs and `pg_blocking_pids`, not elapsed delay, to prove
+the intended blocker before release.
+
+The unchanged migration contract again passed additive/canonical/downgrade/tamper checks and
+`alembic check`; canonical SHA-256 remains
+`ffc0abb58b3f4550bcc5d1524ffd9cd954076d0bf73112cab19fc7b3252e7c2f`. WSL `linux/amd64`, real
+Keycloak service identity/rotation, representative target graph/load/lock/soak and accountable
+physical purge remain external gates.
+
 ### Phase 6B atomic Sharing invocation — 2026-07-24
 
 The current worktree closes the local `R5-BE-05` implementation at Alembic head `0055`. Ruff

@@ -1495,7 +1495,8 @@ npm run build
 For the atomic Sharing invocation contract, run the destructive-but-isolated PostgreSQL acceptance
 harness explicitly. It refuses to reuse an existing container, creates random mode-`0600` temporary
 credentials, proves canonical and additive migration paths plus downgrade refusal and fail-closed
-tamper probes, then removes its container and credentials:
+tamper probes, exercises the Phase 6C timeout/Subject/context/fault/replay/interleaving matrix, then
+removes its container and credentials:
 
 ```bash
 DATARIVER_SHARING_VERIFY_CONFIRM=1 ./scripts/verify_atomic_sharing_postgres.sh

@@ -14,6 +14,22 @@ addenda and `docs/29_MASTER_EXECUTION_BACKLOG.md`.
 
 P0–P3 foundation addendum, updated 2026-07-16: current source checks additionally include the stable DataHub v1.6.0 release contract and typed OIDC assurance. Hardware WebAuthn requires an exact approved ACR+AMR combination and `auth_time`; OTP, generic MFA and refreshed-token `iat` cannot satisfy high-risk authorization. Browser remediation is bounded to typed authentication actions, rejects unsafe return locations, and never automatically replays a denied mutation after an authentication redirect. Compatibility migrations and the current hybrid runtime have separate live evidence below.
 
+## Phase 6C atomic Sharing hardening addendum — 2026-07-24
+
+This addendum accepts local source and isolated-PostgreSQL closure of `R5-BE-05H`. It retains
+ADR-0045 and revision `0055`; it does not accept the preparation PC, production identity, target
+load or physical retention execution.
+
+| Gate | Result | Current executed evidence |
+|---|---|---|
+| Failure atomicity | PASS (local/isolated DB) | Timeout, invalid canonical JSON and injected result, monthly aggregate and deferred-commit failures each leave ledger/result/month usage at zero; a later valid call succeeds exactly once. |
+| Identity and fixed capabilities | PASS (local/isolated DB) | Missing, human, inactive, expired-membership and cross-Workspace Subjects create no grant artifacts. Missing or mismatched Workspace/Subject context cannot prepare or complete, and the app role retains no direct evidence-table access. |
+| Replay and concurrency | PASS (isolated PostgreSQL 17) | Permission, product-version, expired-grant, lineage, active-policy and result-deadline drift deny disclosure without executing. Invoke-first and mutation-first revoke/publish schedules use observed database lock blockers and finish without deadlock or partial evidence. |
+| HTTP and quota | PASS | Rate-limit problem JSON is stable, every domain error is `private, no-store`, per-minute retry is 60 seconds and monthly retry is a database-time-derived advisory with a 60-second floor. Concurrent RPM/month admission remains exactly one and every retry rechecks the current UTC month. |
+| Regression and migration | PASS | Focused `39`; clean-room PostgreSQL `13`; backend `1,419 passed / 97 skipped`; strict mypy over `374` files; static verification; frontend `46 files / 244 tests`, type/lint/build. No schema changed; canonical/additive/downgrade/tamper gates and SHA-256 `ffc0abb58b3f4550bcc5d1524ffd9cd954076d0bf73112cab19fc7b3252e7c2f` remain clean. |
+| Independent review | PASS (local source/isolated DB) | Final SQL/security, persistence/test and traceability reviews each report `P0=0`, `P1=0`. A strict-mypy cleanup error and UTC-rollover Retry-After overstatement found during review were corrected and all applicable gates rerun. |
+| External acceptance | OPEN | WSL `linux/amd64`, real Keycloak service Subject/issuer/client revocation and rotation, representative target lock/load/soak and accountable physical purge evidence remain `EXTERNAL_GATE`. |
+
 ## Phase 6B atomic Sharing invocation addendum — 2026-07-24
 
 This addendum accepts local source and isolated-PostgreSQL closure of `R5-BE-05` at revision `0055`.

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import ast
 import re
+from datetime import UTC, datetime
 from pathlib import Path
 
 from sqlalchemy import CheckConstraint
@@ -9,6 +10,7 @@ from sqlalchemy import CheckConstraint
 from datariver.infrastructure.db import models  # noqa: F401
 from datariver.infrastructure.db.base import Base
 from datariver.infrastructure.db.revision import REQUIRED_DATABASE_REVISION
+from datariver.infrastructure.db.sharing import SqlSharingStore
 
 ROOT = Path(__file__).resolve().parents[3]
 MIGRATION = ROOT / "backend/alembic/versions/0055_atomic_sharing_invocation_results.py"
@@ -486,6 +488,25 @@ def test_month_boundary_and_sensitive_http_results_are_cache_safe() -> None:
     assert utc_expression in month_shape
     assert utc_expression in migration
     assert routes.count('response.headers["Cache-Control"] = "private, no-store"') == 3
+
+
+def test_monthly_retry_uses_the_precompletion_utc_boundary_snapshot() -> None:
+    store = STORE.read_text(encoding="utf-8")
+    capture = "completion_observed_at = await self._database_time()"
+    completion = "completion = await self._complete_invocation("
+    retry = "self._monthly_retry_after_seconds(\n                            completion_observed_at"
+
+    assert store.index(capture) < store.index(completion) < store.index(retry)
+    assert (
+        SqlSharingStore._monthly_retry_after_seconds(
+            datetime(2026, 12, 31, 23, 59, 59, 500_000, tzinfo=UTC)
+        )
+        == 60
+    )
+    assert (
+        SqlSharingStore._monthly_retry_after_seconds(datetime(2026, 1, 31, 12, 0, 0, tzinfo=UTC))
+        == 12 * 60 * 60
+    )
 
 
 def test_store_never_reads_or_writes_invocation_evidence_tables_directly() -> None:

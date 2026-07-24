@@ -233,7 +233,9 @@ Any pre-apply review state → REJECTED or CANCELLED under policy
   classified replay result and UTC-month aggregate.
 - The raw idempotency key is hashed. An exact retry returns the same invocation/result without
   consuming quota; changed binding conflicts. Failed or oversized work records nothing, result JSON
-  is capped at 1 MiB, and result responses are `private, no-store`.
+  is capped at 1 MiB, and result responses are `private, no-store`. Stable quota errors are also
+  non-cacheable and provide a bounded advisory backoff; monthly admission still rechecks the
+  database-owned UTC month rather than trusting the client header.
 - The former authorization-only reservation endpoint returns `410`. Revocation or current
   identity/version/lineage/policy drift prevents stored-result disclosure.
 - No external provider call is allowed while the invocation transaction holds locks. A future

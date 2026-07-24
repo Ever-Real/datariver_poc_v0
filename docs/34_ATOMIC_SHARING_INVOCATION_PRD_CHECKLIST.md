@@ -72,25 +72,29 @@ provider. ADR-0045 is authoritative for the decisions below.
 - [x] Completed replay skips the executor and returns the exact stored document.
 - [x] Changed or legacy binding fails closed.
 - [x] Invalid surface/template/bounds and result oversize record nothing.
-- [ ] Timeout rolls back; rate-limit response has stable `429` semantics.
+- [x] Timeout rolls back; rate-limit response has stable `429` semantics (Phase 6C H-01).
 - [x] Authorization-only route is `410`.
-- [ ] Grant creation rejects missing, human, inactive, expired or cross-Workspace consumer Subjects.
+- [x] Grant creation rejects missing, human, inactive, expired or cross-Workspace consumer Subjects
+      (Phase 6C H-02).
 
 ### Actual PostgreSQL and concurrency
 
 - [x] First app-role call retains transaction-local RLS through Knowledge read and completion.
-- [ ] Missing/wrong Workspace or Subject context cannot prepare, complete or disclose a result.
+- [x] Missing/wrong Workspace or Subject context cannot prepare, complete or disclose a result
+      (Phase 6C H-03).
 - [x] App direct `SELECT/INSERT/UPDATE/DELETE` on invocation tables is denied.
 - [x] Same key/same binding concurrency executes once, stores once and returns equal results.
 - [x] Same key/different binding concurrency yields one success and one conflict.
 - [x] RPM=1 and monthly=1 concurrent boundaries admit exactly one different-key request.
 - [x] Rolling 59/61-second and prior/current UTC-month boundaries use database time.
-- [ ] Every injected precommit failure leaves ledger/result/month aggregate unchanged.
+- [x] Every injected precommit failure leaves ledger/result/month aggregate unchanged
+      (Phase 6C H-04).
 - [x] Response-loss retry replays and revoked grant or changed Subject/issuer denies disclosure.
-- [ ] Expired grant, new current version, corrupt lineage, changed permission fingerprint and
-      expired/policy-drifted retention deny disclosure in one actual-PostgreSQL matrix.
-- [ ] Invoke/revoke/publish interleavings terminate without deadlock and expose only a wholly valid
-      old or new state.
+- [x] Expired grant, new current version, corrupt lineage, changed permission fingerprint and
+      expired/policy-drifted retention deny disclosure in one actual-PostgreSQL matrix
+      (Phase 6C H-05).
+- [x] Invoke/revoke/publish interleavings terminate without deadlock and expose only a wholly valid
+      old or new state (Phase 6C H-06).
 - [x] Legacy usage still contributes to the matching time window but cannot replay.
 
 ### Migration and source gates
@@ -131,9 +135,9 @@ provider. ADR-0045 is authoritative for the decisions below.
   each reported `P0=0`, `P1=0` after the trust-root and seeded legacy-backfill P1 findings were
   corrected and rerun.
 
-The still-unchecked source-matrix items above are explicitly transferred to follow-up
-`R5-BE-05H`; they are not substituted with unexecuted claims or a production-completion statement.
-The target-only checks below remain `EXTERNAL_GATE`.
+Phase 6C closes every transferred source-matrix item with the evidence in
+`docs/35_ATOMIC_SHARING_HARDENING_PRD_CHECKLIST.md`. The target-only checks below remain
+`EXTERNAL_GATE`; no local result is substituted for them.
 
 ## Target-only acceptance gates
 

@@ -3,10 +3,11 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import math
 from collections import defaultdict
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Any
 from uuid import UUID
 
@@ -896,7 +897,10 @@ class SqlSharingStore(SharingStore):
                     details={"retry_after_seconds": 60},
                 )
             if prepared.month_units >= grant.monthly_quota:
-                raise RateLimitError("The API consumer monthly quota has been exhausted.")
+                raise RateLimitError(
+                    "The API consumer monthly quota has been exhausted.",
+                    details={"retry_after_seconds": self._monthly_retry_after_seconds(now)},
+                )
 
             retention = self._prepared_retention(prepared)
             invocation_id = uuid7()
@@ -926,6 +930,7 @@ class SqlSharingStore(SharingStore):
                 executor=execute,
             )
             canonical_result = validate_canonical_result(result_document)
+            completion_observed_at = await self._database_time()
             completion = await self._complete_invocation(
                 binding=binding,
                 authorization=authorization,
@@ -941,7 +946,14 @@ class SqlSharingStore(SharingStore):
                     details={"retry_after_seconds": 60},
                 )
             if completion == "RATE_MONTH":
-                raise RateLimitError("The API consumer monthly quota has been exhausted.")
+                raise RateLimitError(
+                    "The API consumer monthly quota has been exhausted.",
+                    details={
+                        "retry_after_seconds": self._monthly_retry_after_seconds(
+                            completion_observed_at
+                        )
+                    },
+                )
             if completion == "OVERSIZE":
                 raise ValidationError("The API-product result exceeds the 1 MiB contract.")
             if completion == "RETENTION_DENIED":
@@ -1036,6 +1048,15 @@ class SqlSharingStore(SharingStore):
         if not isinstance(value, datetime):
             raise RuntimeError("PostgreSQL did not return a transaction timestamp.")
         return value
+
+    @staticmethod
+    def _monthly_retry_after_seconds(observed_at: datetime) -> int:
+        utc_observed = observed_at.astimezone(UTC)
+        if utc_observed.month == 12:
+            next_month = datetime(utc_observed.year + 1, 1, 1, tzinfo=UTC)
+        else:
+            next_month = datetime(utc_observed.year, utc_observed.month + 1, 1, tzinfo=UTC)
+        return max(60, math.ceil((next_month - utc_observed).total_seconds()))
 
     @staticmethod
     def _validate_invocation_contract(

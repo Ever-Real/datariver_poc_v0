@@ -9,7 +9,7 @@ from fastapi.testclient import TestClient
 
 from datariver.config import Settings
 from datariver.domain.authz import Action
-from datariver.domain.common import ConflictError, ForbiddenError, ValidationError
+from datariver.domain.common import ConflictError, ForbiddenError, RateLimitError, ValidationError
 from datariver.infrastructure.db.models.platform import ExternalServiceProfileModel
 from datariver.infrastructure.db.session import DatabaseReadiness
 from datariver.infrastructure.observability.metrics import HttpMetrics
@@ -128,6 +128,39 @@ def test_invalid_request_id_is_replaced() -> None:
 
     assert response.status_code == 200
     assert response.headers["X-Request-Id"] != "invalid value"
+
+
+def test_rate_limit_problem_is_stable_retryable_and_never_cacheable() -> None:
+    factory = cast(Callable[[Settings], AppContainer], lambda _: LiveOnlyContainer())
+    app = create_app(settings(), container_factory=factory)
+
+    @app.get("/test/rate-limit")
+    async def rate_limited() -> None:
+        raise RateLimitError(
+            "The API consumer per-minute quota has been exhausted.",
+            details={"retry_after_seconds": 60},
+        )
+
+    with TestClient(app) as client:
+        response = client.get(
+            "/test/rate-limit",
+            headers={"X-Request-Id": "phase6c-rate-limit"},
+        )
+
+    assert response.status_code == 429
+    assert response.headers["Content-Type"].startswith("application/problem+json")
+    assert response.headers["Retry-After"] == "60"
+    assert response.headers["Cache-Control"] == "private, no-store"
+    assert response.headers["X-Request-Id"] == "phase6c-rate-limit"
+    assert response.json() == {
+        "type": "urn:datariver:problem:rate_limit_exceeded",
+        "title": "Rate Limit Exceeded",
+        "status": 429,
+        "detail": "The API consumer per-minute quota has been exhausted.",
+        "instance": "/test/rate-limit",
+        "code": "rate_limit_exceeded",
+        "request_id": "phase6c-rate-limit",
+    }
 
 
 def test_http_metrics_use_bounded_route_templates() -> None:
