@@ -497,7 +497,7 @@ egress or a DataHub credential. The complete Linux/WSL boundary is
 
 ## Database and object operations
 
-- Alembic has one head at `0054`: the generated current initial schema plus conditional
+- Alembic has one head at `0055`: the generated current initial schema plus conditional
   compatibility bridges for local databases that applied earlier revisions. Deployment runs
   migration before API/workers. The API role can only read `public.alembic_version` for readiness;
   migration ownership remains separate. After explicitly bounded compatibility repairs, the Policy
@@ -519,7 +519,11 @@ egress or a DataHub credential. The complete Linux/WSL boundary is
   triggers provide a second fail-closed boundary against later grant drift.
   Its downgrade refuses to erase the schema after any durable source-analysis job exists; preserve
   the database and apply a forward fix rather than deleting audit evidence.
-- Existing PostgreSQL volumes must reconcile runtime roles before migration so `0042` and `0054`
+  Revision `0055` adds atomic API-product ledger/result/month usage, subject-bound consumer grants
+  and fixed prepare/complete functions. Canonical and additive paths verify the exact columns,
+  constraints, indexes, FORCE-RLS policies, triggers, function attributes and grants; same-name
+  malformed objects fail migration. Downgrade refuses while V2 grants or evidence exist.
+- Existing PostgreSQL volumes must reconcile runtime roles before migration so `0042`, `0054` and `0055`
   can grant their least-privilege capabilities. Bootstrap first so the new Knowledge password file
   exists, start PostgreSQL, run `DATARIVER_ENV_FILE=<file>
   scripts/reconcile-postgres-roles.sh` on macOS/Linux/WSL or
@@ -530,7 +534,7 @@ egress or a DataHub credential. The complete Linux/WSL boundary is
   past a missing role or grant the worker BYPASSRLS.
 - PostgreSQL pool size/overflow/lease timeout, statement timeout, idle-transaction timeout and application names are explicit. Budget `API replicas × (API pool + overflow) + long-running workers × (worker pool + overflow) + one-shot/IdP/Airflow/admin reserve`; current one-API/four-worker defaults have a ceiling of 60 before reserve.
 - Liveness is process-only. Readiness leases the API pool and requires exactly packaged Alembic
-  head `0054`; Compose and APISIX use readiness for upstream health.
+  head `0055`; Compose and APISIX use readiness for upstream health.
 - `scripts/probe_pgbouncer_rls.py` and its unit contract implement the pre-adoption transaction-pool leakage gate. No Compose profile currently deploys PgBouncer and no live pooler pass has been recorded; direct PostgreSQL remains the supported path until the isolated two-workspace probe succeeds.
 - Back up PostgreSQL and the selected external S3 store as a consistency set or record a watermark; restore into isolation and follow the drill in [operations runbook](13_OPERATIONS_RUNBOOK.md) before traffic.
 - Accepted-object retention/lifecycle is environment policy. Quarantine receives a shorter cleanup policy, but never delete an object whose manifest is actively leased.

@@ -14,6 +14,9 @@ Untrusted inputs include browser/API payloads, OIDC claims before verification, 
   deployment-approved ACR and AMR combination plus `auth_time`; generic MFA, OTP and `iat` are not
   substitutes. Password reauthentication never becomes hardware assurance.
 - Service identities are separate from users, scoped to one purpose and never impersonate a human approver.
+- API-product invocation accepts only an active, non-expiring `SERVICE_ACCOUNT` Subject with an
+  active workspace membership. A V2 grant binds that Subject, its normalized issuer and exact OIDC
+  `client_id`; a client string alone is legacy evidence, not invocation authority.
 - Administrator membership changes never accept arbitrary identity-provider JSON. The direct path
   requires recent hardware WebAuthn. The default-disabled fallback accepts only the versioned full
   membership-access command and requires a recent password-authenticated maker, an independent
@@ -105,11 +108,34 @@ preview ETag before the candidate binding, Change Request item and outbox event 
 - Search cache keys bind workspace, complete subject permission scope, policy version, request shape and projection watermark; non-empty short queries and unescaped wildcard semantics are rejected.
 - Policy service failure is fail-closed for protected reads and writes.
 - Gateway authentication, DataHub permissions, a UI-hidden button, or graph-database users never substitute for application authorization.
+- API-product first execution and replay both reauthorize current membership, Subject, issuer,
+  grant, product/version, governed release lineage, permission fingerprint and retention binding.
+  A matching idempotency key never revives revoked or drifted authority. The raw key is not stored,
+  successful responses are `private, no-store`, and authorization-only quota reservation is
+  retired.
 - Legal Hold takes precedence over expiry, lifecycle rules and erasure. A missing or ambiguous hold
   evaluation denies the destructive operation.
 - A retention duration, expired timestamp, object lifecycle result or provider capability label is
   never deletion authority. Automatic deletion and partition detach/drop remain disabled until the
   governed retention gates in ADR-0010 are implemented and verified.
+
+## Atomic API-product invocation boundary
+
+Only the fixed local `SNAPSHOT_V1`, `NEIGHBORS_V1` and `CHAT_LOCAL_V1` executors can enter the
+atomic Sharing completion path; an external provider is prohibited inside this transaction.
+`datariver_app` has no direct table access to invocation ledger, result or monthly usage. Its two
+allowed `SECURITY DEFINER` functions pin `search_path` and UTC, verify transaction-local
+workspace/Subject context and lock the current revocable authority before reading or writing.
+Result completion writes the immutable ledger, canonical JSON result and monthly aggregate
+together; any validation, executor, serialization, size or commit failure consumes no quota.
+
+The request hash covers permission scope, service Subject/issuer/client, product/version/release,
+contract, operation/scope and canonical payload. An exact completed replay returns the stored
+document and invocation ID without executing or charging again; any changed binding conflicts.
+Result bodies are capped at 1 MiB before JSON parsing and bind the active `POLICY_BOOK_V2` rule and
+deadline for `OBJECT_DATA` or `CHAT_CONTENT`; the immutable ledger separately binds the same
+policy's `AUDIT_EVIDENCE` rule and deadline. Replay is denied after body expiry or current-policy
+drift. Physical deletion remains a separate governed retention operation.
 
 ## Policy Book Role rules
 

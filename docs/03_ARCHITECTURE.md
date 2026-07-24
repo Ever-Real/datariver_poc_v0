@@ -62,7 +62,7 @@ an environment may claim HA.
 | Integration | connections, job intents, outbox/inbox, retry/DLQ/reconcile | durable job and delivery state |
 | Knowledge Studio | ontology, proposals, changesets, validation and releases | immutable graph releases/provenance |
 | Assistant | sessions, messages, runs and authorized evidence | chat audit/evidence metadata |
-| Sharing | release-pinned API products, contracts, grants and usage | sharing control plane |
+| Sharing | release-pinned API products, subject/client-bound grants, exact replay bodies and quota evidence | product/version/grant plus immutable invocation/result/month aggregate |
 | Retention & Erasure | approved retention versions, Legal Hold, erasure Maker-Checker review and optional archive-only execution; destructive execution remains absent | policy/hold/erasure aggregates, fenced execution claims, immutable receipts and append-only evidence in PostgreSQL |
 | Operations | capability health and operator actions | connection/job snapshots, not raw telemetry |
 
@@ -81,6 +81,21 @@ The API gateway is a deployment boundary, not an authorization context. It valid
 - External identifiers such as DataHub URNs map to internal UUIDs and are never primary keys.
 - Policy Book Role rules add deny-capable No/Partial/Full, residency and purpose checks. They never
   replace membership ABAC or RLS; missing rules and unavailable partial-treatment adapters deny.
+
+### Atomic Sharing execution boundary
+
+The current Snapshot, Neighbors and deterministic local Chat API-product surfaces execute inside one
+bounded PostgreSQL transaction. The application locks product → current version → exact
+`SUBJECT_CLIENT_V2` grant, rechecks the active service Subject, issuer/client, ABAC fingerprint,
+governed release lineage and active retention rule, then either returns the exact stored result or
+builds one local bounded response. One security-definer completion capability inserts the immutable
+ledger, classified result and UTC-month aggregate together. Any failure rolls back all three.
+
+Redis, Neo4j, DataHub, Airflow, object storage and an external LLM are not participants in this unit
+of work. A provider-backed Sharing surface requires a durable reserve/execute/settle worker and
+cannot extend the database lock across a network call. Result routes are private/no-store; expired
+or policy-drifted bodies are not disclosed. PostgreSQL remains canonical for quota and evidence,
+while physical retention purge remains governed and disabled.
 
 ## Retention, Legal Hold and immutable archive boundary
 

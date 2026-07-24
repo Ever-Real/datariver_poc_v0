@@ -14,9 +14,9 @@ an unsafe bypass, or a historical result from another commit.
 | Ledger field | Value |
 |---|---|
 | Created | 2026-07-23, Asia/Seoul |
-| Branch / Phase 6A entry base / current local implementation | `codex/admin-policy-rbac` / `0b31a5c` / `HEAD` (focused `R5-DEP-01` worktree) |
+| Branch / Phase 6B entry base / current local implementation | `codex/admin-policy-rbac` / `64f9175` / `HEAD` (focused `R5-BE-05` worktree) |
 | Remote comparison at Phase 6A | local refs: `origin/main` at `313e59a`; `origin/codex/admin-policy-rbac` through `a683a93`; Phase 5 and later work are not yet published |
-| Current controlled phase | Phase 6A closes `R5-DEP-01`; continue immediately with atomic Sharing invocation `R5-BE-05` after independent review and commit |
+| Current controlled phase | Phase 6B `R5-BE-05` closed locally; focused commit then Phase 6C `R5-BE-05H` starts immediately |
 | Final artifact order | Feature → API → Data/ERD → Screen → `README.md` → `ARCHITECTURE.md` |
 
 ## Status language
@@ -161,7 +161,7 @@ merged, released, or available to the preparation PC until publication actually 
 | R4-09 | Implement Chat `GRAPH` mode | `PARTIAL` | Knowledge-specific GraphRAG exists; no general Chat mode integration. |
 | R4-10 | Implement `AUTO` intent routing with explicit evidence and policy | `PENDING` | UI label is decorative; no Tool Calling/Semantic Router contract, confidence, audit or safe no-route state. |
 | R4-11 | Let users select a governed Topic/Graph asset for deep answers | `PARTIAL` | Knowledge screen selects a release; general Chat topic routing is absent. |
-| R4-12 | Expose selected catalog capabilities through typed HTTP APIs | `PARTIAL` | Catalog and release-pinned Sharing APIs exist and revalidate governed release lineage on list/detail, replay, publish, grant and invocation. Atomic quota/result replay hardening under R5-BE-05 and target evidence remain. |
+| R4-12 | Expose selected catalog capabilities through typed HTTP APIs | `DONE_LOCAL` + `EXTERNAL_GATE` | Catalog and release-pinned Sharing APIs exist; subject-bound fixed invocations atomically commit quota/result/audit evidence and revalidate governed lineage/current authority. Target WSL/identity/load evidence remains. MCP is separately tracked by R4-13. |
 | R4-13 | Implement official MCP JSON-RPC `tools/list` and `tools/call` | `PENDING` | No MCP route/server/test exists. Add ADR, threat model, allowlisted typed tools, pagination and authorization. |
 
 ### Phase 5 durable Knowledge source job closure — 2026-07-24
@@ -180,6 +180,24 @@ merged, released, or available to the preparation PC until publication actually 
   checklist and Request group 5.
 - [ ] Target WSL `linux/amd64`, external MinIO/S3 IAM, private OpenAI-compatible provider,
   distinct-human browser and target load/recovery evidence remain `EXTERNAL_GATE`.
+
+### Phase 6B atomic Sharing invocation closure — 2026-07-24
+
+- [x] ADR-0045, PRD/checklist, API/data/security/deployment/operations/migration docs, SQLAlchemy
+  metadata, generated `0001` and additive `0055` agree on subject-bound fixed local invocation.
+- [x] Ledger, exact result, monthly quota and separate `AUDIT_EVIDENCE`/body retention bindings
+  commit together; app direct table access, disabled triggers, malformed RLS and inherited SECDEF
+  capability fail closed.
+- [x] Repository-owned clean-room harness passed canonical/additive/no-evidence downgrade,
+  evidence downgrade refusal, seeded legacy row/month backfill, seven tamper probes, `alembic
+  check`, deterministic generation and `9` actual PostgreSQL tests. Canonical SHA-256 is
+  `ffc0abb58b3f4550bcc5d1524ffd9cd954076d0bf73112cab19fc7b3252e7c2f`.
+- [x] Whole backend `1,417 passed / 93 environment-gated skipped`; whole frontend `46 files / 244
+  tests`, type/lint/build; Ruff, strict mypy and static verification passed.
+- [x] Final independent SQL/security, persistence/test and traceability re-audits report
+  `P0=0`, `P1=0`.
+- [ ] WSL `linux/amd64`, real Keycloak service identity, target load/lock/soak and physical purge
+  remain `EXTERNAL_GATE`.
 
 ## Request group 5 — platform audit, remediation and portability
 
@@ -200,7 +218,8 @@ merged, released, or available to the preparation PC until publication actually 
 | R5-BE-02 | P0 | Rehydrate current canonical release/hash and enforce classification/provider/retention policy before GraphRAG. | `PARTIAL`; governed lineage, exact release snapshot/hash, graph/source classification and provider binding fail closed. General Chat retention/profile routing remains in the Chat phase. |
 | R5-BE-03 | P0 | Prevent direct release publication from bypassing independent changeset review. | `DONE_LOCAL`; direct route is `410`, legacy unlineaged releases are hidden from all consumers and activation requires one exact reviewed lineage. |
 | R5-BE-04 | P0 | Record the actual Chat provider/model/external-use audit facts. | `DONE_LOCAL` + `EXTERNAL_GATE`; current Mac Neo4j/Chat/Embedding pass, local reranking is unavailable, and WSL/private-provider facts remain target evidence. |
-| R5-BE-05 | P0 | Make API-product idempotency, per-minute/monthly quota checks and invocation/result recording atomic; bind request hash and replayable response so retries cannot bypass quota or repeat work. | `PENDING` |
+| R5-BE-05 | P0 | Make API-product idempotency, per-minute/monthly quota checks and invocation/result recording atomic; bind request hash and replayable response so retries cannot bypass quota or repeat work. | `DONE_LOCAL` + `EXTERNAL_GATE`; revision `0055`, subject/issuer/client grants, separate audit/body retention, fixed DB capabilities and the clean-room PostgreSQL harness pass. WSL/real Keycloak/target load/physical purge remain external. |
+| R5-BE-05H | P1 | Complete the extended atomic-Sharing hardening matrix: timeout/429, all grant-Subject negatives, injected persistence failures, full expiry/lineage drift and invoke/revoke/publish interleavings. | `AUTHORIZED`; Phase 6C follows the focused Phase 6B commit. |
 | R5-FE-01 | P0 | Bind global search requests/results to Workspace epoch and abort/discard cross-workspace responses. | `DONE_LOCAL`; Top Navigation keys the search component by Workspace and a late-response regression proves purge/discard. |
 | R5-FE-02 | P1 | Bind Admin context/auth hydration and renewal to subject/session epoch. | `PENDING` |
 | R5-FE-03 | P1 | Preserve CSP/security headers in every Nginx location. | `PENDING` |

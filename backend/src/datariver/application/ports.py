@@ -59,6 +59,7 @@ from datariver.application.dto import (
     GovernanceApplyClaim,
     IdempotencyRecord,
     InvocationAuthorizationRecord,
+    InvocationResultRecord,
     KnowledgeChangeSetRecord,
     KnowledgeEvidenceCandidate,
     KnowledgeGraphRecord,
@@ -1626,6 +1627,7 @@ class SharingStore(Protocol):
         *,
         workspace_id: UUID,
         product_id: UUID,
+        consumer_subject_id: UUID,
         consumer_client_id: str,
         scopes: frozenset[str],
         maximum_classification: int,
@@ -1652,13 +1654,21 @@ class SharingStore(Protocol):
         expected_version: int,
     ) -> ConsumerGrantRecord: ...
 
-    async def authorize_invocation(
+    async def execute_invocation(
         self,
         *,
         workspace_id: UUID,
         product_id: UUID,
+        actor_id: UUID,
+        consumer_issuer: str,
         consumer_client_id: str,
+        security_scopes: frozenset[str],
+        effective_classification: int,
         requested_scope: str,
+        operation: str,
+        result_type: str,
+        payload_document: dict[str, Any],
         invocation_key: str,
         request_id: str,
-    ) -> InvocationAuthorizationRecord: ...
+        result_builder: Callable[[InvocationAuthorizationRecord], Awaitable[dict[str, Any]]],
+    ) -> InvocationResultRecord: ...

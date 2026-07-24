@@ -893,9 +893,45 @@ async def test_legacy_active_release_cannot_be_exposed_rebased_or_replayed() -> 
                     request_hash="d" * 64,
                 )
             now = datetime.now(UTC)
+            consumer_subject_id = uuid4()
+            await session.execute(
+                text(
+                    """
+                    INSERT INTO iam.subjects (
+                        id, issuer, external_subject, display_name, active
+                    ) VALUES (
+                        :subject_id, 'knowledge-publication-test', :external_subject,
+                        'Sharing service consumer', true
+                    )
+                    """
+                ),
+                {
+                    "subject_id": consumer_subject_id,
+                    "external_subject": str(consumer_subject_id),
+                },
+            )
+            await session.execute(
+                text(
+                    """
+                    INSERT INTO iam.workspace_memberships (
+                        workspace_id, subject_id, department_id, job_function,
+                        clearance, attributes, active, access_expires_at, version
+                    ) VALUES (
+                        :workspace_id, :subject_id, NULL, 'SERVICE_ACCOUNT',
+                        3, '{}'::jsonb, true, NULL, 1
+                    )
+                    """
+                ),
+                {
+                    "workspace_id": workspace_id,
+                    "subject_id": consumer_subject_id,
+                },
+            )
+            await session.commit()
             grant = await sharing.create_grant(
                 workspace_id=workspace_id,
                 product_id=product.product_id,
+                consumer_subject_id=consumer_subject_id,
                 consumer_client_id="legacy-release-client",
                 scopes=frozenset({"neighbors.query"}),
                 maximum_classification=1,
@@ -911,6 +947,7 @@ async def test_legacy_active_release_cannot_be_exposed_rebased_or_replayed() -> 
                 await sharing.create_grant(
                     workspace_id=workspace_id,
                     product_id=other_product.product_id,
+                    consumer_subject_id=consumer_subject_id,
                     consumer_client_id="legacy-release-client",
                     scopes=frozenset({"neighbors.query"}),
                     maximum_classification=1,
@@ -922,14 +959,6 @@ async def test_legacy_active_release_cannot_be_exposed_rebased_or_replayed() -> 
                     idempotency_key="legacy-sharing-grant",
                     request_hash="e" * 64,
                 )
-            first_invocation = await sharing.authorize_invocation(
-                workspace_id=workspace_id,
-                product_id=product.product_id,
-                consumer_client_id="legacy-release-client",
-                requested_scope="neighbors.query",
-                invocation_key="legacy-sharing-invocation",
-                request_id="legacy-sharing-request",
-            )
             captured = await store.create_changeset(
                 workspace_id=workspace_id,
                 graph_id=graph_id,
@@ -951,7 +980,6 @@ async def test_legacy_active_release_cannot_be_exposed_rebased_or_replayed() -> 
             assert changeset.published_release_id == release.release_id
             assert published_product.current_version_id == product.versions[0].version_id
             assert grant.product_version_id == product.versions[0].version_id
-            assert first_invocation.release_id == release.release_id
 
         async with engine.begin() as connection:
             await connection.execute(
@@ -1039,6 +1067,7 @@ async def test_legacy_active_release_cannot_be_exposed_rebased_or_replayed() -> 
                 await sharing.create_grant(
                     workspace_id=workspace_id,
                     product_id=product.product_id,
+                    consumer_subject_id=consumer_subject_id,
                     consumer_client_id="legacy-release-client",
                     scopes=frozenset({"neighbors.query"}),
                     maximum_classification=1,
@@ -1049,15 +1078,6 @@ async def test_legacy_active_release_cannot_be_exposed_rebased_or_replayed() -> 
                     actor_id=author_id,
                     idempotency_key="legacy-sharing-grant",
                     request_hash="e" * 64,
-                )
-            with pytest.raises(ConflictError, match="governed changeset base"):
-                await sharing.authorize_invocation(
-                    workspace_id=workspace_id,
-                    product_id=product.product_id,
-                    consumer_client_id="legacy-release-client",
-                    requested_scope="neighbors.query",
-                    invocation_key="legacy-sharing-invocation",
-                    request_id="legacy-sharing-request",
                 )
             with pytest.raises(ConflictError, match="governed changeset base"):
                 await SqlSharingStore(session)._require_release(

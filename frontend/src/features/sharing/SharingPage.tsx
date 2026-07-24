@@ -27,6 +27,7 @@ export function SharingPage({
   const [slug, setSlug] = useState('')
   const [graphId, setGraphId] = useState('')
   const [surface, setSurface] = useState<Surface>('NEIGHBORS')
+  const [consumerSubjectId, setConsumerSubjectId] = useState('')
   const [consumerClientId, setConsumerClientId] = useState('')
   const [error, setError] = useState<unknown>()
 
@@ -103,6 +104,7 @@ export function SharingPage({
       await client.request<ConsumerGrant>(`/api-products/${selected.id}/grants`, {
         method: 'POST', idempotencyKey: newIdempotencyKey('consumer-grant-create'),
         body: JSON.stringify({
+          consumer_subject_id: consumerSubjectId,
           consumer_client_id: consumerClientId,
           scopes: current.contract.scopes ?? [surfaceScope[current.surface]],
           maximum_classification: selected.classification,
@@ -110,7 +112,7 @@ export function SharingPage({
           valid_from: now.toISOString(), expires_at: expires.toISOString(),
         }),
       })
-      setConsumerClientId(''); await refreshGrants()
+      setConsumerSubjectId(''); setConsumerClientId(''); await refreshGrants()
     } catch (next) { setError(next) }
   }
 
@@ -143,8 +145,8 @@ export function SharingPage({
         <div><span className="badge">{selected.state}</span><span className="badge badge-soft">v{selected.version}</span></div>
         <h3>{selected.name}</h3><code>{selected.graph_id}</code>
         <div className="action-row">{selected.versions.some((version) => version.state === 'DRAFT') && <button className="button" onClick={() => void publish(selected)}>강한 인증으로 게시</button>}</div>
-        {selected.current_version_id && <form className="inline-form" onSubmit={(event) => void createGrant(event)}><label>OIDC Consumer client_id<input value={consumerClientId} onChange={(event) => setConsumerClientId(event.target.value)} pattern="[A-Za-z0-9._:-]+" required /></label><label>기본 정책<input value="60 RPM · 월 100,000회 · 30일" readOnly /></label><button className="button">Grant 생성</button></form>}
-        <div className="result-list">{grants.map((grant) => <div className="panel" key={grant.id}><span className="badge">{grant.state}</span><h3>{grant.consumer_client_id}</h3><p>{grant.scopes.join(', ')} · {grant.requests_per_minute} RPM</p><small>{new Date(grant.expires_at).toLocaleString()} 만료</small></div>)}</div>
+        {selected.current_version_id && <form className="inline-form" onSubmit={(event) => void createGrant(event)}><label>Service Subject UUID<input value={consumerSubjectId} onChange={(event) => setConsumerSubjectId(event.target.value)} pattern="[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}" required /></label><label>OIDC Consumer client_id<input value={consumerClientId} onChange={(event) => setConsumerClientId(event.target.value)} pattern="[A-Za-z0-9._:-]+" required /></label><label>기본 정책<input value="60 RPM · 월 100,000회 · 30일" readOnly /></label><button className="button">Grant 생성</button></form>}
+        <div className="result-list">{grants.map((grant) => <div className="panel" key={grant.id}><span className="badge">{grant.state}</span><span className="badge badge-soft">{grant.contract_version}</span><h3>{grant.consumer_client_id}</h3><p>{grant.scopes.join(', ')} · {grant.requests_per_minute} RPM</p><small>Subject {grant.consumer_subject_id ?? 'legacy-unbound'} · {new Date(grant.expires_at).toLocaleString()} 만료</small></div>)}</div>
       </article>}
     </section>
   )

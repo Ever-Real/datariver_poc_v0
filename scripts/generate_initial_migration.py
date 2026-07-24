@@ -44,6 +44,26 @@ def _load_phase5_revision() -> ModuleType:
     return module
 
 
+def _load_phase6b_revision() -> ModuleType:
+    """Load the self-contained atomic Sharing SQL into the canonical baseline."""
+    revision_path = (
+        Path(__file__).resolve().parents[1]
+        / "backend"
+        / "alembic"
+        / "versions"
+        / "0055_atomic_sharing_invocation_results.py"
+    )
+    spec = importlib.util.spec_from_file_location(
+        "datariver_canonical_phase6b_revision",
+        revision_path,
+    )
+    if spec is None or spec.loader is None:
+        raise RuntimeError("Unable to load the Phase 6B migration contract.")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
 def _sql_statements(sql: str) -> tuple[str, ...]:
     return tuple(
         statement.strip() for statement in sql.split(_STATEMENT_BOUNDARY) if statement.strip()
@@ -141,6 +161,17 @@ def build_upgrade() -> ops.UpgradeOps:
     ):
         operations.extend(
             ops.ExecuteSQLOp(statement) for statement in _sql_statements(getattr(phase5, attribute))
+        )
+    phase6b = _load_phase6b_revision()
+    for attribute in (
+        "_FUNCTION_SQL",
+        "_TRIGGER_FUNCTION_SQL",
+        "_TRIGGER_SQL",
+        "_GRANT_SQL",
+    ):
+        operations.extend(
+            ops.ExecuteSQLOp(statement)
+            for statement in _sql_statements(getattr(phase6b, attribute))
         )
     return ops.UpgradeOps(ops=operations)
 
@@ -535,6 +566,23 @@ EXECUTE FUNCTION assistant.enforce_chat_message_retention_binding()
 def build_downgrade() -> ops.DowngradeOps:
     phase5 = _load_phase5_revision()
     operations: list[ops.MigrateOperation] = [
+        ops.ExecuteSQLOp("DROP TRIGGER api_invocation_exact_result ON sharing.api_invocations"),
+        ops.ExecuteSQLOp(
+            "DROP TRIGGER api_invocation_results_immutable ON sharing.api_invocation_results"
+        ),
+        ops.ExecuteSQLOp("DROP TRIGGER api_invocations_immutable ON sharing.api_invocations"),
+        ops.ExecuteSQLOp("DROP FUNCTION sharing.require_atomic_invocation_result()"),
+        ops.ExecuteSQLOp("DROP FUNCTION sharing.reject_invocation_evidence_mutation()"),
+        ops.ExecuteSQLOp(
+            "DROP FUNCTION sharing.complete_api_invocation_v2("
+            "uuid, uuid, uuid, uuid, text, text, text, text, uuid, uuid, uuid, uuid, "
+            "text, text, text, text, integer, text, text, text, text, text, uuid, text)"
+        ),
+        ops.ExecuteSQLOp(
+            "DROP FUNCTION sharing.prepare_api_invocation_v2("
+            "uuid, uuid, uuid, text, text, text, text, uuid, uuid, uuid, uuid, text, "
+            "text, text, integer, text, text, text)"
+        ),
         *(ops.ExecuteSQLOp(statement) for statement in _sql_statements(phase5._DROP_TRIGGER_SQL)),
         ops.ExecuteSQLOp(f"DROP FUNCTION {IDENTITY_PROVISIONING_SIGNATURE}"),
         ops.ExecuteSQLOp("DROP FUNCTION iam.resolve_default_workspace(text, text)"),

@@ -174,7 +174,7 @@ scripts/compose.sh --env-file "$DATARIVER_ENV_FILE" -f compose.yaml run --rm mig
 ./scripts/reconcile-postgres-roles.sh
 scripts/compose.sh --env-file "$DATARIVER_ENV_FILE" -f compose.yaml run --rm migrate \
   /app/.venv/bin/alembic -c backend/alembic.ini current
-# Require: 0054 (head)
+# Require: 0055 (head)
 ```
 
 For native Windows use
@@ -186,6 +186,11 @@ unexpected membership rather than weakening the assertion.
 Revision `0054` refuses downgrade when the durable source-analysis ledger contains any job. That is
 an evidence-preservation gate: preserve backup/logs and use a reviewed forward fix; do not delete
 jobs to force downgrade.
+
+Revision `0055` refuses downgrade while a subject-bound V2 consumer grant or atomic
+invocation/result/month-usage evidence exists. Revocation does not erase audit evidence. Preserve
+the database and use a reviewed forward fix; downgrade is supported only before V2 grant/evidence
+creation, where it restores the exact legacy schema and application privileges.
 
 When the selected Mac or WSL profile intentionally uses the optional local MinIO reference, choose
 that profile's environment file once. Skip this block for external S3/MinIO:

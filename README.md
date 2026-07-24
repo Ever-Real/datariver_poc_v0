@@ -589,7 +589,7 @@ environment's secrets or volumes.
    overlays. For an existing PostgreSQL volume, run `scripts/reconcile-postgres-roles.sh` (or the
    PowerShell equivalent) before and after applying `alembic upgrade head` through the migration
    service; the second idempotent pass repairs Phase 2 grants when roles were created after an older
-   migration. Readiness requires revision `0054`.
+   migration. Readiness requires revision `0055`.
 4. Start the API, relay, workers and web service using either the container profile or the
    host-development commands below. Check `/api/v1/health/live`, `/api/v1/health/ready`,
    `/api/v1/capabilities` and the APISIX/Vite proxy before using application workflows.
@@ -618,7 +618,7 @@ See the
 [ADR-0036](docs/adr/0036-policy-book-rbac-and-admin-approval-gates.md) plus
 [ADR-0037](docs/adr/0037-retention-execution-control-plane.md). On a new or upgraded database,
 run `alembic upgrade head` and verify `/api/v1/health/ready` reports required/current revision
-`0054`. Legacy Role markers remain usable by the existing ABAC document but are not normalized audit
+`0055`. Legacy Role markers remain usable by the existing ABAC document but are not normalized audit
 evidence until an Admin explicitly reassigns the Role. Manual/fallback edits cannot submit a
 `datariver-role-*` marker; the dedicated assignment path matches it to the locked Role row and
 rejects exact same Role/version/canonical-access no-ops even when only the optimistic expected version
@@ -1185,7 +1185,7 @@ scripts/compose.sh --env-file "$DATARIVER_ENV_FILE" -f compose.yaml \
   --profile knowledge-source up -d --wait api knowledge-source-worker
 scripts/compose.sh --env-file "$DATARIVER_ENV_FILE" -f compose.yaml run --rm migrate \
   /app/.venv/bin/alembic -c backend/alembic.ini current
-# Required output: 0054 (head)
+# Required output: 0055 (head)
 ```
 
 When the selected Mac or WSL profile intentionally uses the optional local MinIO reference, it uses
@@ -1293,7 +1293,7 @@ docker compose -f compose.yaml build --pull
 ```
 
 애플리케이션을 올리기 전에 권한이 분리된 `migrate` 서비스로 Alembic을 실행한다. 이
-릴리스의 필수 revision은 `0054`이다. 호스트의 임의 DB 계정으로 `alembic`을 직접 실행하지
+릴리스의 필수 revision은 `0055`이다. 호스트의 임의 DB 계정으로 `alembic`을 직접 실행하지
 않는다.
 
 ```bash
@@ -1302,7 +1302,7 @@ scripts/compose.sh --env-file .env -f compose.yaml run --rm migrate \
   /app/.venv/bin/alembic -c backend/alembic.ini current
 ```
 
-두 번째 명령의 현재 revision이 `0054 (head)`인지 확인한다. 마이그레이션 실패 시 서비스를
+두 번째 명령의 현재 revision이 `0055 (head)`인지 확인한다. 마이그레이션 실패 시 서비스를
 재기동하거나 downgrade를 추측 실행하지 말고, 로그와 DB 상태를 보존한 채 배포를 중단한다.
 
 ### 3. API·Worker·Web 재기동과 상태 확인
@@ -1383,7 +1383,7 @@ service token의 FINAL 호출은 `401` 또는 `403`으로 차단되어야 한다
 - Change management: typed DataHub aspect UPSERT requests are server-bound to an authorized local dataset identity and scope, then move through legal transitions and distinct final approval. In new-CR intake, each Tag/Term `+` uses only the bounded authorization-pruned workspace projection; provider-wide `*` vocabulary is excluded because it cannot carry the same Workspace/classification predicate. Keyword input narrows that projection before a comma-aware new proposal is offered. Column input reserves the table Schema track, so column item/Type/Description/Term/Tag/requested-change/management align with Table/Owner/description/Terms/Tags/requested-change/column-addition above it. Reads use the current authorized target; approval and forward transitions reject identity, revision or authorization-scope drift. REVIEW and TEST require every routed System's Developer evidence, while FINAL requires every routed System's Developer and Data Steward plus one role-separated global Admin. Every FINAL decision also requires recent hardware-WebAuthn assurance. Generic raw Aspect creation and the legacy upload-derived raw proposal API additionally require the deny-by-default, hardware-human-only `change.raw.create` action and are not exposed in the ordinary UI. A leased worker applies each aspect idempotently and only marks `APPLIED` after re-read hash equality. Apply-time requester/policy reauthorization, DataRiver target serialization and external provider CAS remain explicit production gates.
 - Classification access administration: eligible human security administrators can review and independently approve versioned four-class Search/Chat policies, review or revoke immutable inference-provider profile versions, and govern policy-bound RESTRICTED Search grants. ADR-0020 additionally permits an audited, read-only same-workspace catalog review of non-deleted quarantined DataHub projections for classification remediation, including the fixed typed DataHub metadata detail; it never enables export, Chat, arbitrary provider access or mutation. The Admin UI never accepts provider endpoints or credentials, and RESTRICTED evidence is never eligible for Chat.
 - Knowledge graph: create a graph/ontology, author typed node/edge changesets, validate, independently review, publish or roll back immutable releases, export governed views and call bounded analysis. Raw SQL/Cypher is never accepted.
-- API sharing: create a governed-release-pinned contract version, publish it with recent strong authentication, grant an OIDC `client_id` explicit scopes/classification/validity and quotas, revoke it, and invoke bounded neighbor analysis through an atomic grant-and-usage check. List/detail, idempotent replay, publish, grant and invocation revalidate the release's current independently reviewed lineage; a legacy or later-corrupted lineage is not exposed.
+- API sharing: create a governed-release-pinned contract version, publish it with recent strong authentication, bind an active non-expiring service Subject plus issuer/OIDC `client_id` to explicit scopes/classification/validity and quotas, revoke it, and invoke fixed Snapshot/Neighbors/local-Chat surfaces. Ledger, canonical result and monthly quota commit atomically; exact retries replay the stored no-store response without executing or charging twice. List/detail, replay, publish, grant and invocation revalidate current authority and independently reviewed lineage; client-only legacy grants are non-invokable until explicitly upgraded.
 - Chat: deterministic baseline answers only from catalog or active-release knowledge evidence that passed prefiltering and per-item authorization. Immutable chunks bind workspace, classification, typed scope, source/version/effective time and content hash; only validated cited chunk IDs are persisted, otherwise the answer is `검증 불가`. Persistence additionally requires the workspace's independently approved ACTIVE retention policy: each new session binds its exact policy ID/hash and database-time deadline, and a superseded, expired or legacy-unbound session is append-closed. There is no duration fallback. The default inference-worker contract rejects SQL, Cypher, arbitrary HTTP, tools and mutation fields. Development Knowledge processing may use either the fixed loopback Ollama adapter in [ADR-0023](docs/adr/0023-mac-development-local-inference-and-graph-projection.md) or the private-network OpenAI-compatible adapter in [ADR-0030](docs/adr/0030-development-intranet-openai-compatible-adapter.md); both retain a fixed non-executable response contract and server-side validation. Commercial/public external inference remains disabled until live revalidation, delivery/streaming, metrics and scaled red-team gates are accepted.
 - Monitoring: liveness, readiness, dependency capabilities, workspace counts, outbox dead letters and ABAC-protected Prometheus HTTP metrics remain independent so one degraded optional dependency does not hide core state. Database-pool metrics expose only bounded connection states and configured limits, never workspace, subject or query labels.
 
@@ -1490,6 +1490,15 @@ npm run typecheck
 npm run lint
 npm run test -- --run
 npm run build
+```
+
+For the atomic Sharing invocation contract, run the destructive-but-isolated PostgreSQL acceptance
+harness explicitly. It refuses to reuse an existing container, creates random mode-`0600` temporary
+credentials, proves canonical and additive migration paths plus downgrade refusal and fail-closed
+tamper probes, then removes its container and credentials:
+
+```bash
+DATARIVER_SHARING_VERIFY_CONFIRM=1 ./scripts/verify_atomic_sharing_postgres.sh
 ```
 
 Before production promotion, verify the external DataHub runtime independently of application

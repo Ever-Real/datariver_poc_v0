@@ -2,6 +2,35 @@
 
 ## Current verification status
 
+### Phase 6B atomic Sharing invocation — 2026-07-24
+
+The current worktree closes the local `R5-BE-05` implementation at Alembic head `0055`. Ruff
+format/lint, strict mypy over `374` source/test files, static architecture/Compose/document
+verification and the whole backend suite passed: `1,417 passed / 93 environment-gated skipped`.
+The skips are not passes. The frontend passed TypeScript, zero-warning ESLint, `46 files / 244
+tests` and the production Vite build.
+
+The focused domain/persistence suite passed `37` tests. The repository-owned
+`scripts/verify_atomic_sharing_postgres.sh` provisions and removes an isolated PostgreSQL 17
+container, roles and three disposable databases. It passed `9` app/owner concurrency and security
+tests at `0055`: exact first/replay,
+same-key races, changed binding conflict, builder/oversize rollback, revocation/non-disclosure,
+direct-table denial, immutable/orphan evidence, pre-parse byte rejection, membership-lock
+serialization, concurrent RPM/month quota, 59/61-second and UTC-month boundaries, legacy
+usage/replay, permission/product/retention drift and separate audit/body retention. Additive `0054 -> 0055`, empty canonical
+`0001 -> 0055`, safe no-evidence downgrade and downgrade refusal with evidence were also exercised.
+The additive path seeded three 0054 legacy rows across a UTC month boundary and verified preserved
+IDs, honest legacy evidence, exact monthly sums/timestamps and no fabricated result. Malformed
+canonical states with RLS disabled, the exact-result trigger disabled, inherited or SET-only app
+capability, app outbound SET ROLE, unsafe app attributes or runtime-owned evidence failed `0055`
+before revision advance.
+`alembic check` reported no new operations.
+
+Canonical `0001` was generated twice byte-identically at SHA-256
+`ffc0abb58b3f4550bcc5d1524ffd9cd954076d0bf73112cab19fc7b3252e7c2f`. WSL `linux/amd64`, real
+Keycloak service identity/rotation, representative target load/lock-wait/soak and accountable
+physical result-purge evidence remain external gates.
+
 ### Phase 6A WSL bootstrap and connector network — 2026-07-24
 
 The current worktree adds fail-before-mutation blank-profile coverage, approved token-file

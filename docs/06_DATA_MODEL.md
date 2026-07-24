@@ -231,8 +231,21 @@ endpoints are absent from the same typed response are discarded before domain va
 |---|---|---|
 | `sharing.api_products` | workspace/slug UQ, graph/classification/owner/state/current version, optimistic version | stable managed product identity |
 | `sharing.api_product_versions` | workspace/product/version UQ, graph/release composite FK, surface/contract/bounds/state/publisher | immutable release-pinned contract version |
-| `sharing.consumer_grants` | product version/client UQ, scopes/classification/RPM/month quota/validity/state/revocation, version | credential-reference-only consumer entitlement |
-| `sharing.api_invocations` | grant/idempotency key UQ, scope/request/time/units | immutable usage and quota ledger |
+| `sharing.consumer_grants` | V2: workspace service-Subject FK + issuer + client + product version partial UQ; legacy/V2 shape CHECK; scopes/classification/RPM/month quota/validity/state/revocation/version | secret-free, subject-bound consumer entitlement; active legacy grants upgrade in place |
+| `sharing.api_invocations` | workspace/id UQ, grant/key-hash UQ, actor membership and product-version FKs; complete binding/request/result-body retention plus separate `AUDIT_EVIDENCE` policy/hash/deadline; legacy/V2 shape CHECK | immutable usage, replay binding and quota ledger |
+| `sharing.api_invocation_results` | one workspace/invocation PK+FK, actor/client/result type, canonical JSON text/hash/byte size, classification and exact retention binding | immutable replay body, limited to 1 MiB and disclosed only through the fixed functions |
+| `sharing.api_invocation_monthly_usage` | workspace/grant/UTC-month PK, positive units | transactionally locked monthly quota aggregate |
+
+Revision `0055` makes invocation completion the only quota-consuming event. The application role
+has no direct privilege on the three evidence tables; it can execute only
+`sharing.prepare_api_invocation_v2` and `sharing.complete_api_invocation_v2`. Both functions use
+database time, a pinned UTC/search-path context and current membership, Subject, grant, product,
+version, release-lineage and retention-policy locks. The completion function inserts ledger,
+result and monthly usage in one transaction after locking both the body-class rule and the
+`AUDIT_EVIDENCE` rule. Immutable triggers and an initially deferred exact
+result trigger reject mutation or an orphan V2 ledger. Canonical and additive migration paths
+validate the exact columns, constraints, indexes, RLS policies, triggers and function security
+attributes rather than accepting same-name objects.
 
 ### Assistant
 
@@ -453,6 +466,15 @@ creates no release or governance
 approval. Downgrade refuses to erase durable job evidence. The generated `0001` must contain the
 same current schema and security objects; production provider-profile execution and target-host
 acceptance are separate gates.
+
+Alembic `0055` implements ADR-0045's atomic release-pinned Sharing boundary. It binds new grants to
+an active non-expiring service Subject, issuer and OIDC client; preserves active legacy grant IDs
+only through an explicit in-place V2 upgrade; and adds immutable result/month aggregates plus
+least-privilege fixed functions. Existing legacy usage remains evidence but has no replayable
+result. The revision verifies its complete security contract on canonical and additive paths,
+refuses downgrade while V2 grants/evidence exist and otherwise restores the exact legacy schema
+and privileges. Physical result purge and production retention conformance are deliberately not
+claimed.
 
 `EVENT_RETENTION_DAYS` is a target online-retention input, not a deletion switch. The Phase 2 worker
 archives only minimal erasure approval/execution evidence and stops at

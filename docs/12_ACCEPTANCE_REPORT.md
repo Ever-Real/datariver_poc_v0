@@ -14,6 +14,22 @@ addenda and `docs/29_MASTER_EXECUTION_BACKLOG.md`.
 
 P0–P3 foundation addendum, updated 2026-07-16: current source checks additionally include the stable DataHub v1.6.0 release contract and typed OIDC assurance. Hardware WebAuthn requires an exact approved ACR+AMR combination and `auth_time`; OTP, generic MFA and refreshed-token `iat` cannot satisfy high-risk authorization. Browser remediation is bounded to typed authentication actions, rejects unsafe return locations, and never automatically replays a denied mutation after an authentication redirect. Compatibility migrations and the current hybrid runtime have separate live evidence below.
 
+## Phase 6B atomic Sharing invocation addendum — 2026-07-24
+
+This addendum accepts local source and isolated-PostgreSQL closure of `R5-BE-05` at revision `0055`.
+It does not accept the preparation PC, production identity/provider policy, target load or physical
+retention execution.
+
+| Gate | Result | Current executed evidence |
+|---|---|---|
+| Atomic contract | PASS (local/isolated DB) | Fixed Snapshot/Neighbors/local-Chat execution performs no external provider call. Exact result, immutable ledger and UTC-month usage commit together or not at all; replay returns the stored document without executor or quota. The authorization-only route is `410`. |
+| Identity and disclosure | PASS (local/isolated DB) | V2 grants bind active non-expiring service Subject + membership + issuer + client. First call and replay recheck current authority, governed lineage, permission fingerprint and retention binding. The app role has none of seven evidence-table privileges; fixed functions are app-only and immutable/exact-result triggers must be enabled. |
+| PostgreSQL and migration | PASS (isolated PostgreSQL 17) | The repository-owned clean-room harness passed `9` app/owner tests for concurrency, quota, DB-clock boundaries, rollback, replay drift, legacy usage, locking, RLS and immutable evidence. The additive path preserved three seeded 0054 rows and exact UTC-month backfill without fabricating replay bodies; empty canonical upgrade, safe no-evidence downgrade and evidence downgrade refusal also passed. Seven fail-closed probes covered disabled RLS/trigger, inherited or SET-only app assumption, app outbound SET ROLE, unsafe app attributes and runtime-owned evidence. `alembic check` was clean. |
+| Determinism and regression | PASS | Canonical `0001` reproduced twice at SHA-256 `ffc0abb58b3f4550bcc5d1524ffd9cd954076d0bf73112cab19fc7b3252e7c2f`. Ruff, strict mypy over `374` files, static verification and backend `1,417 passed / 93 skipped`; frontend TypeScript, ESLint, `46 files / 244 tests` and production build passed. |
+| Retention posture | PASS WITH OPEN EXECUTION GATE | Ledger `AUDIT_EVIDENCE` and replay-body `OBJECT_DATA/CHAT_CONTENT` policy/hash/deadline bindings are independently stored. Result size is rejected at 1 MiB before JSON parsing, successful responses are `private, no-store`, and disclosure is policy/deadline bound. No source or report claims physical purge, WORM promotion or production retention conformance. |
+| Independent review | PASS (local source/isolated DB) | Final SQL/security, persistence/test and governance/traceability re-audits each reported `P0=0`, `P1=0` after the trust-root and seeded legacy-backfill findings were corrected and rerun. |
+| External acceptance | OPEN | WSL `linux/amd64`, real Keycloak service Subject/issuer/client revocation and rotation, representative target lock/load/soak, and accountable physical purge evidence remain `EXTERNAL_GATE`. |
+
 ## Phase 6A WSL bootstrap/network addendum — 2026-07-24
 
 This addendum accepts the local source-controlled correction for `R5-DEP-01`. It does not accept

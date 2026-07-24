@@ -315,14 +315,20 @@ rejects citations outside the authorized node/relationship evidence package.
 | `POST/GET /api-products` | `sharing.manage` | create/list release-pinned product contracts |
 | `POST /api-products/{id}/versions` | `sharing.manage` | create the next immutable contract draft |
 | `POST .../versions/{version_id}/publish` | `sharing.publish` | strong-auth publish and deprecate prior current version |
-| `POST/GET /api-products/{id}/grants` | `sharing.manage` | grant current version to OIDC `client_id` with scope/classification/time/quota |
+| `POST/GET /api-products/{id}/grants` | `sharing.manage` | bind an active non-expiring service Subject + issuer + OIDC `client_id` to the current version with scope/classification/time/quota |
 | `POST .../grants/{grant_id}/revoke` | `sharing.manage` | immediately revoke a grant |
-| `POST .../{id}/authorize-invocation` | `sharing.invoke` | atomic client/grant/scope/validity/quota check and usage record |
-| `POST .../{id}/invoke/neighbors` | `sharing.invoke` | grant-metered, contract-bounded analysis on the pinned release |
-| `POST .../{id}/invoke/snapshot` | `sharing.invoke` | grant-metered ABAC-filtered snapshot with scoped hash/counts |
-| `POST .../{id}/invoke/chat` | `sharing.invoke` | deterministic evidence Chat over only the pinned authorized release |
+| `POST .../{id}/authorize-invocation` | retired | `410 Gone`; authorization without a completed result never reserves quota |
+| `POST .../{id}/invoke/neighbors` | `sharing.invoke` | atomic grant-metered bounded analysis; exact key/binding replays the stored `NEIGHBORS_V1` result |
+| `POST .../{id}/invoke/snapshot` | `sharing.invoke` | atomic ABAC-filtered snapshot; exact key/binding replays the stored `SNAPSHOT_V1` result |
+| `POST .../{id}/invoke/chat` | `sharing.invoke` | atomic deterministic pinned-release answer; exact key/binding replays the stored `CHAT_LOCAL_V1` result |
 
-Product versions accept only the registered `SNAPSHOT`, `NEIGHBORS` or `CHAT` surfaces and supported scopes. Credentials stay in the IdP/gateway; DataRiver stores only `consumer_client_id`. Replaying the same invocation idempotency key does not consume quota twice.
+Product versions accept only the registered `SNAPSHOT`, `NEIGHBORS` or `CHAT` surfaces and supported
+scopes. Credentials stay in the IdP/gateway; DataRiver stores Subject/issuer/client references, not
+secrets. `Idempotency-Key` is 16..200 characters and persisted only as SHA-256. Request hash binds
+the caller permission fingerprint, product/version/release/contract, surface/scope and canonical
+payload. A completed exact replay returns the same invocation ID and body without quota; changed
+binding conflicts. Result JSON is at most 1 MiB and all three result routes send
+`Cache-Control: private, no-store`.
 
 ### Chat
 

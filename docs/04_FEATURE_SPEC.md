@@ -223,9 +223,21 @@ Any pre-apply review state → REJECTED or CANCELLED under policy
 ## API product sharing
 
 - Publisher selects immutable graph release, registered query template, JSON schema, quota plan and expiration.
-- Consumer client obtains a scoped grant; credentials are managed by gateway/IdP and only references are stored.
-- Every invocation enforces workspace/share grant, template bounds, timeout, row/hop limit and records usage.
-- Revocation invalidates the policy version and cached grant within the documented TTL.
+- A new grant binds one active non-expiring `SERVICE_ACCOUNT` Subject, its issuer, exact
+  `client_id`, current product version, scopes, classification ceiling, validity and quotas.
+  Client-only legacy grants remain non-invokable evidence; explicit owner binding upgrades an active
+  row without discarding its identifier or historical usage.
+- Snapshot, Neighbors and deterministic local Chat execute with fixed typed operations. One bounded
+  transaction rechecks ABAC, service identity, current product/version/grant, governed release
+  lineage and active retention policy, then atomically records one immutable usage row, exact
+  classified replay result and UTC-month aggregate.
+- The raw idempotency key is hashed. An exact retry returns the same invocation/result without
+  consuming quota; changed binding conflicts. Failed or oversized work records nothing, result JSON
+  is capped at 1 MiB, and result responses are `private, no-store`.
+- The former authorization-only reservation endpoint returns `410`. Revocation or current
+  identity/version/lineage/policy drift prevents stored-result disclosure.
+- No external provider call is allowed while the invocation transaction holds locks. A future
+  provider-backed surface requires a durable reserve/execute/settle worker.
 
 ## Administration
 

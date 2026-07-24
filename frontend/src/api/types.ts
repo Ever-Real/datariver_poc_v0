@@ -1022,6 +1022,9 @@ export interface ConsumerGrant {
   id: string
   product_id: string
   product_version_id: string
+  contract_version: 'LEGACY_CLIENT_V1' | 'SUBJECT_CLIENT_V2'
+  consumer_subject_id?: string
+  consumer_issuer?: string
   consumer_client_id: string
   scopes: string[]
   maximum_classification: string

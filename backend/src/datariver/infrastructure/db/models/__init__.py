@@ -99,6 +99,8 @@ from datariver.infrastructure.db.models.retention import (
 )
 from datariver.infrastructure.db.models.sharing import (
     ApiInvocationModel,
+    ApiInvocationMonthlyUsageModel,
+    ApiInvocationResultModel,
     ApiProductModel,
     ApiProductVersionModel,
     ConsumerGrantModel,
@@ -112,6 +114,8 @@ __all__ = [
     "AdminAccessApprovalModel",
     "AdminAccessRequestModel",
     "ApiInvocationModel",
+    "ApiInvocationMonthlyUsageModel",
+    "ApiInvocationResultModel",
     "ApiProductModel",
     "ApiProductVersionModel",
     "ApprovalModel",

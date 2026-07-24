@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Awaitable, Callable
 from datetime import datetime
 from typing import Any
 from uuid import UUID
@@ -9,6 +10,7 @@ from datariver.application.dto import (
     ApiProductVersionRecord,
     ConsumerGrantRecord,
     InvocationAuthorizationRecord,
+    InvocationResultRecord,
 )
 from datariver.application.ports import SharingStore
 from datariver.application.services.authorization import AuthorizationService
@@ -194,6 +196,7 @@ class SharingService:
         *,
         product: ApiProductRecord,
         workspace_id: UUID,
+        consumer_subject_id: UUID,
         consumer_client_id: str,
         scopes: frozenset[str],
         maximum_classification: Classification,
@@ -217,6 +220,7 @@ class SharingService:
         return await self._store.create_grant(
             workspace_id=workspace_id,
             product_id=product.product_id,
+            consumer_subject_id=consumer_subject_id,
             consumer_client_id=consumer_client_id,
             scopes=scopes,
             maximum_classification=int(maximum_classification),
@@ -275,18 +279,23 @@ class SharingService:
             expected_version=expected_version,
         )
 
-    async def authorize_invocation(
+    async def execute_invocation(
         self,
         *,
         product: ApiProductRecord,
         workspace_id: UUID,
+        consumer_issuer: str,
         consumer_client_id: str,
         requested_scope: str,
+        operation: str,
+        result_type: str,
+        payload_document: dict[str, Any],
         invocation_key: str,
         subject: SubjectAttributes,
         environment: EnvironmentAttributes,
         request_id: str,
-    ) -> InvocationAuthorizationRecord:
+        result_builder: Callable[[InvocationAuthorizationRecord], Awaitable[dict[str, Any]]],
+    ) -> InvocationResultRecord:
         await self._authorize_product(
             product=product,
             subject=subject,
@@ -294,13 +303,21 @@ class SharingService:
             environment=environment,
             request_id=request_id,
         )
-        return await self._store.authorize_invocation(
+        return await self._store.execute_invocation(
             workspace_id=workspace_id,
             product_id=product.product_id,
+            actor_id=subject.subject_id,
+            consumer_issuer=consumer_issuer,
             consumer_client_id=consumer_client_id,
+            security_scopes=_subject_security_scopes(subject),
+            effective_classification=int(subject.clearance),
             requested_scope=requested_scope,
+            operation=operation,
+            result_type=result_type,
+            payload_document=payload_document,
             invocation_key=invocation_key,
             request_id=request_id,
+            result_builder=result_builder,
         )
 
     async def _authorize_product(
@@ -354,3 +371,18 @@ class SharingService:
             environment=environment,
             request_id=request_id,
         )
+
+
+def _subject_security_scopes(subject: SubjectAttributes) -> frozenset[str]:
+    values = {
+        f"active:{str(subject.active).lower()}",
+        f"clearance:{int(subject.clearance)}",
+        f"department:{subject.department_id or '-'}",
+        f"job_function:{subject.job_function or '-'}",
+    }
+    values.update(f"group:{value}" for value in subject.groups)
+    values.update(f"system:{value}" for value in subject.allowed_system_ids)
+    values.update(f"domain:{value}" for value in subject.allowed_domain_ids)
+    values.update(f"allow:{value.value}" for value in subject.allowed_actions)
+    values.update(f"deny:{value.value}" for value in subject.denied_actions)
+    return frozenset(values)

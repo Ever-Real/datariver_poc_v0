@@ -2363,6 +2363,7 @@ class ApiProductResponse(BaseModel):
 class ConsumerGrantCreate(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
+    consumer_subject_id: UUID
     consumer_client_id: str = Field(min_length=3, max_length=255, pattern="^[A-Za-z0-9._:-]+$")
     scopes: set[str] = Field(min_length=1, max_length=20)
     maximum_classification: str = Field(pattern="^(PUBLIC|INTERNAL|CONFIDENTIAL|RESTRICTED)$")
@@ -2384,6 +2385,9 @@ class ConsumerGrantResponse(BaseModel):
     id: UUID
     product_id: UUID
     product_version_id: UUID
+    contract_version: str
+    consumer_subject_id: UUID | None
+    consumer_issuer: str | None
     consumer_client_id: str
     scopes: list[str]
     maximum_classification: str
@@ -2399,21 +2403,6 @@ class ApiInvocationAuthorizeRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     requested_scope: str = Field(pattern="^(snapshot.read|neighbors.query|chat.query)$")
-
-
-class ApiInvocationAuthorizationResponse(BaseModel):
-    invocation_id: UUID
-    grant_id: UUID
-    product_id: UUID
-    product_version_id: UUID
-    graph_id: UUID
-    release_id: UUID
-    surface: str
-    requested_scope: str
-    maximum_classification: str
-    maximum_hops: int
-    maximum_nodes: int
-    timeout_ms: int
 
 
 class ApiSnapshotInvokeRequest(BaseModel):

@@ -182,7 +182,8 @@ Verify readiness, OIDC login/refresh/logout, catalog paging at 25/50/100, a smal
 presign/CORS/validation, DataHub read-only behavior and native Ollama chat separately. Keep Airflow,
 APISIX, Neo4j and telemetry stopped unless the current Mac test explicitly requires them.
 
-If durable PDF analysis is selected, also require Alembic `0054 (head)`, one job completing as a
+If durable PDF analysis is selected, require current Alembic head `0055` (the durable job schema was
+introduced by `0054`), one job completing as a
 typed DRAFT, one version-fenced cancel, and a worker-kill/expired-lease recovery. The worker streams
 at most 50 MiB/500 pages, keeps only the configured memory threshold in RAM and spills into its
 worker-only `knowledge-spool` volume. Record peak memory and free-volume headroom; spool bytes are
@@ -417,11 +418,16 @@ docker exec datariver-next-postgres-1 sh -ec \
 # The issuer query must print exactly 2 before Keycloak/API starts.
 ```
 
-Require `0054 (head)` after migration. Revision `0054` refuses a missing, privileged, BYPASSRLS or
+Require `0055 (head)` after migration. Revision `0054` refuses a missing, privileged, BYPASSRLS or
 role-member `datariver_knowledge` principal, so role reconciliation and a reviewed membership
 inventory must happen before migration on the restored volume and again afterward. It revokes prior
 direct application-schema privileges before applying its exact allowlist. It also refuses downgrade
 after any durable analysis job exists; never delete its ledger or stamp around that evidence gate.
+
+Revision `0055` also verifies the complete atomic Sharing schema, RLS, trigger, function and
+privilege contract. On the target, exercise invocation through `datariver_app`; direct access to
+the ledger/result/month tables must be denied. Real Keycloak service-identity and representative
+target lock/load evidence remain explicit acceptance gates.
 
 If either restore fails, stop there. Preserve its logs and discard only the explicitly verified
 fresh target `datariver-next_postgres-data` volume before a clean retry; never retry into a

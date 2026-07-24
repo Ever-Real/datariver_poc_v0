@@ -1098,6 +1098,9 @@ class ConsumerGrantRecord:
     grant_id: UUID
     product_id: UUID
     product_version_id: UUID
+    contract_version: str
+    consumer_subject_id: UUID | None
+    consumer_issuer: str | None
     consumer_client_id: str
     scopes: tuple[str, ...]
     maximum_classification: Classification
@@ -1123,6 +1126,13 @@ class InvocationAuthorizationRecord:
     maximum_hops: int
     maximum_nodes: int
     timeout_ms: int
+
+
+@dataclass(frozen=True, slots=True)
+class InvocationResultRecord:
+    authorization: InvocationAuthorizationRecord
+    result_document: dict[str, Any]
+    replayed: bool
 
 
 @dataclass(frozen=True, slots=True)
