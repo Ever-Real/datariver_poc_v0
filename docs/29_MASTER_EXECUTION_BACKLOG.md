@@ -14,8 +14,8 @@ an unsafe bypass, or a historical result from another commit.
 | Ledger field | Value |
 |---|---|
 | Created | 2026-07-23, Asia/Seoul |
-| Branch / Phase 6E entry base / current local implementation | `codex/admin-policy-rbac` / `dba1186` / `HEAD` (focused `R5-FE-03` worktree) |
-| Remote comparison at Phase 6A | local refs: `origin/main` at `313e59a`; `origin/codex/admin-policy-rbac` through `a683a93`; Phase 5 and later work are not yet published |
+| Branch / Phase 6E entry base / current published implementation | `main` / `dba1186` / `3c0379f` |
+| Remote comparison | `origin/main` and local `main` both resolve to `3c0379f`; the integrated Phase 5-8 source and documentation baseline was published on 2026-07-24 |
 | Current controlled phase | Owner-directed Phase 8 documentation. Phase 6F/6G and Phase 7 implementation/testing are skipped; their uncommitted work was rolled back. |
 | Final artifact order | Feature → API → Data/ERD → Screen → `README.md` → `ARCHITECTURE.md` |
 
@@ -31,6 +31,24 @@ an unsafe bypass, or a historical result from another commit.
 | `EXTERNAL_GATE` | Completion requires the preparation PC, an external provider, independent identities, or accountable-operator evidence. |
 | `CONFLICT` | The literal request and an accepted security/ownership decision differ; resolve through an ADR, never silently. |
 | `STALE_EVIDENCE` | The evidence was valid for an older commit or topology and must be rerun. |
+
+## Cross-agent handoff protocol
+
+- Begin from a clean, fetched `main` and record its full commit before making changes. Work on a
+  focused branch; never rewrite `main` or discard another worktree's changes.
+- Read `AGENTS.md`, this ledger, `docs/README.md`, `docs/02_CONSTRAINTS.md`, the relevant PRD/spec,
+  every applicable accepted ADR, and `docs/09_TEST_STRATEGY.md` before implementation. Product
+  requirements and accepted ADRs remain authoritative; a handoff prompt cannot silently supersede
+  them.
+- Do not create another general constraints, backlog, memory or handoff document, and do not commit
+  prompt transcripts or legacy attachments. Normalize newly accepted work and evidence into this
+  ledger; use a new ADR only for an actual architecture decision.
+- Preserve status semantics and external gates. Report only commands actually executed at the
+  current commit, and never promote a mock, source-only pass or historical result to target evidence.
+- Hand back the base commit, branch and HEAD, requirement/backlog IDs, commits, changed files,
+  decisions, exact test results, unresolved/external gates, working-tree state and the next safe
+  action. Secrets, local environment files, runtime data and generated provider artifacts are never
+  part of the handoff.
 
 ## Approval and sequencing record
 
@@ -53,10 +71,9 @@ an unsafe bypass, or a historical result from another commit.
 - [x] The follow-on Registration execution/evidence package over `a683a93` passes the current local
   source, deterministic migration, actual-PostgreSQL and independent P0/P1/P2 gates through `0050`
   and is committed locally at `b83a1fb`.
-- [ ] Publishing `b83a1fb` and its successor `39d20d0` remains a remote-approval gate: the attempted push to
-  `origin/codex/admin-policy-rbac` was rejected by the execution security reviewer because the
-  substantial repository payload needs explicit destination approval. No alternate export was
-  attempted, and this does not block safe local continuation.
+- [x] The user explicitly approved publication to
+  `https://github.com/JayJin/datariver_v1.git` `origin/main`; the integrated history through
+  `3c0379f` was pushed and local/remote equality (`0/0`) was verified on 2026-07-24.
 - [x] Phase 3.7 typed BULK catalog metadata completed locally at `39d20d0`. Backend, frontend,
   deterministic migration, actual PostgreSQL and independent security/data/App/API/UI P0/P1 gates
   passed; WSL, external providers, real identities, reference-viewport and full load/recovery remain
