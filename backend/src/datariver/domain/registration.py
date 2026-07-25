@@ -23,8 +23,6 @@ class UploadState(StrEnum):
 
 class UploadContentProfile(StrEnum):
     FORMAT_ONLY_V1 = "FORMAT_ONLY_V1"
-    DATASET_DESCRIPTION_CSV_V1 = "DATASET_DESCRIPTION_CSV_V1"
-    DATASET_DESCRIPTION_XLSX_V1 = "DATASET_DESCRIPTION_XLSX_V1"
     CATALOG_METADATA_ROWS_CSV_V1 = "CATALOG_METADATA_ROWS_CSV_V1"
     CATALOG_METADATA_ROWS_XLSX_V1 = "CATALOG_METADATA_ROWS_XLSX_V1"
 
@@ -293,8 +291,8 @@ class UploadPreparation:
         configuration_hash: str,
     ) -> UploadPreparation:
         if content_profile not in {
-            UploadContentProfile.DATASET_DESCRIPTION_CSV_V1,
-            UploadContentProfile.DATASET_DESCRIPTION_XLSX_V1,
+            UploadContentProfile.CATALOG_METADATA_ROWS_CSV_V1,
+            UploadContentProfile.CATALOG_METADATA_ROWS_XLSX_V1,
         }:
             raise ValidationError("The upload profile has no typed preparation workflow.")
         if source_manifest_version < 1:

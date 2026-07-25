@@ -1554,8 +1554,6 @@ class UploadCandidateCurrentTargetResponse(BaseModel):
 class UploadRegistrationCandidateResponse(BaseModel):
     id: UUID
     ordinal: int = Field(ge=1)
-    evidence_version: Literal["DATASET_DESCRIPTION_CANDIDATE_V2"]
-    candidate_kind: Literal["DATASET_DESCRIPTION_UPDATE"]
     proposed_description: str = Field(max_length=10_000)
     submitted_identity: UploadCandidateSubmittedIdentityResponse
     candidate_hash: str = Field(pattern="^[0-9a-f]{64}$")
@@ -1568,7 +1566,6 @@ class UploadCandidateReceiptResponse(BaseModel):
     preparation_id: UUID
     manifest_version: int = Field(ge=1)
     source_sha256: str = Field(pattern="^[0-9a-f]{64}$")
-    content_profile: Literal["DATASET_DESCRIPTION_CSV_V1", "DATASET_DESCRIPTION_XLSX_V1"]
     parser_version: str
     scanner_version: str
     schema_version: str

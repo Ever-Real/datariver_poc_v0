@@ -288,8 +288,6 @@ def _candidate_list_response(
             UploadRegistrationCandidateResponse(
                 id=candidate.candidate_id,
                 ordinal=candidate.ordinal,
-                evidence_version="DATASET_DESCRIPTION_CANDIDATE_V2",
-                candidate_kind="DATASET_DESCRIPTION_UPDATE",
                 proposed_description=candidate.proposed_description,
                 submitted_identity=UploadCandidateSubmittedIdentityResponse(
                     platform=platform,
