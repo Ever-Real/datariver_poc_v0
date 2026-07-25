@@ -175,8 +175,6 @@ CATALOG_METADATA_ROWS_XLSX_V1 = TypedUploadProfileDefinition(
 TYPED_PROFILE_DEFINITIONS = {
     definition.content_profile: definition
     for definition in (
-        DATASET_DESCRIPTION_CSV_V1,
-        DATASET_DESCRIPTION_XLSX_V1,
         CATALOG_METADATA_ROWS_CSV_V1,
         CATALOG_METADATA_ROWS_XLSX_V1,
     )

@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState, type FormEvent, type KeyboardEvent } from 'react'
+import { useQuery, keepPreviousData } from '@tanstack/react-query'
 import type { ColumnDef } from '@tanstack/react-table'
 import { Filter, RotateCcw, Search } from 'lucide-react'
 import type { ApiClient } from '../../api/client'
@@ -87,8 +88,6 @@ export function CatalogPage({
   const [cursors, setCursors] = useState<Array<string | undefined>>([undefined])
   const [pageIndex, setPageIndex] = useState(0)
   const [pageSize, setPageSize] = useState(50)
-  const [loading, setLoading] = useState(false)
-  const [error, setError] = useState<unknown>()
   const suggestionRoot = useRef<HTMLDivElement>(null)
   const filterRoot = useRef<HTMLDivElement>(null)
   const workspaceRef = useRef<HTMLDivElement>(null)
@@ -101,34 +100,22 @@ export function CatalogPage({
     setSelectedAssetId(undefined)
   }, [initialQuery])
 
-  useEffect(() => {
-    const controller = new AbortController()
-    setLoading(true); setError(undefined); setResult(undefined)
-    void client.request<CatalogSearch>(
+  const { data: result, isFetching: loading, error } = useQuery({
+    queryKey: ['catalog', 'assets', query, filters, cursors[pageIndex], pageSize],
+    queryFn: async ({ signal }) => client.request<CatalogSearch>(
       `/catalog/assets?${searchPath(query, filters, cursors[pageIndex], pageSize)}`,
-      { signal: controller.signal },
-    ).then((nextResult) => { if (!controller.signal.aborted) setResult(nextResult) })
-      .catch((next: unknown) => { if (!controller.signal.aborted) setError(next) })
-      .finally(() => { if (!controller.signal.aborted) setLoading(false) })
-    return () => {
-      controller.abort()
-      setResult(undefined)
-    }
-  }, [client, cursors, filters, pageIndex, pageSize, query])
+      { signal },
+    ),
+    placeholderData: keepPreviousData,
+  })
 
-  useEffect(() => {
-    const controller = new AbortController()
-    setFacets(undefined)
-    void client.request<CatalogFacets>(
+  const { data: facets } = useQuery({
+    queryKey: ['catalog', 'facets', query, filters],
+    queryFn: async ({ signal }) => client.request<CatalogFacets>(
       `/catalog/facets?${searchPath(query, filters, undefined, 30)}`,
-      { signal: controller.signal },
-    ).then((nextFacets) => { if (!controller.signal.aborted) setFacets(nextFacets) })
-      .catch((next: unknown) => { if (!controller.signal.aborted) setError(next) })
-    return () => {
-      controller.abort()
-      setFacets(undefined)
-    }
-  }, [client, filters, query])
+      { signal },
+    ),
+  })
 
   useEffect(() => {
     const normalized = draftQuery.trim()
@@ -202,7 +189,7 @@ export function CatalogPage({
     { accessorKey: 'domain', header: 'Domain', size: 130, cell: ({ row }) => optionalTableText(row.original.domain) },
     { accessorKey: 'classification', header: 'Class', size: 100, cell: ({ row }) => <span className="badge badge-soft">{row.original.classification}</span> },
     { accessorKey: 'description', header: 'Description', size: 260, cell: ({ row }) => boundedTableText(row.original.description, row.original.description_truncated) },
-    { id: 'matches', accessorFn: (row) => row.matches.map((match) => match.text).join(' '), header: 'Matches', size: 300, cell: ({ row }) => <CatalogMatchPreview fragments={row.original.matches} /> },
+    { id: 'matches', accessorFn: (row) => row.matches.map((match) => match.text).join(' '), header: 'Matches', size: 300, meta: { className: 'allow-overflow' }, cell: ({ row }) => <CatalogMatchPreview fragments={row.original.matches} /> },
   ], [pageIndex, pageSize])
 
   const updateFilter = (name: keyof Filters, value: string) => {

@@ -9,13 +9,12 @@ const llmSystemIds = new Set<SystemConfigurationEntry['system_id']>([
   'LLM_EMBEDDING',
   'LLM_RERANKER',
 ])
-type SystemTabId = SystemConfigurationEntry['system_id'] | 'LLM_MODELS'
-
 function llmTabLabel(systemId: SystemConfigurationEntry['system_id']) {
   if (systemId === 'LLM_CHAT_MODEL') return 'Chat Model'
   if (systemId === 'LLM_EMBEDDING') return 'Embedding'
   return 'Reranker'
 }
+type SystemTabId = SystemConfigurationEntry['system_id'] | 'LLM_MODELS' | 'CORE_DASHBOARD'
 
 function stateLabel(state: SystemConfigurationEntry['state']) {
   if (state === 'CONFIGURED') return '구성됨'
@@ -170,18 +169,25 @@ export function SystemConfigurationAdmin(props: AdminSectionProps) {
     () => items.filter((item) => llmSystemIds.has(item.system_id)),
     [items],
   )
-  const ordinaryItems = useMemo(
-    () => items.filter((item) => !llmSystemIds.has(item.system_id)),
+  const coreItems = useMemo(
+    () => items.filter((item) => item.is_core),
     [items],
   )
-  const llmSelected = selected ? llmSystemIds.has(selected.system_id) : false
+  const ordinaryItems = useMemo(
+    () => items.filter((item) => !llmSystemIds.has(item.system_id) && !item.is_core),
+    [items],
+  )
+  const llmSelected = selectedId !== 'CORE_DASHBOARD' && selected ? llmSystemIds.has(selected.system_id) : false
   const systemTabIds = useMemo<SystemTabId[]>(() => [
+    ...(coreItems.length > 0 ? ['CORE_DASHBOARD' as const] : []),
     ...ordinaryItems.map((item) => item.system_id),
     ...(llmItems.length > 0 ? ['LLM_MODELS' as const] : []),
-  ], [llmItems.length, ordinaryItems])
-  const activeSystemTab: SystemTabId | undefined = llmSelected
-    ? 'LLM_MODELS'
-    : selected?.system_id
+  ], [coreItems.length, llmItems.length, ordinaryItems])
+  const activeSystemTab: SystemTabId | undefined = selectedId === 'CORE_DASHBOARD' 
+    ? 'CORE_DASHBOARD' 
+    : llmSelected
+      ? 'LLM_MODELS'
+      : selected?.system_id ?? (coreItems.length > 0 ? 'CORE_DASHBOARD' : undefined)
   const selectSystemTab = (id: SystemTabId) => {
     setSelectedId(id === 'LLM_MODELS' ? llmItems[0]?.system_id : id)
   }
@@ -220,13 +226,17 @@ export function SystemConfigurationAdmin(props: AdminSectionProps) {
   }
   const savedDocument = selected?.configuration_yaml || selected?.template_yaml || ''
   const dirty = Boolean(selected && draft !== savedDocument)
-  const testSavedConfiguration = async () => {
-    if (!selected || selected.version === 0 || dirty || testing) return
-    setTesting(true); setTestResult(undefined); setError(undefined)
+  const testSavedConfiguration = async (systemIdToTest?: string) => {
+    const idToTest = systemIdToTest ?? selected?.system_id
+    const itemToTest = items.find(i => i.system_id === idToTest)
+    const isCurrentSelected = idToTest === selected?.system_id
+    if (!itemToTest || itemToTest.version === 0 || (isCurrentSelected && dirty) || testing) return
+    setTesting(true); 
+    if (isCurrentSelected) { setTestResult(undefined); setError(undefined) }
     try {
-      const result = await api.testSystemConfiguration(selected.system_id)
-      setTestResult(result)
-      setItems((current) => current.map((item) => item.system_id === selected.system_id ? {
+      const result = await api.testSystemConfiguration(itemToTest.system_id)
+      if (isCurrentSelected) setTestResult(result)
+      setItems((current) => current.map((item) => item.system_id === itemToTest.system_id ? {
         ...item,
         activation_state: item.activation_state === 'DEPLOYMENT_MANAGED'
           ? 'DEPLOYMENT_MANAGED'
@@ -237,7 +247,10 @@ export function SystemConfigurationAdmin(props: AdminSectionProps) {
         test_status: result.status,
         tested_at: result.tested_at,
       } : item))
-    } catch (next) { setError(next); reportError(next) } finally { setTesting(false) }
+    } catch (next) { 
+      if (isCurrentSelected) { setError(next); reportError(next) }
+      else reportError(next)
+    } finally { setTesting(false) }
   }
   const activate = () => {
     if (!selected || !canActivate || selected.activation_state !== 'TESTED') return
@@ -384,16 +397,34 @@ export function SystemConfigurationAdmin(props: AdminSectionProps) {
     <div className="section-heading"><div><h3>시스템 설정</h3><p className="muted">연결 주소·모델·옵션을 관리합니다. 실행 시크릿(비밀번호/API 키)은 Docker secret 파일로 별도 관리됩니다.</p></div><button className="button button-secondary" onClick={() => void load()} type="button">새로고침</button></div>
     <div className="admin-system-settings-workspace">
       <nav aria-label="설정 시스템 목록" className="admin-system-settings-list" role="tablist">
-        <h4 className="text-xs font-bold text-slate-500 uppercase mt-4 mb-2 ml-3 px-3">Core Systems</h4>
-        {ordinaryItems.filter(i => i.is_core).map((item) => <button {...systemTabs.tabProps(item.system_id)} className={selected?.system_id === item.system_id ? 'active' : ''} key={item.system_id} onClick={() => setSelectedId(item.system_id)} type="button"><span className={`badge ${item.state === 'CONFIGURED' ? '' : 'badge-soft'}`}>{stateLabel(item.state)}</span><strong>{item.label}</strong></button>)}
-        {ordinaryItems.filter(i => !i.is_core).length > 0 && <h4 className="text-xs font-bold text-slate-500 uppercase mt-4 mb-2 ml-3 px-3">Extensions</h4>}
-        {ordinaryItems.filter(i => !i.is_core).map((item) => <button {...systemTabs.tabProps(item.system_id)} className={selected?.system_id === item.system_id ? 'active' : ''} key={item.system_id} onClick={() => setSelectedId(item.system_id)} type="button"><span className={`badge ${item.state === 'CONFIGURED' ? '' : 'badge-soft'}`}>{stateLabel(item.state)}</span><strong>{item.label}</strong></button>)}
+        {coreItems.length > 0 && <h4 className="text-xs font-bold text-slate-500 uppercase mt-4 mb-2 ml-3 px-3">Core Systems</h4>}
+        {coreItems.length > 0 && <button {...systemTabs.tabProps('CORE_DASHBOARD')} className={selectedId === 'CORE_DASHBOARD' || (selected?.is_core) ? 'active' : ''} onClick={() => selectSystemTab('CORE_DASHBOARD')} type="button"><span className={`badge ${coreItems.every((item) => item.state === 'CONFIGURED') ? '' : 'badge-soft'}`}>{coreItems.filter((item) => item.state === 'CONFIGURED').length}/{coreItems.length}</span><strong>Core Dashboard</strong></button>}
+        {ordinaryItems.length > 0 && <h4 className="text-xs font-bold text-slate-500 uppercase mt-4 mb-2 ml-3 px-3">Extensions</h4>}
+        {ordinaryItems.map((item) => <button {...systemTabs.tabProps(item.system_id)} className={selected?.system_id === item.system_id ? 'active' : ''} key={item.system_id} onClick={() => setSelectedId(item.system_id)} type="button"><span className={`badge ${item.state === 'CONFIGURED' ? '' : 'badge-soft'}`}>{stateLabel(item.state)}</span><strong>{item.label}</strong></button>)}
         {llmItems.length > 0 && <h4 className="text-xs font-bold text-slate-500 uppercase mt-4 mb-2 ml-3 px-3">AI Models</h4>}
         {llmItems.length > 0 && <button {...systemTabs.tabProps('LLM_MODELS')} className={llmSelected ? 'active' : ''} onClick={() => selectSystemTab('LLM_MODELS')} type="button"><span className={`badge ${llmItems.every((item) => item.state === 'CONFIGURED') ? '' : 'badge-soft'}`}>{llmItems.filter((item) => item.state === 'CONFIGURED').length}/{llmItems.length}</span><strong>LLM Models</strong></button>}
         {!loading && items.length === 0 && <p>표시 가능한 설정 항목이 없습니다.</p>}
       </nav>
       <section {...(activeSystemTab ? systemTabs.panelProps(activeSystemTab) : {})} aria-live="polite" className="admin-system-settings-detail">
-        {loading ? <p className="muted">서버 구성 상태를 불러오는 중입니다.</p> : !selected ? <p className="muted">왼쪽에서 시스템을 선택하세요.</p> : <>
+        {loading ? <p className="muted">서버 구성 상태를 불러오는 중입니다.</p> : (selectedId === 'CORE_DASHBOARD' || (!selected && coreItems.length > 0)) ? (
+          <div>
+            <header className="flex items-start justify-between gap-3 mb-6"><div><span className="eyebrow">Dashboard</span><h4>Core Systems</h4><p className="muted" style={{ fontSize: 11 }}>배포 환경 변수로 관리되는 핵심 인프라 시스템의 상태를 한눈에 확인하고 테스트합니다.</p></div></header>
+            <div className="grid gap-3">
+              {coreItems.map(item => (
+                <div key={item.system_id} className="flex items-center justify-between p-4 border border-slate-200 rounded-lg bg-white shadow-sm">
+                  <div>
+                    <h5 className="font-bold text-slate-800 text-sm">{item.label}</h5>
+                    <div className="flex gap-2 mt-2 text-xs">
+                      <span className={`badge ${item.state === 'CONFIGURED' ? '' : 'badge-soft'}`}>{stateLabel(item.state)}</span>
+                      {item.test_status && <span className={`badge ${item.test_status === 'AVAILABLE' ? 'badge-soft' : 'badge-warning'}`}>{item.test_status}</span>}
+                    </div>
+                  </div>
+                  <button className="button button-secondary" disabled={testing || item.version === 0} onClick={() => void testSavedConfiguration(item.system_id)} type="button">{testing ? '테스트 중...' : '연결 테스트'}</button>
+                </div>
+              ))}
+            </div>
+          </div>
+        ) : !selected ? <p className="muted">왼쪽에서 시스템을 선택하세요.</p> : <>
           <header className="flex items-start justify-between gap-3"><div><span className="eyebrow">{selected.system_id}</span><h4>{selected.label}</h4><p className="muted" style={{ fontSize: 11 }}>{selected.description}</p></div>{canUpdate && !selected.is_core && <button className="button button-secondary" disabled={!selected.template_yaml} onClick={() => setDraft(selected.template_yaml)} type="button">샘플 양식 복원</button>}</header>
           {llmSelected && <div className="admin-system-llm-tabs" role="group" aria-label="LLM 모델 설정">
             {llmItems.map((item) => <button key={item.system_id} type="button" aria-pressed={selected.system_id === item.system_id} className={`button ${selected.system_id === item.system_id ? '' : 'button-secondary'}`} onClick={() => setSelectedId(item.system_id)}>{llmTabLabel(item.system_id)}</button>)}
