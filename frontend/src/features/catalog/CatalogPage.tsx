@@ -110,7 +110,10 @@ export function CatalogPage({
     ).then((nextResult) => { if (!controller.signal.aborted) setResult(nextResult) })
       .catch((next: unknown) => { if (!controller.signal.aborted) setError(next) })
       .finally(() => { if (!controller.signal.aborted) setLoading(false) })
-    return () => controller.abort()
+    return () => {
+      controller.abort()
+      setResult(undefined)
+    }
   }, [client, cursors, filters, pageIndex, pageSize, query])
 
   useEffect(() => {
@@ -121,7 +124,10 @@ export function CatalogPage({
       { signal: controller.signal },
     ).then((nextFacets) => { if (!controller.signal.aborted) setFacets(nextFacets) })
       .catch((next: unknown) => { if (!controller.signal.aborted) setError(next) })
-    return () => controller.abort()
+    return () => {
+      controller.abort()
+      setFacets(undefined)
+    }
   }, [client, filters, query])
 
   useEffect(() => {
@@ -285,7 +291,7 @@ export function CatalogPage({
           <div className="catalog-query-control" ref={suggestionRoot}>
             <Search size={16} aria-hidden="true" />
             <label className="sr-only" htmlFor="catalog-query">데이터셋 이름이나 설명 검색</label>
-            <input id="catalog-query" value={draftQuery} onChange={(event) => { setDraftQuery(event.target.value); setSuggestionIndex(-1) }} onKeyDown={navigateSuggestions} placeholder="데이터셋 이름이나 설명 검색 (2자 이상)" maxLength={500} autoComplete="off" aria-controls="catalog-suggestions" aria-expanded={suggestions.length > 0} aria-autocomplete="list" aria-activedescendant={suggestionIndex >= 0 ? `catalog-suggestion-${suggestionIndex}` : undefined} role="combobox" />
+            <input id="catalog-query" value={draftQuery} onChange={(event) => { setDraftQuery(event.target.value); setSuggestionIndex(-1); setSelectedAssetId(undefined) }} onKeyDown={navigateSuggestions} placeholder="데이터셋 이름이나 설명 검색 (2자 이상)" maxLength={500} autoComplete="off" aria-controls="catalog-suggestions" aria-expanded={suggestions.length > 0} aria-autocomplete="list" aria-activedescendant={suggestionIndex >= 0 ? `catalog-suggestion-${suggestionIndex}` : undefined} role="combobox" />
             {suggestions.length > 0 && <ul id="catalog-suggestions" className="catalog-suggestions" role="listbox">
               {suggestions.map((suggestion, index) => <li key={suggestion.id} role="none"><button id={`catalog-suggestion-${index}`} role="option" aria-selected={index === suggestionIndex} type="button" onMouseDown={(event) => event.preventDefault()} onClick={() => commitQuery(suggestion.name)}><span><b>{suggestion.name}</b><small>{suggestion.asset_type} · {[suggestion.platform, suggestion.database_name, suggestion.schema_name].filter(Boolean).join(' · ') || '위치 미지정'}</small><CatalogMatchPreview fragments={suggestion.matches ?? []} /></span></button></li>)}
             </ul>}

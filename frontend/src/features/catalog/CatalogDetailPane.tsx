@@ -93,12 +93,22 @@ export function CatalogDetailPane({
   const pagedAssetId = useRef(assetId)
   const fieldSourceVersion = useRef<string | undefined>(undefined)
 
-  // 오버레이 모드에서 본문 스크롤 잠금
   useEffect(() => {
     if (!asOverlay) return
-    document.body.classList.add('catalog-overlay-open')
-    return () => document.body.classList.remove('catalog-overlay-open')
-  }, [asOverlay])
+    const handleClickOutside = (event: MouseEvent) => {
+      // panel 외부 영역 클릭 시 닫기
+      const target = event.target as Node
+      const panel = document.querySelector('.catalog-detail.panel')
+      if (panel && !panel.contains(target)) {
+        onClose()
+      }
+    }
+    // mousedown으로 캡처 (클릭이 뒤쪽 요소에 전달되기 전에 먼저 닫힘)
+    document.addEventListener('mousedown', handleClickOutside)
+    return () => {
+      document.removeEventListener('mousedown', handleClickOutside)
+    }
+  }, [asOverlay, onClose])
 
   useEffect(() => {
     if (pagedAssetId.current !== assetId) {
@@ -206,7 +216,7 @@ export function CatalogDetailPane({
         <div
           className="catalog-detail-backdrop"
           aria-hidden="true"
-          onClick={onClose}
+          style={{ pointerEvents: 'none' }}
         />
       )}
       {/* URN 복사 Toast 알림 */}
@@ -218,9 +228,9 @@ export function CatalogDetailPane({
       <aside
         className={`catalog-detail panel${asOverlay ? ' catalog-detail--overlay' : ''}`}
         aria-label="카탈로그 상세"
-        style={asOverlay ? undefined : { width: width ? `${width}px` : undefined }}
+        style={{ width: width ? `${width}px` : undefined }}
       >
-      {onResizeWidth && !asOverlay && <button aria-label="상세 패널 너비 조절" className="catalog-detail-resizer" onKeyDown={(event) => {
+      {onResizeWidth && <button aria-label="상세 패널 너비 조절" className="catalog-detail-resizer" onKeyDown={(event) => {
         if (event.key === 'ArrowLeft') { event.preventDefault(); onResizeWidth((width ?? 550) + 24) }
         if (event.key === 'ArrowRight') { event.preventDefault(); onResizeWidth((width ?? 550) - 24) }
       }} onPointerDown={startResize} title="왼쪽으로 끌어 상세 폭 조절" type="button" />}
@@ -285,7 +295,7 @@ export function CatalogDetailPane({
                         ? <span className="catalog-schema-type" title={typeTruncated ? `${type} (잘림)` : type}>{type}{typeTruncated && <span aria-label="일부만 표시"> …</span>}</span>
                         : <CatalogEmptyValue />}
                     </td>
-                    <td>{detailText(description, fieldFlag(field, 'description_truncated'))}</td>
+                    <td title={typeof description === 'string' ? description : undefined}>{detailText(description, fieldFlag(field, 'description_truncated'))}</td>
                     <td><BadgeScroller label={`${fieldName ?? 'Column'} Terms`} values={fieldValues(field, 'glossaryTerms')} truncated={fieldFlag(field, 'terms_truncated')} /></td>
                     <td><BadgeScroller label={`${fieldName ?? 'Column'} Tags`} values={fieldValues(field, 'globalTags')} truncated={fieldFlag(field, 'tags_truncated')} /></td>
                   </tr>

@@ -128,7 +128,7 @@
 .catalog-export-control-compact .catalog-export-actions { gap: 5px; }
 .catalog-export-control-compact .catalog-export-status { order: 2; }
 .catalog-export-control-compact > .notice { position: absolute; z-index: 30; top: 100%; right: 9px; left: 9px; }
-.catalog-workspace { --catalog-workspace-height: clamp(510px, calc(100vh - 260px), 820px); min-width: 0; max-width: 100%; display: grid; grid-template-columns: 300px minmax(0, 1fr); align-items: stretch; gap: 8px; }
+.catalog-workspace { --catalog-workspace-height: clamp(520px, calc(100vh - 240px), 860px); min-width: 0; max-width: 100%; display: grid; grid-template-columns: 300px minmax(0, 1fr); align-items: stretch; gap: 8px; }
 .catalog-workspace.with-detail { grid-template-columns: 300px minmax(560px, 1fr) minmax(420px, var(--catalog-detail-width, 550px)); }
 .catalog-tree, .catalog-results, .catalog-detail { height: var(--catalog-workspace-height); min-width: 0; max-width: 100%; }
 .catalog-tree, .catalog-detail { padding: 0; overflow: hidden; }
@@ -202,7 +202,7 @@ body.catalog-overlay-open { overflow: hidden; }
 .catalog-schema-table table { width: 100%; border-collapse: collapse; table-layout: fixed; font-size: 10px; }
 .catalog-schema-table th { position: sticky; top: 0; padding: 5px; color: var(--text-600); text-align: left; background: #edf0f2; }
 .catalog-schema-table th:nth-child(1) { width: 24%; }.catalog-schema-table th:nth-child(2) { width: 16%; }.catalog-schema-table th:nth-child(3) { width: 24%; }.catalog-schema-table th:nth-child(4), .catalog-schema-table th:nth-child(5) { width: 18%; }
-.catalog-schema-table td { border-top: 1px solid var(--line-200); padding: 5px; }
+.catalog-schema-table td { border-top: 1px solid var(--line-200); padding: 5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .catalog-schema-type { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; cursor: help; }
 /* URN 복사 Toast */
 .catalog-urn-toast { position: fixed; z-index: 50; bottom: 28px; left: 50%; transform: translateX(-50%); padding: 8px 18px; border-radius: 4px; color: #fff; font-size: 12px; font-weight: 700; background: #1a7a4a; box-shadow: 0 4px 16px rgba(0,0,0,.22); pointer-events: none; animation: catalog-toast-in 0.18s ease; }
