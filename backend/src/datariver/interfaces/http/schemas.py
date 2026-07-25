@@ -1566,6 +1566,7 @@ class UploadCandidateReceiptResponse(BaseModel):
     preparation_id: UUID
     manifest_version: int = Field(ge=1)
     source_sha256: str = Field(pattern="^[0-9a-f]{64}$")
+    content_profile: str
     parser_version: str
     scanner_version: str
     schema_version: str
