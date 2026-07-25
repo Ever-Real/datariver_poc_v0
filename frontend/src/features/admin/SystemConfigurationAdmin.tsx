@@ -409,19 +409,39 @@ export function SystemConfigurationAdmin(props: AdminSectionProps) {
         {loading ? <p className="muted">서버 구성 상태를 불러오는 중입니다.</p> : (selectedId === 'CORE_DASHBOARD' || (!selected && coreItems.length > 0)) ? (
           <div>
             <header className="flex items-start justify-between gap-3 mb-6"><div><span className="eyebrow">Dashboard</span><h4>Core Systems</h4><p className="muted" style={{ fontSize: 11 }}>배포 환경 변수로 관리되는 핵심 인프라 시스템의 상태를 한눈에 확인하고 테스트합니다.</p></div></header>
-            <div className="grid gap-3">
-              {coreItems.map(item => (
-                <div key={item.system_id} className="flex items-center justify-between p-4 border border-slate-200 rounded-lg bg-white shadow-sm">
-                  <div>
-                    <h5 className="font-bold text-slate-800 text-sm">{item.label}</h5>
-                    <div className="flex gap-2 mt-2 text-xs">
-                      <span className={`badge ${item.state === 'CONFIGURED' ? '' : 'badge-soft'}`}>{stateLabel(item.state)}</span>
-                      {item.test_status && <span className={`badge ${item.test_status === 'AVAILABLE' ? 'badge-soft' : 'badge-warning'}`}>{item.test_status}</span>}
-                    </div>
-                  </div>
-                  <button className="button button-secondary" disabled={testing || item.version === 0} onClick={() => void testSavedConfiguration(item.system_id)} type="button">{testing ? '테스트 중...' : '연결 테스트'}</button>
+            <div className="flex items-center justify-between p-4 border border-slate-200 rounded-lg bg-white shadow-sm">
+              <div>
+                <h5 className="font-bold text-slate-800 text-sm">통합 인프라 상태</h5>
+                <div className="flex gap-2 mt-2 text-xs">
+                  <span className={`badge ${coreItems.every(i => i.state === 'CONFIGURED') ? '' : 'badge-soft'}`}>
+                    {coreItems.every(i => i.state === 'CONFIGURED') ? 'ALL CONFIGURED' : '일부 미구성'}
+                  </span>
+                  {coreItems.some(i => i.test_status) && <span className={`badge ${coreItems.every(i => i.test_status === 'AVAILABLE') ? 'badge-soft' : 'badge-warning'}`}>
+                    {coreItems.every(i => i.test_status === 'AVAILABLE') ? 'ALL AVAILABLE' : '일부 접속 실패'}
+                  </span>}
                 </div>
-              ))}
+              </div>
+              <button className="button button-secondary" disabled={testing || coreItems.length === 0} onClick={async () => {
+                if (testing) return;
+                setTesting(true);
+                try {
+                  await Promise.allSettled(coreItems.map(i => api.testSystemConfiguration(i.system_id).then(result => {
+                    setItems((current) => current.map((item) => item.system_id === i.system_id ? {
+                      ...item,
+                      activation_state: item.activation_state === 'DEPLOYMENT_MANAGED'
+                        ? 'DEPLOYMENT_MANAGED'
+                        : !item.runtime_supported
+                        ? 'RUNTIME_NOT_IMPLEMENTED'
+                        : result.status === 'AVAILABLE' ? 'TESTED' : 'TEST_NOT_AVAILABLE',
+                      tested_version: result.configuration_version,
+                      test_status: result.status,
+                      tested_at: result.tested_at,
+                    } : item))
+                  })))
+                } finally {
+                  setTesting(false);
+                }
+              }} type="button">{testing ? '테스트 중...' : '전체 연결 테스트'}</button>
             </div>
           </div>
         ) : !selected ? <p className="muted">왼쪽에서 시스템을 선택하세요.</p> : <>

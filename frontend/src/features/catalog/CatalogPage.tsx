@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState, type FormEvent, type KeyboardEvent } from 'react'
-import { useQuery, keepPreviousData } from '@tanstack/react-query'
+import { useQuery, keepPreviousData, useQueryClient } from '@tanstack/react-query'
 import type { ColumnDef } from '@tanstack/react-table'
 import { Filter, RotateCcw, Search } from 'lucide-react'
 import type { ApiClient } from '../../api/client'
@@ -75,6 +75,7 @@ export function CatalogPage({
   onQueryChange?: (query: string) => void
   catalogExportWorkerEnabled?: boolean
 }) {
+  const queryClient = useQueryClient()
   const [draftQuery, setDraftQuery] = useState(initialQuery)
   const [query, setQuery] = useState(initialQuery)
   const [filters, setFilters] = useState<Filters>(emptyFilters)
@@ -98,6 +99,13 @@ export function CatalogPage({
     setDraftQuery(initialQuery); setQuery(initialQuery); setCursors([undefined]); setPageIndex(0)
     setSelectedAssetId(undefined)
   }, [initialQuery])
+
+  useEffect(() => {
+    return () => {
+      queryClient.removeQueries({ queryKey: ['catalog', 'assets'] })
+      queryClient.removeQueries({ queryKey: ['catalog', 'facets'] })
+    }
+  }, [queryClient])
 
   const { data: result, isFetching: loading } = useQuery({
     queryKey: ['catalog', 'assets', query, filters, cursors[pageIndex], pageSize],

@@ -151,8 +151,8 @@ _BOOTSTRAP_SYSTEM_CONFIGURATION = (
     ("OIDC_IDENTITY", "OIDC_IDENTITY", "OIDC Identity"),
 )
 _CONNECTOR_SYSTEM_CONFIGURATION = (
-    ("DATAHUB_GMS", "DATAHUB", "DataHub GMS"),
-    ("DATAHUB_FRONTEND", "DATAHUB_FRONTEND", "DataHub Frontend"),
+    ("DATAHUB_GMS", "DATAHUB", "DataHub (Metadata)"),
+    ("DATAHUB_FRONTEND", "DATAHUB_FRONTEND", "DataHub (Frontend)"),
     ("AIRFLOW", "AIRFLOW", "Airflow"),
     ("REDIS_CACHE", "REDIS_CACHE", "Redis Cache"),
     ("REDIS_DELIVERY", "REDIS_DELIVERY", "Redis Delivery"),
@@ -304,7 +304,7 @@ _SYSTEM_METADATA: dict[str, dict[str, Any]] = {
         "requirement": "CORE_CONNECTOR",
         "description": "Authoritative catalog provider for enrichment and governed apply.",
         "fields": (
-            ("base_url", "GMS endpoint", True, False, "https://datahub.example/api"),
+            ("base_url", "Metadata endpoint", True, False, "https://datahub.example/api"),
             ("token", "Service token reference", True, True, None),
             ("expected_version", "Expected version", True, False, "v1.6.0"),
         ),
@@ -356,13 +356,24 @@ _SYSTEM_METADATA: dict[str, dict[str, Any]] = {
         "category": "AI",
         "requirement": "FEATURE_CONNECTOR",
         "description": "Optional approved OpenAI-compatible Chat model endpoint.",
-        "fields": (("base_url", "Model endpoint", True, False, "https://llm.example/v1"),),
+        "fields": (
+            ("connection_mode", "Connection Mode", True, False, "LOCAL_OLLAMA"),
+            ("base_url", "Model endpoint", True, False, "https://llm.example/v1"),
+            ("model", "Model Name", True, False, "llama3.1"),
+            ("timeout_seconds", "Timeout (Seconds)", False, False, "60"),
+            ("context_tokens", "Context Tokens", False, False, "8192"),
+        ),
     },
     "LLM_EMBEDDING": {
         "category": "AI",
         "requirement": "FEATURE_CONNECTOR",
         "description": "Optional approved OpenAI-compatible embedding endpoint.",
-        "fields": (("base_url", "Embedding endpoint", True, False, "https://llm.example/v1"),),
+        "fields": (
+            ("connection_mode", "Connection Mode", True, False, "LOCAL_OLLAMA"),
+            ("base_url", "Embedding endpoint", True, False, "https://llm.example/v1"),
+            ("model", "Model Name", True, False, "bge-m3:latest"),
+            ("timeout_seconds", "Timeout (Seconds)", False, False, "60"),
+        ),
     },
     "LLM_RERANKER": {
         "category": "AI",

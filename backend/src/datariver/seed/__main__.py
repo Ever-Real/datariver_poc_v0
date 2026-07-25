@@ -5,6 +5,7 @@ import asyncio
 import hashlib
 import json
 from collections.abc import Sequence
+from uuid import UUID
 
 from sqlalchemy import delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -297,6 +298,58 @@ async def apply_pack(
         for document in seed_operation_ledger(pack)
     ]
     session.add_all(operations)
+    session.add_all([
+        ChangeSetModel(
+            id=UUID("11111111-1111-1111-1111-111111111111"),
+            workspace_id=WORKSPACE_ID,
+            graph_id=GRAPH_ID,
+            base_release_id=RELEASE_ID,
+            ontology_version_id=ONTOLOGY_ID,
+            title="Update customer masking policy (Draft)",
+            state="DRAFT",
+            author_id=SUBJECT_ID,
+            version=1,
+        ),
+        ChangeSetModel(
+            id=UUID("22222222-2222-2222-2222-222222222222"),
+            workspace_id=WORKSPACE_ID,
+            graph_id=GRAPH_ID,
+            base_release_id=RELEASE_ID,
+            ontology_version_id=ONTOLOGY_ID,
+            title="Add standard properties for Supplier (Pending)",
+            state="PENDING_REVIEW",
+            author_id=SUBJECT_ID,
+            version=1,
+        ),
+        ChangeSetModel(
+            id=UUID("33333333-3333-3333-3333-333333333333"),
+            workspace_id=WORKSPACE_ID,
+            graph_id=GRAPH_ID,
+            base_release_id=RELEASE_ID,
+            ontology_version_id=ONTOLOGY_ID,
+            title="Approve regional mapping adjustment",
+            state="APPROVED",
+            author_id=SUBJECT_ID,
+            reviewed_by=REVIEWER_SUBJECT_ID,
+            reviewed_at=now,
+            review_reason="Looks good to me.",
+            version=2,
+        ),
+        ChangeSetModel(
+            id=UUID("44444444-4444-4444-4444-444444444444"),
+            workspace_id=WORKSPACE_ID,
+            graph_id=GRAPH_ID,
+            base_release_id=RELEASE_ID,
+            ontology_version_id=ONTOLOGY_ID,
+            title="Reject invalid transaction classification",
+            state="REJECTED",
+            author_id=SUBJECT_ID,
+            reviewed_by=REVIEWER_SUBJECT_ID,
+            reviewed_at=now,
+            review_reason="Fails basic security invariants.",
+            version=2,
+        )
+    ])
     await session.flush()
     persisted_nodes = list(
         (

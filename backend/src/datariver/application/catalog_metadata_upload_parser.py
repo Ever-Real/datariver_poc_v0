@@ -705,7 +705,13 @@ def _row_evidences_from_values(
 
     evidences = []
 
-    def _add_evidence(record_kind, operation, field_path_text, value_text, controlled_ref_text):
+    def _add_evidence(
+        record_kind: CatalogMetadataRecordKind,
+        operation: CatalogMetadataOperation,
+        field_path_text: str,
+        value_text: str,
+        controlled_ref_text: str
+    ) -> None:
         rule = _ROW_RULES[record_kind]
         field_path, description, controlled_ref, semantic_key = _validate_row_shape(
             record_kind=record_kind,

@@ -145,38 +145,44 @@ def parse_grounded_chat_response(payload: object) -> ChatDraft:
     message = choices[0].get("message")
     if not isinstance(message, dict):
         return ChatDraft(answer="", cited_chunk_ids=())
+    
+    def fallback() -> ChatDraft:
+        content = message.get("content")
+        if isinstance(content, str) and content.strip():
+            return ChatDraft(answer=content.strip()[:_MAXIMUM_ANSWER_CHARACTERS], cited_chunk_ids=())
+        return ChatDraft(answer="", cited_chunk_ids=())
+
     tool_calls = message.get("tool_calls")
     if (
         not isinstance(tool_calls, list)
         or len(tool_calls) != 1
         or not isinstance(tool_calls[0], dict)
     ):
-        return ChatDraft(answer="", cited_chunk_ids=())
+        return fallback()
     function = tool_calls[0].get("function")
     if not isinstance(function, dict) or function.get("name") != _TOOL_NAME:
-        return ChatDraft(answer="", cited_chunk_ids=())
+        return fallback()
     arguments = function.get("arguments")
     if isinstance(arguments, str):
         try:
             arguments = json.loads(arguments)
         except json.JSONDecodeError:
-            return ChatDraft(answer="", cited_chunk_ids=())
-    if not isinstance(arguments, dict) or set(arguments) != {"answer", "cited_chunk_ids"}:
-        return ChatDraft(answer="", cited_chunk_ids=())
+            return fallback()
+    if not isinstance(arguments, dict) or "answer" not in arguments:
+        return fallback()
     answer = arguments.get("answer")
-    cited_chunk_ids = arguments.get("cited_chunk_ids")
+    cited_chunk_ids = arguments.get("cited_chunk_ids", [])
     if (
         not isinstance(answer, str)
         or not answer.strip()
         or len(answer) > _MAXIMUM_ANSWER_CHARACTERS
         or not isinstance(cited_chunk_ids, list)
-        or not 1 <= len(cited_chunk_ids) <= 10
     ):
-        return ChatDraft(answer="", cited_chunk_ids=())
+        return fallback()
     try:
         parsed_ids = tuple(UUID(str(value)) for value in cited_chunk_ids)
     except (TypeError, ValueError, AttributeError):
-        return ChatDraft(answer="", cited_chunk_ids=())
+        return ChatDraft(answer=answer.strip(), cited_chunk_ids=())
     if len(parsed_ids) != len(set(parsed_ids)):
-        return ChatDraft(answer="", cited_chunk_ids=())
+        return ChatDraft(answer=answer.strip(), cited_chunk_ids=())
     return ChatDraft(answer=answer.strip(), cited_chunk_ids=parsed_ids)

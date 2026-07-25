@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import uuid
 from fastapi import APIRouter, Request
 
 from datariver.application.classification_access import ClassificationAccessResolver
@@ -184,7 +185,7 @@ async def get_messages(
     runs = (await session.execute(runs_stmt)).scalars().all()
     run_by_request_id = {run.request_message_id: run.id for run in runs}
     
-    evidence_by_run = {}
+    evidence_by_run: dict[uuid.UUID, list[EvidenceCitationModel]] = {}
     if runs:
         evidence_stmt = (
             select(EvidenceCitationModel)
