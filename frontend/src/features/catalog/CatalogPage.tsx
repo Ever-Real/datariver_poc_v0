@@ -192,7 +192,7 @@ export function CatalogPage({
     { accessorKey: 'domain', header: 'Domain', size: 130, cell: ({ row }) => optionalTableText(row.original.domain) },
     { accessorKey: 'classification', header: 'Class', size: 100, cell: ({ row }) => <span className="badge badge-soft">{row.original.classification}</span> },
     { accessorKey: 'description', header: 'Description', size: 260, cell: ({ row }) => boundedTableText(row.original.description, row.original.description_truncated) },
-    { id: 'matches', accessorFn: (row) => row.matches.map((match) => match.text).join(' '), header: 'Matches', size: 300, meta: { className: 'allow-overflow' }, cell: ({ row }) => <CatalogMatchPreview fragments={row.original.matches} /> },
+    { id: 'matches', accessorFn: (row) => row.matches.map((match) => match.text).join(' '), header: 'Matches', size: 300, cell: ({ row }) => <CatalogMatchPreview fragments={row.original.matches} /> },
   ], [pageIndex, pageSize])
 
   const updateFilter = (name: keyof Filters, value: string) => {

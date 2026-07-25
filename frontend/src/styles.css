@@ -389,7 +389,7 @@ textarea { min-height: 110px; resize: vertical; }
 .registration-manual-workbench .catalog-tree, .registration-bulk-workbench .catalog-tree { height: var(--registration-workbench-height, auto); }
 .registration-manual-workbench > div:last-child, .registration-bulk-workbench > div:last-child { height: var(--registration-workbench-height, auto); overflow: auto; }
 
-.registration-editor-panel, .registration-bulk-sidebar, .registration-bulk-detail { min-width: 0; padding: 0; overflow: hidden; background: white; }
+.registration-editor-panel, .registration-bulk-sidebar, .registration-bulk-detail { height: 100%; display: flex; flex-direction: column; min-width: 0; padding: 0; overflow: hidden; background: white; }
 .registration-editor-panel > header, .registration-bulk-sidebar > header, .registration-bulk-detail > header { min-height: 43px; display: flex; align-items: center; justify-content: space-between; gap: 8px; border-bottom: 2px solid var(--blue-700); padding: 6px 9px; background: #f3f5f6; }
 .registration-editor-panel > header h2, .registration-bulk-sidebar > header h2, .registration-bulk-detail > header h2 { margin: 1px 0 0; color: var(--navy-900); font-size: 13px; }
 .registration-editor-panel > header .badge { display: inline-flex; align-items: center; gap: 4px; margin: 0; }

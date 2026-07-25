@@ -195,7 +195,7 @@ export function CatalogDetailPane({
   }
 
   const startResize = (event: React.PointerEvent<HTMLButtonElement>) => {
-    if (!onResizeWidth || window.innerWidth < 1320) return
+    if (!onResizeWidth) return
     event.preventDefault()
     const target = event.currentTarget
     target.setPointerCapture(event.pointerId)
