@@ -484,8 +484,6 @@ async def get_registration_operator_capability(
 )
 async def download_typed_upload_template(
     content_profile: Literal[
-        "DATASET_DESCRIPTION_CSV_V1",
-        "DATASET_DESCRIPTION_XLSX_V1",
         "CATALOG_METADATA_ROWS_CSV_V1",
         "CATALOG_METADATA_ROWS_XLSX_V1",
     ],

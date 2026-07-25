@@ -1551,6 +1551,46 @@ class UploadCandidateCurrentTargetResponse(BaseModel):
     observed_at: datetime
 
 
+class UploadRegistrationCandidateResponse(BaseModel):
+    id: UUID
+    ordinal: int = Field(ge=1)
+    evidence_version: Literal["DATASET_DESCRIPTION_CANDIDATE_V2"]
+    candidate_kind: Literal["DATASET_DESCRIPTION_UPDATE"]
+    proposed_description: str = Field(max_length=10_000)
+    submitted_identity: UploadCandidateSubmittedIdentityResponse
+    candidate_hash: str = Field(pattern="^[0-9a-f]{64}$")
+    created_at: datetime
+    current_target: UploadCandidateCurrentTargetResponse
+
+
+class UploadCandidateReceiptResponse(BaseModel):
+    id: UUID
+    preparation_id: UUID
+    manifest_version: int = Field(ge=1)
+    source_sha256: str = Field(pattern="^[0-9a-f]{64}$")
+    content_profile: Literal["DATASET_DESCRIPTION_CSV_V1", "DATASET_DESCRIPTION_XLSX_V1"]
+    parser_version: str
+    scanner_version: str
+    schema_version: str
+    configuration_hash: str = Field(pattern="^[0-9a-f]{64}$")
+    candidate_root_hash: str = Field(pattern="^[0-9a-f]{64}$")
+    receipt_hash: str = Field(pattern="^[0-9a-f]{64}$")
+    observed_at: datetime
+    created_at: datetime
+
+
+class UploadCandidatePolicyMetaResponse(BaseModel):
+    projection_version: int = Field(ge=0)
+    policy_version: str
+    classification_policy_version: int | None = Field(default=None, ge=1)
+    authorization_generation: int | None = Field(default=None, ge=0)
+
+
+class UploadRegistrationCandidateListResponse(BaseModel):
+    items: list[UploadRegistrationCandidateResponse]
+    page: PageMeta
+    receipt: UploadCandidateReceiptResponse
+    meta: UploadCandidatePolicyMetaResponse
 
 
 class TypedBulkCandidatePreviewResponse(BaseModel):
@@ -1631,13 +1671,6 @@ class CatalogMetadataCandidateReceiptResponse(BaseModel):
     receipt_hash: str = Field(pattern="^[0-9a-f]{64}$")
     observed_at: datetime
     created_at: datetime
-
-
-class UploadCandidatePolicyMetaResponse(BaseModel):
-    projection_version: int = Field(ge=0)
-    policy_version: str
-    classification_policy_version: int | None = Field(default=None, ge=1)
-    authorization_generation: int | None = Field(default=None, ge=0)
 
 
 class CatalogMetadataCandidateListResponse(BaseModel):
