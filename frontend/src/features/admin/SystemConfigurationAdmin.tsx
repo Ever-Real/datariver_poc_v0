@@ -122,7 +122,7 @@ function enrichYamlWithComments(yaml: string, systemId: string): string {
 export function SystemConfigurationAdmin(props: AdminSectionProps) {
   const { api, context, reportError, requestConfirmation } = props
   const [items, setItems] = useState<SystemConfigurationEntry[]>([])
-  const [selectedId, setSelectedId] = useState<SystemConfigurationEntry['system_id']>()
+  const [selectedId, setSelectedId] = useState<SystemConfigurationEntry['system_id'] | 'CORE_DASHBOARD' | undefined>('CORE_DASHBOARD')
   const [draft, setDraft] = useState('')
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
@@ -145,7 +145,7 @@ export function SystemConfigurationAdmin(props: AdminSectionProps) {
       const next = await api.listSystemConfiguration(controller.signal)
       if (controller.signal.aborted || loadRequest.current.generation !== generation) return
       setItems(next)
-      setSelectedId((current) => current && next.some((item) => item.system_id === current)
+      setSelectedId((current) => current && (next.some((item) => item.system_id === current) || current === 'CORE_DASHBOARD')
         ? current : next[0]?.system_id)
     } catch (next) {
       if (!controller.signal.aborted) { setError(next); reportError(next) }

@@ -150,7 +150,7 @@
 .catalog-results { position: relative; display: flex; flex-direction: column; }
 .catalog-results > header > div { min-width: 0; display: grid; gap: 1px; }
 .catalog-results .dense-table-frame { min-height: 0; flex: 1; overflow-x: auto; overflow-y: auto; overscroll-behavior-x: contain; border-top: 0; scrollbar-gutter: stable both-edges; }
-.catalog-results .dense-data-table { min-width: 1880px; }
+
 .catalog-selection-loading { position: absolute; z-index: 4; inset: 56px 0 0; display: flex; align-items: center; justify-content: center; gap: 8px; color: var(--text-600); background: rgba(248, 250, 251, .9); font-size: 11px; font-weight: 800; }
 .catalog-selection-loading .loader { width: 18px; height: 18px; border-width: 2px; }
 .catalog-local-table-note { min-height: 24px; margin: 0; border-right: 1px solid var(--line-300); border-left: 1px solid var(--line-300); padding: 5px 7px; color: var(--text-500); background: #fbfcfc; font-size: 9px; }

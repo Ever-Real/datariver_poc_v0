@@ -78,8 +78,7 @@ export function CatalogPage({
   const [draftQuery, setDraftQuery] = useState(initialQuery)
   const [query, setQuery] = useState(initialQuery)
   const [filters, setFilters] = useState<Filters>(emptyFilters)
-  const [result, setResult] = useState<CatalogSearch>()
-  const [facets, setFacets] = useState<CatalogFacets>()
+  const [error, setError] = useState<unknown>()
   const [suggestions, setSuggestions] = useState<CatalogSuggestion[]>([])
   const [suggestionIndex, setSuggestionIndex] = useState(-1)
   const [filtersOpen, setFiltersOpen] = useState(false)
@@ -100,13 +99,15 @@ export function CatalogPage({
     setSelectedAssetId(undefined)
   }, [initialQuery])
 
-  const { data: result, isFetching: loading, error } = useQuery({
+  const { data: result, isFetching: loading } = useQuery({
     queryKey: ['catalog', 'assets', query, filters, cursors[pageIndex], pageSize],
     queryFn: async ({ signal }) => client.request<CatalogSearch>(
       `/catalog/assets?${searchPath(query, filters, cursors[pageIndex], pageSize)}`,
       { signal },
     ),
     placeholderData: keepPreviousData,
+    staleTime: 5 * 60 * 1000,
+    gcTime: 10 * 60 * 1000,
   })
 
   const { data: facets } = useQuery({
@@ -115,6 +116,8 @@ export function CatalogPage({
       `/catalog/facets?${searchPath(query, filters, undefined, 30)}`,
       { signal },
     ),
+    staleTime: 5 * 60 * 1000,
+    gcTime: 10 * 60 * 1000,
   })
 
   useEffect(() => {
