@@ -34,6 +34,7 @@ export function CatalogMatchPreview({ fragments }: { fragments: CatalogMatchFrag
   
   const fullText = fragments.map((f) => `[${labels[f.field]}] ${f.text}`).join(' | ')
   const fragment = fragments[index]
+  if (!fragment) return null
   const hasMultiple = fragments.length > 1
 
   return (
