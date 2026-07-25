@@ -119,6 +119,8 @@ async def query(
                 effective_until=item.effective_until,
                 extraction_method=item.extraction_method,
             )
+            for item in exchange.evidence
+        ],
     )
 
 @router.get("/sessions", response_model=list[ChatSessionResponse])
