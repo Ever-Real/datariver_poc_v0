@@ -44,6 +44,82 @@ function activationLabel(state: SystemConfigurationEntry['activation_state']) {
   return labels[state]
 }
 
+/** YAML 텍스트에서 key: value 맵을 추출 */
+function parseYamlSimple(yaml: string): Record<string, string> {
+  const result: Record<string, string> = {}
+  for (const line of yaml.split('\n')) {
+    if (!line.trim() || line.trim().startsWith('#')) continue
+    const match = line.match(/^([a-zA-Z0-9_-]+):\s*(.*)$/)
+    if (match?.[1]) result[match[1]] = match[2] ?? ''
+  }
+  return result
+}
+
+/** 맵에서 YAML 텍스트를 재구성 (주석/빈줄은 원본에서 유지) */
+function applyValuesToYaml(yaml: string, updates: Record<string, string>): string {
+  return yaml.split('\n').map((line) => {
+    if (!line.trim() || line.trim().startsWith('#')) return line
+    const match = line.match(/^([a-zA-Z0-9_-]+):\s*(.*)$/)
+    if (match?.[1] && match[1] in updates) {
+      return `${match[1]}: ${updates[match[1]]}`
+    }
+    return line
+  }).join('\n')
+}
+
+/** connection_mode 등 알려진 enum 필드 */
+const CONNECTION_MODE_OPTIONS = ['LOCAL_OLLAMA', 'INTRANET_OPENAI_COMPATIBLE'] as const
+
+/** 특정 키가 드롭다운 선택 대상인지 */
+function isDropdownKey(key: string): boolean {
+  return key === 'connection_mode'
+}
+
+/** 드롭다운 옵션 가져오기 */
+function getDropdownOptions(key: string): string[] {
+  if (key === 'connection_mode') return [...CONNECTION_MODE_OPTIONS]
+  return []
+}
+
+/** YAML 모드에서 각 시스템 타입별 가이드 주석 추가 */
+function enrichYamlWithComments(yaml: string, systemId: string): string {
+  const commentMap: Record<string, Record<string, string>> = {
+    LLM_CHAT_MODEL: {
+      connection_mode: '# 로컬 Ollama: LOCAL_OLLAMA | 사내 서버: INTRANET_OPENAI_COMPATIBLE',
+      base_url: '# 예: http://192.168.1.100:11434 (Ollama) 또는 https://your-server.internal/v1',
+      model: '# 예: gemma3:12b, llama3.1:8b (Ollama) 또는 gpt-4o-mini',
+      timeout_seconds: '# 요청 타임아웃(초). 기본값: 120',
+      context_tokens: '# 최대 컨텍스트 토큰 수. 기본값: 8192',
+    },
+    LLM_EMBEDDING: {
+      connection_mode: '# LOCAL_OLLAMA 또는 INTRANET_OPENAI_COMPATIBLE',
+      base_url: '# 예: http://192.168.1.100:11434',
+      model: '# 예: nomic-embed-text:latest',
+      dimensions: '# 임베딩 차원 수. 모델에 따라 다름 (예: 768, 1536)',
+    },
+    POSTGRESQL: {
+      host: '# 예: localhost 또는 postgres (Docker Compose 서비스명)',
+      port: '# 기본값: 5432',
+      database: '# 데이터베이스 이름',
+    },
+    REDIS_CACHE: {
+      host: '# 예: localhost 또는 valkey-cache',
+      port: '# 기본값: 6379',
+      db: '# Redis DB 번호 (0~15)',
+    },
+  }
+  const guide = commentMap[systemId] ?? {}
+  if (Object.keys(guide).length === 0) return yaml
+  return yaml.split('\n').map((line) => {
+    if (!line.trim() || line.trim().startsWith('#')) return line
+    const match = line.match(/^([a-zA-Z0-9_-]+):/)
+    if (match?.[1] && guide[match[1]]) {
+      return `${guide[match[1]]}\n${line}`
+    }
+    return line
+  }).join('\n')
+}
+
 export function SystemConfigurationAdmin(props: AdminSectionProps) {
   const { api, context, reportError, requestConfirmation } = props
   const [items, setItems] = useState<SystemConfigurationEntry[]>([])
@@ -54,7 +130,8 @@ export function SystemConfigurationAdmin(props: AdminSectionProps) {
   const [testing, setTesting] = useState(false)
   const [testResult, setTestResult] = useState<SystemConfigurationTestResult>()
   const [error, setError] = useState<unknown>()
-  const [viewMode, setViewMode] = useState<'YAML' | 'FORM'>('YAML')
+  // Form Mode를 기본값으로 설정
+  const [viewMode, setViewMode] = useState<'YAML' | 'FORM'>('FORM')
   const loadRequest = useRef<{ generation: number; controller?: AbortController }>({
     generation: 0,
   })
@@ -84,6 +161,7 @@ export function SystemConfigurationAdmin(props: AdminSectionProps) {
     void load()
     return () => loadRequest.current.controller?.abort()
   }, [load])
+
   const selected = useMemo(
     () => items.find((item) => item.system_id === selectedId),
     [items, selectedId],
@@ -177,75 +255,188 @@ export function SystemConfigurationAdmin(props: AdminSectionProps) {
     })
   }
 
+  /** Form Mode: connection_requirements 기반 구조화된 폼 렌더링 */
+  const renderFormMode = () => {
+    if (!selected) return null
+    const currentValues = parseYamlSimple(draft)
+    const requirements = selected.connection_requirements ?? []
+
+    const handleFieldChange = (key: string, value: string) => {
+      const updated = { ...currentValues, [key]: value }
+      setDraft(applyValuesToYaml(draft || Object.entries(updated).map(([k, v]) => `${k}: ${v}`).join('\n'), updated))
+      setTestResult(undefined)
+    }
+
+    // connection_requirements가 있으면 구조화된 폼, 없으면 YAML 필드 기반
+    if (requirements.length > 0) {
+      return (
+        <div className="admin-system-form-structured">
+          {requirements.map((req) => {
+            const isSecret = req.secret
+            const isRequired = req.required
+            const isDropdown = isDropdownKey(req.key)
+            const currentVal = currentValues[req.key] ?? ''
+            return (
+              <label key={req.key} className="admin-system-form-field-row">
+                <span className="admin-system-form-label">
+                  {req.label}
+                  {isRequired && <span className="admin-system-form-required" aria-label="필수">*</span>}
+                  {isSecret && <span className="admin-system-form-secret-badge">🔑 secret 참조</span>}
+                </span>
+                {isSecret ? (
+                  <div>
+                    <input
+                      type="text"
+                      className="admin-system-form-input"
+                      value={currentVal}
+                      placeholder={req.example ?? `file:/run/secrets/${req.key}`}
+                      onChange={(e) => handleFieldChange(req.key, e.target.value)}
+                    />
+                    <small className="admin-system-form-hint">
+                      실제 비밀값이 아닌 Docker secret 파일 참조명을 입력하세요 (예: <code>file:/run/secrets/{req.key}</code>)
+                    </small>
+                  </div>
+                ) : isDropdown ? (
+                  <select
+                    className="admin-system-form-input"
+                    value={currentVal}
+                    onChange={(e) => handleFieldChange(req.key, e.target.value)}
+                  >
+                    <option value="">-- 선택 --</option>
+                    {getDropdownOptions(req.key).map((opt) => (
+                      <option key={opt} value={opt}>{opt}</option>
+                    ))}
+                  </select>
+                ) : (
+                  <input
+                    type="text"
+                    className="admin-system-form-input"
+                    value={currentVal}
+                    placeholder={req.example ?? `${req.key} 값 입력`}
+                    onChange={(e) => handleFieldChange(req.key, e.target.value)}
+                  />
+                )}
+              </label>
+            )
+          })}
+          <small className="admin-system-form-hint-global">
+            비밀번호·토큰·API 키 값은 이 화면에서 제출할 수 없습니다. <code>file:/run/secrets/&lt;name&gt;</code> 형식의 Docker secret 참조명만 입력하세요.
+          </small>
+        </div>
+      )
+    }
+
+    // connection_requirements 없을 경우 YAML 키 기반 폼
+    return (
+      <div className="admin-system-form-yaml-based">
+        {draft.split('\n').map((line, idx) => {
+          if (!line.trim() || line.trim().startsWith('#')) {
+            return <div key={idx} className="admin-system-form-comment">{line || '\u00A0'}</div>
+          }
+          const match = line.match(/^([a-zA-Z0-9_-]+):\s*(.*)$/)
+          if (!match) return <div key={idx} className="admin-system-form-unparseable">{line}</div>
+          const [, key, val] = match
+          const isDropdown = isDropdownKey(key!)
+          return (
+            <label key={idx} className="admin-system-form-field-row">
+              <span className="admin-system-form-label">{key}</span>
+              {isDropdown ? (
+                <select
+                  className="admin-system-form-input"
+                  value={val ?? ''}
+                  onChange={(e) => {
+                    const newLines = draft.split('\n')
+                    newLines[idx] = `${key}: ${e.target.value}`
+                    setDraft(newLines.join('\n'))
+                    setTestResult(undefined)
+                  }}
+                >
+                  <option value="">-- 선택 --</option>
+                  {getDropdownOptions(key!).map((opt) => (
+                    <option key={opt} value={opt}>{opt}</option>
+                  ))}
+                </select>
+              ) : (
+                <input
+                  type="text"
+                  className="admin-system-form-input"
+                  value={val ?? ''}
+                  placeholder={`${key} 값 입력`}
+                  onChange={(e) => {
+                    const newLines = draft.split('\n')
+                    newLines[idx] = `${key}: ${e.target.value}`
+                    setDraft(newLines.join('\n'))
+                    setTestResult(undefined)
+                  }}
+                />
+              )}
+            </label>
+          )
+        })}
+        <small className="admin-system-form-hint-global">
+          비밀번호·토큰·API 키 값은 이 화면에서 제출할 수 없습니다.
+        </small>
+      </div>
+    )
+  }
+
   return <section className="panel admin-system-settings">
-    <div className="section-heading"><div><h3>시스템 설정</h3><p className="muted">개발 환경의 시스템별 주소·모델·비민감 옵션을 YAML로 관리합니다. 실행 시크릿은 운영자 관리 영역에 남습니다.</p></div><button className="button button-secondary" onClick={() => void load()} type="button">새로고침</button></div>
+    <div className="section-heading"><div><h3>시스템 설정</h3><p className="muted">연결 주소·모델·옵션을 관리합니다. 실행 시크릿(비밀번호/API 키)은 Docker secret 파일로 별도 관리됩니다.</p></div><button className="button button-secondary" onClick={() => void load()} type="button">새로고침</button></div>
     <div className="admin-system-settings-workspace">
       <nav aria-label="설정 시스템 목록" className="admin-system-settings-list" role="tablist">
         <h4 className="text-xs font-bold text-slate-500 uppercase mt-4 mb-2 ml-3 px-3">Core Systems</h4>
-        {ordinaryItems.filter(i => i.is_core).map((item) => <button {...systemTabs.tabProps(item.system_id)} className={selected?.system_id === item.system_id ? 'active' : ''} key={item.system_id} onClick={() => setSelectedId(item.system_id)} type="button"><span className={`badge ${item.state === 'CONFIGURED' ? '' : 'badge-soft'}`}>{item.state}</span><strong>{item.label}</strong></button>)}
+        {ordinaryItems.filter(i => i.is_core).map((item) => <button {...systemTabs.tabProps(item.system_id)} className={selected?.system_id === item.system_id ? 'active' : ''} key={item.system_id} onClick={() => setSelectedId(item.system_id)} type="button"><span className={`badge ${item.state === 'CONFIGURED' ? '' : 'badge-soft'}`}>{stateLabel(item.state)}</span><strong>{item.label}</strong></button>)}
         {ordinaryItems.filter(i => !i.is_core).length > 0 && <h4 className="text-xs font-bold text-slate-500 uppercase mt-4 mb-2 ml-3 px-3">Extensions</h4>}
-        {ordinaryItems.filter(i => !i.is_core).map((item) => <button {...systemTabs.tabProps(item.system_id)} className={selected?.system_id === item.system_id ? 'active' : ''} key={item.system_id} onClick={() => setSelectedId(item.system_id)} type="button"><span className={`badge ${item.state === 'CONFIGURED' ? '' : 'badge-soft'}`}>{item.state}</span><strong>{item.label}</strong></button>)}
+        {ordinaryItems.filter(i => !i.is_core).map((item) => <button {...systemTabs.tabProps(item.system_id)} className={selected?.system_id === item.system_id ? 'active' : ''} key={item.system_id} onClick={() => setSelectedId(item.system_id)} type="button"><span className={`badge ${item.state === 'CONFIGURED' ? '' : 'badge-soft'}`}>{stateLabel(item.state)}</span><strong>{item.label}</strong></button>)}
         {llmItems.length > 0 && <h4 className="text-xs font-bold text-slate-500 uppercase mt-4 mb-2 ml-3 px-3">AI Models</h4>}
         {llmItems.length > 0 && <button {...systemTabs.tabProps('LLM_MODELS')} className={llmSelected ? 'active' : ''} onClick={() => selectSystemTab('LLM_MODELS')} type="button"><span className={`badge ${llmItems.every((item) => item.state === 'CONFIGURED') ? '' : 'badge-soft'}`}>{llmItems.filter((item) => item.state === 'CONFIGURED').length}/{llmItems.length}</span><strong>LLM Models</strong></button>}
         {!loading && items.length === 0 && <p>표시 가능한 설정 항목이 없습니다.</p>}
       </nav>
       <section {...(activeSystemTab ? systemTabs.panelProps(activeSystemTab) : {})} aria-live="polite" className="admin-system-settings-detail">
         {loading ? <p className="muted">서버 구성 상태를 불러오는 중입니다.</p> : !selected ? <p className="muted">왼쪽에서 시스템을 선택하세요.</p> : <>
-          <header className="flex items-start justify-between gap-3"><div><span className="eyebrow">{selected.system_id}</span><h4>{selected.label}</h4></div>{canUpdate && !selected.is_core && <button className="button button-secondary" disabled={!selected.template_yaml} onClick={() => setDraft(selected.template_yaml)} type="button">샘플 양식 복원</button>}</header>
+          <header className="flex items-start justify-between gap-3"><div><span className="eyebrow">{selected.system_id}</span><h4>{selected.label}</h4><p className="muted" style={{ fontSize: 11 }}>{selected.description}</p></div>{canUpdate && !selected.is_core && <button className="button button-secondary" disabled={!selected.template_yaml} onClick={() => setDraft(selected.template_yaml)} type="button">샘플 양식 복원</button>}</header>
           {llmSelected && <div className="admin-system-llm-tabs" role="group" aria-label="LLM 모델 설정">
             {llmItems.map((item) => <button key={item.system_id} type="button" aria-pressed={selected.system_id === item.system_id} className={`button ${selected.system_id === item.system_id ? '' : 'button-secondary'}`} onClick={() => setSelectedId(item.system_id)}>{llmTabLabel(item.system_id)}</button>)}
           </div>}
-          {(selected.system_id === 'LLM_CHAT_MODEL' || selected.system_id === 'LLM_EMBEDDING') && <p className="muted">개발 환경에서는 <code>connection_mode: LOCAL_OLLAMA</code> 또는 사내 HTTPS 모델 서버용 <code>INTRANET_OPENAI_COMPATIBLE</code>을 선택할 수 있습니다. 후자는 운영자 allowlist와 <code>file:/run/secrets/...</code> API-key 참조가 모두 필요하며, 상용 외부 API는 지원하지 않습니다.</p>}
           <dl className="summary-list">
             <div><dt>구성 상태</dt><dd><span className="badge">{stateLabel(selected.state)}</span></dd></div>
             <div><dt>관리 경로</dt><dd>{selected.management_plane === 'DEVELOPMENT_DATABASE' ? '개발 DB 설정' : selected.management_plane === 'DEPLOYMENT' ? '배포 설정' : '승인 Provider profile'}</dd></div>
-            <div><dt>Embed</dt><dd>{embedLabel(selected.embedding_state)}</dd></div>
-            <div><dt>Version</dt><dd>v{selected.version}</dd></div>
+            <div><dt>Embedding</dt><dd>{embedLabel(selected.embedding_state)}</dd></div>
+            <div><dt>버전</dt><dd>v{selected.version}</dd></div>
             <div><dt>적용 수명주기</dt><dd><span className="badge">{activationLabel(selected.activation_state)}</span></dd></div>
             <div><dt>TEST 버전</dt><dd>{selected.tested_version ? `v${selected.tested_version} · ${selected.test_status}` : '—'}</dd></div>
             <div><dt>활성 버전</dt><dd>{selected.activated_version ? `v${selected.activated_version}` : '—'}</dd></div>
-            <div><dt>현재 API 적용 버전</dt><dd>{selected.applied_version ? `v${selected.applied_version}` : '—'}</dd></div>
+            <div><dt>현재 적용 버전</dt><dd>{selected.applied_version ? `v${selected.applied_version}` : '—'}</dd></div>
           </dl>
-          {selected.is_core ? <p className="callout">이 코어(Core) 시스템 환경은 설정 YAML을 뷰어에서 직접 편집할 수 없습니다. 배포 환경 변수(.env)를 통해 관리됩니다.</p> : canUpdate ? <>
-            {!selected.configuration_yaml && <p className="callout">아직 저장된 설정이 없어 서버가 관리하는 비밀 없는 샘플 양식을 표시합니다. 실제 주소와 비민감 옵션을 입력한 뒤 저장하세요.</p>}
-            <div className="flex gap-2 mb-2">
-              <button type="button" className={`button ${viewMode === 'YAML' ? '' : 'button-secondary'}`} onClick={() => setViewMode('YAML')}>YAML Mode</button>
-              <button type="button" className={`button ${viewMode === 'FORM' ? '' : 'button-secondary'}`} onClick={() => setViewMode('FORM')}>Form Mode</button>
+          {selected.is_core ? <p className="callout">이 코어 시스템 환경은 배포 환경 변수(.env)를 통해 관리됩니다. 아래 양식에서 직접 편집할 수 없습니다.</p> : canUpdate ? <>
+            {!selected.configuration_yaml && <p className="callout">아직 저장된 설정이 없습니다. 실제 주소와 비민감 옵션을 입력한 뒤 저장하세요.</p>}
+            {/* 버튼 순서: Form Mode (기본) | YAML Mode */}
+            <div className="flex gap-2 mb-3">
+              <button type="button" className={`button ${viewMode === 'FORM' ? '' : 'button-secondary'}`} onClick={() => setViewMode('FORM')}>폼 편집</button>
+              <button type="button" className={`button ${viewMode === 'YAML' ? '' : 'button-secondary'}`} onClick={() => setViewMode('YAML')}>YAML 편집</button>
             </div>
-            {viewMode === 'YAML' ? (
-              <label className="form-field admin-system-yaml-field"><span>YAML connection settings</span><textarea aria-label={`${selected.label} YAML 설정`} className="admin-system-yaml" onChange={(event) => { setDraft(event.target.value); setTestResult(undefined) }} spellCheck="false" value={draft} /><small>비밀번호·토큰·API 키 값은 이 화면에서 제출할 수 없습니다. <code>file:/run/secrets/&lt;name&gt;</code> 형식의 Docker secret 참조명만 입력하세요.</small></label>
+            {viewMode === 'FORM' ? (
+              renderFormMode()
             ) : (
-              <div className="form-field admin-system-form-field">
-                <span>Form connection settings</span>
-                <div className="flex flex-col gap-2 p-3 border border-slate-300 rounded bg-white">
-                  {draft.split('\n').map((line, idx) => {
-                    if (!line.trim() || line.trim().startsWith('#')) return <div key={idx} className="text-slate-400 text-xs font-mono">{line}</div>;
-                    const match = line.match(/^([a-zA-Z0-9_-]+):\s*(.*)$/);
-                    if (!match) return <div key={idx} className="text-red-500 text-xs font-mono">{line} (Unparseable)</div>;
-                    const [_, key, val] = match;
-                    return (
-                      <label key={idx} className="flex flex-col gap-1">
-                        <span className="text-xs font-bold text-slate-700">{key}</span>
-                        <input type="text" className="border border-slate-300 rounded p-1 text-sm font-mono" value={val} onChange={(e) => {
-                          const newLines = draft.split('\n');
-                          newLines[idx] = `${key}: ${e.target.value}`;
-                          setDraft(newLines.join('\n'));
-                          setTestResult(undefined);
-                        }} />
-                      </label>
-                    );
-                  })}
-                </div>
-                <small>비밀번호·토큰·API 키 값은 이 화면에서 제출할 수 없습니다.</small>
-              </div>
+              <label className="form-field admin-system-yaml-field">
+                <span>YAML 연결 설정</span>
+                <textarea
+                  aria-label={`${selected.label} YAML 설정`}
+                  className="admin-system-yaml"
+                  onChange={(event) => { setDraft(event.target.value); setTestResult(undefined) }}
+                  spellCheck="false"
+                  value={enrichYamlWithComments(draft, selected.system_id)}
+                />
+                <small>비밀번호·토큰·API 키 값은 이 화면에서 제출할 수 없습니다. <code>file:/run/secrets/&lt;name&gt;</code> 형식의 Docker secret 참조명만 입력하세요.</small>
+              </label>
             )}
-          </> : <p className="callout">이 환경에서는 설정 YAML을 편집할 수 없습니다. 배포 설정과 승인 Provider profile을 사용하세요.</p>}
-          {selected.display_yaml && <section className="rounded-enterprise border border-slate-300 bg-slate-50 p-3" aria-label={`${selected.label} 저장된 비밀 제외 설정`}><span className="eyebrow">Saved non-secret configuration</span><h5 className="mb-2 mt-1 text-xs text-navy-900">저장된 설정 요약</h5><pre className="m-0 overflow-auto whitespace-pre-wrap text-[11px] leading-5 text-slate-700">{selected.display_yaml}</pre><small className="mt-2 block text-[9px] text-slate-500">실제 실행 시크릿은 포함하지 않습니다. 표시된 <code>secret_references</code>는 Docker secret 파일의 참조명입니다.</small></section>}
+          </> : <p className="callout">이 환경에서는 설정을 직접 편집할 수 없습니다. 배포 설정과 승인 Provider profile을 사용하세요.</p>}
+          {selected.display_yaml && <section className="rounded-enterprise border border-slate-300 bg-slate-50 p-3" aria-label={`${selected.label} 저장된 비밀 제외 설정`}><span className="eyebrow">저장된 설정 요약 (비밀값 제외)</span><pre className="m-0 overflow-auto whitespace-pre-wrap text-[11px] leading-5 text-slate-700">{selected.display_yaml}</pre><small className="mt-2 block text-[9px] text-slate-500">실제 실행 시크릿은 포함하지 않습니다.</small></section>}
           {testResult && <p className={`callout m-0 ${testResult.status === 'AVAILABLE' ? 'border-l-green-600' : 'border-l-amber-600'}`} role="status"><strong>{testResult.status}</strong> · {testResult.scope} · {testResult.latency_ms}ms<br />{testResult.detail}</p>}
-          {<div className="action-row"><button className="button button-secondary" disabled={selected.version === 0 || dirty || testing} title={selected.version === 0 ? '먼저 설정을 SAVE하세요.' : dirty ? '변경사항을 SAVE한 뒤 저장된 설정을 TEST하세요.' : '저장된 설정의 서버 고정 probe를 실행합니다.'} onClick={() => void testSavedConfiguration()} type="button">{testing ? 'TESTING…' : 'TEST'}</button>{canUpdate && !selected.is_core && <><button className="button button-secondary" disabled={!canActivate || selected.activation_state !== 'TESTED'} title={!selected.runtime_supported ? '현재 아키텍처에 이 설정을 소비하는 런타임 어댑터가 없습니다.' : !canActivate ? '활성화에는 최근 WebAuthn 보증이 필요합니다.' : 'TEST를 통과한 현재 버전만 활성화할 수 있습니다.'} onClick={activate} type="button">ACTIVATE</button><button className="button" disabled={!draft.trim() || saving || !dirty} onClick={save} type="button">{saving ? '저장 중…' : 'SAVE'}</button></>}</div>}
-          {selected.activation_state === 'DEPLOYMENT_MANAGED' && <p className="callout m-0">이 연결은 데이터베이스의 저장·활성화 상태가 아니라 배포 환경 변수와 secret 파일을 기준으로 적용됩니다.</p>}
-          {selected.activation_state === 'ACTIVATED_RESTART_REQUIRED' && <p className="callout m-0">활성 버전은 저장되었지만 실행 중인 프로세스에는 아직 적용되지 않았습니다. {restartInstruction}</p>}
-          {selected.activation_state === 'APPLIED_TO_API_PROCESS' && selected.restart_scope === 'API_AND_WORKERS' && <p className="callout m-0">현재 API는 이 버전을 시작 시 로드했습니다. 관련 Worker도 동일한 배포 설정으로 재시작해야 하며, 이 화면은 Worker 적용 완료를 추정하지 않습니다.</p>}
+          {<div className="action-row"><button className="button button-secondary" disabled={selected.version === 0 || dirty || testing} title={selected.version === 0 ? '먼저 설정을 저장하세요.' : dirty ? '변경사항을 저장한 뒤 TEST하세요.' : '저장된 설정의 연결 상태를 확인합니다.'} onClick={() => void testSavedConfiguration()} type="button">{testing ? '연결 확인 중…' : '연결 테스트'}</button>{canUpdate && !selected.is_core && <><button className="button button-secondary" disabled={!canActivate || selected.activation_state !== 'TESTED'} title={!selected.runtime_supported ? '현재 아키텍처에 이 설정을 소비하는 런타임 어댑터가 없습니다.' : !canActivate ? '활성화에는 최근 보안키 인증이 필요합니다.' : 'TEST를 통과한 현재 버전만 활성화할 수 있습니다.'} onClick={activate} type="button">활성화</button><button className="button" disabled={!draft.trim() || saving || !dirty} onClick={save} type="button">{saving ? '저장 중…' : '저장'}</button></>}</div>}
+          {selected.activation_state === 'DEPLOYMENT_MANAGED' && <p className="callout m-0">이 연결은 배포 환경 변수와 secret 파일을 기준으로 적용됩니다.</p>}
+          {selected.activation_state === 'ACTIVATED_RESTART_REQUIRED' && <p className="callout m-0">활성 버전이 저장되었지만 실행 중인 프로세스에 아직 적용되지 않았습니다. {restartInstruction}</p>}
+          {selected.activation_state === 'APPLIED_TO_API_PROCESS' && selected.restart_scope === 'API_AND_WORKERS' && <p className="callout m-0">현재 API에 이 버전이 적용되었습니다. 관련 Worker도 동일한 설정으로 재시작하세요.</p>}
         </>}
       </section>
     </div>

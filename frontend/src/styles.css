@@ -163,6 +163,12 @@
 .catalog-match-preview > span { min-width: 0; display: inline-flex; flex: 0 1 auto; align-items: center; gap: 3px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .catalog-match-preview b { flex: 0 0 auto; border: 1px solid #afbbc5; padding: 0 3px; color: var(--blue-700); font-size: 8px; text-transform: uppercase; background: #eef3f6; }
 .catalog-match-preview mark { color: inherit; background: #ffec9d; }
+/* Carousel 컨테이너: overflow visible로 버튼 잘림 방지 */
+.catalog-match-carousel { display: flex; align-items: center; gap: 3px; min-width: 0; width: 100%; overflow: visible; }
+.catalog-match-carousel-btn { flex: 0 0 18px; display: flex; align-items: center; justify-content: center; min-width: 18px; height: 18px; border: 0; padding: 0; background: transparent; cursor: pointer; border-radius: 3px; }
+.catalog-match-carousel-btn:hover:not(:disabled) { background: var(--blue-100); }
+.catalog-match-carousel-btn:disabled { opacity: 0.35; cursor: default; }
+.catalog-match-carousel-btn svg { display: block; }
 .catalog-result-meta { min-height: 26px; display: flex; align-items: center; gap: 12px; border: 1px solid var(--line-300); border-top: 0; padding: 3px 7px; color: var(--text-500); font-size: 9px; background: #f7f8f7; }
 .catalog-result-meta time { margin-left: auto; }
 .catalog-detail { position: sticky; top: 70px; min-height: 0; max-height: none; display: flex; flex-direction: column; overflow: hidden; background: white; }
@@ -379,8 +385,9 @@ textarea { min-height: 110px; resize: vertical; }
 .registration-mode-tabs button.active { color: white; background: var(--blue-700); }
 .role-template-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; }.role-template-grid article { display: grid; align-content: start; gap: 7px; min-width: 0; padding: 10px; border: 1px solid var(--line-300); background: #f8fafb; }.role-template-grid article.selected { border-color: var(--blue-700); box-shadow: inset 0 0 0 1px var(--blue-700); background: #eef6fb; }.role-template-grid h4 { margin: 0; color: var(--navy-900); font-size: 12px; }.role-template-grid p { min-height: 34px; margin: 0; color: var(--text-600); font-size: 10px; line-height: 1.45; }.role-template-grid small { min-height: 38px; overflow-wrap: anywhere; color: var(--text-500); font-size: 8px; line-height: 1.4; }.role-template-grid .button { align-self: end; width: 100%; font-size: 10px; }
 .registration-manual-workbench, .registration-bulk-workbench { --registration-workbench-height: clamp(520px, calc(100vh - 240px), 860px); min-width: 0; display: grid; grid-template-columns: 300px minmax(0, 1fr); align-items: stretch; gap: 8px; }
-/* Registration Tree: workbench 높이와 맞춤 */
+/* Registration Tree 및 우측 패널: workbench 높이와 맞춤 (catalog-workspace 같은 기준) */
 .registration-manual-workbench .catalog-tree, .registration-bulk-workbench .catalog-tree { height: var(--registration-workbench-height, auto); }
+.registration-manual-workbench > div:last-child, .registration-bulk-workbench > div:last-child { height: var(--registration-workbench-height, auto); overflow: auto; }
 
 .registration-editor-panel, .registration-bulk-sidebar, .registration-bulk-detail { min-width: 0; padding: 0; overflow: hidden; background: white; }
 .registration-editor-panel > header, .registration-bulk-sidebar > header, .registration-bulk-detail > header { min-height: 43px; display: flex; align-items: center; justify-content: space-between; gap: 8px; border-bottom: 2px solid var(--blue-700); padding: 6px 9px; background: #f3f5f6; }
@@ -592,6 +599,19 @@ textarea { min-height: 110px; resize: vertical; }
 .admin-system-yaml-field > span { color: var(--text-600); font-size: 10px; font-weight: 800; letter-spacing: .02em; }
 .admin-system-yaml { min-height: 260px; resize: vertical; border: 1px solid #334155; border-radius: 4px; padding: 12px 14px; color: #d7e3f4; background: #07111f; caret-color: #60a5fa; font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace; font-size: 11px; line-height: 1.65; tab-size: 2; }
 .admin-system-yaml:focus { border-color: #60a5fa; outline: 2px solid rgba(96, 165, 250, .25); outline-offset: 1px; }
+/* Form Mode 구조화 폼 */
+.admin-system-form-structured, .admin-system-form-yaml-based { display: grid; gap: 10px; padding: 10px; border: 1px solid var(--line-300); border-radius: 4px; background: #fafbfc; }
+.admin-system-form-field-row { display: grid; gap: 4px; }
+.admin-system-form-label { color: var(--text-700); font-size: 11px; font-weight: 800; }
+.admin-system-form-required { margin-left: 3px; color: #dc2626; font-size: 10px; }
+.admin-system-form-secret-badge { margin-left: 6px; border: 1px solid #fcd34d; border-radius: 3px; padding: 1px 4px; color: #92400e; font-size: 8px; font-weight: 700; background: #fef3c7; }
+.admin-system-form-input { width: 100%; min-width: 0; height: 32px; box-sizing: border-box; border: 1px solid var(--line-300); border-radius: 3px; padding: 4px 8px; color: var(--text-900); background: #fff; font: inherit; font-size: 12px; }
+.admin-system-form-input:focus { border-color: var(--blue-700); outline: 2px solid rgba(59, 130, 246, .15); outline-offset: 1px; }
+select.admin-system-form-input { height: 32px; cursor: pointer; }
+.admin-system-form-hint { display: block; margin-top: 2px; color: var(--text-500); font-size: 9px; line-height: 1.5; }
+.admin-system-form-hint-global { display: block; margin-top: 4px; padding: 6px 8px; border-left: 3px solid var(--line-300); color: var(--text-500); font-size: 9px; line-height: 1.5; background: #f3f5f6; }
+.admin-system-form-comment { color: var(--text-400); font-family: monospace; font-size: 10px; }
+.admin-system-form-unparseable { color: #dc2626; font-family: monospace; font-size: 10px; }
 .admin-two-column .dense-table-frame { max-height: 420px; overflow: auto; border: 1px solid var(--line-300); }
 .admin-two-column .dense-data-table { width: 100%; min-width: 710px; border-collapse: collapse; table-layout: fixed; font-size: 10px; }
 .admin-two-column .dense-data-table th { position: sticky; top: 0; padding: 6px; color: var(--text-600); text-align: left; background: #edf0f2; }

@@ -83,7 +83,7 @@ export function CatalogPage({
   const [suggestionIndex, setSuggestionIndex] = useState(-1)
   const [filtersOpen, setFiltersOpen] = useState(false)
   const [selectedAssetId, setSelectedAssetId] = useState<string>()
-  const [detailWidth] = useState(550)
+  const [detailWidth, setDetailWidth] = useState(550)
   const [cursors, setCursors] = useState<Array<string | undefined>>([undefined])
   const [pageIndex, setPageIndex] = useState(0)
   const [pageSize, setPageSize] = useState(50)
@@ -355,6 +355,7 @@ export function CatalogPage({
           assetId={selectedAssetId}
           onClose={closeSelectedAsset}
           onSelectAsset={selectAsset}
+          onResizeWidth={(w) => setDetailWidth(Math.max(320, Math.min(w, 900)))}
           width={detailWidth}
           asOverlay
         />
