@@ -32,6 +32,68 @@ Accept only `linux/aarch64` or `linux/arm64` on Mac and `linux/x86_64` or `linux
 Record CPU, RAM and free disk separately. Keep at least twice the release plus database/object
 transfer size free during import. Do not continue from a dirty source checkout.
 
+### 2.1 Blank-install and iterative-update executables
+
+For a new blank Mac/WSL environment, prefer `scripts/workflow_fresh_setup.py` to executing the
+bootstrap and Compose commands in this runbook by hand. For an environment that was completed by
+that program, use `scripts/workflow_update_restart.py` after reviewed Git changes. The detailed
+commands below remain the diagnostic and migration authority; the fresh workflow is not a database
+or object-restore shortcut.
+
+The fresh workflow records only non-secret deployment state under ignored
+`runtime/operator-workflow/<profile>.json`. Provider credentials remain under ignored `secrets/`.
+The update workflow reads that state, accepts only a clean fast-forward source history, renders
+Compose before mutation, stops writers only for a required migration, and recreates only affected
+services. External DataHub and MinIO are probed, external Airflow is linked, and external model
+activation remains governed separately; none is restarted by DataRiver.
+
+```bash
+# Mac blank development topology
+./scripts/workflow_fresh_setup.py \
+  --profile mac-development \
+  --datahub-mode local --redis-mode local \
+  --storage-mode local --airflow-mode local
+
+# WSL blank preparation topology; all placeholders must be replaced
+RELEASE_DIR="$HOME/workspace/datariver_platform_amd_distribution/restore/datariver-<release-id>"
+./scripts/workflow_fresh_setup.py \
+  --profile wsl-preparation \
+  --release-dir "$RELEASE_DIR" \
+  --redis-image-archive /approved-transfer/redis-8.2.6-bookworm-linux-amd64-<release>.tar.gz \
+  --datahub-mode external \
+  --datahub-base-url http://<actual-datahub-gms-host>:8080 \
+  --datahub-token-file /approved-secure-transfer/datahub_token \
+  --redis-mode local --storage-mode external \
+  --airflow-mode external \
+  --airflow-ui-url http://<actual-airflow-ui-host>:8080
+```
+
+The WSL source checkout may contain newer documentation, tests and these operator workflow files
+than the immutable image release. Any Backend, Frontend, Compose, image-build or runtime
+configuration difference is rejected before containers are stopped. Transfer a new release whose
+`source-commit.txt` covers that runtime change, retain the old release for rollback, then apply:
+
+```bash
+# Mac after committing local development
+./scripts/workflow_update_restart.py --profile mac-development
+
+# WSL after the new source and, when runtime changed, new release were transferred
+./scripts/workflow_update_restart.py \
+  --profile wsl-preparation \
+  --git-pull \
+  --release-dir "$RELEASE_DIR"
+```
+
+Do not use `--assume-yes` until the interactive plan has been accepted on that host at least once.
+`--refresh-bootstrap` preserves the existing uppercase Redis/S3/provider/LLM/Neo4j deployment
+values while regenerating profile-derived files. Neither executable performs automatic rollback;
+use Section 9 with the retained source commit, release, database backup and object evidence.
+External Neo4j can be selected with `--graph-mode external`, an exact private Bolt URI on port
+`7687`, and a mounted `username/password` credential file. External
+OpenAI-compatible Chat/Embedding/Reranker activation remains an Admin System Settings
+TEST/SAVE/ACTIVATE operation after core startup; the workflow does not bypass that governed
+revision and secret-reference boundary.
+
 ## 3. Mac profile and independently operated connectors
 
 Create ignored runtime files once; rerunning bootstrap preserves existing secret files:

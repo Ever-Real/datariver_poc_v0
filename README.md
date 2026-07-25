@@ -43,6 +43,88 @@ Remaining WSL/external-provider/browser/load/physical-retention checks are expli
 Runtime API/OIDC Origin validation is intentionally deferred as backlog item `R5-FE-04` at P2; the
 source must not be represented as having that protection.
 
+## 직렬 실행 워크플로
+
+반복되는 Mac 개발 PC와 WSL 준비 PC 초기화·업데이트 절차는 다음 두 실행파일로 통합한다.
+두 프로그램은 기존 bootstrap/Compose/migration/Keycloak 스크립트를 순서대로 호출하며, shell로
+입력값을 재해석하지 않는다.
+
+- `scripts/workflow_fresh_setup.py`: **빈 환경 전용**이다. Docker 아키텍처와 clean checkout을
+  검사하고, URL은 형식을 검증하며, token/password/access key는 파일 또는 숨김 입력으로만
+  받는다. bootstrap, 이미지 검증·load 또는 build, PostgreSQL/Keycloak, migration, 선택
+  connector, storage 초기화, 기본 runtime, health/DataHub probe, 최초 catalog sync를 순차
+  실행한다. 기존 DB·object를 이관하는 환경은 이 명령 대신
+  [Mac-to-WSL runbook](docs/26_MAC_TO_WSL_MIGRATION_RUNBOOK.md)의 백업/복원 게이트를 사용한다.
+- `scripts/workflow_update_restart.py`: 첫 프로그램이 기록한 ignored state를 기준으로
+  `git pull --ff-only`를 선택 실행하고 변경 경로를 분류한다. 문서·테스트·이 운영
+  워크플로만 바뀌면 컨테이너를 재시작하지 않는다. Frontend, Backend, migration,
+  Keycloak, Airflow, APISIX, Neo4j 또는 local connector가 바뀌면 실행 중이던 선택
+  서비스와 필수 서비스 중 영향 범위만 build/recreate한다.
+
+Mac 신규 개발 환경의 기본 topology(DataHub/Redis/MinIO/Airflow local)는 다음 한 명령으로
+시작한다. Neo4j와 APISIX는 필요할 때만 각각 `--graph-mode local`, `--with-gateway`를
+추가한다. 외부 Neo4j는 `--graph-mode external --neo4j-uri
+bolt+s://<actual-host>:7687 --neo4j-auth-file <username-password-file>`로 연결하며, credential
+파일 내용은 `username/password` 형식이어야 한다.
+
+```bash
+./scripts/workflow_fresh_setup.py \
+  --profile mac-development \
+  --datahub-mode local \
+  --redis-mode local \
+  --storage-mode local \
+  --airflow-mode local
+```
+
+준비 PC에서는 배포 repository에서 검증·해제한 **release root**와 별도 Redis archive를
+지정한다. `--datahub-base-url`은 UI가 아니라 container에서 접근 가능한 GMS origin이고,
+MinIO도 Console이 아닌 S3 API origin을 입력한다. 실제 외부 주소는 예제 placeholder를
+복사하지 말고 대상 값으로 바꾼다.
+
+```bash
+RELEASE_DIR="$HOME/workspace/datariver_platform_amd_distribution/restore/datariver-<release-id>"
+REDIS_ARCHIVE="$HOME/workspace/datariver_platform_amd_distribution/redis-8.2.6-bookworm-linux-amd64-<release>.tar.gz"
+
+./scripts/workflow_fresh_setup.py \
+  --profile wsl-preparation \
+  --release-dir "$RELEASE_DIR" \
+  --redis-image-archive "$REDIS_ARCHIVE" \
+  --datahub-mode external \
+  --datahub-base-url http://<actual-datahub-gms-host>:8080 \
+  --datahub-token-file /approved-secure-transfer/datahub_token \
+  --redis-mode local \
+  --storage-mode external \
+  --airflow-mode external \
+  --airflow-ui-url http://<actual-airflow-ui-host>:8080
+```
+
+개발 변경을 commit한 Mac에서는 아래 명령으로 현재 source를 적용한다. 준비 PC에서는 먼저
+새 amd64 release를 반입한 뒤 `--git-pull --release-dir "$RELEASE_DIR"`를 사용한다. Backend,
+Frontend 또는 Compose가 현재 offline release보다 새로우면 서비스 중지 전에 실패하므로,
+Git pull만으로 낡은 이미지를 새 코드처럼 실행하지 않는다.
+
+```bash
+# Mac: 현재 clean commit을 build하고 영향 서비스만 재생성
+./scripts/workflow_update_restart.py --profile mac-development
+
+# WSL: fast-forward pull 후 검증한 amd64 release로 영향 서비스만 재생성
+./scripts/workflow_update_restart.py \
+  --profile wsl-preparation \
+  --git-pull \
+  --release-dir "$RELEASE_DIR"
+```
+
+`.env.*`, `secrets/`, `runtime/operator-workflow/*.json`은 Git으로 이동하지 않는다. 업데이트
+프로그램의 `--refresh-bootstrap`은 기존 provider/LLM/Neo4j 설정과 secret을 보존하면서 파생
+파일만 재생성한다. 두 프로그램은 forward apply 도구이며 자동 rollback 도구가 아니다.
+준비 PC는 이전 source commit과 이전 immutable release를 보존하고, 실패 시 사용자 트래픽을
+연결하지 않은 채 runbook의 rollback 절차를 수행한다.
+
+외부 OpenAI-compatible Chat/Embedding/Reranker는 이 OS bootstrap에서 임의 활성화하지 않는다.
+플랫폼 기동 후 Admin System Settings에서 secret **reference**, private allowlist, URL, model을
+TEST/SAVE/ACTIVATE하고 API/해당 worker를 업데이트 워크플로로 재시작한다. Mac profile의
+기본 Ollama Chat 설정도 실제 모델 준비와 capability 확인을 대신하지 않는다.
+
 ## Canonical ownership
 
 | State | Canonical owner |
