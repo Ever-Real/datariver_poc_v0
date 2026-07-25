@@ -2,6 +2,22 @@
 
 ## Purpose and authority
 
+## Handoff public baseline (authoritative for transfer/restart)
+
+- 공개 기준점 is `origin/main` = `3c0379f4051ec698a53db41c5b5092895e40b8fb`.
+- 현재 작업 기준 브랜치: `codex/wsl-migration-runbook`.
+- 현재 작업 기준 HEAD: `a4a45ae3405076ed735cc20819137fb9d1cfed16`
+  (`feat(ops): add serial setup and update workflows`).
+- 현재 확인된 `origin` fetch/push URL:
+  `https://github.com/Ever-Real/datariver_v1.git`.
+- `codex/antigravity-handoff`의 `b04ab61`은 `a4a45ae`의 조상도, 자손도 아니고
+  `3c0379f4051e`에서 갈라진 sibling입니다. 위 기준을 바꾸거나 해당 브랜치를 합병/채택하지
+  않습니다. 통합은 Codex 또는 사용자의 명시적 승인만 가능합니다.
+- `codex/wsl-migration-runbook`과 `codex/antigravity-handoff`는 현재 원격에 공개된 브랜치가
+  아닙니다. 이 Agent가 동일 워크스페이스 또는 `3c0379f...`를 포함하는 검증된 source bundle을
+  받지 못한 상태에서 `origin/main`으로 임의 교체하지 않고, `BLOCKED_SOURCE_BASE`로 보고한 뒤
+  구현을 진행하지 않습니다.
+
 This is the current delivery ledger for the accepted product requirements. It prevents interrupted
 sessions, repeated requests, historical test reports, or partially merged branches from being
 mistaken for completed delivery. Only normalized current requirements and their evidence are
