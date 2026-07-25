@@ -31,7 +31,6 @@ import type {
   UploadRecord,
 } from '../../api/types'
 import { ErrorNotice } from '../../components/ErrorNotice'
-import { CatalogMetadataVocabularyBrowser } from './CatalogMetadataVocabularyBrowser'
 
 const HASH_CHUNK_SIZE = 4 * 1024 * 1024
 const PREPARATION_POLL_MAX_ATTEMPTS = 20
@@ -916,7 +915,6 @@ export function RegistrationBulkWorkbench({ client }: { client: ApiClient }) {
                   {templateBusy ? '템플릿 받는 중…' : '서버 템플릿 받기'}
                 </button>
               </p>
-              <CatalogMetadataVocabularyBrowser client={client} />
             </>
           )}
           {!isCatalogMetadataProfile(contentProfile) && isTypedDescriptionProfile(contentProfile) && (

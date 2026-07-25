@@ -1236,6 +1236,7 @@ def _system_configuration_entries(
                 activated_version=profile.activated_version if profile else None,
                 activated_at=activated_revision.activated_at if activated_revision else None,
                 applied_version=applied_version,
+                is_core=system_id in {"POSTGRESQL", "OIDC_IDENTITY", "DATAHUB_GMS", "DATAHUB_FRONTEND", "REDIS_CACHE", "REDIS_DELIVERY"},
             )
         )
     return entries

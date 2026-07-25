@@ -1260,6 +1260,7 @@ class SystemConfigurationEntryResponse(BaseModel):
     activated_version: int | None = Field(default=None, ge=1)
     activated_at: datetime | None = None
     applied_version: int | None = Field(default=None, ge=1)
+    is_core: bool = False
 
 
 class SystemConfigurationListResponse(BaseModel):
@@ -2258,6 +2259,24 @@ class ChatQueryResponse(BaseModel):
     answer: str
     persistence: Literal["PERSISTED", "EPHEMERAL_NO_STORE"]
     evidence: list[ChatEvidenceResponse]
+
+
+class ChatSessionResponse(BaseModel):
+    id: UUID
+    title: str
+    is_favorite: bool
+    created_at: datetime
+    updated_at: datetime
+    message_count: int
+
+
+class ChatMessageResponse(BaseModel):
+    id: UUID
+    session_id: UUID
+    role: Literal["user", "assistant"]
+    content: str
+    evidence_json: list[ChatEvidenceResponse] | None
+    created_at: datetime
 
 
 class CatalogSchemaMetricResponse(BaseModel):

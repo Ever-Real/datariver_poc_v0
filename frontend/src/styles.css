@@ -157,8 +157,10 @@
 .catalog-asset-name { color: var(--blue-700); font-weight: 800; }
 .catalog-asset-type-table { color: #12548b; background: #e4f0f8; }
 .catalog-asset-type-view { color: #5e437d; background: #efe8f7; }
-.catalog-match-preview { min-width: 0; display: grid; gap: 2px; }
-.catalog-match-preview > span { min-width: 0; display: flex; align-items: center; gap: 4px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* Matches 열: 한 줄로 표시, 전체 내용은 title tooltip에서 제공 */
+.catalog-match-preview { min-width: 0; display: flex; align-items: center; gap: 4px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.catalog-match-preview--single-line { display: flex; flex-wrap: nowrap; }
+.catalog-match-preview > span { min-width: 0; display: inline-flex; flex: 0 1 auto; align-items: center; gap: 3px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .catalog-match-preview b { flex: 0 0 auto; border: 1px solid #afbbc5; padding: 0 3px; color: var(--blue-700); font-size: 8px; text-transform: uppercase; background: #eef3f6; }
 .catalog-match-preview mark { color: inherit; background: #ffec9d; }
 .catalog-result-meta { min-height: 26px; display: flex; align-items: center; gap: 12px; border: 1px solid var(--line-300); border-top: 0; padding: 3px 7px; color: var(--text-500); font-size: 9px; background: #f7f8f7; }
@@ -175,9 +177,17 @@
 .catalog-detail-badges { min-width: 0; display: flex; align-items: center; white-space: nowrap; }
 .catalog-detail-badges .badge:last-child { margin-right: 0; }
 .badge-warning { color: #674b00; background: #fff0b9; }
-.catalog-detail-urn { min-width: 0; border: 1px solid var(--line-200); padding: 5px 6px; color: var(--text-500); font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 9px; background: #f6f7f7; }
-.catalog-urn-copy { display: inline-flex; align-items: center; gap: 3px; border: 1px solid var(--line-300); padding: 3px 6px; color: var(--blue-700); font-size: 9px; font-weight: 800; background: white; }
-.catalog-urn-copy:hover, .catalog-urn-copy:focus-visible { border-color: var(--blue-700); background: var(--blue-100); }
+/* 오버레이 상세 창: 배경 dim + fixed panel */
+.catalog-detail-backdrop { position: fixed; z-index: 38; inset: 0; background: rgba(7, 20, 38, 0.45); }
+/* 본문 스크롤 잠금: body에 .catalog-overlay-open 클래스로 제어 */
+body.catalog-overlay-open { overflow: hidden; }
+/* URN: 클릭 가능한 버튼 스타일 */
+.catalog-detail-urn { min-width: 0; border: 1px solid var(--line-200); padding: 5px 6px; color: var(--text-500); font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 9px; background: #f6f7f7; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.catalog-detail-urn--clickable { cursor: pointer; text-align: left; transition: border-color 0.15s, background 0.15s; }
+.catalog-detail-urn--clickable:hover { border-color: var(--blue-600); background: var(--blue-100); color: var(--blue-700); }
+.catalog-detail-urn--clickable.copied { border-color: #1a7a4a; background: #eafaf2; color: #1a7a4a; }
+/* 복사 URN 추안 버튼 (유지하되 시각적으로 숨김) */
+.catalog-urn-copy { display: none; }
 .catalog-detail-tabs { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 3px; border: 1px solid var(--line-300); padding: 2px; background: #f6f8f9; }
 .catalog-detail-tabs button { min-width: 0; border: 0; padding: 6px 7px; overflow: hidden; color: var(--text-600); text-overflow: ellipsis; white-space: nowrap; background: transparent; font-size: 9px; font-weight: 800; }
 .catalog-detail-tabs button.active { color: #fff; background: var(--blue-700); }
@@ -187,11 +197,18 @@
 .catalog-detail-properties > .metadata-vocabulary { grid-column: span 2; }
 .catalog-detail-properties dt { color: var(--text-500); font-size: 9px; font-weight: 900; text-transform: uppercase; }
 .catalog-detail-properties dd { margin: 3px 0 0; overflow-wrap: anywhere; font-size: 11px; }
+/* 콜럼 스키마 테이블 - type 셀 한 줄 ellipsis */
 .catalog-schema-table { max-height: 330px; overflow: auto; border: 1px solid var(--line-300); }
 .catalog-schema-table table { width: 100%; border-collapse: collapse; table-layout: fixed; font-size: 10px; }
 .catalog-schema-table th { position: sticky; top: 0; padding: 5px; color: var(--text-600); text-align: left; background: #edf0f2; }
 .catalog-schema-table th:nth-child(1) { width: 24%; }.catalog-schema-table th:nth-child(2) { width: 16%; }.catalog-schema-table th:nth-child(3) { width: 24%; }.catalog-schema-table th:nth-child(4), .catalog-schema-table th:nth-child(5) { width: 18%; }
 .catalog-schema-table td { border-top: 1px solid var(--line-200); padding: 5px; }
+.catalog-schema-type { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; cursor: help; }
+/* URN 복사 Toast */
+.catalog-urn-toast { position: fixed; z-index: 50; bottom: 28px; left: 50%; transform: translateX(-50%); padding: 8px 18px; border-radius: 4px; color: #fff; font-size: 12px; font-weight: 700; background: #1a7a4a; box-shadow: 0 4px 16px rgba(0,0,0,.22); pointer-events: none; animation: catalog-toast-in 0.18s ease; }
+@keyframes catalog-toast-in { from { opacity: 0; transform: translateX(-50%) translateY(8px); } to { opacity: 1; transform: translateX(-50%) translateY(0); } }
+/* 오버레이 패널 스타일 */
+.catalog-detail--overlay { position: fixed; z-index: 39; top: 56px; right: 12px; bottom: 12px; width: min(580px, calc(100vw - 24px)); height: auto; max-height: calc(100vh - 68px); border: 1px solid #8da0b3; box-shadow: 0 20px 60px rgba(7, 20, 38, .38); overflow: hidden; }
 .catalog-lineage-summary { display: flex; align-items: center; gap: 6px; padding: 6px; color: var(--blue-700); font-size: 10px; background: var(--blue-100); }
 .catalog-lineage-summary b { margin-left: auto; color: #745b00; }
 .catalog-lineage, .catalog-lineage-graph { min-width: 0; max-width: 100%; }
@@ -361,7 +378,10 @@ textarea { min-height: 110px; resize: vertical; }
 .registration-mode-tabs button { min-width: 104px; display: inline-flex; align-items: center; justify-content: start; gap: 4px; border: 1px solid var(--line-300); border-bottom: 0; padding: 4px 8px; color: var(--text-600); font-size: 10px; font-weight: 900; letter-spacing: .06em; text-align: left; background: #eef1f2; }
 .registration-mode-tabs button.active { color: white; background: var(--blue-700); }
 .role-template-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; }.role-template-grid article { display: grid; align-content: start; gap: 7px; min-width: 0; padding: 10px; border: 1px solid var(--line-300); background: #f8fafb; }.role-template-grid article.selected { border-color: var(--blue-700); box-shadow: inset 0 0 0 1px var(--blue-700); background: #eef6fb; }.role-template-grid h4 { margin: 0; color: var(--navy-900); font-size: 12px; }.role-template-grid p { min-height: 34px; margin: 0; color: var(--text-600); font-size: 10px; line-height: 1.45; }.role-template-grid small { min-height: 38px; overflow-wrap: anywhere; color: var(--text-500); font-size: 8px; line-height: 1.4; }.role-template-grid .button { align-self: end; width: 100%; font-size: 10px; }
-.registration-manual-workbench, .registration-bulk-workbench { min-width: 0; display: grid; grid-template-columns: 300px minmax(0, 1fr); align-items: start; gap: 8px; }
+.registration-manual-workbench, .registration-bulk-workbench { --registration-workbench-height: clamp(520px, calc(100vh - 240px), 860px); min-width: 0; display: grid; grid-template-columns: 300px minmax(0, 1fr); align-items: stretch; gap: 8px; }
+/* Registration Tree: workbench 높이와 맞춤 */
+.registration-manual-workbench .catalog-tree, .registration-bulk-workbench .catalog-tree { height: var(--registration-workbench-height, auto); }
+
 .registration-editor-panel, .registration-bulk-sidebar, .registration-bulk-detail { min-width: 0; padding: 0; overflow: hidden; background: white; }
 .registration-editor-panel > header, .registration-bulk-sidebar > header, .registration-bulk-detail > header { min-height: 43px; display: flex; align-items: center; justify-content: space-between; gap: 8px; border-bottom: 2px solid var(--blue-700); padding: 6px 9px; background: #f3f5f6; }
 .registration-editor-panel > header h2, .registration-bulk-sidebar > header h2, .registration-bulk-detail > header h2 { margin: 1px 0 0; color: var(--navy-900); font-size: 13px; }
@@ -674,6 +694,7 @@ textarea { min-height: 110px; resize: vertical; }
 .controlled-vocabulary-menu button { width: 100%; display: block; border: 0; border-bottom: 1px solid var(--line-200); padding: 6px 8px; overflow: hidden; color: var(--text-700); text-align: left; text-overflow: ellipsis; white-space: nowrap; background: #fff; cursor: pointer; font-size: 10px; }
 .controlled-vocabulary-menu button:hover, .controlled-vocabulary-menu button:focus-visible { color: var(--blue-700); background: var(--blue-100); }
 .controlled-vocabulary-menu p { margin: 0; padding: 7px 8px; color: var(--text-500); font-size: 9px; }
+.controlled-vocabulary-load-more { border-top: 1px dashed var(--line-300) !important; color: var(--blue-700) !important; font-style: italic; }
 .registration-edit-table td { overflow: hidden; vertical-align: middle; text-overflow: ellipsis; white-space: nowrap; }
 .registration-edit-table input { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .registration-edit-table .controlled-vocabulary-row { min-height: 29px; }

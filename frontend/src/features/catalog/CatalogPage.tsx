@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, type CSSProperties, type FormEvent, type KeyboardEvent } from 'react'
+import { useEffect, useMemo, useRef, useState, type FormEvent, type KeyboardEvent } from 'react'
 import type { ColumnDef } from '@tanstack/react-table'
 import { Filter, RotateCcw, Search } from 'lucide-react'
 import type { ApiClient } from '../../api/client'
@@ -83,7 +83,7 @@ export function CatalogPage({
   const [suggestionIndex, setSuggestionIndex] = useState(-1)
   const [filtersOpen, setFiltersOpen] = useState(false)
   const [selectedAssetId, setSelectedAssetId] = useState<string>()
-  const [detailWidth, setDetailWidth] = useState(550)
+  const [detailWidth] = useState(550)
   const [cursors, setCursors] = useState<Array<string | undefined>>([undefined])
   const [pageIndex, setPageIndex] = useState(0)
   const [pageSize, setPageSize] = useState(50)
@@ -103,7 +103,7 @@ export function CatalogPage({
 
   useEffect(() => {
     const controller = new AbortController()
-    setLoading(true); setError(undefined)
+    setLoading(true); setError(undefined); setResult(undefined)
     void client.request<CatalogSearch>(
       `/catalog/assets?${searchPath(query, filters, cursors[pageIndex], pageSize)}`,
       { signal: controller.signal },
@@ -115,6 +115,7 @@ export function CatalogPage({
 
   useEffect(() => {
     const controller = new AbortController()
+    setFacets(undefined)
     void client.request<CatalogFacets>(
       `/catalog/facets?${searchPath(query, filters, undefined, 30)}`,
       { signal: controller.signal },
@@ -245,13 +246,6 @@ export function CatalogPage({
     setSelectedAssetId(undefined)
   }
 
-  const resizeDetail = (requestedWidth: number) => {
-    const measuredWorkspaceWidth = workspaceRef.current?.clientWidth ?? 0
-    const workspaceWidth = measuredWorkspaceWidth || window.innerWidth
-    // Keep the resource tree fixed and leave Search Results at least 560px wide.
-    const maximumWidth = Math.max(420, workspaceWidth - 300 - 16 - 560)
-    setDetailWidth(Math.max(420, Math.min(Math.round(requestedWidth), maximumWidth)))
-  }
 
   const activeFilterCount = [
     filters.assetType,
@@ -333,7 +327,12 @@ export function CatalogPage({
       </div>
     </div>
     <ErrorNotice error={error} />
-    <div className={`catalog-workspace ${selectedAssetId ? 'with-detail' : ''}`} ref={workspaceRef} style={selectedAssetId ? { '--catalog-detail-width': `${detailWidth}px` } as CSSProperties : undefined}>
+    {/* 오버레이 모드: catalog-workspace는 2컬럼 공유, 상세 창은 fixed overlay로 뜸 */}
+    <div
+      className="catalog-workspace"
+      ref={workspaceRef}
+      aria-busy={loading}
+    >
       <CatalogResourceTree client={client} selectedAssetId={selectedAssetId} onSelectAsset={selectAsset} />
       <section className="catalog-results" aria-label="카탈로그 검색 결과">
         <header><div><span className="eyebrow">Permission scoped</span><h2>Search Results</h2><span>{result ? (result.total_exact ? `${result.total.toLocaleString()} items` : `현재 ${result.items.length.toLocaleString()}건${result.page.next_cursor ? ' · 더 있음' : ''}`) : '0 items'} · ALL keywords · ↔ 좌우 스크롤</span></div><CursorPagination {...paginationProps} label="Search Results 상단 페이지 탐색" /></header>
@@ -342,9 +341,21 @@ export function CatalogPage({
         <CursorPagination {...paginationProps} />
         {result && <footer className="catalog-result-meta"><span>projection v{result.meta.projection_version}</span><span>policy {result.meta.policy_version}</span><time dateTime={result.meta.observed_at ?? undefined}>{result.meta.observed_at ? new Date(result.meta.observed_at).toLocaleString() : '관측 시각 없음'}</time></footer>}
       </section>
-      {selectedAssetId && <CatalogDetailPane key={selectedAssetId} client={client} assetId={selectedAssetId} onClose={closeSelectedAsset} onResizeWidth={resizeDetail} onSelectAsset={selectAsset} width={detailWidth} />}
+      {/* 상세 창은 오버레이로 렌더링 (검색 결과를 밀어내지 않음) */}
+      {selectedAssetId && (
+        <CatalogDetailPane
+          key={selectedAssetId}
+          client={client}
+          assetId={selectedAssetId}
+          onClose={closeSelectedAsset}
+          onSelectAsset={selectAsset}
+          width={detailWidth}
+          asOverlay
+        />
+      )}
     </div>
   </section>
+
 }
 
 function optionalTableText(value: string | null | undefined) {

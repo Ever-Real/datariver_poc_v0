@@ -23,7 +23,12 @@ from datariver.interfaces.http.schemas import (
     ChatEvidenceResponse,
     ChatQueryRequest,
     ChatQueryResponse,
+    ChatSessionResponse,
+    ChatMessageResponse,
 )
+from sqlalchemy import select, func, desc
+from uuid import UUID
+from datariver.infrastructure.db.models.assistant import ChatSessionModel, ChatMessageModel
 
 router = APIRouter(prefix="/chat", tags=["assistant"])
 
@@ -114,6 +119,121 @@ async def query(
                 effective_until=item.effective_until,
                 extraction_method=item.extraction_method,
             )
-            for item in exchange.evidence
-        ],
     )
+
+@router.get("/sessions", response_model=list[ChatSessionResponse])
+async def list_sessions(
+    context: ContextDep,
+    session: SessionDep,
+) -> list[ChatSessionResponse]:
+    stmt = (
+        select(
+            ChatSessionModel,
+            func.count(ChatMessageModel.id).label("message_count")
+        )
+        .outerjoin(ChatMessageModel, ChatMessageModel.session_id == ChatSessionModel.id)
+        .where(
+            ChatSessionModel.workspace_id == context.workspace_id,
+            ChatSessionModel.owner_id == context.subject.subject_id,
+        )
+        .group_by(ChatSessionModel.id)
+        .order_by(desc(ChatSessionModel.updated_at))
+    )
+    result = await session.execute(stmt)
+    rows = result.all()
+    return [
+        ChatSessionResponse(
+            id=row.ChatSessionModel.id,
+            title=row.ChatSessionModel.title,
+            is_favorite=False,
+            created_at=row.ChatSessionModel.created_at,
+            updated_at=row.ChatSessionModel.updated_at,
+            message_count=row.message_count,
+        )
+        for row in rows
+    ]
+
+@router.get("/sessions/{session_id}/messages", response_model=list[ChatMessageResponse])
+async def get_messages(
+    session_id: UUID,
+    context: ContextDep,
+    session: SessionDep,
+) -> list[ChatMessageResponse]:
+    from datariver.infrastructure.db.models.assistant import AssistantRunModel, EvidenceCitationModel
+    
+    stmt = (
+        select(ChatMessageModel)
+        .where(
+            ChatMessageModel.workspace_id == context.workspace_id,
+            ChatMessageModel.session_id == session_id,
+        )
+        .order_by(ChatMessageModel.created_at.asc())
+    )
+    result = await session.execute(stmt)
+    messages = result.scalars().all()
+    
+    runs_stmt = (
+        select(AssistantRunModel)
+        .where(
+            AssistantRunModel.workspace_id == context.workspace_id,
+            AssistantRunModel.session_id == session_id,
+        )
+    )
+    runs = (await session.execute(runs_stmt)).scalars().all()
+    run_by_request_id = {run.request_message_id: run.id for run in runs}
+    
+    evidence_by_run = {}
+    if runs:
+        evidence_stmt = (
+            select(EvidenceCitationModel)
+            .where(
+                EvidenceCitationModel.workspace_id == context.workspace_id,
+                EvidenceCitationModel.run_id.in_([run.id for run in runs]),
+            )
+            .order_by(EvidenceCitationModel.run_id, EvidenceCitationModel.rank)
+        )
+        evidence_rows = (await session.execute(evidence_stmt)).scalars().all()
+        for ev in evidence_rows:
+            evidence_by_run.setdefault(ev.run_id, []).append(ev)
+            
+    classification_names = {0: "PUBLIC", 1: "INTERNAL", 2: "CONFIDENTIAL", 3: "RESTRICTED"}
+    
+    response = []
+    last_run_id = None
+    for m in messages:
+        evidence_json = None
+        if m.actor == "USER":
+            last_run_id = run_by_request_id.get(m.id)
+        elif m.actor == "ASSISTANT" and last_run_id and last_run_id in evidence_by_run:
+            evidence_json = [
+                {
+                    "chunk_id": str(ev.chunk_id),
+                    "resource_id": str(ev.resource_id),
+                    "classification": classification_names.get(ev.classification, "PUBLIC"),
+                    "system_id": str(ev.system_id) if ev.system_id else None,
+                    "domain_id": str(ev.domain_id) if ev.domain_id else None,
+                    "owner_department_id": str(ev.owner_department_id) if ev.owner_department_id else None,
+                    "name": ev.source_locator.split("/")[-1] if "/" in ev.source_locator else ev.source_locator,
+                    "source_type": ev.source_type,
+                    "source_locator": ev.source_locator,
+                    "source_version": ev.source_version,
+                    "content_hash": ev.content_hash,
+                    "effective_from": ev.effective_from.isoformat(),
+                    "effective_until": ev.effective_until.isoformat() if ev.effective_until else None,
+                    "extraction_method": ev.extraction_method,
+                }
+                for ev in evidence_by_run[last_run_id]
+            ]
+            last_run_id = None
+            
+        response.append(
+            ChatMessageResponse(
+                id=m.id,
+                session_id=m.session_id,
+                role=m.actor.lower(),
+                content=m.content or "",
+                evidence_json=evidence_json,
+                created_at=m.created_at,
+            )
+        )
+    return response

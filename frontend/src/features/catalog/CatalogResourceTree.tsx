@@ -147,6 +147,28 @@ export function CatalogResourceTree({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [client])
 
+  /**
+   * ROOT 브랜치 로드 완료 후 1단계 노드를 자동으로 펼침.
+   * 하위 항목이 있는 플랫폼 노드를 최대 maximumExpandedBranches 개까지 자동 확장합니다.
+   */
+  useEffect(() => {
+    const rootItems = branches.ROOT?.items
+    if (!rootItems || rootItems.length === 0) return
+    // 아직 아무것도 펼쳐지지 않았을 때만 자동 확장 (사용자 조작 후에는 재실행하지 않음)
+    if (expanded.size > 0) return
+    const toExpand = rootItems
+      .filter((node) => node.has_children && node.kind !== 'ASSET')
+      .slice(0, maximumExpandedBranches)
+    if (toExpand.length === 0) return
+    const keys = toExpand.map((node) => node.id)
+    keys.forEach((key) => activeBranchKeys.current.add(key))
+    expandedOrder.current = keys
+    setExpanded(new Set(keys))
+    // 각 1단계 노드의 하위 항목 사전 로드
+    toExpand.forEach((node) => { if (!branches[node.id]) void loadBranch(node) })
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [branches.ROOT])
+
   const toggle = (node: CatalogTreeNode) => {
     if (node.kind === 'ASSET') { if (node.asset) onSelectAsset(node.asset.id); return }
     const key = branchKey(node)

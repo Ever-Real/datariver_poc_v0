@@ -16,6 +16,7 @@ export function HighlightedText({ text, terms }: { text: string; terms: string[]
   ))}</>
 }
 
+/** 각 match fragment를 한 줄로 표시하고, 전체 텍스트는 title(tooltip)으로 제공 */
 export function CatalogMatchPreview({ fragments }: { fragments: CatalogMatchFragment[] }) {
   if (fragments.length === 0) return <CatalogEmptyValue />
   const labels: Record<CatalogMatchFragment['field'], string> = {
@@ -26,10 +27,16 @@ export function CatalogMatchPreview({ fragments }: { fragments: CatalogMatchFrag
     TAG: 'Tag',
     TERM: 'Term',
   }
-  return <span className="catalog-match-preview">{fragments.map((fragment, index) => (
-    <span key={`${fragment.field}-${index}-${fragment.text}`} title={fragment.text}>
-      <b>{labels[fragment.field]}</b>
-      <HighlightedText text={fragment.text} terms={fragment.matched_terms} />
+  // 전체 텍스트를 합쳐 tooltip에 표시
+  const fullText = fragments.map((f) => `[${labels[f.field]}] ${f.text}`).join(' | ')
+  return (
+    <span className="catalog-match-preview catalog-match-preview--single-line" title={fullText}>
+      {fragments.map((fragment, index) => (
+        <span key={`${fragment.field}-${index}-${fragment.text}`}>
+          <b>{labels[fragment.field]}</b>
+          <HighlightedText text={fragment.text} terms={fragment.matched_terms} />
+        </span>
+      ))}
     </span>
-  ))}</span>
+  )
 }

@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { Check, Copy, Network, X } from 'lucide-react'
+import { Network, X } from 'lucide-react'
 import type { ApiClient } from '../../api/client'
 import type { CatalogAssetDetail, CatalogLineage } from '../../api/types'
 import { ErrorNotice } from '../../components/ErrorNotice'
@@ -65,6 +65,7 @@ export function CatalogDetailPane({
   onSelectAsset,
   onResizeWidth,
   width,
+  asOverlay = false,
 }: {
   client: ApiClient
   assetId: string
@@ -73,6 +74,8 @@ export function CatalogDetailPane({
   onSelectAsset?: (assetId: string) => void
   onResizeWidth?: (width: number) => void
   width?: number
+  /** true이면 오버레이(fixed positioning) 방식으로 렌더링 */
+  asOverlay?: boolean
 }) {
   const [detail, setDetail] = useState<CatalogAssetDetail>()
   const [lineage, setLineage] = useState<CatalogLineage>()
@@ -83,11 +86,19 @@ export function CatalogDetailPane({
   const [error, setError] = useState<unknown>()
   const [lineageError, setLineageError] = useState<unknown>()
   const [copied, setCopied] = useState(false)
+  const [toastVisible, setToastVisible] = useState(false)
   const [fieldOffset, setFieldOffset] = useState(0)
   const lineageController = useRef<AbortController | null>(null)
   const copyFeedbackTimer = useRef<number | undefined>(undefined)
   const pagedAssetId = useRef(assetId)
   const fieldSourceVersion = useRef<string | undefined>(undefined)
+
+  // 오버레이 모드에서 본문 스크롤 잠금
+  useEffect(() => {
+    if (!asOverlay) return
+    document.body.classList.add('catalog-overlay-open')
+    return () => document.body.classList.remove('catalog-overlay-open')
+  }, [asOverlay])
 
   useEffect(() => {
     if (pagedAssetId.current !== assetId) {
@@ -125,6 +136,7 @@ export function CatalogDetailPane({
       if (copyFeedbackTimer.current) window.clearTimeout(copyFeedbackTimer.current)
     }
   }, [assetId, client, fieldOffset, onDetailLoaded])
+
 
   const toggle = (section: string) => {
     setExpanded((current) => {
@@ -167,8 +179,9 @@ export function CatalogDetailPane({
       input.remove()
     }
     setCopied(true)
+    setToastVisible(true)
     if (copyFeedbackTimer.current) window.clearTimeout(copyFeedbackTimer.current)
-    copyFeedbackTimer.current = window.setTimeout(() => setCopied(false), 2_000)
+    copyFeedbackTimer.current = window.setTimeout(() => { setCopied(false); setToastVisible(false) }, 2_000)
   }
 
   const startResize = (event: React.PointerEvent<HTMLButtonElement>) => {
@@ -185,25 +198,53 @@ export function CatalogDetailPane({
     window.addEventListener('pointerup', stop, { once: true })
   }
 
-  return <>
-    <aside className="catalog-detail panel" aria-label="카탈로그 상세">
-    {onResizeWidth && <button aria-label="상세 패널 너비 조절" className="catalog-detail-resizer" onKeyDown={(event) => {
-      if (event.key === 'ArrowLeft') { event.preventDefault(); onResizeWidth((width ?? 550) + 24) }
-      if (event.key === 'ArrowRight') { event.preventDefault(); onResizeWidth((width ?? 550) - 24) }
-    }} onPointerDown={startResize} title="왼쪽으로 끌어 상세 폭 조절" type="button" />}
-    <header>
-      <div><span className="eyebrow">Authorized detail</span><h2>{detail?.name ?? '상세 정보'}</h2></div>
-      <button type="button" aria-label="상세 닫기" onClick={onClose}><X size={16} /></button>
-    </header>
-    <div className="catalog-detail-scroll">
-    {loading && <div className="catalog-detail-state">상세 정보를 불러오는 중입니다.</div>}
-    <ErrorNotice error={error} />
-    {detail && <div className="catalog-detail-body">
-      <div className="catalog-detail-identity">
-        <div className="catalog-detail-badges"><span className="badge">{detail.asset_type}</span><span className="badge badge-soft">{detail.classification}</span>{detail.stale_at && <span className="badge badge-warning">STALE</span>}</div>
-        <TruncatedText value={detail.external_urn} className="catalog-detail-urn" />
-        <button type="button" className="catalog-urn-copy" onClick={() => void copyUrn()} aria-label="URN 복사" title={copied ? 'Copied!' : 'URN 복사'}>{copied ? <Check size={13} /> : <Copy size={13} />}<span>{copied ? 'Copied!' : 'Copy'}</span></button>
-      </div>
+  // 오버레이 모드에서는 Backdrop + fixed aside로 렌더링
+  return (
+    <>
+      {/* Backdrop: 오버레이 모드에서 배경 dimming + 본문 스크롤 잠금 */}
+      {asOverlay && (
+        <div
+          className="catalog-detail-backdrop"
+          aria-hidden="true"
+          onClick={onClose}
+        />
+      )}
+      {/* URN 복사 Toast 알림 */}
+      {toastVisible && (
+        <div className="catalog-urn-toast" role="status" aria-live="polite">
+          ✓ URN이 클립보드에 복사되었습니다
+        </div>
+      )}
+      <aside
+        className={`catalog-detail panel${asOverlay ? ' catalog-detail--overlay' : ''}`}
+        aria-label="카탈로그 상세"
+        style={asOverlay ? undefined : { width: width ? `${width}px` : undefined }}
+      >
+      {onResizeWidth && !asOverlay && <button aria-label="상세 패널 너비 조절" className="catalog-detail-resizer" onKeyDown={(event) => {
+        if (event.key === 'ArrowLeft') { event.preventDefault(); onResizeWidth((width ?? 550) + 24) }
+        if (event.key === 'ArrowRight') { event.preventDefault(); onResizeWidth((width ?? 550) - 24) }
+      }} onPointerDown={startResize} title="왼쪽으로 끌어 상세 폭 조절" type="button" />}
+      <header>
+        <div><span className="eyebrow">Authorized detail</span><h2>{detail?.name ?? '상세 정보'}</h2></div>
+        <button type="button" aria-label="상세 닫기" onClick={onClose}><X size={16} /></button>
+      </header>
+      <div className="catalog-detail-scroll">
+      {loading && <div className="catalog-detail-state">상세 정보를 불러오는 중입니다.</div>}
+      <ErrorNotice error={error} />
+      {detail && <div className="catalog-detail-body">
+        <div className="catalog-detail-identity">
+          <div className="catalog-detail-badges"><span className="badge">{detail.asset_type}</span><span className="badge badge-soft">{detail.classification}</span>{detail.stale_at && <span className="badge badge-warning">STALE</span>}</div>
+          {/* URN 텍스트 자체를 클릭하면 복사 */}
+          <button
+            type="button"
+            className={`catalog-detail-urn catalog-detail-urn--clickable${copied ? ' copied' : ''}`}
+            onClick={() => void copyUrn()}
+            title={copied ? '✓ 복사됨!' : 'URN 클릭 시 클립보드에 복사'}
+            aria-label="URN 복사 (클릭)"
+          >
+            <TruncatedText value={detail.external_urn} />
+          </button>
+        </div>
       <div className="catalog-detail-tabs" role="tablist" aria-label="상세 정보 보기">
         <button aria-controls="catalog-metadata-panel" aria-selected={activeTab === 'metadata'} className={activeTab === 'metadata' ? 'active' : ''} id="catalog-metadata-tab" onClick={() => showTab('metadata')} role="tab" type="button">Table Details</button>
         <button aria-controls="catalog-lineage-panel" aria-selected={activeTab === 'lineage'} className={activeTab === 'lineage' ? 'active' : ''} id="catalog-lineage-tab" onClick={() => showTab('lineage')} role="tab" type="button">Lineage</button>
@@ -235,7 +276,20 @@ export function CatalogDetailPane({
                 const typeTruncated = field.nativeDataType
                   ? fieldFlag(field, 'nativeDataType_truncated')
                   : fieldFlag(field, 'type_truncated')
-                return <tr key={`${fieldName ?? 'unknown'}-${index}`}><td>{fieldName ? <TruncatedText value={fieldName} /> : <CatalogEmptyValue />}</td><td>{detailText(type, typeTruncated)}</td><td>{detailText(description, fieldFlag(field, 'description_truncated'))}</td><td><BadgeScroller label={`${fieldName ?? 'Column'} Terms`} values={fieldValues(field, 'glossaryTerms')} truncated={fieldFlag(field, 'terms_truncated')} /></td><td><BadgeScroller label={`${fieldName ?? 'Column'} Tags`} values={fieldValues(field, 'globalTags')} truncated={fieldFlag(field, 'tags_truncated')} /></td></tr>
+                return (
+                  <tr key={`${fieldName ?? 'unknown'}-${index}`}>
+                    <td>{fieldName ? <TruncatedText value={fieldName} /> : <CatalogEmptyValue />}</td>
+                    {/* type 필드: 한 줄 ellipsis + hover tooltip */}
+                    <td>
+                      {type
+                        ? <span className="catalog-schema-type" title={typeTruncated ? `${type} (잘림)` : type}>{type}{typeTruncated && <span aria-label="일부만 표시"> …</span>}</span>
+                        : <CatalogEmptyValue />}
+                    </td>
+                    <td>{detailText(description, fieldFlag(field, 'description_truncated'))}</td>
+                    <td><BadgeScroller label={`${fieldName ?? 'Column'} Terms`} values={fieldValues(field, 'glossaryTerms')} truncated={fieldFlag(field, 'terms_truncated')} /></td>
+                    <td><BadgeScroller label={`${fieldName ?? 'Column'} Tags`} values={fieldValues(field, 'globalTags')} truncated={fieldFlag(field, 'tags_truncated')} /></td>
+                  </tr>
+                )
               })}</tbody>
             </table>
             {detail.schema_fields.length === 0 && <div className="catalog-detail-state">스키마 필드가 등록되지 않았습니다.</div>}
@@ -259,8 +313,9 @@ export function CatalogDetailPane({
           {lineage.edges.length === 0 && <div className="catalog-detail-state">표시 가능한 연결 관계가 없습니다.</div>}
         </div>}
       </section>
-    </div>}
-    </div>
-    </aside>
-  </>
+      </div>}
+      </div>
+      </aside>
+    </>
+  )
 }

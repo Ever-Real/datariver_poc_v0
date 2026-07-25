@@ -965,6 +965,23 @@ export interface KnowledgeProjectionReceipt {
   state: 'SHADOW_VERIFIED'
 }
 
+export interface ChatSession {
+  id: string
+  title: string
+  is_favorite: boolean
+  created_at: string
+  updated_at: string
+  message_count: number
+}
+
+export interface ChatMessage {
+  id: string
+  session_id: string
+  role: 'user' | 'assistant'
+  content: string
+  evidence_json?: any
+  created_at: string
+}
 export interface ChatResponse {
   session_id: string
   request_message_id: string
@@ -1297,6 +1314,7 @@ export interface SystemConfigurationEntry {
   activated_version: number | null
   activated_at: string | null
   applied_version: number | null
+  is_core?: boolean
 }
 
 export interface SystemConfigurationTestResult {
