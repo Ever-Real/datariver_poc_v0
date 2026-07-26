@@ -387,7 +387,7 @@ export function SystemConfigurationAdmin(props: AdminSectionProps) {
                   type="text"
                   className="admin-system-form-input"
                   value={val ?? ''}
-                  placeholder={`${key} 값 입력`}
+                  placeholder={getPlaceholder(selected.system_id, key!)}
                   onChange={(e) => {
                     const newLines = draft.split('\n')
                     newLines[idx] = `${key}: ${e.target.value}`
