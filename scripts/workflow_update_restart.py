@@ -34,6 +34,7 @@ from platform_workflow import (
     require_command,
     require_regular_file,
     require_release_compatible_checkout,
+    requires_local_identity_bootstrap,
     select_restart_services,
     state_path,
     update_env_values,
@@ -444,6 +445,10 @@ def main() -> int:
 
         changed_paths = tuple(dict.fromkeys((*source_paths, *runtime_paths)))
         source_plan = classify_changes(changed_paths)
+        reapply_local_identity = requires_local_identity_bootstrap(
+            changed_paths,
+            profile=state.profile,
+        )
         files = _compose_files(state, release_override=release_dir)
 
         if args.refresh_bootstrap:
@@ -507,6 +512,15 @@ def main() -> int:
                 files=files,
                 trailing=("build", *build_services),
             )
+        if reapply_local_identity:
+            runner.note("변경된 Mac 로컬 identity bootstrap 이미지를 빌드합니다.")
+            _compose(
+                runner,
+                env_file=env_file,
+                files=files,
+                profiles=("tools",),
+                trailing=("build", "local-bootstrap"),
+            )
 
         if plan.requires_migration:
             stop_services = tuple(service for service in restart_services if service in running)
@@ -532,6 +546,16 @@ def main() -> int:
             )
             runner.note("PostgreSQL 역할 계약을 재적용합니다.")
             _reconcile_postgres(runner, env_file=env_file)
+
+        if reapply_local_identity:
+            runner.note("변경된 Mac 로컬 maker/checker identity를 재적용합니다.")
+            _compose(
+                runner,
+                env_file=env_file,
+                files=files,
+                profiles=("tools",),
+                trailing=("run", "--rm", "local-bootstrap"),
+            )
 
         if restart_services:
             runner.note("영향받은 DataRiver 서비스만 재생성합니다.")

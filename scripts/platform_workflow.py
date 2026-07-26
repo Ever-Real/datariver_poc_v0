@@ -673,6 +673,18 @@ def classify_changes(paths: Sequence[str]) -> ChangePlan:
     )
 
 
+def requires_local_identity_bootstrap(
+    paths: Sequence[str],
+    *,
+    profile: str,
+) -> bool:
+    """Reapply the Mac-only local identity projection when its source contract changes."""
+
+    return profile == "mac-development" and any(
+        path.strip().lstrip("./") == "backend/src/datariver/bootstrap.py" for path in paths
+    )
+
+
 def classify_environment_changes(
     keys: Sequence[str], *, reject_unknown: bool = False
 ) -> ChangePlan:
@@ -787,7 +799,9 @@ def classify_environment_changes(
         elif key == "OIDC_PUBLIC_ORIGIN":
             services.update(("web", "keycloak"))
             configure_keycloak = True
-        elif key.startswith(("OIDC_", "IDENTITY_", "ADMIN_PASSWORD_")):
+        elif key.startswith(("OIDC_", "IDENTITY_", "ADMIN_PASSWORD_")) or key == (
+            "DEVELOPMENT_ADMIN_PASSWORD_BYPASS_ENABLED"
+        ):
             services.add("api")
         elif key.startswith(("UI_", "DATAHUB_EMBED_", "GRAFANA_EMBED_")):
             services.update(("api", "web"))

@@ -66,6 +66,23 @@ def test_portable_profile_is_buildable_on_arm64_and_amd64_without_local_datahub(
     assert "portable-development" in workflow.WORKFLOW_PROFILE_NAMES
 
 
+def test_local_identity_bootstrap_reapplies_only_for_its_mac_source_contract() -> None:
+    changed = ("backend/src/datariver/bootstrap.py",)
+
+    assert workflow.requires_local_identity_bootstrap(
+        changed,
+        profile="mac-development",
+    )
+    assert not workflow.requires_local_identity_bootstrap(
+        changed,
+        profile="portable-development",
+    )
+    assert not workflow.requires_local_identity_bootstrap(
+        ("backend/src/datariver/config.py",),
+        profile="mac-development",
+    )
+
+
 def test_compatibility_profiles_keep_the_reviewed_topology_contract() -> None:
     mac = workflow.workflow_profile("mac-development")
     wsl = workflow.workflow_profile("wsl-preparation")

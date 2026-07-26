@@ -388,6 +388,11 @@ class SqlClassificationPolicyRepository:
 
     async def add(self, policy: ClassificationAccessPolicy) -> None:
         self._session.add(_policy_model(policy))
+        # The immutable rules reference the parent's composite
+        # (workspace, id, payload_hash) key. Flush the parent explicitly
+        # because these models intentionally have no ORM relationship that
+        # could otherwise establish unit-of-work insert ordering.
+        await self._session.flush()
         self._session.add_all(
             [
                 ClassificationAccessPolicyRuleModel(

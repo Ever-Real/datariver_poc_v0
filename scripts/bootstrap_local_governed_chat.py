@@ -69,7 +69,7 @@ def main() -> None:
             "exec",
             "-T",
             "api",
-            "python",
+            "/app/.venv/bin/python",
             "-m",
             "datariver.local_governed_chat_bootstrap",
             *module_arguments,
@@ -78,10 +78,14 @@ def main() -> None:
     completed = subprocess.run(  # noqa: S603 - argv is fixed except validated scalar arguments.
         command,
         cwd=ROOT,
-        check=True,
+        check=False,
         capture_output=True,
         text=True,
     )
+    if completed.returncode != 0:
+        errors = [line.strip() for line in completed.stderr.splitlines() if line.strip()]
+        detail = errors[-1] if errors else "no diagnostic was returned"
+        raise RuntimeError(f"The local governed Chat bootstrap failed: {detail}")
     output_lines = [line.strip() for line in completed.stdout.splitlines() if line.strip()]
     if not output_lines:
         raise RuntimeError("The local governed Chat bootstrap returned no result.")
