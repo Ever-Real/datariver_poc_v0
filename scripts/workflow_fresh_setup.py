@@ -463,11 +463,13 @@ def _health_check(runner: Runner, *, env_file: Path) -> None:
     )
 
 
-def _ensure_local_reranker(runner: Runner, *, env_file: Path, profile: str) -> None:
-    if not workflow_profile(profile).local_reranker_supported:
-        return
+def _reconcile_local_reranker(runner: Runner, *, env_file: Path, profile: str) -> None:
     values = read_env_values(env_file)
-    if values.get("LOCAL_LLAMA_CPP_RERANKER_ENABLED", "").lower() != "true":
+    enabled = values.get("LOCAL_LLAMA_CPP_RERANKER_ENABLED", "").lower() == "true"
+    manager = ROOT / "scripts" / "local_reranker_service.py"
+    if not workflow_profile(profile).local_reranker_supported or not enabled:
+        runner.note("비활성 로컬 llama.cpp reranker의 소유 프로세스를 정리합니다.")
+        runner.run((sys.executable, manager, "stop"))
         return
     model = values.get("LOCAL_LLAMA_CPP_RERANKER_MODEL")
     if not model:
@@ -476,7 +478,7 @@ def _ensure_local_reranker(runner: Runner, *, env_file: Path, profile: str) -> N
     runner.run(
         (
             sys.executable,
-            ROOT / "scripts" / "local_reranker_service.py",
+            manager,
             "start",
             "--model",
             model,
@@ -677,7 +679,7 @@ def main() -> int:
             runner.note("Mac 개발용 DataHub v1.6.0을 시작합니다.")
             runner.run((ROOT / "scripts" / "start_datahub_mac_dev.sh", "start"))
 
-        _ensure_local_reranker(runner, env_file=env_file, profile=args.profile)
+        _reconcile_local_reranker(runner, env_file=env_file, profile=args.profile)
 
         runtime_files = _runtime_compose_files(
             offline_compose=layout.offline_compose if layout else None

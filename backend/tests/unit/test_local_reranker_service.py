@@ -80,17 +80,83 @@ def test_managed_state_model_is_validated_without_a_source_default(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     module = _load_module()
+    model_root = tmp_path / "models" / "blobs"
+    model_root.mkdir(parents=True)
+    blob = model_root / ("sha256-" + "a" * 64)
+    blob.write_bytes(b"gguf")
     state_file = tmp_path / "llama-server.json"
     monkeypatch.setattr(module, "STATE_FILE", state_file)
+    monkeypatch.setattr(module, "_model_store_roots", lambda: (model_root.resolve(),))
     state_file.write_text(
-        '{"model":"operator-selected/model:q4","port":11435}\n',
+        (f'{{"model":"operator-selected/model:q4","model_blob":"{blob}","port":11435}}\n'),
         encoding="utf-8",
     )
 
     assert module._read_managed_model() == "operator-selected/model:q4"
 
-    state_file.write_text('{"model":"invalid model","port":11435}\n', encoding="utf-8")
+    state_file.write_text(
+        f'{{"model":"invalid model","model_blob":"{blob}","port":11435}}\n',
+        encoding="utf-8",
+    )
     assert module._read_managed_model() is None
 
     with pytest.raises(module.ServiceError, match="exact installed reranker model"):
         module._required_model(None)
+
+
+@pytest.mark.parametrize(
+    "command",
+    (
+        (
+            "/opt/homebrew/bin/llama-server --model {blob} --alias "
+            "operator-selected/model:q4 --reranking --pooling rank "
+            "--host 0.0.0.0 --port 11435 --no-webui"
+        ),
+        (
+            "/opt/homebrew/bin/llama-server --model {blob} --alias "
+            "operator-selected/model:q4 --pooling rank "
+            "--host 127.0.0.1 --port 11435 --no-webui"
+        ),
+        (
+            "/opt/homebrew/bin/llama-server --model /tmp/other-blob --alias "
+            "operator-selected/model:q4 --reranking --pooling rank "
+            "--host 127.0.0.1 --port 11435 --no-webui"
+        ),
+    ),
+)
+def test_stop_refuses_process_that_does_not_match_full_owned_state(
+    command: str,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module = _load_module()
+    model_root = tmp_path / "models" / "blobs"
+    model_root.mkdir(parents=True)
+    blob = model_root / ("sha256-" + "b" * 64)
+    blob.write_bytes(b"gguf")
+    runtime = tmp_path / "runtime"
+    runtime.mkdir()
+    pid_file = runtime / "llama-server.pid"
+    pid_file.write_text("4242\n", encoding="utf-8")
+    state_file = runtime / "llama-server.json"
+    state_file.write_text(
+        (f'{{"model":"operator-selected/model:q4","model_blob":"{blob}","port":11435}}\n'),
+        encoding="utf-8",
+    )
+    signals: list[tuple[int, int]] = []
+    monkeypatch.setattr(module, "PID_FILE", pid_file)
+    monkeypatch.setattr(module, "STATE_FILE", state_file)
+    monkeypatch.setattr(module, "_model_store_roots", lambda: (model_root.resolve(),))
+    monkeypatch.setattr(module, "_process_command", lambda _pid: command.format(blob=blob))
+    monkeypatch.setattr(
+        module.os,
+        "kill",
+        lambda pid, signal: signals.append((pid, signal)),
+    )
+
+    with pytest.raises(module.ServiceError, match="not the managed"):
+        module._stop_owned_process()
+
+    assert signals == []
+    assert pid_file.exists()
+    assert state_file.exists()

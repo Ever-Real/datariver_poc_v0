@@ -502,6 +502,67 @@ def test_environment_plan_merges_with_source_plan_without_inferred_migration() -
     assert result.requires_migration is False
 
 
+@pytest.mark.parametrize(
+    "load_workflow",
+    (_load_fresh_setup_module, _load_update_module),
+)
+def test_workflow_reconciles_local_reranker_lifecycle(
+    load_workflow: Any,
+    tmp_path: Path,
+) -> None:
+    module = load_workflow()
+    calls: list[tuple[object, ...]] = []
+
+    class FakeRunner:
+        def note(self, _message: str) -> None:
+            return None
+
+        def run(self, arguments: tuple[object, ...]) -> None:
+            calls.append(arguments)
+
+    env_file = tmp_path / ".env.mac-development"
+    env_file.write_text(
+        "LOCAL_LLAMA_CPP_RERANKER_ENABLED=true\n"
+        "LOCAL_LLAMA_CPP_RERANKER_MODEL=operator-selected/reranker:q4\n",
+        encoding="utf-8",
+    )
+
+    module._reconcile_local_reranker(
+        FakeRunner(),
+        env_file=env_file,
+        profile="mac-development",
+    )
+
+    assert calls[-1][-3:] == (
+        "start",
+        "--model",
+        "operator-selected/reranker:q4",
+    )
+
+    env_file.write_text(
+        "LOCAL_LLAMA_CPP_RERANKER_ENABLED=false\n",
+        encoding="utf-8",
+    )
+    module._reconcile_local_reranker(
+        FakeRunner(),
+        env_file=env_file,
+        profile="mac-development",
+    )
+    assert calls[-1][-1] == "stop"
+
+    env_file.write_text(
+        "LOCAL_LLAMA_CPP_RERANKER_ENABLED=true\n"
+        "LOCAL_LLAMA_CPP_RERANKER_MODEL=operator-selected/reranker:q4\n",
+        encoding="utf-8",
+    )
+    module._reconcile_local_reranker(
+        FakeRunner(),
+        env_file=env_file,
+        profile="portable-development",
+    )
+    assert calls[-1][-1] == "stop"
+
+
 def test_update_main_recreates_env_consumer_and_persists_state_only_after_success(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -568,6 +629,7 @@ def test_update_main_recreates_env_consumer_and_persists_state_only_after_succes
     )
     monkeypatch.setattr(update, "_health_check", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(update, "_probe_datahub", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(update, "_reconcile_local_reranker", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(
         update,
         "write_applied_state",
@@ -659,6 +721,7 @@ def test_update_main_with_unchanged_environment_does_not_recreate(
         "write_applied_state",
         lambda _path, _next_state: None,
     )
+    monkeypatch.setattr(update, "_reconcile_local_reranker", lambda *_args, **_kwargs: None)
 
     assert update.main() == 0
     assert compose_calls == [("config", "--quiet")]
@@ -721,6 +784,7 @@ def test_update_main_recreates_only_changed_local_connector(
     )
     monkeypatch.setattr(update, "_health_check", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(update, "_probe_datahub", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(update, "_reconcile_local_reranker", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(update, "write_applied_state", lambda *_args: None)
 
     assert update.main() == 0

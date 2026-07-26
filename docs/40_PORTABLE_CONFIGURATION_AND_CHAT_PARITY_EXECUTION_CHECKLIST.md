@@ -77,7 +77,7 @@ The independent Alpha User review found no remaining P0/P1/P2 domain-specific de
   helper/Modelfile are removed from the development PC and repository.
 - [x] P4-06 Chat, Embedding and Reranker readiness is visible through deployment-owned Admin probes
   without claiming that a non-consumed capability is active.
-- [ ] P4-REVIEW Data Engineer and IT Engineer independently verify installed-model identity,
+- [x] P4-REVIEW Data Engineer and IT Engineer independently verify installed-model identity,
   capability responses, memory fit and process ownership.
 
 Executed local evidence on 2026-07-26:
@@ -93,9 +93,13 @@ Executed local evidence on 2026-07-26:
   `/v1/rerank` deployment probe.
 - Source evidence is `infrastructure/llm/ollama.py`, `infrastructure/llm/reranker.py`,
   `scripts/local_reranker_service.py`, `scripts/probe_local_chat_stack.py`,
-  `test_local_ollama_chat_composer.py` and `test_local_reranker_service.py`. P4-05 and P4-REVIEW
-  remain open because deleting the host model is destructive and the final live ownership review
-  has not been repeated.
+  `test_local_ollama_chat_composer.py` and `test_local_reranker_service.py`. The final Data
+  Engineer/IT review initially found unsafe disabled/unsupported lifecycle and incomplete
+  process-identity checks. Fresh/update now reconcile `start` or the same safe `stop`, and `stop`
+  verifies the exact executable, existing Ollama SHA-256 blob, alias, pooling, loopback endpoint,
+  reranking and no-WebUI flags before signaling. The independent re-review passed with no
+  P0/P1/P2 finding after 79 focused tests and an actual managed status/probe. P4-05 remains open
+  because deleting the host model is destructive.
 
 ## Phase 5 — Governed Chat feature parity
 
@@ -133,7 +137,7 @@ Current source/evidence map:
 | P5-06/P5-07 | `chat_routing.py`, typed graph evidence port | explicit AUTO/GENERAL/VECTOR/GRAPH and unavailable-without-fallback tests pass |
 | P5-08/P5-09 | `ChatPage.tsx`, server workflow/evidence DTOs | ranked evidence/detail-lineage and server-state UI tests pass |
 | P5-10 | `services/chat.py`, `classification_access.py`, `runtime_binding.py`, Redis budget guard, migrations `0056`/`0057` | focused owner, classification, exact staged provider identity, budget, drift, citation and provider-failure negatives pass; Security and Data Architect final reviews report no P0/P1/P2 |
-| P5-11 | backend/frontend gate commands in `README.md` and `docs/09_TEST_STRATEGY.md` | focused gates, strict type/lint/static checks and production build pass; integrated suites still expose the paused Registration/Catalog work and target browser/runtime evidence remains open |
+| P5-11 | backend/frontend gate commands in `README.md` and `docs/09_TEST_STRATEGY.md` | focused gates, strict type/lint/static checks and production build pass; managed runtime, migrations, RLS and all three provider calls pass; integrated suites still expose the paused Registration/Catalog work and authenticated target-browser evidence remains open |
 
 The paused concurrent Registration/architecture work currently leaves the repository-wide backend
 and frontend suites with failures outside this objective. On 2026-07-26 the backend suite reported
@@ -149,15 +153,28 @@ gates plus target-browser acceptance rerun before release closure.
 | P1 | `test_platform_workflow.py`; explicit portable/Mac/WSL profile and environment round-trip negatives included in the 206-test focused backend set | Data Architect: no P0/P1/P2 profile-boundary finding |
 | P2 | HTTP/OpenAPI, fixed-probe and workflow restart tests in the same focused set; repository scan confirms Admin exposes read-only inventory and fixed `test-deployment` only | Security/IT review: no browser writeback, arbitrary URL or secret-boundary finding |
 | P3 | `DomainNeutralCopy.test.tsx` in the final six-file/40-test frontend set | Alpha User: no domain-specific default-copy finding |
-| P4 | `probe_local_chat_stack.py --env-file .env.mac-development --source-host --confirm-actual-provider-call` exercised the selected installed Chat, Embedding and Reranker contracts; model identity remains environment-owned | final process-ownership review and derivative host-model deletion remain open |
-| P5 | focused backend 206 passed; focused frontend 6 files/40 passed; Ruff format/lint, strict mypy over 388 files, static verification, TypeScript, ESLint and production build passed | Security and Data Architect final reviews: P0/P1/P2 PASS; PM/Alpha source review findings on env-only docs, one-character Enter, localized status and dialog focus containment were resolved |
-| Migration | regenerated `0001` twice with SHA-256 `2a0840c809ba440ac379c200c26e13612b21e99de2f32cfa99da7f0a6276723a`; isolated PostgreSQL passed canonical `0001→0057`, empty-data `0057→0056`, legacy `0056→0057`, and refused an intentionally partial schema | Data Architect and Security final reviews: source migration contract PASS; current deployment application and owner-RLS behavior remain FINAL-03 evidence |
+| P4 | `probe_local_chat_stack.py --env-file .env.mac-development --source-host --confirm-actual-provider-call` exercised the selected installed Chat, Embedding and Reranker contracts before and after the managed restart; model identity remains environment-owned | Data Engineer/IT final process-ownership review: P0/P1/P2 PASS after lifecycle and exact-command hardening; derivative host-model deletion remains open |
+| P5 | focused backend 206 passed; focused frontend 6 files/40 passed; Ruff format/lint, strict mypy over 388 files, static verification, TypeScript, ESLint and production build passed; the managed `mac-development` runtime returned API/Web HTTP 200 and the actual Chat/Embedding/Reranker probe passed | Security and Data Architect final reviews: P0/P1/P2 PASS; PM/Alpha source review findings on env-only docs, one-character Enter, localized status and dialog focus containment were resolved; authenticated browser acceptance remains open |
+| Migration | regenerated `0001` twice with SHA-256 `2a0840c809ba440ac379c200c26e13612b21e99de2f32cfa99da7f0a6276723a`; isolated PostgreSQL passed canonical `0001→0057`, empty-data `0057→0056`, legacy `0056→0057`, and refused an intentionally partial schema; the current runtime reports `0057`, canonical staged-profile columns/FKs/CHECK and the activation trigger | Data Architect and Security final reviews: source migration contract PASS; live four-table owner RLS has `FORCE ROW LEVEL SECURITY`, restrictive owner policies and a rollback-only cross-owner test returned own read/update `1/1`, cross-owner read/update `0/0`, persisted test rows `0` |
 
 ## Final completion gate
 
 - [ ] FINAL-01 Every item above links to authoritative source and executed evidence.
 - [ ] FINAL-02 All independent review findings are resolved or recorded as explicit external gates.
-- [ ] FINAL-03 The current development runtime is restarted through the selected profile workflow
+- [x] FINAL-03 The current development runtime is restarted through the selected profile workflow
   and its API/Web/provider health is verified.
-- [ ] FINAL-04 Git status separates user-owned work, and the delivered commit contains only this
+- [x] FINAL-04 Git status separates user-owned work, and the delivered commit contains only this
   objective's reviewed scope.
+
+FINAL-03 evidence: `workflow_update_restart.py --profile mac-development` completed all 18 steps
+at source commit `538dc25`; API live/ready and Web health returned HTTP 200, DataHub GMS returned
+HTTP 200 with version `v1.6.0`, and the catalog projection upserted 2,000 rows. The post-restart
+actual-provider probe reported Chat model `gemma4:e2b-it-qat`, one grounded citation, Embedding model
+`bge-m3:latest` with 1,024 observed dimensions, and Reranker model
+`qllama/bge-reranker-v2-m3:q4_k_m` with relevant evidence ranked first.
+
+FINAL-04 evidence: objective commits are `4deeb7c` and the restart correction `538dc25`. The
+separate in-progress Registration/architecture work was restored after restart and remains
+uncommitted only in its original five paths:
+`catalog_metadata_upload_parser.py`, `integration.py`, `DenseDataTable.tsx`, `docs/README.md`, and
+untracked `docs/39_ONTOLOGY_KNOWLEDGE_GRAPH_REFERENCE.md`.

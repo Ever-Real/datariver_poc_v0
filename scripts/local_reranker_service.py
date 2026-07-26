@@ -8,6 +8,7 @@ import json
 import math
 import os
 import re
+import shlex
 import shutil
 import signal
 import subprocess
@@ -114,7 +115,7 @@ def _read_pid() -> int | None:
     return value if value > 1 else None
 
 
-def _read_managed_model() -> str | None:
+def _read_managed_state() -> tuple[str, Path] | None:
     if not STATE_FILE.is_file() or STATE_FILE.is_symlink():
         return None
     try:
@@ -124,7 +125,29 @@ def _read_managed_model() -> str | None:
     if not isinstance(payload, dict) or payload.get("port") != LISTEN_PORT:
         return None
     model = payload.get("model")
-    return model if isinstance(model, str) and MODEL_IDENTITY.fullmatch(model) else None
+    raw_model_blob = payload.get("model_blob")
+    if (
+        not isinstance(model, str)
+        or MODEL_IDENTITY.fullmatch(model) is None
+        or not isinstance(raw_model_blob, str)
+    ):
+        return None
+    model_blob = Path(raw_model_blob)
+    if not model_blob.is_absolute() or model_blob.is_symlink():
+        return None
+    resolved = model_blob.resolve()
+    if (
+        not resolved.is_file()
+        or MODEL_BLOB.fullmatch(resolved.name) is None
+        or not any(resolved.is_relative_to(root) for root in _model_store_roots())
+    ):
+        return None
+    return model, resolved
+
+
+def _read_managed_model() -> str | None:
+    state = _read_managed_state()
+    return state[0] if state is not None else None
 
 
 def _process_command(pid: int) -> str:
@@ -141,13 +164,29 @@ def _process_command(pid: int) -> str:
     return result.stdout.strip() if result.returncode == 0 else ""
 
 
-def _owned_process(pid: int, model_blob: Path | None = None) -> bool:
+def _owned_process(pid: int, *, model: str, model_blob: Path) -> bool:
     command = _process_command(pid)
-    if not command or "llama-server" not in command:
+    try:
+        arguments = shlex.split(command)
+    except ValueError:
         return False
-    if f"--port {LISTEN_PORT}" not in command:
+    if not arguments or Path(arguments[0]).name != "llama-server":
         return False
-    return model_blob is None or os.fspath(model_blob) in command
+    expected_pairs = {
+        "--model": os.fspath(model_blob),
+        "--alias": model,
+        "--pooling": "rank",
+        "--host": LISTEN_HOST,
+        "--port": str(LISTEN_PORT),
+    }
+    for option, expected in expected_pairs.items():
+        indexes = [index for index, value in enumerate(arguments) if value == option]
+        if len(indexes) != 1:
+            return False
+        index = indexes[0]
+        if index + 1 >= len(arguments) or arguments[index + 1] != expected:
+            return False
+    return arguments.count("--reranking") == 1 and arguments.count("--no-webui") == 1
 
 
 def _probe(model: str) -> dict[str, object]:
@@ -216,6 +255,24 @@ def _prepare_runtime_directory() -> None:
             raise ServiceError("A local reranker managed file cannot be a symbolic link.")
 
 
+def _write_managed_state(*, model: str, model_blob: Path) -> None:
+    STATE_FILE.write_text(
+        json.dumps(
+            {
+                "host": LISTEN_HOST,
+                "model": model,
+                "model_blob": os.fspath(model_blob),
+                "port": LISTEN_PORT,
+                "reranking": True,
+            },
+            sort_keys=True,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    STATE_FILE.chmod(0o600)
+
+
 def _stop_owned_process() -> bool:
     pid = _read_pid()
     if pid is None:
@@ -224,7 +281,11 @@ def _stop_owned_process() -> bool:
         PID_FILE.unlink(missing_ok=True)
         STATE_FILE.unlink(missing_ok=True)
         return False
-    if not _owned_process(pid):
+    state = _read_managed_state()
+    if state is None:
+        raise ServiceError("The recorded local reranker state is invalid.")
+    model, model_blob = state
+    if not _owned_process(pid, model=model, model_blob=model_blob):
         raise ServiceError("The recorded PID is not the managed llama-server process.")
     try:
         os.kill(pid, signal.SIGTERM)
@@ -250,9 +311,10 @@ def _start(model: str) -> dict[str, object]:
     model_blob = _resolve_model_blob(model)
     pid = _read_pid()
     if pid is not None:
-        if not _owned_process(pid, model_blob):
+        if not _owned_process(pid, model=model, model_blob=model_blob):
             _stop_owned_process()
         else:
+            _write_managed_state(model=model, model_blob=model_blob)
             return _probe(model)
     llama_server = shutil.which("llama-server")
     if llama_server is None:
@@ -283,15 +345,7 @@ def _start(model: str) -> dict[str, object]:
         )
     PID_FILE.write_text(f"{process.pid}\n", encoding="utf-8")
     PID_FILE.chmod(0o600)
-    STATE_FILE.write_text(
-        json.dumps(
-            {"model": model, "model_blob": os.fspath(model_blob), "port": LISTEN_PORT},
-            sort_keys=True,
-        )
-        + "\n",
-        encoding="utf-8",
-    )
-    STATE_FILE.chmod(0o600)
+    _write_managed_state(model=model, model_blob=model_blob)
     last_error: ServiceError | None = None
     for _attempt in range(120):
         if process.poll() is not None:
@@ -327,10 +381,18 @@ def main() -> int:
             print(json.dumps(_probe(model), ensure_ascii=False, sort_keys=True))
             return 0
         pid = _read_pid()
-        if pid is None or not _owned_process(pid):
+        state = _read_managed_state()
+        if pid is None and state is None:
             print("stopped")
             return 1
-        model = _required_model(arguments.model or _read_managed_model())
+        if pid is None or state is None:
+            raise ServiceError("The local reranker PID/state pair is incomplete.")
+        managed_model, model_blob = state
+        if not _owned_process(pid, model=managed_model, model_blob=model_blob):
+            raise ServiceError("The recorded PID is not the managed llama-server process.")
+        model = _required_model(arguments.model or managed_model)
+        if model != managed_model:
+            raise ServiceError("The requested model does not match the managed reranker.")
         print(json.dumps(_probe(model), ensure_ascii=False, sort_keys=True))
         return 0
     except ServiceError as error:

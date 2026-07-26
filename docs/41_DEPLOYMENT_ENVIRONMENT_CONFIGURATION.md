@@ -81,6 +81,25 @@ An unset optional field and an explicitly disabled adapter are both unconfigured
 adapter without every required endpoint/model/reference fails Settings validation; there is no
 source-code fallback.
 
+For the Mac-only loopback Reranker, the selected fresh/update workflow owns the managed process
+lifecycle. An enabled supported profile starts or reuses only the PID whose command, model blob and
+fixed `127.0.0.1:11435` port match the recorded state. Disabling the adapter or applying a profile
+that does not support the local Reranker stops only that verified owned process. Operators may
+inspect or reconcile it directly without supplying an endpoint:
+
+```bash
+.venv/bin/python scripts/local_reranker_service.py status \
+  --model <installed-reranker-model-id>
+.venv/bin/python scripts/local_reranker_service.py probe \
+  --model <installed-reranker-model-id>
+.venv/bin/python scripts/local_reranker_service.py start \
+  --model <installed-reranker-model-id>
+.venv/bin/python scripts/local_reranker_service.py stop
+```
+
+`stop` refuses to signal a recorded PID whose command is not the managed loopback `llama-server`.
+Portable and WSL profiles never start this Mac-only bridge.
+
 ## Option groups
 
 ### Application and browser
