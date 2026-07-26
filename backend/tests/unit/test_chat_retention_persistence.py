@@ -11,7 +11,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from datariver.application.dto import ChatRetentionBinding
 from datariver.domain.common import ConflictError
 from datariver.infrastructure.db.chat import ACTIVE_RETENTION_BINDING, SqlChatStore
-from datariver.infrastructure.db.models.assistant import ChatSessionModel
+from datariver.infrastructure.db.models.assistant import (
+    AssistantRunModel,
+    ChatMessageModel,
+    ChatSessionModel,
+)
 from datariver.infrastructure.db.revision import REQUIRED_DATABASE_REVISION
 
 
@@ -27,12 +31,16 @@ class _Session:
     def __init__(self, existing: ChatSessionModel | None = None) -> None:
         self.existing = existing
         self.added: list[object] = []
+        self.flushed: list[tuple[object, ...]] = []
 
     def add(self, value: object) -> None:
         self.added.append(value)
 
     def add_all(self, values: list[object]) -> None:
         self.added.extend(values)
+
+    async def flush(self, values: tuple[object, ...]) -> None:
+        self.flushed.append(values)
 
     async def scalars(self, statement: object) -> _ScalarResult:
         del statement
@@ -71,6 +79,11 @@ async def test_new_session_binds_the_exact_policy_duration_without_committing() 
     assert model.retention_basis_at == binding.binding_basis_at
     assert model.retention_until == binding.binding_basis_at + timedelta(days=37)
     assert model.retention_binding_version == ACTIVE_RETENTION_BINDING
+    assert [[type(value) for value in batch] for batch in session.flushed] == [
+        [ChatSessionModel],
+        [ChatMessageModel, ChatMessageModel],
+        [AssistantRunModel],
+    ]
 
 
 @pytest.mark.asyncio

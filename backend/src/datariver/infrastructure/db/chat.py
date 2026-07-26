@@ -392,6 +392,7 @@ class SqlChatStore(ChatStore):
                 version=1,
             )
             self._session.add(session)
+            await self._session.flush((session,))
             session_id = session.id
         else:
             existing_session = (
@@ -423,93 +424,91 @@ class SqlChatStore(ChatStore):
         request_message_id = uuid7()
         response_message_id = uuid7()
         run_id = uuid7()
-        self._session.add_all(
-            [
-                ChatMessageModel(
-                    id=request_message_id,
-                    workspace_id=workspace_id,
-                    session_id=session_id,
-                    actor="USER",
-                    content=question,
-                    created_at=now,
-                ),
-                ChatMessageModel(
-                    id=response_message_id,
-                    workspace_id=workspace_id,
-                    session_id=session_id,
-                    actor="ASSISTANT",
-                    content=answer,
-                    created_at=now,
-                ),
-                AssistantRunModel(
-                    id=run_id,
-                    workspace_id=workspace_id,
-                    session_id=session_id,
-                    request_message_id=request_message_id,
-                    provider=resolved_audit.provider,
-                    model=resolved_audit.model,
-                    prompt_template_version=resolved_audit.prompt_template_version,
-                    policy_decision_id=policy_decision_id,
-                    state="COMPLETED",
-                    metrics={
-                        "evidence_count": len(evidence),
-                        "external_service_used": resolved_audit.external_service_used,
-                        "external_stages": list(resolved_audit.external_stages),
-                        "external_stage_provider_profile_version_ids": {
-                            stage: str(profile_id)
-                            for stage, profile_id in (
-                                resolved_audit.external_stage_provider_profile_version_ids
-                            )
-                        },
-                        "provider_profile_version_id": (
-                            str(resolved_audit.provider_profile_version_id)
-                            if resolved_audit.provider_profile_version_id is not None
-                            else None
-                        ),
-                        "classification_policy_id": (
-                            str(resolved_audit.classification_policy_id)
-                            if resolved_audit.classification_policy_id is not None
-                            else None
-                        ),
-                        "classification_policy_hash": (resolved_audit.classification_policy_hash),
-                        "classification_policy_version": (
-                            resolved_audit.classification_policy_version
-                        ),
-                        "authorization_generation": (resolved_audit.authorization_generation),
-                        "retrieval_mode": (
-                            resolved_route.selected_mode.value if resolved_route else "GENERAL"
-                        ),
-                        "requested_mode": (
-                            resolved_route.requested_mode.value if resolved_route else "GENERAL"
-                        ),
-                        "route_reason": (
-                            resolved_route.reason.value if resolved_route else "GENERAL_DEFAULT"
-                        ),
-                        "adapter_state": (
-                            resolved_route.adapter_state.value if resolved_route else "READY"
-                        ),
-                        "evidence_ranking": [
-                            {
-                                "chunk_id": str(item.chunk_id),
-                                "rank": item.rank,
-                                "retrieval_method": item.retrieval_method,
-                            }
-                            for item in evidence_ranking
-                        ],
-                        "workflow": [
-                            {
-                                "stage": item.stage.value,
-                                "status": item.status.value,
-                                "detail_code": item.detail_code,
-                            }
-                            for item in workflow
-                        ],
-                    },
-                    started_at=now,
-                    finished_at=now,
-                ),
-            ]
+        request_message = ChatMessageModel(
+            id=request_message_id,
+            workspace_id=workspace_id,
+            session_id=session_id,
+            actor="USER",
+            content=question,
+            created_at=now,
         )
+        response_message = ChatMessageModel(
+            id=response_message_id,
+            workspace_id=workspace_id,
+            session_id=session_id,
+            actor="ASSISTANT",
+            content=answer,
+            created_at=now,
+        )
+        self._session.add_all([request_message, response_message])
+        await self._session.flush((request_message, response_message))
+        run = AssistantRunModel(
+            id=run_id,
+            workspace_id=workspace_id,
+            session_id=session_id,
+            request_message_id=request_message_id,
+            provider=resolved_audit.provider,
+            model=resolved_audit.model,
+            prompt_template_version=resolved_audit.prompt_template_version,
+            policy_decision_id=policy_decision_id,
+            state="COMPLETED",
+            metrics={
+                "evidence_count": len(evidence),
+                "external_service_used": resolved_audit.external_service_used,
+                "external_stages": list(resolved_audit.external_stages),
+                "external_stage_provider_profile_version_ids": {
+                    stage: str(profile_id)
+                    for stage, profile_id in (
+                        resolved_audit.external_stage_provider_profile_version_ids
+                    )
+                },
+                "provider_profile_version_id": (
+                    str(resolved_audit.provider_profile_version_id)
+                    if resolved_audit.provider_profile_version_id is not None
+                    else None
+                ),
+                "classification_policy_id": (
+                    str(resolved_audit.classification_policy_id)
+                    if resolved_audit.classification_policy_id is not None
+                    else None
+                ),
+                "classification_policy_hash": (resolved_audit.classification_policy_hash),
+                "classification_policy_version": (resolved_audit.classification_policy_version),
+                "authorization_generation": (resolved_audit.authorization_generation),
+                "retrieval_mode": (
+                    resolved_route.selected_mode.value if resolved_route else "GENERAL"
+                ),
+                "requested_mode": (
+                    resolved_route.requested_mode.value if resolved_route else "GENERAL"
+                ),
+                "route_reason": (
+                    resolved_route.reason.value if resolved_route else "GENERAL_DEFAULT"
+                ),
+                "adapter_state": (
+                    resolved_route.adapter_state.value if resolved_route else "READY"
+                ),
+                "evidence_ranking": [
+                    {
+                        "chunk_id": str(item.chunk_id),
+                        "rank": item.rank,
+                        "retrieval_method": item.retrieval_method,
+                    }
+                    for item in evidence_ranking
+                ],
+                "workflow": [
+                    {
+                        "stage": item.stage.value,
+                        "status": item.status.value,
+                        "detail_code": item.detail_code,
+                    }
+                    for item in workflow
+                ],
+            },
+            started_at=now,
+            finished_at=now,
+        )
+        self._session.add(run)
+        await self._session.flush((run,))
         self._session.add_all(
             [
                 EvidenceCitationModel(
