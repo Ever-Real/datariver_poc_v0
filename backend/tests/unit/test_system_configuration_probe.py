@@ -402,6 +402,41 @@ async def test_private_reranker_probe_executes_fixed_rank_request() -> None:
 
 
 @pytest.mark.asyncio
+async def test_local_llama_cpp_reranker_accepts_ordered_finite_raw_logits() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url == httpx.URL("http://127.0.0.1:11435/v1/rerank")
+        assert "Authorization" not in request.headers
+        return httpx.Response(
+            200,
+            request=request,
+            json={
+                "results": [
+                    {"index": 0, "relevance_score": 2.6107},
+                    {"index": 1, "relevance_score": -10.9971},
+                ]
+            },
+        )
+
+    document = {
+        "connection_mode": "LOCAL_LLAMA_CPP",
+        "base_url": "http://127.0.0.1:11435/v1",
+        "model": "qllama/bge-reranker-v2-m3:q4_k_m",
+        "secret_references": {},
+        "options": {"api_style": "rerank_v1", "timeout_seconds": 60, "top_n": 2},
+    }
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        result = await probe_system_configuration(
+            system_id="LLM_RERANKER",
+            document=document,
+            client=client,
+            allowed_hosts=("127.0.0.1",),
+        )
+
+    assert result.status == "AVAILABLE"
+    assert result.scope == "RERANKING_INFERENCE"
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     "results",
     [

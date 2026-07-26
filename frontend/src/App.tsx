@@ -296,7 +296,7 @@ export function App() {
       workspace={activeWorkspace}
       securityEpoch={auth.securityEpoch}
       workspaceSelectionEnabled={workspaceSelectionEnabled}
-      hardwareWebauthnEnabled={auth.profile?.hardware_webauthn_enabled !== false}
+      hardwareWebauthnEnabled={auth.profile?.hardware_webauthn_enabled === true}
       deploymentTier={deploymentTier}
       displayName={auth.profile?.display_name ?? auth.user.profile.name ?? auth.user.profile.sub}
       email={auth.profile?.email}

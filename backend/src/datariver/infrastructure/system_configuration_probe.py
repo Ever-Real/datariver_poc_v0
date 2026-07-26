@@ -241,7 +241,13 @@ def _validated_chat_completion(payload: object) -> bool:
     return isinstance(content, dict) and set(content) == {"status"} and content["status"] == "ok"
 
 
-def _validated_reranking(payload: object, *, document_count: int, top_n: int) -> bool:
+def _validated_reranking(
+    payload: object,
+    *,
+    document_count: int,
+    top_n: int,
+    require_unit_interval: bool = True,
+) -> bool:
     if not isinstance(payload, Mapping):
         return False
     results = payload.get("results")
@@ -261,7 +267,7 @@ def _validated_reranking(payload: object, *, document_count: int, top_n: int) ->
             or not isinstance(score, int | float)
             or isinstance(score, bool)
             or not math.isfinite(float(score))
-            or not 0 <= float(score) <= 1
+            or (require_unit_interval and not 0 <= float(score) <= 1)
         ):
             return False
         indexes.append(index)
@@ -584,9 +590,12 @@ async def probe_system_configuration(
     )
     _require_tls_for_nonlocal_endpoint(endpoint)
     if system_id == "LLM_RERANKER":
-        if document.get("connection_mode") != "INTRANET_RERANK_V1":
+        if document.get("connection_mode") not in {
+            "LOCAL_LLAMA_CPP",
+            "INTRANET_RERANK_V1",
+        }:
             raise ValidationError("The saved reranker connection mode is invalid.")
-        connection_mode = "INTRANET_RERANK_V1"
+        connection_mode = str(document["connection_mode"])
     else:
         connection_mode = _llm_connection_mode(document) if inference_probe else "LOCAL_OLLAMA"
     api_key: str | None = None
@@ -748,6 +757,7 @@ async def probe_system_configuration(
             response_payload,
             document_count=2,
             top_n=top_n,
+            require_unit_interval=connection_mode != "LOCAL_LLAMA_CPP",
         ):
             return SystemConfigurationProbeResult(
                 status="UNAVAILABLE",

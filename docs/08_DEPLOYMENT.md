@@ -231,11 +231,14 @@ Source-host loopback Ollama is accepted only with the explicit development sourc
 endpoint, credential or allowlist is browser-controlled.
 
 Reranking is not an OpenAI-compatible surface. The optional private profile uses
-`INTRANET_RERANK_V1` and an HTTPS `/v1` base, with a canonical mounted reranker key. TEST executes a
-fixed bounded `POST /v1/rerank`, records `RERANKING_INFERENCE` only after validating ordered finite
+`INTRANET_RERANK_V1` and an HTTPS `/v1` base, with a canonical mounted reranker key. Mac development
+may instead use `LOCAL_LLAMA_CPP` at the fixed
+`http://host.docker.internal:11435/v1` endpoint. Its GGUF is resolved from the Ollama model store and
+served by `scripts/local_reranker_service.py`; Ollama itself is not claimed to provide a rerank
+route. TEST executes a fixed bounded `POST /v1/rerank`, records `RERANKING_INFERENCE` only after validating ordered finite
 scores and shares the probe destination/TLS/redirect/body-size controls. It has no ACTIVATE/runtime
-consumer in the current phase. The local Mac Ollama installation does not implement this contract;
-WSL/private endpoint evidence remains an external gate.
+consumer in the current phase. Ollama itself does not implement this route; the Mac bridge's local
+connection evidence is distinct from the WSL/private endpoint gate, which remains external.
 
 Exact host allowlisting occurs before DNS and every returned address is checked. The current
 default HTTP transport is not address-pinned and may resolve again during connection, so private

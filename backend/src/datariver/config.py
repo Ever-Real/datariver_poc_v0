@@ -76,7 +76,7 @@ class Settings(BaseSettings):
     # Operator-owned capability switches. Disabling WebAuthn never downgrades
     # a high-risk operation to password-only access; those operations remain
     # unavailable unless a separately governed fallback permits them.
-    oidc_hardware_webauthn_enabled: bool = True
+    oidc_hardware_webauthn_enabled: bool = False
     # This controls only the manual workspace selector. The verified default
     # workspace, workspace-scoped ABAC and PostgreSQL RLS always remain active.
     workspace_selection_enabled: bool = True
@@ -116,6 +116,13 @@ class Settings(BaseSettings):
     local_ollama_embedding_base_url: HttpUrl | None = None
     local_ollama_embedding_model: str | None = Field(default=None, max_length=128)
     local_ollama_embedding_timeout_seconds: float = Field(default=60.0, ge=1.0, le=120.0)
+    # Ollama stores the selected GGUF, while llama-server exposes the fixed
+    # rerank contract that Ollama itself does not currently implement.
+    local_llama_cpp_reranker_enabled: bool = False
+    local_llama_cpp_reranker_base_url: HttpUrl | None = None
+    local_llama_cpp_reranker_model: str | None = Field(default=None, max_length=128)
+    local_llama_cpp_reranker_timeout_seconds: float = Field(default=60.0, ge=1.0, le=120.0)
+    local_llama_cpp_reranker_top_n: int = Field(default=10, ge=1, le=100)
     # Development-only bridge for an operator-approved model server that is
     # hosted inside the organisation's private network. This intentionally is
     # not an external commercial-provider route and cannot be enabled in
@@ -1018,6 +1025,43 @@ class Settings(BaseSettings):
                 raise ValueError(
                     "Local Ollama embeddings must use http://host.docker.internal:11434/v1, "
                     "or the explicit source-host 127.0.0.1 binding."
+                )
+        if self.local_llama_cpp_reranker_enabled:
+            if self.app_env != "development":
+                raise ValueError("The local llama.cpp reranker is available only in development.")
+            if (
+                self.local_llama_cpp_reranker_base_url is None
+                or self.local_llama_cpp_reranker_model is None
+            ):
+                raise ValueError(
+                    "Enabled local llama.cpp reranking requires a base URL and model identity."
+                )
+            if (
+                re.fullmatch(
+                    r"[A-Za-z0-9][A-Za-z0-9._:/-]{0,127}",
+                    self.local_llama_cpp_reranker_model.strip(),
+                )
+                is None
+            ):
+                raise ValueError("Local llama.cpp reranker model identity is invalid.")
+            parsed_reranker_url = urlsplit(str(self.local_llama_cpp_reranker_base_url))
+            allowed_reranker_hosts = {"host.docker.internal"}
+            if self.local_inference_source_host_enabled:
+                allowed_reranker_hosts.add("127.0.0.1")
+            if (
+                parsed_reranker_url.scheme != "http"
+                or parsed_reranker_url.hostname not in allowed_reranker_hosts
+                or parsed_reranker_url.port != 11435
+                or parsed_reranker_url.path.rstrip("/") != "/v1"
+                or parsed_reranker_url.query
+                or parsed_reranker_url.fragment
+                or parsed_reranker_url.username is not None
+                or parsed_reranker_url.password is not None
+            ):
+                raise ValueError(
+                    "Local llama.cpp reranking must use "
+                    "http://host.docker.internal:11435/v1, or the explicit source-host "
+                    "127.0.0.1 binding."
                 )
         if self.local_inference_source_host_enabled and self.app_env != "development":
             raise ValueError(

@@ -31,6 +31,9 @@ describe('AdminPage mutation safety', () => {
         joined_at: null, access_expires_at: null, access_expired: false,
         pending_renewal_request_id: null,
       }], page: { next_cursor: null, limit: 25 } }))
+      if (url.endsWith('/admin/access-roles?limit=25')) return Promise.resolve(json({
+        items: [], page: { next_cursor: null, limit: 25 },
+      }))
       if (url.endsWith('/admin/systems?limit=25')) return Promise.resolve(json({ items: [{
         system_id: 'system-one', code: 'FAB', name: 'Fabrication', description: 'Fab data', active: true, version: 1, assignee_count: 2,
         assignees: [],
@@ -90,7 +93,8 @@ describe('AdminPage mutation safety', () => {
     await waitFor(() => expect(screen.getAllByText('Target User')).toHaveLength(2))
     const accountTabs = screen.getByRole('tablist', { name: '계정/권한 관리 영역' })
     expect(within(accountTabs).getByRole('tab', { name: 'USERS' })).toBeInTheDocument()
-    expect(screen.getByRole('tab', { name: 'Role 정의·할당' })).toBeInTheDocument()
+    expect(screen.getByRole('heading', { name: 'Role 정의 및 사용자 할당' })).toBeInTheDocument()
+    expect(screen.queryByRole('tablist', { name: '사용자 권한 관리 방식' })).not.toBeInTheDocument()
     fireEvent.click(within(accountTabs).getByRole('tab', { name: 'SYSTEMS' }))
     await screen.findByText('Fabrication')
     expect(screen.getByRole('table', { name: '워크스페이스 시스템 목록' })).toBeInTheDocument()

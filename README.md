@@ -850,9 +850,10 @@ Redis cache requires API restart, Redis delivery requires relay/worker restart, 
 S3 changes require API plus relevant worker restart. Local Ollama or the development
 intranet OpenAI-compatible Chat/Embedding adapters together with Neo4j require an API restart;
 the Reranker remains storable/testable inventory and has no runtime activation. Its TEST contract is
-a private, fixed and bounded `POST /v1/rerank` inference request under
-`INTRANET_RERANK_V1`; it is not OpenAI-compatible. A local Ollama `404` for that route is an honest
-unavailable capability, not a reason to claim readiness or block unrelated authoring. The API can
+a fixed and bounded `POST /v1/rerank` inference request under either private
+`INTRANET_RERANK_V1` or Mac-only `LOCAL_LLAMA_CPP`; it is not OpenAI-compatible. Ollama itself still
+returns `404` for that route, so Mac development resolves the approved GGUF from the Ollama store
+and serves it through the loopback-only `scripts/local_reranker_service.py` process. The API can
 report only the version it loaded itself and does not infer worker success.
 
 Mac bootstrap deliberately leaves the startup resolver disabled. To opt into development-only
@@ -927,8 +928,10 @@ options:
   timeout_seconds: 60
 ```
 
-Reranker가 필요한 배포만 별도 private endpoint를 설정한다. 이 revision은 SAVE/TEST까지만
-지원하고 ACTIVATE는 의도적으로 제공하지 않는다.
+Reranker revision은 SAVE/TEST까지만 지원하고 ACTIVATE는 의도적으로 제공하지 않는다.
+Mac development의 기본 모델은 Ollama store의
+`qllama/bge-reranker-v2-m3:q4_k_m`이며 `LOCAL_LLAMA_CPP` bridge가 고정 포트 11435에서
+제공한다. WSL/private 배포는 아래 계약을 사용한다.
 
 ```yaml
 # Reranker — OpenAI-compatible API가 아님
@@ -1097,7 +1100,7 @@ credential. The export worker is an opt-in Compose profile with its own database
   up -d --build catalog-export-worker
 ```
 
-Open `http://localhost:8080`, sign in as `datariver-admin`, and read the generated temporary password from `secrets/keycloak_demo_password`. The first sign-in requires a new password but does not request a mobile OTP. The local realm keeps ordinary login at LoA 1 and reserves its user-verifying cross-platform WebAuthn key for an explicitly requested LoA 2 step-up. High-risk operations remain fail-closed until the user enrolls a key, completes step-up, and the resulting token satisfies the configured ACR, AMR and `auth_time` contract. Bootstrap assigns this active default Workspace, so a verified user does not need to type it after login:
+Open `http://localhost:8080`, sign in as `datariver-admin`, and read the generated temporary password from `secrets/keycloak_demo_password`. The first sign-in requires a new password but does not request a mobile OTP. Intranet development defaults `OIDC_HARDWARE_WEBAUTHN_ENABLED=false`, so device enrollment and step-up controls are hidden and high-risk operations remain fail-closed. To test such operations, explicitly set the option to `true`, reapply the runtime, enroll the local realm's user-verifying cross-platform WebAuthn key, and complete the LoA 2 step-up so the token satisfies the configured ACR, AMR and `auth_time` contract. Bootstrap assigns this active default Workspace, so a verified user does not need to type it after login:
 
 ```text
 00000000-0000-4000-8000-000000000100
@@ -1730,8 +1733,8 @@ is intentionally a MOCK metadata manifest.
 ```bash
 uv sync --frozen --all-extras
 uv run ruff format --check backend/src backend/tests infra/airflow/dags scripts/reconcile_manual_receipts.py scripts/verify_nginx_headers.py
-uv run ruff check backend/src backend/tests infra/airflow/dags scripts/configure_keycloak_assurance.py scripts/generate_initial_migration.py scripts/generate_semiconductor_seed.py scripts/migrate_s3_objects.py scripts/probe_pgbouncer_rls.py scripts/probe_policy_revocation.py scripts/probe_s3_contract.py scripts/reconcile_manual_receipts.py scripts/verify_datahub_contract.py scripts/verify_datahub_image_inventory.py scripts/verify_nginx_headers.py scripts/verify_static.py
-uv run mypy backend/src backend/tests scripts/migrate_s3_objects.py scripts/probe_s3_contract.py scripts/reconcile_manual_receipts.py scripts/verify_nginx_headers.py
+uv run ruff check backend/src backend/tests infra/airflow/dags scripts/configure_keycloak_assurance.py scripts/generate_initial_migration.py scripts/generate_semiconductor_seed.py scripts/local_reranker_service.py scripts/migrate_s3_objects.py scripts/probe_pgbouncer_rls.py scripts/probe_policy_revocation.py scripts/probe_s3_contract.py scripts/reconcile_manual_receipts.py scripts/verify_datahub_contract.py scripts/verify_datahub_image_inventory.py scripts/verify_nginx_headers.py scripts/verify_static.py
+uv run mypy backend/src backend/tests scripts/local_reranker_service.py scripts/migrate_s3_objects.py scripts/probe_s3_contract.py scripts/reconcile_manual_receipts.py scripts/verify_nginx_headers.py
 uv run pytest backend/tests -q
 uv run python scripts/verify_static.py
 

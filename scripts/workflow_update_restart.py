@@ -223,7 +223,7 @@ def _bootstrap(runner: Runner, *, state: AppliedState, env_file: Path) -> None:
                 "NEO4J_",
             )
         )
-        or key == "NO_PROXY"
+        or key in {"NO_PROXY", "OIDC_HARDWARE_WEBAUTHN_ENABLED"}
     }
     runner.run(
         (
@@ -268,6 +268,27 @@ def _health_check(runner: Runner, *, env_file: Path) -> None:
             f"http://127.0.0.1:{web_port}/healthz",
         ),
         input_text=HEALTH_PROGRAM,
+    )
+
+
+def _ensure_local_reranker(runner: Runner, *, env_file: Path, profile: str) -> None:
+    if profile != "mac-development":
+        return
+    values = read_env_values(env_file)
+    if values.get("LOCAL_LLAMA_CPP_RERANKER_ENABLED", "").lower() != "true":
+        return
+    model = values.get("LOCAL_LLAMA_CPP_RERANKER_MODEL")
+    if not model:
+        raise WorkflowError("LOCAL_LLAMA_CPP_RERANKER_MODEL is required when enabled.")
+    runner.note("Ollama GGUF 기반 로컬 llama.cpp reranker를 검증·시작합니다.")
+    runner.run(
+        (
+            sys.executable,
+            ROOT / "scripts" / "local_reranker_service.py",
+            "start",
+            "--model",
+            model,
+        )
     )
 
 
@@ -439,6 +460,8 @@ def main() -> int:
         if not args.assume_yes and changed_paths:
             if not prompt_confirm("위 변경만 적용할까요?", default=True):
                 raise WorkflowError("Operator cancelled before service mutation.")
+
+        _ensure_local_reranker(runner, env_file=env_file, profile=state.profile)
 
         offline = state.deployment_mode == "offline"
         if not offline and restart_services:

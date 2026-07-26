@@ -391,6 +391,9 @@ def test_deployment_probe_documents_use_only_server_owned_runtime_settings() -> 
                 "local_ollama_chat_enabled": True,
                 "local_ollama_chat_base_url": "http://host.docker.internal:11434/v1",
                 "local_ollama_chat_model": "datariver-gemma4-dev:0.1",
+                "local_llama_cpp_reranker_enabled": True,
+                "local_llama_cpp_reranker_base_url": ("http://host.docker.internal:11435/v1"),
+                "local_llama_cpp_reranker_model": ("qllama/bge-reranker-v2-m3:q4_k_m"),
             }
         )
     )
@@ -398,6 +401,7 @@ def test_deployment_probe_documents_use_only_server_owned_runtime_settings() -> 
     datahub = _deployment_configuration_document(configured, "DATAHUB_GMS")
     delivery = _deployment_configuration_document(configured, "REDIS_DELIVERY")
     chat = _deployment_configuration_document(configured, "LLM_CHAT_MODEL")
+    reranker = _deployment_configuration_document(configured, "LLM_RERANKER")
 
     assert datahub is not None
     assert datahub["base_url"] == configured.datahub_base_url
@@ -409,7 +413,11 @@ def test_deployment_probe_documents_use_only_server_owned_runtime_settings() -> 
     assert chat["base_url"] == "http://host.docker.internal:11434/v1"
     assert chat["model"] == "datariver-gemma4-dev:0.1"
     assert chat["secret_references"] == {}
-    assert _deployment_configuration_document(configured, "LLM_RERANKER") is None
+    assert reranker is not None
+    assert reranker["connection_mode"] == "LOCAL_LLAMA_CPP"
+    assert reranker["base_url"] == "http://host.docker.internal:11435/v1"
+    assert reranker["model"] == "qllama/bge-reranker-v2-m3:q4_k_m"
+    assert reranker["secret_references"] == {}
 
 
 def test_system_configuration_inventory_reads_only_current_and_activated_revisions() -> None:
@@ -712,6 +720,22 @@ def test_reranker_configuration_is_one_fixed_non_openai_contract() -> None:
                 **valid,
                 "secret_references": {"api_key": "file:/run/secrets/intranet_llm_chat_api_key"},
             },
+        )
+
+    local = {
+        **valid,
+        "connection_mode": "LOCAL_LLAMA_CPP",
+        "base_url": "http://host.docker.internal:11435/v1",
+        "model": "qllama/bge-reranker-v2-m3:q4_k_m",
+        "secret_references": {},
+    }
+    assert _validate_system_configuration("LLM_RERANKER", local) == (
+        "http://host.docker.internal:11435/v1"
+    )
+    with pytest.raises(ValidationError, match="port-11435"):
+        _validate_system_configuration(
+            "LLM_RERANKER",
+            {**local, "base_url": "http://host.docker.internal:11434/v1"},
         )
 
 

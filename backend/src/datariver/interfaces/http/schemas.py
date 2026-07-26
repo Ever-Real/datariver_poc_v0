@@ -864,7 +864,7 @@ class AuthMeResponse(BaseModel):
     authentication_time: datetime | None
     default_workspace_id: UUID | None = None
     workspace_selection_enabled: bool = True
-    hardware_webauthn_enabled: bool = True
+    hardware_webauthn_enabled: bool = False
     password_change_supported: bool = False
 
 

@@ -373,6 +373,7 @@ if [ "$host_development" = true ]; then
   set_env_value IDENTITY_ADMIN_BASE_URL http://keycloak:8080
   set_env_value IDENTITY_ADMIN_CLIENT_SECRET_REF file:/run/secrets/keycloak_identity_admin_client_secret
   set_env_value IDENTITY_PASSWORD_CHANGE_ACTION_ENABLED true
+  set_env_value OIDC_HARDWARE_WEBAUTHN_ENABLED false
 fi
 if [ "$mac_development" = true ]; then
   # Keep this Mac development topology disjoint from common local DataHub,
@@ -396,6 +397,7 @@ if [ "$mac_development" = true ]; then
   set_env_value IDENTITY_ADMIN_BASE_URL http://keycloak:8080
   set_env_value IDENTITY_ADMIN_CLIENT_SECRET_REF file:/run/secrets/keycloak_identity_admin_client_secret
   set_env_value IDENTITY_PASSWORD_CHANGE_ACTION_ENABLED true
+  set_env_value OIDC_HARDWARE_WEBAUTHN_ENABLED false
   set_env_value DATAHUB_BASE_URL http://host.docker.internal:8080
   # MinIO Community supports exact cluster-wide CORS, not PutBucketCors.
   set_env_value S3_CORS_MANAGEMENT_MODE external
@@ -405,6 +407,15 @@ if [ "$mac_development" = true ]; then
   set_env_value LOCAL_OLLAMA_CHAT_MODEL datariver-gemma4-dev:0.1
   set_env_value LOCAL_OLLAMA_CHAT_TIMEOUT_SECONDS 60
   set_env_value LOCAL_OLLAMA_CHAT_CONTEXT_TOKENS 8192
+  set_env_value LOCAL_OLLAMA_EMBEDDING_ENABLED true
+  set_env_value LOCAL_OLLAMA_EMBEDDING_BASE_URL http://host.docker.internal:11434/v1
+  set_env_value LOCAL_OLLAMA_EMBEDDING_MODEL bge-m3:latest
+  set_env_value LOCAL_OLLAMA_EMBEDDING_TIMEOUT_SECONDS 60
+  set_env_value LOCAL_LLAMA_CPP_RERANKER_ENABLED true
+  set_env_value LOCAL_LLAMA_CPP_RERANKER_BASE_URL http://host.docker.internal:11435/v1
+  set_env_value LOCAL_LLAMA_CPP_RERANKER_MODEL qllama/bge-reranker-v2-m3:q4_k_m
+  set_env_value LOCAL_LLAMA_CPP_RERANKER_TIMEOUT_SECONDS 60
+  set_env_value LOCAL_LLAMA_CPP_RERANKER_TOP_N 10
   set_env_value SYSTEM_CONFIGURATION_RUNTIME_ACTIVATION_ENABLED false
   set_env_value CHAT_EPHEMERAL_ADMIN_WITHOUT_RETENTION_ENABLED true
   set_env_value UI_GRAPH_URL http://localhost:17474
@@ -436,6 +447,7 @@ if [ "$wsl_preparation" = true ]; then
   set_env_value SYSTEM_CONFIGURATION_RUNTIME_ACTIVATION_ENABLED false
   set_env_value LOCAL_OLLAMA_CHAT_ENABLED false
   set_env_value LOCAL_OLLAMA_EMBEDDING_ENABLED false
+  set_env_value LOCAL_LLAMA_CPP_RERANKER_ENABLED false
   set_env_value NEO4J_PROJECTION_ENABLED false
   set_env_value KNOWLEDGE_PIPELINE_ENABLED false
 fi

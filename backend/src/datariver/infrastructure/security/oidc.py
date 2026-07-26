@@ -34,7 +34,7 @@ class OidcTokenVerifier:
         allowed_algorithms: tuple[str, ...],
         hardware_acr_values: tuple[str, ...] = ("2",),
         hardware_amr_values: tuple[str, ...] = ("webauthn", "hwk"),
-        hardware_webauthn_enabled: bool = True,
+        hardware_webauthn_enabled: bool = False,
         password_reauth_acr_values: tuple[str, ...] = ("1",),
         password_amr_values: tuple[str, ...] = ("pwd",),
     ) -> None:

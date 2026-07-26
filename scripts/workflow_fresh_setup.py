@@ -466,6 +466,27 @@ def _health_check(runner: Runner, *, env_file: Path) -> None:
     )
 
 
+def _ensure_local_reranker(runner: Runner, *, env_file: Path, profile: str) -> None:
+    if profile != "mac-development":
+        return
+    values = read_env_values(env_file)
+    if values.get("LOCAL_LLAMA_CPP_RERANKER_ENABLED", "").lower() != "true":
+        return
+    model = values.get("LOCAL_LLAMA_CPP_RERANKER_MODEL")
+    if not model:
+        raise WorkflowError("LOCAL_LLAMA_CPP_RERANKER_MODEL is required when enabled.")
+    runner.note("Ollama GGUF 기반 로컬 llama.cpp reranker를 검증·시작합니다.")
+    runner.run(
+        (
+            sys.executable,
+            ROOT / "scripts" / "local_reranker_service.py",
+            "start",
+            "--model",
+            model,
+        )
+    )
+
+
 def main() -> int:
     args = parse_args()
     runner = Runner()
@@ -658,6 +679,8 @@ def main() -> int:
         if datahub_mode == "local":
             runner.note("Mac 개발용 DataHub v1.6.0을 시작합니다.")
             runner.run((ROOT / "scripts" / "start_datahub_mac_dev.sh", "start"))
+
+        _ensure_local_reranker(runner, env_file=env_file, profile=args.profile)
 
         runtime_files = _runtime_compose_files(
             offline_compose=layout.offline_compose if layout else None

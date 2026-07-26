@@ -259,15 +259,10 @@ _SYSTEM_CONFIGURATION_TEMPLATES: dict[str, dict[str, Any]] = {
         "options": {"api_style": "openai_compatible", "timeout_seconds": 60},
     },
     "LLM_RERANKER": {
-        "connection_mode": "INTRANET_RERANK_V1",
+        "connection_mode": "LOCAL_LLAMA_CPP",
         "base_url": "",
         "model": "",
-        "secret_references": dict(
-            canonical_secret_references(
-                "LLM_RERANKER",
-                connection_mode="INTRANET_RERANK_V1",
-            )
-        ),
+        "secret_references": {},
         "options": {"api_style": "rerank_v1", "timeout_seconds": 60, "top_n": 10},
     },
     "NEO4J": {
@@ -385,11 +380,15 @@ _SYSTEM_METADATA: dict[str, dict[str, Any]] = {
         "category": "AI",
         "requirement": "FEATURE_CONNECTOR",
         "description": (
-            "Optional private fixed /v1/rerank endpoint; this is not an OpenAI-compatible API."
+            "Optional fixed /v1/rerank endpoint. Local development uses an Ollama-owned "
+            "GGUF through llama-server; private deployments use the governed intranet contract."
         ),
         "fields": (
+            ("connection_mode", "Connection Mode", True, False, "LOCAL_LLAMA_CPP"),
             ("base_url", "Reranker endpoint", True, False, "https://rerank.example/v1"),
+            ("model", "Model Name", True, False, "bge-reranker-v2-m3"),
             ("api_key", "Reranker API-key reference", True, True, None),
+            ("top_n", "Top N", False, False, "10"),
         ),
     },
     "NEO4J": {
@@ -818,21 +817,42 @@ def _validate_system_configuration(
         )
     if system_id == "LLM_RERANKER":
         connection_mode = document.get("connection_mode")
-        if connection_mode != "INTRANET_RERANK_V1":
-            raise ValidationError("The reranker requires connection_mode=INTRANET_RERANK_V1.")
+        if connection_mode not in {"LOCAL_LLAMA_CPP", "INTRANET_RERANK_V1"}:
+            raise ValidationError("The reranker connection_mode is invalid.")
         parsed = urlsplit(endpoint)
-        if parsed.scheme != "https" or parsed.path.rstrip("/") != "/v1":
-            raise ValidationError("The private reranker requires an HTTPS endpoint ending in /v1.")
+        secret_references = _secret_references(document.get("secret_references", {}))
+        if connection_mode == "LOCAL_LLAMA_CPP":
+            if (
+                parsed.scheme != "http"
+                or parsed.hostname not in {"127.0.0.1", "host.docker.internal"}
+                or parsed.port != 11435
+                or parsed.path.rstrip("/") != "/v1"
+                or parsed.query
+                or parsed.fragment
+                or parsed.username is not None
+                or parsed.password is not None
+            ):
+                raise ValidationError(
+                    "The local llama.cpp reranker requires the fixed port-11435 /v1 endpoint."
+                )
+            if secret_references:
+                raise ValidationError(
+                    "The local llama.cpp reranker does not accept an API-key reference."
+                )
+        else:
+            if parsed.scheme != "https" or parsed.path.rstrip("/") != "/v1":
+                raise ValidationError(
+                    "The private reranker requires an HTTPS endpoint ending in /v1."
+                )
+            if set(secret_references) != {"api_key"}:
+                raise ValidationError(
+                    "The private reranker requires exactly one api_key secret reference."
+                )
         if options.get("api_style") != "rerank_v1":
             raise ValidationError("The reranker requires api_style=rerank_v1.")
         top_n = options.get("top_n")
         if not isinstance(top_n, int) or isinstance(top_n, bool) or not 1 <= top_n <= 100:
             raise ValidationError("The reranker top_n must be between 1 and 100.")
-        secret_references = _secret_references(document.get("secret_references", {}))
-        if set(secret_references) != {"api_key"}:
-            raise ValidationError(
-                "The private reranker requires exactly one api_key secret reference."
-            )
         _require_canonical_secret_contract(
             system_id,
             secret_references,
@@ -1133,7 +1153,7 @@ def _system_configuration_entries(
             settings.local_ollama_embedding_enabled
             or settings.intranet_openai_compatible_embedding_enabled
         ),
-        "LLM_RERANKER": False,
+        "LLM_RERANKER": settings.local_llama_cpp_reranker_enabled,
         "NEO4J": settings.neo4j_projection_enabled,
         "PROMETHEUS": settings.ui_prometheus_url is not None,
         "GRAFANA_DASHBOARD": settings.ui_grafana_url is not None,
@@ -2857,6 +2877,18 @@ def _deployment_configuration_document(
                 },
             }
         return None
+    if system_id == "LLM_RERANKER" and settings.local_llama_cpp_reranker_enabled:
+        return {
+            "connection_mode": "LOCAL_LLAMA_CPP",
+            "base_url": str(settings.local_llama_cpp_reranker_base_url),
+            "model": settings.local_llama_cpp_reranker_model,
+            "secret_references": {},
+            "options": {
+                "api_style": "rerank_v1",
+                "timeout_seconds": settings.local_llama_cpp_reranker_timeout_seconds,
+                "top_n": settings.local_llama_cpp_reranker_top_n,
+            },
+        }
     if system_id == "NEO4J" and settings.neo4j_projection_enabled:
         return {
             "database": settings.neo4j_database,

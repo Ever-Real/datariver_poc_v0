@@ -126,11 +126,15 @@ for `12` catalog assets, `257` nodes and `279` edges, then verified and removed 
 Deleting one operation and mutating one canonical node property without changing row counts each
 made `verify` fail closed. Both cases then passed explicit remove/reapply/verify/remove recovery.
 
-System Settings reranking tests execute one fixed private `POST /v1/rerank` request and reject
-401/404, duplicate/out-of-range or boolean indices, unsorted scores and scores outside `[0, 1]`.
+System Settings reranking tests execute one fixed `POST /v1/rerank` request and reject
+401/404, duplicate/out-of-range or boolean indices and unsorted/non-finite scores. The private
+contract additionally rejects scores outside `[0, 1]`; the Mac llama.cpp bridge explicitly accepts
+finite raw classifier logits.
 Migration `0053` extends only the TEST-scope vocabulary and refuses downgrade while such evidence
 exists. The current Mac authenticated Neo4j query, strict-JSON Chat and Embedding inference passed;
-the local Ollama reranking route is absent and is therefore honestly unavailable. WSL/private
+Ollama's own reranking route remains absent. Mac development separately verifies the Ollama-owned
+GGUF through the loopback-only `LOCAL_LLAMA_CPP` bridge, including a container-to-host probe and
+ordered finite raw-logit validation. WSL/private
 provider and runtime-consumer evidence remains external. Probe destinations are exact-allowlisted
 before DNS and resolved addresses are checked, but the default HTTP transport can resolve the
 hostname again at connection time. Address pinning while preserving original-host TLS verification

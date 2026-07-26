@@ -1,0 +1,314 @@
+#!/usr/bin/env python3
+"""Manage the Mac development llama.cpp reranker over one fixed loopback port."""
+
+from __future__ import annotations
+
+import argparse
+import json
+import math
+import os
+import re
+import shutil
+import signal
+import subprocess
+import sys
+import time
+import urllib.error
+import urllib.request
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+RUNTIME_DIRECTORY = ROOT / "runtime" / "local-reranker"
+PID_FILE = RUNTIME_DIRECTORY / "llama-server.pid"
+STATE_FILE = RUNTIME_DIRECTORY / "llama-server.json"
+STDOUT_FILE = RUNTIME_DIRECTORY / "llama-server.out.log"
+STDERR_FILE = RUNTIME_DIRECTORY / "llama-server.err.log"
+LISTEN_HOST = "127.0.0.1"
+LISTEN_PORT = 11435
+DEFAULT_MODEL = "qllama/bge-reranker-v2-m3:q4_k_m"
+MODEL_IDENTITY = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:/-]{0,127}")
+MODEL_BLOB = re.compile(r"sha256-[0-9a-f]{64}")
+
+
+class ServiceError(RuntimeError):
+    """Raised when the bounded local service cannot be managed safely."""
+
+
+def _parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        description=(
+            "Start, stop, probe or inspect the development-only llama.cpp reranker. "
+            "The GGUF remains owned by the local Ollama model store."
+        )
+    )
+    parser.add_argument("action", choices=("start", "stop", "status", "probe"))
+    parser.add_argument("--model", default=DEFAULT_MODEL)
+    return parser.parse_args()
+
+
+def _model_store_roots() -> tuple[Path, ...]:
+    roots = [Path.home() / ".ollama" / "models" / "blobs"]
+    configured = os.environ.get("OLLAMA_MODELS")
+    if configured:
+        roots.insert(0, Path(configured).expanduser() / "blobs")
+    return tuple(root.resolve() for root in roots)
+
+
+def _model_blob_from_modelfile(document: str) -> Path:
+    source_lines = [
+        line.removeprefix("FROM ").strip()
+        for line in document.splitlines()
+        if line.startswith("FROM ")
+    ]
+    if len(source_lines) != 1:
+        raise ServiceError("Ollama returned an ambiguous model source.")
+    source = Path(source_lines[0])
+    if not source.is_absolute() or source.is_symlink():
+        raise ServiceError("The Ollama model source must be one non-symlink absolute file.")
+    resolved = source.resolve()
+    if not resolved.is_file() or not MODEL_BLOB.fullmatch(resolved.name):
+        raise ServiceError("The Ollama model source is not a regular SHA-256 GGUF blob.")
+    if not any(resolved.is_relative_to(root) for root in _model_store_roots()):
+        raise ServiceError("The Ollama model source is outside the configured model store.")
+    return resolved
+
+
+def _resolve_model_blob(model: str) -> Path:
+    if MODEL_IDENTITY.fullmatch(model) is None:
+        raise ServiceError("The reranker model identity is invalid.")
+    ollama = shutil.which("ollama")
+    if ollama is None:
+        raise ServiceError("ollama is required to resolve the governed GGUF model.")
+    try:
+        result = subprocess.run(  # noqa: S603 - resolved executable and validated model identity.
+            (ollama, "show", "--modelfile", model),
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+    except (OSError, subprocess.SubprocessError) as error:
+        raise ServiceError(f"Ollama could not resolve model {model}.") from error
+    return _model_blob_from_modelfile(result.stdout)
+
+
+def _read_pid() -> int | None:
+    if not PID_FILE.is_file() or PID_FILE.is_symlink():
+        return None
+    try:
+        value = int(PID_FILE.read_text(encoding="utf-8").strip())
+    except (OSError, ValueError):
+        return None
+    return value if value > 1 else None
+
+
+def _process_command(pid: int) -> str:
+    try:
+        result = subprocess.run(  # noqa: S603 - fixed ps executable and numeric PID.
+            ("ps", "-p", str(pid), "-o", "command="),
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return ""
+    return result.stdout.strip() if result.returncode == 0 else ""
+
+
+def _owned_process(pid: int, model_blob: Path | None = None) -> bool:
+    command = _process_command(pid)
+    if not command or "llama-server" not in command:
+        return False
+    if f"--port {LISTEN_PORT}" not in command:
+        return False
+    return model_blob is None or os.fspath(model_blob) in command
+
+
+def _probe(model: str) -> dict[str, object]:
+    request = urllib.request.Request(
+        f"http://{LISTEN_HOST}:{LISTEN_PORT}/v1/rerank",
+        data=json.dumps(
+            {
+                "model": model,
+                "query": "governed data catalog metadata",
+                "documents": [
+                    "Data catalog metadata and governed lineage",
+                    "Unrelated weather forecast",
+                ],
+                "top_n": 2,
+            },
+            separators=(",", ":"),
+        ).encode("utf-8"),
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+    try:
+        with opener.open(request, timeout=10) as response:
+            payload = json.loads(response.read(131_072))
+    except (OSError, ValueError, urllib.error.URLError) as error:
+        raise ServiceError("The local reranker probe did not return valid JSON.") from error
+    if not isinstance(payload, dict) or payload.get("model") != model:
+        raise ServiceError("The local reranker returned a different model identity.")
+    results = payload.get("results")
+    if not isinstance(results, list) or len(results) != 2:
+        raise ServiceError("The local reranker returned an invalid result count.")
+    indexes: list[int] = []
+    scores: list[float] = []
+    for item in results:
+        if not isinstance(item, dict):
+            raise ServiceError("The local reranker returned an invalid result.")
+        index = item.get("index")
+        score = item.get("relevance_score")
+        if (
+            not isinstance(index, int)
+            or isinstance(index, bool)
+            or not 0 <= index < 2
+            or not isinstance(score, int | float)
+            or isinstance(score, bool)
+            or not math.isfinite(float(score))
+        ):
+            raise ServiceError("The local reranker returned invalid index or score data.")
+        indexes.append(index)
+        scores.append(float(score))
+    if len(set(indexes)) != len(indexes) or scores != sorted(scores, reverse=True):
+        raise ServiceError("The local reranker results are not uniquely ordered by score.")
+    return {
+        "model": model,
+        "endpoint": f"http://{LISTEN_HOST}:{LISTEN_PORT}/v1",
+        "scores": scores,
+    }
+
+
+def _prepare_runtime_directory() -> None:
+    if RUNTIME_DIRECTORY.is_symlink():
+        raise ServiceError("The local reranker runtime directory cannot be a symbolic link.")
+    RUNTIME_DIRECTORY.mkdir(parents=True, exist_ok=True, mode=0o700)
+    RUNTIME_DIRECTORY.chmod(0o700)
+    for managed_file in (PID_FILE, STATE_FILE, STDOUT_FILE, STDERR_FILE):
+        if managed_file.is_symlink():
+            raise ServiceError("A local reranker managed file cannot be a symbolic link.")
+
+
+def _stop_owned_process() -> bool:
+    pid = _read_pid()
+    if pid is None:
+        return False
+    if not _process_command(pid):
+        PID_FILE.unlink(missing_ok=True)
+        STATE_FILE.unlink(missing_ok=True)
+        return False
+    if not _owned_process(pid):
+        raise ServiceError("The recorded PID is not the managed llama-server process.")
+    try:
+        os.kill(pid, signal.SIGTERM)
+    except ProcessLookupError:
+        PID_FILE.unlink(missing_ok=True)
+        STATE_FILE.unlink(missing_ok=True)
+        return False
+    for _attempt in range(20):
+        if not _process_command(pid):
+            break
+        time.sleep(0.25)
+    else:
+        os.kill(pid, signal.SIGKILL)
+    PID_FILE.unlink(missing_ok=True)
+    STATE_FILE.unlink(missing_ok=True)
+    return True
+
+
+def _start(model: str) -> dict[str, object]:
+    if sys.platform != "darwin":
+        raise ServiceError("The local llama.cpp reranker service is supported only on macOS.")
+    _prepare_runtime_directory()
+    model_blob = _resolve_model_blob(model)
+    pid = _read_pid()
+    if pid is not None:
+        if not _owned_process(pid, model_blob):
+            _stop_owned_process()
+        else:
+            return _probe(model)
+    llama_server = shutil.which("llama-server")
+    if llama_server is None:
+        raise ServiceError("llama-server is required for the fixed local rerank endpoint.")
+    command = (
+        llama_server,
+        "--model",
+        os.fspath(model_blob),
+        "--alias",
+        model,
+        "--reranking",
+        "--pooling",
+        "rank",
+        "--host",
+        LISTEN_HOST,
+        "--port",
+        str(LISTEN_PORT),
+        "--no-webui",
+    )
+    with STDOUT_FILE.open("ab") as stdout, STDERR_FILE.open("ab") as stderr:
+        process = subprocess.Popen(  # noqa: S603 - fixed executable and validated model path.
+            command,
+            stdin=subprocess.DEVNULL,
+            stdout=stdout,
+            stderr=stderr,
+            close_fds=True,
+            start_new_session=True,
+        )
+    PID_FILE.write_text(f"{process.pid}\n", encoding="utf-8")
+    PID_FILE.chmod(0o600)
+    STATE_FILE.write_text(
+        json.dumps(
+            {"model": model, "model_blob": os.fspath(model_blob), "port": LISTEN_PORT},
+            sort_keys=True,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    STATE_FILE.chmod(0o600)
+    last_error: ServiceError | None = None
+    for _attempt in range(120):
+        if process.poll() is not None:
+            break
+        try:
+            return _probe(model)
+        except ServiceError as error:
+            last_error = error
+            time.sleep(0.5)
+    if process.poll() is None:
+        os.kill(process.pid, signal.SIGTERM)
+    PID_FILE.unlink(missing_ok=True)
+    STATE_FILE.unlink(missing_ok=True)
+    raise ServiceError(
+        "The local reranker did not become ready; inspect runtime/local-reranker logs."
+    ) from last_error
+
+
+def main() -> int:
+    arguments = _parse_args()
+    try:
+        if arguments.action == "start":
+            print(json.dumps(_start(arguments.model), ensure_ascii=False, sort_keys=True))
+            return 0
+        if arguments.action == "stop":
+            _prepare_runtime_directory()
+            stopped = _stop_owned_process()
+            print("stopped" if stopped else "already stopped")
+            return 0
+        if arguments.action == "probe":
+            print(json.dumps(_probe(arguments.model), ensure_ascii=False, sort_keys=True))
+            return 0
+        pid = _read_pid()
+        if pid is None or not _owned_process(pid):
+            print("stopped")
+            return 1
+        print(json.dumps(_probe(arguments.model), ensure_ascii=False, sort_keys=True))
+        return 0
+    except ServiceError as error:
+        print(f"ERROR: {error}", file=sys.stderr)
+        return 2
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

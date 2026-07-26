@@ -10,7 +10,6 @@ import { RoleAccessAdmin } from './RoleAccessAdmin'
 import { SystemDirectoryAdmin } from './SystemDirectoryAdmin'
 
 type AccessView = 'users' | 'systems' | 'policies' | 'recovery'
-type UserView = 'directory' | 'roles' | 'renewals'
 type PolicyView = 'classification' | 'restrictedGrants' | 'providers'
 
 function initialAccessView(): AccessView {
@@ -22,13 +21,6 @@ function initialAccessView(): AccessView {
   return 'users'
 }
 
-function initialUserView(): UserView {
-  const parameters = new URL(window.location.href).searchParams
-  if (parameters.get('adminDetail') === 'roles' || parameters.get('adminSection') === 'roles') return 'roles'
-  if (parameters.get('adminDetail') === 'renewals') return 'renewals'
-  return 'directory'
-}
-
 function initialPolicyView(): PolicyView {
   const parameters = new URL(window.location.href).searchParams
   const requested = parameters.get('adminDetail') ?? parameters.get('adminSection')
@@ -37,7 +29,7 @@ function initialPolicyView(): PolicyView {
   return 'classification'
 }
 
-function updateLocation(view: AccessView, detail?: UserView | PolicyView) {
+function updateLocation(view: AccessView, detail?: PolicyView) {
   const url = new URL(window.location.href)
   url.searchParams.set('page', 'admin')
   url.searchParams.set('adminSection', 'memberships')
@@ -50,13 +42,15 @@ function updateLocation(view: AccessView, detail?: UserView | PolicyView) {
 export function AccountAccessAdmin(props: AdminSectionProps) {
   const { context, messages } = props
   const operations = useMemo(() => new Set(context?.allowed_operations ?? []), [context])
+  const canReadMemberships = operations.has('MEMBERSHIP_ACCESS_READ')
+  const canReadRenewals = operations.has('MEMBERSHIP_RENEWAL_READ')
   const views = useMemo(() => {
     const next: Array<{ id: AccessView; label: string; description: string }> = []
-    if (operations.has('MEMBERSHIP_ACCESS_READ')) {
-      next.push(
-        { id: 'users', label: 'USERS', description: '사용자 멤버십과 Role' },
-        { id: 'systems', label: 'SYSTEMS', description: '시스템 담당자와 우선순위' },
-      )
+    if (canReadMemberships || canReadRenewals) {
+      next.push({ id: 'users', label: 'USERS', description: '사용자·Role·갱신 승인 통합' })
+    }
+    if (canReadMemberships) {
+      next.push({ id: 'systems', label: 'SYSTEMS', description: '시스템 담당자와 우선순위' })
     }
     if ([
       'CLASSIFICATION_POLICY_READ', 'INFERENCE_PROVIDER_PROFILE_READ', 'RESTRICTED_SEARCH_GRANT_READ',
@@ -67,20 +61,10 @@ export function AccountAccessAdmin(props: AdminSectionProps) {
       next.push({ id: 'recovery', label: '예외 승인', description: '비밀번호 Maker-Checker 복구 경로' })
     }
     return next
-  }, [operations])
+  }, [canReadMemberships, canReadRenewals, operations])
   const [requestedView, setRequestedView] = useState<AccessView>(initialAccessView)
-  const [userView, setUserView] = useState<UserView>(initialUserView)
   const [policyView, setPolicyView] = useState<PolicyView>(initialPolicyView)
   const view = views.some((item) => item.id === requestedView) ? requestedView : views[0]?.id
-  const userViews = [
-    { id: 'directory' as const, label: '사용자' },
-    { id: 'roles' as const, label: 'Role 정의·할당' },
-    operations.has('MEMBERSHIP_RENEWAL_READ')
-      && { id: 'renewals' as const, label: '계정 갱신 승인' },
-  ].filter((item): item is { id: UserView; label: string } => Boolean(item))
-  const activeUserView = userViews.some((item) => item.id === userView)
-    ? userView
-    : userViews[0]?.id
   const policyViews = [
     operations.has('CLASSIFICATION_POLICY_READ') && { id: 'classification' as const, label: messages.classification },
     operations.has('RESTRICTED_SEARCH_GRANT_READ') && { id: 'restrictedGrants' as const, label: messages.restrictedGrants },
@@ -92,10 +76,7 @@ export function AccountAccessAdmin(props: AdminSectionProps) {
 
   const selectView = (next: AccessView) => {
     setRequestedView(next)
-    updateLocation(next, next === 'users' ? activeUserView : next === 'policies' ? activePolicyView : undefined)
-  }
-  const selectUserView = (next: UserView) => {
-    setUserView(next); updateLocation('users', next)
+    updateLocation(next, next === 'policies' ? activePolicyView : undefined)
   }
   const selectPolicyView = (next: PolicyView) => {
     setPolicyView(next); updateLocation('policies', next)
@@ -105,12 +86,6 @@ export function AccountAccessAdmin(props: AdminSectionProps) {
     activeId: view,
     idPrefix: 'admin-access',
     onSelect: selectView,
-  })
-  const userTabs = useRovingTabs({
-    ids: userViews.map((item) => item.id),
-    activeId: activeUserView,
-    idPrefix: 'admin-users',
-    onSelect: selectUserView,
   })
   const policyTabs = useRovingTabs({
     ids: policyViews.map((item) => item.id),
@@ -129,12 +104,20 @@ export function AccountAccessAdmin(props: AdminSectionProps) {
       {views.map((item) => <button key={item.id} {...accessTabs.tabProps(item.id)} type="button" aria-label={item.label} className={`min-w-40 border border-b-0 px-3 py-2 text-left text-xs font-black ${view === item.id ? 'border-blue-700 bg-blue-700 text-white' : 'border-slate-300 bg-slate-100 text-slate-600'}`} onClick={() => selectView(item.id)}><span className="block">{item.label}</span><small className="mt-0.5 block text-[9px] font-bold opacity-75">{item.description}</small></button>)}
     </div>
     {view === 'users' && <section {...accessTabs.panelProps('users')} className="grid gap-3">
-      <div className="flex gap-1" role="tablist" aria-label="사용자 권한 관리 방식">
-        {userViews.map((item) => <button key={item.id} {...userTabs.tabProps(item.id)} type="button" className={`button ${activeUserView === item.id ? '' : 'button-secondary'}`} onClick={() => selectUserView(item.id)}>{item.label}</button>)}
-      </div>
-      {activeUserView === 'directory' && <div {...userTabs.panelProps('directory')}><MembershipAccessAdmin {...props} /></div>}
-      {activeUserView === 'roles' && <div {...userTabs.panelProps('roles')}><RoleAccessAdmin {...props} /></div>}
-      {activeUserView === 'renewals' && <div {...userTabs.panelProps('renewals')}><MembershipRenewalAdmin {...props} /></div>}
+      <section className="panel flex flex-wrap items-center justify-between gap-2 border-l-4 border-l-blue-700 bg-slate-50" aria-label="사용자 통합 관리 안내">
+        <div>
+          <span className="eyebrow">Unified account workspace</span>
+          <h2 className="mb-1 mt-1 text-base text-navy-900">사용자·Role·계정 갱신 통합 관리</h2>
+          <p className="m-0 text-xs leading-5 text-slate-600">탭 전환 없이 사용자 현황, Role 정의·할당, 계정 갱신 승인 큐를 한 페이지에서 확인합니다.</p>
+        </div>
+        <nav className="flex flex-wrap gap-1" aria-label="사용자 통합 관리 바로가기">
+          {canReadMemberships && <><a className="button button-secondary" href="#admin-user-directory">사용자</a><a className="button button-secondary" href="#admin-role-access">Role 정의·할당</a></>}
+          {canReadRenewals && <a className="button button-secondary" href="#admin-membership-renewals">계정 갱신 승인</a>}
+        </nav>
+      </section>
+      {canReadMemberships && <section id="admin-user-directory" className="scroll-mt-3" aria-label="사용자 관리"><MembershipAccessAdmin {...props} /></section>}
+      {canReadMemberships && <section id="admin-role-access" className="scroll-mt-3 border-t-2 border-slate-300 pt-3" aria-label="Role 정의 및 할당"><RoleAccessAdmin {...props} /></section>}
+      {canReadRenewals && <section id="admin-membership-renewals" className="scroll-mt-3 border-t-2 border-slate-300 pt-3" aria-label="계정 갱신 승인"><MembershipRenewalAdmin {...props} /></section>}
     </section>}
     {view === 'systems' && <section {...accessTabs.panelProps('systems')}><SystemDirectoryAdmin {...props} /></section>}
     {view === 'policies' && <section {...accessTabs.panelProps('policies')} className="grid gap-3">
