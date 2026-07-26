@@ -607,15 +607,19 @@ def _render_yaml(document: object) -> str:
     )
 
 
-def _configuration_endpoint(document: Mapping[str, Any]) -> str | None:
+def _configuration_endpoint(document: Mapping[str, Any], is_draft: bool = False) -> str | None:
     for key in ("url", "endpoint", "base_url"):
         value = document.get(key)
         if isinstance(value, str) and value.strip():
             normalized = value.strip()
+            if is_draft and ("<" in normalized or ">" in normalized):
+                return normalized
             parsed = urlsplit(normalized)
             if parsed.scheme not in {"http", "https"} or parsed.hostname is None:
+                if is_draft: return normalized
                 raise ValidationError("System configuration URL values must use HTTP or HTTPS.")
             if parsed.username is not None or parsed.password is not None:
+                if is_draft: return normalized
                 raise ValidationError("Credentials must not be embedded in a system URL.")
             if parsed.query or parsed.fragment:
                 raise ValidationError("A system base URL must not contain a query or fragment.")
@@ -722,7 +726,7 @@ def _validate_nested_configuration_schema(system_id: str, document: Mapping[str,
                 )
 
 
-def _validate_system_configuration(system_id: str, document: Mapping[str, Any]) -> str | None:
+def _validate_system_configuration(system_id: str, document: Mapping[str, Any], is_draft: bool = False) -> str | None:
     allowed_top_level = set(_SYSTEM_CONFIGURATION_TEMPLATES[system_id]) | {"auth_principal"}
     unknown_keys = sorted(set(document) - allowed_top_level)
     if unknown_keys:
@@ -764,7 +768,7 @@ def _validate_system_configuration(system_id: str, document: Mapping[str, Any]) 
             )
         _require_canonical_secret_contract(system_id, secret_references)
         return url
-    endpoint = _configuration_endpoint(document)
+    endpoint = _configuration_endpoint(document, is_draft=is_draft)
     if endpoint is None:
         raise ValidationError("System configuration requires one non-empty HTTP endpoint.")
     if system_id.startswith("LLM_"):
@@ -2408,6 +2412,43 @@ async def update_system_configuration(
         ),
     )
 
+
+@router.post(
+    "/system-configuration/{system_id}/test-draft",
+    response_model=SystemConfigurationTestResponse,
+)
+async def test_draft_system_configuration(
+    system_id: str,
+    request: Request,
+    response: Response,
+    context: ContextDep,
+    body: SystemConfigurationSaveRequest,
+) -> SystemConfigurationTestResponse:
+    """Probe an unsaved development profile."""
+    container = get_container(request)
+    if container.settings.app_env != "development":
+        raise ForbiddenError("System configuration testing is available only in development.")
+    if system_id not in _CONFIGURATION_BY_ID:
+        raise ValidationError("The system configuration identifier is invalid.")
+    admin_context = await _service(request).get_admin_read_context(
+        workspace_id=context.workspace_id,
+        subject=context.subject,
+        environment=context.environment,
+        request_id=context.request_id,
+    )
+    if "SYSTEM_CONFIGURATION_UPDATE" not in admin_context.allowed_operations:
+        raise ForbiddenError("System configuration testing is not available for this administrator.")
+    
+    tested_document = _yaml_document(body.configuration_yaml)
+    _validate_system_configuration(system_id, tested_document, is_draft=True)
+    return await probe_system_configuration(
+        system_id=system_id,
+        document=tested_document,
+        secret_resolver=SecretResolver(
+            virtual_secret_root=container.settings.system_configuration_secret_root
+        ),
+        allowed_hosts=container.settings.system_configuration_probe_allowed_hosts,
+    )
 
 @router.post(
     "/system-configuration/{system_id}/test",

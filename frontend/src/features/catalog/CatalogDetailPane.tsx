@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
+import { useQuery } from '@tanstack/react-query'
 import { Network, X } from 'lucide-react'
 import type { ApiClient } from '../../api/client'
 import type { CatalogAssetDetail, CatalogLineage } from '../../api/types'
@@ -77,21 +78,46 @@ export function CatalogDetailPane({
   /** true이면 오버레이(fixed positioning) 방식으로 렌더링 */
   asOverlay?: boolean
 }) {
-  const [detail, setDetail] = useState<CatalogAssetDetail>()
-  const [lineage, setLineage] = useState<CatalogLineage>()
   const [expanded, setExpanded] = useState(new Set(['details', 'columns']))
   const [activeTab, setActiveTab] = useState<'metadata' | 'lineage'>('metadata')
-  const [loading, setLoading] = useState(true)
-  const [lineageLoading, setLineageLoading] = useState(false)
-  const [error, setError] = useState<unknown>()
-  const [lineageError, setLineageError] = useState<unknown>()
   const [copied, setCopied] = useState(false)
   const [toastVisible, setToastVisible] = useState(false)
   const [fieldOffset, setFieldOffset] = useState(0)
-  const lineageController = useRef<AbortController | null>(null)
   const copyFeedbackTimer = useRef<number | undefined>(undefined)
   const pagedAssetId = useRef(assetId)
   const fieldSourceVersion = useRef<string | undefined>(undefined)
+
+  const { data: detail, isFetching: loading, error } = useQuery({
+    queryKey: ['catalog', 'asset', assetId, fieldOffset],
+    queryFn: async ({ signal }) => {
+      const fieldQuery = fieldOffset > 0
+        ? `?${new URLSearchParams({
+          field_offset: String(fieldOffset),
+          field_limit: '100',
+          ...(fieldSourceVersion.current ? { field_source_version: fieldSourceVersion.current } : {}),
+        })}`
+        : ''
+      const res = await client.request<CatalogAssetDetail>(`/catalog/assets/${assetId}${fieldQuery}`, { signal })
+      if (fieldOffset === 0) fieldSourceVersion.current = res.source_version
+      return res
+    },
+    staleTime: 5 * 60 * 1000,
+    gcTime: 10 * 60 * 1000,
+  })
+
+  // onDetailLoaded 콜백 처리
+  useEffect(() => {
+    if (detail) onDetailLoaded?.(detail)
+    else onDetailLoaded?.(undefined)
+  }, [detail, onDetailLoaded])
+
+  const { data: lineage, isFetching: lineageLoading, error: lineageError } = useQuery({
+    queryKey: ['catalog', 'lineage', assetId],
+    queryFn: async ({ signal }) => client.request<CatalogLineage>(`/catalog/assets/${assetId}/lineage?direction=BOTH&depth=2`, { signal }),
+    enabled: activeTab === 'lineage',
+    staleTime: 5 * 60 * 1000,
+    gcTime: 10 * 60 * 1000,
+  })
 
   useEffect(() => {
     if (!asOverlay) return
@@ -116,36 +142,9 @@ export function CatalogDetailPane({
       fieldSourceVersion.current = undefined
       if (fieldOffset !== 0) {
         setFieldOffset(0)
-        return
       }
     }
-    const controller = new AbortController()
-    lineageController.current?.abort()
-    onDetailLoaded?.(undefined)
-    setLoading(true); setError(undefined); setDetail(undefined); setLineage(undefined)
-    const fieldQuery = fieldOffset > 0
-      ? `?${new URLSearchParams({
-        field_offset: String(fieldOffset),
-        field_limit: '100',
-        ...(fieldSourceVersion.current ? { field_source_version: fieldSourceVersion.current } : {}),
-      })}`
-      : ''
-    void client.request<CatalogAssetDetail>(`/catalog/assets/${assetId}${fieldQuery}`, { signal: controller.signal })
-      .then((value) => {
-        if (!controller.signal.aborted) {
-          if (fieldOffset === 0) fieldSourceVersion.current = value.source_version
-          setDetail(value)
-          onDetailLoaded?.(value)
-        }
-      })
-      .catch((next: unknown) => { if (!controller.signal.aborted) setError(next) })
-      .finally(() => { if (!controller.signal.aborted) setLoading(false) })
-    return () => {
-      controller.abort()
-      lineageController.current?.abort()
-      if (copyFeedbackTimer.current) window.clearTimeout(copyFeedbackTimer.current)
-    }
-  }, [assetId, client, fieldOffset, onDetailLoaded])
+  }, [assetId, fieldOffset])
 
 
   const toggle = (section: string) => {
@@ -158,19 +157,6 @@ export function CatalogDetailPane({
 
   const showTab = (tab: 'metadata' | 'lineage') => {
     setActiveTab(tab)
-    if (tab === 'lineage' && !lineage && !lineageLoading) {
-      const controller = new AbortController()
-      lineageController.current?.abort()
-      lineageController.current = controller
-      setLineageLoading(true); setLineageError(undefined)
-      void client.request<CatalogLineage>(`/catalog/assets/${assetId}/lineage?direction=BOTH&depth=2`, {
-        signal: controller.signal,
-      }).then((value) => { if (!controller.signal.aborted) setLineage(value) }).catch((next: unknown) => {
-        if (!controller.signal.aborted) setLineageError(next)
-      }).finally(() => {
-        if (!controller.signal.aborted) setLineageLoading(false)
-      })
-    }
   }
 
   const copyUrn = async () => {

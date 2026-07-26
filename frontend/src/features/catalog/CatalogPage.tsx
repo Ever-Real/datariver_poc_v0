@@ -97,7 +97,6 @@ export function CatalogPage({
     if (initialQueryRef.current === initialQuery) return
     initialQueryRef.current = initialQuery
     setDraftQuery(initialQuery); setQuery(initialQuery); setCursors([undefined]); setPageIndex(0)
-    setSelectedAssetId(undefined)
   }, [initialQuery])
 
   useEffect(() => {
@@ -162,8 +161,8 @@ export function CatalogPage({
   const commitQuery = (value: string) => {
     const normalized = value.trim()
     if (!validCatalogQuery(normalized)) { setError(new Error('검색어는 비워 두거나 2자 이상 입력하세요.')); return }
+    if (normalized === query) { setSuggestions([]); setSuggestionIndex(-1); return }
     setDraftQuery(normalized); setQuery(normalized); setSuggestions([]); setSuggestionIndex(-1); setCursors([undefined]); setPageIndex(0)
-    setSelectedAssetId(undefined)
     onQueryChange?.(normalized)
   }
 
@@ -205,7 +204,6 @@ export function CatalogPage({
 
   const updateFilter = (name: keyof Filters, value: string) => {
     setFilters((current) => ({ ...current, [name]: value })); setCursors([undefined]); setPageIndex(0)
-    setSelectedAssetId(undefined)
   }
 
   const toggleSearchField = (field: SearchField) => {
@@ -218,13 +216,11 @@ export function CatalogPage({
       return { ...current, searchFields }
     })
     setCursors([undefined]); setPageIndex(0)
-    setSelectedAssetId(undefined)
   }
 
   const setAllSearchFields = (checked: boolean) => {
     setFilters((current) => ({ ...current, searchFields: checked ? allSearchFields : [allSearchFields[0]!] }))
     setCursors([undefined]); setPageIndex(0)
-    setSelectedAssetId(undefined)
   }
 
   const resetFilters = () => {
@@ -289,7 +285,7 @@ export function CatalogPage({
           <div className="catalog-query-control" ref={suggestionRoot}>
             <Search size={16} aria-hidden="true" />
             <label className="sr-only" htmlFor="catalog-query">데이터셋 이름이나 설명 검색</label>
-            <input id="catalog-query" value={draftQuery} onChange={(event) => { setDraftQuery(event.target.value); setSuggestionIndex(-1); setSelectedAssetId(undefined) }} onKeyDown={navigateSuggestions} placeholder="데이터셋 이름이나 설명 검색 (2자 이상)" maxLength={500} autoComplete="off" aria-controls="catalog-suggestions" aria-expanded={suggestions.length > 0} aria-autocomplete="list" aria-activedescendant={suggestionIndex >= 0 ? `catalog-suggestion-${suggestionIndex}` : undefined} role="combobox" />
+            <input id="catalog-query" value={draftQuery} onChange={(event) => { setDraftQuery(event.target.value); setSuggestionIndex(-1); }} onKeyDown={navigateSuggestions} placeholder="데이터셋 이름이나 설명 검색 (2자 이상)" maxLength={500} autoComplete="off" aria-controls="catalog-suggestions" aria-expanded={suggestions.length > 0} aria-autocomplete="list" aria-activedescendant={suggestionIndex >= 0 ? `catalog-suggestion-${suggestionIndex}` : undefined} role="combobox" />
             {suggestions.length > 0 && <ul id="catalog-suggestions" className="catalog-suggestions" role="listbox">
               {suggestions.map((suggestion, index) => <li key={suggestion.id} role="none"><button id={`catalog-suggestion-${index}`} role="option" aria-selected={index === suggestionIndex} type="button" onMouseDown={(event) => event.preventDefault()} onClick={() => commitQuery(suggestion.name)}><span><b>{suggestion.name}</b><small>{suggestion.asset_type} · {[suggestion.platform, suggestion.database_name, suggestion.schema_name].filter(Boolean).join(' · ') || '위치 미지정'}</small><CatalogMatchPreview fragments={suggestion.matches ?? []} /></span></button></li>)}
             </ul>}

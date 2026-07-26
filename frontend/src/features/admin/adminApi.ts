@@ -349,6 +349,16 @@ export class AdminApi {
     )
   }
 
+  testDraftSystemConfiguration(systemId: string, configurationYaml: string) {
+    return this.client.request<SystemConfigurationTestResult>(
+      `/admin/system-configuration/${encodeURIComponent(systemId)}/test-draft`,
+      {
+        method: 'POST',
+        body: JSON.stringify({ configuration_yaml: configurationYaml }),
+      },
+    )
+  }
+
   activateSystemConfiguration(systemId: string, version: number) {
     return this.client.request<SystemConfigurationEntry>(
       `/admin/system-configuration/${encodeURIComponent(systemId)}/activate`,
