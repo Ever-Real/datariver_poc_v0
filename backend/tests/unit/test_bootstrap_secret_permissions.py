@@ -7,6 +7,10 @@ import shutil
 import subprocess
 from pathlib import Path
 
+import pytest
+
+from datariver.bootstrap import LOCAL_DEMO_IDENTITIES, _local_demo_identities
+
 
 def _copy_bootstrap_fixture(source_root: Path, target_root: Path) -> None:
     (target_root / "scripts").mkdir(parents=True)
@@ -38,6 +42,92 @@ def test_bash_and_powershell_bootstrap_keep_host_secret_files_owner_only() -> No
     assert "Set-OwnerOnlyWindowsAcl -Path $secretsDirectory -Directory" in powershell
     assert "Set-OwnerOnlyWindowsAcl -Path $temporaryPath" in writer
     assert "Set-OwnerOnlyWindowsAcl -Path $realmPath" in powershell
+
+
+def test_local_demo_identities_match_keycloak_and_use_balanced_human_roles(
+    tmp_path: Path,
+) -> None:
+    root = Path(__file__).resolve().parents[3]
+    realm = json.loads(
+        (root / "infra/keycloak/datariver-realm.template.json").read_text(encoding="utf-8")
+    )
+    users_by_id = {user["id"]: user for user in realm["users"]}
+
+    assert {demo.job_function for demo in LOCAL_DEMO_IDENTITIES} == {
+        "DATA_ANALYST",
+        "DATA_ENGINEER",
+        "DATA_STEWARD",
+    }
+    assert len({demo.subject_id for demo in LOCAL_DEMO_IDENTITIES}) == 3
+    assert len({demo.external_subject for demo in LOCAL_DEMO_IDENTITIES}) == 3
+    for demo in LOCAL_DEMO_IDENTITIES:
+        user = users_by_id[demo.external_subject]
+        assert user["enabled"] is True
+        assert user["email"] == demo.email
+        assert user["requiredActions"] == ["UPDATE_PASSWORD"]
+        assert user["credentials"] == [
+            {
+                "type": "password",
+                "value": "__DEMO_PASSWORD__",
+                "temporary": True,
+            }
+        ]
+        assert demo.allowed_actions
+
+    state_path = tmp_path / "local-demo-identities.json"
+    provider_subjects = {
+        "jihoon.choi": "00000000-0000-4000-8000-000000000205",
+        "sua.han": "00000000-0000-4000-8000-000000000206",
+        "minjae.oh": "00000000-0000-4000-8000-000000000207",
+    }
+    state_path.write_text(json.dumps(provider_subjects), encoding="utf-8")
+
+    resolved = _local_demo_identities(state_path)
+
+    assert {demo.username: demo.external_subject for demo in resolved} == provider_subjects
+    state_path.write_text(
+        json.dumps(dict.fromkeys(provider_subjects, provider_subjects["jihoon.choi"])),
+        encoding="utf-8",
+    )
+    with pytest.raises(RuntimeError, match="state file is invalid"):
+        _local_demo_identities(state_path)
+
+
+def test_bootstrap_migrates_demo_identity_state_out_of_keycloak_import(
+    tmp_path: Path,
+) -> None:
+    root = Path(__file__).resolve().parents[3]
+    isolated_root = tmp_path / "repo"
+    _copy_bootstrap_fixture(root, isolated_root)
+    legacy_state = isolated_root / "runtime/keycloak/local-demo-identities.json"
+    legacy_state.parent.mkdir(parents=True)
+    legacy_document = json.dumps(
+        {
+            "jihoon.choi": "00000000-0000-4000-8000-000000000205",
+            "sua.han": "00000000-0000-4000-8000-000000000206",
+            "minjae.oh": "00000000-0000-4000-8000-000000000207",
+        }
+    )
+    legacy_state.write_text(legacy_document, encoding="utf-8")
+    approved_token = isolated_root / "approved-datahub-token"
+    approved_token.write_text("test-only-datahub-token", encoding="utf-8")
+
+    result = subprocess.run(  # noqa: S603 - copied repository script is trusted.
+        [
+            str(isolated_root / "scripts/bootstrap.sh"),
+            "--datahub-token-file",
+            str(approved_token),
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    migrated_state = isolated_root / "runtime/identity/local-demo-identities.json"
+    assert result.returncode == 0, result.stderr
+    assert not legacy_state.exists()
+    assert migrated_state.read_text(encoding="utf-8") == legacy_document
+    assert migrated_state.stat().st_mode & 0o777 == 0o600
 
 
 def test_knowledge_source_worker_bootstrap_is_explicit_and_requires_inference_pair(

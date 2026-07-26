@@ -8,13 +8,17 @@ from datetime import datetime, timedelta
 from types import TracebackType
 from uuid import UUID
 
-from sqlalchemy import and_, cast, func, or_, select, text, tuple_
+from sqlalchemy import and_, cast, exists, func, or_, select, text, tuple_
 from sqlalchemy.dialects import postgresql
 from sqlalchemy.exc import DBAPIError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from datariver.application.dto import (
     AdminAccessRequestPage,
+    MembershipChangeRequestActivity,
+    MembershipChangeRequestActivityPage,
+    MembershipOwnedTable,
+    MembershipOwnedTablePage,
     MembershipRenewalPage,
     MembershipRenewalRecord,
     MembershipRoleAssignmentEvidence,
@@ -56,7 +60,7 @@ from datariver.domain.common import (
 from datariver.domain.membership_renewal import MembershipRenewalRequest, MembershipRenewalState
 from datariver.infrastructure.db.governance import SqlIdempotencyStore, SqlOutboxWriter
 from datariver.infrastructure.db.models.catalog import AssetProjectionModel
-from datariver.infrastructure.db.models.governance import ChangeRequestModel
+from datariver.infrastructure.db.models.governance import ApprovalModel, ChangeRequestModel
 from datariver.infrastructure.db.models.platform import (
     AccessRoleAssignmentEventModel,
     AccessRoleAssignmentModel,
@@ -711,18 +715,29 @@ class SqlMembershipAccessRepository(MembershipAccessRepository):
                 )
             ).all()
         }
-        change_request_counts: dict[UUID, int] = {}
-        for subject_id, count in (
+        change_request_ids: dict[UUID, set[UUID]] = {
+            subject_id: set() for subject_id in subject_ids
+        }
+        for request_id, requester_id in (
             await self._session.execute(
-                select(ChangeRequestModel.requester_id, func.count())
-                .where(
+                select(ChangeRequestModel.id, ChangeRequestModel.requester_id).where(
                     ChangeRequestModel.workspace_id == workspace_id,
                     ChangeRequestModel.requester_id.in_(subject_ids),
                 )
-                .group_by(ChangeRequestModel.requester_id)
             )
         ).all():
-            change_request_counts[subject_id] = int(count)
+            change_request_ids[requester_id].add(request_id)
+        for request_id, actor_id in (
+            await self._session.execute(
+                select(ApprovalModel.change_request_id, ApprovalModel.actor_id)
+                .where(
+                    ApprovalModel.workspace_id == workspace_id,
+                    ApprovalModel.actor_id.in_(subject_ids),
+                )
+                .distinct()
+            )
+        ).all():
+            change_request_ids[actor_id].add(request_id)
         owner_subjects = {
             f"urn:li:corpuser:{subject.external_subject}": subject.id for subject, _ in visible_rows
         }
@@ -735,6 +750,8 @@ class SqlMembershipAccessRepository(MembershipAccessRepository):
                         AssetProjectionModel.workspace_id == workspace_id,
                         AssetProjectionModel.owner_ref.in_(owner_subjects),
                         AssetProjectionModel.asset_type == "TABLE",
+                        AssetProjectionModel.lifecycle == "ACTIVE",
+                        AssetProjectionModel.deleted_at.is_(None),
                     )
                     .group_by(AssetProjectionModel.owner_ref)
                 )
@@ -746,7 +763,7 @@ class SqlMembershipAccessRepository(MembershipAccessRepository):
                 subject,
                 membership,
                 owned_table_count=owned_table_counts[subject.id],
-                change_request_count=int(change_request_counts.get(subject.id, 0)),
+                change_request_count=len(change_request_ids[subject.id]),
                 pending_renewal_request_id=pending_renewals.get(subject.id),
             )
             for subject, membership in visible_rows
@@ -808,6 +825,174 @@ class SqlMembershipAccessRepository(MembershipAccessRepository):
             else None
         )
         return _membership_access_record(subject, membership, role_assignment=evidence)
+
+    async def list_change_request_activity(
+        self,
+        *,
+        workspace_id: UUID,
+        subject_id: UUID,
+        limit: int,
+        cursor: str | None = None,
+    ) -> MembershipChangeRequestActivityPage:
+        _validate_admin_list_limit(limit)
+        if not await self._session.scalar(
+            select(WorkspaceMembershipModel.subject_id).where(
+                WorkspaceMembershipModel.workspace_id == workspace_id,
+                WorkspaceMembershipModel.subject_id == subject_id,
+            )
+        ):
+            raise NotFoundError("The target workspace membership does not exist.")
+        participated = or_(
+            ChangeRequestModel.requester_id == subject_id,
+            exists(
+                select(ApprovalModel.id).where(
+                    ApprovalModel.workspace_id == workspace_id,
+                    ApprovalModel.change_request_id == ChangeRequestModel.id,
+                    ApprovalModel.actor_id == subject_id,
+                )
+            ),
+        )
+        statement = (
+            select(ChangeRequestModel)
+            .where(
+                ChangeRequestModel.workspace_id == workspace_id,
+                participated,
+            )
+            .order_by(ChangeRequestModel.id.desc())
+            .limit(limit + 1)
+        )
+        filters = {"subject_id": str(subject_id)}
+        if cursor is not None:
+            boundary_id = decode_admin_list_cursor(
+                cursor,
+                scope="MEMBERSHIP_CHANGE_REQUEST_ACTIVITY",
+                workspace_id=workspace_id,
+                filters=filters,
+            )
+            statement = statement.where(ChangeRequestModel.id < boundary_id)
+        models = list((await self._session.scalars(statement)).all())
+        has_more = len(models) > limit
+        visible = models[:limit]
+        approved_ids = frozenset(
+            (
+                await self._session.scalars(
+                    select(ApprovalModel.change_request_id)
+                    .where(
+                        ApprovalModel.workspace_id == workspace_id,
+                        ApprovalModel.actor_id == subject_id,
+                        ApprovalModel.change_request_id.in_([item.id for item in visible]),
+                    )
+                    .distinct()
+                )
+            ).all()
+        )
+        return MembershipChangeRequestActivityPage(
+            items=tuple(
+                MembershipChangeRequestActivity(
+                    change_request_id=item.id,
+                    number=item.number,
+                    title=item.title,
+                    request_type=item.request_type,
+                    state=item.state,
+                    relationship=(
+                        "REQUESTER_AND_APPROVER"
+                        if item.requester_id == subject_id and item.id in approved_ids
+                        else "REQUESTER"
+                        if item.requester_id == subject_id
+                        else "APPROVER"
+                    ),
+                    classification=Classification(item.classification),
+                    requester_id=item.requester_id,
+                    updated_at=item.updated_at,
+                )
+                for item in visible
+            ),
+            next_cursor=(
+                encode_admin_list_cursor(
+                    scope="MEMBERSHIP_CHANGE_REQUEST_ACTIVITY",
+                    workspace_id=workspace_id,
+                    filters=filters,
+                    boundary_id=visible[-1].id,
+                )
+                if has_more and visible
+                else None
+            ),
+        )
+
+    async def list_owned_tables(
+        self,
+        *,
+        workspace_id: UUID,
+        subject_id: UUID,
+        limit: int,
+        cursor: str | None = None,
+    ) -> MembershipOwnedTablePage:
+        _validate_admin_list_limit(limit)
+        external_subject = await self._session.scalar(
+            select(SubjectModel.external_subject)
+            .join(
+                WorkspaceMembershipModel,
+                and_(
+                    WorkspaceMembershipModel.workspace_id == workspace_id,
+                    WorkspaceMembershipModel.subject_id == SubjectModel.id,
+                ),
+            )
+            .where(SubjectModel.id == subject_id)
+        )
+        if external_subject is None:
+            raise NotFoundError("The target workspace membership does not exist.")
+        statement = (
+            select(AssetProjectionModel)
+            .where(
+                AssetProjectionModel.workspace_id == workspace_id,
+                AssetProjectionModel.owner_ref == f"urn:li:corpuser:{external_subject}",
+                AssetProjectionModel.asset_type == "TABLE",
+                AssetProjectionModel.lifecycle == "ACTIVE",
+                AssetProjectionModel.deleted_at.is_(None),
+            )
+            .order_by(AssetProjectionModel.id.desc())
+            .limit(limit + 1)
+        )
+        filters = {"subject_id": str(subject_id)}
+        if cursor is not None:
+            boundary_id = decode_admin_list_cursor(
+                cursor,
+                scope="MEMBERSHIP_OWNED_TABLES",
+                workspace_id=workspace_id,
+                filters=filters,
+            )
+            statement = statement.where(AssetProjectionModel.id < boundary_id)
+        models = list((await self._session.scalars(statement)).all())
+        has_more = len(models) > limit
+        visible = models[:limit]
+        return MembershipOwnedTablePage(
+            items=tuple(
+                MembershipOwnedTable(
+                    asset_id=item.id,
+                    name=item.name,
+                    platform=item.platform,
+                    database_name=item.database_name,
+                    schema_name=item.schema_name,
+                    classification=Classification(item.classification),
+                    system_id=item.system_id,
+                    domain_id=item.domain_id,
+                    owner_department_id=item.owner_department_id,
+                    source_version=item.source_version,
+                    observed_at=item.observed_at,
+                )
+                for item in visible
+            ),
+            next_cursor=(
+                encode_admin_list_cursor(
+                    scope="MEMBERSHIP_OWNED_TABLES",
+                    workspace_id=workspace_id,
+                    filters=filters,
+                    boundary_id=visible[-1].id,
+                )
+                if has_more and visible
+                else None
+            ),
+        )
 
     async def provision_identity_membership(
         self,
@@ -1561,8 +1746,8 @@ class SqlSystemDirectoryRepository(SystemDirectoryRepository):
         name: str,
         description: str,
     ) -> SystemDirectoryEntry:
-        from datariver.infrastructure.db.models.platform import DataSystemModel
         from datariver.domain.common import ConflictError
+        from datariver.infrastructure.db.models.platform import DataSystemModel
 
         existing = await self._session.scalar(
             select(DataSystemModel).where(

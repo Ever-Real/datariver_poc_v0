@@ -4,7 +4,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field
 from datetime import date, datetime
 from types import MappingProxyType
-from typing import Any
+from typing import Any, Literal
 from uuid import UUID
 
 from datariver.application.classification_access import ClassificationAccessSnapshot
@@ -874,6 +874,46 @@ class WorkspaceMembershipSummary:
 @dataclass(frozen=True, slots=True)
 class WorkspaceMembershipPage:
     items: tuple[WorkspaceMembershipSummary, ...]
+    next_cursor: str | None
+
+
+@dataclass(frozen=True, slots=True)
+class MembershipChangeRequestActivity:
+    change_request_id: UUID
+    number: str
+    title: str
+    request_type: str
+    state: str
+    relationship: Literal["REQUESTER", "APPROVER", "REQUESTER_AND_APPROVER"]
+    classification: Classification
+    requester_id: UUID
+    updated_at: datetime
+
+
+@dataclass(frozen=True, slots=True)
+class MembershipChangeRequestActivityPage:
+    items: tuple[MembershipChangeRequestActivity, ...]
+    next_cursor: str | None
+
+
+@dataclass(frozen=True, slots=True)
+class MembershipOwnedTable:
+    asset_id: UUID
+    name: str
+    platform: str | None
+    database_name: str | None
+    schema_name: str | None
+    classification: Classification
+    system_id: UUID | None
+    domain_id: UUID | None
+    owner_department_id: UUID | None
+    source_version: str
+    observed_at: datetime
+
+
+@dataclass(frozen=True, slots=True)
+class MembershipOwnedTablePage:
+    items: tuple[MembershipOwnedTable, ...]
     next_cursor: str | None
 
 

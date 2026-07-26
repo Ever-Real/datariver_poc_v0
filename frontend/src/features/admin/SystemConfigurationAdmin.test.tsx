@@ -88,12 +88,13 @@ describe('SystemConfigurationAdmin', () => {
       onEnroll={vi.fn(() => Promise.resolve())}
     />)
 
-    const editor = await screen.findByRole('textbox', { name: 'DataHub GMS YAML 설정' })
+    fireEvent.click(await screen.findByRole('button', { name: 'YAML 편집' }))
+    const editor = screen.getByRole('textbox', { name: 'DataHub GMS YAML 설정' })
     await waitFor(() => expect(editor).toHaveValue(initialEntry.template_yaml))
     fireEvent.change(editor, {
       target: { value: 'base_url: http://datahub-gms:8080\noptions:\n  timeout_seconds: 30\n' },
     })
-    fireEvent.click(screen.getByRole('button', { name: 'SAVE' }))
+    fireEvent.click(screen.getByRole('button', { name: '저장' }))
     expect(pending?.title).toBe('DataHub GMS 설정 저장')
     if (!pending) throw new Error('confirmation was not requested')
     const mutation = pending
@@ -108,7 +109,7 @@ describe('SystemConfigurationAdmin', () => {
     expect(within(summary).getByText(/base_url: http:\/\/datahub-gms:8080/)).toBeInTheDocument()
     expect(within(summary).getByText(/token: file:\/run\/secrets\/datahub_token/)).toBeInTheDocument()
     expect(within(summary).queryByText(/stored-token/)).not.toBeInTheDocument()
-    const testConnection = screen.getByRole('button', { name: 'TEST' })
+    const testConnection = screen.getByRole('button', { name: '연결 테스트' })
     await waitFor(() => expect(testConnection).toBeEnabled())
     fireEvent.click(testConnection)
     expect(await screen.findByRole('status')).toHaveTextContent('AVAILABLE · HTTP_HEALTH · 12ms')
@@ -157,7 +158,7 @@ describe('SystemConfigurationAdmin', () => {
       onEnroll={vi.fn(() => Promise.resolve())}
     />)
 
-    const activate = await screen.findByRole('button', { name: 'ACTIVATE' })
+    const activate = await screen.findByRole('button', { name: '활성화' })
     expect(activate).toBeEnabled()
     fireEvent.click(activate)
     expect(pending?.title).toBe('DataHub GMS 설정 활성화')
@@ -244,7 +245,56 @@ describe('SystemConfigurationAdmin', () => {
     />)
 
     expect(await screen.findByText('배포 환경·secret 관리')).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: 'ACTIVATE' })).toBeDisabled()
+    expect(screen.getByRole('button', { name: '활성화' })).toBeDisabled()
     expect(screen.getByText(/배포 환경 변수와 secret 파일을 기준/)).toBeInTheDocument()
+  })
+
+  it('tests every deployment-managed connector through the server-owned deployment route', async () => {
+    const deploymentManaged: SystemConfigurationEntry = {
+      ...savedEntry,
+      system_id: 'REDIS_DELIVERY',
+      label: 'Redis Delivery',
+      category: 'PLATFORM',
+      activation_state: 'DEPLOYMENT_MANAGED',
+    }
+    const request = vi.fn((path: string, options?: RequestInit) => {
+      if (path === '/admin/system-configuration') return Promise.resolve({ items: [deploymentManaged] })
+      if (path === '/admin/system-configuration/REDIS_DELIVERY/test-deployment'
+        && options?.method === 'POST') {
+        return Promise.resolve({
+          system_id: 'REDIS_DELIVERY', status: 'AVAILABLE', scope: 'REDIS_POLICY',
+          latency_ms: 3, detail: 'fixed deployment probe passed',
+          configuration_version: null, tested_at: '2026-07-20T09:01:00Z',
+        })
+      }
+      throw new Error(`unexpected request: ${path}`)
+    })
+    const api = new AdminApi(
+      { request, requestWithMeta: vi.fn() } as unknown as Pick<ApiClient, 'request' | 'requestWithMeta'>,
+    )
+    render(<SystemConfigurationAdmin
+      api={api}
+      context={{
+        subject_id: 'administrator', workspace_id: 'workspace-one',
+        display_name: 'Administrator', authentication_assurance: 'PASSWORD',
+        fallback_enabled: false,
+        allowed_operations: ['SYSTEM_CONFIGURATION_READ', 'SYSTEM_CONFIGURATION_UPDATE'],
+        action_vocabulary: [],
+      }}
+      messages={getAdminMessages('ko')} requestConfirmation={vi.fn()}
+      keyFor={vi.fn(() => 'unused')} clearKey={vi.fn()} reportError={vi.fn()}
+      onStepUp={vi.fn(() => Promise.resolve())}
+      onPasswordReauth={vi.fn(() => Promise.resolve())}
+      onEnroll={vi.fn(() => Promise.resolve())}
+    />)
+
+    const testConnection = await screen.findByRole('button', { name: '연결 테스트' })
+    expect(testConnection).toBeEnabled()
+    fireEvent.click(testConnection)
+    expect(await screen.findByRole('status')).toHaveTextContent('AVAILABLE')
+    expect(request).toHaveBeenCalledWith(
+      '/admin/system-configuration/REDIS_DELIVERY/test-deployment',
+      { method: 'POST' },
+    )
   })
 })

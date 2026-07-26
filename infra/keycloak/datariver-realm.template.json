@@ -261,6 +261,39 @@
       "clientRoles": {
         "realm-management": ["manage-users", "view-users", "query-users"]
       }
+    },
+    {
+      "id": "00000000-0000-4000-8000-000000000005",
+      "username": "jihoon.choi",
+      "firstName": "지훈",
+      "lastName": "최",
+      "email": "jihoon.choi@localhost.invalid",
+      "emailVerified": true,
+      "enabled": true,
+      "requiredActions": ["UPDATE_PASSWORD"],
+      "credentials": [{"type": "password", "value": "__DEMO_PASSWORD__", "temporary": true}]
+    },
+    {
+      "id": "00000000-0000-4000-8000-000000000006",
+      "username": "sua.han",
+      "firstName": "수아",
+      "lastName": "한",
+      "email": "sua.han@localhost.invalid",
+      "emailVerified": true,
+      "enabled": true,
+      "requiredActions": ["UPDATE_PASSWORD"],
+      "credentials": [{"type": "password", "value": "__DEMO_PASSWORD__", "temporary": true}]
+    },
+    {
+      "id": "00000000-0000-4000-8000-000000000007",
+      "username": "minjae.oh",
+      "firstName": "민재",
+      "lastName": "오",
+      "email": "minjae.oh@localhost.invalid",
+      "emailVerified": true,
+      "enabled": true,
+      "requiredActions": ["UPDATE_PASSWORD"],
+      "credentials": [{"type": "password", "value": "__DEMO_PASSWORD__", "temporary": true}]
     }
   ]
 }

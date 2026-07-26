@@ -96,6 +96,8 @@ services:
     <<: *backend
     profiles: ["tools"]
     command: ["/app/.venv/bin/python", "-m", "datariver.bootstrap", "local-identity"]
+    volumes:
+      - ./runtime/identity/local-demo-identities.json:/run/datariver/local-demo-identities.json:ro
     secrets:
       - postgres_bootstrap_password
     depends_on:
@@ -400,6 +402,8 @@ secrets:
     file: ./secrets/airflow_client_secret
   keycloak_identity_admin_client_secret:
     file: ./secrets/keycloak_identity_admin_client_secret
+  keycloak_demo_password:
+    file: ./secrets/keycloak_demo_password
   airflow_api_secret:
     file: ./secrets/airflow_api_secret
   airflow_admin_password:

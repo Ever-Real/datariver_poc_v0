@@ -392,8 +392,31 @@ def verify_multiarch_release_contract() -> None:
     ):
         if fragment not in keycloak_host_dev:
             raise AssertionError(f"Keycloak host-development sync omits guard: {fragment}")
-    if "set-password" in keycloak_host_dev or "keycloak_demo_password" in keycloak_host_dev:
+    if "set-password" in keycloak_host_dev:
         raise AssertionError("Keycloak host-development sync must not rotate an existing user")
+    for fragment in (
+        'if [ -z "$user_id" ]; then',
+        "demo_password=$(cat /run/secrets/keycloak_demo_password)",
+        '-s "credentials=[',
+        "unset demo_password",
+        "__DATARIVER_DEMO_IDENTITIES__",
+        "local-demo-identities.json",
+    ):
+        if fragment not in keycloak_host_dev:
+            raise AssertionError(
+                f"Keycloak host-development sync omits new-user credential guard: {fragment}"
+            )
+    local_bootstrap = _yaml(ROOT / "compose.yaml")["services"]["local-bootstrap"]
+    if (
+        "./runtime/identity/local-demo-identities.json:"
+        "/run/datariver/local-demo-identities.json:ro" not in local_bootstrap.get("volumes", [])
+    ):
+        raise AssertionError("Local bootstrap must consume the Keycloak demo identity state")
+    keycloak_imports = _yaml(ROOT / "compose.identity.yaml")["services"]["keycloak"].get(
+        "volumes", []
+    )
+    if any("local-demo-identities.json" in mount for mount in keycloak_imports):
+        raise AssertionError("Keycloak realm imports must not include runtime identity state")
 
     connector_network = (ROOT / "scripts" / "ensure_connector_network.sh").read_text(
         encoding="utf-8"

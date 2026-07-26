@@ -77,6 +77,10 @@ Current durable Knowledge source decision: [pinned and fenced PDF analysis jobs]
 
 Current Sharing invocation decision: [atomic API-product invocation results](adr/0045-atomic-api-product-invocation-results.md).
 
+Current administrator runtime decision: [bounded drill-downs and deployment-owned probes](adr/0046-bounded-admin-drilldowns-and-deployment-probes.md).
+
+Current administrator completion evidence: [runtime completion checklist](38_ADMIN_RUNTIME_COMPLETION_CHECKLIST.md).
+
 ## Change control
 
 - Requirements use stable IDs (`FR-*`, `NFR-*`, `SEC-*`).

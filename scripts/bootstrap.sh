@@ -75,6 +75,9 @@ esac
 secrets_dir="$root/secrets"
 runtime_dir="$root/runtime"
 keycloak_runtime_dir="$runtime_dir/keycloak"
+identity_runtime_dir="$runtime_dir/identity"
+demo_identity_state="$identity_runtime_dir/local-demo-identities.json"
+legacy_demo_identity_state="$keycloak_runtime_dir/local-demo-identities.json"
 retention_control_file="$runtime_dir/retention-execution.enabled"
 datahub_token_path="$secrets_dir/datahub_token"
 for protected_path in \
@@ -82,7 +85,10 @@ for protected_path in \
   "$secrets_dir" \
   "$runtime_dir" \
   "$keycloak_runtime_dir" \
+  "$identity_runtime_dir" \
   "$keycloak_runtime_dir/datariver-realm.json" \
+  "$demo_identity_state" \
+  "$legacy_demo_identity_state" \
   "$retention_control_file"; do
   if [ -L "$protected_path" ]; then
     echo "Bootstrap refuses symbolic links for managed paths." >&2
@@ -182,10 +188,30 @@ fi
 umask 077
 mkdir -p "$secrets_dir"
 mkdir -p "$keycloak_runtime_dir"
+mkdir -p "$identity_runtime_dir"
+if [ -e "$legacy_demo_identity_state" ]; then
+  [ -f "$legacy_demo_identity_state" ] || {
+    echo "Legacy local demo identity state must be a regular file." >&2
+    exit 2
+  }
+  if [ -e "$demo_identity_state" ]; then
+    cmp -s "$legacy_demo_identity_state" "$demo_identity_state" || {
+      echo "Conflicting local demo identity state files require manual review." >&2
+      exit 2
+    }
+    migrated_state_dir=$(mktemp -d "$identity_runtime_dir/migrated-keycloak-import.XXXXXX")
+    mv "$legacy_demo_identity_state" "$migrated_state_dir/local-demo-identities.json"
+  else
+    mv "$legacy_demo_identity_state" "$demo_identity_state"
+  fi
+fi
 if [ ! -f "$retention_control_file" ]; then
   printf '%s\n' DISABLED > "$retention_control_file"
 fi
-for existing_file in "$secrets_dir"/* "$keycloak_runtime_dir"/datariver-realm.json; do
+for existing_file in \
+  "$secrets_dir"/* \
+  "$keycloak_runtime_dir"/datariver-realm.json \
+  "$demo_identity_state"; do
   if [ -f "$existing_file" ]; then
     chmod 0600 "$existing_file"
   fi
@@ -426,8 +452,11 @@ fi
 
 # File-based Compose secrets are bind mounts, so container users with different
 # UIDs need read permission. Host access remains restricted by the 0700 parents.
-chmod 0700 "$secrets_dir" "$keycloak_runtime_dir"
+chmod 0700 "$secrets_dir" "$keycloak_runtime_dir" "$identity_runtime_dir"
 chmod 0444 "$secrets_dir"/* "$keycloak_runtime_dir/datariver-realm.json"
+if [ -f "$demo_identity_state" ]; then
+  chmod 0600 "$demo_identity_state"
+fi
 chmod 0644 "$retention_control_file"
 
 echo "Bootstrap files created in $env_file. Keep the environment and secrets directory private and out of Git."

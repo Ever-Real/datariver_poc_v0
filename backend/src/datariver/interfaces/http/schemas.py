@@ -982,6 +982,38 @@ class WorkspaceMembershipListResponse(BaseModel):
     page: PageMeta
 
 
+class MembershipChangeRequestActivityResponse(BaseModel):
+    change_request_id: UUID
+    number: str
+    title: str
+    request_type: str
+    state: str
+    relationship: Literal["REQUESTER", "APPROVER", "REQUESTER_AND_APPROVER"]
+    classification: Literal["PUBLIC", "INTERNAL", "CONFIDENTIAL", "RESTRICTED"]
+    updated_at: datetime
+
+
+class MembershipChangeRequestActivityListResponse(BaseModel):
+    items: list[MembershipChangeRequestActivityResponse]
+    page: PageMeta
+
+
+class MembershipOwnedTableResponse(BaseModel):
+    asset_id: UUID
+    name: str
+    platform: str | None
+    database_name: str | None
+    schema_name: str | None
+    classification: Literal["PUBLIC", "INTERNAL", "CONFIDENTIAL", "RESTRICTED"]
+    source_version: str
+    observed_at: datetime
+
+
+class MembershipOwnedTableListResponse(BaseModel):
+    items: list[MembershipOwnedTableResponse]
+    page: PageMeta
+
+
 class MembershipRenewalCreateRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 

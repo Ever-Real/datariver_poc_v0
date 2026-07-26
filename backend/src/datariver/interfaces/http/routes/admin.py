@@ -95,6 +95,10 @@ from datariver.interfaces.http.schemas import (
     IdentityUserProvisionResponse,
     MembershipAccessDocumentRequest,
     MembershipAccessUpdateResponse,
+    MembershipChangeRequestActivityListResponse,
+    MembershipChangeRequestActivityResponse,
+    MembershipOwnedTableListResponse,
+    MembershipOwnedTableResponse,
     MembershipRenewalCreateRequest,
     MembershipRenewalDecisionRequest,
     MembershipRenewalListResponse,
@@ -618,10 +622,12 @@ def _configuration_endpoint(document: Mapping[str, Any], is_draft: bool = False)
                 return normalized
             parsed = urlsplit(normalized)
             if parsed.scheme not in {"http", "https"} or parsed.hostname is None:
-                if is_draft: return normalized
+                if is_draft:
+                    return normalized
                 raise ValidationError("System configuration URL values must use HTTP or HTTPS.")
             if parsed.username is not None or parsed.password is not None:
-                if is_draft: return normalized
+                if is_draft:
+                    return normalized
                 raise ValidationError("Credentials must not be embedded in a system URL.")
             if parsed.query or parsed.fragment:
                 raise ValidationError("A system base URL must not contain a query or fragment.")
@@ -728,7 +734,11 @@ def _validate_nested_configuration_schema(system_id: str, document: Mapping[str,
                 )
 
 
-def _validate_system_configuration(system_id: str, document: Mapping[str, Any], is_draft: bool = False) -> str | None:
+def _validate_system_configuration(
+    system_id: str,
+    document: Mapping[str, Any],
+    is_draft: bool = False,
+) -> str | None:
     allowed_top_level = set(_SYSTEM_CONFIGURATION_TEMPLATES[system_id]) | {"auth_principal"}
     unknown_keys = sorted(set(document) - allowed_top_level)
     if unknown_keys:
@@ -1253,7 +1263,15 @@ def _system_configuration_entries(
                 activated_version=profile.activated_version if profile else None,
                 activated_at=activated_revision.activated_at if activated_revision else None,
                 applied_version=applied_version,
-                is_core=system_id in {"POSTGRESQL", "OIDC_IDENTITY", "DATAHUB_GMS", "DATAHUB_FRONTEND", "REDIS_CACHE", "REDIS_DELIVERY"},
+                is_core=system_id
+                in {
+                    "POSTGRESQL",
+                    "OIDC_IDENTITY",
+                    "DATAHUB_GMS",
+                    "DATAHUB_FRONTEND",
+                    "REDIS_CACHE",
+                    "REDIS_DELIVERY",
+                },
             )
         )
     return entries
@@ -1429,6 +1447,82 @@ async def list_workspace_memberships(
     )
     return WorkspaceMembershipListResponse(
         items=[workspace_membership_summary_response(value) for value in page.items],
+        page=PageMeta(next_cursor=page.next_cursor, limit=limit),
+    )
+
+
+@router.get(
+    "/workspace-memberships/{target_subject_id}/change-requests",
+    response_model=MembershipChangeRequestActivityListResponse,
+)
+async def list_membership_change_request_activity(
+    target_subject_id: UUID,
+    request: Request,
+    context: ContextDep,
+    limit: Annotated[int, Query(ge=1, le=50)] = 25,
+    cursor: Annotated[str | None, Query(max_length=2000)] = None,
+) -> MembershipChangeRequestActivityListResponse:
+    page = await _service(request).list_membership_change_request_activity(
+        workspace_id=context.workspace_id,
+        target_subject_id=target_subject_id,
+        limit=limit,
+        cursor=cursor,
+        subject=context.subject,
+        environment=context.environment,
+        request_id=context.request_id,
+    )
+    return MembershipChangeRequestActivityListResponse(
+        items=[
+            MembershipChangeRequestActivityResponse(
+                change_request_id=item.change_request_id,
+                number=item.number,
+                title=item.title,
+                request_type=item.request_type,
+                state=item.state,
+                relationship=item.relationship,
+                classification=item.classification.name,
+                updated_at=item.updated_at,
+            )
+            for item in page.items
+        ],
+        page=PageMeta(next_cursor=page.next_cursor, limit=limit),
+    )
+
+
+@router.get(
+    "/workspace-memberships/{target_subject_id}/owned-tables",
+    response_model=MembershipOwnedTableListResponse,
+)
+async def list_membership_owned_tables(
+    target_subject_id: UUID,
+    request: Request,
+    context: ContextDep,
+    limit: Annotated[int, Query(ge=1, le=50)] = 25,
+    cursor: Annotated[str | None, Query(max_length=2000)] = None,
+) -> MembershipOwnedTableListResponse:
+    page = await _service(request).list_membership_owned_tables(
+        workspace_id=context.workspace_id,
+        target_subject_id=target_subject_id,
+        limit=limit,
+        cursor=cursor,
+        subject=context.subject,
+        environment=context.environment,
+        request_id=context.request_id,
+    )
+    return MembershipOwnedTableListResponse(
+        items=[
+            MembershipOwnedTableResponse(
+                asset_id=item.asset_id,
+                name=item.name,
+                platform=item.platform,
+                database_name=item.database_name,
+                schema_name=item.schema_name,
+                classification=item.classification.name,
+                source_version=item.source_version,
+                observed_at=item.observed_at,
+            )
+            for item in page.items
+        ],
         page=PageMeta(next_cursor=page.next_cursor, limit=limit),
     )
 
@@ -1968,7 +2062,16 @@ async def create_system(
     request: Request,
     context: ContextDep,
     body: SystemCreateRequest,
+    idempotency_key: Annotated[str, Header(alias="Idempotency-Key", min_length=16, max_length=200)],
 ) -> SystemDirectoryEntryResponse:
+    request_hash = canonical_json_hash(
+        {
+            "operation": "admin.system.create",
+            "code": body.code.strip(),
+            "name": body.name.strip(),
+            "description": body.description.strip(),
+        }
+    )
     entry = await _service(request).create_system(
         workspace_id=context.workspace_id,
         code=body.code,
@@ -1977,6 +2080,8 @@ async def create_system(
         subject=context.subject,
         environment=context.environment,
         request_id=context.request_id,
+        idempotency_key=idempotency_key,
+        request_hash=request_hash,
     )
     return SystemDirectoryEntryResponse(
         system_id=entry.system_id,
@@ -2466,8 +2571,10 @@ async def test_draft_system_configuration(
         request_id=context.request_id,
     )
     if "SYSTEM_CONFIGURATION_UPDATE" not in admin_context.allowed_operations:
-        raise ForbiddenError("System configuration testing is not available for this administrator.")
-    
+        raise ForbiddenError(
+            "System configuration testing is not available for this administrator."
+        )
+
     tested_document = _yaml_document(body.configuration_yaml)
     _validate_system_configuration(system_id, tested_document, is_draft=True)
     result = await probe_system_configuration(
@@ -2488,6 +2595,7 @@ async def test_draft_system_configuration(
         configuration_version=None,
         tested_at=utc_now(),
     )
+
 
 @router.post(
     "/system-configuration/{system_id}/test",
@@ -2619,27 +2727,174 @@ async def test_system_configuration(
     )
 
 
-_BOOTSTRAP_SYSTEM_IDS = frozenset({"POSTGRESQL", "OIDC_IDENTITY"})
+def _file_secret_reference(value: str) -> str:
+    """Render one deployment-owned secret path as the portable probe contract."""
+
+    return value if value.startswith("file:") else f"file:{value}"
+
+
+def _deployment_configuration_document(
+    settings: Settings,
+    system_id: str,
+) -> dict[str, Any] | None:
+    """Build a non-secret probe document exclusively from server-owned runtime settings."""
+
+    if system_id == "DATAHUB_GMS":
+        return {
+            "base_url": settings.datahub_base_url,
+            "secret_references": {"token": settings.datahub_secret_ref},
+            "options": {
+                "allowed_versions": list(settings.datahub_allowed_versions),
+                "catalog_pit_evidence_reference": (
+                    settings.datahub_catalog_pit_evidence_reference or ""
+                ),
+                "catalog_pit_verified": settings.datahub_catalog_pit_verified,
+                "circuit_failure_threshold": settings.datahub_circuit_failure_threshold,
+                "circuit_open_seconds": settings.datahub_circuit_open_seconds,
+                "expected_version": settings.datahub_expected_version,
+                "maximum_concurrency": settings.datahub_max_concurrency,
+                "queue_timeout_seconds": settings.datahub_queue_timeout_seconds,
+                "stale_ttl_seconds": settings.datahub_stale_ttl_seconds,
+                "timeout_seconds": settings.datahub_timeout_seconds,
+                "version_enforcement": settings.datahub_version_enforcement,
+                "version_probe_ttl_seconds": settings.datahub_version_probe_ttl_seconds,
+            },
+        }
+    if system_id == "DATAHUB_FRONTEND" and settings.ui_datahub_url is not None:
+        return {
+            "url": str(settings.ui_datahub_url),
+            "options": {"embed_enabled": settings.datahub_embed_enabled},
+        }
+    if system_id == "AIRFLOW" and settings.ui_airflow_url is not None:
+        return {
+            "base_url": str(settings.ui_airflow_url),
+            "secret_references": {},
+            "options": {},
+        }
+    if system_id == "REDIS_CACHE":
+        return {
+            "url": settings.redis_cache_url,
+            "secret_references": {"password": settings.redis_cache_secret_ref},
+            "options": {"required_policy": "allkeys-lfu", "role": "CACHE"},
+        }
+    if system_id == "REDIS_DELIVERY":
+        return {
+            "url": settings.redis_delivery_url,
+            "secret_references": {"password": settings.redis_delivery_secret_ref},
+            "options": {"required_policy": "noeviction+aof", "role": "DELIVERY"},
+        }
+    if system_id == "S3_STORAGE":
+        return {
+            "endpoint": settings.s3_endpoint_url,
+            "public_endpoint": settings.s3_public_endpoint_url,
+            "region": settings.s3_region,
+            "buckets": {
+                "accepted": settings.s3_bucket_accepted,
+                "exports": settings.s3_bucket_exports,
+                "filefolder": settings.s3_bucket_filefolder or "",
+                "infoschema": settings.s3_bucket_infoschema or "",
+                "quarantine": settings.s3_bucket_quarantine,
+            },
+            "options": {"presigned_url_ttl_seconds": settings.presigned_url_ttl_seconds},
+            "secret_references": {
+                "access_key": _file_secret_reference(settings.s3_access_key_file),
+                "secret_key": _file_secret_reference(settings.s3_secret_key_file),
+            },
+        }
+    if system_id == "LLM_CHAT_MODEL":
+        if settings.local_ollama_chat_enabled:
+            return {
+                "connection_mode": "LOCAL_OLLAMA",
+                "base_url": str(settings.local_ollama_chat_base_url),
+                "model": settings.local_ollama_chat_model,
+                "secret_references": {},
+                "options": {
+                    "api_style": "openai_compatible",
+                    "context_tokens": settings.local_ollama_chat_context_tokens,
+                    "timeout_seconds": settings.local_ollama_chat_timeout_seconds,
+                },
+            }
+        if settings.intranet_openai_compatible_chat_enabled:
+            return {
+                "connection_mode": "INTRANET_OPENAI_COMPATIBLE",
+                "base_url": str(settings.intranet_openai_compatible_chat_base_url),
+                "model": settings.intranet_openai_compatible_chat_model,
+                "secret_references": {
+                    "api_key": settings.intranet_openai_compatible_chat_api_key_secret_ref
+                },
+                "options": {
+                    "api_style": "openai_compatible",
+                    "context_tokens": settings.intranet_openai_compatible_chat_context_tokens,
+                    "timeout_seconds": settings.intranet_openai_compatible_chat_timeout_seconds,
+                },
+            }
+        return None
+    if system_id == "LLM_EMBEDDING":
+        if settings.local_ollama_embedding_enabled:
+            return {
+                "connection_mode": "LOCAL_OLLAMA",
+                "base_url": str(settings.local_ollama_embedding_base_url),
+                "model": settings.local_ollama_embedding_model,
+                "secret_references": {},
+                "options": {
+                    "api_style": "openai_compatible",
+                    "timeout_seconds": settings.local_ollama_embedding_timeout_seconds,
+                },
+            }
+        if settings.intranet_openai_compatible_embedding_enabled:
+            return {
+                "connection_mode": "INTRANET_OPENAI_COMPATIBLE",
+                "base_url": str(settings.intranet_openai_compatible_embedding_base_url),
+                "model": settings.intranet_openai_compatible_embedding_model,
+                "secret_references": {
+                    "api_key": settings.intranet_openai_compatible_embedding_api_key_secret_ref
+                },
+                "options": {
+                    "api_style": "openai_compatible",
+                    "timeout_seconds": (
+                        settings.intranet_openai_compatible_embedding_timeout_seconds
+                    ),
+                },
+            }
+        return None
+    if system_id == "NEO4J" and settings.neo4j_projection_enabled:
+        return {
+            "database": settings.neo4j_database,
+            "uri": settings.neo4j_uri,
+            "secret_references": {"credential": settings.neo4j_auth_secret_ref},
+            "options": {
+                "connection_timeout_seconds": settings.neo4j_connection_timeout_seconds,
+                "maximum_connection_pool_size": settings.neo4j_maximum_connection_pool_size,
+            },
+        }
+    if system_id == "PROMETHEUS" and settings.ui_prometheus_url is not None:
+        return {"base_url": str(settings.ui_prometheus_url), "options": {}}
+    if system_id == "GRAFANA_DASHBOARD" and settings.ui_grafana_url is not None:
+        return {
+            "url": str(settings.ui_grafana_url),
+            "options": {"dashboard_path": "", "embed_enabled": False},
+        }
+    return None
 
 
 @router.post(
-    "/system-configuration/{system_id}/test-bootstrap",
+    "/system-configuration/{system_id}/test-deployment",
     response_model=SystemConfigurationTestResponse,
 )
-async def test_bootstrap_system_configuration(
+async def test_deployment_system_configuration(
     system_id: str,
     request: Request,
     response: Response,
     context: ContextDep,
 ) -> SystemConfigurationTestResponse:
-    """Probe a deployment-managed bootstrap system (POSTGRESQL, OIDC_IDENTITY) using live settings."""
+    """Probe one configured deployment-managed system using only live server settings."""
     import time as _time
 
     container = get_container(request)
     if container.settings.app_env != "development":
         raise ForbiddenError("System configuration testing is available only in development.")
-    if system_id not in _BOOTSTRAP_SYSTEM_IDS:
-        raise ValidationError("The system identifier is not a deployment-managed bootstrap system.")
+    if system_id not in {item[0] for item in _SYSTEM_CONFIGURATION}:
+        raise ValidationError("The system configuration identifier is invalid.")
     admin_context = await _service(request).get_admin_read_context(
         workspace_id=context.workspace_id,
         subject=context.subject,
@@ -2647,7 +2902,9 @@ async def test_bootstrap_system_configuration(
         request_id=context.request_id,
     )
     if "SYSTEM_CONFIGURATION_UPDATE" not in admin_context.allowed_operations:
-        raise ForbiddenError("System configuration testing is not available for this administrator.")
+        raise ForbiddenError(
+            "System configuration testing is not available for this administrator."
+        )
 
     started = _time.monotonic()
     tested_at = utc_now()
@@ -2666,53 +2923,92 @@ async def test_bootstrap_system_configuration(
                 configuration_version=None,
                 tested_at=tested_at,
             )
-        except Exception as exc:
+        except Exception:
             elapsed_ms = int((_time.monotonic() - started) * 1000)
             return SystemConfigurationTestResponse(
                 system_id=system_id,
                 status="UNAVAILABLE",
                 scope="AUTHENTICATED_QUERY",
                 latency_ms=elapsed_ms,
-                detail=f"PostgreSQL 연결 실패: {exc!s}",
+                detail="PostgreSQL 연결 또는 고정 SELECT 1 검증에 실패했습니다.",
                 configuration_version=None,
                 tested_at=tested_at,
             )
 
-    # OIDC_IDENTITY: probe the OIDC discovery endpoint
-    import httpx as _httpx
+    if system_id == "OIDC_IDENTITY":
+        # The internal JWKS endpoint is the API's actual trust dependency and is
+        # often different from the browser-facing issuer inside containers.
+        import httpx as _httpx
 
-    oidc_issuer = container.settings.oidc_issuer.rstrip("/")
-    discovery_url = f"{oidc_issuer}/.well-known/openid-configuration"
-    try:
-        async with _httpx.AsyncClient(timeout=5.0) as http:
-            resp = await http.get(discovery_url)
-        resp.raise_for_status()
-        elapsed_ms = int((_time.monotonic() - started) * 1000)
+        try:
+            async with _httpx.AsyncClient(
+                timeout=_httpx.Timeout(5.0, connect=3.0),
+                follow_redirects=False,
+                trust_env=False,
+            ) as http:
+                resp = await http.get(container.settings.oidc_jwks_url)
+            resp.raise_for_status()
+            if len(resp.content) > 1024 * 1024 or not isinstance(resp.json().get("keys"), list):
+                raise ValueError("invalid JWKS")
+            status = "AVAILABLE"
+            detail = "OIDC JWKS 신뢰 경로와 키 문서를 검증했습니다."
+        except Exception:
+            status = "UNAVAILABLE"
+            detail = "OIDC JWKS 신뢰 경로 또는 키 문서를 검증하지 못했습니다."
         return SystemConfigurationTestResponse(
             system_id=system_id,
-            status="AVAILABLE",
+            status=status,
             scope="HTTP_HEALTH",
-            latency_ms=elapsed_ms,
-            detail=f"OIDC 인증 서버({oidc_issuer})에 성공적으로 연결되었습니다.",
+            latency_ms=int((_time.monotonic() - started) * 1000),
+            detail=detail,
             configuration_version=None,
             tested_at=tested_at,
         )
-    except Exception as exc:
-        elapsed_ms = int((_time.monotonic() - started) * 1000)
+
+    document = _deployment_configuration_document(container.settings, system_id)
+    if document is None:
         return SystemConfigurationTestResponse(
             system_id=system_id,
             status="UNAVAILABLE",
             scope="HTTP_HEALTH",
-            latency_ms=elapsed_ms,
-            detail=f"OIDC 서버 연결 실패: {exc!s}",
+            latency_ms=int((_time.monotonic() - started) * 1000),
+            detail="이 배포에서 해당 시스템의 런타임 설정이 구성되지 않았습니다.",
             configuration_version=None,
             tested_at=tested_at,
         )
+    try:
+        _validate_system_configuration(system_id, document)
+        result = await probe_system_configuration(
+            system_id=system_id,
+            document=document,
+            secret_resolver=SecretResolver(
+                virtual_secret_root=container.settings.system_configuration_secret_root
+            ),
+            allowed_hosts=container.settings.system_configuration_probe_allowed_hosts,
+        )
+        status = result.status
+        scope = result.scope
+        latency_ms = result.latency_ms
+        detail = result.detail
+    except Exception:
+        status = "UNAVAILABLE"
+        scope = "HTTP_HEALTH"
+        latency_ms = int((_time.monotonic() - started) * 1000)
+        detail = "배포 설정의 고정 연결 검증에 실패했습니다. 서버 로그와 운영 설정을 확인하세요."
+    response.headers["Cache-Control"] = "no-store, private"
+    return SystemConfigurationTestResponse(
+        system_id=system_id,
+        status=status,
+        scope=scope,
+        latency_ms=latency_ms,
+        detail=detail,
+        configuration_version=None,
+        tested_at=tested_at,
+    )
 
 
 @router.post(
     "/system-configuration/{system_id}/activate",
-
     response_model=SystemConfigurationEntryResponse,
 )
 async def activate_system_configuration(

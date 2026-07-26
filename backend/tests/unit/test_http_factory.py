@@ -17,6 +17,7 @@ from datariver.interfaces.http.container import AppContainer
 from datariver.interfaces.http.dependencies import get_request_context
 from datariver.interfaces.http.factory import create_app
 from datariver.interfaces.http.routes.admin import (
+    _deployment_configuration_document,
     _display_configuration,
     _require_system_configuration_runtime_activation,
     _system_configuration_entries,
@@ -248,6 +249,8 @@ def test_openapi_contains_all_required_product_modules() -> None:
         "/api/v1/api-products/{product_id}/invoke/snapshot",
         "/api/v1/api-products/{product_id}/invoke/chat",
         "/api/v1/admin/workspace-memberships/{target_subject_id}/access",
+        "/api/v1/admin/workspace-memberships/{target_subject_id}/change-requests",
+        "/api/v1/admin/workspace-memberships/{target_subject_id}/owned-tables",
         "/api/v1/admin/workspace-memberships/{target_subject_id}/role",
         "/api/v1/admin/workspace-memberships",
         "/api/v1/admin/access-roles",
@@ -258,6 +261,8 @@ def test_openapi_contains_all_required_product_modules() -> None:
         "/api/v1/admin/system-configuration/{system_id}",
         "/api/v1/admin/system-configuration/{system_id}/versions",
         "/api/v1/admin/system-configuration/{system_id}/test",
+        "/api/v1/admin/system-configuration/{system_id}/test-draft",
+        "/api/v1/admin/system-configuration/{system_id}/test-deployment",
         "/api/v1/admin/me",
         "/api/v1/admin/fallback/workspace-membership-access-requests",
         "/api/v1/admin/fallback/workspace-membership-access-requests/{access_request_id}/decisions",
@@ -375,6 +380,36 @@ def test_system_configuration_inventory_is_server_owned_and_redacted() -> None:
         ).activation_state
         == "NOT_CONFIGURED"
     )
+
+
+def test_deployment_probe_documents_use_only_server_owned_runtime_settings() -> None:
+    configured = Settings(
+        **(
+            settings().model_dump()
+            | {
+                "app_env": "development",
+                "local_ollama_chat_enabled": True,
+                "local_ollama_chat_base_url": "http://host.docker.internal:11434/v1",
+                "local_ollama_chat_model": "datariver-gemma4-dev:0.1",
+            }
+        )
+    )
+
+    datahub = _deployment_configuration_document(configured, "DATAHUB_GMS")
+    delivery = _deployment_configuration_document(configured, "REDIS_DELIVERY")
+    chat = _deployment_configuration_document(configured, "LLM_CHAT_MODEL")
+
+    assert datahub is not None
+    assert datahub["base_url"] == configured.datahub_base_url
+    assert datahub["secret_references"] == {"token": configured.datahub_secret_ref}
+    assert delivery is not None
+    assert delivery["url"] == configured.redis_delivery_url
+    assert delivery["secret_references"] == {"password": configured.redis_delivery_secret_ref}
+    assert chat is not None
+    assert chat["base_url"] == "http://host.docker.internal:11434/v1"
+    assert chat["model"] == "datariver-gemma4-dev:0.1"
+    assert chat["secret_references"] == {}
+    assert _deployment_configuration_document(configured, "LLM_RERANKER") is None
 
 
 def test_system_configuration_inventory_reads_only_current_and_activated_revisions() -> None:
@@ -717,8 +752,6 @@ def test_upload_preparation_openapi_is_typed_and_server_managed() -> None:
         "FORMAT_ONLY_V1",
         "CATALOG_METADATA_ROWS_CSV_V1",
         "CATALOG_METADATA_ROWS_XLSX_V1",
-        "DATASET_DESCRIPTION_CSV_V1",
-        "DATASET_DESCRIPTION_XLSX_V1",
     ]
 
     create = document["paths"]["/api/v1/uploads/{upload_id}/preparations"]["post"]
@@ -767,8 +800,6 @@ def test_typed_upload_template_is_an_authenticated_server_versioned_download() -
         parameter for parameter in operation["parameters"] if parameter["name"] == "content_profile"
     )
     assert set(profile["schema"]["enum"]) == {
-        "DATASET_DESCRIPTION_CSV_V1",
-        "DATASET_DESCRIPTION_XLSX_V1",
         "CATALOG_METADATA_ROWS_CSV_V1",
         "CATALOG_METADATA_ROWS_XLSX_V1",
     }
@@ -807,8 +838,6 @@ def test_upload_candidate_openapi_is_bounded_read_only_and_non_disclosing() -> N
         "ordinal",
         "candidate_hash",
         "id",
-        "evidence_version",
-        "candidate_kind",
         "proposed_description",
         "submitted_identity",
         "current_target",

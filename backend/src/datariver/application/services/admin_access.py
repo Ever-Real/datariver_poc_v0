@@ -7,6 +7,8 @@ from uuid import UUID
 from datariver.application.dto import (
     AdminAccessRequestPage,
     AdminReadContext,
+    MembershipChangeRequestActivityPage,
+    MembershipOwnedTablePage,
     MembershipRenewalPage,
     MembershipRenewalRecord,
     SystemAssigneePage,
@@ -147,24 +149,80 @@ class AdminAccessService:
         subject: SubjectAttributes,
         environment: EnvironmentAttributes,
         request_id: str,
+        idempotency_key: str,
+        request_hash: str,
     ) -> SystemDirectoryEntry:
-        await self._authorization.authorize(
+        decision = await self._authorization.authorize(
             subject=subject,
             resource=self._resource(workspace_id, workspace_id),
             action=Action.ADMIN_MANAGE,
             environment=environment,
             request_id=request_id,
         )
+        operation = "admin.system.create"
         async with self._uow_factory() as uow:
             await uow.set_security_context(workspace_id=workspace_id, subject_id=subject.subject_id)
+            await uow.lock_workspace_access(workspace_id=workspace_id)
             await uow.memberships.assert_eligible_human_administrators(
                 workspace_id=workspace_id, subject_ids=frozenset({subject.subject_id})
             )
+            existing = await uow.idempotency.get_result(
+                workspace_id=workspace_id,
+                key=idempotency_key,
+                operation=operation,
+            )
+            if existing is not None:
+                _verify_idempotency(
+                    existing.request_hash,
+                    request_hash,
+                    existing.result.get("actor_id"),
+                    subject.subject_id,
+                )
+                return SystemDirectoryEntry(
+                    system_id=UUID(str(existing.result["system_id"])),
+                    code=str(existing.result["code"]),
+                    name=str(existing.result["name"]),
+                    description=str(existing.result["description"]),
+                    active=True,
+                    version=int(existing.result["version"]),
+                )
             result = await uow.systems.create(
                 workspace_id=workspace_id,
-                code=code,
-                name=name,
-                description=description,
+                code=code.strip(),
+                name=name.strip(),
+                description=description.strip(),
+            )
+            await uow.outbox.add_events(
+                [
+                    DomainEvent.create(
+                        event_type="platform.data_system.created.v1",
+                        aggregate_type="data_system",
+                        aggregate_id=result.system_id,
+                        workspace_id=workspace_id,
+                        payload={
+                            "actor_id": str(subject.subject_id),
+                            "assurance": "HARDWARE_WEBAUTHN",
+                            "code": result.code,
+                            "policy_decision_id": str(decision.decision_id),
+                            "request_hash": request_hash,
+                            "version": result.version,
+                        },
+                    )
+                ]
+            )
+            await uow.idempotency.save_result(
+                workspace_id=workspace_id,
+                key=idempotency_key,
+                operation=operation,
+                request_hash=request_hash,
+                result={
+                    "actor_id": str(subject.subject_id),
+                    "system_id": str(result.system_id),
+                    "code": result.code,
+                    "name": result.name,
+                    "description": result.description,
+                    "version": result.version,
+                },
             )
             await uow.commit()
             return result
@@ -227,6 +285,124 @@ class AdminAccessService:
             if membership is None:
                 raise NotFoundError("The target workspace membership does not exist.")
             return membership
+
+    async def list_membership_change_request_activity(
+        self,
+        *,
+        workspace_id: UUID,
+        target_subject_id: UUID,
+        limit: int,
+        cursor: str | None,
+        subject: SubjectAttributes,
+        environment: EnvironmentAttributes,
+        request_id: str,
+    ) -> MembershipChangeRequestActivityPage:
+        _validate_admin_page_limit(limit)
+        await self._authorize_read(
+            workspace_id=workspace_id,
+            resource_id=target_subject_id,
+            subject=subject,
+            environment=environment,
+            request_id=request_id,
+        )
+        async with self._uow_factory() as uow:
+            await uow.set_security_context(workspace_id=workspace_id, subject_id=subject.subject_id)
+            await uow.memberships.assert_eligible_human_administrators(
+                workspace_id=workspace_id,
+                subject_ids=frozenset({subject.subject_id}),
+            )
+            page = await uow.memberships.list_change_request_activity(
+                workspace_id=workspace_id,
+                subject_id=target_subject_id,
+                limit=limit,
+                cursor=cursor,
+            )
+        visible = []
+        for item in page.items:
+            try:
+                await self._authorization.authorize(
+                    subject=subject,
+                    resource=ResourceAttributes(
+                        resource_id=item.change_request_id,
+                        workspace_id=workspace_id,
+                        resource_type="change_request",
+                        owner_department_id=None,
+                        system_id=None,
+                        domain_id=None,
+                        classification=item.classification,
+                        lifecycle="ACTIVE",
+                        owner_subject_id=item.requester_id,
+                    ),
+                    action=Action.CHANGE_READ,
+                    environment=environment,
+                    request_id=request_id,
+                )
+            except ForbiddenError:
+                continue
+            visible.append(item)
+        return MembershipChangeRequestActivityPage(
+            items=tuple(visible),
+            next_cursor=page.next_cursor,
+        )
+
+    async def list_membership_owned_tables(
+        self,
+        *,
+        workspace_id: UUID,
+        target_subject_id: UUID,
+        limit: int,
+        cursor: str | None,
+        subject: SubjectAttributes,
+        environment: EnvironmentAttributes,
+        request_id: str,
+    ) -> MembershipOwnedTablePage:
+        _validate_admin_page_limit(limit)
+        await self._authorize_read(
+            workspace_id=workspace_id,
+            resource_id=target_subject_id,
+            subject=subject,
+            environment=environment,
+            request_id=request_id,
+        )
+        async with self._uow_factory() as uow:
+            await uow.set_security_context(workspace_id=workspace_id, subject_id=subject.subject_id)
+            await uow.memberships.assert_eligible_human_administrators(
+                workspace_id=workspace_id,
+                subject_ids=frozenset({subject.subject_id}),
+            )
+            page = await uow.memberships.list_owned_tables(
+                workspace_id=workspace_id,
+                subject_id=target_subject_id,
+                limit=limit,
+                cursor=cursor,
+            )
+        visible = []
+        for item in page.items:
+            try:
+                await self._authorization.authorize(
+                    subject=subject,
+                    resource=ResourceAttributes(
+                        resource_id=item.asset_id,
+                        workspace_id=workspace_id,
+                        resource_type="TABLE",
+                        owner_department_id=item.owner_department_id,
+                        system_id=item.system_id,
+                        domain_id=item.domain_id,
+                        classification=item.classification,
+                        lifecycle="ACTIVE",
+                        owner_subject_id=target_subject_id,
+                    ),
+                    action=Action.CATALOG_READ,
+                    environment=environment,
+                    request_id=request_id,
+                )
+            except ForbiddenError:
+                continue
+            visible.append(item)
+        return MembershipOwnedTablePage(
+            items=tuple(visible),
+            next_cursor=page.next_cursor,
+        )
 
     async def get_own_workspace_membership(
         self,

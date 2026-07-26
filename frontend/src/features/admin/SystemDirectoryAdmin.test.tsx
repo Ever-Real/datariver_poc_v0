@@ -176,6 +176,46 @@ describe('SystemDirectoryAdmin', () => {
     expect(screen.getAllByText('New System').length).toBeGreaterThan(0)
     expect(screen.queryByText('Old System')).not.toBeInTheDocument()
   })
+
+  it('creates a system only after confirmation with one idempotency key', async () => {
+    const api = {
+      listSystemPage: vi.fn(() => Promise.resolve({ items: [], nextCursor: null, limit: 25 })),
+      listMembershipPage: vi.fn(() => Promise.resolve({ items: [], nextCursor: null, limit: 25 })),
+      listSystemAssigneePage: vi.fn(),
+      createSystem: vi.fn(() => Promise.resolve(system(
+        '00000000-0000-4000-8000-000000000799', 'CRM', 'Customer Data',
+      ))),
+    }
+    let pending: PendingAdminMutation | undefined
+    render(<SystemDirectoryAdmin
+      api={api as never}
+      context={{
+        subject_id: 'admin', workspace_id: 'workspace', display_name: 'Administrator',
+        authentication_assurance: 'HARDWARE_WEBAUTHN', fallback_enabled: false,
+        allowed_operations: ['SYSTEM_ASSIGNMENT_UPDATE'], action_vocabulary: [],
+      }}
+      messages={getAdminMessages('ko')}
+      requestConfirmation={(value) => { pending = value }}
+      keyFor={() => 'system-create-idempotency-key'}
+      clearKey={vi.fn()} reportError={vi.fn()}
+      onStepUp={vi.fn(() => Promise.resolve())}
+      onPasswordReauth={vi.fn(() => Promise.resolve())}
+      onEnroll={vi.fn(() => Promise.resolve())}
+    />)
+
+    fireEvent.click(await screen.findByRole('button', { name: '신규 시스템 추가' }))
+    fireEvent.change(screen.getByLabelText('시스템 코드'), { target: { value: 'CRM' } })
+    fireEvent.change(screen.getByLabelText('시스템 이름'), { target: { value: 'Customer Data' } })
+    fireEvent.change(screen.getByLabelText('설명'), { target: { value: 'Customer source' } })
+    fireEvent.click(screen.getByRole('button', { name: '생성' }))
+    expect(api.createSystem).not.toHaveBeenCalled()
+    expect(pending?.title).toBe('신규 시스템 생성')
+    await act(async () => { await pending?.execute() })
+    expect(api.createSystem).toHaveBeenCalledWith(
+      { code: 'CRM', name: 'Customer Data', description: 'Customer source' },
+      'system-create-idempotency-key',
+    )
+  })
 })
 
 function deferred<T>() {

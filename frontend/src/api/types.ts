@@ -1120,6 +1120,28 @@ export interface WorkspaceMembershipSummary {
   membership_version: number
 }
 
+export interface MembershipChangeRequestActivity {
+  change_request_id: string
+  number: string
+  title: string
+  request_type: string
+  state: string
+  relationship: 'REQUESTER' | 'APPROVER' | 'REQUESTER_AND_APPROVER'
+  classification: Classification
+  updated_at: string
+}
+
+export interface MembershipOwnedTable {
+  asset_id: string
+  name: string
+  platform: string | null
+  database_name: string | null
+  schema_name: string | null
+  classification: Classification
+  source_version: string
+  observed_at: string
+}
+
 export interface MembershipRenewalRequest {
   id: string
   workspace_id: string

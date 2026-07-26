@@ -106,7 +106,7 @@ describe('AdminPage mutation safety', () => {
     fireEvent.click(screen.getByRole('tab', { name: /시스템 설정|System settings/ }))
     expect(await screen.findByRole('heading', { name: 'Grafana Dashboard' })).toBeInTheDocument()
     expect(screen.getByText('배포 설정')).toBeInTheDocument()
-    expect(screen.getByText(/이 환경에서는 설정 YAML을 편집할 수 없습니다/)).toBeInTheDocument()
+    expect(screen.getByText(/이 환경에서는 설정을 직접 편집할 수 없습니다/)).toBeInTheDocument()
     fireEvent.click(screen.getByRole('tab', { name: /계정\/권한|Accounts & access/ }))
     fireEvent.click(within(screen.getByRole('tablist', { name: '계정/권한 관리 영역' })).getByRole('tab', { name: 'USERS' }))
     const update = await screen.findByRole('button', { name: /보안키로 직접 변경|Update with security key/ })

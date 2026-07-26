@@ -85,14 +85,14 @@ function enrichYamlWithComments(yaml: string, systemId: string): string {
   const commentMap: Record<string, Record<string, string>> = {
     LLM_CHAT_MODEL: {
       connection_mode: '# 로컬 Ollama: LOCAL_OLLAMA | 사내 서버: INTRANET_OPENAI_COMPATIBLE',
-      base_url: '# 예: http://host.docker.internal:11434 (로컬 Ollama)',
+      base_url: '# Docker 실행: http://host.docker.internal:11434/v1 | Host 실행: http://127.0.0.1:11434/v1',
       model: '# 예: llama3.1:8b (Ollama) 또는 gpt-4o-mini',
       timeout_seconds: '# 요청 타임아웃(초). 기본값: 120',
       context_tokens: '# 최대 컨텍스트 토큰 수. 기본값: 8192',
     },
     LLM_EMBEDDING: {
       connection_mode: '# LOCAL_OLLAMA 또는 INTRANET_OPENAI_COMPATIBLE',
-      base_url: '# 예: http://host.docker.internal:11434',
+      base_url: '# Docker 실행: http://host.docker.internal:11434/v1 | Host 실행: http://127.0.0.1:11434/v1',
       model: '# 예: nomic-embed-text:latest',
       dimensions: '# 임베딩 차원 수. 모델에 따라 다름 (예: 768, 1536)',
     },
@@ -121,7 +121,7 @@ function enrichYamlWithComments(yaml: string, systemId: string): string {
 
 function getPlaceholder(systemId: string, key: string): string {
   if (systemId === 'LLM_CHAT_MODEL' || systemId === 'LLM_EMBEDDING' || systemId === 'LLM_RERANKER') {
-    if (key === 'base_url') return 'http://host.docker.internal:11434 (로컬 Ollama)'
+    if (key === 'base_url') return 'http://host.docker.internal:11434/v1 (Docker → native Ollama)'
     if (key === 'model') return systemId === 'LLM_EMBEDDING' ? 'nomic-embed-text:latest' : 'llama3.1:8b'
   }
   return `${key} 입력`
@@ -130,7 +130,7 @@ function getPlaceholder(systemId: string, key: string): string {
 export function SystemConfigurationAdmin(props: AdminSectionProps) {
   const { api, context, reportError, requestConfirmation } = props
   const [items, setItems] = useState<SystemConfigurationEntry[]>([])
-  const [selectedId, setSelectedId] = useState<SystemConfigurationEntry['system_id'] | 'CORE_DASHBOARD' | undefined>('CORE_DASHBOARD')
+  const [selectedId, setSelectedId] = useState<SystemConfigurationEntry['system_id'] | 'CORE_DASHBOARD' | undefined>()
   const [draft, setDraft] = useState('')
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
@@ -153,8 +153,11 @@ export function SystemConfigurationAdmin(props: AdminSectionProps) {
       const next = await api.listSystemConfiguration(controller.signal)
       if (controller.signal.aborted || loadRequest.current.generation !== generation) return
       setItems(next)
-      setSelectedId((current) => current && (next.some((item) => item.system_id === current) || current === 'CORE_DASHBOARD')
-        ? current : next[0]?.system_id)
+      setSelectedId((current) => {
+        if (current === 'CORE_DASHBOARD' && next.some((item) => item.is_core)) return current
+        if (current && next.some((item) => item.system_id === current)) return current
+        return next.some((item) => item.is_core) ? 'CORE_DASHBOARD' : next[0]?.system_id
+      })
     } catch (next) {
       if (!controller.signal.aborted) { setError(next); reportError(next) }
     } finally {
@@ -246,10 +249,13 @@ export function SystemConfigurationAdmin(props: AdminSectionProps) {
       let result: SystemConfigurationTestResult
       if (itemToTest.activation_state === 'DEPLOYMENT_MANAGED') {
         // Core bootstrap systems (POSTGRESQL, OIDC_IDENTITY): probe via live deployment settings
-        result = await api.testBootstrapSystemConfiguration(itemToTest.system_id)
+        result = await api.testDeploymentSystemConfiguration(itemToTest.system_id)
+      } else if (isCurrentSelected && dirty) {
+        result = await api.testDraftSystemConfiguration(itemToTest.system_id, draft)
+      } else if (itemToTest.version > 0) {
+        result = await api.testSystemConfiguration(itemToTest.system_id)
       } else {
-        // Use draft if it's the currently selected item and it's dirty, else use the item's saved yaml (or template)
-        const yamlToTest = (isCurrentSelected && dirty) ? draft : (itemToTest.configuration_yaml || itemToTest.template_yaml || '')
+        const yamlToTest = itemToTest.configuration_yaml || itemToTest.template_yaml || ''
         result = await api.testDraftSystemConfiguration(itemToTest.system_id, yamlToTest)
       }
       if (isCurrentSelected) setTestResult(result)
@@ -257,10 +263,12 @@ export function SystemConfigurationAdmin(props: AdminSectionProps) {
         ...item,
         activation_state: item.activation_state === 'DEPLOYMENT_MANAGED'
           ? 'DEPLOYMENT_MANAGED'
+          : isCurrentSelected && dirty
+          ? item.activation_state
           : !item.runtime_supported
           ? 'RUNTIME_NOT_IMPLEMENTED'
           : result.status === 'AVAILABLE' ? 'TESTED' : 'TEST_NOT_AVAILABLE',
-        tested_version: isCurrentSelected && dirty ? item.version : result.configuration_version,
+        tested_version: isCurrentSelected && dirty ? item.tested_version : result.configuration_version,
         test_status: result.status,
         tested_at: result.tested_at,
       } : item))
@@ -270,7 +278,7 @@ export function SystemConfigurationAdmin(props: AdminSectionProps) {
     } finally { setTesting(false) }
   }
   
-  const testSavedConfiguration = testDraftConfiguration // Alias for compatibility with existing JSX if needed
+  const testSavedConfiguration = testDraftConfiguration
   const activate = () => {
     if (!selected || !canActivate || selected.activation_state !== 'TESTED') return
     requestConfirmation({
@@ -438,7 +446,7 @@ export function SystemConfigurationAdmin(props: AdminSectionProps) {
                       {item.test_status && <span className={`badge ${item.test_status === 'AVAILABLE' ? 'badge-soft' : 'badge-warning'}`}>{item.test_status}</span>}
                     </div>
                   </div>
-                  <button className="button button-secondary" disabled={testing} onClick={() => void testDraftConfiguration(item.system_id)} type="button">{testing ? '테스트 중...' : '연결 테스트'}</button>
+                  <button className="button button-secondary" disabled={testing || item.state !== 'CONFIGURED'} onClick={() => void testDraftConfiguration(item.system_id)} type="button">{testing ? '테스트 중...' : '연결 테스트'}</button>
                 </div>
               ))}
             </div>
@@ -451,7 +459,7 @@ export function SystemConfigurationAdmin(props: AdminSectionProps) {
           {llmSelected && (
             <div className="callout" style={{ fontSize: 11, marginBottom: 8 }}>
               <strong>🦙 로컬 Ollama 연결 방법</strong><br />
-              macOS에서 Ollama 앱을 native로 실행 중이라면 Docker 컨테이너에서 <code>http://host.docker.internal:11434</code> 주소로 접근할 수 있습니다.<br />
+              macOS의 native Ollama를 Docker API가 호출할 때는 <code>http://host.docker.internal:11434/v1</code>, <code>dev_host.sh</code>로 API도 host에서 실행할 때는 <code>http://127.0.0.1:11434/v1</code>을 사용합니다.<br />
               <strong>connection_mode</strong>는 <code>LOCAL_OLLAMA</code>로 설정하고, <strong>model</strong>은 <code>ollama list</code>로 확인한 모델명을 입력하세요.
             </div>
           )}
@@ -490,7 +498,7 @@ export function SystemConfigurationAdmin(props: AdminSectionProps) {
           </> : <p className="callout">이 환경에서는 설정을 직접 편집할 수 없습니다. 배포 설정과 승인 Provider profile을 사용하세요.</p>}
           {selected.display_yaml && <section className="rounded-enterprise border border-slate-300 bg-slate-50 p-3" aria-label={`${selected.label} 저장된 비밀 제외 설정`}><span className="eyebrow">저장된 설정 요약 (비밀값 제외)</span><pre className="m-0 overflow-auto whitespace-pre-wrap text-[11px] leading-5 text-slate-700">{selected.display_yaml}</pre><small className="mt-2 block text-[9px] text-slate-500">실제 실행 시크릿은 포함하지 않습니다.</small></section>}
           {testResult && <p className={`callout m-0 ${testResult.status === 'AVAILABLE' ? 'border-l-green-600' : 'border-l-amber-600'}`} role="status"><strong>{testResult.status}</strong> · {testResult.scope} · {testResult.latency_ms}ms<br />{testResult.detail}</p>}
-          {<div className="action-row"><button className="button button-secondary" disabled={selected.version === 0 || dirty || testing} title={selected.version === 0 ? '먼저 설정을 저장하세요.' : dirty ? '변경사항을 저장한 뒤 TEST하세요.' : '저장된 설정의 연결 상태를 확인합니다.'} onClick={() => void testSavedConfiguration()} type="button">{testing ? '연결 확인 중…' : '연결 테스트'}</button>{canUpdate && !selected.is_core && <><button className="button button-secondary" disabled={!canActivate || selected.activation_state !== 'TESTED'} title={!selected.runtime_supported ? '현재 아키텍처에 이 설정을 소비하는 런타임 어댑터가 없습니다.' : !canActivate ? '활성화에는 최근 보안키 인증이 필요합니다.' : 'TEST를 통과한 현재 버전만 활성화할 수 있습니다.'} onClick={activate} type="button">활성화</button><button className="button" disabled={!draft.trim() || saving || !dirty} onClick={save} type="button">{saving ? '저장 중…' : '저장'}</button></>}</div>}
+          {<div className="action-row"><button className="button button-secondary" disabled={(selected.version === 0 && selected.activation_state !== 'DEPLOYMENT_MANAGED') || dirty || testing || selected.state !== 'CONFIGURED'} title={selected.activation_state === 'DEPLOYMENT_MANAGED' ? '현재 서버가 사용하는 배포 설정을 고정 경로로 확인합니다.' : selected.version === 0 ? '먼저 설정을 저장하세요.' : dirty ? '변경사항을 저장한 뒤 TEST하세요.' : '저장된 설정의 연결 상태를 확인합니다.'} onClick={() => void testSavedConfiguration()} type="button">{testing ? '연결 확인 중…' : '연결 테스트'}</button>{canUpdate && !selected.is_core && <><button className="button button-secondary" disabled={!canActivate || selected.activation_state !== 'TESTED'} title={!selected.runtime_supported ? '현재 아키텍처에 이 설정을 소비하는 런타임 어댑터가 없습니다.' : !canActivate ? '활성화에는 최근 보안키 인증이 필요합니다.' : 'TEST를 통과한 현재 버전만 활성화할 수 있습니다.'} onClick={activate} type="button">활성화</button><button className="button" disabled={!draft.trim() || saving || !dirty} onClick={save} type="button">{saving ? '저장 중…' : '저장'}</button></>}</div>}
           {selected.activation_state === 'DEPLOYMENT_MANAGED' && <p className="callout m-0">이 연결은 배포 환경 변수와 secret 파일을 기준으로 적용됩니다.</p>}
           {selected.activation_state === 'ACTIVATED_RESTART_REQUIRED' && <p className="callout m-0">활성 버전이 저장되었지만 실행 중인 프로세스에 아직 적용되지 않았습니다. {restartInstruction}</p>}
           {selected.activation_state === 'APPLIED_TO_API_PROCESS' && selected.restart_scope === 'API_AND_WORKERS' && <p className="callout m-0">현재 API에 이 버전이 적용되었습니다. 관련 Worker도 동일한 설정으로 재시작하세요.</p>}

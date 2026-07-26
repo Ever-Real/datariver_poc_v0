@@ -65,6 +65,8 @@ from datariver.application.dto import (
     KnowledgeGraphRecord,
     KnowledgeReleaseRecord,
     ManualMetadataApplyAttemptEvidence,
+    MembershipChangeRequestActivityPage,
+    MembershipOwnedTablePage,
     MembershipRenewalPage,
     MembershipRenewalRecord,
     MultipartUpload,
@@ -866,6 +868,24 @@ class MembershipAccessRepository(Protocol):
         self, *, workspace_id: UUID, subject_id: UUID
     ) -> WorkspaceMembershipAccessRecord | None: ...
 
+    async def list_change_request_activity(
+        self,
+        *,
+        workspace_id: UUID,
+        subject_id: UUID,
+        limit: int,
+        cursor: str | None = None,
+    ) -> MembershipChangeRequestActivityPage: ...
+
+    async def list_owned_tables(
+        self,
+        *,
+        workspace_id: UUID,
+        subject_id: UUID,
+        limit: int,
+        cursor: str | None = None,
+    ) -> MembershipOwnedTablePage: ...
+
     async def apply(self, command: MembershipAccessUpdate) -> int: ...
 
     async def record_role_assignment(
@@ -971,7 +991,7 @@ class SystemDirectoryRepository(Protocol):
         code: str,
         name: str,
         description: str,
-    ) -> "SystemDirectoryEntry": ...
+    ) -> SystemDirectoryEntry: ...
 
 
 class AdminAccessUnitOfWork(Protocol):

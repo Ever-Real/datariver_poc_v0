@@ -88,9 +88,9 @@ fallbacks and browser-held credentials are never copied.
 - `UI-ADM-002`: Users and Systems are tabs in the administrator surface. Users uses the real
   membership list; selecting a user opens assigned/access facts and real CR/table counts. Creating
   an IdP user is not simulated.
-- `UI-ADM-003`: Systems uses the canonical system directory and version-fenced assignee replacement.
-  Schema scope, system create and delete controls name their missing typed contracts rather than
-  mutating browser state.
+- `UI-ADM-003`: Systems uses the canonical system directory, governed idempotent System creation
+  and version-fenced assignee replacement. Schema scope and delete controls still name their
+  missing typed contracts rather than mutating browser state.
 - `UI-ADM-004`: Metadata Change Log and Security Log share one Audit/Log entry and switch through
   internal tabs. Audit/Log and Dictionary render only when the server grants administrator context.
   Their tables do not synthesize records. Export or mutation is enabled only when a separately

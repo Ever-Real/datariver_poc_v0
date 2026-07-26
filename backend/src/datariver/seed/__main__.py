@@ -67,13 +67,7 @@ LOCAL_KEYCLOAK_SUBJECT = "00000000-0000-4000-8000-000000000001"
 LOCAL_KEYCLOAK_AIRFLOW_SUBJECT = "00000000-0000-4000-8000-000000000002"
 LOCAL_KEYCLOAK_REVIEWER_SUBJECT = "00000000-0000-4000-8000-000000000003"
 LOCAL_KEYCLOAK_VIEWER_SUBJECT = "00000000-0000-4000-8000-000000000004"
-LOCAL_KEYCLOAK_ENGINEER_SUBJECT = "00000000-0000-4000-8000-000000000005"
-LOCAL_KEYCLOAK_SCIENTIST_SUBJECT = "00000000-0000-4000-8000-000000000006"
-LOCAL_KEYCLOAK_ANALYST_SUBJECT = "00000000-0000-4000-8000-000000000007"
 VIEWER_SUBJECT_ID = stable_id("subject:local-datariver-seed-viewer")
-ENGINEER_SUBJECT_ID = stable_id("subject:local-datariver-seed-engineer")
-SCIENTIST_SUBJECT_ID = stable_id("subject:local-datariver-seed-scientist")
-ANALYST_SUBJECT_ID = stable_id("subject:local-datariver-seed-analyst")
 ADMINISTRATOR_ACTIONS = tuple(
     action.value for action in Action if action is not Action.CHANGE_RAW_CREATE
 )
@@ -304,58 +298,60 @@ async def apply_pack(
         for document in seed_operation_ledger(pack)
     ]
     session.add_all(operations)
-    session.add_all([
-        ChangeSetModel(
-            id=UUID("11111111-1111-1111-1111-111111111111"),
-            workspace_id=WORKSPACE_ID,
-            graph_id=GRAPH_ID,
-            base_release_id=RELEASE_ID,
-            ontology_version_id=ONTOLOGY_ID,
-            title="Update customer masking policy (Draft)",
-            state="DRAFT",
-            author_id=SUBJECT_ID,
-            version=1,
-        ),
-        ChangeSetModel(
-            id=UUID("22222222-2222-2222-2222-222222222222"),
-            workspace_id=WORKSPACE_ID,
-            graph_id=GRAPH_ID,
-            base_release_id=RELEASE_ID,
-            ontology_version_id=ONTOLOGY_ID,
-            title="Add standard properties for Supplier (Pending)",
-            state="PENDING_REVIEW",
-            author_id=SUBJECT_ID,
-            version=1,
-        ),
-        ChangeSetModel(
-            id=UUID("33333333-3333-3333-3333-333333333333"),
-            workspace_id=WORKSPACE_ID,
-            graph_id=GRAPH_ID,
-            base_release_id=RELEASE_ID,
-            ontology_version_id=ONTOLOGY_ID,
-            title="Approve regional mapping adjustment",
-            state="APPROVED",
-            author_id=SUBJECT_ID,
-            reviewed_by=REVIEWER_SUBJECT_ID,
-            reviewed_at=now,
-            review_reason="Looks good to me.",
-            version=2,
-        ),
-        ChangeSetModel(
-            id=UUID("44444444-4444-4444-4444-444444444444"),
-            workspace_id=WORKSPACE_ID,
-            graph_id=GRAPH_ID,
-            base_release_id=RELEASE_ID,
-            ontology_version_id=ONTOLOGY_ID,
-            title="Reject invalid transaction classification",
-            state="REJECTED",
-            author_id=SUBJECT_ID,
-            reviewed_by=REVIEWER_SUBJECT_ID,
-            reviewed_at=now,
-            review_reason="Fails basic security invariants.",
-            version=2,
-        )
-    ])
+    session.add_all(
+        [
+            ChangeSetModel(
+                id=UUID("11111111-1111-1111-1111-111111111111"),
+                workspace_id=WORKSPACE_ID,
+                graph_id=GRAPH_ID,
+                base_release_id=RELEASE_ID,
+                ontology_version_id=ONTOLOGY_ID,
+                title="Update customer masking policy (Draft)",
+                state="DRAFT",
+                author_id=SUBJECT_ID,
+                version=1,
+            ),
+            ChangeSetModel(
+                id=UUID("22222222-2222-2222-2222-222222222222"),
+                workspace_id=WORKSPACE_ID,
+                graph_id=GRAPH_ID,
+                base_release_id=RELEASE_ID,
+                ontology_version_id=ONTOLOGY_ID,
+                title="Add standard properties for Supplier (Pending)",
+                state="PENDING_REVIEW",
+                author_id=SUBJECT_ID,
+                version=1,
+            ),
+            ChangeSetModel(
+                id=UUID("33333333-3333-3333-3333-333333333333"),
+                workspace_id=WORKSPACE_ID,
+                graph_id=GRAPH_ID,
+                base_release_id=RELEASE_ID,
+                ontology_version_id=ONTOLOGY_ID,
+                title="Approve regional mapping adjustment",
+                state="APPROVED",
+                author_id=SUBJECT_ID,
+                reviewed_by=REVIEWER_SUBJECT_ID,
+                reviewed_at=now,
+                review_reason="Looks good to me.",
+                version=2,
+            ),
+            ChangeSetModel(
+                id=UUID("44444444-4444-4444-4444-444444444444"),
+                workspace_id=WORKSPACE_ID,
+                graph_id=GRAPH_ID,
+                base_release_id=RELEASE_ID,
+                ontology_version_id=ONTOLOGY_ID,
+                title="Reject invalid transaction classification",
+                state="REJECTED",
+                author_id=SUBJECT_ID,
+                reviewed_by=REVIEWER_SUBJECT_ID,
+                reviewed_at=now,
+                review_reason="Fails basic security invariants.",
+                version=2,
+            ),
+        ]
+    )
     await session.flush()
     persisted_nodes = list(
         (
@@ -879,167 +875,6 @@ async def _ensure_identity(session: AsyncSession, *, settings: Settings) -> None
         viewer_membership.clearance = int(Classification.INTERNAL)
         viewer_membership.attributes = viewer_attributes
         viewer_membership.active = True
-
-    # --- 더미 사용자: 최지훈 (Data Engineer) ---
-    engineer_subject = await session.scalar(
-        select(SubjectModel).where(
-            SubjectModel.issuer == settings.oidc_issuer,
-            SubjectModel.external_subject == LOCAL_KEYCLOAK_ENGINEER_SUBJECT,
-        )
-    )
-    if engineer_subject is None:
-        engineer_subject = SubjectModel(
-            id=ENGINEER_SUBJECT_ID,
-            issuer=settings.oidc_issuer,
-            external_subject=LOCAL_KEYCLOAK_ENGINEER_SUBJECT,
-            display_name="최지훈 (Data Engineer)",
-            active=True,
-        )
-        session.add(engineer_subject)
-        await session.flush()
-    engineer_membership = await session.get(
-        WorkspaceMembershipModel,
-        {"workspace_id": WORKSPACE_ID, "subject_id": engineer_subject.id},
-    )
-    engineer_attributes = {
-        "groups": ["data-engineers"],
-        "allowed_actions": [
-            Action.CATALOG_READ.value,
-            Action.CATALOG_SEARCH.value,
-            Action.CATALOG_SYNC.value,
-            Action.CHANGE_CREATE.value,
-            Action.KG_READ.value,
-        ],
-        "denied_actions": [],
-        "allowed_system_ids": [str(SYSTEM_ID)],
-        "allowed_domain_ids": [str(DOMAIN_ID)],
-        "seed_namespace": SEED_NAMESPACE,
-    }
-    if engineer_membership is None:
-        session.add(
-            WorkspaceMembershipModel(
-                workspace_id=WORKSPACE_ID,
-                subject_id=engineer_subject.id,
-                department_id=None,
-                job_function="DATA_ENGINEER",
-                clearance=int(Classification.RESTRICTED),
-                attributes=engineer_attributes,
-                active=True,
-                access_expires_at=add_calendar_months(utc_now(), 6),
-            )
-        )
-    else:
-        engineer_membership.job_function = "DATA_ENGINEER"
-        engineer_membership.clearance = int(Classification.RESTRICTED)
-        engineer_membership.attributes = engineer_attributes
-        engineer_membership.active = True
-
-    # --- 더미 사용자: 한수아 (Data Scientist) ---
-    scientist_subject = await session.scalar(
-        select(SubjectModel).where(
-            SubjectModel.issuer == settings.oidc_issuer,
-            SubjectModel.external_subject == LOCAL_KEYCLOAK_SCIENTIST_SUBJECT,
-        )
-    )
-    if scientist_subject is None:
-        scientist_subject = SubjectModel(
-            id=SCIENTIST_SUBJECT_ID,
-            issuer=settings.oidc_issuer,
-            external_subject=LOCAL_KEYCLOAK_SCIENTIST_SUBJECT,
-            display_name="한수아 (Data Scientist)",
-            active=True,
-        )
-        session.add(scientist_subject)
-        await session.flush()
-    scientist_membership = await session.get(
-        WorkspaceMembershipModel,
-        {"workspace_id": WORKSPACE_ID, "subject_id": scientist_subject.id},
-    )
-    scientist_attributes = {
-        "groups": ["data-scientists"],
-        "allowed_actions": [
-            Action.CATALOG_READ.value,
-            Action.CATALOG_SEARCH.value,
-            Action.CHANGE_READ.value,
-            Action.KG_READ.value,
-        ],
-        "denied_actions": [],
-        "allowed_system_ids": [str(SYSTEM_ID)],
-        "allowed_domain_ids": [str(DOMAIN_ID)],
-        "seed_namespace": SEED_NAMESPACE,
-    }
-    if scientist_membership is None:
-        session.add(
-            WorkspaceMembershipModel(
-                workspace_id=WORKSPACE_ID,
-                subject_id=scientist_subject.id,
-                department_id=None,
-                job_function="DATA_SCIENTIST",
-                clearance=int(Classification.INTERNAL),
-                attributes=scientist_attributes,
-                active=True,
-                access_expires_at=add_calendar_months(utc_now(), 6),
-            )
-        )
-    else:
-        scientist_membership.job_function = "DATA_SCIENTIST"
-        scientist_membership.clearance = int(Classification.INTERNAL)
-        scientist_membership.attributes = scientist_attributes
-        scientist_membership.active = True
-
-    # --- 더미 사용자: 오민재 (Catalog Analyst) ---
-    analyst_subject = await session.scalar(
-        select(SubjectModel).where(
-            SubjectModel.issuer == settings.oidc_issuer,
-            SubjectModel.external_subject == LOCAL_KEYCLOAK_ANALYST_SUBJECT,
-        )
-    )
-    if analyst_subject is None:
-        analyst_subject = SubjectModel(
-            id=ANALYST_SUBJECT_ID,
-            issuer=settings.oidc_issuer,
-            external_subject=LOCAL_KEYCLOAK_ANALYST_SUBJECT,
-            display_name="오민재 (Catalog Analyst)",
-            active=True,
-        )
-        session.add(analyst_subject)
-        await session.flush()
-    analyst_membership = await session.get(
-        WorkspaceMembershipModel,
-        {"workspace_id": WORKSPACE_ID, "subject_id": analyst_subject.id},
-    )
-    analyst_attributes = {
-        "groups": ["catalog-analysts"],
-        "allowed_actions": [
-            Action.CATALOG_READ.value,
-            Action.CATALOG_SEARCH.value,
-            Action.KG_READ.value,
-            Action.CHANGE_CREATE.value,
-            Action.CHANGE_REVIEW.value,
-        ],
-        "denied_actions": [],
-        "allowed_system_ids": [str(SYSTEM_ID)],
-        "allowed_domain_ids": [str(DOMAIN_ID)],
-        "seed_namespace": SEED_NAMESPACE,
-    }
-    if analyst_membership is None:
-        session.add(
-            WorkspaceMembershipModel(
-                workspace_id=WORKSPACE_ID,
-                subject_id=analyst_subject.id,
-                department_id=None,
-                job_function="CATALOG_ANALYST",
-                clearance=int(Classification.INTERNAL),
-                attributes=analyst_attributes,
-                active=True,
-                access_expires_at=add_calendar_months(utc_now(), 6),
-            )
-        )
-    else:
-        analyst_membership.job_function = "CATALOG_ANALYST"
-        analyst_membership.clearance = int(Classification.INTERNAL)
-        analyst_membership.attributes = analyst_attributes
-        analyst_membership.active = True
 
 
 async def _append_seed_event(session: AsyncSession, event_type: str, content_hash: str) -> None:

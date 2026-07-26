@@ -21,6 +21,8 @@ import type {
   IdentityUserProvisionResult,
   MembershipAccessDocument,
   MembershipAccessUpdateResult,
+  MembershipChangeRequestActivity,
+  MembershipOwnedTable,
   MembershipRenewalRequest,
   MembershipRoleAssignmentResult,
   RetentionDataClass,
@@ -112,11 +114,41 @@ export class AdminApi {
     }
   }
 
-  async createSystem(payload: { code: string; name: string; description: string }): Promise<SystemDirectoryEntry> {
+  async createSystem(
+    payload: { code: string; name: string; description: string },
+    idempotencyKey: string,
+  ): Promise<SystemDirectoryEntry> {
     return this.client.request<SystemDirectoryEntry>('/admin/systems', {
       method: 'POST',
+      idempotencyKey,
       body: JSON.stringify(payload),
     })
+  }
+
+  async listMembershipChangeRequestActivity(
+    subjectId: string,
+    cursor?: string,
+    signal?: AbortSignal,
+  ): Promise<AdminCursorPage<MembershipChangeRequestActivity>> {
+    const parameters = new URLSearchParams({ limit: '25' })
+    if (cursor) parameters.set('cursor', cursor)
+    return adminCursorPage(await this.client.request<AdminPageResponse<MembershipChangeRequestActivity>>(
+      `/admin/workspace-memberships/${encodeURIComponent(subjectId)}/change-requests?${parameters.toString()}`,
+      { signal },
+    ))
+  }
+
+  async listMembershipOwnedTables(
+    subjectId: string,
+    cursor?: string,
+    signal?: AbortSignal,
+  ): Promise<AdminCursorPage<MembershipOwnedTable>> {
+    const parameters = new URLSearchParams({ limit: '25' })
+    if (cursor) parameters.set('cursor', cursor)
+    return adminCursorPage(await this.client.request<AdminPageResponse<MembershipOwnedTable>>(
+      `/admin/workspace-memberships/${encodeURIComponent(subjectId)}/owned-tables?${parameters.toString()}`,
+      { signal },
+    ))
   }
 
   provisionIdentityUser(payload: IdentityUserProvisionInput, idempotencyKey: string) {
@@ -366,9 +398,9 @@ export class AdminApi {
     )
   }
 
-  testBootstrapSystemConfiguration(systemId: string) {
+  testDeploymentSystemConfiguration(systemId: string) {
     return this.client.request<SystemConfigurationTestResult>(
-      `/admin/system-configuration/${encodeURIComponent(systemId)}/test-bootstrap`,
+      `/admin/system-configuration/${encodeURIComponent(systemId)}/test-deployment`,
       { method: 'POST' },
     )
   }
