@@ -38,6 +38,7 @@ EXPECTED_SERVICE_SECRETS = {
     "api": {
         "postgres_app_password",
         "redis_cache_password",
+        "redis_delivery_password",
         "datahub_token",
         "intranet_llm_chat_api_key",
         "intranet_llm_embedding_api_key",
