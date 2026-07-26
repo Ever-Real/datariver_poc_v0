@@ -10,6 +10,7 @@ from pathlib import Path
 import pytest
 
 from datariver.bootstrap import LOCAL_DEMO_IDENTITIES, _local_demo_identities
+from datariver.domain.authz import Action
 
 
 def _copy_bootstrap_fixture(source_root: Path, target_root: Path) -> None:
@@ -73,6 +74,12 @@ def test_local_demo_identities_match_keycloak_and_use_balanced_human_roles(
             }
         ]
         assert demo.allowed_actions
+    actions_by_username = {
+        demo.username: frozenset(demo.allowed_actions) for demo in LOCAL_DEMO_IDENTITIES
+    }
+    assert Action.CHAT_QUERY in actions_by_username["minjae.oh"]
+    assert Action.CHAT_QUERY not in actions_by_username["jihoon.choi"]
+    assert Action.CHAT_QUERY not in actions_by_username["sua.han"]
 
     state_path = tmp_path / "local-demo-identities.json"
     provider_subjects = {

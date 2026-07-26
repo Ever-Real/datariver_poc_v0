@@ -93,6 +93,7 @@ LOCAL_DEMO_IDENTITIES = (
         allowed_actions=(
             Action.CATALOG_READ,
             Action.CATALOG_SEARCH,
+            Action.CHAT_QUERY,
             Action.CHANGE_READ,
             Action.KG_READ,
         ),
