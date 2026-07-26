@@ -70,6 +70,29 @@ def test_default_governance_worker_is_the_seeded_airflow_service_subject() -> No
     assert settings().governance_worker_subject_id == LOCAL_AIRFLOW_SUBJECT_ID
 
 
+def test_development_admin_password_bypass_is_explicit_and_fail_closed() -> None:
+    configured = settings(
+        admin_password_fallback_enabled=True,
+        development_admin_password_bypass_enabled=True,
+    )
+    assert configured.development_admin_password_bypass_enabled is True
+
+    with pytest.raises(ValidationError, match="development-only"):
+        settings(
+            app_env="test",
+            admin_password_fallback_enabled=True,
+            development_admin_password_bypass_enabled=True,
+        )
+    with pytest.raises(ValidationError, match="governed password fallback"):
+        settings(development_admin_password_bypass_enabled=True)
+    with pytest.raises(ValidationError, match="hardware WebAuthn"):
+        settings(
+            oidc_hardware_webauthn_enabled=True,
+            admin_password_fallback_enabled=True,
+            development_admin_password_bypass_enabled=True,
+        )
+
+
 def test_rejects_shared_redis_service_even_when_database_numbers_differ() -> None:
     with pytest.raises(ValidationError, match="separate Redis service origins"):
         settings(valkey_queue_url="redis://cache:6379/1")

@@ -46,10 +46,15 @@ def _remediation_kind(
 
 class AuthorizationService:
     def __init__(
-        self, *, decision_writer: DecisionWriter, engine: BuiltinPolicyEngine | None = None
+        self,
+        *,
+        decision_writer: DecisionWriter,
+        engine: BuiltinPolicyEngine | None = None,
+        development_admin_password_bypass_enabled: bool = False,
     ) -> None:
         self._decision_writer = decision_writer
         self._engine = engine or BuiltinPolicyEngine()
+        self._development_admin_password_bypass_enabled = development_admin_password_bypass_enabled
 
     async def authorize(
         self,
@@ -66,6 +71,23 @@ class AuthorizationService:
             action=action,
             environment=environment,
         )
+        if self._can_apply_development_admin_password_bypass(
+            subject=subject,
+            action=action,
+            decision=decision,
+            environment=environment,
+        ):
+            decision = Decision(
+                decision_id=decision.decision_id,
+                effect=Effect.ALLOW,
+                reason_codes=("DEVELOPMENT_PASSWORD_BYPASS",),
+                policy_versions=(
+                    *decision.policy_versions,
+                    "development-admin-password-bypass-v1",
+                ),
+                authentication_assurance=subject.authentication_assurance,
+                authentication_time=subject.authentication_time,
+            )
         await self._decision_writer.append_decision(
             decision=decision,
             subject_id=subject.subject_id,
@@ -87,6 +109,32 @@ class AuthorizationService:
                 details=details,
             )
         return decision
+
+    def _can_apply_development_admin_password_bypass(
+        self,
+        *,
+        subject: SubjectAttributes,
+        action: Action,
+        decision: Decision,
+        environment: EnvironmentAttributes,
+    ) -> bool:
+        return (
+            self._development_admin_password_bypass_enabled
+            and action is Action.ADMIN_MANAGE
+            and not decision.allowed
+            and bool(decision.reason_codes)
+            and set(decision.reason_codes).issubset(AUTHENTICATION_DENIAL_REASONS)
+            and subject.authentication_assurance
+            in {
+                AuthenticationAssurance.PASSWORD,
+                AuthenticationAssurance.PASSWORD_REAUTH,
+            }
+            and subject.authentication_time is not None
+            and subject.authentication_time
+            <= environment.requested_at + environment.maximum_clock_skew
+            and environment.requested_at - subject.authentication_time
+            <= environment.maximum_authentication_age
+        )
 
     async def can_review_quarantined_catalog(
         self,

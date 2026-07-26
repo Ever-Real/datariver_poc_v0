@@ -133,6 +133,10 @@ equivalent least-privilege roles.
 - `IDENTITY_ADMIN_*` enables the bounded IdP provisioning adapter only when its dedicated
   service-account secret reference is mounted.
 - `ADMIN_PASSWORD_FALLBACK_*` is a separately governed recovery workflow, not a WebAuthn bypass.
+- `DEVELOPMENT_ADMIN_PASSWORD_BYPASS_ENABLED` defaults false and is accepted only with
+  `APP_ENV=development`, the governed password-fallback switch enabled and hardware WebAuthn
+  disabled. It is a visible, fresh-password `admin.manage` test exception; it never asserts
+  WebAuthn or overrides a non-authentication ABAC denial.
 
 ### Catalog and workflow systems
 
@@ -184,6 +188,31 @@ Then reference the Composition profile and any enabled Embedding/Reranker profil
 classification rule, and place the resulting three version UUIDs in the selected environment. Do
 not copy a single profile UUID across stages: the route and model identities are deliberately
 different. Connection probes work without these UUIDs, but governed evidence egress does not.
+
+For an isolated development profile with two local human administrators, initialize the exact
+three profiles plus active classification/retention contracts explicitly after the runtime
+adapters have passed their real probes:
+
+```bash
+./scripts/bootstrap_local_governed_chat.py \
+  --env-file .env.mac-development \
+  --jurisdiction <approved-local-jurisdiction> \
+  --region <approved-local-region> \
+  --attestation-evidence-reference <actual-probe-evidence-reference> \
+  --attestation-valid-days <1-365> \
+  --restricted-search-grant-maximum-days <1-365> \
+  --completed-operation-days <1-3650> \
+  --chat-content-days <1-3650> \
+  --audit-online-months <1-120> \
+  --immutable-archive-years <1-100>
+```
+
+The command uses the currently selected model/endpoint/adapter identities; none of those values is
+an argument or a source default. It refuses incomplete stages and differing active policies. On
+success it writes only the returned three profile UUIDs and
+`CHAT_EPHEMERAL_ADMIN_WITHOUT_RETENTION_ENABLED=false` to the selected ignored environment.
+Apply them with the normal update/restart workflow. The four retention values are local
+development acceptance inputs, not a production retention approval.
 
 ### Retention and observability
 
@@ -315,6 +344,7 @@ IDENTITY_PASSWORD_CHANGE_ACTION_ENABLED
 HIGH_RISK_AUTH_MAX_AGE_SECONDS
 ADMIN_PASSWORD_FALLBACK_ENABLED
 ADMIN_PASSWORD_FALLBACK_TTL_SECONDS
+DEVELOPMENT_ADMIN_PASSWORD_BYPASS_ENABLED
 SYSTEM_CONFIGURATION_PROBE_ALLOWED_HOSTS
 ```
 

@@ -49,7 +49,12 @@ def _service(request: Request) -> RetentionGovernanceService:
     container = get_container(request)
     return RetentionGovernanceService(
         lambda: SqlRetentionUnitOfWork(container.database.session_factory),
-        AuthorizationService(decision_writer=SqlDecisionWriter(container.database.session_factory)),
+        AuthorizationService(
+            decision_writer=SqlDecisionWriter(container.database.session_factory),
+            development_admin_password_bypass_enabled=(
+                container.settings.development_admin_password_bypass_enabled
+            ),
+        ),
     )
 
 

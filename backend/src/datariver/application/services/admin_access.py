@@ -61,6 +61,7 @@ class AdminAccessService:
         *,
         fallback_enabled: bool,
         fallback_ttl_seconds: int,
+        development_admin_password_bypass_enabled: bool = False,
         development_system_configuration_enabled: bool = False,
         identity_administration_enabled: bool = False,
     ) -> None:
@@ -68,6 +69,7 @@ class AdminAccessService:
         self._authorization = authorization
         self._fallback_enabled = fallback_enabled
         self._fallback_ttl = timedelta(seconds=fallback_ttl_seconds)
+        self._development_admin_password_bypass_enabled = development_admin_password_bypass_enabled
         self._development_system_configuration_enabled = development_system_configuration_enabled
         self._identity_administration_enabled = identity_administration_enabled
 
@@ -201,7 +203,7 @@ class AdminAccessService:
                         workspace_id=workspace_id,
                         payload={
                             "actor_id": str(subject.subject_id),
-                            "assurance": "HARDWARE_WEBAUTHN",
+                            "assurance": subject.authentication_assurance.value,
                             "code": result.code,
                             "policy_decision_id": str(decision.decision_id),
                             "request_hash": request_hash,
@@ -464,9 +466,19 @@ class AdminAccessService:
                     AdminOperation.ERASURE_READ,
                 ]
             )
-        if (
+        direct_mutation_assurance = (
             subject.authentication_assurance is AuthenticationAssurance.HARDWARE_WEBAUTHN
-            and _authentication_is_fresh(subject=subject, environment=environment)
+            or (
+                self._development_admin_password_bypass_enabled
+                and subject.authentication_assurance
+                in {
+                    AuthenticationAssurance.PASSWORD,
+                    AuthenticationAssurance.PASSWORD_REAUTH,
+                }
+            )
+        )
+        if direct_mutation_assurance and _authentication_is_fresh(
+            subject=subject, environment=environment
         ):
             operations.extend(
                 [
@@ -844,7 +856,7 @@ class AdminAccessService:
                             "payload_hash": command.payload_hash,
                             "membership_version": membership_version,
                             "policy_decision_id": str(decision.decision_id),
-                            "assurance": "HARDWARE_WEBAUTHN",
+                            "assurance": subject.authentication_assurance.value,
                         },
                     )
                 ]
@@ -915,7 +927,7 @@ class AdminAccessService:
                             "payload_hash": command.payload_hash,
                             "system_version": system_version,
                             "policy_decision_id": str(decision.decision_id),
-                            "assurance": "HARDWARE_WEBAUTHN",
+                            "assurance": subject.authentication_assurance.value,
                         },
                     )
                 ]
@@ -986,7 +998,7 @@ class AdminAccessService:
                             "payload_hash": command.payload_hash,
                             "system_version": system_version,
                             "policy_decision_id": str(decision.decision_id),
-                            "assurance": "HARDWARE_WEBAUTHN",
+                            "assurance": subject.authentication_assurance.value,
                         },
                     )
                 ]

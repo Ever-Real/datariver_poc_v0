@@ -517,3 +517,85 @@ async def test_non_authentication_denial_does_not_offer_misleading_remediation()
         )
 
     assert "remediation" not in captured.value.details
+
+
+@pytest.mark.parametrize(
+    "assurance",
+    [AuthenticationAssurance.PASSWORD, AuthenticationAssurance.PASSWORD_REAUTH],
+)
+async def test_development_admin_password_bypass_preserves_actual_assurance(
+    assurance: AuthenticationAssurance,
+) -> None:
+    subject, resource, environment = make_context(action=Action.ADMIN_MANAGE)
+    subject = replace(
+        subject,
+        authentication_assurance=assurance,
+        authentication_time=environment.requested_at - timedelta(seconds=10),
+    )
+    writer = BatchDecisionWriter()
+
+    decision = await AuthorizationService(
+        decision_writer=writer,
+        development_admin_password_bypass_enabled=True,
+    ).authorize(
+        subject=subject,
+        resource=resource,
+        action=Action.ADMIN_MANAGE,
+        environment=environment,
+        request_id="development-admin-password-bypass",
+    )
+
+    assert decision.allowed
+    assert decision.authentication_assurance is assurance
+    assert decision.reason_codes == ("DEVELOPMENT_PASSWORD_BYPASS",)
+    assert "development-admin-password-bypass-v1" in decision.policy_versions
+
+
+async def test_development_admin_password_bypass_never_overrides_other_denials() -> None:
+    subject, resource, environment = make_context(action=Action.ADMIN_MANAGE)
+    password_subject = replace(
+        subject,
+        authentication_assurance=AuthenticationAssurance.PASSWORD,
+        authentication_time=environment.requested_at - timedelta(seconds=10),
+    )
+    candidates = (
+        (
+            replace(
+                password_subject,
+                authentication_assurance=AuthenticationAssurance.OTHER_MFA,
+            ),
+            resource,
+        ),
+        (replace(password_subject, authentication_time=None), resource),
+        (
+            replace(
+                password_subject,
+                authentication_time=environment.requested_at
+                - environment.maximum_authentication_age
+                - timedelta(seconds=1),
+            ),
+            resource,
+        ),
+        (replace(password_subject, active=False), resource),
+        (
+            replace(
+                password_subject,
+                denied_actions=frozenset({Action.ADMIN_MANAGE}),
+            ),
+            resource,
+        ),
+        (password_subject, replace(resource, workspace_id=uuid4())),
+    )
+
+    for candidate_subject, candidate_resource in candidates:
+        with pytest.raises(ForbiddenError):
+            await AuthorizationService(
+                decision_writer=BatchDecisionWriter(),
+                development_admin_password_bypass_enabled=True,
+            ).authorize(
+                subject=candidate_subject,
+                resource=candidate_resource,
+                action=Action.ADMIN_MANAGE,
+                environment=environment,
+                request_id="development-admin-password-bypass-deny",
+            )

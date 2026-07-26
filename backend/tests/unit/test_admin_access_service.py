@@ -667,13 +667,22 @@ def _membership_record(subject_id: UUID, display_name: str) -> WorkspaceMembersh
     )
 
 
-def _service(state: dict[str, object], *, enabled: bool = True) -> AdminAccessService:
+def _service(
+    state: dict[str, object],
+    *,
+    enabled: bool = True,
+    development_admin_password_bypass_enabled: bool = False,
+) -> AdminAccessService:
     factory = cast(Callable[[], AdminAccessUnitOfWork], lambda: MemoryAdminAccessUnitOfWork(state))
     return AdminAccessService(
         factory,
-        AuthorizationService(decision_writer=MemoryDecisionWriter()),
+        AuthorizationService(
+            decision_writer=MemoryDecisionWriter(),
+            development_admin_password_bypass_enabled=(development_admin_password_bypass_enabled),
+        ),
         fallback_enabled=enabled,
         fallback_ttl_seconds=300,
+        development_admin_password_bypass_enabled=(development_admin_password_bypass_enabled),
     )
 
 
@@ -1013,6 +1022,59 @@ async def test_system_creation_is_hardware_gated_idempotent_and_audited() -> Non
             idempotency_key="system-create-idempotency-0001",
             request_hash="f" * 64,
         )
+
+
+@pytest.mark.asyncio
+async def test_development_password_bypass_exposes_and_audits_direct_system_mutation() -> None:
+    workspace_id, target_id, administrator_id, other_admin_id = (uuid4() for _ in range(4))
+    now = datetime.now(UTC)
+    state = _state(workspace_id, target_id, administrator_id, other_admin_id)
+    cast(dict[UUID, WorkspaceMembershipAccessRecord], state["membership_records"])[
+        administrator_id
+    ] = _membership_record(administrator_id, "Administrator")
+    service = _service(
+        state,
+        enabled=True,
+        development_admin_password_bypass_enabled=True,
+    )
+    subject = _administrator(
+        workspace_id,
+        administrator_id,
+        assurance=AuthenticationAssurance.PASSWORD,
+        now=now,
+    )
+    environment = EnvironmentAttributes(requested_at=now)
+
+    context = await service.get_admin_read_context(
+        workspace_id=workspace_id,
+        subject=subject,
+        environment=environment,
+        request_id="development-admin-context",
+    )
+    assert AdminOperation.SYSTEM_ASSIGNMENT_UPDATE in context.allowed_operations
+
+    created = await service.create_system(
+        workspace_id=workspace_id,
+        code="DEV",
+        name="Development System",
+        description="Local E2E only",
+        subject=subject,
+        environment=environment,
+        request_id="development-system-create",
+        idempotency_key="development-system-create-0001",
+        request_hash=canonical_json_hash(
+            {
+                "operation": "admin.system.create",
+                "code": "DEV",
+                "name": "Development System",
+                "description": "Local E2E only",
+            }
+        ),
+    )
+
+    assert created.code == "DEV"
+    events = cast(list[DomainEvent], state["outbox"])
+    assert events[-1].payload["assurance"] == "PASSWORD"
 
 
 @pytest.mark.asyncio

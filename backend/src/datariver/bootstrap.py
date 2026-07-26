@@ -68,8 +68,11 @@ LOCAL_DEMO_IDENTITIES = (
         email="sua.han@localhost.invalid",
         job_function="DATA_STEWARD",
         clearance=Classification.RESTRICTED,
-        groups=("data-stewards",),
+        # The local profile needs two independent eligible humans for
+        # governed maker/checker initialization. This remains local-only.
+        groups=("data-stewards", "security-administrators"),
         allowed_actions=(
+            Action.ADMIN_MANAGE,
             Action.CATALOG_READ,
             Action.CATALOG_SEARCH,
             Action.CHANGE_READ,

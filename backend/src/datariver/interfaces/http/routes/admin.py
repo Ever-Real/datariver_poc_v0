@@ -1168,13 +1168,14 @@ def _role_mutation_event(
     event_type: str,
     role: AccessRoleModel,
     actor_id: UUID,
+    assurance: str,
     policy_decision_id: UUID,
     payload_hash: str | None = None,
 ) -> DomainEvent:
     payload: dict[str, object] = {
         "actor_id": str(actor_id),
         "policy_decision_id": str(policy_decision_id),
-        "assurance": "HARDWARE_WEBAUTHN",
+        "assurance": assurance,
         "role_key": role.role_key,
         "version": role.version,
     }
@@ -1565,13 +1566,19 @@ def _require_system_configuration_runtime_activation(settings: Settings) -> None
 def _service(request: Request) -> AdminAccessService:
     container = get_container(request)
     authorization = AuthorizationService(
-        decision_writer=SqlDecisionWriter(container.database.session_factory)
+        decision_writer=SqlDecisionWriter(container.database.session_factory),
+        development_admin_password_bypass_enabled=(
+            container.settings.development_admin_password_bypass_enabled
+        ),
     )
     return AdminAccessService(
         lambda: SqlAdminAccessUnitOfWork(container.database.session_factory),
         authorization,
         fallback_enabled=container.settings.admin_password_fallback_enabled,
         fallback_ttl_seconds=container.settings.admin_password_fallback_ttl_seconds,
+        development_admin_password_bypass_enabled=(
+            container.settings.development_admin_password_bypass_enabled
+        ),
         development_system_configuration_enabled=container.settings.app_env == "development",
         identity_administration_enabled=container.identity_admin is not None,
     )
@@ -2039,6 +2046,7 @@ async def create_access_role(
                         event_type="iam.access_role.created.v1",
                         role=role,
                         actor_id=context.subject.subject_id,
+                        assurance=context.subject.authentication_assurance.value,
                         policy_decision_id=policy_decision_id,
                         payload_hash=canonical_json_hash(
                             _role_document(payload, data_access_rules=requested_rules)
@@ -2167,6 +2175,7 @@ async def update_access_role(
                         event_type="iam.access_role.updated.v1",
                         role=role,
                         actor_id=context.subject.subject_id,
+                        assurance=context.subject.authentication_assurance.value,
                         policy_decision_id=policy_decision_id,
                         payload_hash=canonical_json_hash(next_document),
                     )
@@ -2264,6 +2273,7 @@ async def deactivate_access_role(
                         event_type="iam.access_role.deactivated.v1",
                         role=role,
                         actor_id=context.subject.subject_id,
+                        assurance=context.subject.authentication_assurance.value,
                         policy_decision_id=policy_decision_id,
                     )
                 ]

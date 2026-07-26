@@ -99,6 +99,10 @@ class Settings(BaseSettings):
     high_risk_auth_max_age_seconds: int = Field(default=300, ge=60, le=900)
     admin_password_fallback_enabled: bool = False
     admin_password_fallback_ttl_seconds: int = Field(default=300, ge=60, le=300)
+    # Explicit local-development exception for direct admin.manage exercises.
+    # It preserves all non-authentication ABAC denials and records the real
+    # password assurance; it never asserts or emulates hardware WebAuthn.
+    development_admin_password_bypass_enabled: bool = False
     # Development-only: return an ABAC-authorized, no-store Chat exchange when
     # a security administrator is exercising the local UI before retention
     # policy governance is configured. This never permits durable Chat writes.
@@ -512,6 +516,19 @@ class Settings(BaseSettings):
 
     @model_validator(mode="after")
     def validate_security_posture(self) -> Self:
+        if self.development_admin_password_bypass_enabled:
+            if self.app_env != "development":
+                raise ValueError("The direct administrator password bypass is development-only.")
+            if not self.admin_password_fallback_enabled:
+                raise ValueError(
+                    "The direct administrator password bypass requires the governed "
+                    "password fallback switch."
+                )
+            if self.oidc_hardware_webauthn_enabled:
+                raise ValueError(
+                    "The direct administrator password bypass cannot be combined with "
+                    "enabled hardware WebAuthn."
+                )
         if "*" in self.app_cors_origins:
             raise ValueError("Wildcard CORS origins are not permitted.")
         cache_redis = urlsplit(self.redis_cache_url)
