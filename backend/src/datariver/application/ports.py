@@ -42,10 +42,17 @@ from datariver.application.dto import (
     CatalogVocabularySyncResult,
     ChangeRequestSchemaOverview,
     ChangeRequestSummaryRecord,
+    ChatCompositionAudit,
     ChatDraft,
     ChatEvidence,
+    ChatEvidenceRanking,
     ChatExchange,
+    ChatMessageRecord,
     ChatRetentionBinding,
+    ChatRouteDecision,
+    ChatSessionRecord,
+    ChatVectorSearchResult,
+    ChatWorkflowEvent,
     ConsumerGrantRecord,
     DataHubApplyReceipt,
     DataHubAspectSnapshot,
@@ -91,6 +98,7 @@ from datariver.domain.admin_access import (
     SystemAssigneeUpdateCommand,
 )
 from datariver.domain.authz import Decision, SubjectAttributes
+from datariver.domain.chat import ChatRetrievalMode
 from datariver.domain.common import DomainEvent
 from datariver.domain.governance import ApprovalAuthority, ChangeRequest
 from datariver.domain.knowledge import ChangeSetState, GraphChangeOperation, GraphSnapshot
@@ -1533,6 +1541,10 @@ class ChatStore(Protocol):
         evidence: Sequence[ChatEvidence],
         policy_decision_id: UUID,
         retention: ChatRetentionBinding,
+        route: ChatRouteDecision | None = None,
+        workflow: Sequence[ChatWorkflowEvent] = (),
+        evidence_ranking: Sequence[ChatEvidenceRanking] = (),
+        composition_audit: ChatCompositionAudit | None = None,
     ) -> ChatExchange: ...
 
 
@@ -1569,6 +1581,105 @@ class ChatAnswerComposer(Protocol):
     ) -> ChatDraft: ...
 
 
+class ChatQuestionRouter(Protocol):
+    def route(
+        self,
+        *,
+        question: str,
+        requested_mode: ChatRetrievalMode,
+        vector_available: bool,
+        graph_available: bool,
+    ) -> ChatRouteDecision: ...
+
+
+class ChatVectorCatalogReader(Protocol):
+    async def search(
+        self,
+        *,
+        subject: SubjectAttributes,
+        access: ClassificationAccessSnapshot,
+        question: str,
+        limit: int,
+    ) -> ChatVectorSearchResult: ...
+
+
+class ChatEvidenceReranker(Protocol):
+    async def rerank(
+        self,
+        *,
+        question: str,
+        evidence: Sequence[ChatEvidence],
+    ) -> tuple[UUID, ...]: ...
+
+
+class ChatRequestBudgetGuard(Protocol):
+    async def reserve(
+        self,
+        *,
+        workspace_id: UUID,
+        subject_id: UUID,
+        policy_scope: str,
+        estimated_tokens: int,
+        request_limit: int,
+        token_limit: int,
+        window_seconds: int,
+    ) -> None: ...
+
+
+class ChatHistoryStore(Protocol):
+    async def get_session_owner(
+        self,
+        *,
+        workspace_id: UUID,
+        session_id: UUID,
+    ) -> UUID | None: ...
+
+    async def list_sessions(
+        self,
+        *,
+        workspace_id: UUID,
+        owner_id: UUID,
+        limit: int,
+    ) -> Sequence[ChatSessionRecord]: ...
+
+    async def list_messages(
+        self,
+        *,
+        workspace_id: UUID,
+        owner_id: UUID,
+        session_id: UUID,
+        limit: int,
+    ) -> Sequence[ChatMessageRecord]: ...
+
+    async def set_favorite(
+        self,
+        *,
+        workspace_id: UUID,
+        owner_id: UUID,
+        session_id: UUID,
+        expected_version: int,
+        is_favorite: bool,
+    ) -> ChatSessionRecord: ...
+
+
+class ChatSessionOwnershipReader(Protocol):
+    async def get_session_owner(
+        self,
+        *,
+        workspace_id: UUID,
+        session_id: UUID,
+    ) -> UUID | None: ...
+
+
+class ChatSubjectAccessReader(Protocol):
+    async def refresh_subject(
+        self,
+        *,
+        subject: SubjectAttributes,
+        now: datetime,
+    ) -> SubjectAttributes: ...
+
+
 class AssistantInferenceAdapter(Protocol):
     async def infer(
         self,
@@ -1594,6 +1705,13 @@ class KnowledgeEvidenceReader(Protocol):
         query: str,
         maximum_classification: int,
         limit: int,
+    ) -> Sequence[KnowledgeEvidenceCandidate]: ...
+
+    async def get_active_nodes_by_resource_ids(
+        self,
+        *,
+        workspace_id: UUID,
+        resource_ids: Sequence[UUID],
     ) -> Sequence[KnowledgeEvidenceCandidate]: ...
 
 

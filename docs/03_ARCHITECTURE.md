@@ -25,7 +25,8 @@ flowchart LR
     A --> VC["External Redis cache"]
     A --> O["Upload-oriented S3-compatible storage"]
     A --> D["External DataHub read facade"]
-    A --> C["Deterministic evidence Chat (current)"]
+    A --> C["Governed Chat router and evidence validation"]
+    C -. "development-only, env-selected" .-> DL["Local/private Chat + Embedding + Reranker"]
     A --> Z["ABAC policy decision"]
     P --> R["Outbox relay"]
     R --> VQ["External Redis job delivery"]
@@ -222,8 +223,23 @@ fail-closed floor. RESTRICTED Chat is always denied.
 
 ## Assistant inference boundary
 
-Current Chat remains an in-process deterministic evidence composer and makes no model call. The
-separate assistant-inference source boundary is only a typed, disabled-first worker contract. Its
+Current Chat always remains an in-process authorization, routing, evidence-integrity, citation and
+retention boundary. In development only, it may use the deployment-selected bounded Chat,
+Embedding and Reranker adapters from ADR-0049; production keeps the deterministic composer and
+makes no direct provider call. `GENERAL` uses authorized catalog search, `VECTOR` ranks a bounded
+authorization-pruned catalog window, and `GRAPH` remains explicitly unavailable until the governed
+asset-graph task supplies its typed adapter. Adapter failure yields `검증 불가` with no strategy or
+model fallback. For an existing session, the canonical owner is read and matched before ABAC,
+budget reservation, retrieval or any provider call. Before vector text leaves the process, the
+classification snapshot is narrowed to rules whose stage-specific profile UUID and
+route/provider/model/deployment identity exactly match every adapter the selected route can invoke.
+The local vector window is capped at 20 candidates and 512 characters per candidate; its complete
+worst-case UTF-8 request is added to the atomic request budget before retrieval, together with any
+reranker and composer envelopes.
+The citation gate then re-reads current membership attributes and canonical catalog/release
+evidence, re-resolves the policy identity and re-runs resource ABAC; any drift refuses the answer.
+
+The separate production assistant-inference source boundary is only a typed, disabled-first worker contract. Its
 versioned package binds requested/selected provider identity and region, policy, attestations,
 immutable URN-addressed evidence and a monthly workspace/user token-accounting decision. Internal
 routes are monitor-only; an external route requires a durable hard-limit reservation. An exhausted
@@ -238,10 +254,10 @@ canonical source URN, source version and content hash. Metric, non-zero threshol
 identity come from an immutable grounding-policy snapshot. A structurally valid post-call draft
 retains its usage metrics even when later refused; otherwise the result is
 `보안 규정 및 근거 데이터 부족으로 답변할 수 없습니다`. Neither input nor output has SQL,
-Cypher, arbitrary HTTP, tool or mutation fields. There is no token ledger, configured provider or
-grounding adapter, endpoint/secret, API-to-worker dispatch, durable inference job, streaming
-transport or deployed worker process in this baseline. Dotted inference edges in the runtime view
-are future seams, not current network calls.
+Cypher, arbitrary HTTP, tool or mutation fields. There is no production token ledger, grounding
+adapter, API-to-worker dispatch, durable inference job, streaming transport or deployed inference
+worker in this baseline. The direct development adapter is not evidence that those production
+gates passed. Dotted worker edges in the runtime view remain future seams.
 
 ## External Redis topology
 

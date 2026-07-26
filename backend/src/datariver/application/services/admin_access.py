@@ -452,12 +452,7 @@ class AdminAccessService:
             AdminOperation.RESTRICTED_SEARCH_GRANT_READ,
         ]
         if self._development_system_configuration_enabled:
-            operations.extend(
-                [
-                    AdminOperation.SYSTEM_CONFIGURATION_READ,
-                    AdminOperation.SYSTEM_CONFIGURATION_UPDATE,
-                ]
-            )
+            operations.append(AdminOperation.SYSTEM_CONFIGURATION_READ)
         if (
             Action.RETENTION_READ in subject.allowed_actions
             and Action.RETENTION_READ not in subject.denied_actions
@@ -501,8 +496,6 @@ class AdminAccessService:
                 for action, operation in governed_operations
                 if action in subject.allowed_actions and action not in subject.denied_actions
             )
-            if self._development_system_configuration_enabled:
-                operations.append(AdminOperation.SYSTEM_CONFIGURATION_ACTIVATE)
         if self._fallback_enabled:
             operations.extend(
                 [AdminOperation.FALLBACK_REQUEST_READ, AdminOperation.FALLBACK_REQUEST_DECIDE]

@@ -7,16 +7,37 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[3]
 
 
-def test_source_host_preflight_validates_local_ollama_and_neo4j_settings() -> None:
+def _profile(tmp_path: Path, **overrides: str) -> Path:
+    tmp_path.mkdir(parents=True, exist_ok=True)
+    source = (ROOT / ".env.mac-development").read_text(encoding="utf-8").splitlines()
+    keys = set(overrides)
+    retained = [
+        line
+        for line in source
+        if not line or line.startswith("#") or line.partition("=")[0] not in keys
+    ]
+    profile = tmp_path / "source-host.env"
+    profile.write_text(
+        "\n".join((*retained, *(f"{key}={value}" for key, value in overrides.items()), "")),
+        encoding="utf-8",
+    )
+    return profile
+
+
+def test_source_host_preflight_validates_env_owned_capabilities(tmp_path: Path) -> None:
+    profile = _profile(
+        tmp_path,
+        LOCAL_OLLAMA_CHAT_ENABLED="true",
+        LOCAL_OLLAMA_EMBEDDING_ENABLED="true",
+        NEO4J_PROJECTION_ENABLED="false",
+    )
     result = subprocess.run(  # noqa: S603 - fixed repository script and arguments
         [
             "/bin/bash",
             str(ROOT / "scripts" / "dev_host.sh"),
             "preflight",
             "--env-file",
-            ".env.mac-development",
-            "--enable-local-ollama",
-            "--enable-neo4j",
+            str(profile),
         ],
         cwd=ROOT,
         check=True,
@@ -29,20 +50,19 @@ def test_source_host_preflight_validates_local_ollama_and_neo4j_settings() -> No
     assert document == {
         "knowledge_source_analysis": "CONFIGURED",
         "local_inference_source_host": True,
-        "neo4j_projection": "CONFIGURED",
-        "runtime_activation": True,
+        "neo4j_projection": "NOT_CONFIGURED",
+        "runtime_activation": False,
     }
 
 
-def _preflight(*flags: str) -> dict[str, object]:
+def _preflight(profile: Path) -> dict[str, object]:
     result = subprocess.run(  # noqa: S603 - fixed repository script and arguments
         [
             "/bin/bash",
             str(ROOT / "scripts" / "dev_host.sh"),
             "preflight",
             "--env-file",
-            ".env.mac-development",
-            *flags,
+            str(profile),
         ],
         cwd=ROOT,
         check=True,
@@ -54,9 +74,31 @@ def _preflight(*flags: str) -> dict[str, object]:
     return value
 
 
-def test_source_host_preflight_capabilities_are_independently_selectable() -> None:
-    model_only = _preflight("--enable-local-ollama")
-    graph_only = _preflight("--enable-neo4j")
+def test_source_host_preflight_capabilities_are_independently_selectable(
+    tmp_path: Path,
+) -> None:
+    model_only = _preflight(
+        _profile(
+            tmp_path / "model",
+            LOCAL_OLLAMA_CHAT_ENABLED="true",
+            LOCAL_OLLAMA_EMBEDDING_ENABLED="true",
+            INTRANET_OPENAI_COMPATIBLE_CHAT_ENABLED="false",
+            INTRANET_OPENAI_COMPATIBLE_EMBEDDING_ENABLED="false",
+            NEO4J_PROJECTION_ENABLED="false",
+        )
+    )
+    graph_only = _preflight(
+        _profile(
+            tmp_path / "graph",
+            LOCAL_OLLAMA_CHAT_ENABLED="false",
+            LOCAL_OLLAMA_EMBEDDING_ENABLED="false",
+            INTRANET_OPENAI_COMPATIBLE_CHAT_ENABLED="false",
+            INTRANET_OPENAI_COMPATIBLE_EMBEDDING_ENABLED="false",
+            NEO4J_PROJECTION_ENABLED="true",
+            NEO4J_URI="bolt://127.0.0.1:17687",
+            NEO4J_AUTH_SECRET_REF="file:/run/secrets/neo4j_auth",
+        )
+    )
 
     assert model_only["knowledge_source_analysis"] == "CONFIGURED"
     assert model_only["neo4j_projection"] == "NOT_CONFIGURED"

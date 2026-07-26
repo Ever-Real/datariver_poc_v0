@@ -164,8 +164,8 @@ target-profile activation.
 | RESTRICTED explicit grants | Cursor page | Bounded active member/System selectors | scope/expiry/revocation/no-Chat and out-of-page selection evidence |
 | Inference provider approval/revoke | Exact-key cursor page | Exact-key search and page controls | immutable profile and credential non-disclosure regression |
 | Password fallback workflow | Cursor page, optional | Implemented when enabled | two-person, five-minute, one-use and self-change negatives |
-| System Settings inventory/versions | Redacted current/activated evidence only | Management-plane and restart states explicit | inventory avoids all-history reads |
-| System Settings SAVE/TEST/ACTIVATE | Development only; exact mounted-secret names and fixed probes | Implemented | Redis policy/S3 head scope, bounded probe and runtime-consumer validation |
+| System Settings inventory | Redacted effective deployment snapshot only | Read-only deployment state explicit | inventory avoids historical DB revisions and browser writeback |
+| System Settings deployment probe | Fixed server-owned targets over loaded environment/orchestrator values | Implemented | Redis policy/S3 head scope, bounded probe and runtime-consumer validation; former SAVE/ACTIVATE path is superseded by ADR-0048 |
 | Retention policy | Cursor page; review and archive-only evidence read | Implemented | approval is not deletion; execution evidence is private/no-store |
 | Legal Hold place/release | Cursor page | Implemented | hold precedence and independent release evidence |
 | Erasure request/review | Cursor page plus separate execution-evidence read | Implemented | request, approval and archive receipt remain separate; no physical-delete state |

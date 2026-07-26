@@ -275,10 +275,10 @@ describe('AdminApi', () => {
   it('binds classification, provider, and RESTRICTED grant mutations to versions', async () => {
     const { api, request } = mockClient()
     const rules: ClassificationAccessRule[] = [
-      { classification: 'PUBLIC', search_mode: 'ABAC', chat_mode: 'DENY', provider_profile_version_id: null },
-      { classification: 'INTERNAL', search_mode: 'ABAC', chat_mode: 'DENY', provider_profile_version_id: null },
-      { classification: 'CONFIDENTIAL', search_mode: 'DENY', chat_mode: 'DENY', provider_profile_version_id: null },
-      { classification: 'RESTRICTED', search_mode: 'EXPLICIT_GRANT_ONLY', chat_mode: 'DENY', provider_profile_version_id: null },
+      { classification: 'PUBLIC', search_mode: 'ABAC', chat_mode: 'DENY', provider_profile_version_id: null, embedding_provider_profile_version_id: null, reranker_provider_profile_version_id: null },
+      { classification: 'INTERNAL', search_mode: 'ABAC', chat_mode: 'DENY', provider_profile_version_id: null, embedding_provider_profile_version_id: null, reranker_provider_profile_version_id: null },
+      { classification: 'CONFIDENTIAL', search_mode: 'DENY', chat_mode: 'DENY', provider_profile_version_id: null, embedding_provider_profile_version_id: null, reranker_provider_profile_version_id: null },
+      { classification: 'RESTRICTED', search_mode: 'EXPLICIT_GRANT_ONLY', chat_mode: 'DENY', provider_profile_version_id: null, embedding_provider_profile_version_id: null, reranker_provider_profile_version_id: null },
     ]
     const policy = { policy_id: 'policy-one', version: 1, rules } as ClassificationAccessPolicy
     const profile = {

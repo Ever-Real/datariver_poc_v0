@@ -60,9 +60,10 @@ migration before use.
 - PostgreSQL RLS is enabled and forced on every workspace table. API sets `app.workspace_id` and `app.subject_id` per transaction. Relay, upload and governance BYPASSRLS identities are separate and receive only the tables needed by their background responsibility.
 - Every parent/child relationship between tenant tables carries `workspace_id` in a composite foreign key; application filtering is not the only tenant-integrity guard.
 - Security selectors such as classification/system/domain/owner are typed columns. JSONB stores non-security documents/extensions.
-- Passwords and tokens never have application columns. Development System Settings store only
-  validated non-secret YAML and `file:/run/secrets/<name>` reference names; exact revision,
-  TEST and activation evidence is workspace-scoped and disabled outside development.
+- Passwords and tokens never have application columns. Retained development System Settings rows
+  contain historical non-secret YAML/reference and SAVE/TEST/ACTIVATE evidence only; ADR-0048
+  excludes them from runtime `Settings`. The selected environment plus mounted secret references
+  is the sole live connector source.
 - Outbox, approvals, transitions, decisions, releases and citations are append-only to ordinary application roles.
 
 ## Implemented schemas and tables
@@ -75,8 +76,8 @@ migration before use.
 | `platform.data_systems` | workspace-scoped code/name UQ, description, active flag, version/timestamps | canonical business-system master; not a DataHub provider connection |
 | `platform.system_schema_scopes` | workspace/platform/database/schema UQ, composite system FK, active flag | explicit DataHub projection scope to business-system assignment |
 | `platform.system_assignees` | system/subject/responsibility UQ, `DEVELOPER` or `DATA_STEWARD`, priority `1..999`, active flag | accountable human system assignments; never browser-derived |
-| `platform.external_service_profiles` | workspace/service-key UQ, current YAML/version, nullable activated version, updater and bounded service vocabulary including separate `REDIS_CACHE`, `REDIS_DELIVERY` and `S3_STORAGE` connectors | development-only current draft and pointer to the revision selected for next startup; production runtime settings remain deployment/provider controlled |
-| `platform.external_service_profile_versions` | workspace/profile/configuration-version UQ, SHA-256 document hash, immutable YAML/endpoint, creator, TEST status/scope/latency/actor/time and activation actor/time | exact SAVE → TEST → ACTIVATE evidence; RLS-scoped reads are granted to each consuming process's existing least-privilege DB role |
+| `platform.external_service_profiles` | workspace/service-key UQ, historical YAML/version, nullable activated version, updater and bounded service vocabulary | retained pre-ADR-0048 development audit data; it is not loaded into API/worker runtime settings |
+| `platform.external_service_profile_versions` | workspace/profile/configuration-version UQ, SHA-256 document hash, immutable historical YAML/endpoint, creator, TEST and activation evidence | retained historical SAVE → TEST → ACTIVATE evidence; no live Admin authoring or runtime overlay |
 | `iam.subjects` | `id`, `issuer + external_subject UQ`, `display_name`, IdP email, ordinary last-login timestamp/IP, `active`, timestamps | external IdP mapping and profile audit; no credential or password |
 | `iam.workspace_memberships` | PK `workspace_id + subject_id`, `department_id`, `job_function`, `clearance`, `attributes`, `active`, nullable `access_expires_at`, `version` | versioned ABAC attributes/grants; human expiry is authorization-bearing, service-account expiry is operator-managed `NULL`, and the optional default marker only chooses among active unexpired memberships |
 | `iam.membership_renewal_requests` | workspace/target pending partial UQ, observed/requested expiries, requester/checker, reason/decision/policy/time and optimistic version | self-requested six-calendar-month extension with independent global-Admin decision and no self approval |
@@ -89,7 +90,7 @@ migration before use.
 | `authz.resources` | `workspace_id + resource_type + resource_key UQ`, scope/classification/lifecycle columns, `attributes`, `version` | durable resource attribute registry |
 | `authz.policy_decisions` | `id`, `workspace_id`, `subject_id`, `resource_id`, `action`, `effect`, reason/policy JSON, grouped `evaluation_context`, `request_id`, `decided_at` | immutable allow/deny/system-worker or bounded resource-set evidence |
 | `authz.classification_access_policy_versions` | workspace/policy number UQ, required jurisdiction, grant maximum, payload hash, maker/checker/supersede state and optimistic version | independently approved four-class Search/Chat policy |
-| `authz.classification_access_policy_rules` | workspace/policy/classification UQ, policy hash, typed Search/Chat modes and optional immutable provider-profile version FK | exactly one immutable rule for each of the four classifications |
+| `authz.classification_access_policy_rules` | workspace/policy/classification UQ, policy hash, typed Search/Chat modes, required composition profile FK for enabled Chat and optional stage-specific Embedding/Reranker profile FKs | exactly one immutable rule for each of the four classifications; every invoked inference stage must match its approved route/provider/model/deployment identity |
 | `authz.restricted_search_grants` | active policy ID/hash, subject, typed resource/system/domain scope, validity, payload hash, maker/checker/revocation and optimistic version | explicit policy-bound RESTRICTED Search entitlement |
 | `authz.restricted_search_grant_events` | grant/version UQ, action/actor/reason/policy decision/time/payload hash | append-only grant history |
 | `authz.classification_access_generations` | workspace PK, monotonic generation and update time | transactional authorization/cache invalidation generation |
@@ -118,6 +119,11 @@ The general ABAC decision engine remains code-versioned (`builtin-abac-v2`); gen
 OPA policy/binding tables remain backlog. The narrower classification-access policy above is
 implemented operating data and is evaluated together with ordinary ABAC, never as its replacement.
 Missing or inconsistent active state falls back to the portable static floor.
+
+Revision `0057` adds the stage-specific Embedding/Reranker bindings without rewriting existing
+policy evidence. Its downgrade is allowed only while both additive binding columns are empty;
+otherwise it refuses rather than discard immutable policy payload evidence or leave a payload hash
+that no longer describes the stored rule.
 
 ### Catalog projection
 
@@ -254,8 +260,9 @@ maximum envelope enforced on changeset operations, complete submission/review, p
 immutable source preparation, model-output persistence and release reads. Model operations inherit
 the immutable source classification exactly. Durable PDF analysis is implemented as a separately
 credentialed worker for PUBLIC/INTERNAL sources. Enqueue pins the accepted manifest, graph/base,
-active ontology, parser and secret-free loaded deployment or activated System Configuration model
-bindings; finalization locks and rechecks those
+active ontology, parser and secret-free model bindings loaded from the validated deployment
+environment or orchestrator; the former database-activated System Configuration path is historical
+and superseded by ADR-0048. Finalization locks and rechecks those
 pins plus current requester authority before one transaction creates pages, JSON embeddings,
 `DURABLE_SOURCE_V1` extraction evidence, typed operations and a source-job-bound DRAFT. This is not
 evidence that a target WSL host or a production external model provider has passed acceptance.
@@ -302,10 +309,15 @@ attributes rather than accepting same-name objects.
 
 | Table | Key columns and constraints | Purpose |
 |---|---|---|
-| `assistant.chat_sessions` | `id`, workspace/owner/title/scope, retention policy ID/hash/basis/deadline/binding version, `version`, timestamps; composite policy FK and immutable binding trigger | owner-scoped, active-policy-bound session; legacy/superseded/expired sessions are append-closed |
+| `assistant.chat_sessions` | `id`, workspace/owner/title/scope, owner-mutable `is_favorite`, retention policy ID/hash/basis/deadline/binding version, `version`, timestamps; composite policy FK and immutable binding trigger | owner-scoped, active-policy-bound session; legacy/superseded/expired sessions are append-closed; favorite mutation cannot alter retention evidence |
 | `assistant.chat_messages` | `id`, workspace/session/actor/content/created time | append-only messages |
-| `assistant.assistant_runs` | `id`, workspace/session/request message/provider/model/template/policy/state/metrics/timestamps | answer execution audit |
-| `assistant.evidence_citations` | `id`, workspace/run/chunk/resource, classification, typed system/domain/owner scope, type/locator/version, SHA-256 content hash, effective interval, extraction method, positive unique rank | append-only immutable authorized evidence snapshot |
+| `assistant.assistant_runs` | `id`, workspace/session/request message/provider/model/template/policy/state/metrics/timestamps; metrics include provider-profile UUID and classification policy ID/hash/version/generation when external composition actually runs | answer execution audit |
+| `assistant.evidence_citations` | `id`, workspace/run/chunk/resource, classification, typed system/domain/owner scope, type/locator/version, SHA-256 content hash, effective interval, extraction method, positive unique rank, display name/description | append-only immutable authorized evidence snapshot; legacy rows without reconstructable display data are not fabricated in history |
+
+All four Assistant tables retain forced workspace RLS. Restrictive `FOR ALL TO datariver_app`
+policies additionally require the current `app.subject_id` to own the session, directly or through
+the session/run foreign-key chain. The ordinary application role therefore cannot read or write
+another user's history even if an HTTP owner predicate is accidentally omitted.
 
 Alembic `0011` adds the classification policy/rule/generation, RESTRICTED grant/event and inference
 profile/generation tables with forced workspace RLS, composite workspace foreign keys, immutable

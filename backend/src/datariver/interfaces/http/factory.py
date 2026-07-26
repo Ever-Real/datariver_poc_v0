@@ -24,9 +24,6 @@ from datariver.domain.common import (
     ValidationError,
     uuid7,
 )
-from datariver.infrastructure.system_configuration_runtime import (
-    resolve_activated_system_configuration,
-)
 from datariver.interfaces.http.container import AppContainer, build_container
 from datariver.interfaces.http.router import api_router
 
@@ -65,14 +62,10 @@ def create_app(
     settings: Settings,
     *,
     container_factory: Callable[[Settings], AppContainer] = build_container,
-    runtime_settings_resolver: Callable[[Settings], Awaitable[Settings]] = (
-        resolve_activated_system_configuration
-    ),
 ) -> FastAPI:
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
-        runtime_settings = await runtime_settings_resolver(settings)
-        container = container_factory(runtime_settings)
+        container = container_factory(settings)
         app.state.container = container
         yield
         await container.close()

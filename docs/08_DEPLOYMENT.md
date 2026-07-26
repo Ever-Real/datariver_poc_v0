@@ -138,6 +138,30 @@ materializes file secrets. Native Windows PowerShell disables inherited ACLs on 
 Keycloak-runtime directories/files and grants only the current identity and `SYSTEM`. Copying these
 files elsewhere is a new security boundary and requires an ACL review.
 
+Managed installation never infers Mac from the checkout host. Select one explicit profile:
+
+| Profile | Supported Docker platform | Selected environment file | Purpose |
+|---|---|---|---|
+| `portable-development` | `linux/arm64`, `linux/amd64` | `.env.portable-development` | general source build; no inference default |
+| `mac-development` | `linux/arm64` | `.env.mac-development` | reviewed Mac local-integration compatibility |
+| `wsl-preparation` | `linux/amd64` | `.env.wsl-preparation` | verified offline WSL preparation |
+
+The fresh workflow records the exact selected environment path in its ignored applied-state file.
+The update workflow reuses it, and the Compose wrapper passes it both to interpolation and container
+`env_file`. A normal clean clone should begin with `portable-development`; the Mac profile is not a
+universal default.
+
+```bash
+./scripts/workflow_fresh_setup.py \
+  --profile portable-development \
+  --datahub-mode external \
+  --datahub-base-url https://<approved-datahub-gms-host> \
+  --datahub-token-file /approved-secret-path/datahub_token \
+  --redis-mode local \
+  --storage-mode local \
+  --airflow-mode skip
+```
+
 ### Bootstrap dependencies and connector inventory
 
 PostgreSQL and an OIDC issuer are bootstrap capabilities: the API cannot read a database-backed
@@ -148,10 +172,10 @@ opt-in feature connectors.
 
 Initial deployments set endpoints and mounted-secret references in `.env`. The authenticated System
 Settings inventory classifies entries as `BOOTSTRAP_REQUIRED`, `CORE_CONNECTOR` or
-`FEATURE_CONNECTOR` and returns every required connection field with a `secret` flag. In development,
-eligible administrators can SAVE → TEST → ACTIVATE versioned connector profiles in PostgreSQL;
-credentials remain mounted-secret references. Production activation remains deployment-managed
-until an approved secret backend, restart orchestration, rollback and audit procedure are accepted.
+`FEATURE_CONNECTOR` and returns every required connection field with a `secret` flag. It is
+read-only and can run only server-owned probes against the API's loaded deployment snapshot.
+Operators edit the selected ignored environment and mounted secrets, then apply them through the
+matching update/restart workflow.
 
 Durable Knowledge PDF analysis is an independent opt-in capability. It requires Chat and Embedding
 readiness, but not Neo4j. The API continues to serve the core platform when
@@ -189,16 +213,16 @@ Use `./scripts/bootstrap.sh --mac-development` only for the local Mac developer 
 the same developer-facing web `38102` and API `38101` port contract as source-host development,
 keeps the host PostgreSQL binding on conflict-resistant `15432`, and points
 container-to-DataHub traffic to
-`host.docker.internal:8080`, enables the native macOS Ollama bridge at its exact local OpenAI
-compatible endpoint, and generates a secret-backed Neo4j password. If no DataHub credential exists,
+`host.docker.internal:8080`. Local model capabilities remain disabled until the operator selects
+already installed model IDs in `.env.mac-development`; bootstrap never creates or selects one.
+The profile also generates a secret-backed Neo4j password. If no DataHub credential exists,
 the mode creates an ignored random placeholder because the bundled local DataHub composition has
 authentication disabled; it is never valid for an external DataHub.
 
-Docker Desktop is budgeted at 20 GiB/6 CPUs. Ollama stays native on the Mac host, so the selected
-`datariver-gemma4-dev:0.1` model is outside Docker's memory limit. It reuses the
-`gemma4:e2b-it-qat` weights but fixes its active context at 8,192 tokens through the checked-in
-Modelfile. The full normal stack, DataHub and Neo4j fit this budget; do not run a duplicate Ollama
-container. `compose.graph.yaml` attaches Neo4j
+Docker Desktop is budgeted at 16 GiB/6 CPUs by default, or at most 18 GiB for a bounded large
+import. Ollama stays native on the Mac host and remains outside Docker's memory limit. Choose an
+already installed model that leaves unified-memory headroom; do not create a repository-specific
+derivative or run a duplicate Ollama container. `compose.graph.yaml` attaches Neo4j
 to the private `data` network for internal access and to an otherwise empty non-internal bridge
 solely because Docker Desktop cannot publish loopback ports from an `internal: true` network. Its
 HTTP/Bolt bindings remain `127.0.0.1:17474` and `127.0.0.1:17687`.
@@ -211,9 +235,9 @@ source-access bridge.
 
 The local Ollama adapter is development-only. Container mode accepts only
 `http://host.docker.internal:11434/v1`; explicit source-host development accepts the exact
-loopback origin `http://127.0.0.1:11434/v1`. Both use `datariver-gemma4-dev:0.1`, a fixed
-8,192-token context and a 60-second timeout. `scripts/prepare_ollama_mac_dev.sh` creates that local derivative from
-the checked-in Modelfile. It submits only a fixed non-executable answer/citation function and
+loopback origin `http://127.0.0.1:11434/v1`. The ignored environment selects the installed model,
+bounded context and timeout; source, bootstrap and Admin do not supply a model fallback. It submits
+only a fixed non-executable answer/citation function and
 validates its output as untrusted evidence. It does not make the model a production provider.
 Neo4j is a rebuildable projection sandbox until a future verified release-projection adapter
 exists; do not write DataRiver canonical state to it. The full decision and promotion limits are
@@ -236,9 +260,17 @@ may instead use `LOCAL_LLAMA_CPP` at the fixed
 `http://host.docker.internal:11435/v1` endpoint. Its GGUF is resolved from the Ollama model store and
 served by `scripts/local_reranker_service.py`; Ollama itself is not claimed to provide a rerank
 route. TEST executes a fixed bounded `POST /v1/rerank`, records `RERANKING_INFERENCE` only after validating ordered finite
-scores and shares the probe destination/TLS/redirect/body-size controls. It has no ACTIVATE/runtime
-consumer in the current phase. Ollama itself does not implement this route; the Mac bridge's local
+scores and shares the probe destination/TLS/redirect/body-size controls. Governed Chat may consume
+the deployment-selected reranker after authorization and bounded retrieval; it never expands the
+authorized evidence set and a reranker failure makes that selected route unavailable instead of
+silently falling back. Ollama itself does not implement this route; the Mac bridge's local
 connection evidence is distinct from the WSL/private endpoint gate, which remains external.
+
+Local Chat keeps the configured inventory endpoint at the fixed `/v1` base but sends generation to
+the same Ollama origin's native `/api/chat` route. This is intentional: Ollama's OpenAI-compatible
+route does not apply `options.num_ctx`, while the native route applies the operator-selected
+`LOCAL_OLLAMA_CHAT_CONTEXT_TOKENS` bound. The adapter still owns the fixed route, disables proxy and
+redirect handling, bounds the response body and validates the returned tool call as untrusted data.
 
 Exact host allowlisting occurs before DNS and every returned address is checked. The current
 default HTTP transport is not address-pinned and may resolve again during connection, so private
@@ -255,13 +287,11 @@ password downgrade, so direct high-risk mutations remain unavailable. These are 
 process settings, not browser-editable administrator records. Recreate the API container after a
 change so `/auth/me` and token verification share the same configuration.
 
-`SYSTEM_CONFIGURATION_RUNTIME_ACTIVATION_ENABLED=true` plus an explicit
-`SYSTEM_CONFIGURATION_RUNTIME_WORKSPACE_ID` enables ADR-0028 only in development. SAVE and TEST do
-not alter runtime clients. ACTIVATE records the selected exact revision, and API/relevant workers
-load it once on restart using their own existing RLS-scoped database role. The selected secret
-references must name files actually mounted into every consuming process. The API-loaded version is
-observable in Admin; worker restart success must be checked from the worker process/health evidence
-and is never inferred from the API. Do not enable this resolver in production.
+Admin System Settings is read-only and test-only. The selected deployment environment and mounted
+secret files are the sole live configuration source; the browser cannot save or activate a second
+database-backed configuration. Apply environment changes with the matching managed update/restart
+workflow and verify each recreated process independently. See
+`docs/41_DEPLOYMENT_ENVIRONMENT_CONFIGURATION.md`.
 
 When the host-development overlay connects to a separately composed local DataHub stack, it uses
 the deployment-owned external `DATAHUB_DOCKER_NETWORK` (default `datahub_network`) and overrides

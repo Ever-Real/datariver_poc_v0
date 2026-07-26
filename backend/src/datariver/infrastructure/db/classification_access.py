@@ -12,6 +12,7 @@ from uuid import UUID
 from sqlalchemy import and_, func, or_, select, text, update
 from sqlalchemy.engine import CursorResult
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
+from sqlalchemy.orm import aliased
 
 from datariver.application.classification_access import (
     ClassificationAccessCandidate,
@@ -138,7 +139,18 @@ class SqlClassificationAccessSnapshotReader:
         rule = ClassificationAccessPolicyRuleModel
         generation = ClassificationAccessGenerationModel
         grant = RestrictedSearchGrantModel
-        profile = InferenceProviderProfileVersionModel
+        composition_profile = aliased(
+            InferenceProviderProfileVersionModel,
+            name="composition_profile",
+        )
+        embedding_profile = aliased(
+            InferenceProviderProfileVersionModel,
+            name="embedding_profile",
+        )
+        reranker_profile = aliased(
+            InferenceProviderProfileVersionModel,
+            name="reranker_profile",
+        )
 
         statement = (
             select(
@@ -151,21 +163,15 @@ class SqlClassificationAccessSnapshotReader:
                 rule.search_mode.label("search_mode"),
                 rule.chat_mode.label("chat_mode"),
                 rule.provider_profile_version_id.label("rule_provider_profile_id"),
-                profile.id.label("profile_id"),
-                profile.state.label("profile_state"),
-                profile.kind.label("profile_kind"),
-                profile.jurisdiction.label("profile_jurisdiction"),
-                profile.maximum_classification.label("profile_maximum_classification"),
-                profile.residency_attestation_observed_at.label(
-                    "residency_attestation_observed_at"
+                rule.embedding_provider_profile_version_id.label(
+                    "rule_embedding_provider_profile_id"
                 ),
-                profile.residency_attestation_expires_at.label("residency_attestation_expires_at"),
-                profile.zero_retention_attestation_observed_at.label(
-                    "zero_retention_attestation_observed_at"
+                rule.reranker_provider_profile_version_id.label(
+                    "rule_reranker_provider_profile_id"
                 ),
-                profile.zero_retention_attestation_expires_at.label(
-                    "zero_retention_attestation_expires_at"
-                ),
+                *_profile_snapshot_columns(composition_profile, prefix="composition"),
+                *_profile_snapshot_columns(embedding_profile, prefix="embedding"),
+                *_profile_snapshot_columns(reranker_profile, prefix="reranker"),
                 grant.id.label("grant_id"),
                 grant.classification_policy_id.label("grant_policy_id"),
                 grant.classification_policy_hash.label("grant_policy_hash"),
@@ -185,10 +191,24 @@ class SqlClassificationAccessSnapshotReader:
             )
             .outerjoin(generation, generation.workspace_id == policy.workspace_id)
             .outerjoin(
-                profile,
+                composition_profile,
                 and_(
-                    profile.workspace_id == rule.workspace_id,
-                    profile.id == rule.provider_profile_version_id,
+                    composition_profile.workspace_id == rule.workspace_id,
+                    composition_profile.id == rule.provider_profile_version_id,
+                ),
+            )
+            .outerjoin(
+                embedding_profile,
+                and_(
+                    embedding_profile.workspace_id == rule.workspace_id,
+                    embedding_profile.id == rule.embedding_provider_profile_version_id,
+                ),
+            )
+            .outerjoin(
+                reranker_profile,
+                and_(
+                    reranker_profile.workspace_id == rule.workspace_id,
+                    reranker_profile.id == rule.reranker_provider_profile_version_id,
                 ),
             )
             .outerjoin(
@@ -213,6 +233,32 @@ class SqlClassificationAccessSnapshotReader:
         if not rows:
             return None
         return _candidate_from_rows([dict(row) for row in rows])
+
+
+def _profile_snapshot_columns(profile: Any, *, prefix: str) -> tuple[Any, ...]:
+    return (
+        profile.id.label(f"{prefix}_profile_id"),
+        profile.state.label(f"{prefix}_profile_state"),
+        profile.kind.label(f"{prefix}_profile_kind"),
+        profile.server_route_key.label(f"{prefix}_server_route_key"),
+        profile.provider_identity.label(f"{prefix}_provider_identity"),
+        profile.model_identity.label(f"{prefix}_model_identity"),
+        profile.deployment_identity.label(f"{prefix}_deployment_identity"),
+        profile.jurisdiction.label(f"{prefix}_profile_jurisdiction"),
+        profile.maximum_classification.label(f"{prefix}_profile_maximum_classification"),
+        profile.residency_attestation_observed_at.label(
+            f"{prefix}_residency_attestation_observed_at"
+        ),
+        profile.residency_attestation_expires_at.label(
+            f"{prefix}_residency_attestation_expires_at"
+        ),
+        profile.zero_retention_attestation_observed_at.label(
+            f"{prefix}_zero_retention_attestation_observed_at"
+        ),
+        profile.zero_retention_attestation_expires_at.label(
+            f"{prefix}_zero_retention_attestation_expires_at"
+        ),
+    )
 
 
 def _candidate_from_rows(rows: list[dict[str, Any]]) -> ClassificationAccessCandidate:
@@ -246,33 +292,25 @@ def _candidate_from_rows(rows: list[dict[str, Any]]) -> ClassificationAccessCand
             search_mode=SearchMode(str(row["search_mode"])),
             chat_mode=ChatMode(str(row["chat_mode"])),
             provider_profile_version_id=cast(UUID | None, row["rule_provider_profile_id"]),
+            embedding_provider_profile_version_id=cast(
+                UUID | None,
+                row["rule_embedding_provider_profile_id"],
+            ),
+            reranker_provider_profile_version_id=cast(
+                UUID | None,
+                row["rule_reranker_provider_profile_id"],
+            ),
         )
         existing_rule = rules.get(classification)
         if existing_rule is not None and existing_rule != rule_record:
             raise ConflictError("A classification rule has inconsistent snapshot rows.")
         rules[classification] = rule_record
 
-        profile_id = cast(UUID | None, row["profile_id"])
-        if profile_id is not None:
-            profile_record = ProviderProfileRecord(
-                provider_profile_version_id=profile_id,
-                state=str(row["profile_state"]),
-                kind=str(row["profile_kind"]),
-                jurisdiction=str(row["profile_jurisdiction"]),
-                maximum_classification=Classification(int(row["profile_maximum_classification"])),
-                residency_attestation_observed_at=cast(
-                    datetime, row["residency_attestation_observed_at"]
-                ),
-                residency_attestation_expires_at=cast(
-                    datetime, row["residency_attestation_expires_at"]
-                ),
-                zero_retention_attestation_observed_at=cast(
-                    datetime, row["zero_retention_attestation_observed_at"]
-                ),
-                zero_retention_attestation_expires_at=cast(
-                    datetime, row["zero_retention_attestation_expires_at"]
-                ),
-            )
+        for prefix in ("composition", "embedding", "reranker"):
+            profile_record = _profile_record_from_row(row, prefix=prefix)
+            if profile_record is None:
+                continue
+            profile_id = profile_record.provider_profile_version_id
             existing_profile = profiles.get(profile_id)
             if existing_profile is not None and existing_profile != profile_record:
                 raise ConflictError("A provider profile has inconsistent snapshot rows.")
@@ -307,6 +345,43 @@ def _candidate_from_rows(rows: list[dict[str, Any]]) -> ClassificationAccessCand
     )
 
 
+def _profile_record_from_row(
+    row: dict[str, Any],
+    *,
+    prefix: str,
+) -> ProviderProfileRecord | None:
+    profile_id = cast(UUID | None, row[f"{prefix}_profile_id"])
+    if profile_id is None:
+        return None
+    return ProviderProfileRecord(
+        provider_profile_version_id=profile_id,
+        state=str(row[f"{prefix}_profile_state"]),
+        kind=str(row[f"{prefix}_profile_kind"]),
+        server_route_key=str(row[f"{prefix}_server_route_key"]),
+        provider_identity=str(row[f"{prefix}_provider_identity"]),
+        model_identity=str(row[f"{prefix}_model_identity"]),
+        deployment_identity=str(row[f"{prefix}_deployment_identity"]),
+        jurisdiction=str(row[f"{prefix}_profile_jurisdiction"]),
+        maximum_classification=Classification(int(row[f"{prefix}_profile_maximum_classification"])),
+        residency_attestation_observed_at=cast(
+            datetime,
+            row[f"{prefix}_residency_attestation_observed_at"],
+        ),
+        residency_attestation_expires_at=cast(
+            datetime,
+            row[f"{prefix}_residency_attestation_expires_at"],
+        ),
+        zero_retention_attestation_observed_at=cast(
+            datetime,
+            row[f"{prefix}_zero_retention_attestation_observed_at"],
+        ),
+        zero_retention_attestation_expires_at=cast(
+            datetime,
+            row[f"{prefix}_zero_retention_attestation_expires_at"],
+        ),
+    )
+
+
 class SqlClassificationPolicyRepository:
     def __init__(self, session: AsyncSession) -> None:
         self._session = session
@@ -324,6 +399,12 @@ class SqlClassificationPolicyRepository:
                     search_mode=rule.search_mode.value,
                     chat_mode=rule.chat_mode.value,
                     provider_profile_version_id=rule.provider_profile_version_id,
+                    embedding_provider_profile_version_id=(
+                        rule.embedding_provider_profile_version_id
+                    ),
+                    reranker_provider_profile_version_id=(
+                        rule.reranker_provider_profile_version_id
+                    ),
                 )
                 for rule in policy.rules
             ]
@@ -468,8 +549,19 @@ class SqlClassificationPolicyRepository:
     ) -> None:
         enabled = tuple(rule for rule in policy.rules if rule.chat_mode is not ChatMode.DENY)
         if any(rule.provider_profile_version_id is None for rule in enabled):
-            raise ConflictError("Every enabled Chat rule requires one provider profile.")
-        profile_ids = frozenset(cast(UUID, rule.provider_profile_version_id) for rule in enabled)
+            raise ConflictError(
+                "Every enabled Chat rule requires one composition provider profile."
+            )
+        profile_ids = frozenset(
+            profile_id
+            for rule in enabled
+            for profile_id in (
+                rule.provider_profile_version_id,
+                rule.embedding_provider_profile_version_id,
+                rule.reranker_provider_profile_version_id,
+            )
+            if profile_id is not None
+        )
         profiles = (
             await self._session.scalars(
                 select(InferenceProviderProfileVersionModel)
@@ -482,28 +574,35 @@ class SqlClassificationPolicyRepository:
         ).all()
         by_id = {profile.id: profile for profile in profiles}
         for rule in enabled:
-            profile_id = rule.provider_profile_version_id
-            profile = by_id.get(profile_id) if profile_id is not None else None
-            if (
-                profile is None
-                or profile.state != "APPROVED"
-                or profile.jurisdiction != policy.required_jurisdiction
-                or profile.maximum_classification < int(rule.classification)
-                or profile.residency_attestation_observed_at > now
-                or profile.residency_attestation_expires_at <= now
-                or profile.zero_retention_attestation_observed_at > now
-                or profile.zero_retention_attestation_expires_at <= now
-                or (
-                    rule.chat_mode is ChatMode.INTERNAL_APPROVED_ONLY and profile.kind != "INTERNAL"
-                )
-                or (
-                    rule.classification is Classification.CONFIDENTIAL
-                    and profile.kind != "INTERNAL"
-                )
+            for profile_id in (
+                rule.provider_profile_version_id,
+                rule.embedding_provider_profile_version_id,
+                rule.reranker_provider_profile_version_id,
             ):
-                raise ConflictError(
-                    "The classification policy references an ineligible provider profile."
-                )
+                if profile_id is None:
+                    continue
+                profile = by_id.get(profile_id)
+                if (
+                    profile is None
+                    or profile.state != "APPROVED"
+                    or profile.jurisdiction != policy.required_jurisdiction
+                    or profile.maximum_classification < int(rule.classification)
+                    or profile.residency_attestation_observed_at > now
+                    or profile.residency_attestation_expires_at <= now
+                    or profile.zero_retention_attestation_observed_at > now
+                    or profile.zero_retention_attestation_expires_at <= now
+                    or (
+                        rule.chat_mode is ChatMode.INTERNAL_APPROVED_ONLY
+                        and profile.kind != "INTERNAL"
+                    )
+                    or (
+                        rule.classification is Classification.CONFIDENTIAL
+                        and profile.kind != "INTERNAL"
+                    )
+                ):
+                    raise ConflictError(
+                        "The classification policy references an ineligible provider profile."
+                    )
 
     async def _one(
         self, *, workspace_id: UUID, policy_id: UUID, lock: bool
@@ -758,6 +857,8 @@ def _hydrate_policy(
                 search_mode=SearchMode(rule.search_mode),
                 chat_mode=ChatMode(rule.chat_mode),
                 provider_profile_version_id=rule.provider_profile_version_id,
+                embedding_provider_profile_version_id=(rule.embedding_provider_profile_version_id),
+                reranker_provider_profile_version_id=(rule.reranker_provider_profile_version_id),
             )
             for rule in sorted(rule_models, key=lambda value: value.classification)
         )

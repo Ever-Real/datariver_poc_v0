@@ -8,7 +8,9 @@ under ADR-0046. Target-environment OIDC/WebAuthn ceremonies remain external acce
   `http://127.0.0.1:11434/v1`.
 - [x] Route deployment-managed PostgreSQL, OIDC, DataHub, Redis, S3, configured LLM, Neo4j and
   UI-link probes through server-owned runtime settings with no client URL or raw exception.
-- [x] Keep unsaved draft TEST evidence separate from saved revision TEST evidence.
+- [x] `HISTORICAL / SUPERSEDED BY ADR-0048` The former draft/saved revision TEST evidence stayed
+  separate. Current Admin has no draft, SAVE or activation path and probes only loaded deployment
+  settings.
 - [x] Provision three matching local Keycloak identities and Local Development memberships with
   balanced human roles; exclude them from the semiconductor sample Workspace.
 - [x] Require WebAuthn, confirmation, idempotency, Workspace locking and outbox evidence for System

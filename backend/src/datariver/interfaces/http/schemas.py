@@ -17,6 +17,13 @@ from pydantic import (
 
 from datariver.domain.admin_access import AdminOperation
 from datariver.domain.authz import Action
+from datariver.domain.chat import (
+    ChatAdapterState,
+    ChatRetrievalMode,
+    ChatRouteReason,
+    ChatWorkflowStage,
+    ChatWorkflowStatus,
+)
 
 
 class PageMeta(BaseModel):
@@ -1242,8 +1249,10 @@ class SystemAssigneeUpdateResponse(BaseModel):
 
 
 SystemConfigurationId = Literal[
+    "PLATFORM_RUNTIME",
     "POSTGRESQL",
     "OIDC_IDENTITY",
+    "RETENTION_ARCHIVE",
     "DATAHUB_GMS",
     "DATAHUB_FRONTEND",
     "AIRFLOW",
@@ -1268,7 +1277,7 @@ class SystemConnectionRequirementResponse(BaseModel):
 
 
 class SystemConfigurationEntryResponse(BaseModel):
-    """Administrator-visible configuration state; values are masked before return."""
+    """Read-only deployment configuration inventory; secret values are never returned."""
 
     system_id: SystemConfigurationId
     label: str
@@ -1277,12 +1286,14 @@ class SystemConfigurationEntryResponse(BaseModel):
     description: str
     connection_requirements: list[SystemConnectionRequirementResponse]
     state: Literal["CONFIGURED", "NOT_CONFIGURED", "GOVERNED_PROFILE_REQUIRED"]
-    management_plane: Literal["DEVELOPMENT_DATABASE", "DEPLOYMENT", "GOVERNED_PROVIDER_PROFILE"]
+    management_plane: Literal["DEPLOYMENT"]
     secret_reference_configured: bool
     embedding_state: Literal["NOT_APPLICABLE", "AVAILABLE", "DISABLED", "NOT_CONFIGURED"]
     configuration_yaml: str = ""
     template_yaml: str = ""
     display_yaml: str = ""
+    environment_template: str = ""
+    effective_configuration_yaml: str = ""
     version: int = Field(ge=0)
     configured_at: datetime | None = None
     runtime_supported: bool = False
@@ -2270,6 +2281,7 @@ class ChatQueryRequest(BaseModel):
     session_id: UUID | None = None
     question: str = Field(min_length=2, max_length=4000)
     maximum_evidence: int = Field(default=5, ge=1, le=10)
+    mode: ChatRetrievalMode = ChatRetrievalMode.AUTO
 
 
 class ChatEvidenceResponse(BaseModel):
@@ -2280,6 +2292,7 @@ class ChatEvidenceResponse(BaseModel):
     domain_id: UUID | None
     owner_department_id: UUID | None
     name: str
+    description: str | None
     source_type: str
     source_locator: str
     source_version: str
@@ -2287,6 +2300,21 @@ class ChatEvidenceResponse(BaseModel):
     effective_from: datetime
     effective_until: datetime | None
     extraction_method: str
+    rank: int = Field(ge=1, le=10)
+    retrieval_method: str = Field(min_length=1, max_length=100)
+
+
+class ChatRouteResponse(BaseModel):
+    requested_mode: ChatRetrievalMode
+    selected_mode: ChatRetrievalMode
+    reason: ChatRouteReason
+    adapter_state: ChatAdapterState
+
+
+class ChatWorkflowEventResponse(BaseModel):
+    stage: ChatWorkflowStage
+    status: ChatWorkflowStatus
+    detail_code: str = Field(min_length=1, max_length=100)
 
 
 class ChatQueryResponse(BaseModel):
@@ -2295,6 +2323,8 @@ class ChatQueryResponse(BaseModel):
     response_message_id: UUID
     answer: str
     persistence: Literal["PERSISTED", "EPHEMERAL_NO_STORE"]
+    route: ChatRouteResponse
+    workflow: list[ChatWorkflowEventResponse] = Field(max_length=20)
     evidence: list[ChatEvidenceResponse]
 
 
@@ -2302,6 +2332,7 @@ class ChatSessionResponse(BaseModel):
     id: UUID
     title: str
     is_favorite: bool
+    version: int = Field(ge=1)
     created_at: datetime
     updated_at: datetime
     message_count: int
@@ -2314,6 +2345,15 @@ class ChatMessageResponse(BaseModel):
     content: str
     evidence_json: list[ChatEvidenceResponse] | None
     created_at: datetime
+    route: ChatRouteResponse | None = None
+    workflow: list[ChatWorkflowEventResponse] = Field(default_factory=list, max_length=20)
+
+
+class ChatFavoriteRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    is_favorite: bool
+    expected_version: int = Field(ge=1)
 
 
 class CatalogSchemaMetricResponse(BaseModel):

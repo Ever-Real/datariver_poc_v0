@@ -969,9 +969,53 @@ export interface ChatSession {
   id: string
   title: string
   is_favorite: boolean
+  version: number
   created_at: string
   updated_at: string
   message_count: number
+}
+
+export type ChatMode = 'AUTO' | 'GENERAL' | 'VECTOR' | 'GRAPH'
+
+export interface ChatRouteDecision {
+  requested_mode: ChatMode
+  selected_mode: ChatMode
+  reason: 'EXPLICIT_SELECTION' | 'GRAPH_INTENT' | 'SEMANTIC_INTENT' | 'GENERAL_DEFAULT'
+  adapter_state: 'READY' | 'UNAVAILABLE' | 'FAILED'
+}
+
+export interface ChatWorkflowStep {
+  stage:
+    | 'AUTHORIZATION'
+    | 'BUDGET_RESERVATION'
+    | 'ROUTING'
+    | 'RETRIEVAL'
+    | 'RERANKING'
+    | 'COMPOSITION'
+    | 'CITATION_VALIDATION'
+    | 'PERSISTENCE'
+  status: 'COMPLETED' | 'SKIPPED' | 'UNAVAILABLE' | 'FAILED' | 'REFUSED'
+  detail_code: string
+}
+
+export interface ChatEvidence {
+  chunk_id: string
+  resource_id: string
+  classification: 'PUBLIC' | 'INTERNAL' | 'CONFIDENTIAL' | 'RESTRICTED'
+  system_id: string | null
+  domain_id: string | null
+  owner_department_id: string | null
+  name: string
+  description: string | null
+  source_type: string
+  source_locator: string
+  source_version: string
+  content_hash: string
+  effective_from: string
+  effective_until: string | null
+  extraction_method: string
+  rank: number
+  retrieval_method: string
 }
 
 export interface ChatMessage {
@@ -979,8 +1023,10 @@ export interface ChatMessage {
   session_id: string
   role: 'user' | 'assistant'
   content: string
-  evidence_json?: any
+  evidence_json: ChatEvidence[] | null
   created_at: string
+  route: ChatRouteDecision | null
+  workflow: ChatWorkflowStep[]
 }
 export interface ChatResponse {
   session_id: string
@@ -988,22 +1034,9 @@ export interface ChatResponse {
   response_message_id: string
   answer: string
   persistence: 'PERSISTED' | 'EPHEMERAL_NO_STORE'
-  evidence: Array<{
-    chunk_id: string
-    resource_id: string
-    classification: 'PUBLIC' | 'INTERNAL' | 'CONFIDENTIAL' | 'RESTRICTED'
-    system_id: string | null
-    domain_id: string | null
-    owner_department_id: string | null
-    name: string
-    source_type: string
-    source_locator: string
-    source_version: string
-    content_hash: string
-    effective_from: string
-    effective_until: string | null
-    extraction_method: string
-  }>
+  route: ChatRouteDecision
+  workflow: ChatWorkflowStep[]
+  evidence: ChatEvidence[]
 }
 
 export interface ApiProductVersion {
@@ -1306,7 +1339,7 @@ export interface SystemAssigneeUpdateResult {
 }
 
 export interface SystemConfigurationEntry {
-  system_id: 'POSTGRESQL' | 'OIDC_IDENTITY' | 'DATAHUB_GMS' | 'DATAHUB_FRONTEND' | 'AIRFLOW' | 'REDIS_CACHE' | 'REDIS_DELIVERY' | 'S3_STORAGE' | 'LLM_CHAT_MODEL' | 'LLM_EMBEDDING' | 'LLM_RERANKER' | 'NEO4J' | 'PROMETHEUS' | 'GRAFANA_DASHBOARD'
+  system_id: 'PLATFORM_RUNTIME' | 'POSTGRESQL' | 'OIDC_IDENTITY' | 'RETENTION_ARCHIVE' | 'DATAHUB_GMS' | 'DATAHUB_FRONTEND' | 'AIRFLOW' | 'REDIS_CACHE' | 'REDIS_DELIVERY' | 'S3_STORAGE' | 'LLM_CHAT_MODEL' | 'LLM_EMBEDDING' | 'LLM_RERANKER' | 'NEO4J' | 'PROMETHEUS' | 'GRAFANA_DASHBOARD'
   label: string
   category: 'PLATFORM' | 'CATALOG' | 'ORCHESTRATION' | 'STORAGE' | 'AI' | 'OBSERVABILITY'
   requirement: 'BOOTSTRAP_REQUIRED' | 'CORE_CONNECTOR' | 'FEATURE_CONNECTOR'
@@ -1319,12 +1352,14 @@ export interface SystemConfigurationEntry {
     example: string | null
   }>
   state: 'CONFIGURED' | 'NOT_CONFIGURED' | 'GOVERNED_PROFILE_REQUIRED'
-  management_plane: 'DEVELOPMENT_DATABASE' | 'DEPLOYMENT' | 'GOVERNED_PROVIDER_PROFILE'
+  management_plane: 'DEPLOYMENT'
   secret_reference_configured: boolean
   embedding_state: 'NOT_APPLICABLE' | 'AVAILABLE' | 'DISABLED' | 'NOT_CONFIGURED'
   configuration_yaml: string
   template_yaml: string
   display_yaml: string
+  environment_template: string
+  effective_configuration_yaml: string
   version: number
   configured_at: string | null
   runtime_supported: boolean
@@ -1347,7 +1382,7 @@ export interface SystemConfigurationTestResult {
     | 'S3_HEAD_BUCKET'
   latency_ms: number
   detail: string
-  configuration_version: number
+  configuration_version: number | null
   tested_at: string
 }
 
@@ -1596,6 +1631,8 @@ export interface ClassificationAccessRule {
   search_mode: ClassificationSearchMode
   chat_mode: ClassificationChatMode
   provider_profile_version_id: string | null
+  embedding_provider_profile_version_id: string | null
+  reranker_provider_profile_version_id: string | null
 }
 
 export interface ClassificationAccessPolicy {

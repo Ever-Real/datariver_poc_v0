@@ -810,7 +810,7 @@ def verify_host_development_ports() -> None:
     for fragment in (
         "set_env_value OIDC_ISSUER http://localhost:8081/realms/datariver",
         "set_env_value OIDC_JWKS_URL http://keycloak:8080/realms/datariver/protocol/openid-connect/certs",
-        "set_env_value SYSTEM_CONFIGURATION_RUNTIME_ACTIVATION_ENABLED false",
+        "set_env_value LOCAL_OLLAMA_CHAT_ENABLED false",
     ):
         if fragment not in wsl_block:
             raise AssertionError(
@@ -820,15 +820,31 @@ def verify_host_development_ports() -> None:
     admin_routes = (
         ROOT / "backend" / "src" / "datariver" / "interfaces" / "http" / "routes" / "admin.py"
     ).read_text(encoding="utf-8")
+    forbidden_routes = (
+        '@router.get(\n    "/system-configuration/{system_id}/versions"',
+        '@router.put(\n    "/system-configuration/{system_id}"',
+        '@router.post(\n    "/system-configuration/{system_id}/test-draft"',
+        '@router.post(\n    "/system-configuration/{system_id}/test"',
+        '@router.post(\n    "/system-configuration/{system_id}/activate"',
+    )
+    if any(fragment in admin_routes for fragment in forbidden_routes):
+        raise AssertionError("database-backed system configuration routes must remain retired")
     if (
-        "def _require_system_configuration_runtime_activation" not in admin_routes
-        or "_require_system_configuration_runtime_activation(container.settings)"
-        not in admin_routes
+        '@router.get("/system-configuration"' not in admin_routes
+        or '"/system-configuration/{system_id}/test-deployment"' not in admin_routes
     ):
         raise AssertionError(
-            "system configuration activation must fail closed when deployment settings own "
-            "runtime state"
+            "Admin system configuration must expose only inventory and deployment probes"
         )
+    runtime_consumers = (
+        ROOT / "backend" / "src" / "datariver" / "interfaces" / "http" / "factory.py",
+        *(ROOT / "backend" / "src" / "datariver" / "workers").glob("*.py"),
+    )
+    if any(
+        "resolve_activated_system_configuration" in path.read_text(encoding="utf-8")
+        for path in runtime_consumers
+    ):
+        raise AssertionError("API and workers must load only deployment-owned Settings")
 
     core = _yaml(ROOT / "compose.yaml")
     if "127.0.0.1:${API_PORT:-8000}:8000" not in core["services"]["api"].get("ports", []):

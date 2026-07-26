@@ -2,14 +2,21 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import os
+import subprocess
 import sys
 from pathlib import Path
-from types import ModuleType
+from types import ModuleType, SimpleNamespace
+from typing import Any
 
 import pytest
 
+from datariver.config import Settings
+
 ROOT = Path(__file__).resolve().parents[3]
 MODULE_PATH = ROOT / "scripts" / "platform_workflow.py"
+FRESH_SETUP_MODULE_PATH = ROOT / "scripts" / "workflow_fresh_setup.py"
+UPDATE_MODULE_PATH = ROOT / "scripts" / "workflow_update_restart.py"
 
 
 def _load_module() -> ModuleType:
@@ -23,6 +30,274 @@ def _load_module() -> ModuleType:
 
 
 workflow = _load_module()
+
+
+def _load_fresh_setup_module() -> ModuleType:
+    spec = importlib.util.spec_from_file_location(
+        "workflow_fresh_setup_for_profile_test",
+        FRESH_SETUP_MODULE_PATH,
+    )
+    assert spec is not None
+    assert spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def _load_update_module() -> ModuleType:
+    spec = importlib.util.spec_from_file_location(
+        "workflow_update_restart_for_environment_test",
+        UPDATE_MODULE_PATH,
+    )
+    assert spec is not None
+    assert spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def test_portable_profile_is_buildable_on_arm64_and_amd64_without_local_datahub() -> None:
+    profile = workflow.workflow_profile("portable-development")
+
+    assert profile.deployment_mode == "build"
+    assert profile.target_architectures == ("arm64", "amd64")
+    assert profile.default_datahub_mode == "external"
+    assert profile.local_datahub_supported is False
+    assert "portable-development" in workflow.WORKFLOW_PROFILE_NAMES
+
+
+def test_compatibility_profiles_keep_the_reviewed_topology_contract() -> None:
+    mac = workflow.workflow_profile("mac-development")
+    wsl = workflow.workflow_profile("wsl-preparation")
+
+    assert (
+        mac.deployment_mode,
+        mac.target_architectures,
+        mac.default_datahub_mode,
+        mac.default_redis_mode,
+        mac.default_storage_mode,
+        mac.default_airflow_mode,
+        mac.local_storage_endpoint,
+        mac.local_datahub_supported,
+        mac.local_reranker_supported,
+    ) == (
+        "build",
+        ("arm64",),
+        "local",
+        "local",
+        "local",
+        "local",
+        "http://host.docker.internal:9000",
+        True,
+        True,
+    )
+    assert (
+        wsl.deployment_mode,
+        wsl.target_architectures,
+        wsl.default_datahub_mode,
+        wsl.default_redis_mode,
+        wsl.default_storage_mode,
+        wsl.default_airflow_mode,
+        wsl.local_storage_endpoint,
+        wsl.local_datahub_supported,
+        wsl.local_reranker_supported,
+    ) == (
+        "offline",
+        ("amd64",),
+        "external",
+        "local",
+        "external",
+        "external",
+        "http://minio:9000",
+        False,
+        False,
+    )
+
+
+@pytest.mark.parametrize(
+    ("profile", "docker_platform", "expected"),
+    (
+        ("portable-development", "linux/aarch64", "arm64"),
+        ("portable-development", "linux/x86_64", "amd64"),
+        ("mac-development", "linux/aarch64", "arm64"),
+        ("wsl-preparation", "linux/x86_64", "amd64"),
+    ),
+)
+def test_platform_verification_accepts_each_profile_architecture(
+    profile: str,
+    docker_platform: str,
+    expected: str,
+) -> None:
+    fresh_setup = _load_fresh_setup_module()
+
+    class FakeRunner:
+        def output(self, _arguments: tuple[str, ...]) -> str:
+            return docker_platform
+
+    assert fresh_setup._verify_platform(FakeRunner(), profile=profile) == expected
+
+
+@pytest.mark.parametrize(
+    ("profile", "docker_platform"),
+    (
+        ("portable-development", "windows/amd64"),
+        ("portable-development", "linux/s390x"),
+        ("mac-development", "linux/x86_64"),
+        ("wsl-preparation", "linux/aarch64"),
+    ),
+)
+def test_platform_verification_rejects_wrong_os_or_architecture(
+    profile: str,
+    docker_platform: str,
+) -> None:
+    fresh_setup = _load_fresh_setup_module()
+
+    class FakeRunner:
+        def output(self, _arguments: tuple[str, ...]) -> str:
+            return docker_platform
+
+    with pytest.raises(workflow.WorkflowError):
+        fresh_setup._verify_platform(FakeRunner(), profile=profile)
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    (
+        {"deployment_mode": "mutable"},
+        {"target_architectures": ()},
+        {"target_architectures": ("s390x",)},
+        {"default_datahub_mode": "embedded"},
+        {"default_redis_mode": "shared"},
+        {"default_storage_mode": "unknown"},
+        {"default_airflow_mode": "unknown"},
+        {"local_storage_endpoint": "http://localhost:9000"},
+        {"local_datahub_supported": True},
+    ),
+)
+def test_profile_validator_rejects_invalid_topology(overrides: dict[str, object]) -> None:
+    values: dict[str, object] = {
+        "name": "invalid-profile",
+        "deployment_mode": "build",
+        "target_architectures": ("amd64",),
+        "default_datahub_mode": "external",
+        "default_redis_mode": "local",
+        "default_storage_mode": "local",
+        "default_airflow_mode": "skip",
+        "local_storage_endpoint": "http://minio:9000",
+        "local_datahub_supported": False,
+        "local_reranker_supported": False,
+    }
+    values.update(overrides)
+    profile = workflow.WorkflowProfile(**values)
+
+    with pytest.raises(workflow.WorkflowError):
+        profile.validate()
+
+
+def test_unknown_profile_lookup_and_state_path_fail_closed(tmp_path: Path) -> None:
+    with pytest.raises(workflow.WorkflowError):
+        workflow.workflow_profile("unknown")
+    with pytest.raises(workflow.WorkflowError):
+        workflow.state_path(tmp_path, "unknown")
+
+
+def test_compose_wrapper_uses_one_selected_file_for_interpolation_and_container_env(
+    tmp_path: Path,
+) -> None:
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    fake_docker = fake_bin / "docker"
+    fake_docker.write_text(
+        "#!/bin/sh\n"
+        "printf 'selected=%s\\n' \"$DATARIVER_ENV_FILE\"\n"
+        "printf 'argv='\n"
+        "printf '%s|' \"$@\"\n",
+        encoding="utf-8",
+    )
+    fake_docker.chmod(0o755)
+    environment = os.environ.copy()
+    environment["PATH"] = os.pathsep.join((os.fspath(fake_bin), environment["PATH"]))
+
+    for filename in (".env.portable-development", ".env.other-development"):
+        selected = tmp_path / filename
+        selected.write_text(
+            f"DATARIVER_CONNECTOR_NETWORK=network-{filename.removeprefix('.env.')}\n",
+            encoding="utf-8",
+        )
+        result = subprocess.run(  # noqa: S603 - repository script and bounded fake PATH.
+            (ROOT / "scripts" / "compose.sh", "--env-file", selected, "config"),
+            check=False,
+            capture_output=True,
+            text=True,
+            env=environment,
+        )
+
+        assert result.returncode == 0, result.stderr
+        assert f"selected={selected}" in result.stdout
+        assert f"argv=compose|--env-file|{selected}|config|" in result.stdout
+
+
+def test_applied_state_rejects_profile_deployment_mode_mismatch() -> None:
+    state = workflow.AppliedState(
+        profile="portable-development",
+        applied_commit="b" * 40,
+        runtime_commit="b" * 40,
+        env_file=".env.portable-development",
+        deployment_mode="offline",
+        release_dir="/not-valid-for-portable",
+        local_airflow=False,
+        local_datahub=False,
+        local_redis=True,
+        local_storage=True,
+        local_gateway=False,
+        local_graph=False,
+    )
+
+    with pytest.raises(workflow.WorkflowError, match="does not match"):
+        state.validate()
+
+
+def test_applied_state_rejects_portable_local_datahub() -> None:
+    state = workflow.AppliedState(
+        profile="portable-development",
+        applied_commit="b" * 40,
+        runtime_commit="b" * 40,
+        env_file=".env.portable-development",
+        deployment_mode="build",
+        release_dir=None,
+        local_airflow=False,
+        local_datahub=True,
+        local_redis=True,
+        local_storage=True,
+        local_gateway=False,
+        local_graph=False,
+    )
+
+    with pytest.raises(workflow.WorkflowError, match="local DataHub"):
+        state.validate()
+
+
+def test_portable_state_round_trip_preserves_exact_env_path(tmp_path: Path) -> None:
+    path = workflow.state_path(tmp_path, "portable-development")
+    state = workflow.AppliedState(
+        profile="portable-development",
+        applied_commit="b" * 40,
+        runtime_commit="b" * 40,
+        env_file=".env.portable-development",
+        deployment_mode="build",
+        release_dir=None,
+        local_airflow=False,
+        local_datahub=False,
+        local_redis=True,
+        local_storage=True,
+        local_gateway=False,
+        local_graph=False,
+    )
+
+    workflow.write_applied_state(path, state)
+
+    assert workflow.load_applied_state(path) == state
+    assert json.loads(path.read_text(encoding="utf-8"))["env_file"] == (".env.portable-development")
 
 
 @pytest.mark.parametrize(
@@ -89,6 +364,372 @@ def test_update_env_values_replaces_duplicates_without_exposing_other_values(
     assert "DATAHUB_BASE_URL=http://10.20.30.40:8080" in content
     assert "NO_PROXY=127.0.0.1,localhost,10.20.30.40" in content
     assert "SENSITIVE_VALUE=do-not-touch" in content
+
+
+def test_environment_fingerprints_detect_keys_without_persisting_values() -> None:
+    previous = workflow.environment_key_hashes(
+        {
+            "DATAHUB_BASE_URL": "https://old.example",
+            "DATAHUB_SECRET_REF": "file:/run/secrets/datahub_token",
+        }
+    )
+    current = workflow.environment_key_hashes(
+        {
+            "DATAHUB_BASE_URL": "https://new.example",
+            "DATAHUB_SECRET_REF": "file:/run/secrets/datahub_token",
+        }
+    )
+
+    assert workflow.changed_environment_keys(previous, current) == ("DATAHUB_BASE_URL",)
+    assert all(len(value) == 64 for value in current.values())
+    assert "new.example" not in json.dumps(current)
+    assert "datahub_token" not in json.dumps(current)
+
+
+def test_environment_change_classification_restarts_only_known_consumers() -> None:
+    llm = workflow.classify_environment_changes(("LOCAL_OLLAMA_CHAT_MODEL",))
+    assert llm.services == ("api",)
+    assert llm.requires_migration is False
+
+    embedding = workflow.classify_environment_changes(("LOCAL_OLLAMA_EMBEDDING_MODEL",))
+    assert set(embedding.services) == {"api", "knowledge-source-worker"}
+
+    reranker = workflow.classify_environment_changes(("LOCAL_LLAMA_CPP_RERANKER_MODEL",))
+    assert reranker.services == ("api",)
+
+    identity = workflow.classify_environment_changes(("OIDC_ISSUER",))
+    assert identity.services == ("api",)
+    assert identity.configure_keycloak is False
+
+    browser_identity = workflow.classify_environment_changes(("OIDC_CLIENT_ID",))
+    assert browser_identity.services == ("web",)
+
+    identity_origin = workflow.classify_environment_changes(("OIDC_PUBLIC_ORIGIN",))
+    assert set(identity_origin.services) == {"web", "keycloak"}
+    assert identity_origin.configure_keycloak is True
+
+    identity_admin = workflow.classify_environment_changes(("IDENTITY_ADMIN_ENABLED",))
+    assert identity_admin.services == ("api",)
+
+    storage = workflow.classify_environment_changes(("S3_ENDPOINT_URL",))
+    assert set(storage.services) == set(workflow.BACKEND_RUNTIME_SERVICES)
+    assert storage.restart_local_connectors is False
+
+    browser_storage = workflow.classify_environment_changes(("S3_PUBLIC_ORIGIN",))
+    assert browser_storage.services == ("web",)
+
+    app_origin = workflow.classify_environment_changes(("APP_PUBLIC_ORIGIN",))
+    assert app_origin.local_connector_services == ("minio",)
+
+    connector_network = workflow.classify_environment_changes(("DATARIVER_CONNECTOR_NETWORK",))
+    assert set(connector_network.local_connector_services) == set(workflow.LOCAL_CONNECTOR_SERVICES)
+    assert connector_network.restart_airflow is True
+    assert connector_network.restart_graph is True
+
+    gateway = workflow.classify_environment_changes(("APISIX_PORT", "DATARIVER_API_UPSTREAM"))
+    assert gateway.restart_gateway is True
+
+
+def test_every_documented_environment_key_has_an_explicit_consumer_plan() -> None:
+    documented: set[str] = set()
+    for raw_line in (ROOT / ".env.example").read_text(encoding="utf-8").splitlines():
+        line = raw_line.removeprefix("# ").strip()
+        key, separator, _value = line.partition("=")
+        if separator and key and key.replace("_", "").isalnum() and key.upper() == key:
+            documented.add(key)
+
+    unclassified: list[str] = []
+    for key in sorted(documented):
+        try:
+            workflow.classify_environment_changes((key,), reject_unknown=True)
+        except workflow.WorkflowError:
+            unclassified.append(key)
+
+    assert unclassified == []
+
+
+def test_every_live_settings_field_has_a_documented_explicit_consumer_plan() -> None:
+    retired = {
+        "SYSTEM_CONFIGURATION_RUNTIME_ACTIVATION_ENABLED",
+        "SYSTEM_CONFIGURATION_RUNTIME_WORKSPACE_ID",
+        "SYSTEM_CONFIGURATION_RUNTIME_VERSIONS",
+        "SYSTEM_CONFIGURATION_RUNTIME_HASHES",
+    }
+    live_settings = {name.upper() for name in Settings.model_fields} - retired
+    documented: set[str] = set()
+    for raw_line in (ROOT / ".env.example").read_text(encoding="utf-8").splitlines():
+        line = raw_line.removeprefix("# ").strip()
+        key, separator, _value = line.partition("=")
+        if separator and key and key.replace("_", "").isalnum() and key.upper() == key:
+            documented.add(key)
+
+    assert live_settings - documented == set()
+    for key in sorted(live_settings):
+        workflow.classify_environment_changes((key,), reject_unknown=True)
+
+
+def test_worker_specific_environment_keys_do_not_restart_unrelated_processes() -> None:
+    assert workflow.classify_environment_changes(("GOVERNANCE_APPLY_LEASE_SECONDS",)).services == (
+        "api",
+        "governance-apply-worker",
+    )
+    assert workflow.classify_environment_changes(("OUTBOX_MAXIMUM_ATTEMPTS",)).services == (
+        "outbox-relay",
+    )
+    assert workflow.classify_environment_changes(("UPLOAD_LEASE_SECONDS",)).services == (
+        "upload-worker",
+    )
+    assert workflow.classify_environment_changes(("UPLOAD_VALIDATION_LEASE_SECONDS",)).services == (
+        "upload-validation-worker",
+    )
+    assert workflow.classify_environment_changes(("CACHE_DEFAULT_TTL_SECONDS",)).services == (
+        "api",
+    )
+    assert workflow.classify_environment_changes(("CATALOG_EXPORT_WORKER_ENABLED",)).services == (
+        "api",
+        "catalog-export-worker",
+    )
+    assert workflow.classify_environment_changes(("EVENT_RETENTION_DAYS",)).services == ()
+
+
+def test_environment_plan_merges_with_source_plan_without_inferred_migration() -> None:
+    result = workflow.merge_change_plans(
+        workflow.classify_changes(("frontend/src/App.tsx",)),
+        workflow.classify_environment_changes(("LOCAL_OLLAMA_CHAT_MODEL",)),
+    )
+
+    assert set(result.services) == {"api", "web"}
+    assert result.requires_migration is False
+
+
+def test_update_main_recreates_env_consumer_and_persists_state_only_after_success(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    update = _load_update_module()
+    env_file = tmp_path / ".env.portable-development"
+    env_file.write_text(
+        "LOCAL_OLLAMA_CHAT_ENABLED=true\nLOCAL_OLLAMA_CHAT_MODEL=new-installed-model\n",
+        encoding="utf-8",
+    )
+    state = workflow.AppliedState(
+        profile="portable-development",
+        applied_commit="a" * 40,
+        runtime_commit="a" * 40,
+        env_file=os.fspath(env_file),
+        deployment_mode="build",
+        release_dir=None,
+        local_airflow=False,
+        local_datahub=False,
+        local_redis=False,
+        local_storage=False,
+        local_gateway=False,
+        local_graph=False,
+        environment_key_hashes=workflow.environment_key_hashes(
+            {
+                "LOCAL_OLLAMA_CHAT_ENABLED": "true",
+                "LOCAL_OLLAMA_CHAT_MODEL": "old-installed-model",
+            }
+        ),
+    )
+    compose_calls: list[tuple[str, ...]] = []
+    written: list[Any] = []
+
+    class FakeRunner:
+        def note(self, _message: str) -> None:
+            return None
+
+    monkeypatch.setattr(
+        update,
+        "parse_args",
+        lambda: SimpleNamespace(
+            profile="portable-development",
+            env_file=env_file,
+            release_dir=None,
+            git_pull=False,
+            reload_release=False,
+            refresh_bootstrap=False,
+            skip_catalog_sync=True,
+            assume_yes=True,
+        ),
+    )
+    monkeypatch.setattr(update, "Runner", FakeRunner)
+    monkeypatch.setattr(update, "require_command", lambda _command: None)
+    monkeypatch.setattr(update, "require_clean_worktree", lambda _runner: None)
+    monkeypatch.setattr(update, "state_path", lambda _root, _profile: tmp_path / "state.json")
+    monkeypatch.setattr(update, "load_applied_state", lambda _path: state)
+    monkeypatch.setattr(update, "current_commit", lambda _runner: "a" * 40)
+    monkeypatch.setattr(update, "_git_paths", lambda _runner, _old, _new: ())
+    monkeypatch.setattr(update, "_running_services", lambda *_args, **_kwargs: ("api", "web"))
+    monkeypatch.setattr(
+        update,
+        "_compose",
+        lambda _runner, **kwargs: compose_calls.append(tuple(kwargs["trailing"])),
+    )
+    monkeypatch.setattr(update, "_health_check", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(update, "_probe_datahub", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        update,
+        "write_applied_state",
+        lambda _path, next_state: written.append(next_state),
+    )
+
+    assert update.main() == 0
+    assert ("build", "api") in compose_calls
+    recreate = next(call for call in compose_calls if call[:2] == ("up", "-d"))
+    assert "--force-recreate" in recreate
+    assert recreate[-1] == "api"
+    assert written[-1].environment_key_hashes == workflow.environment_key_hashes(
+        workflow.read_env_values(env_file)
+    )
+
+    written.clear()
+
+    def fail_recreate(_runner: object, **kwargs: object) -> None:
+        raw_trailing = kwargs["trailing"]
+        assert isinstance(raw_trailing, tuple)
+        trailing = raw_trailing
+        compose_calls.append(trailing)
+        if trailing[:2] == ("up", "-d"):
+            raise workflow.WorkflowError("simulated recreate failure")
+
+    monkeypatch.setattr(update, "_compose", fail_recreate)
+    assert update.main() == 2
+    assert written == []
+
+
+def test_update_main_with_unchanged_environment_does_not_recreate(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    update = _load_update_module()
+    env_file = tmp_path / ".env.portable-development"
+    env_file.write_text("LOCAL_OLLAMA_CHAT_ENABLED=false\n", encoding="utf-8")
+    hashes = workflow.environment_key_hashes(workflow.read_env_values(env_file))
+    state = workflow.AppliedState(
+        profile="portable-development",
+        applied_commit="a" * 40,
+        runtime_commit="a" * 40,
+        env_file=os.fspath(env_file),
+        deployment_mode="build",
+        release_dir=None,
+        local_airflow=False,
+        local_datahub=False,
+        local_redis=False,
+        local_storage=False,
+        local_gateway=False,
+        local_graph=False,
+        environment_key_hashes=hashes,
+    )
+    compose_calls: list[tuple[str, ...]] = []
+
+    class FakeRunner:
+        def note(self, _message: str) -> None:
+            return None
+
+    monkeypatch.setattr(
+        update,
+        "parse_args",
+        lambda: SimpleNamespace(
+            profile="portable-development",
+            env_file=env_file,
+            release_dir=None,
+            git_pull=False,
+            reload_release=False,
+            refresh_bootstrap=False,
+            skip_catalog_sync=True,
+            assume_yes=True,
+        ),
+    )
+    monkeypatch.setattr(update, "Runner", FakeRunner)
+    monkeypatch.setattr(update, "require_command", lambda _command: None)
+    monkeypatch.setattr(update, "require_clean_worktree", lambda _runner: None)
+    monkeypatch.setattr(update, "state_path", lambda _root, _profile: tmp_path / "state.json")
+    monkeypatch.setattr(update, "load_applied_state", lambda _path: state)
+    monkeypatch.setattr(update, "current_commit", lambda _runner: "a" * 40)
+    monkeypatch.setattr(update, "_git_paths", lambda _runner, _old, _new: ())
+    monkeypatch.setattr(update, "_running_services", lambda *_args, **_kwargs: ("api", "web"))
+    monkeypatch.setattr(
+        update,
+        "_compose",
+        lambda _runner, **kwargs: compose_calls.append(tuple(kwargs["trailing"])),
+    )
+    monkeypatch.setattr(
+        update,
+        "write_applied_state",
+        lambda _path, _next_state: None,
+    )
+
+    assert update.main() == 0
+    assert compose_calls == [("config", "--quiet")]
+
+
+def test_update_main_recreates_only_changed_local_connector(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    update = _load_update_module()
+    env_file = tmp_path / ".env.portable-development"
+    env_file.write_text("MINIO_API_PORT=19000\n", encoding="utf-8")
+    state = workflow.AppliedState(
+        profile="portable-development",
+        applied_commit="a" * 40,
+        runtime_commit="a" * 40,
+        env_file=os.fspath(env_file),
+        deployment_mode="build",
+        release_dir=None,
+        local_airflow=False,
+        local_datahub=False,
+        local_redis=True,
+        local_storage=True,
+        local_gateway=False,
+        local_graph=False,
+        environment_key_hashes=workflow.environment_key_hashes({"MINIO_API_PORT": "9000"}),
+    )
+    compose_calls: list[tuple[str, ...]] = []
+
+    class FakeRunner:
+        def note(self, _message: str) -> None:
+            return None
+
+    monkeypatch.setattr(
+        update,
+        "parse_args",
+        lambda: SimpleNamespace(
+            profile="portable-development",
+            env_file=env_file,
+            release_dir=None,
+            git_pull=False,
+            reload_release=False,
+            refresh_bootstrap=False,
+            skip_catalog_sync=True,
+            assume_yes=True,
+        ),
+    )
+    monkeypatch.setattr(update, "Runner", FakeRunner)
+    monkeypatch.setattr(update, "require_command", lambda _command: None)
+    monkeypatch.setattr(update, "require_clean_worktree", lambda _runner: None)
+    monkeypatch.setattr(update, "state_path", lambda _root, _profile: tmp_path / "state.json")
+    monkeypatch.setattr(update, "load_applied_state", lambda _path: state)
+    monkeypatch.setattr(update, "current_commit", lambda _runner: "a" * 40)
+    monkeypatch.setattr(update, "_git_paths", lambda _runner, _old, _new: ())
+    monkeypatch.setattr(update, "_running_services", lambda *_args, **_kwargs: ())
+    monkeypatch.setattr(
+        update,
+        "_compose",
+        lambda _runner, **kwargs: compose_calls.append(tuple(kwargs["trailing"])),
+    )
+    monkeypatch.setattr(update, "_health_check", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(update, "_probe_datahub", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(update, "write_applied_state", lambda *_args: None)
+
+    assert update.main() == 0
+    recreate = next(call for call in compose_calls if call[:2] == ("up", "-d"))
+    assert "--force-recreate" in recreate
+    assert recreate[-1] == "minio"
+    assert "redis-cache" not in recreate
+    assert "redis-delivery" not in recreate
+    assert "api" not in recreate
 
 
 def test_merge_no_proxy_adds_hosts_once_and_preserves_existing_order() -> None:
@@ -201,6 +842,7 @@ def test_write_and_load_state_round_trip(tmp_path: Path) -> None:
         local_storage=False,
         local_gateway=False,
         local_graph=False,
+        environment_key_hashes={"DATAHUB_BASE_URL": "d" * 64},
     )
 
     workflow.write_applied_state(state_path, state)
@@ -208,6 +850,92 @@ def test_write_and_load_state_round_trip(tmp_path: Path) -> None:
     assert workflow.load_applied_state(state_path) == state
     assert json.loads(state_path.read_text(encoding="utf-8"))["applied_commit"] == "b" * 40
     assert json.loads(state_path.read_text(encoding="utf-8"))["runtime_commit"] == "a" * 40
+    assert json.loads(state_path.read_text(encoding="utf-8"))["environment_key_hashes"] == {
+        "DATAHUB_BASE_URL": "d" * 64
+    }
+
+
+def test_load_state_accepts_legacy_state_without_environment_fingerprints(
+    tmp_path: Path,
+) -> None:
+    state_path = tmp_path / "legacy-state.json"
+    state_path.write_text(
+        json.dumps(
+            {
+                "profile": "portable-development",
+                "applied_commit": "c" * 40,
+                "runtime_commit": "c" * 40,
+                "env_file": ".env.portable-development",
+                "deployment_mode": "build",
+                "release_dir": None,
+                "local_airflow": False,
+                "local_datahub": False,
+                "local_redis": True,
+                "local_storage": True,
+                "local_gateway": False,
+                "local_graph": False,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    state = workflow.load_applied_state(state_path)
+
+    assert state.environment_key_hashes == {}
+
+
+def test_load_state_rejects_non_mapping_environment_fingerprints(tmp_path: Path) -> None:
+    state_path = tmp_path / "invalid-state.json"
+    state_path.write_text(
+        json.dumps(
+            {
+                "profile": "portable-development",
+                "applied_commit": "c" * 40,
+                "runtime_commit": "c" * 40,
+                "env_file": ".env.portable-development",
+                "deployment_mode": "build",
+                "release_dir": None,
+                "local_airflow": False,
+                "local_datahub": False,
+                "local_redis": True,
+                "local_storage": True,
+                "local_gateway": False,
+                "local_graph": False,
+                "environment_key_hashes": [],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(workflow.WorkflowError, match="fingerprints"):
+        workflow.load_applied_state(state_path)
+
+
+def test_load_state_rejects_non_string_environment_fingerprint(tmp_path: Path) -> None:
+    state_path = tmp_path / "invalid-state.json"
+    state_path.write_text(
+        json.dumps(
+            {
+                "profile": "portable-development",
+                "applied_commit": "c" * 40,
+                "runtime_commit": "c" * 40,
+                "env_file": ".env.portable-development",
+                "deployment_mode": "build",
+                "release_dir": None,
+                "local_airflow": False,
+                "local_datahub": False,
+                "local_redis": True,
+                "local_storage": True,
+                "local_gateway": False,
+                "local_graph": False,
+                "environment_key_hashes": {"DATAHUB_BASE_URL": 42},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(workflow.WorkflowError, match="fingerprints"):
+        workflow.load_applied_state(state_path)
 
 
 def test_load_state_rejects_unknown_fields(tmp_path: Path) -> None:
@@ -285,6 +1013,7 @@ def test_operator_workflow_changes_do_not_restart_runtime() -> None:
             "scripts/platform_workflow.py",
             "scripts/workflow_fresh_setup.py",
             "scripts/workflow_update_restart.py",
+            "scripts/verify_static.py",
         )
     )
 

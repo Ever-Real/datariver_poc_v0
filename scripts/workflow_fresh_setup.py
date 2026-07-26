@@ -15,6 +15,7 @@ from platform_workflow import (
     AIRFLOW_SERVICES,
     DEFAULT_RUNTIME_SERVICES,
     ROOT,
+    WORKFLOW_PROFILE_NAMES,
     AppliedState,
     Runner,
     WorkflowError,
@@ -22,6 +23,7 @@ from platform_workflow import (
     copy_secret,
     current_commit,
     endpoint_host,
+    environment_key_hashes,
     install_secret,
     merge_no_proxy,
     normalize_secret_permissions,
@@ -40,6 +42,7 @@ from platform_workflow import (
     update_env_values,
     validate_endpoint,
     validate_username_password_secret,
+    workflow_profile,
     write_applied_state,
 )
 
@@ -91,13 +94,14 @@ for url in sys.argv[1:]:
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
-            "Create and validate a new DataRiver Mac development or WSL preparation environment. "
-            "Provider credentials are accepted only from files or hidden interactive input."
+            "Create and validate a new DataRiver portable/Mac development or WSL preparation "
+            "environment. Provider credentials are accepted only from files or hidden "
+            "interactive input."
         )
     )
     parser.add_argument(
         "--profile",
-        choices=("mac-development", "wsl-preparation"),
+        choices=WORKFLOW_PROFILE_NAMES,
         required=True,
     )
     parser.add_argument("--env-file", type=Path)
@@ -141,12 +145,6 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def _defaults(profile: str) -> tuple[str, str, str, str]:
-    if profile == "mac-development":
-        return "local", "local", "local", "local"
-    return "external", "local", "external", "external"
-
-
 def _select_mode(
     supplied: str | None,
     *,
@@ -172,9 +170,10 @@ def _verify_platform(runner: Runner, *, profile: str) -> str:
     except ValueError as error:
         raise WorkflowError("Docker returned an invalid OS/architecture value.") from error
     normalized = _normalize_architecture(architecture)
-    expected = "arm64" if profile == "mac-development" else "amd64"
-    if operating_system != "linux" or normalized != expected:
-        raise WorkflowError(f"{profile} requires Docker linux/{expected}, but the daemon is {raw}.")
+    supported = workflow_profile(profile).target_architectures
+    if operating_system != "linux" or normalized not in supported:
+        expected = ", ".join(f"linux/{value}" for value in supported)
+        raise WorkflowError(f"{profile} requires one of {expected}, but the daemon is {raw}.")
     return normalized
 
 
@@ -277,9 +276,7 @@ def _configure_external_storage(env_file: Path) -> tuple[str, str]:
 
 def _configure_local_storage(env_file: Path, *, profile: str) -> tuple[str, str]:
     public_port = "9000"
-    endpoint = (
-        "http://host.docker.internal:9000" if profile == "mac-development" else "http://minio:9000"
-    )
+    endpoint = workflow_profile(profile).local_storage_endpoint
     public_endpoint = f"http://localhost:{public_port}"
     update_env_values(
         env_file,
@@ -467,7 +464,7 @@ def _health_check(runner: Runner, *, env_file: Path) -> None:
 
 
 def _ensure_local_reranker(runner: Runner, *, env_file: Path, profile: str) -> None:
-    if profile != "mac-development":
+    if not workflow_profile(profile).local_reranker_supported:
         return
     values = read_env_values(env_file)
     if values.get("LOCAL_LLAMA_CPP_RERANKER_ENABLED", "").lower() != "true":
@@ -495,33 +492,33 @@ def main() -> int:
             require_command(command)
         require_clean_worktree(runner)
         commit = current_commit(runner)
+        profile = workflow_profile(args.profile)
         architecture = _verify_platform(runner, profile=args.profile)
-        default_datahub, default_redis, default_storage, default_airflow = _defaults(args.profile)
         datahub_mode = _select_mode(
             args.datahub_mode,
             label="DataHub 배치",
             choices=("local", "external"),
-            default=default_datahub,
+            default=profile.default_datahub_mode,
         )
-        if datahub_mode == "local" and args.profile != "mac-development":
-            raise WorkflowError("Local DataHub quickstart is supported only on the Mac profile.")
+        if datahub_mode == "local" and not profile.local_datahub_supported:
+            raise WorkflowError(f"Local DataHub quickstart is not supported by {profile.name}.")
         redis_mode = _select_mode(
             args.redis_mode,
             label="Redis 배치",
             choices=("local", "external"),
-            default=default_redis,
+            default=profile.default_redis_mode,
         )
         storage_mode = _select_mode(
             args.storage_mode,
             label="MinIO/S3 배치",
             choices=("local", "external", "skip"),
-            default=default_storage,
+            default=profile.default_storage_mode,
         )
         airflow_mode = _select_mode(
             args.airflow_mode,
             label="Airflow 배치",
             choices=("local", "external", "skip"),
-            default=default_airflow,
+            default=profile.default_airflow_mode,
         )
         if args.with_graph and args.graph_mode not in {"skip", "local"}:
             raise WorkflowError("--with-graph conflicts with a non-local --graph-mode.")
@@ -530,12 +527,12 @@ def main() -> int:
         env_file = (
             args.env_file.expanduser().resolve() if args.env_file else ROOT / f".env.{args.profile}"
         )
-        offline = args.profile == "wsl-preparation"
+        offline = profile.deployment_mode == "offline"
         layout = None
         if offline:
             require_command("sha256sum")
             if args.release_dir is None:
-                raise WorkflowError("--release-dir is required for wsl-preparation.")
+                raise WorkflowError(f"--release-dir is required for {profile.name}.")
             layout = release_layout(args.release_dir, architecture=architecture)
             release_optional_compose(
                 layout,
@@ -693,7 +690,7 @@ def main() -> int:
                 "keycloak",
                 *DEFAULT_RUNTIME_SERVICES,
             )
-            runner.note("Mac 현재 소스에서 DataRiver 이미지를 빌드합니다.")
+            runner.note("선택한 build 프로필에서 현재 소스의 DataRiver 이미지를 빌드합니다.")
             _compose(
                 runner,
                 env_file=env_file,
@@ -937,6 +934,7 @@ def main() -> int:
                 local_storage=storage_mode == "local",
                 local_gateway=args.with_gateway,
                 local_graph=graph_mode == "local",
+                environment_key_hashes=environment_key_hashes(read_env_values(env_file)),
             ),
         )
         runner.note("신규 설치가 완료되었고 적용 커밋 상태를 기록했습니다.")

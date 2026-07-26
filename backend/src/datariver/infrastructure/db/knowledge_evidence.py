@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Sequence
 from uuid import UUID
 
 from sqlalchemy import Text, cast, or_, select
@@ -57,37 +58,87 @@ class SqlKnowledgeEvidenceReader(KnowledgeEvidenceReader):
                 )
             ).all()
         )
-        candidates: list[KnowledgeEvidenceCandidate] = []
-        for graph, release, node in rows:
-            classification = Classification(max(graph.classification, node.classification))
-            name = str(
-                node.properties.get("name")
-                or node.properties.get("label")
-                or node.properties.get("title")
-                or f"{node.entity_type} {node.entity_id}"
-            )[:500]
-            description_value = node.properties.get("description") or node.properties.get("summary")
-            candidates.append(
-                KnowledgeEvidenceCandidate(
-                    evidence=build_evidence_chunk(
-                        workspace_id=workspace_id,
-                        resource_id=node.entity_id,
-                        classification=classification,
-                        system_id=None,
-                        domain_id=None,
-                        owner_department_id=None,
-                        name=name,
-                        description=str(description_value)[:1000] if description_value else None,
-                        source_locator=(
-                            f"urn:datariver:knowledge-node:{graph.id}:{release.id}:{node.entity_id}"
-                        ),
-                        source_version=release.content_hash,
-                        effective_from=release.published_at,
-                        extraction_method="KNOWLEDGE_RELEASE_NODE_V1",
-                        source_type="KNOWLEDGE_NODE",
-                    ),
-                    graph_id=graph.id,
-                    classification=classification,
-                )
+        return tuple(
+            self._candidate(
+                workspace_id=workspace_id,
+                graph=graph,
+                release=release,
+                node=node,
             )
-        return tuple(candidates)
+            for graph, release, node in rows
+        )
+
+    async def get_active_nodes_by_resource_ids(
+        self,
+        *,
+        workspace_id: UUID,
+        resource_ids: Sequence[UUID],
+    ) -> tuple[KnowledgeEvidenceCandidate, ...]:
+        unique_ids = tuple(dict.fromkeys(resource_ids))
+        if not unique_ids:
+            return ()
+        rows = (
+            await self._session.execute(
+                select(GraphModel, ReleaseModel, ReleaseNodeModel)
+                .join(ReleaseModel, ReleaseModel.id == GraphModel.active_release_id)
+                .join(ReleaseNodeModel, ReleaseNodeModel.release_id == ReleaseModel.id)
+                .where(
+                    GraphModel.workspace_id == workspace_id,
+                    ReleaseModel.id.in_(
+                        governed_release_ids(
+                            workspace_id=workspace_id,
+                            graph_id=ReleaseModel.graph_id,
+                        ).correlate(ReleaseModel)
+                    ),
+                    ReleaseNodeModel.entity_id.in_(unique_ids),
+                )
+                .order_by(ReleaseNodeModel.entity_id, GraphModel.id)
+            )
+        ).all()
+        return tuple(
+            self._candidate(
+                workspace_id=workspace_id,
+                graph=graph,
+                release=release,
+                node=node,
+            )
+            for graph, release, node in rows
+        )
+
+    @staticmethod
+    def _candidate(
+        *,
+        workspace_id: UUID,
+        graph: GraphModel,
+        release: ReleaseModel,
+        node: ReleaseNodeModel,
+    ) -> KnowledgeEvidenceCandidate:
+        classification = Classification(max(graph.classification, node.classification))
+        name = str(
+            node.properties.get("name")
+            or node.properties.get("label")
+            or node.properties.get("title")
+            or f"{node.entity_type} {node.entity_id}"
+        )[:500]
+        description_value = node.properties.get("description") or node.properties.get("summary")
+        return KnowledgeEvidenceCandidate(
+            evidence=build_evidence_chunk(
+                workspace_id=workspace_id,
+                resource_id=node.entity_id,
+                classification=classification,
+                system_id=None,
+                domain_id=None,
+                owner_department_id=None,
+                name=name,
+                description=str(description_value)[:1000] if description_value else None,
+                source_locator=(
+                    f"urn:datariver:knowledge-node:{graph.id}:{release.id}:{node.entity_id}"
+                ),
+                source_version=release.content_hash,
+                effective_from=release.published_at,
+                extraction_method="KNOWLEDGE_RELEASE_NODE_V1",
+                source_type="KNOWLEDGE_NODE",
+            ),
+            graph_id=graph.id,
+            classification=classification,
+        )

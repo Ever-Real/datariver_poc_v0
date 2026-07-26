@@ -67,8 +67,6 @@ def resolve_knowledge_runtime_bindings(settings: Settings) -> KnowledgeRuntimeBi
     )
     return KnowledgeRuntimeBindings(
         embedding=_activated_binding(
-            settings=settings,
-            system_id="LLM_EMBEDDING",
             provider=coordinates.provider,
             model=coordinates.embedding_model,
             prompt_version="embedding-v1",
@@ -77,8 +75,6 @@ def resolve_knowledge_runtime_bindings(settings: Settings) -> KnowledgeRuntimeBi
             deployment_configuration_hash=embedding_deployment_hash,
         ),
         extraction=_activated_binding(
-            settings=settings,
-            system_id="LLM_CHAT_MODEL",
             provider=coordinates.provider,
             model=coordinates.chat_model,
             prompt_version=EXTRACTION_PROMPT_VERSION,
@@ -87,8 +83,6 @@ def resolve_knowledge_runtime_bindings(settings: Settings) -> KnowledgeRuntimeBi
             deployment_configuration_hash=chat_deployment_hash,
         ),
         graphrag=_activated_binding(
-            settings=settings,
-            system_id="LLM_CHAT_MODEL",
             provider=coordinates.provider,
             model=coordinates.chat_model,
             prompt_version=GRAPHRAG_PROMPT_VERSION,
@@ -239,8 +233,6 @@ def _deployment_hash(
 
 def _activated_binding(
     *,
-    settings: Settings,
-    system_id: str,
     provider: str,
     model: str,
     prompt_version: str,
@@ -248,19 +240,13 @@ def _activated_binding(
     adapter_contract: str,
     deployment_configuration_hash: str,
 ) -> ModelBinding:
-    version = settings.system_configuration_runtime_versions.get(system_id)
-    configuration_hash = settings.system_configuration_runtime_hashes.get(system_id)
-    if version is not None and configuration_hash is None:
-        raise ConflictError(
-            "The activated model configuration is missing its immutable revision hash."
-        )
     return ModelBinding.activated(
         provider=provider,
         model=model,
         prompt_version=prompt_version,
         tool_schema_version=tool_schema_version,
-        configuration_version=version,
-        configuration_hash=configuration_hash,
+        configuration_version=None,
+        configuration_hash=None,
         adapter_contract=adapter_contract,
         deployment_configuration_hash=deployment_configuration_hash,
     )

@@ -1,31 +1,32 @@
-import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
+import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { describe, expect, it, vi } from 'vitest'
 import type { ApiClient } from '../../api/client'
 import type { AdminReadContext, SystemConfigurationEntry } from '../../api/types'
 import { AdminApi } from './adminApi'
-import type { PendingAdminMutation } from './AdminMutationConfirmDialog'
 import { getAdminMessages } from './messages'
 import { SystemConfigurationAdmin } from './SystemConfigurationAdmin'
 
-const initialEntry: SystemConfigurationEntry = {
+const deploymentEntry: SystemConfigurationEntry = {
   system_id: 'DATAHUB_GMS',
   label: 'DataHub GMS',
   category: 'CATALOG',
   requirement: 'CORE_CONNECTOR',
   description: 'Catalog metadata API.',
   connection_requirements: [],
-  state: 'NOT_CONFIGURED',
-  management_plane: 'DEVELOPMENT_DATABASE',
-  secret_reference_configured: false,
+  state: 'CONFIGURED',
+  management_plane: 'DEPLOYMENT',
+  secret_reference_configured: true,
   embedding_state: 'NOT_APPLICABLE',
   configuration_yaml: '',
-  template_yaml: 'base_url: ""\noptions:\n  timeout_seconds: 30\n',
-  display_yaml: '',
+  template_yaml: '',
+  display_yaml: 'base_url: http://datahub-gms:8080\n',
+  environment_template: 'DATAHUB_BASE_URL=\nDATAHUB_SECRET_REF=',
+  effective_configuration_yaml: 'base_url: http://datahub-gms:8080\n',
   version: 0,
   configured_at: null,
   runtime_supported: true,
   restart_scope: 'API_AND_WORKERS',
-  activation_state: 'NOT_CONFIGURED',
+  activation_state: 'DEPLOYMENT_MANAGED',
   tested_version: null,
   test_status: null,
   tested_at: null,
@@ -34,267 +35,154 @@ const initialEntry: SystemConfigurationEntry = {
   applied_version: null,
 }
 
-const savedEntry: SystemConfigurationEntry = {
-  ...initialEntry,
-  state: 'CONFIGURED',
-  secret_reference_configured: true,
-  configuration_yaml: 'base_url: http://datahub-gms:8080\nsecret_references:\n  token: file:/run/secrets/datahub_token\n',
-  display_yaml: 'base_url: http://datahub-gms:8080\nsecret_references:\n  token: file:/run/secrets/datahub_token\noptions:\n  timeout_seconds: 30\n',
-  version: 1,
-  configured_at: '2026-07-20T09:00:00Z',
-  activation_state: 'SAVED_UNTESTED',
+const context: AdminReadContext = {
+  subject_id: 'administrator',
+  workspace_id: 'workspace-one',
+  display_name: 'Administrator',
+  authentication_assurance: 'PASSWORD',
+  fallback_enabled: false,
+  allowed_operations: ['SYSTEM_CONFIGURATION_READ'],
+  action_vocabulary: [],
 }
 
-describe('SystemConfigurationAdmin', () => {
-  it('starts from the server template, supports version zero creation, and displays only the server-redacted summary', async () => {
-    const request = vi.fn((path: string, options?: RequestInit & { ifMatch?: string }) => {
-      if (path === '/admin/system-configuration') return Promise.resolve({ items: [initialEntry] })
-      if (path === '/admin/system-configuration/DATAHUB_GMS' && options?.method === 'PUT') {
-        return Promise.resolve(savedEntry)
-      }
-      if (path === '/admin/system-configuration/DATAHUB_GMS/test' && options?.method === 'POST') {
-        return Promise.resolve({
-          system_id: 'DATAHUB_GMS', status: 'AVAILABLE', scope: 'HTTP_HEALTH',
-          latency_ms: 12, detail: 'The saved configuration passed its fixed server-side probe.',
-          configuration_version: 1, tested_at: '2026-07-20T09:01:00Z',
-        })
-      }
-      throw new Error(`unexpected request: ${path}`)
-    })
-    const api = new AdminApi(
-      { request, requestWithMeta: vi.fn() } as unknown as Pick<ApiClient, 'request' | 'requestWithMeta'>,
-    )
-    const context: AdminReadContext = {
-      subject_id: 'administrator',
-      workspace_id: 'workspace-one',
-      display_name: 'Administrator',
-      authentication_assurance: 'HARDWARE_WEBAUTHN',
-      fallback_enabled: false,
-      allowed_operations: ['SYSTEM_CONFIGURATION_READ', 'SYSTEM_CONFIGURATION_UPDATE'],
-      action_vocabulary: [],
-    }
-    let pending: PendingAdminMutation | undefined
-
-    render(<SystemConfigurationAdmin
+function renderAdmin(request: ReturnType<typeof vi.fn>) {
+  const api = new AdminApi(
+    { request, requestWithMeta: vi.fn() } as unknown as Pick<
+      ApiClient,
+      'request' | 'requestWithMeta'
+    >,
+  )
+  render(
+    <SystemConfigurationAdmin
       api={api}
       context={context}
       messages={getAdminMessages('ko')}
-      requestConfirmation={(next) => { pending = next }}
+      requestConfirmation={vi.fn()}
       keyFor={vi.fn(() => 'unused')}
       clearKey={vi.fn()}
       reportError={vi.fn()}
       onStepUp={vi.fn(() => Promise.resolve())}
       onPasswordReauth={vi.fn(() => Promise.resolve())}
       onEnroll={vi.fn(() => Promise.resolve())}
-    />)
+    />,
+  )
+}
 
-    fireEvent.click(await screen.findByRole('button', { name: 'YAML 편집' }))
-    const editor = screen.getByRole('textbox', { name: 'DataHub GMS YAML 설정' })
-    await waitFor(() => expect(editor).toHaveValue(initialEntry.template_yaml))
-    fireEvent.change(editor, {
-      target: { value: 'base_url: http://datahub-gms:8080\noptions:\n  timeout_seconds: 30\n' },
-    })
-    fireEvent.click(screen.getByRole('button', { name: '저장' }))
-    expect(pending?.title).toBe('DataHub GMS 설정 저장')
-    if (!pending) throw new Error('confirmation was not requested')
-    const mutation = pending
-
-    await act(async () => { await mutation.execute() })
-    await waitFor(() => expect(request).toHaveBeenCalledWith(
-      '/admin/system-configuration/DATAHUB_GMS',
-      expect.objectContaining({ method: 'PUT', ifMatch: '"0"' }),
-    ))
-
-    const summary = await screen.findByRole('region', { name: 'DataHub GMS 저장된 비밀 제외 설정' })
-    expect(within(summary).getByText(/base_url: http:\/\/datahub-gms:8080/)).toBeInTheDocument()
-    expect(within(summary).getByText(/token: file:\/run\/secrets\/datahub_token/)).toBeInTheDocument()
-    expect(within(summary).queryByText(/stored-token/)).not.toBeInTheDocument()
-    const testConnection = screen.getByRole('button', { name: '연결 테스트' })
-    await waitFor(() => expect(testConnection).toBeEnabled())
-    fireEvent.click(testConnection)
-    expect(await screen.findByRole('status')).toHaveTextContent('AVAILABLE · HTTP_HEALTH · 12ms')
-  })
-
-  it('activates only the exact TEST-passed version and explains the required restart', async () => {
-    const testedEntry: SystemConfigurationEntry = {
-      ...savedEntry,
-      activation_state: 'TESTED',
-      tested_version: 1,
-      test_status: 'AVAILABLE',
-      tested_at: '2026-07-20T09:01:00Z',
-    }
-    const activatedEntry: SystemConfigurationEntry = {
-      ...testedEntry,
-      activation_state: 'ACTIVATED_RESTART_REQUIRED',
-      activated_version: 1,
-      activated_at: '2026-07-20T09:02:00Z',
-    }
-    const request = vi.fn((path: string, options?: RequestInit & { ifMatch?: string }) => {
-      if (path === '/admin/system-configuration') return Promise.resolve({ items: [testedEntry] })
-      if (path === '/admin/system-configuration/DATAHUB_GMS/activate'
-        && options?.method === 'POST') return Promise.resolve(activatedEntry)
+describe('SystemConfigurationAdmin', () => {
+  it('shows only deployment values and an env template without browser-side editors', async () => {
+    const request = vi.fn((path: string) => {
+      if (path === '/admin/system-configuration') {
+        return Promise.resolve({ items: [deploymentEntry] })
+      }
       throw new Error(`unexpected request: ${path}`)
     })
-    const api = new AdminApi(
-      { request, requestWithMeta: vi.fn() } as unknown as Pick<ApiClient, 'request' | 'requestWithMeta'>,
+
+    renderAdmin(request)
+
+    expect(await screen.findByText('배포 환경 · secret 파일')).toBeInTheDocument()
+    expect(
+      screen.getByRole('region', { name: 'DataHub GMS 환경 변수 템플릿' }),
+    ).toHaveTextContent('DATAHUB_BASE_URL=')
+    expect(screen.getByRole('region', { name: 'DataHub GMS 현재 적용 설정' })).toHaveTextContent(
+      'base_url: http://datahub-gms:8080',
     )
-    const context: AdminReadContext = {
-      subject_id: 'administrator', workspace_id: 'workspace-one', display_name: 'Administrator',
-      authentication_assurance: 'HARDWARE_WEBAUTHN', fallback_enabled: false,
-      allowed_operations: [
-        'SYSTEM_CONFIGURATION_READ', 'SYSTEM_CONFIGURATION_UPDATE',
-        'SYSTEM_CONFIGURATION_ACTIVATE',
-      ],
-      action_vocabulary: [],
-    }
-    let pending: PendingAdminMutation | undefined
-
-    render(<SystemConfigurationAdmin
-      api={api} context={context} messages={getAdminMessages('ko')}
-      requestConfirmation={(next) => { pending = next }} keyFor={vi.fn(() => 'unused')}
-      clearKey={vi.fn()} reportError={vi.fn()}
-      onStepUp={vi.fn(() => Promise.resolve())}
-      onPasswordReauth={vi.fn(() => Promise.resolve())}
-      onEnroll={vi.fn(() => Promise.resolve())}
-    />)
-
-    const activate = await screen.findByRole('button', { name: '활성화' })
-    expect(activate).toBeEnabled()
-    fireEvent.click(activate)
-    expect(pending?.title).toBe('DataHub GMS 설정 활성화')
-    if (!pending) throw new Error('activation confirmation was not requested')
-    const mutation = pending
-    await act(async () => { await mutation.execute() })
-
-    await waitFor(() => expect(request).toHaveBeenCalledWith(
-      '/admin/system-configuration/DATAHUB_GMS/activate',
-      expect.objectContaining({ method: 'POST', ifMatch: '"1"' }),
-    ))
-    expect(await screen.findByText(/API와 관련 Worker를 재시작해야 합니다/))
-      .toBeInTheDocument()
+    expect(screen.queryByRole('textbox')).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: '저장' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: '활성화' })).not.toBeInTheDocument()
+    expect(request).toHaveBeenCalledWith(
+      '/admin/system-configuration',
+      expect.objectContaining({ cache: 'no-store' }),
+    )
   })
 
-  it('groups Chat, Embedding, and Reranker under one LLM menu with model tabs', async () => {
+  it('copies only the server-owned env option template', async () => {
+    const writeText = vi.fn(() => Promise.resolve())
+    Object.defineProperty(navigator, 'clipboard', {
+      configurable: true,
+      value: { writeText },
+    })
+    const request = vi.fn((path: string) => {
+      if (path === '/admin/system-configuration') {
+        return Promise.resolve({ items: [deploymentEntry] })
+      }
+      throw new Error(`unexpected request: ${path}`)
+    })
+
+    renderAdmin(request)
+    fireEvent.click(await screen.findByRole('button', { name: '템플릿 복사' }))
+
+    await waitFor(() =>
+      expect(writeText).toHaveBeenCalledWith(
+        'DATAHUB_BASE_URL=\nDATAHUB_SECRET_REF=\n',
+      ),
+    )
+    expect(screen.getByRole('button', { name: '복사됨' })).toBeInTheDocument()
+  })
+
+  it('tests a configured connector only through the deployment-owned route', async () => {
+    const request = vi.fn((path: string, options?: RequestInit) => {
+      if (path === '/admin/system-configuration') {
+        return Promise.resolve({ items: [deploymentEntry] })
+      }
+      if (
+        path === '/admin/system-configuration/DATAHUB_GMS/test-deployment'
+        && options?.method === 'POST'
+      ) {
+        return Promise.resolve({
+          system_id: 'DATAHUB_GMS',
+          status: 'AVAILABLE',
+          scope: 'HTTP_HEALTH',
+          latency_ms: 12,
+          detail: 'fixed deployment probe passed',
+          configuration_version: null,
+          tested_at: '2026-07-20T09:01:00Z',
+        })
+      }
+      throw new Error(`unexpected request: ${path}`)
+    })
+
+    renderAdmin(request)
+    fireEvent.click(await screen.findByRole('button', { name: '연결 테스트' }))
+
+    expect(await screen.findByRole('status')).toHaveTextContent(
+      '연결 가능 · HTTP_HEALTH · 12ms',
+    )
+    expect(request).toHaveBeenCalledWith(
+      '/admin/system-configuration/DATAHUB_GMS/test-deployment',
+      { method: 'POST' },
+    )
+  })
+
+  it('groups Chat, Embedding, and Reranker under one read-only LLM menu', async () => {
     const llmSpecs: Array<[SystemConfigurationEntry['system_id'], string]> = [
       ['LLM_CHAT_MODEL', 'LLM · Chat model'],
       ['LLM_EMBEDDING', 'LLM · Embedding'],
       ['LLM_RERANKER', 'LLM · Reranker'],
     ]
-    const llmEntries: SystemConfigurationEntry[] = llmSpecs.map(([systemId, label]) => ({
-      ...initialEntry,
+    const llmEntries = llmSpecs.map(([systemId, label]) => ({
+      ...deploymentEntry,
       system_id: systemId,
       label,
     }))
     const request = vi.fn((path: string) => {
-      if (path === '/admin/system-configuration') return Promise.resolve({ items: llmEntries })
-      throw new Error(`unexpected request: ${path}`)
-    })
-    const api = new AdminApi(
-      { request, requestWithMeta: vi.fn() } as unknown as Pick<ApiClient, 'request' | 'requestWithMeta'>,
-    )
-    const context: AdminReadContext = {
-      subject_id: 'administrator', workspace_id: 'workspace-one', display_name: 'Administrator',
-      authentication_assurance: 'HARDWARE_WEBAUTHN', fallback_enabled: false,
-      allowed_operations: ['SYSTEM_CONFIGURATION_READ'], action_vocabulary: [],
-    }
-
-    render(<SystemConfigurationAdmin
-      api={api} context={context} messages={getAdminMessages('ko')}
-      requestConfirmation={vi.fn()} keyFor={vi.fn(() => 'unused')} clearKey={vi.fn()}
-      reportError={vi.fn()} onStepUp={vi.fn(() => Promise.resolve())}
-      onPasswordReauth={vi.fn(() => Promise.resolve())} onEnroll={vi.fn(() => Promise.resolve())}
-    />)
-
-    expect(await screen.findByRole('tab', { name: /LLM Models/ })).toBeInTheDocument()
-    expect(screen.queryByRole('tab', { name: 'LLM · Chat model' })).not.toBeInTheDocument()
-    expect(screen.getByRole('button', { name: 'Chat Model' })).toHaveAttribute('aria-pressed', 'true')
-    fireEvent.click(screen.getByRole('button', { name: 'Reranker' }))
-    expect(screen.getByRole('button', { name: 'Reranker' })).toHaveAttribute('aria-pressed', 'true')
-    expect(screen.getByRole('heading', { name: 'LLM · Reranker' })).toBeInTheDocument()
-  })
-
-  it('keeps deployment-managed connectors visible but prevents database activation', async () => {
-    const deploymentManaged: SystemConfigurationEntry = {
-      ...savedEntry,
-      system_id: 'REDIS_DELIVERY',
-      label: 'Redis Delivery',
-      category: 'PLATFORM',
-      requirement: 'CORE_CONNECTOR',
-      restart_scope: 'WORKERS_ONLY',
-      activation_state: 'DEPLOYMENT_MANAGED',
-    }
-    const api = new AdminApi({
-      request: vi.fn((path: string) => {
-        if (path === '/admin/system-configuration') return Promise.resolve({ items: [deploymentManaged] })
-        throw new Error(`unexpected request: ${path}`)
-      }),
-      requestWithMeta: vi.fn(),
-    } as unknown as Pick<ApiClient, 'request' | 'requestWithMeta'>)
-    const context: AdminReadContext = {
-      subject_id: 'administrator', workspace_id: 'workspace-one', display_name: 'Administrator',
-      authentication_assurance: 'HARDWARE_WEBAUTHN', fallback_enabled: false,
-      allowed_operations: ['SYSTEM_CONFIGURATION_READ', 'SYSTEM_CONFIGURATION_UPDATE', 'SYSTEM_CONFIGURATION_ACTIVATE'],
-      action_vocabulary: [],
-    }
-
-    render(<SystemConfigurationAdmin
-      api={api} context={context} messages={getAdminMessages('ko')}
-      requestConfirmation={vi.fn()} keyFor={vi.fn(() => 'unused')} clearKey={vi.fn()}
-      reportError={vi.fn()} onStepUp={vi.fn(() => Promise.resolve())}
-      onPasswordReauth={vi.fn(() => Promise.resolve())} onEnroll={vi.fn(() => Promise.resolve())}
-    />)
-
-    expect(await screen.findByText('배포 환경·secret 관리')).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: '활성화' })).toBeDisabled()
-    expect(screen.getByText(/배포 환경 변수와 secret 파일을 기준/)).toBeInTheDocument()
-  })
-
-  it('tests every deployment-managed connector through the server-owned deployment route', async () => {
-    const deploymentManaged: SystemConfigurationEntry = {
-      ...savedEntry,
-      system_id: 'REDIS_DELIVERY',
-      label: 'Redis Delivery',
-      category: 'PLATFORM',
-      activation_state: 'DEPLOYMENT_MANAGED',
-    }
-    const request = vi.fn((path: string, options?: RequestInit) => {
-      if (path === '/admin/system-configuration') return Promise.resolve({ items: [deploymentManaged] })
-      if (path === '/admin/system-configuration/REDIS_DELIVERY/test-deployment'
-        && options?.method === 'POST') {
-        return Promise.resolve({
-          system_id: 'REDIS_DELIVERY', status: 'AVAILABLE', scope: 'REDIS_POLICY',
-          latency_ms: 3, detail: 'fixed deployment probe passed',
-          configuration_version: null, tested_at: '2026-07-20T09:01:00Z',
-        })
+      if (path === '/admin/system-configuration') {
+        return Promise.resolve({ items: llmEntries })
       }
       throw new Error(`unexpected request: ${path}`)
     })
-    const api = new AdminApi(
-      { request, requestWithMeta: vi.fn() } as unknown as Pick<ApiClient, 'request' | 'requestWithMeta'>,
-    )
-    render(<SystemConfigurationAdmin
-      api={api}
-      context={{
-        subject_id: 'administrator', workspace_id: 'workspace-one',
-        display_name: 'Administrator', authentication_assurance: 'PASSWORD',
-        fallback_enabled: false,
-        allowed_operations: ['SYSTEM_CONFIGURATION_READ', 'SYSTEM_CONFIGURATION_UPDATE'],
-        action_vocabulary: [],
-      }}
-      messages={getAdminMessages('ko')} requestConfirmation={vi.fn()}
-      keyFor={vi.fn(() => 'unused')} clearKey={vi.fn()} reportError={vi.fn()}
-      onStepUp={vi.fn(() => Promise.resolve())}
-      onPasswordReauth={vi.fn(() => Promise.resolve())}
-      onEnroll={vi.fn(() => Promise.resolve())}
-    />)
 
-    const testConnection = await screen.findByRole('button', { name: '연결 테스트' })
-    expect(testConnection).toBeEnabled()
-    fireEvent.click(testConnection)
-    expect(await screen.findByRole('status')).toHaveTextContent('AVAILABLE')
-    expect(request).toHaveBeenCalledWith(
-      '/admin/system-configuration/REDIS_DELIVERY/test-deployment',
-      { method: 'POST' },
+    renderAdmin(request)
+
+    expect(await screen.findByRole('tab', { name: /LLM Models/ })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Chat Model' })).toHaveAttribute(
+      'aria-pressed',
+      'true',
     )
+    fireEvent.click(screen.getByRole('button', { name: 'Reranker' }))
+    expect(screen.getByRole('button', { name: 'Reranker' })).toHaveAttribute(
+      'aria-pressed',
+      'true',
+    )
+    expect(screen.getByRole('heading', { name: 'LLM · Reranker' })).toBeInTheDocument()
   })
 })

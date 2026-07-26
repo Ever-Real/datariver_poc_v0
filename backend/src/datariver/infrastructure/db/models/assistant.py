@@ -5,6 +5,7 @@ from typing import Any
 from uuid import UUID
 
 from sqlalchemy import (
+    Boolean,
     CheckConstraint,
     ForeignKeyConstraint,
     Index,
@@ -76,6 +77,11 @@ class ChatSessionModel(Base, UuidPrimaryKeyMixin, TimestampMixin, VersionMixin):
     retention_basis_at: Mapped[datetime | None]
     retention_binding_version: Mapped[str] = mapped_column(
         String(32), server_default=text("'ACTIVE_POLICY_V1'"), nullable=False
+    )
+    is_favorite: Mapped[bool] = mapped_column(
+        Boolean,
+        server_default=text("false"),
+        nullable=False,
     )
 
 
@@ -177,3 +183,5 @@ class EvidenceCitationModel(Base, UuidPrimaryKeyMixin):
     effective_until: Mapped[datetime | None]
     extraction_method: Mapped[str] = mapped_column(String(100), nullable=False)
     rank: Mapped[int] = mapped_column(nullable=False)
+    display_name: Mapped[str | None] = mapped_column(String(500))
+    description: Mapped[str | None] = mapped_column(Text)

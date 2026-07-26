@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from datariver.config import Settings
-from datariver.infrastructure.cache.redis import RedisCache
+from datariver.infrastructure.cache.redis import RedisCache, RedisChatRequestBudgetGuard
 from datariver.infrastructure.datahub.http import HttpDataHubGateway
 from datariver.infrastructure.db.session import Database
 from datariver.infrastructure.identity.keycloak import KeycloakIdentityAdministration
@@ -19,6 +19,7 @@ class AppContainer:
     settings: Settings
     database: Database
     cache: RedisCache
+    chat_budget: RedisChatRequestBudgetGuard
     datahub: HttpDataHubGateway
     oidc: OidcTokenVerifier
     object_store: S3ObjectStore
@@ -29,6 +30,7 @@ class AppContainer:
     async def close(self) -> None:
         await self.datahub.close()
         await self.cache.close()
+        await self.chat_budget.close()
         await self.database.close()
         if self.knowledge_neo4j is not None:
             await self.knowledge_neo4j.close()
@@ -41,6 +43,7 @@ def build_container(settings: Settings) -> AppContainer:
     database_password = secret_resolver.resolve(settings.database_secret_ref)
     datahub_token = secret_resolver.resolve(settings.datahub_secret_ref)
     cache_password = secret_resolver.resolve(settings.redis_cache_secret_ref)
+    delivery_password = secret_resolver.resolve(settings.redis_delivery_secret_ref)
     s3_access_key = secret_resolver.resolve(f"file:{settings.s3_access_key_file}")
     s3_secret_key = secret_resolver.resolve(f"file:{settings.s3_secret_key_file}")
     metrics = HttpMetrics()
@@ -87,6 +90,10 @@ def build_container(settings: Settings) -> AppContainer:
             settings.redis_cache_url,
             password=cache_password,
             maximum_value_bytes=settings.cache_max_value_bytes,
+        ),
+        chat_budget=RedisChatRequestBudgetGuard(
+            settings.redis_delivery_url,
+            password=delivery_password,
         ),
         datahub=HttpDataHubGateway(
             base_url=settings.datahub_base_url,

@@ -42,6 +42,67 @@ class SystemConfigurationProbeResult:
     detail: str
 
 
+async def probe_oidc_jwks(
+    *,
+    jwks_url: str,
+    allowed_hosts: tuple[str, ...],
+    client: httpx.AsyncClient | None = None,
+) -> SystemConfigurationProbeResult:
+    """Validate the fixed deployment JWKS URL through the shared SSRF boundary."""
+
+    started = time.monotonic()
+    _, host, port = _validated_url(jwks_url, schemes={"http", "https"})
+    await _reject_unsafe_destination(
+        host,
+        port,
+        allowed_hosts=tuple(value.rstrip(".").lower() for value in allowed_hosts),
+    )
+    _require_tls_for_nonlocal_endpoint(jwks_url)
+    owns_client = client is None
+    active_client = client or httpx.AsyncClient(
+        timeout=httpx.Timeout(5.0, connect=3.0),
+        follow_redirects=False,
+        trust_env=False,
+    )
+    try:
+        response = await _bounded_http_request(
+            active_client,
+            "GET",
+            jwks_url,
+            timeout_seconds=5.0,
+        )
+    except (TimeoutError, httpx.HTTPError) as error:
+        raise ValidationError("The configured OIDC JWKS endpoint is not reachable.") from error
+    finally:
+        if owns_client:
+            await active_client.aclose()
+    latency_ms = max(0, round((time.monotonic() - started) * 1000))
+    if not 200 <= response.status_code < 300:
+        return SystemConfigurationProbeResult(
+            status="UNAVAILABLE",
+            scope="HTTP_HEALTH",
+            latency_ms=latency_ms,
+            detail=f"The fixed OIDC JWKS route returned HTTP {response.status_code}.",
+        )
+    try:
+        keys = response.json().get("keys")
+    except (AttributeError, ValueError):
+        keys = None
+    if not isinstance(keys, list) or not keys or any(not isinstance(key, Mapping) for key in keys):
+        return SystemConfigurationProbeResult(
+            status="UNAVAILABLE",
+            scope="HTTP_HEALTH",
+            latency_ms=latency_ms,
+            detail="The OIDC JWKS endpoint returned an invalid key document.",
+        )
+    return SystemConfigurationProbeResult(
+        status="AVAILABLE",
+        scope="HTTP_HEALTH",
+        latency_ms=latency_ms,
+        detail="OIDC JWKS 신뢰 경로와 키 문서를 검증했습니다.",
+    )
+
+
 _HTTP_PROBE_PATHS: dict[str, tuple[str, ProbeScope]] = {
     "DATAHUB_GMS": ("/health", "HTTP_HEALTH"),
     "DATAHUB_FRONTEND": ("/", "HTTP_HEALTH"),
@@ -159,6 +220,13 @@ def _probe_url(endpoint: str, path: str) -> str:
     return urlunsplit((parsed.scheme, parsed.netloc, f"{base_path}{path}", "", ""))
 
 
+def _ollama_native_probe_url(endpoint: str) -> str:
+    parsed = urlsplit(endpoint)
+    if parsed.path.rstrip("/") != "/v1":
+        raise ValidationError("The local Ollama endpoint must end in /v1.")
+    return urlunsplit((parsed.scheme, parsed.netloc, "/api/chat", "", ""))
+
+
 def _configured_model(document: Mapping[str, Any]) -> str | None:
     direct = document.get("model")
     if isinstance(direct, str) and direct.strip():
@@ -229,6 +297,22 @@ def _validated_chat_completion(payload: object) -> bool:
     if not isinstance(choices, list) or len(choices) != 1 or not isinstance(choices[0], Mapping):
         return False
     message = choices[0].get("message")
+    if not isinstance(message, Mapping):
+        return False
+    content_text = message.get("content")
+    if not isinstance(content_text, str):
+        return False
+    try:
+        content = json.loads(content_text)
+    except ValueError:
+        return False
+    return isinstance(content, dict) and set(content) == {"status"} and content["status"] == "ok"
+
+
+def _validated_ollama_native_chat(payload: object) -> bool:
+    if not isinstance(payload, Mapping):
+        return False
+    message = payload.get("message")
     if not isinstance(message, Mapping):
         return False
     content_text = message.get("content")
@@ -571,7 +655,12 @@ async def probe_system_configuration(
         "LLM_RERANKER",
     }
     path_and_scope: tuple[str, ProbeScope] | None = (
-        ("/chat/completions", "MODEL_INFERENCE")
+        (
+            "/api/chat"
+            if document.get("connection_mode", "LOCAL_OLLAMA") == "LOCAL_OLLAMA"
+            else "/chat/completions",
+            "MODEL_INFERENCE",
+        )
         if system_id == "LLM_CHAT_MODEL"
         else ("/embeddings", "EMBEDDING_INFERENCE")
         if system_id == "LLM_EMBEDDING"
@@ -612,7 +701,11 @@ async def probe_system_configuration(
         api_key = (secret_resolver or SecretResolver()).resolve(
             _secret_reference(document, "api_key")
         )
-    request_url = _probe_url(endpoint, path)
+    request_url = (
+        _ollama_native_probe_url(endpoint)
+        if system_id == "LLM_CHAT_MODEL" and connection_mode == "LOCAL_OLLAMA"
+        else _probe_url(endpoint, path)
+    )
     owns_client = client is None
     options = document.get("options")
     configured_timeout = options.get("timeout_seconds") if isinstance(options, Mapping) else None
@@ -631,13 +724,35 @@ async def probe_system_configuration(
     try:
         model = _configured_model(document)
         if system_id == "LLM_CHAT_MODEL":
-            response = await _bounded_http_request(
-                active_client,
-                "POST",
-                request_url,
-                timeout_seconds=timeout_seconds,
-                headers={"Authorization": f"Bearer {api_key}"} if api_key else None,
-                json_document={
+            context_tokens = options.get("context_tokens") if isinstance(options, Mapping) else None
+            json_document: dict[str, Any]
+            if connection_mode == "LOCAL_OLLAMA":
+                json_document = {
+                    "model": model,
+                    "format": {
+                        "type": "object",
+                        "properties": {"status": {"type": "string", "enum": ["ok"]}},
+                        "required": ["status"],
+                        "additionalProperties": False,
+                    },
+                    "messages": [
+                        {
+                            "role": "system",
+                            "content": "Return exactly the requested JSON object.",
+                        },
+                        {"role": "user", "content": 'Return {"status":"ok"}.'},
+                    ],
+                    "options": {
+                        "temperature": 0,
+                        "num_ctx": (
+                            int(context_tokens) if isinstance(context_tokens, int) else 8192
+                        ),
+                        "num_predict": 32,
+                    },
+                    "stream": False,
+                }
+            else:
+                json_document = {
                     "model": model,
                     "temperature": 0,
                     "messages": [
@@ -660,7 +775,14 @@ async def probe_system_configuration(
                             },
                         },
                     },
-                },
+                }
+            response = await _bounded_http_request(
+                active_client,
+                "POST",
+                request_url,
+                timeout_seconds=timeout_seconds,
+                headers={"Authorization": f"Bearer {api_key}"} if api_key else None,
+                json_document=json_document,
             )
         elif system_id == "LLM_EMBEDDING":
             response = await _bounded_http_request(
@@ -735,7 +857,12 @@ async def probe_system_configuration(
         response_payload: object = response.json()
     except ValueError:
         response_payload = None
-    if scope == "MODEL_INFERENCE" and not _validated_chat_completion(response_payload):
+    valid_chat_response = (
+        _validated_ollama_native_chat(response_payload)
+        if connection_mode == "LOCAL_OLLAMA"
+        else _validated_chat_completion(response_payload)
+    )
+    if scope == "MODEL_INFERENCE" and not valid_chat_response:
         return SystemConfigurationProbeResult(
             status="UNAVAILABLE",
             scope=scope,

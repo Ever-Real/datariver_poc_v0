@@ -532,7 +532,9 @@ alongside API process restart, API container replacement behind both Nginx and A
 outbox-relay restart. The API replacement test deliberately kept the web container running and
 verified that its Docker DNS resolver did not retain a stale upstream address.
 
-The local seeded same-token revocation probe ran 100 iterations per scenario against the direct API:
+Historical execution evidence recorded on 2026-07-20 (it does not describe the current live
+configuration path): the local seeded same-token revocation probe ran 100 iterations per scenario
+against the direct API:
 membership inactive p99 100.660 ms, explicit `catalog.search` deny p99 167.743 ms and system/domain
 scope removal p99 193.388 ms. All passed the provisional 60-second SLA and the original service
 membership was restored. This is development evidence, not the required target-load/two-identity or
@@ -550,10 +552,11 @@ Administrator Role and System Settings changes add the following focused gates:
 - an in-use Role must reject security-bearing edits/deactivation, a subject cannot change its own
   Role, and assignment must retain membership version, idempotency, hardware assurance and ABAC
   validation;
-- System Settings validation rejects unknown top-level keys, embedded credentials, malformed model
-  identities and missing required storage fields; new secret values never cross the browser API;
-- connection tests accept only a known system identifier and an already-saved profile. Probe tests
-  cover fixed paths, authentication-required status, unavailable targets, and blocked
+- System Settings inventory contains deployment-owned option names and redacted effective values;
+  OpenAPI and HTTP negatives prove that database profile SAVE/version/draft-test/saved-test/ACTIVATE
+  routes remain absent and new secret values never cross the browser API;
+- connection tests accept only a known system identifier and the server's loaded Settings snapshot.
+  Probe tests cover fixed paths, authentication-required status, unavailable targets, and blocked
   link-local/multicast/unspecified/reserved addresses;
 - backend test Settings explicitly disable the optional local Ollama path unless a test is about
   that adapter. A developer `.env` must not change unit-test expectations.

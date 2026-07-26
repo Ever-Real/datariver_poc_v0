@@ -16,6 +16,13 @@ from datariver.domain.authz import (
     Decision,
     SubjectAttributes,
 )
+from datariver.domain.chat import (
+    ChatAdapterState,
+    ChatRetrievalMode,
+    ChatRouteReason,
+    ChatWorkflowStage,
+    ChatWorkflowStatus,
+)
 from datariver.domain.governance import ChangeRequest, ChangeState
 from datariver.domain.retention import ArchiveCapability, ImmutableArchiveReceipt
 
@@ -1217,6 +1224,58 @@ class ChatRetentionBinding:
 
 
 @dataclass(frozen=True, slots=True)
+class ChatRouteDecision:
+    requested_mode: ChatRetrievalMode
+    selected_mode: ChatRetrievalMode
+    reason: ChatRouteReason
+    adapter_state: ChatAdapterState
+
+
+@dataclass(frozen=True, slots=True)
+class ChatWorkflowEvent:
+    stage: ChatWorkflowStage
+    status: ChatWorkflowStatus
+    detail_code: str
+
+
+@dataclass(frozen=True, slots=True)
+class ChatEvidenceRanking:
+    chunk_id: UUID
+    rank: int
+    retrieval_method: str
+
+
+@dataclass(frozen=True, slots=True)
+class ChatVectorSearchResult:
+    items: tuple[CatalogAssetIndex, ...]
+    provider_invoked: bool
+
+
+@dataclass(frozen=True, slots=True)
+class ChatCompositionAudit:
+    provider: str
+    model: str
+    prompt_template_version: str
+    external_service_used: bool
+    provider_profile_version_id: UUID | None = None
+    classification_policy_id: UUID | None = None
+    classification_policy_hash: str | None = None
+    classification_policy_version: int | None = None
+    authorization_generation: int | None = None
+    external_stages: tuple[str, ...] = ()
+    external_stage_provider_profile_version_ids: tuple[tuple[str, UUID], ...] = ()
+
+
+def default_chat_route() -> ChatRouteDecision:
+    return ChatRouteDecision(
+        requested_mode=ChatRetrievalMode.GENERAL,
+        selected_mode=ChatRetrievalMode.GENERAL,
+        reason=ChatRouteReason.GENERAL_DEFAULT,
+        adapter_state=ChatAdapterState.READY,
+    )
+
+
+@dataclass(frozen=True, slots=True)
 class ChatExchange:
     session_id: UUID
     request_message_id: UUID
@@ -1224,6 +1283,32 @@ class ChatExchange:
     answer: str
     evidence: tuple[ChatEvidence, ...]
     persistence: str = "PERSISTED"
+    route: ChatRouteDecision = field(default_factory=default_chat_route)
+    workflow: tuple[ChatWorkflowEvent, ...] = ()
+    evidence_ranking: tuple[ChatEvidenceRanking, ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
+class ChatSessionRecord:
+    id: UUID
+    title: str
+    is_favorite: bool
+    version: int
+    created_at: datetime
+    updated_at: datetime
+    message_count: int
+
+
+@dataclass(frozen=True, slots=True)
+class ChatMessageRecord:
+    id: UUID
+    session_id: UUID
+    role: Literal["user", "assistant"]
+    content: str
+    evidence: tuple[ChatEvidence, ...]
+    created_at: datetime
+    route: ChatRouteDecision | None = None
+    workflow: tuple[ChatWorkflowEvent, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)

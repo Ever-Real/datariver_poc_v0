@@ -25,7 +25,6 @@ STDOUT_FILE = RUNTIME_DIRECTORY / "llama-server.out.log"
 STDERR_FILE = RUNTIME_DIRECTORY / "llama-server.err.log"
 LISTEN_HOST = "127.0.0.1"
 LISTEN_PORT = 11435
-DEFAULT_MODEL = "qllama/bge-reranker-v2-m3:q4_k_m"
 MODEL_IDENTITY = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:/-]{0,127}")
 MODEL_BLOB = re.compile(r"sha256-[0-9a-f]{64}")
 
@@ -42,8 +41,21 @@ def _parse_args() -> argparse.Namespace:
         )
     )
     parser.add_argument("action", choices=("start", "stop", "status", "probe"))
-    parser.add_argument("--model", default=DEFAULT_MODEL)
+    parser.add_argument(
+        "--model",
+        default=os.environ.get("LOCAL_LLAMA_CPP_RERANKER_MODEL"),
+        help="Exact installed Ollama model identity; required for start and probe.",
+    )
     return parser.parse_args()
+
+
+def _required_model(value: object) -> str:
+    if not isinstance(value, str) or MODEL_IDENTITY.fullmatch(value) is None:
+        raise ServiceError(
+            "An exact installed reranker model must be selected with --model or "
+            "LOCAL_LLAMA_CPP_RERANKER_MODEL."
+        )
+    return value
 
 
 def _model_store_roots() -> tuple[Path, ...]:
@@ -100,6 +112,19 @@ def _read_pid() -> int | None:
     except (OSError, ValueError):
         return None
     return value if value > 1 else None
+
+
+def _read_managed_model() -> str | None:
+    if not STATE_FILE.is_file() or STATE_FILE.is_symlink():
+        return None
+    try:
+        payload = json.loads(STATE_FILE.read_text(encoding="utf-8")[:8_192])
+    except (OSError, ValueError):
+        return None
+    if not isinstance(payload, dict) or payload.get("port") != LISTEN_PORT:
+        return None
+    model = payload.get("model")
+    return model if isinstance(model, str) and MODEL_IDENTITY.fullmatch(model) else None
 
 
 def _process_command(pid: int) -> str:
@@ -289,7 +314,8 @@ def main() -> int:
     arguments = _parse_args()
     try:
         if arguments.action == "start":
-            print(json.dumps(_start(arguments.model), ensure_ascii=False, sort_keys=True))
+            model = _required_model(arguments.model)
+            print(json.dumps(_start(model), ensure_ascii=False, sort_keys=True))
             return 0
         if arguments.action == "stop":
             _prepare_runtime_directory()
@@ -297,13 +323,15 @@ def main() -> int:
             print("stopped" if stopped else "already stopped")
             return 0
         if arguments.action == "probe":
-            print(json.dumps(_probe(arguments.model), ensure_ascii=False, sort_keys=True))
+            model = _required_model(arguments.model)
+            print(json.dumps(_probe(model), ensure_ascii=False, sort_keys=True))
             return 0
         pid = _read_pid()
         if pid is None or not _owned_process(pid):
             print("stopped")
             return 1
-        print(json.dumps(_probe(arguments.model), ensure_ascii=False, sort_keys=True))
+        model = _required_model(arguments.model or _read_managed_model())
+        print(json.dumps(_probe(model), ensure_ascii=False, sort_keys=True))
         return 0
     except ServiceError as error:
         print(f"ERROR: {error}", file=sys.stderr)

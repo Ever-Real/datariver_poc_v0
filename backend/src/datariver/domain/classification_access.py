@@ -66,6 +66,8 @@ class ClassificationAccessRule:
     search_mode: SearchMode
     chat_mode: ChatMode
     provider_profile_version_id: UUID | None = None
+    embedding_provider_profile_version_id: UUID | None = None
+    reranker_provider_profile_version_id: UUID | None = None
 
     def __post_init__(self) -> None:
         if not isinstance(self.classification, Classification):
@@ -74,14 +76,19 @@ class ClassificationAccessRule:
             raise ValidationError("The classification Search mode is invalid.")
         if not isinstance(self.chat_mode, ChatMode):
             raise ValidationError("The classification Chat mode is invalid.")
-        if self.provider_profile_version_id is not None and not isinstance(
-            self.provider_profile_version_id, UUID
+        for label, profile_id in (
+            ("Chat composition", self.provider_profile_version_id),
+            ("embedding", self.embedding_provider_profile_version_id),
+            ("reranker", self.reranker_provider_profile_version_id),
         ):
-            raise ValidationError("The provider-profile version identifier is invalid.")
+            if profile_id is not None and not isinstance(profile_id, UUID):
+                raise ValidationError(
+                    f"The {label} provider-profile version identifier is invalid."
+                )
         _lint_rule_security_floor(self)
 
     def document(self) -> dict[str, object]:
-        return {
+        document: dict[str, object] = {
             "classification": self.classification.name,
             "search_mode": self.search_mode.value,
             "chat_mode": self.chat_mode.value,
@@ -91,6 +98,24 @@ class ClassificationAccessRule:
                 else None
             ),
         }
+        # Preserve the payload shape and hash of policies created before staged
+        # interactive inference bindings existed. New stage bindings become part
+        # of the immutable policy payload as soon as either is supplied.
+        if (
+            self.embedding_provider_profile_version_id is not None
+            or self.reranker_provider_profile_version_id is not None
+        ):
+            document["embedding_provider_profile_version_id"] = (
+                str(self.embedding_provider_profile_version_id)
+                if self.embedding_provider_profile_version_id is not None
+                else None
+            )
+            document["reranker_provider_profile_version_id"] = (
+                str(self.reranker_provider_profile_version_id)
+                if self.reranker_provider_profile_version_id is not None
+                else None
+            )
+        return document
 
 
 @dataclass(slots=True)
@@ -526,12 +551,18 @@ def _policy_document(
 
 
 def _lint_rule_security_floor(rule: ClassificationAccessRule) -> None:
-    profile_id = rule.provider_profile_version_id
+    profile_ids = (
+        rule.provider_profile_version_id,
+        rule.embedding_provider_profile_version_id,
+        rule.reranker_provider_profile_version_id,
+    )
     if rule.chat_mode is ChatMode.DENY:
-        if profile_id is not None:
-            raise ValidationError("A denied Chat rule cannot reference a provider profile.")
-    elif profile_id is None:
-        raise ValidationError("An enabled Chat rule requires a provider-profile version.")
+        if any(profile_id is not None for profile_id in profile_ids):
+            raise ValidationError("A denied Chat rule cannot reference an inference profile.")
+    elif rule.provider_profile_version_id is None:
+        raise ValidationError(
+            "An enabled Chat rule requires a provider-profile version for composition."
+        )
 
     if rule.classification is Classification.RESTRICTED:
         if rule.chat_mode is not ChatMode.DENY:

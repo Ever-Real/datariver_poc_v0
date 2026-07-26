@@ -90,9 +90,11 @@ values while regenerating profile-derived files. Neither executable performs aut
 use Section 9 with the retained source commit, release, database backup and object evidence.
 External Neo4j can be selected with `--graph-mode external`, an exact private Bolt URI on port
 `7687`, and a mounted `username/password` credential file. External
-OpenAI-compatible Chat/Embedding/Reranker activation remains an Admin System Settings
-TEST/SAVE/ACTIVATE operation after core startup; the workflow does not bypass that governed
-revision and secret-reference boundary.
+OpenAI-compatible Chat/Embedding/Reranker activation is deployment-owned. Set the exact private
+endpoint, allowlist, model identity and mounted secret reference in the selected ignored
+`.env.<profile>`, run the managed update/restart workflow, and use Admin System Settings only for
+the resulting read-only deployment probe. Admin never writes the environment file or hot-reloads
+the process.
 
 ## 3. Mac profile and independently operated connectors
 

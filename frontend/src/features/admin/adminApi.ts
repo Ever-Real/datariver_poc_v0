@@ -366,49 +366,14 @@ export class AdminApi {
   async listSystemConfiguration(signal?: AbortSignal) {
     return (await this.client.request<{ items: SystemConfigurationEntry[] }>(
       '/admin/system-configuration',
-      { signal },
+      { signal, cache: 'no-store' },
     )).items
-  }
-
-  updateSystemConfiguration(systemId: string, configurationYaml: string, version: number) {
-    return this.client.request<SystemConfigurationEntry>(
-      `/admin/system-configuration/${encodeURIComponent(systemId)}`,
-      {
-        method: 'PUT',
-        ifMatch: quotedConfigurationVersion(version),
-        body: JSON.stringify({ configuration_yaml: configurationYaml }),
-      },
-    )
-  }
-
-  testSystemConfiguration(systemId: string) {
-    return this.client.request<SystemConfigurationTestResult>(
-      `/admin/system-configuration/${encodeURIComponent(systemId)}/test`,
-      { method: 'POST' },
-    )
-  }
-
-  testDraftSystemConfiguration(systemId: string, configurationYaml: string) {
-    return this.client.request<SystemConfigurationTestResult>(
-      `/admin/system-configuration/${encodeURIComponent(systemId)}/test-draft`,
-      {
-        method: 'POST',
-        body: JSON.stringify({ configuration_yaml: configurationYaml }),
-      },
-    )
   }
 
   testDeploymentSystemConfiguration(systemId: string) {
     return this.client.request<SystemConfigurationTestResult>(
       `/admin/system-configuration/${encodeURIComponent(systemId)}/test-deployment`,
       { method: 'POST' },
-    )
-  }
-
-  activateSystemConfiguration(systemId: string, version: number) {
-    return this.client.request<SystemConfigurationEntry>(
-      `/admin/system-configuration/${encodeURIComponent(systemId)}/activate`,
-      { method: 'POST', ifMatch: quotedConfigurationVersion(version) },
     )
   }
 
@@ -935,11 +900,6 @@ export class AdminApi {
 
 export function quotedVersion(version: number): string {
   if (!Number.isInteger(version) || version < 1) throw new Error('유효한 버전이 필요합니다.')
-  return `"${version}"`
-}
-
-function quotedConfigurationVersion(version: number): string {
-  if (!Number.isInteger(version) || version < 0) throw new Error('유효한 설정 버전이 필요합니다.')
   return `"${version}"`
 }
 

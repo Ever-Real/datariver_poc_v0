@@ -45,7 +45,8 @@ source must not be represented as having that protection.
 
 ## 직렬 실행 워크플로
 
-반복되는 Mac 개발 PC와 WSL 준비 PC 초기화·업데이트 절차는 다음 두 실행파일로 통합한다.
+반복되는 범용 개발, Mac 로컬 통합, WSL 준비 환경의 초기화·업데이트 절차는 다음 두
+실행파일로 통합한다. 어떤 환경도 자동 선택하지 않으며 `--profile`은 필수다.
 두 프로그램은 기존 bootstrap/Compose/migration/Keycloak 스크립트를 순서대로 호출하며, shell로
 입력값을 재해석하지 않는다.
 
@@ -61,7 +62,32 @@ source must not be represented as having that protection.
   Keycloak, Airflow, APISIX, Neo4j 또는 local connector가 바뀌면 실행 중이던 선택
   서비스와 필수 서비스 중 영향 범위만 build/recreate한다.
 
-Mac 신규 개발 환경의 기본 topology(DataHub/Redis/MinIO/Airflow local)는 다음 한 명령으로
+프로필과 기본 환경 파일은 다음과 같다. 실제 선택 경로는
+`runtime/operator-workflow/<profile>.json`에 기록되며 이후 업데이트가 같은 파일만 다시
+사용한다.
+
+| Profile | Docker architecture | Deployment | Default env | Host-specific defaults |
+|---|---|---|---|---|
+| `portable-development` | `linux/arm64` or `linux/amd64` | current-source build | `.env.portable-development` | none; inference disabled |
+| `mac-development` | `linux/arm64` | current-source build | `.env.mac-development` | optional local DataHub topology |
+| `wsl-preparation` | `linux/amd64` | verified offline release | `.env.wsl-preparation` | WSL preparation contract |
+
+일반적인 Git clone은 `portable-development`에서 시작한다. DataHub는 외부 endpoint/token을
+명시하고, 필요한 local Redis/MinIO만 선택한다. 이 경로는 LLM·Neo4j·APISIX를 자동으로
+활성화하지 않는다.
+
+```bash
+./scripts/workflow_fresh_setup.py \
+  --profile portable-development \
+  --datahub-mode external \
+  --datahub-base-url https://<approved-datahub-gms-host> \
+  --datahub-token-file /approved-secret-path/datahub_token \
+  --redis-mode local \
+  --storage-mode local \
+  --airflow-mode skip
+```
+
+Mac 신규 개발 환경의 로컬 통합 topology(DataHub/Redis/MinIO/Airflow local)는 다음 한 명령으로
 시작한다. Neo4j와 APISIX는 필요할 때만 각각 `--graph-mode local`, `--with-gateway`를
 추가한다. 외부 Neo4j는 `--graph-mode external --neo4j-uri
 bolt+s://<actual-host>:7687 --neo4j-auth-file <username-password-file>`로 연결하며, credential
@@ -98,13 +124,14 @@ REDIS_ARCHIVE="$HOME/workspace/datariver_platform_amd_distribution/redis-8.2.6-b
   --airflow-ui-url http://<actual-airflow-ui-host>:8080
 ```
 
-개발 변경을 commit한 Mac에서는 아래 명령으로 현재 source를 적용한다. 준비 PC에서는 먼저
+개발 변경을 commit한 build profile에서는 아래 명령으로 현재 source를 적용한다. 준비 PC에서는 먼저
 새 amd64 release를 반입한 뒤 `--git-pull --release-dir "$RELEASE_DIR"`를 사용한다. Backend,
 Frontend 또는 Compose가 현재 offline release보다 새로우면 서비스 중지 전에 실패하므로,
 Git pull만으로 낡은 이미지를 새 코드처럼 실행하지 않는다.
 
 ```bash
-# Mac: 현재 clean commit을 build하고 영향 서비스만 재생성
+# Portable/Mac: 현재 clean commit을 build하고 영향 서비스만 재생성
+./scripts/workflow_update_restart.py --profile portable-development
 ./scripts/workflow_update_restart.py --profile mac-development
 
 # WSL: fast-forward pull 후 검증한 amd64 release로 영향 서비스만 재생성
@@ -121,9 +148,9 @@ Git pull만으로 낡은 이미지를 새 코드처럼 실행하지 않는다.
 연결하지 않은 채 runbook의 rollback 절차를 수행한다.
 
 외부 OpenAI-compatible Chat/Embedding/Reranker는 이 OS bootstrap에서 임의 활성화하지 않는다.
-플랫폼 기동 후 Admin System Settings에서 secret **reference**, private allowlist, URL, model을
-TEST/SAVE/ACTIVATE하고 API/해당 worker를 업데이트 워크플로로 재시작한다. Mac profile의
-기본 Ollama Chat 설정도 실제 모델 준비와 capability 확인을 대신하지 않는다.
+operator가 선택한 ignored `.env`에 secret **reference**, private allowlist, URL, model을
+설정하고 API/해당 worker를 업데이트 워크플로로 재시작한다. 이후 Admin System Settings의
+고정 TEST로 실행 snapshot을 확인한다.
 
 ## Canonical ownership
 
@@ -315,10 +342,10 @@ scripts/compose.sh --env-file .env.wsl-preparation \
    개발용 Neo4j도 명시적 선택 profile이다. DataHub는 외부 catalog provider이며, 실제
    Postgres/Oracle source system도 해당 시스템 또는 DataHub ingestion이 별도로 운영한다.
 
-`System settings` 화면은 접속 주소, 모델 ID, 비밀 **참조명**과 비민감 옵션을 관리한다.
-비밀번호·token을 화면에 저장하거나 browser로 보내지 않는다. 개발 PC에서 TEST/SAVE 후
-명시적으로 ACTIVATE하고 API/관련 Worker를 재시작해야 적용된다. 운영에서는 이 runtime
-activation을 활성화하지 않고 배포 설정과 secret mount를 사용한다.
+`System settings` 화면은 배포 환경에서 이미 적용된 접속 주소, 모델 ID, 비밀 **참조명**과
+비민감 옵션을 읽기 전용으로 표시한다. 비밀번호·token을 화면에 저장하거나 browser로 보내지
+않으며, 설정 변경은 ignored `.env`와 secret mount를 수정한 뒤 update/restart workflow로
+적용한다.
 
 ### 원격 DataHub v1.6의 Token authentication 활성화
 
@@ -643,34 +670,29 @@ origin 또는 내부 proxy/DNS 구성을 먼저 확인한다.
 적용해야 한다.
 
 GraphRAG 개발 검증에는 Neo4j projection과 native Ollama model artifact도 별도 반입한다.
-Ollama는 Docker image가 아니라 호스트 프로세스이므로 engine과
-`gemma4:e2b-it-qat`, `bge-m3:latest` model blobs를 연결망에서 미리 준비한다.
+Ollama는 Docker image가 아니라 호스트 프로세스이다. 모델 이름은 저장소나 bootstrap이
+선택하지 않으며, 운영자가 `ollama list`로 이미 설치된 모델을 확인한 뒤 활성 ignored 환경
+파일의 Chat·Embedding·Reranker 항목에 정확한 ID를 기록한다.
 
 ```bash
-ollama show gemma4:e2b-it-qat
-ollama show bge-m3:latest
-./scripts/prepare_ollama_mac_dev.sh
-scripts/compose.sh --env-file .env -f compose.yaml -f compose.graph.yaml \
+ollama list
+scripts/compose.sh --env-file .env.<profile> -f compose.yaml -f compose.graph.yaml \
   up -d --pull never --no-build --wait neo4j
-./scripts/dev_host.sh preflight \
-  --enable-local-ollama --enable-neo4j
+./scripts/dev_host.sh --env-file .env.<profile> preflight
 ./scripts/dev_host.sh stop
-./scripts/dev_host.sh start \
-  --enable-local-ollama --enable-neo4j
+./scripts/dev_host.sh --env-file .env.<profile> start
 ```
 
 `preflight`는 프로세스를 시작하지 않고 선택한 Neo4j/Chat/Embedding의 최종 Settings 계약을
 검증해 안전한 JSON 결과를 출력한다. 실제 endpoint 연결 여부는 각 System Settings의 고정 TEST로
-별도 확인한다. `--enable-local-ollama`과 `--enable-neo4j`는 서로 독립적인
-Mac 개발 capability이며, 둘을 함께 켜야만 각 기능이 활성화되는 전역 전제는 아니다. 각 Asset/LLM
-system setting은 실제 비밀정보가 아닌 이미 mount된 참조명을 사용한다. 위 startup-resolver의
-두 값을 명시적으로 opt-in한 환경에서만 TEST/SAVE/ACTIVATE한 뒤 source-host 프로세스를
-재시작한다.
+별도 확인한다. 각 capability는 환경 파일에서 독립적으로 활성화하며, Chat·Embedding·Neo4j를
+모두 켜야 한다는 전역 전제는 없다. 각 Asset/LLM setting은 실제 비밀정보가 아닌 이미 mount된
+참조명을 사용한다. 환경을 변경한 뒤 source-host 프로세스를 재시작하고 Admin의 고정 TEST로
+확인한다.
 
 사내 OpenAI-compatible LLM을 사용할 때는 위 두 flag를 함께 쓰지 않는다. 먼저 Neo4j container를
-기동하고 Chat·Embedding·Neo4j System Settings revision을 각각 TEST/SAVE/ACTIVATE한다. 이후에는
-System Settings startup resolver가 세 profile을 함께 읽으므로 flag 없이 source-host process만
-재시작한다.
+기동하고 Chat·Embedding·Neo4j 설정을 선택한 ignored `.env`와 secret mount에 기록한다. 이후에는
+flag 없이 source-host process를 재시작하고 세 고정 TEST를 각각 수행한다.
 
 ```bash
 scripts/compose.sh --env-file .env -f compose.yaml -f compose.graph.yaml \
@@ -710,36 +732,34 @@ repository, 고정 component digest, 인증·백업·Kafka/DB/검색 cluster 설
 
 ## Validated Mac development PC
 
-This is a single-developer topology, not a production deployment. On a 32 GiB Mac, set Docker Desktop to **16 GiB memory and 6 CPUs** by default, or at most **18 GiB** for a bounded large import; Ollama runs natively on macOS outside that limit. The selected `datariver-gemma4-dev:0.1` model reuses Gemma4 E2B QAT weights with an 8,192-token context ceiling. Do not run a second Ollama container.
+This is a single-developer topology, not a production deployment. On a 32 GiB Mac, set Docker Desktop to **16 GiB memory and 6 CPUs** by default, or at most **18 GiB** for a bounded large import; Ollama runs natively on macOS outside that limit. Select an already installed, memory-bounded model only in `.env.mac-development`; the repository does not create a derivative model. Do not run a second Ollama container.
 
 The first bootstrap generates a private local DataHub placeholder token, all DataRiver/Neo4j secrets and the Keycloak realm. It does not copy another machine's `.env`, volumes or credentials. The separate DataHub wrapper obtains the official `v1.6.0` source checkout under ignored `runtime/` and starts its official Apple-Silicon `without-neo4j` topology. `without-neo4j` is intentional: DataHub lineage remains in DataHub; the separate Neo4j service below is a rebuildable **DataRiver knowledge-graph projection sandbox**, never a DataHub database.
 
 ```bash
-# Native macOS Ollama must already be running. This reuses the Gemma4 E2B QAT
-# weights and creates a local 8,192-token development derivative.
-./scripts/prepare_ollama_mac_dev.sh
-
-./scripts/bootstrap.sh --mac-development
+# Native macOS Ollama and every selected model must already be installed.
+ollama list
+./scripts/bootstrap.sh --env-file .env.mac-development --mac-development
 ./scripts/start_datahub_mac_dev.sh start
 
-scripts/compose.sh --env-file .env --profile observability \
+scripts/compose.sh --env-file .env.mac-development --profile observability \
   -f compose.yaml -f compose.identity.yaml -f compose.airflow.yaml \
   -f compose.gateway.yaml -f aux-compose.yml -f compose.graph.yaml config --quiet
-scripts/compose.sh --env-file .env --profile observability \
+scripts/compose.sh --env-file .env.mac-development --profile observability \
   -f compose.yaml -f compose.identity.yaml -f compose.airflow.yaml \
   -f compose.gateway.yaml -f aux-compose.yml -f compose.graph.yaml \
   up -d --build --wait
-scripts/compose.sh --env-file .env --profile tools \
+scripts/compose.sh --env-file .env.mac-development --profile tools \
   -f compose.yaml -f compose.identity.yaml \
   -f compose.airflow.yaml -f compose.gateway.yaml -f aux-compose.yml \
   -f compose.graph.yaml run --rm local-bootstrap
 
 # Optional but recommended: deterministic catalog/KG test data.
-scripts/compose.sh --env-file .env --profile semiconductor-seed \
+scripts/compose.sh --env-file .env.mac-development --profile semiconductor-seed \
   -f compose.yaml -f compose.identity.yaml \
   -f compose.airflow.yaml -f compose.gateway.yaml -f aux-compose.yml \
   -f compose.graph.yaml run --rm semiconductor-seed
-scripts/compose.sh --env-file .env --profile semiconductor-seed \
+scripts/compose.sh --env-file .env.mac-development --profile semiconductor-seed \
   -f compose.yaml -f compose.identity.yaml \
   -f compose.airflow.yaml -f compose.gateway.yaml -f aux-compose.yml \
   -f compose.graph.yaml run --rm semiconductor-seed \
@@ -750,8 +770,8 @@ Use DataRiver at `http://localhost:38102`, its API at `http://localhost:38101`, 
 
 On the 32 GiB Mac development host, keep Docker Desktop at `16 GiB` by default and use `18 GiB` only
 for bounded large imports rather than raising it to `24 GiB`: the full DataRiver + DataHub stack
-uses substantial memory, while the host Ollama
-`gemma4` derivative needs separate unified-memory headroom when loaded. Recheck `docker stats` and
+uses substantial memory, while the operator-selected host Ollama model needs separate unified-memory
+headroom when loaded. Recheck `docker stats` and
 `ollama ps` during GraphRAG tests; sustained swap or memory pressure means stop optional services,
 not enlarge both Docker and model budgets past physical memory.
 
@@ -826,55 +846,18 @@ security/exception workflows;
 eligibility remains a nested policy approval because it is distinct from connection configuration.
 
 The inventory always shows deployment-managed PostgreSQL/OIDC bootstrap requirements, separate
-Redis cache/delivery and S3/DataHub core connectors, and optional feature connectors with their
-required fields and secret flags. In development, an eligible administrator can open
-**Profile → System settings** and select a badge for Redis, DataHub, Airflow, S3, the grouped
-Chat/Embedding/Reranker LLM models, Neo4j, Prometheus or Grafana. Unconfigured entries start from a
-server-owned sample YAML containing no credential values. Each SAVE creates a versioned YAML
-revision in PostgreSQL. The browser may save addresses, model identifiers, non-sensitive options
-and strict `file:/run/secrets/<name>` references; a literal `password`, `secret`, `token`, `api_key`
-or `private_key` value is rejected. Actual values remain in ignored local secret files/Docker
-secrets, and `.env` contains only deployment switches or reference paths. Use
-`url`, `endpoint` or `base_url` for an HTTP(S)
-endpoint; Redis uses `redis://` or `rediss://`. The bounded versions API exposes newest-first
-hash/TEST/activation history without YAML or credentials. A saved Grafana URL is supplied by the
-server to the Monitoring page and rendered in its
-sandboxed iframe. Production keeps configuration in deployment/approved-provider controls and does
-not expose this write API.
+Redis cache/delivery and S3/DataHub core connectors, and optional feature connectors. In
+development, **Profile → System settings** is a read-only view of the API process's validated
+deployment environment. It offers only fixed server-owned connection probes and copyable `.env`
+option names. It has no SAVE, ACTIVATE, host-file write or browser-supplied probe URL.
 
-**SAVE** validates and versions the YAML. **TEST** runs one fixed server-side probe against that
-exact saved revision and never accepts a request URL. **ACTIVATE** is available only for a current
-AVAILABLE revision, an implemented runtime consumer and a recent hardware-WebAuthn administrator.
-It selects the version for the next process startup; it never hot-reloads or restarts a client.
-Redis cache requires API restart, Redis delivery requires relay/worker restart, and DataHub GMS and
-S3 changes require API plus relevant worker restart. Local Ollama or the development
-intranet OpenAI-compatible Chat/Embedding adapters together with Neo4j require an API restart;
-the Reranker remains storable/testable inventory and has no runtime activation. Its TEST contract is
-a fixed and bounded `POST /v1/rerank` inference request under either private
-`INTRANET_RERANK_V1` or Mac-only `LOCAL_LLAMA_CPP`; it is not OpenAI-compatible. Ollama itself still
-returns `404` for that route, so Mac development resolves the approved GGUF from the Ollama store
-and serves it through the loopback-only `scripts/local_reranker_service.py` process. The API can
-report only the version it loaded itself and does not infer worker success.
-
-Mac bootstrap deliberately leaves the startup resolver disabled. To opt into development-only
-ACTIVATE, set both values in the selected ignored deployment env file before saving/activating a
-revision:
-
-```dotenv
-SYSTEM_CONFIGURATION_RUNTIME_ACTIVATION_ENABLED=true
-SYSTEM_CONFIGURATION_RUNTIME_WORKSPACE_ID=00000000-0000-4000-8000-000000000100
-```
-
-Compose consumers keep `SYSTEM_CONFIGURATION_SECRET_ROOT=/run/secrets`; `scripts/dev_host.sh`
-maps the same canonical references to this checkout's ignored `secrets/` directory. Do not put
-credential values in the env file. After ACTIVATE, recreate the API and relevant workers:
-
-```bash
-scripts/compose.sh --env-file .env \
-  -f compose.yaml -f compose.identity.yaml -f compose.airflow.yaml \
-  -f compose.gateway.yaml -f aux-compose.yml -f compose.graph.yaml \
-  up -d --force-recreate api governance-apply-worker upload-worker upload-validation-worker
-```
+Edit the ignored environment selected by the explicit workflow profile, then run
+`workflow_update_restart.py` with that same profile. The workflow fingerprints keys without
+persisting values and recreates their consumers. Refresh Admin after the rollout to view the new
+redacted snapshot. Compose consumers keep
+`SYSTEM_CONFIGURATION_SECRET_ROOT=/run/secrets`; source-host launchers map the same canonical
+references to the checkout's ignored `secrets/` directory. Full option and propagation details are
+in [Deployment environment configuration](docs/41_DEPLOYMENT_ENVIRONMENT_CONFIGURATION.md).
 
 APISIX uses DNS discovery through Docker's embedded resolver, so replacing the API container does
 not require restarting the gateway or leave it pinned to the old container address.
@@ -899,63 +882,13 @@ INTRANET_OPENAI_COMPATIBLE_ALLOWED_HOSTS=llm-gateway.corp.example
 chmod 600 secrets/intranet_llm_chat_api_key secrets/intranet_llm_embedding_api_key
 ```
 
-Admin → System settings → LLM Models에서 Chat Model과 Embedding을 각각 저장한다.
-`gemma4` chat endpoint만으로는 GraphRAG pipeline을 완성할 수 없으므로, `/v1/embeddings`를 구현한
-사내 embedding model(예: 승인된 BGE deployment)도 별도 설정한다.
-
-```yaml
-# Chat Model
-connection_mode: INTRANET_OPENAI_COMPATIBLE
-base_url: https://llm-gateway.corp.example/v1
-model: gemma4:latest
-secret_references:
-  api_key: file:/run/secrets/intranet_llm_chat_api_key
-options:
-  api_style: openai_compatible
-  context_tokens: 8192
-  timeout_seconds: 60
-```
-
-```yaml
-# Embedding
-connection_mode: INTRANET_OPENAI_COMPATIBLE
-base_url: https://llm-gateway.corp.example/v1
-model: bge-m3:latest
-secret_references:
-  api_key: file:/run/secrets/intranet_llm_embedding_api_key
-options:
-  api_style: openai_compatible
-  timeout_seconds: 60
-```
-
-Reranker revision은 SAVE/TEST까지만 지원하고 ACTIVATE는 의도적으로 제공하지 않는다.
-Mac development의 기본 모델은 Ollama store의
-`qllama/bge-reranker-v2-m3:q4_k_m`이며 `LOCAL_LLAMA_CPP` bridge가 고정 포트 11435에서
-제공한다. WSL/private 배포는 아래 계약을 사용한다.
-
-```yaml
-# Reranker — OpenAI-compatible API가 아님
-connection_mode: INTRANET_RERANK_V1
-base_url: https://reranker.corp.example/v1
-model: bge-reranker-v2-m3
-secret_references:
-  api_key: file:/run/secrets/intranet_llm_reranker_api_key
-options:
-  api_style: rerank_v1
-  timeout_seconds: 60
-  top_n: 10
-```
-
-Chat/Embedding revision은 **SAVE → TEST → ACTIVATE** 순서로 처리한 뒤 API를 재시작한다.
-source-host launcher는
-portable `/run/secrets` reference를 ignored `secrets/` directory로만 매핑하며, Compose는 API
-container에만 세 모델 key를 mount한다. 사내 endpoint는 fixed strict-JSON Chat probe와 one-vector
-Embedding probe를 통과해야 한다. key를 보낸 뒤 `401`/`403`을 받으면 `UNAVAILABLE`이며 성공이 아니다.
-
-위 ACTIVATE 절차는 Chat/Embedding에만 적용된다. Reranker TEST는 정렬된 유한 점수와 유효한
-문서 index를 검증하지만 런타임 소비자 활성화를 만들지 않는다.
-
-The exact state and security boundary are controlled by [ADR-0028](docs/adr/0028-development-system-configuration-startup-activation.md).
+Chat, Embedding, Reranker의 URL·model ID·secret reference는 모두 선택한 ignored `.env`에
+설정한다. source-host launcher는 portable `/run/secrets` reference를 ignored `secrets/`
+directory로만 매핑한다. 적용 후 Admin → System settings → LLM Models의 고정 TEST를 각각
+수행한다. `401`/`403`은 성공이 아니며, browser에서 다른 URL이나 credential을 전달할 수 없다.
+전체 키와 적용 순서는
+[Deployment environment configuration](docs/41_DEPLOYMENT_ENVIRONMENT_CONFIGURATION.md)을
+따른다.
 
 ### Membership renewal and CR responsibility routing
 
@@ -1530,8 +1463,8 @@ git rev-parse --verify HEAD
 `DATAHUB_VERSION_ENFORCEMENT=enforce`, 운영용 secret 파일 참조를 사용해야 한다.
 고위험 CR/관리자 작업에는 `OIDC_HARDWARE_WEBAUTHN_ENABLED=true`를 유지하고, 별도의
 Maker-Checker 승격을 완료하지 않았다면 `ADMIN_PASSWORD_FALLBACK_ENABLED=false`로 둔다.
-브라우저의 시스템 설정을 런타임에 바로 반영하는
-`SYSTEM_CONFIGURATION_RUNTIME_ACTIVATION_ENABLED`도 운영에서는 활성화하지 않는다.
+Admin 시스템 설정은 운영 환경을 변경하지 않는다. 검토한 배포 환경과 secret을 변경한 뒤
+동일한 운영 workflow로 관련 프로세스를 재생성한다.
 
 ```bash
 docker compose -f compose.yaml config --quiet
@@ -1638,7 +1571,7 @@ service token의 FINAL 호출은 `401` 또는 `403`으로 차단되어야 한다
 - Classification access administration: eligible human security administrators can review and independently approve versioned four-class Search/Chat policies, review or revoke immutable inference-provider profile versions, and govern policy-bound RESTRICTED Search grants. ADR-0020 additionally permits an audited, read-only same-workspace catalog review of non-deleted quarantined DataHub projections for classification remediation, including the fixed typed DataHub metadata detail; it never enables export, Chat, arbitrary provider access or mutation. The Admin UI never accepts provider endpoints or credentials, and RESTRICTED evidence is never eligible for Chat.
 - Knowledge graph: create a graph/ontology, author typed node/edge changesets, validate, independently review, publish or roll back immutable releases, export governed views and call bounded analysis. Raw SQL/Cypher is never accepted.
 - API sharing: create a governed-release-pinned contract version, publish it with recent strong authentication, bind an active non-expiring service Subject plus issuer/OIDC `client_id` to explicit scopes/classification/validity and quotas, revoke it, and invoke fixed Snapshot/Neighbors/local-Chat surfaces. Ledger, canonical result and monthly quota commit atomically; exact retries replay the stored no-store response without executing or charging twice. List/detail, replay, publish, grant and invocation revalidate current authority and independently reviewed lineage; client-only legacy grants are non-invokable until explicitly upgraded.
-- Chat: deterministic baseline answers only from catalog or active-release knowledge evidence that passed prefiltering and per-item authorization. Immutable chunks bind workspace, classification, typed scope, source/version/effective time and content hash; only validated cited chunk IDs are persisted, otherwise the answer is `검증 불가`. Persistence additionally requires the workspace's independently approved ACTIVE retention policy: each new session binds its exact policy ID/hash and database-time deadline, and a superseded, expired or legacy-unbound session is append-closed. There is no duration fallback. The default inference-worker contract rejects SQL, Cypher, arbitrary HTTP, tools and mutation fields. Development Knowledge processing may use either the fixed loopback Ollama adapter in [ADR-0023](docs/adr/0023-mac-development-local-inference-and-graph-projection.md) or the private-network OpenAI-compatible adapter in [ADR-0030](docs/adr/0030-development-intranet-openai-compatible-adapter.md); both retain a fixed non-executable response contract and server-side validation. Commercial/public external inference remains disabled until live revalidation, delivery/streaming, metrics and scaled red-team gates are accepted.
+- Chat: the governed router distinguishes general, bounded vector and adapter-ready graph modes after classification and per-item authorization. Graph remains explicitly unavailable until the governed asset-graph task supplies its port; it never silently falls back. Immutable chunks bind workspace, classification, typed scope, source/version/effective time and content hash; only validated cited chunk IDs are persisted, otherwise the answer is `검증 불가`. Persistence additionally requires the workspace's independently approved ACTIVE retention policy: each new session binds its exact policy ID/hash and database-time deadline, and a superseded, expired or legacy-unbound session is append-closed. There is no duration fallback. In development only, environment-selected local/private Chat, Embedding and Reranker adapters may be exercised through the bounded [ADR-0049](docs/adr/0049-development-governed-chat-routing-and-parity.md) path. Production direct provider inference, Commercial/public external inference and model-generated SQL/Cypher/tools/mutations remain disabled until the durable inference gates are accepted.
 - Monitoring: liveness, readiness, dependency capabilities, workspace counts, outbox dead letters and ABAC-protected Prometheus HTTP metrics remain independent so one degraded optional dependency does not hide core state. Database-pool metrics expose only bounded connection states and configured limits, never workspace, subject or query labels.
 
 The upload store is an external S3-compatible deployment and is not an accepted WORM boundary. A

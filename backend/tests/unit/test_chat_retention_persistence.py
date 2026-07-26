@@ -113,7 +113,7 @@ def test_migration_and_initial_schema_install_fail_closed_binding_guards() -> No
     initial = (root / "backend/alembic/versions/0001_initial_schema.py").read_text(encoding="utf-8")
     generator = (root / "scripts/generate_initial_migration.py").read_text(encoding="utf-8")
 
-    assert REQUIRED_DATABASE_REVISION == "0055"
+    assert REQUIRED_DATABASE_REVISION == "0057"
     assert 'down_revision: str | Sequence[str] | None = "0017"' in migration
     for required in (
         "ACTIVE_POLICY_V1",
@@ -123,7 +123,6 @@ def test_migration_and_initial_schema_install_fail_closed_binding_guards() -> No
         "enforce_chat_message_retention_binding",
         "transaction_timestamp()",
         "FOR KEY SHARE",
-        "GRANT UPDATE (version, updated_at) ON assistant.chat_sessions",
         "The Chat retention binding schema is only partially present.",
         "Chat retention binding privilege contract is invalid",
     ):
@@ -131,7 +130,40 @@ def test_migration_and_initial_schema_install_fail_closed_binding_guards() -> No
         if not required.startswith(("The Chat", "Chat retention")):
             assert required in initial or required in generator
     assert "Compatibility bridge: regenerated 0001 owns" in migration
+    assert "GRANT UPDATE (version, updated_at) ON assistant.chat_sessions" in migration
+    assert "GRANT UPDATE (is_favorite, version, updated_at)" in initial
     assert "GRANT UPDATE ON assistant.chat_sessions TO datariver_app" not in initial
     assert "timedelta(days=90)" not in (
         root / "backend/src/datariver/infrastructure/db/chat.py"
     ).read_text(encoding="utf-8")
+
+
+def test_chat_favorite_migration_preserves_retention_privilege_boundary() -> None:
+    root = Path(__file__).resolve().parents[3]
+    migration = (root / "backend/alembic/versions/0056_chat_session_favorites.py").read_text(
+        encoding="utf-8"
+    )
+    generator = (root / "scripts/generate_initial_migration.py").read_text(encoding="utf-8")
+
+    assert 'revision: str = "0056"' in migration
+    assert 'down_revision: str | Sequence[str] | None = "0055"' in migration
+    assert "is_favorite" in migration
+    assert "display_name" in migration
+    assert "description" in migration
+    assert "GRANT UPDATE (is_favorite, version, updated_at)" in migration
+    for policy in (
+        "chat_session_owner_access",
+        "chat_message_owner_access",
+        "assistant_run_owner_access",
+        "evidence_citation_owner_access",
+    ):
+        assert policy in migration
+        assert policy in generator
+    assert "AS RESTRICTIVE FOR ALL TO datariver_app" in migration
+    assert "normalized_using != expected_expression.lower()" in migration
+    assert "required_fragments" not in migration
+    assert '" or " in normalized_using' not in migration
+    assert "retention_until" in migration
+    assert "Chat favorites exist; downgrade would discard user-owned state." in migration
+    assert "Chat evidence display data exists; downgrade would discard it." in migration
+    assert "GRANT UPDATE (is_favorite, version, updated_at)" in generator

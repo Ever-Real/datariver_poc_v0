@@ -4,6 +4,7 @@ set -eu
 datahub_token_file=
 datahub_base_url=
 host_development=false
+portable_development=false
 mac_development=false
 wsl_preparation=false
 source_host_airflow_bridge=false
@@ -18,6 +19,9 @@ while [ "$#" -gt 0 ]; do
       ;;
     --host-development)
       host_development=true
+      ;;
+    --portable-development)
+      portable_development=true
       ;;
     --mac-development)
       mac_development=true
@@ -51,10 +55,11 @@ done
 
 selected_profiles=0
 [ "$host_development" = true ] && selected_profiles=$((selected_profiles + 1))
+[ "$portable_development" = true ] && selected_profiles=$((selected_profiles + 1))
 [ "$mac_development" = true ] && selected_profiles=$((selected_profiles + 1))
 [ "$wsl_preparation" = true ] && selected_profiles=$((selected_profiles + 1))
 if [ "$selected_profiles" -gt 1 ]; then
-  echo "--host-development, --mac-development and --wsl-preparation are mutually exclusive" >&2
+  echo "--host-development, --portable-development, --mac-development and --wsl-preparation are mutually exclusive" >&2
   exit 2
 fi
 if [ "$source_host_airflow_bridge" = true ] && [ "$host_development" != true ]; then
@@ -142,14 +147,6 @@ env_is_nonempty() {
 }
 
 local_knowledge_inference_is_ready() {
-  if [ "$mac_development" = true ]; then
-    env_is_true LOCAL_OLLAMA_EMBEDDING_ENABLED &&
-      env_is_nonempty LOCAL_OLLAMA_EMBEDDING_BASE_URL &&
-      env_is_nonempty LOCAL_OLLAMA_EMBEDDING_MODEL &&
-      ! env_is_true INTRANET_OPENAI_COMPATIBLE_CHAT_ENABLED &&
-      ! env_is_true INTRANET_OPENAI_COMPATIBLE_EMBEDDING_ENABLED
-    return
-  fi
   env_is_true LOCAL_OLLAMA_CHAT_ENABLED &&
     env_is_true LOCAL_OLLAMA_EMBEDDING_ENABLED &&
     env_is_nonempty LOCAL_OLLAMA_CHAT_BASE_URL &&
@@ -375,6 +372,30 @@ if [ "$host_development" = true ]; then
   set_env_value IDENTITY_PASSWORD_CHANGE_ACTION_ENABLED true
   set_env_value OIDC_HARDWARE_WEBAUTHN_ENABLED false
 fi
+if [ "$portable_development" = true ]; then
+  # Portable development runs the reviewed source on either linux/arm64 or
+  # linux/amd64. Provider endpoints and model identities remain operator-owned
+  # values in the selected environment file.
+  set_env_value APP_ENV development
+  set_env_value APP_PUBLIC_ORIGIN http://localhost:8080
+  set_env_value APP_CORS_ORIGINS http://localhost:8080
+  set_env_value WEB_PORT 8080
+  set_env_value API_PORT 8000
+  set_env_value POSTGRES_PORT 5432
+  set_env_value KEYCLOAK_PORT 8081
+  set_env_value APISIX_PORT 9080
+  set_env_value DATARIVER_API_BASE_URL http://api:8000
+  set_env_value AIRFLOW_SOURCE_API_BRIDGE_ENABLED false
+  set_env_value OIDC_ISSUER http://localhost:8081/realms/datariver
+  set_env_value OIDC_JWKS_URL http://keycloak:8080/realms/datariver/protocol/openid-connect/certs
+  set_env_value OIDC_PUBLIC_AUTHORITY http://localhost:8081/realms/datariver
+  set_env_value OIDC_PUBLIC_ORIGIN http://localhost:8081
+  set_env_value IDENTITY_ADMIN_ENABLED true
+  set_env_value IDENTITY_ADMIN_BASE_URL http://keycloak:8080
+  set_env_value IDENTITY_ADMIN_CLIENT_SECRET_REF file:/run/secrets/keycloak_identity_admin_client_secret
+  set_env_value IDENTITY_PASSWORD_CHANGE_ACTION_ENABLED true
+  set_env_value OIDC_HARDWARE_WEBAUTHN_ENABLED false
+fi
 if [ "$mac_development" = true ]; then
   # Keep this Mac development topology disjoint from common local DataHub,
   # frontend and API bindings.  DataHub remains the external provider on the
@@ -402,21 +423,8 @@ if [ "$mac_development" = true ]; then
   # MinIO Community supports exact cluster-wide CORS, not PutBucketCors.
   set_env_value S3_CORS_MANAGEMENT_MODE external
   set_env_value UI_DATAHUB_URL http://localhost:19002
-  set_env_value LOCAL_OLLAMA_CHAT_ENABLED true
-  set_env_value LOCAL_OLLAMA_CHAT_BASE_URL http://host.docker.internal:11434/v1
-  set_env_value LOCAL_OLLAMA_CHAT_MODEL datariver-gemma4-dev:0.1
-  set_env_value LOCAL_OLLAMA_CHAT_TIMEOUT_SECONDS 60
-  set_env_value LOCAL_OLLAMA_CHAT_CONTEXT_TOKENS 8192
-  set_env_value LOCAL_OLLAMA_EMBEDDING_ENABLED true
-  set_env_value LOCAL_OLLAMA_EMBEDDING_BASE_URL http://host.docker.internal:11434/v1
-  set_env_value LOCAL_OLLAMA_EMBEDDING_MODEL bge-m3:latest
-  set_env_value LOCAL_OLLAMA_EMBEDDING_TIMEOUT_SECONDS 60
-  set_env_value LOCAL_LLAMA_CPP_RERANKER_ENABLED true
-  set_env_value LOCAL_LLAMA_CPP_RERANKER_BASE_URL http://host.docker.internal:11435/v1
-  set_env_value LOCAL_LLAMA_CPP_RERANKER_MODEL qllama/bge-reranker-v2-m3:q4_k_m
-  set_env_value LOCAL_LLAMA_CPP_RERANKER_TIMEOUT_SECONDS 60
-  set_env_value LOCAL_LLAMA_CPP_RERANKER_TOP_N 10
-  set_env_value SYSTEM_CONFIGURATION_RUNTIME_ACTIVATION_ENABLED false
+  # Model endpoints, identities and enablement stay operator-owned in the
+  # ignored environment file. This profile never selects or creates a model.
   set_env_value CHAT_EPHEMERAL_ADMIN_WITHOUT_RETENTION_ENABLED true
   set_env_value UI_GRAPH_URL http://localhost:17474
 fi
@@ -444,7 +452,6 @@ if [ "$wsl_preparation" = true ]; then
   set_env_value WORKER_DATABASE_POOL_MAX_OVERFLOW 0
   set_env_value DATAHUB_MAX_CONCURRENCY 8
   set_env_value NEO4J_MAXIMUM_CONNECTION_POOL_SIZE 4
-  set_env_value SYSTEM_CONFIGURATION_RUNTIME_ACTIVATION_ENABLED false
   set_env_value LOCAL_OLLAMA_CHAT_ENABLED false
   set_env_value LOCAL_OLLAMA_EMBEDDING_ENABLED false
   set_env_value LOCAL_LLAMA_CPP_RERANKER_ENABLED false

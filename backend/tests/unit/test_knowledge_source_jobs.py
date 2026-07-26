@@ -2,9 +2,11 @@ from __future__ import annotations
 
 from dataclasses import replace
 from datetime import UTC, datetime
+from typing import cast
 from uuid import uuid4
 
 import pytest
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from datariver.domain.common import ValidationError
 from datariver.domain.knowledge_pipeline import ModelBinding
@@ -13,6 +15,7 @@ from datariver.domain.knowledge_source_jobs import (
     KnowledgeSourceJobState,
     require_knowledge_source_transition,
 )
+from datariver.infrastructure.db.knowledge_source_jobs import _activated_binding_is_current
 
 
 def _binding(model: str, configuration_hash: str) -> ModelBinding:
@@ -45,6 +48,25 @@ def _pins() -> KnowledgeSourceJobPins:
         embedding_binding=_binding("bge-m3:latest", "e" * 64),
         extraction_binding=_binding("gemma4:latest", "f" * 64),
         prepared_at=datetime(2026, 7, 24, 1, 2, tzinfo=UTC),
+    )
+
+
+@pytest.mark.asyncio
+async def test_historical_database_model_binding_is_never_current() -> None:
+    historical = replace(
+        _binding("historical-model", "a" * 64),
+        configuration_source="SYSTEM_CONFIGURATION",
+        configuration_version=3,
+    )
+
+    assert (
+        await _activated_binding_is_current(
+            cast(AsyncSession, object()),
+            workspace_id=uuid4(),
+            service_key="LLM_CHAT_MODEL",
+            binding=historical,
+        )
+        is False
     )
 
 

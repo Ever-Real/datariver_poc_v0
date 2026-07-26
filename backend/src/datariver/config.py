@@ -103,6 +103,19 @@ class Settings(BaseSettings):
     # a security administrator is exercising the local UI before retention
     # policy governance is configured. This never permits durable Chat writes.
     chat_ephemeral_admin_without_retention_enabled: bool = False
+    chat_rate_limit_requests_per_minute: int = Field(default=30, ge=1, le=1_000)
+    chat_rate_limit_tokens_per_minute: int = Field(
+        default=1_000_000,
+        ge=2_048,
+        le=1_000_000,
+    )
+    # Immutable, stage-specific governance identities selected by the
+    # deployment. Configured adapters remain probe-only until the active
+    # classification policy binds an eligible rule to every stage that the
+    # selected route could invoke.
+    chat_composition_provider_profile_version_id: UUID | None = None
+    chat_embedding_provider_profile_version_id: UUID | None = None
+    chat_reranker_provider_profile_version_id: UUID | None = None
     # Opt-in experimental developer adapter. Container mode is constrained to
     # Docker Desktop's native-host gateway; explicit source-host development may
     # use exact loopback. This is not a provider registry or production inference.
@@ -162,15 +175,15 @@ class Settings(BaseSettings):
     knowledge_source_spool_directory: str = Field(
         default="/var/spool/datariver-knowledge", min_length=1, max_length=512
     )
-    # Development-only startup activation. The database stores versioned, non-secret
-    # documents and file-mounted secret reference names; processes read the selected
-    # activated versions once at startup, so applying a change always requires restart.
+    # Retired compatibility fields. True is rejected below and no runtime consumer
+    # reads profile overlays; deployment Settings remain the sole live source.
     system_configuration_runtime_activation_enabled: bool = False
     system_configuration_runtime_workspace_id: UUID | None = None
     system_configuration_probe_allowed_hosts: tuple[str, ...] = (
         "127.0.0.1",
         "localhost",
         "host.docker.internal",
+        "keycloak",
         "datahub-gms",
         "datahub-frontend",
         "airflow",
@@ -1144,14 +1157,10 @@ class Settings(BaseSettings):
                 "The knowledge pipeline requires activated Chat, embedding, and Neo4j adapters."
             )
         if self.system_configuration_runtime_activation_enabled:
-            if self.app_env != "development":
-                raise ValueError(
-                    "Database-activated system configuration is available only in development."
-                )
-            if self.system_configuration_runtime_workspace_id is None:
-                raise ValueError(
-                    "Runtime system configuration requires one explicit Workspace identifier."
-                )
+            raise ValueError(
+                "Database-backed runtime system configuration activation was retired; "
+                "use the selected deployment environment and restart workflow."
+            )
         if self.app_env == "production":
             if self.chat_ephemeral_admin_without_retention_enabled:
                 raise ValueError("Development-only ephemeral Chat must be disabled in production.")

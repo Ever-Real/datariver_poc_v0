@@ -40,6 +40,8 @@ interface RuleDraft {
   search_mode: ClassificationSearchMode
   chat_mode: ClassificationChatMode
   provider_profile_version_id: string
+  embedding_provider_profile_version_id: string
+  reranker_provider_profile_version_id: string
 }
 
 const classifications = ['PUBLIC', 'INTERNAL', 'CONFIDENTIAL', 'RESTRICTED'] as const
@@ -69,6 +71,8 @@ function emptyPolicyRules(): RuleDraft[] {
     search_mode: 'DENY',
     chat_mode: 'DENY',
     provider_profile_version_id: '',
+    embedding_provider_profile_version_id: '',
+    reranker_provider_profile_version_id: '',
   }))
 }
 
@@ -190,7 +194,12 @@ export function ClassificationPolicyAdmin(props: Props) {
 
   const changeJurisdiction = (value: string) => {
     setRequiredJurisdiction(value)
-    setRules((current) => current.map((rule) => ({ ...rule, provider_profile_version_id: '' })))
+    setRules((current) => current.map((rule) => ({
+      ...rule,
+      provider_profile_version_id: '',
+      embedding_provider_profile_version_id: '',
+      reranker_provider_profile_version_id: '',
+    })))
   }
   const changeRule = (classification: Classification, patch: Partial<RuleDraft>) => {
     setRules((current) => current.map((rule) => rule.classification === classification
@@ -198,7 +207,12 @@ export function ClassificationPolicyAdmin(props: Props) {
       : rule))
   }
   const changeChatMode = (classification: Classification, chatMode: ClassificationChatMode) => {
-    changeRule(classification, { chat_mode: chatMode, provider_profile_version_id: '' })
+    changeRule(classification, {
+      chat_mode: chatMode,
+      provider_profile_version_id: '',
+      embedding_provider_profile_version_id: '',
+      reranker_provider_profile_version_id: '',
+    })
   }
   const eligibleProfiles = (rule: RuleDraft) => [
     ...profiles,
@@ -246,22 +260,39 @@ export function ClassificationPolicyAdmin(props: Props) {
               <option value="INTERNAL_APPROVED_ONLY">INTERNAL_APPROVED_ONLY</option>
               {rule.classification !== 'CONFIDENTIAL' && <option value="APPROVED_PROVIDER_ONLY">APPROVED_PROVIDER_ONLY</option>}
             </select>}
-          {rule.chat_mode !== 'DENY' && <><select aria-label={`${rule.classification} ${messages.providerProfile}`} value={rule.provider_profile_version_id} onChange={(event) => {
-            const providerProfileVersionId = event.target.value
-            const selectedProfile = candidates.find((profile) => (
-              profile.provider_profile_version_id === providerProfileVersionId
-            ))
-            if (selectedProfile) {
-              setSelectedProfiles((current) => ({
-                ...current,
-                [selectedProfile.provider_profile_version_id]: selectedProfile,
-              }))
-            }
-            changeRule(rule.classification, { provider_profile_version_id: providerProfileVersionId })
-          }} required>
-            <option value="">{messages.chooseProvider}</option>
-            {candidates.map((profile) => <option key={profile.provider_profile_version_id} value={profile.provider_profile_version_id}>{profile.profile_key} v{profile.profile_version} · {profile.kind} · {profile.region}</option>)}
-          </select>{candidates.length === 0 && <small>{messages.noEligibleProvider}</small>}</>}
+          {rule.chat_mode !== 'DENY' && <>
+            {([
+              ['provider_profile_version_id', 'Composition profile', true],
+              ['embedding_provider_profile_version_id', 'Embedding profile', false],
+              ['reranker_provider_profile_version_id', 'Reranker profile', false],
+            ] as const).map(([field, label, required]) => (
+              <label key={field}>
+                <span className="text-xs text-slate-600">{label}{required ? ' · 필수' : ' · 선택'}</span>
+                <select
+                  aria-label={`${rule.classification} ${required ? messages.providerProfile : label}`}
+                  value={rule[field]}
+                  onChange={(event) => {
+                    const providerProfileVersionId = event.target.value
+                    const selectedProfile = candidates.find((profile) => (
+                      profile.provider_profile_version_id === providerProfileVersionId
+                    ))
+                    if (selectedProfile) {
+                      setSelectedProfiles((current) => ({
+                        ...current,
+                        [selectedProfile.provider_profile_version_id]: selectedProfile,
+                      }))
+                    }
+                    changeRule(rule.classification, { [field]: providerProfileVersionId })
+                  }}
+                  required={required}
+                >
+                  <option value="">{required ? messages.chooseProvider : '사용하지 않음'}</option>
+                  {candidates.map((profile) => <option key={profile.provider_profile_version_id} value={profile.provider_profile_version_id}>{profile.profile_key} v{profile.profile_version} · {profile.kind} · {profile.region}</option>)}
+                </select>
+              </label>
+            ))}
+            {candidates.length === 0 && <small>{messages.noEligibleProvider}</small>}
+          </>}
         </div>
       },
     },
@@ -292,6 +323,12 @@ export function ClassificationPolicyAdmin(props: Props) {
       provider_profile_version_id: rule.chat_mode === 'DENY'
         ? null
         : rule.provider_profile_version_id,
+      embedding_provider_profile_version_id: rule.chat_mode === 'DENY'
+        ? null
+        : rule.embedding_provider_profile_version_id || null,
+      reranker_provider_profile_version_id: rule.chat_mode === 'DENY'
+        ? null
+        : rule.reranker_provider_profile_version_id || null,
     }))
     const payload = {
       required_jurisdiction: jurisdiction,
@@ -945,7 +982,9 @@ function PolicySummary({ policy }: { policy: ClassificationAccessPolicy }) {
     </dl>
     <div className="compact-list">{policy.rules.map((rule) => <div className="panel" key={rule.classification}>
       <strong>{rule.classification}</strong><small>{rule.search_mode} · {rule.chat_mode}</small>
-      {rule.provider_profile_version_id && <code>{rule.provider_profile_version_id}</code>}
+      {rule.provider_profile_version_id && <code>composition · {rule.provider_profile_version_id}</code>}
+      {rule.embedding_provider_profile_version_id && <code>embedding · {rule.embedding_provider_profile_version_id}</code>}
+      {rule.reranker_provider_profile_version_id && <code>reranker · {rule.reranker_provider_profile_version_id}</code>}
     </div>)}</div>
     <code>{policy.payload_hash}</code>
   </>
@@ -975,7 +1014,7 @@ function attestationsAreCurrent(profile: InferenceProviderProfile, now = Date.no
 }
 
 function ruleSummary(rule: ClassificationAccessRule): string {
-  return `${rule.classification}: Search=${rule.search_mode}, Chat=${rule.chat_mode}, Provider=${rule.provider_profile_version_id ?? 'none'}`
+  return `${rule.classification}: Search=${rule.search_mode}, Chat=${rule.chat_mode}, Composition=${rule.provider_profile_version_id ?? 'none'}, Embedding=${rule.embedding_provider_profile_version_id ?? 'none'}, Reranker=${rule.reranker_provider_profile_version_id ?? 'none'}`
 }
 
 function formatDate(value: string): string {

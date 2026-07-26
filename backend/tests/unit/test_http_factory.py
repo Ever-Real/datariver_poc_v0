@@ -1,32 +1,37 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+from pathlib import Path
+from types import SimpleNamespace
 from typing import Any, cast
-from uuid import UUID
+from unittest.mock import AsyncMock
+from uuid import UUID, uuid4
 
 import pytest
 from fastapi.testclient import TestClient
+from starlette.responses import Response
 
 from datariver.config import Settings
 from datariver.domain.authz import Action
-from datariver.domain.common import ConflictError, ForbiddenError, RateLimitError, ValidationError
-from datariver.infrastructure.db.models.platform import ExternalServiceProfileModel
+from datariver.domain.common import ForbiddenError, RateLimitError, ValidationError
 from datariver.infrastructure.db.session import DatabaseReadiness
 from datariver.infrastructure.observability.metrics import HttpMetrics
 from datariver.interfaces.http.container import AppContainer
 from datariver.interfaces.http.dependencies import get_request_context
 from datariver.interfaces.http.factory import create_app
+from datariver.interfaces.http.routes import admin as admin_routes
 from datariver.interfaces.http.routes.admin import (
+    _SYSTEM_ENVIRONMENT_KEYS,
     _deployment_configuration_document,
     _display_configuration,
-    _require_system_configuration_runtime_activation,
     _system_configuration_entries,
-    _system_configuration_revision_keys,
     _validate_configuration_submission,
     _validate_system_configuration,
     _yaml_document,
 )
 from datariver.interfaces.http.routes.registration import _expected_version
+
+ROOT = Path(__file__).resolve().parents[3]
 
 
 class LiveOnlyContainer:
@@ -258,10 +263,6 @@ def test_openapi_contains_all_required_product_modules() -> None:
         "/api/v1/admin/systems",
         "/api/v1/admin/systems/{system_id}/assignees",
         "/api/v1/admin/system-configuration",
-        "/api/v1/admin/system-configuration/{system_id}",
-        "/api/v1/admin/system-configuration/{system_id}/versions",
-        "/api/v1/admin/system-configuration/{system_id}/test",
-        "/api/v1/admin/system-configuration/{system_id}/test-draft",
         "/api/v1/admin/system-configuration/{system_id}/test-deployment",
         "/api/v1/admin/me",
         "/api/v1/admin/fallback/workspace-membership-access-requests",
@@ -318,8 +319,10 @@ def test_system_configuration_inventory_is_server_owned_and_redacted() -> None:
     by_id = {entry.system_id: entry for entry in entries}
 
     assert list(by_id) == [
+        "PLATFORM_RUNTIME",
         "POSTGRESQL",
         "OIDC_IDENTITY",
+        "RETENTION_ARCHIVE",
         "DATAHUB_GMS",
         "DATAHUB_FRONTEND",
         "AIRFLOW",
@@ -337,52 +340,119 @@ def test_system_configuration_inventory_is_server_owned_and_redacted() -> None:
     assert by_id["POSTGRESQL"].requirement == "BOOTSTRAP_REQUIRED"
     assert by_id["REDIS_CACHE"].requirement == "CORE_CONNECTOR"
     assert by_id["REDIS_DELIVERY"].restart_scope == "WORKERS_ONLY"
+    assert by_id["LLM_RERANKER"].runtime_supported is True
+    assert by_id["LLM_RERANKER"].restart_scope == "API_ONLY"
     assert any(field.secret for field in by_id["S3_STORAGE"].connection_requirements)
-    assert by_id["LLM_CHAT_MODEL"].state == "GOVERNED_PROFILE_REQUIRED"
+    assert by_id["LLM_CHAT_MODEL"].state == "NOT_CONFIGURED"
     assert by_id["GRAFANA_DASHBOARD"].embedding_state == "AVAILABLE"
     assert all(entry.activation_state == "DEPLOYMENT_MANAGED" for entry in entries)
     assert all(entry.template_yaml == "" for entry in entries)
-    assert all(entry.display_yaml == "" for entry in entries)
+    assert all(entry.environment_template for entry in entries)
+    assert by_id["DATAHUB_GMS"].effective_configuration_yaml
+    assert "DATAHUB_BASE_URL=" in by_id["DATAHUB_GMS"].environment_template
+    assert "token:" in by_id["DATAHUB_GMS"].effective_configuration_yaml
+    assert "********" not in by_id["DATAHUB_GMS"].effective_configuration_yaml
     assert all("url" not in entry.model_dump() for entry in entries)
     assert all("secret_reference" not in entry.model_dump() for entry in entries)
 
     development = Settings(**(configured.model_dump() | {"app_env": "development"}))
     development_entries = _system_configuration_entries(development)
-    connector_entries = [
-        entry for entry in development_entries if entry.requirement != "BOOTSTRAP_REQUIRED"
+    assert [entry.model_dump() for entry in development_entries] == [
+        entry.model_dump() for entry in entries
     ]
-    assert all(entry.template_yaml for entry in connector_entries)
-    assert any("file:/run/secrets/" in entry.template_yaml for entry in development_entries)
-    assert all("auth_token" not in entry.template_yaml.lower() for entry in development_entries)
-    assert all("api_token" not in entry.template_yaml.lower() for entry in development_entries)
     assert all(entry.activation_state == "DEPLOYMENT_MANAGED" for entry in development_entries)
 
-    runtime_managed = Settings(
-        **(
-            configured.model_dump()
-            | {
-                "app_env": "development",
-                "system_configuration_runtime_activation_enabled": True,
-                "system_configuration_runtime_workspace_id": (
-                    "00000000-0000-4000-8000-000000000100"
-                ),
-            }
-        )
+
+def test_system_environment_templates_use_only_documented_env_example_keys() -> None:
+    documented: set[str] = set()
+    for raw_line in (ROOT / ".env.example").read_text(encoding="utf-8").splitlines():
+        line = raw_line.removeprefix("# ").strip()
+        if "=" in line:
+            documented.add(line.split("=", 1)[0])
+
+    missing = {
+        key for keys in _SYSTEM_ENVIRONMENT_KEYS.values() for key in keys if key not in documented
+    }
+
+    assert missing == set()
+    retired = {
+        "SYSTEM_CONFIGURATION_RUNTIME_ACTIVATION_ENABLED",
+        "SYSTEM_CONFIGURATION_RUNTIME_WORKSPACE_ID",
+        "SYSTEM_CONFIGURATION_RUNTIME_VERSIONS",
+        "SYSTEM_CONFIGURATION_RUNTIME_HASHES",
+    }
+    live_settings = {name.upper() for name in Settings.model_fields} - retired
+    assert live_settings - documented == set()
+    connector_prefixes = (
+        "DATABASE_",
+        "MIGRATION_DATABASE_",
+        "RELAY_DATABASE_",
+        "UPLOAD_DATABASE_",
+        "GOVERNANCE_DATABASE_",
+        "KNOWLEDGE_DATABASE_",
+        "EXPORT_DATABASE_",
+        "RETENTION_SCHEDULER_DATABASE_",
+        "ARCHIVE_DATABASE_",
+        "BOOTSTRAP_DATABASE_",
+        "WORKER_DATABASE_",
+        "OIDC_",
+        "IDENTITY_",
+        "ADMIN_PASSWORD_",
+        "DATAHUB_",
+        "DATARIVER_CATALOG_",
+        "REDIS_",
+        "CACHE_",
+        "CATALOG_SEARCH_",
+        "CATALOG_EXPORT_",
+        "OUTBOX_",
+        "UPLOAD_",
+        "GOVERNANCE_",
+        "S3_",
+        "LOCAL_OLLAMA_",
+        "LOCAL_LLAMA_CPP_",
+        "INTRANET_OPENAI_",
+        "NEO4J_",
+        "KNOWLEDGE_",
+        "GRAFANA_",
+        "SYSTEM_CONFIGURATION_PROBE_",
+        "SYSTEM_CONFIGURATION_SECRET_",
     )
-    runtime_entries = _system_configuration_entries(runtime_managed)
-    assert (
-        next(entry for entry in runtime_entries if entry.system_id == "POSTGRESQL").activation_state
-        == "DEPLOYMENT_MANAGED"
+    connector_exact = {
+        "AIRFLOW_WORKSPACE_ID",
+        "CATALOG_EXPORT_WORKER_ENABLED",
+        "CHAT_EPHEMERAL_ADMIN_WITHOUT_RETENTION_ENABLED",
+        "EXPORT_WORKER_SUBJECT_ID",
+        "HIGH_RISK_AUTH_MAX_AGE_SECONDS",
+        "LOCAL_INFERENCE_SOURCE_HOST_ENABLED",
+        "POSTGRES_DB",
+        "POSTGRES_USER",
+        "PRESIGNED_URL_TTL_SECONDS",
+        "RETENTION_WORKER_SUBJECT_ID",
+        "UI_AIRFLOW_URL",
+        "UI_DATAHUB_URL",
+        "UI_GRAFANA_URL",
+        "UI_GRAPH_URL",
+        "UI_PROMETHEUS_URL",
+        "WORKER_POLL_SECONDS",
+        "WORKSPACE_SELECTION_ENABLED",
+    }
+    expected = {
+        key for key in documented if key.startswith(connector_prefixes) or key in connector_exact
+    }
+    rendered = {key for keys in _SYSTEM_ENVIRONMENT_KEYS.values() for key in keys}
+
+    assert live_settings - rendered == set()
+    assert expected - rendered == set()
+    reference = (ROOT / "docs" / "41_DEPLOYMENT_ENVIRONMENT_CONFIGURATION.md").read_text(
+        encoding="utf-8"
     )
-    assert (
-        next(
-            entry for entry in runtime_entries if entry.system_id == "LLM_RERANKER"
-        ).activation_state
-        == "NOT_CONFIGURED"
-    )
+    assert {key for key in live_settings if key not in reference} == set()
+    assert {key for key in rendered if key not in reference} == set()
 
 
 def test_deployment_probe_documents_use_only_server_owned_runtime_settings() -> None:
+    chat_profile_id = uuid4()
+    reranker_profile_id = uuid4()
     configured = Settings(
         **(
             settings().model_dump()
@@ -390,10 +460,12 @@ def test_deployment_probe_documents_use_only_server_owned_runtime_settings() -> 
                 "app_env": "development",
                 "local_ollama_chat_enabled": True,
                 "local_ollama_chat_base_url": "http://host.docker.internal:11434/v1",
-                "local_ollama_chat_model": "datariver-gemma4-dev:0.1",
+                "local_ollama_chat_model": "operator-selected-chat-model",
+                "chat_composition_provider_profile_version_id": chat_profile_id,
                 "local_llama_cpp_reranker_enabled": True,
                 "local_llama_cpp_reranker_base_url": ("http://host.docker.internal:11435/v1"),
                 "local_llama_cpp_reranker_model": ("qllama/bge-reranker-v2-m3:q4_k_m"),
+                "chat_reranker_provider_profile_version_id": reranker_profile_id,
             }
         )
     )
@@ -411,53 +483,26 @@ def test_deployment_probe_documents_use_only_server_owned_runtime_settings() -> 
     assert delivery["secret_references"] == {"password": configured.redis_delivery_secret_ref}
     assert chat is not None
     assert chat["base_url"] == "http://host.docker.internal:11434/v1"
-    assert chat["model"] == "datariver-gemma4-dev:0.1"
+    assert chat["model"] == "operator-selected-chat-model"
+    assert chat["options"]["api_style"] == "ollama_native_chat"
+    assert chat["options"]["governance_binding"] == {
+        "stage": "composition",
+        "provider_profile_version_id": str(chat_profile_id),
+        "server_route_key": "local-ollama-native-chat-v1",
+        "provider_identity": "ollama-native-chat",
+        "model_identity": "operator-selected-chat-model",
+        "deployment_identity": chat["options"]["governance_binding"]["deployment_identity"],
+    }
+    assert str(chat["options"]["governance_binding"]["deployment_identity"]).startswith("sha256:")
     assert chat["secret_references"] == {}
     assert reranker is not None
     assert reranker["connection_mode"] == "LOCAL_LLAMA_CPP"
     assert reranker["base_url"] == "http://host.docker.internal:11435/v1"
     assert reranker["model"] == "qllama/bge-reranker-v2-m3:q4_k_m"
+    assert reranker["options"]["governance_binding"]["provider_profile_version_id"] == str(
+        reranker_profile_id
+    )
     assert reranker["secret_references"] == {}
-
-
-def test_system_configuration_inventory_reads_only_current_and_activated_revisions() -> None:
-    profile_id = UUID("00000000-0000-4000-8000-000000000123")
-    profile = ExternalServiceProfileModel(
-        id=profile_id,
-        version=3,
-        activated_version=1,
-    )
-
-    assert _system_configuration_revision_keys([profile]) == {
-        (profile_id, 1),
-        (profile_id, 3),
-    }
-
-    profile.activated_version = 3
-    assert _system_configuration_revision_keys([profile]) == {(profile_id, 3)}
-    assert _system_configuration_revision_keys([]) == set()
-
-
-def test_system_configuration_runtime_activation_fails_closed_by_deployment_mode() -> None:
-    with pytest.raises(ForbiddenError):
-        _require_system_configuration_runtime_activation(settings())
-
-    development = Settings(**(settings().model_dump() | {"app_env": "development"}))
-    with pytest.raises(ConflictError):
-        _require_system_configuration_runtime_activation(development)
-
-    enabled = Settings(
-        **(
-            development.model_dump()
-            | {
-                "system_configuration_runtime_activation_enabled": True,
-                "system_configuration_runtime_workspace_id": (
-                    "00000000-0000-4000-8000-000000000100"
-                ),
-            }
-        )
-    )
-    _require_system_configuration_runtime_activation(enabled)
 
 
 def test_system_configuration_display_removes_nested_secrets_and_submission_rejects_them() -> None:
@@ -739,30 +784,137 @@ def test_reranker_configuration_is_one_fixed_non_openai_contract() -> None:
         )
 
 
-def test_reranker_runtime_activation_is_rejected_by_the_actual_http_route() -> None:
+def test_database_backed_system_configuration_mutation_routes_are_not_published() -> None:
     startup_settings = settings()
-    runtime_settings = startup_settings.model_copy(
-        update={
-            "app_env": "development",
-            "system_configuration_runtime_activation_enabled": True,
-        }
-    )
     container = LiveOnlyContainer()
-    container.settings = runtime_settings  # type: ignore[attr-defined]
+    container.settings = startup_settings  # type: ignore[attr-defined]
     factory = cast(Callable[[Settings], AppContainer], lambda _: cast(AppContainer, container))
     app = create_app(startup_settings, container_factory=factory)
     app.dependency_overrides[get_request_context] = lambda: object()
 
+    document = app.openapi()
+    paths = document["paths"]
+    assert "/api/v1/admin/system-configuration/{system_id}" not in paths
+    assert "/api/v1/admin/system-configuration/{system_id}/versions" not in paths
+    assert "/api/v1/admin/system-configuration/{system_id}/test" not in paths
+    assert "/api/v1/admin/system-configuration/{system_id}/test-draft" not in paths
+    assert "/api/v1/admin/system-configuration/{system_id}/activate" not in paths
     with TestClient(app) as client:
-        response = client.post(
-            "/api/v1/admin/system-configuration/LLM_RERANKER/activate",
-            headers={"If-Match": '"1"'},
+        for method, path in (
+            ("PUT", "/api/v1/admin/system-configuration/DATAHUB_GMS"),
+            ("GET", "/api/v1/admin/system-configuration/DATAHUB_GMS/versions"),
+            ("POST", "/api/v1/admin/system-configuration/DATAHUB_GMS/test"),
+            ("POST", "/api/v1/admin/system-configuration/DATAHUB_GMS/test-draft"),
+            ("POST", "/api/v1/admin/system-configuration/DATAHUB_GMS/activate"),
+        ):
+            assert client.request(method, path).status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_deployment_system_configuration_routes_fail_closed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    request = cast(Any, object())
+    context = cast(
+        Any,
+        SimpleNamespace(
+            workspace_id=UUID(int=1),
+            subject=SimpleNamespace(subject_id=UUID(int=2)),
+            environment=object(),
+            request_id="request-system-configuration-negative",
+        ),
+    )
+    denied_service = SimpleNamespace(
+        get_admin_read_context=AsyncMock(return_value=SimpleNamespace(allowed_operations=()))
+    )
+    monkeypatch.setattr(admin_routes, "_service", lambda _request: denied_service)
+    inventory_response = Response()
+    with pytest.raises(ForbiddenError):
+        await admin_routes.list_system_configuration(
+            request=request,
+            response=inventory_response,
+            context=context,
+        )
+    assert inventory_response.headers["Cache-Control"] == "no-store, private"
+
+    non_admin_service = SimpleNamespace(
+        get_admin_read_context=AsyncMock(
+            side_effect=ForbiddenError("Administrator membership is required.")
+        )
+    )
+    monkeypatch.setattr(admin_routes, "_service", lambda _request: non_admin_service)
+    with pytest.raises(ForbiddenError, match="Administrator membership"):
+        await admin_routes.list_system_configuration(
+            request=request,
+            response=Response(),
+            context=context,
         )
 
-    assert response.status_code == 409
-    assert response.json()["detail"] == (
-        "No runtime consumer is implemented for this system configuration."
+    production_container = SimpleNamespace(
+        settings=settings().model_copy(update={"app_env": "production"})
     )
+    monkeypatch.setattr(
+        admin_routes,
+        "get_container",
+        lambda _request: production_container,
+    )
+    probe_response = Response()
+    with pytest.raises(ForbiddenError, match="development"):
+        await admin_routes.test_deployment_system_configuration(
+            system_id="DATAHUB_GMS",
+            request=request,
+            response=probe_response,
+            context=context,
+        )
+    assert probe_response.headers["Cache-Control"] == "no-store, private"
+
+    development_container = SimpleNamespace(
+        settings=settings().model_copy(update={"app_env": "development"})
+    )
+    monkeypatch.setattr(
+        admin_routes,
+        "get_container",
+        lambda _request: development_container,
+    )
+    probe = AsyncMock()
+    monkeypatch.setattr(admin_routes, "probe_system_configuration", probe)
+    monkeypatch.setattr(admin_routes, "_service", lambda _request: denied_service)
+    denied_probe_response = Response()
+    with pytest.raises(ForbiddenError, match="not available"):
+        await admin_routes.test_deployment_system_configuration(
+            system_id="DATAHUB_GMS",
+            request=request,
+            response=denied_probe_response,
+            context=context,
+        )
+    assert denied_probe_response.headers["Cache-Control"] == "no-store, private"
+    probe.assert_not_awaited()
+
+    monkeypatch.setattr(admin_routes, "_service", lambda _request: non_admin_service)
+    non_admin_probe_response = Response()
+    with pytest.raises(ForbiddenError, match="Administrator membership"):
+        await admin_routes.test_deployment_system_configuration(
+            system_id="DATAHUB_GMS",
+            request=request,
+            response=non_admin_probe_response,
+            context=context,
+        )
+    assert non_admin_probe_response.headers["Cache-Control"] == "no-store, private"
+    probe.assert_not_awaited()
+
+    with pytest.raises(ValidationError, match="identifier"):
+        await admin_routes.test_deployment_system_configuration(
+            system_id="NOT_A_SYSTEM",
+            request=request,
+            response=Response(),
+            context=context,
+        )
+
+    factory = cast(Callable[[Settings], AppContainer], lambda _: LiveOnlyContainer())
+    operation = create_app(settings(), container_factory=factory).openapi()["paths"][
+        "/api/v1/admin/system-configuration/{system_id}/test-deployment"
+    ]["post"]
+    assert "requestBody" not in operation
 
 
 def test_upload_preparation_openapi_is_typed_and_server_managed() -> None:

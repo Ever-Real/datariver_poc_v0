@@ -107,20 +107,20 @@ fallbacks and browser-held credentials are never copied.
 - `UI-ADM-008`: Retention policy, Legal Hold and erasure review remain executable governance
   controls, not duplicate documents. They are grouped under one Retention & Erasure entry while
   preserving Maker-Checker decisions, Legal Hold precedence and non-executing erasure review.
-- `UI-ADM-009`: Development-only System Settings follows the v0 service-selector/YAML interaction
-  but uses a fixed server inventory and server-owned templates containing only non-secret settings
-  and mounted-secret reference names. Literal secret values are rejected, exact revisions retain
-  TEST/activation evidence, and production continues to use deployment/provider controls.
+- `UI-ADM-009` (historical, superseded by ADR-0048): the v0 development System Settings editor
+  used a service-selector/YAML interaction and retained TEST/activation evidence. The current
+  product exposes only a read-only, redacted inventory of the validated deployment environment and
+  fixed server-owned probes; it cannot save or activate configuration.
 - `UI-ADM-010`: The profile dropdown exposes only server-derived grouped administration entries;
   former leaf entries such as Role, provider, Legal Hold and erasure are reachable only inside
   their parent workspace and never become independent menu items.
 - `UI-ADM-011`: reusable Role definitions are workspace-owned server data, not client constants.
   Assigning a Role materializes the existing governed membership access document; an in-use Role's
   security fields stay locked to avoid an unaudited bulk authorization change.
-- `UI-ADM-012`: System Settings groups Chat Model, Embedding and Reranker in one LLM menu, provides
-  SAVE, a fixed server-side TEST and explicit ACTIVATE of an implemented runtime consumer, and
-  renders YAML as a compact terminal editor. ACTIVATE selects only the current TEST-passed revision;
-  applying it requires API/relevant-worker restart and never implies hot reload.
+- `UI-ADM-012` (current ADR-0048 contract): System Settings groups Chat Model, Embedding and
+  Reranker in one read-only LLM inventory, renders redacted effective YAML, and provides only fixed
+  server-side deployment probes. Operators change `.env.<profile>` or orchestrator values and run
+  the managed update/restart workflow; the browser has no SAVE or ACTIVATE path.
 - `UI-ADM-013`: the four classification rows are the server security contract. The UI presents
   them as a table and uses policy modes rather than deleting an enum row. RESTRICTED grants select
   a real authorized resource/System and exact subject and validity interval; missing Domain lookup

@@ -12,14 +12,19 @@ from pathlib import Path
 from platform_workflow import (
     AIRFLOW_SERVICES,
     ROOT,
+    WORKFLOW_PROFILE_NAMES,
     AppliedState,
     ChangePlan,
     Runner,
     WorkflowError,
+    changed_environment_keys,
     classify_changes,
+    classify_environment_changes,
     compose_arguments,
     current_commit,
+    environment_key_hashes,
     load_applied_state,
+    merge_change_plans,
     merge_no_proxy,
     prompt_confirm,
     read_env_values,
@@ -32,6 +37,7 @@ from platform_workflow import (
     select_restart_services,
     state_path,
     update_env_values,
+    workflow_profile,
     write_applied_state,
 )
 
@@ -89,7 +95,7 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--profile",
-        choices=("mac-development", "wsl-preparation"),
+        choices=WORKFLOW_PROFILE_NAMES,
         required=True,
     )
     parser.add_argument("--env-file", type=Path)
@@ -220,6 +226,7 @@ def _bootstrap(runner: Runner, *, state: AppliedState, env_file: Path) -> None:
                 "UI_",
                 "INTRANET_OPENAI_",
                 "LOCAL_OLLAMA_",
+                "LOCAL_LLAMA_CPP_",
                 "NEO4J_",
             )
         )
@@ -272,7 +279,7 @@ def _health_check(runner: Runner, *, env_file: Path) -> None:
 
 
 def _ensure_local_reranker(runner: Runner, *, env_file: Path, profile: str) -> None:
-    if profile != "mac-development":
+    if not workflow_profile(profile).local_reranker_supported:
         return
     values = read_env_values(env_file)
     if values.get("LOCAL_LLAMA_CPP_RERANKER_ENABLED", "").lower() != "true":
@@ -343,6 +350,7 @@ def _print_plan(
     current_source_commit: str,
     runtime_commit: str,
     paths: tuple[str, ...],
+    environment_keys: tuple[str, ...],
     plan: ChangePlan,
     restart_services: tuple[str, ...],
 ) -> None:
@@ -352,6 +360,9 @@ def _print_plan(
     print(f"  changed paths: {len(paths)}", flush=True)
     for path in paths:
         print(f"    - {path}", flush=True)
+    print(f"  changed environment keys: {len(environment_keys)}", flush=True)
+    for key in environment_keys:
+        print(f"    - {key}", flush=True)
     print(
         "  restart services: " + (", ".join(restart_services) if restart_services else "none"),
         flush=True,
@@ -430,12 +441,30 @@ def main() -> int:
             raise WorkflowError("--release-dir is valid only for an offline applied state.")
 
         changed_paths = tuple(dict.fromkeys((*source_paths, *runtime_paths)))
-        plan = classify_changes(changed_paths)
+        source_plan = classify_changes(changed_paths)
         files = _compose_files(state, release_override=release_dir)
 
         if args.refresh_bootstrap:
             runner.note("기존 secret을 보존하며 bootstrap 파생 설정을 재적용합니다.")
             _bootstrap(runner, state=state, env_file=env_file)
+
+        current_environment_hashes = environment_key_hashes(read_env_values(env_file))
+        environment_keys = changed_environment_keys(
+            state.environment_key_hashes,
+            current_environment_hashes,
+        )
+        immutable_bootstrap_keys = {"POSTGRES_DB", "POSTGRES_USER"}
+        changed_immutable_keys = sorted(immutable_bootstrap_keys.intersection(environment_keys))
+        if state.environment_key_hashes and changed_immutable_keys:
+            raise WorkflowError(
+                "Bootstrap-owned PostgreSQL identity cannot be changed by the update workflow: "
+                + ", ".join(changed_immutable_keys)
+                + ". Use a reviewed fresh setup or database migration procedure."
+            )
+        plan = merge_change_plans(
+            source_plan,
+            classify_environment_changes(environment_keys),
+        )
 
         runner.note("Compose 구성을 서비스 변경 전에 검증합니다.")
         _compose(
@@ -454,10 +483,11 @@ def main() -> int:
             current_source_commit=current_source_commit,
             runtime_commit=runtime_commit,
             paths=changed_paths,
+            environment_keys=environment_keys,
             plan=plan,
             restart_services=restart_services,
         )
-        if not args.assume_yes and changed_paths:
+        if not args.assume_yes and (changed_paths or environment_keys):
             if not prompt_confirm("위 변경만 적용할까요?", default=True):
                 raise WorkflowError("Operator cancelled before service mutation.")
 
@@ -468,7 +498,7 @@ def main() -> int:
             build_services = list(restart_services)
             if plan.requires_migration and "migrate" not in build_services:
                 build_services.append("migrate")
-            runner.note("Mac 현재 소스에서 영향받은 이미지만 빌드합니다.")
+            runner.note("선택한 build 프로필에서 영향받은 이미지만 빌드합니다.")
             _compose(
                 runner,
                 env_file=env_file,
@@ -542,29 +572,34 @@ def main() -> int:
             profiles: tuple[str, ...] = ()
             connector_env = os.environ.copy()
             if state.local_redis:
-                connector_services.extend(("redis-cache", "redis-delivery"))
+                connector_services.extend(
+                    service
+                    for service in ("redis-cache", "redis-delivery")
+                    if service in plan.local_connector_services
+                )
                 if offline:
                     connector_env["REDIS_IMAGE"] = "redis:8.2.6-bookworm"
-            if state.local_storage:
+            if state.local_storage and "minio" in plan.local_connector_services:
                 connector_services.append("minio")
                 profiles = ("object-storage",)
-            runner.note("변경된 로컬 connector만 재생성합니다.")
-            _compose(
-                runner,
-                env_file=env_file,
-                files=connector_files,
-                profiles=profiles,
-                trailing=(
-                    "up",
-                    "-d",
-                    "--wait",
-                    "--no-deps",
-                    "--force-recreate",
-                    *(("--no-build", "--pull", "never") if offline else ("--no-build",)),
-                    *connector_services,
-                ),
-                env=connector_env,
-            )
+            if connector_services:
+                runner.note("변경된 로컬 connector만 재생성합니다.")
+                _compose(
+                    runner,
+                    env_file=env_file,
+                    files=connector_files,
+                    profiles=profiles,
+                    trailing=(
+                        "up",
+                        "-d",
+                        "--wait",
+                        "--no-deps",
+                        "--force-recreate",
+                        *(("--no-build", "--pull", "never") if offline else ("--no-build",)),
+                        *connector_services,
+                    ),
+                    env=connector_env,
+                )
 
         if plan.restart_airflow and state.local_airflow:
             airflow_files = (*files, ROOT / "compose.airflow.yaml")
@@ -685,8 +720,14 @@ def main() -> int:
                 ),
             )
 
-        connector_changed = plan.restart_local_connectors and (
-            state.local_redis or state.local_storage
+        connector_changed = (
+            state.local_redis
+            and any(
+                service in plan.local_connector_services
+                for service in ("redis-cache", "redis-delivery")
+            )
+        ) or (
+            state.local_storage and "minio" in plan.local_connector_services
         )
         auxiliary_changed = any(
             (
@@ -706,7 +747,7 @@ def main() -> int:
         backend_changed = any(
             path.startswith("backend/") or path in {"compose.yaml", "pyproject.toml"}
             for path in changed_paths
-        )
+        ) or any(key.startswith("DATAHUB_") for key in environment_keys)
         if (backend_changed or (plan.restart_datahub and state.local_datahub)) and (
             not args.skip_catalog_sync
         ):
@@ -725,10 +766,11 @@ def main() -> int:
                     else os.fspath(env_file)
                 ),
                 release_dir=os.fspath(release_dir) if release_dir else state.release_dir,
+                environment_key_hashes=current_environment_hashes,
             ),
         )
-        if not changed_paths:
-            runner.note("적용할 source/runtime 변경이 없어 컨테이너를 재시작하지 않았습니다.")
+        if not changed_paths and not environment_keys:
+            runner.note("적용할 source/runtime/환경 변경이 없어 컨테이너를 재시작하지 않았습니다.")
         else:
             runner.note("업데이트 적용과 선택적 재시작을 완료했습니다.")
         return 0

@@ -6,6 +6,8 @@ from dataclasses import replace
 from uuid import uuid4
 
 import pytest
+
+from datariver.domain.common import ConflictError, ValidationError
 from datariver.domain.sharing_invocation import (
     MAX_CANONICAL_RESULT_BYTES,
     CompletedInvocation,
@@ -15,8 +17,6 @@ from datariver.domain.sharing_invocation import (
     execute_or_replay_invocation,
     validate_canonical_result,
 )
-
-from datariver.domain.common import ConflictError, ValidationError
 
 
 def _binding() -> InvocationRequestBinding:

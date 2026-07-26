@@ -288,6 +288,107 @@ def test_blank_wsl_bootstrap_fails_before_creating_any_state(tmp_path: Path) -> 
     assert not (isolated_root / "runtime").exists()
 
 
+def test_portable_bootstrap_keeps_inference_disabled_and_uses_generic_ports(
+    tmp_path: Path,
+) -> None:
+    root = Path(__file__).resolve().parents[3]
+    isolated_root = tmp_path / "repo"
+    _copy_bootstrap_fixture(root, isolated_root)
+    token = isolated_root / "approved-datahub-token"
+    token.write_text("portable-test-token", encoding="utf-8")
+
+    result = subprocess.run(  # noqa: S603 - copied repository script is trusted.
+        [
+            str(isolated_root / "scripts/bootstrap.sh"),
+            "--env-file",
+            ".env.portable-development",
+            "--portable-development",
+            "--datahub-token-file",
+            str(token),
+            "--datahub-base-url",
+            "https://datahub.example.internal",
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode == 0, result.stderr
+    values = (isolated_root / ".env.portable-development").read_text(encoding="utf-8")
+    assert "APP_PUBLIC_ORIGIN=http://localhost:8080" in values
+    assert "API_PORT=8000" in values
+    assert "WEB_PORT=8080" in values
+    assert "DATAHUB_BASE_URL=https://datahub.example.internal" in values
+    assert "LOCAL_OLLAMA_CHAT_ENABLED=false" in values
+    assert "LOCAL_OLLAMA_EMBEDDING_ENABLED=false" in values
+    assert "LOCAL_LLAMA_CPP_RERANKER_ENABLED=false" in values
+    assert "NEO4J_PROJECTION_ENABLED=false" in values
+    assert "KNOWLEDGE_PIPELINE_ENABLED=false" in values
+    assert "SYSTEM_CONFIGURATION_RUNTIME_ACTIVATION_ENABLED" not in values
+
+
+def test_mac_bootstrap_never_selects_or_creates_a_local_model(tmp_path: Path) -> None:
+    root = Path(__file__).resolve().parents[3]
+    isolated_root = tmp_path / "repo"
+    _copy_bootstrap_fixture(root, isolated_root)
+
+    result = subprocess.run(  # noqa: S603 - copied repository script is trusted.
+        [
+            str(isolated_root / "scripts/bootstrap.sh"),
+            "--env-file",
+            ".env.mac-development",
+            "--mac-development",
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode == 0, result.stderr
+    values = (isolated_root / ".env.mac-development").read_text(encoding="utf-8")
+    assert "LOCAL_OLLAMA_CHAT_ENABLED=false" in values
+    assert "LOCAL_OLLAMA_EMBEDDING_ENABLED=false" in values
+    assert "LOCAL_LLAMA_CPP_RERANKER_ENABLED=false" in values
+    assert not any(
+        line.startswith(
+            (
+                "LOCAL_OLLAMA_CHAT_MODEL=",
+                "LOCAL_OLLAMA_EMBEDDING_MODEL=",
+                "LOCAL_LLAMA_CPP_RERANKER_MODEL=",
+            )
+        )
+        for line in values.splitlines()
+    )
+    source = (root / "scripts/bootstrap.sh").read_text(encoding="utf-8")
+    assert "datariver-gemma4-dev" not in source
+    assert "bge-m3:latest" not in source
+    assert "qllama/bge-reranker" not in source
+
+
+def test_bootstrap_rejects_conflicting_portable_and_host_specific_profiles(
+    tmp_path: Path,
+) -> None:
+    root = Path(__file__).resolve().parents[3]
+    isolated_root = tmp_path / "repo"
+    _copy_bootstrap_fixture(root, isolated_root)
+
+    result = subprocess.run(  # noqa: S603 - copied repository script is trusted.
+        [
+            str(isolated_root / "scripts/bootstrap.sh"),
+            "--portable-development",
+            "--mac-development",
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode == 2
+    assert "mutually exclusive" in result.stderr
+    assert not (isolated_root / ".env").exists()
+    assert not (isolated_root / "secrets").exists()
+
+
 def test_wsl_bootstrap_preserves_preinstalled_token_without_exposing_it(
     tmp_path: Path,
 ) -> None:

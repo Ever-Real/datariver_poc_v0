@@ -73,3 +73,24 @@ def test_stop_clears_stale_managed_pid(
     assert module._stop_owned_process() is False
     assert not pid_file.exists()
     assert not state_file.exists()
+
+
+def test_managed_state_model_is_validated_without_a_source_default(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module = _load_module()
+    state_file = tmp_path / "llama-server.json"
+    monkeypatch.setattr(module, "STATE_FILE", state_file)
+    state_file.write_text(
+        '{"model":"operator-selected/model:q4","port":11435}\n',
+        encoding="utf-8",
+    )
+
+    assert module._read_managed_model() == "operator-selected/model:q4"
+
+    state_file.write_text('{"model":"invalid model","port":11435}\n', encoding="utf-8")
+    assert module._read_managed_model() is None
+
+    with pytest.raises(module.ServiceError, match="exact installed reranker model"):
+        module._required_model(None)

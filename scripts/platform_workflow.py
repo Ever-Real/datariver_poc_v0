@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import getpass
+import hashlib
 import json
 import os
 import re
@@ -12,7 +13,7 @@ import stat
 import subprocess
 import tempfile
 from collections.abc import Sequence
-from dataclasses import asdict, dataclass, fields
+from dataclasses import asdict, dataclass, field, fields
 from pathlib import Path
 from typing import NoReturn
 from urllib.parse import urlsplit
@@ -57,6 +58,7 @@ OPTIONAL_RELEASE_COMPOSE_FILES = {
     "offline-graph.compose.yaml",
     "offline-local-connectors.compose.yaml",
 }
+LOCAL_CONNECTOR_SERVICES = ("redis-cache", "redis-delivery", "minio")
 
 _ENV_KEY = re.compile(r"^[A-Z][A-Z0-9_]*$")
 _COMMIT = re.compile(r"^[0-9a-f]{40}$")
@@ -64,6 +66,95 @@ _COMMIT = re.compile(r"^[0-9a-f]{40}$")
 
 class WorkflowError(RuntimeError):
     """An operator-correctable workflow failure."""
+
+
+@dataclass(frozen=True)
+class WorkflowProfile:
+    """One explicit operator topology without inferring it from the host OS."""
+
+    name: str
+    deployment_mode: str
+    target_architectures: tuple[str, ...]
+    default_datahub_mode: str
+    default_redis_mode: str
+    default_storage_mode: str
+    default_airflow_mode: str
+    local_storage_endpoint: str
+    local_datahub_supported: bool = False
+    local_reranker_supported: bool = False
+
+    def validate(self) -> None:
+        if self.deployment_mode not in {"build", "offline"}:
+            raise WorkflowError("The workflow profile deployment mode is invalid.")
+        if not self.target_architectures or not set(self.target_architectures) <= {
+            "arm64",
+            "amd64",
+        }:
+            raise WorkflowError("The workflow profile target architecture is invalid.")
+        if self.default_datahub_mode not in {"local", "external"}:
+            raise WorkflowError("The workflow profile DataHub mode is invalid.")
+        if self.default_redis_mode not in {"local", "external"}:
+            raise WorkflowError("The workflow profile Redis mode is invalid.")
+        if self.default_storage_mode not in {"local", "external", "skip"}:
+            raise WorkflowError("The workflow profile storage mode is invalid.")
+        if self.default_airflow_mode not in {"local", "external", "skip"}:
+            raise WorkflowError("The workflow profile Airflow mode is invalid.")
+        if self.local_storage_endpoint not in {
+            "http://host.docker.internal:9000",
+            "http://minio:9000",
+        }:
+            raise WorkflowError("The workflow profile local storage endpoint is invalid.")
+        if self.local_datahub_supported != (self.default_datahub_mode == "local"):
+            raise WorkflowError("The workflow profile local DataHub policy is inconsistent.")
+
+
+WORKFLOW_PROFILES = {
+    profile.name: profile
+    for profile in (
+        WorkflowProfile(
+            name="portable-development",
+            deployment_mode="build",
+            target_architectures=("arm64", "amd64"),
+            default_datahub_mode="external",
+            default_redis_mode="local",
+            default_storage_mode="local",
+            default_airflow_mode="skip",
+            local_storage_endpoint="http://minio:9000",
+        ),
+        WorkflowProfile(
+            name="mac-development",
+            deployment_mode="build",
+            target_architectures=("arm64",),
+            default_datahub_mode="local",
+            default_redis_mode="local",
+            default_storage_mode="local",
+            default_airflow_mode="local",
+            local_storage_endpoint="http://host.docker.internal:9000",
+            local_datahub_supported=True,
+            local_reranker_supported=True,
+        ),
+        WorkflowProfile(
+            name="wsl-preparation",
+            deployment_mode="offline",
+            target_architectures=("amd64",),
+            default_datahub_mode="external",
+            default_redis_mode="local",
+            default_storage_mode="external",
+            default_airflow_mode="external",
+            local_storage_endpoint="http://minio:9000",
+        ),
+    )
+}
+WORKFLOW_PROFILE_NAMES = tuple(WORKFLOW_PROFILES)
+for _profile in WORKFLOW_PROFILES.values():
+    _profile.validate()
+
+
+def workflow_profile(name: str) -> WorkflowProfile:
+    try:
+        return WORKFLOW_PROFILES[name]
+    except KeyError as error:
+        raise WorkflowError("Unsupported workflow profile.") from error
 
 
 @dataclass(frozen=True)
@@ -98,18 +189,32 @@ class AppliedState:
     local_storage: bool
     local_gateway: bool
     local_graph: bool
+    environment_key_hashes: dict[str, str] = field(default_factory=dict)
 
     def validate(self) -> None:
-        if self.profile not in {"mac-development", "wsl-preparation"}:
-            raise WorkflowError("The applied-state profile is invalid.")
+        profile = workflow_profile(self.profile)
         if not _COMMIT.fullmatch(self.applied_commit):
             raise WorkflowError("The applied-state commit is invalid.")
         if not _COMMIT.fullmatch(self.runtime_commit):
             raise WorkflowError("The applied-state runtime commit is invalid.")
         if self.deployment_mode not in {"build", "offline"}:
             raise WorkflowError("The applied-state deployment mode is invalid.")
+        if self.deployment_mode != profile.deployment_mode:
+            raise WorkflowError("The applied-state deployment mode does not match its profile.")
+        if self.local_datahub and not profile.local_datahub_supported:
+            raise WorkflowError(
+                "The applied-state local DataHub mode is not allowed by its profile."
+            )
         if not self.env_file or "\n" in self.env_file or "\r" in self.env_file:
             raise WorkflowError("The applied-state environment path is invalid.")
+        if not isinstance(self.environment_key_hashes, dict) or any(
+            not isinstance(key, str)
+            or not isinstance(digest, str)
+            or not _ENV_KEY.fullmatch(key)
+            or not re.fullmatch(r"[0-9a-f]{64}", digest)
+            for key, digest in self.environment_key_hashes.items()
+        ):
+            raise WorkflowError("The applied-state environment fingerprints are invalid.")
         if self.deployment_mode == "offline" and not self.release_dir:
             raise WorkflowError("Offline applied state requires a release directory.")
 
@@ -123,7 +228,11 @@ class ChangePlan:
     restart_airflow: bool
     restart_gateway: bool
     restart_graph: bool
-    restart_local_connectors: bool
+    local_connector_services: tuple[str, ...]
+
+    @property
+    def restart_local_connectors(self) -> bool:
+        return bool(self.local_connector_services)
 
 
 class Runner:
@@ -255,6 +364,24 @@ def read_env_values(path: Path) -> dict[str, str]:
         if _ENV_KEY.fullmatch(key):
             values[key] = value.rstrip("\r")
     return values
+
+
+def environment_key_hashes(values: dict[str, str]) -> dict[str, str]:
+    """Fingerprint effective .env entries without persisting their values."""
+
+    return {
+        key: hashlib.sha256(f"{key}\0{value}".encode()).hexdigest()
+        for key, value in sorted(values.items())
+    }
+
+
+def changed_environment_keys(
+    previous: dict[str, str],
+    current: dict[str, str],
+) -> tuple[str, ...]:
+    return tuple(
+        sorted(key for key in set(previous) | set(current) if previous.get(key) != current.get(key))
+    )
 
 
 def update_env_values(path: Path, updates: dict[str, str]) -> None:
@@ -410,8 +537,7 @@ def release_optional_compose(
 
 
 def state_path(root: Path, profile: str) -> Path:
-    if profile not in {"mac-development", "wsl-preparation"}:
-        raise WorkflowError("Unsupported workflow profile.")
+    workflow_profile(profile)
     return root / "runtime" / "operator-workflow" / f"{profile}.json"
 
 
@@ -435,8 +561,10 @@ def load_applied_state(path: Path) -> AppliedState:
     if not isinstance(payload, dict):
         raise WorkflowError("The applied workflow state must be an object.")
     expected = {field.name for field in fields(AppliedState)}
-    if set(payload) != expected:
+    optional_legacy_fields = {"environment_key_hashes"}
+    if set(payload) - expected or expected - set(payload) - optional_legacy_fields:
         raise WorkflowError("The applied workflow state has missing or unknown fields.")
+    payload.setdefault("environment_key_hashes", {})
     try:
         state = AppliedState(**payload)
     except TypeError as error:
@@ -453,12 +581,13 @@ def classify_changes(paths: Sequence[str]) -> ChangePlan:
     restart_airflow = False
     restart_gateway = False
     restart_graph = False
-    restart_local_connectors = False
+    local_connector_services: set[str] = set()
     meaningful = False
     operator_only_scripts = {
         "scripts/platform_workflow.py",
         "scripts/workflow_fresh_setup.py",
         "scripts/workflow_update_restart.py",
+        "scripts/verify_static.py",
     }
 
     for path in paths:
@@ -514,7 +643,7 @@ def classify_changes(paths: Sequence[str]) -> ChangePlan:
             continue
         if normalized == "compose.local-connectors.yaml":
             meaningful = True
-            restart_local_connectors = True
+            local_connector_services.update(LOCAL_CONNECTOR_SERVICES)
             continue
         if normalized.startswith(("README", "AGENTS.md", ".github/")):
             continue
@@ -526,7 +655,7 @@ def classify_changes(paths: Sequence[str]) -> ChangePlan:
         restart_airflow = True
         restart_gateway = True
         restart_graph = True
-        restart_local_connectors = True
+        local_connector_services.update(LOCAL_CONNECTOR_SERVICES)
 
     if not meaningful:
         services.clear()
@@ -538,7 +667,251 @@ def classify_changes(paths: Sequence[str]) -> ChangePlan:
         restart_airflow=restart_airflow,
         restart_gateway=restart_gateway,
         restart_graph=restart_graph,
-        restart_local_connectors=restart_local_connectors,
+        local_connector_services=tuple(
+            service for service in LOCAL_CONNECTOR_SERVICES if service in local_connector_services
+        ),
+    )
+
+
+def classify_environment_changes(
+    keys: Sequence[str], *, reject_unknown: bool = False
+) -> ChangePlan:
+    """Map changed deployment settings to only their runtime consumers."""
+
+    services: set[str] = set()
+    configure_keycloak = False
+    restart_airflow = False
+    restart_gateway = False
+    restart_graph = False
+    local_connector_services: set[str] = set()
+    for raw_key in keys:
+        key = raw_key.strip()
+        if not _ENV_KEY.fullmatch(key):
+            raise WorkflowError("An environment change contains an invalid key.")
+        if key in {
+            "DATARIVER_ENV_FILE",
+            "POSTGRES_DB",
+            "POSTGRES_USER",
+            "MIGRATION_DATABASE_URL",
+            "MIGRATION_DATABASE_SECRET_REF",
+            "BOOTSTRAP_DATABASE_URL",
+            "BOOTSTRAP_DATABASE_SECRET_REF",
+            "EVENT_RETENTION_DAYS",
+            "SEED_PROFILE",
+            "DATARIVER_CATALOG_SYNC_MAX_PAGES",
+        }:
+            # These values are consumed by a one-shot operator command, an
+            # immutable bootstrap boundary, or a future retention operation.
+            # No long-running process reads them after startup.
+            pass
+        elif key in {
+            "APP_ENV",
+            "APP_NAME",
+            "APP_LOG_LEVEL",
+            "DEPLOYMENT_TIER",
+            "DEPLOYMENT_EVIDENCE_REFERENCE",
+        }:
+            services.update(BACKEND_RUNTIME_SERVICES)
+        elif key == "APP_PUBLIC_ORIGIN":
+            services.update(("api", "web", "keycloak"))
+            configure_keycloak = True
+            local_connector_services.add("minio")
+        elif key in {"APP_CORS_ORIGINS", "APP_TRUSTED_HOSTS"}:
+            services.add("api")
+        elif key in {
+            "WORKSPACE_SELECTION_ENABLED",
+            "HIGH_RISK_AUTH_MAX_AGE_SECONDS",
+            "CHAT_EPHEMERAL_ADMIN_WITHOUT_RETENTION_ENABLED",
+            "CHAT_RATE_LIMIT_REQUESTS_PER_MINUTE",
+            "CHAT_RATE_LIMIT_TOKENS_PER_MINUTE",
+            "CHAT_COMPOSITION_PROVIDER_PROFILE_VERSION_ID",
+            "CHAT_EMBEDDING_PROVIDER_PROFILE_VERSION_ID",
+            "CHAT_RERANKER_PROVIDER_PROFILE_VERSION_ID",
+            "PRESIGNED_URL_TTL_SECONDS",
+        }:
+            services.add("api")
+        elif key.startswith(("CACHE_", "CATALOG_SEARCH_")):
+            services.add("api")
+        elif key == "CATALOG_EXPORT_WORKER_ENABLED":
+            services.update(("api", "catalog-export-worker"))
+        elif key in {
+            "CATALOG_EXPORT_ACCESS_TTL_SECONDS",
+            "CATALOG_EXPORT_DOWNLOAD_TTL_SECONDS",
+        }:
+            services.add("api")
+        elif key in {
+            "CATALOG_EXPORT_LEASE_SECONDS",
+            "CATALOG_EXPORT_MAXIMUM_ATTEMPTS",
+            "CATALOG_EXPORT_MAXIMUM_BYTES",
+            "CATALOG_EXPORT_MAXIMUM_ROWS",
+            "CATALOG_EXPORT_PAGE_SIZE",
+            "EXPORT_WORKER_SUBJECT_ID",
+        }:
+            services.add("catalog-export-worker")
+        elif key.startswith("GOVERNANCE_APPLY_") or key == "GOVERNANCE_WORKER_SUBJECT_ID":
+            services.update(("api", "governance-apply-worker"))
+        elif key in {"OUTBOX_LEASE_SECONDS", "OUTBOX_MAXIMUM_ATTEMPTS"}:
+            services.add("outbox-relay")
+        elif key in {
+            "UPLOAD_LEASE_SECONDS",
+            "UPLOAD_MAXIMUM_ATTEMPTS",
+        }:
+            services.add("upload-worker")
+        elif key == "WORKER_POLL_SECONDS":
+            services.update(
+                (
+                    "outbox-relay",
+                    "upload-worker",
+                    "upload-validation-worker",
+                    "governance-apply-worker",
+                    "catalog-export-worker",
+                    "retention-scheduler",
+                    "retention-archive-worker",
+                )
+            )
+        elif key == "KNOWLEDGE_WORKER_SUBJECT_ID":
+            services.add("knowledge-source-worker")
+        elif key == "RETENTION_WORKER_SUBJECT_ID":
+            services.add("retention-scheduler")
+        elif key.startswith("UPLOAD_VALIDATION_"):
+            services.add("upload-validation-worker")
+        elif key.startswith("BULK_PREPARATION_"):
+            services.add("api")
+        elif key in {
+            "OIDC_PUBLIC_AUTHORITY",
+            "OIDC_CLIENT_ID",
+            "OIDC_STEP_UP_ACR",
+            "OIDC_PASSWORD_REAUTH_REQUEST_ACR",
+        }:
+            services.add("web")
+        elif key == "OIDC_PUBLIC_ORIGIN":
+            services.update(("web", "keycloak"))
+            configure_keycloak = True
+        elif key.startswith(("OIDC_", "IDENTITY_", "ADMIN_PASSWORD_")):
+            services.add("api")
+        elif key.startswith(("UI_", "DATAHUB_EMBED_", "GRAFANA_EMBED_")):
+            services.update(("api", "web"))
+        elif key.startswith(
+            (
+                "LOCAL_OLLAMA_CHAT_",
+                "LOCAL_LLAMA_CPP_RERANKER_",
+                "INTRANET_OPENAI_COMPATIBLE_CHAT_",
+            )
+        ):
+            services.add("api")
+        elif key == "LOCAL_INFERENCE_SOURCE_HOST_ENABLED":
+            services.update(("api", "knowledge-source-worker"))
+        elif key.startswith(
+            (
+                "LOCAL_OLLAMA_EMBEDDING_",
+                "INTRANET_OPENAI_COMPATIBLE_EMBEDDING_",
+            )
+        ):
+            services.update(("api", "knowledge-source-worker"))
+        elif key == "INTRANET_OPENAI_COMPATIBLE_ALLOWED_HOSTS":
+            services.update(("api", "knowledge-source-worker"))
+        elif key == "SYSTEM_CONFIGURATION_PROBE_ALLOWED_HOSTS":
+            services.add("api")
+        elif key == "SYSTEM_CONFIGURATION_SECRET_ROOT":
+            services.update(BACKEND_RUNTIME_SERVICES)
+        elif key.startswith(("NEO4J_", "KNOWLEDGE_")):
+            services.update(("api", "knowledge-source-worker"))
+            restart_graph = key in {
+                "NEO4J_HTTP_PORT",
+                "NEO4J_BOLT_PORT",
+                "NEO4J_IMAGE",
+            }
+        elif key.startswith("DATAHUB_"):
+            services.update(BACKEND_RUNTIME_SERVICES)
+        elif key == "S3_PUBLIC_ORIGIN":
+            services.add("web")
+        elif key.startswith(("MINIO_",)):
+            local_connector_services.add("minio")
+        elif key.startswith("S3_ARCHIVE_"):
+            services.update(("retention-scheduler", "retention-archive-worker"))
+        elif key.startswith("S3_EXPORT_"):
+            services.add("catalog-export-worker")
+        elif key.startswith("S3_KNOWLEDGE_"):
+            services.add("knowledge-source-worker")
+        elif key.startswith("S3_"):
+            services.update(BACKEND_RUNTIME_SERVICES)
+        elif key in {"REDIS_CACHE_PORT", "REDIS_DELIVERY_PORT", "REDIS_IMAGE"}:
+            local_connector_services.update(("redis-cache", "redis-delivery"))
+        elif key.startswith("REDIS_"):
+            services.update(BACKEND_RUNTIME_SERVICES)
+        elif key.startswith("AIRFLOW_"):
+            services.add("api")
+            restart_airflow = True
+        elif key == "DATARIVER_CONNECTOR_NETWORK":
+            services.update(RUNTIME_SERVICES)
+            local_connector_services.update(LOCAL_CONNECTOR_SERVICES)
+            restart_airflow = True
+            restart_graph = True
+        elif key in {"APISIX_PORT", "DATARIVER_API_UPSTREAM"}:
+            restart_gateway = True
+        elif key == "DATARIVER_API_BASE_URL":
+            restart_airflow = True
+        elif key.startswith("RETENTION_SCHEDULER_DATABASE_"):
+            services.add("retention-scheduler")
+        elif key.startswith("ARCHIVE_DATABASE_"):
+            services.add("retention-archive-worker")
+        elif key.startswith("RETENTION_"):
+            services.update(("retention-scheduler", "retention-archive-worker"))
+        elif key.startswith(
+            (
+                "DATABASE_",
+                "MIGRATION_DATABASE_",
+                "RELAY_DATABASE_",
+                "UPLOAD_DATABASE_",
+                "GOVERNANCE_DATABASE_",
+                "KNOWLEDGE_DATABASE_",
+                "EXPORT_DATABASE_",
+                "ARCHIVE_DATABASE_",
+                "BOOTSTRAP_DATABASE_",
+                "WORKER_DATABASE_",
+            )
+        ):
+            services.update(BACKEND_RUNTIME_SERVICES)
+        elif key in {"WEB_PORT"}:
+            services.add("web")
+        elif key in {"API_PORT"}:
+            services.add("api")
+        else:
+            if reject_unknown:
+                raise WorkflowError(
+                    f"Environment key {key} has no explicit consumer classification."
+                )
+            # Unknown deployment settings fail safe by recreating all runtime
+            # consumers, but never infer a database migration.
+            services.update(RUNTIME_SERVICES)
+    return ChangePlan(
+        services=tuple(service for service in RUNTIME_SERVICES if service in services),
+        requires_migration=False,
+        configure_keycloak=configure_keycloak,
+        restart_datahub=False,
+        restart_airflow=restart_airflow,
+        restart_gateway=restart_gateway,
+        restart_graph=restart_graph,
+        local_connector_services=tuple(
+            service for service in LOCAL_CONNECTOR_SERVICES if service in local_connector_services
+        ),
+    )
+
+
+def merge_change_plans(*plans: ChangePlan) -> ChangePlan:
+    services = {service for plan in plans for service in plan.services}
+    connector_services = {service for plan in plans for service in plan.local_connector_services}
+    return ChangePlan(
+        services=tuple(service for service in RUNTIME_SERVICES if service in services),
+        requires_migration=any(plan.requires_migration for plan in plans),
+        configure_keycloak=any(plan.configure_keycloak for plan in plans),
+        restart_datahub=any(plan.restart_datahub for plan in plans),
+        restart_airflow=any(plan.restart_airflow for plan in plans),
+        restart_gateway=any(plan.restart_gateway for plan in plans),
+        restart_graph=any(plan.restart_graph for plan in plans),
+        local_connector_services=tuple(
+            service for service in LOCAL_CONNECTOR_SERVICES if service in connector_services
+        ),
     )
 
 

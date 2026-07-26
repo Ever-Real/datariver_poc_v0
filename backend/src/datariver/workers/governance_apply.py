@@ -13,9 +13,6 @@ from datariver.infrastructure.db.governance_apply_reauthorization import (
 )
 from datariver.infrastructure.db.outbox import SqlInboxStore
 from datariver.infrastructure.db.provider_mutation import SqlProviderMutationLock
-from datariver.infrastructure.system_configuration_runtime import (
-    resolve_activated_system_configuration,
-)
 from datariver.workers.container import build_governance_container
 from datariver.workers.event_signal import EventSignalConsumer
 
@@ -23,9 +20,7 @@ LOGGER = structlog.get_logger()
 
 
 async def run() -> None:
-    settings = await resolve_activated_system_configuration(
-        get_settings(), database_role="governance"
-    )
+    settings = get_settings()
     container = build_governance_container(settings)
     consumer_name = f"governance-apply:{socket.gethostname()}"
     worker = GovernanceApplyWorker(

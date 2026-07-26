@@ -52,11 +52,11 @@ Status values are `TODO`, `IN PROGRESS`, `DONE`, `BLOCKED API` and `EXTERNAL GAT
 - [x] `DONE` Keep system assignee writes ETag/assurance/idempotency protected.
 - [x] `DONE` Group retention policy, Legal Hold and erasure review under one governance entry;
   preserve their canonical workflows because they are not document-only duplicates.
-- [x] `DONE` Add development-only, server-owned secret-free YAML templates and a server-redacted
-  saved configuration summary. Reject new browser-supplied secret values and support optimistic
-  creation from configuration version zero.
-- [x] `DONE` Group Chat/Embedding/Reranker under one LLM selector and add SAVE plus a fixed
-  server-side TEST of the saved development profile; do not accept arbitrary probe URLs.
+- [x] `SUPERSEDED BY ADR-0048` The former development YAML SAVE/activation workflow is retained
+  only as historical evidence. Current Admin displays a server-redacted, read-only snapshot of the
+  deployment environment and accepts no browser-authored configuration.
+- [x] `DONE` Group Chat/Embedding/Reranker under one read-only LLM selector and provide fixed
+  server-side deployment probes; do not accept arbitrary probe URLs.
 - [x] `DONE` Limit the profile dropdown to grouped server-derived administration entries.
 - [ ] `BLOCKED API` IdP user create, system CRUD and schema-scope mapping contracts are absent.
 - [x] `DONE` Consolidate Metadata Log and Security Log under one Audit/Log entry with internal tabs;
@@ -82,9 +82,9 @@ Status values are `TODO`, `IN PROGRESS`, `DONE`, `BLOCKED API` and `EXTERNAL GAT
   are absent.
 - [x] `DONE` Add server-owned six-calendar-month human membership expiry, final-30-day self-request,
   shared Admin queue and independent WebAuthn-gated decision. Browser time is display-only.
-- [x] `DONE` Add versioned development System Settings revisions, persisted TEST evidence and
-  explicit ACTIVATE. Implemented connectors load exact activated versions only on API/relevant
-  worker restart; unsupported Neo4j/Embedding/Reranker activation remains disabled and explicit.
+- [x] `SUPERSEDED BY ADR-0048` Versioned System Settings revisions and ACTIVATE describe the
+  retired database-authored path. Implemented connectors now load only validated deployment
+  environment/orchestrator values on the managed API/relevant-worker restart.
 - [x] `DONE` Resolve CR authority from canonical System assignees and persist immutable snapshots.
   Multi-System REVIEW/TEST/FINAL completion checks fail closed until every required role is covered.
 

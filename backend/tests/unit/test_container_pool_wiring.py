@@ -67,6 +67,7 @@ def test_api_container_passes_the_configured_pool_budget(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     captured: dict[str, Any] = {}
+    budget_captured: dict[str, Any] = {}
     datahub_captured: dict[str, Any] = {}
     oidc_captured: dict[str, Any] = {}
 
@@ -77,6 +78,11 @@ def test_api_container_passes_the_configured_pool_budget(
     monkeypatch.setattr(http_container, "SecretResolver", Resolver)
     monkeypatch.setattr(http_container, "Database", database)
     monkeypatch.setattr(http_container, "RedisCache", lambda *args, **kwargs: object())
+    monkeypatch.setattr(
+        http_container,
+        "RedisChatRequestBudgetGuard",
+        lambda url, **kwargs: budget_captured.update(url=url, **kwargs) or object(),
+    )
     monkeypatch.setattr(
         http_container,
         "HttpDataHubGateway",
@@ -102,6 +108,10 @@ def test_api_container_passes_the_configured_pool_budget(
     assert oidc_captured["hardware_amr_values"] == ("webauthn", "hwk")
     assert oidc_captured["password_reauth_acr_values"] == ("1",)
     assert oidc_captured["password_amr_values"] == ("pwd",)
+    assert budget_captured == {
+        "url": "redis://delivery:6379/0",
+        "password": "resolved-secret",
+    }
 
 
 def test_worker_container_passes_the_configured_pool_budget(

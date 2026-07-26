@@ -99,6 +99,10 @@ def _profile(
         provider_profile_version_id=profile_id,
         state=state,
         kind=kind,
+        server_route_key="test-route-v1",
+        provider_identity="test-provider",
+        model_identity="test-model",
+        deployment_identity="test-deployment",
         jurisdiction=jurisdiction,
         maximum_classification=maximum,
         residency_attestation_observed_at=observed,
@@ -380,15 +384,21 @@ def _database_rows(*, now: datetime) -> list[dict[str, Any]]:
                 "search_mode": search,
                 "chat_mode": chat,
                 "rule_provider_profile_id": profile_id,
-                "profile_id": profile_id,
-                "profile_state": "APPROVED" if profile_id else None,
-                "profile_kind": kind,
-                "profile_jurisdiction": "jurisdiction-y" if profile_id else None,
-                "profile_maximum_classification": maximum,
-                "residency_attestation_observed_at": now - timedelta(hours=1),
-                "residency_attestation_expires_at": now + timedelta(hours=4),
-                "zero_retention_attestation_observed_at": now - timedelta(hours=1),
-                "zero_retention_attestation_expires_at": now + timedelta(hours=3),
+                "rule_embedding_provider_profile_id": None,
+                "rule_reranker_provider_profile_id": None,
+                "composition_profile_id": profile_id,
+                "composition_profile_state": "APPROVED" if profile_id else None,
+                "composition_profile_kind": kind,
+                "composition_server_route_key": "test-route-v1" if profile_id else None,
+                "composition_provider_identity": "test-provider" if profile_id else None,
+                "composition_model_identity": "test-model" if profile_id else None,
+                "composition_deployment_identity": ("test-deployment" if profile_id else None),
+                "composition_profile_jurisdiction": ("jurisdiction-y" if profile_id else None),
+                "composition_profile_maximum_classification": maximum,
+                "composition_residency_attestation_observed_at": now - timedelta(hours=1),
+                "composition_residency_attestation_expires_at": now + timedelta(hours=4),
+                "composition_zero_retention_attestation_observed_at": now - timedelta(hours=1),
+                "composition_zero_retention_attestation_expires_at": now + timedelta(hours=3),
                 "grant_id": grant_id,
                 "grant_policy_id": policy_id,
                 "grant_policy_hash": "b" * 64,
@@ -398,6 +408,24 @@ def _database_rows(*, now: datetime) -> list[dict[str, Any]]:
                 "grant_expires_at": now + timedelta(hours=2),
             }
         )
+        for prefix in ("embedding", "reranker"):
+            rows[-1].update(
+                {
+                    f"{prefix}_profile_id": None,
+                    f"{prefix}_profile_state": None,
+                    f"{prefix}_profile_kind": None,
+                    f"{prefix}_server_route_key": None,
+                    f"{prefix}_provider_identity": None,
+                    f"{prefix}_model_identity": None,
+                    f"{prefix}_deployment_identity": None,
+                    f"{prefix}_profile_jurisdiction": None,
+                    f"{prefix}_profile_maximum_classification": None,
+                    f"{prefix}_residency_attestation_observed_at": None,
+                    f"{prefix}_residency_attestation_expires_at": None,
+                    f"{prefix}_zero_retention_attestation_observed_at": None,
+                    f"{prefix}_zero_retention_attestation_expires_at": None,
+                }
+            )
     return rows
 
 

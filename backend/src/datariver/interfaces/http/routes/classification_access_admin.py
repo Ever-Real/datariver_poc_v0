@@ -132,6 +132,8 @@ async def propose_classification_policy(
             search_mode=rule.search_mode,
             chat_mode=rule.chat_mode,
             provider_profile_version_id=rule.provider_profile_version_id,
+            embedding_provider_profile_version_id=(rule.embedding_provider_profile_version_id),
+            reranker_provider_profile_version_id=rule.reranker_provider_profile_version_id,
         )
         for rule in payload.rules
     )

@@ -5,14 +5,12 @@ from datetime import UTC, datetime
 
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
-from sqlalchemy import select, text
+from sqlalchemy import text
 
 from datariver.application.services.authorization import AuthorizationService
 from datariver.domain.authz import Action, Classification, ResourceAttributes
 from datariver.infrastructure.db.authz import SqlDecisionWriter
-from datariver.infrastructure.db.models.platform import ExternalServiceProfileModel
 from datariver.infrastructure.db.revision import REQUIRED_DATABASE_REVISION
-from datariver.infrastructure.db.rls import set_security_context
 from datariver.interfaces.http.dependencies import ContextDep, get_container
 from datariver.interfaces.http.schemas import (
     CapabilitiesResponse,
@@ -102,43 +100,17 @@ async def capabilities(request: Request, context: ContextDep) -> CapabilitiesRes
             detail_code=detail,
         )
 
-    async def development_grafana_url() -> str | None:
-        if container.settings.app_env != "development":
-            return None
-        async with container.database.session_factory() as session:
-            async with session.begin():
-                await set_security_context(
-                    session,
-                    workspace_id=context.workspace_id,
-                    subject_id=context.subject.subject_id,
-                )
-                profile = (
-                    await session.scalars(
-                        select(ExternalServiceProfileModel).where(
-                            ExternalServiceProfileModel.workspace_id == context.workspace_id,
-                            ExternalServiceProfileModel.service_key == "GRAFANA_DASHBOARD",
-                            ExternalServiceProfileModel.active.is_(True),
-                        )
-                    )
-                ).one_or_none()
-                return profile.endpoint_url if profile is not None else None
-
-    database, cache, datahub_status, configured_grafana_url = await asyncio.gather(
+    database, cache, datahub_status = await asyncio.gather(
         database_status(),
         redis_status("redis-cache", container.cache.ping()),
         container.datahub.capability(),
-        development_grafana_url(),
     )
-    grafana_url = configured_grafana_url or (
+    grafana_url = (
         str(container.settings.ui_grafana_url)
         if container.settings.ui_grafana_url is not None
         else None
     )
-    grafana_embed_url = (
-        configured_grafana_url
-        if container.settings.app_env == "development"
-        else container.settings.grafana_embed_url()
-    )
+    grafana_embed_url = container.settings.grafana_embed_url()
     grafana_embed_state = (
         "AVAILABLE"
         if grafana_embed_url is not None
