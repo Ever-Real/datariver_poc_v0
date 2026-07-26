@@ -8,6 +8,7 @@ import type {
 } from '../../api/types'
 import { ErrorNotice } from '../../components/ErrorNotice'
 import { DenseDataTable } from '../../components/common/DenseDataTable'
+import { Dialog } from '../../components/common/Dialog'
 import type { AdminSectionProps } from './MembershipAdmin'
 
 type Responsibility = SystemAssigneeUpdate['responsibility']
@@ -57,6 +58,9 @@ export function SystemDirectoryAdmin(props: AdminSectionProps) {
   const [draft, setDraft] = useState<AssignmentDraft[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<unknown>()
+  const [createOpen, setCreateOpen] = useState(false)
+  const [createForm, setCreateForm] = useState({ code: '', name: '', description: '' })
+  const [createValidationError, setCreateValidationError] = useState('')
   const systemGeneration = useRef(0)
   const assigneeGeneration = useRef(0)
   const memberGeneration = useRef(0)
@@ -274,8 +278,25 @@ export function SystemDirectoryAdmin(props: AdminSectionProps) {
     })
   }
 
+  const handleCreateSubmit = async (event: React.FormEvent) => {
+    event.preventDefault()
+    setCreateValidationError('')
+    if (!/^[A-Za-z][A-Za-z0-9_-]{1,99}$/.test(createForm.code)) {
+      setCreateValidationError('시스템 코드는 영문자로 시작하고 2~100자의 영숫자, -, _ 만 허용됩니다.')
+      return
+    }
+    try {
+      await api.createSystem(createForm)
+      setCreateOpen(false)
+      setCreateForm({ code: '', name: '', description: '' })
+      await loadSystems()
+    } catch (err) {
+      reportError(err)
+    }
+  }
+
   return <section className="panel admin-system-directory">
-    <div className="section-heading"><div><h3>시스템 권한 매핑</h3><p className="muted">시스템과 담당자를 각각 서버 페이지로 읽고, 버전 고정 delta로 변경합니다.</p></div><div className="action-row"><button className="button" disabled title="시스템 정본 생성 API가 아직 없습니다." type="button">신규 시스템 추가</button><button className="button button-secondary" onClick={() => void loadSystems()} type="button">새로고침</button></div></div>
+    <div className="section-heading"><div><h3>시스템 권한 매핑</h3><p className="muted">시스템과 담당자를 각각 서버 페이지로 읽고, 버전 고정 delta로 변경합니다.</p></div><div className="action-row"><button className="button" onClick={() => { setCreateOpen(true); setCreateValidationError('') }} type="button">신규 시스템 추가</button><button className="button button-secondary" onClick={() => void loadSystems()} type="button">새로고침</button></div></div>
     <label className="mb-3 block max-w-md text-xs font-bold">시스템 검색<input type="search" value={systemQuery} onChange={(event) => setSystemQuery(event.target.value)} placeholder="시스템명 또는 코드" /></label>
     <DenseDataTable
       caption="워크스페이스 시스템 목록"
@@ -355,6 +376,24 @@ export function SystemDirectoryAdmin(props: AdminSectionProps) {
       />
       {canUpdate ? <div className="action-row"><button className="button" disabled={!draftValid || !changed} onClick={save} type="button">현재 페이지 변경 저장</button><button className="button button-danger" disabled title="시스템 정본 삭제 API와 참조 무결성 검토 계약이 아직 없습니다." type="button">시스템 삭제</button>{!draftValid && <small className="muted">현재 페이지에서 담당자·우선순위가 중복되거나 유효하지 않습니다.</small>}</div> : <p className="callout">담당자 변경은 보안키 인증(HARDWARE_WEBAUTHN) 후에만 활성화됩니다.</p>}
     </section>}
+    <Dialog open={createOpen} title="신규 시스템 추가" size="medium" onRequestClose={() => setCreateOpen(false)}>
+      <form id="system-create-form" onSubmit={handleCreateSubmit} className="grid gap-3">
+        <label className="block text-sm font-bold">시스템 코드
+          <input className="mt-1 block w-full" maxLength={100} onChange={(e) => setCreateForm({ ...createForm, code: e.target.value })} pattern="^[A-Za-z][A-Za-z0-9_-]{1,99}$" required type="text" value={createForm.code} placeholder="예: system-code_123" />
+        </label>
+        {createValidationError && <div className="text-red-600 text-xs mt-[-8px]">{createValidationError}</div>}
+        <label className="block text-sm font-bold">시스템 이름
+          <input className="mt-1 block w-full" maxLength={255} onChange={(e) => setCreateForm({ ...createForm, name: e.target.value })} required type="text" value={createForm.name} />
+        </label>
+        <label className="block text-sm font-bold">설명
+          <textarea className="mt-1 block w-full h-24" maxLength={4000} onChange={(e) => setCreateForm({ ...createForm, description: e.target.value })} value={createForm.description} />
+        </label>
+        <div className="flex justify-end gap-2 pt-2">
+          <button className="button button-secondary" onClick={() => setCreateOpen(false)} type="button">취소</button>
+          <button className="button" type="submit">생성</button>
+        </div>
+      </form>
+    </Dialog>
     <ErrorNotice error={error} />
   </section>
 }

@@ -112,6 +112,13 @@ export class AdminApi {
     }
   }
 
+  async createSystem(payload: { code: string; name: string; description: string }): Promise<SystemDirectoryEntry> {
+    return this.client.request<SystemDirectoryEntry>('/admin/systems', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    })
+  }
+
   provisionIdentityUser(payload: IdentityUserProvisionInput, idempotencyKey: string) {
     return this.client.request<IdentityUserProvisionResult>('/admin/identity-users', {
       method: 'POST', idempotencyKey, body: JSON.stringify(payload),
@@ -356,6 +363,13 @@ export class AdminApi {
         method: 'POST',
         body: JSON.stringify({ configuration_yaml: configurationYaml }),
       },
+    )
+  }
+
+  testBootstrapSystemConfiguration(systemId: string) {
+    return this.client.request<SystemConfigurationTestResult>(
+      `/admin/system-configuration/${encodeURIComponent(systemId)}/test-bootstrap`,
+      { method: 'POST' },
     )
   }
 

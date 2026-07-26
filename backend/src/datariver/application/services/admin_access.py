@@ -10,6 +10,7 @@ from datariver.application.dto import (
     MembershipRenewalPage,
     MembershipRenewalRecord,
     SystemAssigneePage,
+    SystemDirectoryEntry,
     SystemDirectoryPage,
     WorkspaceMembershipAccessRecord,
     WorkspaceMembershipPage,
@@ -135,6 +136,38 @@ class AdminAccessService:
                 active=active,
                 cursor=cursor,
             )
+
+    async def create_system(
+        self,
+        *,
+        workspace_id: UUID,
+        code: str,
+        name: str,
+        description: str,
+        subject: SubjectAttributes,
+        environment: EnvironmentAttributes,
+        request_id: str,
+    ) -> SystemDirectoryEntry:
+        await self._authorization.authorize(
+            subject=subject,
+            resource=self._resource(workspace_id, workspace_id),
+            action=Action.ADMIN_MANAGE,
+            environment=environment,
+            request_id=request_id,
+        )
+        async with self._uow_factory() as uow:
+            await uow.set_security_context(workspace_id=workspace_id, subject_id=subject.subject_id)
+            await uow.memberships.assert_eligible_human_administrators(
+                workspace_id=workspace_id, subject_ids=frozenset({subject.subject_id})
+            )
+            result = await uow.systems.create(
+                workspace_id=workspace_id,
+                code=code,
+                name=name,
+                description=description,
+            )
+            await uow.commit()
+            return result
 
     async def list_system_assignees(
         self,

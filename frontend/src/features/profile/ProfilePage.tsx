@@ -72,9 +72,7 @@ export function ProfilePage({
           <label className="grid gap-1 text-xs font-bold">Email<input readOnly value={profile.email ?? '인증 프로필 미제공'} /></label>
           <label className="grid gap-1 text-xs font-bold">Department<input readOnly value="인증 프로필 미제공" /></label>
           <label className="grid gap-1 text-xs font-bold">현재 Workspace<input readOnly value={workspace || '선택되지 않음'} /></label>
-          <label className="grid gap-1 text-xs font-bold">Workspace 운영 모드<input readOnly value={profile.workspace_selection_enabled === false ? '단일 Workspace · 전환 비활성' : 'Workspace 전환 허용'} /></label>
           <label className="grid gap-1 text-xs font-bold">인증 보증<input readOnly value={profile.authentication_assurance} /></label>
-          <label className="grid gap-1 text-xs font-bold">WebAuthn<input readOnly value={profile.hardware_webauthn_enabled === false ? '비활성 · 고위험 작업 차단' : '활성'} /></label>
           <label className="grid gap-1 text-xs font-bold md:col-span-2">역할<input readOnly value={profile.roles.join(', ') || '역할 없음'} /></label>
         </div>
         <div className="mt-5 flex flex-wrap gap-2">
@@ -91,8 +89,8 @@ export function ProfilePage({
         </section>
       </section>
       <aside className="grid content-start gap-3">
-        <article className="rounded-enterprise border border-slate-300 bg-white p-4 shadow-sm"><div className="flex items-center gap-2 text-xs font-black text-navy-900"><Database size={16} className="text-enterprise-blue" /> Assigned System</div><strong className="mt-3 block text-2xl text-navy-900">—</strong><p className="mb-0 text-[10px] leading-5 text-slate-500">현재 사용자 전용 시스템 할당 조회 API가 없습니다.</p></article>
-        <article className="rounded-enterprise border border-slate-300 bg-white p-4 shadow-sm"><div className="flex items-center gap-2 text-xs font-black text-navy-900"><Database size={16} className="text-enterprise-blue" /> Owned Datasets</div><strong className="mt-3 block text-2xl text-navy-900">—</strong><p className="mb-0 text-[10px] leading-5 text-slate-500">현재 사용자 전용 소유 데이터셋 조회 API가 없습니다.</p></article>
+        <article className="rounded-enterprise border border-slate-300 bg-white p-4 shadow-sm"><div className="flex items-center gap-2 text-xs font-black text-navy-900"><Database size={16} className="text-enterprise-blue" /> Change Request History</div><strong className="mt-3 block text-2xl text-navy-900">{membership?.change_request_count ?? 0}</strong><p className="mb-0 text-[10px] leading-5 text-slate-500">결재 요청 내역 건수</p></article>
+        <article className="rounded-enterprise border border-slate-300 bg-white p-4 shadow-sm"><div className="flex items-center gap-2 text-xs font-black text-navy-900"><Database size={16} className="text-enterprise-blue" /> Owned Datasets</div><strong className="mt-3 block text-2xl text-navy-900">{membership?.owned_table_count ?? 0}</strong><p className="mb-0 text-[10px] leading-5 text-slate-500">담당 중인 데이터셋</p></article>
         <article className="rounded-enterprise border border-slate-300 bg-white p-4 shadow-sm"><div className="flex items-center gap-2 text-xs font-black text-navy-900"><ShieldCheck size={16} className="text-enterprise-blue" /> DataHub Integration</div><span className="badge mt-3">{capabilityState(capabilities, 'datahub')}</span>{dataHubLink ? <a className="mt-3 block text-xs font-bold text-enterprise-blue" href={dataHubLink.url} target="_blank" rel="noreferrer">서버 승인 DataHub 링크 열기</a> : <p className="mb-0 mt-3 text-[10px] leading-5 text-slate-500">서버가 승인한 DataHub 외부 링크가 없습니다.</p>}</article>
       </aside>
     </div>

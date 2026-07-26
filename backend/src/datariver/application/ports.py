@@ -74,6 +74,7 @@ from datariver.application.dto import (
     RetentionExecutionClaim,
     RetentionExecutionEvidence,
     SystemAssigneePage,
+    SystemDirectoryEntry,
     SystemDirectoryPage,
     UploadPreparationReceiptEvidence,
     UploadRegistrationCandidateEvidence,
@@ -962,6 +963,15 @@ class SystemDirectoryRepository(Protocol):
     async def patch_assignees(self, command: SystemAssigneePatchCommand) -> int: ...
 
     async def replace_assignees(self, command: SystemAssigneeUpdateCommand) -> int: ...
+
+    async def create(
+        self,
+        *,
+        workspace_id: UUID,
+        code: str,
+        name: str,
+        description: str,
+    ) -> "SystemDirectoryEntry": ...
 
 
 class AdminAccessUnitOfWork(Protocol):

@@ -1553,6 +1553,45 @@ class SqlSystemDirectoryRepository(SystemDirectoryRepository):
         await self._session.flush()
         return system.version
 
+    async def create(
+        self,
+        *,
+        workspace_id: UUID,
+        code: str,
+        name: str,
+        description: str,
+    ) -> SystemDirectoryEntry:
+        from datariver.infrastructure.db.models.platform import DataSystemModel
+        from datariver.domain.common import ConflictError
+
+        existing = await self._session.scalar(
+            select(DataSystemModel).where(
+                DataSystemModel.workspace_id == workspace_id,
+                DataSystemModel.code == code,
+            )
+        )
+        if existing is not None:
+            raise ConflictError(f"System code '{code}' is already in use in this workspace.")
+        model = DataSystemModel(
+            workspace_id=workspace_id,
+            code=code,
+            name=name,
+            description=description,
+            active=True,
+        )
+        self._session.add(model)
+        await self._session.flush()
+        return SystemDirectoryEntry(
+            system_id=model.id,
+            code=model.code,
+            name=model.name,
+            description=model.description,
+            active=model.active,
+            version=model.version,
+            assignees=(),
+            assignee_count=0,
+        )
+
     async def _system_for_update(
         self,
         *,

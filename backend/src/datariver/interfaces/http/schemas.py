@@ -1158,6 +1158,19 @@ class SystemDirectoryListResponse(BaseModel):
     page: PageMeta
 
 
+class SystemCreateRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    code: str = Field(
+        min_length=2,
+        max_length=100,
+        pattern=r"^[A-Za-z][A-Za-z0-9_-]{1,99}$",
+        description="시스템 고유 코드 (영문자로 시작, 영숫자·_·- 허용)",
+    )
+    name: str = Field(min_length=1, max_length=255)
+    description: str = Field(default="", max_length=4000)
+
+
 class SystemAssigneeUpdateRequest(BaseModel):
     subject_id: UUID
     responsibility: Literal["DEVELOPER", "DATA_STEWARD"]
@@ -1319,7 +1332,7 @@ class SystemConfigurationTestResponse(BaseModel):
     ]
     latency_ms: int = Field(ge=0)
     detail: str
-    configuration_version: int = Field(ge=1)
+    configuration_version: int | None = Field(default=None, ge=1)
     tested_at: datetime
 
 

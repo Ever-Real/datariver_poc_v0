@@ -243,9 +243,15 @@ export function SystemConfigurationAdmin(props: AdminSectionProps) {
     setTesting(true); 
     if (isCurrentSelected) { setTestResult(undefined); setError(undefined) }
     try {
-      // Use draft if it's the currently selected item and it's dirty, else use the item's saved yaml (or template)
-      const yamlToTest = (isCurrentSelected && dirty) ? draft : (itemToTest.configuration_yaml || itemToTest.template_yaml || '')
-      const result = await api.testDraftSystemConfiguration(itemToTest.system_id, yamlToTest)
+      let result: SystemConfigurationTestResult
+      if (itemToTest.activation_state === 'DEPLOYMENT_MANAGED') {
+        // Core bootstrap systems (POSTGRESQL, OIDC_IDENTITY): probe via live deployment settings
+        result = await api.testBootstrapSystemConfiguration(itemToTest.system_id)
+      } else {
+        // Use draft if it's the currently selected item and it's dirty, else use the item's saved yaml (or template)
+        const yamlToTest = (isCurrentSelected && dirty) ? draft : (itemToTest.configuration_yaml || itemToTest.template_yaml || '')
+        result = await api.testDraftSystemConfiguration(itemToTest.system_id, yamlToTest)
+      }
       if (isCurrentSelected) setTestResult(result)
       setItems((current) => current.map((item) => item.system_id === itemToTest.system_id ? {
         ...item,
@@ -442,6 +448,13 @@ export function SystemConfigurationAdmin(props: AdminSectionProps) {
           {llmSelected && <div className="admin-system-llm-tabs" role="group" aria-label="LLM 모델 설정">
             {llmItems.map((item) => <button key={item.system_id} type="button" aria-pressed={selected.system_id === item.system_id} className={`button ${selected.system_id === item.system_id ? '' : 'button-secondary'}`} onClick={() => setSelectedId(item.system_id)}>{llmTabLabel(item.system_id)}</button>)}
           </div>}
+          {llmSelected && (
+            <div className="callout" style={{ fontSize: 11, marginBottom: 8 }}>
+              <strong>🦙 로컬 Ollama 연결 방법</strong><br />
+              macOS에서 Ollama 앱을 native로 실행 중이라면 Docker 컨테이너에서 <code>http://host.docker.internal:11434</code> 주소로 접근할 수 있습니다.<br />
+              <strong>connection_mode</strong>는 <code>LOCAL_OLLAMA</code>로 설정하고, <strong>model</strong>은 <code>ollama list</code>로 확인한 모델명을 입력하세요.
+            </div>
+          )}
           <dl className="summary-list">
             <div><dt>구성 상태</dt><dd><span className="badge">{stateLabel(selected.state)}</span></dd></div>
             <div><dt>관리 경로</dt><dd>{selected.management_plane === 'DEVELOPMENT_DATABASE' ? '개발 DB 설정' : selected.management_plane === 'DEPLOYMENT' ? '배포 설정' : '승인 Provider profile'}</dd></div>

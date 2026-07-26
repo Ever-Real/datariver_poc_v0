@@ -113,6 +113,8 @@ from datariver.interfaces.http.schemas import (
     SystemConfigurationVersionListResponse,
     SystemConfigurationVersionResponse,
     SystemConnectionRequirementResponse,
+    SystemCreateRequest,
+    SystemDirectoryAssigneeResponse,
     SystemDirectoryEntryResponse,
     SystemDirectoryListResponse,
     WorkspaceMembershipAccessResponse,
@@ -1937,27 +1939,54 @@ async def list_systems(
     return SystemDirectoryListResponse(
         items=[
             SystemDirectoryEntryResponse(
-                system_id=value.system_id,
-                code=value.code,
-                name=value.name,
-                description=value.description,
-                active=value.active,
-                version=value.version,
-                assignee_count=value.assignee_count,
+                system_id=entry.system_id,
+                code=entry.code,
+                name=entry.name,
+                description=entry.description,
+                active=entry.active,
+                version=entry.version,
                 assignees=[
-                    {
-                        "subject_id": assignee.subject_id,
-                        "display_name": assignee.display_name,
-                        "responsibility": assignee.responsibility,
-                        "priority": assignee.priority,
-                        "active": assignee.active,
-                    }
-                    for assignee in value.assignees
+                    SystemDirectoryAssigneeResponse(
+                        subject_id=assignee.subject_id,
+                        responsibility=assignee.responsibility,
+                        priority=assignee.priority,
+                        display_name=assignee.display_name,
+                        active=assignee.active,
+                    )
+                    for assignee in entry.assignees
                 ],
+                assignee_count=entry.assignee_count,
             )
-            for value in page.items
+            for entry in page.items
         ],
         page=PageMeta(next_cursor=page.next_cursor, limit=limit),
+    )
+
+
+@router.post("/systems", response_model=SystemDirectoryEntryResponse)
+async def create_system(
+    request: Request,
+    context: ContextDep,
+    body: SystemCreateRequest,
+) -> SystemDirectoryEntryResponse:
+    entry = await _service(request).create_system(
+        workspace_id=context.workspace_id,
+        code=body.code,
+        name=body.name,
+        description=body.description,
+        subject=context.subject,
+        environment=context.environment,
+        request_id=context.request_id,
+    )
+    return SystemDirectoryEntryResponse(
+        system_id=entry.system_id,
+        code=entry.code,
+        name=entry.name,
+        description=entry.description,
+        active=entry.active,
+        version=entry.version,
+        assignees=[],
+        assignee_count=0,
     )
 
 
@@ -2422,7 +2451,7 @@ async def test_draft_system_configuration(
     request: Request,
     response: Response,
     context: ContextDep,
-    body: SystemConfigurationSaveRequest,
+    body: SystemConfigurationUpdateRequest,
 ) -> SystemConfigurationTestResponse:
     """Probe an unsaved development profile."""
     container = get_container(request)
@@ -2441,13 +2470,23 @@ async def test_draft_system_configuration(
     
     tested_document = _yaml_document(body.configuration_yaml)
     _validate_system_configuration(system_id, tested_document, is_draft=True)
-    return await probe_system_configuration(
+    result = await probe_system_configuration(
         system_id=system_id,
         document=tested_document,
         secret_resolver=SecretResolver(
             virtual_secret_root=container.settings.system_configuration_secret_root
         ),
         allowed_hosts=container.settings.system_configuration_probe_allowed_hosts,
+    )
+    response.headers["Cache-Control"] = "no-store, private"
+    return SystemConfigurationTestResponse(
+        system_id=system_id,
+        status=result.status,
+        scope=result.scope,
+        latency_ms=result.latency_ms,
+        detail=result.detail,
+        configuration_version=None,
+        tested_at=utc_now(),
     )
 
 @router.post(
@@ -2580,8 +2619,100 @@ async def test_system_configuration(
     )
 
 
+_BOOTSTRAP_SYSTEM_IDS = frozenset({"POSTGRESQL", "OIDC_IDENTITY"})
+
+
+@router.post(
+    "/system-configuration/{system_id}/test-bootstrap",
+    response_model=SystemConfigurationTestResponse,
+)
+async def test_bootstrap_system_configuration(
+    system_id: str,
+    request: Request,
+    response: Response,
+    context: ContextDep,
+) -> SystemConfigurationTestResponse:
+    """Probe a deployment-managed bootstrap system (POSTGRESQL, OIDC_IDENTITY) using live settings."""
+    import time as _time
+
+    container = get_container(request)
+    if container.settings.app_env != "development":
+        raise ForbiddenError("System configuration testing is available only in development.")
+    if system_id not in _BOOTSTRAP_SYSTEM_IDS:
+        raise ValidationError("The system identifier is not a deployment-managed bootstrap system.")
+    admin_context = await _service(request).get_admin_read_context(
+        workspace_id=context.workspace_id,
+        subject=context.subject,
+        environment=context.environment,
+        request_id=context.request_id,
+    )
+    if "SYSTEM_CONFIGURATION_UPDATE" not in admin_context.allowed_operations:
+        raise ForbiddenError("System configuration testing is not available for this administrator.")
+
+    started = _time.monotonic()
+    tested_at = utc_now()
+
+    if system_id == "POSTGRESQL":
+        try:
+            async with container.database.session_factory() as session:
+                await session.execute(text("SELECT 1"))
+            elapsed_ms = int((_time.monotonic() - started) * 1000)
+            return SystemConfigurationTestResponse(
+                system_id=system_id,
+                status="AVAILABLE",
+                scope="AUTHENTICATED_QUERY",
+                latency_ms=elapsed_ms,
+                detail="PostgreSQL 데이터베이스에 성공적으로 연결되었습니다.",
+                configuration_version=None,
+                tested_at=tested_at,
+            )
+        except Exception as exc:
+            elapsed_ms = int((_time.monotonic() - started) * 1000)
+            return SystemConfigurationTestResponse(
+                system_id=system_id,
+                status="UNAVAILABLE",
+                scope="AUTHENTICATED_QUERY",
+                latency_ms=elapsed_ms,
+                detail=f"PostgreSQL 연결 실패: {exc!s}",
+                configuration_version=None,
+                tested_at=tested_at,
+            )
+
+    # OIDC_IDENTITY: probe the OIDC discovery endpoint
+    import httpx as _httpx
+
+    oidc_issuer = container.settings.oidc_issuer.rstrip("/")
+    discovery_url = f"{oidc_issuer}/.well-known/openid-configuration"
+    try:
+        async with _httpx.AsyncClient(timeout=5.0) as http:
+            resp = await http.get(discovery_url)
+        resp.raise_for_status()
+        elapsed_ms = int((_time.monotonic() - started) * 1000)
+        return SystemConfigurationTestResponse(
+            system_id=system_id,
+            status="AVAILABLE",
+            scope="HTTP_HEALTH",
+            latency_ms=elapsed_ms,
+            detail=f"OIDC 인증 서버({oidc_issuer})에 성공적으로 연결되었습니다.",
+            configuration_version=None,
+            tested_at=tested_at,
+        )
+    except Exception as exc:
+        elapsed_ms = int((_time.monotonic() - started) * 1000)
+        return SystemConfigurationTestResponse(
+            system_id=system_id,
+            status="UNAVAILABLE",
+            scope="HTTP_HEALTH",
+            latency_ms=elapsed_ms,
+            detail=f"OIDC 서버 연결 실패: {exc!s}",
+            configuration_version=None,
+            tested_at=tested_at,
+        )
+
+
 @router.post(
     "/system-configuration/{system_id}/activate",
+
     response_model=SystemConfigurationEntryResponse,
 )
 async def activate_system_configuration(
