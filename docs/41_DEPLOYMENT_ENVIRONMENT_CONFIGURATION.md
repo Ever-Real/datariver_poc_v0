@@ -30,6 +30,14 @@ receive it. No host OS is auto-detected.
 | `mac-development` | Reviewed Apple-Silicon local compatibility topology | Build from source | None |
 | `wsl-preparation` | Reviewed amd64 offline runtime | Verified release archive | DataHub, storage, Airflow |
 
+`wsl-preparation` remains the immutable image/release profile. A preparation PC that also performs
+rapid source validation derives a separate ignored `.env.wsl-intranet-development` with
+`bootstrap.sh --host-development --intranet-source-host` and two operator-selected HTTPS origins.
+That explicit development mode keeps all upstream ports loopback-only and publishes only the
+CIDR-restricted Nginx TLS edge defined by
+[ADR-0051](adr/0051-wsl-intranet-source-host-ingress.md). It is not a fourth managed release
+profile, is not production, and does not alter the workflow state for `wsl-preparation`.
+
 To apply an edited environment:
 
 ```bash
@@ -105,7 +113,7 @@ Portable and WSL profiles never start this Mac-only bridge.
 ### Application and browser
 
 - `APP_ENV`, `APP_NAME`, `APP_LOG_LEVEL`, `APP_PUBLIC_ORIGIN`, `APP_CORS_ORIGINS`,
-  `APP_TRUSTED_HOSTS`, `DEPLOYMENT_TIER`, `API_PORT`, `WEB_PORT`
+  `APP_TRUSTED_HOSTS`, `INTRANET_SOURCE_HOST_ENABLED`, `DEPLOYMENT_TIER`, `API_PORT`, `WEB_PORT`
 - `UI_DATAHUB_URL`, `UI_AIRFLOW_URL`, `UI_GRAFANA_URL`, `UI_PROMETHEUS_URL`,
   `UI_GRAPH_URL`
 - `WORKSPACE_SELECTION_ENABLED` hides manual selection when false but never disables Workspace,

@@ -38,6 +38,12 @@ s3_public_endpoint_url=$(env_file_value S3_PUBLIC_ENDPOINT_URL http://localhost:
 keycloak_port=$(env_file_value KEYCLOAK_PORT 18081)
 api_port=$(env_file_value API_PORT 38101)
 web_port=$(env_file_value WEB_PORT 38102)
+app_env=$(env_file_value APP_ENV development)
+intranet_source_host_enabled=$(env_file_value INTRANET_SOURCE_HOST_ENABLED false)
+configured_web_public_origin=$(env_file_value APP_PUBLIC_ORIGIN "http://localhost:$web_port")
+configured_oidc_public_origin=$(env_file_value OIDC_PUBLIC_ORIGIN "http://localhost:$keycloak_port")
+configured_oidc_public_authority=$(env_file_value OIDC_PUBLIC_AUTHORITY \
+  "$configured_oidc_public_origin/realms/datariver")
 airflow_source_api_bridge_enabled=$(env_file_value AIRFLOW_SOURCE_API_BRIDGE_ENABLED false)
 airflow_source_api_bridge_port=$(env_file_value AIRFLOW_SOURCE_API_BRIDGE_PORT 38103)
 knowledge_source_worker_enabled=$(env_file_value KNOWLEDGE_SOURCE_WORKER_ENABLED false)
@@ -72,6 +78,9 @@ Options:
   --enable-airflow-source-bridge
                       Forward a private Docker bridge listener to the loopback
                       source API. Required only for Linux/WSL Airflow.
+  An environment bootstrapped with --intranet-source-host keeps API, database,
+  Redis and Keycloak upstreams on loopback while an operator-managed HTTPS
+  reverse proxy publishes the configured Web and OIDC origins.
   Local model and Neo4j capabilities are read only from the selected environment file.
   preflight                Validate the final source-host Settings without starting processes.
 EOF
@@ -244,6 +253,82 @@ if [ ! -x "$python" ]; then
   echo "Missing $python. Run 'uv sync --frozen --all-extras' first." >&2
   exit 2
 fi
+
+origin_metadata=$(
+  "$python" - \
+    "$intranet_source_host_enabled" \
+    "$app_env" \
+    "$configured_web_public_origin" \
+    "$configured_oidc_public_origin" \
+    "$configured_oidc_public_authority" \
+    "$web_port" \
+    "$keycloak_port" <<'PY'
+import ipaddress
+import sys
+from urllib.parse import urlsplit
+
+enabled, app_env, web_value, oidc_value, authority_value, web_port, oidc_port = sys.argv[1:]
+
+
+def parsed_origin(value: str, *, label: str, intranet: bool) -> tuple[str, str]:
+    parsed = urlsplit(value)
+    expected_scheme = "https" if intranet else "http"
+    if (
+        parsed.scheme != expected_scheme
+        or parsed.hostname is None
+        or parsed.username is not None
+        or parsed.password is not None
+        or parsed.query
+        or parsed.fragment
+        or parsed.path not in {"", "/"}
+    ):
+        raise SystemExit(f"{label} is not a valid {expected_scheme.upper()} origin")
+    if intranet and parsed.port is not None:
+        raise SystemExit(f"{label} must use the standard HTTPS port")
+    if not intranet and parsed.hostname != "localhost":
+        raise SystemExit(f"{label} must remain localhost outside intranet source-host mode")
+    hostname = parsed.hostname
+    try:
+        address = ipaddress.ip_address(hostname)
+    except ValueError:
+        pass
+    else:
+        if intranet and (address.is_loopback or address.is_unspecified or address.is_multicast):
+            raise SystemExit(f"{label} cannot use a loopback, unspecified or multicast address")
+    return value.rstrip("/"), hostname
+
+
+intranet = enabled.lower() == "true"
+if enabled.lower() not in {"true", "false"}:
+    raise SystemExit("INTRANET_SOURCE_HOST_ENABLED must be true or false")
+if intranet and app_env != "development":
+    raise SystemExit("Intranet source-host mode is permitted only with APP_ENV=development")
+
+if intranet:
+    web_origin, web_host = parsed_origin(web_value, label="APP_PUBLIC_ORIGIN", intranet=True)
+    oidc_origin, oidc_host = parsed_origin(
+        oidc_value, label="OIDC_PUBLIC_ORIGIN", intranet=True
+    )
+    if web_host == oidc_host:
+        raise SystemExit("Web and OIDC public origins must use distinct hostnames")
+    authority = f"{oidc_origin}/realms/datariver"
+    if authority_value.rstrip("/") != authority:
+        raise SystemExit("OIDC_PUBLIC_AUTHORITY must match OIDC_PUBLIC_ORIGIN")
+else:
+    web_origin, web_host = parsed_origin(
+        f"http://localhost:{web_port}", label="APP_PUBLIC_ORIGIN", intranet=False
+    )
+    oidc_origin, _ = parsed_origin(
+        f"http://localhost:{oidc_port}", label="OIDC_PUBLIC_ORIGIN", intranet=False
+    )
+    authority = f"{oidc_origin}/realms/datariver"
+
+print("\t".join((web_origin, oidc_origin, authority, web_host)))
+PY
+)
+IFS=$'\t' read -r web_public_origin oidc_public_origin oidc_public_authority web_public_host \
+  <<<"$origin_metadata"
+
 node=$(command -v node || true)
 vite_entry="$root/frontend/node_modules/vite/bin/vite.js"
 if [ "$action" = start ] && { [ -z "$node" ] || [ ! -f "$vite_entry" ]; }; then
@@ -273,6 +358,30 @@ if [ "$action" = start ]; then
       postgres_knowledge_password s3_knowledge_access_key s3_knowledge_secret_key
     )
   fi
+fi
+
+require_postgres_listener() {
+  if "$python" - "$postgres_port" <<'PY' >/dev/null 2>&1
+import socket
+import sys
+
+with socket.create_connection(("127.0.0.1", int(sys.argv[1])), timeout=2):
+    pass
+PY
+  then
+    return
+  fi
+  echo "PostgreSQL is not reachable at 127.0.0.1:$postgres_port." >&2
+  echo "A container shown only as 5432/tcp is not published to this WSL source host." >&2
+  echo "Stop containerized DataRiver application services, then recreate PostgreSQL and" >&2
+  echo "Keycloak with compose.source-host.yaml before retrying:" >&2
+  printf '  ./scripts/compose.sh --env-file %q -f compose.yaml -f compose.identity.yaml -f compose.source-host.yaml up -d --no-build --pull never --wait postgres keycloak\n' \
+    "$env_file_argument" >&2
+  exit 2
+}
+
+if [ "$action" = start ] || [ "$action" = migrate ]; then
+  require_postgres_listener
 fi
 for required in "${required_secrets[@]}"; do
   if [ ! -s "$root/secrets/$required" ]; then
@@ -341,9 +450,9 @@ secret_ref() {
   printf 'file:%s/secrets/%s' "$root" "$1"
 }
 
-export APP_PUBLIC_ORIGIN="http://localhost:$web_port"
+export APP_PUBLIC_ORIGIN="$web_public_origin"
 export APP_CORS_ORIGINS="$APP_PUBLIC_ORIGIN"
-export APP_TRUSTED_HOSTS="localhost,127.0.0.1,host.docker.internal,apisix"
+export APP_TRUSTED_HOSTS="localhost,127.0.0.1,host.docker.internal,apisix,$web_public_host"
 export DATABASE_URL="postgresql+asyncpg://datariver_app@127.0.0.1:$postgres_port/datariver"
 export DATABASE_SECRET_REF="$(secret_ref postgres_app_password)"
 export MIGRATION_DATABASE_URL="postgresql+asyncpg://datariver_owner@127.0.0.1:$postgres_port/datariver"
@@ -367,8 +476,10 @@ export S3_SECRET_KEY_FILE="$root/secrets/s3_secret_key"
 export S3_KNOWLEDGE_ACCESS_KEY_FILE="$root/secrets/s3_knowledge_access_key"
 export S3_KNOWLEDGE_SECRET_KEY_FILE="$root/secrets/s3_knowledge_secret_key"
 export KNOWLEDGE_SOURCE_SPOOL_DIRECTORY="$runtime_dir/knowledge-spool"
-export OIDC_ISSUER="http://localhost:$keycloak_port/realms/datariver"
+export OIDC_ISSUER="$oidc_public_authority"
 export OIDC_JWKS_URL="http://localhost:$keycloak_port/realms/datariver/protocol/openid-connect/certs"
+export OIDC_PUBLIC_AUTHORITY="$oidc_public_authority"
+export OIDC_PUBLIC_ORIGIN="$oidc_public_origin"
 export IDENTITY_ADMIN_ENABLED=true
 export IDENTITY_ADMIN_BASE_URL="http://127.0.0.1:$keycloak_port"
 export IDENTITY_ADMIN_REALM=datariver
@@ -383,7 +494,8 @@ export SYSTEM_CONFIGURATION_SECRET_ROOT="$root/secrets"
 export VITE_API_BASE_URL=/api/v1
 export VITE_API_PROXY_TARGET="http://127.0.0.1:$api_port"
 export VITE_USE_POLLING=true
-export VITE_OIDC_AUTHORITY="http://localhost:$keycloak_port/realms/datariver"
+export VITE_ALLOWED_HOSTS="$web_public_host"
+export VITE_OIDC_AUTHORITY="$oidc_public_authority"
 export VITE_OIDC_CLIENT_ID=datariver-web
 export VITE_OIDC_REDIRECT_URI="$APP_PUBLIC_ORIGIN"
 export VITE_OIDC_HIGH_ASSURANCE_ACR=2

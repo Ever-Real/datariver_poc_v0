@@ -564,6 +564,206 @@ scripts/compose.sh --env-file .env \
 ./scripts/configure_keycloak_host_dev.sh
 ```
 
+### WSL 준비 PC를 사내 Source 검증 서버로 사용
+
+이 절차는 `wsl-preparation` immutable image 검증을 대체하지 않는다. 동일한 WSL 준비 PC에서
+최신 `linux/amd64` 소스를 빠르게 검증할 때만 별도 ignored 환경
+`.env.wsl-intranet-development`를 사용한다. 컨테이너 API/worker와 source API/worker를 동시에
+실행하면 같은 outbox/queue를 중복 소비하므로 먼저 컨테이너 application service만 중지한다.
+PostgreSQL, Keycloak, Redis volume은 삭제하지 않는다.
+
+현재 migration이 `127.0.0.1:5432`의 `ConnectionRefusedError`로 끝나고 `docker ps`가
+PostgreSQL에 `5432/tcp`만 표시한다면 container port가 WSL host로 publish되지 않은 상태다.
+실제 script 이름은 `dev_host.sh`이며 다음처럼 source-host overlay로 같은 PostgreSQL/Keycloak
+container를 재생성한다. `down -v`, volume 삭제, database 초기화는 사용하지 않는다.
+
+```bash
+# WSL checkout root
+./scripts/dev_host.sh --env-file .env.wsl-preparation stop
+
+./scripts/compose.sh --env-file .env.wsl-preparation \
+  -f compose.yaml -f compose.identity.yaml \
+  stop api web outbox-relay upload-worker upload-validation-worker \
+  governance-apply-worker
+
+./scripts/compose.sh --env-file .env.wsl-preparation \
+  -f compose.yaml -f compose.identity.yaml -f compose.source-host.yaml \
+  up -d --no-build --pull never --wait postgres keycloak
+
+./scripts/compose.sh --env-file .env.wsl-preparation \
+  -f compose.yaml -f compose.identity.yaml -f compose.source-host.yaml \
+  ps postgres keycloak
+docker port datariver-next-postgres-1 5432
+# Expected: 127.0.0.1:5432
+```
+
+Compose project 이름이 달라 container 이름이 다르면 임의의 container를 조작하지 말고
+`./scripts/compose.sh ... ps`가 반환한 정확한 이름을 사용한다. `docker port`가 비어 있으면 세
+Compose 파일을 모두 지정했는지 먼저 확인한다. `dev_host.sh migrate`도 이제 같은 상태를
+사전 점검하고 `5432/tcp`와 host publish의 차이를 설명한 뒤 실패한다.
+
+다음으로 내부 DNS 관리자에게 두 개의 서로 다른 이름과 preparation PC의 고정/예약 주소를
+요청한다. 예시는 `datariver-prep.example.internal`과
+`identity-prep.example.internal`이다. 내부 CA certificate의 SAN에는 두 이름이 모두 있어야
+하며 client PC는 해당 CA를 신뢰해야 한다. IP·DNS·CIDR은 저장소가 선택하지 않는다.
+
+```bash
+# 기존 operator 선택값을 보존하면서 source-host 전용 ignored env를 만든다.
+cp -p .env.wsl-preparation .env.wsl-intranet-development
+
+./scripts/bootstrap.sh \
+  --env-file .env.wsl-intranet-development \
+  --host-development \
+  --intranet-source-host \
+  --web-public-origin https://datariver-prep.example.internal \
+  --oidc-public-origin https://identity-prep.example.internal
+
+# Redis source ports도 loopback에만 publish되었는지 확인한다.
+docker port datariver-local-connectors-redis-cache-1 6379
+docker port datariver-local-connectors-redis-delivery-1 6379
+# Expected: 127.0.0.1:6379 and 127.0.0.1:6380
+
+./scripts/compose.sh --env-file .env.wsl-intranet-development \
+  -f compose.yaml -f compose.identity.yaml -f compose.source-host.yaml \
+  up -d --no-build --pull never --wait postgres keycloak
+
+# compose ps의 Keycloak 이름이 datariver-next-keycloak-1과 다를 때만
+# --container <exact-name>을 추가한다.
+./scripts/configure_keycloak_host_dev.sh \
+  --env-file .env.wsl-intranet-development
+
+uv sync --frozen --all-extras --offline
+(cd frontend && npm ci --offline --no-audit --no-fund)
+./scripts/dev_host.sh --env-file .env.wsl-intranet-development migrate
+./scripts/dev_host.sh --env-file .env.wsl-intranet-development preflight
+./scripts/dev_host.sh --env-file .env.wsl-intranet-development start
+./scripts/dev_host.sh --env-file .env.wsl-intranet-development status
+```
+
+Uvicorn, Vite, PostgreSQL, Redis와 Keycloak upstream은 계속 WSL의 `127.0.0.1`에만 bind한다.
+사내망에는 Nginx `443` 하나만 공개한다. 사내 CA에서 발급받은 certificate/key를
+owner/root 전용 경로에 설치한 뒤, 승인된 실제 client CIDR마다 `--allowed-cidr`를 반복한다.
+`0.0.0.0/0`과 `::/0`은 renderer가 거부한다.
+
+```bash
+sudo install -d -m 700 /etc/datariver/tls
+sudo install -m 644 /approved-certificate/datariver-prep.crt \
+  /etc/datariver/tls/datariver-prep.crt
+sudo install -m 600 /approved-certificate/datariver-prep.key \
+  /etc/datariver/tls/datariver-prep.key
+
+./scripts/render_wsl_intranet_nginx.py \
+  --env-file .env.wsl-intranet-development \
+  --certificate /etc/datariver/tls/datariver-prep.crt \
+  --certificate-key /etc/datariver/tls/datariver-prep.key \
+  --allowed-cidr 10.44.0.0/16 \
+  --output runtime/wsl-intranet/nginx.conf
+
+sudo apt-get install nginx
+sudo install -m 600 runtime/wsl-intranet/nginx.conf \
+  /etc/nginx/conf.d/datariver-wsl-intranet.conf
+# Debian/Ubuntu의 기본 HTTP site는 외부 공개하지 않는다.
+if [ -L /etc/nginx/sites-enabled/default ]; then
+  sudo mv /etc/nginx/sites-enabled/default \
+    /etc/nginx/sites-available/default.disabled
+fi
+sudo nginx -t
+sudo systemctl enable --now nginx
+sudo systemctl reload nginx
+
+ss -ltn | rg ':(443|38101|38102|18081|5432|6379|6380)\b'
+# 443만 all-interface, 나머지는 127.0.0.1이어야 한다.
+```
+
+Windows 11 22H2 이상의 WSL mirrored networking을 권장한다. `%UserProfile%\.wslconfig`의
+기존 `[wsl2]` section에 `networkingMode=mirrored`를 병합한 뒤 관리자 PowerShell에서 WSL을
+재시작한다. 다른 기존 설정을 덮어쓰지 않는다.
+
+```ini
+[wsl2]
+networkingMode=mirrored
+```
+
+```powershell
+wsl --shutdown
+```
+
+재기동 후 관리자 PowerShell에서 WSL Hyper-V firewall의 현재 기본값을 먼저 확인한다. 아래
+WSL creator ID는 Microsoft가 문서화한 값이다. 다른 WSL distribution의 ingress에도 영향을
+주는 기본 정책을 임의로 `Allow`로 바꾸지 않는다. 조직 정책이 기본 inbound block을 요구하면
+운영 승인 후 `Block`으로 맞추고, DataRiver에는 승인된 CIDR의 TCP 443 allow rule 하나만 둔다.
+
+```powershell
+$WslCreator = '{40E0AC32-46A5-438A-A0B2-2B479E8F2E90}'
+Get-NetFirewallHyperVVMSetting -Name $WslCreator
+
+# 조직 승인 후에만 실행. 모든 WSL distribution의 기본 inbound에 적용된다.
+Set-NetFirewallHyperVVMSetting -Name $WslCreator -DefaultInboundAction Block
+
+New-NetFirewallHyperVRule `
+  -Name 'DataRiver-Wsl-Intranet-Https' `
+  -DisplayName 'DataRiver WSL intranet HTTPS' `
+  -Direction Inbound `
+  -VMCreatorId $WslCreator `
+  -Protocol TCP `
+  -LocalPorts 443 `
+  -RemoteAddresses '10.44.0.0/16' `
+  -Profiles Domain `
+  -Action Allow
+```
+
+Mirrored mode를 사용할 수 없는 WSL NAT 환경은 Windows 관리자 PowerShell에서 현재 WSL IPv4를
+확인한 뒤 host `443`만 WSL Nginx `443`으로 전달한다. WSL 재시작 후 주소가 바뀌면 이 rule을
+재생성해야 한다. `5432`, `6379`, `6380`, `18081`, `38101`, `38102`는 portproxy에 추가하지
+않는다. Windows TCP proxy는 원래 client 주소를 Nginx까지 보존하지 않으므로, NAT mode에서는
+Windows Domain firewall이 실제 client CIDR 경계다. WSL에서 Windows gateway의 정확한 `/32`를
+추가하여 Nginx를 다시 render하되 unrestricted network를 추가하지 않는다.
+
+```bash
+windows_wsl_gateway=$(ip route show default | awk '/default/ {print $3; exit}')
+test -n "$windows_wsl_gateway"
+./scripts/render_wsl_intranet_nginx.py \
+  --env-file .env.wsl-intranet-development \
+  --certificate /etc/datariver/tls/datariver-prep.crt \
+  --certificate-key /etc/datariver/tls/datariver-prep.key \
+  --allowed-cidr "$windows_wsl_gateway/32" \
+  --output runtime/wsl-intranet/nginx.conf
+sudo install -m 600 runtime/wsl-intranet/nginx.conf \
+  /etc/nginx/conf.d/datariver-wsl-intranet.conf
+sudo nginx -t
+sudo systemctl reload nginx
+```
+
+```powershell
+$WslAddress = (
+  wsl.exe hostname -I
+).Trim().Split(' ', [System.StringSplitOptions]::RemoveEmptyEntries)[0]
+$WindowsLanAddress = '10.44.12.34' # preparation PC의 예약된 실제 사내망 주소
+netsh interface portproxy add v4tov4 `
+  listenaddress=$WindowsLanAddress listenport=443 `
+  connectaddress=$WslAddress connectport=443
+New-NetFirewallRule `
+  -Name 'DataRiver-Wsl-Nat-Https' `
+  -DisplayName 'DataRiver WSL NAT HTTPS' `
+  -Direction Inbound -Action Allow -Protocol TCP -LocalPort 443 `
+  -RemoteAddress '10.44.0.0/16' -Profile Domain
+```
+
+최종 확인은 preparation PC와 사내 client에서 각각 수행한다. IP로 접속하거나 TLS 검증을 끄지
+않는다.
+
+```bash
+curl --fail --silent --show-error \
+  https://datariver-prep.example.internal/api/v1/health/ready
+curl --fail --silent --show-error \
+  https://identity-prep.example.internal/realms/datariver/.well-known/openid-configuration
+```
+
+Browser에서 Web URL로 로그인하고, redirect가 identity HTTPS hostname으로 이동한 뒤 다시 Web로
+돌아오는지 확인한다. 승인 CIDR 밖 client가 거부되는지와 LAN에서 database/API/Redis/Keycloak
+upstream port가 닫혀 있는지도 확인해야 한다. 자세한 경계와 비운영 성격은
+[ADR-0051](docs/adr/0051-wsl-intranet-source-host-ingress.md)에 고정한다.
+
 외부 DataHub가 원격 HTTPS 주소라면 bootstrap이 `.env`에 기록한 `DATAHUB_BASE_URL`이 정확한
 GMS HTTPS origin인지 확인한다. 이후 `dev_host.sh start`는 이 값을 자동으로 사용한다. CLI의
 `--datahub-base-url`은 `.env`를 변경하지 않는 일회성 override다. API가 아닌 browser에는 DataHub
@@ -1665,9 +1865,9 @@ is intentionally a MOCK metadata manifest.
 
 ```bash
 uv sync --frozen --all-extras
-uv run ruff format --check backend/src backend/tests infra/airflow/dags scripts/reconcile_manual_receipts.py scripts/verify_nginx_headers.py
-uv run ruff check backend/src backend/tests infra/airflow/dags scripts/configure_keycloak_assurance.py scripts/generate_initial_migration.py scripts/generate_semiconductor_seed.py scripts/local_reranker_service.py scripts/migrate_s3_objects.py scripts/probe_pgbouncer_rls.py scripts/probe_policy_revocation.py scripts/probe_s3_contract.py scripts/reconcile_manual_receipts.py scripts/verify_datahub_contract.py scripts/verify_datahub_image_inventory.py scripts/verify_nginx_headers.py scripts/verify_static.py
-uv run mypy backend/src backend/tests scripts/local_reranker_service.py scripts/migrate_s3_objects.py scripts/probe_s3_contract.py scripts/reconcile_manual_receipts.py scripts/verify_nginx_headers.py
+uv run ruff format --check backend/src backend/tests infra/airflow/dags scripts/reconcile_manual_receipts.py scripts/render_wsl_intranet_nginx.py scripts/verify_nginx_headers.py
+uv run ruff check backend/src backend/tests infra/airflow/dags scripts/configure_keycloak_assurance.py scripts/generate_initial_migration.py scripts/generate_semiconductor_seed.py scripts/local_reranker_service.py scripts/migrate_s3_objects.py scripts/probe_pgbouncer_rls.py scripts/probe_policy_revocation.py scripts/probe_s3_contract.py scripts/reconcile_manual_receipts.py scripts/render_wsl_intranet_nginx.py scripts/verify_datahub_contract.py scripts/verify_datahub_image_inventory.py scripts/verify_nginx_headers.py scripts/verify_static.py
+uv run mypy backend/src backend/tests scripts/local_reranker_service.py scripts/migrate_s3_objects.py scripts/probe_s3_contract.py scripts/reconcile_manual_receipts.py scripts/render_wsl_intranet_nginx.py scripts/verify_nginx_headers.py
 uv run pytest backend/tests -q
 uv run python scripts/verify_static.py
 

@@ -3,19 +3,86 @@ set -eu
 
 root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 container=${DATARIVER_KEYCLOAK_CONTAINER:-datariver-next-keycloak-1}
+env_file_argument=${DATARIVER_ENV_FILE:-.env}
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --env-file)
+      shift
+      [ "$#" -gt 0 ] || { echo "--env-file requires a path" >&2; exit 2; }
+      env_file_argument=$1
+      ;;
+    --container)
+      shift
+      [ "$#" -gt 0 ] || { echo "--container requires a container name" >&2; exit 2; }
+      container=$1
+      ;;
+    *)
+      echo "Unexpected argument; use --env-file or --container" >&2
+      exit 2
+      ;;
+  esac
+  shift
+done
+case "$env_file_argument" in
+  /*) env_file=$env_file_argument ;;
+  *) env_file="$root/$env_file_argument" ;;
+esac
+
 web_origin=${DATARIVER_WEB_ORIGIN:-}
-if [ -z "$web_origin" ] && [ -f "$root/.env" ]; then
-  web_origin=$(sed -n 's/^APP_PUBLIC_ORIGIN=//p' "$root/.env" | tail -n 1)
+if [ -z "$web_origin" ] && [ -f "$env_file" ]; then
+  web_origin=$(sed -n 's/^APP_PUBLIC_ORIGIN=//p' "$env_file" | tail -n 1)
 fi
 web_origin=${web_origin:-http://localhost:38102}
+intranet_source_host_enabled=false
+oidc_public_origin=
+oidc_public_authority=
+if [ -f "$env_file" ]; then
+  intranet_source_host_enabled=$(
+    sed -n 's/^INTRANET_SOURCE_HOST_ENABLED=//p' "$env_file" | tail -n 1
+  )
+  oidc_public_origin=$(sed -n 's/^OIDC_PUBLIC_ORIGIN=//p' "$env_file" | tail -n 1)
+  oidc_public_authority=$(sed -n 's/^OIDC_PUBLIC_AUTHORITY=//p' "$env_file" | tail -n 1)
+fi
 
-case "$web_origin" in
-  http://localhost:[0-9]*) ;;
-  *)
-    echo "DATARIVER_WEB_ORIGIN must be an http://localhost:<port> origin." >&2
+validate_https_origin() {
+  label=$1
+  value=$2
+  case "$value" in
+    https://*) ;;
+    *)
+      echo "$label must be an HTTPS origin" >&2
+      exit 2
+      ;;
+  esac
+  authority=${value#https://}
+  case "$authority" in
+    ""|*[!A-Za-z0-9.-]*|.*|*.)
+      echo "$label must contain one DNS name or IPv4 address without a path or port" >&2
+      exit 2
+      ;;
+  esac
+}
+
+if [ "$intranet_source_host_enabled" = true ]; then
+  validate_https_origin "APP_PUBLIC_ORIGIN" "$web_origin"
+  validate_https_origin "OIDC_PUBLIC_ORIGIN" "$oidc_public_origin"
+  if [ "$web_origin" = "$oidc_public_origin" ]; then
+    echo "Web and OIDC public origins must use distinct hostnames" >&2
     exit 2
-    ;;
-esac
+  fi
+  if [ "$oidc_public_authority" != "$oidc_public_origin/realms/datariver" ]; then
+    echo "OIDC_PUBLIC_AUTHORITY must match OIDC_PUBLIC_ORIGIN" >&2
+    exit 2
+  fi
+else
+  case "$web_origin" in
+    http://localhost:[0-9]*) ;;
+    *)
+      echo "DATARIVER_WEB_ORIGIN must remain http://localhost:<port> outside intranet mode." >&2
+      exit 2
+      ;;
+  esac
+fi
 
 sync_output=$(
 docker exec "$container" bash -ec '

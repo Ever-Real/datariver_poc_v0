@@ -334,6 +334,65 @@ def test_portable_bootstrap_keeps_inference_disabled_and_uses_generic_ports(
     assert "SYSTEM_CONFIGURATION_RUNTIME_ACTIVATION_ENABLED" not in values
 
 
+def test_linux_intranet_source_host_bootstrap_persists_distinct_https_origins(
+    tmp_path: Path,
+) -> None:
+    root = Path(__file__).resolve().parents[3]
+    isolated_root = tmp_path / "repo"
+    binary_directory = tmp_path / "bin"
+    _copy_bootstrap_fixture(root, isolated_root)
+    binary_directory.mkdir()
+    fake_uname = binary_directory / "uname"
+    fake_uname.write_text("#!/usr/bin/env sh\nprintf 'Linux\\n'\n", encoding="utf-8")
+    fake_uname.chmod(0o755)
+    token = isolated_root / "approved-datahub-token"
+    token.write_text("intranet-source-host-test-token", encoding="utf-8")
+
+    result = subprocess.run(  # noqa: S603 - copied repository script is trusted.
+        [
+            str(isolated_root / "scripts/bootstrap.sh"),
+            "--env-file",
+            ".env.wsl-intranet-development",
+            "--host-development",
+            "--intranet-source-host",
+            "--web-public-origin",
+            "https://datariver-prep.example.internal",
+            "--oidc-public-origin",
+            "https://identity-prep.example.internal",
+            "--datahub-token-file",
+            str(token),
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+        env={
+            **os.environ,
+            "PATH": f"{binary_directory}:{os.environ['PATH']}",
+        },
+    )
+
+    assert result.returncode == 0, result.stderr
+    values = (isolated_root / ".env.wsl-intranet-development").read_text(encoding="utf-8")
+    assert "APP_ENV=development" in values
+    assert "INTRANET_SOURCE_HOST_ENABLED=true" in values
+    assert "APP_PUBLIC_ORIGIN=https://datariver-prep.example.internal" in values
+    assert "OIDC_PUBLIC_ORIGIN=https://identity-prep.example.internal" in values
+    assert (
+        "OIDC_PUBLIC_AUTHORITY=https://identity-prep.example.internal/realms/datariver"
+    ) in values
+    assert "APP_CORS_ORIGINS=https://datariver-prep.example.internal" in values
+    assert "REDIS_CACHE_URL=redis://127.0.0.1:6379/0" in values
+    assert "REDIS_DELIVERY_URL=redis://127.0.0.1:6380/0" in values
+    realm = json.loads(
+        (isolated_root / "runtime/keycloak/datariver-realm.json").read_text(encoding="utf-8")
+    )
+    web_client = next(
+        client for client in realm["clients"] if client.get("clientId") == "datariver-web"
+    )
+    assert web_client["redirectUris"] == ["https://datariver-prep.example.internal/*"]
+    assert web_client["webOrigins"] == ["https://datariver-prep.example.internal"]
+
+
 def test_mac_bootstrap_never_selects_or_creates_a_local_model(tmp_path: Path) -> None:
     root = Path(__file__).resolve().parents[3]
     isolated_root = tmp_path / "repo"

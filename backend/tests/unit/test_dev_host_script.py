@@ -104,3 +104,44 @@ def test_source_host_preflight_capabilities_are_independently_selectable(
     assert model_only["neo4j_projection"] == "NOT_CONFIGURED"
     assert graph_only["knowledge_source_analysis"] == "NOT_CONFIGURED"
     assert graph_only["neo4j_projection"] == "CONFIGURED"
+
+
+def test_intranet_source_host_preflight_accepts_distinct_https_origins(
+    tmp_path: Path,
+) -> None:
+    document = _preflight(
+        _profile(
+            tmp_path,
+            APP_ENV="development",
+            INTRANET_SOURCE_HOST_ENABLED="true",
+            APP_PUBLIC_ORIGIN="https://datariver-prep.example.internal",
+            APP_CORS_ORIGINS="https://datariver-prep.example.internal",
+            OIDC_ISSUER="https://identity-prep.example.internal/realms/datariver",
+            OIDC_PUBLIC_AUTHORITY=("https://identity-prep.example.internal/realms/datariver"),
+            OIDC_PUBLIC_ORIGIN="https://identity-prep.example.internal",
+        )
+    )
+
+    assert document["local_inference_source_host"] is True
+
+
+def test_migrate_explains_unpublished_wsl_postgres_port(tmp_path: Path) -> None:
+    profile = _profile(tmp_path, POSTGRES_PORT="45999")
+    result = subprocess.run(  # noqa: S603 - fixed repository script and arguments
+        [
+            "/bin/bash",
+            str(ROOT / "scripts" / "dev_host.sh"),
+            "migrate",
+            "--env-file",
+            str(profile),
+        ],
+        cwd=ROOT,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode == 2
+    assert "PostgreSQL is not reachable at 127.0.0.1:45999" in result.stderr
+    assert "shown only as 5432/tcp is not published" in result.stderr
+    assert "compose.source-host.yaml" in result.stderr

@@ -397,6 +397,32 @@ RESTRICTED-cleared human `security-administrators` with `admin.manage`, the IdP 
 reauthentication redirect uses `max_age=0`, and the full maker-checker-consume browser/API journey
 has passed. Local bootstrap intentionally does not manufacture a second administrator.
 
+### WSL intranet source-host ingress
+
+WSL preparation supports a second, explicit development topology for rapid `linux/amd64` source
+validation. It is not the `wsl-preparation` immutable release profile. The operator derives a
+separate ignored environment with `bootstrap.sh --host-development --intranet-source-host` and
+supplies two distinct standard-port HTTPS origins: one for Web and one for Keycloak. Source Uvicorn
+and Vite, container PostgreSQL/Keycloak and separately composed Redis remain loopback-only.
+
+Only an operator-managed Nginx TLS edge listens on the LAN. The repository renderer requires the
+explicit development flag, exact public origins, certificate/key paths and one or more bounded
+client CIDRs. It emits separate virtual hosts, `deny all`, HSTS and loopback proxy targets. It
+rejects production, HTTP, same-host origins, symbolic links and all-network CIDRs. The internal CA,
+certificate SANs, corporate DNS, Windows/Hyper-V firewall and approved CIDRs remain deployment
+inputs and external gates.
+
+In WSL mirrored mode the Hyper-V firewall admits only TCP 443 from approved clients. NAT
+`portproxy` is a fallback that loses the original client address; in that shape the Windows Domain
+firewall enforces the client CIDR and Nginx accepts only the exact Windows gateway `/32`. No mode
+publishes PostgreSQL, Redis, API, Vite or Keycloak upstream ports to the LAN.
+
+Before source processes start, stop the containerized API/web/workers but preserve infrastructure
+containers and volumes. PostgreSQL must be recreated with `compose.source-host.yaml` so
+`docker port` reports `127.0.0.1:5432`; bare `5432/tcp` is container metadata, not a host listener.
+The exact recovery, Nginx and Windows commands are in the root README. The controlling decision is
+[ADR-0051](adr/0051-wsl-intranet-source-host-ingress.md).
+
 ## Network and identity rules
 
 - Core container defaults remain web `8080`, API `8000` and Keycloak `8081`. Host-development uses Vite `38102`, source API `38101`, Keycloak `18081`, APISIX `9080` and Airflow `8082` when their overlays are enabled.

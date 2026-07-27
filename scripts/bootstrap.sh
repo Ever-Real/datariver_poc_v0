@@ -8,6 +8,9 @@ portable_development=false
 mac_development=false
 wsl_preparation=false
 source_host_airflow_bridge=false
+intranet_source_host=false
+web_public_origin_argument=
+oidc_public_origin_argument=
 enable_knowledge_source_worker=false
 env_file_argument=.env
 while [ "$#" -gt 0 ]; do
@@ -31,6 +34,19 @@ while [ "$#" -gt 0 ]; do
       ;;
     --source-host-airflow-bridge)
       source_host_airflow_bridge=true
+      ;;
+    --intranet-source-host)
+      intranet_source_host=true
+      ;;
+    --web-public-origin)
+      shift
+      [ "$#" -gt 0 ] || { echo "--web-public-origin requires an HTTPS origin" >&2; exit 2; }
+      web_public_origin_argument=$1
+      ;;
+    --oidc-public-origin)
+      shift
+      [ "$#" -gt 0 ] || { echo "--oidc-public-origin requires an HTTPS origin" >&2; exit 2; }
+      oidc_public_origin_argument=$1
       ;;
     --enable-knowledge-source-worker)
       enable_knowledge_source_worker=true
@@ -69,6 +85,51 @@ fi
 if [ "$source_host_airflow_bridge" = true ] && [ "$(uname -s)" != Linux ]; then
   echo "--source-host-airflow-bridge is supported only on Linux/WSL source hosts" >&2
   exit 2
+fi
+if [ "$intranet_source_host" = true ]; then
+  if [ "$host_development" != true ]; then
+    echo "--intranet-source-host requires --host-development" >&2
+    exit 2
+  fi
+  if [ "$(uname -s)" != Linux ]; then
+    echo "--intranet-source-host is supported only on Linux/WSL source hosts" >&2
+    exit 2
+  fi
+  if [ -z "$web_public_origin_argument" ] || [ -z "$oidc_public_origin_argument" ]; then
+    echo "--intranet-source-host requires both --web-public-origin and --oidc-public-origin" >&2
+    exit 2
+  fi
+elif [ -n "$web_public_origin_argument" ] || [ -n "$oidc_public_origin_argument" ]; then
+  echo "Public intranet origins require --intranet-source-host" >&2
+  exit 2
+fi
+
+validate_intranet_origin() {
+  origin_name=$1
+  origin_value=$2
+  case "$origin_value" in
+    https://*) ;;
+    *)
+      echo "$origin_name must be an HTTPS origin" >&2
+      exit 2
+      ;;
+  esac
+  origin_authority=${origin_value#https://}
+  case "$origin_authority" in
+    ""|*[!A-Za-z0-9.-]*|.*|*.)
+      echo "$origin_name must contain only one DNS name or IPv4 address without a path or port" >&2
+      exit 2
+      ;;
+  esac
+}
+
+if [ "$intranet_source_host" = true ]; then
+  validate_intranet_origin "--web-public-origin" "$web_public_origin_argument"
+  validate_intranet_origin "--oidc-public-origin" "$oidc_public_origin_argument"
+  if [ "$web_public_origin_argument" = "$oidc_public_origin_argument" ]; then
+    echo "The Web and OIDC public origins must use distinct hostnames" >&2
+    exit 2
+  fi
 fi
 
 root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
@@ -313,10 +374,16 @@ escaped_demo_password=$(printf '%s' "$demo_password" | sed 's/[\/&]/\\&/g')
 escaped_airflow_client_secret=$(printf '%s' "$airflow_client_secret" | sed 's/[\/&]/\\&/g')
 escaped_identity_admin_client_secret=$(printf '%s' "$identity_admin_client_secret" | sed 's/[\/&]/\\&/g')
 web_public_origin=http://localhost:8080
+oidc_public_origin=http://localhost:8081
 if [ "$host_development" = true ]; then
   web_public_origin=http://localhost:38102
+  oidc_public_origin=http://localhost:18081
 elif [ "$mac_development" = true ]; then
   web_public_origin=http://localhost:38102
+fi
+if [ "$intranet_source_host" = true ]; then
+  web_public_origin=$web_public_origin_argument
+  oidc_public_origin=$oidc_public_origin_argument
 fi
 escaped_web_public_origin=$(printf '%s' "$web_public_origin" | sed 's/[\/&]/\\&/g')
 sed -e "s/__DEMO_PASSWORD__/$escaped_demo_password/g" \
@@ -343,6 +410,7 @@ set_env_value DATARIVER_ENV_FILE "$env_file_argument"
 set_env_value DATARIVER_CONNECTOR_NETWORK datariver-connectors
 
 if [ "$host_development" = true ]; then
+  set_env_value APP_ENV development
   set_env_value APP_PUBLIC_ORIGIN "$web_public_origin"
   set_env_value APP_CORS_ORIGINS "$web_public_origin"
   set_env_value API_PORT 38101
@@ -352,6 +420,8 @@ if [ "$host_development" = true ]; then
   set_env_value VALKEY_QUEUE_PORT 6380
   set_env_value KEYCLOAK_PORT 18081
   set_env_value APISIX_PORT 9080
+  set_env_value REDIS_CACHE_URL redis://127.0.0.1:6379/0
+  set_env_value REDIS_DELIVERY_URL redis://127.0.0.1:6380/0
   # Airflow remains containerized while API/workers run from the source host.
   # A WSL/Linux checkout may still run its mutable source API on Windows.
   # Enable the bridge only when the API itself runs in this Linux host.
@@ -363,14 +433,15 @@ if [ "$host_development" = true ]; then
     set_env_value AIRFLOW_SOURCE_API_BRIDGE_ENABLED false
     set_env_value DATARIVER_API_BASE_URL http://host.docker.internal:38101
   fi
-  set_env_value OIDC_ISSUER http://localhost:18081/realms/datariver
-  set_env_value OIDC_PUBLIC_AUTHORITY http://localhost:18081/realms/datariver
-  set_env_value OIDC_PUBLIC_ORIGIN http://localhost:18081
+  set_env_value OIDC_ISSUER "$oidc_public_origin/realms/datariver"
+  set_env_value OIDC_PUBLIC_AUTHORITY "$oidc_public_origin/realms/datariver"
+  set_env_value OIDC_PUBLIC_ORIGIN "$oidc_public_origin"
   set_env_value IDENTITY_ADMIN_ENABLED true
   set_env_value IDENTITY_ADMIN_BASE_URL http://keycloak:8080
   set_env_value IDENTITY_ADMIN_CLIENT_SECRET_REF file:/run/secrets/keycloak_identity_admin_client_secret
   set_env_value IDENTITY_PASSWORD_CHANGE_ACTION_ENABLED true
   set_env_value OIDC_HARDWARE_WEBAUTHN_ENABLED false
+  set_env_value INTRANET_SOURCE_HOST_ENABLED "$intranet_source_host"
 fi
 if [ "$portable_development" = true ]; then
   # Portable development runs the reviewed source on either linux/arm64 or

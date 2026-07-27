@@ -16,6 +16,10 @@ export default defineConfig(({ mode }) => {
   const publicOrigin = value('VITE_OIDC_REDIRECT_URI') || value('APP_PUBLIC_ORIGIN')
   const apiPort = value('API_PORT') || '38101'
   const webPort = Number(value('WEB_PORT') || '38102')
+  const allowedHosts = value('VITE_ALLOWED_HOSTS')
+    .split(',')
+    .map((host) => host.trim())
+    .filter(Boolean)
   return {
     envDir: repositoryRoot,
     plugins: [react(), tailwindcss()],
@@ -32,6 +36,7 @@ export default defineConfig(({ mode }) => {
       host: '127.0.0.1',
       port: webPort,
       strictPort: true,
+      allowedHosts: allowedHosts.length > 0 ? allowedHosts : undefined,
       watch: value('VITE_USE_POLLING') === 'true'
         ? { usePolling: true, interval: 250 }
         : undefined,

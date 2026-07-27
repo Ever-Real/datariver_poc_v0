@@ -751,13 +751,18 @@ def verify_host_development_ports() -> None:
             "datahub_base_url=$(env_file_value DATAHUB_BASE_URL http://127.0.0.1:8080)",
             "api_port=$(env_file_value API_PORT 38101)",
             "web_port=$(env_file_value WEB_PORT 38102)",
+            "intranet_source_host_enabled=$(env_file_value INTRANET_SOURCE_HOST_ENABLED false)",
             "airflow_source_api_bridge_enabled=$(env_file_value "
             "AIRFLOW_SOURCE_API_BRIDGE_ENABLED false)",
             "stop_owned_vite_processes",
+            "require_postgres_listener",
+            "A container shown only as 5432/tcp is not published",
             'vite_entry="$root/frontend/node_modules/vite/bin/vite.js"',
             'start_process vite "$root/frontend" "$node" "$vite_entry"',
             '"$root/scripts/source_api_bridge.py"',
             'VITE_API_PROXY_TARGET="http://127.0.0.1:$api_port"',
+            'VITE_ALLOWED_HOSTS="$web_public_host"',
+            "--host 127.0.0.1",
         },
         ROOT / "scripts" / "bootstrap.sh": {
             "web_public_origin=http://localhost:38102",
@@ -765,9 +770,13 @@ def verify_host_development_ports() -> None:
             "set_env_value WEB_PORT 38102",
             "--source-host-airflow-bridge",
             "set_env_value AIRFLOW_SOURCE_API_BRIDGE_PORT 38103",
+            "--intranet-source-host",
+            "set_env_value INTRANET_SOURCE_HOST_ENABLED",
         },
         ROOT / "scripts" / "configure_keycloak_host_dev.sh": {
             "web_origin=${web_origin:-http://localhost:38102}",
+            "INTRANET_SOURCE_HOST_ENABLED",
+            "OIDC_PUBLIC_AUTHORITY must match OIDC_PUBLIC_ORIGIN",
         },
         ROOT / "scripts" / "start_gateway_host_dev.sh": {
             "api_port=${api_port:-38101}",
@@ -776,6 +785,12 @@ def verify_host_development_ports() -> None:
         ROOT / "frontend" / "vite.config.ts": {
             "value('API_PORT') || '38101'",
             "value('WEB_PORT') || '38102'",
+            "VITE_ALLOWED_HOSTS",
+        },
+        ROOT / "scripts" / "render_wsl_intranet_nginx.py": {
+            "INTRANET_SOURCE_HOST_ENABLED=true",
+            "proxy_pass http://127.0.0.1:",
+            "An unrestricted 0.0.0.0/0 or ::/0 client network is forbidden",
         },
     }
     for path, fragments in required_fragments.items():
