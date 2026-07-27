@@ -453,6 +453,33 @@ def test_neo4j_image_load_is_verified_against_the_bundle_manifest(tmp_path: Path
         workflow.verify_and_load_neo4j_image(cast(Any, mismatched), bundle)
 
 
+def test_loaded_neo4j_reuse_requires_approved_tag_and_amd64(tmp_path: Path) -> None:
+    environment = tmp_path / ".env.source"
+    environment.write_text("NEO4J_IMAGE=neo4j:2026.06.0\n", encoding="utf-8")
+    plan = workflow.SourceHostInfraPlan(
+        profile="local-image-source-development",
+        env_file=environment,
+        compose_files=(tmp_path / "compose.yaml",),
+        offline=False,
+        local_image_reuse=True,
+        release_platform_dir=None,
+    )
+
+    image = workflow.configured_loaded_neo4j_image(plan)
+    assert image == "neo4j:2026.06.0"
+    workflow.verify_loaded_neo4j_image(cast(Any, _Neo4jImageRunner()), image)
+    with pytest.raises(platform.WorkflowError, match="loaded Neo4j image is unavailable"):
+        workflow.verify_loaded_neo4j_image(cast(Any, _MissingImageRunner()), image)
+
+    wrong_platform = _Neo4jImageRunner(observed=f"sha256:{'4' * 64}\tlinux/arm64")
+    with pytest.raises(platform.WorkflowError, match="must be linux/amd64"):
+        workflow.verify_loaded_neo4j_image(cast(Any, wrong_platform), image)
+
+    environment.write_text("NEO4J_IMAGE=neo4j:unreviewed\n", encoding="utf-8")
+    with pytest.raises(platform.WorkflowError, match="approved configured tag"):
+        workflow.configured_loaded_neo4j_image(plan)
+
+
 def test_neo4j_environment_is_persisted_only_after_authenticated_start(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -484,7 +511,7 @@ def test_neo4j_environment_is_persisted_only_after_authenticated_start(
     )
     monkeypatch.setattr(workflow, "ROOT", tmp_path)
 
-    configuration = workflow.resolve_neo4j_environment(plan, bundle)
+    configuration = workflow.resolve_neo4j_environment(plan, bundle.image)
     assert configuration == {
         "NEO4J_ALLOWED_HOSTS": "127.0.0.1",
         "NEO4J_AUTH_SECRET_REF": "file:/run/secrets/neo4j_auth",

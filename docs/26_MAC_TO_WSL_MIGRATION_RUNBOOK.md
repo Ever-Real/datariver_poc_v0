@@ -113,7 +113,7 @@ fi
 
 ./scripts/workflow_source_host_infra.py \
   --env-file .env.wsl-intranet-development \
-  --neo4j-bundle-dir ../datariver-platform-amd64-distribution \
+  --reuse-loaded-neo4j \
   prepare
 ```
 
@@ -126,12 +126,16 @@ with loopback publications. A PostgreSQL listing of `5432/tcp` alone does not sa
 migration; the required observation is `127.0.0.1:5432->5432/tcp`. Do not manually reconstruct the
 release directory or Compose file order.
 
-The Neo4j directory is the separate `Ever-Real/datariver-platform-amd64-distribution` checkout
-after `git lfs pull`, not a directory committed to this source repository. Omit
-`--neo4j-bundle-dir` only when graph projection is intentionally disabled. The workflow validates
-the archive/sidecar SHA-256, manifest schema and matching upstream digest fields, loaded image ID
-and `linux/amd64`, validates the local credential and configured Bolt port before stopping writers,
-then runs an authenticated Cypher query after the healthcheck.
+When the operator already verified the transferred archive and ran `docker image load`, use
+`--reuse-loaded-neo4j`; no distribution checkout is required. The workflow requires the approved
+configured tag, verifies `linux/amd64`, validates the local credential and configured Bolt port,
+starts with registry pulls disabled and runs an authenticated Cypher query after the healthcheck.
+This development path does not claim release evidence.
+
+Use `--neo4j-bundle-dir` only when the separate
+`Ever-Real/datariver-platform-amd64-distribution` checkout and its Git LFS files are present on the
+same host and the workflow should perform archive/checksum/manifest verification plus image load.
+Graph-disabled environments omit both Neo4j options.
 
 The same distribution checkout contains the checksum- and manifest-backed
 `datariver-uv-cache-linux-x86_64-*` archive for this exact `uv.lock`. Verify its sidecar and
@@ -540,8 +544,9 @@ scripts/compose.sh --env-file .env.wsl-preparation \
 Neo4j follows the same explicit choice. The immutable `.env.wsl-preparation` container profile uses
 `bolt://neo4j:7687`. Derive `.env.wsl-intranet-development` with the source-host bootstrap in
 Section 2.2; it translates only that known local-container endpoint to the connector's configured
-loopback publication. Private TLS Neo4j endpoints are preserved. The managed workflow writes this
-complete binding only after verifying the separately transferred AMD64 bundle:
+loopback publication. Private TLS Neo4j endpoints are preserved. The workflow writes this complete
+binding only after validating either the separately transferred bundle or the approved preloaded
+AMD64 image:
 
 ```bash
 # Immutable container profile:
@@ -561,16 +566,19 @@ AIRFLOW_SOURCE_API_BRIDGE_ENABLED=false
 KNOWLEDGE_SOURCE_WORKER_ENABLED=false
 ```
 
-Use the separate distribution checkout as the artifact input. The workflow verifies and loads the
-archive, deduplicates the selected environment keys, starts the tag without registry access, waits
-for health and executes authenticated Cypher:
+When the verified image is already loaded, no distribution checkout is required. The workflow
+validates the approved tag and platform, deduplicates the selected environment keys, starts without
+registry access, waits for health and executes authenticated Cypher:
 
 ```bash
 ./scripts/workflow_source_host_infra.py \
   --env-file .env.wsl-intranet-development \
-  --neo4j-bundle-dir ../datariver-platform-amd64-distribution \
+  --reuse-loaded-neo4j \
   prepare
 ```
+
+Use `--neo4j-bundle-dir <directory>` instead only when the archive/checksum/manifest directory is
+present and the workflow should verify and load it.
 
 The source-host launcher clears inherited deployment keys, rejects duplicate environment keys,
 records the selected environment path in preflight output and replaces the container-oriented

@@ -84,7 +84,8 @@ Current administrator completion evidence: [runtime completion checklist](38_ADM
 Current WSL source-validation decisions: [intranet HTTPS ingress](adr/0051-wsl-intranet-source-host-ingress.md),
 [deployment-aware infrastructure](adr/0052-deployment-aware-source-host-infrastructure.md), and
 [verified Neo4j source-host profile](adr/0053-verified-neo4j-source-host-profile.md), refined by
-[pre-state local-image source validation](adr/0054-pre-state-local-image-source-validation.md).
+[pre-state local-image source validation](adr/0054-pre-state-local-image-source-validation.md) and
+[preloaded Neo4j source validation](adr/0055-preloaded-neo4j-source-validation.md).
 
 ## Change control
 

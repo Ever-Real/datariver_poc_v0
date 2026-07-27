@@ -608,7 +608,7 @@ fi
 
 ./scripts/workflow_source_host_infra.py \
   --env-file .env.wsl-source-development \
-  --neo4j-bundle-dir ../datariver-platform-amd64-distribution \
+  --reuse-loaded-neo4j \
   prepare
 ```
 
@@ -637,10 +637,12 @@ docker port datariver-local-connectors-redis-delivery-1 6379
 
 ./scripts/workflow_source_host_infra.py \
   --env-file .env.wsl-intranet-development \
-  --neo4j-bundle-dir ../datariver-platform-amd64-distribution \
+  --reuse-loaded-neo4j \
   prepare
 
-# Graph projection을 사용하지 않을 때만 --neo4j-bundle-dir를 생략한다.
+# 준비 PC에 archive/manifest checkout도 있을 때만 --reuse-loaded-neo4j 대신
+# --neo4j-bundle-dir <directory>를 사용해 workflow가 검증과 load까지 수행하게 한다.
+# Graph projection을 사용하지 않을 때는 두 옵션을 모두 생략한다.
 # applied state가 없어도 explicit --env-file이면 로컬 image 재사용을 자동 선택한다.
 
 # compose ps의 Keycloak 이름이 datariver-next-keycloak-1과 다를 때만
@@ -669,12 +671,12 @@ UV_CACHE_DIR="$uv_cache_parent/uv" uv sync --frozen --all-extras --offline
 ./scripts/dev_host.sh --env-file .env.wsl-intranet-development status
 ```
 
-Neo4j bundle directory는 별도
-`Ever-Real/datariver-platform-amd64-distribution` checkout이며 먼저 `git lfs pull`이 완료되어야
-한다. `prepare`는 archive와 sidecar SHA-256, manifest의 upstream digest, local tag, image ID,
-`linux/amd64`를 묶고, upstream digest를 checked-in Compose 승인 pin과 대조한다. 이후
-`--pull never`로 기동한 뒤 authenticated `RETURN 1`까지 수행한다.
-따라서 tag 이름만 신뢰하거나 현재 저장소에 image를 복사하지 않는다. `preflight` JSON의
+준비 PC에서 검증된 archive를 별도로 받아 이미 `docker image load`했다면 배포 저장소 checkout은
+필요하지 않으며 `--reuse-loaded-neo4j`를 사용한다. 이 개발 경로는 checked-in 승인 tag와
+`linux/amd64` platform을 확인하고 `--pull never`로 기동한 뒤 authenticated `RETURN 1`을
+수행하되 release acceptance를 주장하지 않는다. Archive/manifest가 같은 PC에 있을 때만
+`--neo4j-bundle-dir`를 사용한다. 이 강한 경로는 archive sidecar SHA-256, upstream digest,
+local tag, image ID와 platform을 묶어 검증하고 load까지 수행한다. `preflight` JSON의
 `environment_file`과 `neo4j_endpoint`는 실제 선택 파일 및 scheme/host/port를 표시하되 credential은
 출력하지 않는다. Source-host `migrate`는 mounted PostgreSQL owner secret으로 runtime role을
 마이그레이션 전후에 자동 조정한다.

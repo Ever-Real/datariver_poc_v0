@@ -436,6 +436,11 @@ manifest schema and matching upstream digest fields, image ID and `linux/amd64` 
 mutation, then require an authenticated healthcheck and Cypher query. This repository never carries
 the image archive. See
 [ADR-0053](adr/0053-verified-neo4j-source-host-profile.md).
+When the verified archive was transferred separately and already loaded with `docker image load`,
+`--reuse-loaded-neo4j` instead verifies the approved local tag and `linux/amd64`, starts with pulls
+disabled and performs the same authenticated checks. This development convenience claims no
+release acceptance; see
+[ADR-0055](adr/0055-preloaded-neo4j-source-validation.md).
 
 A rapid-source host that predates managed applied state supplies an explicit environment file. The
 workflow then automatically selects a development-only local-image path, verifies that the

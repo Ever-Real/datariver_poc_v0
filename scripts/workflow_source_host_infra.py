@@ -112,6 +112,15 @@ def parse_arguments() -> argparse.Namespace:
             "local graph connector."
         ),
     )
+    parser.add_argument(
+        "--reuse-loaded-neo4j",
+        action="store_true",
+        help=(
+            "Development-only: reuse the approved Neo4j tag already loaded in Docker, verify "
+            "linux/amd64, and start it with registry access disabled. No bundle directory is "
+            "required and no release acceptance is claimed."
+        ),
+    )
     return parser.parse_args()
 
 
@@ -435,9 +444,46 @@ def verify_and_load_neo4j_image(runner: Runner, bundle: Neo4jBundle) -> None:
         )
 
 
+def configured_loaded_neo4j_image(plan: SourceHostInfraPlan) -> str:
+    values = read_env_values(plan.env_file)
+    image = values.get("NEO4J_IMAGE", approved_neo4j_source_image().partition("@")[0])
+    approved_tag = approved_neo4j_source_image().partition("@")[0]
+    if image != approved_tag:
+        raise WorkflowError(
+            "Loaded Neo4j development reuse requires the approved configured tag "
+            f"{approved_tag}; selected={image}."
+        )
+    return image
+
+
+def verify_loaded_neo4j_image(runner: Runner, image: str) -> None:
+    try:
+        observed = runner.output(
+            (
+                "docker",
+                "image",
+                "inspect",
+                "--format",
+                "{{.Id}}\t{{.Os}}/{{.Architecture}}",
+                image,
+            )
+        )
+    except WorkflowError as error:
+        raise WorkflowError(
+            f"The loaded Neo4j image is unavailable: {image}. Load the verified AMD64 image "
+            "before rerunning with --reuse-loaded-neo4j."
+        ) from error
+    fields = observed.split("\t")
+    if len(fields) != 2 or fields[1] != EXPECTED_OFFLINE_PLATFORM:
+        raise WorkflowError(
+            f"Loaded Neo4j image must be {EXPECTED_OFFLINE_PLATFORM}: "
+            f"image={image}, observed={observed}"
+        )
+
+
 def resolve_neo4j_environment(
     plan: SourceHostInfraPlan,
-    bundle: Neo4jBundle,
+    image: str,
 ) -> dict[str, str]:
     credential_path = require_regular_file(
         ROOT / "secrets" / "neo4j_auth",
@@ -453,7 +499,7 @@ def resolve_neo4j_environment(
     if not 1 <= bolt_port <= 65535:
         raise WorkflowError("NEO4J_BOLT_PORT must be in the range 1..65535.")
     return {
-        "NEO4J_IMAGE": bundle.image,
+        "NEO4J_IMAGE": image,
         "NEO4J_PROJECTION_ENABLED": "true",
         "NEO4J_SOURCE_HOST_ENABLED": "true",
         "NEO4J_URI": f"bolt://127.0.0.1:{bolt_port}",
@@ -619,6 +665,10 @@ def main() -> int:
         )
         neo4j_bundle: Neo4jBundle | None = None
         neo4j_environment: dict[str, str] | None = None
+        if arguments.neo4j_bundle_dir is not None and arguments.reuse_loaded_neo4j:
+            raise WorkflowError(
+                "--neo4j-bundle-dir and --reuse-loaded-neo4j are mutually exclusive."
+            )
         if arguments.neo4j_bundle_dir is not None:
             if arguments.action != "prepare":
                 raise WorkflowError("--neo4j-bundle-dir is supported only with the prepare action.")
@@ -627,7 +677,15 @@ def main() -> int:
             runner.note("검증된 linux/amd64 Neo4j image를 로드하고 image ID를 대조합니다.")
             verify_and_load_neo4j_image(runner, neo4j_bundle)
             runner.note("Neo4j secret/port를 검증하고 source-host 환경을 확정합니다.")
-            neo4j_environment = resolve_neo4j_environment(plan, neo4j_bundle)
+            neo4j_environment = resolve_neo4j_environment(plan, neo4j_bundle.image)
+        elif arguments.reuse_loaded_neo4j:
+            if arguments.action != "prepare":
+                raise WorkflowError("--reuse-loaded-neo4j is supported only with prepare.")
+            runner.note("Docker에 이미 로드된 승인 Neo4j tag와 linux/amd64 platform을 검증합니다.")
+            loaded_neo4j_image = configured_loaded_neo4j_image(plan)
+            verify_loaded_neo4j_image(runner, loaded_neo4j_image)
+            runner.note("Neo4j secret/port를 검증하고 source-host 환경을 확정합니다.")
+            neo4j_environment = resolve_neo4j_environment(plan, loaded_neo4j_image)
         runner.note("선택 profile의 최종 Compose service image를 해석합니다.")
         service_images = rendered_service_images(runner, plan)
         if plan.offline:
