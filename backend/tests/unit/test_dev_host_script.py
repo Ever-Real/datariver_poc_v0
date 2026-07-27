@@ -145,3 +145,15 @@ def test_migrate_explains_unpublished_wsl_postgres_port(tmp_path: Path) -> None:
     assert "PostgreSQL is not reachable at 127.0.0.1:45999" in result.stderr
     assert "shown only as 5432/tcp is not published" in result.stderr
     assert "workflow_source_host_infra.py" in result.stderr
+
+
+def test_optional_source_processes_are_required_only_when_enabled() -> None:
+    source = (ROOT / "scripts/dev_host.sh").read_text(encoding="utf-8")
+
+    assert 'show_optional_status airflow-api-bridge "$enable_airflow_source_bridge"' in source
+    assert (
+        'show_optional_status knowledge-source-worker "$knowledge_source_worker_enabled"' in source
+    )
+    assert "required_processes+=(airflow-api-bridge)" in source
+    assert "required_processes+=(knowledge-source-worker)" in source
+    assert 'export NEO4J_AUTH_SECRET_REF="$(secret_ref neo4j_auth)"' in source

@@ -224,13 +224,31 @@ stop_owned_vite_processes() {
 
 show_status() {
   local name
-  for name in api airflow-api-bridge outbox-relay upload-worker upload-validation-worker governance-apply-worker knowledge-source-worker vite; do
+  for name in api outbox-relay upload-worker upload-validation-worker governance-apply-worker vite; do
     if is_running "$name"; then
       printf '%-25s running (pid %s)\n' "$name" "$(cat "$(pid_file "$name")")"
     else
       printf '%-25s stopped\n' "$name"
     fi
   done
+  show_optional_status airflow-api-bridge "$enable_airflow_source_bridge"
+  show_optional_status knowledge-source-worker "$knowledge_source_worker_enabled"
+}
+
+show_optional_status() {
+  local name=$1
+  local enabled=$2
+  if is_running "$name"; then
+    if [ "$enabled" = true ]; then
+      printf '%-25s running (pid %s)\n' "$name" "$(cat "$(pid_file "$name")")"
+    else
+      printf '%-25s running (disabled in environment; stop required)\n' "$name"
+    fi
+  elif [ "$enabled" = true ]; then
+    printf '%-25s stopped\n' "$name"
+  else
+    printf '%-25s disabled\n' "$name"
+  fi
 }
 
 case "$action" in
@@ -500,6 +518,9 @@ export VITE_OIDC_CLIENT_ID=datariver-web
 export VITE_OIDC_REDIRECT_URI="$APP_PUBLIC_ORIGIN"
 export VITE_OIDC_HIGH_ASSURANCE_ACR=2
 export VITE_OIDC_PASSWORD_REAUTH_ACR=1
+if [ "${NEO4J_PROJECTION_ENABLED:-false}" = true ]; then
+  export NEO4J_AUTH_SECRET_REF="$(secret_ref neo4j_auth)"
+fi
 if [ "$action" = migrate ]; then
   exec "$python" -m alembic -c "$root/backend/alembic.ini" upgrade head
 fi
@@ -617,17 +638,21 @@ start_process vite "$root/frontend" "$node" "$vite_entry" \
   --host 127.0.0.1 --port "$web_port" --strictPort
 
 sleep 2
-for process in api airflow-api-bridge outbox-relay upload-worker upload-validation-worker governance-apply-worker vite; do
+required_processes=(
+  api outbox-relay upload-worker upload-validation-worker governance-apply-worker vite
+)
+if [ "$enable_airflow_source_bridge" = true ]; then
+  required_processes+=(airflow-api-bridge)
+fi
+if [ "${KNOWLEDGE_SOURCE_WORKER_ENABLED:-false}" = true ]; then
+  required_processes+=(knowledge-source-worker)
+fi
+for process in "${required_processes[@]}"; do
   if ! is_running "$process"; then
     echo "Source-host process failed during startup: $process. Read $runtime_dir/$process.err.log" >&2
     exit 1
   fi
 done
-if [ "${KNOWLEDGE_SOURCE_WORKER_ENABLED:-false}" = true ] &&
-   ! is_running knowledge-source-worker; then
-  echo "Source-host process failed during startup: knowledge-source-worker. Read $runtime_dir/knowledge-source-worker.err.log" >&2
-  exit 1
-fi
 cleanup_needed=false
 trap - EXIT
 show_status
