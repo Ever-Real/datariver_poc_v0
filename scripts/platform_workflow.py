@@ -586,6 +586,7 @@ def classify_changes(paths: Sequence[str]) -> ChangePlan:
     operator_only_scripts = {
         "scripts/platform_workflow.py",
         "scripts/workflow_fresh_setup.py",
+        "scripts/workflow_source_host_infra.py",
         "scripts/workflow_update_restart.py",
         "scripts/verify_static.py",
     }
@@ -711,6 +712,7 @@ def classify_environment_changes(
             "EVENT_RETENTION_DAYS",
             "SEED_PROFILE",
             "DATARIVER_CATALOG_SYNC_MAX_PAGES",
+            "INTRANET_SOURCE_HOST_ENABLED",
         }:
             # These values are consumed by a one-shot operator command, an
             # immutable bootstrap boundary, or a future retention operation.

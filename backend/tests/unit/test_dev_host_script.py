@@ -144,4 +144,4 @@ def test_migrate_explains_unpublished_wsl_postgres_port(tmp_path: Path) -> None:
     assert result.returncode == 2
     assert "PostgreSQL is not reachable at 127.0.0.1:45999" in result.stderr
     assert "shown only as 5432/tcp is not published" in result.stderr
-    assert "compose.source-host.yaml" in result.stderr
+    assert "workflow_source_host_infra.py" in result.stderr

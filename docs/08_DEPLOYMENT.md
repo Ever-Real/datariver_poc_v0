@@ -418,10 +418,15 @@ firewall enforces the client CIDR and Nginx accepts only the exact Windows gatew
 publishes PostgreSQL, Redis, API, Vite or Keycloak upstream ports to the LAN.
 
 Before source processes start, stop the containerized API/web/workers but preserve infrastructure
-containers and volumes. PostgreSQL must be recreated with `compose.source-host.yaml` so
-`docker port` reports `127.0.0.1:5432`; bare `5432/tcp` is container metadata, not a host listener.
-The exact recovery, Nginx and Windows commands are in the root README. The controlling decision is
-[ADR-0051](adr/0051-wsl-intranet-source-host-ingress.md).
+containers and volumes. `workflow_source_host_infra.py prepare` reads the recorded applied profile
+and owns this transition. Build mode retains registry digest pins and builds the local identity
+image; offline mode verifies the release override/manifest checksums and loaded image IDs before
+using tag references restored by `docker load`. Both resolve the same reviewed logical images and
+append `compose.source-host.yaml`, so `docker port` reports `127.0.0.1:5432`; bare `5432/tcp` is
+container metadata, not a host listener. The exact recovery, Nginx and Windows commands are in the
+root README. The controlling decisions are
+[ADR-0051](adr/0051-wsl-intranet-source-host-ingress.md) and
+[ADR-0052](adr/0052-deployment-aware-source-host-infrastructure.md).
 
 ## Network and identity rules
 

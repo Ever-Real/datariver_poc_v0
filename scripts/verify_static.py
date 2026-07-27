@@ -757,6 +757,7 @@ def verify_host_development_ports() -> None:
             "stop_owned_vite_processes",
             "require_postgres_listener",
             "A container shown only as 5432/tcp is not published",
+            "workflow_source_host_infra.py",
             'vite_entry="$root/frontend/node_modules/vite/bin/vite.js"',
             'start_process vite "$root/frontend" "$node" "$vite_entry"',
             '"$root/scripts/source_api_bridge.py"',
@@ -791,6 +792,16 @@ def verify_host_development_ports() -> None:
             "INTRANET_SOURCE_HOST_ENABLED=true",
             "proxy_pass http://127.0.0.1:",
             "An unrestricted 0.0.0.0/0 or ::/0 client network is forbidden",
+        },
+        ROOT / "scripts" / "workflow_source_host_infra.py": {
+            "compose.source-host.yaml",
+            "offline-core.compose.yaml.sha256",
+            "datariver-core-amd64.manifest.tsv.sha256",
+            "Loaded image does not match the verified release manifest",
+            "service_images = rendered_service_images",
+            "retained a registry-only digest",
+            '"--build",',
+            '"--no-build", "--pull", "never"',
         },
     }
     for path, fragments in required_fragments.items():

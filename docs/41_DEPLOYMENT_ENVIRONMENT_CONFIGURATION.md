@@ -37,6 +37,9 @@ That explicit development mode keeps all upstream ports loopback-only and publis
 CIDR-restricted Nginx TLS edge defined by
 [ADR-0051](adr/0051-wsl-intranet-source-host-ingress.md). It is not a fourth managed release
 profile, is not production, and does not alter the workflow state for `wsl-preparation`.
+`workflow_source_host_infra.py` consumes that existing state to hide build-versus-offline Compose
+selection, while an explicitly supplied intranet environment supplies only the runtime origins and
+ports. It never turns an arbitrary tag into accepted release evidence.
 
 To apply an edited environment:
 

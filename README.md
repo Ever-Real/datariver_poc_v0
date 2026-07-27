@@ -579,28 +579,16 @@ container를 재생성한다. `down -v`, volume 삭제, database 초기화는 �
 
 ```bash
 # WSL checkout root
-./scripts/dev_host.sh --env-file .env.wsl-preparation stop
-
-./scripts/compose.sh --env-file .env.wsl-preparation \
-  -f compose.yaml -f compose.identity.yaml \
-  stop api web outbox-relay upload-worker upload-validation-worker \
-  governance-apply-worker
-
-./scripts/compose.sh --env-file .env.wsl-preparation \
-  -f compose.yaml -f compose.identity.yaml -f compose.source-host.yaml \
-  up -d --no-build --pull never --wait postgres keycloak
-
-./scripts/compose.sh --env-file .env.wsl-preparation \
-  -f compose.yaml -f compose.identity.yaml -f compose.source-host.yaml \
-  ps postgres keycloak
-docker port datariver-next-postgres-1 5432
-# Expected: 127.0.0.1:5432
+./scripts/workflow_source_host_infra.py prepare
 ```
 
-Compose project 이름이 달라 container 이름이 다르면 임의의 container를 조작하지 말고
-`./scripts/compose.sh ... ps`가 반환한 정확한 이름을 사용한다. `docker port`가 비어 있으면 세
-Compose 파일을 모두 지정했는지 먼저 확인한다. `dev_host.sh migrate`도 이제 같은 상태를
-사전 점검하고 `5432/tcp`와 host publish의 차이를 설명한 뒤 실패한다.
+이 workflow는 `runtime/operator-workflow/wsl-preparation.json`에 기록된 실제 environment,
+deployment mode와 release directory를 읽는다. 온라인 build profile에는 digest-pinned Compose와
+`--build`를, WSL offline profile에는 checksum/manifest로 검증한 로컬 image tag와
+`--pull never --no-build`를 자동 적용한다. 두 경우 모두 container application writer를 먼저
+중지하고 같은 `compose.source-host.yaml` loopback 경계를 사용한다. 사용자가 release path나
+offline override 순서를 다시 입력하지 않는다. `dev_host.sh migrate`도 `5432/tcp`만 관측하면
+이 단일 workflow를 안내하고 실패한다.
 
 다음으로 내부 DNS 관리자에게 두 개의 서로 다른 이름과 preparation PC의 고정/예약 주소를
 요청한다. 예시는 `datariver-prep.example.internal`과
@@ -623,9 +611,9 @@ docker port datariver-local-connectors-redis-cache-1 6379
 docker port datariver-local-connectors-redis-delivery-1 6379
 # Expected: 127.0.0.1:6379 and 127.0.0.1:6380
 
-./scripts/compose.sh --env-file .env.wsl-intranet-development \
-  -f compose.yaml -f compose.identity.yaml -f compose.source-host.yaml \
-  up -d --no-build --pull never --wait postgres keycloak
+./scripts/workflow_source_host_infra.py \
+  --env-file .env.wsl-intranet-development \
+  prepare
 
 # compose ps의 Keycloak 이름이 datariver-next-keycloak-1과 다를 때만
 # --container <exact-name>을 추가한다.
@@ -1865,9 +1853,9 @@ is intentionally a MOCK metadata manifest.
 
 ```bash
 uv sync --frozen --all-extras
-uv run ruff format --check backend/src backend/tests infra/airflow/dags scripts/reconcile_manual_receipts.py scripts/render_wsl_intranet_nginx.py scripts/verify_nginx_headers.py
-uv run ruff check backend/src backend/tests infra/airflow/dags scripts/configure_keycloak_assurance.py scripts/generate_initial_migration.py scripts/generate_semiconductor_seed.py scripts/local_reranker_service.py scripts/migrate_s3_objects.py scripts/probe_pgbouncer_rls.py scripts/probe_policy_revocation.py scripts/probe_s3_contract.py scripts/reconcile_manual_receipts.py scripts/render_wsl_intranet_nginx.py scripts/verify_datahub_contract.py scripts/verify_datahub_image_inventory.py scripts/verify_nginx_headers.py scripts/verify_static.py
-uv run mypy backend/src backend/tests scripts/local_reranker_service.py scripts/migrate_s3_objects.py scripts/probe_s3_contract.py scripts/reconcile_manual_receipts.py scripts/render_wsl_intranet_nginx.py scripts/verify_nginx_headers.py
+uv run ruff format --check backend/src backend/tests infra/airflow/dags scripts/reconcile_manual_receipts.py scripts/render_wsl_intranet_nginx.py scripts/verify_nginx_headers.py scripts/workflow_source_host_infra.py
+uv run ruff check backend/src backend/tests infra/airflow/dags scripts/configure_keycloak_assurance.py scripts/generate_initial_migration.py scripts/generate_semiconductor_seed.py scripts/local_reranker_service.py scripts/migrate_s3_objects.py scripts/probe_pgbouncer_rls.py scripts/probe_policy_revocation.py scripts/probe_s3_contract.py scripts/reconcile_manual_receipts.py scripts/render_wsl_intranet_nginx.py scripts/verify_datahub_contract.py scripts/verify_datahub_image_inventory.py scripts/verify_nginx_headers.py scripts/verify_static.py scripts/workflow_source_host_infra.py
+uv run mypy backend/src backend/tests scripts/local_reranker_service.py scripts/migrate_s3_objects.py scripts/probe_s3_contract.py scripts/reconcile_manual_receipts.py scripts/render_wsl_intranet_nginx.py scripts/verify_nginx_headers.py scripts/workflow_source_host_infra.py
 uv run pytest backend/tests -q
 uv run python scripts/verify_static.py
 

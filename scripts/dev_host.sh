@@ -373,9 +373,9 @@ PY
   fi
   echo "PostgreSQL is not reachable at 127.0.0.1:$postgres_port." >&2
   echo "A container shown only as 5432/tcp is not published to this WSL source host." >&2
-  echo "Stop containerized DataRiver application services, then recreate PostgreSQL and" >&2
-  echo "Keycloak with compose.source-host.yaml before retrying:" >&2
-  printf '  ./scripts/compose.sh --env-file %q -f compose.yaml -f compose.identity.yaml -f compose.source-host.yaml up -d --no-build --pull never --wait postgres keycloak\n' \
+  echo "Use the applied-profile workflow so build/offline image references are resolved" >&2
+  echo "and verified before PostgreSQL/Keycloak are recreated:" >&2
+  printf '  ./scripts/workflow_source_host_infra.py --env-file %q prepare\n' \
     "$env_file_argument" >&2
   exit 2
 }
