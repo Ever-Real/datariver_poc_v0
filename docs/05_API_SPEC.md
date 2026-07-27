@@ -367,9 +367,19 @@ bounded winner; a rejected call records no ledger, result or aggregate increment
 
 | Method/path | Action | Purpose |
 |---|---|---|
-| `POST /chat/query` | `chat.query` plus `catalog.read` / `kg.read` per citation | persist a question and authorized-evidence answer; development may use local Ollama or one allowlisted private OpenAI-compatible fixed tool contract, while all cited chunk IDs are revalidated server-side |
+| `POST /chat/query` | `chat.query` plus `catalog.read` / `kg.read` per citation | persist a grounded answer or an explicitly disclosed zero-evidence general-knowledge answer; development may use local Ollama or one allowlisted private OpenAI-compatible fixed tool contract |
 
-Request is `{session_id?,question,maximum_evidence<=10}`. Response carries session/message IDs, answer and immutable evidence chunk metadata: `chunk_id`, resource/workspace-authorized classification and typed scope, source type/locator/version, SHA-256 content hash, effective interval and extraction method. Composer citations must be a non-empty, duplicate-free subset of the exact authorized chunk input and pass hash/workspace revalidation; any forged, empty or invalid citation fails closed to the exact answer `검증 불가` with no returned/persisted evidence. The baseline deliberately has no external LLM.
+Request is `{session_id?,question,maximum_evidence<=10}`. Response carries session/message IDs,
+answer, route/workflow state and immutable evidence chunk metadata: `chunk_id`,
+resource/workspace-authorized classification and typed scope, source type/locator/version, SHA-256
+content hash, effective interval and extraction method. Grounded composer citations must be a
+non-empty, duplicate-free subset of the exact authorized chunk input and pass hash/workspace
+revalidation; any forged, empty or invalid grounded citation fails closed to the exact answer
+`검증 불가` with no returned/persisted evidence. If retrieval completed successfully and the final
+authorized evidence set is empty, the separate general composer may return a bounded answer with
+zero citations. The server prefixes it with `※ 사내 인용 근거가 없어 일반 지식으로
+답변합니다.` and records explicit general-answer workflow codes. Adapter, policy, authorization,
+retrieval, reranker and citation failures never use this path.
 
 Final persistence requires a workspace ACTIVE retention-policy version. A new session binds the
 exact policy ID/hash, database transaction time and policy-derived deadline in one locked

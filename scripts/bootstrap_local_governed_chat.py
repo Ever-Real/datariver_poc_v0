@@ -22,6 +22,11 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--attestation-evidence-reference", required=True)
     parser.add_argument("--attestation-valid-days", type=int, required=True)
     parser.add_argument("--restricted-search-grant-maximum-days", type=int, required=True)
+    parser.add_argument(
+        "--maximum-classification",
+        choices=("PUBLIC", "INTERNAL", "CONFIDENTIAL"),
+        default="INTERNAL",
+    )
     parser.add_argument("--completed-operation-days", type=int, required=True)
     parser.add_argument("--chat-content-days", type=int, required=True)
     parser.add_argument("--audit-online-months", type=int, required=True)
@@ -53,6 +58,8 @@ def main() -> None:
         str(arguments.attestation_valid_days),
         "--restricted-search-grant-maximum-days",
         str(arguments.restricted_search_grant_maximum_days),
+        "--maximum-classification",
+        arguments.maximum_classification,
         "--completed-operation-days",
         str(arguments.completed_operation_days),
         "--chat-content-days",

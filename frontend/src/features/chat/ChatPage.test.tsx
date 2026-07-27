@@ -355,6 +355,45 @@ describe('ChatPage', () => {
     expect(screen.queryByRole('button', { name: /근거 .* 상세 열기/ })).not.toBeInTheDocument()
   })
 
+  it('renders a clearly separated general-knowledge answer with no internal citations', async () => {
+    const generalAnswer: ChatResponse = {
+      ...response,
+      answer: '※ 사내 인용 근거가 없어 일반 지식으로 답변합니다.\n\n온톨로지는 개념과 관계를 구조화한 지식 모델입니다.',
+      workflow: [
+        { stage: 'AUTHORIZATION', status: 'COMPLETED', detail_code: 'CHAT_QUERY_AUTHORIZED' },
+        { stage: 'RETRIEVAL', status: 'COMPLETED', detail_code: 'GENERAL_RETRIEVAL_COMPLETED' },
+        { stage: 'RERANKING', status: 'SKIPPED', detail_code: 'NO_RETRIEVED_EVIDENCE' },
+        {
+          stage: 'COMPOSITION',
+          status: 'COMPLETED',
+          detail_code: 'GENERAL_KNOWLEDGE_DRAFT_COMPOSED',
+        },
+        {
+          stage: 'CITATION_VALIDATION',
+          status: 'SKIPPED',
+          detail_code: 'NO_INTERNAL_CITATIONS_GENERAL_ANSWER',
+        },
+      ],
+      evidence: [],
+    }
+    const { client: baseClient } = chatClient()
+    const request = vi.fn((path: string, options?: RequestOptions): Promise<unknown> => (
+      path === '/chat/query' ? Promise.resolve(generalAnswer) : baseClient.request(path, options)
+    ))
+    render(<ChatPage client={{ request } as unknown as ApiClient} />)
+    await screen.findByText('주문 데이터')
+
+    const question = screen.getByLabelText('카탈로그 질문')
+    fireEvent.change(question, { target: { value: '온톨로지가 뭐야?' } })
+    fireEvent.keyDown(question, { key: 'Enter', code: 'Enter' })
+
+    expect(await screen.findByText(/사내 인용 근거가 없어 일반 지식으로 답변합니다/)).toBeInTheDocument()
+    expect(screen.getByLabelText('질문 응답 Workflow')).toHaveTextContent(
+      '사내 근거와 분리된 일반 지식 답변을 작성했습니다.',
+    )
+    expect(screen.getByText('0 items')).toBeInTheDocument()
+  })
+
   it('explains that provider-policy binding is distinct from model reachability', async () => {
     const unavailable: ChatResponse = {
       ...response,

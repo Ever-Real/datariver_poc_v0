@@ -28,9 +28,7 @@ def test_semiconductor_taxonomy_is_complete_and_stable() -> None:
         "referenced_record",
     }
     assert {
-        tag.name
-        for tag in taxonomy.tags
-        if tag.tag_id.startswith("datariver_classification_")
+        tag.name for tag in taxonomy.tags if tag.tag_id.startswith("datariver_classification_")
     } == {
         "CLASSIFICATION:PUBLIC",
         "CLASSIFICATION:INTERNAL",
@@ -105,6 +103,37 @@ def test_generated_dataset_and_field_aspects_have_controlled_semantics() -> None
     assert "urn:li:tag:datariver_execution_mock" in {
         item["tag"] for item in view_aspects["globalTags"]["tags"]
     }
+
+
+def test_selected_entities_can_receive_one_controlled_datahub_domain() -> None:
+    generator = _generator()
+    domain = generator["DataHubDomainSpec"](
+        domain_id="semiconductor-rnd",
+        name="Semiconductor R&D",
+        description="Controlled semiconductor research and development assets.",
+    )
+    entity = next(
+        value
+        for value in generator["build_entities"](
+            generator["build_table_specs"](),
+            "dual",
+            postgres_database_name="datariver",
+            oracle_database_name="ORCL",
+        )
+        if value.platform == "oracle"
+    )
+
+    aspects = dict(
+        generator["aspect_documents"](
+            entity,
+            "seed-run",
+            "CONFIDENTIAL",
+            domain,
+        )
+    )
+
+    assert aspects["domains"] == {"domains": ["urn:li:domain:semiconductor-rnd"]}
+    assert generator["parse_datahub_domain_id"]("semiconductor-rnd") == "semiconductor-rnd"
 
 
 def test_vocabulary_proposals_are_typed_and_parent_first() -> None:

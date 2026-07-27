@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from types import TracebackType
 from typing import Self
@@ -285,6 +286,49 @@ async def test_bootstrap_creates_and_reuses_exact_governed_chat_contracts() -> N
     assert len(uow.profiles.values) == 3
     assert len(uow.outbox.events) == event_count
     assert uow.commits == 2
+
+
+@pytest.mark.asyncio
+async def test_bootstrap_supersedes_policy_and_profiles_for_confidential_chat() -> None:
+    workspace_id, maker_id, checker_id = uuid4(), uuid4(), uuid4()
+    now = datetime.now(UTC)
+    uow = MemoryBootstrapUnitOfWork()
+    service = LocalGovernedChatBootstrapService(lambda: uow)
+
+    initial = await service.bootstrap(
+        workspace_id=workspace_id,
+        maker_id=maker_id,
+        checker_id=checker_id,
+        bindings=_bindings(),
+        config=_config(),
+        now=now,
+    )
+    updated = await service.bootstrap(
+        workspace_id=workspace_id,
+        maker_id=maker_id,
+        checker_id=checker_id,
+        bindings=_bindings(),
+        config=replace(
+            _config(),
+            maximum_classification=Classification.CONFIDENTIAL,
+        ),
+        now=now + timedelta(minutes=1),
+    )
+
+    assert updated.classification_policy_id != initial.classification_policy_id
+    assert len(uow.profiles.values) == 6
+    assert all(
+        value.profile.maximum_classification is Classification.CONFIDENTIAL
+        for value in uow.profiles.values[-3:]
+    )
+    assert uow.classification_policies.values[0].state.value == "SUPERSEDED"
+    active = uow.classification_policies.values[1]
+    assert active.state.value == "ACTIVE"
+    confidential = next(
+        rule for rule in active.rules if rule.classification is Classification.CONFIDENTIAL
+    )
+    assert confidential.chat_mode.value == "INTERNAL_APPROVED_ONLY"
+    assert confidential.provider_profile_version_id is not None
 
 
 @pytest.mark.asyncio

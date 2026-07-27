@@ -12,7 +12,7 @@ from datariver.application.dto import (
     ChatMessageRecord,
     ChatSessionRecord,
 )
-from datariver.application.ports import ChatAnswerComposer
+from datariver.application.ports import ChatAnswerComposer, ChatGeneralAnswerComposer
 from datariver.application.services.authorization import AuthorizationService
 from datariver.application.services.chat import ChatService
 from datariver.application.services.chat_history import ChatHistoryService
@@ -55,20 +55,26 @@ router = APIRouter(prefix="/chat", tags=["assistant"])
 
 def _development_composer(
     container: AppContainer,
-) -> tuple[ChatAnswerComposer | None, ChatCompositionAudit | None]:
+) -> tuple[
+    ChatAnswerComposer | None,
+    ChatGeneralAnswerComposer | None,
+    ChatCompositionAudit | None,
+]:
     settings = container.settings
     if settings.app_env != "development":
-        return None, None
+        return None, None, None
     if settings.local_ollama_chat_enabled:
         assert settings.local_ollama_chat_base_url is not None
         assert settings.local_ollama_chat_model is not None
+        local_composer = LocalOllamaChatComposer(
+            base_url=str(settings.local_ollama_chat_base_url),
+            model=settings.local_ollama_chat_model,
+            timeout_seconds=settings.local_ollama_chat_timeout_seconds,
+            context_tokens=settings.local_ollama_chat_context_tokens,
+        )
         return (
-            LocalOllamaChatComposer(
-                base_url=str(settings.local_ollama_chat_base_url),
-                model=settings.local_ollama_chat_model,
-                timeout_seconds=settings.local_ollama_chat_timeout_seconds,
-                context_tokens=settings.local_ollama_chat_context_tokens,
-            ),
+            local_composer,
+            local_composer,
             ChatCompositionAudit(
                 provider="ollama-native-chat",
                 model=settings.local_ollama_chat_model,
@@ -84,16 +90,18 @@ def _development_composer(
         api_key = SecretResolver(
             virtual_secret_root=settings.system_configuration_secret_root
         ).resolve(settings.intranet_openai_compatible_chat_api_key_secret_ref)
-        return (
-            OpenAICompatibleGroundedChatComposer(
-                model=settings.intranet_openai_compatible_chat_model,
-                transport=HttpxOpenAIJsonTransport(
-                    base_url=str(settings.intranet_openai_compatible_chat_base_url),
-                    allowed_hosts=frozenset(settings.intranet_openai_compatible_allowed_hosts),
-                    api_key=api_key,
-                    timeout_seconds=settings.intranet_openai_compatible_chat_timeout_seconds,
-                ),
+        intranet_composer = OpenAICompatibleGroundedChatComposer(
+            model=settings.intranet_openai_compatible_chat_model,
+            transport=HttpxOpenAIJsonTransport(
+                base_url=str(settings.intranet_openai_compatible_chat_base_url),
+                allowed_hosts=frozenset(settings.intranet_openai_compatible_allowed_hosts),
+                api_key=api_key,
+                timeout_seconds=settings.intranet_openai_compatible_chat_timeout_seconds,
             ),
+        )
+        return (
+            intranet_composer,
+            intranet_composer,
             ChatCompositionAudit(
                 provider="intranet-openai-compatible",
                 model=settings.intranet_openai_compatible_chat_model,
@@ -102,7 +110,7 @@ def _development_composer(
                 provider_profile_version_id=(settings.chat_composition_provider_profile_version_id),
             ),
         )
-    return None, None
+    return None, None, None
 
 
 @router.post("/query", response_model=ChatQueryResponse)
@@ -118,7 +126,7 @@ async def query(
     settings = container.settings
     catalog_index = SqlCatalogIndexReader(session)
     chat_history = SqlChatHistoryStore(session)
-    composer, composition_audit = _development_composer(container)
+    composer, general_composer, composition_audit = _development_composer(container)
     vector_catalog = None
     if (
         settings.app_env == "development"
@@ -169,6 +177,7 @@ async def query(
             SqlClassificationAccessSnapshotReader(session)
         ),
         composer=composer,
+        general_composer=general_composer,
         composition_audit=composition_audit,
         inference_runtime_bindings=resolve_interactive_runtime_bindings(settings),
         allow_ephemeral_without_retention=(

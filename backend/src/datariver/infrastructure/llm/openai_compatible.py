@@ -5,7 +5,9 @@ from collections.abc import Sequence
 from datariver.application.dto import ChatDraft, ChatEvidence
 from datariver.infrastructure.knowledge.openai_compatible import OpenAIJsonTransport
 from datariver.infrastructure.llm.ollama import (
+    general_chat_request_payload,
     grounded_chat_request_payload,
+    parse_general_chat_response,
     parse_grounded_chat_response,
 )
 
@@ -34,3 +36,17 @@ class OpenAICompatibleGroundedChatComposer:
             ),
         )
         return parse_grounded_chat_response(result)
+
+    async def compose_general(
+        self,
+        *,
+        question: str,
+    ) -> ChatDraft:
+        result = await self._transport.post_json(
+            path="/chat/completions",
+            document=general_chat_request_payload(
+                model=self._model,
+                question=question,
+            ),
+        )
+        return parse_general_chat_response(result)

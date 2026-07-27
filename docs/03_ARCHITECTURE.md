@@ -238,6 +238,11 @@ worst-case UTF-8 request is added to the atomic request budget before retrieval,
 reranker and composer envelopes.
 The citation gate then re-reads current membership attributes and canonical catalog/release
 evidence, re-resolves the policy identity and re-runs resource ABAC; any drift refuses the answer.
+When retrieval itself completes successfully but the authorized evidence set is empty, ADR-0056
+permits a separately typed general-knowledge composer. It receives only the bounded question, never
+hidden or rejected asset metadata, and cannot claim organization-specific facts. The server adds a
+visible “사내 인용 근거 없음” disclosure and persists zero citations. Provider, retrieval,
+reranker, policy, authorization and citation failures remain fail-closed and never enter this path.
 
 The separate production assistant-inference source boundary is only a typed, disabled-first worker contract. Its
 versioned package binds requested/selected provider identity and region, policy, attestations,

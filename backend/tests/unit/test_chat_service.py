@@ -39,7 +39,11 @@ from datariver.application.dto import (
 from datariver.application.evidence import build_evidence_chunk, evidence_chunk_is_valid
 from datariver.application.ports import ChatStore, RetentionPolicyRepository
 from datariver.application.services.authorization import AuthorizationService, NullDecisionWriter
-from datariver.application.services.chat import UNVERIFIABLE_ANSWER, ChatService
+from datariver.application.services.chat import (
+    GENERAL_KNOWLEDGE_PREFIX,
+    UNVERIFIABLE_ANSWER,
+    ChatService,
+)
 from datariver.domain.authz import (
     Action,
     Classification,
@@ -730,6 +734,17 @@ class SelectingComposer:
         )
 
 
+class FixedGeneralComposer:
+    def __init__(self, draft: ChatDraft) -> None:
+        self.draft = draft
+        self.calls = 0
+
+    async def compose_general(self, *, question: str) -> ChatDraft:
+        del question
+        self.calls += 1
+        return self.draft
+
+
 class FailingReranker:
     async def rerank(
         self,
@@ -1134,6 +1149,93 @@ async def test_chat_omits_evidence_when_catalog_read_is_not_granted() -> None:
 
     assert exchange.evidence == ()
     assert exchange.answer == UNVERIFIABLE_ANSWER
+
+
+async def test_chat_returns_explicit_general_knowledge_only_after_empty_authorized_retrieval() -> (
+    None
+):
+    workspace_id = uuid4()
+    subject = SubjectAttributes(
+        subject_id=uuid4(),
+        workspace_id=workspace_id,
+        active=True,
+        department_id=None,
+        groups=frozenset(),
+        job_function=None,
+        clearance=Classification.INTERNAL,
+        allowed_actions=frozenset({Action.CHAT_QUERY}),
+    )
+    store = FakeChatStore()
+    general = FixedGeneralComposer(
+        ChatDraft(answer="온톨로지는 개념과 관계를 구조화한 지식 모델입니다.", cited_chunk_ids=())
+    )
+    exchange = await chat_service(
+        catalog_index=FakeIndex(asset(workspace_id)),
+        general_composer=general,
+        uow_factory=chat_uow_factory(store),
+        authorization=AuthorizationService(decision_writer=NullDecisionWriter()),
+    ).query(
+        workspace_id=workspace_id,
+        subject=subject,
+        session_id=None,
+        question="온톨로지가 뭐야?",
+        maximum_evidence=5,
+        environment=EnvironmentAttributes(requested_at=datetime.now(UTC)),
+        request_id="request-general-knowledge",
+    )
+
+    assert general.calls == 1
+    assert exchange.answer == (
+        f"{GENERAL_KNOWLEDGE_PREFIX}온톨로지는 개념과 관계를 구조화한 지식 모델입니다."
+    )
+    assert exchange.evidence == ()
+    assert store.saved_evidence == ()
+    assert any(
+        item.detail_code == "GENERAL_KNOWLEDGE_DRAFT_COMPOSED"
+        and item.status is ChatWorkflowStatus.COMPLETED
+        for item in exchange.workflow
+    )
+    assert any(
+        item.detail_code == "NO_INTERNAL_CITATIONS_GENERAL_ANSWER"
+        and item.status is ChatWorkflowStatus.SKIPPED
+        for item in exchange.workflow
+    )
+
+
+async def test_chat_rejects_general_draft_that_forges_internal_citations() -> None:
+    workspace_id = uuid4()
+    general = FixedGeneralComposer(ChatDraft(answer="forged", cited_chunk_ids=(uuid4(),)))
+    exchange = await chat_service(
+        catalog_index=FakeIndex(asset(workspace_id)),
+        general_composer=general,
+        uow_factory=chat_uow_factory(FakeChatStore()),
+        authorization=AuthorizationService(decision_writer=NullDecisionWriter()),
+    ).query(
+        workspace_id=workspace_id,
+        subject=SubjectAttributes(
+            subject_id=uuid4(),
+            workspace_id=workspace_id,
+            active=True,
+            department_id=None,
+            groups=frozenset(),
+            job_function=None,
+            clearance=Classification.INTERNAL,
+            allowed_actions=frozenset({Action.CHAT_QUERY}),
+        ),
+        session_id=None,
+        question="일반 지식을 알려줘",
+        maximum_evidence=5,
+        environment=EnvironmentAttributes(requested_at=datetime.now(UTC)),
+        request_id="request-general-forged",
+    )
+
+    assert exchange.answer == UNVERIFIABLE_ANSWER
+    assert exchange.evidence == ()
+    assert any(
+        item.detail_code == "INVALID_GENERAL_KNOWLEDGE_DRAFT"
+        and item.status is ChatWorkflowStatus.REFUSED
+        for item in exchange.workflow
+    )
 
 
 async def test_chat_graph_unavailable_is_visible_and_never_falls_back() -> None:

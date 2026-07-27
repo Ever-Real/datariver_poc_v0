@@ -217,6 +217,7 @@ adapters have passed their real probes:
 ```bash
 ./scripts/bootstrap_local_governed_chat.py \
   --env-file .env.mac-development \
+  --maximum-classification <PUBLIC|INTERNAL|CONFIDENTIAL> \
   --jurisdiction <approved-local-jurisdiction> \
   --region <approved-local-region> \
   --attestation-evidence-reference <actual-probe-evidence-reference> \
@@ -229,8 +230,11 @@ adapters have passed their real probes:
 ```
 
 The command uses the currently selected model/endpoint/adapter identities; none of those values is
-an argument or a source default. It refuses incomplete stages and differing active policies. On
-success it writes only the returned three profile UUIDs and
+an argument or a source default. It refuses incomplete stages. When its exact local-development
+classification rules differ from the active policy, it creates and independently approves a new
+immutable policy version and atomically supersedes the previous one; the selected maximum controls
+which classifications from `PUBLIC` through that ceiling can use Chat. On success it writes only
+the returned three profile UUIDs and
 `CHAT_EPHEMERAL_ADMIN_WITHOUT_RETENTION_ENABLED=false` to the selected ignored environment.
 Apply them with the normal update/restart workflow. The four retention values are local
 development acceptance inputs, not a production retention approval.

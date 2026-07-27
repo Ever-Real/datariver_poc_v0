@@ -10,6 +10,7 @@ from datariver.application.services.local_governed_chat_bootstrap import (
 )
 from datariver.bootstrap import LOCAL_DEMO_IDENTITIES, LOCAL_SUBJECT_ID, LOCAL_WORKSPACE_ID
 from datariver.config import get_settings
+from datariver.domain.authz import Classification
 from datariver.domain.common import utc_now
 from datariver.domain.retention import RetentionRules
 from datariver.infrastructure.db.local_governed_chat_bootstrap import (
@@ -35,6 +36,11 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--attestation-evidence-reference", required=True)
     parser.add_argument("--attestation-valid-days", type=int, required=True)
     parser.add_argument("--restricted-search-grant-maximum-days", type=int, required=True)
+    parser.add_argument(
+        "--maximum-classification",
+        choices=("PUBLIC", "INTERNAL", "CONFIDENTIAL"),
+        default="INTERNAL",
+    )
     parser.add_argument("--completed-operation-days", type=int, required=True)
     parser.add_argument("--chat-content-days", type=int, required=True)
     parser.add_argument("--audit-online-months", type=int, required=True)
@@ -69,6 +75,7 @@ async def _run(arguments: argparse.Namespace) -> dict[str, object]:
                 restricted_search_grant_maximum_days=(
                     arguments.restricted_search_grant_maximum_days
                 ),
+                maximum_classification=Classification[arguments.maximum_classification],
                 retention_rules=RetentionRules(
                     completed_operation_days=arguments.completed_operation_days,
                     chat_content_days=arguments.chat_content_days,

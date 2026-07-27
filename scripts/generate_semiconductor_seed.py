@@ -90,6 +90,17 @@ class EntitySpec:
 
 
 @dataclass(frozen=True)
+class DataHubDomainSpec:
+    domain_id: str
+    name: str
+    description: str
+
+    @property
+    def urn(self) -> str:
+        return f"urn:li:domain:{self.domain_id}"
+
+
+@dataclass(frozen=True)
 class GlossaryNodeSpec:
     node_id: str
     name: str
@@ -1199,6 +1210,7 @@ def aspect_documents(
     entity: EntitySpec,
     run_id: str,
     classification: SeedClassification | None = None,
+    domain: DataHubDomainSpec | None = None,
 ) -> tuple[tuple[str, dict[str, Any]], ...]:
     platform_urn = f"urn:li:dataPlatform:{entity.platform}"
     schema_fields = datahub_schema_fields(entity)
@@ -1237,6 +1249,8 @@ def aspect_documents(
         ("globalTags", {"tags": [{"tag": tag} for tag in tags]}),
         ("glossaryTerms", datahub_glossary_terms_document(glossary_terms)),
     ]
+    if domain is not None:
+        documents.append(("domains", {"domains": [domain.urn]}))
     # Every generated dataset carries the same explicit field contract.  Oracle
     # is still clearly labelled MOCK, but omitting its schema aspect made its
     # column descriptions, Tag and Term semantics disappear in DataHub-backed
@@ -1370,6 +1384,24 @@ async def seed_datahub_governance(
         print(f"Progress: {position}/{len(documents)} DataHub governance entities seeded")
 
 
+async def seed_datahub_domain(
+    client: httpx.AsyncClient,
+    *,
+    domain: DataHubDomainSpec,
+) -> None:
+    await post_metadata_aspect(
+        client,
+        entity_type="domain",
+        entity_urn=domain.urn,
+        entity_label=domain.name,
+        aspect_name="domainProperties",
+        document={
+            "name": domain.name,
+            "description": domain.description,
+        },
+    )
+
+
 async def seed_and_verify_datahub_governance(*, datahub_url: str, token: str) -> dict[str, int]:
     headers = {"Authorization": f"Bearer {token}"} if token else {}
     taxonomy = datahub_governance_taxonomy()
@@ -1476,6 +1508,7 @@ async def ingest_datahub(
     batch_size: int,
     run_id: str,
     classification: SeedClassification | None = None,
+    domain: DataHubDomainSpec | None = None,
     on_progress: Callable[[int], None] | None = None,
 ) -> None:
     headers = {"Authorization": f"Bearer {token}"} if token else {}
@@ -1485,6 +1518,8 @@ async def ingest_datahub(
         config_response = await client.get("/config")
         config_response.raise_for_status()
         await seed_datahub_governance(client, taxonomy=datahub_governance_taxonomy())
+        if domain is not None:
+            await seed_datahub_domain(client, domain=domain)
         for offset in range(0, len(entities), batch_size):
             batch = entities[offset : offset + batch_size]
 
@@ -1493,6 +1528,7 @@ async def ingest_datahub(
                     entity,
                     run_id,
                     classification,
+                    domain,
                 ):
                     await post_aspect(
                         client,
@@ -1516,6 +1552,7 @@ async def verify_datahub_entities(
     token: str,
     batch_size: int,
     classification: SeedClassification | None = None,
+    domain: DataHubDomainSpec | None = None,
     on_progress: Callable[[int], None] | None = None,
 ) -> int:
     headers = {"Authorization": f"Bearer {token}"} if token else {}
@@ -1524,6 +1561,17 @@ async def verify_datahub_entities(
         base_url=datahub_url.rstrip("/"), headers=headers, timeout=httpx.Timeout(30.0)
     ) as client:
         await verify_datahub_governance(client, taxonomy=datahub_governance_taxonomy())
+        if domain is not None:
+            domain_properties = await read_datahub_aspect(
+                client,
+                entity_urn=domain.urn,
+                aspect_name="domainProperties",
+            )
+            if (
+                domain_properties.get("name") != domain.name
+                or domain_properties.get("description") != domain.description
+            ):
+                raise RuntimeError(f"DataHub domain verification failed: {domain.urn}")
         for offset in range(0, len(entities), batch_size):
             batch = entities[offset : offset + batch_size]
 
@@ -1549,6 +1597,14 @@ async def verify_datahub_entities(
                     _aspect_references(terms, field="terms", nested="urn")
                 ):
                     return False
+                if domain is not None:
+                    domains = await read_datahub_aspect(
+                        client,
+                        entity_urn=entity.urn,
+                        aspect_name="domains",
+                    )
+                    if domains.get("domains") != [domain.urn]:
+                        return False
                 schema = await read_datahub_aspect(
                     client, entity_urn=entity.urn, aspect_name="schemaMetadata"
                 )
@@ -1642,6 +1698,19 @@ def parse_seed_classification(value: str) -> SeedClassification | None:
     return cast(SeedClassification, normalized)
 
 
+def parse_datahub_domain_id(value: str) -> str:
+    normalized = value.strip()
+    if (
+        not 1 <= len(normalized) <= 128
+        or not normalized[0].isalnum()
+        or any(not (character.isalnum() or character in "._-") for character in normalized)
+    ):
+        raise argparse.ArgumentTypeError(
+            "DataHub domain ID must be 1-128 letters, digits, dots, underscores, or hyphens"
+        )
+    return normalized
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
@@ -1673,6 +1742,12 @@ def build_parser() -> argparse.ArgumentParser:
         default="dual",
         help="DataHub entity scope; dual includes explicitly labelled Oracle MOCK metadata.",
     )
+    parser.add_argument(
+        "--datahub-platform",
+        choices=("all", "postgres", "oracle"),
+        default="all",
+        help="Filter the selected DataHub entity scope by platform before applying range bounds.",
+    )
     parser.add_argument("--rows-per-table", type=parse_rows, default=DEFAULT_ROWS_PER_TABLE)
     parser.add_argument(
         "--datahub-batch-size", type=parse_positive, default=DEFAULT_DATAHUB_BATCH_SIZE
@@ -1697,6 +1772,19 @@ def build_parser() -> argparse.ArgumentParser:
             "Explicit classification tag for the selected synthetic DataHub entities; "
             "the default NONE preserves fail-closed quarantine."
         ),
+    )
+    parser.add_argument(
+        "--datahub-domain-id",
+        type=parse_datahub_domain_id,
+        help="Optional controlled DataHub domain ID assigned to every selected entity.",
+    )
+    parser.add_argument(
+        "--datahub-domain-name",
+        help="Required display name when --datahub-domain-id is supplied.",
+    )
+    parser.add_argument(
+        "--datahub-domain-description",
+        help="Required description when --datahub-domain-id is supplied.",
     )
     parser.add_argument(
         "--postgres-host", default=os.getenv("SEMICONDUCTOR_POSTGRES_HOST", "127.0.0.1")
@@ -1749,16 +1837,35 @@ async def async_main(arguments: argparse.Namespace) -> int:
     )
     if len(table_specs) != 500 or len(entities) not in {1000, 2000}:
         raise AssertionError("Unexpected deterministic semiconductor seed cardinality.")
+    if arguments.datahub_platform != "all":
+        entities = tuple(
+            entity for entity in entities if entity.platform == arguments.datahub_platform
+        )
     selected_entities = entities[arguments.datahub_start_index :]
     if arguments.max_datahub_entities is not None:
         selected_entities = selected_entities[: arguments.max_datahub_entities]
+    domain: DataHubDomainSpec | None = None
+    if arguments.datahub_domain_id is not None:
+        domain_name = (arguments.datahub_domain_name or "").strip()
+        domain_description = (arguments.datahub_domain_description or "").strip()
+        if not domain_name or not domain_description:
+            raise RuntimeError("DataHub domain name and description are required with a domain ID.")
+        domain = DataHubDomainSpec(
+            domain_id=arguments.datahub_domain_id,
+            name=domain_name,
+            description=domain_description,
+        )
+    elif arguments.datahub_domain_name or arguments.datahub_domain_description:
+        raise RuntimeError("DataHub domain name and description require a domain ID.")
     run_id = canonical_hash(
         {
             "families": [asdict(family) for family in FAMILIES],
             "scenarios": SCENARIOS,
             "rows_per_table": arguments.rows_per_table,
             "entity_scope": arguments.entity_scope,
+            "datahub_platform": arguments.datahub_platform,
             "datahub_classification": arguments.datahub_classification,
+            "datahub_domain_urn": domain.urn if domain is not None else None,
         }
     )[:20]
     output_directory = arguments.output_dir
@@ -1783,6 +1890,7 @@ async def async_main(arguments: argparse.Namespace) -> int:
             "entities_verified": 0,
             "start_index": arguments.datahub_start_index,
             "classification": arguments.datahub_classification,
+            "domain_urn": domain.urn if domain is not None else None,
             "phase": "PLANNED",
             "governance": {
                 "nodes_expected": len(datahub_governance_taxonomy().nodes),
@@ -1826,6 +1934,7 @@ async def async_main(arguments: argparse.Namespace) -> int:
             batch_size=arguments.datahub_batch_size,
             run_id=run_id,
             classification=arguments.datahub_classification,
+            domain=domain,
             on_progress=record_ingest_progress,
         )
 
@@ -1840,6 +1949,7 @@ async def async_main(arguments: argparse.Namespace) -> int:
             token=token,
             batch_size=arguments.datahub_batch_size,
             classification=arguments.datahub_classification,
+            domain=domain,
             on_progress=record_verify_progress,
         )
         manifest["datahub"]["governance"]["verified"] = True
@@ -1875,6 +1985,7 @@ async def async_main(arguments: argparse.Namespace) -> int:
             token=token,
             batch_size=arguments.datahub_batch_size,
             classification=arguments.datahub_classification,
+            domain=domain,
             on_progress=record_verify_progress,
         )
         manifest["datahub"]["governance"]["verified"] = True

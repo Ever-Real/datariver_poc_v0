@@ -50,6 +50,7 @@ class LocalGovernedChatBootstrapConfig:
     attestation_valid_days: int
     restricted_search_grant_maximum_days: int
     retention_rules: RetentionRules
+    maximum_classification: Classification = Classification.INTERNAL
 
     def __post_init__(self) -> None:
         if not self.jurisdiction.strip() or not self.region.strip():
@@ -60,6 +61,12 @@ class LocalGovernedChatBootstrapConfig:
             raise ValidationError("Local governance attestation validity must be 1-365 days.")
         if not 1 <= self.restricted_search_grant_maximum_days <= 365:
             raise ValidationError("The RESTRICTED Search grant maximum must be 1-365 days.")
+        if self.maximum_classification not in {
+            Classification.PUBLIC,
+            Classification.INTERNAL,
+            Classification.CONFIDENTIAL,
+        }:
+            raise ValidationError("Local governed Chat may be approved through CONFIDENTIAL only.")
 
 
 @dataclass(frozen=True, slots=True)
@@ -205,7 +212,10 @@ class LocalGovernedChatBootstrapService:
                 profile_ids[stage] = profile.provider_profile_version_id
                 reused_profile_count += int(reused)
 
-            desired_rules = _classification_rules(profile_ids)
+            desired_rules = _classification_rules(
+                profile_ids,
+                maximum_classification=config.maximum_classification,
+            )
             classification_policy, reused_classification = await self._ensure_classification_policy(
                 uow=uow,
                 workspace_id=workspace_id,
@@ -283,7 +293,7 @@ class LocalGovernedChatBootstrapService:
             deployment_identity=binding.deployment_identity,
             jurisdiction=config.jurisdiction,
             region=config.region,
-            maximum_classification=Classification.INTERNAL,
+            maximum_classification=config.maximum_classification,
             residency_attestation=ProviderAttestation(
                 fingerprint=canonical_json_hash({**base_evidence, "claim": "residency"}),
                 observed_at=now,
@@ -340,9 +350,6 @@ class LocalGovernedChatBootstrapService:
                 and active.rules == rules
             ):
                 return active, True
-            raise ConflictError(
-                "An active classification policy exists with a different governed contract."
-            )
         policy = ClassificationAccessPolicy.propose(
             workspace_id=workspace_id,
             policy_number=await uow.classification_policies.next_policy_number(
@@ -358,6 +365,18 @@ class LocalGovernedChatBootstrapService:
         await uow.classification_policies.add(policy)
         await uow.flush()
         await uow.classification_policies.assert_provider_rules_eligible(policy=policy, now=now)
+        events: list[DomainEvent] = []
+        if active is not None:
+            prior_event_count = len(active.events)
+            active.supersede(
+                actor_id=checker_id,
+                reason="Replace the local-development governed Chat classification contract.",
+                policy_decision_id=uuid7(),
+                expected_version=active.version,
+                now=now,
+            )
+            await uow.classification_policies.save(active)
+            events.extend(active.events[prior_event_count:])
         policy.decide(
             decision=PolicyDecision.APPROVED,
             actor_id=checker_id,
@@ -367,7 +386,8 @@ class LocalGovernedChatBootstrapService:
             now=now,
         )
         await uow.classification_policies.save(policy)
-        await uow.outbox.add_events(policy.events)
+        events.extend(policy.events)
+        await uow.outbox.add_events(events)
         await uow.flush()
         return policy, False
 
@@ -427,30 +447,33 @@ def _validated_bindings(
 
 def _classification_rules(
     profile_ids: dict[InferenceStage, UUID],
+    *,
+    maximum_classification: Classification,
 ) -> tuple[ClassificationAccessRule, ...]:
     enabled = {
         "provider_profile_version_id": profile_ids[InferenceStage.COMPOSITION],
         "embedding_provider_profile_version_id": profile_ids[InferenceStage.EMBEDDING],
         "reranker_provider_profile_version_id": profile_ids[InferenceStage.RERANKER],
     }
+    non_restricted = tuple(
+        ClassificationAccessRule(
+            classification=classification,
+            search_mode=SearchMode.ABAC,
+            chat_mode=(
+                ChatMode.INTERNAL_APPROVED_ONLY
+                if classification <= maximum_classification
+                else ChatMode.DENY
+            ),
+            **(enabled if classification <= maximum_classification else {}),
+        )
+        for classification in (
+            Classification.PUBLIC,
+            Classification.INTERNAL,
+            Classification.CONFIDENTIAL,
+        )
+    )
     return (
-        ClassificationAccessRule(
-            classification=Classification.PUBLIC,
-            search_mode=SearchMode.ABAC,
-            chat_mode=ChatMode.INTERNAL_APPROVED_ONLY,
-            **enabled,
-        ),
-        ClassificationAccessRule(
-            classification=Classification.INTERNAL,
-            search_mode=SearchMode.ABAC,
-            chat_mode=ChatMode.INTERNAL_APPROVED_ONLY,
-            **enabled,
-        ),
-        ClassificationAccessRule(
-            classification=Classification.CONFIDENTIAL,
-            search_mode=SearchMode.ABAC,
-            chat_mode=ChatMode.DENY,
-        ),
+        *non_restricted,
         ClassificationAccessRule(
             classification=Classification.RESTRICTED,
             search_mode=SearchMode.EXPLICIT_GRANT_ONLY,
@@ -487,7 +510,7 @@ def _profile_matches(
         and profile.deployment_identity == binding.deployment_identity
         and profile.jurisdiction == config.jurisdiction
         and profile.region == config.region
-        and profile.maximum_classification is Classification.INTERNAL
+        and profile.maximum_classification is config.maximum_classification
         and profile.residency_attestation.fingerprint
         == canonical_json_hash({**base_evidence, "claim": "residency"})
         and profile.zero_retention_attestation.fingerprint

@@ -48,6 +48,34 @@ class RecordingTransport:
         }
 
 
+class RecordingGeneralTransport:
+    def __init__(self) -> None:
+        self.path = ""
+        self.document: dict[str, object] = {}
+
+    async def post_json(self, *, path: str, document: Mapping[str, object]) -> Mapping[str, Any]:
+        self.path = path
+        self.document = dict(document)
+        return {
+            "choices": [
+                {
+                    "message": {
+                        "tool_calls": [
+                            {
+                                "function": {
+                                    "name": "submit_general_answer",
+                                    "arguments": json.dumps(
+                                        {"answer": "A bounded general answer."}
+                                    ),
+                                },
+                            }
+                        ],
+                    },
+                }
+            ],
+        }
+
+
 def evidence() -> ChatEvidence:
     return build_evidence_chunk(
         workspace_id=uuid4(),
@@ -83,3 +111,20 @@ async def test_openai_compatible_chat_uses_fixed_grounded_tool_contract() -> Non
     }
     assert draft.answer == "The answer is grounded."
     assert draft.cited_chunk_ids == (item.chunk_id,)
+
+
+@pytest.mark.asyncio
+async def test_openai_compatible_chat_uses_separate_general_tool_contract() -> None:
+    transport = RecordingGeneralTransport()
+
+    draft = await OpenAICompatibleGroundedChatComposer(
+        model="approved-chat-model", transport=transport
+    ).compose_general(question="What is an ontology?")
+
+    assert transport.path == "/chat/completions"
+    assert transport.document["tool_choice"] == {
+        "type": "function",
+        "function": {"name": "submit_general_answer"},
+    }
+    assert draft.answer == "A bounded general answer."
+    assert draft.cited_chunk_ids == ()

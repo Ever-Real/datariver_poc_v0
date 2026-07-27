@@ -32,6 +32,7 @@ from datariver.application.ports import (
     CatalogIndexReader,
     ChatAnswerComposer,
     ChatEvidenceReranker,
+    ChatGeneralAnswerComposer,
     ChatPersistenceUnitOfWork,
     ChatQuestionRouter,
     ChatRequestBudgetGuard,
@@ -62,6 +63,8 @@ from datariver.domain.common import ConflictError, ForbiddenError, utc_now, uuid
 from datariver.domain.retention import RetentionPolicyState
 
 UNVERIFIABLE_ANSWER = "검증 불가"
+GENERAL_KNOWLEDGE_PREFIX = "※ 사내 인용 근거가 없어 일반 지식으로 답변합니다.\n\n"
+_MAXIMUM_CHAT_ANSWER_CHARACTERS = 4_000
 _DETERMINISTIC_AUDIT = ChatCompositionAudit(
     provider="datariver",
     model="deterministic-evidence-v1",
@@ -101,6 +104,7 @@ class ChatService:
         subject_access: ChatSubjectAccessReader,
         classification_access: ClassificationAccessResolver | None = None,
         composer: ChatAnswerComposer | None = None,
+        general_composer: ChatGeneralAnswerComposer | None = None,
         composition_audit: ChatCompositionAudit | None = None,
         inference_runtime_bindings: tuple[InferenceRuntimeBinding, ...] = (),
         question_router: ChatQuestionRouter | None = None,
@@ -128,6 +132,7 @@ class ChatService:
         self._subject_access = subject_access
         self._classification_access = classification_access
         self._composer = composer or DeterministicChatAnswerComposer()
+        self._general_composer = general_composer
         self._composition_audit = composition_audit or _DETERMINISTIC_AUDIT
         if len({binding.stage for binding in inference_runtime_bindings}) != len(
             inference_runtime_bindings
@@ -428,23 +433,80 @@ class ChatService:
                         )
                     )
                 elif not ranked_evidence:
-                    answer = UNVERIFIABLE_ANSWER
                     cited_evidence = ()
                     rankings = ()
-                    workflow.extend(
-                        (
-                            self._event(
-                                ChatWorkflowStage.COMPOSITION,
-                                ChatWorkflowStatus.REFUSED,
-                                "NO_AUTHORIZED_EVIDENCE",
-                            ),
-                            self._event(
-                                ChatWorkflowStage.CITATION_VALIDATION,
-                                ChatWorkflowStatus.SKIPPED,
-                                "NO_DRAFT",
-                            ),
+                    if self._general_composer is None:
+                        answer = UNVERIFIABLE_ANSWER
+                        workflow.extend(
+                            (
+                                self._event(
+                                    ChatWorkflowStage.COMPOSITION,
+                                    ChatWorkflowStatus.REFUSED,
+                                    "NO_AUTHORIZED_EVIDENCE",
+                                ),
+                                self._event(
+                                    ChatWorkflowStage.CITATION_VALIDATION,
+                                    ChatWorkflowStatus.SKIPPED,
+                                    "NO_DRAFT",
+                                ),
+                            )
                         )
-                    )
+                    else:
+                        try:
+                            if self._composition_audit.external_service_used:
+                                external_stages.append("composition")
+                            draft = await self._general_composer.compose_general(
+                                question=question,
+                            )
+                            answer = self._validate_general_draft(draft)
+                        except Exception:
+                            route = replace(route, adapter_state=ChatAdapterState.FAILED)
+                            answer = UNVERIFIABLE_ANSWER
+                            workflow.extend(
+                                (
+                                    self._event(
+                                        ChatWorkflowStage.COMPOSITION,
+                                        ChatWorkflowStatus.FAILED,
+                                        "GENERAL_KNOWLEDGE_COMPOSER_FAILED",
+                                    ),
+                                    self._event(
+                                        ChatWorkflowStage.CITATION_VALIDATION,
+                                        ChatWorkflowStatus.SKIPPED,
+                                        "NO_DRAFT",
+                                    ),
+                                )
+                            )
+                        else:
+                            if answer == UNVERIFIABLE_ANSWER:
+                                workflow.extend(
+                                    (
+                                        self._event(
+                                            ChatWorkflowStage.COMPOSITION,
+                                            ChatWorkflowStatus.REFUSED,
+                                            "INVALID_GENERAL_KNOWLEDGE_DRAFT",
+                                        ),
+                                        self._event(
+                                            ChatWorkflowStage.CITATION_VALIDATION,
+                                            ChatWorkflowStatus.SKIPPED,
+                                            "NO_DRAFT",
+                                        ),
+                                    )
+                                )
+                            else:
+                                workflow.extend(
+                                    (
+                                        self._event(
+                                            ChatWorkflowStage.COMPOSITION,
+                                            ChatWorkflowStatus.COMPLETED,
+                                            "GENERAL_KNOWLEDGE_DRAFT_COMPOSED",
+                                        ),
+                                        self._event(
+                                            ChatWorkflowStage.CITATION_VALIDATION,
+                                            ChatWorkflowStatus.SKIPPED,
+                                            "NO_INTERNAL_CITATIONS_GENERAL_ANSWER",
+                                        ),
+                                    )
+                                )
                 else:
                     try:
                         if self._composition_audit.external_service_used:
@@ -847,6 +909,17 @@ class ChatService:
             False,
             True,
         )
+
+    @staticmethod
+    def _validate_general_draft(draft: ChatDraft) -> str:
+        answer = draft.answer.strip()
+        if (
+            draft.cited_chunk_ids
+            or not answer
+            or len(answer) > _MAXIMUM_CHAT_ANSWER_CHARACTERS - len(GENERAL_KNOWLEDGE_PREFIX)
+        ):
+            return UNVERIFIABLE_ANSWER
+        return f"{GENERAL_KNOWLEDGE_PREFIX}{answer}"
 
     async def _resolve_classification_access(
         self,

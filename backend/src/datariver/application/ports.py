@@ -1581,6 +1581,14 @@ class ChatAnswerComposer(Protocol):
     ) -> ChatDraft: ...
 
 
+class ChatGeneralAnswerComposer(Protocol):
+    async def compose_general(
+        self,
+        *,
+        question: str,
+    ) -> ChatDraft: ...
+
+
 class ChatQuestionRouter(Protocol):
     def route(
         self,

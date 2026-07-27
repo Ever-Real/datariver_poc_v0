@@ -15,6 +15,7 @@ from datariver.domain.authz import Classification
 from datariver.domain.common import ValidationError
 from datariver.infrastructure.llm.ollama import (
     LocalOllamaChatComposer,
+    ollama_native_general_chat_request_payload,
     ollama_native_grounded_chat_request_payload,
 )
 
@@ -121,6 +122,51 @@ async def test_composer_uses_one_fixed_tool_and_returns_its_untrusted_draft() ->
 
     assert draft.answer == "Final inspection yield is measured."
     assert draft.cited_chunk_ids == (evidence.chunk_id,)
+
+
+@pytest.mark.asyncio
+async def test_composer_uses_separate_fixed_tool_for_general_knowledge() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        payload = json.loads(request.content)
+        assert payload == ollama_native_general_chat_request_payload(
+            model="gemma4:e2b-it-qat",
+            question="온톨로지가 뭐야?",
+            context_tokens=8192,
+        )
+        assert payload["tools"][0]["function"]["name"] == "submit_general_answer"
+        assert "authorized_evidence" not in payload["messages"][1]["content"]
+        return httpx.Response(
+            200,
+            json={
+                "message": {
+                    "tool_calls": [
+                        {
+                            "function": {
+                                "name": "submit_general_answer",
+                                "arguments": {
+                                    "answer": "온톨로지는 개념과 관계를 구조화합니다.",
+                                },
+                            },
+                        }
+                    ]
+                }
+            },
+        )
+
+    async with httpx.AsyncClient(
+        base_url="http://host.docker.internal:11434/v1",
+        transport=httpx.MockTransport(handler),
+    ) as client:
+        draft = await LocalOllamaChatComposer(
+            base_url="http://host.docker.internal:11434/v1",
+            model="gemma4:e2b-it-qat",
+            timeout_seconds=45,
+            context_tokens=8192,
+            client=client,
+        ).compose_general(question="온톨로지가 뭐야?")
+
+    assert draft.answer == "온톨로지는 개념과 관계를 구조화합니다."
+    assert draft.cited_chunk_ids == ()
 
 
 @pytest.mark.asyncio
