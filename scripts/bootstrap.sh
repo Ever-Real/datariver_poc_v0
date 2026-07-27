@@ -172,6 +172,66 @@ if [ -d "$secrets_dir" ]; then
     fi
   done
 fi
+
+umask 077
+
+set_env_value() {
+  name=$1
+  value=$2
+  temp_file="$env_file.tmp.$$"
+  DATARIVER_BOOTSTRAP_ENV_NAME="$name" \
+    DATARIVER_BOOTSTRAP_ENV_VALUE="$value" \
+    awk '
+      BEGIN {
+        target = ENVIRON["DATARIVER_BOOTSTRAP_ENV_NAME"]
+        replacement = target "=" ENVIRON["DATARIVER_BOOTSTRAP_ENV_VALUE"]
+        emitted = 0
+      }
+      index($0, target "=") == 1 {
+        if (!emitted) {
+          print replacement
+          emitted = 1
+        }
+        next
+      }
+      { print }
+      END {
+        if (!emitted) {
+          print replacement
+        }
+      }
+    ' "$env_file" > "$temp_file"
+  mv "$temp_file" "$env_file"
+}
+
+ensure_required_env_value_from_example() {
+  name=$1
+  current_value=$(sed -n "s/^${name}=//p" "$env_file" | tail -n 1 | tr -d '\r')
+  [ -z "$current_value" ] || return 0
+  value=$(sed -n "s/^${name}=//p" "$root/.env.example" | tail -n 1 | tr -d '\r')
+  if [ -z "$value" ]; then
+    echo "Required environment template value is unavailable: $name" >&2
+    exit 2
+  fi
+  set_env_value "$name" "$value"
+  printf 'Added required environment setting from .env.example: %s\n' "$name"
+}
+
+backfill_required_env_values() {
+  [ -f "$env_file" ] || return 0
+  for required_env_name in \
+    OIDC_AUDIENCE \
+    DATAHUB_EXPECTED_VERSION \
+    S3_BUCKET_QUARANTINE \
+    S3_BUCKET_ACCEPTED; do
+    ensure_required_env_value_from_example "$required_env_name"
+  done
+}
+
+# Existing ignored deployment files are repaired before secret preflight so a
+# missing external token cannot prevent non-secret configuration migration.
+backfill_required_env_values
+
 if [ -n "$datahub_token_file" ]; then
   [ ! -L "$datahub_token_file" ] &&
     [ -f "$datahub_token_file" ] && [ -s "$datahub_token_file" ] &&
@@ -190,6 +250,7 @@ elif [ "$mac_development" != true ]; then
 fi
 
 [ -f "$env_file" ] || cp "$root/.env.example" "$env_file"
+backfill_required_env_values
 
 env_value() {
   env_name=$1
@@ -243,7 +304,6 @@ if [ "$enable_knowledge_source_worker" = true ] &&
   exit 2
 fi
 
-umask 077
 mkdir -p "$secrets_dir"
 mkdir -p "$keycloak_runtime_dir"
 mkdir -p "$identity_runtime_dir"
@@ -393,59 +453,6 @@ sed -e "s/__DEMO_PASSWORD__/$escaped_demo_password/g" \
   "$root/infra/keycloak/datariver-realm.template.json" \
   > "$keycloak_runtime_dir/datariver-realm.json"
 
-set_env_value() {
-  name=$1
-  value=$2
-  temp_file="$env_file.tmp.$$"
-  DATARIVER_BOOTSTRAP_ENV_NAME="$name" \
-    DATARIVER_BOOTSTRAP_ENV_VALUE="$value" \
-    awk '
-      BEGIN {
-        target = ENVIRON["DATARIVER_BOOTSTRAP_ENV_NAME"]
-        replacement = target "=" ENVIRON["DATARIVER_BOOTSTRAP_ENV_VALUE"]
-        emitted = 0
-      }
-      index($0, target "=") == 1 {
-        if (!emitted) {
-          print replacement
-          emitted = 1
-        }
-        next
-      }
-      { print }
-      END {
-        if (!emitted) {
-          print replacement
-        }
-      }
-    ' "$env_file" > "$temp_file"
-  mv "$temp_file" "$env_file"
-}
-
-ensure_required_env_value_from_example() {
-  name=$1
-  [ -z "$(env_value "$name")" ] || return 0
-  value=$(sed -n "s/^${name}=//p" "$root/.env.example" | tail -n 1 | tr -d '\r')
-  if [ -z "$value" ]; then
-    echo "Required environment template value is unavailable: $name" >&2
-    exit 2
-  fi
-  set_env_value "$name" "$value"
-  printf 'Added required environment setting from .env.example: %s\n' "$name"
-}
-
-# Ignored deployment environment files survive source updates and therefore do
-# not receive newly required, non-secret contract values through git pull.
-# Preserve every operator-selected non-empty value and fill only missing values
-# from the reviewed example used for a fresh bootstrap.
-for required_env_name in \
-  OIDC_AUDIENCE \
-  DATAHUB_EXPECTED_VERSION \
-  S3_BUCKET_QUARANTINE \
-  S3_BUCKET_ACCEPTED; do
-  ensure_required_env_value_from_example "$required_env_name"
-done
-
 set_env_value DATARIVER_ENV_FILE "$env_file_argument"
 set_env_value DATARIVER_CONNECTOR_NETWORK datariver-connectors
 # Legacy profiles may still carry the retired database-overlay activation
@@ -469,7 +476,13 @@ if [ "$host_development" = true ]; then
   source_host_neo4j_bolt_port=$(env_value NEO4J_BOLT_PORT)
   [ -n "$source_host_neo4j_bolt_port" ] || source_host_neo4j_bolt_port=17687
   case "$source_host_neo4j_uri" in
-    ""|bolt://neo4j:7687|bolt://neo4j:7687/|neo4j://neo4j:7687|neo4j://neo4j:7687/)
+    ""|\
+    bolt://neo4j:7687|bolt://neo4j:7687/|\
+    neo4j://neo4j:7687|neo4j://neo4j:7687/|\
+    bolt://neo4j:"$source_host_neo4j_bolt_port"|\
+    bolt://neo4j:"$source_host_neo4j_bolt_port"/|\
+    neo4j://neo4j:"$source_host_neo4j_bolt_port"|\
+    neo4j://neo4j:"$source_host_neo4j_bolt_port"/)
       set_env_value NEO4J_URI "bolt://127.0.0.1:$source_host_neo4j_bolt_port"
       set_env_value NEO4J_ALLOWED_HOSTS 127.0.0.1
       ;;

@@ -207,6 +207,53 @@ def test_bootstrap_backfills_required_non_secret_settings_in_legacy_env(
     )
 
 
+def test_bootstrap_backfills_existing_env_before_external_token_preflight(
+    tmp_path: Path,
+) -> None:
+    root = Path(__file__).resolve().parents[3]
+    isolated_root = tmp_path / "repo"
+    _copy_bootstrap_fixture(root, isolated_root)
+    env_path = isolated_root / ".env.wsl-intranet-development"
+    required_names = {
+        "OIDC_AUDIENCE",
+        "DATAHUB_EXPECTED_VERSION",
+        "S3_BUCKET_QUARANTINE",
+        "S3_BUCKET_ACCEPTED",
+    }
+    env_path.write_text(
+        "\n".join(
+            line
+            for line in (isolated_root / ".env.example").read_text(encoding="utf-8").splitlines()
+            if line.split("=", 1)[0] not in required_names
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    result = subprocess.run(  # noqa: S603 - copied repository script is trusted.
+        [
+            str(isolated_root / "scripts/bootstrap.sh"),
+            "--env-file",
+            env_path.name,
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode == 2
+    assert "DataHub token file is required" in result.stderr
+    values = dict(
+        line.split("=", 1)
+        for line in env_path.read_text(encoding="utf-8").splitlines()
+        if line and not line.startswith("#")
+    )
+    assert values["OIDC_AUDIENCE"] == "datariver-api"
+    assert values["DATAHUB_EXPECTED_VERSION"] == "v1.6.0"
+    assert values["S3_BUCKET_QUARANTINE"] == "datariver-quarantine"
+    assert values["S3_BUCKET_ACCEPTED"] == "datariver-accepted"
+
+
 def test_knowledge_source_worker_bootstrap_is_explicit_and_requires_inference_pair(
     tmp_path: Path,
 ) -> None:
@@ -575,6 +622,13 @@ def test_wsl_bootstrap_preserves_preinstalled_token_without_exposing_it(
 
     source_environment_path = isolated_root / ".env.wsl-intranet-development"
     shutil.copy2(environment_path, source_environment_path)
+    source_environment_path.write_text(
+        source_environment_path.read_text(encoding="utf-8").replace(
+            "NEO4J_URI=bolt://neo4j:7687",
+            "NEO4J_URI=bolt://neo4j:17687",
+        ),
+        encoding="utf-8",
+    )
     source_result = subprocess.run(  # noqa: S603 - copied repository script is trusted.
         [
             str(isolated_root / "scripts/bootstrap.sh"),

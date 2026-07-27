@@ -248,6 +248,27 @@ def test_source_host_preflight_translates_container_neo4j_to_selected_host_port(
     }
 
 
+def test_source_host_preflight_repairs_container_host_with_source_host_port(
+    tmp_path: Path,
+) -> None:
+    document = _preflight(
+        _profile(
+            tmp_path,
+            NEO4J_PROJECTION_ENABLED="true",
+            NEO4J_URI="bolt://neo4j:17687",
+            NEO4J_ALLOWED_HOSTS="neo4j",
+            NEO4J_BOLT_PORT="17687",
+        )
+    )
+
+    assert document["neo4j_endpoint"] == {
+        "expected_source_host_port": 17687,
+        "host": "127.0.0.1",
+        "port": 17687,
+        "scheme": "bolt",
+    }
+
+
 def test_source_host_preflight_reports_sanitized_endpoint_on_validation_failure(
     tmp_path: Path,
 ) -> None:

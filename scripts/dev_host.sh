@@ -522,7 +522,12 @@ if [ "${NEO4J_PROJECTION_ENABLED:-false}" = true ]; then
   # only this explicit local topology to its loopback publication. Private TLS
   # endpoints remain unchanged.
   case "${NEO4J_URI:-}" in
-    bolt://neo4j:7687|bolt://neo4j:7687/|neo4j://neo4j:7687|neo4j://neo4j:7687/)
+    bolt://neo4j:7687|bolt://neo4j:7687/|\
+    neo4j://neo4j:7687|neo4j://neo4j:7687/|\
+    bolt://neo4j:"${NEO4J_BOLT_PORT:-17687}"|\
+    bolt://neo4j:"${NEO4J_BOLT_PORT:-17687}"/|\
+    neo4j://neo4j:"${NEO4J_BOLT_PORT:-17687}"|\
+    neo4j://neo4j:"${NEO4J_BOLT_PORT:-17687}"/)
       export NEO4J_URI="bolt://127.0.0.1:${NEO4J_BOLT_PORT:-17687}"
       export NEO4J_ALLOWED_HOSTS=127.0.0.1
       ;;
