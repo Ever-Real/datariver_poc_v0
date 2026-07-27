@@ -101,6 +101,25 @@ LOCAL_DEMO_IDENTITIES = (
 )
 
 
+def _local_human_membership_attributes(
+    *,
+    groups: tuple[str, ...],
+    allowed_actions: tuple[Action, ...],
+    bootstrap: str,
+) -> dict[str, object]:
+    """Build the single-Workspace local identity authorization envelope."""
+
+    return {
+        "groups": list(groups),
+        "allowed_actions": [action.value for action in allowed_actions],
+        "denied_actions": [],
+        "allowed_system_ids": [],
+        "allowed_domain_ids": [],
+        "default_workspace": True,
+        "bootstrap": bootstrap,
+    }
+
+
 def _local_demo_identities(
     state_path: Path = LOCAL_DEMO_IDENTITIES_PATH,
 ) -> tuple[LocalDemoIdentity, ...]:
@@ -199,16 +218,13 @@ async def bootstrap_local_identity() -> dict[str, object]:
                 WorkspaceMembershipModel,
                 {"workspace_id": workspace.id, "subject_id": subject.id},
             )
-            attributes = {
-                "groups": ["security-administrators"],
-                "allowed_actions": [
-                    action.value for action in Action if action is not Action.CHANGE_RAW_CREATE
-                ],
-                "denied_actions": [],
-                "allowed_system_ids": [],
-                "allowed_domain_ids": [],
-                "bootstrap": "local-identity-v1",
-            }
+            attributes = _local_human_membership_attributes(
+                groups=("security-administrators",),
+                allowed_actions=tuple(
+                    action for action in Action if action is not Action.CHANGE_RAW_CREATE
+                ),
+                bootstrap="local-identity-v1",
+            )
             if membership is None:
                 session.add(
                     WorkspaceMembershipModel(
@@ -226,6 +242,7 @@ async def bootstrap_local_identity() -> dict[str, object]:
                 membership.clearance = int(Classification.RESTRICTED)
                 membership.attributes = attributes
                 membership.active = True
+                membership.access_expires_at = add_calendar_months(utc_now(), 6)
             airflow_subject = await session.get(SubjectModel, LOCAL_AIRFLOW_SUBJECT_ID)
             identity_airflow_subject = (
                 await session.scalars(
@@ -324,14 +341,11 @@ async def bootstrap_local_identity() -> dict[str, object]:
                     WorkspaceMembershipModel,
                     {"workspace_id": workspace.id, "subject_id": demo_subject.id},
                 )
-                demo_attributes = {
-                    "groups": list(demo.groups),
-                    "allowed_actions": [action.value for action in demo.allowed_actions],
-                    "denied_actions": [],
-                    "allowed_system_ids": [],
-                    "allowed_domain_ids": [],
-                    "bootstrap": "local-demo-identities-v1",
-                }
+                demo_attributes = _local_human_membership_attributes(
+                    groups=demo.groups,
+                    allowed_actions=demo.allowed_actions,
+                    bootstrap="local-demo-identities-v1",
+                )
                 if demo_membership is None:
                     session.add(
                         WorkspaceMembershipModel(

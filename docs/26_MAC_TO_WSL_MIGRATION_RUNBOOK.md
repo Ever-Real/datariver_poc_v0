@@ -148,6 +148,12 @@ artifact. The archive is accepted only for Linux x86_64, Python 3.12.12 and uv 0
 idempotent runtime-role reconciliation both before and after Alembic. Do not replace it with a bare
 host `alembic upgrade` invocation.
 
+After migration, `dev_host.sh bootstrap-identity` applies the non-production local Workspace and
+identity contract directly from the checked-out source. It is idempotent, marks each local human
+membership's only Workspace as the server default, and avoids depending on an older immutable
+`local-bootstrap` image during rapid source validation. Development profiles hide the manual
+Workspace selector by default; Workspace-scoped ABAC, cache keys and RLS remain mandatory.
+
 If `runtime/operator-workflow/wsl-preparation.json` does not exist, the explicit
 `--env-file` automatically selects registry-disabled local-image reuse. It verifies the configured
 PostgreSQL and final Keycloak images as `linux/amd64` before mutation and starts them with

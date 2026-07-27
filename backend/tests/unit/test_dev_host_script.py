@@ -414,3 +414,15 @@ def test_optional_source_processes_are_required_only_when_enabled() -> None:
     assert "required_processes+=(airflow-api-bridge)" in source
     assert "required_processes+=(knowledge-source-worker)" in source
     assert 'export NEO4J_AUTH_SECRET_REF="$(secret_ref neo4j_auth)"' in source
+
+
+def test_source_host_exposes_idempotent_local_identity_bootstrap() -> None:
+    source = (ROOT / "scripts/dev_host.sh").read_text(encoding="utf-8")
+
+    assert "bootstrap-identity" in source
+    assert (
+        'BOOTSTRAP_DATABASE_URL="postgresql+asyncpg://datariver_bootstrap@127.0.0.1:'
+        '$postgres_port/datariver"'
+    ) in source
+    assert 'BOOTSTRAP_DATABASE_SECRET_REF="$(secret_ref postgres_bootstrap_password)"' in source
+    assert "-m datariver.bootstrap local-identity" in source

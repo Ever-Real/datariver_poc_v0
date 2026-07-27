@@ -53,7 +53,7 @@ export function App() {
     authorizationRevision: 0,
     status: 'checking',
   })
-  const workspaceSelectionEnabled = auth.profile?.workspace_selection_enabled !== false
+  const workspaceSelectionEnabled = auth.profile?.workspace_selection_enabled === true
   const activeWorkspace = workspaceSelectionEnabled
     ? workspace
     : auth.profile?.default_workspace_id ?? ''

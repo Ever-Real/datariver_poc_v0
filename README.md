@@ -678,6 +678,7 @@ UV_CACHE_DIR="$uv_cache_parent/uv" uv sync --frozen --all-extras --offline
 # 새 checkout이거나 lock 변경 시에만 검증된 npm cache/사내 mirror로 아래를 수행한다.
 (cd frontend && npm ci --offline --no-audit --no-fund)
 ./scripts/dev_host.sh --env-file .env.wsl-intranet-development migrate
+./scripts/dev_host.sh --env-file .env.wsl-intranet-development bootstrap-identity
 ./scripts/dev_host.sh --env-file .env.wsl-intranet-development preflight
 ./scripts/dev_host.sh --env-file .env.wsl-intranet-development start
 ./scripts/dev_host.sh --env-file .env.wsl-intranet-development status
@@ -691,7 +692,10 @@ UV_CACHE_DIR="$uv_cache_parent/uv" uv sync --frozen --all-extras --offline
 local tag, image ID와 platform을 묶어 검증하고 load까지 수행한다. `preflight` JSON의
 `environment_file`과 `neo4j_endpoint`는 실제 선택 파일 및 scheme/host/port를 표시하되 credential은
 출력하지 않는다. Source-host `migrate`는 mounted PostgreSQL owner secret으로 runtime role을
-마이그레이션 전후에 자동 조정한다.
+마이그레이션 전후에 자동 조정한다. `bootstrap-identity`는 source checkout의 비운영 단일
+Workspace 및 로컬 identity 계약을 idempotent하게 재적용한다. 기본 Workspace는 서버가
+선택하고 `WORKSPACE_SELECTION_ENABLED=false`인 기본 개발 프로필은 사용자에게 Workspace ID나
+전환 UI를 노출하지 않는다.
 
 Uvicorn, Vite, PostgreSQL, Redis와 Keycloak upstream은 계속 WSL의 `127.0.0.1`에만 bind한다.
 사내망에는 Nginx `443` 하나만 공개한다. 사내 CA에서 발급받은 certificate/key를

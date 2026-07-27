@@ -473,6 +473,7 @@ if [ "$host_development" = true ]; then
   set_env_value IDENTITY_ADMIN_CLIENT_SECRET_REF file:/run/secrets/keycloak_identity_admin_client_secret
   set_env_value IDENTITY_PASSWORD_CHANGE_ACTION_ENABLED true
   set_env_value OIDC_HARDWARE_WEBAUTHN_ENABLED false
+  set_env_value WORKSPACE_SELECTION_ENABLED false
   set_env_value INTRANET_SOURCE_HOST_ENABLED "$intranet_source_host"
 fi
 if [ "$portable_development" = true ]; then
@@ -498,6 +499,7 @@ if [ "$portable_development" = true ]; then
   set_env_value IDENTITY_ADMIN_CLIENT_SECRET_REF file:/run/secrets/keycloak_identity_admin_client_secret
   set_env_value IDENTITY_PASSWORD_CHANGE_ACTION_ENABLED true
   set_env_value OIDC_HARDWARE_WEBAUTHN_ENABLED false
+  set_env_value WORKSPACE_SELECTION_ENABLED false
 fi
 if [ "$mac_development" = true ]; then
   # Keep this Mac development topology disjoint from common local DataHub,
@@ -522,6 +524,7 @@ if [ "$mac_development" = true ]; then
   set_env_value IDENTITY_ADMIN_CLIENT_SECRET_REF file:/run/secrets/keycloak_identity_admin_client_secret
   set_env_value IDENTITY_PASSWORD_CHANGE_ACTION_ENABLED true
   set_env_value OIDC_HARDWARE_WEBAUTHN_ENABLED false
+  set_env_value WORKSPACE_SELECTION_ENABLED false
   set_env_value DATAHUB_BASE_URL http://host.docker.internal:8080
   # MinIO Community supports exact cluster-wide CORS, not PutBucketCors.
   set_env_value S3_CORS_MANAGEMENT_MODE external
@@ -550,6 +553,7 @@ if [ "$wsl_preparation" = true ]; then
   set_env_value OIDC_JWKS_URL http://keycloak:8080/realms/datariver/protocol/openid-connect/certs
   set_env_value OIDC_PUBLIC_AUTHORITY http://localhost:8081/realms/datariver
   set_env_value OIDC_PUBLIC_ORIGIN http://localhost:8081
+  set_env_value WORKSPACE_SELECTION_ENABLED false
   set_env_value REDIS_CACHE_URL redis://redis-cache:6379/0
   set_env_value REDIS_DELIVERY_URL redis://redis-delivery:6379/0
   set_env_value DATABASE_POOL_SIZE 4

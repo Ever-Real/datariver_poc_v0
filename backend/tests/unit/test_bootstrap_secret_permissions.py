@@ -9,7 +9,11 @@ from pathlib import Path
 
 import pytest
 
-from datariver.bootstrap import LOCAL_DEMO_IDENTITIES, _local_demo_identities
+from datariver.bootstrap import (
+    LOCAL_DEMO_IDENTITIES,
+    _local_demo_identities,
+    _local_human_membership_attributes,
+)
 from datariver.domain.authz import Action
 
 
@@ -98,6 +102,18 @@ def test_local_demo_identities_match_keycloak_and_use_balanced_human_roles(
     )
     with pytest.raises(RuntimeError, match="state file is invalid"):
         _local_demo_identities(state_path)
+
+
+def test_local_human_memberships_select_the_single_workspace_by_default() -> None:
+    attributes = _local_human_membership_attributes(
+        groups=("data-analysts",),
+        allowed_actions=(Action.CATALOG_READ,),
+        bootstrap="test-local-identity",
+    )
+
+    assert attributes["default_workspace"] is True
+    assert attributes["groups"] == ["data-analysts"]
+    assert attributes["allowed_actions"] == [Action.CATALOG_READ.value]
 
 
 def test_bootstrap_migrates_demo_identity_state_out_of_keycloak_import(
@@ -331,6 +347,7 @@ def test_portable_bootstrap_keeps_inference_disabled_and_uses_generic_ports(
     assert "LOCAL_LLAMA_CPP_RERANKER_ENABLED=false" in values
     assert "NEO4J_PROJECTION_ENABLED=false" in values
     assert "KNOWLEDGE_PIPELINE_ENABLED=false" in values
+    assert "WORKSPACE_SELECTION_ENABLED=false" in values
     assert "SYSTEM_CONFIGURATION_RUNTIME_ACTIVATION_ENABLED=false" in values
     assert "SYSTEM_CONFIGURATION_RUNTIME_ACTIVATION_ENABLED=true" not in values
 
@@ -376,6 +393,7 @@ def test_linux_intranet_source_host_bootstrap_persists_distinct_https_origins(
     values = (isolated_root / ".env.wsl-intranet-development").read_text(encoding="utf-8")
     assert "APP_ENV=development" in values
     assert "INTRANET_SOURCE_HOST_ENABLED=true" in values
+    assert "WORKSPACE_SELECTION_ENABLED=false" in values
     assert "APP_PUBLIC_ORIGIN=https://datariver-prep.example.internal" in values
     assert "OIDC_PUBLIC_ORIGIN=https://identity-prep.example.internal" in values
     assert (
@@ -497,6 +515,7 @@ def test_wsl_bootstrap_preserves_preinstalled_token_without_exposing_it(
         "NEO4J_ALLOWED_HOSTS=neo4j",
         "NEO4J_AUTH_SECRET_REF=file:/run/secrets/neo4j_auth",
         "KNOWLEDGE_SOURCE_WORKER_ENABLED=false",
+        "WORKSPACE_SELECTION_ENABLED=false",
     ):
         assert expected in environment
 

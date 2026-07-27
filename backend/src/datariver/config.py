@@ -79,7 +79,7 @@ class Settings(BaseSettings):
     oidc_hardware_webauthn_enabled: bool = False
     # This controls only the manual workspace selector. The verified default
     # workspace, workspace-scoped ABAC and PostgreSQL RLS always remain active.
-    workspace_selection_enabled: bool = True
+    workspace_selection_enabled: bool = False
     oidc_password_reauth_acr_values: tuple[str, ...] = ("1",)
     oidc_password_amr_values: tuple[str, ...] = ("pwd",)
     # Optional, operator-provisioned Keycloak control plane. The API receives

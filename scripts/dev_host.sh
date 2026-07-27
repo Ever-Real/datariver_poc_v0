@@ -52,7 +52,7 @@ enable_airflow_source_bridge=$airflow_source_api_bridge_enabled
 
 usage() {
   cat <<'EOF'
-Usage: scripts/dev_host.sh [start|stop|status|migrate|preflight] [options]
+Usage: scripts/dev_host.sh [start|stop|status|migrate|bootstrap-identity|preflight] [options]
 
 Run the mutable DataRiver API, core workers, optional Knowledge source worker and Vite from
 the checked-out source.
@@ -63,6 +63,10 @@ The `migrate` action applies the Alembic migrations from this checkout using the
 local PostgreSQL owner credential. Use it after pulling a source revision that
 contains a database migration; it does not use the immutable migration image
 from an offline bundle.
+
+The `bootstrap-identity` action idempotently applies the non-production local
+Workspace and human/service identities from this checkout. Run it after
+`migrate` on a new source host or when the local identity contract changes.
 
 Options:
   --env-file FILE          Ignored deployment environment file (default: DATARIVER_ENV_FILE or .env).
@@ -89,7 +93,7 @@ EOF
 
 while [ "$#" -gt 0 ]; do
   case "$1" in
-    start|stop|status|migrate|preflight)
+    start|stop|status|migrate|bootstrap-identity|preflight)
       action=$1
       ;;
     --env-file)
@@ -399,6 +403,9 @@ if [ "$action" = start ] && [ "$enable_airflow_source_bridge" = true ] && ! comm
 fi
 
 required_secrets=(postgres_password)
+if [ "$action" = bootstrap-identity ]; then
+  required_secrets+=(postgres_bootstrap_password)
+fi
 if [ "$action" = start ]; then
   required_secrets+=(
     postgres_app_password postgres_relay_password postgres_upload_password
@@ -434,7 +441,7 @@ PY
   exit 2
 }
 
-if [ "$action" = start ] || [ "$action" = migrate ]; then
+if [ "$action" = start ] || [ "$action" = migrate ] || [ "$action" = bootstrap-identity ]; then
   require_postgres_listener
 fi
 for required in "${required_secrets[@]}"; do
@@ -575,6 +582,8 @@ export DATABASE_URL="postgresql+asyncpg://datariver_app@127.0.0.1:$postgres_port
 export DATABASE_SECRET_REF="$(secret_ref postgres_app_password)"
 export MIGRATION_DATABASE_URL="postgresql+asyncpg://datariver_owner@127.0.0.1:$postgres_port/datariver"
 export MIGRATION_DATABASE_SECRET_REF="$(secret_ref postgres_password)"
+export BOOTSTRAP_DATABASE_URL="postgresql+asyncpg://datariver_bootstrap@127.0.0.1:$postgres_port/datariver"
+export BOOTSTRAP_DATABASE_SECRET_REF="$(secret_ref postgres_bootstrap_password)"
 export RELAY_DATABASE_URL="postgresql+asyncpg://datariver_relay@127.0.0.1:$postgres_port/datariver"
 export RELAY_DATABASE_SECRET_REF="$(secret_ref postgres_relay_password)"
 export UPLOAD_DATABASE_URL="postgresql+asyncpg://datariver_upload@127.0.0.1:$postgres_port/datariver"
@@ -626,6 +635,10 @@ if [ "$action" = migrate ]; then
   "$python" -m alembic -c "$root/backend/alembic.ini" upgrade head
   DATARIVER_ENV_FILE="$env_file_argument" "$root/scripts/reconcile-postgres-roles.sh"
   exit 0
+fi
+
+if [ "$action" = bootstrap-identity ]; then
+  PYTHONPATH="$root/backend/src" exec "$python" -m datariver.bootstrap local-identity
 fi
 
 if [ "$action" = preflight ]; then

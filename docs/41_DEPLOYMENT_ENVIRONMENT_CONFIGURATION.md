@@ -125,8 +125,9 @@ Portable and WSL profiles never start this Mac-only bridge.
   `APP_TRUSTED_HOSTS`, `INTRANET_SOURCE_HOST_ENABLED`, `DEPLOYMENT_TIER`, `API_PORT`, `WEB_PORT`
 - `UI_DATAHUB_URL`, `UI_AIRFLOW_URL`, `UI_GRAFANA_URL`, `UI_PROMETHEUS_URL`,
   `UI_GRAPH_URL`
-- `WORKSPACE_SELECTION_ENABLED` hides manual selection when false but never disables Workspace,
-  ABAC or RLS request scope.
+- `WORKSPACE_SELECTION_ENABLED` defaults to false and hides manual selection while retaining the
+  server-selected Workspace, ABAC and RLS request scope. Enable it only for a reviewed
+  multi-Workspace deployment whose users must switch memberships.
 
 ### PostgreSQL
 
