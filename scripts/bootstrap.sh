@@ -422,6 +422,30 @@ set_env_value() {
   mv "$temp_file" "$env_file"
 }
 
+ensure_required_env_value_from_example() {
+  name=$1
+  [ -z "$(env_value "$name")" ] || return 0
+  value=$(sed -n "s/^${name}=//p" "$root/.env.example" | tail -n 1 | tr -d '\r')
+  if [ -z "$value" ]; then
+    echo "Required environment template value is unavailable: $name" >&2
+    exit 2
+  fi
+  set_env_value "$name" "$value"
+  printf 'Added required environment setting from .env.example: %s\n' "$name"
+}
+
+# Ignored deployment environment files survive source updates and therefore do
+# not receive newly required, non-secret contract values through git pull.
+# Preserve every operator-selected non-empty value and fill only missing values
+# from the reviewed example used for a fresh bootstrap.
+for required_env_name in \
+  OIDC_AUDIENCE \
+  DATAHUB_EXPECTED_VERSION \
+  S3_BUCKET_QUARANTINE \
+  S3_BUCKET_ACCEPTED; do
+  ensure_required_env_value_from_example "$required_env_name"
+done
+
 set_env_value DATARIVER_ENV_FILE "$env_file_argument"
 set_env_value DATARIVER_CONNECTOR_NETWORK datariver-connectors
 # Legacy profiles may still carry the retired database-overlay activation

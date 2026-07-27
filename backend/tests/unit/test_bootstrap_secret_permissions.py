@@ -153,6 +153,60 @@ def test_bootstrap_migrates_demo_identity_state_out_of_keycloak_import(
     assert migrated_state.stat().st_mode & 0o777 == 0o600
 
 
+def test_bootstrap_backfills_required_non_secret_settings_in_legacy_env(
+    tmp_path: Path,
+) -> None:
+    root = Path(__file__).resolve().parents[3]
+    isolated_root = tmp_path / "repo"
+    _copy_bootstrap_fixture(root, isolated_root)
+    env_path = isolated_root / ".env.wsl-intranet-development"
+    required_names = {
+        "OIDC_AUDIENCE",
+        "DATAHUB_EXPECTED_VERSION",
+        "S3_BUCKET_QUARANTINE",
+        "S3_BUCKET_ACCEPTED",
+    }
+    legacy_lines = [
+        line
+        for line in (isolated_root / ".env.example").read_text(encoding="utf-8").splitlines()
+        if line.split("=", 1)[0] not in required_names
+    ]
+    legacy_lines.append("OIDC_AUDIENCE=operator-selected-audience")
+    env_path.write_text("\n".join(legacy_lines) + "\n", encoding="utf-8")
+    approved_token = isolated_root / "approved-datahub-token"
+    approved_token.write_text("test-only-datahub-token", encoding="utf-8")
+
+    result = subprocess.run(  # noqa: S603 - copied repository script is trusted.
+        [
+            str(isolated_root / "scripts/bootstrap.sh"),
+            "--env-file",
+            env_path.name,
+            "--datahub-token-file",
+            str(approved_token),
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode == 0, result.stderr
+    values = dict(
+        line.split("=", 1)
+        for line in env_path.read_text(encoding="utf-8").splitlines()
+        if line and not line.startswith("#")
+    )
+    assert values["OIDC_AUDIENCE"] == "operator-selected-audience"
+    assert values["DATAHUB_EXPECTED_VERSION"] == "v1.6.0"
+    assert values["S3_BUCKET_QUARANTINE"] == "datariver-quarantine"
+    assert values["S3_BUCKET_ACCEPTED"] == "datariver-accepted"
+    assert "Added required environment setting from .env.example: OIDC_AUDIENCE" not in (
+        result.stdout
+    )
+    assert "Added required environment setting from .env.example: DATAHUB_EXPECTED_VERSION" in (
+        result.stdout
+    )
+
+
 def test_knowledge_source_worker_bootstrap_is_explicit_and_requires_inference_pair(
     tmp_path: Path,
 ) -> None:
