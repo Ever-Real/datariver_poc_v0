@@ -29,6 +29,16 @@ authoritative; an agent may not silently relax a security invariant or productio
 - Direct-to-`dev` publication does not waive security, schema or production evidence requirements.
   Report incomplete gates honestly and do not use a branch-policy shortcut to bypass them.
 
+## Preparation-PC delivery policy
+
+- Do not use Docker images, containers or registries to transfer or deploy the application between
+  the development PC and the preparation PC.
+- Transfer source through `origin/dev` and transfer approved, checksum-verified dependency
+  artifacts separately when the preparation PC cannot reach an external package index.
+- Build platform-specific dependency artifacts on a connected host that matches the preparation
+  PC's operating system, CPU architecture and pinned toolchain. Platform-independent wheels may be
+  prepared on another host only when their lockfile hash and artifact checksum are verified.
+
 ## Recommended review roles
 
 | Role | Bounded responsibility | Required evidence |

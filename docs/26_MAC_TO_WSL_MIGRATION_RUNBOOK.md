@@ -144,6 +144,17 @@ The same distribution checkout contains the checksum- and manifest-backed
 required closed-network path for packages such as `pypdf`; the lockfile alone is not a package
 artifact. The archive is accepted only for Linux x86_64, Python 3.12.12 and uv 0.9.17.
 
+Application source moves between the development and preparation PCs through `origin/dev`, not
+through Docker images, containers or registries. Dependency artifacts move separately through the
+approved artifact channel with checksums. For lock
+`b8ad0fba29c22c70edb0405c202900b3a9491355f2e5df521ed441d3701036ff`, the previous
+`a66012e1308b` Linux x86_64 cache can be supplemented with the lock-pinned, platform-independent
+`pypdf-6.14.2-py3-none-any.whl`: verify its `3f07891a...` checksum, install it into `.venv` with
+`uv pip install --offline --no-index --find-links`, and then run the frozen offline sync. Do not
+assume that `uv sync --find-links` alone is sufficient: a frozen registry lock retains the exact
+artifact URL. This exception is valid only for those two stated lock hashes; later lock changes
+require a complete matching cache.
+
 `dev_host.sh migrate` authenticates from the mounted PostgreSQL owner secret and runs the
 idempotent runtime-role reconciliation both before and after Alembic. Do not replace it with a bare
 host `alembic upgrade` invocation.

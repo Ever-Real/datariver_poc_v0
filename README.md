@@ -662,16 +662,49 @@ docker port datariver-local-connectors-redis-delivery-1 6379
 ./scripts/configure_keycloak_host_dev.sh \
   --env-file .env.wsl-intranet-development
 
-# 별도 AMD64 배포 저장소에서 이 uv.lock 전용 Linux x86_64 cache를 먼저 검증·반입한다.
-python_cache_bundle=../datariver-platform-amd64-distribution/datariver-uv-cache-linux-x86_64-a66012e1308b.tar.gz
-(cd ../datariver-platform-amd64-distribution && \
-  sha256sum -c "$(basename "$python_cache_bundle").sha256")
-test "$(sha256sum uv.lock | awk '{print $1}')" = \
-  "$(awk -F '\t' '$1 == "lock_sha256" {print $2}' \
-    "${python_cache_bundle%.tar.gz}.manifest.tsv")"
+# 승인된 artifact 경로에서 이 uv.lock 전용 Linux x86_64 cache를 먼저 검증·반입한다.
+# 개발 PC와 준비 PC 사이에서 Docker image/container/registry를 배포 수단으로 사용하지 않는다.
+approved_artifact_dir=../datariver-offline-artifacts
+lock_hash=$(sha256sum uv.lock | awk '{print $1}')
+python_cache_bundle="$approved_artifact_dir/datariver-uv-cache-linux-x86_64-${lock_hash:0:12}.tar.gz"
 uv_cache_parent=${XDG_CACHE_HOME:-"$HOME/.cache"}
 mkdir -p "$uv_cache_parent"
-tar -xzf "$python_cache_bundle" -C "$uv_cache_parent"
+
+if [ -f "$python_cache_bundle" ]; then
+  (cd "$approved_artifact_dir" && \
+    sha256sum -c "$(basename "$python_cache_bundle").sha256")
+  test "$lock_hash" = \
+    "$(awk -F '\t' '$1 == "lock_sha256" {print $2}' \
+      "${python_cache_bundle%.tar.gz}.manifest.tsv")"
+  tar -xzf "$python_cache_bundle" -C "$uv_cache_parent"
+else
+  # 현재 lock에 일치하는 전체 cache가 없고 기존 a66012e1308b cache만 있는 경우의 보완 경로다.
+  # 두 lock의 Python dependency 차이는 pypdf 6.13.3 -> 6.14.2 하나다.
+  legacy_python_cache_bundle="$approved_artifact_dir/datariver-uv-cache-linux-x86_64-a66012e1308b.tar.gz"
+  legacy_python_manifest="${legacy_python_cache_bundle%.tar.gz}.manifest.tsv"
+  pypdf_wheel_dir="$approved_artifact_dir/pypdf-6.14.2"
+  test "$lock_hash" = "b8ad0fba29c22c70edb0405c202900b3a9491355f2e5df521ed441d3701036ff"
+  test "$(awk -F '\t' '$1 == "lock_sha256" {print $2}' "$legacy_python_manifest")" = \
+    "a66012e1308be317e49c1768aaabc0d99c3b5a33e741cba2e5d7999d12e87cad"
+  test "$(awk -F '\t' '$1 == "platform" {print $2}' "$legacy_python_manifest")" = \
+    "linux/x86_64"
+  test "$(uv --version)" = "uv 0.9.17"
+  test "$(python3.12 --version)" = "Python 3.12.12"
+  (cd "$approved_artifact_dir" && \
+    sha256sum -c "$(basename "$legacy_python_cache_bundle").sha256")
+  (cd "$pypdf_wheel_dir" && \
+    sha256sum -c pypdf-6.14.2-py3-none-any.whl.sha256)
+  tar -xzf "$legacy_python_cache_bundle" -C "$uv_cache_parent"
+  if [ ! -x .venv/bin/python ]; then
+    uv venv --python 3.12
+  fi
+  UV_CACHE_DIR="$uv_cache_parent/uv" uv pip install \
+    --offline \
+    --no-index \
+    --find-links "$pypdf_wheel_dir" \
+    pypdf==6.14.2 \
+    --python .venv/bin/python
+fi
 UV_CACHE_DIR="$uv_cache_parent/uv" uv sync --frozen --all-extras --offline
 
 # 현재 준비 PC에서 이미 성공한 node_modules는 package-lock 변경 전까지 재사용한다.
