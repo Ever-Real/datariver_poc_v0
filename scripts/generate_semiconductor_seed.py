@@ -23,7 +23,7 @@ from dataclasses import asdict, dataclass
 from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any, Literal, cast
 from urllib.parse import quote
 
 import asyncpg  # type: ignore[import-untyped]
@@ -38,6 +38,8 @@ DEFAULT_BATCH_SIZE = 25
 # Keep this deliberately small; each entity emits three aspects.
 DEFAULT_DATAHUB_BATCH_SIZE = 5
 SEED_NAMESPACE = uuid.UUID("3a1db548-b76a-48e2-9e8f-2e3a93fe7f2a")
+SEED_CLASSIFICATIONS = ("PUBLIC", "INTERNAL", "CONFIDENTIAL", "RESTRICTED")
+SeedClassification = Literal["PUBLIC", "INTERNAL", "CONFIDENTIAL", "RESTRICTED"]
 
 
 @dataclass(frozen=True)
@@ -556,6 +558,17 @@ def datahub_governance_taxonomy() -> DataHubGovernanceTaxonomy:
         for _, stage_id, label in sorted(set(STAGE_FOR_FAMILY.values()), key=lambda value: value[1])
     )
     static_tags = (
+        *(
+            TagSpec(
+                f"datariver_classification_{classification.casefold()}",
+                f"CLASSIFICATION:{classification}",
+                (
+                    "Explicit DataRiver classification for operator-selected synthetic "
+                    "seed metadata."
+                ),
+            )
+            for classification in SEED_CLASSIFICATIONS
+        ),
         TagSpec(
             "datariver_semiconductor",
             "Semiconductor",
@@ -1072,7 +1085,10 @@ def entity_family_and_scenario(entity: EntitySpec) -> tuple[Family, str]:
     raise AssertionError(f"Generated entity has no semiconductor taxonomy mapping: {entity.name}")
 
 
-def datahub_entity_governance(entity: EntitySpec) -> tuple[tuple[str, ...], tuple[str, ...]]:
+def datahub_entity_governance(
+    entity: EntitySpec,
+    classification: SeedClassification | None = None,
+) -> tuple[tuple[str, ...], tuple[str, ...]]:
     """Return deterministic dataset-level (term URNs, tag URNs)."""
     family, scenario = entity_family_and_scenario(entity)
     _, stage_id, _ = STAGE_FOR_FAMILY[family.slug]
@@ -1081,6 +1097,7 @@ def datahub_entity_governance(entity: EntitySpec) -> tuple[tuple[str, ...], tupl
         "urn:li:glossaryTerm:semiconductor_scenario",
     )
     tag_ids = (
+        *((f"datariver_classification_{classification.casefold()}",) if classification else ()),
         "datariver_semiconductor",
         "datariver_seed",
         "datariver_synthetic",
@@ -1178,10 +1195,14 @@ def canonical_hash(document: dict[str, Any]) -> str:
     return hashlib.sha256(payload).hexdigest()
 
 
-def aspect_documents(entity: EntitySpec, run_id: str) -> tuple[tuple[str, dict[str, Any]], ...]:
+def aspect_documents(
+    entity: EntitySpec,
+    run_id: str,
+    classification: SeedClassification | None = None,
+) -> tuple[tuple[str, dict[str, Any]], ...]:
     platform_urn = f"urn:li:dataPlatform:{entity.platform}"
     schema_fields = datahub_schema_fields(entity)
-    glossary_terms, tags = datahub_entity_governance(entity)
+    glossary_terms, tags = datahub_entity_governance(entity, classification)
     schema_document = {
         "schemaName": entity.qualified_name,
         "platform": platform_urn,
@@ -1454,6 +1475,7 @@ async def ingest_datahub(
     token: str,
     batch_size: int,
     run_id: str,
+    classification: SeedClassification | None = None,
     on_progress: Callable[[int], None] | None = None,
 ) -> None:
     headers = {"Authorization": f"Bearer {token}"} if token else {}
@@ -1467,7 +1489,11 @@ async def ingest_datahub(
             batch = entities[offset : offset + batch_size]
 
             async def ingest_entity(entity: EntitySpec) -> None:
-                for aspect_name, document in aspect_documents(entity, run_id):
+                for aspect_name, document in aspect_documents(
+                    entity,
+                    run_id,
+                    classification,
+                ):
                     await post_aspect(
                         client,
                         entity=entity,
@@ -1489,6 +1515,7 @@ async def verify_datahub_entities(
     datahub_url: str,
     token: str,
     batch_size: int,
+    classification: SeedClassification | None = None,
     on_progress: Callable[[int], None] | None = None,
 ) -> int:
     headers = {"Authorization": f"Bearer {token}"} if token else {}
@@ -1506,7 +1533,10 @@ async def verify_datahub_entities(
                 )
                 if not isinstance(properties.get("name"), str):
                     return False
-                expected_terms, expected_tags = datahub_entity_governance(entity)
+                expected_terms, expected_tags = datahub_entity_governance(
+                    entity,
+                    classification,
+                )
                 tags = await read_datahub_aspect(
                     client, entity_urn=entity.urn, aspect_name="globalTags"
                 )
@@ -1601,6 +1631,17 @@ def parse_nonnegative(value: str) -> int:
     return parsed
 
 
+def parse_seed_classification(value: str) -> SeedClassification | None:
+    normalized = value.strip().upper()
+    if normalized == "NONE":
+        return None
+    if normalized not in SEED_CLASSIFICATIONS:
+        raise argparse.ArgumentTypeError(
+            "DataHub classification must be NONE, PUBLIC, INTERNAL, CONFIDENTIAL, or RESTRICTED"
+        )
+    return cast(SeedClassification, normalized)
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
@@ -1646,6 +1687,16 @@ def build_parser() -> argparse.ArgumentParser:
         type=parse_nonnegative,
         default=0,
         help="Resume a bounded DataHub emission range without reprocessing earlier entities.",
+    )
+    parser.add_argument(
+        "--datahub-classification",
+        type=parse_seed_classification,
+        default=None,
+        metavar="NONE|PUBLIC|INTERNAL|CONFIDENTIAL|RESTRICTED",
+        help=(
+            "Explicit classification tag for the selected synthetic DataHub entities; "
+            "the default NONE preserves fail-closed quarantine."
+        ),
     )
     parser.add_argument(
         "--postgres-host", default=os.getenv("SEMICONDUCTOR_POSTGRES_HOST", "127.0.0.1")
@@ -1707,6 +1758,7 @@ async def async_main(arguments: argparse.Namespace) -> int:
             "scenarios": SCENARIOS,
             "rows_per_table": arguments.rows_per_table,
             "entity_scope": arguments.entity_scope,
+            "datahub_classification": arguments.datahub_classification,
         }
     )[:20]
     output_directory = arguments.output_dir
@@ -1730,6 +1782,7 @@ async def async_main(arguments: argparse.Namespace) -> int:
             "entities_ingested": 0,
             "entities_verified": 0,
             "start_index": arguments.datahub_start_index,
+            "classification": arguments.datahub_classification,
             "phase": "PLANNED",
             "governance": {
                 "nodes_expected": len(datahub_governance_taxonomy().nodes),
@@ -1772,6 +1825,7 @@ async def async_main(arguments: argparse.Namespace) -> int:
             token=token,
             batch_size=arguments.datahub_batch_size,
             run_id=run_id,
+            classification=arguments.datahub_classification,
             on_progress=record_ingest_progress,
         )
 
@@ -1785,6 +1839,7 @@ async def async_main(arguments: argparse.Namespace) -> int:
             datahub_url=arguments.datahub_url,
             token=token,
             batch_size=arguments.datahub_batch_size,
+            classification=arguments.datahub_classification,
             on_progress=record_verify_progress,
         )
         manifest["datahub"]["governance"]["verified"] = True
@@ -1819,6 +1874,7 @@ async def async_main(arguments: argparse.Namespace) -> int:
             datahub_url=arguments.datahub_url,
             token=token,
             batch_size=arguments.datahub_batch_size,
+            classification=arguments.datahub_classification,
             on_progress=record_verify_progress,
         )
         manifest["datahub"]["governance"]["verified"] = True

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Literal
 
 from datariver.application.knowledge_pipeline_ports import KnowledgeRuntimeBindings
 from datariver.config import Settings
@@ -126,10 +127,19 @@ def build_knowledge_runtime_adapters(settings: Settings) -> KnowledgeRuntimeAdap
         api_key=chat_api_key,
         timeout_seconds=coordinates.chat_timeout_seconds,
     )
+    reasoning_effort: Literal["none"] | None = (
+        "none" if coordinates.provider == LOCAL_OLLAMA_PROVIDER else None
+    )
     return KnowledgeRuntimeAdapters(
         embedding=OpenAICompatibleEmbeddingProvider(transport=embedding_transport),
-        extractor=OpenAICompatibleTypedKnowledgeExtractor(transport=chat_transport),
-        composer=OpenAICompatibleKnowledgeAnswerComposer(transport=chat_transport),
+        extractor=OpenAICompatibleTypedKnowledgeExtractor(
+            transport=chat_transport,
+            reasoning_effort=reasoning_effort,
+        ),
+        composer=OpenAICompatibleKnowledgeAnswerComposer(
+            transport=chat_transport,
+            reasoning_effort=reasoning_effort,
+        ),
         bindings=bindings,
     )
 

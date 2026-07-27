@@ -14,7 +14,12 @@ from datariver.application.knowledge_pipeline_ports import (
 )
 from datariver.domain.common import ValidationError
 from datariver.domain.knowledge import GraphEdge, GraphNode, GraphSnapshot, Provenance
-from datariver.domain.knowledge_pipeline import GraphRagEvidence, ProjectionReceipt
+from datariver.domain.knowledge_pipeline import (
+    MAX_GRAPHRAG_EVIDENCE_ITEMS,
+    MAX_GRAPHRAG_QUERY_NODES,
+    GraphRagEvidence,
+    ProjectionReceipt,
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -582,6 +587,7 @@ class Neo4jScopedEvidenceRetriever(ScopedGraphEvidenceRetriever):
         maximum_hops: int,
         maximum_nodes: int,
     ) -> tuple[GraphRagEvidence, ...]:
+        effective_maximum_nodes = min(maximum_nodes, MAX_GRAPHRAG_QUERY_NODES)
         selected = list(
             await self._semantic_selector.select_seed_ids(
                 workspace_id=workspace_id,
@@ -589,12 +595,12 @@ class Neo4jScopedEvidenceRetriever(ScopedGraphEvidenceRetriever):
                 release_id=release_id,
                 question=question,
                 maximum_classification=maximum_classification,
-                limit=min(8, maximum_nodes),
+                limit=effective_maximum_nodes,
             )
         )
         if start_node_id is not None and start_node_id not in selected:
             selected.insert(0, start_node_id)
-        selected = selected[:maximum_nodes]
+        selected = selected[:effective_maximum_nodes]
         seen = set(selected)
         frontier = list(selected)
         scope = _common_scope(
@@ -603,7 +609,7 @@ class Neo4jScopedEvidenceRetriever(ScopedGraphEvidenceRetriever):
             release_id=release_id,
         )
         for _ in range(maximum_hops):
-            if not frontier or len(seen) >= maximum_nodes:
+            if not frontier or len(seen) >= effective_maximum_nodes:
                 break
             rows = await self._executor.read(
                 statement=CypherStatement(
@@ -613,7 +619,7 @@ class Neo4jScopedEvidenceRetriever(ScopedGraphEvidenceRetriever):
                         "entity_ids": [str(value) for value in frontier],
                         "maximum_classification": maximum_classification,
                         "edge_types": sorted(edge_types),
-                        "limit": maximum_nodes - len(seen),
+                        "limit": effective_maximum_nodes - len(seen),
                     },
                 )
             )
@@ -652,19 +658,24 @@ class Neo4jScopedEvidenceRetriever(ScopedGraphEvidenceRetriever):
                     source_page_sha256=_optional_string(row.get("source_page_sha256")),
                 )
             )
-        edge_rows = await self._executor.read(
-            statement=CypherStatement(
-                _READ_EDGES,
-                {
-                    **scope,
-                    "entity_ids": [
-                        str(value) for value in sorted(seen, key=lambda value: value.int)
-                    ],
-                    "maximum_classification": maximum_classification,
-                    "edge_types": sorted(edge_types),
-                    "limit": min(500, maximum_nodes * 5),
-                },
+        edge_limit = max(0, MAX_GRAPHRAG_EVIDENCE_ITEMS - len(evidence))
+        edge_rows = (
+            await self._executor.read(
+                statement=CypherStatement(
+                    _READ_EDGES,
+                    {
+                        **scope,
+                        "entity_ids": [
+                            str(value) for value in sorted(seen, key=lambda value: value.int)
+                        ],
+                        "maximum_classification": maximum_classification,
+                        "edge_types": sorted(edge_types),
+                        "limit": edge_limit,
+                    },
+                )
             )
+            if edge_limit
+            else ()
         )
         for row in edge_rows:
             edge_id = UUID(str(row["edge_id"]))

@@ -169,7 +169,7 @@ async def apply_pack(
     if existing_run is not None and existing_run.state == "APPLIED":
         return await verify_pack(session, pack=pack)
 
-    await _ensure_identity(session, settings=settings)
+    publisher_id, reviewer_id = await _ensure_identity(session, settings=settings)
     graph = await session.get(GraphModel, GRAPH_ID)
     if graph is not None:
         raise RuntimeError(
@@ -230,7 +230,7 @@ async def apply_pack(
             node_count=validated.node_count,
             edge_count=validated.edge_count,
             manifest_ref="seed/semiconductor/manifest.yaml",
-            published_by=SUBJECT_ID,
+            published_by=publisher_id,
             published_at=now,
         )
     )
@@ -271,8 +271,8 @@ async def apply_pack(
         ontology_version_id=ONTOLOGY_ID,
         title="Synthetic semiconductor seed publication",
         state="PUBLISHED",
-        author_id=SUBJECT_ID,
-        reviewed_by=REVIEWER_SUBJECT_ID,
+        author_id=publisher_id,
+        reviewed_by=reviewer_id,
         reviewed_at=now,
         review_reason="Approved deterministic synthetic seed content.",
         published_release_id=RELEASE_ID,
@@ -308,7 +308,7 @@ async def apply_pack(
                 ontology_version_id=ONTOLOGY_ID,
                 title="Update customer masking policy (Draft)",
                 state="DRAFT",
-                author_id=SUBJECT_ID,
+                author_id=publisher_id,
                 version=1,
             ),
             ChangeSetModel(
@@ -319,7 +319,7 @@ async def apply_pack(
                 ontology_version_id=ONTOLOGY_ID,
                 title="Add standard properties for Supplier (Pending)",
                 state="PENDING_REVIEW",
-                author_id=SUBJECT_ID,
+                author_id=publisher_id,
                 version=1,
             ),
             ChangeSetModel(
@@ -330,8 +330,8 @@ async def apply_pack(
                 ontology_version_id=ONTOLOGY_ID,
                 title="Approve regional mapping adjustment",
                 state="APPROVED",
-                author_id=SUBJECT_ID,
-                reviewed_by=REVIEWER_SUBJECT_ID,
+                author_id=publisher_id,
+                reviewed_by=reviewer_id,
                 reviewed_at=now,
                 review_reason="Looks good to me.",
                 version=2,
@@ -344,8 +344,8 @@ async def apply_pack(
                 ontology_version_id=ONTOLOGY_ID,
                 title="Reject invalid transaction classification",
                 state="REJECTED",
-                author_id=SUBJECT_ID,
-                reviewed_by=REVIEWER_SUBJECT_ID,
+                author_id=publisher_id,
+                reviewed_by=reviewer_id,
                 reviewed_at=now,
                 review_reason="Fails basic security invariants.",
                 version=2,
@@ -517,20 +517,19 @@ async def verify_pack(session: AsyncSession, *, pack: SemiconductorPack) -> dict
         or graph.classification != graph_classification(pack)
         or changeset is None
         or changeset.state != "PUBLISHED"
-        or changeset.author_id != SUBJECT_ID
-        or changeset.reviewed_by != REVIEWER_SUBJECT_ID
         or changeset.author_id == changeset.reviewed_by
         or changeset.reviewed_at is None
         or not (changeset.review_reason or "").strip()
         or changeset.published_release_id != RELEASE_ID
-        or release.published_by != SUBJECT_ID
         or publisher is None
         or not publisher.active
+        or publisher.external_subject != LOCAL_KEYCLOAK_SUBJECT
         or publisher_membership is None
         or not publisher_membership.active
         or Action.KG_PUBLISH.value not in publisher_membership.attributes.get("allowed_actions", [])
         or reviewer is None
         or not reviewer.active
+        or reviewer.external_subject != LOCAL_KEYCLOAK_REVIEWER_SUBJECT
         or reviewer_membership is None
         or not reviewer_membership.active
         or Action.KG_REVIEW.value not in reviewer_membership.attributes.get("allowed_actions", [])
@@ -663,7 +662,7 @@ async def remove_pack(session: AsyncSession, *, pack: SemiconductorPack) -> dict
     return {"state": "REMOVED", "seed_run_id": str(SEED_RUN_ID)}
 
 
-async def _ensure_identity(session: AsyncSession, *, settings: Settings) -> None:
+async def _ensure_identity(session: AsyncSession, *, settings: Settings) -> tuple[UUID, UUID]:
     workspace = await session.get(WorkspaceModel, WORKSPACE_ID)
     if workspace is None:
         conflicting = await session.scalar(
@@ -697,6 +696,8 @@ async def _ensure_identity(session: AsyncSession, *, settings: Settings) -> None
         )
         session.add(subject)
         await session.flush()
+    else:
+        subject.active = True
     membership = await session.get(
         WorkspaceMembershipModel,
         {"workspace_id": WORKSPACE_ID, "subject_id": subject.id},
@@ -743,6 +744,8 @@ async def _ensure_identity(session: AsyncSession, *, settings: Settings) -> None
         )
         session.add(reviewer_subject)
         await session.flush()
+    else:
+        reviewer_subject.active = True
     reviewer_membership = await session.get(
         WorkspaceMembershipModel,
         {"workspace_id": WORKSPACE_ID, "subject_id": reviewer_subject.id},
@@ -875,6 +878,7 @@ async def _ensure_identity(session: AsyncSession, *, settings: Settings) -> None
         viewer_membership.clearance = int(Classification.INTERNAL)
         viewer_membership.attributes = viewer_attributes
         viewer_membership.active = True
+    return subject.id, reviewer_subject.id
 
 
 async def _append_seed_event(session: AsyncSession, event_type: str, content_hash: str) -> None:

@@ -986,7 +986,7 @@ async def test_graphrag_accepts_only_authorized_citations_and_audits_actual_mode
         edge_types=frozenset(),
         maximum_classification=2,
         maximum_hops=2,
-        maximum_nodes=50,
+        maximum_nodes=8,
         canonical_snapshot=_canonical_snapshot_for_evidence(evidence),
         binding=binding,
     )
@@ -1030,7 +1030,7 @@ async def test_graphrag_rejects_model_citation_outside_authorized_package() -> N
             edge_types=frozenset(),
             maximum_classification=2,
             maximum_hops=1,
-            maximum_nodes=10,
+            maximum_nodes=8,
             canonical_snapshot=_canonical_snapshot_for_evidence(evidence),
             binding=binding,
         )
@@ -1088,7 +1088,7 @@ async def test_graphrag_rejects_neo4j_classification_and_content_drift_before_co
             edge_types=frozenset(),
             maximum_classification=1,
             maximum_hops=1,
-            maximum_nodes=10,
+            maximum_nodes=8,
             canonical_snapshot=canonical,
             binding=binding,
         )

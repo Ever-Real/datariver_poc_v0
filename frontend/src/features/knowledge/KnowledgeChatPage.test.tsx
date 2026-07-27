@@ -33,7 +33,7 @@ describe('KnowledgeChatPage', () => {
         expect(options?.method).toBe('POST')
         if (typeof options?.body !== 'string') throw new Error('Expected a JSON request body.')
         expect(JSON.parse(options.body)).toEqual({
-          question: '연결 관계를 보여줘', start_node_id: 'tool-1', direction: 'BOTH', edge_types: [], maximum_hops: 1, maximum_nodes: 100,
+          question: '연결 관계를 보여줘', start_node_id: 'tool-1', direction: 'BOTH', edge_types: [], maximum_hops: 1, maximum_nodes: 8,
         })
         return Promise.resolve({
           release,

@@ -5,7 +5,7 @@ import math
 from uuid import UUID
 
 from sqlalchemy import select
-from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from datariver.application.knowledge_pipeline_ports import KnowledgeEmbeddingProvider
 from datariver.application.services.knowledge_pipeline import KnowledgeSourcePipeline
@@ -422,6 +422,11 @@ class SqlKnowledgePipelineRepository:
             raise ConflictError("The release has no verified Neo4j shadow projection.")
 
     async def record_success(self, *, record: GraphRagAuditRecord) -> None:
+        await set_security_context(
+            self._session,
+            workspace_id=record.workspace_id,
+            subject_id=record.actor_id,
+        )
         self._session.add(
             KnowledgeGraphRagAuditModel(
                 id=uuid7(),
@@ -451,11 +456,13 @@ class SqlSemanticSeedSelector:
     def __init__(
         self,
         *,
-        session: AsyncSession,
+        session_factory: async_sessionmaker[AsyncSession],
+        subject_id: UUID,
         embedding: KnowledgeEmbeddingProvider,
         binding: ModelBinding,
     ) -> None:
-        self._session = session
+        self._session_factory = session_factory
+        self._subject_id = subject_id
         self._embedding = embedding
         self._binding = binding
 
@@ -476,41 +483,47 @@ class SqlSemanticSeedSelector:
         if len(question_batch.embeddings) != 1:
             raise ValidationError("The question embedding provider returned an invalid batch.")
         question_vector = question_batch.embeddings[0].vector
-        rows = (
-            await self._session.execute(
-                select(KnowledgePageEmbeddingModel, KnowledgeSourceSnapshotModel)
-                .join(
-                    KnowledgeSourceSnapshotModel,
-                    KnowledgeSourceSnapshotModel.id
-                    == KnowledgePageEmbeddingModel.source_snapshot_id,
-                )
-                .where(
-                    KnowledgePageEmbeddingModel.workspace_id == workspace_id,
-                    KnowledgeSourceSnapshotModel.graph_id == graph_id,
-                    KnowledgePageEmbeddingModel.provider == self._binding.provider,
-                    KnowledgePageEmbeddingModel.model_identity == self._binding.model,
-                )
-                .limit(2_000)
+        async with self._session_factory() as session:
+            await set_security_context(
+                session,
+                workspace_id=workspace_id,
+                subject_id=self._subject_id,
             )
-        ).all()
+            rows = (
+                await session.execute(
+                    select(KnowledgePageEmbeddingModel, KnowledgeSourceSnapshotModel)
+                    .join(
+                        KnowledgeSourceSnapshotModel,
+                        KnowledgeSourceSnapshotModel.id
+                        == KnowledgePageEmbeddingModel.source_snapshot_id,
+                    )
+                    .where(
+                        KnowledgePageEmbeddingModel.workspace_id == workspace_id,
+                        KnowledgeSourceSnapshotModel.graph_id == graph_id,
+                        KnowledgePageEmbeddingModel.provider == self._binding.provider,
+                        KnowledgePageEmbeddingModel.model_identity == self._binding.model,
+                    )
+                    .limit(2_000)
+                )
+            ).all()
+            nodes = list(
+                (
+                    await session.scalars(
+                        select(ReleaseNodeModel)
+                        .where(
+                            ReleaseNodeModel.workspace_id == workspace_id,
+                            ReleaseNodeModel.release_id == release_id,
+                            ReleaseNodeModel.classification <= maximum_classification,
+                        )
+                        .limit(2_000)
+                    )
+                ).all()
+            )
         vectors: dict[tuple[str, int], tuple[float, ...]] = {}
         for embedding, source in rows:
             vector = tuple(float(value) for value in embedding.embedding)
             if len(vector) == len(question_vector):
                 vectors[(source.content_sha256, embedding.page_number)] = vector
-        nodes = list(
-            (
-                await self._session.scalars(
-                    select(ReleaseNodeModel)
-                    .where(
-                        ReleaseNodeModel.workspace_id == workspace_id,
-                        ReleaseNodeModel.release_id == release_id,
-                        ReleaseNodeModel.classification <= maximum_classification,
-                    )
-                    .limit(2_000)
-                )
-            ).all()
-        )
         scored: list[tuple[float, UUID]] = []
         for node in nodes:
             best: float | None = None

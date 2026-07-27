@@ -16,7 +16,7 @@ def test_semiconductor_taxonomy_is_complete_and_stable() -> None:
 
     assert len(taxonomy.nodes) == 9
     assert len(taxonomy.terms) == 33
-    assert len(taxonomy.tags) == 52
+    assert len(taxonomy.tags) == 56
     assert len({node.urn for node in taxonomy.nodes}) == len(taxonomy.nodes)
     assert len({term.urn for term in taxonomy.terms}) == len(taxonomy.terms)
     assert len({tag.urn for tag in taxonomy.tags}) == len(taxonomy.tags)
@@ -26,6 +26,16 @@ def test_semiconductor_taxonomy_is_complete_and_stable() -> None:
         "quality_measurement",
         "annual_volume",
         "referenced_record",
+    }
+    assert {
+        tag.name
+        for tag in taxonomy.tags
+        if tag.tag_id.startswith("datariver_classification_")
+    } == {
+        "CLASSIFICATION:PUBLIC",
+        "CLASSIFICATION:INTERNAL",
+        "CLASSIFICATION:CONFIDENTIAL",
+        "CLASSIFICATION:RESTRICTED",
     }
 
 
@@ -62,6 +72,15 @@ def test_generated_dataset_and_field_aspects_have_controlled_semantics() -> None
     }
     assert "urn:li:tag:datariver_semiconductor" in {
         item["tag"] for item in aspects["globalTags"]["tags"]
+    }
+    assert not {
+        item["tag"]
+        for item in aspects["globalTags"]["tags"]
+        if item["tag"].startswith("urn:li:tag:datariver_classification_")
+    }
+    public_aspects = dict(generator["aspect_documents"](table, "seed-run", "PUBLIC"))
+    assert "urn:li:tag:datariver_classification_public" in {
+        item["tag"] for item in public_aspects["globalTags"]["tags"]
     }
     fields = {item["fieldPath"]: item for item in aspects["schemaMetadata"]["fields"]}
     assert fields["id"]["glossaryTerms"]["terms"] == [

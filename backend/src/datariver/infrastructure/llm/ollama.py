@@ -202,6 +202,9 @@ def ollama_native_grounded_chat_request_payload(
     payload.pop("tool_choice")
     payload.pop("temperature")
     payload.pop("max_tokens")
+    # Keep local native responses within the fixed tool-call contract. Reasoning
+    # text is neither evidence nor a valid tool invocation.
+    payload["think"] = False
     payload["options"] = {
         "temperature": 0,
         "num_ctx": context_tokens,

@@ -17,6 +17,7 @@ from datariver.infrastructure.datahub.http import (
     HttpDataHubGateway,
     _catalog_hierarchy_from_browse_path,
     _catalog_snapshot_contract_hash,
+    _classification_from_tags,
     _column_names,
     _metadata_names,
     _metadata_names_with_truncation,
@@ -26,6 +27,24 @@ from datariver.infrastructure.datahub.http import (
 from datariver.infrastructure.observability.metrics import HttpMetrics
 
 DATAHUB_V160_CONFIG = {"versions": {"acryldata/datahub": {"version": "v1.6.0"}}}
+
+
+def test_catalog_classification_uses_the_controlled_tag_display_name() -> None:
+    assert _classification_from_tags(
+        {
+            "tags": [
+                {
+                    "tag": {
+                        "name": "datariver_classification_public",
+                        "properties": {"name": "CLASSIFICATION:PUBLIC"},
+                    }
+                }
+            ]
+        }
+    ) is Classification.PUBLIC
+    assert _classification_from_tags(
+        {"tags": [{"tag": {"name": "CLASSIFICATION:INTERNAL"}}]}
+    ) is Classification.INTERNAL
 
 
 class _ChunkedResponse(httpx.AsyncByteStream):

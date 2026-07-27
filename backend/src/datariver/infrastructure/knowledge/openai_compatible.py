@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import Mapping, Sequence
-from typing import Any, Protocol
+from typing import Any, Literal, Protocol
 from urllib.parse import urlsplit
 
 import httpx
@@ -32,7 +32,7 @@ from datariver.domain.knowledge_pipeline import (
 MAX_EXTRACTION_NODES_PER_BATCH = 4
 MAX_EXTRACTION_EDGES_PER_BATCH = 2
 MAX_EXTRACTION_OUTPUT_TOKENS = 2_048
-MAX_GRAPHRAG_OUTPUT_TOKENS = 2_048
+MAX_GRAPHRAG_OUTPUT_TOKENS = 512
 MAX_EVIDENCE_UNIT_CHARACTERS = 240
 MAX_INFERENCE_RESPONSE_BYTES = 2 * 1024 * 1024
 
@@ -301,8 +301,14 @@ class OpenAICompatibleEmbeddingProvider(KnowledgeEmbeddingProvider):
 
 
 class OpenAICompatibleTypedKnowledgeExtractor(TypedKnowledgeExtractor):
-    def __init__(self, *, transport: OpenAIJsonTransport) -> None:
+    def __init__(
+        self,
+        *,
+        transport: OpenAIJsonTransport,
+        reasoning_effort: Literal["none", "low", "medium", "high"] | None = None,
+    ) -> None:
         self._transport = transport
+        self._reasoning_effort = reasoning_effort
 
     async def propose(
         self,
@@ -317,47 +323,48 @@ class OpenAICompatibleTypedKnowledgeExtractor(TypedKnowledgeExtractor):
         evidence_units = _evidence_units(pages)
         evidence_by_id = {unit.evidence_id: unit for unit in evidence_units}
         evidence_document = [unit.model_dump() for unit in evidence_units]
+        document: dict[str, object] = {
+            "model": binding.model,
+            "temperature": 0,
+            "max_tokens": MAX_EXTRACTION_OUTPUT_TOKENS,
+            "messages": [
+                {
+                    "role": "system",
+                    "content": (
+                        "Extract only assertions explicitly supported by the supplied pages. "
+                        "Use only the approved entity and edge types. local_key values must "
+                        "use letters, numbers, and underscores and must be unique within the "
+                        "complete response. For every node and edge, reference exactly one "
+                        "evidence_id from the supplied evidence_units; never invent or rewrite "
+                        "evidence. Every edge endpoint must reference a node in the same "
+                        "response; omit an edge when either endpoint is absent. Omit "
+                        "any item without a supporting evidence_id. Return "
+                        f"at most {MAX_EXTRACTION_NODES_PER_BATCH} nodes and "
+                        f"{MAX_EXTRACTION_EDGES_PER_BATCH} edges. Keep properties to at most "
+                        "four short scalar values."
+                    ),
+                },
+                {
+                    "role": "user",
+                    "content": json.dumps(
+                        {
+                            "entity_types": sorted(entity_types),
+                            "edge_types": sorted(edge_types),
+                            "evidence_units": evidence_document,
+                        },
+                        ensure_ascii=False,
+                        sort_keys=True,
+                        separators=(",", ":"),
+                    ),
+                },
+            ],
+            "response_format": _json_schema(_ExtractionResponse, name="knowledge_extraction_v1"),
+        }
+        if self._reasoning_effort is not None:
+            document["reasoning_effort"] = self._reasoning_effort
         result = await self._transport.post_json(
             path="/chat/completions",
-            document={
-                "model": binding.model,
-                "temperature": 0,
-                "max_tokens": MAX_EXTRACTION_OUTPUT_TOKENS,
-                "messages": [
-                    {
-                        "role": "system",
-                        "content": (
-                            "Extract only assertions explicitly supported by the supplied pages. "
-                            "Use only the approved entity and edge types. local_key values must "
-                            "use letters, numbers, and underscores and must be unique within the "
-                            "complete response. For every node and edge, reference exactly one "
-                            "evidence_id from the supplied evidence_units; never invent or rewrite "
-                            "evidence. Every edge endpoint must reference a node in the same "
-                            "response; omit an edge when either endpoint is absent. Omit "
-                            "any item without a supporting evidence_id. Return "
-                            f"at most {MAX_EXTRACTION_NODES_PER_BATCH} nodes and "
-                            f"{MAX_EXTRACTION_EDGES_PER_BATCH} edges. Keep properties to at most "
-                            "four short scalar values."
-                        ),
-                    },
-                    {
-                        "role": "user",
-                        "content": json.dumps(
-                            {
-                                "entity_types": sorted(entity_types),
-                                "edge_types": sorted(edge_types),
-                                "evidence_units": evidence_document,
-                            },
-                            ensure_ascii=False,
-                            sort_keys=True,
-                            separators=(",", ":"),
-                        ),
-                    },
-                ],
-                "response_format": _json_schema(
-                    _ExtractionResponse, name="knowledge_extraction_v1"
-                ),
-            },
+            document=document,
         )
         try:
             parsed = _ExtractionResponse.model_validate_json(_choice_content(result))
@@ -399,8 +406,14 @@ class OpenAICompatibleTypedKnowledgeExtractor(TypedKnowledgeExtractor):
 
 
 class OpenAICompatibleKnowledgeAnswerComposer(KnowledgeAnswerComposer):
-    def __init__(self, *, transport: OpenAIJsonTransport) -> None:
+    def __init__(
+        self,
+        *,
+        transport: OpenAIJsonTransport,
+        reasoning_effort: Literal["none", "low", "medium", "high"] | None = None,
+    ) -> None:
         self._transport = transport
+        self._reasoning_effort = reasoning_effort
 
     async def compose(
         self,
@@ -409,9 +422,15 @@ class OpenAICompatibleKnowledgeAnswerComposer(KnowledgeAnswerComposer):
         evidence: Sequence[GraphRagEvidence],
         binding: ModelBinding,
     ) -> GraphRagCompletion:
+        canonical_by_alias = {
+            f"E{index:03d}": item.evidence_id for index, item in enumerate(evidence, start=1)
+        }
+        alias_by_canonical = {
+            canonical_id: alias for alias, canonical_id in canonical_by_alias.items()
+        }
         evidence_document = [
             {
-                "evidence_id": item.evidence_id,
+                "evidence_id": alias_by_canonical[item.evidence_id],
                 "entity_kind": item.entity_kind,
                 "entity_id": str(item.entity_id),
                 "entity_type": item.entity_type,
@@ -432,33 +451,36 @@ class OpenAICompatibleKnowledgeAnswerComposer(KnowledgeAnswerComposer):
             }
             for item in evidence
         ]
+        document: dict[str, object] = {
+            "model": binding.model,
+            "temperature": 0,
+            "max_tokens": MAX_GRAPHRAG_OUTPUT_TOKENS,
+            "messages": [
+                {
+                    "role": "system",
+                    "content": (
+                        "Answer only from the authorized evidence JSON. If it is insufficient, "
+                        "say so. Every factual answer must cite one or more exact short "
+                        "evidence_id aliases from the supplied JSON."
+                    ),
+                },
+                {
+                    "role": "user",
+                    "content": json.dumps(
+                        {"question": question, "evidence": evidence_document},
+                        ensure_ascii=False,
+                        sort_keys=True,
+                        separators=(",", ":"),
+                    ),
+                },
+            ],
+            "response_format": _json_schema(_GraphRagResponse, name="knowledge_graphrag_v1"),
+        }
+        if self._reasoning_effort is not None:
+            document["reasoning_effort"] = self._reasoning_effort
         result = await self._transport.post_json(
             path="/chat/completions",
-            document={
-                "model": binding.model,
-                "temperature": 0,
-                "max_tokens": MAX_GRAPHRAG_OUTPUT_TOKENS,
-                "messages": [
-                    {
-                        "role": "system",
-                        "content": (
-                            "Answer only from the authorized evidence JSON. If it is insufficient, "
-                            "say so. Every factual answer must cite one or more exact evidence_id "
-                            "values."
-                        ),
-                    },
-                    {
-                        "role": "user",
-                        "content": json.dumps(
-                            {"question": question, "evidence": evidence_document},
-                            ensure_ascii=False,
-                            sort_keys=True,
-                            separators=(",", ":"),
-                        ),
-                    },
-                ],
-                "response_format": _json_schema(_GraphRagResponse, name="knowledge_graphrag_v1"),
-            },
+            document=document,
         )
         try:
             parsed = _GraphRagResponse.model_validate_json(_choice_content(result))
@@ -466,10 +488,16 @@ class OpenAICompatibleKnowledgeAnswerComposer(KnowledgeAnswerComposer):
             raise ValidationError("The LLM GraphRAG answer violates the typed schema.") from error
         if not parsed.answer.strip() or len(parsed.answer) > 20_000:
             raise ValidationError("The LLM GraphRAG answer violates the typed schema.")
+        try:
+            cited_evidence_ids = tuple(
+                canonical_by_alias[alias] for alias in parsed.cited_evidence_ids
+            )
+        except KeyError as error:
+            raise ValidationError("The LLM GraphRAG answer violates the typed schema.") from error
         input_tokens, output_tokens = _usage(result)
         return GraphRagCompletion(
             answer=parsed.answer,
-            cited_evidence_ids=tuple(parsed.cited_evidence_ids),
+            cited_evidence_ids=cited_evidence_ids,
             binding=binding,
             input_tokens=input_tokens,
             output_tokens=output_tokens,

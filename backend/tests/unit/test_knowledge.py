@@ -55,6 +55,17 @@ def test_knowledge_routes_authorize_canonical_resources_before_revealing_adapter
         assert source.index("service.get_release_for_graphrag(") < source.index(adapter_error)
 
 
+def test_graphrag_route_releases_request_transaction_before_external_inference() -> None:
+    source = inspect.getsource(query_knowledge_release)
+
+    transaction_release = source.index("await session.commit()")
+    runtime_construction = source.index("runtime = _knowledge_adapters(request)")
+    inference = source.index(").answer(")
+    assert transaction_release < runtime_construction < inference
+    assert "session_factory=container.database.session_factory" in source
+    assert "subject_id=context.subject.subject_id" in source
+
+
 def valid_graph() -> tuple[Ontology, GraphSnapshot]:
     source_id = uuid4()
     target_id = uuid4()

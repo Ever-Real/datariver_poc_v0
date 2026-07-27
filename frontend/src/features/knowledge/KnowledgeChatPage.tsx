@@ -89,7 +89,7 @@ export function KnowledgeChatPage({ client, onNavigate }: { client: ApiClient; o
     try {
       const result = await client.request<KnowledgeGraphRagAnswer>(`/knowledge/graphs/${graphId}/releases/${releaseId}/graphrag`, {
         method: 'POST',
-        body: JSON.stringify({ question: question.trim(), start_node_id: nodeId, direction, edge_types: [], maximum_hops: Number(maximumHops), maximum_nodes: 100 }),
+        body: JSON.stringify({ question: question.trim(), start_node_id: nodeId, direction, edge_types: [], maximum_hops: Number(maximumHops), maximum_nodes: 8 }),
       })
       setAnalysis(result)
     } catch (next) { setError(next) } finally { setLoading(false) }

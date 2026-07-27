@@ -312,7 +312,7 @@ async def test_answer_composer_returns_only_typed_citation_ids() -> None:
                 {
                     "message": {
                         "content": json.dumps(
-                            {"answer": "근거 기반 답변", "cited_evidence_ids": ["kg:r:n"]}
+                            {"answer": "근거 기반 답변", "cited_evidence_ids": ["E001"]}
                         )
                     }
                 }
@@ -353,12 +353,68 @@ async def test_answer_composer_returns_only_typed_citation_ids() -> None:
     assert isinstance(messages, list)
     user_document = json.loads(messages[1]["content"])
     edge_document = user_document["evidence"][0]
+    assert edge_document["evidence_id"] == "E001"
     assert edge_document["entity_kind"] == "EDGE"
     assert edge_document["source_entity_id"] == str(source_id)
     assert edge_document["target_entity_id"] == str(target_id)
     assert edge_document["edge_type"] == "USES"
     assert edge_document["evidence_excerpt"] == excerpt
-    assert transport.calls[0][1]["max_tokens"] == 2_048
+    assert transport.calls[0][1]["max_tokens"] == 512
+    assert "think" not in transport.calls[0][1]
+
+
+@pytest.mark.asyncio
+async def test_local_structured_chat_can_disable_provider_reasoning_output() -> None:
+    extraction_transport = _Transport(
+        {
+            "choices": [{"message": {"content": json.dumps({"nodes": [], "edges": []})}}],
+        }
+    )
+    answer_transport = _Transport(
+        {
+            "choices": [
+                {
+                    "message": {
+                        "content": json.dumps(
+                            {"answer": "근거가 부족합니다.", "cited_evidence_ids": ["E001"]}
+                        )
+                    }
+                }
+            ],
+        }
+    )
+
+    await OpenAICompatibleTypedKnowledgeExtractor(
+        transport=extraction_transport,
+        reasoning_effort="none",
+    ).propose(
+        pages=(PdfPage.create(page_number=1, text="bounded evidence"),),
+        entity_types=frozenset({"Facility"}),
+        edge_types=frozenset(),
+        binding=_binding("gemma4:latest"),
+    )
+    await OpenAICompatibleKnowledgeAnswerComposer(
+        transport=answer_transport,
+        reasoning_effort="none",
+    ).compose(
+        question="근거는?",
+        evidence=(
+            GraphRagEvidence(
+                "kg:r:n",
+                uuid4(),
+                "Facility",
+                {},
+                "private/report.pdf#page=1",
+                "a" * 64,
+                1,
+                2,
+            ),
+        ),
+        binding=_binding("gemma4:latest"),
+    )
+
+    assert extraction_transport.calls[0][1]["reasoning_effort"] == "none"
+    assert answer_transport.calls[0][1]["reasoning_effort"] == "none"
 
 
 @pytest.mark.asyncio

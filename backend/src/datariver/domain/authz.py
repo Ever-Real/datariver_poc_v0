@@ -150,7 +150,7 @@ class Decision:
 class BuiltinPolicyEngine:
     """Deterministic baseline ABAC. An OPA adapter may add denies, never bypass these guards."""
 
-    policy_version = "builtin-abac-v2"
+    policy_version = "builtin-abac-v3"
 
     def decide(
         self,
@@ -176,9 +176,17 @@ class BuiltinPolicyEngine:
             reasons.append("CLEARANCE_INSUFFICIENT")
         if action is Action.CATALOG_EXPORT and resource.classification is Classification.RESTRICTED:
             reasons.append("RESTRICTED_EXPORT_DENIED")
-        if resource.system_id is not None and resource.system_id not in subject.allowed_system_ids:
+        if (
+            resource.classification is not Classification.PUBLIC
+            and resource.system_id is not None
+            and resource.system_id not in subject.allowed_system_ids
+        ):
             reasons.append("SYSTEM_SCOPE_MISMATCH")
-        if resource.domain_id is not None and resource.domain_id not in subject.allowed_domain_ids:
+        if (
+            resource.classification is not Classification.PUBLIC
+            and resource.domain_id is not None
+            and resource.domain_id not in subject.allowed_domain_ids
+        ):
             reasons.append("DOMAIN_SCOPE_MISMATCH")
         if action is Action.CHANGE_APPROVE and resource.requester_id == subject.subject_id:
             reasons.append("SELF_APPROVAL_FORBIDDEN")

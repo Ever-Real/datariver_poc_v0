@@ -80,6 +80,7 @@ async def test_composer_uses_one_fixed_tool_and_returns_its_untrusted_draft() ->
         assert request.url == httpx.URL("http://host.docker.internal:11434/api/chat")
         payload = json.loads(request.content)
         assert payload["model"] == "gemma4:e2b-it-qat"
+        assert payload["think"] is False
         assert payload["tools"][0]["function"]["name"] == "submit_grounded_answer"
         assert payload["options"] == {
             "temperature": 0,

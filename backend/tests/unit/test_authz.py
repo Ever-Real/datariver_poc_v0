@@ -103,6 +103,47 @@ def test_allows_matching_attributes() -> None:
     assert decision.reason_codes == ("POLICY_ALLOW",)
 
 
+def test_public_resource_does_not_require_system_or_domain_scope() -> None:
+    subject, resource, environment = make_context()
+    resource = replace(
+        resource,
+        classification=Classification.PUBLIC,
+        system_id=uuid4(),
+        domain_id=uuid4(),
+    )
+
+    decision = BuiltinPolicyEngine().decide(
+        subject=subject,
+        resource=resource,
+        action=Action.CATALOG_READ,
+        environment=environment,
+    )
+
+    assert decision.allowed
+    assert decision.reason_codes == ("POLICY_ALLOW",)
+
+
+def test_non_public_resource_still_requires_system_and_domain_scope() -> None:
+    subject, resource, environment = make_context()
+    resource = replace(
+        resource,
+        classification=Classification.INTERNAL,
+        system_id=uuid4(),
+        domain_id=uuid4(),
+    )
+
+    decision = BuiltinPolicyEngine().decide(
+        subject=subject,
+        resource=resource,
+        action=Action.CATALOG_READ,
+        environment=environment,
+    )
+
+    assert not decision.allowed
+    assert "SYSTEM_SCOPE_MISMATCH" in decision.reason_codes
+    assert "DOMAIN_SCOPE_MISMATCH" in decision.reason_codes
+
+
 def test_denies_cross_workspace_even_when_action_is_granted() -> None:
     subject, resource, environment = make_context()
     resource = ResourceAttributes(

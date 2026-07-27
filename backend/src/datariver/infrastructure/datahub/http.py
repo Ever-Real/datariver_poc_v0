@@ -166,7 +166,7 @@ query DataRiverCatalogScroll($input: ScrollAcrossEntitiesInput!) {
               }
             }
           }
-          globalTags: tags { tags { tag { name } } }
+          globalTags: tags { tags { tag { name properties { name } } } }
           glossaryTerms { terms { term { urn name } } }
           schemaMetadata { fields { fieldPath } }
         }
@@ -277,7 +277,11 @@ def _classification_from_tags(tags: object) -> Classification | None:
     raw_tags = tags.get("tags", []) if isinstance(tags, dict) else []
     for raw in raw_tags if isinstance(raw_tags, list) else []:
         tag = raw.get("tag") if isinstance(raw, dict) else None
-        name = tag.get("name") if isinstance(tag, dict) else None
+        properties = tag.get("properties") if isinstance(tag, dict) else None
+        properties_name = properties.get("name") if isinstance(properties, dict) else None
+        name = properties_name if isinstance(properties_name, str) else (
+            tag.get("name") if isinstance(tag, dict) else None
+        )
         if not isinstance(name, str) or ":" not in name:
             continue
         namespace, value = (part.strip().upper() for part in name.split(":", 1))

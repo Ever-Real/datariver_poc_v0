@@ -52,6 +52,12 @@ property `datariver.seed.execution_mode=MOCK`.
   tags/terms in `schemaMetadata`, so the catalog, registration and change-management screens show
   the same controlled metadata. The browser is not involved.
   Transient `429`/`5xx` calls retry at most four times; a hard failure stops the run for a safe rerun.
+- Synthetic entities remain unclassified and quarantined by default. An operator may explicitly
+  add `--datahub-classification PUBLIC|INTERNAL|CONFIDENTIAL|RESTRICTED` for the selected bounded
+  entity range. The generator then emits the existing controlled `CLASSIFICATION:<level>` DataHub
+  tag, records the choice in the ignored manifest/run identity and verifies the tag by read-back.
+  This option never reclassifies an existing DataRiver projection directly; the normal governed
+  DataHub-to-catalog reconciliation must observe and map the provider metadata.
 
 ## Local execution and evidence
 

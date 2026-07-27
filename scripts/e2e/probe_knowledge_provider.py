@@ -13,6 +13,7 @@ from datariver.application.services.knowledge_pipeline import (
     KnowledgeSourcePipeline,
     VerifiedProjectionService,
 )
+from datariver.domain.authz import Classification
 from datariver.domain.knowledge import GraphSnapshot, Ontology, apply_change_operations
 from datariver.domain.knowledge_pipeline import (
     PDF_MEDIA_TYPE,
@@ -160,7 +161,10 @@ async def _verify_neo4j_shadow(
                 executor=executor,
                 semantic_selector=_FixedSemanticSelector(tuple(snapshot.nodes)),
             ),
-            composer=OpenAICompatibleKnowledgeAnswerComposer(transport=chat_transport),
+            composer=OpenAICompatibleKnowledgeAnswerComposer(
+                transport=chat_transport,
+                reasoning_effort="none",
+            ),
             audit_writer=audit,
         ).answer(
             request_id=f"e2e-{release_id}",
@@ -175,6 +179,7 @@ async def _verify_neo4j_shadow(
             maximum_classification=3,
             maximum_hops=1,
             maximum_nodes=2,
+            canonical_snapshot=snapshot,
             binding=answer_binding,
         )
         result.update(
@@ -253,7 +258,10 @@ async def _probe(
     embeddings = await OpenAICompatibleEmbeddingProvider(transport=embedding_transport).embed_pages(
         pages=source_pages, binding=embedding_binding
     )
-    extraction = await OpenAICompatibleTypedKnowledgeExtractor(transport=chat_transport).propose(
+    extraction = await OpenAICompatibleTypedKnowledgeExtractor(
+        transport=chat_transport,
+        reasoning_effort="none",
+    ).propose(
         pages=source_pages,
         entity_types=_ENTITY_TYPES,
         edge_types=_EDGE_TYPES,
@@ -279,6 +287,7 @@ async def _probe(
         media_type=PDF_MEDIA_TYPE,
         byte_size=len(payload),
         content_sha256=source_sha256,
+        classification=int(Classification.RESTRICTED),
     )
     analysis = KnowledgeSourceAnalysis(
         source=source,

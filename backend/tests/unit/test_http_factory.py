@@ -23,6 +23,7 @@ from datariver.interfaces.http.routes import admin as admin_routes
 from datariver.interfaces.http.routes.admin import (
     _SYSTEM_ENVIRONMENT_KEYS,
     _deployment_configuration_document,
+    _deployment_probe_document,
     _display_configuration,
     _system_configuration_entries,
     _validate_configuration_submission,
@@ -503,6 +504,52 @@ def test_deployment_probe_documents_use_only_server_owned_runtime_settings() -> 
         reranker_profile_id
     )
     assert reranker["secret_references"] == {}
+
+
+def test_deployment_probe_documents_exclude_display_metadata_and_validate() -> None:
+    chat_profile_id = uuid4()
+    embedding_profile_id = uuid4()
+    reranker_profile_id = uuid4()
+    configured = Settings(
+        **(
+            settings().model_dump()
+            | {
+                "app_env": "development",
+                "local_ollama_chat_enabled": True,
+                "local_ollama_chat_base_url": "http://host.docker.internal:11434/v1",
+                "local_ollama_chat_model": "operator-selected-chat-model",
+                "local_ollama_chat_timeout_seconds": 60.5,
+                "chat_composition_provider_profile_version_id": chat_profile_id,
+                "local_ollama_embedding_enabled": True,
+                "local_ollama_embedding_base_url": "http://host.docker.internal:11434/v1",
+                "local_ollama_embedding_model": "operator-selected-embedding-model",
+                "local_ollama_embedding_timeout_seconds": 60.5,
+                "chat_embedding_provider_profile_version_id": embedding_profile_id,
+                "local_llama_cpp_reranker_enabled": True,
+                "local_llama_cpp_reranker_base_url": ("http://host.docker.internal:11435/v1"),
+                "local_llama_cpp_reranker_model": ("qllama/bge-reranker-v2-m3:q4_k_m"),
+                "local_llama_cpp_reranker_timeout_seconds": 60.5,
+                "chat_reranker_provider_profile_version_id": reranker_profile_id,
+                "neo4j_projection_enabled": True,
+                "neo4j_uri": "bolt://neo4j:7687",
+                "neo4j_auth_secret_ref": "file:/run/secrets/neo4j_auth",
+                "neo4j_connection_timeout_seconds": 30.5,
+            }
+        )
+    )
+
+    for system_id in ("LLM_CHAT_MODEL", "LLM_EMBEDDING", "LLM_RERANKER", "NEO4J"):
+        document = _deployment_probe_document(configured, system_id)
+        assert document is not None
+        assert "governance_binding" not in document["options"]
+        _validate_system_configuration(system_id, document)
+
+    chat = _deployment_probe_document(configured, "LLM_CHAT_MODEL")
+    assert chat is not None
+    assert chat["options"]["api_style"] == "ollama_native_chat"
+    assert chat["options"]["timeout_seconds"] == 60.5
+    assert "request_limit_per_minute" not in chat["options"]
+    assert "token_limit_per_minute" not in chat["options"]
 
 
 def test_system_configuration_display_removes_nested_secrets_and_submission_rejects_them() -> None:

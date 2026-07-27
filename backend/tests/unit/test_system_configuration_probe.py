@@ -67,6 +67,7 @@ async def test_local_chat_model_probe_uses_native_ollama_context_bound() -> None
         assert request.url.path == "/api/chat"
         body = json.loads(request.content)
         assert body["model"] == "gemma4:latest"
+        assert body["think"] is False
         assert body["format"]["type"] == "object"
         assert body["options"] == {
             "temperature": 0,

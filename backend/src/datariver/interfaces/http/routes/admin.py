@@ -525,7 +525,7 @@ _SYSTEM_CONFIGURATION_TEMPLATES: dict[str, dict[str, Any]] = {
         "options": {
             "api_style": "openai_compatible",
             "context_tokens": 8192,
-            "timeout_seconds": 60,
+            "timeout_seconds": 60.0,
         },
     },
     "LLM_EMBEDDING": {
@@ -533,20 +533,20 @@ _SYSTEM_CONFIGURATION_TEMPLATES: dict[str, dict[str, Any]] = {
         "base_url": "",
         "model": "",
         "secret_references": {},
-        "options": {"api_style": "openai_compatible", "timeout_seconds": 60},
+        "options": {"api_style": "openai_compatible", "timeout_seconds": 60.0},
     },
     "LLM_RERANKER": {
         "connection_mode": "LOCAL_LLAMA_CPP",
         "base_url": "",
         "model": "",
         "secret_references": {},
-        "options": {"api_style": "rerank_v1", "timeout_seconds": 60, "top_n": 10},
+        "options": {"api_style": "rerank_v1", "timeout_seconds": 60.0, "top_n": 10},
     },
     "NEO4J": {
         "database": "neo4j",
         "secret_references": dict(canonical_secret_references("NEO4J")),
         "uri": "",
-        "options": {"connection_timeout_seconds": 30, "maximum_connection_pool_size": 50},
+        "options": {"connection_timeout_seconds": 30.0, "maximum_connection_pool_size": 50},
     },
     "PROMETHEUS": {"base_url": "", "options": {}},
     "GRAFANA_DASHBOARD": {
@@ -958,6 +958,20 @@ def _validate_option_value(key: str, value: object, template: object) -> None:
                 f"System configuration option {key} must be between {lower} and {upper}."
             )
         return
+    if isinstance(template, float):
+        if not isinstance(value, int | float) or isinstance(value, bool):
+            raise ValidationError(f"System configuration option {key} must be numeric.")
+        numeric_limits = {
+            "connection_timeout_seconds": (1.0, 60.0),
+            "timeout_seconds": (1.0, 300.0),
+        }
+        numeric_lower, numeric_upper = numeric_limits.get(key, (0.0, 1_000_000.0))
+        if float(value) < numeric_lower or float(value) > numeric_upper:
+            raise ValidationError(
+                f"System configuration option {key} must be between "
+                f"{numeric_lower:g} and {numeric_upper:g}."
+            )
+        return
     if isinstance(template, str):
         if not isinstance(value, str) or len(value) > 512:
             raise ValidationError(f"System configuration option {key} must be a short string.")
@@ -999,10 +1013,17 @@ def _validate_nested_configuration_schema(system_id: str, document: Mapping[str,
             + ", ".join(str(value) for value in unknown_options)
         )
     for option_key, option_value in options.items():
+        option_value_template = option_template[option_key]
+        if (
+            system_id == "LLM_CHAT_MODEL"
+            and option_key == "api_style"
+            and document.get("connection_mode") == "LOCAL_OLLAMA"
+        ):
+            option_value_template = "ollama_native_chat"
         _validate_option_value(
             str(option_key),
             option_value,
-            option_template[option_key],
+            option_value_template,
         )
     buckets = document.get("buckets")
     bucket_template = template.get("buckets")
@@ -1079,6 +1100,15 @@ def _validate_system_configuration(
         connection_mode = document.get("connection_mode", "LOCAL_OLLAMA")
         if connection_mode not in {"LOCAL_OLLAMA", "INTRANET_OPENAI_COMPATIBLE"}:
             raise ValidationError("The LLM connection mode is invalid.")
+        expected_api_style = (
+            "ollama_native_chat"
+            if system_id == "LLM_CHAT_MODEL" and connection_mode == "LOCAL_OLLAMA"
+            else "openai_compatible"
+        )
+        if options.get("api_style") != expected_api_style:
+            raise ValidationError(
+                f"{system_id} with {connection_mode} requires api_style={expected_api_style}."
+            )
         secret_references = _secret_references(document.get("secret_references", {}))
         if connection_mode == "LOCAL_OLLAMA" and secret_references:
             raise ValidationError("Local Ollama does not accept an API-key secret reference.")
@@ -3177,6 +3207,24 @@ def _deployment_configuration_document(
     return None
 
 
+def _deployment_probe_document(
+    settings: Settings,
+    system_id: str,
+) -> dict[str, Any] | None:
+    """Project the live display document onto the fixed connection-probe schema."""
+
+    document = _deployment_configuration_document(settings, system_id)
+    if document is None:
+        return None
+    template = _SYSTEM_CONFIGURATION_TEMPLATES[system_id]
+    probe_document = {key: value for key, value in document.items() if key in template}
+    options = document.get("options")
+    option_template = template.get("options")
+    if isinstance(options, Mapping) and isinstance(option_template, Mapping):
+        probe_document["options"] = {key: options[key] for key in option_template if key in options}
+    return probe_document
+
+
 @router.post(
     "/system-configuration/{system_id}/test-deployment",
     response_model=SystemConfigurationTestResponse,
@@ -3259,7 +3307,7 @@ async def test_deployment_system_configuration(
             tested_at=tested_at,
         )
 
-    document = _deployment_configuration_document(container.settings, system_id)
+    document = _deployment_probe_document(container.settings, system_id)
     if document is None:
         return SystemConfigurationTestResponse(
             system_id=system_id,

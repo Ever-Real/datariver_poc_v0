@@ -1107,11 +1107,15 @@ async def query_knowledge_release(
         node_count=release.node_count,
         edge_count=release.edge_count,
     )
+    # External embedding and composition calls must never hold a request-scoped
+    # PostgreSQL transaction or consume a pool connection while inference runs.
+    await session.commit()
     if container.knowledge_neo4j is None:
         raise ConflictError("The activated Neo4j query adapter is unavailable.")
     runtime = _knowledge_adapters(request)
     selector = SqlSemanticSeedSelector(
-        session=session,
+        session_factory=container.database.session_factory,
+        subject_id=context.subject.subject_id,
         embedding=runtime.embedding,
         binding=runtime.bindings.embedding,
     )

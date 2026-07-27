@@ -729,6 +729,11 @@ async def probe_system_configuration(
             if connection_mode == "LOCAL_OLLAMA":
                 json_document = {
                     "model": model,
+                    # The local adapter requires one exact JSON object. Disable
+                    # reasoning output so models that otherwise render a
+                    # Markdown-wrapped answer cannot make a valid connection
+                    # look unavailable.
+                    "think": False,
                     "format": {
                         "type": "object",
                         "properties": {"status": {"type": "string", "enum": ["ok"]}},

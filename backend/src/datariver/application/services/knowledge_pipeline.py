@@ -24,6 +24,7 @@ from datariver.domain.knowledge import (
     normalize_evidence_excerpt,
 )
 from datariver.domain.knowledge_pipeline import (
+    MAX_GRAPHRAG_QUERY_NODES,
     MAX_PDF_PAGES,
     MAX_QUESTION_CHARACTERS,
     MAX_TOTAL_PAGE_CHARACTERS,
@@ -607,7 +608,7 @@ class KnowledgeGraphRagService:
             )
             if invalid_edge_type:
                 raise ValidationError("GraphRAG edge type filter is invalid.")
-        if not 1 <= maximum_hops <= 3 or not 1 <= maximum_nodes <= 100:
+        if not 1 <= maximum_hops <= 3 or not 1 <= maximum_nodes <= MAX_GRAPHRAG_QUERY_NODES:
             raise ValidationError("GraphRAG traversal bounds are invalid.")
         binding.validate()
         selected_evidence = await self._retriever.retrieve(

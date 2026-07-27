@@ -24,6 +24,7 @@ from datariver.domain.chat import (
     ChatWorkflowStage,
     ChatWorkflowStatus,
 )
+from datariver.domain.knowledge_pipeline import MAX_GRAPHRAG_QUERY_NODES
 
 
 class PageMeta(BaseModel):
@@ -2249,7 +2250,11 @@ class KnowledgeGraphRagRequest(BaseModel):
     direction: Literal["IN", "OUT", "BOTH"] = "BOTH"
     edge_types: set[str] = Field(default_factory=set, max_length=50)
     maximum_hops: int = Field(default=1, ge=1, le=3)
-    maximum_nodes: int = Field(default=100, ge=1, le=100)
+    maximum_nodes: int = Field(
+        default=MAX_GRAPHRAG_QUERY_NODES,
+        ge=1,
+        le=MAX_GRAPHRAG_QUERY_NODES,
+    )
 
 
 class KnowledgeGraphRagCitationResponse(BaseModel):
