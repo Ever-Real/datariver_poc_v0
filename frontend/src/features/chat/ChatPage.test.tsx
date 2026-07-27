@@ -112,6 +112,9 @@ function chatClient() {
       favorite = true
       return Promise.resolve({ ...session, is_favorite: true, version: session.version + 1 })
     }
+    if (path.startsWith(`/chat/sessions/${session.id}?expected_version=`)) {
+      return Promise.resolve(undefined)
+    }
     return Promise.reject(new Error(`Unexpected request: ${path} ${options?.method ?? 'GET'}`))
   })
   return { client: { request } as unknown as ApiClient, request }
@@ -120,6 +123,11 @@ function chatClient() {
 function requestBody(options: RequestOptions | undefined): unknown {
   if (typeof options?.body !== 'string') throw new Error('Expected a JSON request body')
   return JSON.parse(options.body) as unknown
+}
+
+function selectRoute(label: '일반' | '벡터' | '그래프'): void {
+  fireEvent.click(screen.getByRole('button', { name: '검색 경로' }))
+  fireEvent.click(screen.getByRole('option', { name: `검색 경로 ${label}` }))
 }
 
 describe('ChatPage', () => {
@@ -132,7 +140,7 @@ describe('ChatPage', () => {
     render(<ChatPage client={client} />)
 
     expect(await screen.findByText('주문 데이터')).toBeInTheDocument()
-    fireEvent.change(screen.getByLabelText('검색 경로'), { target: { value: 'VECTOR' } })
+    selectRoute('벡터')
     const question = screen.getByLabelText('카탈로그 질문')
     fireEvent.change(question, { target: { value: '주문과 고객 테이블을 찾아줘' } })
     fireEvent.keyDown(question, { key: 'Enter', code: 'Enter' })
@@ -153,6 +161,7 @@ describe('ChatPage', () => {
 
     fireEvent.click(screen.getByRole('button', { name: '근거 1 orders 상세 열기' }))
     const dialog = screen.getByRole('dialog', { name: '근거 테이블 상세와 Lineage' })
+    expect(dialog.parentElement).toBe(document.body)
     expect(within(dialog).getByText('asset:asset-orders')).toBeInTheDocument()
     expect(within(dialog).getByRole('button', { name: '연결 테이블' })).toHaveFocus()
     fireEvent.keyDown(dialog, { key: 'Tab', shiftKey: true })
@@ -254,6 +263,60 @@ describe('ChatPage', () => {
     expect(await screen.findByRole('status')).toHaveTextContent('답변 복사 실패')
   })
 
+  it('filters the owner history to favorites and archives a session through the versioned endpoint', async () => {
+    const { client, request } = chatClient()
+    render(<ChatPage client={client} />)
+    await screen.findByText('주문 데이터')
+
+    fireEvent.click(screen.getByRole('tab', { name: '즐겨찾기' }))
+    expect(screen.getByText('즐겨찾기가 없습니다.')).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('tab', { name: '최근' }))
+    fireEvent.click(screen.getByRole('button', { name: '주문 데이터 즐겨찾기 추가' }))
+    await screen.findByRole('button', { name: '주문 데이터 즐겨찾기 해제' })
+    fireEvent.click(screen.getByRole('tab', { name: '즐겨찾기' }))
+    expect(screen.getByRole('button', { name: '주문 데이터 열기' })).toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('button', { name: '주문 데이터 삭제' }))
+    await waitFor(() => {
+      expect(screen.queryByRole('button', { name: '주문 데이터 열기' })).not.toBeInTheDocument()
+    })
+    expect(request).toHaveBeenCalledWith(
+      `/chat/sessions/${session.id}?expected_version=${session.version + 1}`,
+      { method: 'DELETE' },
+    )
+  })
+
+  it('collapses both side panels and reopens evidence when a past answer is selected', async () => {
+    const { client } = chatClient()
+    render(<ChatPage client={client} />)
+
+    fireEvent.click(await screen.findByRole('button', { name: '주문 데이터 열기' }))
+    await screen.findByText('저장된 답변')
+    fireEvent.click(screen.getByRole('button', { name: '대화 이력 숨기기' }))
+    expect(screen.getByRole('button', { name: '대화 이력 펼치기' })).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'EVIDENCE 패널 숨기기' }))
+    expect(screen.queryByRole('button', { name: '근거 1 orders 상세 열기' })).not.toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('button', { name: '이 답변의 근거 다시 보기' }))
+    expect(screen.getByRole('button', { name: '근거 1 orders 상세 열기' })).toBeInTheDocument()
+  })
+
+  it('clears account-local message state when the authenticated client boundary changes', async () => {
+    const first = chatClient()
+    const secondSession = { ...session, id: 'session-2', title: '다른 계정 대화' }
+    const secondRequest = vi.fn((path: string) => (
+      path === '/chat/sessions?limit=50'
+        ? Promise.resolve([secondSession])
+        : Promise.reject(new Error(`Unexpected request: ${path}`))
+    ))
+    const view = render(<ChatPage client={first.client} />)
+    await screen.findByRole('button', { name: '주문 데이터 열기' })
+
+    view.rerender(<ChatPage client={{ request: secondRequest } as unknown as ApiClient} />)
+    expect(screen.queryByRole('button', { name: '주문 데이터 열기' })).not.toBeInTheDocument()
+    expect(await screen.findByRole('button', { name: '다른 계정 대화 열기' })).toBeInTheDocument()
+  })
+
   it('refreshes a stale favorite version after a conflict before the user retries', async () => {
     let sessionReads = 0
     let favoriteWrites = 0
@@ -344,7 +407,7 @@ describe('ChatPage', () => {
     render(<ChatPage client={{ request } as unknown as ApiClient} />)
     await screen.findByText('주문 데이터')
 
-    fireEvent.change(screen.getByLabelText('검색 경로'), { target: { value: 'GRAPH' } })
+    selectRoute('그래프')
     const question = screen.getByLabelText('카탈로그 질문')
     fireEvent.change(question, { target: { value: '그래프 경로 확인' } })
     fireEvent.keyDown(question, { key: 'Enter', code: 'Enter' })
@@ -421,7 +484,7 @@ describe('ChatPage', () => {
     render(<ChatPage client={{ request } as unknown as ApiClient} />)
     await screen.findByText('주문 데이터')
 
-    fireEvent.change(screen.getByLabelText('검색 경로'), { target: { value: 'GENERAL' } })
+    selectRoute('일반')
     const question = screen.getByLabelText('카탈로그 질문')
     fireEvent.change(question, { target: { value: '승인된 테이블을 알려줘' } })
     fireEvent.keyDown(question, { key: 'Enter', code: 'Enter' })
@@ -439,12 +502,12 @@ describe('ChatPage', () => {
     render(<ChatPage client={client} />)
     await screen.findByText('주문 데이터')
 
-    fireEvent.change(screen.getByLabelText('검색 경로'), { target: { value: 'VECTOR' } })
+    selectRoute('벡터')
     fireEvent.change(screen.getByLabelText('카탈로그 질문'), { target: { value: '작성 중 질문' } })
-    fireEvent.click(screen.getByRole('button', { name: /새 세션/ }))
+    fireEvent.click(screen.getByRole('button', { name: '새 대화' }))
 
-    expect(screen.getByLabelText('검색 경로')).toHaveValue('AUTO')
+    expect(screen.getByRole('button', { name: '검색 경로' })).toHaveTextContent('자동')
     expect(screen.getByLabelText('카탈로그 질문')).toHaveValue('')
-    expect(screen.getByText('질문을 시작하세요')).toBeInTheDocument()
+    expect(screen.getByText('데이터를 이해하는 대화를 시작하세요')).toBeInTheDocument()
   })
 })

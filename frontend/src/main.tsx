@@ -8,6 +8,7 @@ import './styles/tokens.css'
 import './styles.css'
 import './styles/shell.css'
 import './styles/primitives.css'
+import './styles/chat.css'
 
 const queryClient = new QueryClient({
   defaultOptions: {

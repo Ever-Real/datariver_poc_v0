@@ -363,6 +363,7 @@ _SYSTEM_ENVIRONMENT_KEYS: dict[str, tuple[str, ...]] = {
     ),
     "LLM_CHAT_MODEL": (
         "LOCAL_INFERENCE_SOURCE_HOST_ENABLED",
+        "LOCAL_INFERENCE_ALLOWED_HOSTS",
         "LOCAL_OLLAMA_CHAT_ENABLED",
         "LOCAL_OLLAMA_CHAT_BASE_URL",
         "LOCAL_OLLAMA_CHAT_MODEL",
@@ -384,6 +385,7 @@ _SYSTEM_ENVIRONMENT_KEYS: dict[str, tuple[str, ...]] = {
     ),
     "LLM_EMBEDDING": (
         "LOCAL_INFERENCE_SOURCE_HOST_ENABLED",
+        "LOCAL_INFERENCE_ALLOWED_HOSTS",
         "LOCAL_OLLAMA_EMBEDDING_ENABLED",
         "LOCAL_OLLAMA_EMBEDDING_BASE_URL",
         "LOCAL_OLLAMA_EMBEDDING_MODEL",
@@ -400,6 +402,7 @@ _SYSTEM_ENVIRONMENT_KEYS: dict[str, tuple[str, ...]] = {
     ),
     "LLM_RERANKER": (
         "LOCAL_INFERENCE_SOURCE_HOST_ENABLED",
+        "LOCAL_INFERENCE_ALLOWED_HOSTS",
         "LOCAL_LLAMA_CPP_RERANKER_ENABLED",
         "LOCAL_LLAMA_CPP_RERANKER_BASE_URL",
         "LOCAL_LLAMA_CPP_RERANKER_MODEL",
@@ -1143,7 +1146,7 @@ def _validate_system_configuration(
         if connection_mode == "LOCAL_LLAMA_CPP":
             if (
                 parsed.scheme != "http"
-                or parsed.hostname not in {"127.0.0.1", "host.docker.internal"}
+                or parsed.hostname is None
                 or parsed.port != 11435
                 or parsed.path.rstrip("/") != "/v1"
                 or parsed.query
@@ -3225,6 +3228,16 @@ def _deployment_probe_document(
     return probe_document
 
 
+def _deployment_probe_allowed_hosts(
+    settings: Settings,
+    system_id: str,
+) -> tuple[str, ...]:
+    hosts = set(settings.system_configuration_probe_allowed_hosts)
+    if system_id.startswith("LLM_"):
+        hosts.update(settings.effective_local_inference_allowed_hosts)
+    return tuple(sorted(hosts))
+
+
 @router.post(
     "/system-configuration/{system_id}/test-deployment",
     response_model=SystemConfigurationTestResponse,
@@ -3326,7 +3339,7 @@ async def test_deployment_system_configuration(
             secret_resolver=SecretResolver(
                 virtual_secret_root=container.settings.system_configuration_secret_root
             ),
-            allowed_hosts=container.settings.system_configuration_probe_allowed_hosts,
+            allowed_hosts=_deployment_probe_allowed_hosts(container.settings, system_id),
         )
         status = result.status
         scope = result.scope

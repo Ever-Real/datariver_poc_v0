@@ -67,6 +67,7 @@ export function CatalogDetailPane({
   onResizeWidth,
   width,
   asOverlay = false,
+  asModal = false,
 }: {
   client: ApiClient
   assetId: string
@@ -77,6 +78,8 @@ export function CatalogDetailPane({
   width?: number
   /** true이면 오버레이(fixed positioning) 방식으로 렌더링 */
   asOverlay?: boolean
+  /** true이면 document portal 안의 중앙 모달 surface를 채웁니다. */
+  asModal?: boolean
 }) {
   const [expanded, setExpanded] = useState(new Set(['details', 'columns']))
   const [activeTab, setActiveTab] = useState<'metadata' | 'lineage'>('metadata')
@@ -215,7 +218,7 @@ export function CatalogDetailPane({
         </div>
       )}
       <aside
-        className={`catalog-detail panel${asOverlay ? ' catalog-detail--overlay' : ''}`}
+        className={`catalog-detail panel${asOverlay ? ' catalog-detail--overlay' : ''}${asModal ? ' catalog-detail--modal' : ''}`}
         aria-label="카탈로그 상세"
         style={{ width: width ? `${width}px` : undefined }}
       >

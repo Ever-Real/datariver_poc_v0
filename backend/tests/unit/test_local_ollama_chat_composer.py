@@ -78,7 +78,7 @@ async def test_composer_uses_one_fixed_tool_and_returns_its_untrusted_draft() ->
     evidence = _evidence()
 
     def handler(request: httpx.Request) -> httpx.Response:
-        assert request.url == httpx.URL("http://host.docker.internal:11434/api/chat")
+        assert request.url == httpx.URL("http://models.wsl.internal:11434/api/chat")
         payload = json.loads(request.content)
         assert payload["model"] == "gemma4:e2b-it-qat"
         assert payload["think"] is False
@@ -109,14 +109,15 @@ async def test_composer_uses_one_fixed_tool_and_returns_its_untrusted_draft() ->
         )
 
     async with httpx.AsyncClient(
-        base_url="http://host.docker.internal:11434/v1",
+        base_url="http://models.wsl.internal:11434/v1",
         transport=httpx.MockTransport(handler),
     ) as client:
         draft = await LocalOllamaChatComposer(
-            base_url="http://host.docker.internal:11434/v1",
+            base_url="http://models.wsl.internal:11434/v1",
             model="gemma4:e2b-it-qat",
             timeout_seconds=45,
             context_tokens=8192,
+            allowed_hosts=frozenset({"models.wsl.internal"}),
             client=client,
         ).compose(question="How is yield measured?", evidence=(evidence,))
 
@@ -162,6 +163,7 @@ async def test_composer_uses_separate_fixed_tool_for_general_knowledge() -> None
             model="gemma4:e2b-it-qat",
             timeout_seconds=45,
             context_tokens=8192,
+            allowed_hosts=frozenset({"host.docker.internal"}),
             client=client,
         ).compose_general(question="온톨로지가 뭐야?")
 
@@ -187,6 +189,7 @@ async def test_composer_rejects_text_or_unknown_tool_output() -> None:
             model="gemma4:e2b-it-qat",
             timeout_seconds=45,
             context_tokens=8192,
+            allowed_hosts=frozenset({"host.docker.internal"}),
             client=client,
         ).compose(question="How is yield measured?", evidence=(evidence,))
 
@@ -211,6 +214,7 @@ async def test_composer_rejects_an_oversized_response_before_json_parsing() -> N
             model="gemma4:e2b-it-qat",
             timeout_seconds=45,
             context_tokens=8192,
+            allowed_hosts=frozenset({"host.docker.internal"}),
             client=client,
         )
         with pytest.raises(ValidationError, match="exceeded"):

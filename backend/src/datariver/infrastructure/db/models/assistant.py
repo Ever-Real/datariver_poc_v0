@@ -83,6 +83,13 @@ class ChatSessionModel(Base, UuidPrimaryKeyMixin, TimestampMixin, VersionMixin):
         server_default=text("false"),
         nullable=False,
     )
+    # Owner-visible history deletion is a reversible presentation state. The
+    # governed session and its evidence remain retained for the bound policy.
+    is_archived: Mapped[bool] = mapped_column(
+        Boolean,
+        server_default=text("false"),
+        nullable=False,
+    )
 
 
 class ChatMessageModel(Base, UuidPrimaryKeyMixin):

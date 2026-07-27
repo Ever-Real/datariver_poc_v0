@@ -27,12 +27,14 @@ class LocalLlamaCppEvidenceReranker(ChatEvidenceReranker):
         model: str,
         timeout_seconds: float,
         top_n: int,
+        allowed_hosts: frozenset[str],
         transport: httpx.AsyncBaseTransport | None = None,
     ) -> None:
         parsed = urlsplit(base_url)
+        host = (parsed.hostname or "").rstrip(".").lower()
         if (
             parsed.scheme != "http"
-            or parsed.hostname not in {"127.0.0.1", "host.docker.internal"}
+            or host not in allowed_hosts
             or parsed.port != 11435
             or parsed.path.rstrip("/") != "/v1"
             or parsed.username is not None

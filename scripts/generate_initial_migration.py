@@ -321,7 +321,7 @@ BEGIN
         GRANT DELETE ON knowledge.validation_results TO datariver_app;
         GRANT SELECT, INSERT ON assistant.chat_sessions, assistant.chat_messages,
             assistant.assistant_runs, assistant.evidence_citations TO datariver_app;
-        GRANT UPDATE (is_favorite, version, updated_at)
+        GRANT UPDATE (is_favorite, is_archived, version, updated_at)
             ON assistant.chat_sessions TO datariver_app;
         GRANT SELECT, INSERT ON retention.policy_versions,
             retention.policy_class_rules TO datariver_app;

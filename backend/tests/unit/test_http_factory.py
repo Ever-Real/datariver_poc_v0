@@ -23,6 +23,7 @@ from datariver.interfaces.http.routes import admin as admin_routes
 from datariver.interfaces.http.routes.admin import (
     _SYSTEM_ENVIRONMENT_KEYS,
     _deployment_configuration_document,
+    _deployment_probe_allowed_hosts,
     _deployment_probe_document,
     _display_configuration,
     _system_configuration_entries,
@@ -459,6 +460,7 @@ def test_deployment_probe_documents_use_only_server_owned_runtime_settings() -> 
             settings().model_dump()
             | {
                 "app_env": "development",
+                "local_inference_allowed_hosts": ("host.docker.internal",),
                 "local_ollama_chat_enabled": True,
                 "local_ollama_chat_base_url": "http://host.docker.internal:11434/v1",
                 "local_ollama_chat_model": "operator-selected-chat-model",
@@ -504,6 +506,10 @@ def test_deployment_probe_documents_use_only_server_owned_runtime_settings() -> 
         reranker_profile_id
     )
     assert reranker["secret_references"] == {}
+    assert "host.docker.internal" in _deployment_probe_allowed_hosts(
+        configured,
+        "LLM_RERANKER",
+    )
 
 
 def test_deployment_probe_documents_exclude_display_metadata_and_validate() -> None:
@@ -515,6 +521,7 @@ def test_deployment_probe_documents_exclude_display_metadata_and_validate() -> N
             settings().model_dump()
             | {
                 "app_env": "development",
+                "local_inference_allowed_hosts": ("host.docker.internal",),
                 "local_ollama_chat_enabled": True,
                 "local_ollama_chat_base_url": "http://host.docker.internal:11434/v1",
                 "local_ollama_chat_model": "operator-selected-chat-model",

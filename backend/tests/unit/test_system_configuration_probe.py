@@ -84,13 +84,13 @@ async def test_local_chat_model_probe_uses_native_ollama_context_bound() -> None
         result = await probe_system_configuration(
             system_id="LLM_CHAT_MODEL",
             document={
-                "base_url": "http://127.0.0.1:11434/v1",
+                "base_url": "http://10.42.0.15:11434/v1",
                 "connection_mode": "LOCAL_OLLAMA",
                 "model": "gemma4:latest",
                 "options": {"context_tokens": 8192},
             },
             client=client,
-            allowed_hosts=("127.0.0.1",),
+            allowed_hosts=("10.42.0.15",),
         )
 
     assert result.status == "AVAILABLE"

@@ -1,11 +1,37 @@
-import { useCallback, useEffect, useMemo, useState, type FormEvent } from 'react'
-import { Bot, Send, ShieldCheck, Loader2 } from 'lucide-react'
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type FormEvent,
+} from 'react'
+import {
+  Bot,
+  Boxes,
+  ChevronRight,
+  GitBranch,
+  Loader2,
+  Send,
+  ShieldCheck,
+  Sparkles,
+} from 'lucide-react'
 import type { ApiClient } from '../../api/client'
-import type { KnowledgeGraph, KnowledgeNeighborAnalysis, KnowledgeRelease, KnowledgeSnapshot } from '../../api/types'
+import type {
+  KnowledgeGraph,
+  KnowledgeNeighborAnalysis,
+  KnowledgeRelease,
+  KnowledgeSnapshot,
+} from '../../api/types'
 import type { Page } from '../../app/navigation'
 import { ErrorNotice } from '../../components/ErrorNotice'
-import { FlowCanvas, type FlowCanvasEdge, type FlowCanvasNode } from '../../components/common/FlowCanvas'
+import {
+  FlowCanvas,
+  type FlowCanvasEdge,
+  type FlowCanvasNode,
+} from '../../components/common/FlowCanvas'
 import { PageTitle } from '../../components/layout/PageTitle'
+import { SafeMarkdown } from '../chat/SafeMarkdown'
 import { KnowledgeWorkspaceLayout } from './KnowledgeWorkspaceLayout'
 
 interface KnowledgeGraphRagAnswer extends KnowledgeNeighborAnalysis {
@@ -29,7 +55,13 @@ function label(properties: Record<string, unknown>, fallback: string): string {
   return typeof value === 'string' || typeof value === 'number' ? String(value) : fallback
 }
 
-export function KnowledgeChatPage({ client, onNavigate }: { client: ApiClient; onNavigate: (page: Page) => void }) {
+export function KnowledgeChatPage({
+  client,
+  onNavigate,
+}: {
+  client: ApiClient
+  onNavigate: (page: Page) => void
+}) {
   const [graphs, setGraphs] = useState<KnowledgeGraph[]>([])
   const [graphId, setGraphId] = useState('')
   const [releases, setReleases] = useState<KnowledgeRelease[]>([])
@@ -37,91 +69,340 @@ export function KnowledgeChatPage({ client, onNavigate }: { client: ApiClient; o
   const [snapshot, setSnapshot] = useState<KnowledgeSnapshot>()
   const [nodeId, setNodeId] = useState('')
   const [question, setQuestion] = useState('')
+  const [submittedQuestion, setSubmittedQuestion] = useState('')
   const [direction, setDirection] = useState<'IN' | 'OUT' | 'BOTH'>('BOTH')
   const [maximumHops, setMaximumHops] = useState('1')
   const [analysis, setAnalysis] = useState<KnowledgeGraphRagAnswer>()
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<unknown>()
+  const requestVersion = useRef(0)
+  const answerRef = useRef<HTMLElement>(null)
 
   const loadGraphs = useCallback(async () => {
     setError(undefined)
     try {
       const result = await client.request<KnowledgeGraph[]>('/knowledge/graphs')
       setGraphs(result)
-      setGraphId((current) => current && result.some((graph) => graph.id === current) ? current : result[0]?.id ?? '')
-    } catch (next) { setError(next) }
+      setGraphId((current) => (
+        current && result.some((graph) => graph.id === current)
+          ? current
+          : result[0]?.id ?? ''
+      ))
+    } catch (next) {
+      setError(next)
+    }
   }, [client])
-  useEffect(() => { void loadGraphs() }, [loadGraphs])
 
   useEffect(() => {
-    if (!graphId) { setReleases([]); setReleaseId(''); return }
+    void loadGraphs()
+  }, [loadGraphs])
+
+  useEffect(() => {
+    requestVersion.current += 1
+    setAnalysis(undefined)
+    setSubmittedQuestion('')
+    if (!graphId) {
+      setReleases([])
+      setReleaseId('')
+      return
+    }
     const controller = new AbortController()
-    void client.request<KnowledgeRelease[]>(`/knowledge/graphs/${graphId}/releases`, { signal: controller.signal })
+    void client.request<KnowledgeRelease[]>(`/knowledge/graphs/${graphId}/releases`, {
+      signal: controller.signal,
+    })
       .then((result) => {
         if (controller.signal.aborted) return
         setReleases(result)
         const graph = graphs.find((item) => item.id === graphId)
         setReleaseId(graph?.active_release_id ?? result.at(-1)?.id ?? '')
       })
-      .catch((next) => { if (!controller.signal.aborted) setError(next) })
+      .catch((next) => {
+        if (!controller.signal.aborted) setError(next)
+      })
     return () => controller.abort()
   }, [client, graphId, graphs])
 
   useEffect(() => {
-    if (!graphId || !releaseId) { setSnapshot(undefined); setNodeId(''); return }
+    requestVersion.current += 1
+    setAnalysis(undefined)
+    setSubmittedQuestion('')
+    if (!graphId || !releaseId) {
+      setSnapshot(undefined)
+      setNodeId('')
+      return
+    }
     const controller = new AbortController()
-    setLoading(true); setAnalysis(undefined)
-    void client.request<KnowledgeSnapshot>(`/knowledge/graphs/${graphId}/releases/${releaseId}/snapshot?maximum_nodes=200`, { signal: controller.signal })
+    setLoading(true)
+    void client.request<KnowledgeSnapshot>(
+      `/knowledge/graphs/${graphId}/releases/${releaseId}/snapshot?maximum_nodes=200`,
+      { signal: controller.signal },
+    )
       .then((result) => {
         if (controller.signal.aborted) return
         setSnapshot(result)
-        setNodeId((current) => current && result.nodes.some((node) => node.id === current) ? current : result.nodes[0]?.id ?? '')
+        setNodeId((current) => (
+          current && result.nodes.some((node) => node.id === current)
+            ? current
+            : result.nodes[0]?.id ?? ''
+        ))
       })
-      .catch((next) => { if (!controller.signal.aborted) setError(next) })
-      .finally(() => { if (!controller.signal.aborted) setLoading(false) })
+      .catch((next) => {
+        if (!controller.signal.aborted) setError(next)
+      })
+      .finally(() => {
+        if (!controller.signal.aborted) setLoading(false)
+      })
     return () => controller.abort()
   }, [client, graphId, releaseId])
 
   const query = async (event: FormEvent) => {
     event.preventDefault()
-    if (!graphId || !releaseId || !nodeId || question.trim().length < 2) return
-    setLoading(true); setError(undefined)
+    const trimmedQuestion = question.trim()
+    if (!graphId || !releaseId || !nodeId || trimmedQuestion.length < 2 || loading) return
+    const version = ++requestVersion.current
+    setSubmittedQuestion(trimmedQuestion)
+    setAnalysis(undefined)
+    setLoading(true)
+    setError(undefined)
     try {
-      const result = await client.request<KnowledgeGraphRagAnswer>(`/knowledge/graphs/${graphId}/releases/${releaseId}/graphrag`, {
-        method: 'POST',
-        body: JSON.stringify({ question: question.trim(), start_node_id: nodeId, direction, edge_types: [], maximum_hops: Number(maximumHops), maximum_nodes: 8 }),
-      })
+      const result = await client.request<KnowledgeGraphRagAnswer>(
+        `/knowledge/graphs/${graphId}/releases/${releaseId}/graphrag`,
+        {
+          method: 'POST',
+          body: JSON.stringify({
+            question: trimmedQuestion,
+            start_node_id: nodeId,
+            direction,
+            edge_types: [],
+            maximum_hops: Number(maximumHops),
+            maximum_nodes: 8,
+          }),
+        },
+      )
+      if (requestVersion.current !== version) return
       setAnalysis(result)
-    } catch (next) { setError(next) } finally { setLoading(false) }
+      globalThis.requestAnimationFrame(() => answerRef.current?.scrollIntoView?.({
+        behavior: 'smooth',
+        block: 'nearest',
+      }))
+    } catch (next) {
+      if (requestVersion.current === version) setError(next)
+    } finally {
+      if (requestVersion.current === version) setLoading(false)
+    }
   }
 
-  const flowNodes = useMemo<FlowCanvasNode[]>(() => (analysis?.nodes ?? []).map((node) => ({ id: node.id, label: label(node.properties, node.id), subtitle: `${node.entity_type} · 근거 ${node.provenance.length}`, kind: node.id === nodeId ? 'target' : 'neutral' })), [analysis, nodeId])
-  const flowEdges = useMemo<FlowCanvasEdge[]>(() => (analysis?.edges ?? []).map((edge) => ({ id: edge.id, source: edge.source_id, target: edge.target_id, label: edge.edge_type })), [analysis])
+  const flowNodes = useMemo<FlowCanvasNode[]>(() => (
+    analysis?.nodes ?? []
+  ).map((node) => ({
+    id: node.id,
+    label: label(node.properties, node.id),
+    subtitle: `${node.entity_type} · 근거 ${node.provenance.length}`,
+    kind: node.id === nodeId ? 'target' : 'neutral',
+  })), [analysis, nodeId])
 
-  return <section className="grid gap-4">
-    <PageTitle icon="KG" eyebrow="Independent Knowledge GraphRAG" title="지식 챗 · GraphRAG 질의" description="일반 Chat 메뉴와 분리된 지식 에셋·불변 릴리스 기반 질의 화면입니다." />
-    <KnowledgeWorkspaceLayout activeSection="CHAT" onNavigate={onNavigate}>
-    <div className="grid gap-4 2xl:grid-cols-[360px_minmax(0,1fr)_360px]">
-      <form className="grid content-start gap-3 rounded-enterprise border border-slate-300 bg-white p-4 shadow-sm" onSubmit={(event) => void query(event)}>
-        <div className="flex items-center gap-2 text-sm font-black text-navy-900"><Bot size={18} className="text-enterprise-blue" /> Knowledge query context</div>
-        <label className="grid gap-1 text-xs font-bold">지식 에셋<select value={graphId} onChange={(event) => setGraphId(event.target.value)}><option value="">선택</option>{graphs.map((graph) => <option key={graph.id} value={graph.id}>{graph.name} · {graph.status}</option>)}</select></label>
-        <label className="grid gap-1 text-xs font-bold">버전 릴리스<select value={releaseId} onChange={(event) => setReleaseId(event.target.value)}><option value="">선택</option>{releases.map((release) => <option key={release.id} value={release.id}>Release v{release.release_no} · {release.node_count} nodes</option>)}</select></label>
-        <label className="grid gap-1 text-xs font-bold">시작 노드<select value={nodeId} onChange={(event) => setNodeId(event.target.value)}><option value="">선택</option>{(snapshot?.nodes ?? []).map((node) => <option key={node.id} value={node.id}>{label(node.properties, node.id)} · {node.entity_type}</option>)}</select></label>
-        <div className="grid grid-cols-2 gap-2"><label className="grid gap-1 text-xs font-bold">방향<select value={direction} onChange={(event) => setDirection(event.target.value as typeof direction)}><option value="BOTH">BOTH</option><option value="IN">IN</option><option value="OUT">OUT</option></select></label><label className="grid gap-1 text-xs font-bold">최대 Hop<select value={maximumHops} onChange={(event) => setMaximumHops(event.target.value)}><option value="1">1</option><option value="2">2</option><option value="3">3</option></select></label></div>
-        <label className="grid gap-1 text-xs font-bold">질문<textarea className="min-h-28 resize-y" minLength={2} maxLength={4000} required value={question} onChange={(event) => setQuestion(event.target.value)} placeholder="선택한 지식 에셋에서 확인할 관계를 질문하세요." /></label>
-        <button type="submit" className="button" disabled={loading || !nodeId || question.trim().length < 2}><Send size={14} /> {loading ? '권한 범위 답변 생성 중…' : 'GraphRAG 질의'}</button>
-        <p className="m-0 flex items-start gap-2 text-[10px] leading-5 text-slate-500"><ShieldCheck size={14} className="mt-0.5 shrink-0" />선택한 불변 릴리스와 현재 사용자의 분류 권한 안에서 조회한 근거만 LLM 답변에 전달합니다.</p>
-      </form>
-      <main className="grid content-start gap-4">
-        <ErrorNotice error={error} />
-        {loading && <div className="flex h-32 items-center justify-center rounded-enterprise border border-slate-300 bg-white shadow-sm"><Loader2 className="animate-spin text-enterprise-blue" size={32} /></div>}
-        {!loading && <FlowCanvas ariaLabel="GraphRAG 근거 그래프" nodes={flowNodes} edges={flowEdges} height={500} emptyTitle="아직 분석된 지식 근거가 없습니다." emptyDescription="왼쪽에서 에셋·릴리스·시작 노드와 질문을 선택해 근거 탐색을 실행하세요." />}
-        {analysis && !loading && <section className="rounded-enterprise border border-enterprise-blue bg-blue-50 p-4 shadow-sm"><span className="text-[10px] font-black tracking-[.14em] text-enterprise-blue uppercase">Cited GraphRAG answer</span><p className="whitespace-pre-wrap text-sm leading-6 text-slate-800">{analysis.answer}</p><div className="grid gap-1 text-[10px] text-slate-600">{analysis.citations.map((citation) => <span key={citation.evidence_id}>[{citation.evidence_id}] {citation.source_locator}{citation.page_number ? ` · p.${citation.page_number}` : ''} · {citation.source_version}</span>)}</div><small className="mt-3 block text-slate-500">{analysis.model_audit.provider} · {analysis.model_audit.model} · prompt {analysis.model_audit.prompt_version}</small></section>}
-      </main>
-      <aside className="grid content-start gap-4">
-        {analysis && !loading && <section className="rounded-enterprise border border-slate-300 bg-white p-4 shadow-sm"><h2 className="mt-0 mb-3 text-sm font-black text-navy-900">권한 내 그래프 근거 · {analysis.nodes.length} nodes / {analysis.edges.length} edges</h2>{analysis.truncated && <p className="text-xs font-bold text-amber-800">조회 한도로 일부 결과가 생략되었습니다.</p>}<ul className="m-0 grid gap-2 pl-5 text-xs">{analysis.nodes.map((node) => <li key={node.id}><strong>{label(node.properties, node.id)}</strong> · {node.entity_type} · provenance {node.provenance.length}</li>)}</ul></section>}
-      </aside>
-    </div>
-    </KnowledgeWorkspaceLayout>
-  </section>
+  const flowEdges = useMemo<FlowCanvasEdge[]>(() => (
+    analysis?.edges ?? []
+  ).map((edge) => ({
+    id: edge.id,
+    source: edge.source_id,
+    target: edge.target_id,
+    label: edge.edge_type,
+  })), [analysis])
+
+  const activeGraph = graphs.find((graph) => graph.id === graphId)
+  const activeRelease = releases.find((release) => release.id === releaseId)
+  const activeNode = snapshot?.nodes.find((node) => node.id === nodeId)
+
+  return (
+    <section className="grid gap-4">
+      <PageTitle
+        description="불변 릴리스와 현재 계정의 분류 권한 안에서 탐색한 근거만 답변에 사용합니다."
+        eyebrow="Independent Knowledge GraphRAG"
+        icon="KG"
+        title="지식 챗 · GraphRAG"
+      />
+      <KnowledgeWorkspaceLayout activeSection="CHAT" onNavigate={onNavigate}>
+        <div className="knowledge-chat-shell">
+          <form className="knowledge-chat-context" onSubmit={(event) => void query(event)}>
+            <header>
+              <span><Bot size={18} /></span>
+              <div>
+                <small>Query context</small>
+                <h2>탐색 범위</h2>
+              </div>
+            </header>
+            <label>
+              지식 에셋
+              <select value={graphId} onChange={(event) => setGraphId(event.target.value)}>
+                <option value="">선택</option>
+                {graphs.map((graph) => (
+                  <option key={graph.id} value={graph.id}>{graph.name} · {graph.status}</option>
+                ))}
+              </select>
+            </label>
+            <label>
+              버전 릴리스
+              <select value={releaseId} onChange={(event) => setReleaseId(event.target.value)}>
+                <option value="">선택</option>
+                {releases.map((release) => (
+                  <option key={release.id} value={release.id}>
+                    Release v{release.release_no} · {release.node_count} nodes
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label>
+              시작 노드
+              <select value={nodeId} onChange={(event) => setNodeId(event.target.value)}>
+                <option value="">선택</option>
+                {(snapshot?.nodes ?? []).map((node) => (
+                  <option key={node.id} value={node.id}>
+                    {label(node.properties, node.id)} · {node.entity_type}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <div className="knowledge-chat-context-grid">
+              <label>
+                방향
+                <select
+                  value={direction}
+                  onChange={(event) => setDirection(event.target.value as typeof direction)}
+                >
+                  <option value="BOTH">BOTH</option>
+                  <option value="IN">IN</option>
+                  <option value="OUT">OUT</option>
+                </select>
+              </label>
+              <label>
+                최대 Hop
+                <select value={maximumHops} onChange={(event) => setMaximumHops(event.target.value)}>
+                  <option value="1">1</option>
+                  <option value="2">2</option>
+                  <option value="3">3</option>
+                </select>
+              </label>
+            </div>
+            <label className="knowledge-chat-question">
+              질문
+              <textarea
+                maxLength={4000}
+                minLength={2}
+                onChange={(event) => setQuestion(event.target.value)}
+                placeholder="선택한 지식 릴리스에서 확인할 관계를 질문하세요."
+                required
+                value={question}
+              />
+            </label>
+            <button
+              className="knowledge-chat-submit"
+              disabled={loading || !nodeId || question.trim().length < 2}
+              type="submit"
+            >
+              {loading ? <Loader2 className="animate-spin" size={15} /> : <Send size={15} />}
+              {loading ? '근거 탐색 및 답변 생성 중…' : 'GraphRAG 질의'}
+            </button>
+            <p className="knowledge-chat-security">
+              <ShieldCheck size={14} />
+              릴리스와 계정 권한을 서버에서 재검증하며 브라우저는 그래프 쿼리를 직접 만들지 않습니다.
+            </p>
+          </form>
+
+          <main className="knowledge-chat-results">
+            <ErrorNotice error={error} />
+            <section aria-live="polite" className="knowledge-chat-answer" ref={answerRef}>
+              <header>
+                <div>
+                  <span><Sparkles size={16} /></span>
+                  <div><small>Cited answer</small><h2>GraphRAG 응답</h2></div>
+                </div>
+                {analysis && <span className="knowledge-answer-status">근거 검증 완료</span>}
+              </header>
+              {loading && (
+                <div className="knowledge-answer-loading">
+                  <Loader2 className="animate-spin" size={26} />
+                  <strong>인가된 경로와 근거를 탐색하고 있습니다.</strong>
+                  <small>{submittedQuestion}</small>
+                </div>
+              )}
+              {!loading && analysis && (
+                <div className="knowledge-answer-body">
+                  <p className="knowledge-answer-question">{submittedQuestion}</p>
+                  <SafeMarkdown value={analysis.answer} />
+                  <div aria-label="GraphRAG 인용 근거" className="knowledge-citation-chips">
+                    {analysis.citations.map((citation, index) => (
+                      <span key={citation.evidence_id} title={citation.source_locator}>
+                        <b>{index + 1}</b>
+                        {citation.source_locator}
+                        {citation.page_number ? ` · p.${citation.page_number}` : ''}
+                      </span>
+                    ))}
+                  </div>
+                  <footer>
+                    {analysis.model_audit.provider} · {analysis.model_audit.model}
+                    {' · '}prompt {analysis.model_audit.prompt_version}
+                  </footer>
+                </div>
+              )}
+              {!loading && !analysis && (
+                <div className="knowledge-answer-empty">
+                  <span><Bot size={22} /></span>
+                  <strong>질문을 입력하면 답변이 이곳에 표시됩니다.</strong>
+                  <small>긴 그래프 캔버스 아래로 숨지 않고 응답 영역에 즉시 렌더링됩니다.</small>
+                </div>
+              )}
+            </section>
+
+            <div className="knowledge-evidence-grid">
+              <section className="knowledge-graph-card">
+                <header>
+                  <div><GitBranch size={15} /><strong>근거 그래프</strong></div>
+                  {analysis && <small>{analysis.nodes.length} nodes · {analysis.edges.length} edges</small>}
+                </header>
+                <FlowCanvas
+                  ariaLabel="GraphRAG 근거 그래프"
+                  edges={flowEdges}
+                  emptyDescription="질문을 실행하면 답변에 사용된 노드와 관계가 표시됩니다."
+                  emptyTitle="아직 분석된 지식 근거가 없습니다."
+                  height={390}
+                  nodes={flowNodes}
+                />
+              </section>
+              <aside className="knowledge-evidence-list">
+                <header><Boxes size={15} /><strong>Evidence</strong></header>
+                {analysis ? (
+                  <>
+                    <div className="knowledge-context-path" aria-label="GraphRAG 선택 경로">
+                      <span>{activeGraph?.name ?? 'Graph'}</span>
+                      <ChevronRight size={12} />
+                      <span>v{activeRelease?.release_no ?? '-'}</span>
+                      <ChevronRight size={12} />
+                      <strong>{activeNode ? label(activeNode.properties, activeNode.id) : nodeId}</strong>
+                    </div>
+                    {analysis.truncated && (
+                      <p className="knowledge-truncated">조회 한도로 일부 결과가 생략되었습니다.</p>
+                    )}
+                    <ul>
+                      {analysis.nodes.map((node) => (
+                        <li key={node.id}>
+                          <span>{node.entity_type.slice(0, 2).toUpperCase()}</span>
+                          <div>
+                            <strong>{label(node.properties, node.id)}</strong>
+                            <small>{node.entity_type} · provenance {node.provenance.length}</small>
+                          </div>
+                        </li>
+                      ))}
+                    </ul>
+                  </>
+                ) : (
+                  <p className="knowledge-evidence-empty">응답과 함께 권한 내 근거가 표시됩니다.</p>
+                )}
+              </aside>
+            </div>
+          </main>
+        </div>
+      </KnowledgeWorkspaceLayout>
+    </section>
+  )
 }

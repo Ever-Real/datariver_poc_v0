@@ -71,6 +71,7 @@ def _development_composer(
             model=settings.local_ollama_chat_model,
             timeout_seconds=settings.local_ollama_chat_timeout_seconds,
             context_tokens=settings.local_ollama_chat_context_tokens,
+            allowed_hosts=settings.effective_local_inference_allowed_hosts,
         )
         return (
             local_composer,
@@ -156,6 +157,7 @@ async def query(
                 settings.local_llama_cpp_reranker_top_n,
                 payload.maximum_evidence,
             ),
+            allowed_hosts=settings.effective_local_inference_allowed_hosts,
         )
     exchange = await ChatService(
         catalog_index=catalog_index,
@@ -307,6 +309,32 @@ async def set_favorite(
         is_favorite=payload.is_favorite,
     )
     return _session_response(record)
+
+
+@router.delete("/sessions/{session_id}", status_code=204)
+async def archive_session(
+    session_id: UUID,
+    request: Request,
+    response: Response,
+    context: ContextDep,
+    session: SessionDep,
+    expected_version: int = Query(ge=1),
+) -> None:
+    response.headers["Cache-Control"] = "no-store"
+    container = get_container(request)
+    await ChatHistoryService(
+        history=SqlChatHistoryStore(session),
+        authorization=AuthorizationService(
+            decision_writer=SqlDecisionWriter(container.database.session_factory)
+        ),
+    ).archive_session(
+        workspace_id=context.workspace_id,
+        session_id=session_id,
+        subject=context.subject,
+        environment=context.environment,
+        request_id=context.request_id,
+        expected_version=expected_version,
+    )
 
 
 def _session_response(item: ChatSessionRecord) -> ChatSessionResponse:

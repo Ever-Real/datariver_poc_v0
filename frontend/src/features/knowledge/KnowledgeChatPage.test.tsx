@@ -57,7 +57,7 @@ describe('KnowledgeChatPage', () => {
     fireEvent.click(screen.getByRole('button', { name: 'GraphRAG 질의' }))
 
     await screen.findByText('ETCH-01은 검증된 반도체 장비 노드입니다.')
-    await screen.findByText(/권한 내 그래프 근거 · 1 nodes/)
+    await screen.findByText('1 nodes · 0 edges')
     await waitFor(() => expect(request).toHaveBeenCalledWith(
       '/knowledge/graphs/graph-1/releases/release-1/graphrag',
       expect.objectContaining({ method: 'POST' }),

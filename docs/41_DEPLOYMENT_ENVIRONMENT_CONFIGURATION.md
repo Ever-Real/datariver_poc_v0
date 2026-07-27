@@ -81,6 +81,7 @@ CHAT_COMPOSITION_PROVIDER_PROFILE_VERSION_ID=<approved-chat-profile-version-uuid
 CHAT_EMBEDDING_PROVIDER_PROFILE_VERSION_ID=<approved-embedding-profile-version-uuid>
 CHAT_RERANKER_PROVIDER_PROFILE_VERSION_ID=<approved-reranker-profile-version-uuid>
 
+LOCAL_INFERENCE_ALLOWED_HOSTS=<comma-separated-runtime-reachable-hosts>
 LOCAL_OLLAMA_CHAT_ENABLED=false
 LOCAL_OLLAMA_CHAT_BASE_URL=<ollama-origin-ending-in-/v1>
 LOCAL_OLLAMA_CHAT_MODEL=<installed-model-id>
@@ -173,6 +174,10 @@ equivalent least-privilege roles.
 - Local Chat: `LOCAL_OLLAMA_CHAT_*`
 - Local Embedding: `LOCAL_OLLAMA_EMBEDDING_*`
 - Local reranking bridge: `LOCAL_LLAMA_CPP_RERANKER_*`
+- Local endpoint hosts: `LOCAL_INFERENCE_ALLOWED_HOSTS`. The list is evaluated by the API
+  runtime, so a containerized WSL deployment uses the DNS name or private address reachable from
+  that container, while a source-host launcher adds loopback. Changing hosts, URLs or model IDs
+  requires the normal process-recreation and governance-binding workflow, never a code edit.
 - Private OpenAI-compatible Chat/Embedding:
   `INTRANET_OPENAI_COMPATIBLE_ALLOWED_HOSTS` and the corresponding
   `INTRANET_OPENAI_COMPATIBLE_CHAT_*` / `...EMBEDDING_*` keys
@@ -486,6 +491,7 @@ Chat, Embedding and Reranker:
 
 ```text
 LOCAL_INFERENCE_SOURCE_HOST_ENABLED
+LOCAL_INFERENCE_ALLOWED_HOSTS
 LOCAL_OLLAMA_CHAT_ENABLED
 LOCAL_OLLAMA_CHAT_BASE_URL
 LOCAL_OLLAMA_CHAT_MODEL

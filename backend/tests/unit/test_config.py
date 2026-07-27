@@ -308,16 +308,19 @@ def test_production_rejects_development_only_ephemeral_chat() -> None:
         )
 
 
-def test_local_ollama_chat_is_development_only_and_host_gateway_bound() -> None:
+def test_local_ollama_chat_uses_environment_owned_host_allowlist() -> None:
     configured = settings(
+        local_inference_allowed_hosts=("models.wsl.internal",),
         local_ollama_chat_enabled=True,
-        local_ollama_chat_base_url="http://host.docker.internal:11434/v1",
+        local_ollama_chat_base_url="http://models.wsl.internal:11434/v1",
         local_ollama_chat_model="datariver-gemma4-dev:0.1",
     )
 
     assert configured.local_ollama_chat_context_tokens == 8192
-    with pytest.raises(ValidationError, match=r"host\.docker\.internal"):
+    assert configured.effective_local_inference_allowed_hosts == frozenset({"models.wsl.internal"})
+    with pytest.raises(ValidationError, match="allowlisted host"):
         settings(
+            local_inference_allowed_hosts=("models.wsl.internal",),
             local_ollama_chat_enabled=True,
             local_ollama_chat_base_url="http://example.test:11434/v1",
             local_ollama_chat_model="datariver-gemma4-dev:0.1",
@@ -350,7 +353,7 @@ def test_source_host_local_ollama_requires_explicit_development_runtime_mode() -
     )
 
     assert configured.local_inference_source_host_enabled is True
-    with pytest.raises(ValidationError, match=r"host\.docker\.internal"):
+    with pytest.raises(ValidationError, match="allowlisted host"):
         settings(
             local_ollama_chat_enabled=True,
             local_ollama_chat_base_url="http://127.0.0.1:11434/v1",
@@ -360,6 +363,7 @@ def test_source_host_local_ollama_requires_explicit_development_runtime_mode() -
 
 def test_local_llama_cpp_reranker_is_development_only_and_fixed_to_port_11435() -> None:
     configured = settings(
+        local_inference_allowed_hosts=("host.docker.internal",),
         local_llama_cpp_reranker_enabled=True,
         local_llama_cpp_reranker_base_url="http://host.docker.internal:11435/v1",
         local_llama_cpp_reranker_model="qllama/bge-reranker-v2-m3:q4_k_m",
@@ -368,6 +372,7 @@ def test_local_llama_cpp_reranker_is_development_only_and_fixed_to_port_11435() 
     assert configured.local_llama_cpp_reranker_top_n == 10
     with pytest.raises(ValidationError, match="11435"):
         settings(
+            local_inference_allowed_hosts=("host.docker.internal",),
             local_llama_cpp_reranker_enabled=True,
             local_llama_cpp_reranker_base_url="http://host.docker.internal:11434/v1",
             local_llama_cpp_reranker_model="qllama/bge-reranker-v2-m3:q4_k_m",
@@ -688,6 +693,7 @@ def test_knowledge_source_worker_is_independent_from_neo4j_projection() -> None:
         knowledge_database_secret_ref="file:/run/secrets/postgres_knowledge_password",
         s3_knowledge_access_key_file="/run/secrets/s3_knowledge_access_key",
         s3_knowledge_secret_key_file="/run/secrets/s3_knowledge_secret_key",
+        local_inference_allowed_hosts=("host.docker.internal",),
         local_ollama_chat_enabled=True,
         local_ollama_chat_base_url="http://host.docker.internal:11434/v1",
         local_ollama_chat_model="datariver-gemma4-dev:0.1",

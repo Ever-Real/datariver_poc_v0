@@ -61,6 +61,7 @@ class SqlChatHistoryStore(ChatHistoryStore):
             select(ChatSessionModel.owner_id).where(
                 ChatSessionModel.workspace_id == workspace_id,
                 ChatSessionModel.id == session_id,
+                ChatSessionModel.is_archived.is_(False),
             )
         )
         return owner_id if isinstance(owner_id, UUID) else None
@@ -90,6 +91,7 @@ class SqlChatHistoryStore(ChatHistoryStore):
                 .where(
                     ChatSessionModel.workspace_id == workspace_id,
                     ChatSessionModel.owner_id == owner_id,
+                    ChatSessionModel.is_archived.is_(False),
                 )
                 .group_by(ChatSessionModel.id)
                 .order_by(
@@ -120,6 +122,7 @@ class SqlChatHistoryStore(ChatHistoryStore):
                 ChatSessionModel.workspace_id == workspace_id,
                 ChatSessionModel.owner_id == owner_id,
                 ChatSessionModel.id == session_id,
+                ChatSessionModel.is_archived.is_(False),
             )
         )
         if owned is None:
@@ -220,6 +223,7 @@ class SqlChatHistoryStore(ChatHistoryStore):
                 ChatSessionModel.owner_id == owner_id,
                 ChatSessionModel.id == session_id,
                 ChatSessionModel.version == expected_version,
+                ChatSessionModel.is_archived.is_(False),
             )
             .values(
                 is_favorite=is_favorite,
@@ -248,6 +252,7 @@ class SqlChatHistoryStore(ChatHistoryStore):
                     ChatSessionModel.workspace_id == workspace_id,
                     ChatSessionModel.owner_id == owner_id,
                     ChatSessionModel.id == session_id,
+                    ChatSessionModel.is_archived.is_(False),
                 )
                 .group_by(ChatSessionModel.id)
             )
@@ -257,6 +262,38 @@ class SqlChatHistoryStore(ChatHistoryStore):
             session=row.ChatSessionModel,
             message_count=row.message_count,
         )
+
+    async def archive_session(
+        self,
+        *,
+        workspace_id: UUID,
+        owner_id: UUID,
+        session_id: UUID,
+        expected_version: int,
+    ) -> None:
+        if expected_version < 1:
+            raise ConflictError("The Chat session version is invalid.")
+        updated_id = await self._session.scalar(
+            update(ChatSessionModel)
+            .where(
+                ChatSessionModel.workspace_id == workspace_id,
+                ChatSessionModel.owner_id == owner_id,
+                ChatSessionModel.id == session_id,
+                ChatSessionModel.version == expected_version,
+                ChatSessionModel.is_archived.is_(False),
+            )
+            .values(
+                is_archived=True,
+                is_favorite=False,
+                version=ChatSessionModel.version + 1,
+                updated_at=func.now(),
+            )
+            .returning(ChatSessionModel.id)
+        )
+        if updated_id is None:
+            await self._session.rollback()
+            raise ConflictError("The Chat session changed or is not available.")
+        await self._session.commit()
 
     @staticmethod
     def _session_record(
@@ -402,6 +439,7 @@ class SqlChatStore(ChatStore):
                         ChatSessionModel.id == session_id,
                         ChatSessionModel.workspace_id == workspace_id,
                         ChatSessionModel.owner_id == owner_id,
+                        ChatSessionModel.is_archived.is_(False),
                     )
                     .with_for_update()
                 )

@@ -430,6 +430,9 @@ def test_environment_change_classification_restarts_only_known_consumers() -> No
     reranker = workflow.classify_environment_changes(("LOCAL_LLAMA_CPP_RERANKER_MODEL",))
     assert reranker.services == ("api",)
 
+    local_hosts = workflow.classify_environment_changes(("LOCAL_INFERENCE_ALLOWED_HOSTS",))
+    assert set(local_hosts.services) == {"api", "knowledge-source-worker"}
+
     identity = workflow.classify_environment_changes(("OIDC_ISSUER",))
     assert identity.services == ("api",)
     assert identity.configure_keycloak is False

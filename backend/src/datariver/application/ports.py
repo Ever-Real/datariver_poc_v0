@@ -1669,6 +1669,15 @@ class ChatHistoryStore(Protocol):
         is_favorite: bool,
     ) -> ChatSessionRecord: ...
 
+    async def archive_session(
+        self,
+        *,
+        workspace_id: UUID,
+        owner_id: UUID,
+        session_id: UUID,
+        expected_version: int,
+    ) -> None: ...
+
 
 class ChatSessionOwnershipReader(Protocol):
     async def get_session_owner(

@@ -309,7 +309,7 @@ attributes rather than accepting same-name objects.
 
 | Table | Key columns and constraints | Purpose |
 |---|---|---|
-| `assistant.chat_sessions` | `id`, workspace/owner/title/scope, owner-mutable `is_favorite`, retention policy ID/hash/basis/deadline/binding version, `version`, timestamps; composite policy FK and immutable binding trigger | owner-scoped, active-policy-bound session; legacy/superseded/expired sessions are append-closed; favorite mutation cannot alter retention evidence |
+| `assistant.chat_sessions` | `id`, workspace/owner/title/scope, owner-mutable `is_favorite`/`is_archived`, retention policy ID/hash/basis/deadline/binding version, `version`, timestamps; composite policy FK and immutable binding trigger | owner-scoped, active-policy-bound session; archived rows disappear from the owner's Chat history while retained content/evidence remains governed; legacy/superseded/expired/archived sessions are append-closed |
 | `assistant.chat_messages` | `id`, workspace/session/actor/content/created time | append-only messages |
 | `assistant.assistant_runs` | `id`, workspace/session/request message/provider/model/template/policy/state/metrics/timestamps; metrics include provider-profile UUID and classification policy ID/hash/version/generation when external composition actually runs | answer execution audit |
 | `assistant.evidence_citations` | `id`, workspace/run/chunk/resource, classification, typed system/domain/owner scope, type/locator/version, SHA-256 content hash, effective interval, extraction method, positive unique rank, display name/description | append-only immutable authorized evidence snapshot; legacy rows without reconstructable display data are not fabricated in history |

@@ -112,6 +112,36 @@ class ChatHistoryService:
             is_favorite=is_favorite,
         )
 
+    async def archive_session(
+        self,
+        *,
+        workspace_id: UUID,
+        session_id: UUID,
+        subject: SubjectAttributes,
+        environment: EnvironmentAttributes,
+        request_id: str,
+        expected_version: int,
+    ) -> None:
+        owner_id = await self._owned_session_id(
+            workspace_id=workspace_id,
+            session_id=session_id,
+            subject=subject,
+        )
+        await self._authorize(
+            workspace_id=workspace_id,
+            resource_id=session_id,
+            owner_id=owner_id,
+            subject=subject,
+            environment=environment,
+            request_id=request_id,
+        )
+        await self._history.archive_session(
+            workspace_id=workspace_id,
+            owner_id=owner_id,
+            session_id=session_id,
+            expected_version=expected_version,
+        )
+
     async def _authorize(
         self,
         *,

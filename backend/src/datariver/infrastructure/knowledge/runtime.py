@@ -155,11 +155,7 @@ def _coordinates(settings: Settings) -> _RuntimeCoordinates:
             raise ConflictError("The activated local Knowledge model bindings are incomplete.")
         return _RuntimeCoordinates(
             provider=LOCAL_OLLAMA_PROVIDER,
-            allowed_hosts=frozenset(
-                {"host.docker.internal", "127.0.0.1"}
-                if settings.local_inference_source_host_enabled
-                else {"host.docker.internal"}
-            ),
+            allowed_hosts=settings.effective_local_inference_allowed_hosts,
             chat_base_url=str(settings.local_ollama_chat_base_url),
             chat_model=settings.local_ollama_chat_model,
             chat_api_key_secret_ref=None,

@@ -126,7 +126,7 @@ def test_migration_and_initial_schema_install_fail_closed_binding_guards() -> No
     initial = (root / "backend/alembic/versions/0001_initial_schema.py").read_text(encoding="utf-8")
     generator = (root / "scripts/generate_initial_migration.py").read_text(encoding="utf-8")
 
-    assert REQUIRED_DATABASE_REVISION == "0057"
+    assert REQUIRED_DATABASE_REVISION == "0058"
     assert 'down_revision: str | Sequence[str] | None = "0017"' in migration
     for required in (
         "ACTIVE_POLICY_V1",
@@ -144,7 +144,7 @@ def test_migration_and_initial_schema_install_fail_closed_binding_guards() -> No
             assert required in initial or required in generator
     assert "Compatibility bridge: regenerated 0001 owns" in migration
     assert "GRANT UPDATE (version, updated_at) ON assistant.chat_sessions" in migration
-    assert "GRANT UPDATE (is_favorite, version, updated_at)" in initial
+    assert "GRANT UPDATE (is_favorite, is_archived, version, updated_at)" in initial
     assert "GRANT UPDATE ON assistant.chat_sessions TO datariver_app" not in initial
     assert "timedelta(days=90)" not in (
         root / "backend/src/datariver/infrastructure/db/chat.py"
@@ -179,4 +179,21 @@ def test_chat_favorite_migration_preserves_retention_privilege_boundary() -> Non
     assert "retention_until" in migration
     assert "Chat favorites exist; downgrade would discard user-owned state." in migration
     assert "Chat evidence display data exists; downgrade would discard it." in migration
-    assert "GRANT UPDATE (is_favorite, version, updated_at)" in generator
+    assert "GRANT UPDATE (is_favorite, is_archived, version, updated_at)" in generator
+
+
+def test_chat_history_archive_migration_preserves_retained_content() -> None:
+    root = Path(__file__).resolve().parents[3]
+    migration = (root / "backend/alembic/versions/0058_chat_session_history_archive.py").read_text(
+        encoding="utf-8"
+    )
+    generator = (root / "scripts/generate_initial_migration.py").read_text(encoding="utf-8")
+
+    assert 'revision: str = "0058"' in migration
+    assert 'down_revision: str | Sequence[str] | None = "0057"' in migration
+    assert "is_archived" in migration
+    assert "DELETE ON assistant.chat_sessions" not in migration
+    assert "Archived Chat history exists; downgrade would restore deleted items." in migration
+    owner_mutation = "GRANT UPDATE (is_favorite, is_archived, version, updated_at)"
+    assert owner_mutation in migration
+    assert owner_mutation in generator

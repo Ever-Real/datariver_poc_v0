@@ -267,7 +267,7 @@ async def test_reranker_validates_and_returns_the_provider_order() -> None:
     )
 
     def handler(request: httpx.Request) -> httpx.Response:
-        assert request.url == httpx.URL("http://127.0.0.1:11435/v1/rerank")
+        assert request.url == httpx.URL("http://models.wsl.internal:11435/v1/rerank")
         return httpx.Response(
             200,
             json={
@@ -280,10 +280,11 @@ async def test_reranker_validates_and_returns_the_provider_order() -> None:
         )
 
     adapter = LocalLlamaCppEvidenceReranker(
-        base_url="http://127.0.0.1:11435/v1",
+        base_url="http://models.wsl.internal:11435/v1",
         model="operator-selected-reranker",
         timeout_seconds=5,
         top_n=2,
+        allowed_hosts=frozenset({"models.wsl.internal"}),
         transport=httpx.MockTransport(handler),
     )
 
@@ -297,6 +298,7 @@ class _History:
     def __init__(self) -> None:
         self.owner_id: UUID | None = None
         self.session_owner_id: UUID | None = None
+        self.archived_session_id: UUID | None = None
 
     async def get_session_owner(
         self,
@@ -340,6 +342,17 @@ class _History:
     ) -> ChatSessionRecord:
         del workspace_id, owner_id, session_id, expected_version, is_favorite
         raise AssertionError("not used")
+
+    async def archive_session(
+        self,
+        *,
+        workspace_id: UUID,
+        owner_id: UUID,
+        session_id: UUID,
+        expected_version: int,
+    ) -> None:
+        del workspace_id, owner_id, expected_version
+        self.archived_session_id = session_id
 
 
 async def test_history_service_authorizes_before_owner_scoped_access() -> None:
@@ -399,6 +412,45 @@ async def test_history_service_rejects_non_owner_before_session_read() -> None:
             request_id="history-owner-mismatch",
             limit=200,
         )
+
+
+async def test_history_service_archives_only_the_owned_session() -> None:
+    workspace_id = uuid4()
+    subject = _subject(
+        workspace_id,
+        allowed_actions=frozenset({Action.CHAT_QUERY}),
+    )
+    session_id = uuid4()
+    history = _History()
+    history.session_owner_id = subject.subject_id
+    service = ChatHistoryService(
+        history=history,
+        authorization=AuthorizationService(decision_writer=NullDecisionWriter()),
+    )
+    environment = EnvironmentAttributes(requested_at=datetime.now(UTC))
+
+    await service.archive_session(
+        workspace_id=workspace_id,
+        session_id=session_id,
+        subject=subject,
+        environment=environment,
+        request_id="history-archive-owned",
+        expected_version=4,
+    )
+    assert history.archived_session_id == session_id
+
+    history.archived_session_id = None
+    history.session_owner_id = uuid4()
+    with pytest.raises(ForbiddenError):
+        await service.archive_session(
+            workspace_id=workspace_id,
+            session_id=session_id,
+            subject=subject,
+            environment=environment,
+            request_id="history-archive-cross-owner",
+            expected_version=4,
+        )
+    assert history.archived_session_id is None
 
 
 def _asset(workspace_id: UUID, *, name: str) -> CatalogAssetIndex:

@@ -820,7 +820,10 @@ def classify_environment_changes(
             )
         ):
             services.add("api")
-        elif key == "LOCAL_INFERENCE_SOURCE_HOST_ENABLED":
+        elif key in {
+            "LOCAL_INFERENCE_SOURCE_HOST_ENABLED",
+            "LOCAL_INFERENCE_ALLOWED_HOSTS",
+        }:
             services.update(("api", "knowledge-source-worker"))
         elif key.startswith(
             (

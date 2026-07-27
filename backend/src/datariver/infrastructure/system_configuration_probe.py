@@ -154,12 +154,16 @@ def _validated_url(endpoint: str, *, schemes: set[str]) -> tuple[str, str, int]:
     return endpoint, parsed.hostname, parsed.port or default_port
 
 
-def _require_tls_for_nonlocal_endpoint(endpoint: str) -> None:
+def _require_tls_for_nonlocal_endpoint(
+    endpoint: str,
+    *,
+    additional_plaintext_hosts: tuple[str, ...] = (),
+) -> None:
     parsed = urlsplit(endpoint)
     host = (parsed.hostname or "").rstrip(".").lower()
     if parsed.scheme in {"https", "rediss", "bolt+s", "neo4j+s"}:
         return
-    if host not in _PLAINTEXT_DEVELOPMENT_HOSTS:
+    if host not in _PLAINTEXT_DEVELOPMENT_HOSTS and host not in additional_plaintext_hosts:
         raise ValidationError(
             "Plaintext system probes are restricted to fixed local development hosts."
         )
@@ -677,7 +681,6 @@ async def probe_system_configuration(
         port,
         allowed_hosts=normalized_allowed_hosts,
     )
-    _require_tls_for_nonlocal_endpoint(endpoint)
     if system_id == "LLM_RERANKER":
         if document.get("connection_mode") not in {
             "LOCAL_LLAMA_CPP",
@@ -687,6 +690,14 @@ async def probe_system_configuration(
         connection_mode = str(document["connection_mode"])
     else:
         connection_mode = _llm_connection_mode(document) if inference_probe else "LOCAL_OLLAMA"
+    local_inference_probe = inference_probe and connection_mode in {
+        "LOCAL_OLLAMA",
+        "LOCAL_LLAMA_CPP",
+    }
+    _require_tls_for_nonlocal_endpoint(
+        endpoint,
+        additional_plaintext_hosts=(normalized_allowed_hosts if local_inference_probe else ()),
+    )
     api_key: str | None = None
     if connection_mode in {"INTRANET_OPENAI_COMPATIBLE", "INTRANET_RERANK_V1"}:
         parsed_endpoint = urlsplit(endpoint)

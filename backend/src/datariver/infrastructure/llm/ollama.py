@@ -36,12 +36,14 @@ class LocalOllamaChatComposer:
         model: str,
         timeout_seconds: float,
         context_tokens: int,
+        allowed_hosts: frozenset[str],
         client: httpx.AsyncClient | None = None,
     ) -> None:
         parsed = urlsplit(base_url)
+        host = (parsed.hostname or "").rstrip(".").lower()
         if (
             parsed.scheme != "http"
-            or parsed.hostname not in {"127.0.0.1", "host.docker.internal"}
+            or host not in allowed_hosts
             or parsed.port != 11434
             or parsed.path.rstrip("/") != "/v1"
             or parsed.username is not None

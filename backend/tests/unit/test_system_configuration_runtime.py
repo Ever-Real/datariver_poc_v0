@@ -50,6 +50,7 @@ def _settings() -> Settings:
         s3_bucket_accepted="accepted",
         s3_access_key_file="/run/secrets/s3_access_key",
         s3_secret_key_file="/run/secrets/s3_secret_key",
+        local_inference_allowed_hosts=("host.docker.internal",),
     )
 
 
@@ -280,7 +281,7 @@ def test_activation_preflight_uses_the_same_settings_contract_as_process_startup
         },
     }
 
-    with pytest.raises(ValueError, match=r"host\.docker\.internal"):
+    with pytest.raises(ValueError, match="allowlisted host"):
         validate_runtime_system_configuration(
             current,
             service_key="LLM_CHAT_MODEL",

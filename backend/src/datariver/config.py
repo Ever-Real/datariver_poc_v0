@@ -120,10 +120,11 @@ class Settings(BaseSettings):
     chat_composition_provider_profile_version_id: UUID | None = None
     chat_embedding_provider_profile_version_id: UUID | None = None
     chat_reranker_provider_profile_version_id: UUID | None = None
-    # Opt-in experimental developer adapter. Container mode is constrained to
-    # Docker Desktop's native-host gateway; explicit source-host development may
-    # use exact loopback. This is not a provider registry or production inference.
+    # Opt-in experimental developer adapter. The selected environment owns the
+    # exact reachable host allowlist; explicit source-host development may also
+    # use loopback. This is not a provider registry or production inference.
     local_inference_source_host_enabled: bool = False
+    local_inference_allowed_hosts: tuple[str, ...] = ()
     local_ollama_chat_enabled: bool = False
     local_ollama_chat_base_url: HttpUrl | None = None
     local_ollama_chat_model: str | None = Field(default=None, max_length=128)
@@ -364,6 +365,7 @@ class Settings(BaseSettings):
         "oidc_password_reauth_acr_values",
         "oidc_password_amr_values",
         "datahub_allowed_versions",
+        "local_inference_allowed_hosts",
         "intranet_openai_compatible_allowed_hosts",
         "neo4j_allowed_hosts",
         "system_configuration_probe_allowed_hosts",
@@ -375,6 +377,21 @@ class Settings(BaseSettings):
         if isinstance(value, str):
             return tuple(part.strip() for part in value.split(",") if part.strip())
         return value
+
+    @field_validator("local_inference_allowed_hosts")
+    @classmethod
+    def normalize_local_inference_allowed_hosts(cls, values: tuple[str, ...]) -> tuple[str, ...]:
+        normalized = tuple(value.strip().rstrip(".").lower() for value in values)
+        if len(normalized) > 16:
+            raise ValueError("At most 16 local inference hosts may be allowlisted.")
+        if any(
+            not value or re.fullmatch(r"[a-z0-9](?:[a-z0-9.-]{0,251}[a-z0-9])?", value) is None
+            for value in normalized
+        ):
+            raise ValueError("Local inference host allowlist values are invalid.")
+        if len(set(normalized)) != len(normalized):
+            raise ValueError("Local inference host allowlist values must be unique.")
+        return normalized
 
     @field_validator("intranet_openai_compatible_allowed_hosts")
     @classmethod
@@ -1008,12 +1025,11 @@ class Settings(BaseSettings):
             if re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:/-]{0,127}", model) is None:
                 raise ValueError("Local Ollama model identity is invalid.")
             parsed_ollama_url = urlsplit(str(self.local_ollama_chat_base_url))
-            allowed_ollama_hosts = {"host.docker.internal"}
-            if self.local_inference_source_host_enabled:
-                allowed_ollama_hosts.add("127.0.0.1")
+            allowed_ollama_hosts = self.effective_local_inference_allowed_hosts
             if (
                 parsed_ollama_url.scheme != "http"
-                or parsed_ollama_url.hostname not in allowed_ollama_hosts
+                or (parsed_ollama_url.hostname or "").rstrip(".").lower()
+                not in allowed_ollama_hosts
                 or parsed_ollama_url.port != 11434
                 or parsed_ollama_url.path.rstrip("/") != "/v1"
                 or parsed_ollama_url.query
@@ -1022,8 +1038,8 @@ class Settings(BaseSettings):
                 or parsed_ollama_url.password is not None
             ):
                 raise ValueError(
-                    "Local Ollama Chat must use http://host.docker.internal:11434/v1, "
-                    "or the explicit source-host 127.0.0.1 binding."
+                    "Local Ollama Chat must use an environment-allowlisted host on "
+                    "http port 11434 with the /v1 path."
                 )
         if self.local_ollama_embedding_enabled:
             if self.app_env != "development":
@@ -1044,12 +1060,11 @@ class Settings(BaseSettings):
             ):
                 raise ValueError("Local Ollama embedding model identity is invalid.")
             parsed_embedding_url = urlsplit(str(self.local_ollama_embedding_base_url))
-            allowed_embedding_hosts = {"host.docker.internal"}
-            if self.local_inference_source_host_enabled:
-                allowed_embedding_hosts.add("127.0.0.1")
+            allowed_embedding_hosts = self.effective_local_inference_allowed_hosts
             if (
                 parsed_embedding_url.scheme != "http"
-                or parsed_embedding_url.hostname not in allowed_embedding_hosts
+                or (parsed_embedding_url.hostname or "").rstrip(".").lower()
+                not in allowed_embedding_hosts
                 or parsed_embedding_url.port != 11434
                 or parsed_embedding_url.path.rstrip("/") != "/v1"
                 or parsed_embedding_url.query
@@ -1058,8 +1073,8 @@ class Settings(BaseSettings):
                 or parsed_embedding_url.password is not None
             ):
                 raise ValueError(
-                    "Local Ollama embeddings must use http://host.docker.internal:11434/v1, "
-                    "or the explicit source-host 127.0.0.1 binding."
+                    "Local Ollama embeddings must use an environment-allowlisted host on "
+                    "http port 11434 with the /v1 path."
                 )
         if self.local_llama_cpp_reranker_enabled:
             if self.app_env != "development":
@@ -1080,12 +1095,11 @@ class Settings(BaseSettings):
             ):
                 raise ValueError("Local llama.cpp reranker model identity is invalid.")
             parsed_reranker_url = urlsplit(str(self.local_llama_cpp_reranker_base_url))
-            allowed_reranker_hosts = {"host.docker.internal"}
-            if self.local_inference_source_host_enabled:
-                allowed_reranker_hosts.add("127.0.0.1")
+            allowed_reranker_hosts = self.effective_local_inference_allowed_hosts
             if (
                 parsed_reranker_url.scheme != "http"
-                or parsed_reranker_url.hostname not in allowed_reranker_hosts
+                or (parsed_reranker_url.hostname or "").rstrip(".").lower()
+                not in allowed_reranker_hosts
                 or parsed_reranker_url.port != 11435
                 or parsed_reranker_url.path.rstrip("/") != "/v1"
                 or parsed_reranker_url.query
@@ -1094,9 +1108,8 @@ class Settings(BaseSettings):
                 or parsed_reranker_url.password is not None
             ):
                 raise ValueError(
-                    "Local llama.cpp reranking must use "
-                    "http://host.docker.internal:11435/v1, or the explicit source-host "
-                    "127.0.0.1 binding."
+                    "Local llama.cpp reranking must use an environment-allowlisted host on "
+                    "http port 11435 with the /v1 path."
                 )
         if self.local_inference_source_host_enabled and self.app_env != "development":
             raise ValueError(
@@ -1239,6 +1252,13 @@ class Settings(BaseSettings):
         if self.deployment_tier == "HA_ACCEPTED" and not self.deployment_evidence_reference:
             raise ValueError("HA_ACCEPTED requires an accepted deployment evidence reference.")
         return self
+
+    @property
+    def effective_local_inference_allowed_hosts(self) -> frozenset[str]:
+        hosts = set(self.local_inference_allowed_hosts)
+        if self.local_inference_source_host_enabled:
+            hosts.add("127.0.0.1")
+        return frozenset(hosts)
 
     def _validate_intranet_openai_compatible_binding(
         self,
