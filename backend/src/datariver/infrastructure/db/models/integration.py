@@ -296,8 +296,7 @@ class UploadPreparationJobModel(Base, UuidPrimaryKeyMixin, TimestampMixin, Versi
             "created_at",
         ),
         CheckConstraint(
-            "content_profile IN ('CATALOG_METADATA_ROWS_CSV_V1', "
-            "'CATALOG_METADATA_ROWS_XLSX_V1')",
+            "content_profile IN ('CATALOG_METADATA_ROWS_CSV_V1', 'CATALOG_METADATA_ROWS_XLSX_V1')",
             name="typed_profile_allowlist",
         ),
         CheckConstraint(
@@ -397,8 +396,7 @@ class UploadPreparationReceiptModel(Base, UuidPrimaryKeyMixin):
             name="row_counts_nonnegative",
         ),
         CheckConstraint(
-            "content_profile IN ('CATALOG_METADATA_ROWS_CSV_V1', "
-            "'CATALOG_METADATA_ROWS_XLSX_V1')",
+            "content_profile IN ('CATALOG_METADATA_ROWS_CSV_V1', 'CATALOG_METADATA_ROWS_XLSX_V1')",
             name="typed_profile_allowlist",
         ),
         ForeignKeyConstraint(

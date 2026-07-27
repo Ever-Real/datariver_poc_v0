@@ -16,6 +16,19 @@ authoritative; an agent may not silently relax a security invariant or productio
 - Sub-agents do not choose business capacity, retention, data-classification or release exceptions.
   They identify options and consequences; the accountable product/security/operations owner decides.
 
+## Branch and publication policy
+
+- Keep only the long-lived `dev` and `main` branches. Do not create task, feature, agent or Codex
+  branches unless the user explicitly overrides this repository policy.
+- Perform ongoing development on `dev` and push each coherent, completed change to `origin/dev`
+  promptly so the preparation PC can test the current source without waiting for a release merge.
+- Treat `main` as a deliberate checkpoint branch. Merge `dev` into `main` only when the user asks
+  to preserve or release a tested checkpoint; a routine development save does not target `main`.
+- Preparation and development PCs update application source from `origin/dev`. Production or
+  release workflows continue to use `main` and the accepted production gates.
+- Direct-to-`dev` publication does not waive security, schema or production evidence requirements.
+  Report incomplete gates honestly and do not use a branch-policy shortcut to bypass them.
+
 ## Recommended review roles
 
 | Role | Bounded responsibility | Required evidence |

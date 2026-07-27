@@ -4,7 +4,7 @@ import hashlib
 from collections.abc import AsyncIterable, Awaitable, Callable, Iterable, Sequence
 from dataclasses import dataclass
 from enum import StrEnum
-from uuid import UUID, NAMESPACE_URL, uuid5
+from uuid import NAMESPACE_URL, UUID, uuid5
 
 from datariver.application.typed_upload_parser import (
     TypedUploadParseError,
@@ -196,7 +196,9 @@ _ROW_RULES = {
     CatalogMetadataRecordKind.DATASET_OWNER: _RowRule(
         aspect_name=CatalogMetadataAspect.OWNERSHIP,
         candidate_kind=CatalogMetadataCandidateKind.DATASET_OWNER_UPDATE,
-        allowed_operations=frozenset({CatalogMetadataOperation.SET, CatalogMetadataOperation.CLEAR}),
+        allowed_operations=frozenset(
+            {CatalogMetadataOperation.SET, CatalogMetadataOperation.CLEAR}
+        ),
     ),
 }
 
@@ -357,7 +359,10 @@ class CatalogMetadataCandidateAccumulator:
                 evidence.schema_name,
                 evidence.table_name,
             )
-            previous_identity = self._asset_identities.setdefault(evidence.target_asset_id, identity)
+            previous_identity = self._asset_identities.setdefault(
+                evidence.target_asset_id,
+                identity,
+            )
             if previous_identity != identity:
                 raise CatalogMetadataParseError(
                     CatalogMetadataParseFailureCode.CONFLICTING_ASSET_IDENTITY,
@@ -686,22 +691,19 @@ def _row_evidences_from_values(
 
     # Use deterministic UUID5 for target_asset_id since we have no DB session to look up URN
     target_asset_id = uuid5(NAMESPACE_URL, f"urn:datariver:dataset:{urn}")
-    
+
     # We must extract platform/database/schema from URN for identity validation
     platform = "postgres"
     database_name = "db"
     schema_name = "public"
-    try:
-        if "(" in urn and "," in urn:
-            parts = urn.split("(", 1)[1].split(",")
-            if len(parts) >= 2:
-                platform = parts[0].split(":")[-1] if ":" in parts[0] else parts[0]
-                path_parts = parts[1].split(".")
-                if len(path_parts) >= 3:
-                    database_name = path_parts[0]
-                    schema_name = path_parts[1]
-    except Exception:
-        pass
+    if "(" in urn and "," in urn:
+        parts = urn.split("(", 1)[1].split(",")
+        if len(parts) >= 2:
+            platform = parts[0].split(":")[-1] if ":" in parts[0] else parts[0]
+            path_parts = parts[1].split(".")
+            if len(path_parts) >= 3:
+                database_name = path_parts[0]
+                schema_name = path_parts[1]
 
     evidences = []
 
@@ -710,7 +712,7 @@ def _row_evidences_from_values(
         operation: CatalogMetadataOperation,
         field_path_text: str,
         value_text: str,
-        controlled_ref_text: str
+        controlled_ref_text: str,
     ) -> None:
         rule = _ROW_RULES[record_kind]
         field_path, description, controlled_ref, semantic_key = _validate_row_shape(
@@ -738,66 +740,116 @@ def _row_evidences_from_values(
             controlled_ref=controlled_ref,
             definition=definition,
         )
-        evidences.append((
-            CatalogMetadataRowEvidence(
-                workspace_id=workspace_id,
-                ordinal=ordinal,
-                target_asset_id=target_asset_id,
-                platform=platform,
-                database_name=database_name,
-                schema_name=schema_name,
-                table_name=table_name,
-                record_kind=record_kind,
-                aspect_name=rule.aspect_name,
-                operation=operation,
-                field_path=field_path,
-                value_text=description,
-                controlled_ref=controlled_ref,
-                semantic_key=semantic_key,
-                row_hash=row_hash,
-            ),
-            rule,
-        ))
+        evidences.append(
+            (
+                CatalogMetadataRowEvidence(
+                    workspace_id=workspace_id,
+                    ordinal=ordinal,
+                    target_asset_id=target_asset_id,
+                    platform=platform,
+                    database_name=database_name,
+                    schema_name=schema_name,
+                    table_name=table_name,
+                    record_kind=record_kind,
+                    aspect_name=rule.aspect_name,
+                    operation=operation,
+                    field_path=field_path,
+                    value_text=description,
+                    controlled_ref=controlled_ref,
+                    semantic_key=semantic_key,
+                    row_hash=row_hash,
+                ),
+                rule,
+            )
+        )
 
     # table_domain
     if table_domain:
-        _add_evidence(CatalogMetadataRecordKind.DATASET_DOMAIN, CatalogMetadataOperation.SET, "", "", table_domain)
-    
+        _add_evidence(
+            CatalogMetadataRecordKind.DATASET_DOMAIN,
+            CatalogMetadataOperation.SET,
+            "",
+            "",
+            table_domain,
+        )
+
     # table_desc
     if table_desc:
-        _add_evidence(CatalogMetadataRecordKind.TABLE_DESCRIPTION, CatalogMetadataOperation.SET, "", table_desc, "")
-        
+        _add_evidence(
+            CatalogMetadataRecordKind.TABLE_DESCRIPTION,
+            CatalogMetadataOperation.SET,
+            "",
+            table_desc,
+            "",
+        )
+
     # table_owner
     if table_owner:
-        _add_evidence(CatalogMetadataRecordKind.DATASET_OWNER, CatalogMetadataOperation.SET, "", "", table_owner)
+        _add_evidence(
+            CatalogMetadataRecordKind.DATASET_OWNER,
+            CatalogMetadataOperation.SET,
+            "",
+            "",
+            table_owner,
+        )
 
     # table_term (comma separated, must be UUIDs per _controlled_ref)
     if table_term:
         for term in table_term.split(","):
             if term.strip():
-                _add_evidence(CatalogMetadataRecordKind.DATASET_TERM, CatalogMetadataOperation.ADD, "", "", term.strip())
+                _add_evidence(
+                    CatalogMetadataRecordKind.DATASET_TERM,
+                    CatalogMetadataOperation.ADD,
+                    "",
+                    "",
+                    term.strip(),
+                )
 
     # table_tags (comma separated)
     if table_tags:
         for tag in table_tags.split(","):
             if tag.strip():
-                _add_evidence(CatalogMetadataRecordKind.DATASET_TAG, CatalogMetadataOperation.ADD, "", "", tag.strip())
+                _add_evidence(
+                    CatalogMetadataRecordKind.DATASET_TAG,
+                    CatalogMetadataOperation.ADD,
+                    "",
+                    "",
+                    tag.strip(),
+                )
 
     # col_desc
     if col_name and col_desc:
-        _add_evidence(CatalogMetadataRecordKind.COLUMN_DESCRIPTION, CatalogMetadataOperation.SET, col_name, col_desc, "")
+        _add_evidence(
+            CatalogMetadataRecordKind.COLUMN_DESCRIPTION,
+            CatalogMetadataOperation.SET,
+            col_name,
+            col_desc,
+            "",
+        )
 
-    # col_term (WARNING: No backend RecordKind for Column Terms, mapping to DATASET_TERM as temporary workaround)
+    # Column terms map to DATASET_TERM until the backend defines a dedicated record kind.
     if col_name and col_term:
         for term in col_term.split(","):
             if term.strip():
-                _add_evidence(CatalogMetadataRecordKind.DATASET_TERM, CatalogMetadataOperation.ADD, "", "", term.strip())
+                _add_evidence(
+                    CatalogMetadataRecordKind.DATASET_TERM,
+                    CatalogMetadataOperation.ADD,
+                    "",
+                    "",
+                    term.strip(),
+                )
 
-    # col_tags (WARNING: No backend RecordKind for Column Tags, mapping to DATASET_TAG as temporary workaround)
+    # Column tags map to DATASET_TAG until the backend defines a dedicated record kind.
     if col_name and col_tags:
         for tag in col_tags.split(","):
             if tag.strip():
-                _add_evidence(CatalogMetadataRecordKind.DATASET_TAG, CatalogMetadataOperation.ADD, "", "", tag.strip())
+                _add_evidence(
+                    CatalogMetadataRecordKind.DATASET_TAG,
+                    CatalogMetadataOperation.ADD,
+                    "",
+                    "",
+                    tag.strip(),
+                )
 
     return evidences
 
