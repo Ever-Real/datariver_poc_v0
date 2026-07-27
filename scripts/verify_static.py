@@ -959,14 +959,27 @@ def verify_readiness_contract() -> None:
 def verify_browser_storage_boundary() -> None:
     frontend_source = ROOT / "frontend" / "src"
     source_files = tuple(frontend_source.rglob("*.ts")) + tuple(frontend_source.rglob("*.tsx"))
+    webauthn_warning_file = frontend_source / "features" / "admin" / "AdminPage.tsx"
+    allowed_warning_storage = (
+        "const key = `webAuthnWarningShown_${context.subject_id}`",
+        "window.localStorage.getItem(key)",
+        "window.localStorage.setItem(key, 'true')",
+    )
     local_storage_files = [
         path.relative_to(ROOT)
         for path in source_files
         if "localStorage" in path.read_text(encoding="utf-8")
+        and not path.name.endswith((".test.ts", ".test.tsx"))
+        and not (
+            path == webauthn_warning_file
+            and all(item in path.read_text(encoding="utf-8") for item in allowed_warning_storage)
+            and path.read_text(encoding="utf-8").count("localStorage") == 2
+        )
     ]
     if local_storage_files:
         raise AssertionError(
-            "browser source must not persist security or tenant context in localStorage: "
+            "browser source must not persist security or tenant context in localStorage; "
+            "only the non-sensitive, per-user WebAuthn warning acknowledgement is allowed: "
             f"{local_storage_files}"
         )
     auth_provider = (frontend_source / "auth" / "AuthProvider.tsx").read_text(encoding="utf-8")

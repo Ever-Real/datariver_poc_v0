@@ -627,6 +627,11 @@ select.admin-system-form-input { height: 32px; cursor: pointer; }
 .action-matrix label { display: grid; grid-template-columns: minmax(0, 1fr) 110px; align-items: center; gap: 8px; }
 .action-matrix label span { overflow-wrap: anywhere; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11px; }
 .action-matrix select { padding: 6px 8px; font-size: 11px; }
+.admin-access-level-grid { width: 100%; min-width: 680px; border-collapse: collapse; font-size: 11px; }
+.admin-access-level-grid th, .admin-access-level-grid td { border: 1px solid var(--line-300); padding: 8px; text-align: left; vertical-align: top; }
+.admin-access-level-grid th { color: var(--text-600); background: #edf0f2; font-weight: 800; }
+.admin-access-level-grid td select { width: 100%; min-width: 110px; }
+.admin-access-level-grid td small { display: block; margin-top: 4px; color: var(--text-500); }
 .dialog-backdrop { position: fixed; z-index: 50; inset: 0; display: grid; place-items: center; padding: 18px; background: rgba(10, 30, 26, .68); }
 .confirm-dialog { width: min(560px, 100%); max-height: 90vh; overflow: auto; border-radius: var(--radius); padding: 20px; background: var(--cream-50); box-shadow: 0 20px 80px rgba(0,0,0,.3); }
 .confirm-dialog h3 { margin: 8px 0 14px; }

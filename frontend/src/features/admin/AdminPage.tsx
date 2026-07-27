@@ -19,12 +19,14 @@ export function AdminPage({
   initialContext,
   workspace,
   suspended = false,
+  hardwareWebauthnEnabled = true,
   ...assurance
 }: {
   client: ApiClient
   initialContext?: AdminReadContext
   workspace: string
   suspended?: boolean
+  hardwareWebauthnEnabled?: boolean
 } & AssuranceActions) {
   const api = useMemo(() => new AdminApi(client), [client])
   const messages = useMemo(() => getAdminMessages(), [])
@@ -33,6 +35,7 @@ export function AdminPage({
   const [error, setError] = useState<unknown>()
   const [mutation, setMutation] = useState<PendingAdminMutation>()
   const [busy, setBusy] = useState(false)
+  const [showWebauthnDisabledWarning, setShowWebauthnDisabledWarning] = useState(false)
   const contextRequest = useRef<{ generation: number; controller?: AbortController }>({
     generation: 0,
   })
@@ -84,6 +87,25 @@ export function AdminPage({
     keys.current = { epoch: contextEpoch, values: new Map() }
     setMutation(undefined)
   }, [contextEpoch])
+  useEffect(() => {
+    if (!context || hardwareWebauthnEnabled) {
+      setShowWebauthnDisabledWarning(false)
+      return
+    }
+    const key = `webAuthnWarningShown_${context.subject_id}`
+    try {
+      if (window.localStorage.getItem(key)) {
+        setShowWebauthnDisabledWarning(false)
+        return
+      }
+      window.localStorage.setItem(key, 'true')
+      setShowWebauthnDisabledWarning(true)
+    } catch {
+      // Storage can be unavailable in hardened browser contexts. Keep this
+      // session-only fallback without broadening who receives the notice.
+      setShowWebauthnDisabledWarning(true)
+    }
+  }, [context, hardwareWebauthnEnabled])
   useEffect(() => {
     const restore = () => setSection(adminSectionFromLocation())
     window.addEventListener('popstate', restore)
@@ -167,6 +189,11 @@ export function AdminPage({
       <div><small>{messages.currentAssurance}</small><span className="badge">{context.authentication_assurance}</span></div>
       <div><small>{messages.fallbackState}</small><span className={`badge ${context.fallback_enabled ? '' : 'badge-soft'}`}>{context.fallback_enabled ? messages.enabled : messages.disabled}</span></div>
     </section>}
+    {showWebauthnDisabledWarning && <div className="notice notice-error" role="alert">
+      <strong>WebAuthn 보안키 인증이 필요합니다.</strong>
+      <span>이 배포에서는 WebAuthn이 비활성화되어 있습니다. 개발 환경의 관리자 작업은 서버가 허용한 비밀번호 보증 예외가 있는 경우에만 실행할 수 있습니다.</span>
+      <div className="action-row"><button type="button" className="button button-secondary" onClick={() => setShowWebauthnDisabledWarning(false)}>확인</button></div>
+    </div>}
     <AssuranceNotice error={error} requiredAssurance={assuranceType} {...assurance} />
     <ErrorNotice error={error} />
     {activeSection && <div {...primaryTabs.panelProps(activeSection)}>

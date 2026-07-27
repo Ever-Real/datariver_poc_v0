@@ -335,6 +335,7 @@ export function App() {
             initialContext={cachedAdminContext}
             workspace={activeWorkspace}
             suspended={!currentAdminContext}
+            hardwareWebauthnEnabled={auth.profile?.hardware_webauthn_enabled !== false}
             onStepUp={auth.beginStepUp}
             onPasswordReauth={auth.beginPasswordReauth}
             onEnroll={auth.beginWebAuthnEnrollment}

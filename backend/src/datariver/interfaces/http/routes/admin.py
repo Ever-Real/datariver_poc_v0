@@ -1830,7 +1830,10 @@ async def provision_identity_user(
     result = await IdentityAdminService(
         uow_factory=lambda: SqlAdminAccessUnitOfWork(container.database.session_factory),
         authorization=AuthorizationService(
-            decision_writer=SqlDecisionWriter(container.database.session_factory)
+            decision_writer=SqlDecisionWriter(container.database.session_factory),
+            development_admin_password_bypass_enabled=(
+                container.settings.development_admin_password_bypass_enabled
+            ),
         ),
         provider=container.identity_admin,
         issuer=container.settings.oidc_issuer,

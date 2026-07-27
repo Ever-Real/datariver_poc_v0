@@ -3,7 +3,7 @@ export type AdminMessageKey =
   | 'classification' | 'providers' | 'restrictedGrants'
   | 'auditLogs' | 'metadataLogs' | 'securityLogs' | 'dictionary'
   | 'adminContext' | 'currentAssurance' | 'fallbackState' | 'enabled' | 'disabled'
-  | 'members' | 'selectMember' | 'accessDocument' | 'active' | 'clearance' | 'groups'
+  | 'members' | 'selectMember' | 'active' | 'clearance' | 'groups'
   | 'allowedActions' | 'deniedActions' | 'systemScopes' | 'domainScopes' | 'directUpdate'
   | 'fallbackRequest' | 'reason' | 'hardwareAuth' | 'passwordReauth' | 'fallbackDisabled'
   | 'recentRequests' | 'approve' | 'reject' | 'consume' | 'expiresAt' | 'payloadHash'
@@ -31,7 +31,7 @@ const ko: AdminMessages = {
   auditLogs: 'Audit/Log 조회', metadataLogs: '메타데이터 변경 로그', securityLogs: '시스템 보안 로그', dictionary: '용어사전',
   adminContext: '현재 관리자 컨텍스트', currentAssurance: '인증 보증', fallbackState: '비밀번호 예외 경로',
   enabled: '활성', disabled: '비활성', members: '워크스페이스 멤버', selectMember: '편집할 멤버를 선택하세요.',
-  accessDocument: '세부 Access 문서 (고급)', active: '멤버십 활성', clearance: '허용 등급', groups: '그룹',
+  active: '멤버십 활성', clearance: '허용 등급', groups: '그룹',
   allowedActions: '허용 Action', deniedActions: '거부 Action', systemScopes: '허용 System UUID',
   domainScopes: '허용 Domain UUID', directUpdate: '보안키로 직접 변경', fallbackRequest: '비밀번호 Maker 요청',
   reason: '사유', hardwareAuth: '보안키로 인증', passwordReauth: '비밀번호로 재인증',
@@ -74,7 +74,7 @@ const en: AdminMessages = {
   auditLogs: 'Audit/Log review', metadataLogs: 'Metadata change log', securityLogs: 'System security log', dictionary: 'Terminology dictionary',
   adminContext: 'Current administrator context', currentAssurance: 'Authentication assurance',
   fallbackState: 'Password fallback', enabled: 'Enabled', disabled: 'Disabled', members: 'Workspace members',
-  selectMember: 'Select a member to edit.', accessDocument: 'Detailed access document (advanced)', active: 'Membership active',
+  selectMember: 'Select a member to edit.', active: 'Membership active',
   clearance: 'Clearance', groups: 'Groups', allowedActions: 'Allowed actions', deniedActions: 'Denied actions',
   systemScopes: 'Allowed system UUIDs', domainScopes: 'Allowed domain UUIDs', directUpdate: 'Update with security key',
   fallbackRequest: 'Create password maker request', reason: 'Reason', hardwareAuth: 'Authenticate with security key',
