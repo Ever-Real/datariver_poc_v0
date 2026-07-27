@@ -19,7 +19,13 @@ export function HighlightedText({ text, terms }: { text: string; terms: string[]
 }
 
 /** 각 match fragment를 하나씩 슬라이드(Carousel) 방식으로 표시하고, 전체 텍스트는 title(tooltip)으로 제공 */
-export function CatalogMatchPreview({ fragments }: { fragments: CatalogMatchFragment[] }) {
+export function CatalogMatchPreview({
+  fragments,
+  interactive = true,
+}: {
+  fragments: CatalogMatchFragment[]
+  interactive?: boolean
+}) {
   const [index, setIndex] = useState(0)
 
   if (fragments.length === 0) return <CatalogEmptyValue />
@@ -36,10 +42,11 @@ export function CatalogMatchPreview({ fragments }: { fragments: CatalogMatchFrag
   const fragment = fragments[index]
   if (!fragment) return null
   const hasMultiple = fragments.length > 1
+  const hasControls = hasMultiple && interactive
 
   return (
     <div className="catalog-match-carousel" title={fullText}>
-      {hasMultiple && (
+      {hasControls && (
         <button
           type="button"
           className="catalog-match-carousel-btn"
@@ -56,7 +63,7 @@ export function CatalogMatchPreview({ fragments }: { fragments: CatalogMatchFrag
           <HighlightedText text={fragment.text} terms={fragment.matched_terms} />
         </span>
       </span>
-      {hasMultiple && (
+      {hasControls && (
         <button
           type="button"
           className="catalog-match-carousel-btn"
@@ -67,7 +74,7 @@ export function CatalogMatchPreview({ fragments }: { fragments: CatalogMatchFrag
           <ChevronRight size={12} />
         </button>
       )}
-      {hasMultiple && (
+      {hasControls && (
         <span style={{ fontSize: 9, color: 'var(--text-400)', flexShrink: 0, whiteSpace: 'nowrap' }}>
           {index + 1}/{fragments.length}
         </span>

@@ -1,5 +1,6 @@
 import { useState } from 'react'
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { AdminReadContext } from '../../api/types'
 import type { ApiClient } from '../../api/client'
@@ -99,9 +100,17 @@ describe('application shell contracts', () => {
       return Promise.resolve({ items: [], page: { limit: 50 }, meta: { projection_version: 1, policy_version: 'test' }, match_mode: 'ALL' })
     })
     const client = { request } as unknown as ApiClient
-    const view = render(<CatalogPage client={client} initialQuery="wafer" />)
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    })
+    const catalog = (query: string) => (
+      <QueryClientProvider client={queryClient}>
+        <CatalogPage client={client} initialQuery={query} />
+      </QueryClientProvider>
+    )
+    const view = render(catalog('wafer'))
     expect(screen.getByRole('combobox', { name: /데이터셋 이름이나 설명 검색/ })).toHaveValue('wafer')
-    view.rerender(<CatalogPage client={client} initialQuery="yield" />)
+    view.rerender(catalog('yield'))
     expect(screen.getByRole('combobox', { name: /데이터셋 이름이나 설명 검색/ })).toHaveValue('yield')
     await waitFor(() => expect(request).toHaveBeenCalledWith(expect.stringContaining('/catalog/assets?q=yield&limit=50'), expect.anything()))
     expect(request.mock.calls.some(([path]) => String(path).includes('10000'))).toBe(false)

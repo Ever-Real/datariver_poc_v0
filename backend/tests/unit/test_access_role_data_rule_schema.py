@@ -156,6 +156,7 @@ def test_role_mutation_event_binds_high_risk_decision_and_assurance() -> None:
         event_type="iam.access_role.updated.v1",
         role=role,
         actor_id=actor_id,
+        assurance="HARDWARE_WEBAUTHN",
         policy_decision_id=decision_id,
         payload_hash="a" * 64,
     )

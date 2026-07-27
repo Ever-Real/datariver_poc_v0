@@ -1,4 +1,6 @@
+import { useState, type ComponentProps } from 'react'
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { describe, expect, it, vi } from 'vitest'
 import type { ApiClient, RequestOptions } from '../../api/client'
 import type { CatalogAsset } from '../../api/types'
@@ -35,6 +37,17 @@ const asset: CatalogAsset = {
 
 function clientWith(request: (path: string, options?: RequestOptions) => Promise<unknown>): ApiClient {
   return { request: vi.fn(request) } as unknown as ApiClient
+}
+
+function TestCatalogPage(props: ComponentProps<typeof CatalogPage>) {
+  const [queryClient] = useState(() => new QueryClient({
+    defaultOptions: { queries: { retry: false } },
+  }))
+  return (
+    <QueryClientProvider client={queryClient}>
+      <CatalogPage {...props} />
+    </QueryClientProvider>
+  )
 }
 
 function defaultRequest(path: string, options?: RequestOptions): Promise<unknown> {
@@ -78,11 +91,13 @@ describe('catalog workspace', () => {
       }
       return defaultRequest(path)
     })
-    render(<CatalogPage client={clientWith(request)} />)
+    render(<TestCatalogPage client={clientWith(request)} />)
     const input = screen.getByRole('combobox', { name: /데이터셋 이름이나 설명 검색/ })
     fireEvent.focus(input)
     fireEvent.change(input, { target: { value: 'wafer yield' } })
-    expect(await screen.findByRole('option', { name: /wafer_events/ })).toBeInTheDocument()
+    const suggestion = await screen.findByRole('option', { name: /wafer_events/ })
+    expect(suggestion).toBeInTheDocument()
+    expect(within(suggestion).queryByRole('button')).not.toBeInTheDocument()
     expect(input).toHaveAttribute('aria-autocomplete', 'list')
     fireEvent.keyDown(input, { key: 'End' })
     expect(input).toHaveAttribute('aria-activedescendant', 'catalog-suggestion-0')
@@ -104,12 +119,14 @@ describe('catalog workspace', () => {
   it('renders dense server results and plain-text ALL keyword fragments', async () => {
     const request = vi.fn(defaultRequest)
     const client = { request } as unknown as ApiClient
-    render(<CatalogPage client={client} initialQuery="wafer yield" />)
+    render(<TestCatalogPage client={client} initialQuery="wafer yield" />)
 
     expect(await screen.findByText('wafer_events')).toBeInTheDocument()
     expect(screen.getByText(/ALL keywords/)).toBeInTheDocument()
-    expect(screen.getAllByText('wafer').some((node) => node.tagName === 'MARK')).toBe(true)
-    expect(screen.getAllByText('yield').some((node) => node.tagName === 'MARK')).toBe(true)
+    const matchPreview = screen.getByTitle('[Name] wafer_events | [Desc] yield evidence')
+    expect(within(matchPreview).getByText('wafer').tagName).toBe('MARK')
+    fireEvent.click(within(matchPreview).getByRole('button', { name: '다음 매치' }))
+    expect(within(matchPreview).getByText('yield').tagName).toBe('MARK')
     expect(screen.getByText('urn:li:corpGroup:yield')).toBeInTheDocument()
     expect(screen.getByText('urn:li:domain:manufacturing')).toBeInTheDocument()
     expect(screen.getAllByText('tier:gold').length).toBeGreaterThan(0)
@@ -171,12 +188,14 @@ describe('catalog workspace', () => {
       })
       return defaultRequest(path)
     })
-    render(<CatalogPage client={clientWith(request)} />)
+    render(<TestCatalogPage client={clientWith(request)} />)
 
-    const table = await screen.findByRole('table', { name: '카탈로그 검색 결과' })
+    await screen.findByText(bounded.name)
+    const table = screen.getByRole('table', { name: '카탈로그 검색 결과' })
     expect(within(table).getAllByLabelText('일부만 표시')).toHaveLength(3)
     fireEvent.click(within(table).getByText(bounded.name))
     const detail = await screen.findByRole('complementary', { name: '카탈로그 상세' })
+    await within(detail).findByText(bounded.name)
     expect(within(detail).getAllByLabelText('일부만 표시')).toHaveLength(4)
     expect(within(detail).queryByText('raw-provider-term-must-not-win')).not.toBeInTheDocument()
   })
@@ -207,7 +226,7 @@ describe('catalog workspace', () => {
       }
       return defaultRequest(path)
     })
-    render(<CatalogPage client={clientWith(request)} />)
+    render(<TestCatalogPage client={clientWith(request)} />)
     await screen.findByText('asset_049')
     request.mockClear()
     const bottomPagination = screen.getByRole('navigation', { name: '페이지 탐색' })
@@ -240,10 +259,9 @@ describe('catalog workspace', () => {
       if (path.includes('parent_kind=PLATFORM')) return Promise.resolve({ items: [{ id: 'database-node', kind: 'DATABASE', label: 'analytics', asset_count: 1, has_children: true, platform: 'snowflake', database_name: 'analytics' }], page: { limit: 100 }, meta })
       return defaultRequest(path)
     })
-    render(<CatalogPage client={clientWith(request)} />)
+    render(<TestCatalogPage client={clientWith(request)} />)
 
     const tree = await screen.findByRole('complementary', { name: 'Resource Tree' })
-    fireEvent.click(await within(tree).findByRole('button', { name: /snowflake/ }))
     await within(tree).findByText('analytics')
     expect(request.mock.calls.some(([path, options]) => (
       path.includes('parent_kind=PLATFORM') && options?.signal instanceof AbortSignal
@@ -281,10 +299,9 @@ describe('catalog workspace', () => {
       }
       return defaultRequest(path)
     })
-    render(<CatalogPage client={clientWith(request)} />)
+    render(<TestCatalogPage client={clientWith(request)} />)
 
     const tree = await screen.findByRole('complementary', { name: 'Resource Tree' })
-    fireEvent.click(await within(tree).findByRole('button', { name: /snowflake/ }))
     fireEvent.click(await within(tree).findByRole('button', { name: /하위 항목 더 보기/ }))
 
     expect(await within(tree).findByText('메모리 보호를 위해 이 분기의 200개 항목만 표시합니다. 검색을 사용하세요.')).toBeInTheDocument()
@@ -312,13 +329,13 @@ describe('catalog workspace', () => {
       }
       return defaultRequest(path)
     })
-    render(<CatalogPage client={clientWith(request)} />)
+    render(<TestCatalogPage client={clientWith(request)} />)
 
     const tree = await screen.findByRole('complementary', { name: 'Resource Tree' })
-    for (let index = 0; index < 9; index += 1) {
-      fireEvent.click(await within(tree).findByRole('button', { name: new RegExp(`platform_${index}`) }))
-      await within(tree).findByText(`database_platform_${index}`)
-    }
+    await within(tree).findByText('database_platform_0')
+    await within(tree).findByText('database_platform_7')
+    fireEvent.click(await within(tree).findByRole('button', { name: /platform_8/ }))
+    await within(tree).findByText('database_platform_8')
 
     expect(within(tree).queryByText('database_platform_0')).not.toBeInTheDocument()
     expect(within(tree).getByRole('button', { name: /platform_0/ })).toHaveAttribute('aria-expanded', 'false')
@@ -343,15 +360,11 @@ describe('catalog workspace', () => {
       }
       return defaultRequest(path)
     })
-    render(<CatalogPage client={clientWith(request)} />)
+    render(<TestCatalogPage client={clientWith(request)} />)
 
     const tree = await screen.findByRole('complementary', { name: 'Resource Tree' })
-    for (let index = 0; index < 9; index += 1) {
-      fireEvent.click(await within(tree).findByRole('button', {
-        name: new RegExp(`slow_platform_${index}`),
-      }))
-    }
-
+    await waitFor(() => expect(branchSignals).toHaveLength(8))
+    fireEvent.click(await within(tree).findByRole('button', { name: /slow_platform_8/ }))
     await waitFor(() => expect(branchSignals).toHaveLength(9))
     expect(branchSignals[0]?.aborted).toBe(true)
     expect(branchSignals.slice(1).filter((signal) => !signal.aborted)).toHaveLength(8)
@@ -381,11 +394,10 @@ describe('catalog workspace', () => {
       }
       return defaultRequest(path)
     })
-    render(<CatalogPage client={clientWith(request)} />)
+    render(<TestCatalogPage client={clientWith(request)} />)
 
     const tree = await screen.findByRole('complementary', { name: 'Resource Tree' })
     const platform = await within(tree).findByRole('button', { name: /slow_platform/ })
-    fireEvent.click(platform)
     fireEvent.click(await within(tree).findByRole('button', { name: /slow_database/ }))
     await waitFor(() => expect(branchSignal).toBeDefined())
     fireEvent.click(platform)
@@ -421,12 +433,13 @@ describe('catalog workspace', () => {
       if (path === `/catalog/assets/${treeAsset.id}`) return Promise.resolve({ ...treeAsset, ownership: [], glossary_terms: [], tags: [], schema_fields: [], quality: {}, source_version: 'source-v7' })
       return defaultRequest(path)
     })
-    render(<CatalogPage client={clientWith(request)} initialQuery="wafer" />)
+    render(<TestCatalogPage client={clientWith(request)} initialQuery="wafer" />)
 
     const tree = await screen.findByRole('complementary', { name: 'Resource Tree' })
     const assetCallsBeforeSelection = request.mock.calls.filter(([path]) => String(path).startsWith('/catalog/assets?')).length
     fireEvent.click(await within(tree).findByRole('button', { name: /tree_selected_table/ }))
-    expect(await screen.findByRole('complementary', { name: '카탈로그 상세' })).toHaveTextContent(treeAsset.name)
+    const detail = await screen.findByRole('complementary', { name: '카탈로그 상세' })
+    expect(await within(detail).findByText(treeAsset.name)).toBeInTheDocument()
     const table = screen.getByRole('table', { name: '카탈로그 검색 결과' })
     expect(table.querySelector('tbody tr.selected')).toBeNull()
     expect(screen.getAllByText('1 페이지 · 현재 50건')).toHaveLength(2)
@@ -455,12 +468,13 @@ describe('catalog workspace', () => {
       if (path === `/catalog/assets/${treeAsset.id}`) return Promise.resolve({ ...treeAsset, ownership: [], glossary_terms: [], tags: [], schema_fields: [], quality: {}, source_version: 'source-v7' })
       return defaultRequest(path)
     })
-    render(<CatalogPage client={clientWith(request)} initialQuery="wafer" />)
+    render(<TestCatalogPage client={clientWith(request)} initialQuery="wafer" />)
 
     const tree = await screen.findByRole('complementary', { name: 'Resource Tree' })
     const assetCallsBeforeSelection = request.mock.calls.filter(([path]) => String(path).startsWith('/catalog/assets?')).length
     fireEvent.click(await within(tree).findByRole('button', { name: /tree_third_page_table/ }))
-    expect(await screen.findByRole('complementary', { name: '카탈로그 상세' })).toHaveTextContent(treeAsset.name)
+    const detail = await screen.findByRole('complementary', { name: '카탈로그 상세' })
+    expect(await within(detail).findByText(treeAsset.name)).toBeInTheDocument()
     const table = screen.getByRole('table', { name: '카탈로그 검색 결과' })
     expect(table).toHaveTextContent('tree_page_0')
     expect(table).not.toHaveTextContent('tree_page_50')
@@ -470,17 +484,28 @@ describe('catalog workspace', () => {
 
   it('keeps legacy search targets and bounded facet filtering in a responsive popover', async () => {
     const request = vi.fn(defaultRequest)
-    render(<CatalogPage client={clientWith(request)} initialQuery="wafer" />)
+    render(<TestCatalogPage client={clientWith(request)} initialQuery="wafer" />)
 
     fireEvent.click(await screen.findByRole('button', { name: '필터' }))
-    expect(screen.getByRole('dialog', { name: '상세 검색 필터' })).toBeInTheDocument()
+    const dialog = screen.getByRole('dialog', { name: '상세 검색 필터' })
     expect(screen.getByLabelText('Search in 전체')).toBeChecked()
-    fireEvent.change(screen.getByLabelText('Database'), { target: { value: 'analytics' } })
-    fireEvent.change(screen.getByLabelText('Lifecycle'), { target: { value: 'ACTIVE' } })
-
+    await within(dialog).findByRole('option', { name: /analytics/ })
+    await within(dialog).findByRole('option', { name: /ACTIVE/ })
+    fireEvent.change(within(dialog).getByLabelText('Database'), { target: { value: 'analytics' } })
     await waitFor(() => expect(request.mock.calls.some(([path]) => (
-      String(path).includes('database=analytics') && String(path).includes('lifecycle=ACTIVE')
+      String(path).includes('database=analytics')
     ))).toBe(true))
+    await waitFor(() => expect(within(screen.getByRole('dialog', { name: '상세 검색 필터' })).getByLabelText('Database')).toHaveValue('analytics'))
+    const currentDialog = screen.getByRole('dialog', { name: '상세 검색 필터' })
+    const lifecycle = within(currentDialog).getByLabelText('Lifecycle')
+    fireEvent.change(lifecycle, { target: { value: 'ACTIVE' } })
+    expect(lifecycle).toHaveValue('ACTIVE')
+
+    await waitFor(() => expect(
+      request.mock.calls.map(([path]) => String(path)).filter((path) => path.startsWith('/catalog/assets?')),
+    ).toEqual(expect.arrayContaining([
+      expect.stringMatching(/database=analytics.*lifecycle=ACTIVE|lifecycle=ACTIVE.*database=analytics/),
+    ])))
 
     const toolbar = document.querySelector('.catalog-search-toolbar')
     expect(toolbar).not.toBeNull()
@@ -522,21 +547,22 @@ describe('catalog workspace', () => {
       if (path.includes('/lineage?')) return Promise.resolve({ center_asset_id: asset.id, nodes: [asset, lineageAsset], edges: [{ source_asset_id: asset.id, target_asset_id: lineageAsset.id }], direction: 'BOTH', depth: 2, truncated: false, meta })
       return defaultRequest(path)
     })
-    render(<CatalogPage client={clientWith(request)} initialQuery="wafer" />)
+    render(<TestCatalogPage client={clientWith(request)} initialQuery="wafer" />)
 
     fireEvent.click(await screen.findByText('wafer_events'))
     fireEvent.click(await screen.findByRole('tab', { name: 'Lineage' }))
     const assetCallsBeforeSelection = request.mock.calls.filter(([path]) => String(path).startsWith('/catalog/assets?')).length
     fireEvent.click(await screen.findByRole('button', { name: `${lineageAsset.name} 선택` }))
     const table = screen.getByRole('table', { name: '카탈로그 검색 결과' })
-    expect(await screen.findByRole('complementary', { name: '카탈로그 상세' })).toHaveTextContent(lineageAsset.name)
+    const detail = await screen.findByRole('complementary', { name: '카탈로그 상세' })
+    expect(await within(detail).findByText(lineageAsset.name)).toBeInTheDocument()
     expect(table.querySelector('tbody tr.selected')).toBeNull()
     expect(request.mock.calls.filter(([path]) => String(path).startsWith('/catalog/assets?'))).toHaveLength(assetCallsBeforeSelection)
   })
 
   it('resets the query, filters, result selection, and Authorized Detail', async () => {
     const request = vi.fn(defaultRequest)
-    render(<CatalogPage client={clientWith(request)} initialQuery="wafer" />)
+    render(<TestCatalogPage client={clientWith(request)} initialQuery="wafer" />)
 
     fireEvent.click(await screen.findByText('wafer_events'))
     expect(await screen.findByRole('complementary', { name: '카탈로그 상세' })).toBeInTheDocument()
@@ -551,7 +577,7 @@ describe('catalog workspace', () => {
 
   it('opens authorized detail and fetches bounded lineage on demand', async () => {
     const request = vi.fn(defaultRequest)
-    render(<CatalogPage client={clientWith(request)} initialQuery="wafer" />)
+    render(<TestCatalogPage client={clientWith(request)} initialQuery="wafer" />)
 
     fireEvent.click(await screen.findByText('wafer_events'))
     expect(await screen.findByText('Created Date')).toBeInTheDocument()
@@ -575,17 +601,20 @@ describe('catalog workspace', () => {
     expect(identity).toHaveTextContent('INTERNAL')
     expect(identity?.querySelector('.catalog-detail-urn')).toHaveTextContent(asset.external_urn)
     const resizer = screen.getByRole('button', { name: '상세 패널 너비 조절' })
+    const detail = screen.getByRole('complementary', { name: '카탈로그 상세' })
     Object.defineProperty(window, 'innerWidth', { configurable: true, value: 1_500 })
     fireEvent.keyDown(resizer, { key: 'ArrowLeft' })
-    expect(document.querySelector('.catalog-workspace')).toHaveStyle('--catalog-detail-width: 574px')
+    expect(detail).toHaveStyle('width: 574px')
     const detailScroll = document.querySelector<HTMLElement>('.catalog-detail-scroll')
     expect(detailScroll).not.toBeNull()
     expect(detailScroll).not.toContainElement(resizer)
     Object.defineProperty(detailScroll as HTMLElement, 'scrollTop', { configurable: true, value: 160 })
+    Object.defineProperty(resizer, 'setPointerCapture', { configurable: true, value: vi.fn() })
+    Object.defineProperty(resizer, 'releasePointerCapture', { configurable: true, value: vi.fn() })
     fireEvent.pointerDown(resizer, { clientX: 900, pointerId: 7 })
     fireEvent.pointerMove(window, { clientX: 860, pointerId: 7 })
     fireEvent.pointerUp(window, { clientX: 860, pointerId: 7 })
-    expect(document.querySelector('.catalog-workspace')).toHaveStyle('--catalog-detail-width: 614px')
+    expect(detail).toHaveStyle('width: 614px')
     expect(request.mock.calls.some(([path]) => String(path).includes('/lineage?'))).toBe(false)
     fireEvent.click(screen.getByRole('tab', { name: 'Lineage' }))
     expect(await screen.findByText('1 nodes · 0 edges')).toBeInTheDocument()
@@ -617,7 +646,7 @@ describe('catalog workspace', () => {
       }
       return defaultRequest(path)
     })
-    render(<CatalogPage client={clientWith(request)} />)
+    render(<TestCatalogPage client={clientWith(request)} />)
 
     fireEvent.click(await screen.findByText('wafer_events'))
     expect(await screen.findByText('field_099')).toBeInTheDocument()
@@ -656,12 +685,14 @@ describe('catalog workspace', () => {
       if (path === `/catalog/assets/${missing.id}`) return Promise.resolve({ ...missing, ownership: [], glossary_terms: [], tags: [], schema_fields: [], quality: {}, source_version: 'source-v7' })
       return defaultRequest(path)
     })
-    render(<CatalogPage client={clientWith(request)} />)
+    render(<TestCatalogPage client={clientWith(request)} />)
 
-    const table = await screen.findByRole('table', { name: '카탈로그 검색 결과' })
+    await screen.findByText('missing_metadata')
+    const table = screen.getByRole('table', { name: '카탈로그 검색 결과' })
     expect(within(table).getAllByLabelText('정보 없음')).toHaveLength(9)
     fireEvent.click(screen.getByText('missing_metadata'))
     const detail = await screen.findByRole('complementary', { name: '카탈로그 상세' })
+    await within(detail).findByText('missing_metadata')
     expect(within(detail).getAllByLabelText('정보 없음')).toHaveLength(11)
   })
 })
