@@ -239,6 +239,21 @@ the returned three profile UUIDs and
 Apply them with the normal update/restart workflow. The four retention values are local
 development acceptance inputs, not a production retention approval.
 
+For the checked-in local `test` knowledge graph only, an operator can materialize a bounded
+synthetic INTERNAL release and its verified Neo4j shadow projection after the development stack is
+healthy:
+
+```bash
+docker compose --env-file .env.mac-development exec api \
+  /app/.venv/bin/python -m datariver.local_graphrag_fixture
+```
+
+The command is rejected outside `APP_ENV=development`, requires the existing two distinct local
+human actors, uses the normal typed changeset validation and independent-review state machine,
+publishes immutable PostgreSQL release lineage, verifies the Neo4j read-back hash and activates only
+that release. It is idempotent after a verified activation. It does not update an arbitrary graph
+status, relax the GraphRAG INTERNAL ceiling or create a production data path.
+
 ### Retention and observability
 
 - Retention execution remains separately gated by its control file, workspace allowlist,
