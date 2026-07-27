@@ -41,6 +41,7 @@ class SourceHostInfraPlan:
     env_file: Path
     compose_files: tuple[Path, ...]
     offline: bool
+    connected_build: bool
     release_platform_dir: Path | None
 
 
@@ -49,7 +50,8 @@ def parse_arguments() -> argparse.Namespace:
         description=(
             "Stop containerized DataRiver application processes and prepare PostgreSQL/Keycloak "
             "for loopback source-host access. Build and offline image references are resolved "
-            "from the recorded profile state."
+            "from the recorded profile state, or explicitly from repository pins on a connected "
+            "development host."
         )
     )
     parser.add_argument(
@@ -67,6 +69,14 @@ def parse_arguments() -> argparse.Namespace:
         type=Path,
         help="Optional source-host environment; defaults to the applied profile environment.",
     )
+    parser.add_argument(
+        "--connected-build",
+        action="store_true",
+        help=(
+            "Development-only: when no applied state exists, use the repository's digest-pinned "
+            "images and build definitions. Requires --env-file and registry access."
+        ),
+    )
     return parser.parse_args()
 
 
@@ -78,9 +88,33 @@ def _resolve_path(root: Path, value: str | Path) -> Path:
 def resolve_plan(
     *,
     root: Path,
-    state: AppliedState,
+    state: AppliedState | None,
     env_file_override: Path | None,
+    connected_build: bool = False,
 ) -> SourceHostInfraPlan:
+    if connected_build:
+        if env_file_override is None:
+            raise WorkflowError("--connected-build requires an explicit --env-file.")
+        env_file = _resolve_path(root, env_file_override)
+        require_regular_file(env_file, label="Selected source-host environment")
+        return SourceHostInfraPlan(
+            profile="connected-source-development",
+            env_file=env_file,
+            compose_files=(
+                root / "compose.yaml",
+                root / "compose.identity.yaml",
+                root / "compose.source-host.yaml",
+            ),
+            offline=False,
+            connected_build=True,
+            release_platform_dir=None,
+        )
+    if state is None:
+        raise WorkflowError(
+            "The applied workflow state is unavailable. For a connected rapid source-validation "
+            "host, rerun with --connected-build and an explicit --env-file. Offline preparation "
+            "still requires the managed wsl-preparation state and release evidence."
+        )
     env_file = _resolve_path(root, env_file_override or state.env_file)
     require_regular_file(env_file, label="Selected source-host environment")
     compose_files: tuple[Path, ...] = (
@@ -94,6 +128,7 @@ def resolve_plan(
             env_file=env_file,
             compose_files=compose_files,
             offline=False,
+            connected_build=False,
             release_platform_dir=None,
         )
     if state.release_dir is None:
@@ -104,6 +139,7 @@ def resolve_plan(
         env_file=env_file,
         compose_files=(*compose_files, layout.offline_compose),
         offline=True,
+        connected_build=False,
         release_platform_dir=layout.platform_dir,
     )
 
@@ -218,6 +254,13 @@ def verify_offline_images(
             )
 
 
+def verify_connected_build_contract(service_images: dict[str, str]) -> None:
+    if "@sha256:" not in service_images["postgres"]:
+        raise WorkflowError(
+            "Connected source-host PostgreSQL must retain the repository digest pin."
+        )
+
+
 def _compose_command(
     plan: SourceHostInfraPlan,
     trailing: tuple[str, ...],
@@ -271,11 +314,21 @@ def main() -> int:
     runner = Runner(root=ROOT)
     try:
         require_command("docker")
-        state = load_applied_state(state_path(ROOT, arguments.profile))
+        state: AppliedState | None = None
+        if not arguments.connected_build:
+            applied_state_path = state_path(ROOT, arguments.profile)
+            if not applied_state_path.exists():
+                raise WorkflowError(
+                    "The applied workflow state is unavailable. Use --connected-build with an "
+                    "explicit --env-file for connected rapid source validation, or complete the "
+                    "managed offline setup first."
+                )
+            state = load_applied_state(applied_state_path)
         plan = resolve_plan(
             root=ROOT,
             state=state,
             env_file_override=arguments.env_file,
+            connected_build=arguments.connected_build,
         )
         runner.note("선택 profile의 최종 Compose service image를 해석합니다.")
         service_images = rendered_service_images(runner, plan)
@@ -283,6 +336,9 @@ def main() -> int:
             assert plan.release_platform_dir is not None
             runner.note("기록된 amd64 release checksum과 로컬 image identity를 검증합니다.")
             verify_offline_images(runner, plan.release_platform_dir, service_images)
+        elif plan.connected_build:
+            runner.note("연결형 개발 경로의 repository digest/build 계약을 검증합니다.")
+            verify_connected_build_contract(service_images)
         if arguments.action == "config":
             runner.run(_compose_command(plan, ("config", "--images")))
         elif arguments.action == "status":

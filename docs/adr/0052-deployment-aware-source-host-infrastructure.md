@@ -39,6 +39,11 @@ does not select a release or image. Release authority remains the applied state.
 checksum drift, absent tag, image-ID mismatch, wrong platform or rendered registry-only digest in
 offline mode fails before any container is stopped.
 
+For connected rapid source-validation hosts that predate managed applied state, an explicit
+`--connected-build` option accepts an explicit environment file, uses the repository's
+digest-pinned external images and build definitions, and writes no applied/release state. It does
+not accept arbitrary local tags and is not an offline fallback.
+
 The source continues to pin external image indexes. The workflow does not replace them with a
 mutable global default, pull an unpinned tag, encode a developer-machine image ID, or claim that
 arm64 and amd64 image IDs are identical.

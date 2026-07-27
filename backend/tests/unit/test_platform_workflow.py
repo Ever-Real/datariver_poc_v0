@@ -1052,8 +1052,11 @@ def test_release_compatibility_allows_operator_only_checkout_changes() -> None:
         "docs/26_MAC_TO_WSL_MIGRATION_RUNBOOK.md",
         "backend/tests/unit/test_platform_workflow.py",
         "scripts/platform_workflow.py",
+        "scripts/dev_host.sh",
         "scripts/workflow_fresh_setup.py",
+        "scripts/workflow_source_host_infra.py",
         "scripts/workflow_update_restart.py",
+        "scripts/verify_static.py",
     )
 
     assert workflow.incompatible_release_paths(paths) == ()

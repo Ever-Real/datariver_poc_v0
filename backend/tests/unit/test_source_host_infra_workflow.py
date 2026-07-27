@@ -107,6 +107,7 @@ def test_offline_plan_hides_the_release_override_behind_applied_state(
     )
 
     assert plan.offline is True
+    assert plan.connected_build is False
     assert plan.env_file == (tmp_path / ".env.selected").resolve()
     assert [path.name for path in plan.compose_files] == [
         "compose.yaml",
@@ -128,6 +129,7 @@ def test_build_plan_uses_the_same_action_without_an_offline_override(
     )
 
     assert plan.offline is False
+    assert plan.connected_build is False
     assert plan.release_platform_dir is None
     assert [path.name for path in plan.compose_files] == [
         "compose.yaml",
@@ -168,6 +170,7 @@ def test_service_images_come_from_the_final_compose_model(tmp_path: Path) -> Non
         env_file=tmp_path / ".env",
         compose_files=(tmp_path / "compose.yaml",),
         offline=True,
+        connected_build=False,
         release_platform_dir=tmp_path / "release/amd64",
     )
 
@@ -175,6 +178,58 @@ def test_service_images_come_from_the_final_compose_model(tmp_path: Path) -> Non
         "postgres": "registry/database:reviewed",
         "keycloak": "registry/identity:reviewed",
     }
+
+
+def test_connected_build_plan_requires_explicit_environment_and_no_state(
+    tmp_path: Path,
+) -> None:
+    (tmp_path / ".env.connected").write_text("APP_ENV=development\n", encoding="utf-8")
+
+    plan = workflow.resolve_plan(
+        root=tmp_path,
+        state=None,
+        env_file_override=Path(".env.connected"),
+        connected_build=True,
+    )
+
+    assert plan.profile == "connected-source-development"
+    assert plan.offline is False
+    assert plan.connected_build is True
+    assert [path.name for path in plan.compose_files] == [
+        "compose.yaml",
+        "compose.identity.yaml",
+        "compose.source-host.yaml",
+    ]
+    with pytest.raises(platform.WorkflowError, match="requires an explicit --env-file"):
+        workflow.resolve_plan(
+            root=tmp_path,
+            state=None,
+            env_file_override=None,
+            connected_build=True,
+        )
+    with pytest.raises(platform.WorkflowError, match="applied workflow state is unavailable"):
+        workflow.resolve_plan(
+            root=tmp_path,
+            state=None,
+            env_file_override=Path(".env.connected"),
+        )
+
+
+def test_connected_build_requires_repository_digest_pin() -> None:
+    workflow.verify_connected_build_contract(
+        {
+            "postgres": f"registry/database:reviewed@sha256:{'a' * 64}",
+            "keycloak": "registry/identity:reviewed",
+        }
+    )
+
+    with pytest.raises(platform.WorkflowError, match="must retain the repository digest pin"):
+        workflow.verify_connected_build_contract(
+            {
+                "postgres": "registry/database:mutable",
+                "keycloak": "registry/identity:reviewed",
+            }
+        )
 
 
 def test_offline_image_verification_binds_local_tags_to_release_ids(

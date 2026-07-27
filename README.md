@@ -590,6 +590,18 @@ deployment mode와 release directory를 읽는다. 온라인 build profile에는
 offline override 순서를 다시 입력하지 않는다. `dev_host.sh migrate`도 `5432/tcp`만 관측하면
 이 단일 workflow를 안내하고 실패한다.
 
+이전 raw Compose 절차로 구성되어 아직 applied state가 없는 **연결망 rapid source 검증 PC**는
+다음 명시적 개발 경로를 한 번 사용한다. 이 경로는 repository의 digest pin과 build definition을
+그대로 사용하며 registry 접근이 필요하다. 임의의 로컬 tag를 승인하거나 offline release가
+검증되었다고 기록하지 않는다.
+
+```bash
+./scripts/workflow_source_host_infra.py \
+  --connected-build \
+  --env-file .env.wsl-preparation \
+  prepare
+```
+
 다음으로 내부 DNS 관리자에게 두 개의 서로 다른 이름과 preparation PC의 고정/예약 주소를
 요청한다. 예시는 `datariver-prep.example.internal`과
 `identity-prep.example.internal`이다. 내부 CA certificate의 SAN에는 두 이름이 모두 있어야

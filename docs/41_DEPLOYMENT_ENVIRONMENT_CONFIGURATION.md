@@ -40,6 +40,9 @@ profile, is not production, and does not alter the workflow state for `wsl-prepa
 `workflow_source_host_infra.py` consumes that existing state to hide build-versus-offline Compose
 selection, while an explicitly supplied intranet environment supplies only the runtime origins and
 ports. It never turns an arbitrary tag into accepted release evidence.
+A pre-state connected rapid-source host may instead select the explicit `--connected-build` mode;
+that uses repository pins/build definitions, requires registry access and writes no applied or
+release state.
 
 To apply an edited environment:
 

@@ -800,6 +800,8 @@ def verify_host_development_ports() -> None:
             "Loaded image does not match the verified release manifest",
             "service_images = rendered_service_images",
             "retained a registry-only digest",
+            "--connected-build",
+            "Connected source-host PostgreSQL must retain the repository digest pin",
             '"--build",',
             '"--no-build", "--pull", "never"',
         },

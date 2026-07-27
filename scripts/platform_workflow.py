@@ -62,6 +62,16 @@ LOCAL_CONNECTOR_SERVICES = ("redis-cache", "redis-delivery", "minio")
 
 _ENV_KEY = re.compile(r"^[A-Z][A-Z0-9_]*$")
 _COMMIT = re.compile(r"^[0-9a-f]{40}$")
+OPERATOR_ONLY_SOURCE_PATHS = frozenset(
+    {
+        "scripts/dev_host.sh",
+        "scripts/platform_workflow.py",
+        "scripts/workflow_fresh_setup.py",
+        "scripts/workflow_source_host_infra.py",
+        "scripts/workflow_update_restart.py",
+        "scripts/verify_static.py",
+    }
+)
 
 
 class WorkflowError(RuntimeError):
@@ -583,19 +593,11 @@ def classify_changes(paths: Sequence[str]) -> ChangePlan:
     restart_graph = False
     local_connector_services: set[str] = set()
     meaningful = False
-    operator_only_scripts = {
-        "scripts/platform_workflow.py",
-        "scripts/workflow_fresh_setup.py",
-        "scripts/workflow_source_host_infra.py",
-        "scripts/workflow_update_restart.py",
-        "scripts/verify_static.py",
-    }
-
     for path in paths:
         normalized = path.strip().lstrip("./")
         if not normalized:
             continue
-        if normalized in operator_only_scripts:
+        if normalized in OPERATOR_ONLY_SOURCE_PATHS:
             continue
         if normalized.startswith(("docs/", "backend/tests/", "frontend/src/")):
             if normalized.startswith("frontend/src/"):
@@ -951,9 +953,7 @@ def incompatible_release_paths(paths: Sequence[str]) -> tuple[str, ...]:
 
     allowed_exact = {
         "README.md",
-        "scripts/platform_workflow.py",
-        "scripts/workflow_fresh_setup.py",
-        "scripts/workflow_update_restart.py",
+        *OPERATOR_ONLY_SOURCE_PATHS,
     }
     allowed_prefixes = ("docs/", "backend/tests/")
     incompatible: list[str] = []

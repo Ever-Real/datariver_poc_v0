@@ -428,6 +428,11 @@ root README. The controlling decisions are
 [ADR-0051](adr/0051-wsl-intranet-source-host-ingress.md) and
 [ADR-0052](adr/0052-deployment-aware-source-host-infrastructure.md).
 
+A connected rapid-source host that predates managed applied state may explicitly select
+`--connected-build` with an environment file. That path retains repository digest pins, builds
+repository-owned images and writes no release acceptance state. It is not an offline deployment
+fallback.
+
 ## Network and identity rules
 
 - Core container defaults remain web `8080`, API `8000` and Keycloak `8081`. Host-development uses Vite `38102`, source API `38101`, Keycloak `18081`, APISIX `9080` and Airflow `8082` when their overlays are enabled.
