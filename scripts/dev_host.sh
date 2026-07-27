@@ -370,6 +370,24 @@ if [ "$action" = start ]; then
     echo "then rerun this command. Reinstall frontend packages only if node_modules is absent." >&2
     exit 2
   fi
+  if [ "$(uname -s)" = Linux ] && [ "$(uname -m)" = x86_64 ]; then
+    rolldown_binding="$root/frontend/node_modules/@rolldown/binding-linux-x64-gnu/rolldown-binding.linux-x64-gnu.node"
+    if [ ! -f "$rolldown_binding" ]; then
+      echo "Missing Vite/Rolldown Linux x64 native binding: $rolldown_binding" >&2
+      echo "The frozen lock includes this optional package, but the current node_modules does not." >&2
+      echo "With registry or complete npm-cache access, run:" >&2
+      echo "  npm --prefix frontend ci --include=optional --no-audit --no-fund" >&2
+      exit 2
+    fi
+    if ! rolldown_binding_error=$(
+      "$node" -e 'require(process.argv[1])' "$rolldown_binding" 2>&1
+    ); then
+      echo "The Vite/Rolldown Linux x64 native binding cannot be loaded by $node_version." >&2
+      printf '%s\n' "$rolldown_binding_error" >&2
+      echo "Reinstall the frozen frontend dependencies with optional packages enabled." >&2
+      exit 2
+    fi
+  fi
 fi
 if [ "$action" = start ] && [ "$enable_airflow_source_bridge" = true ] && [ "$(uname -s)" != Linux ]; then
   echo "--enable-airflow-source-bridge is supported only on Linux/WSL source hosts." >&2

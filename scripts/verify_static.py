@@ -782,6 +782,8 @@ def verify_host_development_ports() -> None:
             "DATARIVER_SELECTED_ENV_FILE",
             'vite_entry="$root/frontend/node_modules/vite/bin/vite.js"',
             "DataRiver source development requires Node.js >=22.19.0.",
+            "@rolldown/binding-linux-x64-gnu/rolldown-binding.linux-x64-gnu.node",
+            "npm --prefix frontend ci --include=optional",
             'start_process vite "$root/frontend" "$node" "$vite_entry"',
             '"$root/scripts/source_api_bridge.py"',
             'VITE_API_PROXY_TARGET="http://127.0.0.1:$api_port"',

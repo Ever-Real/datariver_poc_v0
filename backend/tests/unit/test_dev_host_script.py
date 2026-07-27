@@ -136,12 +136,20 @@ def test_source_host_start_rejects_unsupported_node_before_processes(
 
 def test_source_host_node_floor_matches_frontend_engine() -> None:
     package = json.loads((ROOT / "frontend/package.json").read_text(encoding="utf-8"))
+    lock = json.loads((ROOT / "frontend/package-lock.json").read_text(encoding="utf-8"))
     launcher = (ROOT / "scripts/dev_host.sh").read_text(encoding="utf-8")
 
     assert package["engines"]["node"] == ">=22.19.0"
+    linux_binding = lock["packages"]["node_modules/@rolldown/binding-linux-x64-gnu"]
+    assert linux_binding["version"] == "1.1.5"
+    assert linux_binding["cpu"] == ["x64"]
+    assert linux_binding["os"] == ["linux"]
+    assert linux_binding["optional"] is True
     assert "node_major < 22" in launcher
     assert "node_major == 22 && node_minor < 19" in launcher
     assert "requires Node.js >=22.19.0" in launcher
+    assert "@rolldown/binding-linux-x64-gnu/rolldown-binding.linux-x64-gnu.node" in launcher
+    assert "npm --prefix frontend ci --include=optional" in launcher
 
 
 def test_source_host_preflight_capabilities_are_independently_selectable(
