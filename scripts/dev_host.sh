@@ -354,6 +354,23 @@ if [ "$action" = start ] && { [ -z "$node" ] || [ ! -f "$vite_entry" ]; }; then
   echo "Node.js and installed Vite dependencies are required. Run 'npm ci' in frontend first." >&2
   exit 2
 fi
+if [ "$action" = start ]; then
+  node_version=$("$node" --version 2>/dev/null || true)
+  if [[ "$node_version" =~ ^v([0-9]+)\.([0-9]+)\.([0-9]+) ]]; then
+    node_major=${BASH_REMATCH[1]}
+    node_minor=${BASH_REMATCH[2]}
+  else
+    echo "Unable to determine the Node.js version from: $node_version" >&2
+    exit 2
+  fi
+  if (( node_major < 22 || (node_major == 22 && node_minor < 19) )); then
+    echo "Unsupported Node.js runtime: $node_version ($node)" >&2
+    echo "DataRiver source development requires Node.js >=22.19.0." >&2
+    echo "Install the Linux x64 Node 22.19+ runtime in WSL, ensure it is first on PATH," >&2
+    echo "then rerun this command. Reinstall frontend packages only if node_modules is absent." >&2
+    exit 2
+  fi
+fi
 if [ "$action" = start ] && [ "$enable_airflow_source_bridge" = true ] && [ "$(uname -s)" != Linux ]; then
   echo "--enable-airflow-source-bridge is supported only on Linux/WSL source hosts." >&2
   exit 2

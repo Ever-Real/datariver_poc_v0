@@ -597,6 +597,10 @@ offline override 순서를 다시 입력하지 않는다. `dev_host.sh migrate`�
 
 준비 PC 자체 브라우저에서 먼저 개발할 때는 DNS, 인증서, Nginx가 필요 없다. OIDC는 제거하지
 않고 loopback Keycloak을 사용하며 WebAuthn은 비활성 상태를 유지한다.
+Source Vite는 `frontend/package.json`의 계약대로 WSL의 Node.js `>=22.19.0`을 사용해야 한다.
+`dev_host.sh start`는 Vite나 backend process를 시작하기 전에 실제 `node --version`과 PATH를
+검사한다. 오래된 Ubuntu/WSL system Node가 먼저 잡히면 npm 설치가 성공했더라도 시작을
+거부한다.
 
 ```bash
 if [ ! -f .env.wsl-source-development ]; then
@@ -610,6 +614,10 @@ fi
   --env-file .env.wsl-source-development \
   --reuse-loaded-neo4j \
   prepare
+
+node --version
+command -v node
+# Required: v22.19.0 이상인 Linux x64 Node
 ```
 
 다음으로 내부 DNS 관리자에게 두 개의 서로 다른 이름과 preparation PC의 고정/예약 주소를

@@ -101,6 +101,49 @@ def _preflight(profile: Path) -> dict[str, object]:
     return value
 
 
+def test_source_host_start_rejects_unsupported_node_before_processes(
+    tmp_path: Path,
+) -> None:
+    profile = _profile(tmp_path / "profile", NEO4J_PROJECTION_ENABLED="false")
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    fake_node = fake_bin / "node"
+    fake_node.write_text(
+        "#!/usr/bin/env sh\nprintf '%s\\n' 'v18.20.8'\n",
+        encoding="utf-8",
+    )
+    fake_node.chmod(0o755)
+
+    result = subprocess.run(  # noqa: S603 - fixed repository script and temporary fake Node
+        [
+            "/bin/bash",
+            str(ROOT / "scripts" / "dev_host.sh"),
+            "start",
+            "--env-file",
+            str(profile),
+        ],
+        cwd=ROOT,
+        env={**os.environ, "PATH": f"{fake_bin}:{os.environ['PATH']}"},
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode == 2
+    assert "Unsupported Node.js runtime: v18.20.8" in result.stderr
+    assert "requires Node.js >=22.19.0" in result.stderr
+
+
+def test_source_host_node_floor_matches_frontend_engine() -> None:
+    package = json.loads((ROOT / "frontend/package.json").read_text(encoding="utf-8"))
+    launcher = (ROOT / "scripts/dev_host.sh").read_text(encoding="utf-8")
+
+    assert package["engines"]["node"] == ">=22.19.0"
+    assert "node_major < 22" in launcher
+    assert "node_major == 22 && node_minor < 19" in launcher
+    assert "requires Node.js >=22.19.0" in launcher
+
+
 def test_source_host_preflight_capabilities_are_independently_selectable(
     tmp_path: Path,
 ) -> None:

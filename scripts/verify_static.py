@@ -781,6 +781,7 @@ def verify_host_development_ports() -> None:
             "Duplicate environment key",
             "DATARIVER_SELECTED_ENV_FILE",
             'vite_entry="$root/frontend/node_modules/vite/bin/vite.js"',
+            "DataRiver source development requires Node.js >=22.19.0.",
             'start_process vite "$root/frontend" "$node" "$vite_entry"',
             '"$root/scripts/source_api_bridge.py"',
             'VITE_API_PROXY_TARGET="http://127.0.0.1:$api_port"',
