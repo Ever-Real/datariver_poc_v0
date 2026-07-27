@@ -73,6 +73,28 @@ def _release(tmp_path: Path) -> Path:
     return release
 
 
+def _neo4j_bundle(tmp_path: Path, *, platform_name: str = "linux/amd64") -> Path:
+    bundle = tmp_path / "neo4j-bundle"
+    bundle.mkdir(parents=True)
+    archive = bundle / "neo4j-2026.06.0-linux-amd64.tar.gz"
+    archive.write_bytes(b"verified neo4j amd64 test archive")
+    _write_checksum(archive)
+    archive_sha256 = hashlib.sha256(archive.read_bytes()).hexdigest()
+    image_id = "sha256:" + "4" * 64
+    repository_digest = workflow.approved_neo4j_source_image().partition("@")[2]
+    (bundle / "neo4j-2026.06.0-linux-amd64.manifest.tsv").write_text(
+        (
+            "archive\timage\tsource_image\tplatform\timage_id\trepo_digest"
+            "\tarchive_sha256\n"
+            f"{archive.name}\tneo4j:2026.06.0"
+            f"\tneo4j:2026.06.0@{repository_digest}\t{platform_name}\t{image_id}"
+            f"\tneo4j@{repository_digest}\t{archive_sha256}\n"
+        ),
+        encoding="utf-8",
+    )
+    return bundle
+
+
 def _state(
     *,
     release_dir: Path | None,
@@ -311,3 +333,168 @@ def test_checksum_verification_rejects_modified_offline_override(
 
     with pytest.raises(platform.WorkflowError, match="Checksum mismatch"):
         workflow.verify_checksum(release / "amd64/offline-core.compose.yaml.sha256")
+
+
+def test_neo4j_bundle_binds_archive_checksum_platform_and_image_identity(
+    tmp_path: Path,
+) -> None:
+    bundle = workflow.load_neo4j_bundle(_neo4j_bundle(tmp_path))
+
+    assert bundle.image == "neo4j:2026.06.0"
+    assert bundle.platform == "linux/amd64"
+    assert bundle.image_id == "sha256:" + "4" * 64
+    assert bundle.source_image == workflow.approved_neo4j_source_image()
+    assert bundle.repository_digest == (
+        "neo4j@" + workflow.approved_neo4j_source_image().partition("@")[2]
+    )
+    assert bundle.archive_sha256 == hashlib.sha256(bundle.archive.read_bytes()).hexdigest()
+
+
+def test_neo4j_bundle_rejects_wrong_platform_and_modified_archive(tmp_path: Path) -> None:
+    wrong_platform = _neo4j_bundle(tmp_path / "wrong-platform", platform_name="linux/arm64")
+    with pytest.raises(platform.WorkflowError, match="must target linux/amd64"):
+        workflow.load_neo4j_bundle(wrong_platform)
+
+    modified = _neo4j_bundle(tmp_path / "modified")
+    next(modified.glob("*.tar.gz")).write_bytes(b"modified")
+    with pytest.raises(platform.WorkflowError, match="Checksum mismatch"):
+        workflow.load_neo4j_bundle(modified)
+
+    digest_mismatch = _neo4j_bundle(tmp_path / "digest-mismatch")
+    manifest = next(digest_mismatch.glob("*.manifest.tsv"))
+    approved_digest = workflow.approved_neo4j_source_image().partition("@")[2]
+    manifest.write_text(
+        manifest.read_text(encoding="utf-8").replace(
+            f"neo4j@{approved_digest}",
+            f"neo4j@sha256:{'6' * 64}",
+        ),
+        encoding="utf-8",
+    )
+    with pytest.raises(platform.WorkflowError, match="digest fields do not match"):
+        workflow.load_neo4j_bundle(digest_mismatch)
+
+    unapproved = _neo4j_bundle(tmp_path / "unapproved")
+    manifest = next(unapproved.glob("*.manifest.tsv"))
+    manifest.write_text(
+        manifest.read_text(encoding="utf-8").replace(
+            approved_digest,
+            "sha256:" + "7" * 64,
+        ),
+        encoding="utf-8",
+    )
+    with pytest.raises(platform.WorkflowError, match="approved Compose digest pin"):
+        workflow.load_neo4j_bundle(unapproved)
+
+
+def test_neo4j_bundle_directory_rejects_symbolic_links(tmp_path: Path) -> None:
+    bundle = _neo4j_bundle(tmp_path)
+    linked = tmp_path / "linked-bundle"
+    linked.symlink_to(bundle, target_is_directory=True)
+
+    with pytest.raises(platform.WorkflowError, match="must not be a symbolic link"):
+        workflow.load_neo4j_bundle(linked)
+
+
+class _Neo4jImageRunner:
+    def __init__(self, *, observed: str | None = None) -> None:
+        self.commands: list[tuple[str, ...]] = []
+        self.observed = observed or f"sha256:{'4' * 64}\tlinux/amd64"
+
+    def run(self, arguments: list[str] | tuple[str, ...]) -> None:
+        self.commands.append(tuple(str(value) for value in arguments))
+
+    def output(self, arguments: list[str] | tuple[str, ...]) -> str:
+        self.commands.append(tuple(str(value) for value in arguments))
+        return self.observed
+
+
+class _Neo4jStartRunner:
+    def __init__(self) -> None:
+        self.commands: list[tuple[str, ...]] = []
+        self.environments: list[dict[str, str]] = []
+
+    def run(
+        self,
+        arguments: list[str] | tuple[str, ...],
+        *,
+        env: dict[str, str] | None = None,
+    ) -> None:
+        self.commands.append(tuple(str(value) for value in arguments))
+        self.environments.append(dict(env or {}))
+
+
+def test_neo4j_image_load_is_verified_against_the_bundle_manifest(tmp_path: Path) -> None:
+    bundle = workflow.load_neo4j_bundle(_neo4j_bundle(tmp_path))
+    runner = _Neo4jImageRunner()
+
+    workflow.verify_and_load_neo4j_image(cast(Any, runner), bundle)
+
+    assert runner.commands[0] == (
+        "docker",
+        "image",
+        "load",
+        "--input",
+        str(bundle.archive),
+    )
+    assert runner.commands[1][-1] == bundle.image
+
+    mismatched = _Neo4jImageRunner(observed=f"sha256:{'9' * 64}\tlinux/amd64")
+    with pytest.raises(platform.WorkflowError, match="does not match"):
+        workflow.verify_and_load_neo4j_image(cast(Any, mismatched), bundle)
+
+
+def test_neo4j_environment_is_persisted_only_after_authenticated_start(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    bundle = workflow.load_neo4j_bundle(_neo4j_bundle(tmp_path))
+    environment = tmp_path / ".env.source"
+    environment.write_text(
+        (
+            "APP_ENV=development\n"
+            "NEO4J_BOLT_PORT=27687\n"
+            "NEO4J_URI=bolt://neo4j:7687\n"
+            "NEO4J_URI=bolt://stale.invalid:7687\n"
+        ),
+        encoding="utf-8",
+    )
+    secret_directory = tmp_path / "secrets"
+    secret_directory.mkdir()
+    (secret_directory / "neo4j_auth").write_text(
+        f"neo4j/{'a' * 64}",
+        encoding="utf-8",
+    )
+    plan = workflow.SourceHostInfraPlan(
+        profile="wsl-preparation",
+        env_file=environment,
+        compose_files=(tmp_path / "compose.yaml",),
+        offline=True,
+        connected_build=False,
+        release_platform_dir=tmp_path / "release/amd64",
+    )
+    monkeypatch.setattr(workflow, "ROOT", tmp_path)
+
+    configuration = workflow.resolve_neo4j_environment(plan, bundle)
+    assert configuration == {
+        "NEO4J_ALLOWED_HOSTS": "127.0.0.1",
+        "NEO4J_AUTH_SECRET_REF": "file:/run/secrets/neo4j_auth",
+        "NEO4J_IMAGE": "neo4j:2026.06.0",
+        "NEO4J_PROJECTION_ENABLED": "true",
+        "NEO4J_SOURCE_HOST_ENABLED": "true",
+        "NEO4J_URI": "bolt://127.0.0.1:27687",
+    }
+    assert environment.read_text(encoding="utf-8").count("NEO4J_URI=") == 2
+
+    runner = _Neo4jStartRunner()
+    workflow.start_and_verify_neo4j(cast(Any, runner), plan, configuration)
+
+    values = platform.read_env_values(environment)
+    assert values["NEO4J_IMAGE"] == "neo4j:2026.06.0"
+    assert values["NEO4J_PROJECTION_ENABLED"] == "true"
+    assert values["NEO4J_SOURCE_HOST_ENABLED"] == "true"
+    assert values["NEO4J_URI"] == "bolt://127.0.0.1:27687"
+    assert values["NEO4J_ALLOWED_HOSTS"] == "127.0.0.1"
+    assert environment.read_text(encoding="utf-8").count("NEO4J_URI=") == 1
+    assert any(command[-6:-3] == ("exec", "-T", "neo4j") for command in runner.commands)
+    assert all("datariver-local-connectors-neo4j-1" not in command for command in runner.commands)
+    assert all(item["NEO4J_IMAGE"] == "neo4j:2026.06.0" for item in runner.environments)

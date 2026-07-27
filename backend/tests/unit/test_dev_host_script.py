@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 from pathlib import Path
 
@@ -9,16 +10,40 @@ ROOT = Path(__file__).resolve().parents[3]
 
 def _profile(tmp_path: Path, **overrides: str) -> Path:
     tmp_path.mkdir(parents=True, exist_ok=True)
-    source = (ROOT / ".env.mac-development").read_text(encoding="utf-8").splitlines()
-    keys = set(overrides)
-    retained = [
-        line
-        for line in source
-        if not line or line.startswith("#") or line.partition("=")[0] not in keys
-    ]
+    source = (ROOT / ".env.example").read_text(encoding="utf-8").splitlines()
+    effective_overrides = {
+        "LOCAL_OLLAMA_CHAT_BASE_URL": "http://127.0.0.1:11434/v1",
+        "LOCAL_OLLAMA_CHAT_MODEL": "test-chat-model",
+        "LOCAL_OLLAMA_EMBEDDING_BASE_URL": "http://127.0.0.1:11434/v1",
+        "LOCAL_OLLAMA_EMBEDDING_MODEL": "test-embedding-model",
+        **overrides,
+    }
+    keys = set(effective_overrides)
+    # Keep the fixture deterministic and independent from ignored developer
+    # profiles. Explicit tests add a duplicate when exercising fail-closed
+    # parsing.
+    last_index: dict[str, int] = {}
+    for index, line in enumerate(source):
+        key, separator, _value = line.partition("=")
+        if separator and key:
+            last_index[key] = index
+    retained = []
+    for index, line in enumerate(source):
+        key, separator, _value = line.partition("=")
+        if key in keys:
+            continue
+        if separator and key and last_index[key] != index:
+            continue
+        retained.append(line)
     profile = tmp_path / "source-host.env"
     profile.write_text(
-        "\n".join((*retained, *(f"{key}={value}" for key, value in overrides.items()), "")),
+        "\n".join(
+            (
+                *retained,
+                *(f"{key}={value}" for key, value in effective_overrides.items()),
+                "",
+            )
+        ),
         encoding="utf-8",
     )
     return profile
@@ -48,8 +73,10 @@ def test_source_host_preflight_validates_env_owned_capabilities(tmp_path: Path) 
     document = json.loads(result.stdout)
 
     assert document == {
+        "environment_file": str(profile),
         "knowledge_source_analysis": "CONFIGURED",
         "local_inference_source_host": True,
+        "neo4j_endpoint": None,
         "neo4j_projection": "NOT_CONFIGURED",
         "runtime_activation": False,
     }
@@ -104,6 +131,12 @@ def test_source_host_preflight_capabilities_are_independently_selectable(
     assert model_only["neo4j_projection"] == "NOT_CONFIGURED"
     assert graph_only["knowledge_source_analysis"] == "NOT_CONFIGURED"
     assert graph_only["neo4j_projection"] == "CONFIGURED"
+    assert graph_only["neo4j_endpoint"] == {
+        "expected_source_host_port": 17687,
+        "host": "127.0.0.1",
+        "port": 17687,
+        "scheme": "bolt",
+    }
 
 
 def test_source_host_preflight_accepts_windows_crlf_and_injects_neo4j_secret(
@@ -122,6 +155,161 @@ def test_source_host_preflight_accepts_windows_crlf_and_injects_neo4j_secret(
     document = _preflight(profile)
 
     assert document["neo4j_projection"] == "CONFIGURED"
+
+
+def test_source_host_preflight_accepts_single_quoted_dotenv_values(tmp_path: Path) -> None:
+    profile = _profile(
+        tmp_path,
+        NEO4J_PROJECTION_ENABLED="'true'",
+        NEO4J_URI="'bolt://127.0.0.1:17687'",
+        NEO4J_ALLOWED_HOSTS="'127.0.0.1'",
+    )
+
+    document = _preflight(profile)
+
+    assert document["neo4j_projection"] == "CONFIGURED"
+    assert document["neo4j_endpoint"] == {
+        "expected_source_host_port": 17687,
+        "host": "127.0.0.1",
+        "port": 17687,
+        "scheme": "bolt",
+    }
+
+
+def test_source_host_preflight_translates_container_neo4j_to_selected_host_port(
+    tmp_path: Path,
+) -> None:
+    document = _preflight(
+        _profile(
+            tmp_path,
+            NEO4J_PROJECTION_ENABLED="true",
+            NEO4J_URI="bolt://neo4j:7687",
+            NEO4J_ALLOWED_HOSTS="neo4j",
+            NEO4J_BOLT_PORT="27687",
+        )
+    )
+
+    assert document["neo4j_endpoint"] == {
+        "expected_source_host_port": 27687,
+        "host": "127.0.0.1",
+        "port": 27687,
+        "scheme": "bolt",
+    }
+
+
+def test_source_host_preflight_reports_sanitized_endpoint_on_validation_failure(
+    tmp_path: Path,
+) -> None:
+    profile = _profile(
+        tmp_path,
+        NEO4J_PROJECTION_ENABLED="true",
+        NEO4J_URI="bolt://127.0.0.1:17687",
+        NEO4J_ALLOWED_HOSTS="127.0.0.1",
+        NEO4J_BOLT_PORT="27687",
+    )
+
+    result = subprocess.run(  # noqa: S603 - fixed repository script and arguments
+        [
+            "/bin/bash",
+            str(ROOT / "scripts" / "dev_host.sh"),
+            "preflight",
+            "--env-file",
+            str(profile),
+        ],
+        cwd=ROOT,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode == 2
+    diagnostic = json.loads(result.stderr)
+    assert diagnostic["environment_file"] == str(profile)
+    assert diagnostic["neo4j_endpoint"] == {
+        "expected_source_host_port": "27687",
+        "host": "127.0.0.1",
+        "port": 17687,
+        "scheme": "bolt",
+    }
+    assert diagnostic["status"] == "INVALID"
+    assert "expected_source_host_port=27687" in diagnostic["validation_errors"][0]["message"]
+    assert "neo4j_auth" not in result.stderr
+
+
+def test_source_host_preflight_rejects_duplicate_environment_keys(tmp_path: Path) -> None:
+    profile = _profile(tmp_path, NEO4J_PROJECTION_ENABLED="false")
+    with profile.open("a", encoding="utf-8") as stream:
+        stream.write("NEO4J_PROJECTION_ENABLED=true\n")
+
+    result = subprocess.run(  # noqa: S603 - fixed repository script and arguments
+        [
+            "/bin/bash",
+            str(ROOT / "scripts" / "dev_host.sh"),
+            "preflight",
+            "--env-file",
+            str(profile),
+        ],
+        cwd=ROOT,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode == 2
+    assert "Duplicate environment key" in result.stderr
+    assert "NEO4J_PROJECTION_ENABLED" in result.stderr
+
+
+def test_source_host_preflight_rejects_bare_environment_entries(tmp_path: Path) -> None:
+    profile = _profile(tmp_path, NEO4J_PROJECTION_ENABLED="false")
+    with profile.open("a", encoding="utf-8") as stream:
+        stream.write("NOT_AN_ASSIGNMENT\n")
+
+    result = subprocess.run(  # noqa: S603 - fixed repository script and arguments
+        [
+            "/bin/bash",
+            str(ROOT / "scripts" / "dev_host.sh"),
+            "preflight",
+            "--env-file",
+            str(profile),
+        ],
+        cwd=ROOT,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode == 2
+    assert "Invalid environment entry without '='" in result.stderr
+
+
+def test_source_host_preflight_does_not_inherit_missing_neo4j_values(
+    tmp_path: Path,
+) -> None:
+    profile = _profile(
+        tmp_path,
+        NEO4J_PROJECTION_ENABLED="false",
+    )
+    result = subprocess.run(  # noqa: S603 - fixed repository script and arguments
+        [
+            "/bin/bash",
+            str(ROOT / "scripts" / "dev_host.sh"),
+            "preflight",
+            "--env-file",
+            str(profile),
+        ],
+        cwd=ROOT,
+        env={
+            **dict(os.environ),
+            "NEO4J_PROJECTION_ENABLED": "true",
+            "NEO4J_URI": "bolt://untrusted.example:7687",
+        },
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+    assert json.loads(result.stdout)["neo4j_projection"] == "NOT_CONFIGURED"
 
 
 def test_intranet_source_host_preflight_accepts_distinct_https_origins(

@@ -170,6 +170,11 @@ class Settings(BaseSettings):
     neo4j_auth_secret_ref: str | None = Field(default=None, max_length=512)
     neo4j_connection_timeout_seconds: float = Field(default=30.0, ge=1.0, le=60.0)
     neo4j_maximum_connection_pool_size: int = Field(default=20, ge=1, le=100)
+    neo4j_source_host_enabled: bool = False
+    # Containerized clients use neo4j:7687. A source-host client must follow
+    # the selected loopback publication instead of assuming its default port.
+    neo4j_http_port: int = Field(default=17474, ge=1, le=65535)
+    neo4j_bolt_port: int = Field(default=17687, ge=1, le=65535)
     knowledge_pipeline_enabled: bool = False
     knowledge_source_job_maximum_attempts: int = Field(default=3, ge=1, le=20)
     knowledge_source_worker_enabled: bool = False
@@ -1129,9 +1134,15 @@ class Settings(BaseSettings):
             allowlisted_neo4j = (
                 neo4j_host in self.neo4j_allowed_hosts and parsed_neo4j_uri.port == 7687
             )
-            source_host_neo4j = neo4j_host == "127.0.0.1" and parsed_neo4j_uri.port == 17687
+            source_host_neo4j = (
+                self.neo4j_source_host_enabled
+                and neo4j_host == "127.0.0.1"
+                and parsed_neo4j_uri.port == self.neo4j_bolt_port
+                and neo4j_host in self.neo4j_allowed_hosts
+            )
             local_container_neo4j = (
-                neo4j_host == "neo4j"
+                not self.neo4j_source_host_enabled
+                and neo4j_host == "neo4j"
                 and parsed_neo4j_uri.port == 7687
                 and parsed_neo4j_uri.scheme in {"bolt", "neo4j"}
             )
@@ -1153,9 +1164,17 @@ class Settings(BaseSettings):
             ):
                 raise ValueError(
                     "Neo4j projection must use TLS for an allowlisted port-7687 host, the local "
-                    "Neo4j container, or the source-host bolt://127.0.0.1:17687 endpoint."
+                    "Neo4j container, or the selected source-host loopback endpoint "
+                    f"(received scheme={parsed_neo4j_uri.scheme!r}, host={neo4j_host!r}, "
+                    f"port={parsed_neo4j_uri.port!r}, "
+                    f"path_present={parsed_neo4j_uri.path not in {'', '/'}}, "
+                    f"query_present={bool(parsed_neo4j_uri.query)}, "
+                    f"fragment_present={bool(parsed_neo4j_uri.fragment)}, "
+                    f"userinfo_present={parsed_neo4j_uri.username is not None}; "
+                    f"source_host={self.neo4j_source_host_enabled}, "
+                    f"expected_source_host_port={self.neo4j_bolt_port})."
                 )
-            if source_host_neo4j:
+            if self.neo4j_source_host_enabled:
                 if not self.neo4j_auth_secret_ref.startswith("file:"):
                     raise ValueError(
                         "Source-host Neo4j credentials must use a file secret reference."

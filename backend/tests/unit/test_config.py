@@ -406,6 +406,58 @@ def test_neo4j_projection_accepts_only_explicit_deployment_hosts() -> None:
         )
 
 
+def test_source_host_neo4j_uses_the_configured_loopback_publication() -> None:
+    configured = settings(
+        neo4j_projection_enabled=True,
+        neo4j_source_host_enabled=True,
+        neo4j_uri="bolt://127.0.0.1:27687",
+        neo4j_allowed_hosts=("127.0.0.1",),
+        neo4j_auth_secret_ref="file:/workspace/secrets/neo4j_auth",
+        neo4j_bolt_port=27687,
+    )
+
+    assert configured.neo4j_bolt_port == 27687
+    with pytest.raises(
+        ValidationError,
+        match="expected_source_host_port=27687",
+    ):
+        settings(
+            neo4j_projection_enabled=True,
+            neo4j_source_host_enabled=True,
+            neo4j_uri="bolt://127.0.0.1:17687",
+            neo4j_allowed_hosts=("127.0.0.1",),
+            neo4j_auth_secret_ref="file:/workspace/secrets/neo4j_auth",
+            neo4j_bolt_port=27687,
+        )
+
+
+def test_source_host_neo4j_rejects_container_dns_even_with_a_host_secret() -> None:
+    with pytest.raises(ValidationError, match="source_host=True"):
+        settings(
+            neo4j_projection_enabled=True,
+            neo4j_source_host_enabled=True,
+            neo4j_uri="bolt://neo4j:7687",
+            neo4j_allowed_hosts=("neo4j",),
+            neo4j_auth_secret_ref="file:/workspace/secrets/neo4j_auth",
+        )
+
+
+def test_neo4j_validation_does_not_echo_invalid_uri_path_content() -> None:
+    sensitive_path = "do-not-log-this-path-token"
+    with pytest.raises(ValidationError) as captured:
+        settings(
+            neo4j_projection_enabled=True,
+            neo4j_source_host_enabled=True,
+            neo4j_uri=f"bolt://127.0.0.1:17687/{sensitive_path}",
+            neo4j_allowed_hosts=("127.0.0.1",),
+            neo4j_auth_secret_ref="file:/workspace/secrets/neo4j_auth",
+        )
+
+    rendered = str(captured.value)
+    assert sensitive_path not in rendered
+    assert "path_present=True" in rendered
+
+
 def test_intranet_openai_compatible_inference_is_development_private_tls_only() -> None:
     configured = settings(
         intranet_openai_compatible_allowed_hosts=("10.42.0.15",),

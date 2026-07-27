@@ -7,6 +7,7 @@ import argparse
 import csv
 import hashlib
 import json
+import os
 import re
 import sys
 from dataclasses import dataclass
@@ -20,10 +21,13 @@ from platform_workflow import (
     WorkflowError,
     compose_arguments,
     load_applied_state,
+    read_env_values,
     release_layout,
     require_command,
     require_regular_file,
     state_path,
+    update_env_values,
+    validate_username_password_secret,
 )
 
 SOURCE_INFRASTRUCTURE_SERVICES = ("postgres", "keycloak")
@@ -31,6 +35,8 @@ CONTAINER_APPLICATION_SERVICES = tuple(
     service for service in RUNTIME_SERVICES if service != "keycloak"
 )
 EXPECTED_OFFLINE_PLATFORM = "linux/amd64"
+NEO4J_BUNDLE_MANIFEST_GLOB = "neo4j-*-linux-amd64.manifest.tsv"
+NEO4J_CONNECTOR_COMPOSE = ROOT / "compose.local-connectors.yaml"
 
 
 @dataclass(frozen=True)
@@ -43,6 +49,21 @@ class SourceHostInfraPlan:
     offline: bool
     connected_build: bool
     release_platform_dir: Path | None
+
+
+@dataclass(frozen=True)
+class Neo4jBundle:
+    """Verified metadata for one separately distributed AMD64 graph image."""
+
+    archive: Path
+    checksum: Path
+    manifest: Path
+    image: str
+    source_image: str
+    platform: str
+    image_id: str
+    repository_digest: str
+    archive_sha256: str
 
 
 def parse_arguments() -> argparse.Namespace:
@@ -75,6 +96,15 @@ def parse_arguments() -> argparse.Namespace:
         help=(
             "Development-only: when no applied state exists, reuse the configured PostgreSQL and "
             "final Keycloak images without rebuilding Keycloak. Requires --env-file."
+        ),
+    )
+    parser.add_argument(
+        "--neo4j-bundle-dir",
+        type=Path,
+        help=(
+            "Directory from the separately distributed Neo4j AMD64 repository. The workflow "
+            "verifies its archive checksum, manifest, platform and image ID before starting the "
+            "local graph connector."
         ),
     )
     return parser.parse_args()
@@ -145,7 +175,15 @@ def resolve_plan(
     )
 
 
-def verify_checksum(path: Path) -> None:
+def sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as stream:
+        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def verify_checksum(path: Path) -> str:
     artifact = path.with_suffix("")
     require_regular_file(path, label=f"{artifact.name} checksum")
     require_regular_file(artifact, label=artifact.name)
@@ -155,9 +193,102 @@ def verify_checksum(path: Path) -> None:
     match = re.fullmatch(r"([0-9a-f]{64})[ \t]+[*]?(.+)", lines[0])
     if match is None or Path(match.group(2)).name != artifact.name:
         raise WorkflowError(f"Checksum sidecar has an invalid target: {path}")
-    actual = hashlib.sha256(artifact.read_bytes()).hexdigest()
+    actual = sha256_file(artifact)
     if actual != match.group(1):
         raise WorkflowError(f"Checksum mismatch: {artifact}")
+    return actual
+
+
+def approved_neo4j_source_image() -> str:
+    """Read the reviewed upstream trust anchor from the checked-in connector contract."""
+
+    compose = require_regular_file(
+        NEO4J_CONNECTOR_COMPOSE,
+        label="Neo4j connector Compose contract",
+    )
+    matches: list[str] = re.findall(
+        r"^\s*image:\s+\$\{NEO4J_IMAGE:-(neo4j:[A-Za-z0-9][A-Za-z0-9_.-]{0,127}"
+        r"@sha256:[0-9a-f]{64})\}\s*$",
+        compose.read_text(encoding="utf-8"),
+        flags=re.MULTILINE,
+    )
+    if len(matches) != 1:
+        raise WorkflowError("Neo4j connector Compose must contain one approved digest pin.")
+    return matches[0]
+
+
+def load_neo4j_bundle(
+    directory: Path,
+    *,
+    approved_source_image: str | None = None,
+) -> Neo4jBundle:
+    expanded = directory.expanduser()
+    if expanded.is_symlink():
+        raise WorkflowError(f"Neo4j bundle directory must not be a symbolic link: {expanded}")
+    candidate = expanded.resolve()
+    if not candidate.is_dir():
+        raise WorkflowError(f"Neo4j bundle directory is not a regular directory: {candidate}")
+    manifests = tuple(candidate.glob(NEO4J_BUNDLE_MANIFEST_GLOB))
+    if len(manifests) != 1:
+        raise WorkflowError("Neo4j bundle directory must contain exactly one linux/amd64 manifest.")
+    manifest = require_regular_file(manifests[0], label="Neo4j AMD64 manifest")
+    with manifest.open(encoding="utf-8", newline="") as stream:
+        reader = csv.DictReader(stream, delimiter="\t")
+        expected_header = [
+            "archive",
+            "image",
+            "source_image",
+            "platform",
+            "image_id",
+            "repo_digest",
+            "archive_sha256",
+        ]
+        if reader.fieldnames != expected_header:
+            raise WorkflowError("Neo4j AMD64 manifest header is invalid.")
+        rows = list(reader)
+    if len(rows) != 1:
+        raise WorkflowError("Neo4j AMD64 manifest must contain exactly one image row.")
+    row = rows[0]
+    archive_name = row["archive"]
+    if not archive_name or Path(archive_name).name != archive_name:
+        raise WorkflowError("Neo4j AMD64 manifest contains an invalid archive name.")
+    archive = require_regular_file(candidate / archive_name, label="Neo4j AMD64 archive")
+    checksum = archive.with_name(f"{archive.name}.sha256")
+    actual_sha256 = verify_checksum(checksum)
+    if row["archive_sha256"] != actual_sha256:
+        raise WorkflowError("Neo4j AMD64 manifest archive SHA-256 does not match the sidecar.")
+    image = row["image"]
+    if re.fullmatch(r"neo4j:[A-Za-z0-9][A-Za-z0-9_.-]{0,127}", image) is None:
+        raise WorkflowError("Neo4j AMD64 manifest image tag is invalid.")
+    digest_suffix = r"@sha256:[0-9a-f]{64}"
+    source_image = row["source_image"]
+    repository_digest = row["repo_digest"]
+    if re.fullmatch(re.escape(image) + digest_suffix, source_image) is None:
+        raise WorkflowError("Neo4j AMD64 manifest source image is not digest-pinned.")
+    if re.fullmatch(r"neo4j" + digest_suffix, repository_digest) is None:
+        raise WorkflowError("Neo4j AMD64 manifest repository digest is invalid.")
+    if source_image.partition("@")[2] != repository_digest.partition("@")[2]:
+        raise WorkflowError("Neo4j AMD64 manifest digest fields do not match.")
+    approved_image = approved_source_image or approved_neo4j_source_image()
+    if source_image != approved_image:
+        raise WorkflowError(
+            "Neo4j AMD64 manifest source image does not match the approved Compose digest pin."
+        )
+    if row["platform"] != EXPECTED_OFFLINE_PLATFORM:
+        raise WorkflowError("Neo4j bundle must target linux/amd64.")
+    if re.fullmatch(r"sha256:[0-9a-f]{64}", row["image_id"]) is None:
+        raise WorkflowError("Neo4j AMD64 manifest image ID is invalid.")
+    return Neo4jBundle(
+        archive=archive,
+        checksum=checksum,
+        manifest=manifest,
+        image=image,
+        source_image=source_image,
+        platform=row["platform"],
+        image_id=row["image_id"],
+        repository_digest=repository_digest,
+        archive_sha256=actual_sha256,
+    )
 
 
 def read_release_image_inventory(manifest: Path) -> dict[str, tuple[str, str]]:
@@ -266,6 +397,111 @@ def _compose_command(
     )
 
 
+def _local_graph_command(
+    plan: SourceHostInfraPlan,
+    trailing: tuple[str, ...],
+) -> list[str]:
+    return compose_arguments(
+        env_file=plan.env_file,
+        compose_files=(NEO4J_CONNECTOR_COMPOSE,),
+        profiles=("graph",),
+        trailing=trailing,
+    )
+
+
+def verify_and_load_neo4j_image(runner: Runner, bundle: Neo4jBundle) -> None:
+    runner.run(("docker", "image", "load", "--input", bundle.archive))
+    observed = runner.output(
+        (
+            "docker",
+            "image",
+            "inspect",
+            "--format",
+            "{{.Id}}\t{{.Os}}/{{.Architecture}}",
+            bundle.image,
+        )
+    )
+    expected = f"{bundle.image_id}\t{bundle.platform}"
+    if observed != expected:
+        raise WorkflowError(
+            "Loaded Neo4j image does not match its verified AMD64 manifest: "
+            f"expected={expected}, observed={observed}"
+        )
+
+
+def resolve_neo4j_environment(
+    plan: SourceHostInfraPlan,
+    bundle: Neo4jBundle,
+) -> dict[str, str]:
+    credential_path = require_regular_file(
+        ROOT / "secrets" / "neo4j_auth",
+        label="Neo4j credential",
+    )
+    validate_username_password_secret(credential_path.read_text(encoding="utf-8"))
+    values = read_env_values(plan.env_file)
+    raw_bolt_port = values.get("NEO4J_BOLT_PORT", "17687")
+    try:
+        bolt_port = int(raw_bolt_port)
+    except ValueError as error:
+        raise WorkflowError("NEO4J_BOLT_PORT must be an integer.") from error
+    if not 1 <= bolt_port <= 65535:
+        raise WorkflowError("NEO4J_BOLT_PORT must be in the range 1..65535.")
+    return {
+        "NEO4J_IMAGE": bundle.image,
+        "NEO4J_PROJECTION_ENABLED": "true",
+        "NEO4J_SOURCE_HOST_ENABLED": "true",
+        "NEO4J_URI": f"bolt://127.0.0.1:{bolt_port}",
+        "NEO4J_ALLOWED_HOSTS": "127.0.0.1",
+        "NEO4J_AUTH_SECRET_REF": "file:/run/secrets/neo4j_auth",
+    }
+
+
+def start_and_verify_neo4j(
+    runner: Runner,
+    plan: SourceHostInfraPlan,
+    environment: dict[str, str],
+) -> None:
+    process_environment = os.environ.copy()
+    process_environment.update(environment)
+    runner.run(
+        _local_graph_command(
+            plan,
+            (
+                "up",
+                "-d",
+                "--no-build",
+                "--pull",
+                "never",
+                "--wait",
+                "neo4j",
+            ),
+        ),
+        env=process_environment,
+    )
+    runner.run(
+        _local_graph_command(
+            plan,
+            (
+                "exec",
+                "-T",
+                "neo4j",
+                "sh",
+                "-ec",
+                (
+                    "exec cypher-shell -u neo4j "
+                    '-p "$(cut -d/ -f2- /run/secrets/neo4j_auth)" "RETURN 1"'
+                ),
+            ),
+        ),
+        env=process_environment,
+    )
+    runner.run(
+        _local_graph_command(plan, ("port", "neo4j", "7687")),
+        env=process_environment,
+    )
+    update_env_values(plan.env_file, environment)
+
+
 def verify_connected_local_keycloak(
     runner: Runner,
     service_images: dict[str, str],
@@ -299,6 +535,7 @@ def prepare(
     runner: Runner,
     plan: SourceHostInfraPlan,
     service_images: dict[str, str],
+    neo4j_environment: dict[str, str] | None,
 ) -> None:
     if plan.connected_build:
         runner.note("기존 final Keycloak image가 로컬에 있는지 먼저 확인합니다.")
@@ -337,6 +574,9 @@ def prepare(
     )
     runner.note("최종 loopback publication을 표시합니다.")
     show_status(runner, plan)
+    if neo4j_environment is not None:
+        runner.note("검증된 별도 AMD64 Neo4j image로 local graph connector를 준비합니다.")
+        start_and_verify_neo4j(runner, plan, neo4j_environment)
 
 
 def main() -> int:
@@ -360,6 +600,17 @@ def main() -> int:
             env_file_override=arguments.env_file,
             connected_build=arguments.connected_build,
         )
+        neo4j_bundle: Neo4jBundle | None = None
+        neo4j_environment: dict[str, str] | None = None
+        if arguments.neo4j_bundle_dir is not None:
+            if arguments.action != "prepare":
+                raise WorkflowError("--neo4j-bundle-dir is supported only with the prepare action.")
+            runner.note("별도 배포 Neo4j archive/checksum/manifest를 검증합니다.")
+            neo4j_bundle = load_neo4j_bundle(arguments.neo4j_bundle_dir)
+            runner.note("검증된 linux/amd64 Neo4j image를 로드하고 image ID를 대조합니다.")
+            verify_and_load_neo4j_image(runner, neo4j_bundle)
+            runner.note("Neo4j secret/port를 검증하고 source-host 환경을 확정합니다.")
+            neo4j_environment = resolve_neo4j_environment(plan, neo4j_bundle)
         runner.note("선택 profile의 최종 Compose service image를 해석합니다.")
         service_images = rendered_service_images(runner, plan)
         if plan.offline:
@@ -376,7 +627,7 @@ def main() -> int:
         elif arguments.action == "status":
             show_status(runner, plan)
         else:
-            prepare(runner, plan, service_images)
+            prepare(runner, plan, service_images, neo4j_environment)
         return 0
     except (OSError, ValueError, WorkflowError) as error:
         print(f"ERROR: {error}", file=sys.stderr)

@@ -14,7 +14,8 @@ if (-not (Test-Path -LiteralPath $resolvedEnvFile -PathType Leaf)) {
 }
 
 & docker compose --env-file $resolvedEnvFile -f (Join-Path $root "compose.yaml") `
-    exec -T postgres sh /docker-entrypoint-initdb.d/010_roles.sh
+    exec -T postgres sh -ec `
+    'export PGPASSWORD="$(tr -d "\r\n" </run/secrets/postgres_password)"; exec sh /docker-entrypoint-initdb.d/010_roles.sh'
 if ($LASTEXITCODE -ne 0) {
     throw "PostgreSQL role reconciliation failed with exit code $LASTEXITCODE."
 }

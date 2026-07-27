@@ -102,7 +102,9 @@ The preparation PC may also run the latest checkout directly for rapid `linux/am
 validation. Keep this separate from `.env.wsl-preparation` and its immutable image acceptance:
 
 ```bash
-cp -p .env.wsl-preparation .env.wsl-intranet-development
+if [ ! -f .env.wsl-intranet-development ]; then
+  cp -p .env.wsl-preparation .env.wsl-intranet-development
+fi
 ./scripts/bootstrap.sh \
   --env-file .env.wsl-intranet-development \
   --host-development --intranet-source-host \
@@ -111,6 +113,7 @@ cp -p .env.wsl-preparation .env.wsl-intranet-development
 
 ./scripts/workflow_source_host_infra.py \
   --env-file .env.wsl-intranet-development \
+  --neo4j-bundle-dir ../datariver-platform-amd64-distribution \
   prepare
 ```
 
@@ -123,9 +126,28 @@ with loopback publications. A PostgreSQL listing of `5432/tcp` alone does not sa
 migration; the required observation is `127.0.0.1:5432->5432/tcp`. Do not manually reconstruct the
 release directory or Compose file order.
 
+The Neo4j directory is the separate `Ever-Real/datariver-platform-amd64-distribution` checkout
+after `git lfs pull`, not a directory committed to this source repository. Omit
+`--neo4j-bundle-dir` only when graph projection is intentionally disabled. The workflow validates
+the archive/sidecar SHA-256, manifest schema and matching upstream digest fields, loaded image ID
+and `linux/amd64`, validates the local credential and configured Bolt port before stopping writers,
+then runs an authenticated Cypher query after the healthcheck.
+
+The same distribution checkout contains the checksum- and manifest-backed
+`datariver-uv-cache-linux-x86_64-*` archive for this exact `uv.lock`. Verify its sidecar and
+`lock_sha256`, extract its `uv/` directory beneath the WSL user's cache parent, and set
+`UV_CACHE_DIR` to that directory for `uv sync --frozen --all-extras --offline`. This is the
+required closed-network path for packages such as `pypdf`; the lockfile alone is not a package
+artifact. The archive is accepted only for Linux x86_64, Python 3.12.12 and uv 0.9.17.
+
+`dev_host.sh migrate` authenticates from the mounted PostgreSQL owner secret and runs the
+idempotent runtime-role reconciliation both before and after Alembic. Do not replace it with a bare
+host `alembic upgrade` invocation.
+
 If this is a connected rapid-source PC created before the managed workflow and
 `runtime/operator-workflow/wsl-preparation.json` does not exist, use the explicit
-`workflow_source_host_infra.py --connected-build --env-file .env.wsl-preparation prepare` path.
+`workflow_source_host_infra.py --connected-build
+--env-file .env.wsl-intranet-development prepare` path.
 It reuses the official version tag already present locally and pulls it only when missing, builds
 no final image during the port transition, requires the existing deployment-owned final Keycloak
 image, preserves volumes and does not create or claim offline release evidence. Managed offline
@@ -509,37 +531,48 @@ scripts/compose.sh --env-file .env.wsl-preparation \
   up -d --wait --no-build --pull never redis-cache redis-delivery
 ```
 
-Neo4j follows the same explicit choice. After loading the separately checksummed AMD64 archive,
-the WSL source-host profile records the verified local tag and the connector's loopback-published
-Bolt port. Graph projection remains opt-in; enabling it requires the complete binding below:
+Neo4j follows the same explicit choice. The immutable `.env.wsl-preparation` container profile uses
+`bolt://neo4j:7687`. Derive `.env.wsl-intranet-development` with the source-host bootstrap in
+Section 2.2; it translates only that known local-container endpoint to the connector's configured
+loopback publication. Private TLS Neo4j endpoints are preserved. The managed workflow writes this
+complete binding only after verifying the separately transferred AMD64 bundle:
 
 ```bash
+# Immutable container profile:
+NEO4J_SOURCE_HOST_ENABLED=false
+NEO4J_URI=bolt://neo4j:7687
+NEO4J_ALLOWED_HOSTS=neo4j
+
+# Derived WSL source-host profile:
 NEO4J_IMAGE=neo4j:2026.06.0
 NEO4J_PROJECTION_ENABLED=true
+NEO4J_SOURCE_HOST_ENABLED=true
 NEO4J_URI=bolt://127.0.0.1:17687
 NEO4J_ALLOWED_HOSTS=127.0.0.1
+NEO4J_BOLT_PORT=17687
 NEO4J_AUTH_SECRET_REF=file:/run/secrets/neo4j_auth
 AIRFLOW_SOURCE_API_BRIDGE_ENABLED=false
 KNOWLEDGE_SOURCE_WORKER_ENABLED=false
 ```
 
-Place those values in the ignored `.env.wsl-preparation`, then start the verified local tag without
-registry access:
+Use the separate distribution checkout as the artifact input. The workflow verifies and loads the
+archive, deduplicates the selected environment keys, starts the tag without registry access, waits
+for health and executes authenticated Cypher:
 
 ```bash
-scripts/compose.sh --env-file .env.wsl-preparation \
-  --profile graph -f compose.local-connectors.yaml \
-  up -d --wait --no-build --pull never neo4j
-docker exec datariver-local-connectors-neo4j-1 sh -ec \
-  'exec cypher-shell -u neo4j -p "$(cut -d/ -f2- /run/secrets/neo4j_auth)" "RETURN 1"'
+./scripts/workflow_source_host_infra.py \
+  --env-file .env.wsl-intranet-development \
+  --neo4j-bundle-dir ../datariver-platform-amd64-distribution \
+  prepare
 ```
 
-The source-host launcher replaces the container-oriented secret reference with the absolute ignored
-host secret path before validating `Settings`. For a connected target that intentionally pulls
-from the registry instead, omit `NEO4J_IMAGE`, pull the digest-pinned Compose default, and record
-the resolved `linux/amd64` image ID. A containerized DataRiver API uses
-`NEO4J_ALLOWED_HOSTS=neo4j` and `NEO4J_URI=bolt://neo4j:7687`; a remote private Neo4j must use its
-exact reviewed DNS name and TLS Bolt URI.
+The source-host launcher clears inherited deployment keys, rejects duplicate environment keys,
+records the selected environment path in preflight output and replaces the container-oriented
+secret reference with the absolute ignored host secret path. It validates the loopback URI against
+`NEO4J_BOLT_PORT`; the port is not hardcoded independently in Settings. For a connected target that
+intentionally pulls from the registry instead, omit `NEO4J_IMAGE`, pull the digest-pinned Compose
+default, and record the resolved `linux/amd64` image ID. A remote private Neo4j must use its exact
+reviewed DNS name and TLS Bolt URI.
 
 APISIX is optional edge infrastructure. The current core-only release does not contain it, and the
 WSL pilot must not build its mutable upstream base opportunistically. Keep APISIX disabled until a

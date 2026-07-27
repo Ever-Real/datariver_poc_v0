@@ -165,6 +165,13 @@ services:
     ports:
       - "127.0.0.1:${NEO4J_HTTP_PORT:-17474}:7474"
       - "127.0.0.1:${NEO4J_BOLT_PORT:-17687}:7687"
+    healthcheck:
+      test:
+        ["CMD-SHELL", "cypher-shell -u neo4j -p \"$$(cut -d/ -f2- /run/secrets/neo4j_auth)\" 'RETURN 1' >/dev/null 2>&1"]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+      start_period: 30s
     restart: unless-stopped
     mem_limit: 1280m
     cpus: 0.75

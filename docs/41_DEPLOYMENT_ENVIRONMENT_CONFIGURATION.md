@@ -175,9 +175,10 @@ equivalent least-privilege roles.
   `INTRANET_OPENAI_COMPATIBLE_ALLOWED_HOSTS` and the corresponding
   `INTRANET_OPENAI_COMPATIBLE_CHAT_*` / `...EMBEDDING_*` keys
 - Graph projection: optional offline `NEO4J_IMAGE` override, `NEO4J_PROJECTION_ENABLED`,
-  `NEO4J_URI`, `NEO4J_ALLOWED_HOSTS`, `NEO4J_DATABASE`, `NEO4J_AUTH_SECRET_REF` and bounded
-  pool/timeouts. A WSL source-host API uses `bolt://127.0.0.1:17687`; a containerized API uses
-  `bolt://neo4j:7687`.
+  launcher-owned `NEO4J_SOURCE_HOST_ENABLED`, `NEO4J_URI`, `NEO4J_ALLOWED_HOSTS`,
+  `NEO4J_DATABASE`, `NEO4J_AUTH_SECRET_REF`, loopback publication ports and bounded
+  pool/timeouts. A WSL source-host API uses
+  `bolt://127.0.0.1:${NEO4J_BOLT_PORT}`; a containerized API uses `bolt://neo4j:7687`.
 - `KNOWLEDGE_PIPELINE_*` and `KNOWLEDGE_SOURCE_*` remain opt-in and fail closed until all required
   deployment adapters and dedicated storage/database roles validate.
 
@@ -505,6 +506,7 @@ Neo4j and Knowledge:
 ```text
 NEO4J_IMAGE
 NEO4J_PROJECTION_ENABLED
+NEO4J_SOURCE_HOST_ENABLED
 NEO4J_URI
 NEO4J_ALLOWED_HOSTS
 NEO4J_DATABASE

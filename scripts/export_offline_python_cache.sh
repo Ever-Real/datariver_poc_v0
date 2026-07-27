@@ -59,7 +59,7 @@ fi
 
 uv_version=$("$uv_bin" --version)
 case "$uv_version" in
-  'uv 0.9.17 '*) ;;
+  'uv 0.9.17'|'uv 0.9.17 '*) ;;
   *)
     echo "This bundle must be created with uv 0.9.17; found: $uv_version" >&2
     exit 2

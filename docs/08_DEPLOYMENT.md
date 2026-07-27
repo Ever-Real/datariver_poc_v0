@@ -429,6 +429,14 @@ root README. The controlling decisions are
 [ADR-0051](adr/0051-wsl-intranet-source-host-ingress.md) and
 [ADR-0052](adr/0052-deployment-aware-source-host-infrastructure.md).
 
+Optional source-host Neo4j uses the separately derived environment and the selected
+`NEO4J_BOLT_PORT`, not the container profile's Docker DNS endpoint. Supplying
+`--neo4j-bundle-dir` makes the infrastructure workflow verify the external bundle SHA-256,
+manifest schema and matching upstream digest fields, image ID and `linux/amd64` platform before
+mutation, then require an authenticated healthcheck and Cypher query. This repository never carries
+the image archive. See
+[ADR-0053](adr/0053-verified-neo4j-source-host-profile.md).
+
 A connected rapid-source host that predates managed applied state may explicitly select
 `--connected-build` with an environment file. That development-only path reuses the official
 version tag already present on the host with `pull_policy: missing` and reuses the existing final

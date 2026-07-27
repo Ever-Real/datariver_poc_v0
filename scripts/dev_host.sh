@@ -411,6 +411,7 @@ done
 
 load_env_file() {
   local line key value
+  local seen_keys="|"
   [ -f "$env_file" ] || { echo "Missing deployment environment file: $env_file" >&2; exit 2; }
   while IFS= read -r line || [ -n "$line" ]; do
     # Environment files are commonly edited by Windows tools before being used
@@ -418,21 +419,80 @@ load_env_file() {
     # remain invalid input.
     line=${line%$'\r'}
     case "$line" in ''|'#'*) continue ;; esac
+    case "$line" in
+      *=*) ;;
+      *)
+        echo "Invalid environment entry without '=' in $env_file" >&2
+        exit 2
+        ;;
+    esac
     key=${line%%=*}
     value=${line#*=}
     [[ "$key" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] || {
       echo "Invalid environment key in $env_file: $key" >&2
       exit 2
     }
+    case "$seen_keys" in
+      *"|$key|"*)
+        echo "Duplicate environment key in $env_file: $key" >&2
+        exit 2
+        ;;
+    esac
+    seen_keys="${seen_keys}${key}|"
     if [[ "$value" == \"*\" ]] && [ "${#value}" -ge 2 ]; then
+      value=${value:1:${#value}-2}
+    elif [[ "$value" == \'*\' ]] && [ "${#value}" -ge 2 ]; then
       value=${value:1:${#value}-2}
     fi
     export "$key=$value"
   done < "$env_file"
 }
 
+clear_managed_environment() {
+  local source line candidate key
+  for source in "$root/.env.example" "$env_file"; do
+    [ -f "$source" ] || continue
+    while IFS= read -r line || [ -n "$line" ]; do
+      line=${line%$'\r'}
+      candidate=$line
+      case "$candidate" in
+        \#*) candidate=${candidate#\#}; candidate=${candidate# } ;;
+      esac
+      case "$candidate" in
+        *=*) key=${candidate%%=*} ;;
+        *) continue ;;
+      esac
+      if [[ "$key" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]]; then
+        unset "$key" || true
+      fi
+    done < "$source"
+  done
+}
+
+clear_managed_environment
 load_env_file
+export DATARIVER_SELECTED_ENV_FILE="$env_file"
 export LOCAL_INFERENCE_SOURCE_HOST_ENABLED=true
+export NEO4J_SOURCE_HOST_ENABLED=true
+if [ "${NEO4J_PROJECTION_ENABLED:-false}" = true ]; then
+  # A copied container profile addresses the local connector through Docker
+  # DNS and port 7687. Source processes run outside that network, so translate
+  # only this explicit local topology to its loopback publication. Private TLS
+  # endpoints remain unchanged.
+  case "${NEO4J_URI:-}" in
+    bolt://neo4j:7687|bolt://neo4j:7687/|neo4j://neo4j:7687|neo4j://neo4j:7687/)
+      export NEO4J_URI="bolt://127.0.0.1:${NEO4J_BOLT_PORT:-17687}"
+      export NEO4J_ALLOWED_HOSTS=127.0.0.1
+      ;;
+    bolt://127.0.0.1:7687|bolt://127.0.0.1:7687/)
+      export NEO4J_URI="bolt://127.0.0.1:${NEO4J_BOLT_PORT:-17687}"
+      export NEO4J_ALLOWED_HOSTS=127.0.0.1
+      ;;
+    bolt://127.0.0.1:*)
+      export NEO4J_ALLOWED_HOSTS=127.0.0.1
+      ;;
+  esac
+fi
 if [ "${NEO4J_PROJECTION_ENABLED:-false}" = true ] && [ ! -s "$root/secrets/neo4j_auth" ]; then
   echo "Missing required secret file: $root/secrets/neo4j_auth" >&2
   exit 2
@@ -527,16 +587,74 @@ if [ "${NEO4J_PROJECTION_ENABLED:-false}" = true ]; then
   export NEO4J_AUTH_SECRET_REF="$(secret_ref neo4j_auth)"
 fi
 if [ "$action" = migrate ]; then
-  exec "$python" -m alembic -c "$root/backend/alembic.ini" upgrade head
+  DATARIVER_ENV_FILE="$env_file_argument" "$root/scripts/reconcile-postgres-roles.sh"
+  "$python" -m alembic -c "$root/backend/alembic.ini" upgrade head
+  DATARIVER_ENV_FILE="$env_file_argument" "$root/scripts/reconcile-postgres-roles.sh"
+  exit 0
 fi
 
 if [ "$action" = preflight ]; then
   PYTHONPATH="$root/backend/src" exec "$python" -c '
 import json
+import os
+import sys
+from urllib.parse import urlsplit
 
 from datariver.config import Settings
+from pydantic import ValidationError
 
-settings = Settings(_env_file=None)
+try:
+    settings = Settings(_env_file=None)
+except ValidationError as error:
+    raw_uri = os.environ.get("NEO4J_URI")
+    raw_endpoint = None
+    if raw_uri:
+        try:
+            parsed_raw = urlsplit(raw_uri)
+            raw_port = parsed_raw.port
+            raw_endpoint = {
+                "expected_source_host_port": os.environ.get("NEO4J_BOLT_PORT", "17687"),
+                "host": parsed_raw.hostname,
+                "port": raw_port,
+                "scheme": parsed_raw.scheme,
+            }
+        except ValueError:
+            raw_endpoint = {
+                "expected_source_host_port": os.environ.get("NEO4J_BOLT_PORT", "17687"),
+                "host": None,
+                "port": "INVALID",
+                "scheme": None,
+            }
+    validation_errors = [
+        {
+            "location": ".".join(str(part) for part in item["loc"]),
+            "message": item["msg"],
+            "type": item["type"],
+        }
+        for item in error.errors(include_input=False, include_url=False)
+    ]
+    print(
+        json.dumps(
+            {
+                "environment_file": os.environ["DATARIVER_SELECTED_ENV_FILE"],
+                "neo4j_endpoint": raw_endpoint,
+                "status": "INVALID",
+                "validation_errors": validation_errors,
+            },
+            sort_keys=True,
+        ),
+        file=sys.stderr,
+    )
+    raise SystemExit(2) from None
+neo4j_endpoint = None
+if settings.neo4j_projection_enabled and settings.neo4j_uri is not None:
+    parsed_neo4j = urlsplit(settings.neo4j_uri)
+    neo4j_endpoint = {
+        "expected_source_host_port": settings.neo4j_bolt_port,
+        "host": parsed_neo4j.hostname,
+        "port": parsed_neo4j.port,
+        "scheme": parsed_neo4j.scheme,
+    }
 source_analysis = (
     settings.local_ollama_chat_enabled and settings.local_ollama_embedding_enabled
 ) or (
@@ -546,11 +664,13 @@ source_analysis = (
 print(
     json.dumps(
         {
+            "environment_file": os.environ["DATARIVER_SELECTED_ENV_FILE"],
             "knowledge_source_analysis": "CONFIGURED" if source_analysis else "NOT_CONFIGURED",
             "local_inference_source_host": settings.local_inference_source_host_enabled,
             "neo4j_projection": (
                 "CONFIGURED" if settings.neo4j_projection_enabled else "NOT_CONFIGURED"
             ),
+            "neo4j_endpoint": neo4j_endpoint,
             "runtime_activation": settings.system_configuration_runtime_activation_enabled,
         },
         sort_keys=True,

@@ -331,7 +331,8 @@ def test_portable_bootstrap_keeps_inference_disabled_and_uses_generic_ports(
     assert "LOCAL_LLAMA_CPP_RERANKER_ENABLED=false" in values
     assert "NEO4J_PROJECTION_ENABLED=false" in values
     assert "KNOWLEDGE_PIPELINE_ENABLED=false" in values
-    assert "SYSTEM_CONFIGURATION_RUNTIME_ACTIVATION_ENABLED" not in values
+    assert "SYSTEM_CONFIGURATION_RUNTIME_ACTIVATION_ENABLED=false" in values
+    assert "SYSTEM_CONFIGURATION_RUNTIME_ACTIVATION_ENABLED=true" not in values
 
 
 def test_linux_intranet_source_host_bootstrap_persists_distinct_https_origins(
@@ -488,14 +489,44 @@ def test_wsl_bootstrap_preserves_preinstalled_token_without_exposing_it(
     environment = environment_path.read_text(encoding="utf-8")
     for expected in (
         "AIRFLOW_SOURCE_API_BRIDGE_ENABLED=false",
+        "SYSTEM_CONFIGURATION_RUNTIME_ACTIVATION_ENABLED=false",
         "NEO4J_IMAGE=neo4j:2026.06.0",
         "NEO4J_PROJECTION_ENABLED=false",
-        "NEO4J_URI=bolt://127.0.0.1:17687",
-        "NEO4J_ALLOWED_HOSTS=127.0.0.1",
+        "NEO4J_SOURCE_HOST_ENABLED=false",
+        "NEO4J_URI=bolt://neo4j:7687",
+        "NEO4J_ALLOWED_HOSTS=neo4j",
         "NEO4J_AUTH_SECRET_REF=file:/run/secrets/neo4j_auth",
         "KNOWLEDGE_SOURCE_WORKER_ENABLED=false",
     ):
         assert expected in environment
+
+    source_environment_path = isolated_root / ".env.wsl-intranet-development"
+    shutil.copy2(environment_path, source_environment_path)
+    source_result = subprocess.run(  # noqa: S603 - copied repository script is trusted.
+        [
+            str(isolated_root / "scripts/bootstrap.sh"),
+            "--env-file",
+            ".env.wsl-intranet-development",
+            "--host-development",
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    assert source_result.returncode == 0, source_result.stderr
+    source_environment = source_environment_path.read_text(encoding="utf-8")
+    for expected in (
+        "NEO4J_SOURCE_HOST_ENABLED=true",
+        "NEO4J_URI=bolt://127.0.0.1:17687",
+        "NEO4J_ALLOWED_HOSTS=127.0.0.1",
+    ):
+        assert expected in source_environment
+    active_keys = [
+        line.partition("=")[0]
+        for line in source_environment.splitlines()
+        if line and not line.startswith("#") and "=" in line
+    ]
+    assert len(active_keys) == len(set(active_keys))
 
 
 def test_bootstrap_accepts_a_token_file_path_but_rejects_a_token_value_argument(

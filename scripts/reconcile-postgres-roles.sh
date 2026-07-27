@@ -14,6 +14,7 @@ esac
 }
 
 docker compose --env-file "$env_file" -f "$root/compose.yaml" \
-  exec -T postgres sh /docker-entrypoint-initdb.d/010_roles.sh
+  exec -T postgres sh -ec \
+  'export PGPASSWORD="$(tr -d "\r\n" </run/secrets/postgres_password)"; exec sh /docker-entrypoint-initdb.d/010_roles.sh'
 
 echo "PostgreSQL runtime roles reconciled with the mounted secret files."

@@ -577,11 +577,6 @@ PostgreSQL에 `5432/tcp`만 표시한다면 container port가 WSL host로 publis
 실제 script 이름은 `dev_host.sh`이며 다음처럼 source-host overlay로 같은 PostgreSQL/Keycloak
 container를 재생성한다. `down -v`, volume 삭제, database 초기화는 사용하지 않는다.
 
-```bash
-# WSL checkout root
-./scripts/workflow_source_host_infra.py prepare
-```
-
 이 workflow는 `runtime/operator-workflow/wsl-preparation.json`에 기록된 실제 environment,
 deployment mode와 release directory를 읽는다. 온라인 build profile에는 digest-pinned Compose와
 `--build`를, WSL offline profile에는 checksum/manifest로 검증한 로컬 image tag와
@@ -599,13 +594,6 @@ build하지 않으므로 Quay base metadata를 조회하지 않는다. `SOURCE_H
 image가 없으면 임의 upstream 이미지를 대신 사용하지 않고 시작 전에 실패한다. 이 편의 경로는
 offline release가 검증되었다고 기록하지 않는다.
 
-```bash
-./scripts/workflow_source_host_infra.py \
-  --connected-build \
-  --env-file .env.wsl-preparation \
-  prepare
-```
-
 다음으로 내부 DNS 관리자에게 두 개의 서로 다른 이름과 preparation PC의 고정/예약 주소를
 요청한다. 예시는 `datariver-prep.example.internal`과
 `identity-prep.example.internal`이다. 내부 CA certificate의 SAN에는 두 이름이 모두 있어야
@@ -613,7 +601,9 @@ offline release가 검증되었다고 기록하지 않는다.
 
 ```bash
 # 기존 operator 선택값을 보존하면서 source-host 전용 ignored env를 만든다.
-cp -p .env.wsl-preparation .env.wsl-intranet-development
+if [ ! -f .env.wsl-intranet-development ]; then
+  cp -p .env.wsl-preparation .env.wsl-intranet-development
+fi
 
 ./scripts/bootstrap.sh \
   --env-file .env.wsl-intranet-development \
@@ -629,20 +619,47 @@ docker port datariver-local-connectors-redis-delivery-1 6379
 
 ./scripts/workflow_source_host_infra.py \
   --env-file .env.wsl-intranet-development \
+  --neo4j-bundle-dir ../datariver-platform-amd64-distribution \
   prepare
+
+# Graph projection을 사용하지 않을 때만 --neo4j-bundle-dir를 생략한다.
+# 기존 raw Compose 설치라 applied state가 없을 때만 위 명령에 --connected-build를 추가한다.
 
 # compose ps의 Keycloak 이름이 datariver-next-keycloak-1과 다를 때만
 # --container <exact-name>을 추가한다.
 ./scripts/configure_keycloak_host_dev.sh \
   --env-file .env.wsl-intranet-development
 
-uv sync --frozen --all-extras --offline
+# 별도 AMD64 배포 저장소에서 이 uv.lock 전용 Linux x86_64 cache를 먼저 검증·반입한다.
+python_cache_bundle=../datariver-platform-amd64-distribution/datariver-uv-cache-linux-x86_64-a66012e1308b.tar.gz
+(cd ../datariver-platform-amd64-distribution && \
+  sha256sum -c "$(basename "$python_cache_bundle").sha256")
+test "$(sha256sum uv.lock | awk '{print $1}')" = \
+  "$(awk -F '\t' '$1 == "lock_sha256" {print $2}' \
+    "${python_cache_bundle%.tar.gz}.manifest.tsv")"
+uv_cache_parent=${XDG_CACHE_HOME:-"$HOME/.cache"}
+mkdir -p "$uv_cache_parent"
+tar -xzf "$python_cache_bundle" -C "$uv_cache_parent"
+UV_CACHE_DIR="$uv_cache_parent/uv" uv sync --frozen --all-extras --offline
+
+# 현재 준비 PC에서 이미 성공한 node_modules는 package-lock 변경 전까지 재사용한다.
+# 새 checkout이거나 lock 변경 시에만 검증된 npm cache/사내 mirror로 아래를 수행한다.
 (cd frontend && npm ci --offline --no-audit --no-fund)
 ./scripts/dev_host.sh --env-file .env.wsl-intranet-development migrate
 ./scripts/dev_host.sh --env-file .env.wsl-intranet-development preflight
 ./scripts/dev_host.sh --env-file .env.wsl-intranet-development start
 ./scripts/dev_host.sh --env-file .env.wsl-intranet-development status
 ```
+
+Neo4j bundle directory는 별도
+`Ever-Real/datariver-platform-amd64-distribution` checkout이며 먼저 `git lfs pull`이 완료되어야
+한다. `prepare`는 archive와 sidecar SHA-256, manifest의 upstream digest, local tag, image ID,
+`linux/amd64`를 묶고, upstream digest를 checked-in Compose 승인 pin과 대조한다. 이후
+`--pull never`로 기동한 뒤 authenticated `RETURN 1`까지 수행한다.
+따라서 tag 이름만 신뢰하거나 현재 저장소에 image를 복사하지 않는다. `preflight` JSON의
+`environment_file`과 `neo4j_endpoint`는 실제 선택 파일 및 scheme/host/port를 표시하되 credential은
+출력하지 않는다. Source-host `migrate`는 mounted PostgreSQL owner secret으로 runtime role을
+마이그레이션 전후에 자동 조정한다.
 
 Uvicorn, Vite, PostgreSQL, Redis와 Keycloak upstream은 계속 WSL의 `127.0.0.1`에만 bind한다.
 사내망에는 Nginx `443` 하나만 공개한다. 사내 CA에서 발급받은 certificate/key를
@@ -663,7 +680,9 @@ sudo install -m 600 /approved-certificate/datariver-prep.key \
   --allowed-cidr 10.44.0.0/16 \
   --output runtime/wsl-intranet/nginx.conf
 
-sudo apt-get install nginx
+# 폐쇄망에서는 이 단계 전에 승인된 Ubuntu package mirror 또는 반입한 .deb로 nginx를
+# 설치해야 한다. 인터넷 apt repository는 전제하지 않는다.
+command -v nginx
 sudo install -m 600 runtime/wsl-intranet/nginx.conf \
   /etc/nginx/conf.d/datariver-wsl-intranet.conf
 # Debian/Ubuntu의 기본 HTTP site는 외부 공개하지 않는다.
@@ -888,11 +907,12 @@ scripts/compose.sh --env-file .env.<profile> -f compose.yaml -f compose.graph.ya
 ```
 
 `preflight`는 프로세스를 시작하지 않고 선택한 Neo4j/Chat/Embedding의 최종 Settings 계약을
-검증해 안전한 JSON 결과를 출력한다. 실제 endpoint 연결 여부는 각 System Settings의 고정 TEST로
-별도 확인한다. 각 capability는 환경 파일에서 독립적으로 활성화하며, Chat·Embedding·Neo4j를
-모두 켜야 한다는 전역 전제는 없다. 각 Asset/LLM setting은 실제 비밀정보가 아닌 이미 mount된
-참조명을 사용한다. 환경을 변경한 뒤 source-host 프로세스를 재시작하고 Admin의 고정 TEST로
-확인한다.
+검증해 안전한 JSON 결과를 출력한다. 로컬 Neo4j bundle을 선택한 경우 infrastructure
+`prepare`가 container health와 authenticated Cypher를 먼저 검증하며, System Settings의 고정
+TEST는 실행 중 API 경로를 별도 확인한다. 각 capability는 환경 파일에서 독립적으로 활성화하며,
+Chat·Embedding·Neo4j를 모두 켜야 한다는 전역 전제는 없다. 각 Asset/LLM setting은 실제
+비밀정보가 아닌 이미 mount된 참조명을 사용한다. 환경을 변경한 뒤 source-host 프로세스를
+재시작하고 Admin의 고정 TEST로 확인한다.
 
 사내 OpenAI-compatible LLM을 사용할 때는 위 두 flag를 함께 쓰지 않는다. 먼저 Neo4j container를
 기동하고 Chat·Embedding·Neo4j 설정을 선택한 ignored `.env`와 secret mount에 기록한다. 이후에는

@@ -287,6 +287,7 @@ def verify_multiarch_release_contract() -> None:
         ROOT / "compose.local-connectors.yaml": {
             "redis:8.2.6-bookworm@sha256:3055dc25265b0c19ec90a1756dad4e0faff6f79e2557a6ac3d1274e39ee906f6",
             "minio:RELEASE.2025-09-07T16-13-09Z@sha256:14cea493d9a34af32f524e538b8346cf79f3321eff8e708c1e2960462bd8936e",
+            "cypher-shell -u neo4j",
         },
     }
     for path, fragments in required_pins.items():
@@ -774,6 +775,11 @@ def verify_host_development_ports() -> None:
             "show_optional_status airflow-api-bridge",
             "required_processes+=(airflow-api-bridge)",
             'export NEO4J_AUTH_SECRET_REF="$(secret_ref neo4j_auth)"',
+            'DATARIVER_ENV_FILE="$env_file_argument" "$root/scripts/reconcile-postgres-roles.sh"',
+            "export NEO4J_SOURCE_HOST_ENABLED=true",
+            'export NEO4J_URI="bolt://127.0.0.1:${NEO4J_BOLT_PORT:-17687}"',
+            "Duplicate environment key",
+            "DATARIVER_SELECTED_ENV_FILE",
             'vite_entry="$root/frontend/node_modules/vite/bin/vite.js"',
             'start_process vite "$root/frontend" "$node" "$vite_entry"',
             '"$root/scripts/source_api_bridge.py"',
@@ -785,12 +791,15 @@ def verify_host_development_ports() -> None:
             "web_public_origin=http://localhost:38102",
             "set_env_value API_PORT 38101",
             "set_env_value WEB_PORT 38102",
+            "DATARIVER_BOOTSTRAP_ENV_NAME",
+            "set_env_value SYSTEM_CONFIGURATION_RUNTIME_ACTIVATION_ENABLED false",
             "--source-host-airflow-bridge",
             "set_env_value AIRFLOW_SOURCE_API_BRIDGE_PORT 38103",
             "--intranet-source-host",
             "set_env_value INTRANET_SOURCE_HOST_ENABLED",
             "set_env_value NEO4J_IMAGE neo4j:2026.06.0",
-            "set_env_value NEO4J_URI bolt://127.0.0.1:17687",
+            "set_env_value NEO4J_SOURCE_HOST_ENABLED true",
+            "set_env_value NEO4J_URI bolt://neo4j:7687",
             "set_env_value NEO4J_AUTH_SECRET_REF file:/run/secrets/neo4j_auth",
             "set_env_value KNOWLEDGE_SOURCE_WORKER_ENABLED false",
         },
@@ -823,6 +832,15 @@ def verify_host_development_ports() -> None:
             "--connected-build",
             "compose.connected-source-host.yaml",
             "verify_connected_local_keycloak",
+            "--neo4j-bundle-dir",
+            "approved_neo4j_source_image",
+            "load_neo4j_bundle",
+            "verify_and_load_neo4j_image",
+            "resolve_neo4j_environment(plan, neo4j_bundle)",
+            "start_and_verify_neo4j",
+            '"exec",',
+            '"-T",',
+            '"RETURN 1"',
             'mode_flags = ("--no-build",)',
             '"--build",',
             '"--no-build", "--pull", "never"',
@@ -1084,6 +1102,12 @@ def verify_database_roles() -> None:
     ):
         if not reconciliation_script.is_file():
             raise AssertionError("cross-platform PostgreSQL role reconciliation is incomplete")
+        if 'PGPASSWORD="$(tr -d "\\r\\n" </run/secrets/postgres_password)"' not in (
+            reconciliation_script.read_text(encoding="utf-8")
+        ):
+            raise AssertionError(
+                "PostgreSQL role reconciliation must authenticate from the mounted owner secret"
+            )
     relay_configuration_grant = (
         "GRANT SELECT ON platform.external_service_profiles,\n"
         "            platform.external_service_profile_versions TO datariver_relay;"

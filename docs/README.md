@@ -81,6 +81,10 @@ Current administrator runtime decision: [bounded drill-downs and deployment-owne
 
 Current administrator completion evidence: [runtime completion checklist](38_ADMIN_RUNTIME_COMPLETION_CHECKLIST.md).
 
+Current WSL source-validation decisions: [intranet HTTPS ingress](adr/0051-wsl-intranet-source-host-ingress.md),
+[deployment-aware infrastructure](adr/0052-deployment-aware-source-host-infrastructure.md), and
+[verified Neo4j source-host profile](adr/0053-verified-neo4j-source-host-profile.md).
+
 ## Change control
 
 - Requirements use stable IDs (`FR-*`, `NFR-*`, `SEC-*`).

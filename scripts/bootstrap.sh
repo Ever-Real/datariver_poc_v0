@@ -397,17 +397,36 @@ set_env_value() {
   name=$1
   value=$2
   temp_file="$env_file.tmp.$$"
-  if grep -q "^${name}=" "$env_file"; then
-    sed "s|^${name}=.*|${name}=${value}|" "$env_file" > "$temp_file"
-  else
-    cp "$env_file" "$temp_file"
-    printf '%s=%s\n' "$name" "$value" >> "$temp_file"
-  fi
+  DATARIVER_BOOTSTRAP_ENV_NAME="$name" \
+    DATARIVER_BOOTSTRAP_ENV_VALUE="$value" \
+    awk '
+      BEGIN {
+        target = ENVIRON["DATARIVER_BOOTSTRAP_ENV_NAME"]
+        replacement = target "=" ENVIRON["DATARIVER_BOOTSTRAP_ENV_VALUE"]
+        emitted = 0
+      }
+      index($0, target "=") == 1 {
+        if (!emitted) {
+          print replacement
+          emitted = 1
+        }
+        next
+      }
+      { print }
+      END {
+        if (!emitted) {
+          print replacement
+        }
+      }
+    ' "$env_file" > "$temp_file"
   mv "$temp_file" "$env_file"
 }
 
 set_env_value DATARIVER_ENV_FILE "$env_file_argument"
 set_env_value DATARIVER_CONNECTOR_NETWORK datariver-connectors
+# Legacy profiles may still carry the retired database-overlay activation
+# switch. Normalize it before any source/container Settings validation.
+set_env_value SYSTEM_CONFIGURATION_RUNTIME_ACTIVATION_ENABLED false
 
 if [ "$host_development" = true ]; then
   set_env_value APP_ENV development
@@ -422,6 +441,19 @@ if [ "$host_development" = true ]; then
   set_env_value APISIX_PORT 9080
   set_env_value REDIS_CACHE_URL redis://127.0.0.1:6379/0
   set_env_value REDIS_DELIVERY_URL redis://127.0.0.1:6380/0
+  source_host_neo4j_uri=$(env_value NEO4J_URI)
+  source_host_neo4j_bolt_port=$(env_value NEO4J_BOLT_PORT)
+  [ -n "$source_host_neo4j_bolt_port" ] || source_host_neo4j_bolt_port=17687
+  case "$source_host_neo4j_uri" in
+    ""|bolt://neo4j:7687|bolt://neo4j:7687/|neo4j://neo4j:7687|neo4j://neo4j:7687/)
+      set_env_value NEO4J_URI "bolt://127.0.0.1:$source_host_neo4j_bolt_port"
+      set_env_value NEO4J_ALLOWED_HOSTS 127.0.0.1
+      ;;
+    bolt://127.0.0.1:*)
+      set_env_value NEO4J_ALLOWED_HOSTS 127.0.0.1
+      ;;
+  esac
+  set_env_value NEO4J_SOURCE_HOST_ENABLED true
   # Airflow remains containerized while API/workers run from the source host.
   # A WSL/Linux checkout may still run its mutable source API on Windows.
   # Enable the bridge only when the API itself runs in this Linux host.
@@ -529,13 +561,14 @@ if [ "$wsl_preparation" = true ]; then
   set_env_value LOCAL_OLLAMA_CHAT_ENABLED false
   set_env_value LOCAL_OLLAMA_EMBEDDING_ENABLED false
   set_env_value LOCAL_LLAMA_CPP_RERANKER_ENABLED false
-  # The separately verified AMD64 archive restores this local tag. Keep graph
-  # projection opt-in, but emit a complete source-host binding so enabling the
-  # switch never leaves URI or secret-reference fields incomplete.
+  # The separately verified AMD64 archive restores this local tag. The
+  # immutable/container profile uses Docker DNS; a derived host-development
+  # profile translates this endpoint to the loopback publication above.
   set_env_value NEO4J_IMAGE neo4j:2026.06.0
   set_env_value NEO4J_PROJECTION_ENABLED false
-  set_env_value NEO4J_URI bolt://127.0.0.1:17687
-  set_env_value NEO4J_ALLOWED_HOSTS 127.0.0.1
+  set_env_value NEO4J_SOURCE_HOST_ENABLED false
+  set_env_value NEO4J_URI bolt://neo4j:7687
+  set_env_value NEO4J_ALLOWED_HOSTS neo4j
   set_env_value NEO4J_AUTH_SECRET_REF file:/run/secrets/neo4j_auth
   set_env_value KNOWLEDGE_PIPELINE_ENABLED false
   set_env_value KNOWLEDGE_SOURCE_WORKER_ENABLED false

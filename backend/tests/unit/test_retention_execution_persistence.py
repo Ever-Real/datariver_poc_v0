@@ -139,6 +139,9 @@ def test_phase2_roles_and_migration_have_no_destructive_privilege_or_state() -> 
     assert 'op.f("ck_immutable_archive_receipts_source")' in migration
     assert "/docker-entrypoint-initdb.d/010_roles.sh" in reconcile_sh
     assert "/docker-entrypoint-initdb.d/010_roles.sh" in reconcile_ps1
+    expected_owner_auth = 'PGPASSWORD="$(tr -d "\\r\\n" </run/secrets/postgres_password)"'
+    assert expected_owner_auth in reconcile_sh
+    assert expected_owner_auth in reconcile_ps1
 
 
 def test_execution_evidence_tables_are_forced_rls_and_events_are_append_only() -> None:
