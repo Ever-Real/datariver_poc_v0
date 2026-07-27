@@ -50,8 +50,8 @@ def parse_arguments() -> argparse.Namespace:
         description=(
             "Stop containerized DataRiver application processes and prepare PostgreSQL/Keycloak "
             "for loopback source-host access. Build and offline image references are resolved "
-            "from the recorded profile state, or explicitly from repository pins on a connected "
-            "development host."
+            "from the recorded profile state, or explicitly from the official version tag and "
+            "repository build definitions on a connected development host."
         )
     )
     parser.add_argument(
@@ -73,8 +73,8 @@ def parse_arguments() -> argparse.Namespace:
         "--connected-build",
         action="store_true",
         help=(
-            "Development-only: when no applied state exists, use the repository's digest-pinned "
-            "images and build definitions. Requires --env-file and registry access."
+            "Development-only: when no applied state exists, reuse the configured official image "
+            "tag when present and use repository build definitions. Requires --env-file."
         ),
     )
     return parser.parse_args()
@@ -104,6 +104,7 @@ def resolve_plan(
                 root / "compose.yaml",
                 root / "compose.identity.yaml",
                 root / "compose.source-host.yaml",
+                root / "compose.connected-source-host.yaml",
             ),
             offline=False,
             connected_build=True,
@@ -254,13 +255,6 @@ def verify_offline_images(
             )
 
 
-def verify_connected_build_contract(service_images: dict[str, str]) -> None:
-    if "@sha256:" not in service_images["postgres"]:
-        raise WorkflowError(
-            "Connected source-host PostgreSQL must retain the repository digest pin."
-        )
-
-
 def _compose_command(
     plan: SourceHostInfraPlan,
     trailing: tuple[str, ...],
@@ -337,8 +331,10 @@ def main() -> int:
             runner.note("기록된 amd64 release checksum과 로컬 image identity를 검증합니다.")
             verify_offline_images(runner, plan.release_platform_dir, service_images)
         elif plan.connected_build:
-            runner.note("연결형 개발 경로의 repository digest/build 계약을 검증합니다.")
-            verify_connected_build_contract(service_images)
+            runner.note(
+                f"연결형 개발 경로에서 로컬 우선 PostgreSQL image를 사용합니다: "
+                f"{service_images['postgres']}"
+            )
         if arguments.action == "config":
             runner.run(_compose_command(plan, ("config", "--images")))
         elif arguments.action == "status":

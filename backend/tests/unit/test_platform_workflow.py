@@ -1051,6 +1051,7 @@ def test_release_compatibility_allows_operator_only_checkout_changes() -> None:
         "README.md",
         "docs/26_MAC_TO_WSL_MIGRATION_RUNBOOK.md",
         "backend/tests/unit/test_platform_workflow.py",
+        "compose.connected-source-host.yaml",
         "scripts/platform_workflow.py",
         "scripts/dev_host.sh",
         "scripts/workflow_fresh_setup.py",

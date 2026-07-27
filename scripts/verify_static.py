@@ -16,6 +16,7 @@ COMPOSE_FILES = (
     ROOT / "compose.yaml",
     ROOT / "compose.identity.yaml",
     ROOT / "compose.source-host.yaml",
+    ROOT / "compose.connected-source-host.yaml",
     ROOT / "compose.airflow.yaml",
     ROOT / "compose.gateway.yaml",
 )
@@ -160,6 +161,12 @@ def verify_compose() -> None:
                 f"compose.source-host.yaml:{name} must keep private data access and the "
                 "dedicated source-access publication bridge"
             )
+    connected_source_host = documents[ROOT / "compose.connected-source-host.yaml"]
+    connected_postgres = connected_source_host["services"]["postgres"]
+    if connected_postgres.get("pull_policy") != "missing":
+        raise AssertionError(
+            "compose.connected-source-host.yaml:postgres must reuse a local version tag"
+        )
     base = documents[ROOT / "compose.yaml"]
     connectors = base.get("networks", {}).get("connectors", {})
     if connectors.get("external") is not True:
@@ -801,9 +808,13 @@ def verify_host_development_ports() -> None:
             "service_images = rendered_service_images",
             "retained a registry-only digest",
             "--connected-build",
-            "Connected source-host PostgreSQL must retain the repository digest pin",
+            "compose.connected-source-host.yaml",
             '"--build",',
             '"--no-build", "--pull", "never"',
+        },
+        ROOT / "compose.connected-source-host.yaml": {
+            "${SOURCE_HOST_POSTGRES_IMAGE:-postgres:17.10-bookworm}",
+            "pull_policy: missing",
         },
     }
     for path, fragments in required_fragments.items():

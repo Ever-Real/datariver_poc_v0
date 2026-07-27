@@ -199,6 +199,7 @@ def test_connected_build_plan_requires_explicit_environment_and_no_state(
         "compose.yaml",
         "compose.identity.yaml",
         "compose.source-host.yaml",
+        "compose.connected-source-host.yaml",
     ]
     with pytest.raises(platform.WorkflowError, match="requires an explicit --env-file"):
         workflow.resolve_plan(
@@ -212,23 +213,6 @@ def test_connected_build_plan_requires_explicit_environment_and_no_state(
             root=tmp_path,
             state=None,
             env_file_override=Path(".env.connected"),
-        )
-
-
-def test_connected_build_requires_repository_digest_pin() -> None:
-    workflow.verify_connected_build_contract(
-        {
-            "postgres": f"registry/database:reviewed@sha256:{'a' * 64}",
-            "keycloak": "registry/identity:reviewed",
-        }
-    )
-
-    with pytest.raises(platform.WorkflowError, match="must retain the repository digest pin"):
-        workflow.verify_connected_build_contract(
-            {
-                "postgres": "registry/database:mutable",
-                "keycloak": "registry/identity:reviewed",
-            }
         )
 
 

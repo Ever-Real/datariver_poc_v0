@@ -64,6 +64,7 @@ _ENV_KEY = re.compile(r"^[A-Z][A-Z0-9_]*$")
 _COMMIT = re.compile(r"^[0-9a-f]{40}$")
 OPERATOR_ONLY_SOURCE_PATHS = frozenset(
     {
+        "compose.connected-source-host.yaml",
         "scripts/dev_host.sh",
         "scripts/platform_workflow.py",
         "scripts/workflow_fresh_setup.py",

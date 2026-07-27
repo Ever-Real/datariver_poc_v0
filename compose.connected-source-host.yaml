@@ -1,0 +1,7 @@
+services:
+  # Rapid source validation may reuse the official version tag already present
+  # on the connected preparation PC. Immutable/offline profiles continue to
+  # use the digest pin or a checksum-verified release override.
+  postgres:
+    image: ${SOURCE_HOST_POSTGRES_IMAGE:-postgres:17.10-bookworm}
+    pull_policy: missing

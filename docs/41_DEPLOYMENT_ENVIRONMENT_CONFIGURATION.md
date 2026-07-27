@@ -41,8 +41,9 @@ profile, is not production, and does not alter the workflow state for `wsl-prepa
 selection, while an explicitly supplied intranet environment supplies only the runtime origins and
 ports. It never turns an arbitrary tag into accepted release evidence.
 A pre-state connected rapid-source host may instead select the explicit `--connected-build` mode;
-that uses repository pins/build definitions, requires registry access and writes no applied or
-release state.
+that reuses the configured official version tag when present, pulls only when missing, uses
+repository build definitions and writes no applied or release state. This connected-development
+exception does not weaken managed offline or production digest verification.
 
 To apply an edited environment:
 

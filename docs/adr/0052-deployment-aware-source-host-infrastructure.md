@@ -40,18 +40,23 @@ checksum drift, absent tag, image-ID mismatch, wrong platform or rendered regist
 offline mode fails before any container is stopped.
 
 For connected rapid source-validation hosts that predate managed applied state, an explicit
-`--connected-build` option accepts an explicit environment file, uses the repository's
-digest-pinned external images and build definitions, and writes no applied/release state. It does
-not accept arbitrary local tags and is not an offline fallback.
+`--connected-build` option accepts an explicit environment file. A final development-only Compose
+overlay selects the official PostgreSQL version tag with `pull_policy: missing`, so an existing
+local tag is reused and the registry is contacted only when it is absent. An operator may select an
+approved mirror through `SOURCE_HOST_POSTGRES_IMAGE`. The path uses repository-owned build
+definitions and writes no applied/release state. It is not an offline fallback.
 
-The source continues to pin external image indexes. The workflow does not replace them with a
-mutable global default, pull an unpinned tag, encode a developer-machine image ID, or claim that
-arm64 and amd64 image IDs are identical.
+Managed build/offline source continues to pin external image indexes. The connected overlay is an
+explicit development exception, not the global or production default. The workflow does not encode
+a developer-machine image ID, treat a version tag as release evidence, or claim that arm64 and
+amd64 image IDs are identical.
 
 ## Consequences
 
 - Preparation-PC operation becomes one command:
   `./scripts/workflow_source_host_infra.py prepare`.
+- A pre-state connected source PC can reuse its official local PostgreSQL version tag without
+  acquiring a registry digest association.
 - Operators no longer pass `RELEASE_DIR` or an offline Compose override during routine source
   validation.
 - Build and offline modes use the same logical service contract while retaining their necessary,
