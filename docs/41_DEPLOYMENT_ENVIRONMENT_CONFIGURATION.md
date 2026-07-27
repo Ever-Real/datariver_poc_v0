@@ -40,10 +40,11 @@ profile, is not production, and does not alter the workflow state for `wsl-prepa
 `workflow_source_host_infra.py` consumes that existing state to hide build-versus-offline Compose
 selection, while an explicitly supplied intranet environment supplies only the runtime origins and
 ports. It never turns an arbitrary tag into accepted release evidence.
-A pre-state connected rapid-source host may instead select the explicit `--connected-build` mode;
-that reuses the configured official version tag when present, pulls only when missing, uses
-the existing final Keycloak image without rebuilding its Quay base, and writes no applied or
-release state. This connected-development exception does not weaken managed offline or production
+A pre-state rapid-source host with an explicit environment automatically selects registry-disabled
+local-image reuse. The workflow verifies configured PostgreSQL and Keycloak images as
+`linux/amd64`, uses `--pull never --no-build`, and writes no applied or release state.
+`--reuse-local-images` forces this behavior when a state exists; `--connected-build` is retained as
+a compatibility alias. This development exception does not weaken managed offline or production
 digest verification.
 
 To apply an edited environment:

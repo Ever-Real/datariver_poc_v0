@@ -163,9 +163,9 @@ def verify_compose() -> None:
             )
     connected_source_host = documents[ROOT / "compose.connected-source-host.yaml"]
     connected_postgres = connected_source_host["services"]["postgres"]
-    if connected_postgres.get("pull_policy") != "missing":
+    if connected_postgres.get("pull_policy") != "never":
         raise AssertionError(
-            "compose.connected-source-host.yaml:postgres must reuse a local version tag"
+            "compose.connected-source-host.yaml:postgres must not access a registry"
         )
     connected_keycloak = connected_source_host["services"]["keycloak"]
     if connected_keycloak.get("pull_policy") != "never":
@@ -829,9 +829,10 @@ def verify_host_development_ports() -> None:
             "Loaded image does not match the verified release manifest",
             "service_images = rendered_service_images",
             "retained a registry-only digest",
+            "--reuse-local-images",
             "--connected-build",
             "compose.connected-source-host.yaml",
-            "verify_connected_local_keycloak",
+            "verify_local_source_images",
             "--neo4j-bundle-dir",
             "approved_neo4j_source_image",
             "load_neo4j_bundle",
@@ -841,14 +842,12 @@ def verify_host_development_ports() -> None:
             '"exec",',
             '"-T",',
             '"RETURN 1"',
-            'mode_flags = ("--no-build",)',
             '"--build",',
             '"--no-build", "--pull", "never"',
         },
         ROOT / "compose.connected-source-host.yaml": {
             "${SOURCE_HOST_POSTGRES_IMAGE:-postgres:17.10-bookworm}",
             "${SOURCE_HOST_KEYCLOAK_IMAGE:-datariver-keycloak:26.7.0}",
-            "pull_policy: missing",
             "pull_policy: never",
         },
     }

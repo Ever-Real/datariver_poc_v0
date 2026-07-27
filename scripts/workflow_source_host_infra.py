@@ -47,7 +47,7 @@ class SourceHostInfraPlan:
     env_file: Path
     compose_files: tuple[Path, ...]
     offline: bool
-    connected_build: bool
+    local_image_reuse: bool
     release_platform_dir: Path | None
 
 
@@ -71,8 +71,8 @@ def parse_arguments() -> argparse.Namespace:
         description=(
             "Stop containerized DataRiver application processes and prepare PostgreSQL/Keycloak "
             "for loopback source-host access. Build and offline image references are resolved "
-            "from the recorded profile state, or explicitly from the official version tag and "
-            "repository build definitions on a connected development host."
+            "from recorded profile state; a pre-state explicit environment reuses only verified "
+            "local AMD64 image references with registry access disabled."
         )
     )
     parser.add_argument(
@@ -91,12 +91,17 @@ def parse_arguments() -> argparse.Namespace:
         help="Optional source-host environment; defaults to the applied profile environment.",
     )
     parser.add_argument(
-        "--connected-build",
+        "--reuse-local-images",
         action="store_true",
         help=(
-            "Development-only: when no applied state exists, reuse the configured PostgreSQL and "
-            "final Keycloak images without rebuilding Keycloak. Requires --env-file."
+            "Development-only: force registry-disabled reuse of the configured local PostgreSQL "
+            "and final Keycloak images. Requires --env-file."
         ),
+    )
+    parser.add_argument(
+        "--connected-build",
+        action="store_true",
+        help=("Deprecated alias for --reuse-local-images. No registry pull or image build occurs."),
     )
     parser.add_argument(
         "--neo4j-bundle-dir",
@@ -120,15 +125,16 @@ def resolve_plan(
     root: Path,
     state: AppliedState | None,
     env_file_override: Path | None,
-    connected_build: bool = False,
+    reuse_local_images: bool = False,
 ) -> SourceHostInfraPlan:
-    if connected_build:
+    local_image_reuse = reuse_local_images or (state is None and env_file_override is not None)
+    if local_image_reuse:
         if env_file_override is None:
-            raise WorkflowError("--connected-build requires an explicit --env-file.")
+            raise WorkflowError("--reuse-local-images requires an explicit --env-file.")
         env_file = _resolve_path(root, env_file_override)
         require_regular_file(env_file, label="Selected source-host environment")
         return SourceHostInfraPlan(
-            profile="connected-source-development",
+            profile="local-image-source-development",
             env_file=env_file,
             compose_files=(
                 root / "compose.yaml",
@@ -137,14 +143,14 @@ def resolve_plan(
                 root / "compose.connected-source-host.yaml",
             ),
             offline=False,
-            connected_build=True,
+            local_image_reuse=True,
             release_platform_dir=None,
         )
     if state is None:
         raise WorkflowError(
-            "The applied workflow state is unavailable. For a connected rapid source-validation "
-            "host, rerun with --connected-build and an explicit --env-file. Offline preparation "
-            "still requires the managed wsl-preparation state and release evidence."
+            "The applied workflow state is unavailable. Supply an explicit --env-file to reuse "
+            "already loaded local images without registry access. Managed offline acceptance "
+            "still requires the wsl-preparation state and release evidence."
         )
     env_file = _resolve_path(root, env_file_override or state.env_file)
     require_regular_file(env_file, label="Selected source-host environment")
@@ -159,7 +165,7 @@ def resolve_plan(
             env_file=env_file,
             compose_files=compose_files,
             offline=False,
-            connected_build=False,
+            local_image_reuse=False,
             release_platform_dir=None,
         )
     if state.release_dir is None:
@@ -170,7 +176,7 @@ def resolve_plan(
         env_file=env_file,
         compose_files=(*compose_files, layout.offline_compose),
         offline=True,
-        connected_build=False,
+        local_image_reuse=False,
         release_platform_dir=layout.platform_dir,
     )
 
@@ -502,27 +508,36 @@ def start_and_verify_neo4j(
     update_env_values(plan.env_file, environment)
 
 
-def verify_connected_local_keycloak(
+def verify_local_source_images(
     runner: Runner,
     service_images: dict[str, str],
 ) -> None:
-    image = service_images["keycloak"]
-    try:
-        runner.output(
-            (
-                "docker",
-                "image",
-                "inspect",
-                "--format",
-                "{{.Id}}\t{{.Os}}/{{.Architecture}}",
-                image,
+    for service in SOURCE_INFRASTRUCTURE_SERVICES:
+        image = service_images[service]
+        try:
+            observed = runner.output(
+                (
+                    "docker",
+                    "image",
+                    "inspect",
+                    "--format",
+                    "{{.Id}}\t{{.Os}}/{{.Architecture}}",
+                    image,
+                )
             )
-        )
-    except WorkflowError as error:
-        raise WorkflowError(
-            "Connected source-host preparation requires the existing final Keycloak image "
-            f"{image}; it intentionally does not rebuild or pull that deployment-owned image."
-        ) from error
+        except WorkflowError as error:
+            raise WorkflowError(
+                "Local-image source-host preparation requires the existing "
+                f"{service} image {image}. Load the verified AMD64 distribution image or select "
+                f"an existing local reference with SOURCE_HOST_{service.upper()}_IMAGE; "
+                "the workflow will not pull or build it."
+            ) from error
+        fields = observed.split("\t")
+        if len(fields) != 2 or fields[1] != EXPECTED_OFFLINE_PLATFORM:
+            raise WorkflowError(
+                f"Local {service} image must be {EXPECTED_OFFLINE_PLATFORM}: "
+                f"image={image}, observed={observed}"
+            )
 
 
 def show_status(runner: Runner, plan: SourceHostInfraPlan) -> None:
@@ -537,9 +552,9 @@ def prepare(
     service_images: dict[str, str],
     neo4j_environment: dict[str, str] | None,
 ) -> None:
-    if plan.connected_build:
-        runner.note("기존 final Keycloak image가 로컬에 있는지 먼저 확인합니다.")
-        verify_connected_local_keycloak(runner, service_images)
+    if plan.local_image_reuse:
+        runner.note("기존 PostgreSQL/Keycloak AMD64 image가 로컬에 있는지 먼저 확인합니다.")
+        verify_local_source_images(runner, service_images)
     runner.note("동일 checkout의 source-host process를 중지합니다.")
     runner.run(
         (
@@ -555,8 +570,8 @@ def prepare(
     mode_flags: tuple[str, ...]
     if plan.offline:
         mode_flags = ("--no-build", "--pull", "never")
-    elif plan.connected_build:
-        mode_flags = ("--no-build",)
+    elif plan.local_image_reuse:
+        mode_flags = ("--no-build", "--pull", "never")
     else:
         mode_flags = ("--build",)
     runner.run(
@@ -585,20 +600,22 @@ def main() -> int:
     try:
         require_command("docker")
         state: AppliedState | None = None
-        if not arguments.connected_build:
+        force_local_image_reuse = arguments.reuse_local_images or arguments.connected_build
+        if not force_local_image_reuse:
             applied_state_path = state_path(ROOT, arguments.profile)
-            if not applied_state_path.exists():
+            if applied_state_path.exists():
+                state = load_applied_state(applied_state_path)
+            elif arguments.env_file is None:
                 raise WorkflowError(
-                    "The applied workflow state is unavailable. Use --connected-build with an "
-                    "explicit --env-file for connected rapid source validation, or complete the "
+                    "The applied workflow state is unavailable. Supply an explicit --env-file to "
+                    "reuse already loaded local images without registry access, or complete the "
                     "managed offline setup first."
                 )
-            state = load_applied_state(applied_state_path)
         plan = resolve_plan(
             root=ROOT,
             state=state,
             env_file_override=arguments.env_file,
-            connected_build=arguments.connected_build,
+            reuse_local_images=force_local_image_reuse,
         )
         neo4j_bundle: Neo4jBundle | None = None
         neo4j_environment: dict[str, str] | None = None
@@ -617,9 +634,9 @@ def main() -> int:
             assert plan.release_platform_dir is not None
             runner.note("기록된 amd64 release checksum과 로컬 image identity를 검증합니다.")
             verify_offline_images(runner, plan.release_platform_dir, service_images)
-        elif plan.connected_build:
+        elif plan.local_image_reuse:
             runner.note(
-                f"연결형 개발 경로에서 로컬 우선 PostgreSQL image를 사용합니다: "
+                f"로컬-image 개발 경로에서 registry-disabled PostgreSQL image를 사용합니다: "
                 f"{service_images['postgres']}"
             )
         if arguments.action == "config":

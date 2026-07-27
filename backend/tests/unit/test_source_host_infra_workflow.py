@@ -129,7 +129,7 @@ def test_offline_plan_hides_the_release_override_behind_applied_state(
     )
 
     assert plan.offline is True
-    assert plan.connected_build is False
+    assert plan.local_image_reuse is False
     assert plan.env_file == (tmp_path / ".env.selected").resolve()
     assert [path.name for path in plan.compose_files] == [
         "compose.yaml",
@@ -151,7 +151,7 @@ def test_build_plan_uses_the_same_action_without_an_offline_override(
     )
 
     assert plan.offline is False
-    assert plan.connected_build is False
+    assert plan.local_image_reuse is False
     assert plan.release_platform_dir is None
     assert [path.name for path in plan.compose_files] == [
         "compose.yaml",
@@ -161,15 +161,21 @@ def test_build_plan_uses_the_same_action_without_an_offline_override(
 
 
 class _ImageRunner:
-    def __init__(self, *, database_id: str | None = None) -> None:
+    def __init__(
+        self,
+        *,
+        database_id: str | None = None,
+        platform_name: str = "linux/amd64",
+    ) -> None:
         self.database_id = database_id or "sha256:" + "1" * 64
+        self.platform_name = platform_name
 
     def output(self, arguments: list[str] | tuple[str, ...]) -> str:
         image = str(arguments[-1])
         if image == "postgres:17.10-bookworm":
-            return f"{self.database_id}\tlinux/amd64"
+            return f"{self.database_id}\t{self.platform_name}"
         if image == "datariver-keycloak:26.7.0":
-            return f"sha256:{'2' * 64}\tlinux/amd64"
+            return f"sha256:{'2' * 64}\t{self.platform_name}"
         raise AssertionError(f"Unexpected image: {image}")
 
 
@@ -197,7 +203,7 @@ def test_service_images_come_from_the_final_compose_model(tmp_path: Path) -> Non
         env_file=tmp_path / ".env",
         compose_files=(tmp_path / "compose.yaml",),
         offline=True,
-        connected_build=False,
+        local_image_reuse=False,
         release_platform_dir=tmp_path / "release/amd64",
     )
 
@@ -207,22 +213,27 @@ def test_service_images_come_from_the_final_compose_model(tmp_path: Path) -> Non
     }
 
 
-def test_connected_prepare_requires_existing_final_keycloak_before_mutation() -> None:
+def test_local_reuse_requires_existing_amd64_infrastructure_before_mutation() -> None:
     images = {
         "postgres": "postgres:17.10-bookworm",
         "keycloak": "datariver-keycloak:26.7.0",
     }
 
-    workflow.verify_connected_local_keycloak(cast(Any, _ImageRunner()), images)
+    workflow.verify_local_source_images(cast(Any, _ImageRunner()), images)
 
     with pytest.raises(
         platform.WorkflowError,
-        match="requires the existing final Keycloak image",
+        match="requires the existing postgres image",
     ):
-        workflow.verify_connected_local_keycloak(cast(Any, _MissingImageRunner()), images)
+        workflow.verify_local_source_images(cast(Any, _MissingImageRunner()), images)
+    with pytest.raises(platform.WorkflowError, match="must be linux/amd64"):
+        workflow.verify_local_source_images(
+            cast(Any, _ImageRunner(platform_name="linux/arm64")),
+            images,
+        )
 
 
-def test_connected_build_plan_requires_explicit_environment_and_no_state(
+def test_state_absent_plan_infers_registry_disabled_local_image_reuse(
     tmp_path: Path,
 ) -> None:
     (tmp_path / ".env.connected").write_text("APP_ENV=development\n", encoding="utf-8")
@@ -231,12 +242,11 @@ def test_connected_build_plan_requires_explicit_environment_and_no_state(
         root=tmp_path,
         state=None,
         env_file_override=Path(".env.connected"),
-        connected_build=True,
     )
 
-    assert plan.profile == "connected-source-development"
+    assert plan.profile == "local-image-source-development"
     assert plan.offline is False
-    assert plan.connected_build is True
+    assert plan.local_image_reuse is True
     assert [path.name for path in plan.compose_files] == [
         "compose.yaml",
         "compose.identity.yaml",
@@ -248,13 +258,13 @@ def test_connected_build_plan_requires_explicit_environment_and_no_state(
             root=tmp_path,
             state=None,
             env_file_override=None,
-            connected_build=True,
+            reuse_local_images=True,
         )
     with pytest.raises(platform.WorkflowError, match="applied workflow state is unavailable"):
         workflow.resolve_plan(
             root=tmp_path,
             state=None,
-            env_file_override=Path(".env.connected"),
+            env_file_override=None,
         )
 
 
@@ -469,7 +479,7 @@ def test_neo4j_environment_is_persisted_only_after_authenticated_start(
         env_file=environment,
         compose_files=(tmp_path / "compose.yaml",),
         offline=True,
-        connected_build=False,
+        local_image_reuse=False,
         release_platform_dir=tmp_path / "release/amd64",
     )
     monkeypatch.setattr(workflow, "ROOT", tmp_path)

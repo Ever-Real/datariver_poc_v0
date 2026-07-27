@@ -585,14 +585,32 @@ deployment mode와 release directory를 읽는다. 온라인 build profile에는
 offline override 순서를 다시 입력하지 않는다. `dev_host.sh migrate`도 `5432/tcp`만 관측하면
 이 단일 workflow를 안내하고 실패한다.
 
-이전 raw Compose 절차로 구성되어 아직 applied state가 없는 **연결망 rapid source 검증 PC**는
-다음 명시적 개발 경로를 사용한다. 이 경로는 공식 `postgres:17.10-bookworm` version tag가
-로컬에 있으면 그대로 재사용하고 없을 때만 pull하며, 기존
-`datariver-keycloak:26.7.0` final image도 재사용한다. 준비 과정에서는 Keycloak을 다시
-build하지 않으므로 Quay base metadata를 조회하지 않는다. `SOURCE_HOST_POSTGRES_IMAGE`와
-`SOURCE_HOST_KEYCLOAK_IMAGE`로 승인된 mirror/local reference를 선택할 수 있다. Keycloak final
-image가 없으면 임의 upstream 이미지를 대신 사용하지 않고 시작 전에 실패한다. 이 편의 경로는
-offline release가 검증되었다고 기록하지 않는다.
+이전 raw Compose 절차로 구성되어 아직 applied state가 없는 rapid source 검증 PC는 explicit
+`--env-file`만으로 로컬-image 재사용 경로를 자동 선택한다. 공식
+`postgres:17.10-bookworm`과 기존 `datariver-keycloak:26.7.0` final image를 모두 로컬에서
+검사하고 `linux/amd64`가 아니거나 없으면 container를 중지하기 전에 실패한다. 이 경로는
+`--pull never --no-build`이므로 폐쇄망에서 registry나 Quay metadata를 조회하지 않는다.
+`SOURCE_HOST_POSTGRES_IMAGE`와 `SOURCE_HOST_KEYCLOAK_IMAGE`로 이미 로드된 다른 승인 reference를
+선택할 수 있다. `--reuse-local-images`는 applied state가 있어도 이 개발 경로를 강제로 선택할
+때만 필요하며, 기존 `--connected-build`는 호환 alias이다. 이 경로는 offline release가
+검증되었다고 기록하지 않는다.
+
+준비 PC 자체 브라우저에서 먼저 개발할 때는 DNS, 인증서, Nginx가 필요 없다. OIDC는 제거하지
+않고 loopback Keycloak을 사용하며 WebAuthn은 비활성 상태를 유지한다.
+
+```bash
+if [ ! -f .env.wsl-source-development ]; then
+  cp -p .env.wsl-preparation .env.wsl-source-development
+fi
+./scripts/bootstrap.sh \
+  --env-file .env.wsl-source-development \
+  --host-development
+
+./scripts/workflow_source_host_infra.py \
+  --env-file .env.wsl-source-development \
+  --neo4j-bundle-dir ../datariver-platform-amd64-distribution \
+  prepare
+```
 
 다음으로 내부 DNS 관리자에게 두 개의 서로 다른 이름과 preparation PC의 고정/예약 주소를
 요청한다. 예시는 `datariver-prep.example.internal`과
@@ -623,7 +641,7 @@ docker port datariver-local-connectors-redis-delivery-1 6379
   prepare
 
 # Graph projection을 사용하지 않을 때만 --neo4j-bundle-dir를 생략한다.
-# 기존 raw Compose 설치라 applied state가 없을 때만 위 명령에 --connected-build를 추가한다.
+# applied state가 없어도 explicit --env-file이면 로컬 image 재사용을 자동 선택한다.
 
 # compose ps의 Keycloak 이름이 datariver-next-keycloak-1과 다를 때만
 # --container <exact-name>을 추가한다.

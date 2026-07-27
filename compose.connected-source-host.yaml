@@ -1,14 +1,13 @@
 services:
-  # Rapid source validation may reuse the official version tag already present
-  # on the connected preparation PC. Immutable/offline profiles continue to
-  # use the digest pin or a checksum-verified release override.
+  # A pre-state rapid source-validation host may reuse only images that are
+  # already present locally. Immutable/offline profiles continue to use the
+  # digest pin or a checksum-verified release override.
   postgres:
     image: ${SOURCE_HOST_POSTGRES_IMAGE:-postgres:17.10-bookworm}
-    pull_policy: missing
+    pull_policy: never
 
   # The preparation PC already owns the reviewed, theme-bearing final image.
-  # Never rebuild it during a loopback port transition: doing so would resolve
-  # the upstream Quay base even though the runnable final image is local.
+  # Never rebuild or pull it during a loopback port transition.
   keycloak:
     image: ${SOURCE_HOST_KEYCLOAK_IMAGE:-datariver-keycloak:26.7.0}
     pull_policy: never
