@@ -65,6 +65,7 @@ _COMMIT = re.compile(r"^[0-9a-f]{40}$")
 OPERATOR_ONLY_SOURCE_PATHS = frozenset(
     {
         "compose.connected-source-host.yaml",
+        "scripts/development_cycle.py",
         "scripts/dev_host.sh",
         "scripts/platform_workflow.py",
         "scripts/workflow_fresh_setup.py",
@@ -716,6 +717,7 @@ def classify_environment_changes(
             "SEED_PROFILE",
             "DATARIVER_CATALOG_SYNC_MAX_PAGES",
             "INTRANET_SOURCE_HOST_ENABLED",
+            "SYSTEM_CONFIGURATION_RUNTIME_ACTIVATION_ENABLED",
         }:
             # These values are consumed by a one-shot operator command, an
             # immutable bootstrap boundary, or a future retention operation.

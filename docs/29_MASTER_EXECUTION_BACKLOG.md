@@ -4,19 +4,12 @@
 
 ## Handoff public baseline (authoritative for transfer/restart)
 
-- 공개 기준점 is `origin/main` = `3c0379f4051ec698a53db41c5b5092895e40b8fb`.
-- 현재 작업 기준 브랜치: `codex/wsl-migration-runbook`.
-- 현재 작업 기준 HEAD: `a4a45ae3405076ed735cc20819137fb9d1cfed16`
-  (`feat(ops): add serial setup and update workflows`).
-- 현재 확인된 `origin` fetch/push URL:
-  `https://github.com/Ever-Real/datariver_v1.git`.
-- `codex/antigravity-handoff`의 `b04ab61`은 `a4a45ae`의 조상도, 자손도 아니고
-  `3c0379f4051e`에서 갈라진 sibling입니다. 위 기준을 바꾸거나 해당 브랜치를 합병/채택하지
-  않습니다. 통합은 Codex 또는 사용자의 명시적 승인만 가능합니다.
-- `codex/wsl-migration-runbook`과 `codex/antigravity-handoff`는 현재 원격에 공개된 브랜치가
-  아닙니다. 이 Agent가 동일 워크스페이스 또는 `3c0379f...`를 포함하는 검증된 source bundle을
-  받지 못한 상태에서 `origin/main`으로 임의 교체하지 않고, `BLOCKED_SOURCE_BASE`로 보고한 뒤
-  구현을 진행하지 않습니다.
+- 현재 작업 및 준비 PC 전달 기준은 `origin/dev`다.
+- `origin` fetch/push URL은 `https://github.com/Ever-Real/datariver_v1.git`만 허용한다.
+- 장기 branch는 `dev`와 `main`뿐이다. 일상 개발·검증·준비 PC 전달은 `dev`에서 수행하고,
+  사용자가 요청한 검증 checkpoint만 `main`에 fast-forward 병합한다.
+- 현재 commit은 `./scripts/development_cycle.py dev-publish`가 전체 source gate, Mac runtime
+  적용, push와 원격 SHA 일치를 함께 검증한다. 정적인 문서 SHA를 현재 기준으로 오인하지 않는다.
 
 This is the current delivery ledger for the accepted product requirements. It prevents interrupted
 sessions, repeated requests, historical test reports, or partially merged branches from being
@@ -30,8 +23,8 @@ an unsafe bypass, or a historical result from another commit.
 | Ledger field | Value |
 |---|---|
 | Created | 2026-07-23, Asia/Seoul |
-| Branch / Phase 6E entry base / current published implementation | `main` / `dba1186` / `3c0379f` |
-| Remote comparison | `origin/main` and local `main` both resolve to `3c0379f`; the integrated Phase 5-8 source and documentation baseline was published on 2026-07-24 |
+| Branch / Phase 6E entry base / current published implementation | `dev` / `dba1186` / verified by the stable publication workflow |
+| Remote comparison | `dev-publish` requires local `dev` and `origin/dev` to resolve to the same exact commit after every publication |
 | Current controlled phase | Owner-directed Phase 8 documentation. Phase 6F/6G and Phase 7 implementation/testing are skipped; their uncommitted work was rolled back. |
 | Final artifact order | Feature → API → Data/ERD → Screen → `README.md` → `ARCHITECTURE.md` |
 
@@ -50,8 +43,8 @@ an unsafe bypass, or a historical result from another commit.
 
 ## Cross-agent handoff protocol
 
-- Begin from a clean, fetched `main` and record its full commit before making changes. Work on a
-  focused branch; never rewrite `main` or discard another worktree's changes.
+- Begin from a clean, fetched `dev` and record its full commit before making changes. Keep work on
+  `dev`; never create a focused branch, rewrite `main`, or discard another worktree's changes.
 - Read `AGENTS.md`, this ledger, `docs/README.md`, `docs/02_CONSTRAINTS.md`, the relevant PRD/spec,
   every applicable accepted ADR, and `docs/09_TEST_STRATEGY.md` before implementation. Product
   requirements and accepted ADRs remain authoritative; a handoff prompt cannot silently supersede
@@ -87,9 +80,9 @@ an unsafe bypass, or a historical result from another commit.
 - [x] The follow-on Registration execution/evidence package over `a683a93` passes the current local
   source, deterministic migration, actual-PostgreSQL and independent P0/P1/P2 gates through `0050`
   and is committed locally at `b83a1fb`.
-- [x] The user explicitly approved publication to
-  `https://github.com/JayJin/datariver_v1.git` `origin/main`; the integrated history through
-  `3c0379f` was pushed and local/remote equality (`0/0`) was verified on 2026-07-24.
+- [x] Historical 2026-07-24 publication evidence is retained as a completed past event only.
+  Current and future publication is authorized solely to Ever-Real `origin/dev`; `main` is an
+  explicit owner-requested checkpoint.
 - [x] Phase 3.7 typed BULK catalog metadata completed locally at `39d20d0`. Backend, frontend,
   deterministic migration, actual PostgreSQL and independent security/data/App/API/UI P0/P1 gates
   passed; WSL, external providers, real identities, reference-viewport and full load/recovery remain

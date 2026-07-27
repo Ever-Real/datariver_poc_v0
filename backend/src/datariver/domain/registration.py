@@ -76,6 +76,7 @@ class UploadManifest:
         if (
             self.content_profile
             in {
+                UploadContentProfile.DATASET_DESCRIPTION_CSV_V1,
                 UploadContentProfile.CATALOG_METADATA_ROWS_CSV_V1,
             }
             and self.declared_mime != "text/csv"
@@ -84,6 +85,7 @@ class UploadManifest:
         if (
             self.content_profile
             in {
+                UploadContentProfile.DATASET_DESCRIPTION_XLSX_V1,
                 UploadContentProfile.CATALOG_METADATA_ROWS_XLSX_V1,
             }
             and self.declared_mime
@@ -293,6 +295,8 @@ class UploadPreparation:
         configuration_hash: str,
     ) -> UploadPreparation:
         if content_profile not in {
+            UploadContentProfile.DATASET_DESCRIPTION_CSV_V1,
+            UploadContentProfile.DATASET_DESCRIPTION_XLSX_V1,
             UploadContentProfile.CATALOG_METADATA_ROWS_CSV_V1,
             UploadContentProfile.CATALOG_METADATA_ROWS_XLSX_V1,
         }:

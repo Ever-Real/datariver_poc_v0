@@ -43,6 +43,30 @@ Remaining WSL/external-provider/browser/load/physical-retention checks are expli
 Runtime API/OIDC Origin validation is intentionally deferred as backlog item `R5-FE-04` at P2; the
 source must not be represented as having that protection.
 
+## 고정 개발·준비 PC 루프
+
+일상 업데이트는 아래 두 명령을 호환 인터페이스로 사용한다. 구현 내부가 바뀌더라도 명령 이름,
+기본 환경 파일과 검증 의미는 유지한다. 두 명령 모두 `dev`와
+`https://github.com/Ever-Real/datariver_v1.git`만 허용하고 branch를 생성하지 않는다.
+
+```bash
+# 개발 PC: 변경을 dev에 commit한 뒤 검증, Mac runtime 적용, dev push, GitHub SHA 확인
+./scripts/development_cycle.py dev-publish
+
+# 준비 PC: dev fast-forward pull, 필요한 offline dependency sync, 환경 schema 재적용,
+# migration, source-host 시작, API/Web/OIDC 확인
+./scripts/development_cycle.py prep-update
+```
+
+준비 PC가 이미 최신일 때 pull 없이 상태만 다시 확인하려면
+`./scripts/development_cycle.py prep-check`를 사용한다. 개발 PC에서 push 없이 전체 source gate만
+재실행하려면 `./scripts/development_cycle.py verify`를 사용한다.
+
+일상 명령이 읽는 canonical ignored 환경은 개발 PC의 `.env.mac-development`와 준비 PC의
+`.env.wsl-intranet-development`다. 이 파일과 `secrets/`는 PC별로 한 번 구성하고 Git으로
+복사하지 않는다. 아래의 bootstrap, dependency cache, 개별 migrate/start 명령은 최초 구성,
+복구 또는 실패 진단용이며 정상적인 `dev` 업데이트 절차가 아니다.
+
 ## 직렬 실행 워크플로
 
 반복되는 범용 개발, Mac 로컬 통합, WSL 준비 환경의 초기화·업데이트 절차는 다음 두
@@ -662,7 +686,7 @@ docker port datariver-local-connectors-redis-delivery-1 6379
 ./scripts/configure_keycloak_host_dev.sh \
   --env-file .env.wsl-intranet-development
 
-# 승인된 artifact 경로에서 이 uv.lock 전용 Linux x86_64 cache를 먼저 검증·반입한다.
+# 승인된 artifact 경로에서 현재 uv.lock 전용 Linux x86_64 cache를 먼저 검증·반입한다.
 # 개발 PC와 준비 PC 사이에서 Docker image/container/registry를 배포 수단으로 사용하지 않는다.
 approved_artifact_dir=../datariver-offline-artifacts
 lock_hash=$(sha256sum uv.lock | awk '{print $1}')
@@ -670,41 +694,13 @@ python_cache_bundle="$approved_artifact_dir/datariver-uv-cache-linux-x86_64-${lo
 uv_cache_parent=${XDG_CACHE_HOME:-"$HOME/.cache"}
 mkdir -p "$uv_cache_parent"
 
-if [ -f "$python_cache_bundle" ]; then
-  (cd "$approved_artifact_dir" && \
-    sha256sum -c "$(basename "$python_cache_bundle").sha256")
-  test "$lock_hash" = \
-    "$(awk -F '\t' '$1 == "lock_sha256" {print $2}' \
-      "${python_cache_bundle%.tar.gz}.manifest.tsv")"
-  tar -xzf "$python_cache_bundle" -C "$uv_cache_parent"
-else
-  # 현재 lock에 일치하는 전체 cache가 없고 기존 a66012e1308b cache만 있는 경우의 보완 경로다.
-  # 두 lock의 Python dependency 차이는 pypdf 6.13.3 -> 6.14.2 하나다.
-  legacy_python_cache_bundle="$approved_artifact_dir/datariver-uv-cache-linux-x86_64-a66012e1308b.tar.gz"
-  legacy_python_manifest="${legacy_python_cache_bundle%.tar.gz}.manifest.tsv"
-  pypdf_wheel_dir="$approved_artifact_dir/pypdf-6.14.2"
-  test "$lock_hash" = "b8ad0fba29c22c70edb0405c202900b3a9491355f2e5df521ed441d3701036ff"
-  test "$(awk -F '\t' '$1 == "lock_sha256" {print $2}' "$legacy_python_manifest")" = \
-    "a66012e1308be317e49c1768aaabc0d99c3b5a33e741cba2e5d7999d12e87cad"
-  test "$(awk -F '\t' '$1 == "platform" {print $2}' "$legacy_python_manifest")" = \
-    "linux/x86_64"
-  test "$(uv --version)" = "uv 0.9.17"
-  test "$(python3.12 --version)" = "Python 3.12.12"
-  (cd "$approved_artifact_dir" && \
-    sha256sum -c "$(basename "$legacy_python_cache_bundle").sha256")
-  (cd "$pypdf_wheel_dir" && \
-    sha256sum -c pypdf-6.14.2-py3-none-any.whl.sha256)
-  tar -xzf "$legacy_python_cache_bundle" -C "$uv_cache_parent"
-  if [ ! -x .venv/bin/python ]; then
-    uv venv --python 3.12
-  fi
-  UV_CACHE_DIR="$uv_cache_parent/uv" uv pip install \
-    --offline \
-    --no-index \
-    --find-links "$pypdf_wheel_dir" \
-    pypdf==6.14.2 \
-    --python .venv/bin/python
-fi
+test -f "$python_cache_bundle"
+(cd "$approved_artifact_dir" && \
+  sha256sum -c "$(basename "$python_cache_bundle").sha256")
+test "$lock_hash" = \
+  "$(awk -F '\t' '$1 == "lock_sha256" {print $2}' \
+    "${python_cache_bundle%.tar.gz}.manifest.tsv")"
+tar -xzf "$python_cache_bundle" -C "$uv_cache_parent"
 UV_CACHE_DIR="$uv_cache_parent/uv" uv sync --frozen --all-extras --offline
 
 # 현재 준비 PC에서 이미 성공한 node_modules는 package-lock 변경 전까지 재사용한다.
@@ -1958,9 +1954,9 @@ is intentionally a MOCK metadata manifest.
 
 ```bash
 uv sync --frozen --all-extras
-uv run ruff format --check backend/src backend/tests infra/airflow/dags scripts/reconcile_manual_receipts.py scripts/render_wsl_intranet_nginx.py scripts/verify_nginx_headers.py scripts/workflow_source_host_infra.py
-uv run ruff check backend/src backend/tests infra/airflow/dags scripts/configure_keycloak_assurance.py scripts/generate_initial_migration.py scripts/generate_semiconductor_seed.py scripts/local_reranker_service.py scripts/migrate_s3_objects.py scripts/probe_pgbouncer_rls.py scripts/probe_policy_revocation.py scripts/probe_s3_contract.py scripts/reconcile_manual_receipts.py scripts/render_wsl_intranet_nginx.py scripts/verify_datahub_contract.py scripts/verify_datahub_image_inventory.py scripts/verify_nginx_headers.py scripts/verify_static.py scripts/workflow_source_host_infra.py
-uv run mypy backend/src backend/tests scripts/local_reranker_service.py scripts/migrate_s3_objects.py scripts/probe_s3_contract.py scripts/reconcile_manual_receipts.py scripts/render_wsl_intranet_nginx.py scripts/verify_nginx_headers.py scripts/workflow_source_host_infra.py
+uv run ruff format --check backend/src backend/tests infra/airflow/dags scripts/platform_workflow.py scripts/reconcile_manual_receipts.py scripts/render_wsl_intranet_nginx.py scripts/verify_nginx_headers.py scripts/workflow_source_host_infra.py scripts/development_cycle.py
+uv run ruff check backend/src backend/tests infra/airflow/dags scripts/configure_keycloak_assurance.py scripts/development_cycle.py scripts/generate_initial_migration.py scripts/generate_semiconductor_seed.py scripts/local_reranker_service.py scripts/migrate_s3_objects.py scripts/platform_workflow.py scripts/probe_pgbouncer_rls.py scripts/probe_policy_revocation.py scripts/probe_s3_contract.py scripts/reconcile_manual_receipts.py scripts/render_wsl_intranet_nginx.py scripts/verify_datahub_contract.py scripts/verify_datahub_image_inventory.py scripts/verify_nginx_headers.py scripts/verify_static.py scripts/workflow_source_host_infra.py
+uv run mypy backend/src backend/tests scripts/development_cycle.py scripts/local_reranker_service.py scripts/migrate_s3_objects.py scripts/platform_workflow.py scripts/probe_s3_contract.py scripts/reconcile_manual_receipts.py scripts/render_wsl_intranet_nginx.py scripts/verify_nginx_headers.py scripts/workflow_source_host_infra.py
 uv run pytest backend/tests -q
 uv run python scripts/verify_static.py
 

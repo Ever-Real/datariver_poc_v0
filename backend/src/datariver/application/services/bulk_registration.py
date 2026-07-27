@@ -25,10 +25,12 @@ from datariver.application.typed_upload_parser import (
     DatasetDescriptionParseSummary,
     TypedUploadParseError,
     TypedUploadParseFailureCode,
+    parse_dataset_description_csv,
 )
 from datariver.application.typed_upload_profiles import typed_profile_definition
 from datariver.application.typed_xlsx_upload_parser import (
     parse_catalog_metadata_rows_xlsx,
+    parse_dataset_description_xlsx,
 )
 from datariver.domain.common import DomainError
 from datariver.domain.registration import UploadContentProfile
@@ -251,6 +253,22 @@ class BulkRegistrationPreparationService:
                 message="The BULK preparation parser configuration no longer matches its job.",
             )
 
+        if claim.content_profile is UploadContentProfile.DATASET_DESCRIPTION_CSV_V1:
+            return await parse_dataset_description_csv(
+                workspace_id=claim.workspace_id,
+                chunks=chunks,
+                expected_source_sha256=claim.source_sha256,
+                consume_candidate=spool.append,
+                definition=definition,
+            )
+        if claim.content_profile is UploadContentProfile.DATASET_DESCRIPTION_XLSX_V1:
+            return await parse_dataset_description_xlsx(
+                workspace_id=claim.workspace_id,
+                chunks=chunks,
+                expected_source_sha256=claim.source_sha256,
+                consume_candidate=spool.append,
+                definition=definition,
+            )
         if claim.content_profile is UploadContentProfile.CATALOG_METADATA_ROWS_CSV_V1:
             return await parse_catalog_metadata_rows_csv(
                 workspace_id=claim.workspace_id,

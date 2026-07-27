@@ -39,6 +39,27 @@ authoritative; an agent may not silently relax a security invariant or productio
   PC's operating system, CPU architecture and pinned toolchain. Platform-independent wheels may be
   prepared on another host only when their lockfile hash and artifact checksum are verified.
 
+## Stable daily development loop
+
+- Treat `./scripts/development_cycle.py dev-publish` on the arm64 Mac and
+  `./scripts/development_cycle.py prep-update` on the amd64 Linux/WSL preparation PC as stable
+  operator interfaces. Do not rename them, change their existing action semantics, or add required
+  daily arguments without an explicit operator migration plan.
+- `dev-publish` requires a clean committed `dev`, runs the repository source gates, applies that
+  commit to the Mac development runtime, pushes only `origin/dev`, and verifies the exact remote
+  SHA. It never creates a branch or merges `main`.
+- `prep-update` requires a clean `dev`, accepts only a fast-forward from the exact
+  `Ever-Real/datariver_v1` origin, performs offline dependency sync only when a lock changed or an
+  installation is absent, reapplies the ignored source-host environment schema, migrates, starts,
+  and verifies API/Web/OIDC health.
+- The canonical daily environment files are `.env.mac-development` on the development PC and
+  `.env.wsl-intranet-development` on the preparation PC. They and `secrets/` remain ignored,
+  host-local and outside Git. A normal daily update must not require copying, renaming or editing an
+  environment file.
+- Keep detailed bootstrap, migration, dependency-cache and recovery commands as diagnostic or
+  one-time procedures. Do not replace a stable daily action with a new sequence of manual commands
+  merely because its implementation changes.
+
 ## Recommended review roles
 
 | Role | Bounded responsibility | Required evidence |

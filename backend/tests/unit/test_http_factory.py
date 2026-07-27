@@ -928,6 +928,8 @@ def test_upload_preparation_openapi_is_typed_and_server_managed() -> None:
         "FORMAT_ONLY_V1",
         "CATALOG_METADATA_ROWS_CSV_V1",
         "CATALOG_METADATA_ROWS_XLSX_V1",
+        "DATASET_DESCRIPTION_CSV_V1",
+        "DATASET_DESCRIPTION_XLSX_V1",
     ]
 
     create = document["paths"]["/api/v1/uploads/{upload_id}/preparations"]["post"]
@@ -976,6 +978,8 @@ def test_typed_upload_template_is_an_authenticated_server_versioned_download() -
         parameter for parameter in operation["parameters"] if parameter["name"] == "content_profile"
     )
     assert set(profile["schema"]["enum"]) == {
+        "DATASET_DESCRIPTION_CSV_V1",
+        "DATASET_DESCRIPTION_XLSX_V1",
         "CATALOG_METADATA_ROWS_CSV_V1",
         "CATALOG_METADATA_ROWS_XLSX_V1",
     }
@@ -1014,6 +1018,8 @@ def test_upload_candidate_openapi_is_bounded_read_only_and_non_disclosing() -> N
         "ordinal",
         "candidate_hash",
         "id",
+        "evidence_version",
+        "candidate_kind",
         "proposed_description",
         "submitted_identity",
         "current_target",

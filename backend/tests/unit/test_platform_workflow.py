@@ -40,7 +40,15 @@ def _load_fresh_setup_module() -> ModuleType:
     assert spec is not None
     assert spec.loader is not None
     module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
+    previous_platform_module = sys.modules.get("platform_workflow")
+    sys.modules["platform_workflow"] = workflow
+    try:
+        spec.loader.exec_module(module)
+    finally:
+        if previous_platform_module is None:
+            sys.modules.pop("platform_workflow", None)
+        else:
+            sys.modules["platform_workflow"] = previous_platform_module
     return module
 
 
@@ -52,7 +60,15 @@ def _load_update_module() -> ModuleType:
     assert spec is not None
     assert spec.loader is not None
     module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
+    previous_platform_module = sys.modules.get("platform_workflow")
+    sys.modules["platform_workflow"] = workflow
+    try:
+        spec.loader.exec_module(module)
+    finally:
+        if previous_platform_module is None:
+            sys.modules.pop("platform_workflow", None)
+        else:
+            sys.modules["platform_workflow"] = previous_platform_module
     return module
 
 

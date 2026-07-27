@@ -226,6 +226,7 @@ class ObjectManifestModel(Base, UuidPrimaryKeyMixin, TimestampMixin, VersionMixi
         Index("ix_object_manifests_workspace_state", "workspace_id", "state"),
         CheckConstraint(
             "content_profile IN ('FORMAT_ONLY_V1', "
+            "'DATASET_DESCRIPTION_CSV_V1', 'DATASET_DESCRIPTION_XLSX_V1', "
             "'CATALOG_METADATA_ROWS_CSV_V1', 'CATALOG_METADATA_ROWS_XLSX_V1')",
             name="content_profile_allowlist",
         ),
@@ -296,7 +297,9 @@ class UploadPreparationJobModel(Base, UuidPrimaryKeyMixin, TimestampMixin, Versi
             "created_at",
         ),
         CheckConstraint(
-            "content_profile IN ('CATALOG_METADATA_ROWS_CSV_V1', 'CATALOG_METADATA_ROWS_XLSX_V1')",
+            "content_profile IN ('DATASET_DESCRIPTION_CSV_V1', "
+            "'DATASET_DESCRIPTION_XLSX_V1', 'CATALOG_METADATA_ROWS_CSV_V1', "
+            "'CATALOG_METADATA_ROWS_XLSX_V1')",
             name="typed_profile_allowlist",
         ),
         CheckConstraint(
@@ -396,7 +399,9 @@ class UploadPreparationReceiptModel(Base, UuidPrimaryKeyMixin):
             name="row_counts_nonnegative",
         ),
         CheckConstraint(
-            "content_profile IN ('CATALOG_METADATA_ROWS_CSV_V1', 'CATALOG_METADATA_ROWS_XLSX_V1')",
+            "content_profile IN ('DATASET_DESCRIPTION_CSV_V1', "
+            "'DATASET_DESCRIPTION_XLSX_V1', 'CATALOG_METADATA_ROWS_CSV_V1', "
+            "'CATALOG_METADATA_ROWS_XLSX_V1')",
             name="typed_profile_allowlist",
         ),
         ForeignKeyConstraint(

@@ -39,6 +39,8 @@ const TERMINAL_STATES = new Set(['ACCEPTED', 'REJECTED', 'ABORTED', 'EXPIRED'])
 const TYPED_DESCRIPTION_PROFILES = new Set<UploadContentProfile>([
   'CATALOG_METADATA_ROWS_CSV_V1',
   'CATALOG_METADATA_ROWS_XLSX_V1',
+  'DATASET_DESCRIPTION_CSV_V1',
+  'DATASET_DESCRIPTION_XLSX_V1',
 ])
 const CATALOG_METADATA_PROFILES = new Set<UploadContentProfile>([
   'CATALOG_METADATA_ROWS_CSV_V1',
@@ -896,7 +898,7 @@ export function RegistrationBulkWorkbench({ client }: { client: ApiClient }) {
             accept={profileAccept(contentProfile)}
             onChange={(event) => selectFile(event.target.files?.[0])}
           />
-          <label>등록 프로파일<select aria-describedby={isTypedDescriptionProfile(contentProfile) ? profileHintId : undefined} disabled={busy} value={contentProfile} onChange={(event) => selectProfile(event.target.value as UploadContentProfile)}><option value="FORMAT_ONLY_V1">형식 검증만</option><option value="CATALOG_METADATA_ROWS_CSV_V1">카탈로그 메타데이터 CSV</option><option value="CATALOG_METADATA_ROWS_XLSX_V1">카탈로그 메타데이터 Excel (.xlsx)</option></select></label>
+          <label>등록 프로파일<select aria-describedby={isTypedDescriptionProfile(contentProfile) ? profileHintId : undefined} disabled={busy} value={contentProfile} onChange={(event) => selectProfile(event.target.value as UploadContentProfile)}><option value="FORMAT_ONLY_V1">형식 검증만</option><option value="CATALOG_METADATA_ROWS_CSV_V1">카탈로그 메타데이터 CSV</option><option value="CATALOG_METADATA_ROWS_XLSX_V1">카탈로그 메타데이터 Excel (.xlsx)</option><option value="DATASET_DESCRIPTION_CSV_V1">Dataset 설명 CSV (호환)</option><option value="DATASET_DESCRIPTION_XLSX_V1">Dataset 설명 Excel (.xlsx, 호환)</option></select></label>
           {isCatalogMetadataProfile(contentProfile) && (
             <>
               <p className="registration-profile-hint" id={profileHintId}>
@@ -1508,6 +1510,8 @@ function preparationStatusLabel(
 function profileLabel(profile: UploadContentProfile): string {
   if (profile === 'CATALOG_METADATA_ROWS_CSV_V1') return '카탈로그 메타데이터 CSV'
   if (profile === 'CATALOG_METADATA_ROWS_XLSX_V1') return '카탈로그 메타데이터 Excel (.xlsx)'
+  if (profile === 'DATASET_DESCRIPTION_CSV_V1') return 'Dataset 설명 CSV'
+  if (profile === 'DATASET_DESCRIPTION_XLSX_V1') return 'Dataset 설명 Excel (.xlsx)'
   return '형식 검증만'
 }
 
@@ -1544,14 +1548,22 @@ export function validateProfileFile(
   if (profile === 'CATALOG_METADATA_ROWS_XLSX_V1' && !isTypedDescriptionXlsx(file)) {
     throw new Error('카탈로그 메타데이터 Excel 프로파일은 .xlsx 파일만 등록할 수 있습니다.')
   }
+  if (profile === 'DATASET_DESCRIPTION_CSV_V1' && !isTypedDescriptionCsv(file)) {
+    throw new Error('Dataset 설명 CSV 프로파일은 CSV 파일만 등록할 수 있습니다.')
+  }
+  if (profile === 'DATASET_DESCRIPTION_XLSX_V1' && !isTypedDescriptionXlsx(file)) {
+    throw new Error('Dataset 설명 Excel 프로파일은 .xlsx 파일만 등록할 수 있습니다.')
+  }
 }
 
 export function profileAccept(profile: UploadContentProfile): string {
   if (
     profile === 'CATALOG_METADATA_ROWS_CSV_V1'
+    || profile === 'DATASET_DESCRIPTION_CSV_V1'
   ) return '.csv,text/csv'
   if (
     profile === 'CATALOG_METADATA_ROWS_XLSX_V1'
+    || profile === 'DATASET_DESCRIPTION_XLSX_V1'
   ) return '.xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
   return '.pdf,.csv,.json,.parquet,.yaml,.yml,.xlsx'
 }

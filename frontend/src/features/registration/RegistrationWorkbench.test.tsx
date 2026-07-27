@@ -196,7 +196,7 @@ describe('Registration workbench', () => {
         schema_fields_has_more: false,
       }}
       loading={false}
-
+      canViewWorkspaceHistory
       onClose={() => undefined}
     />)
 

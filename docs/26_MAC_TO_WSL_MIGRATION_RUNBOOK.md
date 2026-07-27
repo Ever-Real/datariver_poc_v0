@@ -34,6 +34,24 @@ transfer size free during import. Do not continue from a dirty source checkout.
 
 ### 2.1 Blank-install and iterative-update executables
 
+The stable daily source loop is intentionally shorter than the installation and migration
+procedures in this runbook:
+
+```bash
+# arm64 Mac, after committing one coherent change on dev
+./scripts/development_cycle.py dev-publish
+
+# amd64 Linux/WSL preparation PC
+./scripts/development_cycle.py prep-update
+```
+
+These commands are repository compatibility interfaces. The first verifies and applies the exact
+commit before pushing `origin/dev`; the second accepts only a fast-forward from the exact Ever-Real
+origin, synchronizes a changed lock from existing offline caches, reapplies the existing ignored
+source-host environment, migrates, starts and probes API/Web/OIDC. They never create branches,
+copy `.env` files between hosts or claim production acceptance. Commands below remain one-time,
+migration, release-acceptance and failure-diagnostic procedures.
+
 For a new blank Mac/WSL environment, prefer `scripts/workflow_fresh_setup.py` to executing the
 bootstrap and Compose commands in this runbook by hand. For an environment that was completed by
 that program, use `scripts/workflow_update_restart.py` after reviewed Git changes. The detailed
@@ -138,22 +156,16 @@ same host and the workflow should perform archive/checksum/manifest verification
 Graph-disabled environments omit both Neo4j options.
 
 The same distribution checkout contains the checksum- and manifest-backed
-`datariver-uv-cache-linux-x86_64-*` archive for this exact `uv.lock`. Verify its sidecar and
+`datariver-uv-cache-linux-x86_64-*` archive for the exact current `uv.lock`. Verify its sidecar and
 `lock_sha256`, extract its `uv/` directory beneath the WSL user's cache parent, and set
-`UV_CACHE_DIR` to that directory for `uv sync --frozen --all-extras --offline`. This is the
-required closed-network path for packages such as `pypdf`; the lockfile alone is not a package
-artifact. The archive is accepted only for Linux x86_64, Python 3.12.12 and uv 0.9.17.
+`UV_CACHE_DIR` to that directory for `uv sync --frozen --all-extras --offline`. The lockfile alone
+is not a package artifact. Do not encode a package-specific fallback into the daily update:
+every later lock change requires one complete cache whose manifest matches that lock and the
+approved Linux x86_64 Python/uv toolchain.
 
 Application source moves between the development and preparation PCs through `origin/dev`, not
 through Docker images, containers or registries. Dependency artifacts move separately through the
-approved artifact channel with checksums. For lock
-`b8ad0fba29c22c70edb0405c202900b3a9491355f2e5df521ed441d3701036ff`, the previous
-`a66012e1308b` Linux x86_64 cache can be supplemented with the lock-pinned, platform-independent
-`pypdf-6.14.2-py3-none-any.whl`: verify its `3f07891a...` checksum, install it into `.venv` with
-`uv pip install --offline --no-index --find-links`, and then run the frozen offline sync. Do not
-assume that `uv sync --find-links` alone is sufficient: a frozen registry lock retains the exact
-artifact URL. This exception is valid only for those two stated lock hashes; later lock changes
-require a complete matching cache.
+approved artifact channel with checksums.
 
 `dev_host.sh migrate` authenticates from the mounted PostgreSQL owner secret and runs the
 idempotent runtime-role reconciliation both before and after Alembic. Do not replace it with a bare
