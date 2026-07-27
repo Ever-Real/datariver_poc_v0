@@ -509,19 +509,37 @@ scripts/compose.sh --env-file .env.wsl-preparation \
   up -d --wait --no-build --pull never redis-cache redis-delivery
 ```
 
-Neo4j follows the same explicit choice. For a connected WSL target, set
-`NEO4J_ALLOWED_HOSTS=neo4j` and `NEO4J_URI=bolt://neo4j:7687`, then pull/start the digest-pinned
-separate connector. For a remote private server, replace `neo4j` in both values with its exact DNS
-name; the API rejects a host absent from `NEO4J_ALLOWED_HOSTS`:
+Neo4j follows the same explicit choice. After loading the separately checksummed AMD64 archive,
+the WSL source-host profile records the verified local tag and the connector's loopback-published
+Bolt port. Graph projection remains opt-in; enabling it requires the complete binding below:
+
+```bash
+NEO4J_IMAGE=neo4j:2026.06.0
+NEO4J_PROJECTION_ENABLED=true
+NEO4J_URI=bolt://127.0.0.1:17687
+NEO4J_ALLOWED_HOSTS=127.0.0.1
+NEO4J_AUTH_SECRET_REF=file:/run/secrets/neo4j_auth
+AIRFLOW_SOURCE_API_BRIDGE_ENABLED=false
+KNOWLEDGE_SOURCE_WORKER_ENABLED=false
+```
+
+Place those values in the ignored `.env.wsl-preparation`, then start the verified local tag without
+registry access:
 
 ```bash
 scripts/compose.sh --env-file .env.wsl-preparation \
-  --profile graph -f compose.local-connectors.yaml pull neo4j
-scripts/compose.sh --env-file .env.wsl-preparation \
-  --profile graph -f compose.local-connectors.yaml up -d --wait neo4j
+  --profile graph -f compose.local-connectors.yaml \
+  up -d --wait --no-build --pull never neo4j
 docker exec datariver-local-connectors-neo4j-1 sh -ec \
   'exec cypher-shell -u neo4j -p "$(cut -d/ -f2- /run/secrets/neo4j_auth)" "RETURN 1"'
 ```
+
+The source-host launcher replaces the container-oriented secret reference with the absolute ignored
+host secret path before validating `Settings`. For a connected target that intentionally pulls
+from the registry instead, omit `NEO4J_IMAGE`, pull the digest-pinned Compose default, and record
+the resolved `linux/amd64` image ID. A containerized DataRiver API uses
+`NEO4J_ALLOWED_HOSTS=neo4j` and `NEO4J_URI=bolt://neo4j:7687`; a remote private Neo4j must use its
+exact reviewed DNS name and TLS Bolt URI.
 
 APISIX is optional edge infrastructure. The current core-only release does not contain it, and the
 WSL pilot must not build its mutable upstream base opportunistically. Keep APISIX disabled until a

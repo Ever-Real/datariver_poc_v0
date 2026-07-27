@@ -106,6 +106,24 @@ def test_source_host_preflight_capabilities_are_independently_selectable(
     assert graph_only["neo4j_projection"] == "CONFIGURED"
 
 
+def test_source_host_preflight_accepts_windows_crlf_and_injects_neo4j_secret(
+    tmp_path: Path,
+) -> None:
+    profile = _profile(
+        tmp_path,
+        LOCAL_OLLAMA_CHAT_ENABLED="false",
+        LOCAL_OLLAMA_EMBEDDING_ENABLED="false",
+        NEO4J_PROJECTION_ENABLED="true",
+        NEO4J_URI="bolt://127.0.0.1:17687",
+        NEO4J_ALLOWED_HOSTS="127.0.0.1",
+    )
+    profile.write_bytes(profile.read_text(encoding="utf-8").replace("\n", "\r\n").encode())
+
+    document = _preflight(profile)
+
+    assert document["neo4j_projection"] == "CONFIGURED"
+
+
 def test_intranet_source_host_preflight_accepts_distinct_https_origins(
     tmp_path: Path,
 ) -> None:

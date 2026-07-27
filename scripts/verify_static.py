@@ -766,6 +766,7 @@ def verify_host_development_ports() -> None:
             "intranet_source_host_enabled=$(env_file_value INTRANET_SOURCE_HOST_ENABLED false)",
             "airflow_source_api_bridge_enabled=$(env_file_value "
             "AIRFLOW_SOURCE_API_BRIDGE_ENABLED false)",
+            "line=${line%$'\\r'}",
             "stop_owned_vite_processes",
             "require_postgres_listener",
             "A container shown only as 5432/tcp is not published",
@@ -788,6 +789,10 @@ def verify_host_development_ports() -> None:
             "set_env_value AIRFLOW_SOURCE_API_BRIDGE_PORT 38103",
             "--intranet-source-host",
             "set_env_value INTRANET_SOURCE_HOST_ENABLED",
+            "set_env_value NEO4J_IMAGE neo4j:2026.06.0",
+            "set_env_value NEO4J_URI bolt://127.0.0.1:17687",
+            "set_env_value NEO4J_AUTH_SECRET_REF file:/run/secrets/neo4j_auth",
+            "set_env_value KNOWLEDGE_SOURCE_WORKER_ENABLED false",
         },
         ROOT / "scripts" / "configure_keycloak_host_dev.sh": {
             "web_origin=${web_origin:-http://localhost:38102}",

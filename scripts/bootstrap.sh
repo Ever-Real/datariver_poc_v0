@@ -509,6 +509,9 @@ if [ "$wsl_preparation" = true ]; then
   set_env_value API_PORT 8000
   set_env_value POSTGRES_PORT 5432
   set_env_value KEYCLOAK_PORT 8081
+  # Airflow is external for the preparation source-host profile. The private
+  # Docker-to-host bridge is required only for a local containerized Airflow.
+  set_env_value AIRFLOW_SOURCE_API_BRIDGE_ENABLED false
   # Tokens carry the browser-reachable issuer.  API-side key retrieval remains
   # on the private Compose network through OIDC_JWKS_URL below.
   set_env_value OIDC_ISSUER http://localhost:8081/realms/datariver
@@ -526,8 +529,16 @@ if [ "$wsl_preparation" = true ]; then
   set_env_value LOCAL_OLLAMA_CHAT_ENABLED false
   set_env_value LOCAL_OLLAMA_EMBEDDING_ENABLED false
   set_env_value LOCAL_LLAMA_CPP_RERANKER_ENABLED false
+  # The separately verified AMD64 archive restores this local tag. Keep graph
+  # projection opt-in, but emit a complete source-host binding so enabling the
+  # switch never leaves URI or secret-reference fields incomplete.
+  set_env_value NEO4J_IMAGE neo4j:2026.06.0
   set_env_value NEO4J_PROJECTION_ENABLED false
+  set_env_value NEO4J_URI bolt://127.0.0.1:17687
+  set_env_value NEO4J_ALLOWED_HOSTS 127.0.0.1
+  set_env_value NEO4J_AUTH_SECRET_REF file:/run/secrets/neo4j_auth
   set_env_value KNOWLEDGE_PIPELINE_ENABLED false
+  set_env_value KNOWLEDGE_SOURCE_WORKER_ENABLED false
 fi
 if [ -n "$datahub_base_url" ]; then
   set_env_value DATAHUB_BASE_URL "$datahub_base_url"

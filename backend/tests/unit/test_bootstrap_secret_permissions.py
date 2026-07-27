@@ -483,7 +483,19 @@ def test_wsl_bootstrap_preserves_preinstalled_token_without_exposing_it(
     assert token_path.read_text(encoding="utf-8") == token
     assert token not in result.stdout
     assert token not in result.stderr
-    assert (isolated_root / ".env.wsl-preparation").is_file()
+    environment_path = isolated_root / ".env.wsl-preparation"
+    assert environment_path.is_file()
+    environment = environment_path.read_text(encoding="utf-8")
+    for expected in (
+        "AIRFLOW_SOURCE_API_BRIDGE_ENABLED=false",
+        "NEO4J_IMAGE=neo4j:2026.06.0",
+        "NEO4J_PROJECTION_ENABLED=false",
+        "NEO4J_URI=bolt://127.0.0.1:17687",
+        "NEO4J_ALLOWED_HOSTS=127.0.0.1",
+        "NEO4J_AUTH_SECRET_REF=file:/run/secrets/neo4j_auth",
+        "KNOWLEDGE_SOURCE_WORKER_ENABLED=false",
+    ):
+        assert expected in environment
 
 
 def test_bootstrap_accepts_a_token_file_path_but_rejects_a_token_value_argument(

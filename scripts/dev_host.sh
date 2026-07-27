@@ -24,6 +24,7 @@ env_file_value() {
   local value=
   if [ -f "$env_file" ]; then
     value=$(sed -n "s/^${key}=//p" "$env_file" | tail -n 1)
+    value=${value%$'\r'}
   fi
   printf '%s' "${value:-$fallback}"
 }
@@ -412,6 +413,10 @@ load_env_file() {
   local line key value
   [ -f "$env_file" ] || { echo "Missing deployment environment file: $env_file" >&2; exit 2; }
   while IFS= read -r line || [ -n "$line" ]; do
+    # Environment files are commonly edited by Windows tools before being used
+    # from WSL. Strip only the CRLF record terminator; embedded CR characters
+    # remain invalid input.
+    line=${line%$'\r'}
     case "$line" in ''|'#'*) continue ;; esac
     key=${line%%=*}
     value=${line#*=}
