@@ -5,11 +5,35 @@ from datetime import datetime, timedelta
 from types import TracebackType
 from uuid import UUID
 
-from sqlalchemy import select, text
+from sqlalchemy import desc, func, select, text, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from datariver.application.dto import ChatEvidence, ChatExchange, ChatRetentionBinding
-from datariver.application.ports import ChatPersistenceUnitOfWork, ChatStore
+from datariver.application.dto import (
+    ChatCompositionAudit,
+    ChatEvidence,
+    ChatEvidenceRanking,
+    ChatExchange,
+    ChatMessageRecord,
+    ChatRetentionBinding,
+    ChatRouteDecision,
+    ChatSessionRecord,
+    ChatWorkflowEvent,
+    default_chat_route,
+)
+from datariver.application.evidence import evidence_chunk_is_valid
+from datariver.application.ports import (
+    ChatHistoryStore,
+    ChatPersistenceUnitOfWork,
+    ChatStore,
+)
+from datariver.domain.authz import Classification
+from datariver.domain.chat import (
+    ChatAdapterState,
+    ChatRetrievalMode,
+    ChatRouteReason,
+    ChatWorkflowStage,
+    ChatWorkflowStatus,
+)
 from datariver.domain.common import ConflictError, ForbiddenError, uuid7
 from datariver.infrastructure.db.models.assistant import (
     AssistantRunModel,
@@ -21,6 +45,306 @@ from datariver.infrastructure.db.retention import SqlRetentionPolicyRepository
 from datariver.infrastructure.db.rls import set_security_context
 
 ACTIVE_RETENTION_BINDING = "ACTIVE_POLICY_V1"
+
+
+class SqlChatHistoryStore(ChatHistoryStore):
+    def __init__(self, session: AsyncSession) -> None:
+        self._session = session
+
+    async def get_session_owner(
+        self,
+        *,
+        workspace_id: UUID,
+        session_id: UUID,
+    ) -> UUID | None:
+        owner_id = await self._session.scalar(
+            select(ChatSessionModel.owner_id).where(
+                ChatSessionModel.workspace_id == workspace_id,
+                ChatSessionModel.id == session_id,
+            )
+        )
+        return owner_id if isinstance(owner_id, UUID) else None
+
+    async def list_sessions(
+        self,
+        *,
+        workspace_id: UUID,
+        owner_id: UUID,
+        limit: int,
+    ) -> Sequence[ChatSessionRecord]:
+        if not 1 <= limit <= 50:
+            raise ValueError("Chat session history limit must be between 1 and 50.")
+        rows = (
+            await self._session.execute(
+                select(
+                    ChatSessionModel,
+                    func.count(ChatMessageModel.id).label("message_count"),
+                )
+                .outerjoin(
+                    ChatMessageModel,
+                    (
+                        (ChatMessageModel.workspace_id == ChatSessionModel.workspace_id)
+                        & (ChatMessageModel.session_id == ChatSessionModel.id)
+                    ),
+                )
+                .where(
+                    ChatSessionModel.workspace_id == workspace_id,
+                    ChatSessionModel.owner_id == owner_id,
+                )
+                .group_by(ChatSessionModel.id)
+                .order_by(
+                    desc(ChatSessionModel.is_favorite),
+                    desc(ChatSessionModel.updated_at),
+                    desc(ChatSessionModel.id),
+                )
+                .limit(limit)
+            )
+        ).all()
+        return tuple(
+            self._session_record(session=row.ChatSessionModel, message_count=row.message_count)
+            for row in rows
+        )
+
+    async def list_messages(
+        self,
+        *,
+        workspace_id: UUID,
+        owner_id: UUID,
+        session_id: UUID,
+        limit: int,
+    ) -> Sequence[ChatMessageRecord]:
+        if not 1 <= limit <= 200:
+            raise ValueError("Chat message history limit must be between 1 and 200.")
+        owned = await self._session.scalar(
+            select(ChatSessionModel.id).where(
+                ChatSessionModel.workspace_id == workspace_id,
+                ChatSessionModel.owner_id == owner_id,
+                ChatSessionModel.id == session_id,
+            )
+        )
+        if owned is None:
+            raise ForbiddenError("The chat session is not available.")
+        messages = list(
+            (
+                await self._session.scalars(
+                    select(ChatMessageModel)
+                    .where(
+                        ChatMessageModel.workspace_id == workspace_id,
+                        ChatMessageModel.session_id == session_id,
+                    )
+                    .order_by(
+                        desc(ChatMessageModel.created_at),
+                        desc(ChatMessageModel.id),
+                    )
+                    .limit(limit)
+                )
+            ).all()
+        )
+        messages.reverse()
+        request_ids = tuple(message.id for message in messages if message.actor == "USER")
+        runs = (
+            list(
+                (
+                    await self._session.scalars(
+                        select(AssistantRunModel).where(
+                            AssistantRunModel.workspace_id == workspace_id,
+                            AssistantRunModel.session_id == session_id,
+                            AssistantRunModel.request_message_id.in_(request_ids),
+                        )
+                    )
+                ).all()
+            )
+            if request_ids
+            else []
+        )
+        citations_by_run: dict[UUID, list[EvidenceCitationModel]] = {}
+        if runs:
+            citations = (
+                await self._session.scalars(
+                    select(EvidenceCitationModel)
+                    .where(
+                        EvidenceCitationModel.workspace_id == workspace_id,
+                        EvidenceCitationModel.run_id.in_(tuple(run.id for run in runs)),
+                    )
+                    .order_by(EvidenceCitationModel.run_id, EvidenceCitationModel.rank)
+                )
+            ).all()
+            for citation in citations:
+                citations_by_run.setdefault(citation.run_id, []).append(citation)
+        run_by_request = {run.request_message_id: run for run in runs}
+        active_run: AssistantRunModel | None = None
+        records: list[ChatMessageRecord] = []
+        for message in messages:
+            evidence: tuple[ChatEvidence, ...] = ()
+            route: ChatRouteDecision | None = None
+            workflow: tuple[ChatWorkflowEvent, ...] = ()
+            if message.actor == "USER":
+                active_run = run_by_request.get(message.id)
+            elif message.actor == "ASSISTANT" and active_run is not None:
+                evidence = self._rehydrate_evidence(
+                    workspace_id=workspace_id,
+                    citations=citations_by_run.get(active_run.id, ()),
+                )
+                route = self._rehydrate_route(active_run.metrics)
+                workflow = self._rehydrate_workflow(active_run.metrics)
+                active_run = None
+            records.append(
+                ChatMessageRecord(
+                    id=message.id,
+                    session_id=message.session_id,
+                    role="user" if message.actor == "USER" else "assistant",
+                    content=message.content or "",
+                    evidence=evidence,
+                    created_at=message.created_at,
+                    route=route,
+                    workflow=workflow,
+                )
+            )
+        return tuple(records)
+
+    async def set_favorite(
+        self,
+        *,
+        workspace_id: UUID,
+        owner_id: UUID,
+        session_id: UUID,
+        expected_version: int,
+        is_favorite: bool,
+    ) -> ChatSessionRecord:
+        if expected_version < 1:
+            raise ConflictError("The Chat session version is invalid.")
+        updated_id = await self._session.scalar(
+            update(ChatSessionModel)
+            .where(
+                ChatSessionModel.workspace_id == workspace_id,
+                ChatSessionModel.owner_id == owner_id,
+                ChatSessionModel.id == session_id,
+                ChatSessionModel.version == expected_version,
+            )
+            .values(
+                is_favorite=is_favorite,
+                version=ChatSessionModel.version + 1,
+                updated_at=func.now(),
+            )
+            .returning(ChatSessionModel.id)
+        )
+        if updated_id is None:
+            await self._session.rollback()
+            raise ConflictError("The Chat session changed or is not available.")
+        row = (
+            await self._session.execute(
+                select(
+                    ChatSessionModel,
+                    func.count(ChatMessageModel.id).label("message_count"),
+                )
+                .outerjoin(
+                    ChatMessageModel,
+                    (
+                        (ChatMessageModel.workspace_id == ChatSessionModel.workspace_id)
+                        & (ChatMessageModel.session_id == ChatSessionModel.id)
+                    ),
+                )
+                .where(
+                    ChatSessionModel.workspace_id == workspace_id,
+                    ChatSessionModel.owner_id == owner_id,
+                    ChatSessionModel.id == session_id,
+                )
+                .group_by(ChatSessionModel.id)
+            )
+        ).one()
+        await self._session.commit()
+        return self._session_record(
+            session=row.ChatSessionModel,
+            message_count=row.message_count,
+        )
+
+    @staticmethod
+    def _session_record(
+        *,
+        session: ChatSessionModel,
+        message_count: int,
+    ) -> ChatSessionRecord:
+        return ChatSessionRecord(
+            id=session.id,
+            title=session.title,
+            is_favorite=session.is_favorite,
+            version=session.version,
+            created_at=session.created_at,
+            updated_at=session.updated_at,
+            message_count=int(message_count),
+        )
+
+    @staticmethod
+    def _rehydrate_evidence(
+        *,
+        workspace_id: UUID,
+        citations: Sequence[EvidenceCitationModel],
+    ) -> tuple[ChatEvidence, ...]:
+        values: list[ChatEvidence] = []
+        for citation in citations:
+            if not citation.display_name:
+                continue
+            value = ChatEvidence(
+                chunk_id=citation.chunk_id,
+                workspace_id=workspace_id,
+                resource_id=citation.resource_id,
+                classification=Classification(citation.classification),
+                system_id=citation.system_id,
+                domain_id=citation.domain_id,
+                owner_department_id=citation.owner_department_id,
+                name=citation.display_name,
+                description=citation.description,
+                source_type=citation.source_type,
+                source_locator=citation.source_locator,
+                source_version=citation.source_version,
+                content_hash=citation.content_hash,
+                effective_from=citation.effective_from,
+                effective_until=citation.effective_until,
+                extraction_method=citation.extraction_method,
+            )
+            if evidence_chunk_is_valid(value):
+                values.append(value)
+        return tuple(values)
+
+    @staticmethod
+    def _rehydrate_route(metrics: dict[str, object]) -> ChatRouteDecision | None:
+        try:
+            selected = ChatRetrievalMode(str(metrics["retrieval_mode"]))
+            requested = ChatRetrievalMode(str(metrics.get("requested_mode", selected.value)))
+            reason = ChatRouteReason(str(metrics["route_reason"]))
+            adapter_state = ChatAdapterState(str(metrics.get("adapter_state", "READY")))
+        except (KeyError, ValueError):
+            return None
+        return ChatRouteDecision(
+            requested_mode=requested,
+            selected_mode=selected,
+            reason=reason,
+            adapter_state=adapter_state,
+        )
+
+    @staticmethod
+    def _rehydrate_workflow(metrics: dict[str, object]) -> tuple[ChatWorkflowEvent, ...]:
+        document = metrics.get("workflow")
+        if not isinstance(document, list) or len(document) > 20:
+            return ()
+        values: list[ChatWorkflowEvent] = []
+        try:
+            for item in document:
+                if not isinstance(item, dict):
+                    return ()
+                detail_code = item.get("detail_code")
+                if not isinstance(detail_code, str) or not 1 <= len(detail_code) <= 100:
+                    return ()
+                values.append(
+                    ChatWorkflowEvent(
+                        stage=ChatWorkflowStage(str(item["stage"])),
+                        status=ChatWorkflowStatus(str(item["status"])),
+                        detail_code=detail_code,
+                    )
+                )
+        except (KeyError, ValueError):
+            return ()
+        return tuple(values)
 
 
 class SqlChatStore(ChatStore):
@@ -38,10 +362,21 @@ class SqlChatStore(ChatStore):
         evidence: Sequence[ChatEvidence],
         policy_decision_id: UUID,
         retention: ChatRetentionBinding,
+        route: ChatRouteDecision | None = None,
+        workflow: Sequence[ChatWorkflowEvent] = (),
+        evidence_ranking: Sequence[ChatEvidenceRanking] = (),
+        composition_audit: ChatCompositionAudit | None = None,
     ) -> ChatExchange:
         if any(item.workspace_id != workspace_id for item in evidence):
             raise ValueError("Evidence chunks must belong to the exchange workspace.")
         now = retention.binding_basis_at
+        resolved_route = route
+        resolved_audit = composition_audit or ChatCompositionAudit(
+            provider="datariver",
+            model="deterministic-evidence-v1",
+            prompt_template_version="catalog-evidence-v1",
+            external_service_used=False,
+        )
         if session_id is None:
             session = ChatSessionModel(
                 id=uuid7(),
@@ -57,6 +392,7 @@ class SqlChatStore(ChatStore):
                 version=1,
             )
             self._session.add(session)
+            await self._session.flush((session,))
             session_id = session.id
         else:
             existing_session = (
@@ -88,40 +424,91 @@ class SqlChatStore(ChatStore):
         request_message_id = uuid7()
         response_message_id = uuid7()
         run_id = uuid7()
-        self._session.add_all(
-            [
-                ChatMessageModel(
-                    id=request_message_id,
-                    workspace_id=workspace_id,
-                    session_id=session_id,
-                    actor="USER",
-                    content=question,
-                    created_at=now,
-                ),
-                ChatMessageModel(
-                    id=response_message_id,
-                    workspace_id=workspace_id,
-                    session_id=session_id,
-                    actor="ASSISTANT",
-                    content=answer,
-                    created_at=now,
-                ),
-                AssistantRunModel(
-                    id=run_id,
-                    workspace_id=workspace_id,
-                    session_id=session_id,
-                    request_message_id=request_message_id,
-                    provider="datariver",
-                    model="authorized-evidence-v1",
-                    prompt_template_version="catalog-knowledge-evidence-v1",
-                    policy_decision_id=policy_decision_id,
-                    state="COMPLETED",
-                    metrics={"evidence_count": len(evidence), "external_llm_used": False},
-                    started_at=now,
-                    finished_at=now,
-                ),
-            ]
+        request_message = ChatMessageModel(
+            id=request_message_id,
+            workspace_id=workspace_id,
+            session_id=session_id,
+            actor="USER",
+            content=question,
+            created_at=now,
         )
+        response_message = ChatMessageModel(
+            id=response_message_id,
+            workspace_id=workspace_id,
+            session_id=session_id,
+            actor="ASSISTANT",
+            content=answer,
+            created_at=now,
+        )
+        self._session.add_all([request_message, response_message])
+        await self._session.flush((request_message, response_message))
+        run = AssistantRunModel(
+            id=run_id,
+            workspace_id=workspace_id,
+            session_id=session_id,
+            request_message_id=request_message_id,
+            provider=resolved_audit.provider,
+            model=resolved_audit.model,
+            prompt_template_version=resolved_audit.prompt_template_version,
+            policy_decision_id=policy_decision_id,
+            state="COMPLETED",
+            metrics={
+                "evidence_count": len(evidence),
+                "external_service_used": resolved_audit.external_service_used,
+                "external_stages": list(resolved_audit.external_stages),
+                "external_stage_provider_profile_version_ids": {
+                    stage: str(profile_id)
+                    for stage, profile_id in (
+                        resolved_audit.external_stage_provider_profile_version_ids
+                    )
+                },
+                "provider_profile_version_id": (
+                    str(resolved_audit.provider_profile_version_id)
+                    if resolved_audit.provider_profile_version_id is not None
+                    else None
+                ),
+                "classification_policy_id": (
+                    str(resolved_audit.classification_policy_id)
+                    if resolved_audit.classification_policy_id is not None
+                    else None
+                ),
+                "classification_policy_hash": (resolved_audit.classification_policy_hash),
+                "classification_policy_version": (resolved_audit.classification_policy_version),
+                "authorization_generation": (resolved_audit.authorization_generation),
+                "retrieval_mode": (
+                    resolved_route.selected_mode.value if resolved_route else "GENERAL"
+                ),
+                "requested_mode": (
+                    resolved_route.requested_mode.value if resolved_route else "GENERAL"
+                ),
+                "route_reason": (
+                    resolved_route.reason.value if resolved_route else "GENERAL_DEFAULT"
+                ),
+                "adapter_state": (
+                    resolved_route.adapter_state.value if resolved_route else "READY"
+                ),
+                "evidence_ranking": [
+                    {
+                        "chunk_id": str(item.chunk_id),
+                        "rank": item.rank,
+                        "retrieval_method": item.retrieval_method,
+                    }
+                    for item in evidence_ranking
+                ],
+                "workflow": [
+                    {
+                        "stage": item.stage.value,
+                        "status": item.status.value,
+                        "detail_code": item.detail_code,
+                    }
+                    for item in workflow
+                ],
+            },
+            started_at=now,
+            finished_at=now,
+        )
+        self._session.add(run)
+        await self._session.flush((run,))
         self._session.add_all(
             [
                 EvidenceCitationModel(
@@ -142,6 +529,8 @@ class SqlChatStore(ChatStore):
                     effective_until=item.effective_until,
                     extraction_method=item.extraction_method,
                     rank=rank,
+                    display_name=item.name,
+                    description=item.description,
                 )
                 for rank, item in enumerate(evidence, start=1)
             ]
@@ -152,6 +541,9 @@ class SqlChatStore(ChatStore):
             response_message_id=response_message_id,
             answer=answer,
             evidence=tuple(evidence),
+            route=resolved_route or default_chat_route(),
+            workflow=tuple(workflow),
+            evidence_ranking=tuple(evidence_ranking),
         )
 
 

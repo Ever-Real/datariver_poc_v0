@@ -20,12 +20,32 @@ class ClassificationAccessPosture(StrEnum):
     STATIC_FLOOR = "STATIC_FLOOR"
 
 
+class InferenceStage(StrEnum):
+    COMPOSITION = "composition"
+    EMBEDDING = "embedding"
+    RERANKER = "reranker"
+
+
+@dataclass(frozen=True, slots=True)
+class InferenceRuntimeBinding:
+    """Exact deployment identity for one configured external inference stage."""
+
+    stage: InferenceStage
+    provider_profile_version_id: UUID | None
+    server_route_key: str
+    provider_identity: str
+    model_identity: str
+    deployment_identity: str
+
+
 @dataclass(frozen=True, slots=True)
 class ClassificationRuleRecord:
     classification: Classification
     search_mode: SearchMode
     chat_mode: ChatMode
     provider_profile_version_id: UUID | None
+    embedding_provider_profile_version_id: UUID | None = None
+    reranker_provider_profile_version_id: UUID | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -43,6 +63,10 @@ class ProviderProfileRecord:
     provider_profile_version_id: UUID
     state: str
     kind: str
+    server_route_key: str
+    provider_identity: str
+    model_identity: str
+    deployment_identity: str
     jurisdiction: str
     maximum_classification: Classification
     residency_attestation_observed_at: datetime
@@ -76,6 +100,7 @@ class ClassificationAccessSnapshot:
     restricted_system_ids: frozenset[UUID]
     restricted_domain_ids: frozenset[UUID]
     nearest_validity_boundary: datetime | None
+    provider_profiles: tuple[ProviderProfileRecord, ...] = ()
     admin_quarantine_review: bool = False
 
     def rule_for(self, classification: Classification) -> ClassificationRuleRecord:
@@ -158,6 +183,7 @@ def static_classification_access_floor() -> ClassificationAccessSnapshot:
         restricted_system_ids=frozenset(),
         restricted_domain_ids=frozenset(),
         nearest_validity_boundary=None,
+        provider_profiles=(),
     )
 
 
@@ -191,36 +217,54 @@ def _governed_snapshot(
             search_mode=record.search_mode,
             chat_mode=record.chat_mode,
             provider_profile_version_id=record.provider_profile_version_id,
+            embedding_provider_profile_version_id=(record.embedding_provider_profile_version_id),
+            reranker_provider_profile_version_id=record.reranker_provider_profile_version_id,
         )
         effective_chat_mode = rule.chat_mode
         effective_profile_id = rule.provider_profile_version_id
-        profile = (
-            profile_records.get(rule.provider_profile_version_id)
-            if rule.provider_profile_version_id is not None
-            else None
+        effective_embedding_profile_id = rule.embedding_provider_profile_version_id
+        effective_reranker_profile_id = rule.reranker_provider_profile_version_id
+        referenced_profiles = tuple(
+            profile_records.get(profile_id)
+            for profile_id in (
+                rule.provider_profile_version_id,
+                rule.embedding_provider_profile_version_id,
+                rule.reranker_provider_profile_version_id,
+            )
+            if profile_id is not None
         )
         if rule.chat_mode is not ChatMode.DENY:
-            if profile is None or not _provider_is_eligible(
-                profile,
-                rule=rule,
-                required_jurisdiction=jurisdiction,
-                now=now,
+            if not referenced_profiles or any(
+                profile is None
+                or not _provider_is_eligible(
+                    profile,
+                    rule=rule,
+                    required_jurisdiction=jurisdiction,
+                    now=now,
+                )
+                for profile in referenced_profiles
             ):
                 effective_chat_mode = ChatMode.DENY
                 effective_profile_id = None
+                effective_embedding_profile_id = None
+                effective_reranker_profile_id = None
             else:
-                provider_boundaries.extend(
-                    (
-                        profile.residency_attestation_expires_at,
-                        profile.zero_retention_attestation_expires_at,
+                for profile in referenced_profiles:
+                    assert profile is not None
+                    provider_boundaries.extend(
+                        (
+                            profile.residency_attestation_expires_at,
+                            profile.zero_retention_attestation_expires_at,
+                        )
                     )
-                )
         rules.append(
             ClassificationRuleRecord(
                 classification=rule.classification,
                 search_mode=rule.search_mode,
                 chat_mode=effective_chat_mode,
                 provider_profile_version_id=effective_profile_id,
+                embedding_provider_profile_version_id=effective_embedding_profile_id,
+                reranker_provider_profile_version_id=effective_reranker_profile_id,
             )
         )
 
@@ -259,6 +303,9 @@ def _governed_snapshot(
         restricted_system_ids=frozenset(systems),
         restricted_domain_ids=frozenset(domains),
         nearest_validity_boundary=min(boundaries, default=None),
+        provider_profiles=tuple(
+            profile_records[key] for key in sorted(profile_records, key=lambda value: value.int)
+        ),
     )
 
 

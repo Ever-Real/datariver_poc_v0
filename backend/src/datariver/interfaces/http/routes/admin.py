@@ -12,6 +12,7 @@ from sqlalchemy import exists, func, or_, select, text, tuple_
 from sqlalchemy.ext.asyncio import AsyncSession
 from yaml.tokens import AliasToken, AnchorToken  # type: ignore[import-untyped]
 
+from datariver.application.classification_access import InferenceRuntimeBinding
 from datariver.application.dto import MembershipRenewalRecord
 from datariver.application.identity_admin import IdentityUserDraft
 from datariver.application.services.admin_access import AdminAccessService
@@ -67,8 +68,16 @@ from datariver.infrastructure.db.models.platform import (
     WorkspaceMembershipModel,
 )
 from datariver.infrastructure.db.rls import set_security_context
+from datariver.infrastructure.llm.runtime_binding import (
+    resolve_composition_runtime_binding,
+    resolve_embedding_runtime_binding,
+    resolve_reranker_runtime_binding,
+)
 from datariver.infrastructure.secrets import SecretResolver
-from datariver.infrastructure.system_configuration_probe import probe_system_configuration
+from datariver.infrastructure.system_configuration_probe import (
+    probe_oidc_jwks,
+    probe_system_configuration,
+)
 from datariver.infrastructure.system_configuration_runtime import (
     validate_runtime_system_configuration,
 )
@@ -95,6 +104,10 @@ from datariver.interfaces.http.schemas import (
     IdentityUserProvisionResponse,
     MembershipAccessDocumentRequest,
     MembershipAccessUpdateResponse,
+    MembershipChangeRequestActivityListResponse,
+    MembershipChangeRequestActivityResponse,
+    MembershipOwnedTableListResponse,
+    MembershipOwnedTableResponse,
     MembershipRenewalCreateRequest,
     MembershipRenewalDecisionRequest,
     MembershipRenewalListResponse,
@@ -113,6 +126,8 @@ from datariver.interfaces.http.schemas import (
     SystemConfigurationVersionListResponse,
     SystemConfigurationVersionResponse,
     SystemConnectionRequirementResponse,
+    SystemCreateRequest,
+    SystemDirectoryAssigneeResponse,
     SystemDirectoryEntryResponse,
     SystemDirectoryListResponse,
     WorkspaceMembershipAccessResponse,
@@ -147,12 +162,14 @@ def _membership_renewal_response(
 
 
 _BOOTSTRAP_SYSTEM_CONFIGURATION = (
+    ("PLATFORM_RUNTIME", "PLATFORM_RUNTIME", "DataRiver Runtime"),
     ("POSTGRESQL", "POSTGRESQL", "PostgreSQL"),
     ("OIDC_IDENTITY", "OIDC_IDENTITY", "OIDC Identity"),
+    ("RETENTION_ARCHIVE", "RETENTION_ARCHIVE", "Retention and archive"),
 )
 _CONNECTOR_SYSTEM_CONFIGURATION = (
-    ("DATAHUB_GMS", "DATAHUB", "DataHub GMS"),
-    ("DATAHUB_FRONTEND", "DATAHUB_FRONTEND", "DataHub Frontend"),
+    ("DATAHUB_GMS", "DATAHUB", "DataHub (Metadata)"),
+    ("DATAHUB_FRONTEND", "DATAHUB_FRONTEND", "DataHub (Frontend)"),
     ("AIRFLOW", "AIRFLOW", "Airflow"),
     ("REDIS_CACHE", "REDIS_CACHE", "Redis Cache"),
     ("REDIS_DELIVERY", "REDIS_DELIVERY", "Redis Delivery"),
@@ -165,6 +182,266 @@ _CONNECTOR_SYSTEM_CONFIGURATION = (
     ("GRAFANA_DASHBOARD", "GRAFANA_DASHBOARD", "Grafana Dashboard"),
 )
 _SYSTEM_CONFIGURATION = _BOOTSTRAP_SYSTEM_CONFIGURATION + _CONNECTOR_SYSTEM_CONFIGURATION
+_SYSTEM_ENVIRONMENT_KEYS: dict[str, tuple[str, ...]] = {
+    "PLATFORM_RUNTIME": (
+        "APP_ENV",
+        "APP_NAME",
+        "APP_LOG_LEVEL",
+        "APP_PUBLIC_ORIGIN",
+        "APP_CORS_ORIGINS",
+        "APP_TRUSTED_HOSTS",
+        "DEPLOYMENT_TIER",
+        "DEPLOYMENT_EVIDENCE_REFERENCE",
+        "SEED_PROFILE",
+    ),
+    "POSTGRESQL": (
+        "POSTGRES_DB",
+        "POSTGRES_USER",
+        "DATABASE_URL",
+        "DATABASE_SECRET_REF",
+        "MIGRATION_DATABASE_URL",
+        "MIGRATION_DATABASE_SECRET_REF",
+        "RELAY_DATABASE_URL",
+        "RELAY_DATABASE_SECRET_REF",
+        "UPLOAD_DATABASE_URL",
+        "UPLOAD_DATABASE_SECRET_REF",
+        "GOVERNANCE_DATABASE_URL",
+        "GOVERNANCE_DATABASE_SECRET_REF",
+        "KNOWLEDGE_DATABASE_URL",
+        "KNOWLEDGE_DATABASE_SECRET_REF",
+        "EXPORT_DATABASE_URL",
+        "EXPORT_DATABASE_SECRET_REF",
+        "RETENTION_SCHEDULER_DATABASE_URL",
+        "RETENTION_SCHEDULER_DATABASE_SECRET_REF",
+        "ARCHIVE_DATABASE_URL",
+        "ARCHIVE_DATABASE_SECRET_REF",
+        "BOOTSTRAP_DATABASE_URL",
+        "BOOTSTRAP_DATABASE_SECRET_REF",
+        "DATABASE_POOL_SIZE",
+        "DATABASE_POOL_MAX_OVERFLOW",
+        "DATABASE_POOL_TIMEOUT_SECONDS",
+        "DATABASE_READINESS_TIMEOUT_SECONDS",
+        "WORKER_DATABASE_POOL_SIZE",
+        "WORKER_DATABASE_POOL_MAX_OVERFLOW",
+        "WORKER_DATABASE_POOL_TIMEOUT_SECONDS",
+    ),
+    "OIDC_IDENTITY": (
+        "OIDC_ISSUER",
+        "OIDC_AUDIENCE",
+        "OIDC_JWKS_URL",
+        "OIDC_ALLOWED_ALGORITHMS",
+        "OIDC_PUBLIC_AUTHORITY",
+        "OIDC_PUBLIC_ORIGIN",
+        "OIDC_CLIENT_ID",
+        "OIDC_HARDWARE_ACR_VALUES",
+        "OIDC_STEP_UP_ACR",
+        "OIDC_HARDWARE_AMR_VALUES",
+        "OIDC_HARDWARE_WEBAUTHN_ENABLED",
+        "OIDC_PASSWORD_REAUTH_ACR_VALUES",
+        "OIDC_PASSWORD_REAUTH_REQUEST_ACR",
+        "OIDC_PASSWORD_AMR_VALUES",
+        "WORKSPACE_SELECTION_ENABLED",
+        "IDENTITY_ADMIN_ENABLED",
+        "IDENTITY_ADMIN_BASE_URL",
+        "IDENTITY_ADMIN_REALM",
+        "IDENTITY_ADMIN_CLIENT_ID",
+        "IDENTITY_ADMIN_CLIENT_SECRET_REF",
+        "IDENTITY_ADMIN_TIMEOUT_SECONDS",
+        "IDENTITY_PASSWORD_CHANGE_ACTION_ENABLED",
+        "HIGH_RISK_AUTH_MAX_AGE_SECONDS",
+        "ADMIN_PASSWORD_FALLBACK_ENABLED",
+        "ADMIN_PASSWORD_FALLBACK_TTL_SECONDS",
+        "SYSTEM_CONFIGURATION_PROBE_ALLOWED_HOSTS",
+    ),
+    "RETENTION_ARCHIVE": (
+        "EVENT_RETENTION_DAYS",
+        "RETENTION_ARCHIVE_EXECUTION_ENABLED",
+        "RETENTION_EXECUTION_CONTROL_FILE",
+        "RETENTION_WORKSPACE_IDS",
+        "RETENTION_CLAIM_BATCH_SIZE",
+        "RETENTION_LEASE_SECONDS",
+        "RETENTION_MAXIMUM_ATTEMPTS",
+        "RETENTION_WORKER_DATABASE_POOL_SIZE",
+        "RETENTION_WORKER_DATABASE_POOL_MAX_OVERFLOW",
+        "RETENTION_METRICS_PORT",
+        "RETENTION_WORKER_SUBJECT_ID",
+    ),
+    "DATAHUB_GMS": (
+        "DATAHUB_BASE_URL",
+        "DATAHUB_SECRET_REF",
+        "DATAHUB_EXPECTED_VERSION",
+        "DATAHUB_ALLOWED_VERSIONS",
+        "DATAHUB_VERSION_ENFORCEMENT",
+        "DATAHUB_VERSION_PROBE_TTL_SECONDS",
+        "DATAHUB_TIMEOUT_SECONDS",
+        "DATAHUB_MAX_CONCURRENCY",
+        "DATAHUB_QUEUE_TIMEOUT_SECONDS",
+        "DATAHUB_CIRCUIT_FAILURE_THRESHOLD",
+        "DATAHUB_CIRCUIT_OPEN_SECONDS",
+        "DATAHUB_STALE_TTL_SECONDS",
+        "DATAHUB_CATALOG_PIT_VERIFIED",
+        "DATAHUB_CATALOG_PIT_EVIDENCE_REFERENCE",
+        "DATARIVER_CATALOG_SYNC_MAX_PAGES",
+        "GOVERNANCE_APPLY_LEASE_SECONDS",
+        "GOVERNANCE_APPLY_MAXIMUM_ATTEMPTS",
+        "GOVERNANCE_WORKER_SUBJECT_ID",
+        "SYSTEM_CONFIGURATION_PROBE_ALLOWED_HOSTS",
+    ),
+    "DATAHUB_FRONTEND": (
+        "UI_DATAHUB_URL",
+        "DATAHUB_EMBED_BASE_URL",
+        "DATAHUB_EMBED_ENABLED",
+        "SYSTEM_CONFIGURATION_PROBE_ALLOWED_HOSTS",
+    ),
+    "AIRFLOW": (
+        "UI_AIRFLOW_URL",
+        "AIRFLOW_WORKSPACE_ID",
+        "SYSTEM_CONFIGURATION_PROBE_ALLOWED_HOSTS",
+    ),
+    "REDIS_CACHE": (
+        "REDIS_CACHE_URL",
+        "REDIS_CACHE_SECRET_REF",
+        "CACHE_DEFAULT_TTL_SECONDS",
+        "CACHE_MAX_VALUE_BYTES",
+        "CATALOG_SEARCH_CACHE_TTL_SECONDS",
+        "CATALOG_SEARCH_MINIMUM_QUERY_LENGTH",
+        "SYSTEM_CONFIGURATION_PROBE_ALLOWED_HOSTS",
+    ),
+    "REDIS_DELIVERY": (
+        "REDIS_DELIVERY_URL",
+        "REDIS_DELIVERY_SECRET_REF",
+        "OUTBOX_LEASE_SECONDS",
+        "OUTBOX_MAXIMUM_ATTEMPTS",
+        "WORKER_POLL_SECONDS",
+        "SYSTEM_CONFIGURATION_PROBE_ALLOWED_HOSTS",
+    ),
+    "S3_STORAGE": (
+        "S3_ENDPOINT_URL",
+        "S3_PUBLIC_ENDPOINT_URL",
+        "S3_PUBLIC_ORIGIN",
+        "S3_REGION",
+        "S3_BUCKET_QUARANTINE",
+        "S3_BUCKET_ACCEPTED",
+        "S3_BUCKET_EXPORTS",
+        "S3_BUCKET_FILEFOLDER",
+        "S3_BUCKET_INFOSCHEMA",
+        "S3_ACCESS_KEY_FILE",
+        "S3_SECRET_KEY_FILE",
+        "S3_EXPORT_ACCESS_KEY_FILE",
+        "S3_EXPORT_SECRET_KEY_FILE",
+        "S3_KNOWLEDGE_ACCESS_KEY_FILE",
+        "S3_KNOWLEDGE_SECRET_KEY_FILE",
+        "S3_CORS_MANAGEMENT_MODE",
+        "S3_ARCHIVE_ENDPOINT_URL",
+        "S3_ARCHIVE_REGION",
+        "S3_ARCHIVE_BUCKET",
+        "S3_ARCHIVE_PREFIX",
+        "S3_ARCHIVE_ACCESS_KEY_FILE",
+        "S3_ARCHIVE_SECRET_KEY_FILE",
+        "S3_ARCHIVE_ENCRYPTION_PROFILE_FINGERPRINT",
+        "S3_ARCHIVE_WORKER_PRINCIPAL_FINGERPRINT",
+        "PRESIGNED_URL_TTL_SECONDS",
+        "CATALOG_EXPORT_WORKER_ENABLED",
+        "CATALOG_EXPORT_ACCESS_TTL_SECONDS",
+        "CATALOG_EXPORT_DOWNLOAD_TTL_SECONDS",
+        "CATALOG_EXPORT_LEASE_SECONDS",
+        "CATALOG_EXPORT_MAXIMUM_ATTEMPTS",
+        "CATALOG_EXPORT_PAGE_SIZE",
+        "CATALOG_EXPORT_MAXIMUM_ROWS",
+        "CATALOG_EXPORT_MAXIMUM_BYTES",
+        "UPLOAD_LEASE_SECONDS",
+        "UPLOAD_MAXIMUM_ATTEMPTS",
+        "UPLOAD_VALIDATION_LEASE_SECONDS",
+        "UPLOAD_VALIDATION_MAXIMUM_ATTEMPTS",
+        "BULK_PREPARATION_LEASE_SECONDS",
+        "BULK_PREPARATION_MAXIMUM_ATTEMPTS",
+        "EXPORT_WORKER_SUBJECT_ID",
+        "RETENTION_WORKER_SUBJECT_ID",
+        "WORKER_POLL_SECONDS",
+        "SYSTEM_CONFIGURATION_PROBE_ALLOWED_HOSTS",
+    ),
+    "LLM_CHAT_MODEL": (
+        "LOCAL_INFERENCE_SOURCE_HOST_ENABLED",
+        "LOCAL_OLLAMA_CHAT_ENABLED",
+        "LOCAL_OLLAMA_CHAT_BASE_URL",
+        "LOCAL_OLLAMA_CHAT_MODEL",
+        "LOCAL_OLLAMA_CHAT_TIMEOUT_SECONDS",
+        "LOCAL_OLLAMA_CHAT_CONTEXT_TOKENS",
+        "INTRANET_OPENAI_COMPATIBLE_ALLOWED_HOSTS",
+        "INTRANET_OPENAI_COMPATIBLE_CHAT_ENABLED",
+        "INTRANET_OPENAI_COMPATIBLE_CHAT_BASE_URL",
+        "INTRANET_OPENAI_COMPATIBLE_CHAT_MODEL",
+        "INTRANET_OPENAI_COMPATIBLE_CHAT_API_KEY_SECRET_REF",
+        "INTRANET_OPENAI_COMPATIBLE_CHAT_TIMEOUT_SECONDS",
+        "INTRANET_OPENAI_COMPATIBLE_CHAT_CONTEXT_TOKENS",
+        "CHAT_EPHEMERAL_ADMIN_WITHOUT_RETENTION_ENABLED",
+        "CHAT_RATE_LIMIT_REQUESTS_PER_MINUTE",
+        "CHAT_RATE_LIMIT_TOKENS_PER_MINUTE",
+        "CHAT_COMPOSITION_PROVIDER_PROFILE_VERSION_ID",
+        "SYSTEM_CONFIGURATION_PROBE_ALLOWED_HOSTS",
+        "SYSTEM_CONFIGURATION_SECRET_ROOT",
+    ),
+    "LLM_EMBEDDING": (
+        "LOCAL_INFERENCE_SOURCE_HOST_ENABLED",
+        "LOCAL_OLLAMA_EMBEDDING_ENABLED",
+        "LOCAL_OLLAMA_EMBEDDING_BASE_URL",
+        "LOCAL_OLLAMA_EMBEDDING_MODEL",
+        "LOCAL_OLLAMA_EMBEDDING_TIMEOUT_SECONDS",
+        "INTRANET_OPENAI_COMPATIBLE_ALLOWED_HOSTS",
+        "INTRANET_OPENAI_COMPATIBLE_EMBEDDING_ENABLED",
+        "INTRANET_OPENAI_COMPATIBLE_EMBEDDING_BASE_URL",
+        "INTRANET_OPENAI_COMPATIBLE_EMBEDDING_MODEL",
+        "INTRANET_OPENAI_COMPATIBLE_EMBEDDING_API_KEY_SECRET_REF",
+        "INTRANET_OPENAI_COMPATIBLE_EMBEDDING_TIMEOUT_SECONDS",
+        "CHAT_EMBEDDING_PROVIDER_PROFILE_VERSION_ID",
+        "SYSTEM_CONFIGURATION_PROBE_ALLOWED_HOSTS",
+        "SYSTEM_CONFIGURATION_SECRET_ROOT",
+    ),
+    "LLM_RERANKER": (
+        "LOCAL_INFERENCE_SOURCE_HOST_ENABLED",
+        "LOCAL_LLAMA_CPP_RERANKER_ENABLED",
+        "LOCAL_LLAMA_CPP_RERANKER_BASE_URL",
+        "LOCAL_LLAMA_CPP_RERANKER_MODEL",
+        "LOCAL_LLAMA_CPP_RERANKER_TIMEOUT_SECONDS",
+        "LOCAL_LLAMA_CPP_RERANKER_TOP_N",
+        "CHAT_RERANKER_PROVIDER_PROFILE_VERSION_ID",
+        "SYSTEM_CONFIGURATION_PROBE_ALLOWED_HOSTS",
+        "SYSTEM_CONFIGURATION_SECRET_ROOT",
+    ),
+    "NEO4J": (
+        "NEO4J_PROJECTION_ENABLED",
+        "NEO4J_URI",
+        "NEO4J_ALLOWED_HOSTS",
+        "NEO4J_DATABASE",
+        "NEO4J_AUTH_SECRET_REF",
+        "NEO4J_CONNECTION_TIMEOUT_SECONDS",
+        "NEO4J_MAXIMUM_CONNECTION_POOL_SIZE",
+        "NEO4J_HTTP_PORT",
+        "NEO4J_BOLT_PORT",
+        "UI_GRAPH_URL",
+        "KNOWLEDGE_PIPELINE_ENABLED",
+        "KNOWLEDGE_SOURCE_WORKER_ENABLED",
+        "KNOWLEDGE_SOURCE_JOB_MAXIMUM_ATTEMPTS",
+        "KNOWLEDGE_SOURCE_WORKER_LEASE_SECONDS",
+        "KNOWLEDGE_SOURCE_WORKER_POLL_SECONDS",
+        "KNOWLEDGE_SOURCE_MEMORY_SPOOL_BYTES",
+        "KNOWLEDGE_SOURCE_SPOOL_DIRECTORY",
+        "KNOWLEDGE_WORKER_SUBJECT_ID",
+        "SYSTEM_CONFIGURATION_PROBE_ALLOWED_HOSTS",
+        "SYSTEM_CONFIGURATION_SECRET_ROOT",
+    ),
+    "PROMETHEUS": (
+        "UI_PROMETHEUS_URL",
+        "SYSTEM_CONFIGURATION_PROBE_ALLOWED_HOSTS",
+    ),
+    "GRAFANA_DASHBOARD": (
+        "UI_GRAFANA_URL",
+        "GRAFANA_EMBED_BASE_URL",
+        "GRAFANA_EMBED_ENABLED",
+        "GRAFANA_EMBED_EVIDENCE_REFERENCE",
+        "SYSTEM_CONFIGURATION_PROBE_ALLOWED_HOSTS",
+    ),
+}
 _CONFIGURATION_BY_ID = {
     system_id: (service_key, label)
     for system_id, service_key, label in _CONNECTOR_SYSTEM_CONFIGURATION
@@ -178,11 +455,14 @@ _RUNTIME_RESTART_SCOPE = {
     "S3_STORAGE": "API_AND_WORKERS",
     "LLM_CHAT_MODEL": "API_ONLY",
     "LLM_EMBEDDING": "API_AND_WORKERS",
+    "LLM_RERANKER": "API_ONLY",
     "NEO4J": "API_AND_WORKERS",
     "PROMETHEUS": "API_ONLY",
     "GRAFANA_DASHBOARD": "API_ONLY",
 }
 _SYSTEM_CONFIGURATION_TEMPLATES: dict[str, dict[str, Any]] = {
+    "PLATFORM_RUNTIME": {"options": {}},
+    "RETENTION_ARCHIVE": {"options": {}},
     "DATAHUB_GMS": {
         "base_url": "",
         "secret_references": dict(canonical_secret_references("DATAHUB_GMS")),
@@ -253,15 +533,10 @@ _SYSTEM_CONFIGURATION_TEMPLATES: dict[str, dict[str, Any]] = {
         "options": {"api_style": "openai_compatible", "timeout_seconds": 60},
     },
     "LLM_RERANKER": {
-        "connection_mode": "INTRANET_RERANK_V1",
+        "connection_mode": "LOCAL_LLAMA_CPP",
         "base_url": "",
         "model": "",
-        "secret_references": dict(
-            canonical_secret_references(
-                "LLM_RERANKER",
-                connection_mode="INTRANET_RERANK_V1",
-            )
-        ),
+        "secret_references": {},
         "options": {"api_style": "rerank_v1", "timeout_seconds": 60, "top_n": 10},
     },
     "NEO4J": {
@@ -278,6 +553,12 @@ _SYSTEM_CONFIGURATION_TEMPLATES: dict[str, dict[str, Any]] = {
 }
 
 _SYSTEM_METADATA: dict[str, dict[str, Any]] = {
+    "PLATFORM_RUNTIME": {
+        "category": "PLATFORM",
+        "requirement": "BOOTSTRAP_REQUIRED",
+        "description": "Application identity, public origin and deployment evidence options.",
+        "fields": (),
+    },
     "POSTGRESQL": {
         "category": "PLATFORM",
         "requirement": "BOOTSTRAP_REQUIRED",
@@ -299,12 +580,18 @@ _SYSTEM_METADATA: dict[str, dict[str, Any]] = {
             ("audience", "API audience", True, False, "datariver-api"),
         ),
     },
+    "RETENTION_ARCHIVE": {
+        "category": "STORAGE",
+        "requirement": "FEATURE_CONNECTOR",
+        "description": "Fail-closed retention scheduling and immutable archive execution controls.",
+        "fields": (),
+    },
     "DATAHUB_GMS": {
         "category": "CATALOG",
         "requirement": "CORE_CONNECTOR",
         "description": "Authoritative catalog provider for enrichment and governed apply.",
         "fields": (
-            ("base_url", "GMS endpoint", True, False, "https://datahub.example/api"),
+            ("base_url", "Metadata endpoint", True, False, "https://datahub.example/api"),
             ("token", "Service token reference", True, True, None),
             ("expected_version", "Expected version", True, False, "v1.6.0"),
         ),
@@ -356,23 +643,38 @@ _SYSTEM_METADATA: dict[str, dict[str, Any]] = {
         "category": "AI",
         "requirement": "FEATURE_CONNECTOR",
         "description": "Optional approved OpenAI-compatible Chat model endpoint.",
-        "fields": (("base_url", "Model endpoint", True, False, "https://llm.example/v1"),),
+        "fields": (
+            ("connection_mode", "Connection Mode", True, False, "LOCAL_OLLAMA"),
+            ("base_url", "Model endpoint", True, False, "https://llm.example/v1"),
+            ("model", "Model Name", True, False, None),
+            ("timeout_seconds", "Timeout (Seconds)", False, False, "60"),
+            ("context_tokens", "Context Tokens", False, False, "8192"),
+        ),
     },
     "LLM_EMBEDDING": {
         "category": "AI",
         "requirement": "FEATURE_CONNECTOR",
         "description": "Optional approved OpenAI-compatible embedding endpoint.",
-        "fields": (("base_url", "Embedding endpoint", True, False, "https://llm.example/v1"),),
+        "fields": (
+            ("connection_mode", "Connection Mode", True, False, "LOCAL_OLLAMA"),
+            ("base_url", "Embedding endpoint", True, False, "https://llm.example/v1"),
+            ("model", "Model Name", True, False, None),
+            ("timeout_seconds", "Timeout (Seconds)", False, False, "60"),
+        ),
     },
     "LLM_RERANKER": {
         "category": "AI",
         "requirement": "FEATURE_CONNECTOR",
         "description": (
-            "Optional private fixed /v1/rerank endpoint; this is not an OpenAI-compatible API."
+            "Optional fixed /v1/rerank endpoint. Local development uses an Ollama-owned "
+            "GGUF through llama-server; private deployments use the governed intranet contract."
         ),
         "fields": (
+            ("connection_mode", "Connection Mode", True, False, "LOCAL_LLAMA_CPP"),
             ("base_url", "Reranker endpoint", True, False, "https://rerank.example/v1"),
+            ("model", "Model Name", True, False, None),
             ("api_key", "Reranker API-key reference", True, True, None),
+            ("top_n", "Top N", False, False, "10"),
         ),
     },
     "NEO4J": {
@@ -596,15 +898,21 @@ def _render_yaml(document: object) -> str:
     )
 
 
-def _configuration_endpoint(document: Mapping[str, Any]) -> str | None:
+def _configuration_endpoint(document: Mapping[str, Any], is_draft: bool = False) -> str | None:
     for key in ("url", "endpoint", "base_url"):
         value = document.get(key)
         if isinstance(value, str) and value.strip():
             normalized = value.strip()
+            if is_draft and ("<" in normalized or ">" in normalized):
+                return normalized
             parsed = urlsplit(normalized)
             if parsed.scheme not in {"http", "https"} or parsed.hostname is None:
+                if is_draft:
+                    return normalized
                 raise ValidationError("System configuration URL values must use HTTP or HTTPS.")
             if parsed.username is not None or parsed.password is not None:
+                if is_draft:
+                    return normalized
                 raise ValidationError("Credentials must not be embedded in a system URL.")
             if parsed.query or parsed.fragment:
                 raise ValidationError("A system base URL must not contain a query or fragment.")
@@ -711,7 +1019,11 @@ def _validate_nested_configuration_schema(system_id: str, document: Mapping[str,
                 )
 
 
-def _validate_system_configuration(system_id: str, document: Mapping[str, Any]) -> str | None:
+def _validate_system_configuration(
+    system_id: str,
+    document: Mapping[str, Any],
+    is_draft: bool = False,
+) -> str | None:
     allowed_top_level = set(_SYSTEM_CONFIGURATION_TEMPLATES[system_id]) | {"auth_principal"}
     unknown_keys = sorted(set(document) - allowed_top_level)
     if unknown_keys:
@@ -753,7 +1065,7 @@ def _validate_system_configuration(system_id: str, document: Mapping[str, Any]) 
             )
         _require_canonical_secret_contract(system_id, secret_references)
         return url
-    endpoint = _configuration_endpoint(document)
+    endpoint = _configuration_endpoint(document, is_draft=is_draft)
     if endpoint is None:
         raise ValidationError("System configuration requires one non-empty HTTP endpoint.")
     if system_id.startswith("LLM_"):
@@ -791,21 +1103,42 @@ def _validate_system_configuration(system_id: str, document: Mapping[str, Any]) 
         )
     if system_id == "LLM_RERANKER":
         connection_mode = document.get("connection_mode")
-        if connection_mode != "INTRANET_RERANK_V1":
-            raise ValidationError("The reranker requires connection_mode=INTRANET_RERANK_V1.")
+        if connection_mode not in {"LOCAL_LLAMA_CPP", "INTRANET_RERANK_V1"}:
+            raise ValidationError("The reranker connection_mode is invalid.")
         parsed = urlsplit(endpoint)
-        if parsed.scheme != "https" or parsed.path.rstrip("/") != "/v1":
-            raise ValidationError("The private reranker requires an HTTPS endpoint ending in /v1.")
+        secret_references = _secret_references(document.get("secret_references", {}))
+        if connection_mode == "LOCAL_LLAMA_CPP":
+            if (
+                parsed.scheme != "http"
+                or parsed.hostname not in {"127.0.0.1", "host.docker.internal"}
+                or parsed.port != 11435
+                or parsed.path.rstrip("/") != "/v1"
+                or parsed.query
+                or parsed.fragment
+                or parsed.username is not None
+                or parsed.password is not None
+            ):
+                raise ValidationError(
+                    "The local llama.cpp reranker requires the fixed port-11435 /v1 endpoint."
+                )
+            if secret_references:
+                raise ValidationError(
+                    "The local llama.cpp reranker does not accept an API-key reference."
+                )
+        else:
+            if parsed.scheme != "https" or parsed.path.rstrip("/") != "/v1":
+                raise ValidationError(
+                    "The private reranker requires an HTTPS endpoint ending in /v1."
+                )
+            if set(secret_references) != {"api_key"}:
+                raise ValidationError(
+                    "The private reranker requires exactly one api_key secret reference."
+                )
         if options.get("api_style") != "rerank_v1":
             raise ValidationError("The reranker requires api_style=rerank_v1.")
         top_n = options.get("top_n")
         if not isinstance(top_n, int) or isinstance(top_n, bool) or not 1 <= top_n <= 100:
             raise ValidationError("The reranker top_n must be between 1 and 100.")
-        secret_references = _secret_references(document.get("secret_references", {}))
-        if set(secret_references) != {"api_key"}:
-            raise ValidationError(
-                "The private reranker requires exactly one api_key secret reference."
-            )
         _require_canonical_secret_contract(
             system_id,
             secret_references,
@@ -835,13 +1168,14 @@ def _role_mutation_event(
     event_type: str,
     role: AccessRoleModel,
     actor_id: UUID,
+    assurance: str,
     policy_decision_id: UUID,
     payload_hash: str | None = None,
 ) -> DomainEvent:
     payload: dict[str, object] = {
         "actor_id": str(actor_id),
         "policy_decision_id": str(policy_decision_id),
-        "assurance": "HARDWARE_WEBAUTHN",
+        "assurance": assurance,
         "role_key": role.role_key,
         "version": role.version,
     }
@@ -1086,13 +1420,12 @@ def _apply_role_payload(
 
 def _system_configuration_entries(
     settings: Settings,
-    profiles: Mapping[str, ExternalServiceProfileModel] = {},
-    versions: Mapping[tuple[UUID, int], ExternalServiceProfileVersionModel] = {},
 ) -> list[SystemConfigurationEntryResponse]:
-    development = settings.app_env == "development"
     deployment_configured = {
+        "PLATFORM_RUNTIME": True,
         "POSTGRESQL": True,
         "OIDC_IDENTITY": True,
+        "RETENTION_ARCHIVE": True,
         "DATAHUB_GMS": True,
         "DATAHUB_FRONTEND": settings.ui_datahub_url is not None,
         "AIRFLOW": settings.ui_airflow_url is not None,
@@ -1106,12 +1439,12 @@ def _system_configuration_entries(
             settings.local_ollama_embedding_enabled
             or settings.intranet_openai_compatible_embedding_enabled
         ),
-        "LLM_RERANKER": False,
+        "LLM_RERANKER": settings.local_llama_cpp_reranker_enabled,
         "NEO4J": settings.neo4j_projection_enabled,
         "PROMETHEUS": settings.ui_prometheus_url is not None,
         "GRAFANA_DASHBOARD": settings.ui_grafana_url is not None,
     }
-    deployment_secret_configured = {
+    deployment_secret_configured: dict[str, bool] = {
         "POSTGRESQL": bool(settings.database_secret_ref),
         "OIDC_IDENTITY": False,
         "DATAHUB_GMS": bool(settings.datahub_secret_ref),
@@ -1121,35 +1454,21 @@ def _system_configuration_entries(
         "NEO4J": bool(settings.neo4j_auth_secret_ref),
     }
     entries: list[SystemConfigurationEntryResponse] = []
-    for system_id, service_key, label in _SYSTEM_CONFIGURATION:
-        profile = profiles.get(service_key)
-        current_revision = versions.get((profile.id, profile.version)) if profile else None
-        activated_revision = (
-            versions.get((profile.id, profile.activated_version))
-            if profile and profile.activated_version is not None
-            else None
-        )
+    for system_id, _service_key, label in _SYSTEM_CONFIGURATION:
         restart_scope = _RUNTIME_RESTART_SCOPE.get(system_id, "NOT_IMPLEMENTED")
         runtime_supported = system_id in _RUNTIME_RESTART_SCOPE
-        applied_version = settings.system_configuration_runtime_versions.get(service_key)
-        configured = profile is not None and profile.active
-        if system_id in {"POSTGRESQL", "OIDC_IDENTITY"}:
+        if system_id in {
+            "PLATFORM_RUNTIME",
+            "POSTGRESQL",
+            "OIDC_IDENTITY",
+            "RETENTION_ARCHIVE",
+        }:
             state = "CONFIGURED"
             embedding_state = "NOT_APPLICABLE"
-            management_plane = "DEPLOYMENT"
-        elif development and configured:
-            state = "CONFIGURED" if configured else "NOT_CONFIGURED"
-            if system_id == "GRAFANA_DASHBOARD":
-                embedding_state = "AVAILABLE" if configured else "NOT_CONFIGURED"
-            else:
-                embedding_state = "NOT_APPLICABLE"
-            management_plane = "DEVELOPMENT_DATABASE"
         else:
             static_configured = deployment_configured.get(system_id, False)
             if static_configured:
                 state = "CONFIGURED"
-            elif system_id.startswith("LLM_"):
-                state = "GOVERNED_PROFILE_REQUIRED"
             else:
                 state = "NOT_CONFIGURED"
             if system_id == "GRAFANA_DASHBOARD":
@@ -1158,43 +1477,14 @@ def _system_configuration_entries(
                 )
             else:
                 embedding_state = "NOT_APPLICABLE"
-            management_plane = (
-                "GOVERNED_PROVIDER_PROFILE" if system_id.startswith("LLM_") else "DEPLOYMENT"
-            )
-        configuration_yaml = ""
-        display_yaml = ""
-        template_yaml = (
-            _render_yaml(_SYSTEM_CONFIGURATION_TEMPLATES[system_id])
-            if development and system_id in _SYSTEM_CONFIGURATION_TEMPLATES
+        management_plane = "DEPLOYMENT"
+        environment_template = "\n".join(f"{key}=" for key in _SYSTEM_ENVIRONMENT_KEYS[system_id])
+        effective_document = _deployment_display_document(settings, system_id)
+        effective_configuration_yaml = (
+            _render_yaml(_display_configuration(effective_document))
+            if effective_document is not None
             else ""
         )
-        if development and profile and profile.configuration_yaml:
-            document = _yaml_document(profile.configuration_yaml)
-            configuration_yaml = _render_yaml(_mask_configuration(document))
-            display_yaml = _render_yaml(_display_configuration(document))
-        secret_reference_configured = bool(profile and profile.secret_reference) or bool(
-            deployment_secret_configured.get(system_id, False)
-        )
-        if not settings.system_configuration_runtime_activation_enabled:
-            activation_state = "DEPLOYMENT_MANAGED"
-        elif system_id in {"POSTGRESQL", "OIDC_IDENTITY"}:
-            activation_state = "DEPLOYMENT_MANAGED"
-        elif profile is None and deployment_configured.get(system_id, False):
-            activation_state = "DEPLOYMENT_MANAGED"
-        elif profile is None:
-            activation_state = "NOT_CONFIGURED"
-        elif not runtime_supported:
-            activation_state = "RUNTIME_NOT_IMPLEMENTED"
-        elif current_revision is None or current_revision.test_status is None:
-            activation_state = "SAVED_UNTESTED"
-        elif current_revision.test_status != "AVAILABLE":
-            activation_state = "TEST_NOT_AVAILABLE"
-        elif profile.activated_version != profile.version:
-            activation_state = "TESTED"
-        elif applied_version == profile.activated_version:
-            activation_state = "APPLIED_TO_API_PROCESS"
-        else:
-            activation_state = "ACTIVATED_RESTART_REQUIRED"
         metadata = _SYSTEM_METADATA[system_id]
         requirements = [
             SystemConnectionRequirementResponse(
@@ -1216,26 +1506,35 @@ def _system_configuration_entries(
                 connection_requirements=requirements,
                 state=state,
                 management_plane=management_plane,
-                secret_reference_configured=secret_reference_configured,
+                secret_reference_configured=deployment_secret_configured.get(system_id, False),
                 embedding_state=embedding_state,
-                configuration_yaml=configuration_yaml,
-                template_yaml=template_yaml,
-                display_yaml=display_yaml,
-                version=profile.version if profile else 0,
-                configured_at=profile.updated_at if profile else None,
+                configuration_yaml="",
+                template_yaml="",
+                display_yaml=effective_configuration_yaml,
+                environment_template=environment_template,
+                effective_configuration_yaml=effective_configuration_yaml,
+                version=0,
+                configured_at=None,
                 runtime_supported=runtime_supported,
                 restart_scope=restart_scope,
-                activation_state=activation_state,
-                tested_version=(
-                    current_revision.configuration_version
-                    if current_revision and current_revision.test_status is not None
-                    else None
-                ),
-                test_status=current_revision.test_status if current_revision else None,
-                tested_at=current_revision.tested_at if current_revision else None,
-                activated_version=profile.activated_version if profile else None,
-                activated_at=activated_revision.activated_at if activated_revision else None,
-                applied_version=applied_version,
+                activation_state="DEPLOYMENT_MANAGED",
+                tested_version=None,
+                test_status=None,
+                tested_at=None,
+                activated_version=None,
+                activated_at=None,
+                applied_version=None,
+                is_core=system_id
+                in {
+                    "POSTGRESQL",
+                    "PLATFORM_RUNTIME",
+                    "OIDC_IDENTITY",
+                    "RETENTION_ARCHIVE",
+                    "DATAHUB_GMS",
+                    "DATAHUB_FRONTEND",
+                    "REDIS_CACHE",
+                    "REDIS_DELIVERY",
+                },
             )
         )
     return entries
@@ -1267,13 +1566,19 @@ def _require_system_configuration_runtime_activation(settings: Settings) -> None
 def _service(request: Request) -> AdminAccessService:
     container = get_container(request)
     authorization = AuthorizationService(
-        decision_writer=SqlDecisionWriter(container.database.session_factory)
+        decision_writer=SqlDecisionWriter(container.database.session_factory),
+        development_admin_password_bypass_enabled=(
+            container.settings.development_admin_password_bypass_enabled
+        ),
     )
     return AdminAccessService(
         lambda: SqlAdminAccessUnitOfWork(container.database.session_factory),
         authorization,
         fallback_enabled=container.settings.admin_password_fallback_enabled,
         fallback_ttl_seconds=container.settings.admin_password_fallback_ttl_seconds,
+        development_admin_password_bypass_enabled=(
+            container.settings.development_admin_password_bypass_enabled
+        ),
         development_system_configuration_enabled=container.settings.app_env == "development",
         identity_administration_enabled=container.identity_admin is not None,
     )
@@ -1411,6 +1716,82 @@ async def list_workspace_memberships(
     )
     return WorkspaceMembershipListResponse(
         items=[workspace_membership_summary_response(value) for value in page.items],
+        page=PageMeta(next_cursor=page.next_cursor, limit=limit),
+    )
+
+
+@router.get(
+    "/workspace-memberships/{target_subject_id}/change-requests",
+    response_model=MembershipChangeRequestActivityListResponse,
+)
+async def list_membership_change_request_activity(
+    target_subject_id: UUID,
+    request: Request,
+    context: ContextDep,
+    limit: Annotated[int, Query(ge=1, le=50)] = 25,
+    cursor: Annotated[str | None, Query(max_length=2000)] = None,
+) -> MembershipChangeRequestActivityListResponse:
+    page = await _service(request).list_membership_change_request_activity(
+        workspace_id=context.workspace_id,
+        target_subject_id=target_subject_id,
+        limit=limit,
+        cursor=cursor,
+        subject=context.subject,
+        environment=context.environment,
+        request_id=context.request_id,
+    )
+    return MembershipChangeRequestActivityListResponse(
+        items=[
+            MembershipChangeRequestActivityResponse(
+                change_request_id=item.change_request_id,
+                number=item.number,
+                title=item.title,
+                request_type=item.request_type,
+                state=item.state,
+                relationship=item.relationship,
+                classification=item.classification.name,
+                updated_at=item.updated_at,
+            )
+            for item in page.items
+        ],
+        page=PageMeta(next_cursor=page.next_cursor, limit=limit),
+    )
+
+
+@router.get(
+    "/workspace-memberships/{target_subject_id}/owned-tables",
+    response_model=MembershipOwnedTableListResponse,
+)
+async def list_membership_owned_tables(
+    target_subject_id: UUID,
+    request: Request,
+    context: ContextDep,
+    limit: Annotated[int, Query(ge=1, le=50)] = 25,
+    cursor: Annotated[str | None, Query(max_length=2000)] = None,
+) -> MembershipOwnedTableListResponse:
+    page = await _service(request).list_membership_owned_tables(
+        workspace_id=context.workspace_id,
+        target_subject_id=target_subject_id,
+        limit=limit,
+        cursor=cursor,
+        subject=context.subject,
+        environment=context.environment,
+        request_id=context.request_id,
+    )
+    return MembershipOwnedTableListResponse(
+        items=[
+            MembershipOwnedTableResponse(
+                asset_id=item.asset_id,
+                name=item.name,
+                platform=item.platform,
+                database_name=item.database_name,
+                schema_name=item.schema_name,
+                classification=item.classification.name,
+                source_version=item.source_version,
+                observed_at=item.observed_at,
+            )
+            for item in page.items
+        ],
         page=PageMeta(next_cursor=page.next_cursor, limit=limit),
     )
 
@@ -1665,6 +2046,7 @@ async def create_access_role(
                         event_type="iam.access_role.created.v1",
                         role=role,
                         actor_id=context.subject.subject_id,
+                        assurance=context.subject.authentication_assurance.value,
                         policy_decision_id=policy_decision_id,
                         payload_hash=canonical_json_hash(
                             _role_document(payload, data_access_rules=requested_rules)
@@ -1793,6 +2175,7 @@ async def update_access_role(
                         event_type="iam.access_role.updated.v1",
                         role=role,
                         actor_id=context.subject.subject_id,
+                        assurance=context.subject.authentication_assurance.value,
                         policy_decision_id=policy_decision_id,
                         payload_hash=canonical_json_hash(next_document),
                     )
@@ -1890,6 +2273,7 @@ async def deactivate_access_role(
                         event_type="iam.access_role.deactivated.v1",
                         role=role,
                         actor_id=context.subject.subject_id,
+                        assurance=context.subject.authentication_assurance.value,
                         policy_decision_id=policy_decision_id,
                     )
                 ]
@@ -1921,27 +2305,65 @@ async def list_systems(
     return SystemDirectoryListResponse(
         items=[
             SystemDirectoryEntryResponse(
-                system_id=value.system_id,
-                code=value.code,
-                name=value.name,
-                description=value.description,
-                active=value.active,
-                version=value.version,
-                assignee_count=value.assignee_count,
+                system_id=entry.system_id,
+                code=entry.code,
+                name=entry.name,
+                description=entry.description,
+                active=entry.active,
+                version=entry.version,
                 assignees=[
-                    {
-                        "subject_id": assignee.subject_id,
-                        "display_name": assignee.display_name,
-                        "responsibility": assignee.responsibility,
-                        "priority": assignee.priority,
-                        "active": assignee.active,
-                    }
-                    for assignee in value.assignees
+                    SystemDirectoryAssigneeResponse(
+                        subject_id=assignee.subject_id,
+                        responsibility=assignee.responsibility,
+                        priority=assignee.priority,
+                        display_name=assignee.display_name,
+                        active=assignee.active,
+                    )
+                    for assignee in entry.assignees
                 ],
+                assignee_count=entry.assignee_count,
             )
-            for value in page.items
+            for entry in page.items
         ],
         page=PageMeta(next_cursor=page.next_cursor, limit=limit),
+    )
+
+
+@router.post("/systems", response_model=SystemDirectoryEntryResponse)
+async def create_system(
+    request: Request,
+    context: ContextDep,
+    body: SystemCreateRequest,
+    idempotency_key: Annotated[str, Header(alias="Idempotency-Key", min_length=16, max_length=200)],
+) -> SystemDirectoryEntryResponse:
+    request_hash = canonical_json_hash(
+        {
+            "operation": "admin.system.create",
+            "code": body.code.strip(),
+            "name": body.name.strip(),
+            "description": body.description.strip(),
+        }
+    )
+    entry = await _service(request).create_system(
+        workspace_id=context.workspace_id,
+        code=body.code,
+        name=body.name,
+        description=body.description,
+        subject=context.subject,
+        environment=context.environment,
+        request_id=context.request_id,
+        idempotency_key=idempotency_key,
+        request_hash=request_hash,
+    )
+    return SystemDirectoryEntryResponse(
+        system_id=entry.system_id,
+        code=entry.code,
+        name=entry.name,
+        description=entry.description,
+        active=entry.active,
+        version=entry.version,
+        assignees=[],
+        assignee_count=0,
     )
 
 
@@ -2080,8 +2502,10 @@ async def patch_system_assignees(
 @router.get("/system-configuration", response_model=SystemConfigurationListResponse)
 async def list_system_configuration(
     request: Request,
+    response: Response,
     context: ContextDep,
 ) -> SystemConfigurationListResponse:
+    response.headers["Cache-Control"] = "no-store, private"
     admin_context = await _service(request).get_admin_read_context(
         workspace_id=context.workspace_id,
         subject=context.subject,
@@ -2091,52 +2515,9 @@ async def list_system_configuration(
     if "SYSTEM_CONFIGURATION_READ" not in admin_context.allowed_operations:
         raise ForbiddenError("System configuration access is not available for this administrator.")
     container = get_container(request)
-    profiles: dict[str, ExternalServiceProfileModel] = {}
-    versions: dict[tuple[UUID, int], ExternalServiceProfileVersionModel] = {}
-    if container.settings.app_env == "development":
-        async with container.database.session_factory() as session:
-            async with session.begin():
-                await set_security_context(
-                    session,
-                    workspace_id=context.workspace_id,
-                    subject_id=context.subject.subject_id,
-                )
-                profile_items = (
-                    await session.scalars(
-                        select(ExternalServiceProfileModel).where(
-                            ExternalServiceProfileModel.workspace_id == context.workspace_id
-                        )
-                    )
-                ).all()
-                profiles = {profile.service_key: profile for profile in profile_items}
-                revision_keys = _system_configuration_revision_keys(profile_items)
-                revision_items: list[ExternalServiceProfileVersionModel] = []
-                if revision_keys:
-                    revision_items = list(
-                        await session.scalars(
-                            select(ExternalServiceProfileVersionModel).where(
-                                ExternalServiceProfileVersionModel.workspace_id
-                                == context.workspace_id,
-                                tuple_(
-                                    ExternalServiceProfileVersionModel.profile_id,
-                                    ExternalServiceProfileVersionModel.configuration_version,
-                                ).in_(revision_keys),
-                            )
-                        )
-                    )
-                versions = {
-                    (revision.profile_id, revision.configuration_version): revision
-                    for revision in revision_items
-                }
-    return SystemConfigurationListResponse(
-        items=_system_configuration_entries(container.settings, profiles, versions)
-    )
+    return SystemConfigurationListResponse(items=_system_configuration_entries(container.settings))
 
 
-@router.get(
-    "/system-configuration/{system_id}/versions",
-    response_model=SystemConfigurationVersionListResponse,
-)
 async def list_system_configuration_versions(
     system_id: str,
     request: Request,
@@ -2145,6 +2526,9 @@ async def list_system_configuration_versions(
 ) -> SystemConfigurationVersionListResponse:
     """Return bounded non-secret SAVE/TEST/ACTIVATE history for one connector."""
 
+    raise ForbiddenError(
+        "Database-backed system configuration history is retired and deployment-managed."
+    )
     container = get_container(request)
     if container.settings.app_env != "development":
         raise ForbiddenError(
@@ -2221,20 +2605,6 @@ async def list_system_configuration_versions(
             )
 
 
-@router.put(
-    "/system-configuration/{system_id}",
-    response_model=SystemConfigurationEntryResponse,
-    responses={
-        200: {
-            "headers": {
-                "ETag": {
-                    "description": "Quoted configuration version after the update.",
-                    "schema": {"type": "string"},
-                }
-            }
-        }
-    },
-)
 async def update_system_configuration(
     system_id: str,
     payload: SystemConfigurationUpdateRequest,
@@ -2243,6 +2613,9 @@ async def update_system_configuration(
     context: ContextDep,
     if_match: Annotated[str, Header(alias="If-Match", max_length=100)],
 ) -> SystemConfigurationEntryResponse:
+    raise ForbiddenError(
+        "Database-backed system configuration writes are retired and deployment-managed."
+    )
     container = get_container(request)
     if container.settings.app_env != "development":
         raise ForbiddenError(
@@ -2397,10 +2770,55 @@ async def update_system_configuration(
     )
 
 
-@router.post(
-    "/system-configuration/{system_id}/test",
-    response_model=SystemConfigurationTestResponse,
-)
+async def test_draft_system_configuration(
+    system_id: str,
+    request: Request,
+    response: Response,
+    context: ContextDep,
+    body: SystemConfigurationUpdateRequest,
+) -> SystemConfigurationTestResponse:
+    """Probe an unsaved development profile."""
+    raise ForbiddenError(
+        "Browser-authored system configuration probes are retired and deployment-managed."
+    )
+    container = get_container(request)
+    if container.settings.app_env != "development":
+        raise ForbiddenError("System configuration testing is available only in development.")
+    if system_id not in _CONFIGURATION_BY_ID:
+        raise ValidationError("The system configuration identifier is invalid.")
+    admin_context = await _service(request).get_admin_read_context(
+        workspace_id=context.workspace_id,
+        subject=context.subject,
+        environment=context.environment,
+        request_id=context.request_id,
+    )
+    if "SYSTEM_CONFIGURATION_READ" not in admin_context.allowed_operations:
+        raise ForbiddenError(
+            "System configuration testing is not available for this administrator."
+        )
+
+    tested_document = _yaml_document(body.configuration_yaml)
+    _validate_system_configuration(system_id, tested_document, is_draft=True)
+    result = await probe_system_configuration(
+        system_id=system_id,
+        document=tested_document,
+        secret_resolver=SecretResolver(
+            virtual_secret_root=container.settings.system_configuration_secret_root
+        ),
+        allowed_hosts=container.settings.system_configuration_probe_allowed_hosts,
+    )
+    response.headers["Cache-Control"] = "no-store, private"
+    return SystemConfigurationTestResponse(
+        system_id=system_id,
+        status=result.status,
+        scope=result.scope,
+        latency_ms=result.latency_ms,
+        detail=result.detail,
+        configuration_version=None,
+        tested_at=utc_now(),
+    )
+
+
 async def test_system_configuration(
     system_id: str,
     request: Request,
@@ -2409,6 +2827,9 @@ async def test_system_configuration(
 ) -> SystemConfigurationTestResponse:
     """Probe only a saved development profile through one fixed connector route."""
 
+    raise ForbiddenError(
+        "Database-backed system configuration probes are retired and deployment-managed."
+    )
     container = get_container(request)
     if container.settings.app_env != "development":
         raise ForbiddenError(
@@ -2527,10 +2948,352 @@ async def test_system_configuration(
     )
 
 
+def _file_secret_reference(value: str) -> str:
+    """Render one deployment-owned secret path as the portable probe contract."""
+
+    return value if value.startswith("file:") else f"file:{value}"
+
+
+def _deployment_display_document(
+    settings: Settings,
+    system_id: str,
+) -> dict[str, Any] | None:
+    """Return the effective typed Settings view without returning credential values."""
+
+    if system_id == "POSTGRESQL":
+        parsed = urlsplit(settings.database_url)
+        return {
+            "database": parsed.path.lstrip("/"),
+            "host": parsed.hostname or "",
+            "port": parsed.port,
+            "role": parsed.username or "",
+            "secret_reference": settings.database_secret_ref,
+            "pool": {
+                "max_overflow": settings.database_pool_max_overflow,
+                "size": settings.database_pool_size,
+                "timeout_seconds": settings.database_pool_timeout_seconds,
+            },
+        }
+    if system_id == "OIDC_IDENTITY":
+        return {
+            "audience": settings.oidc_audience,
+            "hardware_webauthn_enabled": settings.oidc_hardware_webauthn_enabled,
+            "issuer": settings.oidc_issuer,
+            "jwks_url": settings.oidc_jwks_url,
+        }
+    return _deployment_configuration_document(settings, system_id)
+
+
+def _runtime_binding_document(
+    binding: InferenceRuntimeBinding | None,
+) -> dict[str, str | None] | None:
+    if binding is None:
+        return None
+    return {
+        "stage": binding.stage.value,
+        "provider_profile_version_id": (
+            str(binding.provider_profile_version_id)
+            if binding.provider_profile_version_id is not None
+            else None
+        ),
+        "server_route_key": binding.server_route_key,
+        "provider_identity": binding.provider_identity,
+        "model_identity": binding.model_identity,
+        "deployment_identity": binding.deployment_identity,
+    }
+
+
+def _deployment_configuration_document(
+    settings: Settings,
+    system_id: str,
+) -> dict[str, Any] | None:
+    """Build a non-secret probe document exclusively from server-owned runtime settings."""
+
+    if system_id == "DATAHUB_GMS":
+        return {
+            "base_url": settings.datahub_base_url,
+            "secret_references": {"token": settings.datahub_secret_ref},
+            "options": {
+                "allowed_versions": list(settings.datahub_allowed_versions),
+                "catalog_pit_evidence_reference": (
+                    settings.datahub_catalog_pit_evidence_reference or ""
+                ),
+                "catalog_pit_verified": settings.datahub_catalog_pit_verified,
+                "circuit_failure_threshold": settings.datahub_circuit_failure_threshold,
+                "circuit_open_seconds": settings.datahub_circuit_open_seconds,
+                "expected_version": settings.datahub_expected_version,
+                "maximum_concurrency": settings.datahub_max_concurrency,
+                "queue_timeout_seconds": settings.datahub_queue_timeout_seconds,
+                "stale_ttl_seconds": settings.datahub_stale_ttl_seconds,
+                "timeout_seconds": settings.datahub_timeout_seconds,
+                "version_enforcement": settings.datahub_version_enforcement,
+                "version_probe_ttl_seconds": settings.datahub_version_probe_ttl_seconds,
+            },
+        }
+    if system_id == "DATAHUB_FRONTEND" and settings.ui_datahub_url is not None:
+        return {
+            "url": str(settings.ui_datahub_url),
+            "options": {"embed_enabled": settings.datahub_embed_enabled},
+        }
+    if system_id == "AIRFLOW" and settings.ui_airflow_url is not None:
+        return {
+            "base_url": str(settings.ui_airflow_url),
+            "secret_references": {},
+            "options": {},
+        }
+    if system_id == "REDIS_CACHE":
+        return {
+            "url": settings.redis_cache_url,
+            "secret_references": {"password": settings.redis_cache_secret_ref},
+            "options": {"required_policy": "allkeys-lfu", "role": "CACHE"},
+        }
+    if system_id == "REDIS_DELIVERY":
+        return {
+            "url": settings.redis_delivery_url,
+            "secret_references": {"password": settings.redis_delivery_secret_ref},
+            "options": {"required_policy": "noeviction+aof", "role": "DELIVERY"},
+        }
+    if system_id == "S3_STORAGE":
+        return {
+            "endpoint": settings.s3_endpoint_url,
+            "public_endpoint": settings.s3_public_endpoint_url,
+            "region": settings.s3_region,
+            "buckets": {
+                "accepted": settings.s3_bucket_accepted,
+                "exports": settings.s3_bucket_exports,
+                "filefolder": settings.s3_bucket_filefolder or "",
+                "infoschema": settings.s3_bucket_infoschema or "",
+                "quarantine": settings.s3_bucket_quarantine,
+            },
+            "options": {"presigned_url_ttl_seconds": settings.presigned_url_ttl_seconds},
+            "secret_references": {
+                "access_key": _file_secret_reference(settings.s3_access_key_file),
+                "secret_key": _file_secret_reference(settings.s3_secret_key_file),
+            },
+        }
+    if system_id == "LLM_CHAT_MODEL":
+        binding = resolve_composition_runtime_binding(settings)
+        if settings.local_ollama_chat_enabled:
+            return {
+                "connection_mode": "LOCAL_OLLAMA",
+                "base_url": str(settings.local_ollama_chat_base_url),
+                "model": settings.local_ollama_chat_model,
+                "secret_references": {},
+                "options": {
+                    "api_style": "ollama_native_chat",
+                    "context_tokens": settings.local_ollama_chat_context_tokens,
+                    "request_limit_per_minute": (settings.chat_rate_limit_requests_per_minute),
+                    "token_limit_per_minute": settings.chat_rate_limit_tokens_per_minute,
+                    "timeout_seconds": settings.local_ollama_chat_timeout_seconds,
+                    "governance_binding": _runtime_binding_document(binding),
+                },
+            }
+        if settings.intranet_openai_compatible_chat_enabled:
+            return {
+                "connection_mode": "INTRANET_OPENAI_COMPATIBLE",
+                "base_url": str(settings.intranet_openai_compatible_chat_base_url),
+                "model": settings.intranet_openai_compatible_chat_model,
+                "secret_references": {
+                    "api_key": settings.intranet_openai_compatible_chat_api_key_secret_ref
+                },
+                "options": {
+                    "api_style": "openai_compatible",
+                    "context_tokens": settings.intranet_openai_compatible_chat_context_tokens,
+                    "request_limit_per_minute": (settings.chat_rate_limit_requests_per_minute),
+                    "token_limit_per_minute": settings.chat_rate_limit_tokens_per_minute,
+                    "timeout_seconds": settings.intranet_openai_compatible_chat_timeout_seconds,
+                    "governance_binding": _runtime_binding_document(binding),
+                },
+            }
+        return None
+    if system_id == "LLM_EMBEDDING":
+        binding = resolve_embedding_runtime_binding(settings)
+        if settings.local_ollama_embedding_enabled:
+            return {
+                "connection_mode": "LOCAL_OLLAMA",
+                "base_url": str(settings.local_ollama_embedding_base_url),
+                "model": settings.local_ollama_embedding_model,
+                "secret_references": {},
+                "options": {
+                    "api_style": "openai_compatible",
+                    "timeout_seconds": settings.local_ollama_embedding_timeout_seconds,
+                    "governance_binding": _runtime_binding_document(binding),
+                },
+            }
+        if settings.intranet_openai_compatible_embedding_enabled:
+            return {
+                "connection_mode": "INTRANET_OPENAI_COMPATIBLE",
+                "base_url": str(settings.intranet_openai_compatible_embedding_base_url),
+                "model": settings.intranet_openai_compatible_embedding_model,
+                "secret_references": {
+                    "api_key": settings.intranet_openai_compatible_embedding_api_key_secret_ref
+                },
+                "options": {
+                    "api_style": "openai_compatible",
+                    "timeout_seconds": (
+                        settings.intranet_openai_compatible_embedding_timeout_seconds
+                    ),
+                    "governance_binding": _runtime_binding_document(binding),
+                },
+            }
+        return None
+    if system_id == "LLM_RERANKER" and settings.local_llama_cpp_reranker_enabled:
+        binding = resolve_reranker_runtime_binding(settings)
+        return {
+            "connection_mode": "LOCAL_LLAMA_CPP",
+            "base_url": str(settings.local_llama_cpp_reranker_base_url),
+            "model": settings.local_llama_cpp_reranker_model,
+            "secret_references": {},
+            "options": {
+                "api_style": "rerank_v1",
+                "timeout_seconds": settings.local_llama_cpp_reranker_timeout_seconds,
+                "top_n": settings.local_llama_cpp_reranker_top_n,
+                "governance_binding": _runtime_binding_document(binding),
+            },
+        }
+    if system_id == "NEO4J" and settings.neo4j_projection_enabled:
+        return {
+            "database": settings.neo4j_database,
+            "uri": settings.neo4j_uri,
+            "secret_references": {"credential": settings.neo4j_auth_secret_ref},
+            "options": {
+                "connection_timeout_seconds": settings.neo4j_connection_timeout_seconds,
+                "maximum_connection_pool_size": settings.neo4j_maximum_connection_pool_size,
+            },
+        }
+    if system_id == "PROMETHEUS" and settings.ui_prometheus_url is not None:
+        return {"base_url": str(settings.ui_prometheus_url), "options": {}}
+    if system_id == "GRAFANA_DASHBOARD" and settings.ui_grafana_url is not None:
+        return {
+            "url": str(settings.ui_grafana_url),
+            "options": {"dashboard_path": "", "embed_enabled": False},
+        }
+    return None
+
+
 @router.post(
-    "/system-configuration/{system_id}/activate",
-    response_model=SystemConfigurationEntryResponse,
+    "/system-configuration/{system_id}/test-deployment",
+    response_model=SystemConfigurationTestResponse,
 )
+async def test_deployment_system_configuration(
+    system_id: str,
+    request: Request,
+    response: Response,
+    context: ContextDep,
+) -> SystemConfigurationTestResponse:
+    """Probe one configured deployment-managed system using only live server settings."""
+    import time as _time
+
+    response.headers["Cache-Control"] = "no-store, private"
+    container = get_container(request)
+    if container.settings.app_env != "development":
+        raise ForbiddenError("System configuration testing is available only in development.")
+    if system_id not in {item[0] for item in _SYSTEM_CONFIGURATION}:
+        raise ValidationError("The system configuration identifier is invalid.")
+    admin_context = await _service(request).get_admin_read_context(
+        workspace_id=context.workspace_id,
+        subject=context.subject,
+        environment=context.environment,
+        request_id=context.request_id,
+    )
+    if "SYSTEM_CONFIGURATION_READ" not in admin_context.allowed_operations:
+        raise ForbiddenError(
+            "System configuration testing is not available for this administrator."
+        )
+
+    started = _time.monotonic()
+    tested_at = utc_now()
+
+    if system_id == "POSTGRESQL":
+        try:
+            async with container.database.session_factory() as session:
+                await session.execute(text("SELECT 1"))
+            elapsed_ms = int((_time.monotonic() - started) * 1000)
+            return SystemConfigurationTestResponse(
+                system_id=system_id,
+                status="AVAILABLE",
+                scope="AUTHENTICATED_QUERY",
+                latency_ms=elapsed_ms,
+                detail="PostgreSQL 데이터베이스에 성공적으로 연결되었습니다.",
+                configuration_version=None,
+                tested_at=tested_at,
+            )
+        except Exception:
+            elapsed_ms = int((_time.monotonic() - started) * 1000)
+            return SystemConfigurationTestResponse(
+                system_id=system_id,
+                status="UNAVAILABLE",
+                scope="AUTHENTICATED_QUERY",
+                latency_ms=elapsed_ms,
+                detail="PostgreSQL 연결 또는 고정 SELECT 1 검증에 실패했습니다.",
+                configuration_version=None,
+                tested_at=tested_at,
+            )
+
+    if system_id == "OIDC_IDENTITY":
+        try:
+            result = await probe_oidc_jwks(
+                jwks_url=container.settings.oidc_jwks_url,
+                allowed_hosts=container.settings.system_configuration_probe_allowed_hosts,
+            )
+            status = result.status
+            detail = result.detail
+            latency_ms = result.latency_ms
+        except Exception:
+            status = "UNAVAILABLE"
+            detail = "OIDC JWKS 신뢰 경로 또는 키 문서를 검증하지 못했습니다."
+            latency_ms = int((_time.monotonic() - started) * 1000)
+        return SystemConfigurationTestResponse(
+            system_id=system_id,
+            status=status,
+            scope="HTTP_HEALTH",
+            latency_ms=latency_ms,
+            detail=detail,
+            configuration_version=None,
+            tested_at=tested_at,
+        )
+
+    document = _deployment_configuration_document(container.settings, system_id)
+    if document is None:
+        return SystemConfigurationTestResponse(
+            system_id=system_id,
+            status="UNAVAILABLE",
+            scope="HTTP_HEALTH",
+            latency_ms=int((_time.monotonic() - started) * 1000),
+            detail="이 배포에서 해당 시스템의 런타임 설정이 구성되지 않았습니다.",
+            configuration_version=None,
+            tested_at=tested_at,
+        )
+    try:
+        _validate_system_configuration(system_id, document)
+        result = await probe_system_configuration(
+            system_id=system_id,
+            document=document,
+            secret_resolver=SecretResolver(
+                virtual_secret_root=container.settings.system_configuration_secret_root
+            ),
+            allowed_hosts=container.settings.system_configuration_probe_allowed_hosts,
+        )
+        status = result.status
+        scope = result.scope
+        latency_ms = result.latency_ms
+        detail = result.detail
+    except Exception:
+        status = "UNAVAILABLE"
+        scope = "HTTP_HEALTH"
+        latency_ms = int((_time.monotonic() - started) * 1000)
+        detail = "배포 설정의 고정 연결 검증에 실패했습니다. 서버 로그와 운영 설정을 확인하세요."
+    return SystemConfigurationTestResponse(
+        system_id=system_id,
+        status=status,
+        scope=scope,
+        latency_ms=latency_ms,
+        detail=detail,
+        configuration_version=None,
+        tested_at=tested_at,
+    )
+
+
 async def activate_system_configuration(
     system_id: str,
     request: Request,
@@ -2540,6 +3303,9 @@ async def activate_system_configuration(
 ) -> SystemConfigurationEntryResponse:
     """Select one TEST-passed revision for the next API/worker process startup."""
 
+    raise ForbiddenError(
+        "Database-backed system configuration activation is retired and deployment-managed."
+    )
     container = get_container(request)
     _require_system_configuration_runtime_activation(container.settings)
     if system_id not in _CONFIGURATION_BY_ID:
@@ -2627,11 +3393,7 @@ async def activate_system_configuration(
                     ]
                 )
             await session.flush()
-            entry = _system_configuration_entries(
-                container.settings,
-                {service_key: profile},
-                {(profile.id, revision.configuration_version): revision},
-            )
+            entry = _system_configuration_entries(container.settings)
             result = next(item for item in entry if item.system_id == system_id)
     response.headers["ETag"] = f'"{profile.version}"'
     return result

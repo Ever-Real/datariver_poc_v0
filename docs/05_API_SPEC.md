@@ -322,8 +322,9 @@ PDF analysis accepts only an `ACCEPTED` `application/pdf` upload owned by the cu
 declared and observed SHA-256/size equality, a 50 MiB hard limit and PUBLIC/INTERNAL classification
 within the graph envelope. The enqueue transaction pins source version/hash/classification, graph
 version, explicit empty or exact governed active-release base, active ontology ID/checksum, parser
-hash and secret-free loaded deployment or activated System Configuration Chat/Embedding binding
-documents and hashes. The same
+hash and secret-free Chat/Embedding binding documents and hashes loaded from the validated
+deployment environment or orchestrator. Database-activated System Configuration is a historical
+path superseded by ADR-0048. The same
 actor/key/request replays one job; key reuse with a changed actor, graph, upload or payload is a
 conflict. Submission is unavailable when the separately credentialed worker capability is disabled.
 
@@ -397,6 +398,8 @@ classification policy and RLS; this contract does not expose source-row data or 
 |---|---|---|
 | `GET /admin/me` | eligible human security administrator with a valid current OIDC identity | internal subject identity, current-assurance operations, fallback availability and the supported action vocabulary; read discovery never grants mutation authority |
 | `GET /admin/workspace-memberships?q=&status=&limit=&cursor=` | eligible human security administrator with a valid current OIDC identity | workspace/filter-bound keyset page of membership display/version summaries, maximum 100 |
+| `GET /admin/workspace-memberships/{subject_id}/change-requests?limit=&cursor=` | eligible human security administrator plus item-level `change.read` | subject-bound, maximum-50 CR participation page; unauthorized items are omitted and the cursor remains bound to Workspace and target subject |
+| `GET /admin/workspace-memberships/{subject_id}/owned-tables?limit=&cursor=` | eligible human security administrator plus item-level `catalog.read` | subject-bound, maximum-50 active TABLE ownership page; unauthorized items are omitted and provider owner references are not returned |
 | `POST /admin/identity-users` | eligible human security administrator + recent hardware WebAuthn + enabled governed Keycloak adapter | idempotently create a disabled marked Keycloak identity, temporary `UPDATE_PASSWORD` credential and canonical six-month Workspace membership, optionally from an active Role, then enable the identity. The password is excluded from request hash, DB, outbox and response. |
 | `GET /admin/workspace-memberships/me/summary` | current active member | server-calculated membership expiry, renewal opening and pending-request facts; browser time is not authorization input |
 | `POST /admin/membership-renewals/me` | current member during the final 30 days + `Idempotency-Key` | request exactly six calendar months beyond the observed current expiry; one pending request per member |
@@ -409,14 +412,12 @@ classification policy and RLS; this contract does not expose source-row data or 
 | `DELETE /admin/access-roles/{role_id}` | `admin.manage` + recent hardware WebAuthn + quoted `If-Match` | deactivate an unassigned Role; no row or audit evidence is deleted |
 | `PUT /admin/workspace-memberships/{subject_id}/role` | `admin.manage` + recent hardware WebAuthn | assign one active Role, or remove it, by materializing the governed membership access document; requires `If-Match` and `Idempotency-Key` and prohibits self-change |
 | `GET /admin/systems?q=&status=&limit=&cursor=` | eligible human security administrator with a valid current OIDC identity | bounded canonical System page with active state, System version and set-based assignee count; assignment rows are not embedded |
+| `POST /admin/systems` | `admin.manage` + recent hardware WebAuthn + `Idempotency-Key` | create one canonical Workspace System under a Workspace transaction lock, canonical request hash and immutable outbox evidence |
 | `GET /admin/systems/{system_id}/assignees?limit=&cursor=` | eligible human security administrator with a valid current OIDC identity | System-version-bound keyset page of Developer/Data Steward assignments |
 | `PATCH /admin/systems/{system_id}/assignees` | `admin.manage` + recent hardware WebAuthn | apply disjoint assignment `upserts`/`removals`, maximum 100 combined; requires `If-Match` and `Idempotency-Key`, locks the System/targets, rejects missing or identical-only changes, validates the complete resulting lanes, emits one audit event and returns the new System version/`ETag` |
 | `PUT /admin/systems/{system_id}/assignees` | `admin.manage` + recent hardware WebAuthn | compatibility complete replacement under the same lane, version, idempotency and audit invariants; the Admin browser uses `PATCH` |
-| `GET /admin/system-configuration` | eligible human security administrator with a valid current OIDC identity | fixed server-owned inventory for PostgreSQL, OIDC, separate Redis cache/delivery, S3, DataHub and feature connectors. Every item includes `category`, `requirement` (`BOOTSTRAP_REQUIRED`, `CORE_CONNECTOR`, `FEATURE_CONNECTOR`), description, ordered `connection_requirements[{key,label,required,secret,example}]`, management plane, exact saved/TEST/activated/API-loaded versions and restart scope. Deployment-managed bootstrap entries are read-only. Development templates contain only non-secret values and strict mounted-secret reference names. |
-| `GET /admin/system-configuration/{system_id}/versions?limit=` | eligible human security administrator in development, `SYSTEM_CONFIGURATION_READ` | newest-first bounded revision history (maximum 100) containing configuration hash, creator, fixed TEST evidence and activation evidence. It returns no endpoint, YAML document or credential value. Deployment-managed bootstrap entries have no database history route. |
-| `PUT /admin/system-configuration/{system_id}` | eligible human security administrator in development, `SYSTEM_CONFIGURATION_UPDATE`, quoted `If-Match` | save a new immutable YAML revision. Literal sensitive values are rejected; only `file:/run/secrets/<name>` references are accepted. This route is unavailable outside development. |
-| `POST /admin/system-configuration/{system_id}/test` | eligible human security administrator in development, `SYSTEM_CONFIGURATION_UPDATE` | test the exact saved current revision through one server-owned fixed connector probe and persist bounded evidence. Redis uses authenticated `PING`; other scopes remain fixed and typed. The request cannot supply a URL or command. Availability is not activation or process readiness. |
-| `POST /admin/system-configuration/{system_id}/activate` | eligible human administrator in development, recent hardware WebAuthn, `SYSTEM_CONFIGURATION_ACTIVATE`, quoted `If-Match` | select the current AVAILABLE revision for next startup. Fails when no typed runtime consumer exists; never hot-reloads or restarts API/workers. |
+| `GET /admin/system-configuration` | eligible human security administrator with `SYSTEM_CONFIGURATION_READ` | read-only, redacted inventory of the API process's validated deployment `Settings` snapshot for PostgreSQL, OIDC, separate Redis cache/delivery, S3, DataHub and feature connectors. Items contain category, requirement, bounded connection requirements, effective deployment state, restart scope and copy/paste environment templates; they do not expose credentials or a second desired-state store. |
+| `POST /admin/system-configuration/{system_id}/test-deployment` | eligible human security administrator with `SYSTEM_CONFIGURATION_READ` | execute one fixed server-owned probe against the current deployment snapshot and mounted secret references. The request supplies only the known System identifier, never a URL, command, model or credential. Availability is not inference authorization or process readiness. |
 | `GET /admin/workspace-memberships/{subject_id}/access` | eligible human security administrator with a valid current OIDC identity | exact typed full access document plus display metadata, membership version and matching `ETag` |
 | `PUT /admin/workspace-memberships/{subject_id}/access` | `admin.manage` + recent hardware WebAuthn | exact full access-document replacement for another subject |
 | `GET /admin/fallback/workspace-membership-access-requests?state=&limit=&cursor=` | eligible human security administrator with a valid current OIDC identity | bounded workspace/state-bound fallback keyset queue |
@@ -446,6 +447,12 @@ The server rechecks both human administrators, the unchanged target version and 
 remaining eligible human security administrators in the mutation transaction. Fallback is disabled
 unless `ADMIN_PASSWORD_FALLBACK_ENABLED=true`; disabled requests return only the bounded
 `FALLBACK_UNAVAILABLE` remediation.
+
+The former development database `SAVE → TEST → ACTIVATE` System Settings API is historical and
+superseded by ADR-0048. It is not published as a live route and its retained rows are audit-only.
+Operators edit the selected ignored `.env.<profile>` or orchestrator environment, run the managed
+update/restart workflow, and use the two routes above only to inspect and probe the resulting
+validated process snapshot.
 
 Administrator read contracts are discovery only: an eligible authenticated human may load
 `/admin/me` and the bounded read documents without password reauthentication, and the read path

@@ -142,6 +142,69 @@ describe('MembershipAccessAdmin identity provisioning', () => {
     expect(screen.getByDisplayValue('beta-users')).toBeInTheDocument()
     expect(screen.queryByDisplayValue('alpha-users')).not.toBeInTheDocument()
   })
+
+  it('loads authorized CR history and owned tables in the user detail dialog', async () => {
+    const target = {
+      ...member('00000000-0000-4000-8000-000000000601', '김하늘'),
+      change_request_count: 1,
+      owned_table_count: 1,
+    }
+    const api = {
+      listMembershipPage: vi.fn(() => Promise.resolve({
+        items: [target], nextCursor: null, limit: 25,
+      })),
+      getMembershipAccess: vi.fn(() => Promise.resolve(
+        accessResponse(target, 'CONFIDENTIAL', ['catalog-users']),
+      )),
+      listMembershipChangeRequestActivity: vi.fn(() => Promise.resolve({
+        items: [{
+          change_request_id: '00000000-0000-4000-8000-000000000602',
+          number: 'CR-42',
+          title: '고객 테이블 설명 변경',
+          request_type: 'METADATA_CHANGE',
+          state: 'IN_REVIEW',
+          relationship: 'REQUESTER',
+          classification: 'INTERNAL',
+          updated_at: '2026-07-26T00:00:00Z',
+        }],
+        nextCursor: null,
+        limit: 25,
+      })),
+      listMembershipOwnedTables: vi.fn(() => Promise.resolve({
+        items: [{
+          asset_id: '00000000-0000-4000-8000-000000000603',
+          name: 'customer_orders',
+          platform: 'postgres',
+          database_name: 'warehouse',
+          schema_name: 'sales',
+          classification: 'INTERNAL',
+          source_version: 'v1',
+          observed_at: '2026-07-26T00:00:00Z',
+        }],
+        nextCursor: null,
+        limit: 25,
+      })),
+    }
+    render(<MembershipAccessAdmin
+      api={api as never}
+      context={{
+        subject_id: 'admin', workspace_id: 'workspace', display_name: 'Administrator',
+        authentication_assurance: 'PASSWORD', fallback_enabled: false,
+        allowed_operations: ['MEMBERSHIP_ACCESS_READ'], action_vocabulary: [],
+      }}
+      messages={getAdminMessages('ko')} requestConfirmation={vi.fn()}
+      keyFor={() => 'stable-key'} clearKey={vi.fn()} reportError={vi.fn()}
+      onStepUp={vi.fn(() => Promise.resolve())}
+      onPasswordReauth={vi.fn(() => Promise.resolve())}
+      onEnroll={vi.fn(() => Promise.resolve())}
+    />)
+
+    fireEvent.click(await screen.findByText('김하늘'))
+    expect(await screen.findByText('CR-42')).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('tab', { name: 'Owned Tables' }))
+    expect(await screen.findByText('customer_orders')).toBeInTheDocument()
+    expect(screen.getByText('warehouse.sales')).toBeInTheDocument()
+  })
 })
 
 function member(subjectId: string, displayName: string): WorkspaceMembershipSummary {

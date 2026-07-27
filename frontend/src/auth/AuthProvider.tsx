@@ -72,7 +72,7 @@ function securityFingerprint(user: User, profile: AuthenticatedProfile): string 
     profile.authentication_time ?? '',
     profile.default_workspace_id ?? '',
     profile.workspace_selection_enabled !== false,
-    profile.hardware_webauthn_enabled !== false,
+    profile.hardware_webauthn_enabled === true,
     profile.password_change_supported !== false,
   ])
 }
@@ -427,7 +427,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const beginRedirect = useCallback(async (intent: AuthIntent) => {
     if (
       (intent === 'STEP_UP' || intent === 'WEBAUTHN_ENROLLMENT')
-      && profile?.hardware_webauthn_enabled === false
+      && profile?.hardware_webauthn_enabled !== true
     ) {
       setNotice({
         kind: 'ERROR',

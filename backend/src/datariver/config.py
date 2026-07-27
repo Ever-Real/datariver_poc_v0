@@ -76,7 +76,7 @@ class Settings(BaseSettings):
     # Operator-owned capability switches. Disabling WebAuthn never downgrades
     # a high-risk operation to password-only access; those operations remain
     # unavailable unless a separately governed fallback permits them.
-    oidc_hardware_webauthn_enabled: bool = True
+    oidc_hardware_webauthn_enabled: bool = False
     # This controls only the manual workspace selector. The verified default
     # workspace, workspace-scoped ABAC and PostgreSQL RLS always remain active.
     workspace_selection_enabled: bool = True
@@ -99,10 +99,27 @@ class Settings(BaseSettings):
     high_risk_auth_max_age_seconds: int = Field(default=300, ge=60, le=900)
     admin_password_fallback_enabled: bool = False
     admin_password_fallback_ttl_seconds: int = Field(default=300, ge=60, le=300)
+    # Explicit local-development exception for direct admin.manage exercises.
+    # It preserves all non-authentication ABAC denials and records the real
+    # password assurance; it never asserts or emulates hardware WebAuthn.
+    development_admin_password_bypass_enabled: bool = False
     # Development-only: return an ABAC-authorized, no-store Chat exchange when
     # a security administrator is exercising the local UI before retention
     # policy governance is configured. This never permits durable Chat writes.
     chat_ephemeral_admin_without_retention_enabled: bool = False
+    chat_rate_limit_requests_per_minute: int = Field(default=30, ge=1, le=1_000)
+    chat_rate_limit_tokens_per_minute: int = Field(
+        default=1_000_000,
+        ge=2_048,
+        le=1_000_000,
+    )
+    # Immutable, stage-specific governance identities selected by the
+    # deployment. Configured adapters remain probe-only until the active
+    # classification policy binds an eligible rule to every stage that the
+    # selected route could invoke.
+    chat_composition_provider_profile_version_id: UUID | None = None
+    chat_embedding_provider_profile_version_id: UUID | None = None
+    chat_reranker_provider_profile_version_id: UUID | None = None
     # Opt-in experimental developer adapter. Container mode is constrained to
     # Docker Desktop's native-host gateway; explicit source-host development may
     # use exact loopback. This is not a provider registry or production inference.
@@ -116,6 +133,13 @@ class Settings(BaseSettings):
     local_ollama_embedding_base_url: HttpUrl | None = None
     local_ollama_embedding_model: str | None = Field(default=None, max_length=128)
     local_ollama_embedding_timeout_seconds: float = Field(default=60.0, ge=1.0, le=120.0)
+    # Ollama stores the selected GGUF, while llama-server exposes the fixed
+    # rerank contract that Ollama itself does not currently implement.
+    local_llama_cpp_reranker_enabled: bool = False
+    local_llama_cpp_reranker_base_url: HttpUrl | None = None
+    local_llama_cpp_reranker_model: str | None = Field(default=None, max_length=128)
+    local_llama_cpp_reranker_timeout_seconds: float = Field(default=60.0, ge=1.0, le=120.0)
+    local_llama_cpp_reranker_top_n: int = Field(default=10, ge=1, le=100)
     # Development-only bridge for an operator-approved model server that is
     # hosted inside the organisation's private network. This intentionally is
     # not an external commercial-provider route and cannot be enabled in
@@ -155,15 +179,15 @@ class Settings(BaseSettings):
     knowledge_source_spool_directory: str = Field(
         default="/var/spool/datariver-knowledge", min_length=1, max_length=512
     )
-    # Development-only startup activation. The database stores versioned, non-secret
-    # documents and file-mounted secret reference names; processes read the selected
-    # activated versions once at startup, so applying a change always requires restart.
+    # Retired compatibility fields. True is rejected below and no runtime consumer
+    # reads profile overlays; deployment Settings remain the sole live source.
     system_configuration_runtime_activation_enabled: bool = False
     system_configuration_runtime_workspace_id: UUID | None = None
     system_configuration_probe_allowed_hosts: tuple[str, ...] = (
         "127.0.0.1",
         "localhost",
         "host.docker.internal",
+        "keycloak",
         "datahub-gms",
         "datahub-frontend",
         "airflow",
@@ -492,6 +516,19 @@ class Settings(BaseSettings):
 
     @model_validator(mode="after")
     def validate_security_posture(self) -> Self:
+        if self.development_admin_password_bypass_enabled:
+            if self.app_env != "development":
+                raise ValueError("The direct administrator password bypass is development-only.")
+            if not self.admin_password_fallback_enabled:
+                raise ValueError(
+                    "The direct administrator password bypass requires the governed "
+                    "password fallback switch."
+                )
+            if self.oidc_hardware_webauthn_enabled:
+                raise ValueError(
+                    "The direct administrator password bypass cannot be combined with "
+                    "enabled hardware WebAuthn."
+                )
         if "*" in self.app_cors_origins:
             raise ValueError("Wildcard CORS origins are not permitted.")
         cache_redis = urlsplit(self.redis_cache_url)
@@ -1019,6 +1056,43 @@ class Settings(BaseSettings):
                     "Local Ollama embeddings must use http://host.docker.internal:11434/v1, "
                     "or the explicit source-host 127.0.0.1 binding."
                 )
+        if self.local_llama_cpp_reranker_enabled:
+            if self.app_env != "development":
+                raise ValueError("The local llama.cpp reranker is available only in development.")
+            if (
+                self.local_llama_cpp_reranker_base_url is None
+                or self.local_llama_cpp_reranker_model is None
+            ):
+                raise ValueError(
+                    "Enabled local llama.cpp reranking requires a base URL and model identity."
+                )
+            if (
+                re.fullmatch(
+                    r"[A-Za-z0-9][A-Za-z0-9._:/-]{0,127}",
+                    self.local_llama_cpp_reranker_model.strip(),
+                )
+                is None
+            ):
+                raise ValueError("Local llama.cpp reranker model identity is invalid.")
+            parsed_reranker_url = urlsplit(str(self.local_llama_cpp_reranker_base_url))
+            allowed_reranker_hosts = {"host.docker.internal"}
+            if self.local_inference_source_host_enabled:
+                allowed_reranker_hosts.add("127.0.0.1")
+            if (
+                parsed_reranker_url.scheme != "http"
+                or parsed_reranker_url.hostname not in allowed_reranker_hosts
+                or parsed_reranker_url.port != 11435
+                or parsed_reranker_url.path.rstrip("/") != "/v1"
+                or parsed_reranker_url.query
+                or parsed_reranker_url.fragment
+                or parsed_reranker_url.username is not None
+                or parsed_reranker_url.password is not None
+            ):
+                raise ValueError(
+                    "Local llama.cpp reranking must use "
+                    "http://host.docker.internal:11435/v1, or the explicit source-host "
+                    "127.0.0.1 binding."
+                )
         if self.local_inference_source_host_enabled and self.app_env != "development":
             raise ValueError(
                 "The local inference source-host mode is available only in development."
@@ -1100,14 +1174,10 @@ class Settings(BaseSettings):
                 "The knowledge pipeline requires activated Chat, embedding, and Neo4j adapters."
             )
         if self.system_configuration_runtime_activation_enabled:
-            if self.app_env != "development":
-                raise ValueError(
-                    "Database-activated system configuration is available only in development."
-                )
-            if self.system_configuration_runtime_workspace_id is None:
-                raise ValueError(
-                    "Runtime system configuration requires one explicit Workspace identifier."
-                )
+            raise ValueError(
+                "Database-backed runtime system configuration activation was retired; "
+                "use the selected deployment environment and restart workflow."
+            )
         if self.app_env == "production":
             if self.chat_ephemeral_admin_without_retention_enabled:
                 raise ValueError("Development-only ephemeral Chat must be disabled in production.")

@@ -32,6 +32,8 @@ class ClassificationRuleRequest(StrictClassificationAccessRequest):
     search_mode: SearchMode
     chat_mode: ChatMode
     provider_profile_version_id: UUID | None = None
+    embedding_provider_profile_version_id: UUID | None = None
+    reranker_provider_profile_version_id: UUID | None = None
 
 
 class ClassificationPolicyProposalRequest(StrictClassificationAccessRequest):
@@ -55,6 +57,8 @@ class ClassificationRuleResponse(BaseModel):
     search_mode: SearchMode
     chat_mode: ChatMode
     provider_profile_version_id: UUID | None
+    embedding_provider_profile_version_id: UUID | None
+    reranker_provider_profile_version_id: UUID | None
 
 
 class ClassificationPolicyResponse(BaseModel):

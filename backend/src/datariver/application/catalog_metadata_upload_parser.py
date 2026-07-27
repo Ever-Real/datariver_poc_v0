@@ -4,7 +4,7 @@ import hashlib
 from collections.abc import AsyncIterable, Awaitable, Callable, Iterable, Sequence
 from dataclasses import dataclass
 from enum import StrEnum
-from uuid import UUID
+from uuid import UUID, NAMESPACE_URL, uuid5
 
 from datariver.application.typed_upload_parser import (
     TypedUploadParseError,
@@ -33,6 +33,7 @@ class CatalogMetadataRecordKind(StrEnum):
     DATASET_DOMAIN = "DATASET_DOMAIN"
     DATASET_TERM = "DATASET_TERM"
     DATASET_TAG = "DATASET_TAG"
+    DATASET_OWNER = "DATASET_OWNER"
 
 
 class CatalogMetadataOperation(StrEnum):
@@ -47,6 +48,7 @@ class CatalogMetadataAspect(StrEnum):
     DOMAINS = "domains"
     GLOSSARY_TERMS = "glossaryTerms"
     GLOBAL_TAGS = "globalTags"
+    OWNERSHIP = "ownership"
 
 
 class CatalogMetadataCandidateKind(StrEnum):
@@ -55,6 +57,7 @@ class CatalogMetadataCandidateKind(StrEnum):
     DATASET_DOMAIN_UPDATE = "DATASET_DOMAIN_UPDATE"
     DATASET_TERM_ADD = "DATASET_TERM_ADD"
     DATASET_TAG_ADD = "DATASET_TAG_ADD"
+    DATASET_OWNER_UPDATE = "DATASET_OWNER_UPDATE"
 
 
 class CatalogMetadataParseFailureCode(StrEnum):
@@ -189,6 +192,11 @@ _ROW_RULES = {
         aspect_name=CatalogMetadataAspect.GLOBAL_TAGS,
         candidate_kind=CatalogMetadataCandidateKind.DATASET_TAG_ADD,
         allowed_operations=frozenset({CatalogMetadataOperation.ADD}),
+    ),
+    CatalogMetadataRecordKind.DATASET_OWNER: _RowRule(
+        aspect_name=CatalogMetadataAspect.OWNERSHIP,
+        candidate_kind=CatalogMetadataCandidateKind.DATASET_OWNER_UPDATE,
+        allowed_operations=frozenset({CatalogMetadataOperation.SET, CatalogMetadataOperation.CLEAR}),
     ),
 }
 
@@ -336,53 +344,54 @@ class CatalogMetadataCandidateAccumulator:
         return self._row_count
 
     def add_row(self, *, ordinal: int, values: Sequence[str]) -> None:
-        evidence, rule = _row_evidence_from_values(
+        evidences = _row_evidences_from_values(
             workspace_id=self._workspace_id,
             ordinal=ordinal,
             values=values,
             definition=self._definition,
         )
-        identity = (
-            evidence.platform,
-            evidence.database_name,
-            evidence.schema_name,
-            evidence.table_name,
-        )
-        previous_identity = self._asset_identities.setdefault(evidence.target_asset_id, identity)
-        if previous_identity != identity:
-            raise CatalogMetadataParseError(
-                CatalogMetadataParseFailureCode.CONFLICTING_ASSET_IDENTITY,
-                "One asset ID has conflicting submitted hierarchy values.",
-                ordinal=ordinal,
+        for evidence, rule in evidences:
+            identity = (
+                evidence.platform,
+                evidence.database_name,
+                evidence.schema_name,
+                evidence.table_name,
             )
+            previous_identity = self._asset_identities.setdefault(evidence.target_asset_id, identity)
+            if previous_identity != identity:
+                raise CatalogMetadataParseError(
+                    CatalogMetadataParseFailureCode.CONFLICTING_ASSET_IDENTITY,
+                    "One asset ID has conflicting submitted hierarchy values.",
+                    ordinal=ordinal,
+                )
 
-        group_key = (evidence.target_asset_id, evidence.aspect_name)
-        group = self._groups.setdefault(group_key, {})
-        if evidence.semantic_key in group:
-            raise CatalogMetadataParseError(
-                CatalogMetadataParseFailureCode.DUPLICATE_SEMANTIC_KEY,
-                "The upload repeats or conflicts with an existing semantic operation.",
-                ordinal=ordinal,
+            group_key = (evidence.target_asset_id, evidence.aspect_name)
+            group = self._groups.setdefault(group_key, {})
+            if evidence.semantic_key in group:
+                raise CatalogMetadataParseError(
+                    CatalogMetadataParseFailureCode.DUPLICATE_SEMANTIC_KEY,
+                    "The upload repeats or conflicts with an existing semantic operation.",
+                    ordinal=ordinal,
+                )
+            maximum_group_operations = (
+                self._definition.maximum_column_operations_per_candidate
+                if evidence.record_kind is CatalogMetadataRecordKind.COLUMN_DESCRIPTION
+                else self._definition.maximum_controlled_operations_per_candidate
+                if evidence.record_kind
+                in {
+                    CatalogMetadataRecordKind.DATASET_TAG,
+                    CatalogMetadataRecordKind.DATASET_TERM,
+                }
+                else 1
             )
-        maximum_group_operations = (
-            self._definition.maximum_column_operations_per_candidate
-            if evidence.record_kind is CatalogMetadataRecordKind.COLUMN_DESCRIPTION
-            else self._definition.maximum_controlled_operations_per_candidate
-            if evidence.record_kind
-            in {
-                CatalogMetadataRecordKind.DATASET_TAG,
-                CatalogMetadataRecordKind.DATASET_TERM,
-            }
-            else 1
-        )
-        if len(group) >= maximum_group_operations:
-            raise CatalogMetadataParseError(
-                CatalogMetadataParseFailureCode.TOO_MANY_GROUP_OPERATIONS,
-                "One catalog-metadata candidate exceeds its executable operation limit.",
-                ordinal=ordinal,
-            )
-        group[evidence.semantic_key] = evidence
-        self._group_rules.setdefault(group_key, rule)
+            if len(group) >= maximum_group_operations:
+                raise CatalogMetadataParseError(
+                    CatalogMetadataParseFailureCode.TOO_MANY_GROUP_OPERATIONS,
+                    "One catalog-metadata candidate exceeds its executable operation limit.",
+                    ordinal=ordinal,
+                )
+            group[evidence.semantic_key] = evidence
+            self._group_rules.setdefault(group_key, rule)
         self._row_count += 1
 
     def iter_candidates(self) -> Iterable[CatalogMetadataCandidateDraft]:
@@ -641,13 +650,13 @@ def advance_catalog_metadata_candidate_root(
     ).digest()
 
 
-def _row_evidence_from_values(
+def _row_evidences_from_values(
     *,
     workspace_id: UUID,
     ordinal: int,
     values: Sequence[str],
     definition: TypedUploadProfileDefinition,
-) -> tuple[CatalogMetadataRowEvidence, _RowRule]:
+) -> list[tuple[CatalogMetadataRowEvidence, _RowRule]]:
     if len(values) != len(definition.headers):
         raise CatalogMetadataParseError(
             CatalogMetadataParseFailureCode.INVALID_COLUMN_COUNT,
@@ -655,92 +664,65 @@ def _row_evidence_from_values(
             ordinal=ordinal,
         )
     (
-        record_kind_text,
-        asset_id_text,
-        platform,
-        database_name,
-        schema_name,
+        urn,
         table_name,
-        field_path_text,
-        operation_text,
-        value_text,
-        controlled_ref_text,
+        table_domain,
+        table_desc,
+        table_owner,
+        table_term,
+        table_tags,
+        col_name,
+        col_desc,
+        col_term,
+        col_tags,
     ) = values
-    target_asset_id = _canonical_uuid(
-        asset_id_text,
-        failure_code=CatalogMetadataParseFailureCode.INVALID_ASSET_ID,
-        message="The catalog-metadata asset ID must be a canonical lowercase UUID.",
-        ordinal=ordinal,
-    )
-    identity_values = (
-        (platform, definition.maximum_platform_characters),
-        (database_name, definition.maximum_database_name_characters),
-        (schema_name, definition.maximum_schema_name_characters),
-        (table_name, definition.maximum_table_name_characters),
-    )
-    if any(
-        not value
-        or value != value.strip()
-        or len(value) > maximum_characters
-        or _contains_forbidden_identity_control(value)
-        for value, maximum_characters in identity_values
-    ):
+
+    if not urn.startswith("urn:li:dataset:"):
         raise CatalogMetadataParseError(
             CatalogMetadataParseFailureCode.INVALID_IDENTITY_FIELD,
-            "The catalog-metadata hierarchy values are invalid.",
-            ordinal=ordinal,
-        )
-    try:
-        record_kind = CatalogMetadataRecordKind(record_kind_text)
-    except ValueError as error:
-        raise CatalogMetadataParseError(
-            CatalogMetadataParseFailureCode.INVALID_RECORD_KIND,
-            "The catalog-metadata record kind is not registered.",
-            ordinal=ordinal,
-        ) from error
-    rule = _ROW_RULES[record_kind]
-    try:
-        operation = CatalogMetadataOperation(operation_text)
-    except ValueError as error:
-        raise CatalogMetadataParseError(
-            CatalogMetadataParseFailureCode.INVALID_OPERATION,
-            "The catalog-metadata operation is not registered.",
-            ordinal=ordinal,
-        ) from error
-    if operation not in rule.allowed_operations:
-        raise CatalogMetadataParseError(
-            CatalogMetadataParseFailureCode.INVALID_OPERATION,
-            "The operation is not allowed for the selected record kind.",
+            "The urn must start with urn:li:dataset:.",
             ordinal=ordinal,
         )
 
-    field_path, description, controlled_ref, semantic_key = _validate_row_shape(
-        record_kind=record_kind,
-        operation=operation,
-        field_path_text=field_path_text,
-        value_text=value_text,
-        controlled_ref_text=controlled_ref_text,
-        definition=definition,
-        ordinal=ordinal,
-    )
-    row_hash = catalog_metadata_row_hash(
-        workspace_id=workspace_id,
-        ordinal=ordinal,
-        target_asset_id=target_asset_id,
-        platform=platform,
-        database_name=database_name,
-        schema_name=schema_name,
-        table_name=table_name,
-        record_kind=record_kind,
-        aspect_name=rule.aspect_name,
-        operation=operation,
-        field_path=field_path,
-        value_text=description,
-        controlled_ref=controlled_ref,
-        definition=definition,
-    )
-    return (
-        CatalogMetadataRowEvidence(
+    # Use deterministic UUID5 for target_asset_id since we have no DB session to look up URN
+    target_asset_id = uuid5(NAMESPACE_URL, f"urn:datariver:dataset:{urn}")
+    
+    # We must extract platform/database/schema from URN for identity validation
+    platform = "postgres"
+    database_name = "db"
+    schema_name = "public"
+    try:
+        if "(" in urn and "," in urn:
+            parts = urn.split("(", 1)[1].split(",")
+            if len(parts) >= 2:
+                platform = parts[0].split(":")[-1] if ":" in parts[0] else parts[0]
+                path_parts = parts[1].split(".")
+                if len(path_parts) >= 3:
+                    database_name = path_parts[0]
+                    schema_name = path_parts[1]
+    except Exception:
+        pass
+
+    evidences = []
+
+    def _add_evidence(
+        record_kind: CatalogMetadataRecordKind,
+        operation: CatalogMetadataOperation,
+        field_path_text: str,
+        value_text: str,
+        controlled_ref_text: str
+    ) -> None:
+        rule = _ROW_RULES[record_kind]
+        field_path, description, controlled_ref, semantic_key = _validate_row_shape(
+            record_kind=record_kind,
+            operation=operation,
+            field_path_text=field_path_text,
+            value_text=value_text,
+            controlled_ref_text=controlled_ref_text,
+            definition=definition,
+            ordinal=ordinal,
+        )
+        row_hash = catalog_metadata_row_hash(
             workspace_id=workspace_id,
             ordinal=ordinal,
             target_asset_id=target_asset_id,
@@ -754,11 +736,70 @@ def _row_evidence_from_values(
             field_path=field_path,
             value_text=description,
             controlled_ref=controlled_ref,
-            semantic_key=semantic_key,
-            row_hash=row_hash,
-        ),
-        rule,
-    )
+            definition=definition,
+        )
+        evidences.append((
+            CatalogMetadataRowEvidence(
+                workspace_id=workspace_id,
+                ordinal=ordinal,
+                target_asset_id=target_asset_id,
+                platform=platform,
+                database_name=database_name,
+                schema_name=schema_name,
+                table_name=table_name,
+                record_kind=record_kind,
+                aspect_name=rule.aspect_name,
+                operation=operation,
+                field_path=field_path,
+                value_text=description,
+                controlled_ref=controlled_ref,
+                semantic_key=semantic_key,
+                row_hash=row_hash,
+            ),
+            rule,
+        ))
+
+    # table_domain
+    if table_domain:
+        _add_evidence(CatalogMetadataRecordKind.DATASET_DOMAIN, CatalogMetadataOperation.SET, "", "", table_domain)
+    
+    # table_desc
+    if table_desc:
+        _add_evidence(CatalogMetadataRecordKind.TABLE_DESCRIPTION, CatalogMetadataOperation.SET, "", table_desc, "")
+        
+    # table_owner
+    if table_owner:
+        _add_evidence(CatalogMetadataRecordKind.DATASET_OWNER, CatalogMetadataOperation.SET, "", "", table_owner)
+
+    # table_term (comma separated, must be UUIDs per _controlled_ref)
+    if table_term:
+        for term in table_term.split(","):
+            if term.strip():
+                _add_evidence(CatalogMetadataRecordKind.DATASET_TERM, CatalogMetadataOperation.ADD, "", "", term.strip())
+
+    # table_tags (comma separated)
+    if table_tags:
+        for tag in table_tags.split(","):
+            if tag.strip():
+                _add_evidence(CatalogMetadataRecordKind.DATASET_TAG, CatalogMetadataOperation.ADD, "", "", tag.strip())
+
+    # col_desc
+    if col_name and col_desc:
+        _add_evidence(CatalogMetadataRecordKind.COLUMN_DESCRIPTION, CatalogMetadataOperation.SET, col_name, col_desc, "")
+
+    # col_term (WARNING: No backend RecordKind for Column Terms, mapping to DATASET_TERM as temporary workaround)
+    if col_name and col_term:
+        for term in col_term.split(","):
+            if term.strip():
+                _add_evidence(CatalogMetadataRecordKind.DATASET_TERM, CatalogMetadataOperation.ADD, "", "", term.strip())
+
+    # col_tags (WARNING: No backend RecordKind for Column Tags, mapping to DATASET_TAG as temporary workaround)
+    if col_name and col_tags:
+        for tag in col_tags.split(","):
+            if tag.strip():
+                _add_evidence(CatalogMetadataRecordKind.DATASET_TAG, CatalogMetadataOperation.ADD, "", "", tag.strip())
+
+    return evidences
 
 
 def _validate_row_shape(

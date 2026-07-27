@@ -117,16 +117,17 @@ DATASET_DESCRIPTION_XLSX_V1 = TypedUploadProfileDefinition(
 )
 
 _CATALOG_METADATA_ROWS_HEADERS = (
-    "record_kind",
-    "asset_id",
-    "platform",
-    "database_name",
-    "schema_name",
+    "urn",
     "table_name",
-    "field_path",
-    "operation",
-    "value_text",
-    "controlled_ref",
+    "table_domain",
+    "table_desc",
+    "table_owner",
+    "table_term",
+    "table_tags",
+    "col_name",
+    "col_desc",
+    "col_term",
+    "col_tags",
 )
 
 CATALOG_METADATA_ROWS_CSV_V1 = TypedUploadProfileDefinition(
@@ -174,8 +175,6 @@ CATALOG_METADATA_ROWS_XLSX_V1 = TypedUploadProfileDefinition(
 TYPED_PROFILE_DEFINITIONS = {
     definition.content_profile: definition
     for definition in (
-        DATASET_DESCRIPTION_CSV_V1,
-        DATASET_DESCRIPTION_XLSX_V1,
         CATALOG_METADATA_ROWS_CSV_V1,
         CATALOG_METADATA_ROWS_XLSX_V1,
     )

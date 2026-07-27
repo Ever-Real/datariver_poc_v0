@@ -4,6 +4,8 @@ import type {
   AdminAccessRequest,
   AdminReadContext,
   MembershipAccessDocument,
+  MembershipChangeRequestActivity,
+  MembershipOwnedTable,
   MembershipRoleAssignmentEvidence,
   MembershipRenewalRequest,
   WorkspaceMembershipSummary,
@@ -12,7 +14,6 @@ import { sha256Text } from '../../api/client'
 import type { AssuranceActions } from '../../components/AssuranceNotice'
 import { DenseDataTable } from '../../components/common/DenseDataTable'
 import { Dialog } from '../../components/common/Dialog'
-import { GovernedUnavailable } from '../../components/common/GovernedUnavailable'
 import { useRovingTabs } from '../../components/common/useRovingTabs'
 import type { AdminApi } from './adminApi'
 import type { PendingAdminMutation } from './AdminMutationConfirmDialog'
@@ -53,6 +54,13 @@ export function MembershipAccessAdmin(props: AdminSectionProps) {
   const [reason, setReason] = useState('')
   const [detailOpen, setDetailOpen] = useState(false)
   const [detailTab, setDetailTab] = useState<'CR' | 'TABLES'>('CR')
+  const [changeRequests, setChangeRequests] = useState<MembershipChangeRequestActivity[]>([])
+  const [changeRequestCursor, setChangeRequestCursor] = useState<string>()
+  const [nextChangeRequestCursor, setNextChangeRequestCursor] = useState<string | null>(null)
+  const [ownedTables, setOwnedTables] = useState<MembershipOwnedTable[]>([])
+  const [ownedTableCursor, setOwnedTableCursor] = useState<string>()
+  const [nextOwnedTableCursor, setNextOwnedTableCursor] = useState<string | null>(null)
+  const [detailLoading, setDetailLoading] = useState(false)
   const [memberQuery, setMemberQuery] = useState('')
   const [appliedMemberQuery, setAppliedMemberQuery] = useState('')
   const [memberStatus, setMemberStatus] = useState<'ALL' | 'ACTIVE' | 'INACTIVE'>('ALL')
@@ -78,6 +86,7 @@ export function MembershipAccessAdmin(props: AdminSectionProps) {
   const memberGeneration = useRef(0)
   const accessGeneration = useRef(0)
   const provisionRoleGeneration = useRef(0)
+  const detailGeneration = useRef(0)
 
   const loadMembers = useCallback(async (signal?: AbortSignal) => {
     const generation = ++memberGeneration.current
@@ -155,6 +164,54 @@ export function MembershipAccessAdmin(props: AdminSectionProps) {
       accessGeneration.current += 1
     }
   }, [loadAccess, selectedId])
+  useEffect(() => {
+    if (!detailOpen || !selectedId) return
+    const controller = new AbortController()
+    const generation = ++detailGeneration.current
+    setDetailLoading(true)
+    const loadDetail = async () => {
+      try {
+        if (detailTab === 'CR') {
+          const page = await api.listMembershipChangeRequestActivity(
+            selectedId,
+            changeRequestCursor,
+            controller.signal,
+          )
+          if (controller.signal.aborted || generation !== detailGeneration.current) return
+          setChangeRequests((current) => changeRequestCursor ? [...current, ...page.items] : page.items)
+          setNextChangeRequestCursor(page.nextCursor)
+        } else {
+          const page = await api.listMembershipOwnedTables(
+            selectedId,
+            ownedTableCursor,
+            controller.signal,
+          )
+          if (controller.signal.aborted || generation !== detailGeneration.current) return
+          setOwnedTables((current) => ownedTableCursor ? [...current, ...page.items] : page.items)
+          setNextOwnedTableCursor(page.nextCursor)
+        }
+      } catch (error) {
+        if (!controller.signal.aborted && generation === detailGeneration.current) reportError(error)
+      } finally {
+        if (!controller.signal.aborted && generation === detailGeneration.current) {
+          setDetailLoading(false)
+        }
+      }
+    }
+    void loadDetail()
+    return () => {
+      controller.abort()
+      detailGeneration.current += 1
+    }
+  }, [
+    api,
+    changeRequestCursor,
+    detailOpen,
+    detailTab,
+    ownedTableCursor,
+    reportError,
+    selectedId,
+  ])
 
   const loadedForSelection = loadedSubjectId === selectedId
   const manualAccessLocked = !loadedForSelection || roleAssignment?.status !== 'MANUAL'
@@ -338,7 +395,17 @@ export function MembershipAccessAdmin(props: AdminSectionProps) {
           emptyMessage={messages.empty}
           getRowId={(member) => member.subject_id}
           selectedRowId={selectedId}
-          onRowActivate={(member) => { setSelectedId(member.subject_id); setDetailOpen(true); setDetailTab('CR') }}
+          onRowActivate={(member) => {
+            setSelectedId(member.subject_id)
+            setDetailOpen(true)
+            setDetailTab('CR')
+            setChangeRequests([])
+            setChangeRequestCursor(undefined)
+            setNextChangeRequestCursor(null)
+            setOwnedTables([])
+            setOwnedTableCursor(undefined)
+            setNextOwnedTableCursor(null)
+          }}
         />
         <div className="action-row" aria-label="사용자 목록 페이지">
           <button type="button" className="button button-secondary" disabled={membershipCursorHistory.length === 0} onClick={() => { const previous = membershipCursorHistory.at(-1); setMembershipCursorHistory((current) => current.slice(0, -1)); setMembershipCursor(previous || undefined); setMembershipPageNumber((current) => Math.max(1, current - 1)) }}>이전 페이지</button>
@@ -398,7 +465,7 @@ export function MembershipAccessAdmin(props: AdminSectionProps) {
           <section className="border-t border-slate-300 pt-3"><h3 className="m-0 text-xs font-black text-navy-900">Assigned Systems</h3>{!loadedForSelection ? <p className="mb-0 text-xs text-slate-500">권한 정보를 불러오는 중입니다.</p> : access?.allowed_system_ids.length ? <ul className="mb-0 pl-5 text-xs">{access.allowed_system_ids.map((id) => <li key={id}><code>{id}</code></li>)}</ul> : <p className="mb-0 text-xs text-slate-500">할당된 시스템 범위가 없습니다.</p>}</section>
           <section className="border-t border-slate-300 pt-3"><h3 className="m-0 text-xs font-black text-navy-900">Account Stats</h3><dl className="mt-2 grid gap-2 text-xs"><div><dt>CR Participated</dt><dd className="m-0 text-lg font-black">{selected.change_request_count}</dd></div><div><dt>Entities Owned</dt><dd className="m-0 text-lg font-black">{selected.owned_table_count}</dd></div><div><dt>Joined Date</dt><dd className="m-0">{selected.joined_at ? new Date(selected.joined_at).toLocaleDateString() : '—'}</dd></div></dl></section>
         </aside>
-        <main className="grid content-start gap-3"><div className="flex gap-2 border-b border-slate-300 pb-2" role="tablist" aria-label="사용자 활동 상세"><button {...detailTabs.tabProps('CR')} type="button" className={`button ${detailTab === 'CR' ? '' : 'button-secondary'}`} onClick={() => setDetailTab('CR')}>CR History</button><button {...detailTabs.tabProps('TABLES')} type="button" className={`button ${detailTab === 'TABLES' ? '' : 'button-secondary'}`} onClick={() => setDetailTab('TABLES')}>Owned Tables</button></div>{detailTab === 'CR' ? <div {...detailTabs.panelProps('CR')}><GovernedUnavailable title="사용자별 CR 상세 목록 API 미구현" description={`서버는 참여 건수 ${selected.change_request_count}건만 제공합니다. CR 번호·역할·상태가 포함된 권한 필터 목록 API 없이 항목을 추정하지 않습니다.`} /></div> : <div {...detailTabs.panelProps('TABLES')}><GovernedUnavailable title="사용자별 소유 테이블 목록 API 미구현" description={`서버는 소유 건수 ${selected.owned_table_count}건만 제공합니다. 자산 상세 목록은 전용 권한 필터 API가 추가된 뒤 표시합니다.`} /></div>}</main>
+        <main className="grid content-start gap-3"><div className="flex gap-2 border-b border-slate-300 pb-2" role="tablist" aria-label="사용자 활동 상세"><button {...detailTabs.tabProps('CR')} type="button" className={`button ${detailTab === 'CR' ? '' : 'button-secondary'}`} onClick={() => setDetailTab('CR')}>CR History</button><button {...detailTabs.tabProps('TABLES')} type="button" className={`button ${detailTab === 'TABLES' ? '' : 'button-secondary'}`} onClick={() => setDetailTab('TABLES')}>Owned Tables</button></div>{detailTab === 'CR' ? <div {...detailTabs.panelProps('CR')} className="grid gap-2"><DenseDataTable caption="사용자 Change Request 참여 이력" columns={[{ accessorKey: 'number', header: 'CR', size: 110 }, { accessorKey: 'title', header: '제목', size: 260 }, { accessorKey: 'relationship', header: '관계', size: 125 }, { accessorKey: 'state', header: '상태', size: 105 }, { accessorKey: 'updated_at', header: '최근 변경', size: 150, cell: ({ row }) => new Date(row.original.updated_at).toLocaleString() }]} data={changeRequests} getRowId={(item) => item.change_request_id} loading={detailLoading && changeRequests.length === 0} emptyMessage="권한 범위에서 표시할 CR 참여 이력이 없습니다." />{nextChangeRequestCursor && <button type="button" className="button button-secondary justify-self-end" disabled={detailLoading} onClick={() => setChangeRequestCursor(nextChangeRequestCursor)}>{detailLoading ? '불러오는 중…' : 'CR 이력 더 보기'}</button>}</div> : <div {...detailTabs.panelProps('TABLES')} className="grid gap-2"><DenseDataTable caption="사용자 소유 테이블" columns={[{ accessorKey: 'name', header: '테이블', size: 210, cell: ({ row }) => <><strong>{row.original.name}</strong><small>{[row.original.database_name, row.original.schema_name].filter(Boolean).join('.') || '경로 없음'}</small></> }, { accessorKey: 'platform', header: '플랫폼', size: 105, cell: ({ row }) => row.original.platform ?? '—' }, { accessorKey: 'classification', header: '등급', size: 115 }, { accessorKey: 'observed_at', header: '관측 시각', size: 150, cell: ({ row }) => new Date(row.original.observed_at).toLocaleString() }]} data={ownedTables} getRowId={(item) => item.asset_id} loading={detailLoading && ownedTables.length === 0} emptyMessage="권한 범위에서 표시할 소유 테이블이 없습니다." />{nextOwnedTableCursor && <button type="button" className="button button-secondary justify-self-end" disabled={detailLoading} onClick={() => setOwnedTableCursor(nextOwnedTableCursor)}>{detailLoading ? '불러오는 중…' : '소유 테이블 더 보기'}</button>}</div>}</main>
       </div>}
     </Dialog>
     <Dialog open={createOpen} title="신규 사용자 등록" description="인증 계정과 현재 Workspace 멤버십을 하나의 통제된 작업으로 생성합니다." onRequestClose={closeCreate} footer={<><button type="button" className="button button-secondary" disabled={createBusy} onClick={closeCreate}>취소</button><button type="button" className="button" disabled={createBusy || !newUser.username.trim() || !newUser.email.trim() || !newUser.firstName.trim() || !newUser.lastName.trim() || newUser.temporaryPassword.length < 12 || newUser.temporaryPassword !== newUser.passwordConfirmation} onClick={() => void provisionUser()}>{createBusy ? '등록 중…' : '계정 생성'}</button></>}>

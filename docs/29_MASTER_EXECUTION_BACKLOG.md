@@ -2,6 +2,22 @@
 
 ## Purpose and authority
 
+## Handoff public baseline (authoritative for transfer/restart)
+
+- 공개 기준점 is `origin/main` = `3c0379f4051ec698a53db41c5b5092895e40b8fb`.
+- 현재 작업 기준 브랜치: `codex/wsl-migration-runbook`.
+- 현재 작업 기준 HEAD: `a4a45ae3405076ed735cc20819137fb9d1cfed16`
+  (`feat(ops): add serial setup and update workflows`).
+- 현재 확인된 `origin` fetch/push URL:
+  `https://github.com/Ever-Real/datariver_v1.git`.
+- `codex/antigravity-handoff`의 `b04ab61`은 `a4a45ae`의 조상도, 자손도 아니고
+  `3c0379f4051e`에서 갈라진 sibling입니다. 위 기준을 바꾸거나 해당 브랜치를 합병/채택하지
+  않습니다. 통합은 Codex 또는 사용자의 명시적 승인만 가능합니다.
+- `codex/wsl-migration-runbook`과 `codex/antigravity-handoff`는 현재 원격에 공개된 브랜치가
+  아닙니다. 이 Agent가 동일 워크스페이스 또는 `3c0379f...`를 포함하는 검증된 source bundle을
+  받지 못한 상태에서 `origin/main`으로 임의 교체하지 않고, `BLOCKED_SOURCE_BASE`로 보고한 뒤
+  구현을 진행하지 않습니다.
+
 This is the current delivery ledger for the accepted product requirements. It prevents interrupted
 sessions, repeated requests, historical test reports, or partially merged branches from being
 mistaken for completed delivery. Only normalized current requirements and their evidence are
@@ -127,7 +143,7 @@ merged, released, or available to the preparation PC until publication actually 
 | R2-09 | Consume approved erasure intent with maker/checker/executor separation | `DONE_LOCAL` | Domain plus DB actor inequalities, fixed executor service-principal FK/config binding and SQL constraint negative pass. Physical deletion remains absent. |
 | R2-10 | Add kill switch, bounded metrics and crash/restart/duplicate/hold-race tests | `DONE_LOCAL` + `EXTERNAL_GATE` | Deployment flag plus reloadable exact-value control file, fixed-label outcomes, atomic duplicate prevention, every-lease read-only recovery, three-fence transient recovery and cold-process exact receipt linkage are tested; full WSL/provider crash/soak remains external. |
 | R2-11 | Connect four-class data rules and exact Role evidence to Admin UI | `DONE_LOCAL` | The Role editor covers all four classes, displays exact assignment evidence and disables manual/fallback editing for Role-bound or unverifiable legacy state. |
-| R2-12 | Resolve every Admin inventory row honestly | `DONE_LOCAL` + `EXTERNAL_GATE` | Displayed collections use bounded server cursors and stale-response guards; missing audit/dictionary/profile/drill-down APIs are explicit governed-unavailable states. Actual OIDC/WebAuthn browser acceptance remains external. |
+| R2-12 | Resolve every Admin inventory row honestly | `DONE_LOCAL` + `EXTERNAL_GATE` | Displayed collections use bounded server cursors and stale-response guards. Per-member CR/table drill-downs now apply item-level ABAC; remaining audit/dictionary/profile-mutation gaps are explicit. Actual OIDC/WebAuthn browser acceptance remains external. |
 | R2-13 | Govern user registration and membership lifecycle | `DONE_LOCAL` + `EXTERNAL_GATE` | Optional Keycloak provisioning, active Role search, expiring membership/renewal and normalized evidence are wired and tested. Real IdP rollback/ceremony and multi-human acceptance remain external. |
 
 ## Request group 3 — Search, Registration, Manual/Bulk and CR
@@ -153,7 +169,7 @@ merged, released, or available to the preparation PC until publication actually 
 
 | ID | Checklist item | Current status | Evidence / remaining work |
 |---|---|---|---|
-| R4-01 | Probe Neo4j plus Chat, Embedding and Reranker adapters before feature execution | `DONE_LOCAL` + `EXTERNAL_GATE` | Current Mac evidence proves authenticated Neo4j `RETURN 1`, strict-JSON Chat and 1,024-dimensional Embedding inference. The installed local Ollama reranker honestly fails the fixed contract: `/v1/rerank` is absent. Revision `0053` adds a bounded fixed private reranking TEST without inventing runtime activation. WSL/private-provider DNS, TLS, credentials and responses remain unverified. |
+| R4-01 | Probe Neo4j plus Chat, Embedding and Reranker adapters before feature execution | `DONE_LOCAL` + `EXTERNAL_GATE` | Current Mac evidence proves authenticated Neo4j `RETURN 1`, strict-JSON Chat, 1,024-dimensional Embedding inference and an ordered finite-score rerank through `LOCAL_LLAMA_CPP`. Ollama still has no rerank route; the bridge serves the Ollama-owned GGUF on fixed loopback port 11435 without inventing runtime activation. Revision `0053` retains the bounded private reranking TEST. WSL/private-provider DNS, TLS, credentials and responses remain unverified. |
 | R4-02 | Compare v0.3 code/docs and retain safe functional intent | `PARTIAL` | Registry, changesets, releases and typed studio exist; keep a traceable safe-substitution matrix. |
 | R4-03 | Define and manage Knowledge Graph/Ontology assets | `PARTIAL` | Schema/domain/ontology/changeset/release contracts, durable PDF-to-DRAFT analysis and atomic independently reviewed publication/receipt-backed activation are implemented. Remaining Mode A lifecycle UX and target acceptance stay open. |
 | R4-04 | Generate typed KG proposals from sources with provenance | `DONE_LOCAL` + `EXTERNAL_GATE` | Revision `0054` provides pinned, fenced, retryable/cancellable PDF-to-typed-DRAFT jobs with pre-egress and final reauthorization, atomic evidence, active-first bounded owner history and a separately credentialed worker. DB schema sources, target WSL/private-provider IAM/TLS/recovery/load and human acceptance remain external or later scope. |

@@ -1,6 +1,0 @@
-# Local development derivative only. It reuses the installed Gemma4 E2B QAT
-# weights and caps the active context so the Mac remains responsive while the
-# Docker-based DataHub and platform stacks are running.
-FROM gemma4:e2b-it-qat
-PARAMETER num_ctx 8192
-REQUIRES 0.32.1

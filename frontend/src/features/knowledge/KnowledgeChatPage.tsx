@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState, type FormEvent } from 'react'
-import { Bot, Send, ShieldCheck } from 'lucide-react'
+import { Bot, Send, ShieldCheck, Loader2 } from 'lucide-react'
 import type { ApiClient } from '../../api/client'
 import type { KnowledgeGraph, KnowledgeNeighborAnalysis, KnowledgeRelease, KnowledgeSnapshot } from '../../api/types'
 import type { Page } from '../../app/navigation'
@@ -101,7 +101,7 @@ export function KnowledgeChatPage({ client, onNavigate }: { client: ApiClient; o
   return <section className="grid gap-4">
     <PageTitle icon="KG" eyebrow="Independent Knowledge GraphRAG" title="지식 챗 · GraphRAG 질의" description="일반 Chat 메뉴와 분리된 지식 에셋·불변 릴리스 기반 질의 화면입니다." />
     <KnowledgeWorkspaceLayout activeSection="CHAT" onNavigate={onNavigate}>
-    <div className="grid gap-4 2xl:grid-cols-[360px_minmax(0,1fr)]">
+    <div className="grid gap-4 2xl:grid-cols-[360px_minmax(0,1fr)_360px]">
       <form className="grid content-start gap-3 rounded-enterprise border border-slate-300 bg-white p-4 shadow-sm" onSubmit={(event) => void query(event)}>
         <div className="flex items-center gap-2 text-sm font-black text-navy-900"><Bot size={18} className="text-enterprise-blue" /> Knowledge query context</div>
         <label className="grid gap-1 text-xs font-bold">지식 에셋<select value={graphId} onChange={(event) => setGraphId(event.target.value)}><option value="">선택</option>{graphs.map((graph) => <option key={graph.id} value={graph.id}>{graph.name} · {graph.status}</option>)}</select></label>
@@ -114,10 +114,13 @@ export function KnowledgeChatPage({ client, onNavigate }: { client: ApiClient; o
       </form>
       <main className="grid content-start gap-4">
         <ErrorNotice error={error} />
-        <FlowCanvas ariaLabel="GraphRAG 근거 그래프" nodes={flowNodes} edges={flowEdges} height={500} emptyTitle="아직 분석된 지식 근거가 없습니다." emptyDescription="왼쪽에서 에셋·릴리스·시작 노드와 질문을 선택해 근거 탐색을 실행하세요." />
-        {analysis && <section className="rounded-enterprise border border-enterprise-blue bg-blue-50 p-4 shadow-sm"><span className="text-[10px] font-black tracking-[.14em] text-enterprise-blue uppercase">Cited GraphRAG answer</span><p className="whitespace-pre-wrap text-sm leading-6 text-slate-800">{analysis.answer}</p><div className="grid gap-1 text-[10px] text-slate-600">{analysis.citations.map((citation) => <span key={citation.evidence_id}>[{citation.evidence_id}] {citation.source_locator}{citation.page_number ? ` · p.${citation.page_number}` : ''} · {citation.source_version}</span>)}</div><small className="mt-3 block text-slate-500">{analysis.model_audit.provider} · {analysis.model_audit.model} · prompt {analysis.model_audit.prompt_version}</small></section>}
-        {analysis && <section className="rounded-enterprise border border-slate-300 bg-white p-4 shadow-sm"><h2 className="mt-0 mb-3 text-sm font-black text-navy-900">권한 내 그래프 근거 · {analysis.nodes.length} nodes / {analysis.edges.length} edges</h2>{analysis.truncated && <p className="text-xs font-bold text-amber-800">조회 한도로 일부 결과가 생략되었습니다.</p>}<ul className="m-0 grid gap-2 pl-5 text-xs">{analysis.nodes.map((node) => <li key={node.id}><strong>{label(node.properties, node.id)}</strong> · {node.entity_type} · provenance {node.provenance.length}</li>)}</ul></section>}
+        {loading && <div className="flex h-32 items-center justify-center rounded-enterprise border border-slate-300 bg-white shadow-sm"><Loader2 className="animate-spin text-enterprise-blue" size={32} /></div>}
+        {!loading && <FlowCanvas ariaLabel="GraphRAG 근거 그래프" nodes={flowNodes} edges={flowEdges} height={500} emptyTitle="아직 분석된 지식 근거가 없습니다." emptyDescription="왼쪽에서 에셋·릴리스·시작 노드와 질문을 선택해 근거 탐색을 실행하세요." />}
+        {analysis && !loading && <section className="rounded-enterprise border border-enterprise-blue bg-blue-50 p-4 shadow-sm"><span className="text-[10px] font-black tracking-[.14em] text-enterprise-blue uppercase">Cited GraphRAG answer</span><p className="whitespace-pre-wrap text-sm leading-6 text-slate-800">{analysis.answer}</p><div className="grid gap-1 text-[10px] text-slate-600">{analysis.citations.map((citation) => <span key={citation.evidence_id}>[{citation.evidence_id}] {citation.source_locator}{citation.page_number ? ` · p.${citation.page_number}` : ''} · {citation.source_version}</span>)}</div><small className="mt-3 block text-slate-500">{analysis.model_audit.provider} · {analysis.model_audit.model} · prompt {analysis.model_audit.prompt_version}</small></section>}
       </main>
+      <aside className="grid content-start gap-4">
+        {analysis && !loading && <section className="rounded-enterprise border border-slate-300 bg-white p-4 shadow-sm"><h2 className="mt-0 mb-3 text-sm font-black text-navy-900">권한 내 그래프 근거 · {analysis.nodes.length} nodes / {analysis.edges.length} edges</h2>{analysis.truncated && <p className="text-xs font-bold text-amber-800">조회 한도로 일부 결과가 생략되었습니다.</p>}<ul className="m-0 grid gap-2 pl-5 text-xs">{analysis.nodes.map((node) => <li key={node.id}><strong>{label(node.properties, node.id)}</strong> · {node.entity_type} · provenance {node.provenance.length}</li>)}</ul></section>}
+      </aside>
     </div>
     </KnowledgeWorkspaceLayout>
   </section>

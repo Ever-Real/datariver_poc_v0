@@ -99,7 +99,17 @@ preview ETag before the candidate binding, Change Request item and outbox event 
   projections for classification remediation. It never applies to export, Chat, attachments,
   arbitrary provider egress, mutations, service identities or another workspace. The existing typed
   DataHub metadata enrichment remains available only through authorized catalog detail.
-- Chat filters evidence before model invocation and re-authorizes citations before response.
+- Chat filters evidence before model invocation. Every external stage additionally requires its
+  deployment-selected immutable profile UUID and exact route/provider/model/deployment identity to
+  match the active classification rule.
+  The exact provider-bound rule set is applied to the catalog query before vector candidate text
+  reaches an embedding provider. After composition, Chat re-reads current membership attributes
+  and canonical catalog or active-release evidence, re-resolves the exact
+  policy-ID/hash/version/generation and re-runs resource authorization for every citation before
+  persistence; drift, revocation or dependency failure yields no answer evidence.
+- Existing Chat session requests read and match the canonical session owner before authorization,
+  budget reservation, retrieval or provider invocation. The application predicates and
+  restrictive owner RLS remain independent, defense-in-depth controls.
 - Before a governed workspace classification policy is active, Search/detail cannot return
   RESTRICTED assets and Chat cannot retrieve evidence above INTERNAL. A future explicit Search grant
   may narrow the Search deny, while RESTRICTED Chat remains a non-overridable deny.
@@ -192,9 +202,10 @@ drift. Physical deletion remains a separate governed retention operation.
 ## Secrets and encryption
 
 - Git contains `.env.example` names only. Bootstrap generates strong local secrets into ignored files.
-- Production uses secret mounts or a secret manager; DB stores `secret_ref` only. Development may
-  use the administrator's versioned, RLS-scoped system YAML record as an explicit local-only
-  exception. API responses mask sensitive keys and the update route is unavailable in production.
+- Every environment uses deployment variables and secret mounts or a secret manager as the sole
+  live connector source. Historical database profile rows are audit-only: no API, worker or
+  capability path may load them into runtime Settings. Admin returns a redacted snapshot, publishes
+  no write/activate route and never accepts a probe destination from the browser.
 - No zero/default encryption key fallback. Startup fails when required secret material is missing or weak.
 - TLS is mandatory outside a single-host private development network. PostgreSQL/object backups are encrypted and restoration is tested.
 - Logs redact Authorization, cookies, provider tokens, presigned URLs, connection strings, prompt content and personal data.

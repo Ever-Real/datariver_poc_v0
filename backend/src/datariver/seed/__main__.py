@@ -5,6 +5,7 @@ import asyncio
 import hashlib
 import json
 from collections.abc import Sequence
+from uuid import UUID
 
 from sqlalchemy import delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -65,6 +66,8 @@ DOMAIN_ID = stable_id("domain:semiconductor-value-chain")
 LOCAL_KEYCLOAK_SUBJECT = "00000000-0000-4000-8000-000000000001"
 LOCAL_KEYCLOAK_AIRFLOW_SUBJECT = "00000000-0000-4000-8000-000000000002"
 LOCAL_KEYCLOAK_REVIEWER_SUBJECT = "00000000-0000-4000-8000-000000000003"
+LOCAL_KEYCLOAK_VIEWER_SUBJECT = "00000000-0000-4000-8000-000000000004"
+VIEWER_SUBJECT_ID = stable_id("subject:local-datariver-seed-viewer")
 ADMINISTRATOR_ACTIONS = tuple(
     action.value for action in Action if action is not Action.CHANGE_RAW_CREATE
 )
@@ -295,6 +298,60 @@ async def apply_pack(
         for document in seed_operation_ledger(pack)
     ]
     session.add_all(operations)
+    session.add_all(
+        [
+            ChangeSetModel(
+                id=UUID("11111111-1111-1111-1111-111111111111"),
+                workspace_id=WORKSPACE_ID,
+                graph_id=GRAPH_ID,
+                base_release_id=RELEASE_ID,
+                ontology_version_id=ONTOLOGY_ID,
+                title="Update customer masking policy (Draft)",
+                state="DRAFT",
+                author_id=SUBJECT_ID,
+                version=1,
+            ),
+            ChangeSetModel(
+                id=UUID("22222222-2222-2222-2222-222222222222"),
+                workspace_id=WORKSPACE_ID,
+                graph_id=GRAPH_ID,
+                base_release_id=RELEASE_ID,
+                ontology_version_id=ONTOLOGY_ID,
+                title="Add standard properties for Supplier (Pending)",
+                state="PENDING_REVIEW",
+                author_id=SUBJECT_ID,
+                version=1,
+            ),
+            ChangeSetModel(
+                id=UUID("33333333-3333-3333-3333-333333333333"),
+                workspace_id=WORKSPACE_ID,
+                graph_id=GRAPH_ID,
+                base_release_id=RELEASE_ID,
+                ontology_version_id=ONTOLOGY_ID,
+                title="Approve regional mapping adjustment",
+                state="APPROVED",
+                author_id=SUBJECT_ID,
+                reviewed_by=REVIEWER_SUBJECT_ID,
+                reviewed_at=now,
+                review_reason="Looks good to me.",
+                version=2,
+            ),
+            ChangeSetModel(
+                id=UUID("44444444-4444-4444-4444-444444444444"),
+                workspace_id=WORKSPACE_ID,
+                graph_id=GRAPH_ID,
+                base_release_id=RELEASE_ID,
+                ontology_version_id=ONTOLOGY_ID,
+                title="Reject invalid transaction classification",
+                state="REJECTED",
+                author_id=SUBJECT_ID,
+                reviewed_by=REVIEWER_SUBJECT_ID,
+                reviewed_at=now,
+                review_reason="Fails basic security invariants.",
+                version=2,
+            ),
+        ]
+    )
     await session.flush()
     persisted_nodes = list(
         (
@@ -635,7 +692,7 @@ async def _ensure_identity(session: AsyncSession, *, settings: Settings) -> None
             id=SUBJECT_ID,
             issuer=settings.oidc_issuer,
             external_subject=LOCAL_KEYCLOAK_SUBJECT,
-            display_name="DataRiver Local Administrator",
+            display_name="김데이터 (DataRiver Admin)",
             active=True,
         )
         session.add(subject)
@@ -681,7 +738,7 @@ async def _ensure_identity(session: AsyncSession, *, settings: Settings) -> None
             id=REVIEWER_SUBJECT_ID,
             issuer=settings.oidc_issuer,
             external_subject=LOCAL_KEYCLOAK_REVIEWER_SUBJECT,
-            display_name="DataRiver Synthetic Seed Reviewer",
+            display_name="이스튜어드 (Data Steward)",
             active=True,
         )
         session.add(reviewer_subject)
@@ -766,6 +823,58 @@ async def _ensure_identity(session: AsyncSession, *, settings: Settings) -> None
         airflow_membership.clearance = int(Classification.RESTRICTED)
         airflow_membership.attributes = airflow_attributes
         airflow_membership.active = True
+
+    # --- Viewer 더미 사용자: 박뷰어 (Viewer) ---
+    viewer_subject = await session.scalar(
+        select(SubjectModel).where(
+            SubjectModel.issuer == settings.oidc_issuer,
+            SubjectModel.external_subject == LOCAL_KEYCLOAK_VIEWER_SUBJECT,
+        )
+    )
+    if viewer_subject is None:
+        viewer_subject = SubjectModel(
+            id=VIEWER_SUBJECT_ID,
+            issuer=settings.oidc_issuer,
+            external_subject=LOCAL_KEYCLOAK_VIEWER_SUBJECT,
+            display_name="박뷰어 (Viewer)",
+            active=True,
+        )
+        session.add(viewer_subject)
+        await session.flush()
+    viewer_membership = await session.get(
+        WorkspaceMembershipModel,
+        {"workspace_id": WORKSPACE_ID, "subject_id": viewer_subject.id},
+    )
+    viewer_attributes = {
+        "groups": ["data-viewers"],
+        "allowed_actions": [
+            Action.CATALOG_READ.value,
+            Action.CATALOG_SEARCH.value,
+            Action.KG_READ.value,
+        ],
+        "denied_actions": [],
+        "allowed_system_ids": [str(SYSTEM_ID)],
+        "allowed_domain_ids": [str(DOMAIN_ID)],
+        "seed_namespace": SEED_NAMESPACE,
+    }
+    if viewer_membership is None:
+        session.add(
+            WorkspaceMembershipModel(
+                workspace_id=WORKSPACE_ID,
+                subject_id=viewer_subject.id,
+                department_id=None,
+                job_function="DATA_ANALYST",
+                clearance=int(Classification.INTERNAL),
+                attributes=viewer_attributes,
+                active=True,
+                access_expires_at=add_calendar_months(utc_now(), 6),
+            )
+        )
+    else:
+        viewer_membership.job_function = "DATA_ANALYST"
+        viewer_membership.clearance = int(Classification.INTERNAL)
+        viewer_membership.attributes = viewer_attributes
+        viewer_membership.active = True
 
 
 async def _append_seed_event(session: AsyncSession, event_type: str, content_hash: str) -> None:

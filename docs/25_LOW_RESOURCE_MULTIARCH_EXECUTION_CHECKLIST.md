@@ -84,8 +84,10 @@ This checklist is evidence-driven. `[x]` means the named repository evidence was
 - [x] six accepted upload objects plus seven manual-metadata CSV objects were selected from the
   repeatable-read PostgreSQL evidence manifest, copied SeaweedFS→MinIO and re-read from both ends;
   the idempotent rerun reported `verified_existing=13` and `planned=0`.
-- [x] PostgreSQL/Keycloak/DataRiver start with `.env.mac-development`; native Ollama advertises the
-  configured `datariver-gemma4-dev:0.1` model.
+- [x] Historical run evidence: PostgreSQL/Keycloak/DataRiver started with
+  `.env.mac-development`; native Ollama advertised the then-configured
+  `datariver-gemma4-dev:0.1` model. ADR-0048 later retired this derivative and moved every model
+  identity to the operator-selected ignored environment.
 - [x] Alembic `0040`, readiness, browser PKCE login, dashboard and catalog paging passed. At page
   size 100, moving page 1→2 retained exactly 101 table rows including the header and browser
   warning/error logs remained empty.

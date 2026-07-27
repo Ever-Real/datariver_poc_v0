@@ -6,16 +6,13 @@ import structlog
 
 from datariver.config import get_settings
 from datariver.infrastructure.db.outbox import SqlOutboxRelayStore
-from datariver.infrastructure.system_configuration_runtime import (
-    resolve_activated_system_configuration,
-)
 from datariver.workers.container import build_relay_container
 
 LOGGER = structlog.get_logger()
 
 
 async def run() -> None:
-    settings = await resolve_activated_system_configuration(get_settings(), database_role="relay")
+    settings = get_settings()
     container = build_relay_container(settings)
     store = SqlOutboxRelayStore(container.database.session_factory)
     try:

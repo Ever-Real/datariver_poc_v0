@@ -155,6 +155,39 @@ class SqlSubjectReader(SubjectReader):
         subject, membership = row
         return subject_attributes_from_models(subject=subject, membership=membership)
 
+    async def refresh_subject(
+        self,
+        *,
+        subject: SubjectAttributes,
+        now: datetime,
+    ) -> SubjectAttributes:
+        row = (
+            await self._session.execute(
+                select(SubjectModel, WorkspaceMembershipModel)
+                .join(
+                    WorkspaceMembershipModel,
+                    WorkspaceMembershipModel.subject_id == SubjectModel.id,
+                )
+                .where(
+                    SubjectModel.id == subject.subject_id,
+                    WorkspaceMembershipModel.workspace_id == subject.workspace_id,
+                )
+            )
+        ).one_or_none()
+        if row is None:
+            raise ForbiddenError("No current workspace membership exists.")
+        subject_model, membership = row
+        refreshed = subject_attributes_from_models(
+            subject=subject_model,
+            membership=membership,
+            observed_at=now,
+        )
+        return with_authentication_context(
+            refreshed,
+            authentication_time=subject.authentication_time,
+            authentication_assurance=subject.authentication_assurance,
+        )
+
     async def get_default_workspace_id(self, *, issuer: str, external_subject: str) -> UUID | None:
         """Return only the caller's deterministic active-workspace selection.
 

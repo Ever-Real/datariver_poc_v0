@@ -16,7 +16,7 @@ when identity, policy, source evidence or a required connector is unavailable.
 | Policy and retention | security administrator, independent checker, scheduler/archive roles | reusable Role rules, No/Partial/Full access, retention/hold/erasure approval evidence | PostgreSQL policy/evidence; no direct destructive completion claim |
 | Knowledge and Chat | steward, reviewer, authorized user | governed graph publication, bounded source jobs, grounded Chat/GraphRAG capability gates | PostgreSQL release/audit; Neo4j/LLM are optional projections/providers |
 | API sharing | product manager, service consumer | versioned product contracts, subject-bound grants, atomic quota/result/replay evidence | PostgreSQL; revoked/expired/drifted grants deny first call and replay |
-| Administration and operations | security administrator, operator | bounded membership/System/configuration views and typed commands; connector status is redacted | PostgreSQL + deployment config; secrets and provider coordinates stay server-side |
+| Administration and operations | security administrator, operator | bounded membership/System/configuration views and typed commands; connector status is redacted | PostgreSQL + deployment config; secrets stay server-side, while authorized Admin may read bounded redacted effective coordinates that never become browser-supplied probe input |
 
 Global UX rules are loading/empty/denied/degraded/error states, server paging rather than browser
 accumulation, explicit confirmation for high-risk actions, bounded polling, and no fabricated
@@ -238,11 +238,22 @@ Any pre-apply review state → REJECTED or CANCELLED under policy
 - Conversation is workspace/owner-bound and persists only under an exact active retention-policy
   ID/hash and policy-derived deadline. Legacy, expired and superseded-policy sessions are
   append-closed. Explicit deletion remains governed backlog and is not a current Chat command.
-- User chooses catalog, graph and optional release scope only from authorized resources.
-- Retrieval filters before LLM invocation. Responses include evidence cards, source locator, observed/release version and whether data is stale.
-- Prompt/model/tool metadata are audited without logging raw secrets or confidential content by default.
+- User chooses AUTO, general, vector or graph routing; the server records the requested/selected
+  route and refuses an unavailable graph adapter without silent fallback.
+- Retrieval filters before any development LLM invocation. Responses include ranked authorized
+  evidence cards, route and bounded workflow state.
+- Adapter reachability alone never authorizes inference. Every invoked stage's environment-selected
+  immutable profile UUID and exact route/provider/model/deployment identity must match the active
+  classification rule; only classifications satisfying the complete stage set may reach Chat,
+  Embedding or Reranker.
+- After composition, the exact classification policy/generation and every cited resource are
+  reauthorized before persistence. Revocation, drift or dependency failure removes the answer and
+  citations.
+- Prompt/model/tool and provider/profile/policy identity metadata are audited without logging raw
+  secrets or confidential content by default.
 - Graph questions use registered typed query templates; generated raw Cypher is rejected.
-- If the LLM is unavailable, evidence results remain accessible as a degraded response.
+- If an activated retrieval, reranking or composition adapter fails, Chat returns `검증 불가`
+  without citations or a substituted strategy/model.
 
 ## API product sharing
 
@@ -276,10 +287,21 @@ Any pre-apply review state → REJECTED or CANCELLED under policy
   Workspace/epoch or Admin-context fingerprint change, mismatch or denial remounts/purges it so
   rows, forms, ETags, confirmations and idempotency keys cannot cross a security boundary.
 - The administrator user and Role lists are dense server-keyset pages of at most 100 rows; the browser requests 25, caps cursor history and discards aborted or late responses. A selected Role/member outside the current search page remains an explicit identifier rather than causing an unbounded preload. Membership access changes remain ETag-, assurance- and audit-protected. A Role version defines one secret-free Policy Book rule per PUBLIC/INTERNAL/CONFIDENTIAL/RESTRICTED classification: No/Partial/Full access, typed partial treatment, residency and processing-purpose allowlists. Missing rules deny. Role assignment/removal records exact normalized evidence in the same membership transaction, and the generic access form is disabled for Role-bound or unverifiable legacy evidence until the Role is removed or repaired. When the operator enables the governed Keycloak adapter, a recently hardware-authenticated security administrator may create a disabled IdP identity and six-month Workspace membership together, optionally materializing one active server-searched Role, before the identity is enabled. Temporary credentials pass only to the identity provider and require first-login replacement. Other IdPs keep account creation external.
-- The adjacent administrator System tab pages the canonical System master separately from each System's assignees. A recently hardware-authenticated security administrator applies a bounded, confirmation-gated, ETag-fenced and idempotent delta of disjoint upserts/removals. Each resulting responsibility lane retains at least one active human Workspace member; role-local priorities are unique and start at one. The command emits immutable outbox audit evidence. The compatibility full-replacement API remains, but the browser neither loads nor resubmits every assignee.
+- The adjacent administrator System tab pages the canonical System master separately from each System's assignees. A recently hardware-authenticated security administrator creates a System through a confirmation-gated, idempotent, audited command, then applies a bounded, confirmation-gated, ETag-fenced and idempotent delta of disjoint upserts/removals. Each resulting responsibility lane retains at least one active human Workspace member; role-local priorities are unique and start at one. The commands emit immutable outbox audit evidence. The compatibility full-replacement API remains, but the browser neither loads nor resubmits every assignee.
 - Classification policies, RESTRICTED grants, inference profiles, retention policies, Legal Holds, erasure requests, renewals and fallback requests use the same bounded server-cursor and per-channel abort/stale-response rules across effect, refresh, mutation reload and unmount. Legal Hold and erasure lists omit history; exact details return only the newest 100 records with an explicit truncation flag. Retention review displays archive-only execution evidence separately and never labels approval or an immutable receipt as physical deletion.
-- The administrator System settings tab is a server-backed, redacted inventory for deployment-managed PostgreSQL/OIDC bootstrap capabilities, separate external Redis cache/delivery, DataHub GMS/Frontend, Airflow, S3/MinIO, LLM chat/embedding/reranker, Neo4j, Prometheus and Grafana. Every item carries category, requirement level and explicit required/secret field metadata. Inventory lookup reads only current/activated revision evidence; bounded history exposes non-secret revision hash/TEST/activation facts. SAVE accepts exact server-owned mounted-secret reference names, TEST executes a fixed typed probe, and credential/provider response values are never returned. In development only, connector YAML may be versioned and activated; a separately guarded private-network OpenAI-compatible Chat/Embedding adapter is not a provider-profile route, cannot target a public endpoint and is not a production inference capability (ADR-0030, ADR-0033, ADR-0038). Reranking is separately fixed to the private `INTRANET_RERANK_V1` `POST /v1/rerank` inference test; it is not described as OpenAI-compatible and has no runtime activation or consumer in this phase (ADR-0043).
-- Audit/security export, canonical terminology CRUD, user-profile edit and per-user CR/owned-table drill-down remain explicit governed-unavailable states until separately authorized, masked and server-paged APIs exist. The Admin UI does not fabricate their rows or expose silent controls.
+- The administrator System settings tab is a server-backed, redacted inventory for
+  deployment-managed PostgreSQL/OIDC bootstrap capabilities, separate Redis cache/delivery,
+  DataHub GMS/Frontend, Airflow, S3/MinIO, LLM chat/embedding/reranker, Neo4j, Prometheus and
+  Grafana. `.env`/orchestrator values plus mounted secret references are the only live source
+  (ADR-0048). Admin exposes no SAVE, revision or ACTIVATE operation: it returns bounded redacted
+  effective state, a blank key-only environment template, and one fixed server-owned typed probe.
+  Browser input cannot select the probe destination. A separately guarded private-network
+  OpenAI-compatible Chat/Embedding adapter cannot target a public endpoint and is not a production
+  inference capability (ADR-0030, ADR-0033, ADR-0038). Reranking uses the Mac-only
+  `LOCAL_LLAMA_CPP` bridge over an operator-selected Ollama-owned GGUF and executes the fixed
+  `POST /v1/rerank` probe; it is not described as OpenAI-compatible. Historical database-backed
+  System Settings revisions are non-runtime records and cannot activate a connector.
+- Per-user CR activity and owned-table drill-downs are bounded Workspace/subject-bound cursor APIs. The server filters every CR/table through its ordinary ABAC action before display. Identity profile attributes remain IdP-managed; audit/security export and canonical terminology CRUD remain explicit governed-unavailable states rather than fabricated browser data.
 - Policy changes are versioned, linted, tested against fixtures, approved and atomically activated.
 - Connection configuration stores endpoints/capabilities and `secret_ref`, not plaintext credentials.
 - Audit search/export is separately authorized and immutable to normal admins.

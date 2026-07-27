@@ -1,4 +1,4 @@
-import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { describe, expect, it, vi } from 'vitest'
 import type {
   AdminReadContext,
@@ -38,10 +38,10 @@ function policy(state: ClassificationAccessPolicy['state'] = 'ACTIVE'): Classifi
     policy_id: 'policy-one', policy_number: 7, required_jurisdiction: 'runtime-jurisdiction',
     restricted_search_grant_maximum_days: 30,
     rules: [
-      { classification: 'PUBLIC', search_mode: 'ABAC', chat_mode: 'DENY', provider_profile_version_id: null },
-      { classification: 'INTERNAL', search_mode: 'ABAC', chat_mode: 'DENY', provider_profile_version_id: null },
-      { classification: 'CONFIDENTIAL', search_mode: 'DENY', chat_mode: 'DENY', provider_profile_version_id: null },
-      { classification: 'RESTRICTED', search_mode: 'EXPLICIT_GRANT_ONLY', chat_mode: 'DENY', provider_profile_version_id: null },
+      { classification: 'PUBLIC', search_mode: 'ABAC', chat_mode: 'DENY', provider_profile_version_id: null, embedding_provider_profile_version_id: null, reranker_provider_profile_version_id: null },
+      { classification: 'INTERNAL', search_mode: 'ABAC', chat_mode: 'DENY', provider_profile_version_id: null, embedding_provider_profile_version_id: null, reranker_provider_profile_version_id: null },
+      { classification: 'CONFIDENTIAL', search_mode: 'DENY', chat_mode: 'DENY', provider_profile_version_id: null, embedding_provider_profile_version_id: null, reranker_provider_profile_version_id: null },
+      { classification: 'RESTRICTED', search_mode: 'EXPLICIT_GRANT_ONLY', chat_mode: 'DENY', provider_profile_version_id: null, embedding_provider_profile_version_id: null, reranker_provider_profile_version_id: null },
     ],
     payload_hash: 'a'.repeat(64), requester_id: 'maker-one', request_reason: 'reviewed policy',
     state, checker_id: state === 'PROPOSED' ? null : 'checker-one', decision_reason: null,
@@ -255,8 +255,11 @@ describe('ClassificationPolicyAdmin', () => {
       expect.objectContaining({ profileKey: 'other-profile' }),
     ))
 
-    expect(screen.getByLabelText('PUBLIC 승인 Provider profile')).toHaveValue('profile-one')
-    expect(screen.getByRole('option', { name: /runtime-profile v3/ })).toBeInTheDocument()
+    const preservedProvider = screen.getByLabelText('PUBLIC 승인 Provider profile')
+    expect(preservedProvider).toHaveValue('profile-one')
+    expect(within(preservedProvider).getByRole('option', {
+      name: /runtime-profile v3/,
+    })).toBeInTheDocument()
   })
 
   it('does not expose policy mutation controls from a read-only admin context', async () => {

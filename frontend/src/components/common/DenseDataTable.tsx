@@ -111,7 +111,7 @@ export function DenseDataTable<T>({
                 onClick={() => onRowActivate?.(row.original)}
                 onKeyDown={(event) => activateFromKeyboard(event, row.original)}
               >
-                {row.getVisibleCells().map((cell) => <td key={cell.id}>{flexRender(cell.column.columnDef.cell, cell.getContext())}</td>)}
+                {row.getVisibleCells().map((cell) => <td key={cell.id} className={(cell.column.columnDef.meta as any)?.className}>{flexRender(cell.column.columnDef.cell, cell.getContext())}</td>)}
               </tr>
               {renderExpandedRow && expandedRowId === row.id && (
                 <tr className="dense-table-expanded-row">

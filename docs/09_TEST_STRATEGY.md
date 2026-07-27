@@ -126,11 +126,15 @@ for `12` catalog assets, `257` nodes and `279` edges, then verified and removed 
 Deleting one operation and mutating one canonical node property without changing row counts each
 made `verify` fail closed. Both cases then passed explicit remove/reapply/verify/remove recovery.
 
-System Settings reranking tests execute one fixed private `POST /v1/rerank` request and reject
-401/404, duplicate/out-of-range or boolean indices, unsorted scores and scores outside `[0, 1]`.
+System Settings reranking tests execute one fixed `POST /v1/rerank` request and reject
+401/404, duplicate/out-of-range or boolean indices and unsorted/non-finite scores. The private
+contract additionally rejects scores outside `[0, 1]`; the Mac llama.cpp bridge explicitly accepts
+finite raw classifier logits.
 Migration `0053` extends only the TEST-scope vocabulary and refuses downgrade while such evidence
 exists. The current Mac authenticated Neo4j query, strict-JSON Chat and Embedding inference passed;
-the local Ollama reranking route is absent and is therefore honestly unavailable. WSL/private
+Ollama's own reranking route remains absent. Mac development separately verifies the Ollama-owned
+GGUF through the loopback-only `LOCAL_LLAMA_CPP` bridge, including a container-to-host probe and
+ordered finite raw-logit validation. WSL/private
 provider and runtime-consumer evidence remains external. Probe destinations are exact-allowlisted
 before DNS and resolved addresses are checked, but the default HTTP transport can resolve the
 hostname again at connection time. Address pinning while preserving original-host TLS verification
@@ -528,7 +532,9 @@ alongside API process restart, API container replacement behind both Nginx and A
 outbox-relay restart. The API replacement test deliberately kept the web container running and
 verified that its Docker DNS resolver did not retain a stale upstream address.
 
-The local seeded same-token revocation probe ran 100 iterations per scenario against the direct API:
+Historical execution evidence recorded on 2026-07-20 (it does not describe the current live
+configuration path): the local seeded same-token revocation probe ran 100 iterations per scenario
+against the direct API:
 membership inactive p99 100.660 ms, explicit `catalog.search` deny p99 167.743 ms and system/domain
 scope removal p99 193.388 ms. All passed the provisional 60-second SLA and the original service
 membership was restored. This is development evidence, not the required target-load/two-identity or
@@ -546,10 +552,11 @@ Administrator Role and System Settings changes add the following focused gates:
 - an in-use Role must reject security-bearing edits/deactivation, a subject cannot change its own
   Role, and assignment must retain membership version, idempotency, hardware assurance and ABAC
   validation;
-- System Settings validation rejects unknown top-level keys, embedded credentials, malformed model
-  identities and missing required storage fields; new secret values never cross the browser API;
-- connection tests accept only a known system identifier and an already-saved profile. Probe tests
-  cover fixed paths, authentication-required status, unavailable targets, and blocked
+- System Settings inventory contains deployment-owned option names and redacted effective values;
+  OpenAPI and HTTP negatives prove that database profile SAVE/version/draft-test/saved-test/ACTIVATE
+  routes remain absent and new secret values never cross the browser API;
+- connection tests accept only a known system identifier and the server's loaded Settings snapshot.
+  Probe tests cover fixed paths, authentication-required status, unavailable targets, and blocked
   link-local/multicast/unspecified/reserved addresses;
 - backend test Settings explicitly disable the optional local Ollama path unless a test is about
   that adapter. A developer `.env` must not change unit-test expectations.

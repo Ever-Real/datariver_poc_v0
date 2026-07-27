@@ -21,6 +21,8 @@ import type {
   IdentityUserProvisionResult,
   MembershipAccessDocument,
   MembershipAccessUpdateResult,
+  MembershipChangeRequestActivity,
+  MembershipOwnedTable,
   MembershipRenewalRequest,
   MembershipRoleAssignmentResult,
   RetentionDataClass,
@@ -110,6 +112,43 @@ export class AdminApi {
       nextCursor: response.page.next_cursor,
       limit: response.page.limit,
     }
+  }
+
+  async createSystem(
+    payload: { code: string; name: string; description: string },
+    idempotencyKey: string,
+  ): Promise<SystemDirectoryEntry> {
+    return this.client.request<SystemDirectoryEntry>('/admin/systems', {
+      method: 'POST',
+      idempotencyKey,
+      body: JSON.stringify(payload),
+    })
+  }
+
+  async listMembershipChangeRequestActivity(
+    subjectId: string,
+    cursor?: string,
+    signal?: AbortSignal,
+  ): Promise<AdminCursorPage<MembershipChangeRequestActivity>> {
+    const parameters = new URLSearchParams({ limit: '25' })
+    if (cursor) parameters.set('cursor', cursor)
+    return adminCursorPage(await this.client.request<AdminPageResponse<MembershipChangeRequestActivity>>(
+      `/admin/workspace-memberships/${encodeURIComponent(subjectId)}/change-requests?${parameters.toString()}`,
+      { signal },
+    ))
+  }
+
+  async listMembershipOwnedTables(
+    subjectId: string,
+    cursor?: string,
+    signal?: AbortSignal,
+  ): Promise<AdminCursorPage<MembershipOwnedTable>> {
+    const parameters = new URLSearchParams({ limit: '25' })
+    if (cursor) parameters.set('cursor', cursor)
+    return adminCursorPage(await this.client.request<AdminPageResponse<MembershipOwnedTable>>(
+      `/admin/workspace-memberships/${encodeURIComponent(subjectId)}/owned-tables?${parameters.toString()}`,
+      { signal },
+    ))
   }
 
   provisionIdentityUser(payload: IdentityUserProvisionInput, idempotencyKey: string) {
@@ -327,32 +366,14 @@ export class AdminApi {
   async listSystemConfiguration(signal?: AbortSignal) {
     return (await this.client.request<{ items: SystemConfigurationEntry[] }>(
       '/admin/system-configuration',
-      { signal },
+      { signal, cache: 'no-store' },
     )).items
   }
 
-  updateSystemConfiguration(systemId: string, configurationYaml: string, version: number) {
-    return this.client.request<SystemConfigurationEntry>(
-      `/admin/system-configuration/${encodeURIComponent(systemId)}`,
-      {
-        method: 'PUT',
-        ifMatch: quotedConfigurationVersion(version),
-        body: JSON.stringify({ configuration_yaml: configurationYaml }),
-      },
-    )
-  }
-
-  testSystemConfiguration(systemId: string) {
+  testDeploymentSystemConfiguration(systemId: string) {
     return this.client.request<SystemConfigurationTestResult>(
-      `/admin/system-configuration/${encodeURIComponent(systemId)}/test`,
+      `/admin/system-configuration/${encodeURIComponent(systemId)}/test-deployment`,
       { method: 'POST' },
-    )
-  }
-
-  activateSystemConfiguration(systemId: string, version: number) {
-    return this.client.request<SystemConfigurationEntry>(
-      `/admin/system-configuration/${encodeURIComponent(systemId)}/activate`,
-      { method: 'POST', ifMatch: quotedConfigurationVersion(version) },
     )
   }
 
@@ -879,11 +900,6 @@ export class AdminApi {
 
 export function quotedVersion(version: number): string {
   if (!Number.isInteger(version) || version < 1) throw new Error('유효한 버전이 필요합니다.')
-  return `"${version}"`
-}
-
-function quotedConfigurationVersion(version: number): string {
-  if (!Number.isInteger(version) || version < 0) throw new Error('유효한 설정 버전이 필요합니다.')
   return `"${version}"`
 }
 

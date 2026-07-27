@@ -43,6 +43,115 @@ Remaining WSL/external-provider/browser/load/physical-retention checks are expli
 Runtime API/OIDC Origin validation is intentionally deferred as backlog item `R5-FE-04` at P2; the
 source must not be represented as having that protection.
 
+## 직렬 실행 워크플로
+
+반복되는 범용 개발, Mac 로컬 통합, WSL 준비 환경의 초기화·업데이트 절차는 다음 두
+실행파일로 통합한다. 어떤 환경도 자동 선택하지 않으며 `--profile`은 필수다.
+두 프로그램은 기존 bootstrap/Compose/migration/Keycloak 스크립트를 순서대로 호출하며, shell로
+입력값을 재해석하지 않는다.
+
+- `scripts/workflow_fresh_setup.py`: **빈 환경 전용**이다. Docker 아키텍처와 clean checkout을
+  검사하고, URL은 형식을 검증하며, token/password/access key는 파일 또는 숨김 입력으로만
+  받는다. bootstrap, 이미지 검증·load 또는 build, PostgreSQL/Keycloak, migration, 선택
+  connector, storage 초기화, 기본 runtime, health/DataHub probe, 최초 catalog sync를 순차
+  실행한다. 기존 DB·object를 이관하는 환경은 이 명령 대신
+  [Mac-to-WSL runbook](docs/26_MAC_TO_WSL_MIGRATION_RUNBOOK.md)의 백업/복원 게이트를 사용한다.
+- `scripts/workflow_update_restart.py`: 첫 프로그램이 기록한 ignored state를 기준으로
+  `git pull --ff-only`를 선택 실행하고 변경 경로를 분류한다. 문서·테스트·이 운영
+  워크플로만 바뀌면 컨테이너를 재시작하지 않는다. Frontend, Backend, migration,
+  Keycloak, Airflow, APISIX, Neo4j 또는 local connector가 바뀌면 실행 중이던 선택
+  서비스와 필수 서비스 중 영향 범위만 build/recreate한다.
+
+프로필과 기본 환경 파일은 다음과 같다. 실제 선택 경로는
+`runtime/operator-workflow/<profile>.json`에 기록되며 이후 업데이트가 같은 파일만 다시
+사용한다.
+
+| Profile | Docker architecture | Deployment | Default env | Host-specific defaults |
+|---|---|---|---|---|
+| `portable-development` | `linux/arm64` or `linux/amd64` | current-source build | `.env.portable-development` | none; inference disabled |
+| `mac-development` | `linux/arm64` | current-source build | `.env.mac-development` | optional local DataHub topology |
+| `wsl-preparation` | `linux/amd64` | verified offline release | `.env.wsl-preparation` | WSL preparation contract |
+
+일반적인 Git clone은 `portable-development`에서 시작한다. DataHub는 외부 endpoint/token을
+명시하고, 필요한 local Redis/MinIO만 선택한다. 이 경로는 LLM·Neo4j·APISIX를 자동으로
+활성화하지 않는다.
+
+```bash
+./scripts/workflow_fresh_setup.py \
+  --profile portable-development \
+  --datahub-mode external \
+  --datahub-base-url https://<approved-datahub-gms-host> \
+  --datahub-token-file /approved-secret-path/datahub_token \
+  --redis-mode local \
+  --storage-mode local \
+  --airflow-mode skip
+```
+
+Mac 신규 개발 환경의 로컬 통합 topology(DataHub/Redis/MinIO/Airflow local)는 다음 한 명령으로
+시작한다. Neo4j와 APISIX는 필요할 때만 각각 `--graph-mode local`, `--with-gateway`를
+추가한다. 외부 Neo4j는 `--graph-mode external --neo4j-uri
+bolt+s://<actual-host>:7687 --neo4j-auth-file <username-password-file>`로 연결하며, credential
+파일 내용은 `username/password` 형식이어야 한다.
+
+```bash
+./scripts/workflow_fresh_setup.py \
+  --profile mac-development \
+  --datahub-mode local \
+  --redis-mode local \
+  --storage-mode local \
+  --airflow-mode local
+```
+
+준비 PC에서는 배포 repository에서 검증·해제한 **release root**와 별도 Redis archive를
+지정한다. `--datahub-base-url`은 UI가 아니라 container에서 접근 가능한 GMS origin이고,
+MinIO도 Console이 아닌 S3 API origin을 입력한다. 실제 외부 주소는 예제 placeholder를
+복사하지 말고 대상 값으로 바꾼다.
+
+```bash
+RELEASE_DIR="$HOME/workspace/datariver_platform_amd_distribution/restore/datariver-<release-id>"
+REDIS_ARCHIVE="$HOME/workspace/datariver_platform_amd_distribution/redis-8.2.6-bookworm-linux-amd64-<release>.tar.gz"
+
+./scripts/workflow_fresh_setup.py \
+  --profile wsl-preparation \
+  --release-dir "$RELEASE_DIR" \
+  --redis-image-archive "$REDIS_ARCHIVE" \
+  --datahub-mode external \
+  --datahub-base-url http://<actual-datahub-gms-host>:8080 \
+  --datahub-token-file /approved-secure-transfer/datahub_token \
+  --redis-mode local \
+  --storage-mode external \
+  --airflow-mode external \
+  --airflow-ui-url http://<actual-airflow-ui-host>:8080
+```
+
+개발 변경을 commit한 build profile에서는 아래 명령으로 현재 source를 적용한다. 준비 PC에서는 먼저
+새 amd64 release를 반입한 뒤 `--git-pull --release-dir "$RELEASE_DIR"`를 사용한다. Backend,
+Frontend 또는 Compose가 현재 offline release보다 새로우면 서비스 중지 전에 실패하므로,
+Git pull만으로 낡은 이미지를 새 코드처럼 실행하지 않는다.
+
+```bash
+# Portable/Mac: 현재 clean commit을 build하고 영향 서비스만 재생성
+./scripts/workflow_update_restart.py --profile portable-development
+./scripts/workflow_update_restart.py --profile mac-development
+
+# WSL: fast-forward pull 후 검증한 amd64 release로 영향 서비스만 재생성
+./scripts/workflow_update_restart.py \
+  --profile wsl-preparation \
+  --git-pull \
+  --release-dir "$RELEASE_DIR"
+```
+
+`.env.*`, `secrets/`, `runtime/operator-workflow/*.json`은 Git으로 이동하지 않는다. 업데이트
+프로그램의 `--refresh-bootstrap`은 기존 provider/LLM/Neo4j 설정과 secret을 보존하면서 파생
+파일만 재생성한다. 두 프로그램은 forward apply 도구이며 자동 rollback 도구가 아니다.
+준비 PC는 이전 source commit과 이전 immutable release를 보존하고, 실패 시 사용자 트래픽을
+연결하지 않은 채 runbook의 rollback 절차를 수행한다.
+
+외부 OpenAI-compatible Chat/Embedding/Reranker는 이 OS bootstrap에서 임의 활성화하지 않는다.
+operator가 선택한 ignored `.env`에 secret **reference**, private allowlist, URL, model을
+설정하고 API/해당 worker를 업데이트 워크플로로 재시작한다. 이후 Admin System Settings의
+고정 TEST로 실행 snapshot을 확인한다.
+
 ## Canonical ownership
 
 | State | Canonical owner |
@@ -170,6 +279,51 @@ release 디렉터리를 전달한다. 내부 Registry가 있으면 tar 대신 �
   --platform linux/amd64 --source-dir . --artifact-only
 ```
 
+### WSL 폐쇄망 반입 시 권한·환경·이미지 확인
+
+릴리스를 root 또는 다른 계정으로 압축 해제하면 exporter의 제한된 staging mode 때문에
+`amd64/`가 현재 운영 계정에 존재하지 않는 것처럼 보일 수 있다. 릴리스 디렉터리만 정확히
+지정해 소유권과 읽기 권한을 복구하고, 애플리케이션 checkout이나 Docker volume 전체에
+재귀 권한 변경을 적용하지 않는다.
+
+```bash
+RELEASE_DIR=/transfer/datariver-release/datariver-<12자리-commit>
+sudo chown -R "$(id -un):$(id -gn)" "$RELEASE_DIR"
+sudo find "$RELEASE_DIR" -type d -exec chmod 0755 {} +
+sudo find "$RELEASE_DIR" -type f -exec chmod 0644 {} +
+test -r "$RELEASE_DIR/amd64/datariver-core-amd64.tar"
+```
+
+`.env.wsl-preparation`과 secret 파일은 Git 관리 대상이 아니므로 `git pull`로 갱신되지 않는다.
+기존 파일에 bootstrap을 다시 적용한 뒤, Redis 전환 환경에서는 다음 네 canonical 설정이
+모두 존재하는지 확인한다. `VALKEY_*` 이름은 이전 환경을 읽기 위한 alias일 뿐 신규 설정에
+추가하지 않는다.
+
+```dotenv
+REDIS_CACHE_URL=redis://redis-cache:6379/0
+REDIS_DELIVERY_URL=redis://redis-delivery:6379/0
+REDIS_CACHE_SECRET_REF=file:/run/secrets/redis_cache_password
+REDIS_DELIVERY_SECRET_REF=file:/run/secrets/redis_delivery_password
+```
+
+Docker Desktop의 containerd image store가 기록한 OCI manifest ID와 WSL Docker가
+`docker image load` 후 표시하는 config ID는 다를 수 있다. `already exists`는 동일 layer
+재사용 메시지이며 실패가 아니다. Bundle checksum, `linux/amd64`, tar의 해당 tag가 가리키는
+config digest와 대상의 `docker image inspect .Id`가 모두 일치해야 한다. 엔진 간 표시 ID
+차이를 이유로 이미지를 반복 삭제하거나 volume을 제거하지 않는다. 실행 가능한 확인 명령은
+[Mac-to-WSL runbook](docs/26_MAC_TO_WSL_MIGRATION_RUNBOOK.md)에 둔다.
+
+Core-only release와 별도로 승인·반입한 Redis tar는 `redis:8.2.6-bookworm` tag로 load한 뒤
+offline Compose에 그 tag를 명시한다. 외부 Redis를 선택한 배포는 이 서비스를 시작하지 않고
+두 private `redis://` 또는 `rediss://` endpoint를 설정한다.
+
+```bash
+REDIS_IMAGE=redis:8.2.6-bookworm \
+scripts/compose.sh --env-file .env.wsl-preparation \
+  -f compose.local-connectors.yaml \
+  up -d --wait --no-build --pull never redis-cache redis-delivery
+```
+
 ### 폐쇄망 공통 사전조건
 
 1. Git mirror 또는 승인된 source bundle에서 이 repository의 동일 commit을 checkout한다.
@@ -188,10 +342,10 @@ release 디렉터리를 전달한다. 내부 Registry가 있으면 tar 대신 �
    개발용 Neo4j도 명시적 선택 profile이다. DataHub는 외부 catalog provider이며, 실제
    Postgres/Oracle source system도 해당 시스템 또는 DataHub ingestion이 별도로 운영한다.
 
-`System settings` 화면은 접속 주소, 모델 ID, 비밀 **참조명**과 비민감 옵션을 관리한다.
-비밀번호·token을 화면에 저장하거나 browser로 보내지 않는다. 개발 PC에서 TEST/SAVE 후
-명시적으로 ACTIVATE하고 API/관련 Worker를 재시작해야 적용된다. 운영에서는 이 runtime
-activation을 활성화하지 않고 배포 설정과 secret mount를 사용한다.
+`System settings` 화면은 배포 환경에서 이미 적용된 접속 주소, 모델 ID, 비밀 **참조명**과
+비민감 옵션을 읽기 전용으로 표시한다. 비밀번호·token을 화면에 저장하거나 browser로 보내지
+않으며, 설정 변경은 ignored `.env`와 secret mount를 수정한 뒤 update/restart workflow로
+적용한다.
 
 ### 원격 DataHub v1.6의 Token authentication 활성화
 
@@ -516,34 +670,29 @@ origin 또는 내부 proxy/DNS 구성을 먼저 확인한다.
 적용해야 한다.
 
 GraphRAG 개발 검증에는 Neo4j projection과 native Ollama model artifact도 별도 반입한다.
-Ollama는 Docker image가 아니라 호스트 프로세스이므로 engine과
-`gemma4:e2b-it-qat`, `bge-m3:latest` model blobs를 연결망에서 미리 준비한다.
+Ollama는 Docker image가 아니라 호스트 프로세스이다. 모델 이름은 저장소나 bootstrap이
+선택하지 않으며, 운영자가 `ollama list`로 이미 설치된 모델을 확인한 뒤 활성 ignored 환경
+파일의 Chat·Embedding·Reranker 항목에 정확한 ID를 기록한다.
 
 ```bash
-ollama show gemma4:e2b-it-qat
-ollama show bge-m3:latest
-./scripts/prepare_ollama_mac_dev.sh
-scripts/compose.sh --env-file .env -f compose.yaml -f compose.graph.yaml \
+ollama list
+scripts/compose.sh --env-file .env.<profile> -f compose.yaml -f compose.graph.yaml \
   up -d --pull never --no-build --wait neo4j
-./scripts/dev_host.sh preflight \
-  --enable-local-ollama --enable-neo4j
+./scripts/dev_host.sh --env-file .env.<profile> preflight
 ./scripts/dev_host.sh stop
-./scripts/dev_host.sh start \
-  --enable-local-ollama --enable-neo4j
+./scripts/dev_host.sh --env-file .env.<profile> start
 ```
 
 `preflight`는 프로세스를 시작하지 않고 선택한 Neo4j/Chat/Embedding의 최종 Settings 계약을
 검증해 안전한 JSON 결과를 출력한다. 실제 endpoint 연결 여부는 각 System Settings의 고정 TEST로
-별도 확인한다. `--enable-local-ollama`과 `--enable-neo4j`는 서로 독립적인
-Mac 개발 capability이며, 둘을 함께 켜야만 각 기능이 활성화되는 전역 전제는 아니다. 각 Asset/LLM
-system setting은 실제 비밀정보가 아닌 이미 mount된 참조명을 사용한다. 위 startup-resolver의
-두 값을 명시적으로 opt-in한 환경에서만 TEST/SAVE/ACTIVATE한 뒤 source-host 프로세스를
-재시작한다.
+별도 확인한다. 각 capability는 환경 파일에서 독립적으로 활성화하며, Chat·Embedding·Neo4j를
+모두 켜야 한다는 전역 전제는 없다. 각 Asset/LLM setting은 실제 비밀정보가 아닌 이미 mount된
+참조명을 사용한다. 환경을 변경한 뒤 source-host 프로세스를 재시작하고 Admin의 고정 TEST로
+확인한다.
 
 사내 OpenAI-compatible LLM을 사용할 때는 위 두 flag를 함께 쓰지 않는다. 먼저 Neo4j container를
-기동하고 Chat·Embedding·Neo4j System Settings revision을 각각 TEST/SAVE/ACTIVATE한다. 이후에는
-System Settings startup resolver가 세 profile을 함께 읽으므로 flag 없이 source-host process만
-재시작한다.
+기동하고 Chat·Embedding·Neo4j 설정을 선택한 ignored `.env`와 secret mount에 기록한다. 이후에는
+flag 없이 source-host process를 재시작하고 세 고정 TEST를 각각 수행한다.
 
 ```bash
 scripts/compose.sh --env-file .env -f compose.yaml -f compose.graph.yaml \
@@ -583,36 +732,34 @@ repository, 고정 component digest, 인증·백업·Kafka/DB/검색 cluster 설
 
 ## Validated Mac development PC
 
-This is a single-developer topology, not a production deployment. On a 32 GiB Mac, set Docker Desktop to **16 GiB memory and 6 CPUs** by default, or at most **18 GiB** for a bounded large import; Ollama runs natively on macOS outside that limit. The selected `datariver-gemma4-dev:0.1` model reuses Gemma4 E2B QAT weights with an 8,192-token context ceiling. Do not run a second Ollama container.
+This is a single-developer topology, not a production deployment. On a 32 GiB Mac, set Docker Desktop to **16 GiB memory and 6 CPUs** by default, or at most **18 GiB** for a bounded large import; Ollama runs natively on macOS outside that limit. Select an already installed, memory-bounded model only in `.env.mac-development`; the repository does not create a derivative model. Do not run a second Ollama container.
 
 The first bootstrap generates a private local DataHub placeholder token, all DataRiver/Neo4j secrets and the Keycloak realm. It does not copy another machine's `.env`, volumes or credentials. The separate DataHub wrapper obtains the official `v1.6.0` source checkout under ignored `runtime/` and starts its official Apple-Silicon `without-neo4j` topology. `without-neo4j` is intentional: DataHub lineage remains in DataHub; the separate Neo4j service below is a rebuildable **DataRiver knowledge-graph projection sandbox**, never a DataHub database.
 
 ```bash
-# Native macOS Ollama must already be running. This reuses the Gemma4 E2B QAT
-# weights and creates a local 8,192-token development derivative.
-./scripts/prepare_ollama_mac_dev.sh
-
-./scripts/bootstrap.sh --mac-development
+# Native macOS Ollama and every selected model must already be installed.
+ollama list
+./scripts/bootstrap.sh --env-file .env.mac-development --mac-development
 ./scripts/start_datahub_mac_dev.sh start
 
-scripts/compose.sh --env-file .env --profile observability \
+scripts/compose.sh --env-file .env.mac-development --profile observability \
   -f compose.yaml -f compose.identity.yaml -f compose.airflow.yaml \
   -f compose.gateway.yaml -f aux-compose.yml -f compose.graph.yaml config --quiet
-scripts/compose.sh --env-file .env --profile observability \
+scripts/compose.sh --env-file .env.mac-development --profile observability \
   -f compose.yaml -f compose.identity.yaml -f compose.airflow.yaml \
   -f compose.gateway.yaml -f aux-compose.yml -f compose.graph.yaml \
   up -d --build --wait
-scripts/compose.sh --env-file .env --profile tools \
+scripts/compose.sh --env-file .env.mac-development --profile tools \
   -f compose.yaml -f compose.identity.yaml \
   -f compose.airflow.yaml -f compose.gateway.yaml -f aux-compose.yml \
   -f compose.graph.yaml run --rm local-bootstrap
 
 # Optional but recommended: deterministic catalog/KG test data.
-scripts/compose.sh --env-file .env --profile semiconductor-seed \
+scripts/compose.sh --env-file .env.mac-development --profile semiconductor-seed \
   -f compose.yaml -f compose.identity.yaml \
   -f compose.airflow.yaml -f compose.gateway.yaml -f aux-compose.yml \
   -f compose.graph.yaml run --rm semiconductor-seed
-scripts/compose.sh --env-file .env --profile semiconductor-seed \
+scripts/compose.sh --env-file .env.mac-development --profile semiconductor-seed \
   -f compose.yaml -f compose.identity.yaml \
   -f compose.airflow.yaml -f compose.gateway.yaml -f aux-compose.yml \
   -f compose.graph.yaml run --rm semiconductor-seed \
@@ -623,8 +770,8 @@ Use DataRiver at `http://localhost:38102`, its API at `http://localhost:38101`, 
 
 On the 32 GiB Mac development host, keep Docker Desktop at `16 GiB` by default and use `18 GiB` only
 for bounded large imports rather than raising it to `24 GiB`: the full DataRiver + DataHub stack
-uses substantial memory, while the host Ollama
-`gemma4` derivative needs separate unified-memory headroom when loaded. Recheck `docker stats` and
+uses substantial memory, while the operator-selected host Ollama model needs separate unified-memory
+headroom when loaded. Recheck `docker stats` and
 `ollama ps` during GraphRAG tests; sustained swap or memory pressure means stop optional services,
 not enlarge both Docker and model budgets past physical memory.
 
@@ -699,54 +846,18 @@ security/exception workflows;
 eligibility remains a nested policy approval because it is distinct from connection configuration.
 
 The inventory always shows deployment-managed PostgreSQL/OIDC bootstrap requirements, separate
-Redis cache/delivery and S3/DataHub core connectors, and optional feature connectors with their
-required fields and secret flags. In development, an eligible administrator can open
-**Profile → System settings** and select a badge for Redis, DataHub, Airflow, S3, the grouped
-Chat/Embedding/Reranker LLM models, Neo4j, Prometheus or Grafana. Unconfigured entries start from a
-server-owned sample YAML containing no credential values. Each SAVE creates a versioned YAML
-revision in PostgreSQL. The browser may save addresses, model identifiers, non-sensitive options
-and strict `file:/run/secrets/<name>` references; a literal `password`, `secret`, `token`, `api_key`
-or `private_key` value is rejected. Actual values remain in ignored local secret files/Docker
-secrets, and `.env` contains only deployment switches or reference paths. Use
-`url`, `endpoint` or `base_url` for an HTTP(S)
-endpoint; Redis uses `redis://` or `rediss://`. The bounded versions API exposes newest-first
-hash/TEST/activation history without YAML or credentials. A saved Grafana URL is supplied by the
-server to the Monitoring page and rendered in its
-sandboxed iframe. Production keeps configuration in deployment/approved-provider controls and does
-not expose this write API.
+Redis cache/delivery and S3/DataHub core connectors, and optional feature connectors. In
+development, **Profile → System settings** is a read-only view of the API process's validated
+deployment environment. It offers only fixed server-owned connection probes and copyable `.env`
+option names. It has no SAVE, ACTIVATE, host-file write or browser-supplied probe URL.
 
-**SAVE** validates and versions the YAML. **TEST** runs one fixed server-side probe against that
-exact saved revision and never accepts a request URL. **ACTIVATE** is available only for a current
-AVAILABLE revision, an implemented runtime consumer and a recent hardware-WebAuthn administrator.
-It selects the version for the next process startup; it never hot-reloads or restarts a client.
-Redis cache requires API restart, Redis delivery requires relay/worker restart, and DataHub GMS and
-S3 changes require API plus relevant worker restart. Local Ollama or the development
-intranet OpenAI-compatible Chat/Embedding adapters together with Neo4j require an API restart;
-the Reranker remains storable/testable inventory and has no runtime activation. Its TEST contract is
-a private, fixed and bounded `POST /v1/rerank` inference request under
-`INTRANET_RERANK_V1`; it is not OpenAI-compatible. A local Ollama `404` for that route is an honest
-unavailable capability, not a reason to claim readiness or block unrelated authoring. The API can
-report only the version it loaded itself and does not infer worker success.
-
-Mac bootstrap deliberately leaves the startup resolver disabled. To opt into development-only
-ACTIVATE, set both values in the selected ignored deployment env file before saving/activating a
-revision:
-
-```dotenv
-SYSTEM_CONFIGURATION_RUNTIME_ACTIVATION_ENABLED=true
-SYSTEM_CONFIGURATION_RUNTIME_WORKSPACE_ID=00000000-0000-4000-8000-000000000100
-```
-
-Compose consumers keep `SYSTEM_CONFIGURATION_SECRET_ROOT=/run/secrets`; `scripts/dev_host.sh`
-maps the same canonical references to this checkout's ignored `secrets/` directory. Do not put
-credential values in the env file. After ACTIVATE, recreate the API and relevant workers:
-
-```bash
-scripts/compose.sh --env-file .env \
-  -f compose.yaml -f compose.identity.yaml -f compose.airflow.yaml \
-  -f compose.gateway.yaml -f aux-compose.yml -f compose.graph.yaml \
-  up -d --force-recreate api governance-apply-worker upload-worker upload-validation-worker
-```
+Edit the ignored environment selected by the explicit workflow profile, then run
+`workflow_update_restart.py` with that same profile. The workflow fingerprints keys without
+persisting values and recreates their consumers. Refresh Admin after the rollout to view the new
+redacted snapshot. Compose consumers keep
+`SYSTEM_CONFIGURATION_SECRET_ROOT=/run/secrets`; source-host launchers map the same canonical
+references to the checkout's ignored `secrets/` directory. Full option and propagation details are
+in [Deployment environment configuration](docs/41_DEPLOYMENT_ENVIRONMENT_CONFIGURATION.md).
 
 APISIX uses DNS discovery through Docker's embedded resolver, so replacing the API container does
 not require restarting the gateway or leave it pinned to the old container address.
@@ -771,61 +882,13 @@ INTRANET_OPENAI_COMPATIBLE_ALLOWED_HOSTS=llm-gateway.corp.example
 chmod 600 secrets/intranet_llm_chat_api_key secrets/intranet_llm_embedding_api_key
 ```
 
-Admin → System settings → LLM Models에서 Chat Model과 Embedding을 각각 저장한다.
-`gemma4` chat endpoint만으로는 GraphRAG pipeline을 완성할 수 없으므로, `/v1/embeddings`를 구현한
-사내 embedding model(예: 승인된 BGE deployment)도 별도 설정한다.
-
-```yaml
-# Chat Model
-connection_mode: INTRANET_OPENAI_COMPATIBLE
-base_url: https://llm-gateway.corp.example/v1
-model: gemma4:latest
-secret_references:
-  api_key: file:/run/secrets/intranet_llm_chat_api_key
-options:
-  api_style: openai_compatible
-  context_tokens: 8192
-  timeout_seconds: 60
-```
-
-```yaml
-# Embedding
-connection_mode: INTRANET_OPENAI_COMPATIBLE
-base_url: https://llm-gateway.corp.example/v1
-model: bge-m3:latest
-secret_references:
-  api_key: file:/run/secrets/intranet_llm_embedding_api_key
-options:
-  api_style: openai_compatible
-  timeout_seconds: 60
-```
-
-Reranker가 필요한 배포만 별도 private endpoint를 설정한다. 이 revision은 SAVE/TEST까지만
-지원하고 ACTIVATE는 의도적으로 제공하지 않는다.
-
-```yaml
-# Reranker — OpenAI-compatible API가 아님
-connection_mode: INTRANET_RERANK_V1
-base_url: https://reranker.corp.example/v1
-model: bge-reranker-v2-m3
-secret_references:
-  api_key: file:/run/secrets/intranet_llm_reranker_api_key
-options:
-  api_style: rerank_v1
-  timeout_seconds: 60
-  top_n: 10
-```
-
-Chat/Embedding revision은 **SAVE → TEST → ACTIVATE** 순서로 처리한 뒤 API를 재시작한다.
-source-host launcher는
-portable `/run/secrets` reference를 ignored `secrets/` directory로만 매핑하며, Compose는 API
-container에만 세 모델 key를 mount한다. 사내 endpoint는 fixed strict-JSON Chat probe와 one-vector
-Embedding probe를 통과해야 한다. key를 보낸 뒤 `401`/`403`을 받으면 `UNAVAILABLE`이며 성공이 아니다.
-
-위 ACTIVATE 절차는 Chat/Embedding에만 적용된다. Reranker TEST는 정렬된 유한 점수와 유효한
-문서 index를 검증하지만 런타임 소비자 활성화를 만들지 않는다.
-
-The exact state and security boundary are controlled by [ADR-0028](docs/adr/0028-development-system-configuration-startup-activation.md).
+Chat, Embedding, Reranker의 URL·model ID·secret reference는 모두 선택한 ignored `.env`에
+설정한다. source-host launcher는 portable `/run/secrets` reference를 ignored `secrets/`
+directory로만 매핑한다. 적용 후 Admin → System settings → LLM Models의 고정 TEST를 각각
+수행한다. `401`/`403`은 성공이 아니며, browser에서 다른 URL이나 credential을 전달할 수 없다.
+전체 키와 적용 순서는
+[Deployment environment configuration](docs/41_DEPLOYMENT_ENVIRONMENT_CONFIGURATION.md)을
+따른다.
 
 ### Membership renewal and CR responsibility routing
 
@@ -970,7 +1033,7 @@ credential. The export worker is an opt-in Compose profile with its own database
   up -d --build catalog-export-worker
 ```
 
-Open `http://localhost:8080`, sign in as `datariver-admin`, and read the generated temporary password from `secrets/keycloak_demo_password`. The first sign-in requires a new password but does not request a mobile OTP. The local realm keeps ordinary login at LoA 1 and reserves its user-verifying cross-platform WebAuthn key for an explicitly requested LoA 2 step-up. High-risk operations remain fail-closed until the user enrolls a key, completes step-up, and the resulting token satisfies the configured ACR, AMR and `auth_time` contract. Bootstrap assigns this active default Workspace, so a verified user does not need to type it after login:
+Open `http://localhost:8080`, sign in as `datariver-admin`, and read the generated temporary password from `secrets/keycloak_demo_password`. The first sign-in requires a new password but does not request a mobile OTP. Intranet development defaults `OIDC_HARDWARE_WEBAUTHN_ENABLED=false`, so device enrollment and step-up controls are hidden and high-risk operations remain fail-closed. To test such operations, explicitly set the option to `true`, reapply the runtime, enroll the local realm's user-verifying cross-platform WebAuthn key, and complete the LoA 2 step-up so the token satisfies the configured ACR, AMR and `auth_time` contract. Bootstrap assigns this active default Workspace, so a verified user does not need to type it after login:
 
 ```text
 00000000-0000-4000-8000-000000000100
@@ -1248,6 +1311,70 @@ scripts/compose.sh --env-file "$DATARIVER_ENV_FILE" -f compose.yaml run --rm mig
 # Required output: 0055 (head)
 ```
 
+### WSL 준비 PC에서 Migration 이후
+
+Migration이 `0055 (head)`에 도달해도 API/Worker를 바로 시작하지 않는다. 역할을 한 번 더
+reconcile하고, 대상 issuer에 맞는 local identity를 bootstrap한 후 선택한 외부 connector를
+초기화한다. 아래 `RELEASE_DIR`은 checksum과 source commit을 확인한 실제 절대 경로다.
+
+```bash
+RELEASE_DIR=/transfer/datariver-release/datariver-<12자리-commit>
+OFFLINE_COMPOSE="$RELEASE_DIR/amd64/offline-core.compose.yaml"
+
+# 현재 release의 helper가 password를 전달하지 못하는 경우에도 동작하는 명시적 role reconcile.
+scripts/compose.sh --env-file .env.wsl-preparation -f compose.yaml \
+  exec -T postgres sh -ec \
+  'export PGPASSWORD="$(tr -d "\r\n" </run/secrets/postgres_password)"; exec sh /docker-entrypoint-initdb.d/010_roles.sh'
+
+scripts/compose.sh --env-file .env.wsl-preparation \
+  -f compose.yaml -f compose.identity.yaml -f "$OFFLINE_COMPOSE" \
+  run --rm --pull never migrate \
+  /app/.venv/bin/alembic -c backend/alembic.ini current
+
+scripts/compose.sh --env-file .env.wsl-preparation --profile tools \
+  -f compose.yaml -f compose.identity.yaml -f "$OFFLINE_COMPOSE" \
+  run --rm --pull never local-bootstrap
+```
+
+외부 MinIO/S3를 선택했다면 실제 private endpoint와 별도 secret을 먼저 설정하고
+`storage-init`을 한 번 실행한다. 외부 소유자가 bucket/IAM을 이미 관리하는 환경에서도
+DataRiver가 사용하는 bucket 계약과 최소 권한 probe는 통과해야 한다. S3 기능을 아직
+승인하지 않았다면 init을 억지로 통과시키지 말고 해당 기능을 비활성 상태로 둔다.
+`S3_ENDPOINT_URL`과 `S3_PUBLIC_ENDPOINT_URL`에는 MinIO Console/UI 포트가 아니라 S3 API
+origin을 넣는다. Kubernetes NodePort는 service의 `targetPort`가 MinIO API `9000`을 가리킬
+때만 사용할 수 있다. 외부 MinIO가 per-bucket `PutBucketCors`를 지원하지 않으면 운영자가
+exact-origin CORS를 별도로 구성하고 `S3_CORS_MANAGEMENT_MODE=external`을 선택한다.
+
+```bash
+scripts/compose.sh --env-file .env.wsl-preparation \
+  --profile object-storage-tools \
+  -f compose.yaml -f compose.identity.yaml -f "$OFFLINE_COMPOSE" \
+  run --rm --pull never storage-init
+
+scripts/compose.sh --env-file .env.wsl-preparation \
+  -f compose.yaml -f compose.identity.yaml -f "$OFFLINE_COMPOSE" \
+  up -d --wait --no-build --pull never keycloak
+
+# Keycloak health는 외부 8081이 아니라 컨테이너 내부 management port 9000에 있다.
+docker inspect --format '{{.State.Health.Status}}' datariver-next-keycloak-1
+curl -fsS \
+  http://127.0.0.1:8081/realms/datariver/.well-known/openid-configuration \
+  >/dev/null
+
+scripts/compose.sh --env-file .env.wsl-preparation \
+  -f compose.yaml -f compose.identity.yaml -f "$OFFLINE_COMPOSE" \
+  up -d --wait --no-build --pull never \
+  api web outbox-relay upload-worker upload-validation-worker governance-apply-worker
+
+curl -fsS http://127.0.0.1:8000/api/v1/health/live
+curl -fsS http://127.0.0.1:8000/api/v1/health/ready
+curl -fsS http://127.0.0.1:8080/healthz
+```
+
+Neo4j/Knowledge worker, APISIX, Airflow와 observability는 각각의 provider·image·secret gate가
+통과한 경우에만 profile/overlay로 추가한다. 기본 Catalog/Search/CR 운영을 위해 이들을
+강제로 시작하지 않는다.
+
 When the selected Mac or WSL profile intentionally uses the optional local MinIO reference, it uses
 the configurable `S3_BUCKET_ACCEPTED`. Create the buckets with the general storage initializer,
 then create/attach the generated worker identity and its exact `GetBucketLocation` +
@@ -1336,8 +1463,8 @@ git rev-parse --verify HEAD
 `DATAHUB_VERSION_ENFORCEMENT=enforce`, 운영용 secret 파일 참조를 사용해야 한다.
 고위험 CR/관리자 작업에는 `OIDC_HARDWARE_WEBAUTHN_ENABLED=true`를 유지하고, 별도의
 Maker-Checker 승격을 완료하지 않았다면 `ADMIN_PASSWORD_FALLBACK_ENABLED=false`로 둔다.
-브라우저의 시스템 설정을 런타임에 바로 반영하는
-`SYSTEM_CONFIGURATION_RUNTIME_ACTIVATION_ENABLED`도 운영에서는 활성화하지 않는다.
+Admin 시스템 설정은 운영 환경을 변경하지 않는다. 검토한 배포 환경과 secret을 변경한 뒤
+동일한 운영 workflow로 관련 프로세스를 재생성한다.
 
 ```bash
 docker compose -f compose.yaml config --quiet
@@ -1444,7 +1571,7 @@ service token의 FINAL 호출은 `401` 또는 `403`으로 차단되어야 한다
 - Classification access administration: eligible human security administrators can review and independently approve versioned four-class Search/Chat policies, review or revoke immutable inference-provider profile versions, and govern policy-bound RESTRICTED Search grants. ADR-0020 additionally permits an audited, read-only same-workspace catalog review of non-deleted quarantined DataHub projections for classification remediation, including the fixed typed DataHub metadata detail; it never enables export, Chat, arbitrary provider access or mutation. The Admin UI never accepts provider endpoints or credentials, and RESTRICTED evidence is never eligible for Chat.
 - Knowledge graph: create a graph/ontology, author typed node/edge changesets, validate, independently review, publish or roll back immutable releases, export governed views and call bounded analysis. Raw SQL/Cypher is never accepted.
 - API sharing: create a governed-release-pinned contract version, publish it with recent strong authentication, bind an active non-expiring service Subject plus issuer/OIDC `client_id` to explicit scopes/classification/validity and quotas, revoke it, and invoke fixed Snapshot/Neighbors/local-Chat surfaces. Ledger, canonical result and monthly quota commit atomically; exact retries replay the stored no-store response without executing or charging twice. List/detail, replay, publish, grant and invocation revalidate current authority and independently reviewed lineage; client-only legacy grants are non-invokable until explicitly upgraded.
-- Chat: deterministic baseline answers only from catalog or active-release knowledge evidence that passed prefiltering and per-item authorization. Immutable chunks bind workspace, classification, typed scope, source/version/effective time and content hash; only validated cited chunk IDs are persisted, otherwise the answer is `검증 불가`. Persistence additionally requires the workspace's independently approved ACTIVE retention policy: each new session binds its exact policy ID/hash and database-time deadline, and a superseded, expired or legacy-unbound session is append-closed. There is no duration fallback. The default inference-worker contract rejects SQL, Cypher, arbitrary HTTP, tools and mutation fields. Development Knowledge processing may use either the fixed loopback Ollama adapter in [ADR-0023](docs/adr/0023-mac-development-local-inference-and-graph-projection.md) or the private-network OpenAI-compatible adapter in [ADR-0030](docs/adr/0030-development-intranet-openai-compatible-adapter.md); both retain a fixed non-executable response contract and server-side validation. Commercial/public external inference remains disabled until live revalidation, delivery/streaming, metrics and scaled red-team gates are accepted.
+- Chat: the governed router distinguishes general, bounded vector and adapter-ready graph modes after classification and per-item authorization. Graph remains explicitly unavailable until the governed asset-graph task supplies its port; it never silently falls back. Immutable chunks bind workspace, classification, typed scope, source/version/effective time and content hash; only validated cited chunk IDs are persisted, otherwise the answer is `검증 불가`. Persistence additionally requires the workspace's independently approved ACTIVE retention policy: each new session binds its exact policy ID/hash and database-time deadline, and a superseded, expired or legacy-unbound session is append-closed. There is no duration fallback. In development only, environment-selected local/private Chat, Embedding and Reranker adapters may be exercised through the bounded [ADR-0049](docs/adr/0049-development-governed-chat-routing-and-parity.md) path. Production direct provider inference, Commercial/public external inference and model-generated SQL/Cypher/tools/mutations remain disabled until the durable inference gates are accepted.
 - Monitoring: liveness, readiness, dependency capabilities, workspace counts, outbox dead letters and ABAC-protected Prometheus HTTP metrics remain independent so one degraded optional dependency does not hide core state. Database-pool metrics expose only bounded connection states and configured limits, never workspace, subject or query labels.
 
 The upload store is an external S3-compatible deployment and is not an accepted WORM boundary. A
@@ -1539,8 +1666,8 @@ is intentionally a MOCK metadata manifest.
 ```bash
 uv sync --frozen --all-extras
 uv run ruff format --check backend/src backend/tests infra/airflow/dags scripts/reconcile_manual_receipts.py scripts/verify_nginx_headers.py
-uv run ruff check backend/src backend/tests infra/airflow/dags scripts/configure_keycloak_assurance.py scripts/generate_initial_migration.py scripts/generate_semiconductor_seed.py scripts/migrate_s3_objects.py scripts/probe_pgbouncer_rls.py scripts/probe_policy_revocation.py scripts/probe_s3_contract.py scripts/reconcile_manual_receipts.py scripts/verify_datahub_contract.py scripts/verify_datahub_image_inventory.py scripts/verify_nginx_headers.py scripts/verify_static.py
-uv run mypy backend/src backend/tests scripts/migrate_s3_objects.py scripts/probe_s3_contract.py scripts/reconcile_manual_receipts.py scripts/verify_nginx_headers.py
+uv run ruff check backend/src backend/tests infra/airflow/dags scripts/configure_keycloak_assurance.py scripts/generate_initial_migration.py scripts/generate_semiconductor_seed.py scripts/local_reranker_service.py scripts/migrate_s3_objects.py scripts/probe_pgbouncer_rls.py scripts/probe_policy_revocation.py scripts/probe_s3_contract.py scripts/reconcile_manual_receipts.py scripts/verify_datahub_contract.py scripts/verify_datahub_image_inventory.py scripts/verify_nginx_headers.py scripts/verify_static.py
+uv run mypy backend/src backend/tests scripts/local_reranker_service.py scripts/migrate_s3_objects.py scripts/probe_s3_contract.py scripts/reconcile_manual_receipts.py scripts/verify_nginx_headers.py
 uv run pytest backend/tests -q
 uv run python scripts/verify_static.py
 

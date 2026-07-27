@@ -31,6 +31,9 @@ describe('AdminPage mutation safety', () => {
         joined_at: null, access_expires_at: null, access_expired: false,
         pending_renewal_request_id: null,
       }], page: { next_cursor: null, limit: 25 } }))
+      if (url.endsWith('/admin/access-roles?limit=25')) return Promise.resolve(json({
+        items: [], page: { next_cursor: null, limit: 25 },
+      }))
       if (url.endsWith('/admin/systems?limit=25')) return Promise.resolve(json({ items: [{
         system_id: 'system-one', code: 'FAB', name: 'Fabrication', description: 'Fab data', active: true, version: 1, assignee_count: 2,
         assignees: [],
@@ -47,7 +50,9 @@ describe('AdminPage mutation safety', () => {
         system_id: 'GRAFANA_DASHBOARD', label: 'Grafana Dashboard', state: 'CONFIGURED', management_plane: 'DEPLOYMENT',
         category: 'OBSERVABILITY', requirement: 'FEATURE_CONNECTOR', description: 'Dashboard', connection_requirements: [],
         secret_reference_configured: false, embedding_state: 'DISABLED', configuration_yaml: '',
-        template_yaml: '', display_yaml: '', version: 0, configured_at: null, runtime_supported: true,
+        template_yaml: '', display_yaml: '', environment_template: 'UI_GRAFANA_URL=',
+        effective_configuration_yaml: 'url: https://grafana.example',
+        version: 0, configured_at: null, runtime_supported: true,
         restart_scope: 'API_ONLY', activation_state: 'DEPLOYMENT_MANAGED', tested_version: null,
         test_status: null, tested_at: null, activated_version: null, activated_at: null, applied_version: null,
       }] }))
@@ -90,7 +95,8 @@ describe('AdminPage mutation safety', () => {
     await waitFor(() => expect(screen.getAllByText('Target User')).toHaveLength(2))
     const accountTabs = screen.getByRole('tablist', { name: '계정/권한 관리 영역' })
     expect(within(accountTabs).getByRole('tab', { name: 'USERS' })).toBeInTheDocument()
-    expect(screen.getByRole('tab', { name: 'Role 정의·할당' })).toBeInTheDocument()
+    expect(screen.getByRole('heading', { name: 'Role 정의 및 사용자 할당' })).toBeInTheDocument()
+    expect(screen.queryByRole('tablist', { name: '사용자 권한 관리 방식' })).not.toBeInTheDocument()
     fireEvent.click(within(accountTabs).getByRole('tab', { name: 'SYSTEMS' }))
     await screen.findByText('Fabrication')
     expect(screen.getByRole('table', { name: '워크스페이스 시스템 목록' })).toBeInTheDocument()
@@ -105,8 +111,8 @@ describe('AdminPage mutation safety', () => {
     fireEvent.click(screen.getByRole('button', { name: /취소|Cancel/ }))
     fireEvent.click(screen.getByRole('tab', { name: /시스템 설정|System settings/ }))
     expect(await screen.findByRole('heading', { name: 'Grafana Dashboard' })).toBeInTheDocument()
-    expect(screen.getByText('배포 설정')).toBeInTheDocument()
-    expect(screen.getByText(/이 환경에서는 설정 YAML을 편집할 수 없습니다/)).toBeInTheDocument()
+    expect(screen.getByText('배포 환경 · secret 파일')).toBeInTheDocument()
+    expect(screen.getByText(/호스트의/)).toBeInTheDocument()
     fireEvent.click(screen.getByRole('tab', { name: /계정\/권한|Accounts & access/ }))
     fireEvent.click(within(screen.getByRole('tablist', { name: '계정/권한 관리 영역' })).getByRole('tab', { name: 'USERS' }))
     const update = await screen.findByRole('button', { name: /보안키로 직접 변경|Update with security key/ })

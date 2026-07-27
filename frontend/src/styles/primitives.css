@@ -34,6 +34,7 @@
 .dense-column-filter { display: grid; gap: 3px; border-top: 1px solid var(--line-200); margin-top: 2px; padding: 6px 3px 3px; color: var(--text-500); font-size: 9px; font-weight: 900; }
 .dense-column-filter input { width: 100%; min-width: 0; height: 28px; box-sizing: border-box; border: 1px solid var(--line-300); padding: 4px 6px; color: var(--text-900); text-transform: none; background: white; font-size: 10px; font-weight: 500; }
 .dense-data-table td { height: 29px; overflow: hidden; border-right: 1px solid #e4e7e9; border-bottom: 1px solid #e4e7e9; padding: 4px 7px; text-overflow: ellipsis; white-space: nowrap; }
+.dense-data-table td.allow-overflow { overflow: visible; }
 .dense-data-table tbody tr.interactive { cursor: pointer; }
 .dense-data-table tbody tr.interactive:hover, .dense-data-table tbody tr.interactive:focus-visible { outline: none; background: #eef6fb; }
 .dense-data-table tbody tr.selected { color: #083e6a; background: #deedf7; box-shadow: inset 3px 0 var(--blue-700); }

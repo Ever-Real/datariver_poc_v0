@@ -41,8 +41,6 @@ web_port=$(env_file_value WEB_PORT 38102)
 airflow_source_api_bridge_enabled=$(env_file_value AIRFLOW_SOURCE_API_BRIDGE_ENABLED false)
 airflow_source_api_bridge_port=$(env_file_value AIRFLOW_SOURCE_API_BRIDGE_PORT 38103)
 knowledge_source_worker_enabled=$(env_file_value KNOWLEDGE_SOURCE_WORKER_ENABLED false)
-enable_local_ollama=false
-enable_neo4j=false
 enable_airflow_source_bridge=$airflow_source_api_bridge_enabled
 
 usage() {
@@ -74,8 +72,7 @@ Options:
   --enable-airflow-source-bridge
                       Forward a private Docker bridge listener to the loopback
                       source API. Required only for Linux/WSL Airflow.
-  --enable-local-ollama    Use native Ollama on 127.0.0.1:11434 for Mac development.
-  --enable-neo4j           Use the local Neo4j projection on 127.0.0.1:17687.
+  Local model and Neo4j capabilities are read only from the selected environment file.
   preflight                Validate the final source-host Settings without starting processes.
 EOF
 }
@@ -124,12 +121,6 @@ while [ "$#" -gt 0 ]; do
     --web-port)
       shift
       web_port=${1:?--web-port requires a value}
-      ;;
-    --enable-local-ollama)
-      enable_local_ollama=true
-      ;;
-    --enable-neo4j)
-      enable_neo4j=true
       ;;
     --enable-airflow-source-bridge)
       enable_airflow_source_bridge=true
@@ -310,7 +301,7 @@ load_env_file() {
 
 load_env_file
 export LOCAL_INFERENCE_SOURCE_HOST_ENABLED=true
-if [ "$enable_neo4j" = true ] && [ ! -s "$root/secrets/neo4j_auth" ]; then
+if [ "${NEO4J_PROJECTION_ENABLED:-false}" = true ] && [ ! -s "$root/secrets/neo4j_auth" ]; then
   echo "Missing required secret file: $root/secrets/neo4j_auth" >&2
   exit 2
 fi
@@ -397,36 +388,8 @@ export VITE_OIDC_CLIENT_ID=datariver-web
 export VITE_OIDC_REDIRECT_URI="$APP_PUBLIC_ORIGIN"
 export VITE_OIDC_HIGH_ASSURANCE_ACR=2
 export VITE_OIDC_PASSWORD_REAUTH_ACR=1
-export LOCAL_OLLAMA_CHAT_ENABLED=false
-export LOCAL_OLLAMA_EMBEDDING_ENABLED=false
-export NEO4J_PROJECTION_ENABLED=false
-export KNOWLEDGE_PIPELINE_ENABLED=false
-
 if [ "$action" = migrate ]; then
   exec "$python" -m alembic -c "$root/backend/alembic.ini" upgrade head
-fi
-
-if [ "$enable_local_ollama" = true ]; then
-  export LOCAL_OLLAMA_CHAT_ENABLED=true
-  export LOCAL_OLLAMA_CHAT_BASE_URL=http://127.0.0.1:11434/v1
-  export LOCAL_OLLAMA_CHAT_MODEL=datariver-gemma4-dev:0.1
-  export LOCAL_OLLAMA_CHAT_TIMEOUT_SECONDS=60
-  export LOCAL_OLLAMA_CHAT_CONTEXT_TOKENS=8192
-  export LOCAL_OLLAMA_EMBEDDING_ENABLED=true
-  export LOCAL_OLLAMA_EMBEDDING_BASE_URL=http://127.0.0.1:11434/v1
-  export LOCAL_OLLAMA_EMBEDDING_MODEL=bge-m3:latest
-fi
-
-if [ "$enable_neo4j" = true ]; then
-  export NEO4J_PROJECTION_ENABLED=true
-  export NEO4J_URI=bolt://127.0.0.1:17687
-  export NEO4J_AUTH_SECRET_REF="$(secret_ref neo4j_auth)"
-fi
-
-if [ "$enable_local_ollama" = true ] && [ "$enable_neo4j" = true ]; then
-  # Backward-compatible aggregate signal only. Knowledge authoring, model
-  # analysis, projection and GraphRAG are capability-gated independently.
-  export KNOWLEDGE_PIPELINE_ENABLED=true
 fi
 
 if [ "$action" = preflight ]; then

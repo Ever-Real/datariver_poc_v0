@@ -17,6 +17,13 @@ from pydantic import (
 
 from datariver.domain.admin_access import AdminOperation
 from datariver.domain.authz import Action
+from datariver.domain.chat import (
+    ChatAdapterState,
+    ChatRetrievalMode,
+    ChatRouteReason,
+    ChatWorkflowStage,
+    ChatWorkflowStatus,
+)
 
 
 class PageMeta(BaseModel):
@@ -864,7 +871,7 @@ class AuthMeResponse(BaseModel):
     authentication_time: datetime | None
     default_workspace_id: UUID | None = None
     workspace_selection_enabled: bool = True
-    hardware_webauthn_enabled: bool = True
+    hardware_webauthn_enabled: bool = False
     password_change_supported: bool = False
 
 
@@ -979,6 +986,38 @@ class WorkspaceMembershipSummaryResponse(BaseModel):
 
 class WorkspaceMembershipListResponse(BaseModel):
     items: list[WorkspaceMembershipSummaryResponse]
+    page: PageMeta
+
+
+class MembershipChangeRequestActivityResponse(BaseModel):
+    change_request_id: UUID
+    number: str
+    title: str
+    request_type: str
+    state: str
+    relationship: Literal["REQUESTER", "APPROVER", "REQUESTER_AND_APPROVER"]
+    classification: Literal["PUBLIC", "INTERNAL", "CONFIDENTIAL", "RESTRICTED"]
+    updated_at: datetime
+
+
+class MembershipChangeRequestActivityListResponse(BaseModel):
+    items: list[MembershipChangeRequestActivityResponse]
+    page: PageMeta
+
+
+class MembershipOwnedTableResponse(BaseModel):
+    asset_id: UUID
+    name: str
+    platform: str | None
+    database_name: str | None
+    schema_name: str | None
+    classification: Literal["PUBLIC", "INTERNAL", "CONFIDENTIAL", "RESTRICTED"]
+    source_version: str
+    observed_at: datetime
+
+
+class MembershipOwnedTableListResponse(BaseModel):
+    items: list[MembershipOwnedTableResponse]
     page: PageMeta
 
 
@@ -1158,6 +1197,19 @@ class SystemDirectoryListResponse(BaseModel):
     page: PageMeta
 
 
+class SystemCreateRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    code: str = Field(
+        min_length=2,
+        max_length=100,
+        pattern=r"^[A-Za-z][A-Za-z0-9_-]{1,99}$",
+        description="시스템 고유 코드 (영문자로 시작, 영숫자·_·- 허용)",
+    )
+    name: str = Field(min_length=1, max_length=255)
+    description: str = Field(default="", max_length=4000)
+
+
 class SystemAssigneeUpdateRequest(BaseModel):
     subject_id: UUID
     responsibility: Literal["DEVELOPER", "DATA_STEWARD"]
@@ -1197,8 +1249,10 @@ class SystemAssigneeUpdateResponse(BaseModel):
 
 
 SystemConfigurationId = Literal[
+    "PLATFORM_RUNTIME",
     "POSTGRESQL",
     "OIDC_IDENTITY",
+    "RETENTION_ARCHIVE",
     "DATAHUB_GMS",
     "DATAHUB_FRONTEND",
     "AIRFLOW",
@@ -1223,7 +1277,7 @@ class SystemConnectionRequirementResponse(BaseModel):
 
 
 class SystemConfigurationEntryResponse(BaseModel):
-    """Administrator-visible configuration state; values are masked before return."""
+    """Read-only deployment configuration inventory; secret values are never returned."""
 
     system_id: SystemConfigurationId
     label: str
@@ -1232,12 +1286,14 @@ class SystemConfigurationEntryResponse(BaseModel):
     description: str
     connection_requirements: list[SystemConnectionRequirementResponse]
     state: Literal["CONFIGURED", "NOT_CONFIGURED", "GOVERNED_PROFILE_REQUIRED"]
-    management_plane: Literal["DEVELOPMENT_DATABASE", "DEPLOYMENT", "GOVERNED_PROVIDER_PROFILE"]
+    management_plane: Literal["DEPLOYMENT"]
     secret_reference_configured: bool
     embedding_state: Literal["NOT_APPLICABLE", "AVAILABLE", "DISABLED", "NOT_CONFIGURED"]
     configuration_yaml: str = ""
     template_yaml: str = ""
     display_yaml: str = ""
+    environment_template: str = ""
+    effective_configuration_yaml: str = ""
     version: int = Field(ge=0)
     configured_at: datetime | None = None
     runtime_supported: bool = False
@@ -1260,6 +1316,7 @@ class SystemConfigurationEntryResponse(BaseModel):
     activated_version: int | None = Field(default=None, ge=1)
     activated_at: datetime | None = None
     applied_version: int | None = Field(default=None, ge=1)
+    is_core: bool = False
 
 
 class SystemConfigurationListResponse(BaseModel):
@@ -1318,7 +1375,7 @@ class SystemConfigurationTestResponse(BaseModel):
     ]
     latency_ms: int = Field(ge=0)
     detail: str
-    configuration_version: int = Field(ge=1)
+    configuration_version: int | None = Field(default=None, ge=1)
     tested_at: datetime
 
 
@@ -1460,8 +1517,6 @@ class UploadInitiateRequest(BaseModel):
         "FORMAT_ONLY_V1",
         "CATALOG_METADATA_ROWS_CSV_V1",
         "CATALOG_METADATA_ROWS_XLSX_V1",
-        "DATASET_DESCRIPTION_CSV_V1",
-        "DATASET_DESCRIPTION_XLSX_V1",
     ] = "FORMAT_ONLY_V1"
 
     @field_validator("display_name")
@@ -1485,8 +1540,6 @@ class UploadResponse(BaseModel):
         "FORMAT_ONLY_V1",
         "CATALOG_METADATA_ROWS_CSV_V1",
         "CATALOG_METADATA_ROWS_XLSX_V1",
-        "DATASET_DESCRIPTION_CSV_V1",
-        "DATASET_DESCRIPTION_XLSX_V1",
     ]
     expires_at: datetime
     version: int
@@ -1505,8 +1558,6 @@ class UploadPreparationResponse(BaseModel):
     content_profile: Literal[
         "CATALOG_METADATA_ROWS_CSV_V1",
         "CATALOG_METADATA_ROWS_XLSX_V1",
-        "DATASET_DESCRIPTION_CSV_V1",
-        "DATASET_DESCRIPTION_XLSX_V1",
     ]
     source_manifest_version: int = Field(ge=1)
     source_sha256: str = Field(pattern="^[0-9a-f]{64}$")
@@ -1559,8 +1610,6 @@ class UploadCandidateCurrentTargetResponse(BaseModel):
 class UploadRegistrationCandidateResponse(BaseModel):
     id: UUID
     ordinal: int = Field(ge=1)
-    evidence_version: Literal["DATASET_DESCRIPTION_CANDIDATE_V2"]
-    candidate_kind: Literal["DATASET_DESCRIPTION_UPDATE"]
     proposed_description: str = Field(max_length=10_000)
     submitted_identity: UploadCandidateSubmittedIdentityResponse
     candidate_hash: str = Field(pattern="^[0-9a-f]{64}$")
@@ -1573,7 +1622,7 @@ class UploadCandidateReceiptResponse(BaseModel):
     preparation_id: UUID
     manifest_version: int = Field(ge=1)
     source_sha256: str = Field(pattern="^[0-9a-f]{64}$")
-    content_profile: Literal["DATASET_DESCRIPTION_CSV_V1", "DATASET_DESCRIPTION_XLSX_V1"]
+    content_profile: str
     parser_version: str
     scanner_version: str
     schema_version: str
@@ -2232,6 +2281,7 @@ class ChatQueryRequest(BaseModel):
     session_id: UUID | None = None
     question: str = Field(min_length=2, max_length=4000)
     maximum_evidence: int = Field(default=5, ge=1, le=10)
+    mode: ChatRetrievalMode = ChatRetrievalMode.AUTO
 
 
 class ChatEvidenceResponse(BaseModel):
@@ -2242,6 +2292,7 @@ class ChatEvidenceResponse(BaseModel):
     domain_id: UUID | None
     owner_department_id: UUID | None
     name: str
+    description: str | None
     source_type: str
     source_locator: str
     source_version: str
@@ -2249,6 +2300,21 @@ class ChatEvidenceResponse(BaseModel):
     effective_from: datetime
     effective_until: datetime | None
     extraction_method: str
+    rank: int = Field(ge=1, le=10)
+    retrieval_method: str = Field(min_length=1, max_length=100)
+
+
+class ChatRouteResponse(BaseModel):
+    requested_mode: ChatRetrievalMode
+    selected_mode: ChatRetrievalMode
+    reason: ChatRouteReason
+    adapter_state: ChatAdapterState
+
+
+class ChatWorkflowEventResponse(BaseModel):
+    stage: ChatWorkflowStage
+    status: ChatWorkflowStatus
+    detail_code: str = Field(min_length=1, max_length=100)
 
 
 class ChatQueryResponse(BaseModel):
@@ -2257,7 +2323,37 @@ class ChatQueryResponse(BaseModel):
     response_message_id: UUID
     answer: str
     persistence: Literal["PERSISTED", "EPHEMERAL_NO_STORE"]
+    route: ChatRouteResponse
+    workflow: list[ChatWorkflowEventResponse] = Field(max_length=20)
     evidence: list[ChatEvidenceResponse]
+
+
+class ChatSessionResponse(BaseModel):
+    id: UUID
+    title: str
+    is_favorite: bool
+    version: int = Field(ge=1)
+    created_at: datetime
+    updated_at: datetime
+    message_count: int
+
+
+class ChatMessageResponse(BaseModel):
+    id: UUID
+    session_id: UUID
+    role: Literal["user", "assistant"]
+    content: str
+    evidence_json: list[ChatEvidenceResponse] | None
+    created_at: datetime
+    route: ChatRouteResponse | None = None
+    workflow: list[ChatWorkflowEventResponse] = Field(default_factory=list, max_length=20)
+
+
+class ChatFavoriteRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    is_favorite: bool
+    expected_version: int = Field(ge=1)
 
 
 class CatalogSchemaMetricResponse(BaseModel):

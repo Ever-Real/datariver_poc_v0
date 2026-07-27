@@ -7,6 +7,11 @@ import shutil
 import subprocess
 from pathlib import Path
 
+import pytest
+
+from datariver.bootstrap import LOCAL_DEMO_IDENTITIES, _local_demo_identities
+from datariver.domain.authz import Action
+
 
 def _copy_bootstrap_fixture(source_root: Path, target_root: Path) -> None:
     (target_root / "scripts").mkdir(parents=True)
@@ -38,6 +43,98 @@ def test_bash_and_powershell_bootstrap_keep_host_secret_files_owner_only() -> No
     assert "Set-OwnerOnlyWindowsAcl -Path $secretsDirectory -Directory" in powershell
     assert "Set-OwnerOnlyWindowsAcl -Path $temporaryPath" in writer
     assert "Set-OwnerOnlyWindowsAcl -Path $realmPath" in powershell
+
+
+def test_local_demo_identities_match_keycloak_and_use_balanced_human_roles(
+    tmp_path: Path,
+) -> None:
+    root = Path(__file__).resolve().parents[3]
+    realm = json.loads(
+        (root / "infra/keycloak/datariver-realm.template.json").read_text(encoding="utf-8")
+    )
+    users_by_id = {user["id"]: user for user in realm["users"]}
+
+    assert {demo.job_function for demo in LOCAL_DEMO_IDENTITIES} == {
+        "DATA_ANALYST",
+        "DATA_ENGINEER",
+        "DATA_STEWARD",
+    }
+    assert len({demo.subject_id for demo in LOCAL_DEMO_IDENTITIES}) == 3
+    assert len({demo.external_subject for demo in LOCAL_DEMO_IDENTITIES}) == 3
+    for demo in LOCAL_DEMO_IDENTITIES:
+        user = users_by_id[demo.external_subject]
+        assert user["enabled"] is True
+        assert user["email"] == demo.email
+        assert user["requiredActions"] == ["UPDATE_PASSWORD"]
+        assert user["credentials"] == [
+            {
+                "type": "password",
+                "value": "__DEMO_PASSWORD__",
+                "temporary": True,
+            }
+        ]
+        assert demo.allowed_actions
+    actions_by_username = {
+        demo.username: frozenset(demo.allowed_actions) for demo in LOCAL_DEMO_IDENTITIES
+    }
+    assert Action.CHAT_QUERY in actions_by_username["minjae.oh"]
+    assert Action.CHAT_QUERY not in actions_by_username["jihoon.choi"]
+    assert Action.CHAT_QUERY not in actions_by_username["sua.han"]
+
+    state_path = tmp_path / "local-demo-identities.json"
+    provider_subjects = {
+        "jihoon.choi": "00000000-0000-4000-8000-000000000205",
+        "sua.han": "00000000-0000-4000-8000-000000000206",
+        "minjae.oh": "00000000-0000-4000-8000-000000000207",
+    }
+    state_path.write_text(json.dumps(provider_subjects), encoding="utf-8")
+
+    resolved = _local_demo_identities(state_path)
+
+    assert {demo.username: demo.external_subject for demo in resolved} == provider_subjects
+    state_path.write_text(
+        json.dumps(dict.fromkeys(provider_subjects, provider_subjects["jihoon.choi"])),
+        encoding="utf-8",
+    )
+    with pytest.raises(RuntimeError, match="state file is invalid"):
+        _local_demo_identities(state_path)
+
+
+def test_bootstrap_migrates_demo_identity_state_out_of_keycloak_import(
+    tmp_path: Path,
+) -> None:
+    root = Path(__file__).resolve().parents[3]
+    isolated_root = tmp_path / "repo"
+    _copy_bootstrap_fixture(root, isolated_root)
+    legacy_state = isolated_root / "runtime/keycloak/local-demo-identities.json"
+    legacy_state.parent.mkdir(parents=True)
+    legacy_document = json.dumps(
+        {
+            "jihoon.choi": "00000000-0000-4000-8000-000000000205",
+            "sua.han": "00000000-0000-4000-8000-000000000206",
+            "minjae.oh": "00000000-0000-4000-8000-000000000207",
+        }
+    )
+    legacy_state.write_text(legacy_document, encoding="utf-8")
+    approved_token = isolated_root / "approved-datahub-token"
+    approved_token.write_text("test-only-datahub-token", encoding="utf-8")
+
+    result = subprocess.run(  # noqa: S603 - copied repository script is trusted.
+        [
+            str(isolated_root / "scripts/bootstrap.sh"),
+            "--datahub-token-file",
+            str(approved_token),
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    migrated_state = isolated_root / "runtime/identity/local-demo-identities.json"
+    assert result.returncode == 0, result.stderr
+    assert not legacy_state.exists()
+    assert migrated_state.read_text(encoding="utf-8") == legacy_document
+    assert migrated_state.stat().st_mode & 0o777 == 0o600
 
 
 def test_knowledge_source_worker_bootstrap_is_explicit_and_requires_inference_pair(
@@ -196,6 +293,107 @@ def test_blank_wsl_bootstrap_fails_before_creating_any_state(tmp_path: Path) -> 
     assert not (isolated_root / ".env.wsl-preparation").exists()
     assert not (isolated_root / "secrets").exists()
     assert not (isolated_root / "runtime").exists()
+
+
+def test_portable_bootstrap_keeps_inference_disabled_and_uses_generic_ports(
+    tmp_path: Path,
+) -> None:
+    root = Path(__file__).resolve().parents[3]
+    isolated_root = tmp_path / "repo"
+    _copy_bootstrap_fixture(root, isolated_root)
+    token = isolated_root / "approved-datahub-token"
+    token.write_text("portable-test-token", encoding="utf-8")
+
+    result = subprocess.run(  # noqa: S603 - copied repository script is trusted.
+        [
+            str(isolated_root / "scripts/bootstrap.sh"),
+            "--env-file",
+            ".env.portable-development",
+            "--portable-development",
+            "--datahub-token-file",
+            str(token),
+            "--datahub-base-url",
+            "https://datahub.example.internal",
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode == 0, result.stderr
+    values = (isolated_root / ".env.portable-development").read_text(encoding="utf-8")
+    assert "APP_PUBLIC_ORIGIN=http://localhost:8080" in values
+    assert "API_PORT=8000" in values
+    assert "WEB_PORT=8080" in values
+    assert "DATAHUB_BASE_URL=https://datahub.example.internal" in values
+    assert "LOCAL_OLLAMA_CHAT_ENABLED=false" in values
+    assert "LOCAL_OLLAMA_EMBEDDING_ENABLED=false" in values
+    assert "LOCAL_LLAMA_CPP_RERANKER_ENABLED=false" in values
+    assert "NEO4J_PROJECTION_ENABLED=false" in values
+    assert "KNOWLEDGE_PIPELINE_ENABLED=false" in values
+    assert "SYSTEM_CONFIGURATION_RUNTIME_ACTIVATION_ENABLED" not in values
+
+
+def test_mac_bootstrap_never_selects_or_creates_a_local_model(tmp_path: Path) -> None:
+    root = Path(__file__).resolve().parents[3]
+    isolated_root = tmp_path / "repo"
+    _copy_bootstrap_fixture(root, isolated_root)
+
+    result = subprocess.run(  # noqa: S603 - copied repository script is trusted.
+        [
+            str(isolated_root / "scripts/bootstrap.sh"),
+            "--env-file",
+            ".env.mac-development",
+            "--mac-development",
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode == 0, result.stderr
+    values = (isolated_root / ".env.mac-development").read_text(encoding="utf-8")
+    assert "LOCAL_OLLAMA_CHAT_ENABLED=false" in values
+    assert "LOCAL_OLLAMA_EMBEDDING_ENABLED=false" in values
+    assert "LOCAL_LLAMA_CPP_RERANKER_ENABLED=false" in values
+    assert not any(
+        line.startswith(
+            (
+                "LOCAL_OLLAMA_CHAT_MODEL=",
+                "LOCAL_OLLAMA_EMBEDDING_MODEL=",
+                "LOCAL_LLAMA_CPP_RERANKER_MODEL=",
+            )
+        )
+        for line in values.splitlines()
+    )
+    source = (root / "scripts/bootstrap.sh").read_text(encoding="utf-8")
+    assert "datariver-gemma4-dev" not in source
+    assert "bge-m3:latest" not in source
+    assert "qllama/bge-reranker" not in source
+
+
+def test_bootstrap_rejects_conflicting_portable_and_host_specific_profiles(
+    tmp_path: Path,
+) -> None:
+    root = Path(__file__).resolve().parents[3]
+    isolated_root = tmp_path / "repo"
+    _copy_bootstrap_fixture(root, isolated_root)
+
+    result = subprocess.run(  # noqa: S603 - copied repository script is trusted.
+        [
+            str(isolated_root / "scripts/bootstrap.sh"),
+            "--portable-development",
+            "--mac-development",
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode == 2
+    assert "mutually exclusive" in result.stderr
+    assert not (isolated_root / ".env").exists()
+    assert not (isolated_root / "secrets").exists()
 
 
 def test_wsl_bootstrap_preserves_preinstalled_token_without_exposing_it(

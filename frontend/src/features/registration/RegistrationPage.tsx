@@ -195,7 +195,7 @@ export function RegistrationPage({ client }: { client: ApiClient }) {
               client={client}
               asset={selectedAssetDetail}
               loading={loadingDetail}
-              canViewWorkspaceHistory={capability.can_view_workspace_history}
+
               onClose={() => setSelectedAssetId(undefined)}
               onPreviousFieldPage={() => {
                 setFieldOffset((current) => Math.max(0, current - MANUAL_FIELD_PAGE_SIZE))

@@ -129,6 +129,70 @@ def build_upgrade() -> ops.UpgradeOps:
                         "NULLIF(current_setting('app.subject_id', true), '')::uuid))"
                     )
                 )
+            if table.fullname == "assistant.chat_sessions":
+                owner_expression = (
+                    "owner_id = "
+                    "NULLIF(current_setting('app.subject_id', true), '')::uuid"
+                )
+                operations.append(
+                    ops.ExecuteSQLOp(
+                        "CREATE POLICY chat_session_owner_access "
+                        "ON assistant.chat_sessions AS RESTRICTIVE FOR ALL "
+                        f"TO datariver_app USING ({owner_expression}) "
+                        f"WITH CHECK ({owner_expression})"
+                    )
+                )
+            if table.fullname == "assistant.chat_messages":
+                owner_expression = (
+                    "EXISTS (SELECT 1 FROM assistant.chat_sessions AS owned_session "
+                    "WHERE owned_session.workspace_id = chat_messages.workspace_id "
+                    "AND owned_session.id = chat_messages.session_id "
+                    "AND owned_session.owner_id = "
+                    "NULLIF(current_setting('app.subject_id', true), '')::uuid)"
+                )
+                operations.append(
+                    ops.ExecuteSQLOp(
+                        "CREATE POLICY chat_message_owner_access "
+                        "ON assistant.chat_messages AS RESTRICTIVE FOR ALL "
+                        f"TO datariver_app USING ({owner_expression}) "
+                        f"WITH CHECK ({owner_expression})"
+                    )
+                )
+            if table.fullname == "assistant.assistant_runs":
+                owner_expression = (
+                    "EXISTS (SELECT 1 FROM assistant.chat_sessions AS owned_session "
+                    "WHERE owned_session.workspace_id = assistant_runs.workspace_id "
+                    "AND owned_session.id = assistant_runs.session_id "
+                    "AND owned_session.owner_id = "
+                    "NULLIF(current_setting('app.subject_id', true), '')::uuid)"
+                )
+                operations.append(
+                    ops.ExecuteSQLOp(
+                        "CREATE POLICY assistant_run_owner_access "
+                        "ON assistant.assistant_runs AS RESTRICTIVE FOR ALL "
+                        f"TO datariver_app USING ({owner_expression}) "
+                        f"WITH CHECK ({owner_expression})"
+                    )
+                )
+            if table.fullname == "assistant.evidence_citations":
+                owner_expression = (
+                    "EXISTS (SELECT 1 FROM assistant.assistant_runs AS owned_run "
+                    "JOIN assistant.chat_sessions AS owned_session "
+                    "ON owned_session.workspace_id = owned_run.workspace_id "
+                    "AND owned_session.id = owned_run.session_id "
+                    "WHERE owned_run.workspace_id = evidence_citations.workspace_id "
+                    "AND owned_run.id = evidence_citations.run_id "
+                    "AND owned_session.owner_id = "
+                    "NULLIF(current_setting('app.subject_id', true), '')::uuid)"
+                )
+                operations.append(
+                    ops.ExecuteSQLOp(
+                        "CREATE POLICY evidence_citation_owner_access "
+                        "ON assistant.evidence_citations AS RESTRICTIVE FOR ALL "
+                        f"TO datariver_app USING ({owner_expression}) "
+                        f"WITH CHECK ({owner_expression})"
+                    )
+                )
     operations.extend(
         ops.ExecuteSQLOp(statement) for statement in _manifest_content_profile_immutability_sql()
     )
@@ -257,7 +321,8 @@ BEGIN
         GRANT DELETE ON knowledge.validation_results TO datariver_app;
         GRANT SELECT, INSERT ON assistant.chat_sessions, assistant.chat_messages,
             assistant.assistant_runs, assistant.evidence_citations TO datariver_app;
-        GRANT UPDATE (version, updated_at) ON assistant.chat_sessions TO datariver_app;
+        GRANT UPDATE (is_favorite, version, updated_at)
+            ON assistant.chat_sessions TO datariver_app;
         GRANT SELECT, INSERT ON retention.policy_versions,
             retention.policy_class_rules TO datariver_app;
         GRANT UPDATE (state, checker_id, decision_reason,

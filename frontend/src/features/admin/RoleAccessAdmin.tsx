@@ -369,7 +369,7 @@ export function RoleAccessAdmin(props: AdminSectionProps) {
     <div className="admin-two-column role-access-admin">
       <section className="panel form-stack">
         <div className="section-heading"><div><h3>사용자 Role 할당</h3><p className="muted">인증 계정은 User 관리에서 등록하고, 플랫폼 권한은 이 Role로 관리합니다.</p></div><button type="button" className="button button-secondary" onClick={() => void Promise.all([loadMembers(), loadRoles(), loadSystems()])}>새로고침</button></div>
-        <label>사용자 검색<input type="search" value={memberQuery} onChange={(event) => setMemberQuery(event.target.value)} placeholder="이름 또는 이메일" /></label>
+        <label>Role 할당 사용자 검색<input type="search" value={memberQuery} onChange={(event) => setMemberQuery(event.target.value)} placeholder="이름 또는 이메일" /></label>
         <label>사용자<select value={selectedSubjectId} onChange={(event) => setSelectedSubjectId(event.target.value)}>{members.map((member) => <option key={member.subject_id} value={member.subject_id}>{member.display_name} · {member.email ?? 'Email 미제공'}</option>)}</select></label>
         <PageControls
           pageNumber={memberPageNumber}

@@ -69,8 +69,6 @@ from datariver.infrastructure.db.models.knowledge import (
     OntologyVersionModel,
 )
 from datariver.infrastructure.db.models.platform import (
-    ExternalServiceProfileModel,
-    ExternalServiceProfileVersionModel,
     SubjectModel,
     WorkspaceMembershipModel,
 )
@@ -164,34 +162,8 @@ async def _activated_binding_is_current(
     service_key: str,
     binding: ModelBinding,
 ) -> bool:
-    if binding.configuration_source != "SYSTEM_CONFIGURATION":
-        return binding.configuration_source == "DEPLOYMENT"
-    if binding.configuration_version is None or binding.configuration_hash is None:
-        return False
-    row = (
-        await session.execute(
-            select(ExternalServiceProfileModel, ExternalServiceProfileVersionModel)
-            .join(
-                ExternalServiceProfileVersionModel,
-                and_(
-                    ExternalServiceProfileVersionModel.workspace_id
-                    == ExternalServiceProfileModel.workspace_id,
-                    ExternalServiceProfileVersionModel.profile_id == ExternalServiceProfileModel.id,
-                    ExternalServiceProfileVersionModel.configuration_version
-                    == ExternalServiceProfileModel.activated_version,
-                ),
-            )
-            .where(
-                ExternalServiceProfileModel.workspace_id == workspace_id,
-                ExternalServiceProfileModel.service_key == service_key,
-                ExternalServiceProfileModel.active.is_(True),
-                ExternalServiceProfileModel.activated_version == binding.configuration_version,
-                ExternalServiceProfileVersionModel.configuration_hash == binding.configuration_hash,
-                ExternalServiceProfileVersionModel.test_status == "AVAILABLE",
-            )
-        )
-    ).one_or_none()
-    return row is not None
+    del session, workspace_id, service_key
+    return binding.configuration_source == "DEPLOYMENT"
 
 
 def _encode_cursor(

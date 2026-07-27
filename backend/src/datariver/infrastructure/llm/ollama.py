@@ -3,15 +3,21 @@ from __future__ import annotations
 import json
 from collections.abc import Sequence
 from typing import Any
+from urllib.parse import urlsplit
 from uuid import UUID
 
 import httpx
 
 from datariver.application.dto import ChatDraft, ChatEvidence
+from datariver.domain.common import ValidationError
 
 _TOOL_NAME = "submit_grounded_answer"
 _MAXIMUM_ANSWER_CHARACTERS = 4_000
+_MAXIMUM_EVIDENCE_NAME_CHARACTERS = 256
 _MAXIMUM_EVIDENCE_DESCRIPTION_CHARACTERS = 1_000
+_MAXIMUM_EVIDENCE_SOURCE_LOCATOR_CHARACTERS = 512
+_MAXIMUM_EVIDENCE_SOURCE_VERSION_CHARACTERS = 128
+_MAXIMUM_RESPONSE_BYTES = 1_048_576
 
 
 class LocalOllamaChatComposer:
@@ -31,7 +37,19 @@ class LocalOllamaChatComposer:
         context_tokens: int,
         client: httpx.AsyncClient | None = None,
     ) -> None:
-        self._base_url = base_url.rstrip("/")
+        parsed = urlsplit(base_url)
+        if (
+            parsed.scheme != "http"
+            or parsed.hostname not in {"127.0.0.1", "host.docker.internal"}
+            or parsed.port != 11434
+            or parsed.path.rstrip("/") != "/v1"
+            or parsed.username is not None
+            or parsed.password is not None
+            or parsed.query
+            or parsed.fragment
+        ):
+            raise ValidationError("The local Ollama endpoint violates the fixed contract.")
+        self._base_url = f"{parsed.scheme}://{parsed.netloc}"
         self._model = model
         self._timeout_seconds = timeout_seconds
         self._context_tokens = context_tokens
@@ -45,23 +63,57 @@ class LocalOllamaChatComposer:
     ) -> ChatDraft:
         if not evidence:
             return ChatDraft(answer="", cited_chunk_ids=())
-        payload = grounded_chat_request_payload(
+        payload = ollama_native_grounded_chat_request_payload(
             model=self._model,
             question=question,
             evidence=evidence,
             context_tokens=self._context_tokens,
         )
         if self._client is not None:
-            response = await self._client.post("/chat/completions", json=payload)
+            document = await _post_bounded_json(
+                self._client,
+                path=f"{self._base_url}/api/chat",
+                payload=payload,
+            )
         else:
             async with httpx.AsyncClient(
                 base_url=self._base_url,
                 timeout=httpx.Timeout(self._timeout_seconds, connect=min(self._timeout_seconds, 3)),
                 follow_redirects=False,
+                trust_env=False,
             ) as client:
-                response = await client.post("/chat/completions", json=payload)
+                document = await _post_bounded_json(
+                    client,
+                    path=f"{self._base_url}/api/chat",
+                    payload=payload,
+                )
+        return parse_ollama_native_grounded_chat_response(document)
+
+
+async def _post_bounded_json(
+    client: httpx.AsyncClient,
+    *,
+    path: str = "/chat/completions",
+    payload: dict[str, Any],
+) -> object:
+    async with client.stream("POST", path, json=payload) as response:
         response.raise_for_status()
-        return parse_grounded_chat_response(response.json())
+        declared_length = response.headers.get("content-length")
+        if declared_length is not None:
+            try:
+                if int(declared_length) > _MAXIMUM_RESPONSE_BYTES:
+                    raise ValidationError("The local Ollama response exceeded its bound.")
+            except ValueError:
+                pass
+        raw = bytearray()
+        async for chunk in response.aiter_bytes():
+            raw.extend(chunk)
+            if len(raw) > _MAXIMUM_RESPONSE_BYTES:
+                raise ValidationError("The local Ollama response exceeded its bound.")
+    try:
+        return json.loads(raw)
+    except (UnicodeDecodeError, json.JSONDecodeError) as error:
+        raise ValidationError("The local Ollama response must be valid JSON.") from error
 
 
 def grounded_chat_request_payload(
@@ -69,15 +121,14 @@ def grounded_chat_request_payload(
     model: str,
     question: str,
     evidence: Sequence[ChatEvidence],
-    context_tokens: int | None = None,
 ) -> dict[str, Any]:
     evidence_payload = [
         {
             "chunk_id": str(item.chunk_id),
-            "name": item.name,
+            "name": item.name[:_MAXIMUM_EVIDENCE_NAME_CHARACTERS],
             "description": (item.description or "")[:_MAXIMUM_EVIDENCE_DESCRIPTION_CHARACTERS],
-            "source_locator": item.source_locator,
-            "source_version": item.source_version,
+            "source_locator": item.source_locator[:_MAXIMUM_EVIDENCE_SOURCE_LOCATOR_CHARACTERS],
+            "source_version": item.source_version[:_MAXIMUM_EVIDENCE_SOURCE_VERSION_CHARACTERS],
         }
         for item in evidence
     ]
@@ -131,8 +182,31 @@ def grounded_chat_request_payload(
         "max_tokens": 1024,
         "stream": False,
     }
-    if context_tokens is not None:
-        payload["options"] = {"num_ctx": context_tokens}
+    return payload
+
+
+def ollama_native_grounded_chat_request_payload(
+    *,
+    model: str,
+    question: str,
+    evidence: Sequence[ChatEvidence],
+    context_tokens: int,
+) -> dict[str, Any]:
+    """Build the native Ollama request that can enforce the selected context bound."""
+
+    payload = grounded_chat_request_payload(
+        model=model,
+        question=question,
+        evidence=evidence,
+    )
+    payload.pop("tool_choice")
+    payload.pop("temperature")
+    payload.pop("max_tokens")
+    payload["options"] = {
+        "temperature": 0,
+        "num_ctx": context_tokens,
+        "num_predict": 1024,
+    }
     return payload
 
 
@@ -145,6 +219,19 @@ def parse_grounded_chat_response(payload: object) -> ChatDraft:
     message = choices[0].get("message")
     if not isinstance(message, dict):
         return ChatDraft(answer="", cited_chunk_ids=())
+    return _parse_grounded_tool_call(message)
+
+
+def parse_ollama_native_grounded_chat_response(payload: object) -> ChatDraft:
+    if not isinstance(payload, dict):
+        return ChatDraft(answer="", cited_chunk_ids=())
+    message = payload.get("message")
+    if not isinstance(message, dict):
+        return ChatDraft(answer="", cited_chunk_ids=())
+    return _parse_grounded_tool_call(message)
+
+
+def _parse_grounded_tool_call(message: dict[str, Any]) -> ChatDraft:
     tool_calls = message.get("tool_calls")
     if (
         not isinstance(tool_calls, list)
@@ -161,16 +248,17 @@ def parse_grounded_chat_response(payload: object) -> ChatDraft:
             arguments = json.loads(arguments)
         except json.JSONDecodeError:
             return ChatDraft(answer="", cited_chunk_ids=())
-    if not isinstance(arguments, dict) or set(arguments) != {"answer", "cited_chunk_ids"}:
+    if not isinstance(arguments, dict) or "answer" not in arguments:
         return ChatDraft(answer="", cited_chunk_ids=())
     answer = arguments.get("answer")
-    cited_chunk_ids = arguments.get("cited_chunk_ids")
+    cited_chunk_ids = arguments.get("cited_chunk_ids", [])
     if (
         not isinstance(answer, str)
         or not answer.strip()
         or len(answer) > _MAXIMUM_ANSWER_CHARACTERS
         or not isinstance(cited_chunk_ids, list)
-        or not 1 <= len(cited_chunk_ids) <= 10
+        or not cited_chunk_ids
+        or len(cited_chunk_ids) > 10
     ):
         return ChatDraft(answer="", cited_chunk_ids=())
     try:

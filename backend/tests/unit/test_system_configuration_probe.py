@@ -9,26 +9,85 @@ import httpx
 import pytest
 
 from datariver.domain.common import ValidationError
-from datariver.infrastructure.system_configuration_probe import probe_system_configuration
+from datariver.infrastructure.system_configuration_probe import (
+    probe_oidc_jwks,
+    probe_system_configuration,
+)
 
 
 @pytest.mark.asyncio
-async def test_chat_model_probe_executes_a_strict_json_completion() -> None:
+async def test_oidc_jwks_probe_uses_fixed_allowlisted_bounded_document() -> None:
     def handler(request: httpx.Request) -> httpx.Response:
-        assert request.url.path == "/v1/chat/completions"
-        body = json.loads(request.content)
-        assert body["model"] == "gemma4:latest"
-        assert body["response_format"]["type"] == "json_schema"
+        assert request.url.path == "/realms/datariver/protocol/openid-connect/certs"
         return httpx.Response(
             200,
             request=request,
-            json={"choices": [{"message": {"content": '{"status":"ok"}'}}]},
+            json={"keys": [{"kty": "RSA", "kid": "test-key"}]},
+        )
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        result = await probe_oidc_jwks(
+            jwks_url=("http://127.0.0.1:8081/realms/datariver/protocol/openid-connect/certs"),
+            allowed_hosts=("127.0.0.1",),
+            client=client,
+        )
+
+    assert result.status == "AVAILABLE"
+    assert result.scope == "HTTP_HEALTH"
+
+
+@pytest.mark.asyncio
+async def test_oidc_jwks_probe_rejects_unallowlisted_and_link_local_destinations() -> None:
+    async with httpx.AsyncClient(
+        transport=httpx.MockTransport(
+            lambda request: httpx.Response(
+                200,
+                request=request,
+                json={"keys": [{"kty": "RSA"}]},
+            )
+        )
+    ) as client:
+        with pytest.raises(ValidationError, match="operator probe allowlist"):
+            await probe_oidc_jwks(
+                jwks_url="http://127.0.0.1:8081/certs",
+                allowed_hosts=(),
+                client=client,
+            )
+        with pytest.raises(ValidationError, match="forbidden network range"):
+            await probe_oidc_jwks(
+                jwks_url="http://169.254.169.254/latest/meta-data",
+                allowed_hosts=("169.254.169.254",),
+                client=client,
+            )
+
+
+@pytest.mark.asyncio
+async def test_local_chat_model_probe_uses_native_ollama_context_bound() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.path == "/api/chat"
+        body = json.loads(request.content)
+        assert body["model"] == "gemma4:latest"
+        assert body["format"]["type"] == "object"
+        assert body["options"] == {
+            "temperature": 0,
+            "num_ctx": 8192,
+            "num_predict": 32,
+        }
+        return httpx.Response(
+            200,
+            request=request,
+            json={"message": {"content": '{"status":"ok"}'}},
         )
 
     async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
         result = await probe_system_configuration(
             system_id="LLM_CHAT_MODEL",
-            document={"base_url": "http://127.0.0.1:11434/v1", "model": "gemma4:latest"},
+            document={
+                "base_url": "http://127.0.0.1:11434/v1",
+                "connection_mode": "LOCAL_OLLAMA",
+                "model": "gemma4:latest",
+                "options": {"context_tokens": 8192},
+            },
             client=client,
             allowed_hosts=("127.0.0.1",),
         )
@@ -395,6 +454,41 @@ async def test_private_reranker_probe_executes_fixed_rank_request() -> None:
             client=client,
             secret_resolver=_IntranetRerankerSecretResolver(),  # type: ignore[arg-type]
             allowed_hosts=("10.42.0.16",),
+        )
+
+    assert result.status == "AVAILABLE"
+    assert result.scope == "RERANKING_INFERENCE"
+
+
+@pytest.mark.asyncio
+async def test_local_llama_cpp_reranker_accepts_ordered_finite_raw_logits() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url == httpx.URL("http://127.0.0.1:11435/v1/rerank")
+        assert "Authorization" not in request.headers
+        return httpx.Response(
+            200,
+            request=request,
+            json={
+                "results": [
+                    {"index": 0, "relevance_score": 2.6107},
+                    {"index": 1, "relevance_score": -10.9971},
+                ]
+            },
+        )
+
+    document = {
+        "connection_mode": "LOCAL_LLAMA_CPP",
+        "base_url": "http://127.0.0.1:11435/v1",
+        "model": "qllama/bge-reranker-v2-m3:q4_k_m",
+        "secret_references": {},
+        "options": {"api_style": "rerank_v1", "timeout_seconds": 60, "top_n": 2},
+    }
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        result = await probe_system_configuration(
+            system_id="LLM_RERANKER",
+            document=document,
+            client=client,
+            allowed_hosts=("127.0.0.1",),
         )
 
     assert result.status == "AVAILABLE"

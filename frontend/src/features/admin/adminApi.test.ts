@@ -118,6 +118,26 @@ describe('AdminApi', () => {
     await expect(api.getMembershipAccess('subject-one')).rejects.toThrow(/ETag/)
   })
 
+  it('binds member activity drilldowns to the target and cursor', async () => {
+    const { api, request } = mockClient()
+    const controller = new AbortController()
+    request.mockResolvedValue({ items: [], page: { next_cursor: null, limit: 25 } })
+
+    await api.listMembershipChangeRequestActivity('subject-one', 'cr-cursor', controller.signal)
+    await api.listMembershipOwnedTables('subject-one', 'table-cursor', controller.signal)
+
+    expect(request.mock.calls).toEqual([
+      [
+        '/admin/workspace-memberships/subject-one/change-requests?limit=25&cursor=cr-cursor',
+        { signal: controller.signal },
+      ],
+      [
+        '/admin/workspace-memberships/subject-one/owned-tables?limit=25&cursor=table-cursor',
+        { signal: controller.signal },
+      ],
+    ])
+  })
+
   it('sends an exact direct update with If-Match and one idempotency key', async () => {
     const { api, request } = mockClient()
     request.mockResolvedValue({ target_subject_id: 'subject-one', membership_version: 4, payload_hash: 'a'.repeat(64) })
@@ -255,10 +275,10 @@ describe('AdminApi', () => {
   it('binds classification, provider, and RESTRICTED grant mutations to versions', async () => {
     const { api, request } = mockClient()
     const rules: ClassificationAccessRule[] = [
-      { classification: 'PUBLIC', search_mode: 'ABAC', chat_mode: 'DENY', provider_profile_version_id: null },
-      { classification: 'INTERNAL', search_mode: 'ABAC', chat_mode: 'DENY', provider_profile_version_id: null },
-      { classification: 'CONFIDENTIAL', search_mode: 'DENY', chat_mode: 'DENY', provider_profile_version_id: null },
-      { classification: 'RESTRICTED', search_mode: 'EXPLICIT_GRANT_ONLY', chat_mode: 'DENY', provider_profile_version_id: null },
+      { classification: 'PUBLIC', search_mode: 'ABAC', chat_mode: 'DENY', provider_profile_version_id: null, embedding_provider_profile_version_id: null, reranker_provider_profile_version_id: null },
+      { classification: 'INTERNAL', search_mode: 'ABAC', chat_mode: 'DENY', provider_profile_version_id: null, embedding_provider_profile_version_id: null, reranker_provider_profile_version_id: null },
+      { classification: 'CONFIDENTIAL', search_mode: 'DENY', chat_mode: 'DENY', provider_profile_version_id: null, embedding_provider_profile_version_id: null, reranker_provider_profile_version_id: null },
+      { classification: 'RESTRICTED', search_mode: 'EXPLICIT_GRANT_ONLY', chat_mode: 'DENY', provider_profile_version_id: null, embedding_provider_profile_version_id: null, reranker_provider_profile_version_id: null },
     ]
     const policy = { policy_id: 'policy-one', version: 1, rules } as ClassificationAccessPolicy
     const profile = {

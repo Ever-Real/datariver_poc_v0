@@ -38,6 +38,7 @@ EXPECTED_SERVICE_SECRETS = {
     "api": {
         "postgres_app_password",
         "redis_cache_password",
+        "redis_delivery_password",
         "datahub_token",
         "intranet_llm_chat_api_key",
         "intranet_llm_embedding_api_key",
@@ -392,8 +393,31 @@ def verify_multiarch_release_contract() -> None:
     ):
         if fragment not in keycloak_host_dev:
             raise AssertionError(f"Keycloak host-development sync omits guard: {fragment}")
-    if "set-password" in keycloak_host_dev or "keycloak_demo_password" in keycloak_host_dev:
+    if "set-password" in keycloak_host_dev:
         raise AssertionError("Keycloak host-development sync must not rotate an existing user")
+    for fragment in (
+        'if [ -z "$user_id" ]; then',
+        "demo_password=$(cat /run/secrets/keycloak_demo_password)",
+        '-s "credentials=[',
+        "unset demo_password",
+        "__DATARIVER_DEMO_IDENTITIES__",
+        "local-demo-identities.json",
+    ):
+        if fragment not in keycloak_host_dev:
+            raise AssertionError(
+                f"Keycloak host-development sync omits new-user credential guard: {fragment}"
+            )
+    local_bootstrap = _yaml(ROOT / "compose.yaml")["services"]["local-bootstrap"]
+    if (
+        "./runtime/identity/local-demo-identities.json:"
+        "/run/datariver/local-demo-identities.json:ro" not in local_bootstrap.get("volumes", [])
+    ):
+        raise AssertionError("Local bootstrap must consume the Keycloak demo identity state")
+    keycloak_imports = _yaml(ROOT / "compose.identity.yaml")["services"]["keycloak"].get(
+        "volumes", []
+    )
+    if any("local-demo-identities.json" in mount for mount in keycloak_imports):
+        raise AssertionError("Keycloak realm imports must not include runtime identity state")
 
     connector_network = (ROOT / "scripts" / "ensure_connector_network.sh").read_text(
         encoding="utf-8"
@@ -787,7 +811,7 @@ def verify_host_development_ports() -> None:
     for fragment in (
         "set_env_value OIDC_ISSUER http://localhost:8081/realms/datariver",
         "set_env_value OIDC_JWKS_URL http://keycloak:8080/realms/datariver/protocol/openid-connect/certs",
-        "set_env_value SYSTEM_CONFIGURATION_RUNTIME_ACTIVATION_ENABLED false",
+        "set_env_value LOCAL_OLLAMA_CHAT_ENABLED false",
     ):
         if fragment not in wsl_block:
             raise AssertionError(
@@ -797,15 +821,31 @@ def verify_host_development_ports() -> None:
     admin_routes = (
         ROOT / "backend" / "src" / "datariver" / "interfaces" / "http" / "routes" / "admin.py"
     ).read_text(encoding="utf-8")
+    forbidden_routes = (
+        '@router.get(\n    "/system-configuration/{system_id}/versions"',
+        '@router.put(\n    "/system-configuration/{system_id}"',
+        '@router.post(\n    "/system-configuration/{system_id}/test-draft"',
+        '@router.post(\n    "/system-configuration/{system_id}/test"',
+        '@router.post(\n    "/system-configuration/{system_id}/activate"',
+    )
+    if any(fragment in admin_routes for fragment in forbidden_routes):
+        raise AssertionError("database-backed system configuration routes must remain retired")
     if (
-        "def _require_system_configuration_runtime_activation" not in admin_routes
-        or "_require_system_configuration_runtime_activation(container.settings)"
-        not in admin_routes
+        '@router.get("/system-configuration"' not in admin_routes
+        or '"/system-configuration/{system_id}/test-deployment"' not in admin_routes
     ):
         raise AssertionError(
-            "system configuration activation must fail closed when deployment settings own "
-            "runtime state"
+            "Admin system configuration must expose only inventory and deployment probes"
         )
+    runtime_consumers = (
+        ROOT / "backend" / "src" / "datariver" / "interfaces" / "http" / "factory.py",
+        *(ROOT / "backend" / "src" / "datariver" / "workers").glob("*.py"),
+    )
+    if any(
+        "resolve_activated_system_configuration" in path.read_text(encoding="utf-8")
+        for path in runtime_consumers
+    ):
+        raise AssertionError("API and workers must load only deployment-owned Settings")
 
     core = _yaml(ROOT / "compose.yaml")
     if "127.0.0.1:${API_PORT:-8000}:8000" not in core["services"]["api"].get("ports", []):

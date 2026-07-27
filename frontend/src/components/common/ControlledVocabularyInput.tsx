@@ -80,10 +80,15 @@ export function ControlledVocabularyInput({
   const canProposeNew = kind === 'TAG' || kind === 'TERM'
   const [input, setInput] = useState('')
   const [options, setOptions] = useState<string[]>([])
+  const [hasMore, setHasMore] = useState(false)
+  const [limit, setLimit] = useState(12)
   const [open, setOpen] = useState(false)
   const [loadingOptions, setLoadingOptions] = useState(false)
   const [lookupFailed, setLookupFailed] = useState(false)
   const [menuPosition, setMenuPosition] = useState<{ left: number; top: number; width: number }>()
+
+  // limit이나 open 상태 변경 시 초기화
+  useEffect(() => { if (!open) setLimit(12) }, [open])
 
   useEffect(() => {
     if (!open) return
@@ -93,24 +98,31 @@ export function ControlledVocabularyInput({
     const query = input.trim()
     setLoadingOptions(true)
     setLookupFailed(false)
+    const fetchLimit = limit + 1  // 1개 더 가져와서 "더보기" 여부 판단
     const timeout = window.setTimeout(() => {
       const parameters = new URLSearchParams({ kind })
       if (query) parameters.set('q', query)
-      parameters.set('limit', '12')
+      parameters.set('limit', String(fetchLimit))
       void client.request<CatalogVocabulary>(`/catalog/vocabulary?${parameters.toString()}`, { signal: controller.signal })
         .then((result) => {
-          if (!controller.signal.aborted) setOptions(result.items.filter((item) => !values.includes(item)))
+          if (!controller.signal.aborted) {
+            const filtered = result.items.filter((item) => !values.includes(item))
+            setHasMore(filtered.length > limit)
+            setOptions(filtered.slice(0, limit))
+          }
         })
         .catch(() => {
           if (!controller.signal.aborted) {
             setOptions([])
+            setHasMore(false)
             setLookupFailed(true)
           }
         })
         .finally(() => { if (!controller.signal.aborted) setLoadingOptions(false) })
     }, query ? 160 : 0)
     return () => { controller.abort(); window.clearTimeout(timeout) }
-  }, [client, input, kind, open, values])
+  }, [client, input, kind, limit, open, values])
+
 
   useEffect(() => () => requestRef.current?.abort(), [])
 
@@ -173,6 +185,7 @@ export function ControlledVocabularyInput({
           const chunks = event.target.value.split(',')
           if (chunks.length > 1 && canProposeNew) appendValues(chunks.slice(0, -1))
           setInput(chunks.at(-1) ?? '')
+          setLimit(12)  // 검색어 바뀌면 limit 초기화
         }} onKeyDown={selectFirst} placeholder="등록된 항목 검색 또는 신규 입력" ref={inputRef} value={input} />
         {input.trim() ? <>
           {loadingOptions && <p role="status">등록된 항목을 찾는 중입니다.</p>}
@@ -184,10 +197,22 @@ export function ControlledVocabularyInput({
           {!loadingOptions && options.map((option) => <button key={option} onMouseDown={(event) => { event.preventDefault(); commit(option) }} role="option" type="button">{option}</button>)}
           {!loadingOptions && !options.length && <p role="status">{lookupFailed ? '등록된 항목을 불러오지 못했습니다. 키워드를 입력해 다시 시도하세요.' : '키워드로 등록된 항목을 찾거나 새 제안값을 입력하세요.'}</p>}
         </>}
+        {/* 더 보기 버튼 */}
+        {hasMore && !loadingOptions && (
+          <button
+            className="controlled-vocabulary-load-more"
+            onMouseDown={(event) => { event.preventDefault(); setLimit((prev) => prev + 12) }}
+            role="option"
+            type="button"
+          >
+            더 보기…
+          </button>
+        )}
       </div>,
       document.body,
     )
     : null
+
 
   return <div className="controlled-vocabulary-input" ref={rootRef}>
     <div className="controlled-vocabulary-row">

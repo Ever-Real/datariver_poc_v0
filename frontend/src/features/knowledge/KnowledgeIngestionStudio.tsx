@@ -36,7 +36,7 @@ function SourceConnection({ sourceTab, onSourceTab }: { sourceTab: SourceTab; on
     </div>
     {sourceTab === 'FILE' ? <>
       <label className="grid min-h-36 place-items-center rounded-enterprise border border-dashed border-enterprise-blue bg-blue-50 p-5 text-center text-xs font-bold text-enterprise-blue"><span><FileUp className="mx-auto mb-2" />파일을 드래그하거나 클릭하세요.<small className="mt-1 block font-normal text-slate-500">PDF, CSV, MD 등 · 현재는 선택만 가능</small></span><input className="sr-only" type="file" multiple accept=".pdf,.csv,.md,.txt" /></label>
-      <label className="grid gap-1 text-xs font-black text-navy-900">추가 의도 · 옵션<textarea className="min-h-24 resize-y border border-slate-300 p-3 font-normal" value={intent} onChange={(event) => setIntent(event.target.value)} placeholder="예: 제조 공정과 관련된 장비, 자재, 레시피 위주로 노드를 추출해줘." /></label>
+      <label className="grid gap-1 text-xs font-black text-navy-900">추가 의도 · 옵션<textarea className="min-h-24 resize-y border border-slate-300 p-3 font-normal" value={intent} onChange={(event) => setIntent(event.target.value)} placeholder="예: 고객, 주문, 상품 간 관계를 중심으로 노드를 추출해 주세요." /></label>
     </> : <label className="grid gap-1 text-xs font-black text-navy-900">DB 스키마 검색<div className="flex items-center gap-2 border border-slate-300 bg-white px-3"><Search size={14} /><input className="min-w-0 flex-1 border-0 py-2" value={dbQuery} onChange={(event) => setDbQuery(event.target.value)} placeholder="연결된 카탈로그 스키마 키워드" /></div><small className="font-normal text-slate-500">자동 추천·스키마 선택 계약은 아직 제공되지 않습니다.</small></label>}
   </section>
 }

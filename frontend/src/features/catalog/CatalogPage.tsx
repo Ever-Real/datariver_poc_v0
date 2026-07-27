@@ -1,4 +1,5 @@
-import { useEffect, useMemo, useRef, useState, type CSSProperties, type FormEvent, type KeyboardEvent } from 'react'
+import { useEffect, useMemo, useRef, useState, type FormEvent, type KeyboardEvent } from 'react'
+import { useQuery, keepPreviousData, useQueryClient } from '@tanstack/react-query'
 import type { ColumnDef } from '@tanstack/react-table'
 import { Filter, RotateCcw, Search } from 'lucide-react'
 import type { ApiClient } from '../../api/client'
@@ -74,11 +75,11 @@ export function CatalogPage({
   onQueryChange?: (query: string) => void
   catalogExportWorkerEnabled?: boolean
 }) {
+  const queryClient = useQueryClient()
   const [draftQuery, setDraftQuery] = useState(initialQuery)
   const [query, setQuery] = useState(initialQuery)
   const [filters, setFilters] = useState<Filters>(emptyFilters)
-  const [result, setResult] = useState<CatalogSearch>()
-  const [facets, setFacets] = useState<CatalogFacets>()
+  const [error, setError] = useState<unknown>()
   const [suggestions, setSuggestions] = useState<CatalogSuggestion[]>([])
   const [suggestionIndex, setSuggestionIndex] = useState(-1)
   const [filtersOpen, setFiltersOpen] = useState(false)
@@ -87,8 +88,6 @@ export function CatalogPage({
   const [cursors, setCursors] = useState<Array<string | undefined>>([undefined])
   const [pageIndex, setPageIndex] = useState(0)
   const [pageSize, setPageSize] = useState(50)
-  const [loading, setLoading] = useState(false)
-  const [error, setError] = useState<unknown>()
   const suggestionRoot = useRef<HTMLDivElement>(null)
   const filterRoot = useRef<HTMLDivElement>(null)
   const workspaceRef = useRef<HTMLDivElement>(null)
@@ -98,30 +97,35 @@ export function CatalogPage({
     if (initialQueryRef.current === initialQuery) return
     initialQueryRef.current = initialQuery
     setDraftQuery(initialQuery); setQuery(initialQuery); setCursors([undefined]); setPageIndex(0)
-    setSelectedAssetId(undefined)
   }, [initialQuery])
 
   useEffect(() => {
-    const controller = new AbortController()
-    setLoading(true); setError(undefined)
-    void client.request<CatalogSearch>(
-      `/catalog/assets?${searchPath(query, filters, cursors[pageIndex], pageSize)}`,
-      { signal: controller.signal },
-    ).then((nextResult) => { if (!controller.signal.aborted) setResult(nextResult) })
-      .catch((next: unknown) => { if (!controller.signal.aborted) setError(next) })
-      .finally(() => { if (!controller.signal.aborted) setLoading(false) })
-    return () => controller.abort()
-  }, [client, cursors, filters, pageIndex, pageSize, query])
+    return () => {
+      queryClient.removeQueries({ queryKey: ['catalog', 'assets'] })
+      queryClient.removeQueries({ queryKey: ['catalog', 'facets'] })
+    }
+  }, [queryClient])
 
-  useEffect(() => {
-    const controller = new AbortController()
-    void client.request<CatalogFacets>(
+  const { data: result, isFetching: loading } = useQuery({
+    queryKey: ['catalog', 'assets', query, filters, cursors[pageIndex], pageSize],
+    queryFn: async ({ signal }) => client.request<CatalogSearch>(
+      `/catalog/assets?${searchPath(query, filters, cursors[pageIndex], pageSize)}`,
+      { signal },
+    ),
+    placeholderData: keepPreviousData,
+    staleTime: 5 * 60 * 1000,
+    gcTime: 10 * 60 * 1000,
+  })
+
+  const { data: facets } = useQuery({
+    queryKey: ['catalog', 'facets', query, filters],
+    queryFn: async ({ signal }) => client.request<CatalogFacets>(
       `/catalog/facets?${searchPath(query, filters, undefined, 30)}`,
-      { signal: controller.signal },
-    ).then((nextFacets) => { if (!controller.signal.aborted) setFacets(nextFacets) })
-      .catch((next: unknown) => { if (!controller.signal.aborted) setError(next) })
-    return () => controller.abort()
-  }, [client, filters, query])
+      { signal },
+    ),
+    staleTime: 5 * 60 * 1000,
+    gcTime: 10 * 60 * 1000,
+  })
 
   useEffect(() => {
     const normalized = draftQuery.trim()
@@ -157,8 +161,8 @@ export function CatalogPage({
   const commitQuery = (value: string) => {
     const normalized = value.trim()
     if (!validCatalogQuery(normalized)) { setError(new Error('검색어는 비워 두거나 2자 이상 입력하세요.')); return }
+    if (normalized === query) { setSuggestions([]); setSuggestionIndex(-1); return }
     setDraftQuery(normalized); setQuery(normalized); setSuggestions([]); setSuggestionIndex(-1); setCursors([undefined]); setPageIndex(0)
-    setSelectedAssetId(undefined)
     onQueryChange?.(normalized)
   }
 
@@ -200,7 +204,6 @@ export function CatalogPage({
 
   const updateFilter = (name: keyof Filters, value: string) => {
     setFilters((current) => ({ ...current, [name]: value })); setCursors([undefined]); setPageIndex(0)
-    setSelectedAssetId(undefined)
   }
 
   const toggleSearchField = (field: SearchField) => {
@@ -213,13 +216,11 @@ export function CatalogPage({
       return { ...current, searchFields }
     })
     setCursors([undefined]); setPageIndex(0)
-    setSelectedAssetId(undefined)
   }
 
   const setAllSearchFields = (checked: boolean) => {
     setFilters((current) => ({ ...current, searchFields: checked ? allSearchFields : [allSearchFields[0]!] }))
     setCursors([undefined]); setPageIndex(0)
-    setSelectedAssetId(undefined)
   }
 
   const resetFilters = () => {
@@ -245,13 +246,6 @@ export function CatalogPage({
     setSelectedAssetId(undefined)
   }
 
-  const resizeDetail = (requestedWidth: number) => {
-    const measuredWorkspaceWidth = workspaceRef.current?.clientWidth ?? 0
-    const workspaceWidth = measuredWorkspaceWidth || window.innerWidth
-    // Keep the resource tree fixed and leave Search Results at least 560px wide.
-    const maximumWidth = Math.max(420, workspaceWidth - 300 - 16 - 560)
-    setDetailWidth(Math.max(420, Math.min(Math.round(requestedWidth), maximumWidth)))
-  }
 
   const activeFilterCount = [
     filters.assetType,
@@ -291,7 +285,7 @@ export function CatalogPage({
           <div className="catalog-query-control" ref={suggestionRoot}>
             <Search size={16} aria-hidden="true" />
             <label className="sr-only" htmlFor="catalog-query">데이터셋 이름이나 설명 검색</label>
-            <input id="catalog-query" value={draftQuery} onChange={(event) => { setDraftQuery(event.target.value); setSuggestionIndex(-1) }} onKeyDown={navigateSuggestions} placeholder="데이터셋 이름이나 설명 검색 (2자 이상)" maxLength={500} autoComplete="off" aria-controls="catalog-suggestions" aria-expanded={suggestions.length > 0} aria-autocomplete="list" aria-activedescendant={suggestionIndex >= 0 ? `catalog-suggestion-${suggestionIndex}` : undefined} role="combobox" />
+            <input id="catalog-query" value={draftQuery} onChange={(event) => { setDraftQuery(event.target.value); setSuggestionIndex(-1); }} onKeyDown={navigateSuggestions} placeholder="데이터셋 이름이나 설명 검색 (2자 이상)" maxLength={500} autoComplete="off" aria-controls="catalog-suggestions" aria-expanded={suggestions.length > 0} aria-autocomplete="list" aria-activedescendant={suggestionIndex >= 0 ? `catalog-suggestion-${suggestionIndex}` : undefined} role="combobox" />
             {suggestions.length > 0 && <ul id="catalog-suggestions" className="catalog-suggestions" role="listbox">
               {suggestions.map((suggestion, index) => <li key={suggestion.id} role="none"><button id={`catalog-suggestion-${index}`} role="option" aria-selected={index === suggestionIndex} type="button" onMouseDown={(event) => event.preventDefault()} onClick={() => commitQuery(suggestion.name)}><span><b>{suggestion.name}</b><small>{suggestion.asset_type} · {[suggestion.platform, suggestion.database_name, suggestion.schema_name].filter(Boolean).join(' · ') || '위치 미지정'}</small><CatalogMatchPreview fragments={suggestion.matches ?? []} /></span></button></li>)}
             </ul>}
@@ -333,7 +327,12 @@ export function CatalogPage({
       </div>
     </div>
     <ErrorNotice error={error} />
-    <div className={`catalog-workspace ${selectedAssetId ? 'with-detail' : ''}`} ref={workspaceRef} style={selectedAssetId ? { '--catalog-detail-width': `${detailWidth}px` } as CSSProperties : undefined}>
+    {/* 오버레이 모드: catalog-workspace는 2컬럼 공유, 상세 창은 fixed overlay로 뜸 */}
+    <div
+      className="catalog-workspace"
+      ref={workspaceRef}
+      aria-busy={loading}
+    >
       <CatalogResourceTree client={client} selectedAssetId={selectedAssetId} onSelectAsset={selectAsset} />
       <section className="catalog-results" aria-label="카탈로그 검색 결과">
         <header><div><span className="eyebrow">Permission scoped</span><h2>Search Results</h2><span>{result ? (result.total_exact ? `${result.total.toLocaleString()} items` : `현재 ${result.items.length.toLocaleString()}건${result.page.next_cursor ? ' · 더 있음' : ''}`) : '0 items'} · ALL keywords · ↔ 좌우 스크롤</span></div><CursorPagination {...paginationProps} label="Search Results 상단 페이지 탐색" /></header>
@@ -342,9 +341,22 @@ export function CatalogPage({
         <CursorPagination {...paginationProps} />
         {result && <footer className="catalog-result-meta"><span>projection v{result.meta.projection_version}</span><span>policy {result.meta.policy_version}</span><time dateTime={result.meta.observed_at ?? undefined}>{result.meta.observed_at ? new Date(result.meta.observed_at).toLocaleString() : '관측 시각 없음'}</time></footer>}
       </section>
-      {selectedAssetId && <CatalogDetailPane key={selectedAssetId} client={client} assetId={selectedAssetId} onClose={closeSelectedAsset} onResizeWidth={resizeDetail} onSelectAsset={selectAsset} width={detailWidth} />}
+      {/* 상세 창은 오버레이로 렌더링 (검색 결과를 밀어내지 않음) */}
+      {selectedAssetId && (
+        <CatalogDetailPane
+          key={selectedAssetId}
+          client={client}
+          assetId={selectedAssetId}
+          onClose={closeSelectedAsset}
+          onSelectAsset={selectAsset}
+          onResizeWidth={(w) => setDetailWidth(Math.max(320, Math.min(w, 900)))}
+          width={detailWidth}
+          asOverlay
+        />
+      )}
     </div>
   </section>
+
 }
 
 function optionalTableText(value: string | null | undefined) {

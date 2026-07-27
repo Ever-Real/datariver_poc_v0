@@ -13,6 +13,10 @@ import pytest
 from datariver.application.dto import (
     AdminAccessRequestPage,
     IdempotencyRecord,
+    MembershipChangeRequestActivity,
+    MembershipChangeRequestActivityPage,
+    MembershipOwnedTable,
+    MembershipOwnedTablePage,
     MembershipRenewalPage,
     MembershipRenewalRecord,
     SystemAssigneePage,
@@ -157,6 +161,40 @@ class MemoryMemberships:
             dict[UUID, WorkspaceMembershipAccessRecord], self.state["membership_records"]
         )
         return records.get(subject_id)
+
+    async def list_change_request_activity(
+        self,
+        *,
+        workspace_id: UUID,
+        subject_id: UUID,
+        limit: int,
+        cursor: str | None = None,
+    ) -> MembershipChangeRequestActivityPage:
+        assert workspace_id == self.state["workspace_id"]
+        assert cursor is None
+        assert subject_id in cast(
+            dict[UUID, WorkspaceMembershipAccessRecord],
+            self.state["membership_records"],
+        )
+        items = cast(list[MembershipChangeRequestActivity], self.state["member_cr_activity"])
+        return MembershipChangeRequestActivityPage(items=tuple(items[:limit]), next_cursor=None)
+
+    async def list_owned_tables(
+        self,
+        *,
+        workspace_id: UUID,
+        subject_id: UUID,
+        limit: int,
+        cursor: str | None = None,
+    ) -> MembershipOwnedTablePage:
+        assert workspace_id == self.state["workspace_id"]
+        assert cursor is None
+        assert subject_id in cast(
+            dict[UUID, WorkspaceMembershipAccessRecord],
+            self.state["membership_records"],
+        )
+        items = cast(list[MembershipOwnedTable], self.state["member_owned_tables"])
+        return MembershipOwnedTablePage(items=tuple(items[:limit]), next_cursor=None)
 
     async def apply(self, command: MembershipAccessUpdate) -> int:
         await self.assert_current_version(command)
@@ -415,6 +453,29 @@ class MemorySystems:
         )
         return systems[index].version
 
+    async def create(
+        self,
+        *,
+        workspace_id: UUID,
+        code: str,
+        name: str,
+        description: str,
+    ) -> SystemDirectoryEntry:
+        assert workspace_id == self.state["workspace_id"]
+        systems = cast(list[SystemDirectoryEntry], self.state["systems"])
+        if any(item.code == code for item in systems):
+            raise ConflictError("system code already exists")
+        entry = SystemDirectoryEntry(
+            system_id=uuid4(),
+            code=code,
+            name=name,
+            description=description,
+            active=True,
+            version=1,
+        )
+        systems.append(entry)
+        return entry
+
 
 class MemoryIdempotency:
     def __init__(self, values: dict[tuple[UUID, str, str], IdempotencyRecord]) -> None:
@@ -571,6 +632,8 @@ def _state(
         "membership_versions": {target_id: 1},
         "membership_records": {},
         "renewals": [],
+        "member_cr_activity": [],
+        "member_owned_tables": [],
         "membership_read_count": 0,
         "systems": [],
         "assignable_subjects": {target_id, maker_id, checker_id},
@@ -604,13 +667,22 @@ def _membership_record(subject_id: UUID, display_name: str) -> WorkspaceMembersh
     )
 
 
-def _service(state: dict[str, object], *, enabled: bool = True) -> AdminAccessService:
+def _service(
+    state: dict[str, object],
+    *,
+    enabled: bool = True,
+    development_admin_password_bypass_enabled: bool = False,
+) -> AdminAccessService:
     factory = cast(Callable[[], AdminAccessUnitOfWork], lambda: MemoryAdminAccessUnitOfWork(state))
     return AdminAccessService(
         factory,
-        AuthorizationService(decision_writer=MemoryDecisionWriter()),
+        AuthorizationService(
+            decision_writer=MemoryDecisionWriter(),
+            development_admin_password_bypass_enabled=(development_admin_password_bypass_enabled),
+        ),
         fallback_enabled=enabled,
         fallback_ttl_seconds=300,
+        development_admin_password_bypass_enabled=(development_admin_password_bypass_enabled),
     )
 
 
@@ -711,6 +783,88 @@ async def test_membership_reads_reuse_admin_read_assurance_when_fallback_is_disa
 
 
 @pytest.mark.asyncio
+async def test_member_activity_drilldowns_apply_item_level_authorization() -> None:
+    workspace_id, target_id, administrator_id, other_admin_id = (uuid4() for _ in range(4))
+    now = datetime.now(UTC)
+    state = _state(workspace_id, target_id, administrator_id, other_admin_id)
+    state["membership_records"] = {
+        target_id: _membership_record(target_id, "Target User"),
+        administrator_id: _membership_record(administrator_id, "Administrator"),
+    }
+    state["member_cr_activity"] = [
+        MembershipChangeRequestActivity(
+            change_request_id=uuid4(),
+            number="CR-42",
+            title="Metadata update",
+            request_type="METADATA_CHANGE",
+            state="IN_REVIEW",
+            relationship="REQUESTER",
+            classification=Classification.INTERNAL,
+            requester_id=target_id,
+            updated_at=now,
+        )
+    ]
+    state["member_owned_tables"] = [
+        MembershipOwnedTable(
+            asset_id=uuid4(),
+            name="customer_orders",
+            platform="postgres",
+            database_name="warehouse",
+            schema_name="sales",
+            classification=Classification.INTERNAL,
+            system_id=None,
+            domain_id=None,
+            owner_department_id=None,
+            source_version="v1",
+            observed_at=now,
+        )
+    ]
+    service = _service(state, enabled=False)
+    allowed_subject = _administrator(
+        workspace_id,
+        administrator_id,
+        assurance=AuthenticationAssurance.PASSWORD,
+        now=now,
+        allowed_actions=frozenset({Action.ADMIN_MANAGE, Action.CHANGE_READ, Action.CATALOG_READ}),
+    )
+
+    change_requests = await service.list_membership_change_request_activity(
+        workspace_id=workspace_id,
+        target_subject_id=target_id,
+        limit=25,
+        cursor=None,
+        subject=allowed_subject,
+        environment=EnvironmentAttributes(requested_at=now),
+        request_id="member-cr-activity",
+    )
+    tables = await service.list_membership_owned_tables(
+        workspace_id=workspace_id,
+        target_subject_id=target_id,
+        limit=25,
+        cursor=None,
+        subject=allowed_subject,
+        environment=EnvironmentAttributes(requested_at=now),
+        request_id="member-owned-tables",
+    )
+    denied_tables = await service.list_membership_owned_tables(
+        workspace_id=workspace_id,
+        target_subject_id=target_id,
+        limit=25,
+        cursor=None,
+        subject=replace(
+            allowed_subject,
+            denied_actions=frozenset({Action.CATALOG_READ}),
+        ),
+        environment=EnvironmentAttributes(requested_at=now),
+        request_id="member-owned-tables-denied",
+    )
+
+    assert [item.number for item in change_requests.items] == ["CR-42"]
+    assert [item.name for item in tables.items] == ["customer_orders"]
+    assert denied_tables.items == ()
+
+
+@pytest.mark.asyncio
 async def test_system_directory_read_requires_an_eligible_workspace_administrator() -> None:
     workspace_id, target_id, administrator_id, other_admin_id = (uuid4() for _ in range(4))
     now = datetime.now(UTC)
@@ -802,6 +956,125 @@ async def test_system_directory_read_forwards_normalized_filters_and_cursor_page
     assert first.next_cursor == "1"
     assert [item.code for item in second.items] == ["FAB-B"]
     assert second.next_cursor is None
+
+
+@pytest.mark.asyncio
+async def test_system_creation_is_hardware_gated_idempotent_and_audited() -> None:
+    workspace_id, target_id, administrator_id, other_admin_id = (uuid4() for _ in range(4))
+    now = datetime.now(UTC)
+    state = _state(workspace_id, target_id, administrator_id, other_admin_id)
+    service = _service(state, enabled=False)
+    subject = _administrator(
+        workspace_id,
+        administrator_id,
+        assurance=AuthenticationAssurance.HARDWARE_WEBAUTHN,
+        now=now,
+    )
+    environment = EnvironmentAttributes(requested_at=now)
+    request_hash = canonical_json_hash(
+        {
+            "operation": "admin.system.create",
+            "code": "CRM",
+            "name": "Customer Data",
+            "description": "Customer source",
+        }
+    )
+
+    created = await service.create_system(
+        workspace_id=workspace_id,
+        code="CRM",
+        name="Customer Data",
+        description="Customer source",
+        subject=subject,
+        environment=environment,
+        request_id="system-create",
+        idempotency_key="system-create-idempotency-0001",
+        request_hash=request_hash,
+    )
+    replayed = await service.create_system(
+        workspace_id=workspace_id,
+        code="CRM",
+        name="Customer Data",
+        description="Customer source",
+        subject=subject,
+        environment=environment,
+        request_id="system-create-replay",
+        idempotency_key="system-create-idempotency-0001",
+        request_hash=request_hash,
+    )
+
+    assert replayed == created
+    assert len(cast(list[SystemDirectoryEntry], state["systems"])) == 1
+    events = cast(list[DomainEvent], state["outbox"])
+    assert len(events) == 1
+    assert events[0].event_type == "platform.data_system.created.v1"
+    assert events[0].payload["assurance"] == "HARDWARE_WEBAUTHN"
+
+    with pytest.raises(ConflictError, match="different request"):
+        await service.create_system(
+            workspace_id=workspace_id,
+            code="CRM",
+            name="Changed",
+            description="Customer source",
+            subject=subject,
+            environment=environment,
+            request_id="system-create-conflict",
+            idempotency_key="system-create-idempotency-0001",
+            request_hash="f" * 64,
+        )
+
+
+@pytest.mark.asyncio
+async def test_development_password_bypass_exposes_and_audits_direct_system_mutation() -> None:
+    workspace_id, target_id, administrator_id, other_admin_id = (uuid4() for _ in range(4))
+    now = datetime.now(UTC)
+    state = _state(workspace_id, target_id, administrator_id, other_admin_id)
+    cast(dict[UUID, WorkspaceMembershipAccessRecord], state["membership_records"])[
+        administrator_id
+    ] = _membership_record(administrator_id, "Administrator")
+    service = _service(
+        state,
+        enabled=True,
+        development_admin_password_bypass_enabled=True,
+    )
+    subject = _administrator(
+        workspace_id,
+        administrator_id,
+        assurance=AuthenticationAssurance.PASSWORD,
+        now=now,
+    )
+    environment = EnvironmentAttributes(requested_at=now)
+
+    context = await service.get_admin_read_context(
+        workspace_id=workspace_id,
+        subject=subject,
+        environment=environment,
+        request_id="development-admin-context",
+    )
+    assert AdminOperation.SYSTEM_ASSIGNMENT_UPDATE in context.allowed_operations
+
+    created = await service.create_system(
+        workspace_id=workspace_id,
+        code="DEV",
+        name="Development System",
+        description="Local E2E only",
+        subject=subject,
+        environment=environment,
+        request_id="development-system-create",
+        idempotency_key="development-system-create-0001",
+        request_hash=canonical_json_hash(
+            {
+                "operation": "admin.system.create",
+                "code": "DEV",
+                "name": "Development System",
+                "description": "Local E2E only",
+            }
+        ),
+    )
+
+    assert created.code == "DEV"
+    events = cast(list[DomainEvent], state["outbox"])
+    assert events[-1].payload["assurance"] == "PASSWORD"
 
 
 @pytest.mark.asyncio

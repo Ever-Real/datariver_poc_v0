@@ -18,9 +18,6 @@ from datariver.infrastructure.knowledge.object_store import (
 )
 from datariver.infrastructure.knowledge.pdf import PypdfPageAwareParser
 from datariver.infrastructure.knowledge.runtime import build_knowledge_runtime_adapters
-from datariver.infrastructure.system_configuration_runtime import (
-    resolve_claim_activated_knowledge_configuration,
-)
 from datariver.workers.container import build_knowledge_source_container
 from datariver.workers.event_signal import EventSignalConsumer
 
@@ -32,12 +29,11 @@ async def run() -> None:
     container = build_knowledge_source_container(settings)
     worker_name = f"knowledge-source:{socket.gethostname()}"
 
-    async def resolve_runtime(claim: KnowledgeSourceJobClaim) -> KnowledgePipelineRuntime:
-        claim_settings = await resolve_claim_activated_knowledge_configuration(
-            settings,
-            claim=claim,
-        )
-        return build_knowledge_runtime_adapters(claim_settings)
+    async def resolve_runtime(_claim: KnowledgeSourceJobClaim) -> KnowledgePipelineRuntime:
+        # The worker compares this deployment-owned binding with the immutable
+        # claim pins before processing. Historical DB-profile pins therefore
+        # fail closed instead of reviving a retired configuration source.
+        return build_knowledge_runtime_adapters(settings)
 
     worker = KnowledgeSourceWorker(
         store=SqlKnowledgeSourceJobWorkerStore(

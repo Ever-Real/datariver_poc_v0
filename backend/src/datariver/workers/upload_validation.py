@@ -9,9 +9,6 @@ from datariver.application.services.upload_validation import UploadValidationWor
 from datariver.config import get_settings
 from datariver.infrastructure.db.outbox import SqlInboxStore
 from datariver.infrastructure.db.registration import SqlUploadValidationStore
-from datariver.infrastructure.system_configuration_runtime import (
-    resolve_activated_system_configuration,
-)
 from datariver.workers.container import build_upload_container
 from datariver.workers.event_signal import EventSignalConsumer
 
@@ -19,7 +16,7 @@ LOGGER = structlog.get_logger()
 
 
 async def run() -> None:
-    settings = await resolve_activated_system_configuration(get_settings(), database_role="upload")
+    settings = get_settings()
     container = build_upload_container(settings)
     worker = UploadValidationWorker(
         store=SqlUploadValidationStore(container.database.session_factory),

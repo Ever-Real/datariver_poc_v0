@@ -6,25 +6,42 @@ from datetime import datetime
 from uuid import UUID
 
 from datariver.application.classification_access import (
+    ClassificationAccessPosture,
     ClassificationAccessResolver,
     ClassificationAccessSnapshot,
     ClassificationRuleRecord,
+    InferenceRuntimeBinding,
+    InferenceStage,
+    ProviderProfileRecord,
     static_classification_access_floor,
 )
 from datariver.application.dto import (
+    CatalogAssetIndex,
+    ChatCompositionAudit,
     ChatDraft,
     ChatEvidence,
+    ChatEvidenceRanking,
     ChatExchange,
     ChatRetentionBinding,
+    ChatRouteDecision,
+    ChatWorkflowEvent,
 )
+from datariver.application.errors import ChatExternalAdapterInvocationError
 from datariver.application.evidence import build_evidence_chunk, evidence_chunk_is_valid
 from datariver.application.ports import (
     CatalogIndexReader,
     ChatAnswerComposer,
+    ChatEvidenceReranker,
     ChatPersistenceUnitOfWork,
+    ChatQuestionRouter,
+    ChatRequestBudgetGuard,
+    ChatSessionOwnershipReader,
+    ChatSubjectAccessReader,
+    ChatVectorCatalogReader,
     KnowledgeEvidenceReader,
 )
 from datariver.application.services.authorization import AuthorizationService
+from datariver.application.services.chat_routing import DeterministicChatQuestionRouter
 from datariver.domain.authz import (
     Action,
     Classification,
@@ -32,11 +49,25 @@ from datariver.domain.authz import (
     ResourceAttributes,
     SubjectAttributes,
 )
+from datariver.domain.chat import (
+    MAXIMUM_CHAT_VECTOR_CANDIDATES,
+    MAXIMUM_CHAT_VECTOR_TEXT_CHARACTERS,
+    ChatAdapterState,
+    ChatRetrievalMode,
+    ChatWorkflowStage,
+    ChatWorkflowStatus,
+)
 from datariver.domain.classification_access import ChatMode, SearchMode
-from datariver.domain.common import ConflictError, uuid7
+from datariver.domain.common import ConflictError, ForbiddenError, utc_now, uuid7
 from datariver.domain.retention import RetentionPolicyState
 
 UNVERIFIABLE_ANSWER = "검증 불가"
+_DETERMINISTIC_AUDIT = ChatCompositionAudit(
+    provider="datariver",
+    model="deterministic-evidence-v1",
+    prompt_template_version="catalog-evidence-v1",
+    external_service_used=False,
+)
 
 
 class DeterministicChatAnswerComposer:
@@ -49,7 +80,7 @@ class DeterministicChatAnswerComposer:
         del question
         if not evidence:
             return ChatDraft(answer=UNVERIFIABLE_ANSWER, cited_chunk_ids=())
-        lines = ["접근 권한이 확인된 카탈로그·지식그래프 근거는 다음과 같습니다."]
+        lines = ["접근 권한이 확인된 카탈로그 근거는 다음과 같습니다."]
         for index, item in enumerate(evidence, start=1):
             description = (item.description or "설명이 등록되지 않았습니다.").strip()
             lines.append(f"[{index}] {item.name}: {description[:500]}")
@@ -64,19 +95,55 @@ class ChatService:
         self,
         *,
         catalog_index: CatalogIndexReader,
-        knowledge_evidence: KnowledgeEvidenceReader | None = None,
         uow_factory: Callable[[], ChatPersistenceUnitOfWork],
         authorization: AuthorizationService,
+        session_ownership: ChatSessionOwnershipReader,
+        subject_access: ChatSubjectAccessReader,
         classification_access: ClassificationAccessResolver | None = None,
         composer: ChatAnswerComposer | None = None,
+        composition_audit: ChatCompositionAudit | None = None,
+        inference_runtime_bindings: tuple[InferenceRuntimeBinding, ...] = (),
+        question_router: ChatQuestionRouter | None = None,
+        vector_catalog: ChatVectorCatalogReader | None = None,
+        graph_evidence: KnowledgeEvidenceReader | None = None,
+        knowledge_evidence: KnowledgeEvidenceReader | None = None,
+        reranker: ChatEvidenceReranker | None = None,
+        budget_guard: ChatRequestBudgetGuard | None = None,
+        request_limit_per_minute: int = 30,
+        token_limit_per_minute: int = 1_000_000,
         allow_ephemeral_without_retention: bool = False,
     ) -> None:
+        if graph_evidence is not None and knowledge_evidence is not None:
+            raise ValueError("Only one governed graph evidence adapter may be supplied.")
         self._catalog_index = catalog_index
-        self._knowledge_evidence = knowledge_evidence
+        self._vector_catalog = vector_catalog
+        self._graph_evidence = graph_evidence or knowledge_evidence
+        self._reranker = reranker
+        self._budget_guard = budget_guard
+        self._request_limit_per_minute = request_limit_per_minute
+        self._token_limit_per_minute = token_limit_per_minute
         self._uow_factory = uow_factory
         self._authorization = authorization
+        self._session_ownership = session_ownership
+        self._subject_access = subject_access
         self._classification_access = classification_access
         self._composer = composer or DeterministicChatAnswerComposer()
+        self._composition_audit = composition_audit or _DETERMINISTIC_AUDIT
+        if len({binding.stage for binding in inference_runtime_bindings}) != len(
+            inference_runtime_bindings
+        ):
+            raise ValueError("Interactive inference stages require unique runtime bindings.")
+        self._inference_runtime_bindings = {
+            binding.stage: binding for binding in inference_runtime_bindings
+        }
+        composition_binding = self._inference_runtime_bindings.get(InferenceStage.COMPOSITION)
+        if self._composition_audit.provider_profile_version_id is not None and (
+            composition_binding is None
+            or composition_binding.provider_profile_version_id
+            != self._composition_audit.provider_profile_version_id
+        ):
+            raise ValueError("The Chat composer and deployment provider-profile bindings differ.")
+        self._question_router = question_router or DeterministicChatQuestionRouter()
         self._allow_ephemeral_without_retention = allow_ephemeral_without_retention
 
     async def query(
@@ -89,7 +156,18 @@ class ChatService:
         maximum_evidence: int,
         environment: EnvironmentAttributes,
         request_id: str,
+        requested_mode: ChatRetrievalMode = ChatRetrievalMode.AUTO,
     ) -> ChatExchange:
+        workflow: list[ChatWorkflowEvent] = []
+        owner_id = subject.subject_id
+        if session_id is not None:
+            current_owner_id = await self._session_ownership.get_session_owner(
+                workspace_id=workspace_id,
+                session_id=session_id,
+            )
+            if current_owner_id is None or current_owner_id != subject.subject_id:
+                raise ForbiddenError("The chat session is not available.")
+            owner_id = current_owner_id
         chat_decision = await self._authorization.authorize(
             subject=subject,
             resource=ResourceAttributes(
@@ -101,138 +179,348 @@ class ChatService:
                 domain_id=None,
                 classification=Classification.INTERNAL,
                 lifecycle="ACTIVE",
-                owner_subject_id=subject.subject_id,
+                owner_subject_id=owner_id,
             ),
             action=Action.CHAT_QUERY,
             environment=environment,
             request_id=request_id,
+        )
+        workflow.append(
+            self._event(
+                ChatWorkflowStage.AUTHORIZATION,
+                ChatWorkflowStatus.COMPLETED,
+                "CHAT_QUERY_AUTHORIZED",
+            )
         )
         access = await self._resolve_classification_access(
             subject=subject,
             now=environment.requested_at,
         )
         chat_access = self._chat_retrieval_access(access, subject=subject)
+        route = self._question_router.route(
+            question=question,
+            requested_mode=requested_mode,
+            vector_available=self._vector_catalog is not None,
+            graph_available=self._graph_evidence is not None,
+        )
+        if self._budget_guard is not None:
+            await self._budget_guard.reserve(
+                workspace_id=workspace_id,
+                subject_id=subject.subject_id,
+                policy_scope=self._budget_policy_scope(access),
+                estimated_tokens=self._estimated_token_envelope(
+                    question,
+                    maximum_evidence=maximum_evidence,
+                    retrieval_mode=(
+                        route.selected_mode
+                        if route.adapter_state is ChatAdapterState.READY
+                        else ChatRetrievalMode.GENERAL
+                    ),
+                    reranker_enabled=self._reranker is not None,
+                ),
+                request_limit=self._request_limit_per_minute,
+                token_limit=self._token_limit_per_minute,
+                window_seconds=60,
+            )
+        workflow.append(
+            self._event(
+                ChatWorkflowStage.BUDGET_RESERVATION,
+                ChatWorkflowStatus.COMPLETED,
+                (
+                    "CHAT_RATE_AND_TOKEN_BUDGET_RESERVED"
+                    if self._budget_guard is not None
+                    else "CHAT_BUDGET_GUARD_NOT_CONFIGURED"
+                ),
+            )
+        )
+        required_external_stages = (
+            self._required_external_stages(route)
+            if route.adapter_state is ChatAdapterState.READY
+            else ()
+        )
+        external_path_required = bool(required_external_stages)
+        route_unavailable_detail = f"{route.selected_mode.value}_ADAPTER_UNAVAILABLE"
         allowed_chat_classifications = {
             rule.classification for rule in chat_access.rules if rule.search_mode is SearchMode.ABAC
         }
-        page = await self._catalog_index.search(
-            subject=replace(
-                subject,
-                clearance=self._chat_ceiling(
-                    allowed_chat_classifications,
-                    subject=subject,
-                ),
-            ),
-            access=chat_access,
-            query=self._search_term(question),
-            filters={},
-            cursor=None,
-            limit=maximum_evidence,
-        )
-        catalog_items = tuple(
-            item for item in page.items if item.classification in allowed_chat_classifications
-        )
-        catalog_resources = tuple(
-            ResourceAttributes(
-                resource_id=asset.asset_id,
-                workspace_id=asset.workspace_id,
-                resource_type="catalog_asset",
-                owner_department_id=asset.owner_department_id,
-                system_id=asset.system_id,
-                domain_id=asset.domain_id,
-                classification=asset.classification,
-                lifecycle=asset.lifecycle,
+        if external_path_required:
+            provider_bound = self._provider_bound_classifications(
+                chat_access,
+                required_stages=required_external_stages,
             )
-            for asset in catalog_items
-        )
-        authorized_catalog_ids = {
-            resource.resource_id
-            for resource in await self._authorization.filter_authorized(
+            if not provider_bound:
+                route = replace(route, adapter_state=ChatAdapterState.UNAVAILABLE)
+                route_unavailable_detail = "INFERENCE_PROVIDER_POLICY_BINDING_UNAVAILABLE"
+                allowed_chat_classifications = set()
+            else:
+                allowed_chat_classifications.intersection_update(provider_bound)
+        retrieval_subject = replace(
+            subject,
+            clearance=self._chat_ceiling(
+                allowed_chat_classifications,
                 subject=subject,
-                resources=catalog_resources,
-                action=Action.CATALOG_READ,
-                environment=environment,
-                request_id=request_id,
-                parent_resource_id=session_id or workspace_id,
-            )
-        }
-        evidence: list[ChatEvidence] = []
-        for asset in catalog_items:
-            if asset.asset_id not in authorized_catalog_ids:
-                continue
-            evidence.append(
-                build_evidence_chunk(
-                    workspace_id=asset.workspace_id,
-                    resource_id=asset.asset_id,
-                    classification=asset.classification,
-                    system_id=asset.system_id,
-                    domain_id=asset.domain_id,
-                    owner_department_id=asset.owner_department_id,
-                    name=asset.name,
-                    description=asset.description,
-                    source_locator=asset.external_urn,
-                    source_version=asset.source_version,
-                    effective_from=asset.observed_at,
-                    extraction_method="CATALOG_PROJECTION_V1",
+            ),
+        )
+        retrieval_access = self._retrieval_access_for_allowed(
+            chat_access,
+            allowed_chat_classifications,
+        )
+        request_composition_audit = self._audit_for_access(
+            access,
+            external_stages=(),
+        )
+        external_stages: list[str] = []
+        if route.adapter_state is ChatAdapterState.UNAVAILABLE:
+            workflow.extend(
+                (
+                    self._event(
+                        ChatWorkflowStage.ROUTING,
+                        ChatWorkflowStatus.UNAVAILABLE,
+                        route_unavailable_detail,
+                    ),
+                    self._event(
+                        ChatWorkflowStage.RETRIEVAL,
+                        ChatWorkflowStatus.UNAVAILABLE,
+                        "RETRIEVAL_NOT_EXECUTED",
+                    ),
+                    self._event(
+                        ChatWorkflowStage.RERANKING,
+                        ChatWorkflowStatus.SKIPPED,
+                        "NO_RETRIEVED_EVIDENCE",
+                    ),
+                    self._event(
+                        ChatWorkflowStage.COMPOSITION,
+                        ChatWorkflowStatus.REFUSED,
+                        "UNAVAILABLE_ROUTE_REFUSED",
+                    ),
+                    self._event(
+                        ChatWorkflowStage.CITATION_VALIDATION,
+                        ChatWorkflowStatus.SKIPPED,
+                        "NO_DRAFT",
+                    ),
                 )
             )
-        if self._knowledge_evidence is not None and len(evidence) < maximum_evidence:
-            candidates = await self._knowledge_evidence.search_active_nodes(
-                workspace_id=workspace_id,
-                query=self._search_term(question),
-                maximum_classification=int(
-                    self._chat_ceiling(allowed_chat_classifications, subject=subject)
-                ),
-                limit=maximum_evidence - len(evidence),
+            answer = UNVERIFIABLE_ANSWER
+            cited_evidence: tuple[ChatEvidence, ...] = ()
+            rankings: tuple[ChatEvidenceRanking, ...] = ()
+        else:
+            workflow.append(
+                self._event(
+                    ChatWorkflowStage.ROUTING,
+                    ChatWorkflowStatus.COMPLETED,
+                    f"{route.selected_mode.value}_ROUTE_SELECTED",
+                )
             )
-            candidates = tuple(
-                candidate
-                for candidate in candidates
-                if candidate.classification in allowed_chat_classifications
-            )
-            knowledge_resources = tuple(
-                ResourceAttributes(
-                    resource_id=candidate.evidence.resource_id,
+            try:
+                evidence, retrieval_stages = await self._retrieve(
+                    route=route,
                     workspace_id=workspace_id,
-                    resource_type="knowledge_node",
-                    owner_department_id=None,
-                    system_id=None,
-                    domain_id=None,
-                    classification=candidate.classification,
-                    lifecycle="PUBLISHED",
-                )
-                for candidate in candidates
-            )
-            authorized_knowledge_ids = {
-                resource.resource_id
-                for resource in await self._authorization.filter_authorized(
                     subject=subject,
-                    resources=knowledge_resources,
-                    action=Action.KG_READ,
+                    retrieval_subject=retrieval_subject,
+                    access=retrieval_access,
+                    allowed_classifications=allowed_chat_classifications,
+                    question=question,
+                    maximum_evidence=maximum_evidence,
                     environment=environment,
                     request_id=request_id,
                     parent_resource_id=session_id or workspace_id,
                 )
-            }
-            for candidate in candidates:
-                if candidate.evidence.resource_id not in authorized_knowledge_ids:
-                    continue
-                if (
-                    candidate.evidence.workspace_id != workspace_id
-                    or candidate.evidence.classification != candidate.classification
-                ):
-                    continue
-                evidence.append(candidate.evidence)
-                if len(evidence) >= maximum_evidence:
-                    break
-        try:
-            draft = await self._composer.compose(question=question, evidence=tuple(evidence))
-        except Exception:
-            draft = ChatDraft(answer=UNVERIFIABLE_ANSWER, cited_chunk_ids=())
-        answer, cited_evidence = self._validate_draft(
-            draft=draft,
-            authorized_evidence=evidence,
-            workspace_id=workspace_id,
+                external_stages.extend(retrieval_stages)
+            except ChatExternalAdapterInvocationError as error:
+                external_stages.append(error.stage)
+                route = replace(route, adapter_state=ChatAdapterState.FAILED)
+                workflow.extend(
+                    (
+                        self._event(
+                            ChatWorkflowStage.RETRIEVAL,
+                            ChatWorkflowStatus.FAILED,
+                            f"{route.selected_mode.value}_RETRIEVAL_FAILED",
+                        ),
+                        self._event(
+                            ChatWorkflowStage.RERANKING,
+                            ChatWorkflowStatus.SKIPPED,
+                            "RETRIEVAL_FAILED",
+                        ),
+                        self._event(
+                            ChatWorkflowStage.COMPOSITION,
+                            ChatWorkflowStatus.REFUSED,
+                            "RETRIEVAL_FAILURE_REFUSED",
+                        ),
+                        self._event(
+                            ChatWorkflowStage.CITATION_VALIDATION,
+                            ChatWorkflowStatus.SKIPPED,
+                            "NO_DRAFT",
+                        ),
+                    )
+                )
+                evidence = ()
+                answer = UNVERIFIABLE_ANSWER
+                cited_evidence = ()
+                rankings = ()
+            except Exception:
+                route = replace(route, adapter_state=ChatAdapterState.FAILED)
+                workflow.extend(
+                    (
+                        self._event(
+                            ChatWorkflowStage.RETRIEVAL,
+                            ChatWorkflowStatus.FAILED,
+                            f"{route.selected_mode.value}_RETRIEVAL_FAILED",
+                        ),
+                        self._event(
+                            ChatWorkflowStage.RERANKING,
+                            ChatWorkflowStatus.SKIPPED,
+                            "RETRIEVAL_FAILED",
+                        ),
+                        self._event(
+                            ChatWorkflowStage.COMPOSITION,
+                            ChatWorkflowStatus.REFUSED,
+                            "RETRIEVAL_FAILURE_REFUSED",
+                        ),
+                        self._event(
+                            ChatWorkflowStage.CITATION_VALIDATION,
+                            ChatWorkflowStatus.SKIPPED,
+                            "NO_DRAFT",
+                        ),
+                    )
+                )
+                evidence = ()
+                answer = UNVERIFIABLE_ANSWER
+                cited_evidence = ()
+                rankings = ()
+            else:
+                workflow.append(
+                    self._event(
+                        ChatWorkflowStage.RETRIEVAL,
+                        ChatWorkflowStatus.COMPLETED,
+                        f"{route.selected_mode.value}_RETRIEVAL_COMPLETED",
+                    )
+                )
+                (
+                    ranked_evidence,
+                    rankings,
+                    rerank_failed,
+                    reranker_invoked,
+                ) = await self._rank(
+                    question=question,
+                    evidence=evidence,
+                    route=route,
+                    workflow=workflow,
+                )
+                if reranker_invoked:
+                    external_stages.append("reranker")
+                if rerank_failed:
+                    route = replace(route, adapter_state=ChatAdapterState.FAILED)
+                    answer = UNVERIFIABLE_ANSWER
+                    cited_evidence = ()
+                    rankings = ()
+                    workflow.extend(
+                        (
+                            self._event(
+                                ChatWorkflowStage.COMPOSITION,
+                                ChatWorkflowStatus.REFUSED,
+                                "RERANKER_FAILURE_REFUSED",
+                            ),
+                            self._event(
+                                ChatWorkflowStage.CITATION_VALIDATION,
+                                ChatWorkflowStatus.SKIPPED,
+                                "NO_DRAFT",
+                            ),
+                        )
+                    )
+                elif not ranked_evidence:
+                    answer = UNVERIFIABLE_ANSWER
+                    cited_evidence = ()
+                    rankings = ()
+                    workflow.extend(
+                        (
+                            self._event(
+                                ChatWorkflowStage.COMPOSITION,
+                                ChatWorkflowStatus.REFUSED,
+                                "NO_AUTHORIZED_EVIDENCE",
+                            ),
+                            self._event(
+                                ChatWorkflowStage.CITATION_VALIDATION,
+                                ChatWorkflowStatus.SKIPPED,
+                                "NO_DRAFT",
+                            ),
+                        )
+                    )
+                else:
+                    try:
+                        if self._composition_audit.external_service_used:
+                            external_stages.append("composition")
+                        draft = await self._composer.compose(
+                            question=question,
+                            evidence=ranked_evidence,
+                        )
+                    except Exception:
+                        route = replace(route, adapter_state=ChatAdapterState.FAILED)
+                        answer = UNVERIFIABLE_ANSWER
+                        cited_evidence = ()
+                        rankings = ()
+                        workflow.extend(
+                            (
+                                self._event(
+                                    ChatWorkflowStage.COMPOSITION,
+                                    ChatWorkflowStatus.FAILED,
+                                    "COMPOSER_FAILED",
+                                ),
+                                self._event(
+                                    ChatWorkflowStage.CITATION_VALIDATION,
+                                    ChatWorkflowStatus.SKIPPED,
+                                    "NO_DRAFT",
+                                ),
+                            )
+                        )
+                    else:
+                        workflow.append(
+                            self._event(
+                                ChatWorkflowStage.COMPOSITION,
+                                ChatWorkflowStatus.COMPLETED,
+                                "GROUNDED_DRAFT_COMPOSED",
+                            )
+                        )
+                        answer, cited_evidence = self._validate_draft(
+                            draft=draft,
+                            authorized_evidence=ranked_evidence,
+                            workspace_id=workspace_id,
+                        )
+                        if cited_evidence:
+                            answer, cited_evidence = await self._final_reauthorize_citations(
+                                answer=answer,
+                                evidence=cited_evidence,
+                                initial_access=access,
+                                required_external_stages=required_external_stages,
+                                workspace_id=workspace_id,
+                                subject=subject,
+                                environment=environment,
+                                request_id=request_id,
+                                parent_resource_id=session_id or workspace_id,
+                            )
+                        if cited_evidence:
+                            workflow.append(
+                                self._event(
+                                    ChatWorkflowStage.CITATION_VALIDATION,
+                                    ChatWorkflowStatus.COMPLETED,
+                                    "CITATIONS_VALIDATED",
+                                )
+                            )
+                            ranking_by_id = {item.chunk_id: item for item in rankings}
+                            rankings = tuple(
+                                ranking_by_id[item.chunk_id] for item in cited_evidence
+                            )
+                        else:
+                            rankings = ()
+                            workflow.append(
+                                self._event(
+                                    ChatWorkflowStage.CITATION_VALIDATION,
+                                    ChatWorkflowStatus.REFUSED,
+                                    "INVALID_REVOKED_OR_MISSING_CITATIONS",
+                                )
+                            )
+        request_composition_audit = self._audit_for_access(
+            access,
+            external_stages=tuple(dict.fromkeys(external_stages)),
         )
         async with self._uow_factory() as uow:
             await uow.set_security_context(
@@ -243,10 +531,14 @@ class ChatService:
             policy = await uow.retention_policies.get_active_for_update(workspace_id=workspace_id)
             if policy is None or policy.state is not RetentionPolicyState.ACTIVE:
                 if self._allow_ephemeral_without_retention:
-                    # This path deliberately returns before the unit of work
-                    # commits. It preserves ABAC/evidence validation but does
-                    # not create a Chat session, message, citation, or policy
-                    # binding when the development workspace has no policy.
+                    ephemeral_workflow = (
+                        *workflow,
+                        self._event(
+                            ChatWorkflowStage.PERSISTENCE,
+                            ChatWorkflowStatus.SKIPPED,
+                            "EPHEMERAL_NO_STORE",
+                        ),
+                    )
                     return ChatExchange(
                         session_id=session_id or uuid7(),
                         request_message_id=uuid7(),
@@ -254,6 +546,9 @@ class ChatService:
                         answer=answer,
                         evidence=cited_evidence,
                         persistence="EPHEMERAL_NO_STORE",
+                        route=route,
+                        workflow=ephemeral_workflow,
+                        evidence_ranking=rankings,
                     )
                 raise ConflictError(
                     "An active retention policy is required to persist Chat content."
@@ -264,18 +559,294 @@ class ChatService:
                 binding_basis_at=await uow.transaction_time(),
                 chat_content_days=policy.rules.chat_content_days,
             )
+            persisted_workflow = (
+                *workflow,
+                self._event(
+                    ChatWorkflowStage.PERSISTENCE,
+                    ChatWorkflowStatus.COMPLETED,
+                    "RETENTION_BOUND_EXCHANGE_PERSISTED",
+                ),
+            )
             exchange = await uow.chats.save_exchange(
                 workspace_id=workspace_id,
-                owner_id=subject.subject_id,
+                owner_id=owner_id,
                 session_id=session_id,
                 question=question,
                 answer=answer,
                 evidence=cited_evidence,
                 policy_decision_id=chat_decision.decision_id,
                 retention=binding,
+                route=route,
+                workflow=persisted_workflow,
+                evidence_ranking=rankings,
+                composition_audit=request_composition_audit,
             )
             await uow.commit()
             return exchange
+
+    async def _retrieve(
+        self,
+        *,
+        route: ChatRouteDecision,
+        workspace_id: UUID,
+        subject: SubjectAttributes,
+        retrieval_subject: SubjectAttributes,
+        access: ClassificationAccessSnapshot,
+        allowed_classifications: set[Classification],
+        question: str,
+        maximum_evidence: int,
+        environment: EnvironmentAttributes,
+        request_id: str,
+        parent_resource_id: UUID,
+    ) -> tuple[tuple[ChatEvidence, ...], tuple[str, ...]]:
+        if route.selected_mode is ChatRetrievalMode.GRAPH:
+            return (
+                await self._retrieve_graph(
+                    workspace_id=workspace_id,
+                    subject=subject,
+                    allowed_classifications=allowed_classifications,
+                    question=question,
+                    maximum_evidence=maximum_evidence,
+                    environment=environment,
+                    request_id=request_id,
+                    parent_resource_id=parent_resource_id,
+                ),
+                (),
+            )
+        retrieval_stages: tuple[str, ...] = ()
+        if route.selected_mode is ChatRetrievalMode.VECTOR:
+            assert self._vector_catalog is not None
+            vector_result = await self._vector_catalog.search(
+                subject=retrieval_subject,
+                access=access,
+                question=question,
+                limit=maximum_evidence,
+            )
+            catalog_items = vector_result.items
+            if vector_result.provider_invoked:
+                retrieval_stages = ("embedding",)
+        else:
+            page = await self._catalog_index.search(
+                subject=retrieval_subject,
+                access=access,
+                query=self._search_term(question),
+                filters={},
+                cursor=None,
+                limit=maximum_evidence,
+            )
+            catalog_items = page.items
+        return (
+            await self._authorize_catalog_items(
+                subject=subject,
+                catalog_items=catalog_items,
+                allowed_classifications=allowed_classifications,
+                environment=environment,
+                request_id=request_id,
+                parent_resource_id=parent_resource_id,
+            ),
+            retrieval_stages,
+        )
+
+    async def _authorize_catalog_items(
+        self,
+        *,
+        subject: SubjectAttributes,
+        catalog_items: Sequence[CatalogAssetIndex],
+        allowed_classifications: set[Classification],
+        environment: EnvironmentAttributes,
+        request_id: str,
+        parent_resource_id: UUID,
+    ) -> tuple[ChatEvidence, ...]:
+        eligible_items = tuple(
+            item for item in catalog_items if item.classification in allowed_classifications
+        )
+        resources = tuple(
+            ResourceAttributes(
+                resource_id=asset.asset_id,
+                workspace_id=asset.workspace_id,
+                resource_type="catalog_asset",
+                owner_department_id=asset.owner_department_id,
+                system_id=asset.system_id,
+                domain_id=asset.domain_id,
+                classification=asset.classification,
+                lifecycle=asset.lifecycle,
+            )
+            for asset in eligible_items
+        )
+        authorized_ids = {
+            resource.resource_id
+            for resource in await self._authorization.filter_authorized(
+                subject=subject,
+                resources=resources,
+                action=Action.CATALOG_READ,
+                environment=environment,
+                request_id=request_id,
+                parent_resource_id=parent_resource_id,
+            )
+        }
+        return tuple(
+            build_evidence_chunk(
+                workspace_id=asset.workspace_id,
+                resource_id=asset.asset_id,
+                classification=asset.classification,
+                system_id=asset.system_id,
+                domain_id=asset.domain_id,
+                owner_department_id=asset.owner_department_id,
+                name=asset.name,
+                description=asset.description,
+                source_locator=asset.external_urn,
+                source_version=asset.source_version,
+                effective_from=asset.observed_at,
+                extraction_method="CATALOG_PROJECTION_V1",
+            )
+            for asset in eligible_items
+            if asset.asset_id in authorized_ids
+        )
+
+    async def _retrieve_graph(
+        self,
+        *,
+        workspace_id: UUID,
+        subject: SubjectAttributes,
+        allowed_classifications: set[Classification],
+        question: str,
+        maximum_evidence: int,
+        environment: EnvironmentAttributes,
+        request_id: str,
+        parent_resource_id: UUID,
+    ) -> tuple[ChatEvidence, ...]:
+        assert self._graph_evidence is not None
+        candidates = await self._graph_evidence.search_active_nodes(
+            workspace_id=workspace_id,
+            query=self._search_term(question),
+            maximum_classification=int(
+                self._chat_ceiling(allowed_classifications, subject=subject)
+            ),
+            limit=maximum_evidence,
+        )
+        eligible = tuple(
+            candidate
+            for candidate in candidates
+            if candidate.classification in allowed_classifications
+            and candidate.evidence.workspace_id == workspace_id
+            and candidate.evidence.classification == candidate.classification
+        )
+        resources = tuple(
+            ResourceAttributes(
+                resource_id=candidate.evidence.resource_id,
+                workspace_id=workspace_id,
+                resource_type="knowledge_node",
+                owner_department_id=candidate.evidence.owner_department_id,
+                system_id=candidate.evidence.system_id,
+                domain_id=candidate.evidence.domain_id,
+                classification=candidate.classification,
+                lifecycle="PUBLISHED",
+            )
+            for candidate in eligible
+        )
+        authorized_ids = {
+            resource.resource_id
+            for resource in await self._authorization.filter_authorized(
+                subject=subject,
+                resources=resources,
+                action=Action.KG_READ,
+                environment=environment,
+                request_id=request_id,
+                parent_resource_id=parent_resource_id,
+            )
+        }
+        return tuple(
+            candidate.evidence
+            for candidate in eligible
+            if candidate.evidence.resource_id in authorized_ids
+        )
+
+    async def _rank(
+        self,
+        *,
+        question: str,
+        evidence: Sequence[ChatEvidence],
+        route: ChatRouteDecision,
+        workflow: list[ChatWorkflowEvent],
+    ) -> tuple[
+        tuple[ChatEvidence, ...],
+        tuple[ChatEvidenceRanking, ...],
+        bool,
+        bool,
+    ]:
+        if not evidence:
+            workflow.append(
+                self._event(
+                    ChatWorkflowStage.RERANKING,
+                    ChatWorkflowStatus.SKIPPED,
+                    "NO_RETRIEVED_EVIDENCE",
+                )
+            )
+            return (), (), False, False
+        if self._reranker is None:
+            workflow.append(
+                self._event(
+                    ChatWorkflowStage.RERANKING,
+                    ChatWorkflowStatus.SKIPPED,
+                    "RERANKER_NOT_CONFIGURED",
+                )
+            )
+            method = f"{route.selected_mode.value}_RETRIEVAL_V1"
+            return (
+                tuple(evidence),
+                tuple(
+                    ChatEvidenceRanking(
+                        chunk_id=item.chunk_id,
+                        rank=index,
+                        retrieval_method=method,
+                    )
+                    for index, item in enumerate(evidence, start=1)
+                ),
+                False,
+                False,
+            )
+        try:
+            ordered_ids = await self._reranker.rerank(
+                question=question,
+                evidence=evidence,
+            )
+            by_id = {item.chunk_id: item for item in evidence}
+            if (
+                not ordered_ids
+                or len(ordered_ids) != len(set(ordered_ids))
+                or any(chunk_id not in by_id for chunk_id in ordered_ids)
+            ):
+                raise ValueError("The reranker returned an invalid evidence selection.")
+        except Exception:
+            workflow.append(
+                self._event(
+                    ChatWorkflowStage.RERANKING,
+                    ChatWorkflowStatus.FAILED,
+                    "RERANKER_FAILED",
+                )
+            )
+            return (), (), True, True
+        ranked = tuple(by_id[chunk_id] for chunk_id in ordered_ids)
+        workflow.append(
+            self._event(
+                ChatWorkflowStage.RERANKING,
+                ChatWorkflowStatus.COMPLETED,
+                "EVIDENCE_RERANKED",
+            )
+        )
+        return (
+            ranked,
+            tuple(
+                ChatEvidenceRanking(
+                    chunk_id=item.chunk_id,
+                    rank=index,
+                    retrieval_method="LOCAL_RERANKER_V1",
+                )
+                for index, item in enumerate(ranked, start=1)
+            ),
+            False,
+            True,
+        )
 
     async def _resolve_classification_access(
         self,
@@ -289,6 +860,115 @@ class ChatService:
             workspace_id=subject.workspace_id,
             subject_id=subject.subject_id,
             now=now,
+        )
+
+    def _provider_bound_classifications(
+        self,
+        access: ClassificationAccessSnapshot,
+        *,
+        required_stages: tuple[InferenceStage, ...],
+    ) -> set[Classification]:
+        if access.posture is not ClassificationAccessPosture.GOVERNED or not required_stages:
+            return set()
+        profiles = {
+            profile.provider_profile_version_id: profile for profile in access.provider_profiles
+        }
+        return {
+            rule.classification
+            for rule in access.rules
+            if rule.search_mode is SearchMode.ABAC
+            and rule.chat_mode is not ChatMode.DENY
+            and all(
+                self._stage_binding_matches(
+                    rule=rule,
+                    stage=stage,
+                    profiles=profiles,
+                )
+                for stage in required_stages
+            )
+        }
+
+    def _stage_binding_matches(
+        self,
+        *,
+        rule: ClassificationRuleRecord,
+        stage: InferenceStage,
+        profiles: dict[UUID, ProviderProfileRecord],
+    ) -> bool:
+        binding = self._inference_runtime_bindings.get(stage)
+        profile_id = self._rule_profile_id(rule, stage=stage)
+        if binding is None or binding.provider_profile_version_id is None:
+            return False
+        if profile_id != binding.provider_profile_version_id:
+            return False
+        profile = profiles.get(profile_id)
+        return (
+            profile is not None
+            and profile.server_route_key == binding.server_route_key
+            and profile.provider_identity == binding.provider_identity
+            and profile.model_identity == binding.model_identity
+            and profile.deployment_identity == binding.deployment_identity
+        )
+
+    @staticmethod
+    def _rule_profile_id(
+        rule: ClassificationRuleRecord,
+        *,
+        stage: InferenceStage,
+    ) -> UUID | None:
+        if stage is InferenceStage.COMPOSITION:
+            return rule.provider_profile_version_id
+        if stage is InferenceStage.EMBEDDING:
+            return rule.embedding_provider_profile_version_id
+        return rule.reranker_provider_profile_version_id
+
+    def _required_external_stages(
+        self,
+        route: ChatRouteDecision,
+    ) -> tuple[InferenceStage, ...]:
+        stages: list[InferenceStage] = []
+        if route.selected_mode is ChatRetrievalMode.VECTOR and self._vector_catalog is not None:
+            stages.append(InferenceStage.EMBEDDING)
+        if self._reranker is not None:
+            stages.append(InferenceStage.RERANKER)
+        if self._composition_audit.external_service_used:
+            stages.append(InferenceStage.COMPOSITION)
+        return tuple(stages)
+
+    def _audit_for_access(
+        self,
+        access: ClassificationAccessSnapshot,
+        *,
+        external_stages: tuple[str, ...],
+    ) -> ChatCompositionAudit:
+        base = self._composition_audit
+        external_service_used = bool(external_stages)
+        stage_profile_ids = tuple(
+            (
+                stage,
+                binding.provider_profile_version_id,
+            )
+            for stage in external_stages
+            if (
+                (binding := self._inference_runtime_bindings.get(InferenceStage(stage))) is not None
+                and binding.provider_profile_version_id is not None
+            )
+        )
+        composition_binding = self._inference_runtime_bindings.get(InferenceStage.COMPOSITION)
+        return replace(
+            base,
+            external_service_used=external_service_used,
+            provider_profile_version_id=(
+                composition_binding.provider_profile_version_id
+                if external_service_used and composition_binding is not None
+                else None
+            ),
+            classification_policy_id=access.policy_id,
+            classification_policy_hash=access.policy_hash,
+            classification_policy_version=access.policy_version,
+            authorization_generation=access.authorization_generation,
+            external_stages=external_stages,
+            external_stage_provider_profile_version_ids=stage_profile_ids,
         )
 
     @staticmethod
@@ -309,6 +989,8 @@ class ChatService:
                 ),
                 chat_mode=rule.chat_mode,
                 provider_profile_version_id=rule.provider_profile_version_id,
+                embedding_provider_profile_version_id=(rule.embedding_provider_profile_version_id),
+                reranker_provider_profile_version_id=(rule.reranker_provider_profile_version_id),
             )
             for rule in access.rules
         )
@@ -318,6 +1000,24 @@ class ChatService:
             restricted_resource_ids=frozenset(),
             restricted_system_ids=frozenset(),
             restricted_domain_ids=frozenset(),
+        )
+
+    @staticmethod
+    def _retrieval_access_for_allowed(
+        access: ClassificationAccessSnapshot,
+        allowed: set[Classification],
+    ) -> ClassificationAccessSnapshot:
+        return replace(
+            access,
+            rules=tuple(
+                replace(
+                    rule,
+                    search_mode=(
+                        rule.search_mode if rule.classification in allowed else SearchMode.DENY
+                    ),
+                )
+                for rule in access.rules
+            ),
         )
 
     @staticmethod
@@ -366,3 +1066,255 @@ class ChatService:
         ):
             return UNVERIFIABLE_ANSWER, ()
         return draft.answer.strip(), cited
+
+    async def _final_reauthorize_citations(
+        self,
+        *,
+        answer: str,
+        evidence: Sequence[ChatEvidence],
+        initial_access: ClassificationAccessSnapshot,
+        required_external_stages: tuple[InferenceStage, ...],
+        workspace_id: UUID,
+        subject: SubjectAttributes,
+        environment: EnvironmentAttributes,
+        request_id: str,
+        parent_resource_id: UUID,
+    ) -> tuple[str, tuple[ChatEvidence, ...]]:
+        try:
+            validation_time = utc_now()
+            refreshed_subject = await self._subject_access.refresh_subject(
+                subject=subject,
+                now=validation_time,
+            )
+            if not refreshed_subject.active or self._subject_security_identity(
+                refreshed_subject
+            ) != self._subject_security_identity(subject):
+                return UNVERIFIABLE_ANSWER, ()
+            current_access = await self._resolve_classification_access(
+                subject=refreshed_subject,
+                now=validation_time,
+            )
+            if self._access_security_identity(current_access) != self._access_security_identity(
+                initial_access
+            ):
+                return UNVERIFIABLE_ANSWER, ()
+            current_chat_access = self._chat_retrieval_access(
+                current_access,
+                subject=refreshed_subject,
+            )
+            allowed = {
+                rule.classification
+                for rule in current_chat_access.rules
+                if rule.search_mode is SearchMode.ABAC
+            }
+            if required_external_stages:
+                provider_bound = self._provider_bound_classifications(
+                    current_chat_access,
+                    required_stages=required_external_stages,
+                )
+                if not provider_bound:
+                    return UNVERIFIABLE_ANSWER, ()
+                allowed.intersection_update(provider_bound)
+            current_retrieval_access = self._retrieval_access_for_allowed(
+                current_chat_access,
+                allowed,
+            )
+            if any(
+                item.workspace_id != workspace_id or item.classification not in allowed
+                for item in evidence
+            ):
+                return UNVERIFIABLE_ANSWER, ()
+
+            final_environment = replace(
+                environment,
+                requested_at=validation_time,
+            )
+            resource_groups: dict[Action, list[ResourceAttributes]] = {
+                Action.CATALOG_READ: [],
+                Action.KG_READ: [],
+            }
+            catalog_evidence = tuple(
+                item for item in evidence if item.source_type == "CATALOG_ASSET"
+            )
+            knowledge_evidence = tuple(
+                item for item in evidence if item.source_type == "KNOWLEDGE_NODE"
+            )
+            if len(catalog_evidence) + len(knowledge_evidence) != len(evidence):
+                return UNVERIFIABLE_ANSWER, ()
+
+            for item in catalog_evidence:
+                detail = await self._catalog_index.get_authorized_asset(
+                    subject=refreshed_subject,
+                    access=current_retrieval_access,
+                    asset_id=item.resource_id,
+                )
+                if detail is None:
+                    return UNVERIFIABLE_ANSWER, ()
+                index = detail.index
+                canonical = build_evidence_chunk(
+                    workspace_id=index.workspace_id,
+                    resource_id=index.asset_id,
+                    classification=index.classification,
+                    system_id=index.system_id,
+                    domain_id=index.domain_id,
+                    owner_department_id=index.owner_department_id,
+                    name=index.name,
+                    description=index.description,
+                    source_locator=index.external_urn,
+                    source_version=index.source_version,
+                    effective_from=index.observed_at,
+                    extraction_method="CATALOG_PROJECTION_V1",
+                )
+                if canonical != item or index.lifecycle != "ACTIVE":
+                    return UNVERIFIABLE_ANSWER, ()
+                resource_groups[Action.CATALOG_READ].append(
+                    ResourceAttributes(
+                        resource_id=index.asset_id,
+                        workspace_id=index.workspace_id,
+                        resource_type="catalog_asset",
+                        owner_department_id=index.owner_department_id,
+                        system_id=index.system_id,
+                        domain_id=index.domain_id,
+                        classification=index.classification,
+                        lifecycle=index.lifecycle,
+                    )
+                )
+
+            if knowledge_evidence:
+                if self._graph_evidence is None:
+                    return UNVERIFIABLE_ANSWER, ()
+                current_candidates = await self._graph_evidence.get_active_nodes_by_resource_ids(
+                    workspace_id=workspace_id,
+                    resource_ids=tuple(item.resource_id for item in knowledge_evidence),
+                )
+                candidates_by_id: dict[UUID, list[ChatEvidence]] = {}
+                for candidate in current_candidates:
+                    candidates_by_id.setdefault(
+                        candidate.evidence.resource_id,
+                        [],
+                    ).append(candidate.evidence)
+                for item in knowledge_evidence:
+                    candidates = candidates_by_id.get(item.resource_id, [])
+                    if len(candidates) != 1 or candidates[0] != item:
+                        return UNVERIFIABLE_ANSWER, ()
+                    resource_groups[Action.KG_READ].append(
+                        ResourceAttributes(
+                            resource_id=item.resource_id,
+                            workspace_id=item.workspace_id,
+                            resource_type="knowledge_node",
+                            owner_department_id=item.owner_department_id,
+                            system_id=item.system_id,
+                            domain_id=item.domain_id,
+                            classification=item.classification,
+                            lifecycle="PUBLISHED",
+                        )
+                    )
+            final_authorized_ids: set[UUID] = set()
+            for action, resources in resource_groups.items():
+                if not resources:
+                    continue
+                authorized = await self._authorization.filter_authorized(
+                    subject=refreshed_subject,
+                    resources=tuple(resources),
+                    action=action,
+                    environment=final_environment,
+                    request_id=f"{request_id}:citation-final",
+                    parent_resource_id=parent_resource_id,
+                )
+                final_authorized_ids.update(resource.resource_id for resource in authorized)
+            if final_authorized_ids != {item.resource_id for item in evidence}:
+                return UNVERIFIABLE_ANSWER, ()
+        except Exception:
+            return UNVERIFIABLE_ANSWER, ()
+        return answer, tuple(evidence)
+
+    @staticmethod
+    def _subject_security_identity(subject: SubjectAttributes) -> tuple[object, ...]:
+        return (
+            subject.subject_id,
+            subject.workspace_id,
+            subject.active,
+            subject.department_id,
+            subject.groups,
+            subject.job_function,
+            subject.clearance,
+            subject.allowed_system_ids,
+            subject.allowed_domain_ids,
+            subject.allowed_actions,
+            subject.denied_actions,
+            subject.authentication_time,
+            subject.authentication_assurance,
+        )
+
+    @staticmethod
+    def _access_security_identity(
+        access: ClassificationAccessSnapshot,
+    ) -> tuple[object, ...]:
+        return (
+            access.posture,
+            access.policy_id,
+            access.policy_hash,
+            access.policy_version,
+            access.required_jurisdiction,
+            access.authorization_generation,
+            access.rules,
+            access.restricted_resource_ids,
+            access.restricted_system_ids,
+            access.restricted_domain_ids,
+            access.provider_profiles,
+            access.admin_quarantine_review,
+        )
+
+    @staticmethod
+    def _estimated_token_envelope(
+        question: str,
+        *,
+        maximum_evidence: int,
+        retrieval_mode: ChatRetrievalMode = ChatRetrievalMode.GENERAL,
+        reranker_enabled: bool = False,
+    ) -> int:
+        # One reserved token per possible UTF-8 byte deliberately overstates
+        # provider tokenization. The base covers the bounded composer request
+        # and output. VECTOR and reranker inputs are additive because they are
+        # separate provider invocations in the same request.
+        question_bytes = len(question.encode("utf-8"))
+        total = question_bytes + (maximum_evidence * 16_384) + 8_192 + 1_024
+        if retrieval_mode is ChatRetrievalMode.VECTOR:
+            candidate_count = min(
+                max(maximum_evidence * 4, 8),
+                MAXIMUM_CHAT_VECTOR_CANDIDATES,
+            )
+            total += (
+                question_bytes + (candidate_count * MAXIMUM_CHAT_VECTOR_TEXT_CHARACTERS * 4) + 8_192
+            )
+        if reranker_enabled:
+            total += question_bytes + (maximum_evidence * 16_384) + 8_192
+        return total
+
+    @staticmethod
+    def _budget_policy_scope(access: ClassificationAccessSnapshot) -> str:
+        if access.posture is ClassificationAccessPosture.STATIC_FLOOR:
+            return "static-floor-v1"
+        if (
+            access.policy_id is None
+            or access.policy_hash is None
+            or access.policy_version is None
+            or access.authorization_generation is None
+        ):
+            raise ValueError("The governed Chat budget scope is incomplete.")
+        return (
+            f"governed-{access.policy_id}-{access.policy_version}-"
+            f"{access.authorization_generation}-{access.policy_hash}"
+        )
+
+    @staticmethod
+    def _event(
+        stage: ChatWorkflowStage,
+        status: ChatWorkflowStatus,
+        detail_code: str,
+    ) -> ChatWorkflowEvent:
+        return ChatWorkflowEvent(
+            stage=stage,
+            status=status,
+            detail_code=detail_code,
+        )

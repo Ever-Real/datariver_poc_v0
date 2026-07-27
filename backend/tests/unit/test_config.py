@@ -70,6 +70,29 @@ def test_default_governance_worker_is_the_seeded_airflow_service_subject() -> No
     assert settings().governance_worker_subject_id == LOCAL_AIRFLOW_SUBJECT_ID
 
 
+def test_development_admin_password_bypass_is_explicit_and_fail_closed() -> None:
+    configured = settings(
+        admin_password_fallback_enabled=True,
+        development_admin_password_bypass_enabled=True,
+    )
+    assert configured.development_admin_password_bypass_enabled is True
+
+    with pytest.raises(ValidationError, match="development-only"):
+        settings(
+            app_env="test",
+            admin_password_fallback_enabled=True,
+            development_admin_password_bypass_enabled=True,
+        )
+    with pytest.raises(ValidationError, match="governed password fallback"):
+        settings(development_admin_password_bypass_enabled=True)
+    with pytest.raises(ValidationError, match="hardware WebAuthn"):
+        settings(
+            oidc_hardware_webauthn_enabled=True,
+            admin_password_fallback_enabled=True,
+            development_admin_password_bypass_enabled=True,
+        )
+
+
 def test_rejects_shared_redis_service_even_when_database_numbers_differ() -> None:
     with pytest.raises(ValidationError, match="separate Redis service origins"):
         settings(valkey_queue_url="redis://cache:6379/1")
@@ -200,12 +223,13 @@ def test_identity_administration_is_opt_in_and_requires_a_file_secret() -> None:
 
 
 def test_platform_security_switches_are_explicit_and_fail_closed_by_default() -> None:
+    assert settings().oidc_hardware_webauthn_enabled is False
     configured = settings(
-        oidc_hardware_webauthn_enabled=False,
+        oidc_hardware_webauthn_enabled=True,
         workspace_selection_enabled=False,
     )
 
-    assert configured.oidc_hardware_webauthn_enabled is False
+    assert configured.oidc_hardware_webauthn_enabled is True
     assert configured.workspace_selection_enabled is False
     assert configured.admin_password_fallback_enabled is False
 
@@ -331,6 +355,36 @@ def test_source_host_local_ollama_requires_explicit_development_runtime_mode() -
             local_ollama_chat_enabled=True,
             local_ollama_chat_base_url="http://127.0.0.1:11434/v1",
             local_ollama_chat_model="datariver-gemma4-dev:0.1",
+        )
+
+
+def test_local_llama_cpp_reranker_is_development_only_and_fixed_to_port_11435() -> None:
+    configured = settings(
+        local_llama_cpp_reranker_enabled=True,
+        local_llama_cpp_reranker_base_url="http://host.docker.internal:11435/v1",
+        local_llama_cpp_reranker_model="qllama/bge-reranker-v2-m3:q4_k_m",
+    )
+
+    assert configured.local_llama_cpp_reranker_top_n == 10
+    with pytest.raises(ValidationError, match="11435"):
+        settings(
+            local_llama_cpp_reranker_enabled=True,
+            local_llama_cpp_reranker_base_url="http://host.docker.internal:11434/v1",
+            local_llama_cpp_reranker_model="qllama/bge-reranker-v2-m3:q4_k_m",
+        )
+    with pytest.raises(ValidationError, match="only in development"):
+        settings(
+            app_env="production",
+            app_public_origin="https://catalog.example.com",
+            app_cors_origins=("https://catalog.example.com",),
+            oidc_issuer="https://idp.example.com/realms/data",
+            oidc_jwks_url="https://idp.example.com/realms/data/certs",
+            datahub_base_url="https://datahub.example.com",
+            datahub_version_enforcement="enforce",
+            s3_public_endpoint_url="https://objects.example.com",
+            local_llama_cpp_reranker_enabled=True,
+            local_llama_cpp_reranker_base_url="http://host.docker.internal:11435/v1",
+            local_llama_cpp_reranker_model="qllama/bge-reranker-v2-m3:q4_k_m",
         )
 
 

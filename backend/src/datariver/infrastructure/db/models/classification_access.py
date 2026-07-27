@@ -148,6 +148,22 @@ class ClassificationAccessPolicyRuleModel(Base, UuidPrimaryKeyMixin):
             ],
             name="fk_classification_policy_rules_provider_profile",
         ),
+        ForeignKeyConstraint(
+            ["workspace_id", "embedding_provider_profile_version_id"],
+            [
+                "integration.inference_provider_profile_versions.workspace_id",
+                "integration.inference_provider_profile_versions.id",
+            ],
+            name="fk_classification_policy_rules_embedding_profile",
+        ),
+        ForeignKeyConstraint(
+            ["workspace_id", "reranker_provider_profile_version_id"],
+            [
+                "integration.inference_provider_profile_versions.workspace_id",
+                "integration.inference_provider_profile_versions.id",
+            ],
+            name="fk_classification_policy_rules_reranker_profile",
+        ),
         UniqueConstraint(
             "workspace_id",
             "policy_id",
@@ -163,7 +179,9 @@ class ClassificationAccessPolicyRuleModel(Base, UuidPrimaryKeyMixin):
             name="chat_mode",
         ),
         CheckConstraint(
-            "(chat_mode = 'DENY' AND provider_profile_version_id IS NULL) OR "
+            "(chat_mode = 'DENY' AND provider_profile_version_id IS NULL "
+            "AND embedding_provider_profile_version_id IS NULL "
+            "AND reranker_provider_profile_version_id IS NULL) OR "
             "(chat_mode <> 'DENY' AND provider_profile_version_id IS NOT NULL)",
             name="provider_binding",
         ),
@@ -190,6 +208,8 @@ class ClassificationAccessPolicyRuleModel(Base, UuidPrimaryKeyMixin):
     search_mode: Mapped[str] = mapped_column(String(30), nullable=False)
     chat_mode: Mapped[str] = mapped_column(String(30), nullable=False)
     provider_profile_version_id: Mapped[UUID | None] = mapped_column(Uuid(as_uuid=True))
+    embedding_provider_profile_version_id: Mapped[UUID | None] = mapped_column(Uuid(as_uuid=True))
+    reranker_provider_profile_version_id: Mapped[UUID | None] = mapped_column(Uuid(as_uuid=True))
 
 
 class RestrictedSearchGrantModel(Base, UuidPrimaryKeyMixin, TimestampMixin, VersionMixin):

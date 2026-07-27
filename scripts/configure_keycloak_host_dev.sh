@@ -17,6 +17,7 @@ case "$web_origin" in
     ;;
 esac
 
+sync_output=$(
 docker exec "$container" bash -ec '
   config=/tmp/kcadm-host-dev.config
   web_origin=$1
@@ -100,6 +101,97 @@ docker exec "$container" bash -ec '
     --config "$config" -r datariver --uid "$identity_user_id" \
     --cclientid realm-management \
     --rolename manage-users --rolename view-users --rolename query-users >/dev/null
+  jihoon_id=
+  sua_id=
+  minjae_id=
+  for fixture in \
+    "jihoon.choi|지훈|최|jihoon.choi@localhost.invalid" \
+    "sua.han|수아|한|sua.han@localhost.invalid" \
+    "minjae.oh|민재|오|minjae.oh@localhost.invalid"
+  do
+    IFS="|" read -r username first_name last_name email <<EOF
+$fixture
+EOF
+    user_id=$(
+      /opt/keycloak/bin/kcadm.sh get users \
+        --config "$config" -r datariver -q "username=$username" \
+        --fields id --format csv --noquotes
+    )
+    if [ -z "$user_id" ]; then
+      demo_password=$(cat /run/secrets/keycloak_demo_password)
+      /opt/keycloak/bin/kcadm.sh create users \
+        --config "$config" -r datariver \
+        -s "username=$username" \
+        -s "firstName=$first_name" -s "lastName=$last_name" \
+        -s "email=$email" -s emailVerified=true -s enabled=true \
+        -s "requiredActions=[\"UPDATE_PASSWORD\"]" \
+        -s "credentials=[{\"type\":\"password\",\"value\":\"$demo_password\",\"temporary\":true}]" \
+        >/dev/null
+      unset demo_password
+      user_id=$(
+        /opt/keycloak/bin/kcadm.sh get users \
+          --config "$config" -r datariver -q "username=$username" \
+          --fields id --format csv --noquotes
+      )
+    else
+      /opt/keycloak/bin/kcadm.sh update "users/$user_id" \
+        --config "$config" -r datariver \
+        -s "firstName=$first_name" -s "lastName=$last_name" \
+        -s "email=$email" -s emailVerified=true -s enabled=true >/dev/null
+    fi
+    test -n "$user_id"
+    case "$username" in
+      jihoon.choi) jihoon_id=$user_id ;;
+      sua.han) sua_id=$user_id ;;
+      minjae.oh) minjae_id=$user_id ;;
+    esac
+  done
+  test -n "$jihoon_id"
+  test -n "$sua_id"
+  test -n "$minjae_id"
+  printf "__DATARIVER_DEMO_IDENTITIES__%s|%s|%s\n" \
+    "$jihoon_id" "$sua_id" "$minjae_id"
 ' -- "$web_origin"
+)
 
-echo "Keycloak web redirects, login theme and governed identity client configured for $web_origin."
+printf '%s\n' "$sync_output" | sed '/^__DATARIVER_DEMO_IDENTITIES__/d'
+identity_state=$(
+  printf '%s\n' "$sync_output" |
+    sed -n 's/^__DATARIVER_DEMO_IDENTITIES__//p' |
+    tail -n 1
+)
+IFS="|" read -r jihoon_id sua_id minjae_id extra <<EOF
+$identity_state
+EOF
+for user_id in "$jihoon_id" "$sua_id" "$minjae_id"
+do
+  case "$user_id" in
+    ""|*[!0-9a-fA-F-]*)
+      echo "Keycloak returned an invalid local demo identity id." >&2
+      exit 3
+      ;;
+  esac
+  if [ "${#user_id}" -ne 36 ]; then
+    echo "Keycloak returned an invalid local demo identity id." >&2
+    exit 3
+  fi
+done
+if [ -n "${extra:-}" ]; then
+  echo "Keycloak returned an invalid local demo identity state." >&2
+  exit 3
+fi
+
+state_directory="$root/runtime/identity"
+state_file="$state_directory/local-demo-identities.json"
+state_tmp="$state_file.tmp.$$"
+mkdir -p "$state_directory"
+trap 'rm -f "$state_tmp"' EXIT HUP INT TERM
+(
+  umask 077
+  printf '{"jihoon.choi":"%s","sua.han":"%s","minjae.oh":"%s"}\n' \
+    "$jihoon_id" "$sua_id" "$minjae_id" >"$state_tmp"
+)
+mv "$state_tmp" "$state_file"
+trap - EXIT HUP INT TERM
+
+echo "Keycloak web redirects, login theme, governed identity client and local demo identities configured for $web_origin."

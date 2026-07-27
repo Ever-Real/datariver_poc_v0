@@ -82,7 +82,7 @@
 | 상태 | 항목 | 증거 |
 |---|---|---|
 | PASS | PDF governed upload | upload `019f8177-3df8-7867-b4b1-61582577986c`, `ACCEPTED`, actual/declared size and SHA 일치, `application/pdf`, `FULL_SIGNATURE`, validator `integrity-format-v1` |
-| PASS | local provider compatibility | native Ollama `0.32.1`; embedding `bge-m3:latest` actual 1024 dimensions; `datariver-gemma4-dev:0.1` OpenAI-compatible strict JSON completion success |
+| PASS (historical; model retired by ADR-0048) | local provider compatibility | native Ollama `0.32.1`; embedding `bge-m3:latest` actual 1024 dimensions; the then-configured `datariver-gemma4-dev:0.1` OpenAI-compatible strict JSON completion succeeded. Current runtime identities are operator-selected in the ignored environment. |
 | PASS | grounding hardening | 모델은 server-owned `evidence_id`만 선택하며 원문/페이지/해시는 서버가 결합; unknown ID, fabricated endpoint, excerpt/hash와 projection read-back mismatch를 차단 |
 | PASS | actual PDF analysis | 전체 105-page parse 후 page 58 actual extraction: input/output `2093/359` tokens, nodes `3`, edges `2`, 모든 page-bound evidence 검증 |
 | BLOCKED | independent review/publish/project | 작성자와 다른 `kg.review` actor 및 `kg.publish` hardware WebAuthn 필요; 우회하지 않음 |
@@ -95,9 +95,9 @@
 
 | 상태 | 항목 | 증거 |
 |---|---|---|
-| PASS | secret boundary | Admin DB/YAML에는 `file:/run/secrets/<name>` 참조만 허용; literal secret/token/password 거부 |
-| PASS | actual TEST implementation | Chat strict JSON completion, embedding vector validation, Neo4j Docker-secret authentication + fixed `RETURN 1`로 강화 |
-| OPEN | Admin SAVE→TEST→ACTIVATE→restart | DB profile은 아직 0건; activation은 hardware WebAuthn gate. 현재 Knowledge runtime은 deployment `.env` source임을 binding audit에 구분 기록 |
+| PASS | 단일 live source | 선택한 `.env.<profile>`/orchestrator 환경과 mounted secret만 API/worker `Settings`에 적용; DB profile은 역사 감사 자료이며 runtime overlay가 아님 |
+| PASS | Admin read-only probe | Admin은 redacted effective snapshot과 고정 Chat/Embedding/Reranker/Neo4j probe만 제공하고 URL·모델·credential 입력을 받지 않음 |
+| OPEN | managed restart + live probe | 선택 환경을 변경한 뒤 `workflow_update_restart.py --profile ...`로 재기동하고 대상 provider/API/Web 응답을 별도 확인 |
 
 ## 8. Resource observation
 
@@ -133,7 +133,7 @@
 | PASS | unsafe configuration rejection | public/HTTP/non-`/v1` intranet profile, URL credential/query/fragment, missing API-key reference 및 production activation을 fail-closed로 검증 |
 | PASS | source-host secret portability | portable `file:/run/secrets/<name>` reference가 source-host의 ignored `secrets/` directory에 단일 파일명으로만 매핑되고 path traversal을 거부함을 검증 |
 | PASS | focused code verification | Ruff, strict mypy (`160` source files), related pytest `83 passed`, `scripts/verify_static.py`, source-host/graph Compose `config --quiet`, frontend lint/typecheck/System Configuration test (`3 passed`)/production build 통과 |
-| OPEN | authenticated intranet model live TEST | 실제 private hostname, approved CA와 Chat·Embedding API key가 제공되지 않아 실행하지 않음. Admin System settings에서 SAVE → TEST → ACTIVATE 후 API 재시작으로 별도 검증 필요 |
+| OPEN | authenticated intranet model live TEST | 실제 private hostname, approved CA와 Chat·Embedding API key가 제공되지 않아 실행하지 않음. 선택한 `.env.<profile>`과 mounted secret reference를 적용해 관리형 재시작한 뒤 Admin의 read-only deployment probe로 별도 검증 필요 |
 | OPEN | remote DataHub token-auth live enablement | 원격 DataHub Compose owner의 maintenance window와 signing key/salt 보관이 필요하므로 이 checkout에서 변경하지 않음. README 절차 후 service-account token으로 DataHub TEST 필요 |
 
 ## 11. 2026-07-22 사용자 계정·비밀번호 셀프서비스

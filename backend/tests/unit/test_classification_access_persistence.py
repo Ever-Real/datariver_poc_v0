@@ -45,6 +45,8 @@ def test_classification_models_bind_workspace_policy_and_provider_versions() -> 
     assert {
         "fk_classification_policy_rules_policy",
         "fk_classification_policy_rules_provider_profile",
+        "fk_classification_policy_rules_embedding_profile",
+        "fk_classification_policy_rules_reranker_profile",
         "uq_classification_policy_rules_classification",
         "ck_classification_access_policy_rules_restricted_floor",
         "ck_classification_access_policy_rules_confidential_chat_floor",
@@ -95,7 +97,7 @@ def test_migration_installs_fail_closed_triggers_rls_and_limited_role_grants() -
     migration = (
         root / "backend/alembic/versions/0011_governed_classification_access.py"
     ).read_text(encoding="utf-8")
-    assert REQUIRED_DATABASE_REVISION == "0055"
+    assert REQUIRED_DATABASE_REVISION == "0057"
     assert "FORCE ROW LEVEL SECURITY" in migration
     assert "validate_classification_policy_activation" in migration
     assert "validate_restricted_search_grant" in migration
@@ -106,3 +108,26 @@ def test_migration_installs_fail_closed_triggers_rls_and_limited_role_grants() -
     assert "REVOKE UPDATE" in migration
     assert "CREATE POLICY workspace_isolation" in migration
     assert "ON DELETE CASCADE" not in migration
+
+
+def test_staged_inference_binding_migration_is_forward_and_backward_complete() -> None:
+    root = Path(__file__).resolve().parents[3]
+    migration = (
+        root / "backend/alembic/versions/0057_staged_inference_profile_bindings.py"
+    ).read_text(encoding="utf-8")
+
+    assert 'revision: str = "0057"' in migration
+    assert 'down_revision: str | Sequence[str] | None = "0056"' in migration
+    assert "embedding_provider_profile_version_id" in migration
+    assert "reranker_provider_profile_version_id" in migration
+    assert "fk_classification_policy_rules_embedding_profile" in migration
+    assert "fk_classification_policy_rules_reranker_profile" in migration
+    assert "_is_legacy_schema" in migration
+    assert "_is_canonical_schema" in migration
+    assert "_assert_staged_schema_contract()" in migration
+    assert "The staged inference profile binding schema is only partially present." in migration
+    assert "Compatibility bridge: regenerated canonical 0001" in migration
+    assert "_assert_staged_binding_columns_empty()" in migration
+    assert "Staged inference profile bindings exist; downgrade would discard " in migration
+    assert "immutable policy evidence." in migration
+    assert "op.drop_column" in migration

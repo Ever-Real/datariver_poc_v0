@@ -4,6 +4,7 @@ set -eu
 datahub_token_file=
 datahub_base_url=
 host_development=false
+portable_development=false
 mac_development=false
 wsl_preparation=false
 source_host_airflow_bridge=false
@@ -18,6 +19,9 @@ while [ "$#" -gt 0 ]; do
       ;;
     --host-development)
       host_development=true
+      ;;
+    --portable-development)
+      portable_development=true
       ;;
     --mac-development)
       mac_development=true
@@ -51,10 +55,11 @@ done
 
 selected_profiles=0
 [ "$host_development" = true ] && selected_profiles=$((selected_profiles + 1))
+[ "$portable_development" = true ] && selected_profiles=$((selected_profiles + 1))
 [ "$mac_development" = true ] && selected_profiles=$((selected_profiles + 1))
 [ "$wsl_preparation" = true ] && selected_profiles=$((selected_profiles + 1))
 if [ "$selected_profiles" -gt 1 ]; then
-  echo "--host-development, --mac-development and --wsl-preparation are mutually exclusive" >&2
+  echo "--host-development, --portable-development, --mac-development and --wsl-preparation are mutually exclusive" >&2
   exit 2
 fi
 if [ "$source_host_airflow_bridge" = true ] && [ "$host_development" != true ]; then
@@ -75,6 +80,9 @@ esac
 secrets_dir="$root/secrets"
 runtime_dir="$root/runtime"
 keycloak_runtime_dir="$runtime_dir/keycloak"
+identity_runtime_dir="$runtime_dir/identity"
+demo_identity_state="$identity_runtime_dir/local-demo-identities.json"
+legacy_demo_identity_state="$keycloak_runtime_dir/local-demo-identities.json"
 retention_control_file="$runtime_dir/retention-execution.enabled"
 datahub_token_path="$secrets_dir/datahub_token"
 for protected_path in \
@@ -82,7 +90,10 @@ for protected_path in \
   "$secrets_dir" \
   "$runtime_dir" \
   "$keycloak_runtime_dir" \
+  "$identity_runtime_dir" \
   "$keycloak_runtime_dir/datariver-realm.json" \
+  "$demo_identity_state" \
+  "$legacy_demo_identity_state" \
   "$retention_control_file"; do
   if [ -L "$protected_path" ]; then
     echo "Bootstrap refuses symbolic links for managed paths." >&2
@@ -136,14 +147,6 @@ env_is_nonempty() {
 }
 
 local_knowledge_inference_is_ready() {
-  if [ "$mac_development" = true ]; then
-    env_is_true LOCAL_OLLAMA_EMBEDDING_ENABLED &&
-      env_is_nonempty LOCAL_OLLAMA_EMBEDDING_BASE_URL &&
-      env_is_nonempty LOCAL_OLLAMA_EMBEDDING_MODEL &&
-      ! env_is_true INTRANET_OPENAI_COMPATIBLE_CHAT_ENABLED &&
-      ! env_is_true INTRANET_OPENAI_COMPATIBLE_EMBEDDING_ENABLED
-    return
-  fi
   env_is_true LOCAL_OLLAMA_CHAT_ENABLED &&
     env_is_true LOCAL_OLLAMA_EMBEDDING_ENABLED &&
     env_is_nonempty LOCAL_OLLAMA_CHAT_BASE_URL &&
@@ -182,10 +185,30 @@ fi
 umask 077
 mkdir -p "$secrets_dir"
 mkdir -p "$keycloak_runtime_dir"
+mkdir -p "$identity_runtime_dir"
+if [ -e "$legacy_demo_identity_state" ]; then
+  [ -f "$legacy_demo_identity_state" ] || {
+    echo "Legacy local demo identity state must be a regular file." >&2
+    exit 2
+  }
+  if [ -e "$demo_identity_state" ]; then
+    cmp -s "$legacy_demo_identity_state" "$demo_identity_state" || {
+      echo "Conflicting local demo identity state files require manual review." >&2
+      exit 2
+    }
+    migrated_state_dir=$(mktemp -d "$identity_runtime_dir/migrated-keycloak-import.XXXXXX")
+    mv "$legacy_demo_identity_state" "$migrated_state_dir/local-demo-identities.json"
+  else
+    mv "$legacy_demo_identity_state" "$demo_identity_state"
+  fi
+fi
 if [ ! -f "$retention_control_file" ]; then
   printf '%s\n' DISABLED > "$retention_control_file"
 fi
-for existing_file in "$secrets_dir"/* "$keycloak_runtime_dir"/datariver-realm.json; do
+for existing_file in \
+  "$secrets_dir"/* \
+  "$keycloak_runtime_dir"/datariver-realm.json \
+  "$demo_identity_state"; do
   if [ -f "$existing_file" ]; then
     chmod 0600 "$existing_file"
   fi
@@ -347,6 +370,31 @@ if [ "$host_development" = true ]; then
   set_env_value IDENTITY_ADMIN_BASE_URL http://keycloak:8080
   set_env_value IDENTITY_ADMIN_CLIENT_SECRET_REF file:/run/secrets/keycloak_identity_admin_client_secret
   set_env_value IDENTITY_PASSWORD_CHANGE_ACTION_ENABLED true
+  set_env_value OIDC_HARDWARE_WEBAUTHN_ENABLED false
+fi
+if [ "$portable_development" = true ]; then
+  # Portable development runs the reviewed source on either linux/arm64 or
+  # linux/amd64. Provider endpoints and model identities remain operator-owned
+  # values in the selected environment file.
+  set_env_value APP_ENV development
+  set_env_value APP_PUBLIC_ORIGIN http://localhost:8080
+  set_env_value APP_CORS_ORIGINS http://localhost:8080
+  set_env_value WEB_PORT 8080
+  set_env_value API_PORT 8000
+  set_env_value POSTGRES_PORT 5432
+  set_env_value KEYCLOAK_PORT 8081
+  set_env_value APISIX_PORT 9080
+  set_env_value DATARIVER_API_BASE_URL http://api:8000
+  set_env_value AIRFLOW_SOURCE_API_BRIDGE_ENABLED false
+  set_env_value OIDC_ISSUER http://localhost:8081/realms/datariver
+  set_env_value OIDC_JWKS_URL http://keycloak:8080/realms/datariver/protocol/openid-connect/certs
+  set_env_value OIDC_PUBLIC_AUTHORITY http://localhost:8081/realms/datariver
+  set_env_value OIDC_PUBLIC_ORIGIN http://localhost:8081
+  set_env_value IDENTITY_ADMIN_ENABLED true
+  set_env_value IDENTITY_ADMIN_BASE_URL http://keycloak:8080
+  set_env_value IDENTITY_ADMIN_CLIENT_SECRET_REF file:/run/secrets/keycloak_identity_admin_client_secret
+  set_env_value IDENTITY_PASSWORD_CHANGE_ACTION_ENABLED true
+  set_env_value OIDC_HARDWARE_WEBAUTHN_ENABLED false
 fi
 if [ "$mac_development" = true ]; then
   # Keep this Mac development topology disjoint from common local DataHub,
@@ -370,16 +418,13 @@ if [ "$mac_development" = true ]; then
   set_env_value IDENTITY_ADMIN_BASE_URL http://keycloak:8080
   set_env_value IDENTITY_ADMIN_CLIENT_SECRET_REF file:/run/secrets/keycloak_identity_admin_client_secret
   set_env_value IDENTITY_PASSWORD_CHANGE_ACTION_ENABLED true
+  set_env_value OIDC_HARDWARE_WEBAUTHN_ENABLED false
   set_env_value DATAHUB_BASE_URL http://host.docker.internal:8080
   # MinIO Community supports exact cluster-wide CORS, not PutBucketCors.
   set_env_value S3_CORS_MANAGEMENT_MODE external
   set_env_value UI_DATAHUB_URL http://localhost:19002
-  set_env_value LOCAL_OLLAMA_CHAT_ENABLED true
-  set_env_value LOCAL_OLLAMA_CHAT_BASE_URL http://host.docker.internal:11434/v1
-  set_env_value LOCAL_OLLAMA_CHAT_MODEL datariver-gemma4-dev:0.1
-  set_env_value LOCAL_OLLAMA_CHAT_TIMEOUT_SECONDS 60
-  set_env_value LOCAL_OLLAMA_CHAT_CONTEXT_TOKENS 8192
-  set_env_value SYSTEM_CONFIGURATION_RUNTIME_ACTIVATION_ENABLED false
+  # Model endpoints, identities and enablement stay operator-owned in the
+  # ignored environment file. This profile never selects or creates a model.
   set_env_value CHAT_EPHEMERAL_ADMIN_WITHOUT_RETENTION_ENABLED true
   set_env_value UI_GRAPH_URL http://localhost:17474
 fi
@@ -407,9 +452,9 @@ if [ "$wsl_preparation" = true ]; then
   set_env_value WORKER_DATABASE_POOL_MAX_OVERFLOW 0
   set_env_value DATAHUB_MAX_CONCURRENCY 8
   set_env_value NEO4J_MAXIMUM_CONNECTION_POOL_SIZE 4
-  set_env_value SYSTEM_CONFIGURATION_RUNTIME_ACTIVATION_ENABLED false
   set_env_value LOCAL_OLLAMA_CHAT_ENABLED false
   set_env_value LOCAL_OLLAMA_EMBEDDING_ENABLED false
+  set_env_value LOCAL_LLAMA_CPP_RERANKER_ENABLED false
   set_env_value NEO4J_PROJECTION_ENABLED false
   set_env_value KNOWLEDGE_PIPELINE_ENABLED false
 fi
@@ -426,8 +471,11 @@ fi
 
 # File-based Compose secrets are bind mounts, so container users with different
 # UIDs need read permission. Host access remains restricted by the 0700 parents.
-chmod 0700 "$secrets_dir" "$keycloak_runtime_dir"
+chmod 0700 "$secrets_dir" "$keycloak_runtime_dir" "$identity_runtime_dir"
 chmod 0444 "$secrets_dir"/* "$keycloak_runtime_dir/datariver-realm.json"
+if [ -f "$demo_identity_state" ]; then
+  chmod 0600 "$demo_identity_state"
+fi
 chmod 0644 "$retention_control_file"
 
 echo "Bootstrap files created in $env_file. Keep the environment and secrets directory private and out of Git."

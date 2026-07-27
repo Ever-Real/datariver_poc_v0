@@ -288,8 +288,6 @@ def _candidate_list_response(
             UploadRegistrationCandidateResponse(
                 id=candidate.candidate_id,
                 ordinal=candidate.ordinal,
-                evidence_version="DATASET_DESCRIPTION_CANDIDATE_V2",
-                candidate_kind="DATASET_DESCRIPTION_UPDATE",
                 proposed_description=candidate.proposed_description,
                 submitted_identity=UploadCandidateSubmittedIdentityResponse(
                     platform=platform,
@@ -484,8 +482,6 @@ async def get_registration_operator_capability(
 )
 async def download_typed_upload_template(
     content_profile: Literal[
-        "DATASET_DESCRIPTION_CSV_V1",
-        "DATASET_DESCRIPTION_XLSX_V1",
         "CATALOG_METADATA_ROWS_CSV_V1",
         "CATALOG_METADATA_ROWS_XLSX_V1",
     ],

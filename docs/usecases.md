@@ -389,7 +389,8 @@ teardown으로 제거하고, immutable policy decision만 감사 증거로 남�
 브라우저는 owner-scoped list/detail을 bounded polling하고 positive-version `If-Match`와 새
 `Idempotency-Key`로 취소한다. 제출 시 accepted PDF version/hash/classification, graph version,
 explicit empty/exact active-release base, active ontology ID/checksum, parser hash와 loaded
-deployment 또는 activated System Configuration Chat/Embedding binding을 고정한다. 별도
+deployment environment/orchestrator의 Chat/Embedding binding을 고정한다. Database-activated
+System Configuration 경로는 ADR-0048이 supersede한 역사적 경로다. 별도
 `datariver_knowledge` worker만 DB-clock lease/epoch/token-hash fence로 claim하고
 PUBLIC/INTERNAL source를 page/batch 제한 안에서 처리한다.
 
@@ -423,7 +424,7 @@ Neo4j에는 constant `DRNode`와 `DR_EDGE`를 사용하고 ontology type은 prop
 | `KG-C03` | typed LLM composition | approved OpenAI-compatible adapter에 fixed answer/citation tool schema만 제공한다. SQL/Cypher/HTTP/tool mutation 필드는 없다. |
 | `KG-C04` | citation | answer의 각 claim이 source document, page/section locator, source hash/version, release ID/hash와 evidence chunk ID를 가진다. |
 | `KG-C05` | session isolation | `assistant.chat_sessions.scope`를 server-built `KNOWLEDGE_RELEASE` scope로 확장하고 일반 Chat UI와 session list를 공유하지 않는다. active retention policy를 그대로 준수한다. |
-| `KG-C06` | actual run audit | 실제 activated configuration revision, provider/model, prompt/tool-schema version, embedding/reranker revision, usage AVAILABLE/UNAVAILABLE을 `assistant_runs`에 기록한다. deterministic composer identity로 고정 기록하지 않는다. |
+| `KG-C06` | actual run audit | 실제 loaded deployment/orchestrator binding identity/hash, provider/model, prompt/tool-schema version, embedding/reranker identity와 usage AVAILABLE/UNAVAILABLE을 `assistant_runs`에 기록한다. deterministic composer identity로 고정 기록하지 않는다. |
 | `KG-C07` | prior release comparison | 각각의 immutable release에 pin된 두 질의를 실행하고 source/release가 섞이지 않게 비교한다. |
 | `KG-C08` | abstention | citation 누락, invalid ID, grounding 부족, projection mismatch 또는 model malformed response는 `검증 불가`/governed refusal이며 uncited prose를 반환하지 않는다. |
 
@@ -437,7 +438,7 @@ Neo4j에는 constant `DRNode`와 `DR_EDGE`를 사용하고 ontology type은 prop
 | `KG-N04` | self review | approval 거부 |
 | `KG-N05` | invalid ontology/edge endpoint/provenance missing | validation error persisted, publish 거부 |
 | `KG-N06` | Neo4j count/hash mismatch | deployment DRIFTED/FAILED, active query source로 선택 금지 |
-| `KG-N07` | embedding/reranker config 저장만 되고 미활성 | extraction/query capability unavailable; SAVE/TEST를 runtime applied로 표시하지 않음 |
+| `KG-N07` | 배포 환경의 embedding/reranker 값이 누락되었거나 재시작 전임 | extraction/query capability unavailable; probe 성공을 runtime applied/Chat 승인으로 표시하지 않음 |
 | `KG-N08` | RESTRICTED evidence/clearance mismatch | retrieval 전에 deny; prompt/model/graph 결과에 포함하지 않음 |
 | `KG-N09` | retention policy 없음/expired session | persistent answer 저장 거부; 허용된 dev admin `EPHEMERAL_NO_STORE`만 별도 표시 |
 | `KG-N10` | publication 중 두 번째 DB commit 실패 | 단일 UoW rollback으로 release/changeset partial state 0건 |
@@ -452,10 +453,12 @@ Neo4j에는 constant `DRNode`와 `DR_EDGE`를 사용하고 ontology type은 prop
 3. release publish와 changeset `PUBLISHED` 전환은 같은 PostgreSQL UoW에서 처리한다.
 4. Neo4j adapter는 release-scoped shadow를 적재한 뒤 전체 typed snapshot을 다시 읽어 canonical
    content hash가 같은 경우에만 `SHADOW_VERIFIED`로 기록한다.
-5. Knowledge GraphRAG audit는 실제 provider/model/prompt/tool schema와 deployment 또는 activated
-   System Configuration의 version/hash를 기록한다.
-6. Chat/Embedding/Neo4j에는 typed startup consumer와 실제 inference/authenticated query TEST가
-   구현됐다. SAVE/TEST는 ACTIVATE 또는 재시작 적용으로 가장하지 않는다.
+5. Knowledge GraphRAG audit는 실제 provider/model/prompt/tool schema와 deployment environment
+   또는 orchestrator binding의 identity/hash를 기록한다. Database-activated System
+   Configuration은 ADR-0048 이전의 역사적 경로다.
+6. Chat/Embedding/Neo4j에는 typed startup consumer와 실제 inference/authenticated fixed
+   deployment probe가 구현됐다. Probe 성공은 managed restart 적용이나 governed Chat 승인을
+   대신하지 않는다.
 7. Neo4j runtime과 Compose는 동일한 mounted `neo4j_auth` secret contract를 사용한다.
 
 2026-07-21 actual adapter E2E에서는 당시의 bounded adapter 경로로 PwC PDF page 58의
@@ -539,9 +542,9 @@ flowchart LR
 operator가 수행하고, 일반 제품 흐름은 private upload manifest 또는 authorized catalog scope ID만
 허용한다.
 
-### 8.3 System Settings 연계
+### 8.3 Deployment environment와 System Settings 연계
 
-| Profile | 필요한 TEST | startup consumer |
+| Profile | 고정 deployment probe | startup consumer |
 |---|---|---|
 | Chat/Extraction model | fixed `/v1/chat/completions` tool-schema probe | API 또는 isolated extraction/inference worker |
 | Embedding | fixed typed embeddings request, dimension/model identity 확인 | extraction/query worker |
@@ -549,11 +552,11 @@ operator가 수행하고, 일반 제품 흐름은 private upload manifest 또는
 | Neo4j | authenticated `RETURN 1`, shadow namespace write/read/cleanup probe | projection/query worker |
 | S3 | private bucket write/read/hash/delete-on-quarantine conformance | upload/extraction worker |
 
-SAVE -> TEST -> ACTIVATE -> 관련 process 명시적 restart -> loaded version 확인 순서를 유지한다. endpoint와
-credential은 fixed server template와 mounted secret에서만 온다. Chat, Embedding, Neo4j에는 typed
-startup consumer가 있으며, Reranker는 실행 adapter가 구현되기 전까지 inventory/TEST만 가능하고
-ACTIVATE할 수 없다. 세 Knowledge profile이 모두 TEST/ACTIVATE되고 재시작 시 exact version/hash가
-로드돼야 DB 관리 설정 기반 pipeline으로 판정한다.
+ADR-0048 이후 현재 순서는 `.env.<profile>` 또는 orchestrator 값 변경 -> 관리형 update/restart ->
+read-only Admin inventory에서 loaded identity 확인 -> 고정 deployment probe다. Endpoint와 credential은
+배포 환경과 mounted secret에서만 오며 브라우저는 이를 SAVE/ACTIVATE하지 않는다. Chat, Embedding,
+Neo4j에는 typed startup consumer가 있고 Reranker에는 bounded adapter가 있다. 필요한 profile이 모두
+명시되고 재시작 시 exact identity/hash가 로드되어야 deployment-owned pipeline으로 판정한다.
 
 ### 8.4 GraphRAG 평가 질문
 
