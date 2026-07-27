@@ -42,8 +42,9 @@ selection, while an explicitly supplied intranet environment supplies only the r
 ports. It never turns an arbitrary tag into accepted release evidence.
 A pre-state connected rapid-source host may instead select the explicit `--connected-build` mode;
 that reuses the configured official version tag when present, pulls only when missing, uses
-repository build definitions and writes no applied or release state. This connected-development
-exception does not weaken managed offline or production digest verification.
+the existing final Keycloak image without rebuilding its Quay base, and writes no applied or
+release state. This connected-development exception does not weaken managed offline or production
+digest verification.
 
 To apply an edited environment:
 

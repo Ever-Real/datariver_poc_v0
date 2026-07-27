@@ -43,8 +43,11 @@ For connected rapid source-validation hosts that predate managed applied state, 
 `--connected-build` option accepts an explicit environment file. A final development-only Compose
 overlay selects the official PostgreSQL version tag with `pull_policy: missing`, so an existing
 local tag is reused and the registry is contacted only when it is absent. An operator may select an
-approved mirror through `SOURCE_HOST_POSTGRES_IMAGE`. The path uses repository-owned build
-definitions and writes no applied/release state. It is not an offline fallback.
+approved mirror through `SOURCE_HOST_POSTGRES_IMAGE`. The same overlay selects the existing
+theme-bearing final Keycloak image with `pull_policy: never`; connected preparation fails before
+stopping processes when that final image is absent and never rebuilds its Quay base merely to
+change loopback port publication. `SOURCE_HOST_KEYCLOAK_IMAGE` may select an approved local
+reference. The path writes no applied/release state and is not an offline fallback.
 
 Managed build/offline source continues to pin external image indexes. The connected overlay is an
 explicit development exception, not the global or production default. The workflow does not encode

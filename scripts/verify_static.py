@@ -167,6 +167,11 @@ def verify_compose() -> None:
         raise AssertionError(
             "compose.connected-source-host.yaml:postgres must reuse a local version tag"
         )
+    connected_keycloak = connected_source_host["services"]["keycloak"]
+    if connected_keycloak.get("pull_policy") != "never":
+        raise AssertionError(
+            "compose.connected-source-host.yaml:keycloak must use the existing final image"
+        )
     base = documents[ROOT / "compose.yaml"]
     connectors = base.get("networks", {}).get("connectors", {})
     if connectors.get("external") is not True:
@@ -809,12 +814,16 @@ def verify_host_development_ports() -> None:
             "retained a registry-only digest",
             "--connected-build",
             "compose.connected-source-host.yaml",
+            "verify_connected_local_keycloak",
+            'mode_flags = ("--no-build",)',
             '"--build",',
             '"--no-build", "--pull", "never"',
         },
         ROOT / "compose.connected-source-host.yaml": {
             "${SOURCE_HOST_POSTGRES_IMAGE:-postgres:17.10-bookworm}",
+            "${SOURCE_HOST_KEYCLOAK_IMAGE:-datariver-keycloak:26.7.0}",
             "pull_policy: missing",
+            "pull_policy: never",
         },
     }
     for path, fragments in required_fragments.items():

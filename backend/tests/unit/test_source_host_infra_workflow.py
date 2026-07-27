@@ -164,6 +164,11 @@ class _ConfigRunner:
         )
 
 
+class _MissingImageRunner:
+    def output(self, arguments: list[str] | tuple[str, ...]) -> str:
+        raise platform.WorkflowError(f"missing {arguments[-1]}")
+
+
 def test_service_images_come_from_the_final_compose_model(tmp_path: Path) -> None:
     plan = workflow.SourceHostInfraPlan(
         profile="wsl-preparation",
@@ -178,6 +183,21 @@ def test_service_images_come_from_the_final_compose_model(tmp_path: Path) -> Non
         "postgres": "registry/database:reviewed",
         "keycloak": "registry/identity:reviewed",
     }
+
+
+def test_connected_prepare_requires_existing_final_keycloak_before_mutation() -> None:
+    images = {
+        "postgres": "postgres:17.10-bookworm",
+        "keycloak": "datariver-keycloak:26.7.0",
+    }
+
+    workflow.verify_connected_local_keycloak(cast(Any, _ImageRunner()), images)
+
+    with pytest.raises(
+        platform.WorkflowError,
+        match="requires the existing final Keycloak image",
+    ):
+        workflow.verify_connected_local_keycloak(cast(Any, _MissingImageRunner()), images)
 
 
 def test_connected_build_plan_requires_explicit_environment_and_no_state(

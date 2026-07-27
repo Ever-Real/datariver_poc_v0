@@ -13,7 +13,7 @@ evidence.
 | `compose.yaml` | PostgreSQL 17.10, migration/optional external-storage init, API, UI, outbox relay, upload completion/validation and governance apply workers; opt-in catalog-export and retention-archive workers; explicit external connector network | portable DataRiver core; no Redis or object-store provider is bundled |
 | `compose.identity.yaml` | Keycloak 26.7 and isolated Keycloak database/credentials | local identity only |
 | `compose.source-host.yaml` | loopback host port and a dedicated publication bridge for PostgreSQL | source-host development; does not publish external connector services |
-| `compose.connected-source-host.yaml` | local-first official PostgreSQL version tag | connected rapid source validation only; never release evidence |
+| `compose.connected-source-host.yaml` | local-first official PostgreSQL version tag and existing final Keycloak image | connected rapid source validation only; never release evidence or rebuild identity |
 | `compose.airflow.yaml` | Airflow 3.3 API server, scheduler, DAG processor, triggerer and init using LocalExecutor/isolated DB role | scheduled scan/probe only |
 | `compose.gateway.yaml` | APISIX 3.17 standalone configuration | local gateway/rate limit/health-check profile |
 | `compose.graph.yaml` | Neo4j Community projection sandbox | local only; PostgreSQL KG releases remain canonical |
@@ -431,10 +431,12 @@ root README. The controlling decisions are
 
 A connected rapid-source host that predates managed applied state may explicitly select
 `--connected-build` with an environment file. That development-only path reuses the official
-version tag already present on the host with `pull_policy: missing`, builds repository-owned images
-and writes no release acceptance state. An approved mirror may be selected with
-`SOURCE_HOST_POSTGRES_IMAGE`. It is not an offline deployment fallback; managed offline and
-production paths retain digest/release verification.
+version tag already present on the host with `pull_policy: missing` and reuses the existing final
+Keycloak image with `pull_policy: never`, avoiding an unnecessary rebuild and
+Quay base-image resolution. It writes no release acceptance state. Approved local/mirror references
+may be selected with `SOURCE_HOST_POSTGRES_IMAGE` and `SOURCE_HOST_KEYCLOAK_IMAGE`. It is not an
+offline deployment fallback; managed offline and production paths retain digest/release
+verification.
 
 ## Network and identity rules
 

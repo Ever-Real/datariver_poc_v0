@@ -592,9 +592,12 @@ offline override 순서를 다시 입력하지 않는다. `dev_host.sh migrate`�
 
 이전 raw Compose 절차로 구성되어 아직 applied state가 없는 **연결망 rapid source 검증 PC**는
 다음 명시적 개발 경로를 사용한다. 이 경로는 공식 `postgres:17.10-bookworm` version tag가
-로컬에 있으면 그대로 재사용하고 없을 때만 pull하며, repository-owned Keycloak build
-definition을 사용한다. `SOURCE_HOST_POSTGRES_IMAGE`로 승인된 mirror의 같은 개발용 image
-reference를 선택할 수 있다. 이 편의 경로는 offline release가 검증되었다고 기록하지 않는다.
+로컬에 있으면 그대로 재사용하고 없을 때만 pull하며, 기존
+`datariver-keycloak:26.7.0` final image도 재사용한다. 준비 과정에서는 Keycloak을 다시
+build하지 않으므로 Quay base metadata를 조회하지 않는다. `SOURCE_HOST_POSTGRES_IMAGE`와
+`SOURCE_HOST_KEYCLOAK_IMAGE`로 승인된 mirror/local reference를 선택할 수 있다. Keycloak final
+image가 없으면 임의 upstream 이미지를 대신 사용하지 않고 시작 전에 실패한다. 이 편의 경로는
+offline release가 검증되었다고 기록하지 않는다.
 
 ```bash
 ./scripts/workflow_source_host_infra.py \

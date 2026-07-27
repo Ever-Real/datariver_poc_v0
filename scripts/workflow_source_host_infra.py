@@ -73,8 +73,8 @@ def parse_arguments() -> argparse.Namespace:
         "--connected-build",
         action="store_true",
         help=(
-            "Development-only: when no applied state exists, reuse the configured official image "
-            "tag when present and use repository build definitions. Requires --env-file."
+            "Development-only: when no applied state exists, reuse the configured PostgreSQL and "
+            "final Keycloak images without rebuilding Keycloak. Requires --env-file."
         ),
     )
     return parser.parse_args()
@@ -266,13 +266,43 @@ def _compose_command(
     )
 
 
+def verify_connected_local_keycloak(
+    runner: Runner,
+    service_images: dict[str, str],
+) -> None:
+    image = service_images["keycloak"]
+    try:
+        runner.output(
+            (
+                "docker",
+                "image",
+                "inspect",
+                "--format",
+                "{{.Id}}\t{{.Os}}/{{.Architecture}}",
+                image,
+            )
+        )
+    except WorkflowError as error:
+        raise WorkflowError(
+            "Connected source-host preparation requires the existing final Keycloak image "
+            f"{image}; it intentionally does not rebuild or pull that deployment-owned image."
+        ) from error
+
+
 def show_status(runner: Runner, plan: SourceHostInfraPlan) -> None:
     runner.run(_compose_command(plan, ("ps", "postgres", "keycloak")))
     runner.run(_compose_command(plan, ("port", "postgres", "5432")))
     runner.run(_compose_command(plan, ("port", "keycloak", "8080")))
 
 
-def prepare(runner: Runner, plan: SourceHostInfraPlan) -> None:
+def prepare(
+    runner: Runner,
+    plan: SourceHostInfraPlan,
+    service_images: dict[str, str],
+) -> None:
+    if plan.connected_build:
+        runner.note("기존 final Keycloak image가 로컬에 있는지 먼저 확인합니다.")
+        verify_connected_local_keycloak(runner, service_images)
     runner.note("동일 checkout의 source-host process를 중지합니다.")
     runner.run(
         (
@@ -285,7 +315,13 @@ def prepare(runner: Runner, plan: SourceHostInfraPlan) -> None:
     runner.note("중복 writer가 될 container application service를 중지합니다.")
     runner.run(_compose_command(plan, ("stop", *CONTAINER_APPLICATION_SERVICES)))
     runner.note("PostgreSQL과 Keycloak을 loopback source-host 경계로 준비합니다.")
-    mode_flags = ("--no-build", "--pull", "never") if plan.offline else ("--build",)
+    mode_flags: tuple[str, ...]
+    if plan.offline:
+        mode_flags = ("--no-build", "--pull", "never")
+    elif plan.connected_build:
+        mode_flags = ("--no-build",)
+    else:
+        mode_flags = ("--build",)
     runner.run(
         _compose_command(
             plan,
@@ -340,7 +376,7 @@ def main() -> int:
         elif arguments.action == "status":
             show_status(runner, plan)
         else:
-            prepare(runner, plan)
+            prepare(runner, plan, service_images)
         return 0
     except (OSError, ValueError, WorkflowError) as error:
         print(f"ERROR: {error}", file=sys.stderr)

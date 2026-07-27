@@ -5,3 +5,10 @@ services:
   postgres:
     image: ${SOURCE_HOST_POSTGRES_IMAGE:-postgres:17.10-bookworm}
     pull_policy: missing
+
+  # The preparation PC already owns the reviewed, theme-bearing final image.
+  # Never rebuild it during a loopback port transition: doing so would resolve
+  # the upstream Quay base even though the runnable final image is local.
+  keycloak:
+    image: ${SOURCE_HOST_KEYCLOAK_IMAGE:-datariver-keycloak:26.7.0}
+    pull_policy: never
