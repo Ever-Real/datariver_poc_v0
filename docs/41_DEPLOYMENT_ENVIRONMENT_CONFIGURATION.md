@@ -244,7 +244,7 @@ synthetic INTERNAL release and its verified Neo4j shadow projection after the de
 healthy:
 
 ```bash
-docker compose --env-file .env.mac-development exec api \
+docker compose --project-name datariver-next --env-file .env.mac-development exec api \
   /app/.venv/bin/python -m datariver.local_graphrag_fixture
 ```
 
