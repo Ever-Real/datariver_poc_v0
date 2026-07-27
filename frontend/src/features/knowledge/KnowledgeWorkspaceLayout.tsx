@@ -1,8 +1,8 @@
-import { BookOpen, DatabaseZap, MessageSquareText } from 'lucide-react'
+import { BookOpen, MessageSquareText } from 'lucide-react'
 import type { ReactNode } from 'react'
 import type { Page } from '../../app/navigation'
 
-export type KnowledgeWorkspaceSection = 'REGISTRY' | 'INGESTION' | 'CHAT'
+export type KnowledgeWorkspaceSection = 'REGISTRY' | 'CHAT'
 
 const items: Array<{
   section: KnowledgeWorkspaceSection
@@ -11,18 +11,15 @@ const items: Array<{
   icon: typeof BookOpen
 }> = [
   { section: 'REGISTRY', title: '지식 레지스트리', description: '에셋 관리 및 이력', icon: BookOpen },
-  { section: 'INGESTION', title: '데이터 적재', description: '온톨로지 정의 및 머지', icon: DatabaseZap },
   { section: 'CHAT', title: '지식 챗', description: '별도 GraphRAG 질의', icon: MessageSquareText },
 ]
 
 export function KnowledgeWorkspaceLayout({
   activeSection,
-  onLocalSection,
   onNavigate,
   children,
 }: {
   activeSection: KnowledgeWorkspaceSection
-  onLocalSection?: (section: Exclude<KnowledgeWorkspaceSection, 'CHAT'>) => void
   onNavigate: (page: Page) => void
   children: ReactNode
 }) {
@@ -31,11 +28,7 @@ export function KnowledgeWorkspaceLayout({
       onNavigate('knowledge-chat')
       return
     }
-    if (activeSection === 'CHAT') {
-      onNavigate('knowledge')
-      return
-    }
-    onLocalSection?.(section)
+    onNavigate('knowledge')
   }
 
   return <div className="grid gap-4 xl:grid-cols-[280px_minmax(0,1fr)]">
@@ -63,7 +56,6 @@ export function KnowledgeWorkspaceLayout({
           </button>
         })}
       </nav>
-      {activeSection === 'INGESTION' && <div className="mt-4 border-t border-slate-200 pt-4 text-[10px] leading-5 text-slate-500">작업 모드는 본문에서 MODE A · Ontology Builder 또는 MODE B · Data Enricher로 선택합니다.</div>}
     </aside>
     <main className="min-w-0">{children}</main>
   </div>

@@ -33,6 +33,40 @@ class GraphModel(Base, UuidPrimaryKeyMixin, TimestampMixin, VersionMixin):
     __table_args__ = (
         UniqueConstraint("workspace_id", "slug"),
         UniqueConstraint("workspace_id", "id"),
+        CheckConstraint(
+            "status IN ('DRAFT', 'REVIEW', 'PUBLISHED')",
+            name="status_vocabulary",
+        ),
+        CheckConstraint(
+            "classification BETWEEN 0 AND 3",
+            name="classification_range",
+        ),
+        CheckConstraint(
+            "(domain_ref_id IS NULL AND domain_ref_kind IS NULL "
+            "AND domain_source_version IS NULL) OR "
+            "(domain_ref_id IS NOT NULL AND domain_ref_kind = 'DOMAIN' "
+            "AND domain_source_version IS NOT NULL)",
+            name="domain_reference_shape",
+        ),
+        ForeignKeyConstraint(
+            ("workspace_id", "domain_ref_id", "domain_ref_kind"),
+            (
+                "catalog.vocabulary_entries.workspace_id",
+                "catalog.vocabulary_entries.id",
+                "catalog.vocabulary_entries.kind",
+            ),
+            ondelete="RESTRICT",
+        ),
+        ForeignKeyConstraint(
+            ("workspace_id", "created_by"),
+            ("iam.workspace_memberships.workspace_id", "iam.workspace_memberships.subject_id"),
+            ondelete="RESTRICT",
+        ),
+        ForeignKeyConstraint(
+            ("workspace_id", "updated_by"),
+            ("iam.workspace_memberships.workspace_id", "iam.workspace_memberships.subject_id"),
+            ondelete="RESTRICT",
+        ),
         ForeignKeyConstraint(
             ("workspace_id", "id", "active_release_id"),
             (
@@ -52,6 +86,11 @@ class GraphModel(Base, UuidPrimaryKeyMixin, TimestampMixin, VersionMixin):
     status: Mapped[str] = mapped_column(String(32), default="DRAFT", nullable=False)
     active_release_id: Mapped[UUID | None] = mapped_column(Uuid(as_uuid=True))
     classification: Mapped[int] = mapped_column(default=0, nullable=False)
+    domain_ref_id: Mapped[UUID | None] = mapped_column(Uuid(as_uuid=True))
+    domain_ref_kind: Mapped[str | None] = mapped_column(String(16))
+    domain_source_version: Mapped[str | None] = mapped_column(String(255))
+    created_by: Mapped[UUID | None] = mapped_column(Uuid(as_uuid=True))
+    updated_by: Mapped[UUID | None] = mapped_column(Uuid(as_uuid=True))
 
 
 class OntologyVersionModel(Base, UuidPrimaryKeyMixin, TimestampMixin):
@@ -64,6 +103,21 @@ class OntologyVersionModel(Base, UuidPrimaryKeyMixin, TimestampMixin):
             ("knowledge.graphs.workspace_id", "knowledge.graphs.id"),
             ondelete="CASCADE",
         ),
+        ForeignKeyConstraint(
+            ("workspace_id", "graph_id", "base_ontology_version_id"),
+            (
+                "knowledge.ontology_versions.workspace_id",
+                "knowledge.ontology_versions.graph_id",
+                "knowledge.ontology_versions.id",
+            ),
+            ondelete="RESTRICT",
+            use_alter=True,
+        ),
+        ForeignKeyConstraint(
+            ("workspace_id", "created_by"),
+            ("iam.workspace_memberships.workspace_id", "iam.workspace_memberships.subject_id"),
+            ondelete="RESTRICT",
+        ),
         {"schema": "knowledge"},
     )
 
@@ -73,6 +127,9 @@ class OntologyVersionModel(Base, UuidPrimaryKeyMixin, TimestampMixin):
     schema_document: Mapped[dict[str, Any]] = mapped_column(JSON_DOCUMENT, nullable=False)
     checksum: Mapped[str] = mapped_column(String(64), nullable=False)
     status: Mapped[str] = mapped_column(String(32), nullable=False)
+    schema_contract_version: Mapped[str | None] = mapped_column(String(50))
+    base_ontology_version_id: Mapped[UUID | None] = mapped_column(Uuid(as_uuid=True))
+    created_by: Mapped[UUID | None] = mapped_column(Uuid(as_uuid=True))
 
 
 class ChangeSetModel(Base, UuidPrimaryKeyMixin, TimestampMixin, VersionMixin):

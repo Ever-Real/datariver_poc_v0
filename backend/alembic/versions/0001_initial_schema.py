@@ -312,27 +312,6 @@ def upgrade() -> None:
         op.execute('ALTER TABLE integration.seed_runs ENABLE ROW LEVEL SECURITY')
         op.execute('ALTER TABLE integration.seed_runs FORCE ROW LEVEL SECURITY')
         op.execute("CREATE POLICY workspace_isolation ON integration.seed_runs USING (workspace_id = NULLIF(current_setting('app.workspace_id', true), '')::uuid) WITH CHECK (workspace_id = NULLIF(current_setting('app.workspace_id', true), '')::uuid)")
-        op.create_table('graphs',
-        sa.Column('workspace_id', sa.Uuid(), nullable=False),
-        sa.Column('slug', sa.String(length=100), nullable=False),
-        sa.Column('name', sa.String(length=255), nullable=False),
-        sa.Column('graph_type', sa.String(length=50), nullable=False),
-        sa.Column('status', sa.String(length=32), nullable=False),
-        sa.Column('active_release_id', sa.Uuid(), nullable=True),
-        sa.Column('classification', sa.Integer(), nullable=False),
-        sa.Column('id', sa.Uuid(), nullable=False),
-        sa.Column('created_at', sa.DateTime(timezone=True), server_default=sa.text('CURRENT_TIMESTAMP'), nullable=False),
-        sa.Column('updated_at', sa.DateTime(timezone=True), server_default=sa.text('CURRENT_TIMESTAMP'), nullable=False),
-        sa.Column('version', sa.Integer(), nullable=False),
-        sa.ForeignKeyConstraint(['workspace_id', 'id', 'active_release_id'], ['knowledge.releases.workspace_id', 'knowledge.releases.graph_id', 'knowledge.releases.id'], name=op.f('fk_graphs_workspace_id_id_active_release_id_releases'), use_alter=True),
-        sa.PrimaryKeyConstraint('id', name=op.f('pk_graphs')),
-        sa.UniqueConstraint('workspace_id', 'id', name=op.f('uq_graphs_workspace_id_id')),
-        sa.UniqueConstraint('workspace_id', 'slug', name=op.f('uq_graphs_workspace_id_slug')),
-        schema='knowledge'
-        )
-        op.execute('ALTER TABLE knowledge.graphs ENABLE ROW LEVEL SECURITY')
-        op.execute('ALTER TABLE knowledge.graphs FORCE ROW LEVEL SECURITY')
-        op.execute("CREATE POLICY workspace_isolation ON knowledge.graphs USING (workspace_id = NULLIF(current_setting('app.workspace_id', true), '')::uuid) WITH CHECK (workspace_id = NULLIF(current_setting('app.workspace_id', true), '')::uuid)")
         op.create_table('workspaces',
         sa.Column('slug', sa.String(length=100), nullable=False),
         sa.Column('name', sa.String(length=255), nullable=False),
@@ -485,56 +464,6 @@ def upgrade() -> None:
         op.execute('ALTER TABLE integration.inference_provider_generations ENABLE ROW LEVEL SECURITY')
         op.execute('ALTER TABLE integration.inference_provider_generations FORCE ROW LEVEL SECURITY')
         op.execute("CREATE POLICY workspace_isolation ON integration.inference_provider_generations USING (workspace_id = NULLIF(current_setting('app.workspace_id', true), '')::uuid) WITH CHECK (workspace_id = NULLIF(current_setting('app.workspace_id', true), '')::uuid)")
-        op.create_table('ontology_versions',
-        sa.Column('workspace_id', sa.Uuid(), nullable=False),
-        sa.Column('graph_id', sa.Uuid(), nullable=False),
-        sa.Column('version', sa.String(length=100), nullable=False),
-        sa.Column('schema_document', sa.JSON().with_variant(postgresql.JSONB(none_as_null=True, astext_type=Text()), 'postgresql'), nullable=False),
-        sa.Column('checksum', sa.String(length=64), nullable=False),
-        sa.Column('status', sa.String(length=32), nullable=False),
-        sa.Column('id', sa.Uuid(), nullable=False),
-        sa.Column('created_at', sa.DateTime(timezone=True), server_default=sa.text('CURRENT_TIMESTAMP'), nullable=False),
-        sa.Column('updated_at', sa.DateTime(timezone=True), server_default=sa.text('CURRENT_TIMESTAMP'), nullable=False),
-        sa.ForeignKeyConstraint(['workspace_id', 'graph_id'], ['knowledge.graphs.workspace_id', 'knowledge.graphs.id'], name=op.f('fk_ontology_versions_workspace_id_graph_id_graphs'), ondelete='CASCADE'),
-        sa.PrimaryKeyConstraint('id', name=op.f('pk_ontology_versions')),
-        sa.UniqueConstraint('graph_id', 'version', name=op.f('uq_ontology_versions_graph_id_version')),
-        sa.UniqueConstraint('workspace_id', 'graph_id', 'id', name=op.f('uq_ontology_versions_workspace_id_graph_id_id')),
-        schema='knowledge'
-        )
-        op.execute('ALTER TABLE knowledge.ontology_versions ENABLE ROW LEVEL SECURITY')
-        op.execute('ALTER TABLE knowledge.ontology_versions FORCE ROW LEVEL SECURITY')
-        op.execute("CREATE POLICY workspace_isolation ON knowledge.ontology_versions USING (workspace_id = NULLIF(current_setting('app.workspace_id', true), '')::uuid) WITH CHECK (workspace_id = NULLIF(current_setting('app.workspace_id', true), '')::uuid)")
-        op.create_table('source_snapshots',
-        sa.Column('workspace_id', sa.Uuid(), nullable=False),
-        sa.Column('graph_id', sa.Uuid(), nullable=False),
-        sa.Column('upload_id', sa.Uuid(), nullable=False),
-        sa.Column('bucket', sa.String(length=255), nullable=False),
-        sa.Column('object_key', sa.Text(), nullable=False),
-        sa.Column('storage_version', sa.String(length=255), nullable=False),
-        sa.Column('media_type', sa.String(length=100), nullable=False),
-        sa.Column('byte_size', sa.BigInteger(), nullable=False),
-        sa.Column('content_sha256', sa.String(length=64), nullable=False),
-        sa.Column('classification', sa.Integer(), nullable=False),
-        sa.Column('state', sa.String(length=32), nullable=False),
-        sa.Column('created_by', sa.Uuid(), nullable=False),
-        sa.Column('id', sa.Uuid(), nullable=False),
-        sa.Column('created_at', sa.DateTime(timezone=True), server_default=sa.text('CURRENT_TIMESTAMP'), nullable=False),
-        sa.Column('updated_at', sa.DateTime(timezone=True), server_default=sa.text('CURRENT_TIMESTAMP'), nullable=False),
-        sa.CheckConstraint("content_sha256 ~ '^[0-9a-f]{64}$'", name=op.f('ck_source_snapshots_content_sha256')),
-        sa.CheckConstraint("media_type = 'application/pdf'", name=op.f('ck_source_snapshots_pdf_media_type')),
-        sa.CheckConstraint("state IN ('PENDING', 'ANALYZED', 'FAILED')", name=op.f('ck_source_snapshots_state_vocabulary')),
-        sa.CheckConstraint('byte_size > 0 AND byte_size <= 52428800', name=op.f('ck_source_snapshots_bounded_size')),
-        sa.ForeignKeyConstraint(['workspace_id', 'graph_id'], ['knowledge.graphs.workspace_id', 'knowledge.graphs.id'], name=op.f('fk_source_snapshots_workspace_id_graph_id_graphs'), ondelete='CASCADE'),
-        sa.ForeignKeyConstraint(['workspace_id', 'upload_id'], ['integration.object_manifests.workspace_id', 'integration.object_manifests.id'], name=op.f('fk_source_snapshots_workspace_id_upload_id_object_manifests'), ondelete='RESTRICT'),
-        sa.PrimaryKeyConstraint('id', name=op.f('pk_source_snapshots')),
-        sa.UniqueConstraint('workspace_id', 'graph_id', 'upload_id', name=op.f('uq_source_snapshots_workspace_id_graph_id_upload_id')),
-        sa.UniqueConstraint('workspace_id', 'id', name=op.f('uq_source_snapshots_workspace_id_id')),
-        schema='knowledge'
-        )
-        op.create_index('ix_source_snapshots_graph_created', 'source_snapshots', ['graph_id', 'created_at'], unique=False, schema='knowledge')
-        op.execute('ALTER TABLE knowledge.source_snapshots ENABLE ROW LEVEL SECURITY')
-        op.execute('ALTER TABLE knowledge.source_snapshots FORCE ROW LEVEL SECURITY')
-        op.execute("CREATE POLICY workspace_isolation ON knowledge.source_snapshots USING (workspace_id = NULLIF(current_setting('app.workspace_id', true), '')::uuid) WITH CHECK (workspace_id = NULLIF(current_setting('app.workspace_id', true), '')::uuid)")
         op.create_table('data_systems',
         sa.Column('workspace_id', sa.Uuid(), nullable=False),
         sa.Column('code', sa.String(length=100), nullable=False),
@@ -599,31 +528,6 @@ def upgrade() -> None:
         op.execute('ALTER TABLE retention.archive_capability_attestations ENABLE ROW LEVEL SECURITY')
         op.execute('ALTER TABLE retention.archive_capability_attestations FORCE ROW LEVEL SECURITY')
         op.execute("CREATE POLICY workspace_isolation ON retention.archive_capability_attestations USING (workspace_id = NULLIF(current_setting('app.workspace_id', true), '')::uuid) WITH CHECK (workspace_id = NULLIF(current_setting('app.workspace_id', true), '')::uuid)")
-        op.create_table('api_products',
-        sa.Column('workspace_id', sa.Uuid(), nullable=False),
-        sa.Column('slug', sa.String(length=100), nullable=False),
-        sa.Column('name', sa.String(length=255), nullable=False),
-        sa.Column('description', sa.Text(), nullable=False),
-        sa.Column('graph_id', sa.Uuid(), nullable=False),
-        sa.Column('classification', sa.Integer(), nullable=False),
-        sa.Column('owner_id', sa.Uuid(), nullable=False),
-        sa.Column('state', sa.String(length=32), nullable=False),
-        sa.Column('current_version_id', sa.Uuid(), nullable=True),
-        sa.Column('id', sa.Uuid(), nullable=False),
-        sa.Column('created_at', sa.DateTime(timezone=True), server_default=sa.text('CURRENT_TIMESTAMP'), nullable=False),
-        sa.Column('updated_at', sa.DateTime(timezone=True), server_default=sa.text('CURRENT_TIMESTAMP'), nullable=False),
-        sa.Column('version', sa.Integer(), nullable=False),
-        sa.ForeignKeyConstraint(['workspace_id', 'graph_id'], ['knowledge.graphs.workspace_id', 'knowledge.graphs.id'], name=op.f('fk_api_products_workspace_id_graph_id_graphs')),
-        sa.ForeignKeyConstraint(['workspace_id', 'id', 'current_version_id'], ['sharing.api_product_versions.workspace_id', 'sharing.api_product_versions.product_id', 'sharing.api_product_versions.id'], name=op.f('fk_api_products_workspace_id_id_current_version_id_api_product_versions'), use_alter=True),
-        sa.PrimaryKeyConstraint('id', name=op.f('pk_api_products')),
-        sa.UniqueConstraint('workspace_id', 'graph_id', 'id', name=op.f('uq_api_products_workspace_id_graph_id_id')),
-        sa.UniqueConstraint('workspace_id', 'slug', name=op.f('uq_api_products_workspace_id_slug')),
-        schema='sharing'
-        )
-        op.create_index('ix_api_products_workspace_state', 'api_products', ['workspace_id', 'state', 'updated_at'], unique=False, schema='sharing')
-        op.execute('ALTER TABLE sharing.api_products ENABLE ROW LEVEL SECURITY')
-        op.execute('ALTER TABLE sharing.api_products FORCE ROW LEVEL SECURITY')
-        op.execute("CREATE POLICY workspace_isolation ON sharing.api_products USING (workspace_id = NULLIF(current_setting('app.workspace_id', true), '')::uuid) WITH CHECK (workspace_id = NULLIF(current_setting('app.workspace_id', true), '')::uuid)")
         op.create_table('classification_access_policy_versions',
         sa.Column('workspace_id', sa.Uuid(), nullable=False),
         sa.Column('policy_number', sa.Integer(), nullable=False),
@@ -1215,156 +1119,38 @@ def upgrade() -> None:
         op.execute('ALTER TABLE integration.upload_preparation_jobs ENABLE ROW LEVEL SECURITY')
         op.execute('ALTER TABLE integration.upload_preparation_jobs FORCE ROW LEVEL SECURITY')
         op.execute("CREATE POLICY workspace_isolation ON integration.upload_preparation_jobs USING (workspace_id = NULLIF(current_setting('app.workspace_id', true), '')::uuid) WITH CHECK (workspace_id = NULLIF(current_setting('app.workspace_id', true), '')::uuid)")
-        op.create_table('changesets',
+        op.create_table('graphs',
         sa.Column('workspace_id', sa.Uuid(), nullable=False),
-        sa.Column('graph_id', sa.Uuid(), nullable=False),
-        sa.Column('base_release_id', sa.Uuid(), nullable=True),
-        sa.Column('ontology_version_id', sa.Uuid(), nullable=False),
-        sa.Column('title', sa.String(length=500), nullable=False),
-        sa.Column('state', sa.String(length=32), nullable=False),
-        sa.Column('author_id', sa.Uuid(), nullable=False),
-        sa.Column('source_analysis_job_id', sa.Uuid(), nullable=True),
-        sa.Column('reviewed_by', sa.Uuid(), nullable=True),
-        sa.Column('reviewed_at', sa.DateTime(timezone=True), nullable=True),
-        sa.Column('review_reason', sa.Text(), nullable=True),
-        sa.Column('published_release_id', sa.Uuid(), nullable=True),
+        sa.Column('slug', sa.String(length=100), nullable=False),
+        sa.Column('name', sa.String(length=255), nullable=False),
+        sa.Column('graph_type', sa.String(length=50), nullable=False),
+        sa.Column('status', sa.String(length=32), nullable=False),
+        sa.Column('active_release_id', sa.Uuid(), nullable=True),
+        sa.Column('classification', sa.Integer(), nullable=False),
+        sa.Column('domain_ref_id', sa.Uuid(), nullable=True),
+        sa.Column('domain_ref_kind', sa.String(length=16), nullable=True),
+        sa.Column('domain_source_version', sa.String(length=255), nullable=True),
+        sa.Column('created_by', sa.Uuid(), nullable=True),
+        sa.Column('updated_by', sa.Uuid(), nullable=True),
         sa.Column('id', sa.Uuid(), nullable=False),
         sa.Column('created_at', sa.DateTime(timezone=True), server_default=sa.text('CURRENT_TIMESTAMP'), nullable=False),
         sa.Column('updated_at', sa.DateTime(timezone=True), server_default=sa.text('CURRENT_TIMESTAMP'), nullable=False),
         sa.Column('version', sa.Integer(), nullable=False),
-        sa.ForeignKeyConstraint(['workspace_id', 'graph_id', 'base_release_id'], ['knowledge.releases.workspace_id', 'knowledge.releases.graph_id', 'knowledge.releases.id'], name=op.f('fk_changesets_workspace_id_graph_id_base_release_id_releases'), use_alter=True),
-        sa.ForeignKeyConstraint(['workspace_id', 'graph_id', 'ontology_version_id'], ['knowledge.ontology_versions.workspace_id', 'knowledge.ontology_versions.graph_id', 'knowledge.ontology_versions.id'], name=op.f('fk_changesets_workspace_id_graph_id_ontology_version_id_ontology_versions')),
-        sa.ForeignKeyConstraint(['workspace_id', 'graph_id', 'published_release_id'], ['knowledge.releases.workspace_id', 'knowledge.releases.graph_id', 'knowledge.releases.id'], name=op.f('fk_changesets_workspace_id_graph_id_published_release_id_releases'), use_alter=True),
-        sa.ForeignKeyConstraint(['workspace_id', 'graph_id'], ['knowledge.graphs.workspace_id', 'knowledge.graphs.id'], name=op.f('fk_changesets_workspace_id_graph_id_graphs'), ondelete='CASCADE'),
-        sa.ForeignKeyConstraint(['workspace_id', 'source_analysis_job_id'], ['knowledge.source_analysis_jobs.workspace_id', 'knowledge.source_analysis_jobs.id'], name=op.f('fk_changesets_workspace_id_source_analysis_job_id_source_analysis_jobs'), ondelete='RESTRICT', use_alter=True),
-        sa.PrimaryKeyConstraint('id', name=op.f('pk_changesets')),
-        sa.UniqueConstraint('workspace_id', 'graph_id', 'id', name=op.f('uq_changesets_workspace_id_graph_id_id')),
-        sa.UniqueConstraint('workspace_id', 'id', name=op.f('uq_changesets_workspace_id_id')),
+        sa.CheckConstraint("(domain_ref_id IS NULL AND domain_ref_kind IS NULL AND domain_source_version IS NULL) OR (domain_ref_id IS NOT NULL AND domain_ref_kind = 'DOMAIN' AND domain_source_version IS NOT NULL)", name=op.f('ck_graphs_domain_reference_shape')),
+        sa.CheckConstraint("status IN ('DRAFT', 'REVIEW', 'PUBLISHED')", name=op.f('ck_graphs_status_vocabulary')),
+        sa.CheckConstraint('classification BETWEEN 0 AND 3', name=op.f('ck_graphs_classification_range')),
+        sa.ForeignKeyConstraint(['workspace_id', 'created_by'], ['iam.workspace_memberships.workspace_id', 'iam.workspace_memberships.subject_id'], name=op.f('fk_graphs_workspace_id_created_by_workspace_memberships'), ondelete='RESTRICT'),
+        sa.ForeignKeyConstraint(['workspace_id', 'domain_ref_id', 'domain_ref_kind'], ['catalog.vocabulary_entries.workspace_id', 'catalog.vocabulary_entries.id', 'catalog.vocabulary_entries.kind'], name=op.f('fk_graphs_workspace_id_domain_ref_id_domain_ref_kind_vocabulary_entries'), ondelete='RESTRICT'),
+        sa.ForeignKeyConstraint(['workspace_id', 'id', 'active_release_id'], ['knowledge.releases.workspace_id', 'knowledge.releases.graph_id', 'knowledge.releases.id'], name=op.f('fk_graphs_workspace_id_id_active_release_id_releases'), use_alter=True),
+        sa.ForeignKeyConstraint(['workspace_id', 'updated_by'], ['iam.workspace_memberships.workspace_id', 'iam.workspace_memberships.subject_id'], name=op.f('fk_graphs_workspace_id_updated_by_workspace_memberships'), ondelete='RESTRICT'),
+        sa.PrimaryKeyConstraint('id', name=op.f('pk_graphs')),
+        sa.UniqueConstraint('workspace_id', 'id', name=op.f('uq_graphs_workspace_id_id')),
+        sa.UniqueConstraint('workspace_id', 'slug', name=op.f('uq_graphs_workspace_id_slug')),
         schema='knowledge'
         )
-        op.create_index('ix_changesets_graph_state', 'changesets', ['graph_id', 'state', 'created_at'], unique=False, schema='knowledge')
-        op.execute('ALTER TABLE knowledge.changesets ENABLE ROW LEVEL SECURITY')
-        op.execute('ALTER TABLE knowledge.changesets FORCE ROW LEVEL SECURITY')
-        op.execute("CREATE POLICY workspace_isolation ON knowledge.changesets USING (workspace_id = NULLIF(current_setting('app.workspace_id', true), '')::uuid) WITH CHECK (workspace_id = NULLIF(current_setting('app.workspace_id', true), '')::uuid)")
-        op.create_table('releases',
-        sa.Column('workspace_id', sa.Uuid(), nullable=False),
-        sa.Column('graph_id', sa.Uuid(), nullable=False),
-        sa.Column('release_no', sa.Integer(), nullable=False),
-        sa.Column('ontology_version_id', sa.Uuid(), nullable=False),
-        sa.Column('content_hash', sa.String(length=64), nullable=False),
-        sa.Column('node_count', sa.Integer(), nullable=False),
-        sa.Column('edge_count', sa.Integer(), nullable=False),
-        sa.Column('manifest_ref', sa.Text(), nullable=True),
-        sa.Column('published_by', sa.Uuid(), nullable=False),
-        sa.Column('published_at', sa.DateTime(timezone=True), nullable=False),
-        sa.Column('deprecated_at', sa.DateTime(timezone=True), nullable=True),
-        sa.Column('id', sa.Uuid(), nullable=False),
-        sa.ForeignKeyConstraint(['workspace_id', 'graph_id', 'ontology_version_id'], ['knowledge.ontology_versions.workspace_id', 'knowledge.ontology_versions.graph_id', 'knowledge.ontology_versions.id'], name=op.f('fk_releases_workspace_id_graph_id_ontology_version_id_ontology_versions')),
-        sa.ForeignKeyConstraint(['workspace_id', 'graph_id'], ['knowledge.graphs.workspace_id', 'knowledge.graphs.id'], name=op.f('fk_releases_workspace_id_graph_id_graphs'), ondelete='CASCADE'),
-        sa.PrimaryKeyConstraint('id', name=op.f('pk_releases')),
-        sa.UniqueConstraint('graph_id', 'content_hash', name=op.f('uq_releases_graph_id_content_hash')),
-        sa.UniqueConstraint('graph_id', 'release_no', name=op.f('uq_releases_graph_id_release_no')),
-        sa.UniqueConstraint('workspace_id', 'graph_id', 'id', name=op.f('uq_releases_workspace_id_graph_id_id')),
-        sa.UniqueConstraint('workspace_id', 'id', name=op.f('uq_releases_workspace_id_id')),
-        schema='knowledge'
-        )
-        op.execute('ALTER TABLE knowledge.releases ENABLE ROW LEVEL SECURITY')
-        op.execute('ALTER TABLE knowledge.releases FORCE ROW LEVEL SECURITY')
-        op.execute("CREATE POLICY workspace_isolation ON knowledge.releases USING (workspace_id = NULLIF(current_setting('app.workspace_id', true), '')::uuid) WITH CHECK (workspace_id = NULLIF(current_setting('app.workspace_id', true), '')::uuid)")
-        op.create_table('source_analysis_jobs',
-        sa.Column('workspace_id', sa.Uuid(), nullable=False),
-        sa.Column('graph_id', sa.Uuid(), nullable=False),
-        sa.Column('source_snapshot_id', sa.Uuid(), nullable=False),
-        sa.Column('requested_by', sa.Uuid(), nullable=False),
-        sa.Column('title', sa.String(length=500), nullable=False),
-        sa.Column('request_hash', sa.String(length=64), nullable=False),
-        sa.Column('requester_authorization_hash', sa.String(length=64), nullable=False),
-        sa.Column('source_storage_version', sa.String(length=255), nullable=False),
-        sa.Column('source_content_sha256', sa.String(length=64), nullable=False),
-        sa.Column('source_classification', sa.Integer(), nullable=False),
-        sa.Column('graph_version', sa.Integer(), nullable=False),
-        sa.Column('base_kind', sa.String(length=20), nullable=False),
-        sa.Column('base_release_id', sa.Uuid(), nullable=True),
-        sa.Column('base_release_hash', sa.String(length=64), nullable=True),
-        sa.Column('ontology_version_id', sa.Uuid(), nullable=False),
-        sa.Column('ontology_checksum', sa.String(length=64), nullable=False),
-        sa.Column('parser_config_hash', sa.String(length=64), nullable=False),
-        sa.Column('embedding_binding', sa.JSON().with_variant(postgresql.JSONB(none_as_null=True, astext_type=Text()), 'postgresql'), nullable=False),
-        sa.Column('embedding_binding_hash', sa.String(length=64), nullable=False),
-        sa.Column('extraction_binding', sa.JSON().with_variant(postgresql.JSONB(none_as_null=True, astext_type=Text()), 'postgresql'), nullable=False),
-        sa.Column('extraction_binding_hash', sa.String(length=64), nullable=False),
-        sa.Column('pin_hash', sa.String(length=64), nullable=False),
-        sa.Column('prepared_at', sa.DateTime(timezone=True), nullable=False),
-        sa.Column('state', sa.String(length=32), nullable=False),
-        sa.Column('stage', sa.String(length=32), nullable=False),
-        sa.Column('progress', sa.JSON().with_variant(postgresql.JSONB(none_as_null=True, astext_type=Text()), 'postgresql'), nullable=False),
-        sa.Column('next_attempt_at', sa.DateTime(timezone=True), nullable=False),
-        sa.Column('attempt_count', sa.Integer(), nullable=False),
-        sa.Column('maximum_attempts', sa.Integer(), nullable=False),
-        sa.Column('lease_epoch', sa.Integer(), nullable=False),
-        sa.Column('lease_token_hash', sa.String(length=64), nullable=True),
-        sa.Column('lease_owner_fingerprint', sa.String(length=255), nullable=True),
-        sa.Column('lease_started_at', sa.DateTime(timezone=True), nullable=True),
-        sa.Column('lease_expires_at', sa.DateTime(timezone=True), nullable=True),
-        sa.Column('cancel_requested_by', sa.Uuid(), nullable=True),
-        sa.Column('cancel_requested_at', sa.DateTime(timezone=True), nullable=True),
-        sa.Column('cancel_reason', sa.String(length=1000), nullable=True),
-        sa.Column('result_changeset_id', sa.Uuid(), nullable=True),
-        sa.Column('result_evidence_hash', sa.String(length=64), nullable=True),
-        sa.Column('last_failure_code', sa.String(length=100), nullable=True),
-        sa.Column('completed_at', sa.DateTime(timezone=True), nullable=True),
-        sa.Column('id', sa.Uuid(), nullable=False),
-        sa.Column('created_at', sa.DateTime(timezone=True), server_default=sa.text('CURRENT_TIMESTAMP'), nullable=False),
-        sa.Column('updated_at', sa.DateTime(timezone=True), server_default=sa.text('CURRENT_TIMESTAMP'), nullable=False),
-        sa.Column('version', sa.Integer(), nullable=False),
-        sa.CheckConstraint("((state = 'SUCCEEDED') AND result_changeset_id IS NOT NULL AND result_evidence_hash ~ '^[0-9a-f]{64}$' AND completed_at IS NOT NULL AND last_failure_code IS NULL) OR ((state <> 'SUCCEEDED') AND result_changeset_id IS NULL AND result_evidence_hash IS NULL) ", name=op.f('ck_source_analysis_jobs_result_shape')),
-        sa.CheckConstraint("((state IN ('CANCEL_REQUESTED', 'CANCELLED')) AND cancel_requested_by IS NOT NULL AND cancel_requested_at IS NOT NULL AND cancel_reason IS NOT NULL) OR ((state NOT IN ('CANCEL_REQUESTED', 'CANCELLED')) AND cancel_requested_by IS NULL AND cancel_requested_at IS NULL AND cancel_reason IS NULL)", name=op.f('ck_source_analysis_jobs_cancel_shape')),
-        sa.CheckConstraint("((state IN ('FAILED', 'STALE')) AND last_failure_code IS NOT NULL AND completed_at IS NOT NULL) OR (state = 'RETRY_WAIT' AND last_failure_code IS NOT NULL AND completed_at IS NULL) OR ((state NOT IN ('FAILED', 'STALE', 'RETRY_WAIT')) AND last_failure_code IS NULL)", name=op.f('ck_source_analysis_jobs_failure_shape')),
-        sa.CheckConstraint("(state IN ('QUEUED', 'RETRY_WAIT') AND stage = 'QUEUED') OR (state IN ('RUNNING', 'CANCEL_REQUESTED') AND stage IN ('SOURCE_READ', 'PARSED', 'EMBEDDED', 'EXTRACTED', 'FINALIZING')) OR (state IN ('SUCCEEDED', 'FAILED', 'STALE', 'CANCELLED') AND stage = 'COMPLETED')", name=op.f('ck_source_analysis_jobs_execution_stage_shape')),
-        sa.CheckConstraint("(state IN ('RUNNING', 'CANCEL_REQUESTED') AND lease_token_hash IS NOT NULL AND lease_owner_fingerprint IS NOT NULL AND lease_started_at IS NOT NULL AND lease_expires_at IS NOT NULL) OR (state NOT IN ('RUNNING', 'CANCEL_REQUESTED') AND lease_token_hash IS NULL AND lease_owner_fingerprint IS NULL AND lease_started_at IS NULL AND lease_expires_at IS NULL)", name=op.f('ck_source_analysis_jobs_lease_shape')),
-        sa.CheckConstraint("(state IN ('SUCCEEDED', 'FAILED', 'STALE', 'CANCELLED')) = (completed_at IS NOT NULL)", name=op.f('ck_source_analysis_jobs_terminal_completion')),
-        sa.CheckConstraint("(state IN ('SUCCEEDED', 'FAILED', 'STALE', 'CANCELLED')) = (stage = 'COMPLETED')", name=op.f('ck_source_analysis_jobs_terminal_stage')),
-        sa.CheckConstraint("base_kind IN ('EMPTY', 'RELEASE') AND ((base_kind = 'EMPTY' AND base_release_id IS NULL AND base_release_hash IS NULL) OR (base_kind = 'RELEASE' AND base_release_id IS NOT NULL AND base_release_hash ~ '^[0-9a-f]{64}$'))", name=op.f('ck_source_analysis_jobs_base_binding_shape')),
-        sa.CheckConstraint("lease_token_hash IS NULL OR lease_token_hash ~ '^[0-9a-f]{64}$'", name=op.f('ck_source_analysis_jobs_lease_token_hash')),
-        sa.CheckConstraint("source_content_sha256 ~ '^[0-9a-f]{64}$' AND ontology_checksum ~ '^[0-9a-f]{64}$' AND parser_config_hash ~ '^[0-9a-f]{64}$' AND embedding_binding_hash ~ '^[0-9a-f]{64}$' AND extraction_binding_hash ~ '^[0-9a-f]{64}$' AND pin_hash ~ '^[0-9a-f]{64}$' AND request_hash ~ '^[0-9a-f]{64}$' AND requester_authorization_hash ~ '^[0-9a-f]{64}$'", name=op.f('ck_source_analysis_jobs_evidence_hashes')),
-        sa.CheckConstraint("stage IN ('QUEUED', 'SOURCE_READ', 'PARSED', 'EMBEDDED', 'EXTRACTED', 'FINALIZING', 'COMPLETED')", name=op.f('ck_source_analysis_jobs_stage_vocabulary')),
-        sa.CheckConstraint("state IN ('QUEUED', 'RUNNING', 'RETRY_WAIT', 'CANCEL_REQUESTED', 'SUCCEEDED', 'FAILED', 'STALE', 'CANCELLED')", name=op.f('ck_source_analysis_jobs_state_vocabulary')),
-        sa.CheckConstraint('graph_version > 0 AND attempt_count >= 0 AND maximum_attempts > 0 AND attempt_count <= maximum_attempts AND lease_epoch >= 0', name=op.f('ck_source_analysis_jobs_counters')),
-        sa.CheckConstraint('source_classification BETWEEN 0 AND 1', name=op.f('ck_source_analysis_jobs_inference_classification')),
-        sa.ForeignKeyConstraint(['workspace_id', 'cancel_requested_by'], ['iam.workspace_memberships.workspace_id', 'iam.workspace_memberships.subject_id'], name=op.f('fk_source_analysis_jobs_workspace_id_cancel_requested_by_workspace_memberships'), ondelete='RESTRICT'),
-        sa.ForeignKeyConstraint(['workspace_id', 'graph_id', 'base_release_id'], ['knowledge.releases.workspace_id', 'knowledge.releases.graph_id', 'knowledge.releases.id'], name=op.f('fk_source_analysis_jobs_workspace_id_graph_id_base_release_id_releases'), ondelete='RESTRICT', use_alter=True),
-        sa.ForeignKeyConstraint(['workspace_id', 'graph_id', 'ontology_version_id'], ['knowledge.ontology_versions.workspace_id', 'knowledge.ontology_versions.graph_id', 'knowledge.ontology_versions.id'], name=op.f('fk_source_analysis_jobs_workspace_id_graph_id_ontology_version_id_ontology_versions'), ondelete='RESTRICT'),
-        sa.ForeignKeyConstraint(['workspace_id', 'graph_id', 'result_changeset_id'], ['knowledge.changesets.workspace_id', 'knowledge.changesets.graph_id', 'knowledge.changesets.id'], name=op.f('fk_source_analysis_jobs_workspace_id_graph_id_result_changeset_id_changesets'), ondelete='RESTRICT', use_alter=True),
-        sa.ForeignKeyConstraint(['workspace_id', 'graph_id'], ['knowledge.graphs.workspace_id', 'knowledge.graphs.id'], name=op.f('fk_source_analysis_jobs_workspace_id_graph_id_graphs'), ondelete='RESTRICT'),
-        sa.ForeignKeyConstraint(['workspace_id', 'requested_by'], ['iam.workspace_memberships.workspace_id', 'iam.workspace_memberships.subject_id'], name=op.f('fk_source_analysis_jobs_workspace_id_requested_by_workspace_memberships'), ondelete='RESTRICT'),
-        sa.ForeignKeyConstraint(['workspace_id', 'source_snapshot_id'], ['knowledge.source_snapshots.workspace_id', 'knowledge.source_snapshots.id'], name=op.f('fk_source_analysis_jobs_workspace_id_source_snapshot_id_source_snapshots'), ondelete='RESTRICT'),
-        sa.PrimaryKeyConstraint('id', name=op.f('pk_source_analysis_jobs')),
-        sa.UniqueConstraint('workspace_id', 'id', name=op.f('uq_source_analysis_jobs_workspace_id_id')),
-        sa.UniqueConstraint('workspace_id', 'source_snapshot_id', name=op.f('uq_source_analysis_jobs_workspace_id_source_snapshot_id')),
-        schema='knowledge'
-        )
-        op.create_index('ix_source_analysis_jobs_claim', 'source_analysis_jobs', ['workspace_id', 'next_attempt_at', 'created_at', 'id'], unique=False, schema='knowledge', postgresql_where=sa.text("state IN ('QUEUED', 'RETRY_WAIT')"))
-        op.create_index('ix_source_analysis_jobs_expired', 'source_analysis_jobs', ['workspace_id', 'lease_expires_at', 'id'], unique=False, schema='knowledge', postgresql_where=sa.text("state IN ('RUNNING', 'CANCEL_REQUESTED')"))
-        op.create_index('ix_source_analysis_jobs_graph_created', 'source_analysis_jobs', ['workspace_id', 'graph_id', 'created_at', 'id'], unique=False, schema='knowledge')
-        op.execute('ALTER TABLE knowledge.source_analysis_jobs ENABLE ROW LEVEL SECURITY')
-        op.execute('ALTER TABLE knowledge.source_analysis_jobs FORCE ROW LEVEL SECURITY')
-        op.execute("CREATE POLICY workspace_isolation ON knowledge.source_analysis_jobs USING (workspace_id = NULLIF(current_setting('app.workspace_id', true), '')::uuid) WITH CHECK (workspace_id = NULLIF(current_setting('app.workspace_id', true), '')::uuid)")
-        op.execute("CREATE POLICY source_analysis_job_owner_select ON knowledge.source_analysis_jobs AS RESTRICTIVE FOR SELECT TO datariver_app USING (requested_by = NULLIF(current_setting('app.subject_id', true), '')::uuid)")
-        op.create_table('source_pages',
-        sa.Column('workspace_id', sa.Uuid(), nullable=False),
-        sa.Column('source_snapshot_id', sa.Uuid(), nullable=False),
-        sa.Column('page_number', sa.Integer(), nullable=False),
-        sa.Column('content_sha256', sa.String(length=64), nullable=False),
-        sa.Column('content', sa.Text(), nullable=False),
-        sa.CheckConstraint("content_sha256 ~ '^[0-9a-f]{64}$'", name=op.f('ck_source_pages_content_sha256')),
-        sa.CheckConstraint('page_number > 0', name=op.f('ck_source_pages_page_number_positive')),
-        sa.ForeignKeyConstraint(['workspace_id', 'source_snapshot_id'], ['knowledge.source_snapshots.workspace_id', 'knowledge.source_snapshots.id'], name=op.f('fk_source_pages_workspace_id_source_snapshot_id_source_snapshots'), ondelete='CASCADE'),
-        sa.PrimaryKeyConstraint('workspace_id', 'source_snapshot_id', 'page_number', name=op.f('pk_source_pages')),
-        schema='knowledge'
-        )
-        op.execute('ALTER TABLE knowledge.source_pages ENABLE ROW LEVEL SECURITY')
-        op.execute('ALTER TABLE knowledge.source_pages FORCE ROW LEVEL SECURITY')
-        op.execute("CREATE POLICY workspace_isolation ON knowledge.source_pages USING (workspace_id = NULLIF(current_setting('app.workspace_id', true), '')::uuid) WITH CHECK (workspace_id = NULLIF(current_setting('app.workspace_id', true), '')::uuid)")
+        op.execute('ALTER TABLE knowledge.graphs ENABLE ROW LEVEL SECURITY')
+        op.execute('ALTER TABLE knowledge.graphs FORCE ROW LEVEL SECURITY')
+        op.execute("CREATE POLICY workspace_isolation ON knowledge.graphs USING (workspace_id = NULLIF(current_setting('app.workspace_id', true), '')::uuid) WITH CHECK (workspace_id = NULLIF(current_setting('app.workspace_id', true), '')::uuid)")
         op.create_table('external_service_profiles',
         sa.Column('workspace_id', sa.Uuid(), nullable=False),
         sa.Column('service_key', sa.String(length=32), nullable=False),
@@ -1896,195 +1682,61 @@ def upgrade() -> None:
         op.execute('ALTER TABLE integration.upload_preparation_receipts ENABLE ROW LEVEL SECURITY')
         op.execute('ALTER TABLE integration.upload_preparation_receipts FORCE ROW LEVEL SECURITY')
         op.execute("CREATE POLICY workspace_isolation ON integration.upload_preparation_receipts USING (workspace_id = NULLIF(current_setting('app.workspace_id', true), '')::uuid) WITH CHECK (workspace_id = NULLIF(current_setting('app.workspace_id', true), '')::uuid)")
-        op.create_table('change_operations',
-        sa.Column('workspace_id', sa.Uuid(), nullable=False),
-        sa.Column('changeset_id', sa.Uuid(), nullable=False),
-        sa.Column('sequence', sa.Integer(), nullable=False),
-        sa.Column('operation', sa.String(length=50), nullable=False),
-        sa.Column('entity_kind', sa.String(length=20), nullable=False),
-        sa.Column('stable_entity_id', sa.Uuid(), nullable=False),
-        sa.Column('document', sa.JSON().with_variant(postgresql.JSONB(none_as_null=True, astext_type=Text()), 'postgresql'), nullable=False),
-        sa.Column('provenance', sa.JSON().with_variant(postgresql.JSONB(none_as_null=True, astext_type=Text()), 'postgresql'), nullable=False),
-        sa.Column('confidence', sa.Float(), nullable=False),
-        sa.Column('id', sa.Uuid(), nullable=False),
-        sa.ForeignKeyConstraint(['workspace_id', 'changeset_id'], ['knowledge.changesets.workspace_id', 'knowledge.changesets.id'], name=op.f('fk_change_operations_workspace_id_changeset_id_changesets'), ondelete='CASCADE'),
-        sa.PrimaryKeyConstraint('id', name=op.f('pk_change_operations')),
-        sa.UniqueConstraint('changeset_id', 'sequence', name=op.f('uq_change_operations_changeset_id_sequence')),
-        schema='knowledge'
-        )
-        op.execute('ALTER TABLE knowledge.change_operations ENABLE ROW LEVEL SECURITY')
-        op.execute('ALTER TABLE knowledge.change_operations FORCE ROW LEVEL SECURITY')
-        op.execute("CREATE POLICY workspace_isolation ON knowledge.change_operations USING (workspace_id = NULLIF(current_setting('app.workspace_id', true), '')::uuid) WITH CHECK (workspace_id = NULLIF(current_setting('app.workspace_id', true), '')::uuid)")
-        op.create_table('graphrag_audits',
+        op.create_table('ontology_versions',
         sa.Column('workspace_id', sa.Uuid(), nullable=False),
         sa.Column('graph_id', sa.Uuid(), nullable=False),
-        sa.Column('release_id', sa.Uuid(), nullable=False),
-        sa.Column('actor_id', sa.Uuid(), nullable=False),
-        sa.Column('request_id', sa.String(length=100), nullable=False),
-        sa.Column('question_sha256', sa.String(length=64), nullable=False),
-        sa.Column('evidence_ids', sa.JSON().with_variant(postgresql.JSONB(none_as_null=True, astext_type=Text()), 'postgresql'), nullable=False),
-        sa.Column('cited_evidence_ids', sa.JSON().with_variant(postgresql.JSONB(none_as_null=True, astext_type=Text()), 'postgresql'), nullable=False),
-        sa.Column('provider', sa.String(length=100), nullable=False),
-        sa.Column('model_identity', sa.String(length=200), nullable=False),
-        sa.Column('prompt_version', sa.String(length=200), nullable=False),
-        sa.Column('tool_schema_version', sa.String(length=200), nullable=False),
-        sa.Column('configuration_source', sa.String(length=32), nullable=True),
-        sa.Column('configuration_version', sa.Integer(), nullable=True),
-        sa.Column('configuration_hash', sa.String(length=64), nullable=True),
-        sa.Column('input_tokens', sa.Integer(), nullable=True),
-        sa.Column('output_tokens', sa.Integer(), nullable=True),
+        sa.Column('version', sa.String(length=100), nullable=False),
+        sa.Column('schema_document', sa.JSON().with_variant(postgresql.JSONB(none_as_null=True, astext_type=Text()), 'postgresql'), nullable=False),
+        sa.Column('checksum', sa.String(length=64), nullable=False),
+        sa.Column('status', sa.String(length=32), nullable=False),
+        sa.Column('schema_contract_version', sa.String(length=50), nullable=True),
+        sa.Column('base_ontology_version_id', sa.Uuid(), nullable=True),
+        sa.Column('created_by', sa.Uuid(), nullable=True),
         sa.Column('id', sa.Uuid(), nullable=False),
         sa.Column('created_at', sa.DateTime(timezone=True), server_default=sa.text('CURRENT_TIMESTAMP'), nullable=False),
         sa.Column('updated_at', sa.DateTime(timezone=True), server_default=sa.text('CURRENT_TIMESTAMP'), nullable=False),
-        sa.CheckConstraint("(configuration_source IS NULL AND configuration_version IS NULL AND configuration_hash IS NULL) OR (configuration_source = 'SYSTEM_CONFIGURATION' AND configuration_version > 0 AND configuration_hash ~ '^[0-9a-f]{64}$') OR (configuration_source = 'DEPLOYMENT' AND configuration_version IS NULL AND configuration_hash ~ '^[0-9a-f]{64}$')", name=op.f('ck_graphrag_audits_configuration_evidence_shape')),
-        sa.CheckConstraint("question_sha256 ~ '^[0-9a-f]{64}$'", name=op.f('ck_graphrag_audits_question_sha256')),
-        sa.CheckConstraint('input_tokens IS NULL OR input_tokens >= 0', name=op.f('ck_graphrag_audits_input_tokens_nonnegative')),
-        sa.CheckConstraint('output_tokens IS NULL OR output_tokens >= 0', name=op.f('ck_graphrag_audits_output_tokens_nonnegative')),
-        sa.ForeignKeyConstraint(['workspace_id', 'graph_id', 'release_id'], ['knowledge.releases.workspace_id', 'knowledge.releases.graph_id', 'knowledge.releases.id'], name=op.f('fk_graphrag_audits_workspace_id_graph_id_release_id_releases'), ondelete='RESTRICT'),
-        sa.PrimaryKeyConstraint('id', name=op.f('pk_graphrag_audits')),
-        sa.UniqueConstraint('workspace_id', 'request_id', name=op.f('uq_graphrag_audits_workspace_id_request_id')),
+        sa.ForeignKeyConstraint(['workspace_id', 'created_by'], ['iam.workspace_memberships.workspace_id', 'iam.workspace_memberships.subject_id'], name=op.f('fk_ontology_versions_workspace_id_created_by_workspace_memberships'), ondelete='RESTRICT'),
+        sa.ForeignKeyConstraint(['workspace_id', 'graph_id', 'base_ontology_version_id'], ['knowledge.ontology_versions.workspace_id', 'knowledge.ontology_versions.graph_id', 'knowledge.ontology_versions.id'], name=op.f('fk_ontology_versions_workspace_id_graph_id_base_ontology_version_id_ontology_versions'), ondelete='RESTRICT', use_alter=True),
+        sa.ForeignKeyConstraint(['workspace_id', 'graph_id'], ['knowledge.graphs.workspace_id', 'knowledge.graphs.id'], name=op.f('fk_ontology_versions_workspace_id_graph_id_graphs'), ondelete='CASCADE'),
+        sa.PrimaryKeyConstraint('id', name=op.f('pk_ontology_versions')),
+        sa.UniqueConstraint('graph_id', 'version', name=op.f('uq_ontology_versions_graph_id_version')),
+        sa.UniqueConstraint('workspace_id', 'graph_id', 'id', name=op.f('uq_ontology_versions_workspace_id_graph_id_id')),
         schema='knowledge'
         )
-        op.create_index('ix_graphrag_audits_release_created', 'graphrag_audits', ['release_id', 'created_at'], unique=False, schema='knowledge')
-        op.execute('ALTER TABLE knowledge.graphrag_audits ENABLE ROW LEVEL SECURITY')
-        op.execute('ALTER TABLE knowledge.graphrag_audits FORCE ROW LEVEL SECURITY')
-        op.execute("CREATE POLICY workspace_isolation ON knowledge.graphrag_audits USING (workspace_id = NULLIF(current_setting('app.workspace_id', true), '')::uuid) WITH CHECK (workspace_id = NULLIF(current_setting('app.workspace_id', true), '')::uuid)")
-        op.create_table('projection_deployments',
+        op.execute('ALTER TABLE knowledge.ontology_versions ENABLE ROW LEVEL SECURITY')
+        op.execute('ALTER TABLE knowledge.ontology_versions FORCE ROW LEVEL SECURITY')
+        op.execute("CREATE POLICY workspace_isolation ON knowledge.ontology_versions USING (workspace_id = NULLIF(current_setting('app.workspace_id', true), '')::uuid) WITH CHECK (workspace_id = NULLIF(current_setting('app.workspace_id', true), '')::uuid)")
+        op.create_table('source_snapshots',
         sa.Column('workspace_id', sa.Uuid(), nullable=False),
         sa.Column('graph_id', sa.Uuid(), nullable=False),
-        sa.Column('release_id', sa.Uuid(), nullable=False),
-        sa.Column('job_id', sa.Uuid(), nullable=True),
-        sa.Column('adapter', sa.String(length=100), nullable=False),
-        sa.Column('target_ref', sa.String(length=500), nullable=False),
-        sa.Column('state', sa.String(length=32), nullable=False),
-        sa.Column('content_hash', sa.String(length=64), nullable=True),
-        sa.Column('verification_hash', sa.String(length=64), nullable=True),
-        sa.Column('node_count', sa.Integer(), nullable=True),
-        sa.Column('edge_count', sa.Integer(), nullable=True),
-        sa.Column('verified_at', sa.DateTime(timezone=True), nullable=True),
-        sa.Column('error_code', sa.String(length=100), nullable=True),
-        sa.Column('id', sa.Uuid(), nullable=False),
-        sa.Column('created_at', sa.DateTime(timezone=True), server_default=sa.text('CURRENT_TIMESTAMP'), nullable=False),
-        sa.Column('updated_at', sa.DateTime(timezone=True), server_default=sa.text('CURRENT_TIMESTAMP'), nullable=False),
-        sa.ForeignKeyConstraint(['workspace_id', 'graph_id', 'release_id'], ['knowledge.releases.workspace_id', 'knowledge.releases.graph_id', 'knowledge.releases.id'], name=op.f('fk_projection_deployments_workspace_id_graph_id_release_id_releases'), ondelete='CASCADE'),
-        sa.PrimaryKeyConstraint('id', name=op.f('pk_projection_deployments')),
-        schema='knowledge'
-        )
-        op.create_index('ix_projection_deployments_release', 'projection_deployments', ['release_id', 'adapter'], unique=False, schema='knowledge')
-        op.execute('ALTER TABLE knowledge.projection_deployments ENABLE ROW LEVEL SECURITY')
-        op.execute('ALTER TABLE knowledge.projection_deployments FORCE ROW LEVEL SECURITY')
-        op.execute("CREATE POLICY workspace_isolation ON knowledge.projection_deployments USING (workspace_id = NULLIF(current_setting('app.workspace_id', true), '')::uuid) WITH CHECK (workspace_id = NULLIF(current_setting('app.workspace_id', true), '')::uuid)")
-        op.create_table('release_edges',
-        sa.Column('workspace_id', sa.Uuid(), nullable=False),
-        sa.Column('release_id', sa.Uuid(), nullable=False),
-        sa.Column('edge_id', sa.Uuid(), nullable=False),
-        sa.Column('source_entity_id', sa.Uuid(), nullable=False),
-        sa.Column('target_entity_id', sa.Uuid(), nullable=False),
-        sa.Column('edge_type', sa.String(length=100), nullable=False),
-        sa.Column('properties', sa.JSON().with_variant(postgresql.JSONB(none_as_null=True, astext_type=Text()), 'postgresql'), nullable=False),
-        sa.Column('classification', sa.Integer(), nullable=False),
-        sa.Column('provenance', sa.JSON().with_variant(postgresql.JSONB(none_as_null=True, astext_type=Text()), 'postgresql'), nullable=False),
-        sa.ForeignKeyConstraint(['workspace_id', 'release_id'], ['knowledge.releases.workspace_id', 'knowledge.releases.id'], name=op.f('fk_release_edges_workspace_id_release_id_releases'), ondelete='CASCADE'),
-        sa.PrimaryKeyConstraint('release_id', 'edge_id', name=op.f('pk_release_edges')),
-        schema='knowledge'
-        )
-        op.create_index('ix_release_edges_source', 'release_edges', ['release_id', 'source_entity_id', 'edge_type'], unique=False, schema='knowledge')
-        op.create_index('ix_release_edges_target', 'release_edges', ['release_id', 'target_entity_id', 'edge_type'], unique=False, schema='knowledge')
-        op.execute('ALTER TABLE knowledge.release_edges ENABLE ROW LEVEL SECURITY')
-        op.execute('ALTER TABLE knowledge.release_edges FORCE ROW LEVEL SECURITY')
-        op.execute("CREATE POLICY workspace_isolation ON knowledge.release_edges USING (workspace_id = NULLIF(current_setting('app.workspace_id', true), '')::uuid) WITH CHECK (workspace_id = NULLIF(current_setting('app.workspace_id', true), '')::uuid)")
-        op.create_table('release_nodes',
-        sa.Column('workspace_id', sa.Uuid(), nullable=False),
-        sa.Column('release_id', sa.Uuid(), nullable=False),
-        sa.Column('entity_id', sa.Uuid(), nullable=False),
-        sa.Column('entity_type', sa.String(length=100), nullable=False),
-        sa.Column('properties', sa.JSON().with_variant(postgresql.JSONB(none_as_null=True, astext_type=Text()), 'postgresql'), nullable=False),
-        sa.Column('classification', sa.Integer(), nullable=False),
-        sa.Column('provenance', sa.JSON().with_variant(postgresql.JSONB(none_as_null=True, astext_type=Text()), 'postgresql'), nullable=False),
-        sa.ForeignKeyConstraint(['workspace_id', 'release_id'], ['knowledge.releases.workspace_id', 'knowledge.releases.id'], name=op.f('fk_release_nodes_workspace_id_release_id_releases'), ondelete='CASCADE'),
-        sa.PrimaryKeyConstraint('release_id', 'entity_id', name=op.f('pk_release_nodes')),
-        schema='knowledge'
-        )
-        op.execute('ALTER TABLE knowledge.release_nodes ENABLE ROW LEVEL SECURITY')
-        op.execute('ALTER TABLE knowledge.release_nodes FORCE ROW LEVEL SECURITY')
-        op.execute("CREATE POLICY workspace_isolation ON knowledge.release_nodes USING (workspace_id = NULLIF(current_setting('app.workspace_id', true), '')::uuid) WITH CHECK (workspace_id = NULLIF(current_setting('app.workspace_id', true), '')::uuid)")
-        op.create_table('source_analysis_attempts',
-        sa.Column('workspace_id', sa.Uuid(), nullable=False),
-        sa.Column('job_id', sa.Uuid(), nullable=False),
-        sa.Column('attempt_no', sa.Integer(), nullable=False),
-        sa.Column('lease_epoch', sa.Integer(), nullable=False),
-        sa.Column('lease_token_hash', sa.String(length=64), nullable=False),
-        sa.Column('worker_fingerprint', sa.String(length=255), nullable=False),
-        sa.Column('state', sa.String(length=32), nullable=False),
-        sa.Column('stage', sa.String(length=32), nullable=False),
-        sa.Column('input_hash', sa.String(length=64), nullable=False),
-        sa.Column('output_hash', sa.String(length=64), nullable=True),
-        sa.Column('external_response_hash', sa.String(length=64), nullable=True),
-        sa.Column('retryable', sa.Boolean(), nullable=False),
-        sa.Column('failure_code', sa.String(length=100), nullable=True),
-        sa.Column('started_at', sa.DateTime(timezone=True), nullable=False),
-        sa.Column('finished_at', sa.DateTime(timezone=True), nullable=True),
-        sa.Column('id', sa.Uuid(), nullable=False),
-        sa.CheckConstraint("(state = 'RUNNING' AND finished_at IS NULL) OR (state <> 'RUNNING' AND finished_at IS NOT NULL)", name=op.f('ck_source_analysis_attempts_terminal_shape')),
-        sa.CheckConstraint("input_hash ~ '^[0-9a-f]{64}$' AND (output_hash IS NULL OR output_hash ~ '^[0-9a-f]{64}$') AND (external_response_hash IS NULL OR external_response_hash ~ '^[0-9a-f]{64}$')", name=op.f('ck_source_analysis_attempts_evidence_hashes')),
-        sa.CheckConstraint("lease_token_hash ~ '^[0-9a-f]{64}$'", name=op.f('ck_source_analysis_attempts_lease_token_hash')),
-        sa.CheckConstraint("stage IN ('SOURCE_READ', 'PARSED', 'EMBEDDED', 'EXTRACTED', 'FINALIZING', 'COMPLETED')", name=op.f('ck_source_analysis_attempts_stage_vocabulary')),
-        sa.CheckConstraint("state IN ('RUNNING', 'SUCCEEDED', 'FAILED', 'STALE', 'CANCELLED', 'SUPERSEDED')", name=op.f('ck_source_analysis_attempts_state_vocabulary')),
-        sa.CheckConstraint('attempt_no > 0 AND lease_epoch > 0', name=op.f('ck_source_analysis_attempts_counters')),
-        sa.ForeignKeyConstraint(['workspace_id', 'job_id'], ['knowledge.source_analysis_jobs.workspace_id', 'knowledge.source_analysis_jobs.id'], name=op.f('fk_source_analysis_attempts_workspace_id_job_id_source_analysis_jobs'), ondelete='RESTRICT'),
-        sa.PrimaryKeyConstraint('id', name=op.f('pk_source_analysis_attempts')),
-        sa.UniqueConstraint('workspace_id', 'id', name=op.f('uq_source_analysis_attempts_workspace_id_id')),
-        sa.UniqueConstraint('workspace_id', 'job_id', 'attempt_no', name=op.f('uq_source_analysis_attempts_workspace_id_job_id_attempt_no')),
-        sa.UniqueConstraint('workspace_id', 'job_id', 'lease_epoch', name=op.f('uq_source_analysis_attempts_workspace_id_job_id_lease_epoch')),
-        schema='knowledge'
-        )
-        op.create_index('ix_source_analysis_attempts_job', 'source_analysis_attempts', ['workspace_id', 'job_id', 'attempt_no'], unique=False, schema='knowledge')
-        op.execute('ALTER TABLE knowledge.source_analysis_attempts ENABLE ROW LEVEL SECURITY')
-        op.execute('ALTER TABLE knowledge.source_analysis_attempts FORCE ROW LEVEL SECURITY')
-        op.execute("CREATE POLICY workspace_isolation ON knowledge.source_analysis_attempts USING (workspace_id = NULLIF(current_setting('app.workspace_id', true), '')::uuid) WITH CHECK (workspace_id = NULLIF(current_setting('app.workspace_id', true), '')::uuid)")
-        op.create_table('source_page_embeddings',
-        sa.Column('workspace_id', sa.Uuid(), nullable=False),
-        sa.Column('source_snapshot_id', sa.Uuid(), nullable=False),
-        sa.Column('page_number', sa.Integer(), nullable=False),
-        sa.Column('provider', sa.String(length=100), nullable=False),
-        sa.Column('model_identity', sa.String(length=200), nullable=False),
-        sa.Column('dimension', sa.Integer(), nullable=False),
-        sa.Column('embedding', sa.JSON().with_variant(postgresql.JSONB(none_as_null=True, astext_type=Text()), 'postgresql'), nullable=False),
+        sa.Column('upload_id', sa.Uuid(), nullable=False),
+        sa.Column('bucket', sa.String(length=255), nullable=False),
+        sa.Column('object_key', sa.Text(), nullable=False),
+        sa.Column('storage_version', sa.String(length=255), nullable=False),
+        sa.Column('media_type', sa.String(length=100), nullable=False),
+        sa.Column('byte_size', sa.BigInteger(), nullable=False),
         sa.Column('content_sha256', sa.String(length=64), nullable=False),
+        sa.Column('classification', sa.Integer(), nullable=False),
+        sa.Column('state', sa.String(length=32), nullable=False),
+        sa.Column('created_by', sa.Uuid(), nullable=False),
         sa.Column('id', sa.Uuid(), nullable=False),
         sa.Column('created_at', sa.DateTime(timezone=True), server_default=sa.text('CURRENT_TIMESTAMP'), nullable=False),
         sa.Column('updated_at', sa.DateTime(timezone=True), server_default=sa.text('CURRENT_TIMESTAMP'), nullable=False),
-        sa.CheckConstraint("content_sha256 ~ '^[0-9a-f]{64}$'", name=op.f('ck_source_page_embeddings_content_sha256')),
-        sa.CheckConstraint('dimension > 0 AND dimension <= 16384', name=op.f('ck_source_page_embeddings_bounded_dimension')),
-        sa.ForeignKeyConstraint(['workspace_id', 'source_snapshot_id', 'page_number'], ['knowledge.source_pages.workspace_id', 'knowledge.source_pages.source_snapshot_id', 'knowledge.source_pages.page_number'], name=op.f('fk_source_page_embeddings_workspace_id_source_snapshot_id_page_number_source_pages'), ondelete='CASCADE'),
-        sa.PrimaryKeyConstraint('id', name=op.f('pk_source_page_embeddings')),
-        sa.UniqueConstraint('source_snapshot_id', 'page_number', 'provider', 'model_identity', name=op.f('uq_source_page_embeddings_source_snapshot_id_page_number_provider_model_identity')),
+        sa.CheckConstraint("content_sha256 ~ '^[0-9a-f]{64}$'", name=op.f('ck_source_snapshots_content_sha256')),
+        sa.CheckConstraint("media_type = 'application/pdf'", name=op.f('ck_source_snapshots_pdf_media_type')),
+        sa.CheckConstraint("state IN ('PENDING', 'ANALYZED', 'FAILED')", name=op.f('ck_source_snapshots_state_vocabulary')),
+        sa.CheckConstraint('byte_size > 0 AND byte_size <= 52428800', name=op.f('ck_source_snapshots_bounded_size')),
+        sa.ForeignKeyConstraint(['workspace_id', 'graph_id'], ['knowledge.graphs.workspace_id', 'knowledge.graphs.id'], name=op.f('fk_source_snapshots_workspace_id_graph_id_graphs'), ondelete='CASCADE'),
+        sa.ForeignKeyConstraint(['workspace_id', 'upload_id'], ['integration.object_manifests.workspace_id', 'integration.object_manifests.id'], name=op.f('fk_source_snapshots_workspace_id_upload_id_object_manifests'), ondelete='RESTRICT'),
+        sa.PrimaryKeyConstraint('id', name=op.f('pk_source_snapshots')),
+        sa.UniqueConstraint('workspace_id', 'graph_id', 'upload_id', name=op.f('uq_source_snapshots_workspace_id_graph_id_upload_id')),
+        sa.UniqueConstraint('workspace_id', 'id', name=op.f('uq_source_snapshots_workspace_id_id')),
         schema='knowledge'
         )
-        op.create_index('ix_source_page_embeddings_source', 'source_page_embeddings', ['source_snapshot_id', 'page_number'], unique=False, schema='knowledge')
-        op.execute('ALTER TABLE knowledge.source_page_embeddings ENABLE ROW LEVEL SECURITY')
-        op.execute('ALTER TABLE knowledge.source_page_embeddings FORCE ROW LEVEL SECURITY')
-        op.execute("CREATE POLICY workspace_isolation ON knowledge.source_page_embeddings USING (workspace_id = NULLIF(current_setting('app.workspace_id', true), '')::uuid) WITH CHECK (workspace_id = NULLIF(current_setting('app.workspace_id', true), '')::uuid)")
-        op.create_table('validation_results',
-        sa.Column('workspace_id', sa.Uuid(), nullable=False),
-        sa.Column('changeset_id', sa.Uuid(), nullable=False),
-        sa.Column('validator', sa.String(length=100), nullable=False),
-        sa.Column('validator_version', sa.String(length=100), nullable=False),
-        sa.Column('severity', sa.String(length=20), nullable=False),
-        sa.Column('code', sa.String(length=100), nullable=False),
-        sa.Column('location', sa.Text(), nullable=False),
-        sa.Column('message', sa.Text(), nullable=False),
-        sa.Column('id', sa.Uuid(), nullable=False),
-        sa.Column('created_at', sa.DateTime(timezone=True), server_default=sa.text('CURRENT_TIMESTAMP'), nullable=False),
-        sa.Column('updated_at', sa.DateTime(timezone=True), server_default=sa.text('CURRENT_TIMESTAMP'), nullable=False),
-        sa.ForeignKeyConstraint(['workspace_id', 'changeset_id'], ['knowledge.changesets.workspace_id', 'knowledge.changesets.id'], name=op.f('fk_validation_results_workspace_id_changeset_id_changesets'), ondelete='CASCADE'),
-        sa.PrimaryKeyConstraint('id', name=op.f('pk_validation_results')),
-        schema='knowledge'
-        )
-        op.create_index('ix_validation_results_changeset', 'validation_results', ['changeset_id', 'severity'], unique=False, schema='knowledge')
-        op.execute('ALTER TABLE knowledge.validation_results ENABLE ROW LEVEL SECURITY')
-        op.execute('ALTER TABLE knowledge.validation_results FORCE ROW LEVEL SECURITY')
-        op.execute("CREATE POLICY workspace_isolation ON knowledge.validation_results USING (workspace_id = NULLIF(current_setting('app.workspace_id', true), '')::uuid) WITH CHECK (workspace_id = NULLIF(current_setting('app.workspace_id', true), '')::uuid)")
+        op.create_index('ix_source_snapshots_graph_created', 'source_snapshots', ['graph_id', 'created_at'], unique=False, schema='knowledge')
+        op.execute('ALTER TABLE knowledge.source_snapshots ENABLE ROW LEVEL SECURITY')
+        op.execute('ALTER TABLE knowledge.source_snapshots FORCE ROW LEVEL SECURITY')
+        op.execute("CREATE POLICY workspace_isolation ON knowledge.source_snapshots USING (workspace_id = NULLIF(current_setting('app.workspace_id', true), '')::uuid) WITH CHECK (workspace_id = NULLIF(current_setting('app.workspace_id', true), '')::uuid)")
         op.create_table('external_service_profile_versions',
         sa.Column('workspace_id', sa.Uuid(), nullable=False),
         sa.Column('profile_id', sa.Uuid(), nullable=False),
@@ -2321,35 +1973,31 @@ def upgrade() -> None:
         op.execute('ALTER TABLE retention.policy_class_rules ENABLE ROW LEVEL SECURITY')
         op.execute('ALTER TABLE retention.policy_class_rules FORCE ROW LEVEL SECURITY')
         op.execute("CREATE POLICY workspace_isolation ON retention.policy_class_rules USING (workspace_id = NULLIF(current_setting('app.workspace_id', true), '')::uuid) WITH CHECK (workspace_id = NULLIF(current_setting('app.workspace_id', true), '')::uuid)")
-        op.create_table('api_product_versions',
+        op.create_table('api_products',
         sa.Column('workspace_id', sa.Uuid(), nullable=False),
-        sa.Column('product_id', sa.Uuid(), nullable=False),
+        sa.Column('slug', sa.String(length=100), nullable=False),
+        sa.Column('name', sa.String(length=255), nullable=False),
+        sa.Column('description', sa.Text(), nullable=False),
         sa.Column('graph_id', sa.Uuid(), nullable=False),
-        sa.Column('release_id', sa.Uuid(), nullable=False),
-        sa.Column('version_no', sa.Integer(), nullable=False),
-        sa.Column('surface', sa.String(length=32), nullable=False),
-        sa.Column('contract_document', sa.JSON().with_variant(postgresql.JSONB(none_as_null=True, astext_type=Text()), 'postgresql'), nullable=False),
-        sa.Column('maximum_hops', sa.Integer(), nullable=False),
-        sa.Column('maximum_nodes', sa.Integer(), nullable=False),
-        sa.Column('timeout_ms', sa.Integer(), nullable=False),
+        sa.Column('classification', sa.Integer(), nullable=False),
+        sa.Column('owner_id', sa.Uuid(), nullable=False),
         sa.Column('state', sa.String(length=32), nullable=False),
-        sa.Column('created_by', sa.Uuid(), nullable=False),
-        sa.Column('published_by', sa.Uuid(), nullable=True),
-        sa.Column('published_at', sa.DateTime(timezone=True), nullable=True),
+        sa.Column('current_version_id', sa.Uuid(), nullable=True),
         sa.Column('id', sa.Uuid(), nullable=False),
         sa.Column('created_at', sa.DateTime(timezone=True), server_default=sa.text('CURRENT_TIMESTAMP'), nullable=False),
         sa.Column('updated_at', sa.DateTime(timezone=True), server_default=sa.text('CURRENT_TIMESTAMP'), nullable=False),
-        sa.ForeignKeyConstraint(['workspace_id', 'graph_id', 'product_id'], ['sharing.api_products.workspace_id', 'sharing.api_products.graph_id', 'sharing.api_products.id'], name=op.f('fk_api_product_versions_workspace_id_graph_id_product_id_api_products'), ondelete='CASCADE'),
-        sa.ForeignKeyConstraint(['workspace_id', 'graph_id', 'release_id'], ['knowledge.releases.workspace_id', 'knowledge.releases.graph_id', 'knowledge.releases.id'], name=op.f('fk_api_product_versions_workspace_id_graph_id_release_id_releases')),
-        sa.PrimaryKeyConstraint('id', name=op.f('pk_api_product_versions')),
-        sa.UniqueConstraint('workspace_id', 'product_id', 'id', name=op.f('uq_api_product_versions_workspace_id_product_id_id')),
-        sa.UniqueConstraint('workspace_id', 'product_id', 'version_no', name=op.f('uq_api_product_versions_workspace_id_product_id_version_no')),
+        sa.Column('version', sa.Integer(), nullable=False),
+        sa.ForeignKeyConstraint(['workspace_id', 'graph_id'], ['knowledge.graphs.workspace_id', 'knowledge.graphs.id'], name=op.f('fk_api_products_workspace_id_graph_id_graphs')),
+        sa.ForeignKeyConstraint(['workspace_id', 'id', 'current_version_id'], ['sharing.api_product_versions.workspace_id', 'sharing.api_product_versions.product_id', 'sharing.api_product_versions.id'], name=op.f('fk_api_products_workspace_id_id_current_version_id_api_product_versions'), use_alter=True),
+        sa.PrimaryKeyConstraint('id', name=op.f('pk_api_products')),
+        sa.UniqueConstraint('workspace_id', 'graph_id', 'id', name=op.f('uq_api_products_workspace_id_graph_id_id')),
+        sa.UniqueConstraint('workspace_id', 'slug', name=op.f('uq_api_products_workspace_id_slug')),
         schema='sharing'
         )
-        op.create_index('ix_api_product_versions_product_state', 'api_product_versions', ['product_id', 'state', 'version_no'], unique=False, schema='sharing')
-        op.execute('ALTER TABLE sharing.api_product_versions ENABLE ROW LEVEL SECURITY')
-        op.execute('ALTER TABLE sharing.api_product_versions FORCE ROW LEVEL SECURITY')
-        op.execute("CREATE POLICY workspace_isolation ON sharing.api_product_versions USING (workspace_id = NULLIF(current_setting('app.workspace_id', true), '')::uuid) WITH CHECK (workspace_id = NULLIF(current_setting('app.workspace_id', true), '')::uuid)")
+        op.create_index('ix_api_products_workspace_state', 'api_products', ['workspace_id', 'state', 'updated_at'], unique=False, schema='sharing')
+        op.execute('ALTER TABLE sharing.api_products ENABLE ROW LEVEL SECURITY')
+        op.execute('ALTER TABLE sharing.api_products FORCE ROW LEVEL SECURITY')
+        op.execute("CREATE POLICY workspace_isolation ON sharing.api_products USING (workspace_id = NULLIF(current_setting('app.workspace_id', true), '')::uuid) WITH CHECK (workspace_id = NULLIF(current_setting('app.workspace_id', true), '')::uuid)")
         op.create_table('chat_messages',
         sa.Column('workspace_id', sa.Uuid(), nullable=False),
         sa.Column('session_id', sa.Uuid(), nullable=False),
@@ -2550,68 +2198,205 @@ def upgrade() -> None:
         op.execute('ALTER TABLE integration.upload_registration_candidates ENABLE ROW LEVEL SECURITY')
         op.execute('ALTER TABLE integration.upload_registration_candidates FORCE ROW LEVEL SECURITY')
         op.execute("CREATE POLICY workspace_isolation ON integration.upload_registration_candidates USING (workspace_id = NULLIF(current_setting('app.workspace_id', true), '')::uuid) WITH CHECK (workspace_id = NULLIF(current_setting('app.workspace_id', true), '')::uuid)")
-        op.create_table('extraction_runs',
+        op.create_table('changesets',
         sa.Column('workspace_id', sa.Uuid(), nullable=False),
         sa.Column('graph_id', sa.Uuid(), nullable=False),
-        sa.Column('source_snapshot_id', sa.Uuid(), nullable=False),
-        sa.Column('proposed_changeset_id', sa.Uuid(), nullable=False),
-        sa.Column('source_analysis_job_id', sa.Uuid(), nullable=True),
-        sa.Column('source_analysis_attempt_id', sa.Uuid(), nullable=True),
-        sa.Column('contract_version', sa.String(length=32), server_default='LEGACY_SYNC_V1', nullable=False),
+        sa.Column('base_release_id', sa.Uuid(), nullable=True),
+        sa.Column('ontology_version_id', sa.Uuid(), nullable=False),
+        sa.Column('title', sa.String(length=500), nullable=False),
         sa.Column('state', sa.String(length=32), nullable=False),
-        sa.Column('parser_config_hash', sa.String(length=64), nullable=False),
-        sa.Column('embedding_binding', sa.JSON().with_variant(postgresql.JSONB(none_as_null=True, astext_type=Text()), 'postgresql'), nullable=False),
-        sa.Column('extraction_binding', sa.JSON().with_variant(postgresql.JSONB(none_as_null=True, astext_type=Text()), 'postgresql'), nullable=False),
-        sa.Column('input_hash', sa.String(length=64), nullable=False),
-        sa.Column('output_hash', sa.String(length=64), nullable=False),
-        sa.Column('error_code', sa.String(length=100), nullable=True),
+        sa.Column('author_id', sa.Uuid(), nullable=False),
+        sa.Column('source_analysis_job_id', sa.Uuid(), nullable=True),
+        sa.Column('reviewed_by', sa.Uuid(), nullable=True),
+        sa.Column('reviewed_at', sa.DateTime(timezone=True), nullable=True),
+        sa.Column('review_reason', sa.Text(), nullable=True),
+        sa.Column('published_release_id', sa.Uuid(), nullable=True),
         sa.Column('id', sa.Uuid(), nullable=False),
         sa.Column('created_at', sa.DateTime(timezone=True), server_default=sa.text('CURRENT_TIMESTAMP'), nullable=False),
         sa.Column('updated_at', sa.DateTime(timezone=True), server_default=sa.text('CURRENT_TIMESTAMP'), nullable=False),
         sa.Column('version', sa.Integer(), nullable=False),
-        sa.CheckConstraint("contract_version IN ('LEGACY_SYNC_V1', 'DURABLE_SOURCE_V1') AND ((contract_version = 'LEGACY_SYNC_V1' AND source_analysis_job_id IS NULL AND source_analysis_attempt_id IS NULL) OR (contract_version = 'DURABLE_SOURCE_V1' AND source_analysis_job_id IS NOT NULL AND source_analysis_attempt_id IS NOT NULL))", name=op.f('ck_extraction_runs_contract_shape')),
-        sa.CheckConstraint("input_hash ~ '^[0-9a-f]{64}$'", name=op.f('ck_extraction_runs_input_hash')),
-        sa.CheckConstraint("output_hash ~ '^[0-9a-f]{64}$'", name=op.f('ck_extraction_runs_output_hash')),
-        sa.CheckConstraint("state IN ('SUCCEEDED', 'FAILED')", name=op.f('ck_extraction_runs_state_vocabulary')),
-        sa.ForeignKeyConstraint(['workspace_id', 'graph_id'], ['knowledge.graphs.workspace_id', 'knowledge.graphs.id'], name=op.f('fk_extraction_runs_workspace_id_graph_id_graphs'), ondelete='CASCADE'),
-        sa.ForeignKeyConstraint(['workspace_id', 'proposed_changeset_id'], ['knowledge.changesets.workspace_id', 'knowledge.changesets.id'], name=op.f('fk_extraction_runs_workspace_id_proposed_changeset_id_changesets'), ondelete='RESTRICT'),
-        sa.ForeignKeyConstraint(['workspace_id', 'source_analysis_attempt_id'], ['knowledge.source_analysis_attempts.workspace_id', 'knowledge.source_analysis_attempts.id'], name=op.f('fk_extraction_runs_workspace_id_source_analysis_attempt_id_source_analysis_attempts'), ondelete='RESTRICT'),
-        sa.ForeignKeyConstraint(['workspace_id', 'source_analysis_job_id'], ['knowledge.source_analysis_jobs.workspace_id', 'knowledge.source_analysis_jobs.id'], name=op.f('fk_extraction_runs_workspace_id_source_analysis_job_id_source_analysis_jobs'), ondelete='RESTRICT'),
-        sa.ForeignKeyConstraint(['workspace_id', 'source_snapshot_id'], ['knowledge.source_snapshots.workspace_id', 'knowledge.source_snapshots.id'], name=op.f('fk_extraction_runs_workspace_id_source_snapshot_id_source_snapshots'), ondelete='RESTRICT'),
-        sa.PrimaryKeyConstraint('id', name=op.f('pk_extraction_runs')),
-        sa.UniqueConstraint('workspace_id', 'id', name=op.f('uq_extraction_runs_workspace_id_id')),
+        sa.ForeignKeyConstraint(['workspace_id', 'graph_id', 'base_release_id'], ['knowledge.releases.workspace_id', 'knowledge.releases.graph_id', 'knowledge.releases.id'], name=op.f('fk_changesets_workspace_id_graph_id_base_release_id_releases'), use_alter=True),
+        sa.ForeignKeyConstraint(['workspace_id', 'graph_id', 'ontology_version_id'], ['knowledge.ontology_versions.workspace_id', 'knowledge.ontology_versions.graph_id', 'knowledge.ontology_versions.id'], name=op.f('fk_changesets_workspace_id_graph_id_ontology_version_id_ontology_versions')),
+        sa.ForeignKeyConstraint(['workspace_id', 'graph_id', 'published_release_id'], ['knowledge.releases.workspace_id', 'knowledge.releases.graph_id', 'knowledge.releases.id'], name=op.f('fk_changesets_workspace_id_graph_id_published_release_id_releases'), use_alter=True),
+        sa.ForeignKeyConstraint(['workspace_id', 'graph_id'], ['knowledge.graphs.workspace_id', 'knowledge.graphs.id'], name=op.f('fk_changesets_workspace_id_graph_id_graphs'), ondelete='CASCADE'),
+        sa.ForeignKeyConstraint(['workspace_id', 'source_analysis_job_id'], ['knowledge.source_analysis_jobs.workspace_id', 'knowledge.source_analysis_jobs.id'], name=op.f('fk_changesets_workspace_id_source_analysis_job_id_source_analysis_jobs'), ondelete='RESTRICT', use_alter=True),
+        sa.PrimaryKeyConstraint('id', name=op.f('pk_changesets')),
+        sa.UniqueConstraint('workspace_id', 'graph_id', 'id', name=op.f('uq_changesets_workspace_id_graph_id_id')),
+        sa.UniqueConstraint('workspace_id', 'id', name=op.f('uq_changesets_workspace_id_id')),
         schema='knowledge'
         )
-        op.create_index('ix_extraction_runs_graph_created', 'extraction_runs', ['graph_id', 'created_at'], unique=False, schema='knowledge')
-        op.execute('ALTER TABLE knowledge.extraction_runs ENABLE ROW LEVEL SECURITY')
-        op.execute('ALTER TABLE knowledge.extraction_runs FORCE ROW LEVEL SECURITY')
-        op.execute("CREATE POLICY workspace_isolation ON knowledge.extraction_runs USING (workspace_id = NULLIF(current_setting('app.workspace_id', true), '')::uuid) WITH CHECK (workspace_id = NULLIF(current_setting('app.workspace_id', true), '')::uuid)")
-        op.create_table('source_analysis_events',
-        sa.Column('id', sa.Uuid(), nullable=False),
+        op.create_index('ix_changesets_graph_state', 'changesets', ['graph_id', 'state', 'created_at'], unique=False, schema='knowledge')
+        op.execute('ALTER TABLE knowledge.changesets ENABLE ROW LEVEL SECURITY')
+        op.execute('ALTER TABLE knowledge.changesets FORCE ROW LEVEL SECURITY')
+        op.execute("CREATE POLICY workspace_isolation ON knowledge.changesets USING (workspace_id = NULLIF(current_setting('app.workspace_id', true), '')::uuid) WITH CHECK (workspace_id = NULLIF(current_setting('app.workspace_id', true), '')::uuid)")
+        op.create_table('releases',
         sa.Column('workspace_id', sa.Uuid(), nullable=False),
-        sa.Column('job_id', sa.Uuid(), nullable=False),
-        sa.Column('sequence', sa.Integer(), nullable=False),
-        sa.Column('attempt_id', sa.Uuid(), nullable=True),
-        sa.Column('event_type', sa.String(length=100), nullable=False),
-        sa.Column('actor_ref', sa.String(length=255), nullable=False),
-        sa.Column('reason_code', sa.String(length=100), nullable=True),
-        sa.Column('evidence_hash', sa.String(length=64), nullable=False),
-        sa.Column('details', sa.JSON().with_variant(postgresql.JSONB(none_as_null=True, astext_type=Text()), 'postgresql'), nullable=False),
-        sa.Column('occurred_at', sa.DateTime(timezone=True), nullable=False),
-        sa.CheckConstraint("evidence_hash ~ '^[0-9a-f]{64}$'", name=op.f('ck_source_analysis_events_evidence_hash')),
-        sa.CheckConstraint('sequence > 0', name=op.f('ck_source_analysis_events_sequence_positive')),
-        sa.ForeignKeyConstraint(['workspace_id', 'attempt_id'], ['knowledge.source_analysis_attempts.workspace_id', 'knowledge.source_analysis_attempts.id'], name=op.f('fk_source_analysis_events_workspace_id_attempt_id_source_analysis_attempts'), ondelete='RESTRICT'),
-        sa.ForeignKeyConstraint(['workspace_id', 'job_id'], ['knowledge.source_analysis_jobs.workspace_id', 'knowledge.source_analysis_jobs.id'], name=op.f('fk_source_analysis_events_workspace_id_job_id_source_analysis_jobs'), ondelete='RESTRICT'),
-        sa.PrimaryKeyConstraint('id', name=op.f('pk_source_analysis_events')),
-        sa.UniqueConstraint('workspace_id', 'job_id', 'sequence', name=op.f('uq_source_analysis_events_workspace_id_job_id_sequence')),
+        sa.Column('graph_id', sa.Uuid(), nullable=False),
+        sa.Column('release_no', sa.Integer(), nullable=False),
+        sa.Column('ontology_version_id', sa.Uuid(), nullable=False),
+        sa.Column('content_hash', sa.String(length=64), nullable=False),
+        sa.Column('node_count', sa.Integer(), nullable=False),
+        sa.Column('edge_count', sa.Integer(), nullable=False),
+        sa.Column('manifest_ref', sa.Text(), nullable=True),
+        sa.Column('published_by', sa.Uuid(), nullable=False),
+        sa.Column('published_at', sa.DateTime(timezone=True), nullable=False),
+        sa.Column('deprecated_at', sa.DateTime(timezone=True), nullable=True),
+        sa.Column('id', sa.Uuid(), nullable=False),
+        sa.ForeignKeyConstraint(['workspace_id', 'graph_id', 'ontology_version_id'], ['knowledge.ontology_versions.workspace_id', 'knowledge.ontology_versions.graph_id', 'knowledge.ontology_versions.id'], name=op.f('fk_releases_workspace_id_graph_id_ontology_version_id_ontology_versions')),
+        sa.ForeignKeyConstraint(['workspace_id', 'graph_id'], ['knowledge.graphs.workspace_id', 'knowledge.graphs.id'], name=op.f('fk_releases_workspace_id_graph_id_graphs'), ondelete='CASCADE'),
+        sa.PrimaryKeyConstraint('id', name=op.f('pk_releases')),
+        sa.UniqueConstraint('graph_id', 'content_hash', name=op.f('uq_releases_graph_id_content_hash')),
+        sa.UniqueConstraint('graph_id', 'release_no', name=op.f('uq_releases_graph_id_release_no')),
+        sa.UniqueConstraint('workspace_id', 'graph_id', 'id', name=op.f('uq_releases_workspace_id_graph_id_id')),
+        sa.UniqueConstraint('workspace_id', 'id', name=op.f('uq_releases_workspace_id_id')),
         schema='knowledge'
         )
-        op.create_index('ix_source_analysis_events_job', 'source_analysis_events', ['workspace_id', 'job_id', 'sequence'], unique=False, schema='knowledge')
-        op.create_index('ux_source_analysis_events_transition_evidence', 'source_analysis_events', ['workspace_id', 'job_id', 'event_type', 'occurred_at'], unique=True, schema='knowledge')
-        op.execute('ALTER TABLE knowledge.source_analysis_events ENABLE ROW LEVEL SECURITY')
-        op.execute('ALTER TABLE knowledge.source_analysis_events FORCE ROW LEVEL SECURITY')
-        op.execute("CREATE POLICY workspace_isolation ON knowledge.source_analysis_events USING (workspace_id = NULLIF(current_setting('app.workspace_id', true), '')::uuid) WITH CHECK (workspace_id = NULLIF(current_setting('app.workspace_id', true), '')::uuid)")
-        op.execute("CREATE POLICY source_analysis_event_owner_select ON knowledge.source_analysis_events AS RESTRICTIVE FOR SELECT TO datariver_app USING (EXISTS (SELECT 1 FROM knowledge.source_analysis_jobs AS job WHERE job.workspace_id = source_analysis_events.workspace_id AND job.id = source_analysis_events.job_id AND job.requested_by = NULLIF(current_setting('app.subject_id', true), '')::uuid))")
+        op.execute('ALTER TABLE knowledge.releases ENABLE ROW LEVEL SECURITY')
+        op.execute('ALTER TABLE knowledge.releases FORCE ROW LEVEL SECURITY')
+        op.execute("CREATE POLICY workspace_isolation ON knowledge.releases USING (workspace_id = NULLIF(current_setting('app.workspace_id', true), '')::uuid) WITH CHECK (workspace_id = NULLIF(current_setting('app.workspace_id', true), '')::uuid)")
+        op.create_table('source_analysis_jobs',
+        sa.Column('workspace_id', sa.Uuid(), nullable=False),
+        sa.Column('graph_id', sa.Uuid(), nullable=False),
+        sa.Column('source_snapshot_id', sa.Uuid(), nullable=False),
+        sa.Column('requested_by', sa.Uuid(), nullable=False),
+        sa.Column('title', sa.String(length=500), nullable=False),
+        sa.Column('request_hash', sa.String(length=64), nullable=False),
+        sa.Column('requester_authorization_hash', sa.String(length=64), nullable=False),
+        sa.Column('source_storage_version', sa.String(length=255), nullable=False),
+        sa.Column('source_content_sha256', sa.String(length=64), nullable=False),
+        sa.Column('source_classification', sa.Integer(), nullable=False),
+        sa.Column('graph_version', sa.Integer(), nullable=False),
+        sa.Column('base_kind', sa.String(length=20), nullable=False),
+        sa.Column('base_release_id', sa.Uuid(), nullable=True),
+        sa.Column('base_release_hash', sa.String(length=64), nullable=True),
+        sa.Column('ontology_version_id', sa.Uuid(), nullable=False),
+        sa.Column('ontology_checksum', sa.String(length=64), nullable=False),
+        sa.Column('parser_config_hash', sa.String(length=64), nullable=False),
+        sa.Column('embedding_binding', sa.JSON().with_variant(postgresql.JSONB(none_as_null=True, astext_type=Text()), 'postgresql'), nullable=False),
+        sa.Column('embedding_binding_hash', sa.String(length=64), nullable=False),
+        sa.Column('extraction_binding', sa.JSON().with_variant(postgresql.JSONB(none_as_null=True, astext_type=Text()), 'postgresql'), nullable=False),
+        sa.Column('extraction_binding_hash', sa.String(length=64), nullable=False),
+        sa.Column('pin_hash', sa.String(length=64), nullable=False),
+        sa.Column('prepared_at', sa.DateTime(timezone=True), nullable=False),
+        sa.Column('state', sa.String(length=32), nullable=False),
+        sa.Column('stage', sa.String(length=32), nullable=False),
+        sa.Column('progress', sa.JSON().with_variant(postgresql.JSONB(none_as_null=True, astext_type=Text()), 'postgresql'), nullable=False),
+        sa.Column('next_attempt_at', sa.DateTime(timezone=True), nullable=False),
+        sa.Column('attempt_count', sa.Integer(), nullable=False),
+        sa.Column('maximum_attempts', sa.Integer(), nullable=False),
+        sa.Column('lease_epoch', sa.Integer(), nullable=False),
+        sa.Column('lease_token_hash', sa.String(length=64), nullable=True),
+        sa.Column('lease_owner_fingerprint', sa.String(length=255), nullable=True),
+        sa.Column('lease_started_at', sa.DateTime(timezone=True), nullable=True),
+        sa.Column('lease_expires_at', sa.DateTime(timezone=True), nullable=True),
+        sa.Column('cancel_requested_by', sa.Uuid(), nullable=True),
+        sa.Column('cancel_requested_at', sa.DateTime(timezone=True), nullable=True),
+        sa.Column('cancel_reason', sa.String(length=1000), nullable=True),
+        sa.Column('result_changeset_id', sa.Uuid(), nullable=True),
+        sa.Column('result_evidence_hash', sa.String(length=64), nullable=True),
+        sa.Column('last_failure_code', sa.String(length=100), nullable=True),
+        sa.Column('completed_at', sa.DateTime(timezone=True), nullable=True),
+        sa.Column('id', sa.Uuid(), nullable=False),
+        sa.Column('created_at', sa.DateTime(timezone=True), server_default=sa.text('CURRENT_TIMESTAMP'), nullable=False),
+        sa.Column('updated_at', sa.DateTime(timezone=True), server_default=sa.text('CURRENT_TIMESTAMP'), nullable=False),
+        sa.Column('version', sa.Integer(), nullable=False),
+        sa.CheckConstraint("((state = 'SUCCEEDED') AND result_changeset_id IS NOT NULL AND result_evidence_hash ~ '^[0-9a-f]{64}$' AND completed_at IS NOT NULL AND last_failure_code IS NULL) OR ((state <> 'SUCCEEDED') AND result_changeset_id IS NULL AND result_evidence_hash IS NULL) ", name=op.f('ck_source_analysis_jobs_result_shape')),
+        sa.CheckConstraint("((state IN ('CANCEL_REQUESTED', 'CANCELLED')) AND cancel_requested_by IS NOT NULL AND cancel_requested_at IS NOT NULL AND cancel_reason IS NOT NULL) OR ((state NOT IN ('CANCEL_REQUESTED', 'CANCELLED')) AND cancel_requested_by IS NULL AND cancel_requested_at IS NULL AND cancel_reason IS NULL)", name=op.f('ck_source_analysis_jobs_cancel_shape')),
+        sa.CheckConstraint("((state IN ('FAILED', 'STALE')) AND last_failure_code IS NOT NULL AND completed_at IS NOT NULL) OR (state = 'RETRY_WAIT' AND last_failure_code IS NOT NULL AND completed_at IS NULL) OR ((state NOT IN ('FAILED', 'STALE', 'RETRY_WAIT')) AND last_failure_code IS NULL)", name=op.f('ck_source_analysis_jobs_failure_shape')),
+        sa.CheckConstraint("(state IN ('QUEUED', 'RETRY_WAIT') AND stage = 'QUEUED') OR (state IN ('RUNNING', 'CANCEL_REQUESTED') AND stage IN ('SOURCE_READ', 'PARSED', 'EMBEDDED', 'EXTRACTED', 'FINALIZING')) OR (state IN ('SUCCEEDED', 'FAILED', 'STALE', 'CANCELLED') AND stage = 'COMPLETED')", name=op.f('ck_source_analysis_jobs_execution_stage_shape')),
+        sa.CheckConstraint("(state IN ('RUNNING', 'CANCEL_REQUESTED') AND lease_token_hash IS NOT NULL AND lease_owner_fingerprint IS NOT NULL AND lease_started_at IS NOT NULL AND lease_expires_at IS NOT NULL) OR (state NOT IN ('RUNNING', 'CANCEL_REQUESTED') AND lease_token_hash IS NULL AND lease_owner_fingerprint IS NULL AND lease_started_at IS NULL AND lease_expires_at IS NULL)", name=op.f('ck_source_analysis_jobs_lease_shape')),
+        sa.CheckConstraint("(state IN ('SUCCEEDED', 'FAILED', 'STALE', 'CANCELLED')) = (completed_at IS NOT NULL)", name=op.f('ck_source_analysis_jobs_terminal_completion')),
+        sa.CheckConstraint("(state IN ('SUCCEEDED', 'FAILED', 'STALE', 'CANCELLED')) = (stage = 'COMPLETED')", name=op.f('ck_source_analysis_jobs_terminal_stage')),
+        sa.CheckConstraint("base_kind IN ('EMPTY', 'RELEASE') AND ((base_kind = 'EMPTY' AND base_release_id IS NULL AND base_release_hash IS NULL) OR (base_kind = 'RELEASE' AND base_release_id IS NOT NULL AND base_release_hash ~ '^[0-9a-f]{64}$'))", name=op.f('ck_source_analysis_jobs_base_binding_shape')),
+        sa.CheckConstraint("lease_token_hash IS NULL OR lease_token_hash ~ '^[0-9a-f]{64}$'", name=op.f('ck_source_analysis_jobs_lease_token_hash')),
+        sa.CheckConstraint("source_content_sha256 ~ '^[0-9a-f]{64}$' AND ontology_checksum ~ '^[0-9a-f]{64}$' AND parser_config_hash ~ '^[0-9a-f]{64}$' AND embedding_binding_hash ~ '^[0-9a-f]{64}$' AND extraction_binding_hash ~ '^[0-9a-f]{64}$' AND pin_hash ~ '^[0-9a-f]{64}$' AND request_hash ~ '^[0-9a-f]{64}$' AND requester_authorization_hash ~ '^[0-9a-f]{64}$'", name=op.f('ck_source_analysis_jobs_evidence_hashes')),
+        sa.CheckConstraint("stage IN ('QUEUED', 'SOURCE_READ', 'PARSED', 'EMBEDDED', 'EXTRACTED', 'FINALIZING', 'COMPLETED')", name=op.f('ck_source_analysis_jobs_stage_vocabulary')),
+        sa.CheckConstraint("state IN ('QUEUED', 'RUNNING', 'RETRY_WAIT', 'CANCEL_REQUESTED', 'SUCCEEDED', 'FAILED', 'STALE', 'CANCELLED')", name=op.f('ck_source_analysis_jobs_state_vocabulary')),
+        sa.CheckConstraint('graph_version > 0 AND attempt_count >= 0 AND maximum_attempts > 0 AND attempt_count <= maximum_attempts AND lease_epoch >= 0', name=op.f('ck_source_analysis_jobs_counters')),
+        sa.CheckConstraint('source_classification BETWEEN 0 AND 1', name=op.f('ck_source_analysis_jobs_inference_classification')),
+        sa.ForeignKeyConstraint(['workspace_id', 'cancel_requested_by'], ['iam.workspace_memberships.workspace_id', 'iam.workspace_memberships.subject_id'], name=op.f('fk_source_analysis_jobs_workspace_id_cancel_requested_by_workspace_memberships'), ondelete='RESTRICT'),
+        sa.ForeignKeyConstraint(['workspace_id', 'graph_id', 'base_release_id'], ['knowledge.releases.workspace_id', 'knowledge.releases.graph_id', 'knowledge.releases.id'], name=op.f('fk_source_analysis_jobs_workspace_id_graph_id_base_release_id_releases'), ondelete='RESTRICT', use_alter=True),
+        sa.ForeignKeyConstraint(['workspace_id', 'graph_id', 'ontology_version_id'], ['knowledge.ontology_versions.workspace_id', 'knowledge.ontology_versions.graph_id', 'knowledge.ontology_versions.id'], name=op.f('fk_source_analysis_jobs_workspace_id_graph_id_ontology_version_id_ontology_versions'), ondelete='RESTRICT'),
+        sa.ForeignKeyConstraint(['workspace_id', 'graph_id', 'result_changeset_id'], ['knowledge.changesets.workspace_id', 'knowledge.changesets.graph_id', 'knowledge.changesets.id'], name=op.f('fk_source_analysis_jobs_workspace_id_graph_id_result_changeset_id_changesets'), ondelete='RESTRICT', use_alter=True),
+        sa.ForeignKeyConstraint(['workspace_id', 'graph_id'], ['knowledge.graphs.workspace_id', 'knowledge.graphs.id'], name=op.f('fk_source_analysis_jobs_workspace_id_graph_id_graphs'), ondelete='RESTRICT'),
+        sa.ForeignKeyConstraint(['workspace_id', 'requested_by'], ['iam.workspace_memberships.workspace_id', 'iam.workspace_memberships.subject_id'], name=op.f('fk_source_analysis_jobs_workspace_id_requested_by_workspace_memberships'), ondelete='RESTRICT'),
+        sa.ForeignKeyConstraint(['workspace_id', 'source_snapshot_id'], ['knowledge.source_snapshots.workspace_id', 'knowledge.source_snapshots.id'], name=op.f('fk_source_analysis_jobs_workspace_id_source_snapshot_id_source_snapshots'), ondelete='RESTRICT'),
+        sa.PrimaryKeyConstraint('id', name=op.f('pk_source_analysis_jobs')),
+        sa.UniqueConstraint('workspace_id', 'id', name=op.f('uq_source_analysis_jobs_workspace_id_id')),
+        sa.UniqueConstraint('workspace_id', 'source_snapshot_id', name=op.f('uq_source_analysis_jobs_workspace_id_source_snapshot_id')),
+        schema='knowledge'
+        )
+        op.create_index('ix_source_analysis_jobs_claim', 'source_analysis_jobs', ['workspace_id', 'next_attempt_at', 'created_at', 'id'], unique=False, schema='knowledge', postgresql_where=sa.text("state IN ('QUEUED', 'RETRY_WAIT')"))
+        op.create_index('ix_source_analysis_jobs_expired', 'source_analysis_jobs', ['workspace_id', 'lease_expires_at', 'id'], unique=False, schema='knowledge', postgresql_where=sa.text("state IN ('RUNNING', 'CANCEL_REQUESTED')"))
+        op.create_index('ix_source_analysis_jobs_graph_created', 'source_analysis_jobs', ['workspace_id', 'graph_id', 'created_at', 'id'], unique=False, schema='knowledge')
+        op.execute('ALTER TABLE knowledge.source_analysis_jobs ENABLE ROW LEVEL SECURITY')
+        op.execute('ALTER TABLE knowledge.source_analysis_jobs FORCE ROW LEVEL SECURITY')
+        op.execute("CREATE POLICY workspace_isolation ON knowledge.source_analysis_jobs USING (workspace_id = NULLIF(current_setting('app.workspace_id', true), '')::uuid) WITH CHECK (workspace_id = NULLIF(current_setting('app.workspace_id', true), '')::uuid)")
+        op.execute("CREATE POLICY source_analysis_job_owner_select ON knowledge.source_analysis_jobs AS RESTRICTIVE FOR SELECT TO datariver_app USING (requested_by = NULLIF(current_setting('app.subject_id', true), '')::uuid)")
+        op.create_table('source_pages',
+        sa.Column('workspace_id', sa.Uuid(), nullable=False),
+        sa.Column('source_snapshot_id', sa.Uuid(), nullable=False),
+        sa.Column('page_number', sa.Integer(), nullable=False),
+        sa.Column('content_sha256', sa.String(length=64), nullable=False),
+        sa.Column('content', sa.Text(), nullable=False),
+        sa.CheckConstraint("content_sha256 ~ '^[0-9a-f]{64}$'", name=op.f('ck_source_pages_content_sha256')),
+        sa.CheckConstraint('page_number > 0', name=op.f('ck_source_pages_page_number_positive')),
+        sa.ForeignKeyConstraint(['workspace_id', 'source_snapshot_id'], ['knowledge.source_snapshots.workspace_id', 'knowledge.source_snapshots.id'], name=op.f('fk_source_pages_workspace_id_source_snapshot_id_source_snapshots'), ondelete='CASCADE'),
+        sa.PrimaryKeyConstraint('workspace_id', 'source_snapshot_id', 'page_number', name=op.f('pk_source_pages')),
+        schema='knowledge'
+        )
+        op.execute('ALTER TABLE knowledge.source_pages ENABLE ROW LEVEL SECURITY')
+        op.execute('ALTER TABLE knowledge.source_pages FORCE ROW LEVEL SECURITY')
+        op.execute("CREATE POLICY workspace_isolation ON knowledge.source_pages USING (workspace_id = NULLIF(current_setting('app.workspace_id', true), '')::uuid) WITH CHECK (workspace_id = NULLIF(current_setting('app.workspace_id', true), '')::uuid)")
+        op.create_table('studio_drafts',
+        sa.Column('workspace_id', sa.Uuid(), nullable=False),
+        sa.Column('author_id', sa.Uuid(), nullable=False),
+        sa.Column('kind', sa.String(length=16), nullable=False),
+        sa.Column('state', sa.String(length=16), nullable=False),
+        sa.Column('current_step', sa.String(length=16), nullable=False),
+        sa.Column('name', sa.String(length=255), nullable=False),
+        sa.Column('endpoint_alias', sa.String(length=100), nullable=False),
+        sa.Column('domain_ref_id', sa.Uuid(), nullable=False),
+        sa.Column('domain_ref_kind', sa.String(length=16), nullable=False),
+        sa.Column('domain_source_version', sa.String(length=255), nullable=False),
+        sa.Column('classification', sa.Integer(), nullable=False),
+        sa.Column('base_graph_id', sa.Uuid(), nullable=True),
+        sa.Column('base_ontology_version_id', sa.Uuid(), nullable=True),
+        sa.Column('base_release_id', sa.Uuid(), nullable=True),
+        sa.Column('review_requested_at', sa.DateTime(timezone=True), nullable=True),
+        sa.Column('published_at', sa.DateTime(timezone=True), nullable=True),
+        sa.Column('discarded_at', sa.DateTime(timezone=True), nullable=True),
+        sa.Column('discarded_by', sa.Uuid(), nullable=True),
+        sa.Column('last_autosaved_at', sa.DateTime(timezone=True), nullable=False),
+        sa.Column('id', sa.Uuid(), nullable=False),
+        sa.Column('created_at', sa.DateTime(timezone=True), server_default=sa.text('CURRENT_TIMESTAMP'), nullable=False),
+        sa.Column('updated_at', sa.DateTime(timezone=True), server_default=sa.text('CURRENT_TIMESTAMP'), nullable=False),
+        sa.Column('version', sa.Integer(), nullable=False),
+        sa.CheckConstraint("(kind = 'CREATE' AND base_graph_id IS NULL AND base_ontology_version_id IS NULL AND base_release_id IS NULL) OR (kind = 'EDIT' AND base_graph_id IS NOT NULL AND base_ontology_version_id IS NOT NULL)", name=op.f('ck_studio_drafts_base_reference_shape')),
+        sa.CheckConstraint("(state = 'DRAFT' AND review_requested_at IS NULL AND published_at IS NULL AND discarded_at IS NULL AND discarded_by IS NULL) OR (state = 'REVIEW' AND review_requested_at IS NOT NULL AND published_at IS NULL AND discarded_at IS NULL AND discarded_by IS NULL) OR (state = 'PUBLISHED' AND review_requested_at IS NOT NULL AND published_at IS NOT NULL AND discarded_at IS NULL AND discarded_by IS NULL) OR (state = 'DISCARDED' AND published_at IS NULL AND discarded_at IS NOT NULL AND discarded_by = author_id)", name=op.f('ck_studio_drafts_state_shape')),
+        sa.CheckConstraint("current_step IN ('BASIC', 'TBOX', 'ABOX')", name=op.f('ck_studio_drafts_current_step_vocabulary')),
+        sa.CheckConstraint("domain_ref_kind = 'DOMAIN' AND char_length(domain_source_version) BETWEEN 1 AND 255", name=op.f('ck_studio_drafts_domain_reference_shape')),
+        sa.CheckConstraint("endpoint_alias ~ '^[a-z][a-z0-9_]{2,99}$'", name=op.f('ck_studio_drafts_endpoint_alias_shape')),
+        sa.CheckConstraint("kind IN ('CREATE', 'EDIT')", name=op.f('ck_studio_drafts_kind_vocabulary')),
+        sa.CheckConstraint("state IN ('DRAFT', 'REVIEW', 'PUBLISHED', 'DISCARDED')", name=op.f('ck_studio_drafts_state_vocabulary')),
+        sa.CheckConstraint('char_length(name) BETWEEN 1 AND 255 AND name = btrim(name)', name=op.f('ck_studio_drafts_name_valid')),
+        sa.CheckConstraint('classification BETWEEN 0 AND 3', name=op.f('ck_studio_drafts_classification_range')),
+        sa.ForeignKeyConstraint(['workspace_id', 'author_id'], ['iam.workspace_memberships.workspace_id', 'iam.workspace_memberships.subject_id'], name=op.f('fk_studio_drafts_workspace_id_author_id_workspace_memberships'), ondelete='RESTRICT'),
+        sa.ForeignKeyConstraint(['workspace_id', 'base_graph_id', 'base_ontology_version_id'], ['knowledge.ontology_versions.workspace_id', 'knowledge.ontology_versions.graph_id', 'knowledge.ontology_versions.id'], name=op.f('fk_studio_drafts_workspace_id_base_graph_id_base_ontology_version_id_ontology_versions'), ondelete='RESTRICT'),
+        sa.ForeignKeyConstraint(['workspace_id', 'base_graph_id', 'base_release_id'], ['knowledge.releases.workspace_id', 'knowledge.releases.graph_id', 'knowledge.releases.id'], name=op.f('fk_studio_drafts_workspace_id_base_graph_id_base_release_id_releases'), ondelete='RESTRICT', use_alter=True),
+        sa.ForeignKeyConstraint(['workspace_id', 'base_graph_id'], ['knowledge.graphs.workspace_id', 'knowledge.graphs.id'], name=op.f('fk_studio_drafts_workspace_id_base_graph_id_graphs'), ondelete='RESTRICT'),
+        sa.ForeignKeyConstraint(['workspace_id', 'discarded_by'], ['iam.workspace_memberships.workspace_id', 'iam.workspace_memberships.subject_id'], name=op.f('fk_studio_drafts_workspace_id_discarded_by_workspace_memberships'), ondelete='RESTRICT'),
+        sa.ForeignKeyConstraint(['workspace_id', 'domain_ref_id', 'domain_ref_kind'], ['catalog.vocabulary_entries.workspace_id', 'catalog.vocabulary_entries.id', 'catalog.vocabulary_entries.kind'], name=op.f('fk_studio_drafts_workspace_id_domain_ref_id_domain_ref_kind_vocabulary_entries'), ondelete='RESTRICT'),
+        sa.PrimaryKeyConstraint('id', name=op.f('pk_studio_drafts')),
+        sa.UniqueConstraint('workspace_id', 'id', name=op.f('uq_studio_drafts_workspace_id_id')),
+        schema='knowledge'
+        )
+        op.create_index('ix_studio_drafts_owner_updated', 'studio_drafts', ['workspace_id', 'author_id', 'updated_at', 'id'], unique=False, schema='knowledge')
+        op.create_index('uq_studio_drafts_live_endpoint_alias', 'studio_drafts', ['workspace_id', 'endpoint_alias'], unique=True, schema='knowledge', postgresql_where=sa.text("state IN ('DRAFT', 'REVIEW')"))
+        op.execute('ALTER TABLE knowledge.studio_drafts ENABLE ROW LEVEL SECURITY')
+        op.execute('ALTER TABLE knowledge.studio_drafts FORCE ROW LEVEL SECURITY')
+        op.execute("CREATE POLICY workspace_isolation ON knowledge.studio_drafts USING (workspace_id = NULLIF(current_setting('app.workspace_id', true), '')::uuid) WITH CHECK (workspace_id = NULLIF(current_setting('app.workspace_id', true), '')::uuid)")
+        op.execute("CREATE POLICY studio_draft_owner_access ON knowledge.studio_drafts AS RESTRICTIVE FOR ALL TO datariver_app USING (author_id = NULLIF(current_setting('app.subject_id', true), '')::uuid) WITH CHECK (author_id = NULLIF(current_setting('app.subject_id', true), '')::uuid)")
         op.create_table('erasure_request_events',
         sa.Column('workspace_id', sa.Uuid(), nullable=False),
         sa.Column('erasure_request_id', sa.Uuid(), nullable=False),
@@ -2708,41 +2493,6 @@ def upgrade() -> None:
         op.execute('ALTER TABLE retention.execution_jobs ENABLE ROW LEVEL SECURITY')
         op.execute('ALTER TABLE retention.execution_jobs FORCE ROW LEVEL SECURITY')
         op.execute("CREATE POLICY workspace_isolation ON retention.execution_jobs USING (workspace_id = NULLIF(current_setting('app.workspace_id', true), '')::uuid) WITH CHECK (workspace_id = NULLIF(current_setting('app.workspace_id', true), '')::uuid)")
-        op.create_table('consumer_grants',
-        sa.Column('workspace_id', sa.Uuid(), nullable=False),
-        sa.Column('product_id', sa.Uuid(), nullable=False),
-        sa.Column('product_version_id', sa.Uuid(), nullable=False),
-        sa.Column('contract_version', sa.String(length=32), nullable=False),
-        sa.Column('consumer_subject_id', sa.Uuid(), nullable=True),
-        sa.Column('consumer_issuer', sa.String(length=500), nullable=True),
-        sa.Column('consumer_client_id', sa.String(length=255), nullable=False),
-        sa.Column('scopes', sa.JSON().with_variant(postgresql.JSONB(none_as_null=True, astext_type=Text()), 'postgresql'), nullable=False),
-        sa.Column('maximum_classification', sa.Integer(), nullable=False),
-        sa.Column('requests_per_minute', sa.Integer(), nullable=False),
-        sa.Column('monthly_quota', sa.Integer(), nullable=False),
-        sa.Column('valid_from', sa.DateTime(timezone=True), nullable=False),
-        sa.Column('expires_at', sa.DateTime(timezone=True), nullable=False),
-        sa.Column('state', sa.String(length=32), nullable=False),
-        sa.Column('created_by', sa.Uuid(), nullable=False),
-        sa.Column('revoked_by', sa.Uuid(), nullable=True),
-        sa.Column('revoked_at', sa.DateTime(timezone=True), nullable=True),
-        sa.Column('id', sa.Uuid(), nullable=False),
-        sa.Column('created_at', sa.DateTime(timezone=True), server_default=sa.text('CURRENT_TIMESTAMP'), nullable=False),
-        sa.Column('updated_at', sa.DateTime(timezone=True), server_default=sa.text('CURRENT_TIMESTAMP'), nullable=False),
-        sa.Column('version', sa.Integer(), nullable=False),
-        sa.CheckConstraint("(contract_version = 'LEGACY_CLIENT_V1' AND consumer_subject_id IS NULL AND consumer_issuer IS NULL) OR (contract_version = 'SUBJECT_CLIENT_V2' AND consumer_subject_id IS NOT NULL AND consumer_issuer IS NOT NULL AND length(consumer_issuer) BETWEEN 1 AND 500)", name=op.f('ck_consumer_grants_contract_shape')),
-        sa.ForeignKeyConstraint(['workspace_id', 'consumer_subject_id'], ['iam.workspace_memberships.workspace_id', 'iam.workspace_memberships.subject_id'], name='fk_consumer_grants_consumer_membership', ondelete='RESTRICT'),
-        sa.ForeignKeyConstraint(['workspace_id', 'product_id', 'product_version_id'], ['sharing.api_product_versions.workspace_id', 'sharing.api_product_versions.product_id', 'sharing.api_product_versions.id'], name=op.f('fk_consumer_grants_workspace_id_product_id_product_version_id_api_product_versions'), ondelete='RESTRICT'),
-        sa.PrimaryKeyConstraint('id', name=op.f('pk_consumer_grants')),
-        sa.UniqueConstraint('workspace_id', 'id', name=op.f('uq_consumer_grants_workspace_id_id')),
-        schema='sharing'
-        )
-        op.create_index('ix_consumer_grants_client_state', 'consumer_grants', ['workspace_id', 'consumer_client_id', 'state'], unique=False, schema='sharing')
-        op.create_index('uq_consumer_grants_legacy_client', 'consumer_grants', ['workspace_id', 'product_version_id', 'consumer_client_id'], unique=True, schema='sharing', postgresql_where=sa.text("contract_version = 'LEGACY_CLIENT_V1'"))
-        op.create_index('uq_consumer_grants_v2_subject_client', 'consumer_grants', ['workspace_id', 'product_version_id', 'consumer_subject_id', 'consumer_client_id'], unique=True, schema='sharing', postgresql_where=sa.text("contract_version = 'SUBJECT_CLIENT_V2'"))
-        op.execute('ALTER TABLE sharing.consumer_grants ENABLE ROW LEVEL SECURITY')
-        op.execute('ALTER TABLE sharing.consumer_grants FORCE ROW LEVEL SECURITY')
-        op.execute("CREATE POLICY workspace_isolation ON sharing.consumer_grants USING (workspace_id = NULLIF(current_setting('app.workspace_id', true), '')::uuid) WITH CHECK (workspace_id = NULLIF(current_setting('app.workspace_id', true), '')::uuid)")
         op.create_table('assistant_runs',
         sa.Column('workspace_id', sa.Uuid(), nullable=False),
         sa.Column('session_id', sa.Uuid(), nullable=False),
@@ -2848,6 +2598,195 @@ def upgrade() -> None:
         op.execute('ALTER TABLE integration.catalog_metadata_candidate_rows ENABLE ROW LEVEL SECURITY')
         op.execute('ALTER TABLE integration.catalog_metadata_candidate_rows FORCE ROW LEVEL SECURITY')
         op.execute("CREATE POLICY workspace_isolation ON integration.catalog_metadata_candidate_rows USING (workspace_id = NULLIF(current_setting('app.workspace_id', true), '')::uuid) WITH CHECK (workspace_id = NULLIF(current_setting('app.workspace_id', true), '')::uuid)")
+        op.create_table('change_operations',
+        sa.Column('workspace_id', sa.Uuid(), nullable=False),
+        sa.Column('changeset_id', sa.Uuid(), nullable=False),
+        sa.Column('sequence', sa.Integer(), nullable=False),
+        sa.Column('operation', sa.String(length=50), nullable=False),
+        sa.Column('entity_kind', sa.String(length=20), nullable=False),
+        sa.Column('stable_entity_id', sa.Uuid(), nullable=False),
+        sa.Column('document', sa.JSON().with_variant(postgresql.JSONB(none_as_null=True, astext_type=Text()), 'postgresql'), nullable=False),
+        sa.Column('provenance', sa.JSON().with_variant(postgresql.JSONB(none_as_null=True, astext_type=Text()), 'postgresql'), nullable=False),
+        sa.Column('confidence', sa.Float(), nullable=False),
+        sa.Column('id', sa.Uuid(), nullable=False),
+        sa.ForeignKeyConstraint(['workspace_id', 'changeset_id'], ['knowledge.changesets.workspace_id', 'knowledge.changesets.id'], name=op.f('fk_change_operations_workspace_id_changeset_id_changesets'), ondelete='CASCADE'),
+        sa.PrimaryKeyConstraint('id', name=op.f('pk_change_operations')),
+        sa.UniqueConstraint('changeset_id', 'sequence', name=op.f('uq_change_operations_changeset_id_sequence')),
+        schema='knowledge'
+        )
+        op.execute('ALTER TABLE knowledge.change_operations ENABLE ROW LEVEL SECURITY')
+        op.execute('ALTER TABLE knowledge.change_operations FORCE ROW LEVEL SECURITY')
+        op.execute("CREATE POLICY workspace_isolation ON knowledge.change_operations USING (workspace_id = NULLIF(current_setting('app.workspace_id', true), '')::uuid) WITH CHECK (workspace_id = NULLIF(current_setting('app.workspace_id', true), '')::uuid)")
+        op.create_table('graphrag_audits',
+        sa.Column('workspace_id', sa.Uuid(), nullable=False),
+        sa.Column('graph_id', sa.Uuid(), nullable=False),
+        sa.Column('release_id', sa.Uuid(), nullable=False),
+        sa.Column('actor_id', sa.Uuid(), nullable=False),
+        sa.Column('request_id', sa.String(length=100), nullable=False),
+        sa.Column('question_sha256', sa.String(length=64), nullable=False),
+        sa.Column('evidence_ids', sa.JSON().with_variant(postgresql.JSONB(none_as_null=True, astext_type=Text()), 'postgresql'), nullable=False),
+        sa.Column('cited_evidence_ids', sa.JSON().with_variant(postgresql.JSONB(none_as_null=True, astext_type=Text()), 'postgresql'), nullable=False),
+        sa.Column('provider', sa.String(length=100), nullable=False),
+        sa.Column('model_identity', sa.String(length=200), nullable=False),
+        sa.Column('prompt_version', sa.String(length=200), nullable=False),
+        sa.Column('tool_schema_version', sa.String(length=200), nullable=False),
+        sa.Column('configuration_source', sa.String(length=32), nullable=True),
+        sa.Column('configuration_version', sa.Integer(), nullable=True),
+        sa.Column('configuration_hash', sa.String(length=64), nullable=True),
+        sa.Column('input_tokens', sa.Integer(), nullable=True),
+        sa.Column('output_tokens', sa.Integer(), nullable=True),
+        sa.Column('id', sa.Uuid(), nullable=False),
+        sa.Column('created_at', sa.DateTime(timezone=True), server_default=sa.text('CURRENT_TIMESTAMP'), nullable=False),
+        sa.Column('updated_at', sa.DateTime(timezone=True), server_default=sa.text('CURRENT_TIMESTAMP'), nullable=False),
+        sa.CheckConstraint("(configuration_source IS NULL AND configuration_version IS NULL AND configuration_hash IS NULL) OR (configuration_source = 'SYSTEM_CONFIGURATION' AND configuration_version > 0 AND configuration_hash ~ '^[0-9a-f]{64}$') OR (configuration_source = 'DEPLOYMENT' AND configuration_version IS NULL AND configuration_hash ~ '^[0-9a-f]{64}$')", name=op.f('ck_graphrag_audits_configuration_evidence_shape')),
+        sa.CheckConstraint("question_sha256 ~ '^[0-9a-f]{64}$'", name=op.f('ck_graphrag_audits_question_sha256')),
+        sa.CheckConstraint('input_tokens IS NULL OR input_tokens >= 0', name=op.f('ck_graphrag_audits_input_tokens_nonnegative')),
+        sa.CheckConstraint('output_tokens IS NULL OR output_tokens >= 0', name=op.f('ck_graphrag_audits_output_tokens_nonnegative')),
+        sa.ForeignKeyConstraint(['workspace_id', 'graph_id', 'release_id'], ['knowledge.releases.workspace_id', 'knowledge.releases.graph_id', 'knowledge.releases.id'], name=op.f('fk_graphrag_audits_workspace_id_graph_id_release_id_releases'), ondelete='RESTRICT'),
+        sa.PrimaryKeyConstraint('id', name=op.f('pk_graphrag_audits')),
+        sa.UniqueConstraint('workspace_id', 'request_id', name=op.f('uq_graphrag_audits_workspace_id_request_id')),
+        schema='knowledge'
+        )
+        op.create_index('ix_graphrag_audits_release_created', 'graphrag_audits', ['release_id', 'created_at'], unique=False, schema='knowledge')
+        op.execute('ALTER TABLE knowledge.graphrag_audits ENABLE ROW LEVEL SECURITY')
+        op.execute('ALTER TABLE knowledge.graphrag_audits FORCE ROW LEVEL SECURITY')
+        op.execute("CREATE POLICY workspace_isolation ON knowledge.graphrag_audits USING (workspace_id = NULLIF(current_setting('app.workspace_id', true), '')::uuid) WITH CHECK (workspace_id = NULLIF(current_setting('app.workspace_id', true), '')::uuid)")
+        op.create_table('projection_deployments',
+        sa.Column('workspace_id', sa.Uuid(), nullable=False),
+        sa.Column('graph_id', sa.Uuid(), nullable=False),
+        sa.Column('release_id', sa.Uuid(), nullable=False),
+        sa.Column('job_id', sa.Uuid(), nullable=True),
+        sa.Column('adapter', sa.String(length=100), nullable=False),
+        sa.Column('target_ref', sa.String(length=500), nullable=False),
+        sa.Column('state', sa.String(length=32), nullable=False),
+        sa.Column('content_hash', sa.String(length=64), nullable=True),
+        sa.Column('verification_hash', sa.String(length=64), nullable=True),
+        sa.Column('node_count', sa.Integer(), nullable=True),
+        sa.Column('edge_count', sa.Integer(), nullable=True),
+        sa.Column('verified_at', sa.DateTime(timezone=True), nullable=True),
+        sa.Column('error_code', sa.String(length=100), nullable=True),
+        sa.Column('id', sa.Uuid(), nullable=False),
+        sa.Column('created_at', sa.DateTime(timezone=True), server_default=sa.text('CURRENT_TIMESTAMP'), nullable=False),
+        sa.Column('updated_at', sa.DateTime(timezone=True), server_default=sa.text('CURRENT_TIMESTAMP'), nullable=False),
+        sa.ForeignKeyConstraint(['workspace_id', 'graph_id', 'release_id'], ['knowledge.releases.workspace_id', 'knowledge.releases.graph_id', 'knowledge.releases.id'], name=op.f('fk_projection_deployments_workspace_id_graph_id_release_id_releases'), ondelete='CASCADE'),
+        sa.PrimaryKeyConstraint('id', name=op.f('pk_projection_deployments')),
+        schema='knowledge'
+        )
+        op.create_index('ix_projection_deployments_release', 'projection_deployments', ['release_id', 'adapter'], unique=False, schema='knowledge')
+        op.execute('ALTER TABLE knowledge.projection_deployments ENABLE ROW LEVEL SECURITY')
+        op.execute('ALTER TABLE knowledge.projection_deployments FORCE ROW LEVEL SECURITY')
+        op.execute("CREATE POLICY workspace_isolation ON knowledge.projection_deployments USING (workspace_id = NULLIF(current_setting('app.workspace_id', true), '')::uuid) WITH CHECK (workspace_id = NULLIF(current_setting('app.workspace_id', true), '')::uuid)")
+        op.create_table('release_edges',
+        sa.Column('workspace_id', sa.Uuid(), nullable=False),
+        sa.Column('release_id', sa.Uuid(), nullable=False),
+        sa.Column('edge_id', sa.Uuid(), nullable=False),
+        sa.Column('source_entity_id', sa.Uuid(), nullable=False),
+        sa.Column('target_entity_id', sa.Uuid(), nullable=False),
+        sa.Column('edge_type', sa.String(length=100), nullable=False),
+        sa.Column('properties', sa.JSON().with_variant(postgresql.JSONB(none_as_null=True, astext_type=Text()), 'postgresql'), nullable=False),
+        sa.Column('classification', sa.Integer(), nullable=False),
+        sa.Column('provenance', sa.JSON().with_variant(postgresql.JSONB(none_as_null=True, astext_type=Text()), 'postgresql'), nullable=False),
+        sa.ForeignKeyConstraint(['workspace_id', 'release_id'], ['knowledge.releases.workspace_id', 'knowledge.releases.id'], name=op.f('fk_release_edges_workspace_id_release_id_releases'), ondelete='CASCADE'),
+        sa.PrimaryKeyConstraint('release_id', 'edge_id', name=op.f('pk_release_edges')),
+        schema='knowledge'
+        )
+        op.create_index('ix_release_edges_source', 'release_edges', ['release_id', 'source_entity_id', 'edge_type'], unique=False, schema='knowledge')
+        op.create_index('ix_release_edges_target', 'release_edges', ['release_id', 'target_entity_id', 'edge_type'], unique=False, schema='knowledge')
+        op.execute('ALTER TABLE knowledge.release_edges ENABLE ROW LEVEL SECURITY')
+        op.execute('ALTER TABLE knowledge.release_edges FORCE ROW LEVEL SECURITY')
+        op.execute("CREATE POLICY workspace_isolation ON knowledge.release_edges USING (workspace_id = NULLIF(current_setting('app.workspace_id', true), '')::uuid) WITH CHECK (workspace_id = NULLIF(current_setting('app.workspace_id', true), '')::uuid)")
+        op.create_table('release_nodes',
+        sa.Column('workspace_id', sa.Uuid(), nullable=False),
+        sa.Column('release_id', sa.Uuid(), nullable=False),
+        sa.Column('entity_id', sa.Uuid(), nullable=False),
+        sa.Column('entity_type', sa.String(length=100), nullable=False),
+        sa.Column('properties', sa.JSON().with_variant(postgresql.JSONB(none_as_null=True, astext_type=Text()), 'postgresql'), nullable=False),
+        sa.Column('classification', sa.Integer(), nullable=False),
+        sa.Column('provenance', sa.JSON().with_variant(postgresql.JSONB(none_as_null=True, astext_type=Text()), 'postgresql'), nullable=False),
+        sa.ForeignKeyConstraint(['workspace_id', 'release_id'], ['knowledge.releases.workspace_id', 'knowledge.releases.id'], name=op.f('fk_release_nodes_workspace_id_release_id_releases'), ondelete='CASCADE'),
+        sa.PrimaryKeyConstraint('release_id', 'entity_id', name=op.f('pk_release_nodes')),
+        schema='knowledge'
+        )
+        op.execute('ALTER TABLE knowledge.release_nodes ENABLE ROW LEVEL SECURITY')
+        op.execute('ALTER TABLE knowledge.release_nodes FORCE ROW LEVEL SECURITY')
+        op.execute("CREATE POLICY workspace_isolation ON knowledge.release_nodes USING (workspace_id = NULLIF(current_setting('app.workspace_id', true), '')::uuid) WITH CHECK (workspace_id = NULLIF(current_setting('app.workspace_id', true), '')::uuid)")
+        op.create_table('source_analysis_attempts',
+        sa.Column('workspace_id', sa.Uuid(), nullable=False),
+        sa.Column('job_id', sa.Uuid(), nullable=False),
+        sa.Column('attempt_no', sa.Integer(), nullable=False),
+        sa.Column('lease_epoch', sa.Integer(), nullable=False),
+        sa.Column('lease_token_hash', sa.String(length=64), nullable=False),
+        sa.Column('worker_fingerprint', sa.String(length=255), nullable=False),
+        sa.Column('state', sa.String(length=32), nullable=False),
+        sa.Column('stage', sa.String(length=32), nullable=False),
+        sa.Column('input_hash', sa.String(length=64), nullable=False),
+        sa.Column('output_hash', sa.String(length=64), nullable=True),
+        sa.Column('external_response_hash', sa.String(length=64), nullable=True),
+        sa.Column('retryable', sa.Boolean(), nullable=False),
+        sa.Column('failure_code', sa.String(length=100), nullable=True),
+        sa.Column('started_at', sa.DateTime(timezone=True), nullable=False),
+        sa.Column('finished_at', sa.DateTime(timezone=True), nullable=True),
+        sa.Column('id', sa.Uuid(), nullable=False),
+        sa.CheckConstraint("(state = 'RUNNING' AND finished_at IS NULL) OR (state <> 'RUNNING' AND finished_at IS NOT NULL)", name=op.f('ck_source_analysis_attempts_terminal_shape')),
+        sa.CheckConstraint("input_hash ~ '^[0-9a-f]{64}$' AND (output_hash IS NULL OR output_hash ~ '^[0-9a-f]{64}$') AND (external_response_hash IS NULL OR external_response_hash ~ '^[0-9a-f]{64}$')", name=op.f('ck_source_analysis_attempts_evidence_hashes')),
+        sa.CheckConstraint("lease_token_hash ~ '^[0-9a-f]{64}$'", name=op.f('ck_source_analysis_attempts_lease_token_hash')),
+        sa.CheckConstraint("stage IN ('SOURCE_READ', 'PARSED', 'EMBEDDED', 'EXTRACTED', 'FINALIZING', 'COMPLETED')", name=op.f('ck_source_analysis_attempts_stage_vocabulary')),
+        sa.CheckConstraint("state IN ('RUNNING', 'SUCCEEDED', 'FAILED', 'STALE', 'CANCELLED', 'SUPERSEDED')", name=op.f('ck_source_analysis_attempts_state_vocabulary')),
+        sa.CheckConstraint('attempt_no > 0 AND lease_epoch > 0', name=op.f('ck_source_analysis_attempts_counters')),
+        sa.ForeignKeyConstraint(['workspace_id', 'job_id'], ['knowledge.source_analysis_jobs.workspace_id', 'knowledge.source_analysis_jobs.id'], name=op.f('fk_source_analysis_attempts_workspace_id_job_id_source_analysis_jobs'), ondelete='RESTRICT'),
+        sa.PrimaryKeyConstraint('id', name=op.f('pk_source_analysis_attempts')),
+        sa.UniqueConstraint('workspace_id', 'id', name=op.f('uq_source_analysis_attempts_workspace_id_id')),
+        sa.UniqueConstraint('workspace_id', 'job_id', 'attempt_no', name=op.f('uq_source_analysis_attempts_workspace_id_job_id_attempt_no')),
+        sa.UniqueConstraint('workspace_id', 'job_id', 'lease_epoch', name=op.f('uq_source_analysis_attempts_workspace_id_job_id_lease_epoch')),
+        schema='knowledge'
+        )
+        op.create_index('ix_source_analysis_attempts_job', 'source_analysis_attempts', ['workspace_id', 'job_id', 'attempt_no'], unique=False, schema='knowledge')
+        op.execute('ALTER TABLE knowledge.source_analysis_attempts ENABLE ROW LEVEL SECURITY')
+        op.execute('ALTER TABLE knowledge.source_analysis_attempts FORCE ROW LEVEL SECURITY')
+        op.execute("CREATE POLICY workspace_isolation ON knowledge.source_analysis_attempts USING (workspace_id = NULLIF(current_setting('app.workspace_id', true), '')::uuid) WITH CHECK (workspace_id = NULLIF(current_setting('app.workspace_id', true), '')::uuid)")
+        op.create_table('source_page_embeddings',
+        sa.Column('workspace_id', sa.Uuid(), nullable=False),
+        sa.Column('source_snapshot_id', sa.Uuid(), nullable=False),
+        sa.Column('page_number', sa.Integer(), nullable=False),
+        sa.Column('provider', sa.String(length=100), nullable=False),
+        sa.Column('model_identity', sa.String(length=200), nullable=False),
+        sa.Column('dimension', sa.Integer(), nullable=False),
+        sa.Column('embedding', sa.JSON().with_variant(postgresql.JSONB(none_as_null=True, astext_type=Text()), 'postgresql'), nullable=False),
+        sa.Column('content_sha256', sa.String(length=64), nullable=False),
+        sa.Column('id', sa.Uuid(), nullable=False),
+        sa.Column('created_at', sa.DateTime(timezone=True), server_default=sa.text('CURRENT_TIMESTAMP'), nullable=False),
+        sa.Column('updated_at', sa.DateTime(timezone=True), server_default=sa.text('CURRENT_TIMESTAMP'), nullable=False),
+        sa.CheckConstraint("content_sha256 ~ '^[0-9a-f]{64}$'", name=op.f('ck_source_page_embeddings_content_sha256')),
+        sa.CheckConstraint('dimension > 0 AND dimension <= 16384', name=op.f('ck_source_page_embeddings_bounded_dimension')),
+        sa.ForeignKeyConstraint(['workspace_id', 'source_snapshot_id', 'page_number'], ['knowledge.source_pages.workspace_id', 'knowledge.source_pages.source_snapshot_id', 'knowledge.source_pages.page_number'], name=op.f('fk_source_page_embeddings_workspace_id_source_snapshot_id_page_number_source_pages'), ondelete='CASCADE'),
+        sa.PrimaryKeyConstraint('id', name=op.f('pk_source_page_embeddings')),
+        sa.UniqueConstraint('source_snapshot_id', 'page_number', 'provider', 'model_identity', name=op.f('uq_source_page_embeddings_source_snapshot_id_page_number_provider_model_identity')),
+        schema='knowledge'
+        )
+        op.create_index('ix_source_page_embeddings_source', 'source_page_embeddings', ['source_snapshot_id', 'page_number'], unique=False, schema='knowledge')
+        op.execute('ALTER TABLE knowledge.source_page_embeddings ENABLE ROW LEVEL SECURITY')
+        op.execute('ALTER TABLE knowledge.source_page_embeddings FORCE ROW LEVEL SECURITY')
+        op.execute("CREATE POLICY workspace_isolation ON knowledge.source_page_embeddings USING (workspace_id = NULLIF(current_setting('app.workspace_id', true), '')::uuid) WITH CHECK (workspace_id = NULLIF(current_setting('app.workspace_id', true), '')::uuid)")
+        op.create_table('validation_results',
+        sa.Column('workspace_id', sa.Uuid(), nullable=False),
+        sa.Column('changeset_id', sa.Uuid(), nullable=False),
+        sa.Column('validator', sa.String(length=100), nullable=False),
+        sa.Column('validator_version', sa.String(length=100), nullable=False),
+        sa.Column('severity', sa.String(length=20), nullable=False),
+        sa.Column('code', sa.String(length=100), nullable=False),
+        sa.Column('location', sa.Text(), nullable=False),
+        sa.Column('message', sa.Text(), nullable=False),
+        sa.Column('id', sa.Uuid(), nullable=False),
+        sa.Column('created_at', sa.DateTime(timezone=True), server_default=sa.text('CURRENT_TIMESTAMP'), nullable=False),
+        sa.Column('updated_at', sa.DateTime(timezone=True), server_default=sa.text('CURRENT_TIMESTAMP'), nullable=False),
+        sa.ForeignKeyConstraint(['workspace_id', 'changeset_id'], ['knowledge.changesets.workspace_id', 'knowledge.changesets.id'], name=op.f('fk_validation_results_workspace_id_changeset_id_changesets'), ondelete='CASCADE'),
+        sa.PrimaryKeyConstraint('id', name=op.f('pk_validation_results')),
+        schema='knowledge'
+        )
+        op.create_index('ix_validation_results_changeset', 'validation_results', ['changeset_id', 'severity'], unique=False, schema='knowledge')
+        op.execute('ALTER TABLE knowledge.validation_results ENABLE ROW LEVEL SECURITY')
+        op.execute('ALTER TABLE knowledge.validation_results FORCE ROW LEVEL SECURITY')
+        op.execute("CREATE POLICY workspace_isolation ON knowledge.validation_results USING (workspace_id = NULLIF(current_setting('app.workspace_id', true), '')::uuid) WITH CHECK (workspace_id = NULLIF(current_setting('app.workspace_id', true), '')::uuid)")
         op.create_table('execution_attempts',
         sa.Column('workspace_id', sa.Uuid(), nullable=False),
         sa.Column('execution_job_id', sa.Uuid(), nullable=False),
@@ -2908,6 +2847,167 @@ def upgrade() -> None:
         op.execute('ALTER TABLE retention.execution_events ENABLE ROW LEVEL SECURITY')
         op.execute('ALTER TABLE retention.execution_events FORCE ROW LEVEL SECURITY')
         op.execute("CREATE POLICY workspace_isolation ON retention.execution_events USING (workspace_id = NULLIF(current_setting('app.workspace_id', true), '')::uuid) WITH CHECK (workspace_id = NULLIF(current_setting('app.workspace_id', true), '')::uuid)")
+        op.create_table('api_product_versions',
+        sa.Column('workspace_id', sa.Uuid(), nullable=False),
+        sa.Column('product_id', sa.Uuid(), nullable=False),
+        sa.Column('graph_id', sa.Uuid(), nullable=False),
+        sa.Column('release_id', sa.Uuid(), nullable=False),
+        sa.Column('version_no', sa.Integer(), nullable=False),
+        sa.Column('surface', sa.String(length=32), nullable=False),
+        sa.Column('contract_document', sa.JSON().with_variant(postgresql.JSONB(none_as_null=True, astext_type=Text()), 'postgresql'), nullable=False),
+        sa.Column('maximum_hops', sa.Integer(), nullable=False),
+        sa.Column('maximum_nodes', sa.Integer(), nullable=False),
+        sa.Column('timeout_ms', sa.Integer(), nullable=False),
+        sa.Column('state', sa.String(length=32), nullable=False),
+        sa.Column('created_by', sa.Uuid(), nullable=False),
+        sa.Column('published_by', sa.Uuid(), nullable=True),
+        sa.Column('published_at', sa.DateTime(timezone=True), nullable=True),
+        sa.Column('id', sa.Uuid(), nullable=False),
+        sa.Column('created_at', sa.DateTime(timezone=True), server_default=sa.text('CURRENT_TIMESTAMP'), nullable=False),
+        sa.Column('updated_at', sa.DateTime(timezone=True), server_default=sa.text('CURRENT_TIMESTAMP'), nullable=False),
+        sa.ForeignKeyConstraint(['workspace_id', 'graph_id', 'product_id'], ['sharing.api_products.workspace_id', 'sharing.api_products.graph_id', 'sharing.api_products.id'], name=op.f('fk_api_product_versions_workspace_id_graph_id_product_id_api_products'), ondelete='CASCADE'),
+        sa.ForeignKeyConstraint(['workspace_id', 'graph_id', 'release_id'], ['knowledge.releases.workspace_id', 'knowledge.releases.graph_id', 'knowledge.releases.id'], name=op.f('fk_api_product_versions_workspace_id_graph_id_release_id_releases')),
+        sa.PrimaryKeyConstraint('id', name=op.f('pk_api_product_versions')),
+        sa.UniqueConstraint('workspace_id', 'product_id', 'id', name=op.f('uq_api_product_versions_workspace_id_product_id_id')),
+        sa.UniqueConstraint('workspace_id', 'product_id', 'version_no', name=op.f('uq_api_product_versions_workspace_id_product_id_version_no')),
+        schema='sharing'
+        )
+        op.create_index('ix_api_product_versions_product_state', 'api_product_versions', ['product_id', 'state', 'version_no'], unique=False, schema='sharing')
+        op.execute('ALTER TABLE sharing.api_product_versions ENABLE ROW LEVEL SECURITY')
+        op.execute('ALTER TABLE sharing.api_product_versions FORCE ROW LEVEL SECURITY')
+        op.execute("CREATE POLICY workspace_isolation ON sharing.api_product_versions USING (workspace_id = NULLIF(current_setting('app.workspace_id', true), '')::uuid) WITH CHECK (workspace_id = NULLIF(current_setting('app.workspace_id', true), '')::uuid)")
+        op.create_table('evidence_citations',
+        sa.Column('workspace_id', sa.Uuid(), nullable=False),
+        sa.Column('run_id', sa.Uuid(), nullable=False),
+        sa.Column('chunk_id', sa.Uuid(), nullable=False),
+        sa.Column('resource_id', sa.Uuid(), nullable=False),
+        sa.Column('classification', sa.Integer(), nullable=False),
+        sa.Column('system_id', sa.Uuid(), nullable=True),
+        sa.Column('domain_id', sa.Uuid(), nullable=True),
+        sa.Column('owner_department_id', sa.Uuid(), nullable=True),
+        sa.Column('source_type', sa.String(length=50), nullable=False),
+        sa.Column('source_locator', sa.Text(), nullable=False),
+        sa.Column('source_version', sa.String(length=255), nullable=False),
+        sa.Column('content_hash', sa.String(length=64), nullable=False),
+        sa.Column('effective_from', sa.DateTime(timezone=True), nullable=False),
+        sa.Column('effective_until', sa.DateTime(timezone=True), nullable=True),
+        sa.Column('extraction_method', sa.String(length=100), nullable=False),
+        sa.Column('rank', sa.Integer(), nullable=False),
+        sa.Column('display_name', sa.String(length=500), nullable=True),
+        sa.Column('description', sa.Text(), nullable=True),
+        sa.Column('id', sa.Uuid(), nullable=False),
+        sa.CheckConstraint("content_hash ~ '^[0-9a-f]{64}$'", name=op.f('ck_evidence_citations_content_hash_sha256')),
+        sa.CheckConstraint('classification >= 0 AND classification <= 3', name=op.f('ck_evidence_citations_classification_range')),
+        sa.CheckConstraint('effective_until IS NULL OR effective_until >= effective_from', name=op.f('ck_evidence_citations_effective_window')),
+        sa.CheckConstraint('rank > 0', name=op.f('ck_evidence_citations_rank_positive')),
+        sa.ForeignKeyConstraint(['workspace_id', 'run_id'], ['assistant.assistant_runs.workspace_id', 'assistant.assistant_runs.id'], name=op.f('fk_evidence_citations_workspace_id_run_id_assistant_runs'), ondelete='CASCADE'),
+        sa.PrimaryKeyConstraint('id', name=op.f('pk_evidence_citations')),
+        sa.UniqueConstraint('workspace_id', 'run_id', 'chunk_id', name=op.f('uq_evidence_citations_workspace_id_run_id_chunk_id')),
+        sa.UniqueConstraint('workspace_id', 'run_id', 'rank', name=op.f('uq_evidence_citations_workspace_id_run_id_rank')),
+        schema='assistant'
+        )
+        op.create_index('ix_evidence_citations_run_rank', 'evidence_citations', ['run_id', 'rank'], unique=False, schema='assistant')
+        op.execute('ALTER TABLE assistant.evidence_citations ENABLE ROW LEVEL SECURITY')
+        op.execute('ALTER TABLE assistant.evidence_citations FORCE ROW LEVEL SECURITY')
+        op.execute("CREATE POLICY workspace_isolation ON assistant.evidence_citations USING (workspace_id = NULLIF(current_setting('app.workspace_id', true), '')::uuid) WITH CHECK (workspace_id = NULLIF(current_setting('app.workspace_id', true), '')::uuid)")
+        op.execute("CREATE POLICY evidence_citation_owner_access ON assistant.evidence_citations AS RESTRICTIVE FOR ALL TO datariver_app USING (EXISTS (SELECT 1 FROM assistant.assistant_runs AS owned_run JOIN assistant.chat_sessions AS owned_session ON owned_session.workspace_id = owned_run.workspace_id AND owned_session.id = owned_run.session_id WHERE owned_run.workspace_id = evidence_citations.workspace_id AND owned_run.id = evidence_citations.run_id AND owned_session.owner_id = NULLIF(current_setting('app.subject_id', true), '')::uuid)) WITH CHECK (EXISTS (SELECT 1 FROM assistant.assistant_runs AS owned_run JOIN assistant.chat_sessions AS owned_session ON owned_session.workspace_id = owned_run.workspace_id AND owned_session.id = owned_run.session_id WHERE owned_run.workspace_id = evidence_citations.workspace_id AND owned_run.id = evidence_citations.run_id AND owned_session.owner_id = NULLIF(current_setting('app.subject_id', true), '')::uuid))")
+        op.create_table('extraction_runs',
+        sa.Column('workspace_id', sa.Uuid(), nullable=False),
+        sa.Column('graph_id', sa.Uuid(), nullable=False),
+        sa.Column('source_snapshot_id', sa.Uuid(), nullable=False),
+        sa.Column('proposed_changeset_id', sa.Uuid(), nullable=False),
+        sa.Column('source_analysis_job_id', sa.Uuid(), nullable=True),
+        sa.Column('source_analysis_attempt_id', sa.Uuid(), nullable=True),
+        sa.Column('contract_version', sa.String(length=32), server_default='LEGACY_SYNC_V1', nullable=False),
+        sa.Column('state', sa.String(length=32), nullable=False),
+        sa.Column('parser_config_hash', sa.String(length=64), nullable=False),
+        sa.Column('embedding_binding', sa.JSON().with_variant(postgresql.JSONB(none_as_null=True, astext_type=Text()), 'postgresql'), nullable=False),
+        sa.Column('extraction_binding', sa.JSON().with_variant(postgresql.JSONB(none_as_null=True, astext_type=Text()), 'postgresql'), nullable=False),
+        sa.Column('input_hash', sa.String(length=64), nullable=False),
+        sa.Column('output_hash', sa.String(length=64), nullable=False),
+        sa.Column('error_code', sa.String(length=100), nullable=True),
+        sa.Column('id', sa.Uuid(), nullable=False),
+        sa.Column('created_at', sa.DateTime(timezone=True), server_default=sa.text('CURRENT_TIMESTAMP'), nullable=False),
+        sa.Column('updated_at', sa.DateTime(timezone=True), server_default=sa.text('CURRENT_TIMESTAMP'), nullable=False),
+        sa.Column('version', sa.Integer(), nullable=False),
+        sa.CheckConstraint("contract_version IN ('LEGACY_SYNC_V1', 'DURABLE_SOURCE_V1') AND ((contract_version = 'LEGACY_SYNC_V1' AND source_analysis_job_id IS NULL AND source_analysis_attempt_id IS NULL) OR (contract_version = 'DURABLE_SOURCE_V1' AND source_analysis_job_id IS NOT NULL AND source_analysis_attempt_id IS NOT NULL))", name=op.f('ck_extraction_runs_contract_shape')),
+        sa.CheckConstraint("input_hash ~ '^[0-9a-f]{64}$'", name=op.f('ck_extraction_runs_input_hash')),
+        sa.CheckConstraint("output_hash ~ '^[0-9a-f]{64}$'", name=op.f('ck_extraction_runs_output_hash')),
+        sa.CheckConstraint("state IN ('SUCCEEDED', 'FAILED')", name=op.f('ck_extraction_runs_state_vocabulary')),
+        sa.ForeignKeyConstraint(['workspace_id', 'graph_id'], ['knowledge.graphs.workspace_id', 'knowledge.graphs.id'], name=op.f('fk_extraction_runs_workspace_id_graph_id_graphs'), ondelete='CASCADE'),
+        sa.ForeignKeyConstraint(['workspace_id', 'proposed_changeset_id'], ['knowledge.changesets.workspace_id', 'knowledge.changesets.id'], name=op.f('fk_extraction_runs_workspace_id_proposed_changeset_id_changesets'), ondelete='RESTRICT'),
+        sa.ForeignKeyConstraint(['workspace_id', 'source_analysis_attempt_id'], ['knowledge.source_analysis_attempts.workspace_id', 'knowledge.source_analysis_attempts.id'], name=op.f('fk_extraction_runs_workspace_id_source_analysis_attempt_id_source_analysis_attempts'), ondelete='RESTRICT'),
+        sa.ForeignKeyConstraint(['workspace_id', 'source_analysis_job_id'], ['knowledge.source_analysis_jobs.workspace_id', 'knowledge.source_analysis_jobs.id'], name=op.f('fk_extraction_runs_workspace_id_source_analysis_job_id_source_analysis_jobs'), ondelete='RESTRICT'),
+        sa.ForeignKeyConstraint(['workspace_id', 'source_snapshot_id'], ['knowledge.source_snapshots.workspace_id', 'knowledge.source_snapshots.id'], name=op.f('fk_extraction_runs_workspace_id_source_snapshot_id_source_snapshots'), ondelete='RESTRICT'),
+        sa.PrimaryKeyConstraint('id', name=op.f('pk_extraction_runs')),
+        sa.UniqueConstraint('workspace_id', 'id', name=op.f('uq_extraction_runs_workspace_id_id')),
+        schema='knowledge'
+        )
+        op.create_index('ix_extraction_runs_graph_created', 'extraction_runs', ['graph_id', 'created_at'], unique=False, schema='knowledge')
+        op.execute('ALTER TABLE knowledge.extraction_runs ENABLE ROW LEVEL SECURITY')
+        op.execute('ALTER TABLE knowledge.extraction_runs FORCE ROW LEVEL SECURITY')
+        op.execute("CREATE POLICY workspace_isolation ON knowledge.extraction_runs USING (workspace_id = NULLIF(current_setting('app.workspace_id', true), '')::uuid) WITH CHECK (workspace_id = NULLIF(current_setting('app.workspace_id', true), '')::uuid)")
+        op.create_table('source_analysis_events',
+        sa.Column('id', sa.Uuid(), nullable=False),
+        sa.Column('workspace_id', sa.Uuid(), nullable=False),
+        sa.Column('job_id', sa.Uuid(), nullable=False),
+        sa.Column('sequence', sa.Integer(), nullable=False),
+        sa.Column('attempt_id', sa.Uuid(), nullable=True),
+        sa.Column('event_type', sa.String(length=100), nullable=False),
+        sa.Column('actor_ref', sa.String(length=255), nullable=False),
+        sa.Column('reason_code', sa.String(length=100), nullable=True),
+        sa.Column('evidence_hash', sa.String(length=64), nullable=False),
+        sa.Column('details', sa.JSON().with_variant(postgresql.JSONB(none_as_null=True, astext_type=Text()), 'postgresql'), nullable=False),
+        sa.Column('occurred_at', sa.DateTime(timezone=True), nullable=False),
+        sa.CheckConstraint("evidence_hash ~ '^[0-9a-f]{64}$'", name=op.f('ck_source_analysis_events_evidence_hash')),
+        sa.CheckConstraint('sequence > 0', name=op.f('ck_source_analysis_events_sequence_positive')),
+        sa.ForeignKeyConstraint(['workspace_id', 'attempt_id'], ['knowledge.source_analysis_attempts.workspace_id', 'knowledge.source_analysis_attempts.id'], name=op.f('fk_source_analysis_events_workspace_id_attempt_id_source_analysis_attempts'), ondelete='RESTRICT'),
+        sa.ForeignKeyConstraint(['workspace_id', 'job_id'], ['knowledge.source_analysis_jobs.workspace_id', 'knowledge.source_analysis_jobs.id'], name=op.f('fk_source_analysis_events_workspace_id_job_id_source_analysis_jobs'), ondelete='RESTRICT'),
+        sa.PrimaryKeyConstraint('id', name=op.f('pk_source_analysis_events')),
+        sa.UniqueConstraint('workspace_id', 'job_id', 'sequence', name=op.f('uq_source_analysis_events_workspace_id_job_id_sequence')),
+        schema='knowledge'
+        )
+        op.create_index('ix_source_analysis_events_job', 'source_analysis_events', ['workspace_id', 'job_id', 'sequence'], unique=False, schema='knowledge')
+        op.create_index('ux_source_analysis_events_transition_evidence', 'source_analysis_events', ['workspace_id', 'job_id', 'event_type', 'occurred_at'], unique=True, schema='knowledge')
+        op.execute('ALTER TABLE knowledge.source_analysis_events ENABLE ROW LEVEL SECURITY')
+        op.execute('ALTER TABLE knowledge.source_analysis_events FORCE ROW LEVEL SECURITY')
+        op.execute("CREATE POLICY workspace_isolation ON knowledge.source_analysis_events USING (workspace_id = NULLIF(current_setting('app.workspace_id', true), '')::uuid) WITH CHECK (workspace_id = NULLIF(current_setting('app.workspace_id', true), '')::uuid)")
+        op.execute("CREATE POLICY source_analysis_event_owner_select ON knowledge.source_analysis_events AS RESTRICTIVE FOR SELECT TO datariver_app USING (EXISTS (SELECT 1 FROM knowledge.source_analysis_jobs AS job WHERE job.workspace_id = source_analysis_events.workspace_id AND job.id = source_analysis_events.job_id AND job.requested_by = NULLIF(current_setting('app.subject_id', true), '')::uuid))")
+        op.create_table('consumer_grants',
+        sa.Column('workspace_id', sa.Uuid(), nullable=False),
+        sa.Column('product_id', sa.Uuid(), nullable=False),
+        sa.Column('product_version_id', sa.Uuid(), nullable=False),
+        sa.Column('contract_version', sa.String(length=32), nullable=False),
+        sa.Column('consumer_subject_id', sa.Uuid(), nullable=True),
+        sa.Column('consumer_issuer', sa.String(length=500), nullable=True),
+        sa.Column('consumer_client_id', sa.String(length=255), nullable=False),
+        sa.Column('scopes', sa.JSON().with_variant(postgresql.JSONB(none_as_null=True, astext_type=Text()), 'postgresql'), nullable=False),
+        sa.Column('maximum_classification', sa.Integer(), nullable=False),
+        sa.Column('requests_per_minute', sa.Integer(), nullable=False),
+        sa.Column('monthly_quota', sa.Integer(), nullable=False),
+        sa.Column('valid_from', sa.DateTime(timezone=True), nullable=False),
+        sa.Column('expires_at', sa.DateTime(timezone=True), nullable=False),
+        sa.Column('state', sa.String(length=32), nullable=False),
+        sa.Column('created_by', sa.Uuid(), nullable=False),
+        sa.Column('revoked_by', sa.Uuid(), nullable=True),
+        sa.Column('revoked_at', sa.DateTime(timezone=True), nullable=True),
+        sa.Column('id', sa.Uuid(), nullable=False),
+        sa.Column('created_at', sa.DateTime(timezone=True), server_default=sa.text('CURRENT_TIMESTAMP'), nullable=False),
+        sa.Column('updated_at', sa.DateTime(timezone=True), server_default=sa.text('CURRENT_TIMESTAMP'), nullable=False),
+        sa.Column('version', sa.Integer(), nullable=False),
+        sa.CheckConstraint("(contract_version = 'LEGACY_CLIENT_V1' AND consumer_subject_id IS NULL AND consumer_issuer IS NULL) OR (contract_version = 'SUBJECT_CLIENT_V2' AND consumer_subject_id IS NOT NULL AND consumer_issuer IS NOT NULL AND length(consumer_issuer) BETWEEN 1 AND 500)", name=op.f('ck_consumer_grants_contract_shape')),
+        sa.ForeignKeyConstraint(['workspace_id', 'consumer_subject_id'], ['iam.workspace_memberships.workspace_id', 'iam.workspace_memberships.subject_id'], name='fk_consumer_grants_consumer_membership', ondelete='RESTRICT'),
+        sa.ForeignKeyConstraint(['workspace_id', 'product_id', 'product_version_id'], ['sharing.api_product_versions.workspace_id', 'sharing.api_product_versions.product_id', 'sharing.api_product_versions.id'], name=op.f('fk_consumer_grants_workspace_id_product_id_product_version_id_api_product_versions'), ondelete='RESTRICT'),
+        sa.PrimaryKeyConstraint('id', name=op.f('pk_consumer_grants')),
+        sa.UniqueConstraint('workspace_id', 'id', name=op.f('uq_consumer_grants_workspace_id_id')),
+        schema='sharing'
+        )
+        op.create_index('ix_consumer_grants_client_state', 'consumer_grants', ['workspace_id', 'consumer_client_id', 'state'], unique=False, schema='sharing')
+        op.create_index('uq_consumer_grants_legacy_client', 'consumer_grants', ['workspace_id', 'product_version_id', 'consumer_client_id'], unique=True, schema='sharing', postgresql_where=sa.text("contract_version = 'LEGACY_CLIENT_V1'"))
+        op.create_index('uq_consumer_grants_v2_subject_client', 'consumer_grants', ['workspace_id', 'product_version_id', 'consumer_subject_id', 'consumer_client_id'], unique=True, schema='sharing', postgresql_where=sa.text("contract_version = 'SUBJECT_CLIENT_V2'"))
+        op.execute('ALTER TABLE sharing.consumer_grants ENABLE ROW LEVEL SECURITY')
+        op.execute('ALTER TABLE sharing.consumer_grants FORCE ROW LEVEL SECURITY')
+        op.execute("CREATE POLICY workspace_isolation ON sharing.consumer_grants USING (workspace_id = NULLIF(current_setting('app.workspace_id', true), '')::uuid) WITH CHECK (workspace_id = NULLIF(current_setting('app.workspace_id', true), '')::uuid)")
         op.create_table('api_invocation_monthly_usage',
         sa.Column('workspace_id', sa.Uuid(), nullable=False),
         sa.Column('grant_id', sa.Uuid(), nullable=False),
@@ -2973,41 +3073,6 @@ def upgrade() -> None:
         op.execute('ALTER TABLE sharing.api_invocations ENABLE ROW LEVEL SECURITY')
         op.execute('ALTER TABLE sharing.api_invocations FORCE ROW LEVEL SECURITY')
         op.execute("CREATE POLICY workspace_isolation ON sharing.api_invocations USING (workspace_id = NULLIF(current_setting('app.workspace_id', true), '')::uuid) WITH CHECK (workspace_id = NULLIF(current_setting('app.workspace_id', true), '')::uuid)")
-        op.create_table('evidence_citations',
-        sa.Column('workspace_id', sa.Uuid(), nullable=False),
-        sa.Column('run_id', sa.Uuid(), nullable=False),
-        sa.Column('chunk_id', sa.Uuid(), nullable=False),
-        sa.Column('resource_id', sa.Uuid(), nullable=False),
-        sa.Column('classification', sa.Integer(), nullable=False),
-        sa.Column('system_id', sa.Uuid(), nullable=True),
-        sa.Column('domain_id', sa.Uuid(), nullable=True),
-        sa.Column('owner_department_id', sa.Uuid(), nullable=True),
-        sa.Column('source_type', sa.String(length=50), nullable=False),
-        sa.Column('source_locator', sa.Text(), nullable=False),
-        sa.Column('source_version', sa.String(length=255), nullable=False),
-        sa.Column('content_hash', sa.String(length=64), nullable=False),
-        sa.Column('effective_from', sa.DateTime(timezone=True), nullable=False),
-        sa.Column('effective_until', sa.DateTime(timezone=True), nullable=True),
-        sa.Column('extraction_method', sa.String(length=100), nullable=False),
-        sa.Column('rank', sa.Integer(), nullable=False),
-        sa.Column('display_name', sa.String(length=500), nullable=True),
-        sa.Column('description', sa.Text(), nullable=True),
-        sa.Column('id', sa.Uuid(), nullable=False),
-        sa.CheckConstraint("content_hash ~ '^[0-9a-f]{64}$'", name=op.f('ck_evidence_citations_content_hash_sha256')),
-        sa.CheckConstraint('classification >= 0 AND classification <= 3', name=op.f('ck_evidence_citations_classification_range')),
-        sa.CheckConstraint('effective_until IS NULL OR effective_until >= effective_from', name=op.f('ck_evidence_citations_effective_window')),
-        sa.CheckConstraint('rank > 0', name=op.f('ck_evidence_citations_rank_positive')),
-        sa.ForeignKeyConstraint(['workspace_id', 'run_id'], ['assistant.assistant_runs.workspace_id', 'assistant.assistant_runs.id'], name=op.f('fk_evidence_citations_workspace_id_run_id_assistant_runs'), ondelete='CASCADE'),
-        sa.PrimaryKeyConstraint('id', name=op.f('pk_evidence_citations')),
-        sa.UniqueConstraint('workspace_id', 'run_id', 'chunk_id', name=op.f('uq_evidence_citations_workspace_id_run_id_chunk_id')),
-        sa.UniqueConstraint('workspace_id', 'run_id', 'rank', name=op.f('uq_evidence_citations_workspace_id_run_id_rank')),
-        schema='assistant'
-        )
-        op.create_index('ix_evidence_citations_run_rank', 'evidence_citations', ['run_id', 'rank'], unique=False, schema='assistant')
-        op.execute('ALTER TABLE assistant.evidence_citations ENABLE ROW LEVEL SECURITY')
-        op.execute('ALTER TABLE assistant.evidence_citations FORCE ROW LEVEL SECURITY')
-        op.execute("CREATE POLICY workspace_isolation ON assistant.evidence_citations USING (workspace_id = NULLIF(current_setting('app.workspace_id', true), '')::uuid) WITH CHECK (workspace_id = NULLIF(current_setting('app.workspace_id', true), '')::uuid)")
-        op.execute("CREATE POLICY evidence_citation_owner_access ON assistant.evidence_citations AS RESTRICTIVE FOR ALL TO datariver_app USING (EXISTS (SELECT 1 FROM assistant.assistant_runs AS owned_run JOIN assistant.chat_sessions AS owned_session ON owned_session.workspace_id = owned_run.workspace_id AND owned_session.id = owned_run.session_id WHERE owned_run.workspace_id = evidence_citations.workspace_id AND owned_run.id = evidence_citations.run_id AND owned_session.owner_id = NULLIF(current_setting('app.subject_id', true), '')::uuid)) WITH CHECK (EXISTS (SELECT 1 FROM assistant.assistant_runs AS owned_run JOIN assistant.chat_sessions AS owned_session ON owned_session.workspace_id = owned_run.workspace_id AND owned_session.id = owned_run.session_id WHERE owned_run.workspace_id = evidence_citations.workspace_id AND owned_run.id = evidence_citations.run_id AND owned_session.owner_id = NULLIF(current_setting('app.subject_id', true), '')::uuid))")
         op.create_table('api_invocation_results',
         sa.Column('workspace_id', sa.Uuid(), nullable=False),
         sa.Column('invocation_id', sa.Uuid(), nullable=False),
@@ -3057,9 +3122,11 @@ def upgrade() -> None:
         op.create_foreign_key(op.f('fk_changesets_workspace_id_graph_id_published_release_id_releases'), 'changesets', 'releases', ['workspace_id', 'graph_id', 'published_release_id'], ['workspace_id', 'graph_id', 'id'], source_schema='knowledge', referent_schema='knowledge', use_alter=True)
         op.create_foreign_key(op.f('fk_changesets_workspace_id_source_analysis_job_id_source_analysis_jobs'), 'changesets', 'source_analysis_jobs', ['workspace_id', 'source_analysis_job_id'], ['workspace_id', 'id'], source_schema='knowledge', referent_schema='knowledge', ondelete='RESTRICT', use_alter=True)
         op.create_foreign_key(op.f('fk_graphs_workspace_id_id_active_release_id_releases'), 'graphs', 'releases', ['workspace_id', 'id', 'active_release_id'], ['workspace_id', 'graph_id', 'id'], source_schema='knowledge', referent_schema='knowledge', use_alter=True)
+        op.create_foreign_key(op.f('fk_ontology_versions_workspace_id_graph_id_base_ontology_version_id_ontology_versions'), 'ontology_versions', 'ontology_versions', ['workspace_id', 'graph_id', 'base_ontology_version_id'], ['workspace_id', 'graph_id', 'id'], source_schema='knowledge', referent_schema='knowledge', ondelete='RESTRICT', use_alter=True)
         op.create_foreign_key(op.f('fk_source_analysis_jobs_workspace_id_graph_id_base_release_id_releases'), 'source_analysis_jobs', 'releases', ['workspace_id', 'graph_id', 'base_release_id'], ['workspace_id', 'graph_id', 'id'], source_schema='knowledge', referent_schema='knowledge', ondelete='RESTRICT', use_alter=True)
         op.create_foreign_key(op.f('fk_source_analysis_jobs_workspace_id_graph_id_result_changeset_id_changesets'), 'source_analysis_jobs', 'changesets', ['workspace_id', 'graph_id', 'result_changeset_id'], ['workspace_id', 'graph_id', 'id'], source_schema='knowledge', referent_schema='knowledge', ondelete='RESTRICT', use_alter=True)
-        op.execute("DO $datariver$\nBEGIN\n    IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'datariver_app') THEN\n        GRANT USAGE ON SCHEMA platform, iam, authz, catalog, governance, integration, knowledge, assistant, sharing, retention TO datariver_app;\n        GRANT USAGE ON SCHEMA public TO datariver_app;\n        GRANT SELECT ON public.alembic_version TO datariver_app;\n        GRANT SELECT ON platform.workspaces, iam.subjects TO datariver_app;\n        GRANT UPDATE (email, last_login_at, last_login_ip, updated_at)\n            ON iam.subjects TO datariver_app;\n        GRANT SELECT ON iam.workspace_memberships TO datariver_app;\n        GRANT SELECT, INSERT, UPDATE ON iam.membership_renewal_requests TO datariver_app;\n        GRANT SELECT, INSERT ON iam.access_roles TO datariver_app;\n        GRANT UPDATE (name, description, clearance, groups, allowed_actions, denied_actions,\n            allowed_system_ids, allowed_domain_ids, active, updated_by, version, updated_at)\n            ON iam.access_roles TO datariver_app;\n        GRANT SELECT, INSERT ON iam.access_role_data_rules,\n            iam.access_role_assignment_events TO datariver_app;\n        GRANT SELECT, INSERT ON iam.access_role_assignments TO datariver_app;\n        GRANT UPDATE (role_id, role_version, membership_version, access_payload_hash,\n            assigned_by, active, version, updated_at)\n            ON iam.access_role_assignments TO datariver_app;\n        GRANT EXECUTE ON FUNCTION iam.resolve_default_workspace(text, text) TO datariver_app;\n        GRANT EXECUTE ON FUNCTION iam.provision_workspace_identity(uuid, uuid, text, text, text, text, uuid, text, uuid, timestamptz) TO datariver_app;\n        GRANT UPDATE (active, clearance, attributes, version, updated_at)\n            ON iam.workspace_memberships TO datariver_app;\n        GRANT UPDATE (access_expires_at, version, updated_at)\n            ON iam.workspace_memberships TO datariver_app;\n        GRANT SELECT, INSERT ON iam.admin_access_requests TO datariver_app;\n        GRANT UPDATE (state, checker_id, consumed_by, consumed_at,\n            consume_policy_decision_id, version, updated_at)\n            ON iam.admin_access_requests TO datariver_app;\n        GRANT SELECT, INSERT ON iam.admin_access_approvals TO datariver_app;\n        GRANT INSERT ON authz.policy_decisions TO datariver_app;\n        GRANT SELECT, INSERT, UPDATE ON catalog.assets_projection,\n            catalog.sync_runs, catalog.projection_watermarks TO datariver_app;\n        GRANT SELECT, INSERT ON catalog.export_requests TO datariver_app;\n        GRANT SELECT, INSERT ON governance.change_request_items,\n            governance.approvals, governance.state_transitions TO datariver_app;\n        GRANT SELECT, INSERT ON governance.change_request_attachments TO datariver_app;\n        GRANT SELECT, INSERT, UPDATE ON governance.change_request_rounds TO datariver_app;\n        GRANT SELECT, INSERT ON governance.change_test_runs TO datariver_app;\n        GRANT SELECT, INSERT ON governance.registration_content_bindings TO datariver_app;\n        GRANT SELECT, INSERT, UPDATE ON governance.change_requests TO datariver_app;\n        GRANT SELECT, INSERT, UPDATE ON platform.data_systems, platform.system_schema_scopes,\n            platform.system_assignees, platform.external_service_profiles TO datariver_app;\n        GRANT SELECT, INSERT, UPDATE ON platform.external_service_profile_versions\n            TO datariver_app;\n        GRANT SELECT ON integration.jobs, integration.job_attempts TO datariver_app;\n        GRANT INSERT ON integration.jobs TO datariver_app;\n        GRANT SELECT, INSERT, UPDATE ON integration.object_manifests TO datariver_app;\n        GRANT SELECT, INSERT ON integration.upload_preparation_jobs TO datariver_app;\n        GRANT UPDATE (state, lease_token, lease_until, attempts, rows_processed,\n            total_rows, last_error_code, version, updated_at)\n            ON integration.upload_preparation_jobs TO datariver_app;\n        GRANT SELECT ON integration.upload_preparation_receipts,\n            integration.upload_registration_candidates TO datariver_app;\n        GRANT INSERT ON integration.upload_preparation_receipts,\n            integration.upload_registration_candidates TO datariver_app;\n        GRANT SELECT, INSERT ON integration.idempotency_keys,\n            integration.outbox_events TO datariver_app;\n        GRANT SELECT ON knowledge.graphs, knowledge.ontology_versions,\n            knowledge.releases, knowledge.release_nodes, knowledge.release_edges,\n            knowledge.changesets, knowledge.change_operations,\n            knowledge.validation_results, knowledge.projection_deployments,\n            knowledge.source_snapshots, knowledge.source_pages,\n            knowledge.source_page_embeddings, knowledge.extraction_runs,\n            knowledge.graphrag_audits TO datariver_app;\n        GRANT INSERT ON knowledge.graphs, knowledge.ontology_versions,\n            knowledge.releases, knowledge.release_nodes, knowledge.release_edges,\n            knowledge.changesets, knowledge.change_operations,\n            knowledge.validation_results, knowledge.projection_deployments,\n            knowledge.source_snapshots, knowledge.source_pages,\n            knowledge.source_page_embeddings, knowledge.extraction_runs,\n            knowledge.graphrag_audits TO datariver_app;\n        GRANT UPDATE ON knowledge.graphs, knowledge.changesets,\n            knowledge.projection_deployments, knowledge.source_snapshots TO datariver_app;\n        GRANT DELETE ON knowledge.validation_results TO datariver_app;\n        GRANT SELECT, INSERT ON assistant.chat_sessions, assistant.chat_messages,\n            assistant.assistant_runs, assistant.evidence_citations TO datariver_app;\n        GRANT UPDATE (is_favorite, is_archived, version, updated_at)\n            ON assistant.chat_sessions TO datariver_app;\n        GRANT SELECT, INSERT ON retention.policy_versions,\n            retention.policy_class_rules TO datariver_app;\n        GRANT UPDATE (state, checker_id, decision_reason,\n            decision_policy_decision_id, decided_at, superseded_by, supersede_reason,\n            supersede_policy_decision_id, superseded_at, version, updated_at)\n            ON retention.policy_versions TO datariver_app;\n        GRANT SELECT, INSERT ON retention.legal_holds TO datariver_app;\n        GRANT UPDATE (state, release_requested_by, release_request_reason,\n            release_request_policy_decision_id, release_checker_id,\n            release_decision_reason, release_decision_policy_decision_id,\n            released_at, version, updated_at)\n            ON retention.legal_holds TO datariver_app;\n        GRANT SELECT, INSERT ON retention.legal_hold_events TO datariver_app;\n        GRANT SELECT, INSERT ON retention.erasure_requests TO datariver_app;\n        GRANT UPDATE (state, checker_id, decision_reason,\n            decision_policy_decision_id, decided_at, version, updated_at)\n            ON retention.erasure_requests TO datariver_app;\n        GRANT SELECT, INSERT ON retention.erasure_request_events TO datariver_app;\n        GRANT SELECT ON retention.archive_capability_attestations,\n            retention.immutable_archive_receipts TO datariver_app;\n        GRANT SELECT ON retention.execution_jobs TO datariver_app;\n        GRANT SELECT ON retention.execution_attempts,\n            retention.execution_events TO datariver_app;\n        GRANT SELECT, INSERT, UPDATE ON sharing.api_products,\n            sharing.api_product_versions, sharing.consumer_grants TO datariver_app;\n        GRANT SELECT, INSERT ON sharing.api_invocations TO datariver_app;\n    END IF;\n\n    IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'datariver_relay') THEN\n        GRANT USAGE ON SCHEMA platform, integration TO datariver_relay;\n        GRANT SELECT ON platform.external_service_profiles,\n            platform.external_service_profile_versions TO datariver_relay;\n        GRANT SELECT, UPDATE ON integration.outbox_events TO datariver_relay;\n        GRANT SELECT ON integration.inbox_messages TO datariver_relay;\n    END IF;\n\n    IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'datariver_upload') THEN\n        GRANT USAGE ON SCHEMA platform, integration TO datariver_upload;\n        GRANT SELECT ON platform.external_service_profiles,\n            platform.external_service_profile_versions TO datariver_upload;\n        GRANT SELECT, UPDATE ON integration.object_manifests TO datariver_upload;\n        GRANT SELECT, INSERT ON integration.outbox_events TO datariver_upload;\n        GRANT SELECT, INSERT, UPDATE ON integration.inbox_messages TO datariver_upload;\n    END IF;\n\n    IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'datariver_governance') THEN\n        GRANT USAGE ON SCHEMA platform, iam, authz, governance, integration\n            TO datariver_governance;\n        GRANT SELECT ON platform.external_service_profiles,\n            platform.external_service_profile_versions TO datariver_governance;\n        GRANT SELECT, INSERT ON authz.policy_decisions TO datariver_governance;\n        GRANT SELECT ON governance.change_requests TO datariver_governance;\n        GRANT UPDATE (state, version, updated_at)\n            ON governance.change_requests TO datariver_governance;\n        GRANT SELECT ON governance.change_request_items, governance.approvals,\n            governance.state_transitions, governance.change_request_rounds,\n            governance.change_test_runs TO datariver_governance;\n        GRANT INSERT ON governance.state_transitions TO datariver_governance;\n        GRANT SELECT, INSERT ON integration.jobs, integration.job_attempts\n            TO datariver_governance;\n        GRANT UPDATE (state, progress, result_ref, lease_until, attempts,\n            attempt_cycle, cycle_attempts, lease_token_hash, lease_owner_id,\n            last_error_code, version, updated_at)\n            ON integration.jobs TO datariver_governance;\n        GRANT UPDATE (state, error_class, external_response_hash, finished_at)\n            ON integration.job_attempts TO datariver_governance;\n        GRANT SELECT, INSERT, UPDATE ON integration.inbox_messages\n            TO datariver_governance;\n        GRANT SELECT, INSERT ON integration.outbox_events TO datariver_governance;\n    END IF;\n\n    IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'datariver_export') THEN\n        GRANT USAGE ON SCHEMA platform, iam, authz, catalog, integration TO datariver_export;\n        GRANT SELECT ON platform.workspaces, iam.subjects,\n            iam.workspace_memberships TO datariver_export;\n        GRANT SELECT ON platform.external_service_profiles,\n            platform.external_service_profile_versions TO datariver_export;\n        GRANT SELECT ON authz.classification_access_policy_versions,\n            authz.classification_access_policy_rules, authz.classification_access_generations,\n            authz.restricted_search_grants TO datariver_export;\n        GRANT INSERT ON authz.policy_decisions TO datariver_export;\n        GRANT SELECT ON catalog.assets_projection, catalog.projection_watermarks,\n            catalog.export_requests TO datariver_export;\n        GRANT UPDATE (object_bucket, object_key, row_count, size_bytes, content_sha256,\n            provider_checksum, completed_at, version, updated_at)\n            ON catalog.export_requests TO datariver_export;\n        GRANT SELECT ON integration.inference_provider_profile_versions,\n            integration.jobs, integration.job_attempts TO datariver_export;\n        GRANT SELECT, INSERT, UPDATE ON integration.inbox_messages TO datariver_export;\n        GRANT UPDATE (state, progress, result_ref, lease_until, attempts, last_error_code,\n            version, updated_at) ON integration.jobs TO datariver_export;\n        GRANT INSERT, UPDATE (state, error_class, external_response_hash, finished_at)\n            ON integration.job_attempts TO datariver_export;\n    END IF;\n\n    IF EXISTS (\n        SELECT 1 FROM pg_roles WHERE rolname = 'datariver_retention_scheduler'\n    ) THEN\n        GRANT USAGE ON SCHEMA platform, iam, authz, assistant, retention\n            TO datariver_retention_scheduler;\n        GRANT SELECT ON platform.workspaces, iam.subjects,\n            iam.workspace_memberships, iam.access_roles,\n            iam.access_role_assignments, authz.policy_decisions,\n            retention.policy_versions, retention.policy_class_rules,\n            retention.legal_holds, retention.erasure_requests,\n            retention.erasure_request_events,\n            assistant.chat_sessions TO datariver_retention_scheduler;\n        GRANT SELECT, INSERT ON retention.execution_jobs,\n            retention.execution_events TO datariver_retention_scheduler;\n    END IF;\n\n    IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'datariver_archive') THEN\n        GRANT USAGE ON SCHEMA platform, iam, authz, assistant, retention\n            TO datariver_archive;\n        GRANT SELECT ON platform.workspaces, iam.subjects,\n            iam.workspace_memberships, iam.access_roles,\n            iam.access_role_assignments, authz.policy_decisions,\n            retention.policy_versions, retention.policy_class_rules,\n            retention.legal_holds, retention.erasure_requests,\n            retention.erasure_request_events,\n            assistant.chat_sessions, retention.execution_jobs,\n            retention.execution_attempts,\n            retention.archive_capability_attestations,\n            retention.immutable_archive_receipts TO datariver_archive;\n        GRANT INSERT ON retention.archive_capability_attestations,\n            retention.immutable_archive_receipts,\n            retention.execution_attempts TO datariver_archive;\n        GRANT SELECT, INSERT ON retention.execution_events TO datariver_archive;\n        GRANT UPDATE (state, next_attempt_at, attempt_count, lease_epoch,\n            lease_token_hash, lease_owner_fingerprint, lease_until,\n            archive_receipt_id, archive_manifest_hash, last_failure_code,\n            version, updated_at) ON retention.execution_jobs TO datariver_archive;\n        GRANT UPDATE (state, stage, evidence_hash, external_response_hash,\n            failure_code, finished_at) ON retention.execution_attempts TO datariver_archive;\n    END IF;\n\n    IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'datariver_bootstrap') THEN\n        GRANT USAGE ON SCHEMA platform, iam TO datariver_bootstrap;\n        GRANT SELECT, INSERT, UPDATE ON platform.workspaces, iam.subjects,\n            iam.workspace_memberships TO datariver_bootstrap;\n    END IF;\nEND\n$datariver$")
+        op.create_foreign_key(op.f('fk_studio_drafts_workspace_id_base_graph_id_base_release_id_releases'), 'studio_drafts', 'releases', ['workspace_id', 'base_graph_id', 'base_release_id'], ['workspace_id', 'graph_id', 'id'], source_schema='knowledge', referent_schema='knowledge', ondelete='RESTRICT', use_alter=True)
+        op.execute("DO $datariver$\nBEGIN\n    IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'datariver_app') THEN\n        GRANT USAGE ON SCHEMA platform, iam, authz, catalog, governance, integration, knowledge, assistant, sharing, retention TO datariver_app;\n        GRANT USAGE ON SCHEMA public TO datariver_app;\n        GRANT SELECT ON public.alembic_version TO datariver_app;\n        GRANT SELECT ON platform.workspaces, iam.subjects TO datariver_app;\n        GRANT UPDATE (email, last_login_at, last_login_ip, updated_at)\n            ON iam.subjects TO datariver_app;\n        GRANT SELECT ON iam.workspace_memberships TO datariver_app;\n        GRANT SELECT, INSERT, UPDATE ON iam.membership_renewal_requests TO datariver_app;\n        GRANT SELECT, INSERT ON iam.access_roles TO datariver_app;\n        GRANT UPDATE (name, description, clearance, groups, allowed_actions, denied_actions,\n            allowed_system_ids, allowed_domain_ids, active, updated_by, version, updated_at)\n            ON iam.access_roles TO datariver_app;\n        GRANT SELECT, INSERT ON iam.access_role_data_rules,\n            iam.access_role_assignment_events TO datariver_app;\n        GRANT SELECT, INSERT ON iam.access_role_assignments TO datariver_app;\n        GRANT UPDATE (role_id, role_version, membership_version, access_payload_hash,\n            assigned_by, active, version, updated_at)\n            ON iam.access_role_assignments TO datariver_app;\n        GRANT EXECUTE ON FUNCTION iam.resolve_default_workspace(text, text) TO datariver_app;\n        GRANT EXECUTE ON FUNCTION iam.provision_workspace_identity(uuid, uuid, text, text, text, text, uuid, text, uuid, timestamptz) TO datariver_app;\n        GRANT UPDATE (active, clearance, attributes, version, updated_at)\n            ON iam.workspace_memberships TO datariver_app;\n        GRANT UPDATE (access_expires_at, version, updated_at)\n            ON iam.workspace_memberships TO datariver_app;\n        GRANT SELECT, INSERT ON iam.admin_access_requests TO datariver_app;\n        GRANT UPDATE (state, checker_id, consumed_by, consumed_at,\n            consume_policy_decision_id, version, updated_at)\n            ON iam.admin_access_requests TO datariver_app;\n        GRANT SELECT, INSERT ON iam.admin_access_approvals TO datariver_app;\n        GRANT INSERT ON authz.policy_decisions TO datariver_app;\n        GRANT SELECT, INSERT, UPDATE ON catalog.assets_projection,\n            catalog.sync_runs, catalog.projection_watermarks TO datariver_app;\n        GRANT SELECT, INSERT ON catalog.export_requests TO datariver_app;\n        GRANT SELECT, INSERT ON governance.change_request_items,\n            governance.approvals, governance.state_transitions TO datariver_app;\n        GRANT SELECT, INSERT ON governance.change_request_attachments TO datariver_app;\n        GRANT SELECT, INSERT, UPDATE ON governance.change_request_rounds TO datariver_app;\n        GRANT SELECT, INSERT ON governance.change_test_runs TO datariver_app;\n        GRANT SELECT, INSERT ON governance.registration_content_bindings TO datariver_app;\n        GRANT SELECT, INSERT, UPDATE ON governance.change_requests TO datariver_app;\n        GRANT SELECT, INSERT, UPDATE ON platform.data_systems, platform.system_schema_scopes,\n            platform.system_assignees, platform.external_service_profiles TO datariver_app;\n        GRANT SELECT, INSERT, UPDATE ON platform.external_service_profile_versions\n            TO datariver_app;\n        GRANT SELECT ON integration.jobs, integration.job_attempts TO datariver_app;\n        GRANT INSERT ON integration.jobs TO datariver_app;\n        GRANT SELECT, INSERT, UPDATE ON integration.object_manifests TO datariver_app;\n        GRANT SELECT, INSERT ON integration.upload_preparation_jobs TO datariver_app;\n        GRANT UPDATE (state, lease_token, lease_until, attempts, rows_processed,\n            total_rows, last_error_code, version, updated_at)\n            ON integration.upload_preparation_jobs TO datariver_app;\n        GRANT SELECT ON integration.upload_preparation_receipts,\n            integration.upload_registration_candidates TO datariver_app;\n        GRANT INSERT ON integration.upload_preparation_receipts,\n            integration.upload_registration_candidates TO datariver_app;\n        GRANT SELECT, INSERT ON integration.idempotency_keys,\n            integration.outbox_events TO datariver_app;\n        GRANT SELECT ON knowledge.graphs, knowledge.ontology_versions,\n            knowledge.releases, knowledge.release_nodes, knowledge.release_edges,\n            knowledge.changesets, knowledge.change_operations,\n            knowledge.validation_results, knowledge.projection_deployments,\n            knowledge.source_snapshots, knowledge.source_pages,\n            knowledge.source_page_embeddings, knowledge.extraction_runs,\n            knowledge.graphrag_audits, knowledge.studio_drafts TO datariver_app;\n        GRANT INSERT ON knowledge.graphs, knowledge.ontology_versions,\n            knowledge.releases, knowledge.release_nodes, knowledge.release_edges,\n            knowledge.changesets, knowledge.change_operations,\n            knowledge.validation_results, knowledge.projection_deployments,\n            knowledge.source_snapshots, knowledge.source_pages,\n            knowledge.source_page_embeddings, knowledge.extraction_runs,\n            knowledge.graphrag_audits, knowledge.studio_drafts TO datariver_app;\n        GRANT UPDATE ON knowledge.graphs, knowledge.changesets,\n            knowledge.projection_deployments, knowledge.source_snapshots TO datariver_app;\n        GRANT UPDATE (\n            state, current_step, name, endpoint_alias,\n            domain_ref_id, domain_ref_kind, domain_source_version,\n            classification, review_requested_at, discarded_at,\n            discarded_by, last_autosaved_at,\n            version, updated_at\n        ) ON knowledge.studio_drafts TO datariver_app;\n        GRANT DELETE ON knowledge.validation_results TO datariver_app;\n        GRANT SELECT, INSERT ON assistant.chat_sessions, assistant.chat_messages,\n            assistant.assistant_runs, assistant.evidence_citations TO datariver_app;\n        GRANT UPDATE (is_favorite, is_archived, version, updated_at)\n            ON assistant.chat_sessions TO datariver_app;\n        GRANT SELECT, INSERT ON retention.policy_versions,\n            retention.policy_class_rules TO datariver_app;\n        GRANT UPDATE (state, checker_id, decision_reason,\n            decision_policy_decision_id, decided_at, superseded_by, supersede_reason,\n            supersede_policy_decision_id, superseded_at, version, updated_at)\n            ON retention.policy_versions TO datariver_app;\n        GRANT SELECT, INSERT ON retention.legal_holds TO datariver_app;\n        GRANT UPDATE (state, release_requested_by, release_request_reason,\n            release_request_policy_decision_id, release_checker_id,\n            release_decision_reason, release_decision_policy_decision_id,\n            released_at, version, updated_at)\n            ON retention.legal_holds TO datariver_app;\n        GRANT SELECT, INSERT ON retention.legal_hold_events TO datariver_app;\n        GRANT SELECT, INSERT ON retention.erasure_requests TO datariver_app;\n        GRANT UPDATE (state, checker_id, decision_reason,\n            decision_policy_decision_id, decided_at, version, updated_at)\n            ON retention.erasure_requests TO datariver_app;\n        GRANT SELECT, INSERT ON retention.erasure_request_events TO datariver_app;\n        GRANT SELECT ON retention.archive_capability_attestations,\n            retention.immutable_archive_receipts TO datariver_app;\n        GRANT SELECT ON retention.execution_jobs TO datariver_app;\n        GRANT SELECT ON retention.execution_attempts,\n            retention.execution_events TO datariver_app;\n        GRANT SELECT, INSERT, UPDATE ON sharing.api_products,\n            sharing.api_product_versions, sharing.consumer_grants TO datariver_app;\n        GRANT SELECT, INSERT ON sharing.api_invocations TO datariver_app;\n    END IF;\n\n    IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'datariver_relay') THEN\n        GRANT USAGE ON SCHEMA platform, integration TO datariver_relay;\n        GRANT SELECT ON platform.external_service_profiles,\n            platform.external_service_profile_versions TO datariver_relay;\n        GRANT SELECT, UPDATE ON integration.outbox_events TO datariver_relay;\n        GRANT SELECT ON integration.inbox_messages TO datariver_relay;\n    END IF;\n\n    IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'datariver_upload') THEN\n        GRANT USAGE ON SCHEMA platform, integration TO datariver_upload;\n        GRANT SELECT ON platform.external_service_profiles,\n            platform.external_service_profile_versions TO datariver_upload;\n        GRANT SELECT, UPDATE ON integration.object_manifests TO datariver_upload;\n        GRANT SELECT, INSERT ON integration.outbox_events TO datariver_upload;\n        GRANT SELECT, INSERT, UPDATE ON integration.inbox_messages TO datariver_upload;\n    END IF;\n\n    IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'datariver_governance') THEN\n        GRANT USAGE ON SCHEMA platform, iam, authz, governance, integration\n            TO datariver_governance;\n        GRANT SELECT ON platform.external_service_profiles,\n            platform.external_service_profile_versions TO datariver_governance;\n        GRANT SELECT, INSERT ON authz.policy_decisions TO datariver_governance;\n        GRANT SELECT ON governance.change_requests TO datariver_governance;\n        GRANT UPDATE (state, version, updated_at)\n            ON governance.change_requests TO datariver_governance;\n        GRANT SELECT ON governance.change_request_items, governance.approvals,\n            governance.state_transitions, governance.change_request_rounds,\n            governance.change_test_runs TO datariver_governance;\n        GRANT INSERT ON governance.state_transitions TO datariver_governance;\n        GRANT SELECT, INSERT ON integration.jobs, integration.job_attempts\n            TO datariver_governance;\n        GRANT UPDATE (state, progress, result_ref, lease_until, attempts,\n            attempt_cycle, cycle_attempts, lease_token_hash, lease_owner_id,\n            last_error_code, version, updated_at)\n            ON integration.jobs TO datariver_governance;\n        GRANT UPDATE (state, error_class, external_response_hash, finished_at)\n            ON integration.job_attempts TO datariver_governance;\n        GRANT SELECT, INSERT, UPDATE ON integration.inbox_messages\n            TO datariver_governance;\n        GRANT SELECT, INSERT ON integration.outbox_events TO datariver_governance;\n    END IF;\n\n    IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'datariver_export') THEN\n        GRANT USAGE ON SCHEMA platform, iam, authz, catalog, integration TO datariver_export;\n        GRANT SELECT ON platform.workspaces, iam.subjects,\n            iam.workspace_memberships TO datariver_export;\n        GRANT SELECT ON platform.external_service_profiles,\n            platform.external_service_profile_versions TO datariver_export;\n        GRANT SELECT ON authz.classification_access_policy_versions,\n            authz.classification_access_policy_rules, authz.classification_access_generations,\n            authz.restricted_search_grants TO datariver_export;\n        GRANT INSERT ON authz.policy_decisions TO datariver_export;\n        GRANT SELECT ON catalog.assets_projection, catalog.projection_watermarks,\n            catalog.export_requests TO datariver_export;\n        GRANT UPDATE (object_bucket, object_key, row_count, size_bytes, content_sha256,\n            provider_checksum, completed_at, version, updated_at)\n            ON catalog.export_requests TO datariver_export;\n        GRANT SELECT ON integration.inference_provider_profile_versions,\n            integration.jobs, integration.job_attempts TO datariver_export;\n        GRANT SELECT, INSERT, UPDATE ON integration.inbox_messages TO datariver_export;\n        GRANT UPDATE (state, progress, result_ref, lease_until, attempts, last_error_code,\n            version, updated_at) ON integration.jobs TO datariver_export;\n        GRANT INSERT, UPDATE (state, error_class, external_response_hash, finished_at)\n            ON integration.job_attempts TO datariver_export;\n    END IF;\n\n    IF EXISTS (\n        SELECT 1 FROM pg_roles WHERE rolname = 'datariver_retention_scheduler'\n    ) THEN\n        GRANT USAGE ON SCHEMA platform, iam, authz, assistant, retention\n            TO datariver_retention_scheduler;\n        GRANT SELECT ON platform.workspaces, iam.subjects,\n            iam.workspace_memberships, iam.access_roles,\n            iam.access_role_assignments, authz.policy_decisions,\n            retention.policy_versions, retention.policy_class_rules,\n            retention.legal_holds, retention.erasure_requests,\n            retention.erasure_request_events,\n            assistant.chat_sessions TO datariver_retention_scheduler;\n        GRANT SELECT, INSERT ON retention.execution_jobs,\n            retention.execution_events TO datariver_retention_scheduler;\n    END IF;\n\n    IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'datariver_archive') THEN\n        GRANT USAGE ON SCHEMA platform, iam, authz, assistant, retention\n            TO datariver_archive;\n        GRANT SELECT ON platform.workspaces, iam.subjects,\n            iam.workspace_memberships, iam.access_roles,\n            iam.access_role_assignments, authz.policy_decisions,\n            retention.policy_versions, retention.policy_class_rules,\n            retention.legal_holds, retention.erasure_requests,\n            retention.erasure_request_events,\n            assistant.chat_sessions, retention.execution_jobs,\n            retention.execution_attempts,\n            retention.archive_capability_attestations,\n            retention.immutable_archive_receipts TO datariver_archive;\n        GRANT INSERT ON retention.archive_capability_attestations,\n            retention.immutable_archive_receipts,\n            retention.execution_attempts TO datariver_archive;\n        GRANT SELECT, INSERT ON retention.execution_events TO datariver_archive;\n        GRANT UPDATE (state, next_attempt_at, attempt_count, lease_epoch,\n            lease_token_hash, lease_owner_fingerprint, lease_until,\n            archive_receipt_id, archive_manifest_hash, last_failure_code,\n            version, updated_at) ON retention.execution_jobs TO datariver_archive;\n        GRANT UPDATE (state, stage, evidence_hash, external_response_hash,\n            failure_code, finished_at) ON retention.execution_attempts TO datariver_archive;\n    END IF;\n\n    IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'datariver_bootstrap') THEN\n        GRANT USAGE ON SCHEMA platform, iam TO datariver_bootstrap;\n        GRANT SELECT, INSERT, UPDATE ON platform.workspaces, iam.subjects,\n            iam.workspace_memberships TO datariver_bootstrap;\n    END IF;\nEND\n$datariver$")
         op.execute("DO $datariver$\nDECLARE\n    role_is_safe boolean;\nBEGIN\n    IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'datariver_app') THEN\n        RAISE EXCEPTION 'datariver_app must exist before durable Knowledge migration';\n    END IF;\n    SELECT\n        rolcanlogin\n        AND NOT rolsuper\n        AND NOT rolcreatedb\n        AND NOT rolcreaterole\n        AND NOT rolreplication\n        AND NOT rolbypassrls\n    INTO role_is_safe\n    FROM pg_roles WHERE rolname = 'datariver_app';\n    IF NOT role_is_safe THEN\n        RAISE EXCEPTION 'datariver_app must be an unprivileged LOGIN principal';\n    END IF;\n    IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'datariver_knowledge') THEN\n        RAISE EXCEPTION\n            'datariver_knowledge must be reconciled before durable Knowledge migration';\n    END IF;\n    SELECT\n        rolcanlogin\n        AND NOT rolsuper\n        AND NOT rolcreatedb\n        AND NOT rolcreaterole\n        AND NOT rolreplication\n        AND NOT rolbypassrls\n    INTO role_is_safe\n    FROM pg_roles WHERE rolname = 'datariver_knowledge';\n    IF NOT role_is_safe THEN\n        RAISE EXCEPTION\n            'datariver_knowledge must be an unprivileged LOGIN principal';\n    END IF;\n    IF EXISTS (\n        SELECT 1\n        FROM pg_roles AS candidate\n        WHERE candidate.rolname <> 'datariver_knowledge'\n          AND pg_has_role('datariver_knowledge', candidate.oid, 'MEMBER')\n    ) THEN\n        RAISE EXCEPTION\n            'datariver_knowledge must not inherit or SET ROLE to another principal';\n    END IF;\n    IF EXISTS (\n        SELECT 1\n        FROM pg_roles AS candidate\n        WHERE candidate.rolname <> 'datariver_knowledge'\n          AND NOT candidate.rolsuper\n          AND pg_has_role(candidate.oid, 'datariver_knowledge', 'MEMBER')\n    ) THEN\n        RAISE EXCEPTION\n            'datariver_knowledge must not be assumable by another non-superuser principal';\n    END IF;\nEND\n$datariver$;")
         op.execute("CREATE OR REPLACE FUNCTION knowledge.current_source_claim_scope()\nRETURNS TABLE (\n    job_id uuid,\n    workspace_id uuid,\n    graph_id uuid,\n    source_snapshot_id uuid,\n    upload_id uuid,\n    requested_by uuid,\n    ontology_version_id uuid,\n    base_release_id uuid,\n    embedding_binding jsonb,\n    extraction_binding jsonb\n)\nLANGUAGE plpgsql\nSTABLE\nSECURITY DEFINER\nSET search_path = pg_catalog, knowledge\nAS $$\nDECLARE\n    selected_job_id uuid :=\n        NULLIF(current_setting('app.knowledge_source_job_id', true), '')::uuid;\n    raw_token text :=\n        NULLIF(current_setting('app.knowledge_source_lease_token', true), '');\n    raw_hash text;\nBEGIN\n    IF session_user <> 'datariver_knowledge'\n       OR selected_job_id IS NULL\n       OR raw_token IS NULL THEN\n        RETURN;\n    END IF;\n    raw_hash := encode(sha256(convert_to(raw_token, 'UTF8')), 'hex');\n    RETURN QUERY\n    SELECT\n        job.id,\n        job.workspace_id,\n        job.graph_id,\n        job.source_snapshot_id,\n        source.upload_id,\n        job.requested_by,\n        job.ontology_version_id,\n        job.base_release_id,\n        job.embedding_binding,\n        job.extraction_binding\n    FROM knowledge.source_analysis_jobs AS job\n    JOIN knowledge.source_analysis_attempts AS attempt\n      ON attempt.workspace_id = job.workspace_id\n     AND attempt.job_id = job.id\n     AND attempt.lease_epoch = job.lease_epoch\n    JOIN knowledge.source_snapshots AS source\n      ON source.workspace_id = job.workspace_id\n     AND source.id = job.source_snapshot_id\n    WHERE job.id = selected_job_id\n      AND job.state IN ('RUNNING', 'CANCEL_REQUESTED')\n      AND job.lease_expires_at > clock_timestamp()\n      AND job.lease_token_hash = raw_hash\n      AND attempt.state = 'RUNNING'\n      AND attempt.lease_token_hash = raw_hash;\nEND\n$$;")
         op.execute('REVOKE ALL ON FUNCTION knowledge.current_source_claim_scope() FROM PUBLIC;')
@@ -3202,8 +3269,10 @@ def downgrade() -> None:
         op.execute('DROP FUNCTION integration.reject_upload_registration_candidate_evidence_mutation()')
         op.execute('DROP TRIGGER reject_object_manifest_content_profile_change ON integration.object_manifests')
         op.execute('DROP FUNCTION integration.reject_object_manifest_content_profile_change()')
+        op.drop_constraint(op.f('fk_studio_drafts_workspace_id_base_graph_id_base_release_id_releases'), 'studio_drafts', schema='knowledge', type_='foreignkey')
         op.drop_constraint(op.f('fk_source_analysis_jobs_workspace_id_graph_id_result_changeset_id_changesets'), 'source_analysis_jobs', schema='knowledge', type_='foreignkey')
         op.drop_constraint(op.f('fk_source_analysis_jobs_workspace_id_graph_id_base_release_id_releases'), 'source_analysis_jobs', schema='knowledge', type_='foreignkey')
+        op.drop_constraint(op.f('fk_ontology_versions_workspace_id_graph_id_base_ontology_version_id_ontology_versions'), 'ontology_versions', schema='knowledge', type_='foreignkey')
         op.drop_constraint(op.f('fk_graphs_workspace_id_id_active_release_id_releases'), 'graphs', schema='knowledge', type_='foreignkey')
         op.drop_constraint(op.f('fk_changesets_workspace_id_source_analysis_job_id_source_analysis_jobs'), 'changesets', schema='knowledge', type_='foreignkey')
         op.drop_constraint(op.f('fk_changesets_workspace_id_graph_id_published_release_id_releases'), 'changesets', schema='knowledge', type_='foreignkey')
@@ -3212,32 +3281,15 @@ def downgrade() -> None:
         op.drop_constraint('fk_catalog_export_requests_workspace_job', 'export_requests', schema='catalog', type_='foreignkey')
         op.drop_constraint(op.f('fk_api_products_workspace_id_id_current_version_id_api_product_versions'), 'api_products', schema='sharing', type_='foreignkey')
         op.drop_table('api_invocation_results', schema='sharing')
-        op.drop_table('evidence_citations', schema='assistant')
         op.drop_table('api_invocations', schema='sharing')
         op.drop_table('api_invocation_monthly_usage', schema='sharing')
-        op.drop_table('execution_events', schema='retention')
-        op.drop_table('execution_attempts', schema='retention')
-        op.drop_table('catalog_metadata_candidate_rows', schema='integration')
-        op.drop_table('registration_metadata_content_bindings', schema='governance')
-        op.drop_table('registration_content_bindings', schema='governance')
-        op.drop_table('assistant_runs', schema='assistant')
         op.drop_table('consumer_grants', schema='sharing')
-        op.drop_table('execution_jobs', schema='retention')
-        op.drop_table('erasure_request_events', schema='retention')
         op.drop_table('source_analysis_events', schema='knowledge')
         op.drop_table('extraction_runs', schema='knowledge')
-        op.drop_table('upload_registration_candidates', schema='integration')
-        op.drop_table('catalog_metadata_rows', schema='integration')
-        op.drop_table('catalog_metadata_candidates', schema='integration')
-        op.drop_table('manual_metadata_aspect_reports', schema='governance')
-        op.drop_table('restricted_search_grant_events', schema='authz')
-        op.drop_table('chat_messages', schema='assistant')
+        op.drop_table('evidence_citations', schema='assistant')
         op.drop_table('api_product_versions', schema='sharing')
-        op.drop_table('policy_class_rules', schema='retention')
-        op.drop_table('legal_hold_events', schema='retention')
-        op.drop_table('immutable_archive_receipts', schema='retention')
-        op.drop_table('erasure_requests', schema='retention')
-        op.drop_table('external_service_profile_versions', schema='platform')
+        op.drop_table('execution_events', schema='retention')
+        op.drop_table('execution_attempts', schema='retention')
         op.drop_table('validation_results', schema='knowledge')
         op.drop_table('source_page_embeddings', schema='knowledge')
         op.drop_table('source_analysis_attempts', schema='knowledge')
@@ -3246,6 +3298,31 @@ def downgrade() -> None:
         op.drop_table('projection_deployments', schema='knowledge')
         op.drop_table('graphrag_audits', schema='knowledge')
         op.drop_table('change_operations', schema='knowledge')
+        op.drop_table('catalog_metadata_candidate_rows', schema='integration')
+        op.drop_table('registration_metadata_content_bindings', schema='governance')
+        op.drop_table('registration_content_bindings', schema='governance')
+        op.drop_table('assistant_runs', schema='assistant')
+        op.drop_table('execution_jobs', schema='retention')
+        op.drop_table('erasure_request_events', schema='retention')
+        op.drop_table('studio_drafts', schema='knowledge')
+        op.drop_table('source_pages', schema='knowledge')
+        op.drop_table('source_analysis_jobs', schema='knowledge')
+        op.drop_table('releases', schema='knowledge')
+        op.drop_table('changesets', schema='knowledge')
+        op.drop_table('upload_registration_candidates', schema='integration')
+        op.drop_table('catalog_metadata_rows', schema='integration')
+        op.drop_table('catalog_metadata_candidates', schema='integration')
+        op.drop_table('manual_metadata_aspect_reports', schema='governance')
+        op.drop_table('restricted_search_grant_events', schema='authz')
+        op.drop_table('chat_messages', schema='assistant')
+        op.drop_table('api_products', schema='sharing')
+        op.drop_table('policy_class_rules', schema='retention')
+        op.drop_table('legal_hold_events', schema='retention')
+        op.drop_table('immutable_archive_receipts', schema='retention')
+        op.drop_table('erasure_requests', schema='retention')
+        op.drop_table('external_service_profile_versions', schema='platform')
+        op.drop_table('source_snapshots', schema='knowledge')
+        op.drop_table('ontology_versions', schema='knowledge')
         op.drop_table('upload_preparation_receipts', schema='integration')
         op.drop_table('job_attempts', schema='integration')
         op.drop_table('admin_access_approvals', schema='iam')
@@ -3262,10 +3339,7 @@ def downgrade() -> None:
         op.drop_table('system_schema_scopes', schema='platform')
         op.drop_table('system_assignees', schema='platform')
         op.drop_table('external_service_profiles', schema='platform')
-        op.drop_table('source_pages', schema='knowledge')
-        op.drop_table('source_analysis_jobs', schema='knowledge')
-        op.drop_table('releases', schema='knowledge')
-        op.drop_table('changesets', schema='knowledge')
+        op.drop_table('graphs', schema='knowledge')
         op.drop_table('upload_preparation_jobs', schema='integration')
         op.drop_table('registration_worker_call_receipts', schema='integration')
         op.drop_table('jobs', schema='integration')
@@ -3281,11 +3355,8 @@ def downgrade() -> None:
         op.drop_table('approvals', schema='governance')
         op.drop_table('export_requests', schema='catalog')
         op.drop_table('classification_access_policy_versions', schema='authz')
-        op.drop_table('api_products', schema='sharing')
         op.drop_table('archive_capability_attestations', schema='retention')
         op.drop_table('data_systems', schema='platform')
-        op.drop_table('source_snapshots', schema='knowledge')
-        op.drop_table('ontology_versions', schema='knowledge')
         op.drop_table('inference_provider_generations', schema='integration')
         op.drop_table('workspace_memberships', schema='iam')
         op.drop_table('change_request_rounds', schema='governance')
@@ -3294,7 +3365,6 @@ def downgrade() -> None:
         op.drop_table('projection_watermarks', schema='catalog')
         op.drop_table('classification_access_generations', schema='authz')
         op.drop_table('workspaces', schema='platform')
-        op.drop_table('graphs', schema='knowledge')
         op.drop_table('seed_runs', schema='integration')
         op.drop_table('outbox_events', schema='integration')
         op.drop_table('object_manifests', schema='integration')

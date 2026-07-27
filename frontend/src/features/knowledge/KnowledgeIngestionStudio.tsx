@@ -5,7 +5,11 @@ import type { KnowledgeChangeOperationCreate, KnowledgeChangeSet, KnowledgeChang
 import { ErrorNotice } from '../../components/ErrorNotice'
 import { FlowCanvas, type FlowCanvasEdge, type FlowCanvasNode } from '../../components/common/FlowCanvas'
 import { GovernedUnavailable } from '../../components/common/GovernedUnavailable'
-import { formatSafeCypherDraft, parseSafeCypherDraft } from './knowledgeCypherDraft'
+import {
+  formatSafeCypherDraft,
+  isSafeCypherIdentifier,
+  parseSafeCypherDraft,
+} from './knowledgeCypherDraft'
 import { KnowledgeSourceUpload } from './KnowledgeSourceUpload'
 
 type Mode = 'A' | 'B'
@@ -108,7 +112,7 @@ export function KnowledgeIngestionStudio({ client }: { client: ApiClient }) {
 
   const addNode = () => {
     const label = nodeLabel.trim()
-    if (!/^[A-Za-z][A-Za-z0-9_]{0,63}$/.test(label)) {
+    if (!isSafeCypherIdentifier(label)) {
       setError(new Error('노드 레이블은 영문자로 시작하고 영문·숫자·밑줄만 64자 이내로 입력하세요.'))
       return
     }
@@ -117,7 +121,7 @@ export function KnowledgeIngestionStudio({ client }: { client: ApiClient }) {
   }
   const connect = (source: string, target: string) => {
     const edgeType = relation.trim()
-    if (!/^[A-Za-z][A-Za-z0-9_]{0,63}$/.test(edgeType)) {
+    if (!isSafeCypherIdentifier(edgeType)) {
       setError(new Error('관계 유형은 영문자로 시작하고 영문·숫자·밑줄만 64자 이내로 입력하세요.'))
       return
     }
@@ -135,7 +139,7 @@ export function KnowledgeIngestionStudio({ client }: { client: ApiClient }) {
 
   const updateCypherDraft = (source: string) => {
     setCypherSource(source)
-    const parsed = parseSafeCypherDraft(source)
+    const parsed = parseSafeCypherDraft(source, { nodes: draftNodes, edges: draftEdges })
     setCypherParseError(parsed.error ?? '')
     if (parsed.error) return
     setDraftNodes(parsed.nodes)

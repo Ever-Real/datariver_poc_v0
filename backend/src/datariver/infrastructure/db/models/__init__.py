@@ -71,6 +71,7 @@ from datariver.infrastructure.db.models.knowledge import (
     ReleaseNodeModel,
     ValidationResultModel,
 )
+from datariver.infrastructure.db.models.knowledge_studio import KnowledgeStudioDraftModel
 from datariver.infrastructure.db.models.platform import (
     AccessRoleAssignmentEventModel,
     AccessRoleAssignmentModel,
@@ -161,6 +162,7 @@ __all__ = [
     "KnowledgeSourceAnalysisJobModel",
     "KnowledgeSourcePageModel",
     "KnowledgeSourceSnapshotModel",
+    "KnowledgeStudioDraftModel",
     "LegalHoldEventModel",
     "LegalHoldModel",
     "ManualMetadataApplyAttemptModel",

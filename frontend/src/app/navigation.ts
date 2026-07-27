@@ -10,7 +10,14 @@ export const primaryNavigation = [
 ] as const
 
 export type PrimaryPage = typeof primaryNavigation[number]['id']
-export type Page = PrimaryPage | 'dashboard' | 'sharing' | 'admin' | 'knowledge-chat' | 'profile'
+export type Page =
+  | PrimaryPage
+  | 'dashboard'
+  | 'sharing'
+  | 'admin'
+  | 'knowledge-chat'
+  | 'knowledge-studio'
+  | 'profile'
 
 const pageIds = new Set<Page>([
   ...primaryNavigation.map(({ id }) => id),
@@ -18,6 +25,7 @@ const pageIds = new Set<Page>([
   'sharing',
   'admin',
   'knowledge-chat',
+  'knowledge-studio',
   'profile',
 ])
 
@@ -31,5 +39,13 @@ export function pageUrl(page: Page, options: { query?: string; href?: string } =
   url.searchParams.set('page', page)
   if (page === 'catalog' && options.query) url.searchParams.set('q', options.query)
   else url.searchParams.delete('q')
+  if (page !== 'knowledge') {
+    url.searchParams.delete('asset')
+    url.searchParams.delete('drawerTab')
+  }
+  if (page !== 'knowledge-studio') {
+    url.searchParams.delete('draft')
+    url.searchParams.delete('step')
+  }
   return `${url.pathname}${url.search}${url.hash}`
 }

@@ -40,6 +40,8 @@
 | 35 | [Phase 6C atomic Sharing hardening](35_ATOMIC_SHARING_HARDENING_PRD_CHECKLIST.md) | failure rollback, Subject/context negatives, replay expiry and lock interleavings | Local source/DB complete; target load/identity/retention gates open |
 | 36 | [Phase 6D Admin/auth session epoch](36_ADMIN_AUTH_SESSION_EPOCH_PRD_CHECKLIST.md) | latest-only identity hydration, request boundary fencing and Admin context teardown | Local source/audit complete; target IdP/browser gates open |
 | 37 | [Phase 6E web Nginx security headers](37_WEB_NGINX_SECURITY_HEADERS_PRD_CHECKLIST.md) | recursive header inheritance, API normalization and native-image behavior gate | Local source/runtime/audit complete; target gates open |
+| 44 | [Knowledge Studio redesign PRD](44_KNOWLEDGE_STUDIO_REDESIGN_PRD.md) | Registry drawer, full-screen Studio, T-Box proposal and A-Box whitelist design | Approved; Phase 1 implementation |
+| 45 | [Knowledge Studio redesign execution checklist](45_KNOWLEDGE_STUDIO_REDESIGN_EXECUTION_CHECKLIST.md) | phased contracts, migration, UI and evidence gates for the redesign | Active; Phase 0 approved |
 
 Independent review records: [Data Architect](reviews/2026-07-14_DATA_ARCHITECT_REVIEW.md) and [Data Engineer/SRE](reviews/2026-07-14_DATA_ENGINEER_REVIEW.md).
 
@@ -86,6 +88,9 @@ Current WSL source-validation decisions: [intranet HTTPS ingress](adr/0051-wsl-i
 [verified Neo4j source-host profile](adr/0053-verified-neo4j-source-host-profile.md), refined by
 [pre-state local-image source validation](adr/0054-pre-state-local-image-source-validation.md) and
 [preloaded Neo4j source validation](adr/0055-preloaded-neo4j-source-validation.md).
+
+Current Knowledge Studio foundation decision: [persistent Studio drafts, weighted overlay merge,
+endpoint aliases and managed default graphs](adr/0058-knowledge-studio-foundation-and-managed-graphs.md).
 
 ## Change control
 

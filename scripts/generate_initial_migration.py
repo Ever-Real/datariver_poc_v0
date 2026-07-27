@@ -129,10 +129,21 @@ def build_upgrade() -> ops.UpgradeOps:
                         "NULLIF(current_setting('app.subject_id', true), '')::uuid))"
                     )
                 )
+            if table.fullname == "knowledge.studio_drafts":
+                owner_expression = (
+                    "author_id = NULLIF(current_setting('app.subject_id', true), '')::uuid"
+                )
+                operations.append(
+                    ops.ExecuteSQLOp(
+                        "CREATE POLICY studio_draft_owner_access "
+                        "ON knowledge.studio_drafts AS RESTRICTIVE FOR ALL "
+                        f"TO datariver_app USING ({owner_expression}) "
+                        f"WITH CHECK ({owner_expression})"
+                    )
+                )
             if table.fullname == "assistant.chat_sessions":
                 owner_expression = (
-                    "owner_id = "
-                    "NULLIF(current_setting('app.subject_id', true), '')::uuid"
+                    "owner_id = NULLIF(current_setting('app.subject_id', true), '')::uuid"
                 )
                 operations.append(
                     ops.ExecuteSQLOp(
@@ -308,16 +319,23 @@ BEGIN
             knowledge.validation_results, knowledge.projection_deployments,
             knowledge.source_snapshots, knowledge.source_pages,
             knowledge.source_page_embeddings, knowledge.extraction_runs,
-            knowledge.graphrag_audits TO datariver_app;
+            knowledge.graphrag_audits, knowledge.studio_drafts TO datariver_app;
         GRANT INSERT ON knowledge.graphs, knowledge.ontology_versions,
             knowledge.releases, knowledge.release_nodes, knowledge.release_edges,
             knowledge.changesets, knowledge.change_operations,
             knowledge.validation_results, knowledge.projection_deployments,
             knowledge.source_snapshots, knowledge.source_pages,
             knowledge.source_page_embeddings, knowledge.extraction_runs,
-            knowledge.graphrag_audits TO datariver_app;
+            knowledge.graphrag_audits, knowledge.studio_drafts TO datariver_app;
         GRANT UPDATE ON knowledge.graphs, knowledge.changesets,
             knowledge.projection_deployments, knowledge.source_snapshots TO datariver_app;
+        GRANT UPDATE (
+            state, current_step, name, endpoint_alias,
+            domain_ref_id, domain_ref_kind, domain_source_version,
+            classification, review_requested_at, discarded_at,
+            discarded_by, last_autosaved_at,
+            version, updated_at
+        ) ON knowledge.studio_drafts TO datariver_app;
         GRANT DELETE ON knowledge.validation_results TO datariver_app;
         GRANT SELECT, INSERT ON assistant.chat_sessions, assistant.chat_messages,
             assistant.assistant_runs, assistant.evidence_citations TO datariver_app;

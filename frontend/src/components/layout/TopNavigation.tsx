@@ -53,6 +53,9 @@ export function TopNavigation({
   onSignOut,
 }: TopNavigationProps) {
   const [navigation, setNavigation] = useState<HTMLElement | null>(null)
+  const activePrimaryPage = page === 'knowledge-chat' || page === 'knowledge-studio'
+    ? 'knowledge'
+    : page
 
   return (
     <header className="top-navigation">
@@ -67,8 +70,8 @@ export function TopNavigation({
           <button
             type="button"
             key={id}
-            className={page === id ? 'active' : ''}
-            aria-current={page === id ? 'page' : undefined}
+            className={activePrimaryPage === id ? 'active' : ''}
+            aria-current={activePrimaryPage === id ? 'page' : undefined}
             onClick={() => onNavigate(id)}
           >
             <span>{label}</span>

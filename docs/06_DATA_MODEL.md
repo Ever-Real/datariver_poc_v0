@@ -227,8 +227,9 @@ privilege. No API or ordinary application unit of work can claim or complete exe
 
 | Table | Key columns and constraints | Purpose |
 |---|---|---|
-| `knowledge.graphs` | `id`, `workspace + slug UQ`, name/type/status/classification/active release, `version`, timestamps | graph aggregate and active pointer |
-| `knowledge.ontology_versions` | `id`, graph/version/schema/checksum/status, timestamps | typed ontology versions |
+| `knowledge.graphs` | `id`, `workspace + slug UQ`, name/type, `DRAFT/REVIEW/PUBLISHED`, classification/active release, nullable legacy-safe domain UUID/kind/source-version and creator/editor provenance, `version`, timestamps | consumable graph aggregate and active pointer; new Studio materialization requires complete provenance while legacy rows are not fabricated |
+| `knowledge.ontology_versions` | `id`, graph/version/schema/checksum/status, nullable schema-contract/base-ontology/creator provenance, timestamps | immutable typed ontology versions |
+| `knowledge.studio_drafts` | `id`, workspace/author, CREATE/EDIT, `DRAFT/REVIEW/PUBLISHED/DISCARDED`, current step, name/endpoint alias, exact DOMAIN UUID/source version, classification, optional EDIT base pins, autosave/review/publish/discard times, optimistic version | author-scoped full-screen Studio aggregate; auto-saves persist without expiry until explicit Discard and are invisible to Registry/Chat/GraphRAG before materialization |
 | `knowledge.changesets` | `id`, graph/base release/ontology/title/state/author/reviewer/published release, nullable `source_analysis_job_id`, `version`, timestamps | incremental author/review/publish aggregate; a durable worker-created DRAFT is bound to exactly one source-analysis job |
 | `knowledge.change_operations` | `id`, `changeset_id + sequence UQ`, operation/kind/stable ID/document/provenance/confidence | ordered typed node/edge edits; model-proposed provenance includes verified excerpt/excerpt hash/page hash |
 | `knowledge.validation_results` | `id`, changeset/validator/version/severity/code/location/message/time | persisted submission validation evidence |
@@ -254,6 +255,16 @@ exact adapter-specific verified receipt. The old complete-snapshot HTTP publicat
 and unlineaged legacy releases are hidden from list/snapshot/export/projection/GraphRAG, general
 Chat evidence and release-pinned Sharing. Neo4j result properties are never canonical inputs:
 selected identifiers are rehydrated from these immutable PostgreSQL rows before prompt composition.
+
+`knowledge.studio_drafts` has forced workspace RLS plus a restrictive `datariver_app` author policy.
+The application role can select/insert and update only autosave/submit/discard editor columns; it
+cannot update `published_at` or delete a
+draft. The live `(workspace, endpoint_alias)` partial unique index prevents two DRAFT/REVIEW Studio
+drafts from claiming the same API identity while allowing immutable PUBLISHED history and a later
+EDIT draft. Cross-table collision with an already materialized
+`knowledge.graphs.slug` remains a locked application/materialization invariant because PostgreSQL
+cannot express a foreign-table unique constraint. CREATE drafts have no graph/ontology/release FK;
+EDIT drafts pin exact graph and ontology versions.
 
 PostgreSQL releases remain canonical; Neo4j can be deleted and rebuilt. Graph classification is a
 maximum envelope enforced on changeset operations, complete submission/review, publication,

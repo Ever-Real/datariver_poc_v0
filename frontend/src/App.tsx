@@ -20,6 +20,7 @@ const DashboardPage = lazy(() => import('./features/dashboard/DashboardPage').th
 const GovernancePage = lazy(() => import('./features/governance/GovernancePage').then((module) => ({ default: module.GovernancePage })))
 const KnowledgePage = lazy(() => import('./features/knowledge/KnowledgePage').then((module) => ({ default: module.KnowledgePage })))
 const KnowledgeChatPage = lazy(() => import('./features/knowledge/KnowledgeChatPage').then((module) => ({ default: module.KnowledgeChatPage })))
+const KnowledgeStudioPage = lazy(() => import('./features/knowledge/studio/KnowledgeStudioPage').then((module) => ({ default: module.KnowledgeStudioPage })))
 const MonitoringPage = lazy(() => import('./features/monitoring/MonitoringPage').then((module) => ({ default: module.MonitoringPage })))
 const PolicyGovernancePage = lazy(() => import('./features/policy/PolicyGovernancePage').then((module) => ({ default: module.PolicyGovernancePage })))
 const ProfilePage = lazy(() => import('./features/profile/ProfilePage').then((module) => ({ default: module.ProfilePage })))
@@ -322,6 +323,7 @@ export function App() {
         {page === 'quality' && <QualityPage />}
         {page === 'knowledge' && <KnowledgePage client={client} onNavigate={navigate} />}
         {page === 'knowledge-chat' && <KnowledgeChatPage client={client} onNavigate={navigate} />}
+        {page === 'knowledge-studio' && <KnowledgeStudioPage onNavigate={navigate} />}
         {page === 'monitoring' && <MonitoringPage client={client} />}
         {page === 'governance' && <PolicyGovernancePage client={client} mayReadPolicies={mayReadPolicyGovernance} allowedOperations={currentAdminContext?.allowed_operations} />}
         {page === 'sharing' && <SharingPage client={client} onStepUp={auth.beginStepUp} onPasswordReauth={auth.beginPasswordReauth} onEnroll={auth.beginWebAuthnEnrollment} />}
