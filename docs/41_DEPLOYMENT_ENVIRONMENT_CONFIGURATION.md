@@ -205,6 +205,12 @@ equivalent least-privilege roles.
   `/models`. `INTRANET_OPENAI_COMPATIBLE_ALLOWED_HOSTS` contains hostnames/IPs only, never URLs.
 - If all three stages share one provider token, copy the same value into the three canonical
   ignored secret files. Do not put it in an environment value. `stream` remains fixed to `false`.
+- `SYSTEM_CONFIGURATION_PROBE_ALLOWED_HOSTS` must contain the exact hostname of each configured
+  non-inference external connector that an administrator will test, including external DataHub,
+  MinIO/S3, Airflow, Prometheus and Grafana endpoints. Inference probes additionally inherit the
+  exact `LOCAL_INFERENCE_ALLOWED_HOSTS` and
+  `INTRANET_OPENAI_COMPATIBLE_ALLOWED_HOSTS` values; URL schemes, ports, paths and wildcards never
+  belong in any host allowlist.
 - Graph projection: optional offline `NEO4J_IMAGE` override, `NEO4J_PROJECTION_ENABLED`,
   launcher-owned `NEO4J_SOURCE_HOST_ENABLED`, `NEO4J_URI`, `NEO4J_ALLOWED_HOSTS`,
   `NEO4J_DATABASE`, `NEO4J_AUTH_SECRET_REF`, loopback publication ports and bounded
@@ -267,6 +273,15 @@ the returned three profile UUIDs and
 `CHAT_EPHEMERAL_ADMIN_WITHOUT_RETENTION_ENABLED=false` to the selected ignored environment.
 Apply them with the normal update/restart workflow. The four retention values are local
 development acceptance inputs, not a production retention approval.
+
+The Admin fixed connection tests and governed Chat readiness are separate gates. Chat, Embedding
+and Reranker must each return `AVAILABLE` from their typed inference probe before their evidence
+reference is approved. A successful transport probe does not create governance automatically:
+one administrator proposes the stage-specific provider profiles, classification policy and
+retention policy, and a different eligible administrator approves them. Until a retention policy
+is `ACTIVE`, Chat returns HTTP `409` with
+`An active retention policy is required to persist Chat content.` by design. This is neither a
+Redis/cache failure nor a reason to edit retention rows directly.
 
 For the checked-in local `test` knowledge graph only, an operator can materialize a bounded
 synthetic INTERNAL release and its verified Neo4j shadow projection after the development stack is

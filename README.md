@@ -1250,6 +1250,12 @@ directory로만 매핑한다. 적용 후 Admin → System settings → LLM Model
 `stream`은 검증 가능한 단일 JSON 응답을 위해 항상 `false`다. Gateway가 제공하는 bounded
 `temperature`, `top_p`, `repetition_penalty`, `enable_thinking` 옵션은 deployment 환경에서만
 선택한다.
+외부 DataHub, MinIO/S3, Airflow, Prometheus 또는 Grafana의 고정 TEST에는 각 endpoint의 정확한
+hostname을 `SYSTEM_CONFIGURATION_PROBE_ALLOWED_HOSTS`에도 추가한다. LLM TEST는 별도로
+`INTRANET_OPENAI_COMPATIBLE_ALLOWED_HOSTS`와 선택적
+`INTRANET_OPENAI_COMPATIBLE_APPROVED_PUBLIC_HOSTS`를 적용한다. 연결 TEST 성공은 Chat 거버넌스
+승인을 대신하지 않는다. 각 provider profile과 classification policy에 이어 retention policy를
+서로 다른 두 Admin이 제안·승인해 `ACTIVE`로 만들어야 Chat 내용을 저장할 수 있다.
 전체 키와 적용 순서는
 [Deployment environment configuration](docs/41_DEPLOYMENT_ENVIRONMENT_CONFIGURATION.md)을
 따른다.

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import re
 import shlex
 from collections.abc import Mapping, Sequence
@@ -78,8 +79,9 @@ from datariver.infrastructure.llm.runtime_binding import (
     resolve_embedding_runtime_binding,
     resolve_reranker_runtime_binding,
 )
-from datariver.infrastructure.secrets import SecretResolver
+from datariver.infrastructure.secrets import SecretResolutionError, SecretResolver
 from datariver.infrastructure.system_configuration_probe import (
+    ProbeScope,
     probe_oidc_jwks,
     probe_system_configuration,
 )
@@ -142,6 +144,7 @@ from datariver.interfaces.http.schemas import (
 )
 
 router = APIRouter(prefix="/admin", tags=["administration"])
+logger = logging.getLogger(__name__)
 
 
 def _membership_renewal_response(
@@ -959,6 +962,26 @@ def _require_non_empty_string(document: Mapping[str, Any], key: str) -> str:
 
 
 def _validate_option_value(key: str, value: object, template: object) -> None:
+    if template is None:
+        if value is None:
+            return
+        optional_numeric_limits = {
+            "top_p": (0.0, 1.0),
+            "repetition_penalty": (0.0, 2.0),
+        }
+        optional_bounds = optional_numeric_limits.get(key)
+        if (
+            optional_bounds is None
+            or not isinstance(value, int | float)
+            or isinstance(value, bool)
+            or not optional_bounds[0] < float(value) <= optional_bounds[1]
+        ):
+            upper = optional_bounds[1] if optional_bounds is not None else 0.0
+            raise ValidationError(
+                f"System configuration option {key} must be null or numeric "
+                f"between 0 (exclusive) and {upper:g}."
+            )
+        return
     if isinstance(template, bool):
         if not isinstance(value, bool):
             raise ValidationError(f"System configuration option {key} must be boolean.")
@@ -1220,9 +1243,7 @@ def _validate_system_configuration(
                     "The local llama.cpp reranker does not accept an API-key reference."
                 )
         else:
-            if parsed.scheme != "https" or not is_safe_inference_api_base_path(
-                parsed.path
-            ):
+            if parsed.scheme != "https" or not is_safe_inference_api_base_path(parsed.path):
                 raise ValidationError(
                     "The private reranker requires an HTTPS endpoint with a safe base path."
                 )
@@ -1536,8 +1557,7 @@ def _system_configuration_entries(
             or settings.intranet_openai_compatible_embedding_enabled
         ),
         "LLM_RERANKER": (
-            settings.local_llama_cpp_reranker_enabled
-            or settings.intranet_reranker_enabled
+            settings.local_llama_cpp_reranker_enabled or settings.intranet_reranker_enabled
         ),
         "NEO4J": settings.neo4j_projection_enabled,
         "PROMETHEUS": settings.ui_prometheus_url is not None,
@@ -1559,8 +1579,7 @@ def _system_configuration_entries(
             and settings.intranet_openai_compatible_embedding_api_key_secret_ref
         ),
         "LLM_RERANKER": bool(
-            settings.intranet_reranker_enabled
-            and settings.intranet_reranker_api_key_secret_ref
+            settings.intranet_reranker_enabled and settings.intranet_reranker_api_key_secret_ref
         ),
         "NEO4J": bool(settings.neo4j_auth_secret_ref),
     }
@@ -3265,17 +3284,13 @@ def _deployment_configuration_document(
                 "options": {
                     "api_style": "openai_compatible",
                     "context_tokens": settings.intranet_openai_compatible_chat_context_tokens,
-                    "enable_thinking": (
-                        settings.intranet_openai_compatible_chat_enable_thinking
-                    ),
+                    "enable_thinking": (settings.intranet_openai_compatible_chat_enable_thinking),
                     "repetition_penalty": (
                         settings.intranet_openai_compatible_chat_repetition_penalty
                     ),
                     "request_limit_per_minute": (settings.chat_rate_limit_requests_per_minute),
                     "stream": False,
-                    "temperature": (
-                        settings.intranet_openai_compatible_chat_temperature
-                    ),
+                    "temperature": (settings.intranet_openai_compatible_chat_temperature),
                     "token_limit_per_minute": settings.chat_rate_limit_tokens_per_minute,
                     "timeout_seconds": settings.intranet_openai_compatible_chat_timeout_seconds,
                     "top_p": settings.intranet_openai_compatible_chat_top_p,
@@ -3334,9 +3349,7 @@ def _deployment_configuration_document(
             "connection_mode": "INTRANET_RERANK_V1",
             "base_url": str(settings.intranet_reranker_base_url),
             "model": settings.intranet_reranker_model,
-            "secret_references": {
-                "api_key": settings.intranet_reranker_api_key_secret_ref
-            },
+            "secret_references": {"api_key": settings.intranet_reranker_api_key_secret_ref},
             "options": {
                 "api_style": "rerank_v1",
                 "timeout_seconds": settings.intranet_reranker_timeout_seconds,
@@ -3391,6 +3404,19 @@ def _deployment_probe_allowed_hosts(
         hosts.update(settings.effective_local_inference_allowed_hosts)
         hosts.update(settings.intranet_openai_compatible_allowed_hosts)
     return tuple(sorted(hosts))
+
+
+def _deployment_probe_scope(system_id: str) -> ProbeScope:
+    scopes: dict[str, ProbeScope] = {
+        "LLM_CHAT_MODEL": "MODEL_INFERENCE",
+        "LLM_EMBEDDING": "EMBEDDING_INFERENCE",
+        "LLM_RERANKER": "RERANKING_INFERENCE",
+        "REDIS_CACHE": "REDIS_POLICY",
+        "REDIS_DELIVERY": "REDIS_POLICY",
+        "S3_STORAGE": "S3_HEAD_BUCKET",
+        "NEO4J": "AUTHENTICATED_QUERY",
+    }
+    return scopes.get(system_id, "HTTP_HEALTH")
 
 
 @router.post(
@@ -3505,11 +3531,34 @@ async def test_deployment_system_configuration(
         scope = result.scope
         latency_ms = result.latency_ms
         detail = result.detail
+    except ValidationError as error:
+        status = "UNAVAILABLE"
+        scope = _deployment_probe_scope(system_id)
+        latency_ms = int((_time.monotonic() - started) * 1000)
+        detail = str(error)
+        logger.warning(
+            "Deployment system configuration probe validation failed: system_id=%s detail=%s",
+            system_id,
+            detail,
+        )
+    except SecretResolutionError:
+        status = "UNAVAILABLE"
+        scope = _deployment_probe_scope(system_id)
+        latency_ms = int((_time.monotonic() - started) * 1000)
+        detail = "배포 secret 파일이 없거나 비어 있거나 API 프로세스에서 읽을 수 없습니다."
+        logger.warning(
+            "Deployment system configuration probe secret resolution failed: system_id=%s",
+            system_id,
+        )
     except Exception:
         status = "UNAVAILABLE"
-        scope = "HTTP_HEALTH"
+        scope = _deployment_probe_scope(system_id)
         latency_ms = int((_time.monotonic() - started) * 1000)
         detail = "배포 설정의 고정 연결 검증에 실패했습니다. 서버 로그와 운영 설정을 확인하세요."
+        logger.exception(
+            "Unexpected deployment system configuration probe failure: system_id=%s",
+            system_id,
+        )
     return SystemConfigurationTestResponse(
         system_id=system_id,
         status=status,

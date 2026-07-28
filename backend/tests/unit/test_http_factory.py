@@ -21,6 +21,7 @@ from datariver.domain.common import (
 )
 from datariver.infrastructure.db.session import DatabaseReadiness
 from datariver.infrastructure.observability.metrics import HttpMetrics
+from datariver.infrastructure.secrets import SecretResolutionError
 from datariver.interfaces.http.container import AppContainer
 from datariver.interfaces.http.dependencies import get_request_context
 from datariver.interfaces.http.factory import create_app
@@ -593,9 +594,7 @@ def test_intranet_gateway_deployment_documents_bind_all_three_stages() -> None:
                 "intranet_openai_compatible_chat_base_url": (
                     "https://10.42.0.15/api/llm/openai/v1"
                 ),
-                "intranet_openai_compatible_chat_model": (
-                    "/models/llm/gemma-4-31B-it"
-                ),
+                "intranet_openai_compatible_chat_model": ("/models/llm/gemma-4-31B-it"),
                 "intranet_openai_compatible_chat_api_key_secret_ref": (
                     "file:/run/secrets/intranet_llm_chat_api_key"
                 ),
@@ -605,19 +604,13 @@ def test_intranet_gateway_deployment_documents_bind_all_three_stages() -> None:
                 "intranet_openai_compatible_embedding_base_url": (
                     "https://10.42.0.15/api/llm/openai/v1"
                 ),
-                "intranet_openai_compatible_embedding_model": (
-                    "/models/embedding/bge-m3"
-                ),
+                "intranet_openai_compatible_embedding_model": ("/models/embedding/bge-m3"),
                 "intranet_openai_compatible_embedding_api_key_secret_ref": (
                     "file:/run/secrets/intranet_llm_embedding_api_key"
                 ),
                 "intranet_reranker_enabled": True,
-                "intranet_reranker_base_url": (
-                    "https://10.42.0.15/api/llm/openai"
-                ),
-                "intranet_reranker_model": (
-                    "/models/Reranker/bge-reranker-v2-m3"
-                ),
+                "intranet_reranker_base_url": ("https://10.42.0.15/api/llm/openai"),
+                "intranet_reranker_model": ("/models/Reranker/bge-reranker-v2-m3"),
                 "intranet_reranker_api_key_secret_ref": (
                     "file:/run/secrets/intranet_llm_reranker_api_key"
                 ),
@@ -639,21 +632,20 @@ def test_intranet_gateway_deployment_documents_bind_all_three_stages() -> None:
     assert reranker is not None
     assert reranker["connection_mode"] == "INTRANET_RERANK_V1"
     assert reranker["base_url"] == "https://10.42.0.15/api/llm/openai"
-    assert reranker["options"]["governance_binding"]["server_route_key"] == (
-        "intranet-rerank-v1"
-    )
+    assert reranker["options"]["governance_binding"]["server_route_key"] == ("intranet-rerank-v1")
     assert "10.42.0.15" in _deployment_probe_allowed_hosts(
         configured,
         "LLM_RERANKER",
     )
+
+    chat_probe = _deployment_probe_document(configured, "LLM_CHAT_MODEL")
+    assert chat_probe is not None
+    _validate_system_configuration("LLM_CHAT_MODEL", chat_probe)
+
     approved_public = Settings(
         **(
             configured.model_dump()
-            | {
-                "intranet_openai_compatible_approved_public_hosts": (
-                    "10.42.0.15",
-                )
-            }
+            | {"intranet_openai_compatible_approved_public_hosts": ("10.42.0.15",)}
         )
     )
     approved_chat = _deployment_configuration_document(
@@ -887,9 +879,7 @@ def test_system_configuration_contract_rejects_credentials_and_incomplete_profil
                 "connection_mode": "INTRANET_OPENAI_COMPATIBLE",
                 "base_url": "https://10.42.0.15/api/llm/openai/v1",
                 "model": "/models/llm/gemma-4-31B-it",
-                "secret_references": {
-                    "api_key": "file:/run/secrets/intranet_llm_chat_api_key"
-                },
+                "secret_references": {"api_key": "file:/run/secrets/intranet_llm_chat_api_key"},
                 "options": {
                     "api_style": "openai_compatible",
                     "stream": True,
@@ -1126,6 +1116,74 @@ async def test_deployment_system_configuration_routes_fail_closed(
         "/api/v1/admin/system-configuration/{system_id}/test-deployment"
     ]["post"]
     assert "requestBody" not in operation
+
+
+@pytest.mark.parametrize(
+    ("failure", "expected_detail"),
+    (
+        (
+            ValidationError(
+                "The configured inference host is not in the operator probe allowlist."
+            ),
+            "The configured inference host is not in the operator probe allowlist.",
+        ),
+        (
+            SecretResolutionError("The referenced secret file does not exist."),
+            "배포 secret 파일이 없거나 비어 있거나 API 프로세스에서 읽을 수 없습니다.",
+        ),
+    ),
+)
+@pytest.mark.asyncio
+async def test_deployment_probe_returns_bounded_llm_failure_detail(
+    monkeypatch: pytest.MonkeyPatch,
+    failure: Exception,
+    expected_detail: str,
+) -> None:
+    request = cast(Any, object())
+    context = cast(
+        Any,
+        SimpleNamespace(
+            workspace_id=UUID(int=1),
+            subject=SimpleNamespace(subject_id=UUID(int=2)),
+            environment=object(),
+            request_id="request-system-configuration-validation",
+        ),
+    )
+    configured = settings().model_copy(update={"app_env": "development"})
+    container = SimpleNamespace(settings=configured)
+    service = SimpleNamespace(
+        get_admin_read_context=AsyncMock(
+            return_value=SimpleNamespace(allowed_operations=("SYSTEM_CONFIGURATION_READ",))
+        )
+    )
+    monkeypatch.setattr(admin_routes, "get_container", lambda _request: container)
+    monkeypatch.setattr(admin_routes, "_service", lambda _request: service)
+    monkeypatch.setattr(
+        admin_routes,
+        "_deployment_probe_document",
+        lambda _settings, _system_id: {"options": {}},
+    )
+    monkeypatch.setattr(
+        admin_routes,
+        "_validate_system_configuration",
+        lambda _system_id, _document: None,
+    )
+    monkeypatch.setattr(
+        admin_routes,
+        "probe_system_configuration",
+        AsyncMock(side_effect=failure),
+    )
+
+    result = await admin_routes.test_deployment_system_configuration(
+        system_id="LLM_CHAT_MODEL",
+        request=request,
+        response=Response(),
+        context=context,
+    )
+
+    assert result.status == "UNAVAILABLE"
+    assert result.scope == "MODEL_INFERENCE"
+    assert result.detail == expected_detail
 
 
 def test_upload_preparation_openapi_is_typed_and_server_managed() -> None:
