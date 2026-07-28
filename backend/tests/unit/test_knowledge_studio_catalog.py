@@ -142,6 +142,28 @@ async def test_studio_source_detail_pins_datahub_schema_version_and_typed_field_
     assert not hasattr(result.dataset, "external_urn")
 
 
+@pytest.mark.asyncio
+async def test_studio_source_access_revalidation_uses_one_authorized_catalog_set() -> None:
+    catalog = SimpleNamespace(get_asset_indexes=AsyncMock(return_value=(asset(),)))
+    reader = CatalogKnowledgeStudioSourceReader(cast(CatalogService, catalog))
+
+    result = await reader.validate_dataset_access(
+        subject=subject(),
+        asset_ids=(ASSET_ID,),
+        environment=EnvironmentAttributes(requested_at=NOW),
+        request_id="request",
+    )
+
+    assert result[0].asset_id == ASSET_ID
+    assert result[0].projection_source_version == "projection-v1"
+    catalog.get_asset_indexes.assert_awaited_once_with(
+        subject=subject(),
+        asset_ids=(ASSET_ID,),
+        environment=EnvironmentAttributes(requested_at=NOW),
+        request_id="request",
+    )
+
+
 def test_internal_dataset_search_filter_enforces_a_typed_classification_ceiling() -> None:
     conditions = SqlCatalogIndexReader._filter_conditions(
         {

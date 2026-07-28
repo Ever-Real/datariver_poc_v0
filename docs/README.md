@@ -95,6 +95,8 @@ Its auto-save concurrency and browser recovery boundary is defined by
 [Knowledge Studio offline recovery and ETag conflicts](adr/0059-knowledge-studio-offline-recovery-and-etag-conflicts.md).
 The Step 3 child aggregate and provider boundary are defined by
 [Knowledge Studio A-Box binding drafts](adr/0060-knowledge-studio-abox-binding-drafts.md).
+Its row-sample dry run and version-fenced ingestion readiness evidence are defined by
+[Knowledge Studio dry-run preview and pre-flight](adr/0061-knowledge-studio-dry-run-preview-and-preflight.md).
 
 ## Change control
 

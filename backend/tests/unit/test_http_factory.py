@@ -1104,6 +1104,27 @@ def test_knowledge_studio_draft_openapi_requires_etag_and_idempotency() -> None:
     }
     assert {"tbox_elements", "schema_document"}.isdisjoint(binding_request["properties"])
 
+    preview = document["paths"]["/api/v1/knowledge/studio/drafts/{draft_id}/abox/previews"]["post"]
+    preview_headers = {item["name"]: item for item in preview["parameters"]}
+    assert preview_headers["If-Match"]["required"] is True
+    preview_request = document["components"]["schemas"]["KnowledgeStudioPreviewRequest"]
+    assert set(preview_request["properties"]) == {
+        "target_stable_element_id",
+        "sample_limit",
+    }
+    sample_limit = preview_request["properties"]["sample_limit"]
+    assert sample_limit["minimum"] == 5
+    assert sample_limit["maximum"] == 10
+    preview_response = document["components"]["schemas"]["KnowledgeStudioPreviewResponse"]
+    assert {"cypher", "query", "external_urn"}.isdisjoint(preview_response["properties"])
+
+    preflight = document["paths"]["/api/v1/knowledge/studio/drafts/{draft_id}/abox/preflight"][
+        "post"
+    ]
+    preflight_headers = {item["name"]: item for item in preflight["parameters"]}
+    assert preflight_headers["If-Match"]["required"] is True
+    assert "requestBody" not in preflight
+
 
 def test_typed_upload_template_is_an_authenticated_server_versioned_download() -> None:
     factory = cast(Callable[[Settings], AppContainer], lambda _: LiveOnlyContainer())

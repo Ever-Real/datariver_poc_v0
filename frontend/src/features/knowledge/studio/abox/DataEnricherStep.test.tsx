@@ -271,4 +271,106 @@ describe('DataEnricherStep', () => {
     const patchCalls = fetchMock.mock.calls.filter(([, init]) => init?.method === 'PATCH')
     expect(new Headers(patchCalls[1]?.[1]?.headers).get('If-Match')).toBe('"4"')
   })
+
+  it('shows a dry-run graph overlay, click-to-inspect properties and pre-flight evidence', async () => {
+    const firstNodeId = `preview:${'a'.repeat(64)}`
+    const secondNodeId = `preview:${'b'.repeat(64)}`
+    const fetchMock = vi.fn<typeof fetch>((input, init) => {
+      const path = requestUrl(input)
+      if (path.endsWith(`/drafts/${draftId}/abox`) && !init?.method) {
+        return Promise.resolve(json({
+          draft: draft(3),
+          tbox_elements: tboxElements,
+          bindings: [binding(1)],
+        }, 200, '"3"'))
+      }
+      if (path.includes(`/drafts/${draftId}/abox/sources?`)) {
+        return Promise.resolve(json({ items: [source], page: { limit: 25 } }))
+      }
+      if (path.endsWith(`/abox/sources/${assetId}`)) {
+        return Promise.resolve(json({
+          dataset: source,
+          observed_at: '2026-07-28T04:00:00Z',
+        }))
+      }
+      if (path.endsWith('/abox/previews') && init?.method === 'POST') {
+        return Promise.resolve(json({
+          status: 'READY',
+          draft_version: 3,
+          binding_version: 1,
+          target_stable_element_id: 'class.employee',
+          dry_run: true,
+          sample_size: 2,
+          graph: {
+            nodes: [
+              {
+                id: firstNodeId,
+                stable_element_id: 'class.employee',
+                type: 'Employee',
+                identity: 'E-001',
+                properties: { name: 'Kim' },
+              },
+              {
+                id: secondNodeId,
+                stable_element_id: 'class.employee',
+                type: 'Employee',
+                identity: 'E-002',
+                properties: { name: 'Park' },
+              },
+            ],
+            edges: [],
+          },
+          evidence: [],
+        }, 200, '"3"'))
+      }
+      if (path.endsWith('/abox/preflight') && init?.method === 'POST') {
+        return Promise.resolve(json({
+          status: 'UNAVAILABLE',
+          valid: false,
+          draft_version: 3,
+          checked_at: '2026-07-28T08:00:00Z',
+          evidence: [{
+            severity: 'ERROR',
+            code: 'SOURCE_ROW_READER_UNAVAILABLE',
+            location: 'abox',
+            message: 'No approved physical Dataset row reader is configured.',
+          }],
+        }, 200, '"3"'))
+      }
+      return Promise.reject(new Error(`Unexpected request: ${path}`))
+    })
+    vi.stubGlobal('fetch', fetchMock)
+    const client = new ApiClient('/api/v1', () => 'token', () => 'workspace')
+    render(<DataEnricherStep client={client} draftId={draftId} onDraftUpdate={vi.fn()} />)
+
+    fireEvent.click(await screen.findByLabelText('Employee, 2 properties · Mapped · DRAFT'))
+    await screen.findByText(/source version source-v1/)
+    fireEvent.click(screen.getByRole('button', { name: 'Preview · Dry Run' }))
+
+    const previewDialog = await screen.findByRole('dialog', {
+      name: 'Knowledge Graph Preview · Dry Run',
+    })
+    expect(within(previewDialog).getByText('Kim')).toBeInTheDocument()
+    fireEvent.click(await within(previewDialog).findByLabelText(
+      'Employee, SUBJECT_ID E-002 · 1 properties',
+    ))
+    expect(within(previewDialog).getByText('Park')).toBeInTheDocument()
+    expect(within(previewDialog).getByText(/Neo4j에는 쓰지 않습니다/)).toBeInTheDocument()
+    fireEvent.click(within(previewDialog).getByRole('button', { name: '닫기' }))
+
+    fireEvent.click(screen.getByRole('button', { name: 'Pre-flight 검증' }))
+    const preflightResult = await screen.findByLabelText('Ingestion Pre-flight 결과')
+    expect(within(preflightResult).getByText(/Pre-flight UNAVAILABLE/)).toBeInTheDocument()
+    expect(within(preflightResult).getByText(/SOURCE_ROW_READER_UNAVAILABLE/)).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Run Ingestion' })).toBeDisabled()
+
+    const previewCall = fetchMock.mock.calls.find(([input]) => (
+      requestUrl(input).endsWith('/abox/previews')
+    ))
+    expect(new Headers(previewCall?.[1]?.headers).get('If-Match')).toBe('"3"')
+    expect(JSON.parse(previewCall?.[1]?.body as string)).toEqual({
+      target_stable_element_id: 'class.employee',
+      sample_limit: 5,
+    })
+  })
 })

@@ -1,6 +1,6 @@
 # 지식관리 레지스트리 및 Knowledge Studio 개편 실행 체크리스트
 
-- 상태: **진행 중 — Phase 4 A-Box Mapping Draft increment 구현**
+- 상태: **진행 중 — Phase 4 Dry-run Preview/Pre-flight increment 구현**
 - 상위 문서: [Knowledge Studio 전면 개편 PRD](44_KNOWLEDGE_STUDIO_REDESIGN_PRD.md)
 
 이 체크리스트는 한 번에 화면을 교체하지 않는다. 각 phase는 앞 단계의 API/tests를 고정하고,
@@ -112,6 +112,14 @@ profile과 mapping registry 항목은 해당 Phase 시작 전에 추가 승인�
   `IDENTITY@1`만 수락하도록 구현하고 negative test를 만든다.
 - [x] 현재 Mapping `DRAFT`와 instance ingestion `NOT_RUN`을 분리 표시하고 mapped 색상만으로
   ingestion 또는 publication 성공을 주장하지 않는다.
+- [x] DataHub metadata와 physical row reader를 분리하고 local Asset UUID, exact version,
+  persisted field allowlist, 5~10 row bound만 받는 typed sample port를 승인한다.
+- [x] persisted Class Binding을 provider-neutral JSON graph로 변환하는 dry-run engine과
+  React Flow overlay/property inspector를 구현한다. raw Cypher/SQL과 Neo4j write는 없다.
+- [x] accepted Class/SUBJECT_ID/non-nullable Property/T-Box version/source authorization 및
+  physical access capability를 검사하는 ETag-fenced Pre-flight evidence를 구현한다.
+- [x] 승인된 physical row reader가 없는 runtime은 sample을 만들지 않고
+  `SOURCE_ROW_READER_UNAVAILABLE`로 실패하며 Run Ingestion을 disabled로 유지한다.
 - [ ] mutable binding/rule draft, immutable binding version/rule, append-only validation
   evidence를 분리하고 네 mapping method 외 값을 거부한다.
 - [ ] source/target, unit, transform, cardinality, source version, classification/provenance validation을 구현한다.

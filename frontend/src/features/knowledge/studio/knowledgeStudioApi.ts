@@ -111,6 +111,54 @@ export interface KnowledgeStudioSourceDetail {
   stale_at?: string
 }
 
+export type KnowledgeStudioPreviewScalar = string | number | boolean | null
+
+export interface KnowledgeStudioValidationEvidence {
+  severity: 'ERROR' | 'WARNING' | 'INFO'
+  code: string
+  location: string
+  message: string
+}
+
+export interface KnowledgeStudioPreviewNode {
+  id: string
+  stable_element_id: string
+  type: string
+  identity: KnowledgeStudioPreviewScalar
+  properties: Record<string, KnowledgeStudioPreviewScalar>
+}
+
+export interface KnowledgeStudioPreviewEdge {
+  id: string
+  stable_element_id: string
+  type: string
+  source_node_id: string
+  target_node_id: string
+  properties: Record<string, KnowledgeStudioPreviewScalar>
+}
+
+export interface KnowledgeStudioPreview {
+  status: 'READY' | 'INVALID' | 'UNAVAILABLE'
+  draft_version: number
+  binding_version?: number
+  target_stable_element_id: string
+  dry_run: true
+  sample_size: number
+  graph: {
+    nodes: KnowledgeStudioPreviewNode[]
+    edges: KnowledgeStudioPreviewEdge[]
+  }
+  evidence: KnowledgeStudioValidationEvidence[]
+}
+
+export interface KnowledgeStudioPreflight {
+  status: 'PASS' | 'FAIL' | 'UNAVAILABLE'
+  valid: boolean
+  draft_version: number
+  checked_at: string
+  evidence: KnowledgeStudioValidationEvidence[]
+}
+
 function requireEtag<T>(response: ApiResponse<T>): ApiResponse<T> {
   if (!response.etag) throw new Error('서버가 Draft ETag를 반환하지 않았습니다.')
   return response
@@ -254,6 +302,42 @@ export async function saveKnowledgeStudioBinding(
       cache: 'no-store',
       ifMatch: etag,
       idempotencyKey,
+    },
+  ))
+}
+
+export async function previewKnowledgeStudioBinding(
+  client: ApiClient,
+  draftId: string,
+  targetStableElementId: string,
+  etag: string,
+  sampleLimit = 5,
+): Promise<ApiResponse<KnowledgeStudioPreview>> {
+  return requireEtag(await client.requestWithMeta<KnowledgeStudioPreview>(
+    `/knowledge/studio/drafts/${encodeURIComponent(draftId)}/abox/previews`,
+    {
+      method: 'POST',
+      body: JSON.stringify({
+        target_stable_element_id: targetStableElementId,
+        sample_limit: sampleLimit,
+      }),
+      cache: 'no-store',
+      ifMatch: etag,
+    },
+  ))
+}
+
+export async function preflightKnowledgeStudioABox(
+  client: ApiClient,
+  draftId: string,
+  etag: string,
+): Promise<ApiResponse<KnowledgeStudioPreflight>> {
+  return requireEtag(await client.requestWithMeta<KnowledgeStudioPreflight>(
+    `/knowledge/studio/drafts/${encodeURIComponent(draftId)}/abox/preflight`,
+    {
+      method: 'POST',
+      cache: 'no-store',
+      ifMatch: etag,
     },
   ))
 }

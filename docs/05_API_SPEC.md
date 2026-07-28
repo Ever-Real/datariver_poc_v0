@@ -27,6 +27,15 @@ only when their route declares durable idempotency; reads/results are discarded 
 in-memory security-epoch drift. API/MCP surfaces not listed in the implemented inventory are backlog,
 not implied capabilities. Runtime API/OIDC Origin validation remains deferred as `R5-FE-04` P2.
 
+Knowledge Studio A-Box adds two current-Draft advisory endpoints:
+`POST /knowledge/studio/drafts/{draft_id}/abox/previews` accepts only a persisted T-Box target,
+`sample_limit` from 5 through 10 and exact `If-Match`; it returns a no-store provider-neutral JSON
+graph and bounded evidence without a Cypher string or any source/Neo4j write.
+`POST /knowledge/studio/drafts/{draft_id}/abox/preflight` requires the same exact Draft ETag and
+returns all required-binding, source-version, authorization and physical-reader capability evidence.
+An invalid/unavailable result is a typed `200` document; a stale Draft is `412`. A passing response
+does not create ingestion authority, a release or a durable validation receipt.
+
 ## Conventions
 
 - Base path `/api/v1`; JSON UTF-8; RFC 3339 UTC timestamps.

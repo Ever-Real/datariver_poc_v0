@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from datariver.application.ports import KnowledgeStudioSampleReader
 from datariver.config import Settings
 from datariver.infrastructure.cache.redis import RedisCache, RedisChatRequestBudgetGuard
 from datariver.infrastructure.datahub.http import HttpDataHubGateway
@@ -26,6 +27,7 @@ class AppContainer:
     metrics: HttpMetrics
     knowledge_neo4j: BoltNeo4jQueryExecutor | None = None
     identity_admin: KeycloakIdentityAdministration | None = None
+    knowledge_studio_samples: KnowledgeStudioSampleReader | None = None
 
     async def close(self) -> None:
         await self.datahub.close()

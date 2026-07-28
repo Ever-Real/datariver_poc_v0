@@ -5,6 +5,8 @@ import {
   autosaveKnowledgeStudioDraft,
   createKnowledgeStudioDraft,
   listKnowledgeStudioDomains,
+  preflightKnowledgeStudioABox,
+  previewKnowledgeStudioBinding,
   type KnowledgeStudioBasicInformation,
 } from './knowledgeStudioApi'
 
@@ -102,5 +104,66 @@ describe('Knowledge Studio API', () => {
     await expect(
       createKnowledgeStudioDraft(client, payload, 'create-key'),
     ).rejects.toThrow(/ETag/)
+  })
+
+  it('fences dry-run preview and pre-flight reads without sending provider queries', async () => {
+    const preview = {
+      status: 'READY',
+      draft_version: 3,
+      binding_version: 1,
+      target_stable_element_id: 'class.employee',
+      dry_run: true,
+      sample_size: 1,
+      graph: { nodes: [], edges: [] },
+      evidence: [],
+    }
+    const preflight = {
+      status: 'PASS',
+      valid: true,
+      draft_version: 3,
+      checked_at: '2026-07-28T08:00:00Z',
+      evidence: [],
+    }
+    const fetchMock = vi.fn<typeof fetch>()
+      .mockResolvedValueOnce(new Response(JSON.stringify(preview), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json', ETag: '"3"' },
+      }))
+      .mockResolvedValueOnce(new Response(JSON.stringify(preflight), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json', ETag: '"3"' },
+      }))
+    vi.stubGlobal('fetch', fetchMock)
+    const client = new ApiClient('/api/v1', () => 'token', () => 'workspace')
+
+    await previewKnowledgeStudioBinding(
+      client,
+      '019fa57b-52de-74c0-9f5e-06ae7b1bf3b0',
+      'class.employee',
+      '"3"',
+      5,
+    )
+    await preflightKnowledgeStudioABox(
+      client,
+      '019fa57b-52de-74c0-9f5e-06ae7b1bf3b0',
+      '"3"',
+    )
+
+    const previewCall = fetchMock.mock.calls[0]
+    expect(requestUrl(previewCall?.[0])).toContain('/abox/previews')
+    expect(previewCall?.[1]?.method).toBe('POST')
+    expect(new Headers(previewCall?.[1]?.headers).get('If-Match')).toBe('"3"')
+    expect(new Headers(previewCall?.[1]?.headers).get('Idempotency-Key')).toBeNull()
+    expect(JSON.parse(previewCall?.[1]?.body as string)).toEqual({
+      target_stable_element_id: 'class.employee',
+      sample_limit: 5,
+    })
+    expect(JSON.stringify(previewCall?.[1]?.body)).not.toMatch(/query|cypher|external_urn/)
+
+    const preflightCall = fetchMock.mock.calls[1]
+    expect(requestUrl(preflightCall?.[0])).toContain('/abox/preflight')
+    expect(preflightCall?.[1]?.method).toBe('POST')
+    expect(new Headers(preflightCall?.[1]?.headers).get('If-Match')).toBe('"3"')
+    expect(preflightCall?.[1]?.body).toBeUndefined()
   })
 })

@@ -2141,6 +2141,64 @@ class KnowledgeStudioSourceDetailResponse(BaseModel):
     stale_at: datetime | None
 
 
+class KnowledgeStudioPreviewRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    target_stable_element_id: str = Field(min_length=1, max_length=128)
+    sample_limit: int = Field(default=5, ge=5, le=10)
+
+
+class KnowledgeStudioValidationEvidenceResponse(BaseModel):
+    severity: Literal["ERROR", "WARNING", "INFO"]
+    code: str = Field(min_length=1, max_length=100)
+    location: str = Field(min_length=1, max_length=300)
+    message: str = Field(min_length=1, max_length=1_000)
+
+
+KnowledgeStudioPreviewScalar = str | int | float | bool | None
+
+
+class KnowledgeStudioPreviewNodeResponse(BaseModel):
+    id: str = Field(min_length=72, max_length=72, pattern="^preview:[0-9a-f]{64}$")
+    stable_element_id: str
+    type: str
+    identity: KnowledgeStudioPreviewScalar
+    properties: dict[str, KnowledgeStudioPreviewScalar] = Field(max_length=200)
+
+
+class KnowledgeStudioPreviewEdgeResponse(BaseModel):
+    id: str
+    stable_element_id: str
+    type: str
+    source_node_id: str
+    target_node_id: str
+    properties: dict[str, KnowledgeStudioPreviewScalar] = Field(max_length=200)
+
+
+class KnowledgeStudioPreviewGraphResponse(BaseModel):
+    nodes: list[KnowledgeStudioPreviewNodeResponse] = Field(max_length=10)
+    edges: list[KnowledgeStudioPreviewEdgeResponse] = Field(max_length=100)
+
+
+class KnowledgeStudioPreviewResponse(BaseModel):
+    status: Literal["READY", "INVALID", "UNAVAILABLE"]
+    draft_version: int = Field(ge=1)
+    binding_version: int | None = Field(default=None, ge=1)
+    target_stable_element_id: str
+    dry_run: Literal[True]
+    sample_size: int = Field(ge=0, le=10)
+    graph: KnowledgeStudioPreviewGraphResponse
+    evidence: list[KnowledgeStudioValidationEvidenceResponse] = Field(max_length=200)
+
+
+class KnowledgeStudioPreflightResponse(BaseModel):
+    status: Literal["PASS", "FAIL", "UNAVAILABLE"]
+    valid: bool
+    draft_version: int = Field(ge=1)
+    checked_at: datetime
+    evidence: list[KnowledgeStudioValidationEvidenceResponse] = Field(max_length=2_000)
+
+
 class KnowledgeGraphCreate(BaseModel):
     model_config = ConfigDict(extra="forbid")
 

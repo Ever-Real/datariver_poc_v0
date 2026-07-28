@@ -10,12 +10,16 @@ from datariver.application.dto import (
     KnowledgeStudioBindingRecord,
     KnowledgeStudioDraftRecord,
     KnowledgeStudioSourceDataset,
+    KnowledgeStudioValidationEvidence,
 )
 from datariver.application.services.authorization import AuthorizationService
 from datariver.application.services.catalog import CatalogService
 from datariver.application.services.knowledge_studio import KnowledgeStudioService
 from datariver.application.services.knowledge_studio_catalog import (
     CatalogKnowledgeStudioSourceReader,
+)
+from datariver.application.services.knowledge_studio_preview import (
+    KnowledgeStudioPreviewService,
 )
 from datariver.domain.authz import BuiltinPolicyEngine, Classification
 from datariver.domain.common import ValidationError, canonical_json_hash
@@ -37,10 +41,17 @@ from datariver.interfaces.http.schemas import (
     KnowledgeStudioDomainOptionsResponse,
     KnowledgeStudioDraftResponse,
     KnowledgeStudioMappingRuleResponse,
+    KnowledgeStudioPreflightResponse,
+    KnowledgeStudioPreviewEdgeResponse,
+    KnowledgeStudioPreviewGraphResponse,
+    KnowledgeStudioPreviewNodeResponse,
+    KnowledgeStudioPreviewRequest,
+    KnowledgeStudioPreviewResponse,
     KnowledgeStudioSourceDatasetResponse,
     KnowledgeStudioSourceDetailResponse,
     KnowledgeStudioSourcePageResponse,
     KnowledgeStudioTBoxElementResponse,
+    KnowledgeStudioValidationEvidenceResponse,
     PageMeta,
 )
 
@@ -60,7 +71,14 @@ IfMatch = Annotated[
 ]
 
 
-def _service(request: Request, session: SessionDep) -> KnowledgeStudioService:
+def _service_components(
+    request: Request,
+    session: SessionDep,
+) -> tuple[
+    SqlKnowledgeStudioStore,
+    AuthorizationService,
+    CatalogKnowledgeStudioSourceReader,
+]:
     container = get_container(request)
     authorization = AuthorizationService(
         decision_writer=SqlDecisionWriter(container.database.session_factory)
@@ -82,11 +100,35 @@ def _service(request: Request, session: SessionDep) -> KnowledgeStudioService:
             SqlClassificationAccessSnapshotReader(session)
         ),
         telemetry=container.metrics,
+        candidate_targets=index,
     )
+    return (
+        SqlKnowledgeStudioStore(session),
+        authorization,
+        CatalogKnowledgeStudioSourceReader(catalog),
+    )
+
+
+def _service(request: Request, session: SessionDep) -> KnowledgeStudioService:
+    store, authorization, sources = _service_components(request, session)
     return KnowledgeStudioService(
-        store=SqlKnowledgeStudioStore(session),
+        store=store,
         authorization=authorization,
-        sources=CatalogKnowledgeStudioSourceReader(catalog),
+        sources=sources,
+    )
+
+
+def _preview_service(
+    request: Request,
+    session: SessionDep,
+) -> KnowledgeStudioPreviewService:
+    container = get_container(request)
+    store, authorization, sources = _service_components(request, session)
+    return KnowledgeStudioPreviewService(
+        store=store,
+        authorization=authorization,
+        sources=sources,
+        samples=container.knowledge_studio_samples,
     )
 
 
@@ -123,6 +165,11 @@ def _draft_response(record: KnowledgeStudioDraftRecord) -> KnowledgeStudioDraftR
 
 def _set_draft_headers(response: Response, record: KnowledgeStudioDraftRecord) -> None:
     response.headers["ETag"] = f'"{record.version}"'
+    response.headers["Cache-Control"] = "no-store"
+
+
+def _set_version_headers(response: Response, version: int) -> None:
+    response.headers["ETag"] = f'"{version}"'
     response.headers["Cache-Control"] = "no-store"
 
 
@@ -175,6 +222,17 @@ def _binding_response(
         ],
         created_at=binding.created_at,
         updated_at=binding.updated_at,
+    )
+
+
+def _evidence_response(
+    item: KnowledgeStudioValidationEvidence,
+) -> KnowledgeStudioValidationEvidenceResponse:
+    return KnowledgeStudioValidationEvidenceResponse(
+        severity=item.severity,
+        code=item.code,
+        location=item.location,
+        message=item.message,
     )
 
 
@@ -524,4 +582,104 @@ async def patch_knowledge_studio_abox_binding(
     return KnowledgeStudioBindingMutationResponse(
         draft=_draft_response(draft),
         binding=_binding_response(binding),
+    )
+
+
+@router.post(
+    "/drafts/{draft_id}/abox/previews",
+    response_model=KnowledgeStudioPreviewResponse,
+    responses={
+        status.HTTP_200_OK: ETAG_RESPONSE,
+        status.HTTP_412_PRECONDITION_FAILED: {
+            "description": "The If-Match Draft version is stale."
+        },
+    },
+)
+async def preview_knowledge_studio_abox_binding(
+    draft_id: UUID,
+    payload: KnowledgeStudioPreviewRequest,
+    request: Request,
+    response: Response,
+    context: ContextDep,
+    session: SessionDep,
+    if_match: IfMatch,
+) -> KnowledgeStudioPreviewResponse:
+    record = await _preview_service(request, session).preview_binding(
+        workspace_id=context.workspace_id,
+        subject=context.subject,
+        draft_id=draft_id,
+        target_stable_element_id=payload.target_stable_element_id,
+        sample_limit=payload.sample_limit,
+        expected_version=_expected_version(if_match),
+        environment=context.environment,
+        request_id=context.request_id,
+    )
+    _set_version_headers(response, record.draft_version)
+    return KnowledgeStudioPreviewResponse(
+        status=record.status,
+        draft_version=record.draft_version,
+        binding_version=record.binding_version,
+        target_stable_element_id=record.target_stable_element_id,
+        dry_run=True,
+        sample_size=record.sample_size,
+        graph=KnowledgeStudioPreviewGraphResponse(
+            nodes=[
+                KnowledgeStudioPreviewNodeResponse(
+                    id=item.node_id,
+                    stable_element_id=item.stable_element_id,
+                    type=item.type_name,
+                    identity=item.identity,
+                    properties=dict(item.properties),
+                )
+                for item in record.graph.nodes
+            ],
+            edges=[
+                KnowledgeStudioPreviewEdgeResponse(
+                    id=item.edge_id,
+                    stable_element_id=item.stable_element_id,
+                    type=item.type_name,
+                    source_node_id=item.source_node_id,
+                    target_node_id=item.target_node_id,
+                    properties=dict(item.properties),
+                )
+                for item in record.graph.edges
+            ],
+        ),
+        evidence=[_evidence_response(item) for item in record.evidence],
+    )
+
+
+@router.post(
+    "/drafts/{draft_id}/abox/preflight",
+    response_model=KnowledgeStudioPreflightResponse,
+    responses={
+        status.HTTP_200_OK: ETAG_RESPONSE,
+        status.HTTP_412_PRECONDITION_FAILED: {
+            "description": "The If-Match Draft version is stale."
+        },
+    },
+)
+async def preflight_knowledge_studio_abox(
+    draft_id: UUID,
+    request: Request,
+    response: Response,
+    context: ContextDep,
+    session: SessionDep,
+    if_match: IfMatch,
+) -> KnowledgeStudioPreflightResponse:
+    record = await _preview_service(request, session).preflight(
+        workspace_id=context.workspace_id,
+        subject=context.subject,
+        draft_id=draft_id,
+        expected_version=_expected_version(if_match),
+        environment=context.environment,
+        request_id=context.request_id,
+    )
+    _set_version_headers(response, record.draft_version)
+    return KnowledgeStudioPreflightResponse(
+        status=record.status,
+        valid=record.valid,
+        draft_version=record.draft_version,
+        checked_at=record.checked_at,
+        evidence=[_evidence_response(item) for item in record.evidence],
     )

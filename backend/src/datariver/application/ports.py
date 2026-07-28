@@ -75,8 +75,12 @@ from datariver.application.dto import (
     KnowledgeStudioBindingRecord,
     KnowledgeStudioDomainOption,
     KnowledgeStudioDraftRecord,
+    KnowledgeStudioSamplePage,
+    KnowledgeStudioSampleRequest,
+    KnowledgeStudioSourceAccess,
     KnowledgeStudioSourceDetail,
     KnowledgeStudioSourcePage,
+    KnowledgeStudioSourceProbe,
     ManualMetadataApplyAttemptEvidence,
     MembershipChangeRequestActivityPage,
     MembershipOwnedTablePage,
@@ -1547,6 +1551,35 @@ class KnowledgeStudioSourceReader(Protocol):
         environment: EnvironmentAttributes,
         request_id: str,
     ) -> KnowledgeStudioSourceDetail | None: ...
+
+    async def validate_dataset_access(
+        self,
+        *,
+        subject: SubjectAttributes,
+        asset_ids: tuple[UUID, ...],
+        environment: EnvironmentAttributes,
+        request_id: str,
+    ) -> tuple[KnowledgeStudioSourceAccess, ...]: ...
+
+
+class KnowledgeStudioSampleReader(Protocol):
+    async def sample_rows(
+        self,
+        *,
+        subject: SubjectAttributes,
+        source: KnowledgeStudioSampleRequest,
+        environment: EnvironmentAttributes,
+        request_id: str,
+    ) -> KnowledgeStudioSamplePage: ...
+
+    async def probe_access(
+        self,
+        *,
+        subject: SubjectAttributes,
+        sources: tuple[KnowledgeStudioSampleRequest, ...],
+        environment: EnvironmentAttributes,
+        request_id: str,
+    ) -> tuple[KnowledgeStudioSourceProbe, ...]: ...
 
 
 class KnowledgeStore(Protocol):

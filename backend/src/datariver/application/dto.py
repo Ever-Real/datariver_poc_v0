@@ -1165,6 +1165,98 @@ class KnowledgeStudioSourceDetail:
 
 
 @dataclass(frozen=True, slots=True)
+class KnowledgeStudioSourceAccess:
+    asset_id: UUID
+    classification: Classification
+    projection_source_version: str
+
+
+KnowledgeStudioSampleScalar = str | int | float | bool | None
+
+
+@dataclass(frozen=True, slots=True)
+class KnowledgeStudioSampleRequest:
+    source_reference_id: UUID
+    asset_id: UUID
+    source_version: str
+    projection_source_version: str
+    field_paths: tuple[str, ...]
+    limit: int
+
+
+@dataclass(frozen=True, slots=True)
+class KnowledgeStudioSamplePage:
+    source_reference_id: UUID
+    source_version: str
+    projection_source_version: str
+    rows: tuple[Mapping[str, KnowledgeStudioSampleScalar], ...]
+    observed_at: datetime
+
+
+@dataclass(frozen=True, slots=True)
+class KnowledgeStudioSourceProbe:
+    source_reference_id: UUID
+    source_version: str
+    projection_source_version: str
+    accessible: bool
+    observed_at: datetime
+
+
+@dataclass(frozen=True, slots=True)
+class KnowledgeStudioValidationEvidence:
+    severity: str
+    code: str
+    location: str
+    message: str
+
+
+@dataclass(frozen=True, slots=True)
+class KnowledgeStudioPreviewNode:
+    node_id: str
+    stable_element_id: str
+    type_name: str
+    identity: KnowledgeStudioSampleScalar
+    properties: Mapping[str, KnowledgeStudioSampleScalar]
+
+
+@dataclass(frozen=True, slots=True)
+class KnowledgeStudioPreviewEdge:
+    edge_id: str
+    stable_element_id: str
+    type_name: str
+    source_node_id: str
+    target_node_id: str
+    properties: Mapping[str, KnowledgeStudioSampleScalar]
+
+
+@dataclass(frozen=True, slots=True)
+class KnowledgeStudioPreviewGraph:
+    nodes: tuple[KnowledgeStudioPreviewNode, ...]
+    edges: tuple[KnowledgeStudioPreviewEdge, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class KnowledgeStudioPreviewRecord:
+    status: str
+    draft_version: int
+    binding_version: int | None
+    target_stable_element_id: str
+    dry_run: bool
+    sample_size: int
+    graph: KnowledgeStudioPreviewGraph
+    evidence: tuple[KnowledgeStudioValidationEvidence, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class KnowledgeStudioPreflightRecord:
+    status: str
+    valid: bool
+    draft_version: int
+    checked_at: datetime
+    evidence: tuple[KnowledgeStudioValidationEvidence, ...]
+
+
+@dataclass(frozen=True, slots=True)
 class KnowledgeReleaseRecord:
     release_id: UUID
     graph_id: UUID

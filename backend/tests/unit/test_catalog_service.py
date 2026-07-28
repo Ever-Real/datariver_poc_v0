@@ -31,6 +31,7 @@ from datariver.application.dto import (
 from datariver.application.errors import ExternalDependencyError
 from datariver.application.ports import (
     Cache,
+    CatalogCandidateTargetReader,
     CatalogDiscoveryReader,
     CatalogIndexReader,
     CatalogWatermarkReader,
@@ -153,6 +154,12 @@ class FakeIndex:
         del external_urns
         return self.lineage_assets
 
+    async def get_authorized_assets_by_ids(
+        self, *, asset_ids: object, **_: object
+    ) -> tuple[CatalogAssetIndex, ...]:
+        requested = set(cast(tuple[object, ...], asset_ids))
+        return tuple(item for item in self.lineage_assets if item.asset_id in requested)
+
 
 class FakeGateway:
     def __init__(self, enrichment: DataHubAssetEnrichment) -> None:
@@ -218,6 +225,9 @@ class AllowAuthorization:
     async def can_review_quarantined_catalog(self, **_: object) -> bool:
         return False
 
+    async def filter_authorized(self, **values: object) -> tuple[object, ...]:
+        return cast(tuple[object, ...], values["resources"])
+
 
 class AdminReviewAuthorization(AllowAuthorization):
     async def can_review_quarantined_catalog(self, **_: object) -> bool:
@@ -227,6 +237,65 @@ class AdminReviewAuthorization(AllowAuthorization):
 class ReviewOnlyAuthorization(AdminReviewAuthorization):
     async def authorize(self, **_: object) -> None:
         raise AssertionError("The separate audited review scope must not re-enter generic ABAC.")
+
+
+@pytest.mark.asyncio
+async def test_catalog_asset_access_revalidation_is_set_based_and_skips_datahub_detail() -> None:
+    now = datetime.now(UTC)
+    workspace_id, asset_id = uuid4(), uuid4()
+    asset = CatalogAssetIndex(
+        asset_id=asset_id,
+        workspace_id=workspace_id,
+        external_urn="urn:li:dataset:employee",
+        asset_type="DATASET",
+        name="employee",
+        description=None,
+        platform="postgres",
+        domain_id=None,
+        system_id=None,
+        owner_department_id=None,
+        classification=Classification.INTERNAL,
+        lifecycle="ACTIVE",
+        source_version="projection-v3",
+        observed_at=now,
+    )
+    detail = CatalogAssetDetail(asset, (), (), (), (), {}, "datahub-v4", now)
+    index_reader = FakeIndex(detail)
+    gateway = FakeGateway(DataHubAssetEnrichment((), (), (), (), {}, "datahub-v4", now))
+    service = CatalogService(
+        index=cast(CatalogIndexReader, index_reader),
+        discovery=cast(CatalogDiscoveryReader, index_reader),
+        watermark=cast(CatalogWatermarkReader, index_reader),
+        datahub=cast(DataHubGateway, gateway),
+        cache=cast(Cache, FakeCache()),
+        authorization=cast(AuthorizationService, AllowAuthorization()),
+        detail_cache_ttl_seconds=60,
+        stale_detail_ttl_seconds=900,
+        search_cache_ttl_seconds=30,
+        minimum_query_length=2,
+        policy_version=BuiltinPolicyEngine.policy_version,
+        candidate_targets=cast(CatalogCandidateTargetReader, index_reader),
+    )
+    current_subject = SubjectAttributes(
+        subject_id=uuid4(),
+        workspace_id=workspace_id,
+        active=True,
+        department_id=None,
+        groups=frozenset(),
+        job_function="USER",
+        clearance=Classification.INTERNAL,
+        allowed_actions=frozenset({Action.CATALOG_READ}),
+    )
+
+    values = await service.get_asset_indexes(
+        subject=current_subject,
+        asset_ids=(asset_id,),
+        environment=EnvironmentAttributes(requested_at=now),
+        request_id="preflight",
+    )
+
+    assert values == (asset,)
+    assert gateway.calls == 0
 
 
 def test_search_cache_ttl_never_crosses_policy_or_grant_boundary() -> None:

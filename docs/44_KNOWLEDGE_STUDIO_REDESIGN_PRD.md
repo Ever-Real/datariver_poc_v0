@@ -255,6 +255,46 @@ contract version으로만 전환한다.
 accessible label에 mapping/ingestion 두 상태를 모두 표시한다. 색상만으로 상태를 구분하지
 않는다.
 
+#### 3.4.1 Dry-run Preview와 Ingestion Pre-flight
+
+저장된 Class Binding의 Preview는 persisted rule의 field allowlist만 physical source reader에
+전달하고 5~10개의 실제 row를 bounded JSON scalar로 읽는다. DataHub는 metadata provider이므로
+schema field 예시값을 coherent row로 만들거나 DataRiver 정본 DB의 동명 table을 대신 읽지 않는다.
+deployment에 승인된 row reader가 없으면 `SOURCE_ROW_READER_UNAVAILABLE` evidence를 반환한다.
+
+Preview 엔진은 typed element/rule을 순회해 아래 provider-neutral graph를 만든다. raw Cypher,
+SQL, GraphQL, URN, source endpoint와 credential은 요청/응답 어디에도 없다. sample row는
+transient response이며 PostgreSQL/Neo4j/cache/log에 저장하지 않는다.
+
+~~~json
+{
+  "status": "READY",
+  "dry_run": true,
+  "graph": {
+    "nodes": [{
+      "id": "preview:<opaque-hash>",
+      "stable_element_id": "class.employee",
+      "type": "Employee",
+      "identity": "E-001",
+      "properties": {"name": "Kim"}
+    }],
+    "edges": []
+  },
+  "evidence": []
+}
+~~~
+
+Pre-flight contract v1에서 모든 accepted Class는 required node다. 각 Class는 current binding,
+단일 SUBJECT_ID, `nullable=false` Property mapping, exact T-Box version, 현재 authorized
+Dataset metadata pin과 physical source access probe를 모두 통과해야 한다. Relation은 required
+cardinality 계약이 아직 없으므로 required로 추측하지 않는다. 실패는 stable code/location을
+가진 bounded Validation Evidence로 모두 반환한다.
+
+Preview/Pre-flight는 현재 Draft ETag에 묶인 advisory read다. 성공해도 ingestion authority,
+mapping `VALIDATED`, changeset 또는 publication을 만들지 않는다. 향후 durable ingestion
+command는 같은 검사를 다시 수행하고 immutable binding version과 fenced job evidence를
+원자적으로 pin해야 한다.
+
 ### 3.5 system-managed 기본 Asset
 
 | Asset | graph type | 기준 source | 매일 결과 |
@@ -533,6 +573,8 @@ additive하게 둔다.
 | `GET .../drafts/{id}/abox/sources?q=&cursor=&limit=` | Dataset 후보 검색 | local authorized DataHub projection, dataset types only, opaque cursor |
 | `GET .../drafts/{id}/abox/sources/{asset_id}` | 선택 Dataset 컬럼 계약 | existing Catalog service/DataHub Gateway/cache, local UUID와 field path만 반환 |
 | `PATCH .../drafts/{id}/abox/bindings/{target}` | 한 Class/Relation의 mapping rule 부분 교체 | Idempotency-Key + If-Match, four-method whitelist, T-Box/source 재검증 |
+| `POST .../drafts/{id}/abox/previews` | 저장된 한 Class Binding의 row-sample dry run | If-Match, local target ID와 5~10 limit만 허용, no-store, Neo4j/source write 없음 |
+| `POST .../drafts/{id}/abox/preflight` | 현재 Draft의 ingestion readiness evidence | If-Match, required Class/property와 metadata/physical access를 재검증, 성공도 ingestion authority 아님 |
 
 이 increment의 `Mapped`는 rule이 하나 이상 영속화되었다는 뜻이며 `VALIDATED`, ingestion,
 changeset 또는 publication을 뜻하지 않는다. accepted T-Box 요소가 없는 Draft에는 임의

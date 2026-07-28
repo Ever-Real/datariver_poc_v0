@@ -1,5 +1,15 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
-import { CheckCircle2, Database, Link2, Save, Search } from 'lucide-react'
+import {
+  CheckCircle2,
+  Database,
+  Eye,
+  Link2,
+  Play,
+  Save,
+  Search,
+  ShieldCheck,
+  TriangleAlert,
+} from 'lucide-react'
 import { ApiError, type ApiClient } from '../../../../api/client'
 import { Dialog } from '../../../../components/common/Dialog'
 import {
@@ -11,12 +21,17 @@ import {
   getKnowledgeStudioABox,
   getKnowledgeStudioSource,
   newKnowledgeStudioIdempotencyKey,
+  preflightKnowledgeStudioABox,
+  previewKnowledgeStudioBinding,
   saveKnowledgeStudioBinding,
   searchKnowledgeStudioSources,
   type KnowledgeStudioABox,
   type KnowledgeStudioBinding,
   type KnowledgeStudioDraft,
   type KnowledgeStudioMappingRuleInput,
+  type KnowledgeStudioPreflight,
+  type KnowledgeStudioPreview,
+  type KnowledgeStudioPreviewScalar,
   type KnowledgeStudioSourceDataset,
   type KnowledgeStudioTBoxElement,
 } from '../knowledgeStudioApi'
@@ -64,6 +79,11 @@ function rulesForForm(
   return rules
 }
 
+function previewValue(value: KnowledgeStudioPreviewScalar): string {
+  if (value === null) return 'null'
+  return String(value)
+}
+
 export function DataEnricherStep({
   client,
   draftId,
@@ -81,6 +101,11 @@ export function DataEnricherStep({
   const [loading, setLoading] = useState(true)
   const [sourceLoading, setSourceLoading] = useState(false)
   const [saving, setSaving] = useState(false)
+  const [previewLoading, setPreviewLoading] = useState(false)
+  const [preview, setPreview] = useState<KnowledgeStudioPreview>()
+  const [selectedPreviewNodeId, setSelectedPreviewNodeId] = useState<string>()
+  const [preflightLoading, setPreflightLoading] = useState(false)
+  const [preflight, setPreflight] = useState<KnowledgeStudioPreflight>()
   const [status, setStatus] = useState('Accepted T-Box와 Binding Draft를 불러오고 있습니다.')
   const [conflict, setConflict] = useState<LocalBindingDraft>()
 
@@ -289,6 +314,7 @@ export function DataEnricherStep({
           }
         : current)
       setConflict(undefined)
+      setPreflight(undefined)
       setStatus(`Binding Draft 저장 완료 · version ${response.data.binding.version}`)
       return true
     } catch (error) {
@@ -356,6 +382,85 @@ export function DataEnricherStep({
     }
   }
 
+  const openPreview = async () => {
+    if (!selectedTarget || !etag) return
+    if (!bindingByTarget.has(selectedTarget.stable_element_id)) {
+      setStatus('먼저 Binding Draft를 저장한 뒤 Preview를 실행하세요.')
+      return
+    }
+    setPreviewLoading(true)
+    try {
+      const response = await previewKnowledgeStudioBinding(
+        client,
+        draftId,
+        selectedTarget.stable_element_id,
+        etag,
+        5,
+      )
+      setPreview(response.data)
+      setSelectedPreviewNodeId(response.data.graph.nodes[0]?.id)
+      setStatus(
+        response.data.status === 'READY'
+          ? `${response.data.sample_size}개 실제 Row를 Dry-run Graph로 변환했습니다.`
+          : 'Preview evidence를 확인하세요. 실제 적재는 수행되지 않았습니다.',
+      )
+    } catch (error) {
+      setStatus(
+        error instanceof ApiError && error.problem.status === 412
+          ? 'Draft가 변경되어 Preview를 중단했습니다. Mapping 입력은 그대로 보존됩니다.'
+          : error instanceof Error ? error.message : 'Knowledge Graph Preview에 실패했습니다.',
+      )
+    } finally {
+      setPreviewLoading(false)
+    }
+  }
+
+  const runPreflight = async () => {
+    if (!etag) return
+    setPreflightLoading(true)
+    try {
+      const response = await preflightKnowledgeStudioABox(client, draftId, etag)
+      setPreflight(response.data)
+      setStatus(
+        response.data.valid
+          ? 'Pre-flight PASS · 현재 Draft version의 advisory 검증이 완료되었습니다.'
+          : 'Pre-flight evidence를 확인하세요. Run Ingestion은 실행되지 않았습니다.',
+      )
+    } catch (error) {
+      setStatus(
+        error instanceof ApiError && error.problem.status === 412
+          ? 'Draft가 변경되어 Pre-flight를 중단했습니다. 최신 version을 확인하세요.'
+          : error instanceof Error ? error.message : 'Pre-flight 검증에 실패했습니다.',
+      )
+    } finally {
+      setPreflightLoading(false)
+    }
+  }
+
+  const previewFlowNodes = useMemo<FlowCanvasNode[]>(() => (
+    preview?.graph.nodes.map((node, index) => ({
+      id: node.id,
+      label: node.type,
+      subtitle: `SUBJECT_ID ${previewValue(node.identity)} · ${
+        Object.keys(node.properties).length
+      } properties`,
+      kind: 'source',
+      x: 40 + (index % 3) * 220,
+      y: 45 + Math.floor(index / 3) * 140,
+    })) ?? []
+  ), [preview?.graph.nodes])
+  const previewFlowEdges = useMemo<FlowCanvasEdge[]>(() => (
+    preview?.graph.edges.map((edge) => ({
+      id: edge.id,
+      source: edge.source_node_id,
+      target: edge.target_node_id,
+      label: edge.type,
+    })) ?? []
+  ), [preview?.graph.edges])
+  const selectedPreviewNode = preview?.graph.nodes.find(
+    (node) => node.id === selectedPreviewNodeId,
+  )
+
   if (loading) {
     return <section className="grid min-h-[420px] place-items-center rounded-enterprise border border-slate-300 bg-white text-sm text-slate-500">
       Data Enricher 계약을 확인하고 있습니다.
@@ -375,11 +480,64 @@ export function DataEnricherStep({
             ingestion 또는 publication 완료를 뜻하지 않습니다.
           </p>
         </div>
-        <div className="flex gap-2 text-[11px]">
+        <div className="flex flex-wrap justify-end gap-2 text-[11px]">
           <span className="badge badge-soft">Mapping: DRAFT</span>
           <span className="badge badge-soft">Ingestion: NOT_RUN</span>
+          <button
+            type="button"
+            className="button button-secondary"
+            disabled={!etag || preflightLoading}
+            onClick={() => void runPreflight()}
+          >
+            <ShieldCheck size={14} />
+            {preflightLoading ? '검증 중…' : 'Pre-flight 검증'}
+          </button>
+          <button
+            type="button"
+            className="button"
+            disabled
+            title="Durable ingestion command와 worker가 아직 구현되지 않았습니다."
+          >
+            <Play size={14} /> Run Ingestion
+          </button>
         </div>
       </header>
+      {preflight && (
+        <section
+          aria-label="Ingestion Pre-flight 결과"
+          className={`mb-3 rounded-enterprise border p-3 ${
+            preflight.valid
+              ? 'border-emerald-300 bg-emerald-50'
+              : 'border-amber-300 bg-amber-50'
+          }`}
+        >
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <strong className="flex items-center gap-1 text-xs text-navy-900">
+              {preflight.valid
+                ? <CheckCircle2 size={14} className="text-emerald-700" />
+                : <TriangleAlert size={14} className="text-amber-700" />}
+              Pre-flight {preflight.status}
+            </strong>
+            <span className="text-[10px] text-slate-500">
+              Draft version {preflight.draft_version} · advisory evidence
+            </span>
+          </div>
+          {preflight.evidence.length > 0
+            ? <ul className="mb-0 pl-5 text-[11px] leading-5 text-slate-700">
+                {preflight.evidence.map((item, index) => (
+                  <li key={`${item.code}:${item.location}:${index}`}>
+                    <strong>{item.code}</strong> · {item.message}
+                  </li>
+                ))}
+              </ul>
+            : <p className="mb-0 text-[11px] text-emerald-800">
+                Required Class, Property, source contract와 access probe가 모두 유효합니다.
+              </p>}
+          <p className="mb-0 text-[10px] text-slate-500">
+            PASS도 ingestion 권한이나 publication receipt가 아니며 실행 시 다시 검증해야 합니다.
+          </p>
+        </section>
+      )}
       <FlowCanvas
         ariaLabel="Data Enricher accepted T-Box"
         nodes={flowNodes}
@@ -523,15 +681,30 @@ export function DataEnricherStep({
                     <p className="m-0 flex items-center gap-1 text-[11px] text-slate-500">
                       <Link2 size={13} /> IDENTITY transform만 허용되며 실제 Row는 아직 적재되지 않습니다.
                     </p>
-                    <button
-                      type="button"
-                      className="button"
-                      disabled={saving || !etag || selectedSourceStale}
-                      onClick={save}
-                    >
-                      {saving ? <Database size={14} /> : <Save size={14} />}
-                      {saving ? '저장 중…' : 'Binding Draft 저장'}
-                    </button>
+                    <span className="flex flex-wrap gap-2">
+                      <button
+                        type="button"
+                        className="button button-secondary"
+                        disabled={
+                          previewLoading
+                          || !etag
+                          || !bindingByTarget.has(selectedTarget.stable_element_id)
+                        }
+                        onClick={() => void openPreview()}
+                      >
+                        <Eye size={14} />
+                        {previewLoading ? 'Preview 중…' : 'Preview · Dry Run'}
+                      </button>
+                      <button
+                        type="button"
+                        className="button"
+                        disabled={saving || !etag || selectedSourceStale}
+                        onClick={save}
+                      >
+                        {saving ? <Database size={14} /> : <Save size={14} />}
+                        {saving ? '저장 중…' : 'Binding Draft 저장'}
+                      </button>
+                    </span>
                   </footer>
                 </>
               : <div className="grid min-h-72 place-items-center rounded-enterprise border border-dashed border-slate-300 bg-slate-50 p-6 text-center">
@@ -572,6 +745,101 @@ export function DataEnricherStep({
         덮어쓰기는 서버의 최신 ETag를 다시 읽은 뒤 보존된 typed mapping을 새 version fence로
         저장합니다. T-Box와 다른 노드의 Binding은 변경하지 않습니다.
       </p>
+    </Dialog>
+
+    <Dialog
+      open={Boolean(preview)}
+      title="Knowledge Graph Preview · Dry Run"
+      description="저장된 Mapping으로 실제 Row 샘플을 JSON Graph로 변환합니다. Neo4j에는 쓰지 않습니다."
+      size="workspace"
+      onRequestClose={() => {
+        setPreview(undefined)
+        setSelectedPreviewNodeId(undefined)
+      }}
+      footer={<button
+        type="button"
+        className="button button-secondary"
+        onClick={() => {
+          setPreview(undefined)
+          setSelectedPreviewNodeId(undefined)
+        }}
+      >
+        닫기
+      </button>}
+    >
+      {preview && <div className="grid gap-4">
+        <header className="flex flex-wrap items-center justify-between gap-2">
+          <span className="badge badge-soft">
+            {preview.status} · {preview.sample_size} sampled rows
+          </span>
+          <span className="text-[10px] text-slate-500">
+            Draft {preview.draft_version} · Binding {preview.binding_version ?? '없음'}
+          </span>
+        </header>
+        {preview.graph.nodes.length > 0
+          ? <div className="grid gap-4 lg:grid-cols-[minmax(520px,1.5fr)_minmax(260px,.7fr)]">
+              <FlowCanvas
+                ariaLabel="Knowledge Graph sample preview"
+                nodes={previewFlowNodes}
+                edges={previewFlowEdges}
+                height={430}
+                locked
+                onNodeActivate={setSelectedPreviewNodeId}
+              />
+              <aside
+                aria-label="Preview node properties"
+                className="rounded-enterprise border border-slate-300 bg-slate-50 p-4"
+              >
+                {selectedPreviewNode
+                  ? <>
+                      <span className="text-[10px] font-black tracking-[.12em] text-enterprise-blue uppercase">
+                        Sample node properties
+                      </span>
+                      <h3 className="my-1 text-sm font-black text-navy-900">
+                        {selectedPreviewNode.type}
+                      </h3>
+                      <dl className="grid grid-cols-[minmax(90px,.5fr)_1fr] gap-x-3 gap-y-2 text-xs">
+                        <dt className="font-black text-slate-500">SUBJECT_ID</dt>
+                        <dd className="m-0 break-all text-navy-900">
+                          {previewValue(selectedPreviewNode.identity)}
+                        </dd>
+                        {Object.entries(selectedPreviewNode.properties).map(([key, value]) => (
+                          <div className="contents" key={key}>
+                            <dt className="font-black text-slate-500">{key}</dt>
+                            <dd className="m-0 break-all text-navy-900">
+                              {previewValue(value)}
+                            </dd>
+                          </div>
+                        ))}
+                      </dl>
+                    </>
+                  : <p className="m-0 text-xs text-slate-500">
+                      샘플 노드를 클릭하면 Mapping된 Property 값을 확인할 수 있습니다.
+                    </p>}
+              </aside>
+            </div>
+          : <div className="rounded-enterprise border border-dashed border-slate-300 bg-slate-50 p-6 text-center">
+              <TriangleAlert className="mx-auto mb-2 text-amber-600" size={24} />
+              <p className="m-0 text-sm font-black text-navy-900">Preview Graph가 생성되지 않았습니다.</p>
+              <p className="mt-1 text-xs text-slate-500">아래 Validation Evidence를 확인하세요.</p>
+            </div>}
+        {preview.evidence.length > 0 && (
+          <section aria-label="Preview Validation Evidence">
+            <h3 className="mb-2 text-xs font-black text-navy-900">Validation Evidence</h3>
+            <ul className="m-0 grid gap-2 p-0 text-xs">
+              {preview.evidence.map((item, index) => (
+                <li
+                  key={`${item.code}:${item.location}:${index}`}
+                  className="list-none rounded-enterprise border border-amber-200 bg-amber-50 p-2"
+                >
+                  <strong>{item.severity} · {item.code}</strong>
+                  <span className="ml-2 text-slate-600">{item.message}</span>
+                </li>
+              ))}
+            </ul>
+          </section>
+        )}
+      </div>}
     </Dialog>
   </div>
 }

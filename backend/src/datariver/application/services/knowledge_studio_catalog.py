@@ -4,6 +4,7 @@ from uuid import UUID
 
 from datariver.application.dto import (
     CatalogAssetIndex,
+    KnowledgeStudioSourceAccess,
     KnowledgeStudioSourceDataset,
     KnowledgeStudioSourceDetail,
     KnowledgeStudioSourcePage,
@@ -91,9 +92,7 @@ class CatalogKnowledgeStudioSourceReader:
                 _dataset(
                     item,
                     field_paths=(),
-                    fields_truncated=(
-                        bool(item.column_names) or item.column_names_truncated
-                    ),
+                    fields_truncated=(bool(item.column_names) or item.column_names_truncated),
                 )
                 for item in page.items
             ),
@@ -130,4 +129,27 @@ class CatalogKnowledgeStudioSourceReader:
             ),
             observed_at=detail.observed_at,
             stale_at=detail.stale_at,
+        )
+
+    async def validate_dataset_access(
+        self,
+        *,
+        subject: SubjectAttributes,
+        asset_ids: tuple[UUID, ...],
+        environment: EnvironmentAttributes,
+        request_id: str,
+    ) -> tuple[KnowledgeStudioSourceAccess, ...]:
+        values = await self._catalog.get_asset_indexes(
+            subject=subject,
+            asset_ids=asset_ids,
+            environment=environment,
+            request_id=request_id,
+        )
+        return tuple(
+            KnowledgeStudioSourceAccess(
+                asset_id=item.asset_id,
+                classification=item.classification,
+                projection_source_version=item.source_version,
+            )
+            for item in values
         )

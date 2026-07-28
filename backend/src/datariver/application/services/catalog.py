@@ -41,6 +41,7 @@ from datariver.application.dto import (
 from datariver.application.errors import ExternalDependencyError
 from datariver.application.ports import (
     Cache,
+    CatalogCandidateTargetReader,
     CatalogDiscoveryReader,
     CatalogIndexReader,
     CatalogTelemetry,
@@ -56,7 +57,7 @@ from datariver.domain.authz import (
     SubjectAttributes,
 )
 from datariver.domain.classification_policy import CLASSIFICATION_ACCESS_FLOOR_VERSION
-from datariver.domain.common import ValidationError
+from datariver.domain.common import ConflictError, ValidationError
 
 MAX_CATALOG_MATCH_FRAGMENTS = 72
 MAX_CATALOG_CACHE_EXTERNAL_URN_CHARACTERS = 4_096
@@ -157,6 +158,7 @@ class CatalogService:
         policy_version: str,
         classification_access: ClassificationAccessResolver | None = None,
         telemetry: CatalogTelemetry | None = None,
+        candidate_targets: CatalogCandidateTargetReader | None = None,
     ) -> None:
         self._index = index
         self._discovery = discovery
@@ -171,6 +173,7 @@ class CatalogService:
         self._policy_version = policy_version
         self._classification_access = classification_access
         self._telemetry = telemetry
+        self._candidate_targets = candidate_targets
 
     async def search(
         self,
@@ -679,6 +682,60 @@ class CatalogService:
             return detail
         self._cache_access(cache="detail_write", outcome="success")
         return detail
+
+    async def get_asset_indexes(
+        self,
+        *,
+        subject: SubjectAttributes,
+        asset_ids: tuple[UUID, ...],
+        environment: EnvironmentAttributes,
+        request_id: str,
+    ) -> tuple[CatalogAssetIndex, ...]:
+        """Revalidate a bounded Dataset set without provider-detail N+1 reads."""
+
+        unique_ids = tuple(dict.fromkeys(asset_ids))
+        if len(unique_ids) > 500:
+            raise ValidationError("The catalog access check exceeds the configured bound.")
+        if not unique_ids:
+            return ()
+        if self._candidate_targets is None:
+            raise ConflictError("Bounded catalog Dataset access validation is unavailable.")
+        access = await self._resolve_classification_access(
+            subject=subject,
+            now=environment.requested_at,
+            request_id=request_id,
+        )
+        candidates = tuple(
+            await self._candidate_targets.get_authorized_assets_by_ids(
+                subject=subject,
+                access=access,
+                asset_ids=unique_ids,
+            )
+        )
+        resources = tuple(
+            ResourceAttributes(
+                resource_id=item.asset_id,
+                workspace_id=item.workspace_id,
+                resource_type="catalog_asset",
+                owner_department_id=item.owner_department_id,
+                system_id=item.system_id,
+                domain_id=item.domain_id,
+                classification=item.classification,
+                lifecycle=item.lifecycle,
+            )
+            for item in candidates
+        )
+        permitted = await self._authorization.filter_authorized(
+            subject=subject,
+            resources=resources,
+            action=Action.CATALOG_READ,
+            environment=environment,
+            request_id=request_id,
+            parent_resource_id=subject.workspace_id,
+        )
+        permitted_ids = {item.resource_id for item in permitted}
+        by_id = {item.asset_id: item for item in candidates if item.asset_id in permitted_ids}
+        return tuple(by_id[item_id] for item_id in unique_ids if item_id in by_id)
 
     async def lineage(
         self,
