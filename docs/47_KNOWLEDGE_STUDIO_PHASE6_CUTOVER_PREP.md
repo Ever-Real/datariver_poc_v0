@@ -144,3 +144,19 @@ readiness가 실패하면 트래픽을 연결하지 않는다.
 - 미실행 상태인 Step 2 persistence, physical reader, instance ingestion/default graph gate
 
 이 증거가 승인되기 전에는 RC tag가 production acceptance나 HA sign-off를 뜻하지 않는다.
+
+## 8. 개발 PC 실행 증거
+
+RC 준비 소스는 안정된 `development_cycle.py dev-publish` 경로에서 다음을 통과했다.
+
+- Ruff repository format `427` files, lint, strict mypy `421` files
+- backend `1,694 passed / 97 environment-gated skipped`
+- frontend TypeScript, ESLint, `55 files / 303 tests`, production build
+- focused Graph Builder/Studio `2 files / 8 tests`
+- PostgreSQL 실제 additive migration `0058 -> 0059 -> 0060 -> 0061`
+- API readiness, Web health, Keycloak, DataHub GMS `v1.6.0`
+- authorization-pruned catalog projection 2,000 rows sync
+
+가시 브라우저는 로컬 Keycloak 로그인 화면까지 열었다. 기존 로그인 세션이 없어
+자격증명/토큰을 우회하지 않았으며, 인증 후 실제 add/drag/connect/delete/refresh 화면 캡처는
+운영 승인자의 최종 sign-off gate로 남는다.

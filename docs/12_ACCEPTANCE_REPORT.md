@@ -14,6 +14,20 @@ addenda and `docs/29_MASTER_EXECUTION_BACKLOG.md`.
 
 P0–P3 foundation addendum, updated 2026-07-16: current source checks additionally include the stable DataHub v1.6.0 release contract and typed OIDC assurance. Hardware WebAuthn requires an exact approved ACR+AMR combination and `auth_time`; OTP, generic MFA and refreshed-token `iat` cannot satisfy high-risk authorization. Browser remediation is bounded to typed authentication actions, rejects unsafe return locations, and never automatically replays a denied mutation after an authentication redirect. Compatibility migrations and the current hybrid runtime have separate live evidence below.
 
+## Knowledge Studio Phase 6 RC preparation addendum — 2026-07-28
+
+This addendum accepts the local source/runtime Graph Builder scaffold for RC visual testing. It
+does not accept Step 2 typed-operation persistence, target production identity, HA or production
+cutover.
+
+| Gate | Result | Current executed evidence |
+|---|---|---|
+| Empty/manual canvas contract | PASS (local source) | Step 2 starts without a node or relation. Only a user-entered label creates a browser-memory node; drag/connect/selected delete do not mutate Draft T-Box, Publish, DataHub or Neo4j. The UI continues to report `Accepted T-Box · 0개`. |
+| Lifecycle boundary | PASS (local source) | REVIEW/PUBLISHED/DISCARDED lock all scaffold mutations. A local node cannot satisfy the server Accepted-T-Box gate for A-Box transition. |
+| Regression | PASS | Repository Ruff format `427` files and lint, strict mypy `421` files, backend `1,694 passed / 97 skipped`, static verification, frontend TypeScript/ESLint, `55 files / 303 tests` and production build passed. Focused Studio `2 files / 8 tests`; normalized DataHub format baseline `49 tests`. |
+| Mac runtime | PASS (development) | Stable `dev-publish` applied PostgreSQL `0058 -> 0061`, roles, API/Web/Keycloak, DataHub `v1.6.0` and a 2,000-row catalog projection sync. API readiness and Web health returned success. |
+| Authenticated browser journey | OPEN | The visible local browser reached the canonical Keycloak login form, but no existing user session was available. Credentials/tokens were not bypassed. Human login followed by add/drag/connect/delete/refresh capture remains the final UI sign-off gate. |
+
 ## Knowledge Studio governed Publish addendum — 2026-07-28
 
 This addendum accepts the local-source contract at revision `0061` for independent-review

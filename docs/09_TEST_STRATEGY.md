@@ -2,6 +2,31 @@
 
 ## Current verification status
 
+### Knowledge Studio Phase 6 Graph Builder scaffold / RC preparation — 2026-07-28
+
+The Step 2 route now exposes a genuinely empty React Flow canvas. Only a user-named local test node
+can be added; drag/connect/explicit selected-node deletion remain browser-memory interactions and
+never become a typed operation, Accepted T-Box, autosave, Publish or provider/Neo4j mutation.
+`REVIEW`, `PUBLISHED` and `DISCARDED` lock the scaffold.
+
+The stable `development_cycle.py dev-publish` gate passes repository-wide Ruff format over `427`
+files, Ruff lint, strict mypy over `421` source/test files, static architecture/security/
+documentation verification and the whole backend suite at `1,694 passed / 97 environment-gated
+skipped`. The two prior DataHub format-only baseline files are now mechanically normalized and
+their focused test passes `49`.
+
+Frontend strict TypeScript, zero-warning ESLint, `55 files / 303 tests` and the production build
+pass. The focused Graph Builder/Studio routing set passes `2 files / 8 tests`, including true empty
+state, no fabricated schema, user-named local add, explicit selected-node deletion, lifecycle lock
+and saved Step 1 routing.
+
+The Mac development workflow executed the real additive PostgreSQL chain `0058 -> 0059 -> 0060 ->
+0061`, reapplied roles and reported API readiness, Web health, Keycloak, DataHub GMS `v1.6.0` and a
+2,000-row authorization-pruned catalog projection sync as healthy. The visible in-app browser
+reached the local Keycloak login form. No existing login session was present, so authenticated
+Graph Builder interaction remains a human sign-in gate; no credential or token was bypassed or
+injected.
+
 ### Knowledge Studio governed Publish / Phase 5A — 2026-07-28
 
 Revision `0061` adds durable pre-flight receipts, immutable Studio Releases/T-Box element/A-Box
