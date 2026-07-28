@@ -1,5 +1,4 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { Network } from 'lucide-react'
 import { ApiError, type ApiClient } from '../../../api/client'
 import type { Page } from '../../../app/navigation'
 import { Dialog } from '../../../components/common/Dialog'
@@ -27,6 +26,7 @@ import {
   type KnowledgeStudioDraft,
 } from './knowledgeStudioApi'
 import { StudioShell } from './StudioShell'
+import { GraphBuilderScaffold } from './tbox/GraphBuilderScaffold'
 
 const EMPTY_BASIC_INFORMATION: KnowledgeStudioBasicInformation = {
   name: '',
@@ -52,33 +52,6 @@ function draftBasicInformation(draft: KnowledgeStudioDraft): KnowledgeStudioBasi
 
 function isNetworkFailure(error: unknown): boolean {
   return !navigator.onLine || error instanceof TypeError
-}
-
-function TBoxPlaceholder({
-  busy,
-  onContinue,
-}: {
-  busy: boolean
-  onContinue: () => void
-}) {
-  return <section className="grid min-h-[420px] place-items-center rounded-enterprise border border-dashed border-slate-300 bg-white p-8 text-center">
-    <div className="max-w-xl">
-      <Network className="mx-auto mb-3 text-enterprise-blue" size={38} />
-      <span className="text-[10px] font-black tracking-[.14em] text-enterprise-blue uppercase">
-        Step 2 · T-Box
-      </span>
-      <h2 className="my-2 text-lg font-black text-navy-900">
-        Graph Builder canvas foundation
-      </h2>
-      <p className="m-0 text-xs leading-5 text-slate-500">
-        Step 1 Draft가 저장되고 version fence를 통과했습니다. Accepted typed operation이 없는
-        경우 Data Enricher는 임의의 Class를 생성하지 않습니다.
-      </p>
-      <button type="button" className="button mt-4" disabled={busy} onClick={onContinue}>
-        {busy ? '확인 중…' : 'Accepted T-Box로 Data Enricher 열기'}
-      </button>
-    </div>
-  </section>
 }
 
 interface ConflictState {
@@ -611,8 +584,16 @@ export function KnowledgeStudioPage({
           onSave={() => { void flushLatest() }}
           onContinue={() => { void continueToTbox() }}
         />
+      : step === 'tbox' && !serverDraft
+      ? <section className="grid min-h-[320px] place-items-center rounded-enterprise border border-slate-300 bg-white p-8 text-sm text-slate-500">
+          Graph Builder를 열기 전에 서버 Draft와 lifecycle을 확인하고 있습니다.
+        </section>
       : step === 'tbox'
-      ? <TBoxPlaceholder busy={busy} onContinue={() => { void continueToAbox() }} />
+      ? <GraphBuilderScaffold
+          busy={busy}
+          lifecycleState={serverDraft?.state}
+          onContinue={() => { void continueToAbox() }}
+        />
       : draftId
       ? <DataEnricherStep
           client={client}

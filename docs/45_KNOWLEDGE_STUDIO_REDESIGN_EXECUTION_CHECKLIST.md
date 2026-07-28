@@ -76,6 +76,9 @@ profile과 mapping registry 항목은 해당 Phase 시작 전에 추가 승인�
 ## Phase 3 — T-Box Graph Builder
 
 - [ ] block, input, typed T-Box operation, proposal, layout model을 approved lifecycle에 맞게 추가한다.
+- [x] RC 화면 검증을 위해 빈 React Flow canvas, 사용자 입력 기반 로컬 node 추가,
+  drag/connect/선택 삭제 scaffold를 Studio Step 2 route에 연결한다. 이 요소는 브라우저
+  메모리에만 존재하고 Accepted operation이나 schema 저장 성공으로 표시하지 않는다.
 - [ ] immutable typed `source_references`를 upload/catalog Asset/graph release XOR constraint,
   exact source version/hash/classification과 함께 추가한다.
 - [x] DIRECT safe lexer/parser/AST/formatter를 pure module로 만들고 unsupported clause,

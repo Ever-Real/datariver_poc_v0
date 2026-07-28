@@ -43,6 +43,7 @@
 | 44 | [Knowledge Studio redesign PRD](44_KNOWLEDGE_STUDIO_REDESIGN_PRD.md) | Registry drawer, full-screen Studio, T-Box proposal and A-Box whitelist design | Approved; Phase 1 implementation |
 | 45 | [Knowledge Studio redesign execution checklist](45_KNOWLEDGE_STUDIO_REDESIGN_EXECUTION_CHECKLIST.md) | phased contracts, migration, UI and evidence gates for the redesign | Active; Phase 0 approved |
 | 46 | [Knowledge Studio Phase 5 release report](46_KNOWLEDGE_STUDIO_PHASE5_RELEASE_REPORT.md) | governed schema/mapping publication, adapter boundary, cleanup and remaining operational gates | Local-source release candidate |
+| 47 | [Knowledge Studio Phase 6 cutover preparation](47_KNOWLEDGE_STUDIO_PHASE6_CUTOVER_PREP.md) | RC tag, revision `0061`, Docker restart and Graph Builder scaffold acceptance commands | RC cutover preparation |
 
 Independent review records: [Data Architect](reviews/2026-07-14_DATA_ARCHITECT_REVIEW.md) and [Data Engineer/SRE](reviews/2026-07-14_DATA_ENGINEER_REVIEW.md).
 

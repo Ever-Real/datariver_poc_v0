@@ -138,7 +138,9 @@ describe('KnowledgeStudioPage Draft recovery', () => {
     await waitFor(() => expect(window.location.search).toContain(`draft=${draftId}`))
 
     fireEvent.click(screen.getByRole('button', { name: /저장 후 Graph Builder/ }))
-    expect(await screen.findByText('Graph Builder canvas foundation')).toBeInTheDocument()
+    expect(await screen.findByRole('heading', { name: 'Graph Builder' })).toBeInTheDocument()
+    expect(screen.getByText('Accepted schema가 없습니다.')).toBeInTheDocument()
+    expect(screen.getByText('Accepted T-Box · 0개')).toBeInTheDocument()
     expect(window.location.search).toContain('step=tbox')
     expect(queue.records.size).toBe(0)
   })

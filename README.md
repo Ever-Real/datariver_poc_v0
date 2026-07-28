@@ -38,6 +38,7 @@ Detailed entry points:
 - [Architecture](docs/03_ARCHITECTURE.md)
 - [Deployment and migration](docs/08_DEPLOYMENT.md), [Mac-to-WSL runbook](docs/26_MAC_TO_WSL_MIGRATION_RUNBOOK.md)
 - [Security/ABAC](docs/07_SECURITY_ABAC.md), [master backlog](docs/29_MASTER_EXECUTION_BACKLOG.md)
+- [Knowledge Studio Phase 6 RC cutover preparation](docs/47_KNOWLEDGE_STUDIO_PHASE6_CUTOVER_PREP.md)
 
 Remaining WSL/external-provider/browser/load/physical-retention checks are explicit external gates.
 Runtime API/OIDC Origin validation is intentionally deferred as backlog item `R5-FE-04` at P2; the
@@ -1597,12 +1598,12 @@ scripts/compose.sh --env-file "$DATARIVER_ENV_FILE" -f compose.yaml \
   --profile knowledge-source up -d --wait api knowledge-source-worker
 scripts/compose.sh --env-file "$DATARIVER_ENV_FILE" -f compose.yaml run --rm migrate \
   /app/.venv/bin/alembic -c backend/alembic.ini current
-# Required output: 0055 (head)
+# Required output: 0061 (head)
 ```
 
 ### WSL 준비 PC에서 Migration 이후
 
-Migration이 `0055 (head)`에 도달해도 API/Worker를 바로 시작하지 않는다. 역할을 한 번 더
+Migration이 `0061 (head)`에 도달해도 API/Worker를 바로 시작하지 않는다. 역할을 한 번 더
 reconcile하고, 대상 issuer에 맞는 local identity를 bootstrap한 후 선택한 외부 connector를
 초기화한다. 아래 `RELEASE_DIR`은 checksum과 source commit을 확인한 실제 절대 경로다.
 
@@ -1778,7 +1779,7 @@ scripts/compose.sh --env-file .env -f compose.yaml run --rm migrate \
   /app/.venv/bin/alembic -c backend/alembic.ini current
 ```
 
-두 번째 명령의 현재 revision이 `0055 (head)`인지 확인한다. 마이그레이션 실패 시 서비스를
+두 번째 명령의 현재 revision이 `0061 (head)`인지 확인한다. 마이그레이션 실패 시 서비스를
 재기동하거나 downgrade를 추측 실행하지 말고, 로그와 DB 상태를 보존한 채 배포를 중단한다.
 
 ### 3. API·Worker·Web 재기동과 상태 확인
