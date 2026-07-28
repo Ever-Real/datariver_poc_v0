@@ -30,21 +30,25 @@ DATAHUB_V160_CONFIG = {"versions": {"acryldata/datahub": {"version": "v1.6.0"}}}
 
 
 def test_catalog_classification_uses_the_controlled_tag_display_name() -> None:
-    assert _classification_from_tags(
-        {
-            "tags": [
-                {
-                    "tag": {
-                        "name": "datariver_classification_public",
-                        "properties": {"name": "CLASSIFICATION:PUBLIC"},
+    assert (
+        _classification_from_tags(
+            {
+                "tags": [
+                    {
+                        "tag": {
+                            "name": "datariver_classification_public",
+                            "properties": {"name": "CLASSIFICATION:PUBLIC"},
+                        }
                     }
-                }
-            ]
-        }
-    ) is Classification.PUBLIC
-    assert _classification_from_tags(
-        {"tags": [{"tag": {"name": "CLASSIFICATION:INTERNAL"}}]}
-    ) is Classification.INTERNAL
+                ]
+            }
+        )
+        is Classification.PUBLIC
+    )
+    assert (
+        _classification_from_tags({"tags": [{"tag": {"name": "CLASSIFICATION:INTERNAL"}}]})
+        is Classification.INTERNAL
+    )
 
 
 class _ChunkedResponse(httpx.AsyncByteStream):

@@ -279,8 +279,10 @@ def _classification_from_tags(tags: object) -> Classification | None:
         tag = raw.get("tag") if isinstance(raw, dict) else None
         properties = tag.get("properties") if isinstance(tag, dict) else None
         properties_name = properties.get("name") if isinstance(properties, dict) else None
-        name = properties_name if isinstance(properties_name, str) else (
-            tag.get("name") if isinstance(tag, dict) else None
+        name = (
+            properties_name
+            if isinstance(properties_name, str)
+            else (tag.get("name") if isinstance(tag, dict) else None)
         )
         if not isinstance(name, str) or ":" not in name:
             continue
