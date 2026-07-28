@@ -294,6 +294,13 @@ database-backed configuration. Apply environment changes with the matching manag
 workflow and verify each recreated process independently. See
 `docs/41_DEPLOYMENT_ENVIRONMENT_CONFIGURATION.md`.
 
+An isolated development network without DNS/TLS may place an exact connector IP in both
+`SYSTEM_CONFIGURATION_PROBE_ALLOWED_HOSTS` and
+`SYSTEM_CONFIGURATION_PROBE_PLAINTEXT_ALLOWED_IPS`. The second list is an explicit transport-risk
+acceptance for fixed server-owned probes, not a general HTTP client allowlist; it accepts no
+hostname, URL, port, CIDR or wildcard and does not relax inference-gateway or production
+browser-link HTTPS requirements (ADR-0067).
+
 When the host-development overlay connects to a separately composed local DataHub stack, it uses
 the deployment-owned external `DATAHUB_DOCKER_NETWORK` (default `datahub_network`) and overrides
 container callers with `DATAHUB_CONTAINER_BASE_URL` (default `http://datahub-gms:8080`). This avoids

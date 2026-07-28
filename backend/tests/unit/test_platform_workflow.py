@@ -441,6 +441,11 @@ def test_environment_change_classification_restarts_only_known_consumers() -> No
         "knowledge-source-worker",
     }
 
+    plaintext_probe_ips = workflow.classify_environment_changes(
+        ("SYSTEM_CONFIGURATION_PROBE_PLAINTEXT_ALLOWED_IPS",)
+    )
+    assert plaintext_probe_ips.services == ("api",)
+
     identity = workflow.classify_environment_changes(("OIDC_ISSUER",))
     assert identity.services == ("api",)
     assert identity.configure_keycloak is False

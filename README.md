@@ -1256,6 +1256,12 @@ hostname을 `SYSTEM_CONFIGURATION_PROBE_ALLOWED_HOSTS`에도 추가한다. LLM T
 `INTRANET_OPENAI_COMPATIBLE_APPROVED_PUBLIC_HOSTS`를 적용한다. 연결 TEST 성공은 Chat 거버넌스
 승인을 대신하지 않는다. 각 provider profile과 classification policy에 이어 retention policy를
 서로 다른 두 Admin이 제안·승인해 `ACTIVE`로 만들어야 Chat 내용을 저장할 수 있다.
+내부 DNS/TLS가 없는 격리 개발망에서 connector가 `http://<IP>`, `redis://<IP>` 또는
+`bolt://<IP>`만 제공한다면 그 정확한 IP를
+`SYSTEM_CONFIGURATION_PROBE_PLAINTEXT_ALLOWED_IPS`에도 추가한다. 이 값은 반드시 일반 probe
+allowlist의 부분집합이어야 하며 URL, port, hostname, CIDR 및 wildcard를 허용하지 않는다. 같은
+IP의 여러 service/port는 한 번만 적는다. 이 예외는 고정 Admin probe에만 적용되고 LLM gateway의
+HTTPS 요구나 production browser URL 정책을 완화하지 않는다.
 전체 키와 적용 순서는
 [Deployment environment configuration](docs/41_DEPLOYMENT_ENVIRONMENT_CONFIGURATION.md)을
 따른다.

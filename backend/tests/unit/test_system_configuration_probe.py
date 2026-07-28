@@ -233,6 +233,60 @@ async def test_probe_requires_tls_for_an_allowlisted_nonlocal_host() -> None:
     assert result.status == "AVAILABLE"
 
 
+@pytest.mark.asyncio
+async def test_probe_allows_an_explicitly_approved_plaintext_ip() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url == httpx.URL("http://10.42.0.15:8080/api/v2/monitor/health")
+        return httpx.Response(200, request=request, json={"status": "healthy"})
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        result = await probe_system_configuration(
+            system_id="AIRFLOW",
+            document={
+                "base_url": "http://10.42.0.15:8080",
+                "secret_references": {},
+                "options": {},
+            },
+            client=client,
+            allowed_hosts=("10.42.0.15",),
+            plaintext_allowed_ips=("10.42.0.15",),
+        )
+
+    assert result.status == "AVAILABLE"
+    assert result.scope == "HTTP_HEALTH"
+
+
+@pytest.mark.asyncio
+async def test_plaintext_probe_ip_must_be_an_exact_allowed_ip() -> None:
+    async with httpx.AsyncClient(
+        transport=httpx.MockTransport(
+            lambda request: pytest.fail(f"unexpected HTTP request: {request.url}")
+        )
+    ) as client:
+        with pytest.raises(ValidationError, match="subset of the operator probe allowlist"):
+            await probe_system_configuration(
+                system_id="GRAFANA_DASHBOARD",
+                document={
+                    "url": "http://10.42.0.15:3000",
+                    "options": {},
+                },
+                client=client,
+                allowed_hosts=("10.42.0.16",),
+                plaintext_allowed_ips=("10.42.0.15",),
+            )
+        with pytest.raises(ValidationError, match="exact IP addresses"):
+            await probe_system_configuration(
+                system_id="GRAFANA_DASHBOARD",
+                document={
+                    "url": "http://grafana.internal:3000",
+                    "options": {},
+                },
+                client=client,
+                allowed_hosts=("grafana.internal",),
+                plaintext_allowed_ips=("grafana.internal",),
+            )
+
+
 class _SecretResolver:
     def resolve(self, reference: str) -> str:
         assert reference == "file:/run/secrets/neo4j_auth"
@@ -378,9 +432,7 @@ async def test_s3_probe_authenticates_against_one_fixed_bucket() -> None:
 @pytest.mark.asyncio
 async def test_intranet_llm_probe_uses_the_operator_secret_and_rejects_bad_credentials() -> None:
     def accepted_handler(request: httpx.Request) -> httpx.Response:
-        assert request.url == httpx.URL(
-            "https://10.42.0.15/api/llm/openai/v1/chat/completions"
-        )
+        assert request.url == httpx.URL("https://10.42.0.15/api/llm/openai/v1/chat/completions")
         assert request.headers["Authorization"] == "Bearer intranet-api-key"
         return httpx.Response(
             200,
@@ -423,9 +475,7 @@ async def test_intranet_llm_probe_requires_explicit_public_host_approval() -> No
         "connection_mode": "INTRANET_OPENAI_COMPATIBLE",
         "base_url": "https://8.8.8.8/api/llm/openai/v1",
         "model": "/models/llm/gemma-4-31B-it",
-        "secret_references": {
-            "api_key": "file:/run/secrets/intranet_llm_chat_api_key"
-        },
+        "secret_references": {"api_key": "file:/run/secrets/intranet_llm_chat_api_key"},
     }
 
     async with httpx.AsyncClient(
@@ -462,9 +512,7 @@ async def test_intranet_llm_probe_requires_explicit_public_host_approval() -> No
 async def test_private_reranker_probe_executes_fixed_rank_request() -> None:
     def accepted_handler(request: httpx.Request) -> httpx.Response:
         assert request.method == "POST"
-        assert request.url == httpx.URL(
-            "https://10.42.0.16/api/llm/openai/rerank"
-        )
+        assert request.url == httpx.URL("https://10.42.0.16/api/llm/openai/rerank")
         assert request.headers["Authorization"] == "Bearer reranker-api-key"
         document = json.loads(request.content)
         assert document == {

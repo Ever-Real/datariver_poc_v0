@@ -503,6 +503,9 @@ superseded by ADR-0048. It is not published as a live route and its retained row
 Operators edit the selected ignored `.env.<profile>` or orchestrator environment, run the managed
 update/restart workflow, and use the two routes above only to inspect and probe the resulting
 validated process snapshot.
+The fixed deployment probe may use plaintext for an exact IP only when that literal is present in
+both deployment-owned probe allowlists defined by ADR-0067; clients cannot submit or override
+either list through this API.
 
 Administrator read contracts are discovery only: an eligible authenticated human may load
 `/admin/me` and the bounded read documents without password reauthentication, and the read path

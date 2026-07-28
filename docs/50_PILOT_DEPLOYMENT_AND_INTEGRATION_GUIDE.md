@@ -474,9 +474,15 @@ vi /home/datariver/.env
 
 ```dotenv
 SYSTEM_CONFIGURATION_PROBE_ALLOWED_HOSTS=keycloak,postgres,redis-cache,redis-delivery,10.20.30.41,10.20.30.42
+# HTTP/redis/bolt만 제공되는 정확한 격리망 IP만 선택적으로 중복 승인한다.
+SYSTEM_CONFIGURATION_PROBE_PLAINTEXT_ALLOWED_IPS=10.20.30.41
 ```
 
 wildcard, URL, CIDR 또는 port를 이 allowlist에 넣지 않는다. URL의 hostname/IP만 넣는다.
+두 번째 allowlist에는 hostname도 넣지 않는다. 정확한 IP만 허용되며 첫 번째 allowlist의
+부분집합이어야 한다. 동일 IP에서 Airflow와 Grafana가 서로 다른 port를 사용하면 IP는 한 번만
+적는다. 이 옵션은 고정 Admin probe에만 적용되며 LLM gateway HTTPS 및 production browser URL
+정책을 변경하지 않는다.
 
 설정 변경 후 Pilot 재적용:
 

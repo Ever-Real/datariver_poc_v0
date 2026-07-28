@@ -295,7 +295,10 @@ Any pre-apply review state → REJECTED or CANCELLED under policy
   Grafana. `.env`/orchestrator values plus mounted secret references are the only live source
   (ADR-0048). Admin exposes no SAVE, revision or ACTIVATE operation: it returns bounded redacted
   effective state, a blank key-only environment template, and one fixed server-owned typed probe.
-  Browser input cannot select the probe destination. A separately guarded private-network
+  Browser input cannot select the probe destination. DNS-less isolated development deployments may
+  opt exact IP literals into plaintext fixed probes only through the deployment environment; the
+  IP must also be in the ordinary destination allowlist, while URL/port/CIDR/wildcard values remain
+  rejected (ADR-0067). A separately guarded private-network
   OpenAI-compatible Chat/Embedding adapter cannot target a public endpoint and is not a production
   inference capability (ADR-0030, ADR-0033, ADR-0038). Reranking uses the Mac-only
   `LOCAL_LLAMA_CPP` bridge over an operator-selected Ollama-owned GGUF and executes the fixed

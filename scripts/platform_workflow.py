@@ -839,7 +839,10 @@ def classify_environment_changes(
             "INTRANET_OPENAI_COMPATIBLE_APPROVED_PUBLIC_HOSTS",
         }:
             services.update(("api", "knowledge-source-worker"))
-        elif key == "SYSTEM_CONFIGURATION_PROBE_ALLOWED_HOSTS":
+        elif key in {
+            "SYSTEM_CONFIGURATION_PROBE_ALLOWED_HOSTS",
+            "SYSTEM_CONFIGURATION_PROBE_PLAINTEXT_ALLOWED_IPS",
+        }:
             services.add("api")
         elif key == "SYSTEM_CONFIGURATION_SECRET_ROOT":
             services.update(BACKEND_RUNTIME_SERVICES)

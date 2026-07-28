@@ -1149,7 +1149,16 @@ async def test_deployment_probe_returns_bounded_llm_failure_detail(
             request_id="request-system-configuration-validation",
         ),
     )
-    configured = settings().model_copy(update={"app_env": "development"})
+    configured = Settings(
+        **(
+            settings().model_dump()
+            | {
+                "app_env": "development",
+                "system_configuration_probe_allowed_hosts": ("10.42.0.15",),
+                "system_configuration_probe_plaintext_allowed_ips": ("10.42.0.15",),
+            }
+        )
+    )
     container = SimpleNamespace(settings=configured)
     service = SimpleNamespace(
         get_admin_read_context=AsyncMock(
@@ -1168,10 +1177,11 @@ async def test_deployment_probe_returns_bounded_llm_failure_detail(
         "_validate_system_configuration",
         lambda _system_id, _document: None,
     )
+    probe = AsyncMock(side_effect=failure)
     monkeypatch.setattr(
         admin_routes,
         "probe_system_configuration",
-        AsyncMock(side_effect=failure),
+        probe,
     )
 
     result = await admin_routes.test_deployment_system_configuration(
@@ -1184,6 +1194,8 @@ async def test_deployment_probe_returns_bounded_llm_failure_detail(
     assert result.status == "UNAVAILABLE"
     assert result.scope == "MODEL_INFERENCE"
     assert result.detail == expected_detail
+    assert probe.await_args is not None
+    assert probe.await_args.kwargs["plaintext_allowed_ips"] == ("10.42.0.15",)
 
 
 def test_upload_preparation_openapi_is_typed_and_server_managed() -> None:

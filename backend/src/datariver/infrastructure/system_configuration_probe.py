@@ -50,18 +50,27 @@ async def probe_oidc_jwks(
     *,
     jwks_url: str,
     allowed_hosts: tuple[str, ...],
+    plaintext_allowed_ips: tuple[str, ...] = (),
     client: httpx.AsyncClient | None = None,
 ) -> SystemConfigurationProbeResult:
     """Validate the fixed deployment JWKS URL through the shared SSRF boundary."""
 
     started = time.monotonic()
+    normalized_allowed_hosts = tuple(value.rstrip(".").lower() for value in allowed_hosts)
+    normalized_plaintext_allowed_ips = _validated_plaintext_allowed_ips(
+        plaintext_allowed_ips,
+        allowed_hosts=normalized_allowed_hosts,
+    )
     _, host, port = _validated_url(jwks_url, schemes={"http", "https"})
     await _reject_unsafe_destination(
         host,
         port,
-        allowed_hosts=tuple(value.rstrip(".").lower() for value in allowed_hosts),
+        allowed_hosts=normalized_allowed_hosts,
     )
-    _require_tls_for_nonlocal_endpoint(jwks_url)
+    _require_tls_for_nonlocal_endpoint(
+        jwks_url,
+        additional_plaintext_hosts=normalized_plaintext_allowed_ips,
+    )
     owns_client = client is None
     active_client = client or httpx.AsyncClient(
         timeout=httpx.Timeout(5.0, connect=3.0),
@@ -171,6 +180,40 @@ def _require_tls_for_nonlocal_endpoint(
         raise ValidationError(
             "Plaintext system probes are restricted to fixed local development hosts."
         )
+
+
+def _validated_plaintext_allowed_ips(
+    values: tuple[str, ...],
+    *,
+    allowed_hosts: tuple[str, ...],
+) -> tuple[str, ...]:
+    if len(values) > 64:
+        raise ValidationError("At most 64 plaintext system probe IPs may be allowlisted.")
+    normalized: list[str] = []
+    for raw_value in values:
+        try:
+            address = ipaddress.ip_address(raw_value.strip())
+        except ValueError as error:
+            raise ValidationError(
+                "Plaintext system probe allowlist values must be exact IP addresses."
+            ) from error
+        if (
+            address.is_link_local
+            or address.is_multicast
+            or address.is_unspecified
+            or address.is_reserved
+        ):
+            raise ValidationError(
+                "Plaintext system probe allowlist values contain a forbidden IP range."
+            )
+        normalized.append(str(address))
+    if len(set(normalized)) != len(normalized):
+        raise ValidationError("Plaintext system probe allowlist values must be unique.")
+    if not set(normalized).issubset(allowed_hosts):
+        raise ValidationError(
+            "Plaintext system probe IPs must be a subset of the operator probe allowlist."
+        )
+    return tuple(normalized)
 
 
 async def _reject_unsafe_destination(
@@ -497,6 +540,7 @@ async def probe_system_configuration(
     ),
     allowed_hosts: tuple[str, ...] = (),
     approved_public_hosts: tuple[str, ...] = (),
+    plaintext_allowed_ips: tuple[str, ...] = (),
 ) -> SystemConfigurationProbeResult:
     """Probe one saved, allowlisted development profile without accepting a request URL.
 
@@ -527,6 +571,10 @@ async def probe_system_configuration(
     normalized_approved_public_hosts = tuple(
         value.rstrip(".").lower() for value in approved_public_hosts
     )
+    normalized_plaintext_allowed_ips = _validated_plaintext_allowed_ips(
+        plaintext_allowed_ips,
+        allowed_hosts=normalized_allowed_hosts,
+    )
     if not set(normalized_approved_public_hosts).issubset(normalized_allowed_hosts):
         raise ValidationError(
             "Approved public probe hosts must be a subset of the operator probe allowlist."
@@ -538,7 +586,10 @@ async def probe_system_configuration(
             port,
             allowed_hosts=normalized_allowed_hosts,
         )
-        _require_tls_for_nonlocal_endpoint(endpoint)
+        _require_tls_for_nonlocal_endpoint(
+            endpoint,
+            additional_plaintext_hosts=normalized_plaintext_allowed_ips,
+        )
         password = (secret_resolver or SecretResolver()).resolve(
             _secret_reference(document, "password")
         )
@@ -584,7 +635,10 @@ async def probe_system_configuration(
             port,
             allowed_hosts=normalized_allowed_hosts,
         )
-        _require_tls_for_nonlocal_endpoint(endpoint)
+        _require_tls_for_nonlocal_endpoint(
+            endpoint,
+            additional_plaintext_hosts=normalized_plaintext_allowed_ips,
+        )
         region = document.get("region")
         buckets = document.get("buckets")
         if not isinstance(region, str) or not region.strip():
@@ -637,7 +691,10 @@ async def probe_system_configuration(
             port,
             allowed_hosts=normalized_allowed_hosts,
         )
-        _require_tls_for_nonlocal_endpoint(endpoint)
+        _require_tls_for_nonlocal_endpoint(
+            endpoint,
+            additional_plaintext_hosts=normalized_plaintext_allowed_ips,
+        )
         resolver = secret_resolver or SecretResolver()
         username, password = _neo4j_credentials(
             resolver.resolve(_secret_reference(document, "credential"))
@@ -720,14 +777,17 @@ async def probe_system_configuration(
     }
     _require_tls_for_nonlocal_endpoint(
         endpoint,
-        additional_plaintext_hosts=(normalized_allowed_hosts if local_inference_probe else ()),
+        additional_plaintext_hosts=tuple(
+            sorted(
+                set(normalized_plaintext_allowed_ips)
+                | (set(normalized_allowed_hosts) if local_inference_probe else set())
+            )
+        ),
     )
     api_key: str | None = None
     if connection_mode in {"INTRANET_OPENAI_COMPATIBLE", "INTRANET_RERANK_V1"}:
         parsed_endpoint = urlsplit(endpoint)
-        terminal_segment = (
-            "v1" if connection_mode == "INTRANET_OPENAI_COMPATIBLE" else None
-        )
+        terminal_segment = "v1" if connection_mode == "INTRANET_OPENAI_COMPATIBLE" else None
         if parsed_endpoint.scheme != "https" or not is_safe_inference_api_base_path(
             parsed_endpoint.path,
             terminal_segment=terminal_segment,
@@ -742,9 +802,7 @@ async def probe_system_configuration(
             )
         _require_intranet_inference_destination(
             validated_addresses,
-            allow_global=(
-                host.rstrip(".").lower() in normalized_approved_public_hosts
-            ),
+            allow_global=(host.rstrip(".").lower() in normalized_approved_public_hosts),
         )
         api_key = (secret_resolver or SecretResolver()).resolve(
             _secret_reference(document, "api_key")
@@ -808,9 +866,7 @@ async def probe_system_configuration(
                 json_document = {
                     "model": model,
                     "temperature": (
-                        float(options.get("temperature", 0))
-                        if isinstance(options, Mapping)
-                        else 0
+                        float(options.get("temperature", 0)) if isinstance(options, Mapping) else 0
                     ),
                     "stream": False,
                     "messages": [
@@ -840,13 +896,9 @@ async def probe_system_configuration(
                     if isinstance(top_p, int | float):
                         json_document["top_p"] = float(top_p)
                     if isinstance(repetition_penalty, int | float):
-                        json_document["repetition_penalty"] = float(
-                            repetition_penalty
-                        )
+                        json_document["repetition_penalty"] = float(repetition_penalty)
                     if options.get("enable_thinking") is True:
-                        json_document["chat_template_kwargs"] = {
-                            "enable_thinking": True
-                        }
+                        json_document["chat_template_kwargs"] = {"enable_thinking": True}
             response = await _bounded_http_request(
                 active_client,
                 "POST",

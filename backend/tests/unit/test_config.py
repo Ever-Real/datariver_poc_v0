@@ -86,6 +86,34 @@ def test_deployment_environment_identity_is_typed_and_rejects_control_characters
         settings(datariver_operator_profile="browser-command-execution")
 
 
+def test_plaintext_probe_ips_are_explicit_exact_and_allowlisted() -> None:
+    configured = settings(
+        system_configuration_probe_allowed_hosts="127.0.0.1,10.42.0.15,fd00::15",
+        system_configuration_probe_plaintext_allowed_ips="10.42.0.15,fd00::15",
+    )
+
+    assert configured.system_configuration_probe_plaintext_allowed_ips == (
+        "10.42.0.15",
+        "fd00::15",
+    )
+
+    with pytest.raises(ValidationError, match="exact IP addresses"):
+        settings(
+            system_configuration_probe_allowed_hosts=("airflow.internal",),
+            system_configuration_probe_plaintext_allowed_ips=("airflow.internal",),
+        )
+    with pytest.raises(ValidationError, match="subset of the system probe host allowlist"):
+        settings(
+            system_configuration_probe_allowed_hosts=("10.42.0.16",),
+            system_configuration_probe_plaintext_allowed_ips=("10.42.0.15",),
+        )
+    with pytest.raises(ValidationError, match="exact IP addresses"):
+        settings(
+            system_configuration_probe_allowed_hosts=("10.42.0.15",),
+            system_configuration_probe_plaintext_allowed_ips=("10.42.0.0/24",),
+        )
+
+
 def test_development_admin_password_bypass_is_explicit_and_fail_closed() -> None:
     configured = settings(
         admin_password_fallback_enabled=True,
@@ -541,9 +569,7 @@ def test_approved_public_intranet_gateway_requires_explicit_subset_opt_in(
     common = {
         "intranet_openai_compatible_allowed_hosts": (gateway_host,),
         "intranet_openai_compatible_chat_enabled": True,
-        "intranet_openai_compatible_chat_base_url": (
-            f"https://{gateway_host}/api/llm/openai/v1"
-        ),
+        "intranet_openai_compatible_chat_base_url": (f"https://{gateway_host}/api/llm/openai/v1"),
         "intranet_openai_compatible_chat_model": "/models/llm/gemma-4-31B-it",
         "intranet_openai_compatible_chat_api_key_secret_ref": (
             "file:/run/secrets/intranet_llm_chat_api_key"
@@ -557,9 +583,7 @@ def test_approved_public_intranet_gateway_requires_explicit_subset_opt_in(
         **common,
         intranet_openai_compatible_approved_public_hosts=(gateway_host,),
     )
-    assert configured.intranet_openai_compatible_approved_public_hosts == (
-        gateway_host,
-    )
+    assert configured.intranet_openai_compatible_approved_public_hosts == (gateway_host,)
 
     with pytest.raises(ValidationError, match="subset"):
         settings(
@@ -592,9 +616,7 @@ def test_approved_public_intranet_gateway_still_rejects_loopback(
             intranet_openai_compatible_allowed_hosts=(gateway_host,),
             intranet_openai_compatible_approved_public_hosts=(gateway_host,),
             intranet_openai_compatible_chat_enabled=True,
-            intranet_openai_compatible_chat_base_url=(
-                f"https://{gateway_host}/api/llm/openai/v1"
-            ),
+            intranet_openai_compatible_chat_base_url=(f"https://{gateway_host}/api/llm/openai/v1"),
             intranet_openai_compatible_chat_model="/models/llm/gemma-4-31B-it",
             intranet_openai_compatible_chat_api_key_secret_ref=(
                 "file:/run/secrets/intranet_llm_chat_api_key"
@@ -606,17 +628,13 @@ def test_intranet_inference_accepts_gateway_prefix_and_path_like_model_id() -> N
     configured = settings(
         intranet_openai_compatible_allowed_hosts=("10.42.0.15",),
         intranet_openai_compatible_chat_enabled=True,
-        intranet_openai_compatible_chat_base_url=(
-            "https://10.42.0.15/api/llm/openai/v1"
-        ),
+        intranet_openai_compatible_chat_base_url=("https://10.42.0.15/api/llm/openai/v1"),
         intranet_openai_compatible_chat_model="/models/llm/gemma-4-31B-it",
         intranet_openai_compatible_chat_api_key_secret_ref=(
             "file:/run/secrets/intranet_llm_chat_api_key"
         ),
         intranet_openai_compatible_embedding_enabled=True,
-        intranet_openai_compatible_embedding_base_url=(
-            "https://10.42.0.15/api/llm/openai/v1"
-        ),
+        intranet_openai_compatible_embedding_base_url=("https://10.42.0.15/api/llm/openai/v1"),
         intranet_openai_compatible_embedding_model="/models/embedding/bge-m3",
         intranet_openai_compatible_embedding_api_key_secret_ref=(
             "file:/run/secrets/intranet_llm_embedding_api_key"
@@ -629,9 +647,7 @@ def test_intranet_inference_accepts_gateway_prefix_and_path_like_model_id() -> N
     assert str(configured.intranet_openai_compatible_chat_base_url).rstrip("/") == (
         "https://10.42.0.15/api/llm/openai/v1"
     )
-    assert configured.intranet_openai_compatible_chat_model == (
-        "/models/llm/gemma-4-31B-it"
-    )
+    assert configured.intranet_openai_compatible_chat_model == ("/models/llm/gemma-4-31B-it")
     assert configured.intranet_openai_compatible_chat_enable_thinking is True
 
 
@@ -670,23 +686,17 @@ def test_intranet_reranker_accepts_private_gateway_prefix() -> None:
         intranet_reranker_enabled=True,
         intranet_reranker_base_url="https://10.42.0.15/api/llm/openai",
         intranet_reranker_model="/models/Reranker/bge-reranker-v2-m3",
-        intranet_reranker_api_key_secret_ref=(
-            "file:/run/secrets/intranet_llm_reranker_api_key"
-        ),
+        intranet_reranker_api_key_secret_ref=("file:/run/secrets/intranet_llm_reranker_api_key"),
     )
 
     assert configured.intranet_reranker_enabled is True
-    assert configured.intranet_reranker_model == (
-        "/models/Reranker/bge-reranker-v2-m3"
-    )
+    assert configured.intranet_reranker_model == ("/models/Reranker/bge-reranker-v2-m3")
 
     with pytest.raises(ValidationError, match="cannot be enabled together"):
         settings(
             local_inference_allowed_hosts=("host.docker.internal",),
             local_llama_cpp_reranker_enabled=True,
-            local_llama_cpp_reranker_base_url=(
-                "http://host.docker.internal:11435/v1"
-            ),
+            local_llama_cpp_reranker_base_url=("http://host.docker.internal:11435/v1"),
             local_llama_cpp_reranker_model="local-reranker",
             intranet_openai_compatible_allowed_hosts=("10.42.0.15",),
             intranet_reranker_enabled=True,

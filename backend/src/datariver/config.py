@@ -237,6 +237,11 @@ class Settings(BaseSettings):
         "prometheus",
         "grafana",
     )
+    # Development Admin probes remain TLS-first. An isolated deployment without
+    # internal DNS/TLS may opt exact IP literals into plaintext transport. This
+    # list is independently reviewed and must be a subset of the SSRF host
+    # allowlist above; URLs, ports, hostnames, CIDRs and wildcards are rejected.
+    system_configuration_probe_plaintext_allowed_ips: tuple[str, ...] = ()
     # System configuration YAML always stores a portable Docker-secret
     # reference. Source-host development maps that virtual root to its private
     # checkout secrets directory; the mapping itself remains operator-owned.
@@ -402,6 +407,7 @@ class Settings(BaseSettings):
         "intranet_openai_compatible_approved_public_hosts",
         "neo4j_allowed_hosts",
         "system_configuration_probe_allowed_hosts",
+        "system_configuration_probe_plaintext_allowed_ips",
         "retention_workspace_ids",
         mode="before",
     )
@@ -489,6 +495,35 @@ class Settings(BaseSettings):
         if len(set(normalized)) != len(normalized):
             raise ValueError("System configuration probe host allowlist values must be unique.")
         return normalized
+
+    @field_validator("system_configuration_probe_plaintext_allowed_ips")
+    @classmethod
+    def normalize_system_configuration_probe_plaintext_allowed_ips(
+        cls, values: tuple[str, ...]
+    ) -> tuple[str, ...]:
+        if len(values) > 64:
+            raise ValueError("At most 64 plaintext system probe IPs may be allowlisted.")
+        normalized: list[str] = []
+        for raw_value in values:
+            try:
+                address = ipaddress.ip_address(raw_value.strip())
+            except ValueError as error:
+                raise ValueError(
+                    "Plaintext system probe allowlist values must be exact IP addresses."
+                ) from error
+            if (
+                address.is_link_local
+                or address.is_multicast
+                or address.is_unspecified
+                or address.is_reserved
+            ):
+                raise ValueError(
+                    "Plaintext system probe allowlist values contain a forbidden IP range."
+                )
+            normalized.append(str(address))
+        if len(set(normalized)) != len(normalized):
+            raise ValueError("Plaintext system probe allowlist values must be unique.")
+        return tuple(normalized)
 
     @field_validator("s3_endpoint_url", "s3_public_endpoint_url", "s3_archive_endpoint_url")
     @classmethod
@@ -1277,6 +1312,12 @@ class Settings(BaseSettings):
                 "Database-backed runtime system configuration activation was retired; "
                 "use the selected deployment environment and restart workflow."
             )
+        if not set(self.system_configuration_probe_plaintext_allowed_ips).issubset(
+            self.system_configuration_probe_allowed_hosts
+        ):
+            raise ValueError(
+                "Plaintext system probe IPs must be a subset of the system probe host allowlist."
+            )
         if self.app_env == "production":
             if self.chat_ephemeral_admin_without_retention_enabled:
                 raise ValueError("Development-only ephemeral Chat must be disabled in production.")
@@ -1379,9 +1420,7 @@ class Settings(BaseSettings):
             raise ValueError("Intranet OpenAI-compatible host could not be resolved.") from error
         if not addresses:
             raise ValueError("Intranet OpenAI-compatible host could not be resolved.")
-        allow_global = (
-            host in self.intranet_openai_compatible_approved_public_hosts
-        )
+        allow_global = host in self.intranet_openai_compatible_approved_public_hosts
         for address in addresses:
             value = ipaddress.ip_address(address[4][0])
             if not is_allowed_intranet_inference_address(

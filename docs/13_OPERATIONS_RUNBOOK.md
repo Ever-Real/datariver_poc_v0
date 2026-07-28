@@ -34,6 +34,11 @@ enabled Keycloak/APISIX, PostgreSQL and enabled Airflow components must be healt
 S3/MinIO and feature connectors are checked in their owner deployment and through fixed DataRiver
 connection probes; workers, DAG processor and triggerer must remain running when enabled.
 
+For a DNS-less isolated development network, an HTTP/Redis/Bolt endpoint addressed by IP must place
+that exact literal in both `SYSTEM_CONFIGURATION_PROBE_ALLOWED_HOSTS` and
+`SYSTEM_CONFIGURATION_PROBE_PLAINTEXT_ALLOWED_IPS`, followed by an API restart. The latter never
+accepts a URL, port, CIDR, wildcard or hostname and does not make the transport encrypted.
+
 Host-port overrides do not change an OIDC issuer. When browser-facing origins change, update `APP_PUBLIC_ORIGIN`, `OIDC_PUBLIC_ORIGIN`, `OIDC_PUBLIC_AUTHORITY` and `OIDC_ISSUER` as one reviewed change and rebuild the affected services.
 
 ## Safe restart order

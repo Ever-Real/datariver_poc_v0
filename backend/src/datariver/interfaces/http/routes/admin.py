@@ -262,6 +262,7 @@ _SYSTEM_ENVIRONMENT_KEYS: dict[str, tuple[str, ...]] = {
         "ADMIN_PASSWORD_FALLBACK_TTL_SECONDS",
         "DEVELOPMENT_ADMIN_PASSWORD_BYPASS_ENABLED",
         "SYSTEM_CONFIGURATION_PROBE_ALLOWED_HOSTS",
+        "SYSTEM_CONFIGURATION_PROBE_PLAINTEXT_ALLOWED_IPS",
     ),
     "RETENTION_ARCHIVE": (
         "EVENT_RETENTION_DAYS",
@@ -296,17 +297,20 @@ _SYSTEM_ENVIRONMENT_KEYS: dict[str, tuple[str, ...]] = {
         "GOVERNANCE_APPLY_MAXIMUM_ATTEMPTS",
         "GOVERNANCE_WORKER_SUBJECT_ID",
         "SYSTEM_CONFIGURATION_PROBE_ALLOWED_HOSTS",
+        "SYSTEM_CONFIGURATION_PROBE_PLAINTEXT_ALLOWED_IPS",
     ),
     "DATAHUB_FRONTEND": (
         "UI_DATAHUB_URL",
         "DATAHUB_EMBED_BASE_URL",
         "DATAHUB_EMBED_ENABLED",
         "SYSTEM_CONFIGURATION_PROBE_ALLOWED_HOSTS",
+        "SYSTEM_CONFIGURATION_PROBE_PLAINTEXT_ALLOWED_IPS",
     ),
     "AIRFLOW": (
         "UI_AIRFLOW_URL",
         "AIRFLOW_WORKSPACE_ID",
         "SYSTEM_CONFIGURATION_PROBE_ALLOWED_HOSTS",
+        "SYSTEM_CONFIGURATION_PROBE_PLAINTEXT_ALLOWED_IPS",
     ),
     "REDIS_CACHE": (
         "REDIS_CACHE_URL",
@@ -316,6 +320,7 @@ _SYSTEM_ENVIRONMENT_KEYS: dict[str, tuple[str, ...]] = {
         "CATALOG_SEARCH_CACHE_TTL_SECONDS",
         "CATALOG_SEARCH_MINIMUM_QUERY_LENGTH",
         "SYSTEM_CONFIGURATION_PROBE_ALLOWED_HOSTS",
+        "SYSTEM_CONFIGURATION_PROBE_PLAINTEXT_ALLOWED_IPS",
     ),
     "REDIS_DELIVERY": (
         "REDIS_DELIVERY_URL",
@@ -324,6 +329,7 @@ _SYSTEM_ENVIRONMENT_KEYS: dict[str, tuple[str, ...]] = {
         "OUTBOX_MAXIMUM_ATTEMPTS",
         "WORKER_POLL_SECONDS",
         "SYSTEM_CONFIGURATION_PROBE_ALLOWED_HOSTS",
+        "SYSTEM_CONFIGURATION_PROBE_PLAINTEXT_ALLOWED_IPS",
     ),
     "S3_STORAGE": (
         "S3_ENDPOINT_URL",
@@ -369,6 +375,7 @@ _SYSTEM_ENVIRONMENT_KEYS: dict[str, tuple[str, ...]] = {
         "RETENTION_WORKER_SUBJECT_ID",
         "WORKER_POLL_SECONDS",
         "SYSTEM_CONFIGURATION_PROBE_ALLOWED_HOSTS",
+        "SYSTEM_CONFIGURATION_PROBE_PLAINTEXT_ALLOWED_IPS",
     ),
     "LLM_CHAT_MODEL": (
         "LOCAL_INFERENCE_SOURCE_HOST_ENABLED",
@@ -395,6 +402,7 @@ _SYSTEM_ENVIRONMENT_KEYS: dict[str, tuple[str, ...]] = {
         "CHAT_RATE_LIMIT_TOKENS_PER_MINUTE",
         "CHAT_COMPOSITION_PROVIDER_PROFILE_VERSION_ID",
         "SYSTEM_CONFIGURATION_PROBE_ALLOWED_HOSTS",
+        "SYSTEM_CONFIGURATION_PROBE_PLAINTEXT_ALLOWED_IPS",
         "SYSTEM_CONFIGURATION_SECRET_ROOT",
     ),
     "LLM_EMBEDDING": (
@@ -413,6 +421,7 @@ _SYSTEM_ENVIRONMENT_KEYS: dict[str, tuple[str, ...]] = {
         "INTRANET_OPENAI_COMPATIBLE_EMBEDDING_TIMEOUT_SECONDS",
         "CHAT_EMBEDDING_PROVIDER_PROFILE_VERSION_ID",
         "SYSTEM_CONFIGURATION_PROBE_ALLOWED_HOSTS",
+        "SYSTEM_CONFIGURATION_PROBE_PLAINTEXT_ALLOWED_IPS",
         "SYSTEM_CONFIGURATION_SECRET_ROOT",
     ),
     "LLM_RERANKER": (
@@ -433,6 +442,7 @@ _SYSTEM_ENVIRONMENT_KEYS: dict[str, tuple[str, ...]] = {
         "INTRANET_RERANKER_TOP_N",
         "CHAT_RERANKER_PROVIDER_PROFILE_VERSION_ID",
         "SYSTEM_CONFIGURATION_PROBE_ALLOWED_HOSTS",
+        "SYSTEM_CONFIGURATION_PROBE_PLAINTEXT_ALLOWED_IPS",
         "SYSTEM_CONFIGURATION_SECRET_ROOT",
     ),
     "NEO4J": (
@@ -457,11 +467,13 @@ _SYSTEM_ENVIRONMENT_KEYS: dict[str, tuple[str, ...]] = {
         "KNOWLEDGE_SOURCE_SPOOL_DIRECTORY",
         "KNOWLEDGE_WORKER_SUBJECT_ID",
         "SYSTEM_CONFIGURATION_PROBE_ALLOWED_HOSTS",
+        "SYSTEM_CONFIGURATION_PROBE_PLAINTEXT_ALLOWED_IPS",
         "SYSTEM_CONFIGURATION_SECRET_ROOT",
     ),
     "PROMETHEUS": (
         "UI_PROMETHEUS_URL",
         "SYSTEM_CONFIGURATION_PROBE_ALLOWED_HOSTS",
+        "SYSTEM_CONFIGURATION_PROBE_PLAINTEXT_ALLOWED_IPS",
     ),
     "GRAFANA_DASHBOARD": (
         "UI_GRAFANA_URL",
@@ -469,6 +481,7 @@ _SYSTEM_ENVIRONMENT_KEYS: dict[str, tuple[str, ...]] = {
         "GRAFANA_EMBED_ENABLED",
         "GRAFANA_EMBED_EVIDENCE_REFERENCE",
         "SYSTEM_CONFIGURATION_PROBE_ALLOWED_HOSTS",
+        "SYSTEM_CONFIGURATION_PROBE_PLAINTEXT_ALLOWED_IPS",
     ),
 }
 _CONFIGURATION_BY_ID = {
@@ -2991,6 +3004,7 @@ async def test_draft_system_configuration(
             virtual_secret_root=container.settings.system_configuration_secret_root
         ),
         allowed_hosts=container.settings.system_configuration_probe_allowed_hosts,
+        plaintext_allowed_ips=(container.settings.system_configuration_probe_plaintext_allowed_ips),
     )
     response.headers["Cache-Control"] = "no-store, private"
     return SystemConfigurationTestResponse(
@@ -3062,6 +3076,7 @@ async def test_system_configuration(
             virtual_secret_root=container.settings.system_configuration_secret_root
         ),
         allowed_hosts=container.settings.system_configuration_probe_allowed_hosts,
+        plaintext_allowed_ips=(container.settings.system_configuration_probe_plaintext_allowed_ips),
     )
     tested_at = utc_now()
     async with container.database.session_factory() as session:
@@ -3483,6 +3498,9 @@ async def test_deployment_system_configuration(
             result = await probe_oidc_jwks(
                 jwks_url=container.settings.oidc_jwks_url,
                 allowed_hosts=container.settings.system_configuration_probe_allowed_hosts,
+                plaintext_allowed_ips=(
+                    container.settings.system_configuration_probe_plaintext_allowed_ips
+                ),
             )
             status = result.status
             detail = result.detail
@@ -3525,6 +3543,9 @@ async def test_deployment_system_configuration(
                 container.settings.intranet_openai_compatible_approved_public_hosts
                 if system_id.startswith("LLM_")
                 else ()
+            ),
+            plaintext_allowed_ips=(
+                container.settings.system_configuration_probe_plaintext_allowed_ips
             ),
         )
         status = result.status
