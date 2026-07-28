@@ -179,7 +179,7 @@ scripts/compose.sh --env-file "$DATARIVER_ENV_FILE" -f compose.yaml run --rm mig
 ./scripts/reconcile-postgres-roles.sh
 scripts/compose.sh --env-file "$DATARIVER_ENV_FILE" -f compose.yaml run --rm migrate \
   /app/.venv/bin/alembic -c backend/alembic.ini current
-# Require: 0061 (head)
+# Require: 0062 (head)
 ```
 
 For native Windows use

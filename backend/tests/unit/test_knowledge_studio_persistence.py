@@ -2,10 +2,14 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 from pathlib import Path
+from types import SimpleNamespace
+from typing import cast
+from unittest.mock import AsyncMock
 from uuid import UUID
 
 import pytest
 from sqlalchemy import CheckConstraint, ForeignKeyConstraint, Index, Table
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from datariver.application.dto import (
     IdempotencyRecord,
@@ -15,9 +19,15 @@ from datariver.application.dto import (
 )
 from datariver.domain.authz import Classification
 from datariver.domain.common import ConflictError
+from datariver.domain.knowledge_studio import (
+    DEFAULT_KNOWLEDGE_DOMAIN_SOURCE_VERSION,
+    DEFAULT_KNOWLEDGE_DOMAINS,
+    default_knowledge_domain_id,
+)
 from datariver.infrastructure.db import models  # noqa: F401
 from datariver.infrastructure.db.base import Base
 from datariver.infrastructure.db.knowledge_studio import (
+    SqlKnowledgeStudioStore,
     abox_binding_result,
     resolve_abox_idempotent_replay,
     resolve_studio_idempotent_replay,
@@ -32,6 +42,7 @@ ABOX_MIGRATION = ROOT / "backend/alembic/versions/0060_knowledge_studio_abox_bin
 PUBLICATION_MIGRATION = (
     ROOT / "backend/alembic/versions/0061_knowledge_studio_governed_publication.py"
 )
+QA_MIGRATION = ROOT / "backend/alembic/versions/0062_knowledge_qa_domain_archive.py"
 INITIAL_MIGRATION = ROOT / "backend/alembic/versions/0001_initial_schema.py"
 GENERATOR = ROOT / "scripts/generate_initial_migration.py"
 
@@ -42,7 +53,7 @@ def _table(name: str) -> Table:
 
 def test_studio_draft_model_is_separate_persistent_author_state() -> None:
     draft = _table("knowledge.studio_drafts")
-    assert REQUIRED_DATABASE_REVISION == "0061"
+    assert REQUIRED_DATABASE_REVISION == "0062"
     assert {
         "workspace_id",
         "author_id",
@@ -107,6 +118,59 @@ def test_studio_draft_model_is_separate_persistent_author_state() -> None:
     live_alias_predicate = str(live_alias.dialect_options["postgresql"]["where"])
     assert "DRAFT" in live_alias_predicate
     assert "REVIEW" in live_alias_predicate
+
+
+def test_qa_domain_seed_and_graph_archive_are_deterministic_and_auditable() -> None:
+    graph = _table("knowledge.graphs")
+    assert {"archived_at", "archived_by"} <= set(graph.c.keys())
+    checks = {
+        constraint.name: str(constraint.sqltext)
+        for constraint in graph.constraints
+        if isinstance(constraint, CheckConstraint)
+    }
+    assert "ARCHIVED" in checks["ck_graphs_status_vocabulary"]
+    assert "archived_by" in checks["ck_graphs_archive_shape"]
+
+    migration = QA_MIGRATION.read_text(encoding="utf-8")
+    assert "datariver-default-domains-v1" in migration
+    assert "exec_driver_sql" in migration
+    assert "knowledge.graphs" in migration
+    assert "ARCHIVED" in migration
+    assert "Archived Knowledge graph evidence must be restored" in migration
+    assert DEFAULT_KNOWLEDGE_DOMAIN_SOURCE_VERSION in migration
+    assert tuple(name for _slug, name in DEFAULT_KNOWLEDGE_DOMAINS) == (
+        "General",
+        "Data Governance",
+        "R&D",
+        "Finance",
+        "Space System",
+    )
+    assert default_knowledge_domain_id(
+        UUID("019fa57b-52de-74c0-9f5e-06ae7b1bf3b1"),
+        "general",
+    ) == UUID("3e43b772-b1f5-747c-52c0-bd1c154e595e")
+
+
+@pytest.mark.asyncio
+async def test_empty_domain_table_uses_only_deterministic_abac_scoped_fallbacks() -> None:
+    session = SimpleNamespace(
+        execute=AsyncMock(return_value=SimpleNamespace(all=lambda: [])),
+    )
+    store = SqlKnowledgeStudioStore(cast(AsyncSession, session))
+    workspace_id = UUID("019fa57b-52de-74c0-9f5e-06ae7b1bf3b1")
+    finance_id = default_knowledge_domain_id(workspace_id, "finance")
+
+    values = await store.list_domains(
+        workspace_id=workspace_id,
+        allowed_domain_ids=frozenset({finance_id}),
+        query=None,
+        limit=100,
+    )
+
+    assert tuple((value.domain_id, value.display_name) for value in values) == (
+        (finance_id, "Finance"),
+    )
+    assert values[0].source_version == DEFAULT_KNOWLEDGE_DOMAIN_SOURCE_VERSION
 
 
 def test_abox_mapping_is_a_normalized_child_aggregate_not_draft_json() -> None:

@@ -1053,6 +1053,13 @@ class KnowledgeGraphRecord:
     active_release_id: UUID | None
     version: int
     active_studio_release_id: UUID | None = None
+    domain_id: UUID | None = None
+    domain_source_version: str | None = None
+    domain_name: str | None = None
+    created_by: UUID | None = None
+    updated_by: UUID | None = None
+    created_at: datetime | None = None
+    updated_at: datetime | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -1295,6 +1302,7 @@ class KnowledgeReleaseRecord:
     content_hash: str
     node_count: int
     edge_count: int
+    published_by: UUID
     published_at: datetime
 
 

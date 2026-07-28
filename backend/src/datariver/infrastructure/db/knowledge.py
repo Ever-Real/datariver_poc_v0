@@ -43,6 +43,7 @@ from datariver.domain.knowledge import (
     apply_change_operations,
 )
 from datariver.infrastructure.db.governance import SqlIdempotencyStore, SqlOutboxWriter
+from datariver.infrastructure.db.models.catalog import CatalogVocabularyEntryModel
 from datariver.infrastructure.db.models.knowledge import (
     ChangeOperationModel,
     ChangeSetModel,
@@ -56,7 +57,11 @@ from datariver.infrastructure.db.models.knowledge import (
 )
 
 
-def _graph_record(model: GraphModel) -> KnowledgeGraphRecord:
+def _graph_record(
+    model: GraphModel,
+    *,
+    domain_name: str | None = None,
+) -> KnowledgeGraphRecord:
     return KnowledgeGraphRecord(
         graph_id=model.id,
         workspace_id=model.workspace_id,
@@ -68,6 +73,13 @@ def _graph_record(model: GraphModel) -> KnowledgeGraphRecord:
         active_release_id=model.active_release_id,
         version=model.version,
         active_studio_release_id=model.active_studio_release_id,
+        domain_id=model.domain_ref_id,
+        domain_source_version=model.domain_source_version,
+        domain_name=domain_name,
+        created_by=model.created_by,
+        updated_by=model.updated_by,
+        created_at=model.created_at,
+        updated_at=model.updated_at,
     )
 
 
@@ -80,6 +92,7 @@ def _release_record(model: ReleaseModel) -> KnowledgeReleaseRecord:
         content_hash=model.content_hash,
         node_count=model.node_count,
         edge_count=model.edge_count,
+        published_by=model.published_by,
         published_at=model.published_at,
     )
 
@@ -193,8 +206,13 @@ class SqlKnowledgeStore(KnowledgeStore):
     def __init__(self, session: AsyncSession) -> None:
         self._session = session
 
-    async def _governed_graph_record(self, model: GraphModel) -> KnowledgeGraphRecord:
-        record = _graph_record(model)
+    async def _governed_graph_record(
+        self,
+        model: GraphModel,
+        *,
+        domain_name: str | None = None,
+    ) -> KnowledgeGraphRecord:
+        record = _graph_record(model, domain_name=domain_name)
         if model.active_release_id is None:
             return record
         try:
@@ -290,35 +308,184 @@ class SqlKnowledgeStore(KnowledgeStore):
         return _graph_record(model)
 
     async def list_graphs(
-        self, *, workspace_id: UUID, clearance: int
+        self,
+        *,
+        workspace_id: UUID,
+        clearance: int,
+        allowed_domain_ids: frozenset[UUID],
     ) -> tuple[KnowledgeGraphRecord, ...]:
-        models = list(
-            (
-                await self._session.scalars(
-                    select(GraphModel)
-                    .where(
-                        GraphModel.workspace_id == workspace_id,
-                        GraphModel.classification <= clearance,
-                    )
-                    .order_by(GraphModel.name, GraphModel.id)
+        rows = (
+            await self._session.execute(
+                select(GraphModel, CatalogVocabularyEntryModel.display_name)
+                .outerjoin(
+                    CatalogVocabularyEntryModel,
+                    (CatalogVocabularyEntryModel.workspace_id == GraphModel.workspace_id)
+                    & (CatalogVocabularyEntryModel.id == GraphModel.domain_ref_id)
+                    & (CatalogVocabularyEntryModel.kind == "DOMAIN"),
                 )
-            ).all()
+                .where(
+                    GraphModel.workspace_id == workspace_id,
+                    GraphModel.classification <= clearance,
+                    GraphModel.status != "ARCHIVED",
+                    (
+                        (GraphModel.classification == int(Classification.PUBLIC))
+                        | GraphModel.domain_ref_id.is_(None)
+                        | GraphModel.domain_ref_id.in_(allowed_domain_ids)
+                    ),
+                )
+                .order_by(GraphModel.name, GraphModel.id)
+            )
+        ).all()
+        return tuple(
+            [
+                await self._governed_graph_record(
+                    model,
+                    domain_name=domain_name,
+                )
+                for model, domain_name in rows
+            ]
         )
-        return tuple([await self._governed_graph_record(model) for model in models])
 
     async def get_graph(
         self, *, workspace_id: UUID, graph_id: UUID, clearance: int
     ) -> KnowledgeGraphRecord | None:
-        model = (
-            await self._session.scalars(
-                select(GraphModel).where(
+        row = (
+            await self._session.execute(
+                select(GraphModel, CatalogVocabularyEntryModel.display_name)
+                .outerjoin(
+                    CatalogVocabularyEntryModel,
+                    (CatalogVocabularyEntryModel.workspace_id == GraphModel.workspace_id)
+                    & (CatalogVocabularyEntryModel.id == GraphModel.domain_ref_id)
+                    & (CatalogVocabularyEntryModel.kind == "DOMAIN"),
+                )
+                .where(
+                    GraphModel.id == graph_id,
+                    GraphModel.workspace_id == workspace_id,
+                    GraphModel.classification <= clearance,
+                    GraphModel.status != "ARCHIVED",
+                )
+            )
+        ).one_or_none()
+        if row is None:
+            return None
+        model, domain_name = row
+        return await self._governed_graph_record(model, domain_name=domain_name)
+
+    async def get_graph_for_archive(
+        self, *, workspace_id: UUID, graph_id: UUID, clearance: int
+    ) -> KnowledgeGraphRecord | None:
+        row = (
+            await self._session.execute(
+                select(GraphModel, CatalogVocabularyEntryModel.display_name)
+                .outerjoin(
+                    CatalogVocabularyEntryModel,
+                    (CatalogVocabularyEntryModel.workspace_id == GraphModel.workspace_id)
+                    & (CatalogVocabularyEntryModel.id == GraphModel.domain_ref_id)
+                    & (CatalogVocabularyEntryModel.kind == "DOMAIN"),
+                )
+                .where(
                     GraphModel.id == graph_id,
                     GraphModel.workspace_id == workspace_id,
                     GraphModel.classification <= clearance,
                 )
             )
         ).one_or_none()
-        return await self._governed_graph_record(model) if model is not None else None
+        if row is None:
+            return None
+        model, domain_name = row
+        return _graph_record(model, domain_name=domain_name)
+
+    async def archive_graph(
+        self,
+        *,
+        workspace_id: UUID,
+        graph_id: UUID,
+        actor_id: UUID,
+        expected_version: int,
+        reason: str,
+        idempotency_key: str,
+        request_hash: str,
+    ) -> KnowledgeGraphRecord:
+        operation = f"knowledge.graph.archive:{graph_id}"
+        idempotency = SqlIdempotencyStore(self._session)
+        await idempotency.acquire_key_lock(
+            workspace_id=workspace_id,
+            key=idempotency_key,
+            operation=operation,
+        )
+        existing = await idempotency.get_result(
+            workspace_id=workspace_id,
+            key=idempotency_key,
+            operation=operation,
+        )
+        if existing is not None:
+            if existing.request_hash != request_hash:
+                raise ConflictError("The idempotency key was used with a different request.")
+            if str(existing.result.get("actor_id", "")) != str(actor_id):
+                raise ConflictError("The idempotent graph archive is bound to another actor.")
+            replay = (
+                await self._session.scalars(
+                    select(GraphModel).where(
+                        GraphModel.workspace_id == workspace_id,
+                        GraphModel.id == graph_id,
+                        GraphModel.status == "ARCHIVED",
+                    )
+                )
+            ).one_or_none()
+            if replay is None:
+                raise ConflictError("The idempotent graph archive result is unavailable.")
+            return _graph_record(replay)
+        graph = (
+            await self._session.scalars(
+                select(GraphModel)
+                .where(
+                    GraphModel.workspace_id == workspace_id,
+                    GraphModel.id == graph_id,
+                    GraphModel.status != "ARCHIVED",
+                )
+                .with_for_update()
+            )
+        ).one_or_none()
+        if graph is None:
+            raise ValidationError("The knowledge graph does not exist.")
+        if graph.version != expected_version:
+            raise ConflictError("The knowledge graph version is stale.")
+        now = utc_now()
+        graph.status = "ARCHIVED"
+        graph.archived_at = now
+        graph.archived_by = actor_id
+        graph.updated_by = actor_id
+        graph.updated_at = now
+        graph.version += 1
+        await SqlOutboxWriter(self._session).add_events(
+            [
+                DomainEvent.create(
+                    event_type="knowledge.graph.archived.v1",
+                    aggregate_type="knowledge_graph",
+                    aggregate_id=graph.id,
+                    workspace_id=workspace_id,
+                    payload={
+                        "actor_id": str(actor_id),
+                        "graph_id": str(graph.id),
+                        "reason": reason,
+                        "version": graph.version,
+                    },
+                )
+            ]
+        )
+        await idempotency.save_result(
+            workspace_id=workspace_id,
+            key=idempotency_key,
+            operation=operation,
+            request_hash=request_hash,
+            result={
+                "actor_id": str(actor_id),
+                "graph_id": str(graph.id),
+                "version": graph.version,
+            },
+        )
+        await self._session.commit()
+        return _graph_record(graph)
 
     async def create_changeset(
         self,

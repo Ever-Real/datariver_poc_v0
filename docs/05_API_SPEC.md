@@ -307,8 +307,9 @@ cannot re-enter the ordinary workflow.
 
 | Method/path | Action | Purpose |
 |---|---|---|
-| `GET /knowledge/studio/domains?classification=&q=&limit=` | `kg.create` | active DOMAIN picker, bounded to 100 and filtered by the requested classification plus Subject domain scope |
+| `GET /knowledge/domains?classification=&q=&limit=` (`/knowledge/studio/domains` compatibility alias) | `kg.create` | active DOMAIN picker, bounded to 100 and filtered by the requested classification plus Subject domain scope; when the vocabulary table has no eligible rows, returns only deterministic built-in domain options still permitted by the same ABAC scope |
 | `POST /knowledge/studio/drafts` | `kg.create` | create an author-only CREATE Draft from typed Step 1 data; requires `Idempotency-Key`, returns ETag and does not create a graph |
+| `POST /knowledge/studio/drafts/from-asset/{asset_id}` | `kg.edit` | idempotently reuse the author's live EDIT Draft or create one pinned to the asset's active Studio/ontology/instance releases; copies immutable T-Box and A-Box contracts into mutable Draft rows and returns ETag |
 | `GET /knowledge/studio/drafts/{draft_id}` | author `kg.read`; independent reviewer `kg.review` | read an author Draft or a REVIEW/PUBLISHED Draft visible to a permitted reviewer with `Cache-Control: no-store` and ETag; hidden Drafts are not disclosed |
 | `PATCH /knowledge/studio/drafts/{draft_id}` | `kg.edit` | idempotent Step 1 auto-save; requires exact `If-Match` and returns `412` on a stale version |
 | `POST /knowledge/studio/drafts/{draft_id}/advance` | `kg.edit` | idempotently advance to `TBOX`, or from T-Box to `ABOX` only when at least one accepted Class/Relation exists; requires exact `If-Match` |
@@ -323,6 +324,7 @@ cannot re-enter the ordinary workflow.
 | `POST /knowledge/studio/drafts/{draft_id}/publish` | independent `kg.review` + high-risk `kg.publish` | require fresh Hardware WebAuthn and the same reviewer's exact PASS receipt, then atomically materialize an immutable Studio schema/mapping release; archives the previous Studio Release but does not activate an instance release or run ingestion |
 | `POST /knowledge/graphs` | `kg.create` | graph plus initial typed ontology |
 | `GET /knowledge/graphs` | `kg.read` | clearance-filtered graphs |
+| `POST /knowledge/graphs/{graph_id}/archive` | `kg.edit` | version-fenced, idempotent soft archive with an actor/reason outbox event; immutable releases remain intact and archived graphs disappear from ordinary list/read/query flows |
 | `POST/GET /knowledge/graphs/{graph_id}/changesets` | `kg.edit` / `kg.read` | create/list a base-release-pinned changeset |
 | `POST .../changesets/{changeset_id}/operations` | `kg.edit` | append typed node/edge upsert/delete with provenance |
 | `POST .../changesets/{changeset_id}/submit` | `kg.edit` | materialize and persist validation evidence |

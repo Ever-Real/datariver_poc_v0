@@ -1,13 +1,31 @@
 from __future__ import annotations
 
+import hashlib
 from dataclasses import dataclass
 from enum import StrEnum
+from uuid import UUID
 
 from datariver.domain.common import (
     ConflictError,
     PreconditionFailedError,
     ValidationError,
 )
+
+DEFAULT_KNOWLEDGE_DOMAIN_SOURCE_VERSION = "datariver-default-domains-v1"
+DEFAULT_KNOWLEDGE_DOMAINS = (
+    ("general", "General"),
+    ("data-governance", "Data Governance"),
+    ("research-development", "R&D"),
+    ("finance", "Finance"),
+    ("space-system", "Space System"),
+)
+
+
+def default_knowledge_domain_id(workspace_id: UUID, slug: str) -> UUID:
+    """Return the migration-compatible identity for one workspace default domain."""
+
+    value = f"{workspace_id}:knowledge-default-domain:{slug}".encode()
+    return UUID(hashlib.md5(value, usedforsecurity=False).hexdigest())
 
 
 class StudioDraftKind(StrEnum):

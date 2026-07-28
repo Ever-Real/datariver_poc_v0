@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import UTC, datetime
 from typing import Any, cast
 from uuid import UUID, uuid4
@@ -71,6 +72,7 @@ class _PublicationStore:
                 content_hash="a" * 64,
                 node_count=1,
                 edge_count=0,
+                published_by=uuid4(),
                 published_at=now,
             ),
         )
@@ -93,6 +95,24 @@ class _CreateGraphStore:
             classification=Classification.INTERNAL,
             active_release_id=None,
             version=1,
+        )
+
+
+class _ArchiveStore:
+    def __init__(self, graph: KnowledgeGraphRecord) -> None:
+        self.graph = graph
+        self.calls: list[dict[str, object]] = []
+
+    async def get_graph_for_archive(self, **kwargs: object) -> KnowledgeGraphRecord:
+        self.calls.append({"read": dict(kwargs)})
+        return self.graph
+
+    async def archive_graph(self, **kwargs: object) -> KnowledgeGraphRecord:
+        self.calls.append({"archive": dict(kwargs)})
+        return replace(
+            self.graph,
+            status="ARCHIVED",
+            version=self.graph.version + 1,
         )
 
 
@@ -177,6 +197,56 @@ async def test_create_graph_binds_the_idempotent_command_to_the_authenticated_su
     )
 
     assert store.calls[0]["actor_id"] == subject.subject_id
+
+
+@pytest.mark.asyncio
+async def test_archive_resolves_hidden_replays_and_binds_actor_version_and_reason() -> None:
+    workspace_id = uuid4()
+    graph = KnowledgeGraphRecord(
+        graph_id=uuid4(),
+        workspace_id=workspace_id,
+        slug="finance",
+        name="Finance",
+        graph_type="DOMAIN",
+        status="PUBLISHED",
+        classification=Classification.INTERNAL,
+        active_release_id=uuid4(),
+        version=4,
+    )
+    store = _ArchiveStore(graph)
+    subject = _subject(workspace_id=workspace_id)
+    service = KnowledgeService(
+        store=cast(KnowledgeStore, store),
+        authorization=cast(AuthorizationService, _Authorization()),
+    )
+
+    archived = await service.archive_graph(
+        workspace_id=workspace_id,
+        graph_id=graph.graph_id,
+        subject=subject,
+        expected_version=4,
+        reason="QA confirmed archive",
+        idempotency_key="knowledge-archive-key",
+        request_hash="d" * 64,
+        environment=EnvironmentAttributes(requested_at=datetime.now(UTC)),
+        request_id="knowledge-archive",
+    )
+
+    assert archived.status == "ARCHIVED"
+    assert store.calls[0]["read"] == {
+        "workspace_id": workspace_id,
+        "graph_id": graph.graph_id,
+        "clearance": int(subject.clearance),
+    }
+    assert store.calls[1]["archive"] == {
+        "workspace_id": workspace_id,
+        "graph_id": graph.graph_id,
+        "actor_id": subject.subject_id,
+        "expected_version": 4,
+        "reason": "QA confirmed archive",
+        "idempotency_key": "knowledge-archive-key",
+        "request_hash": "d" * 64,
+    }
 
 
 @pytest.mark.asyncio

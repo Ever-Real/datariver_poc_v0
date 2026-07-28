@@ -10,6 +10,7 @@ from uuid import UUID
 import pytest
 
 from datariver.application.dto import (
+    KnowledgeGraphRecord,
     KnowledgeStudioABoxRecord,
     KnowledgeStudioBindingRecord,
     KnowledgeStudioDomainOption,
@@ -236,6 +237,59 @@ async def test_domain_picker_applies_nonpublic_subject_domain_scope() -> None:
         allowed_domain_ids=frozenset({DOMAIN_ID}),
         query=None,
         limit=50,
+    )
+
+
+@pytest.mark.asyncio
+async def test_edit_entry_reuses_or_creates_the_authorized_asset_draft() -> None:
+    graph = KnowledgeGraphRecord(
+        graph_id=GRAPH_ID,
+        workspace_id=WORKSPACE_ID,
+        slug="semiconductor-materials",
+        name="반도체 소재 그래프",
+        graph_type="DOMAIN",
+        status="PUBLISHED",
+        classification=Classification.INTERNAL,
+        active_release_id=UUID("019fa57b-52de-74c0-9f5e-06ae7b1bf3b9"),
+        version=3,
+        domain_id=DOMAIN_ID,
+        domain_source_version="domain-v3",
+    )
+    edit_draft = replace(
+        draft(),
+        kind="EDIT",
+        base_graph_id=GRAPH_ID,
+        base_ontology_version_id=ONTOLOGY_VERSION_ID,
+        base_release_id=graph.active_release_id,
+    )
+    store = SimpleNamespace(
+        get_edit_graph=AsyncMock(return_value=graph),
+        create_edit_draft=AsyncMock(return_value=edit_draft),
+    )
+
+    result = await service(store).create_edit_draft(
+        workspace_id=WORKSPACE_ID,
+        subject=subject(allowed_domains=frozenset({DOMAIN_ID})),
+        graph_id=GRAPH_ID,
+        idempotency_key="edit-idempotency-key",
+        request_hash="e" * 64,
+        environment=EnvironmentAttributes(requested_at=NOW),
+        request_id="edit-request",
+    )
+
+    assert result.kind == "EDIT"
+    assert result.base_graph_id == GRAPH_ID
+    store.get_edit_graph.assert_awaited_once_with(
+        workspace_id=WORKSPACE_ID,
+        graph_id=GRAPH_ID,
+        clearance=int(Classification.RESTRICTED),
+    )
+    store.create_edit_draft.assert_awaited_once_with(
+        workspace_id=WORKSPACE_ID,
+        author_id=SUBJECT_ID,
+        graph_id=GRAPH_ID,
+        idempotency_key="edit-idempotency-key",
+        request_hash="e" * 64,
     )
 
 

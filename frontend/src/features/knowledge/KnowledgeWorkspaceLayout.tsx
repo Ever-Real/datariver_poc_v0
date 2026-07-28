@@ -2,7 +2,7 @@ import { BookOpen, MessageSquareText } from 'lucide-react'
 import type { ReactNode } from 'react'
 import type { Page } from '../../app/navigation'
 
-export type KnowledgeWorkspaceSection = 'REGISTRY' | 'CHAT'
+export type KnowledgeWorkspaceSection = 'REGISTRY' | 'CHAT' | 'STUDIO'
 
 const items: Array<{
   section: KnowledgeWorkspaceSection

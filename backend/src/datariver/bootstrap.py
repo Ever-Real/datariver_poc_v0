@@ -12,6 +12,10 @@ from sqlalchemy import select
 from datariver.config import get_settings
 from datariver.domain.authz import Action, Classification
 from datariver.domain.common import utc_now
+from datariver.domain.knowledge_studio import (
+    DEFAULT_KNOWLEDGE_DOMAINS,
+    default_knowledge_domain_id,
+)
 from datariver.domain.membership_renewal import add_calendar_months
 from datariver.infrastructure.db.models.platform import (
     SubjectModel,
@@ -106,6 +110,7 @@ def _local_human_membership_attributes(
     groups: tuple[str, ...],
     allowed_actions: tuple[Action, ...],
     bootstrap: str,
+    allowed_domain_ids: tuple[UUID, ...] = (),
 ) -> dict[str, object]:
     """Build the single-Workspace local identity authorization envelope."""
 
@@ -114,7 +119,7 @@ def _local_human_membership_attributes(
         "allowed_actions": [action.value for action in allowed_actions],
         "denied_actions": [],
         "allowed_system_ids": [],
-        "allowed_domain_ids": [],
+        "allowed_domain_ids": [str(value) for value in allowed_domain_ids],
         "default_workspace": True,
         "bootstrap": bootstrap,
     }
@@ -189,6 +194,10 @@ async def bootstrap_local_identity() -> dict[str, object]:
                     version=1,
                 )
                 session.add(workspace)
+            default_domain_ids = tuple(
+                default_knowledge_domain_id(workspace.id, slug)
+                for slug, _display_name in DEFAULT_KNOWLEDGE_DOMAINS
+            )
             subject = await session.get(SubjectModel, LOCAL_SUBJECT_ID)
             identity_subject = (
                 await session.scalars(
@@ -224,6 +233,7 @@ async def bootstrap_local_identity() -> dict[str, object]:
                     action for action in Action if action is not Action.CHANGE_RAW_CREATE
                 ),
                 bootstrap="local-identity-v1",
+                allowed_domain_ids=default_domain_ids,
             )
             if membership is None:
                 session.add(

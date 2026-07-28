@@ -34,8 +34,13 @@ class GraphModel(Base, UuidPrimaryKeyMixin, TimestampMixin, VersionMixin):
         UniqueConstraint("workspace_id", "slug"),
         UniqueConstraint("workspace_id", "id"),
         CheckConstraint(
-            "status IN ('DRAFT', 'REVIEW', 'PUBLISHED')",
+            "status IN ('DRAFT', 'REVIEW', 'PUBLISHED', 'ARCHIVED')",
             name="status_vocabulary",
+        ),
+        CheckConstraint(
+            "(status = 'ARCHIVED' AND archived_at IS NOT NULL AND archived_by IS NOT NULL) "
+            "OR (status <> 'ARCHIVED' AND archived_at IS NULL AND archived_by IS NULL)",
+            name="archive_shape",
         ),
         CheckConstraint(
             "classification BETWEEN 0 AND 3",
@@ -64,6 +69,11 @@ class GraphModel(Base, UuidPrimaryKeyMixin, TimestampMixin, VersionMixin):
         ),
         ForeignKeyConstraint(
             ("workspace_id", "updated_by"),
+            ("iam.workspace_memberships.workspace_id", "iam.workspace_memberships.subject_id"),
+            ondelete="RESTRICT",
+        ),
+        ForeignKeyConstraint(
+            ("workspace_id", "archived_by"),
             ("iam.workspace_memberships.workspace_id", "iam.workspace_memberships.subject_id"),
             ondelete="RESTRICT",
         ),
@@ -102,6 +112,8 @@ class GraphModel(Base, UuidPrimaryKeyMixin, TimestampMixin, VersionMixin):
     domain_source_version: Mapped[str | None] = mapped_column(String(255))
     created_by: Mapped[UUID | None] = mapped_column(Uuid(as_uuid=True))
     updated_by: Mapped[UUID | None] = mapped_column(Uuid(as_uuid=True))
+    archived_at: Mapped[datetime | None]
+    archived_by: Mapped[UUID | None] = mapped_column(Uuid(as_uuid=True))
 
 
 class OntologyVersionModel(Base, UuidPrimaryKeyMixin, TimestampMixin):

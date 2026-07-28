@@ -2,6 +2,25 @@
 
 ## Current verification status
 
+### Knowledge Phase 6 cutover QA remediation — 2026-07-28
+
+Revision `0062` adds deterministic workspace DOMAIN seed data and an auditable graph Archive
+lifecycle. The Knowledge UI keeps one PageTitle/left workspace shell while switching Registry,
+GraphRAG Chat and Studio content. Registry actions now open a base-pinned EDIT Draft or execute a
+version-fenced soft archive; the bounded right drawer is mouse/keyboard resizable and release
+selection drives the metadata and snapshot preview from the same immutable release ID.
+
+Frontend strict TypeScript, zero-warning ESLint, `56 files / 312 tests` and production build pass.
+Backend Ruff format/lint, strict mypy over `222` source files, static verification and the complete
+suite pass at `1,726 passed / 97 environment-gated skipped`. Repeated canonical `0001` generation is
+byte-identical at SHA-256
+`7f4e1d543f9eab64d7d03ce503c7ec5306af140cbecd846240b1227033e5bd70`; Alembic has the sole head
+`0062`.
+
+The skipped external PostgreSQL/RLS suites, authenticated target-browser interaction, mouse resize
+capture, actual target migration and preparation-PC health remain target-environment gates. The
+local passes are not production acceptance.
+
 ### Knowledge Studio Phase 6 Graph Builder scaffold / RC preparation — 2026-07-28
 
 The Step 2 route now exposes a genuinely empty React Flow canvas. Only a user-named local test node

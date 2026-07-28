@@ -46,6 +46,7 @@
 | 47 | [Knowledge Studio Phase 6 cutover preparation](47_KNOWLEDGE_STUDIO_PHASE6_CUTOVER_PREP.md) | RC tag, revision `0061`, Docker restart and Graph Builder scaffold acceptance commands | RC cutover preparation |
 | 48 | [Air-gapped source-free amd64 Pilot PRD/checklist](48_AIR_GAPPED_SOURCE_FREE_PILOT_PRD_CHECKLIST.md) | exact-commit image bundle, source-free target, one-shot migration and external gates | Local implementation complete; target gates open |
 | 50 | [Pilot deployment and integration guide](50_PILOT_DEPLOYMENT_AND_INTEGRATION_GUIDE.md) | copy/paste artifact transfer, environment/secret setup, deployment, integration and Day 2 operations | Operator runbook; target gates open |
+| 51 | [Knowledge Phase 6 cutover QA remediation](51_KNOWLEDGE_PHASE6_QA_REMEDIATION.md) | domain safety net, persistent Knowledge shell, resizable/version-focused Registry drawer and governed edit/archive actions | Local source verified; target browser/PostgreSQL gates open |
 
 Independent review records: [Data Architect](reviews/2026-07-14_DATA_ARCHITECT_REVIEW.md) and [Data Engineer/SRE](reviews/2026-07-14_DATA_ENGINEER_REVIEW.md).
 

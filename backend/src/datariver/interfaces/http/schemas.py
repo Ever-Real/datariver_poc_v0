@@ -2284,6 +2284,19 @@ class KnowledgeGraphResponse(BaseModel):
     classification: str
     active_release_id: UUID | None
     version: int
+    domain_id: UUID | None
+    domain_name: str | None
+    domain_source_version: str | None
+    created_by: UUID | None
+    updated_by: UUID | None
+    created_at: datetime | None
+    updated_at: datetime | None
+
+
+class KnowledgeGraphArchiveRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    reason: str = Field(min_length=1, max_length=2_000)
 
 
 class ProvenanceRequest(BaseModel):
@@ -2336,6 +2349,7 @@ class KnowledgeReleaseResponse(BaseModel):
     content_hash: str
     node_count: int
     edge_count: int
+    published_by: UUID
     published_at: datetime
 
 

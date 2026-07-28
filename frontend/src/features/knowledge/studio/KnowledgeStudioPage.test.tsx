@@ -89,6 +89,47 @@ afterEach(() => {
 })
 
 describe('KnowledgeStudioPage Draft recovery', () => {
+  it('converts an asset route into its server-issued EDIT Draft route', async () => {
+    const assetId = '019fa57b-52de-74c0-9f5e-06ae7b1bf3c0'
+    window.history.replaceState(
+      {},
+      '',
+      `/?page=knowledge-studio&workspace=workspace&asset_id=${assetId}`,
+    )
+    const fetchMock = vi.fn<typeof fetch>((input, init) => {
+      const path = requestUrl(input)
+      if (path.includes('/domains?')) return Promise.resolve(domains())
+      if (
+        path.endsWith(`/knowledge/studio/drafts/from-asset/${assetId}`)
+        && init?.method === 'POST'
+      ) {
+        return Promise.resolve(json({ ...draft(1), kind: 'EDIT' }, 201, '"1"'))
+      }
+      return Promise.reject(new Error(`Unexpected request: ${path}`))
+    })
+    vi.stubGlobal('fetch', fetchMock)
+    const client = new ApiClient('/api/v1', () => 'token', () => 'workspace')
+
+    render(
+      <KnowledgeStudioPage
+        client={client}
+        workspaceId="workspace"
+        subjectId="subject"
+        onNavigate={vi.fn()}
+        recoveryQueue={new MemoryRecoveryQueue()}
+        debounceMs={10}
+      />,
+    )
+
+    await waitFor(() => expect(screen.getByLabelText('지식 그래프 이름')).toHaveValue('서버 그래프'))
+    expect(window.location.search).toContain(`draft=${draftId}`)
+    expect(window.location.search).not.toContain('asset_id=')
+    const editCall = fetchMock.mock.calls.find(([input]) => (
+      requestUrl(input).includes('/drafts/from-asset/')
+    ))
+    expect(new Headers(editCall?.[1]?.headers).get('Idempotency-Key')).toBeTruthy()
+  })
+
   it('persists input first, debounces create, then advances to Graph Builder', async () => {
     window.history.replaceState({}, '', '/?page=knowledge-studio&workspace=workspace')
     const queue = new MemoryRecoveryQueue()

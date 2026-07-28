@@ -60,6 +60,7 @@ from datariver.interfaces.http.schemas import (
 )
 
 router = APIRouter(prefix="/knowledge/studio", tags=["knowledge-studio"])
+domains_router = APIRouter(prefix="/knowledge", tags=["knowledge-studio"])
 ETAG_RESPONSE = {
     "description": "Knowledge Studio Draft",
     "headers": {"ETag": {"schema": {"type": "string"}}},
@@ -270,7 +271,16 @@ def _evidence_response(
     )
 
 
-@router.get("/domains", response_model=KnowledgeStudioDomainOptionsResponse)
+@domains_router.get(
+    "/domains",
+    response_model=KnowledgeStudioDomainOptionsResponse,
+    operation_id="list_knowledge_domains",
+)
+@router.get(
+    "/domains",
+    response_model=KnowledgeStudioDomainOptionsResponse,
+    operation_id="list_knowledge_studio_domains_compatibility",
+)
 async def list_knowledge_studio_domains(
     request: Request,
     response: Response,
@@ -328,6 +338,39 @@ async def create_knowledge_studio_draft(
         domain_id=payload.domain_id,
         domain_source_version=payload.domain_source_version,
         classification=Classification[payload.classification],
+        idempotency_key=idempotency_key,
+        request_hash=request_hash,
+        environment=context.environment,
+        request_id=context.request_id,
+    )
+    _set_draft_headers(response, record)
+    return _draft_response(record)
+
+
+@router.post(
+    "/drafts/from-asset/{asset_id}",
+    response_model=KnowledgeStudioDraftResponse,
+    status_code=status.HTTP_201_CREATED,
+    responses={status.HTTP_201_CREATED: ETAG_RESPONSE},
+)
+async def create_knowledge_studio_edit_draft(
+    asset_id: UUID,
+    request: Request,
+    response: Response,
+    context: ContextDep,
+    session: SessionDep,
+    idempotency_key: IdempotencyKey,
+) -> KnowledgeStudioDraftResponse:
+    request_hash = canonical_json_hash(
+        {
+            "contract": "KNOWLEDGE_STUDIO_EDIT_DRAFT_V1",
+            "asset_id": str(asset_id),
+        }
+    )
+    record = await _service(request, session).create_edit_draft(
+        workspace_id=context.workspace_id,
+        subject=context.subject,
+        graph_id=asset_id,
         idempotency_key=idempotency_key,
         request_hash=request_hash,
         environment=context.environment,

@@ -12,6 +12,7 @@ const release: KnowledgeRelease = {
   content_hash: 'hash-1',
   node_count: 2,
   edge_count: 1,
+  published_by: '00000000-0000-0000-0000-000000000001',
   published_at: '2026-07-20T08:00:00Z',
 }
 

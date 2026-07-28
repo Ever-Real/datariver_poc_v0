@@ -2,6 +2,7 @@ export type KnowledgeStudioStep = 'basic' | 'tbox' | 'abox'
 
 export interface KnowledgeStudioLocation {
   draftId?: string
+  assetId?: string
   step: KnowledgeStudioStep
   valid: boolean
 }
@@ -31,23 +32,33 @@ export function knowledgeStudioLocationFromHref(
 ): KnowledgeStudioLocation {
   const params = new URL(href).searchParams
   const draft = params.get('draft')
+  const asset = params.get('asset_id')
   const candidateStep = params.get('step') ?? 'basic'
   const step = steps.has(candidateStep as KnowledgeStudioStep)
     ? candidateStep as KnowledgeStudioStep
     : 'basic'
   const draftValid = draft === null || isUuid(draft)
+  const assetValid = asset === null || isUuid(asset)
   const stepValid = steps.has(candidateStep as KnowledgeStudioStep)
   const draftRequired = step !== 'basic'
   return {
     draftId: draftValid && draft !== null ? draft : undefined,
+    assetId: assetValid && asset !== null ? asset : undefined,
     step,
-    valid: draftValid && stepValid && (!draftRequired || draft !== null),
+    valid: (
+      draftValid
+      && assetValid
+      && stepValid
+      && !(draft !== null && asset !== null)
+      && (!draftRequired || draft !== null)
+    ),
   }
 }
 
 export function knowledgeStudioUrl(
   options: {
     draftId?: string
+    assetId?: string
     step?: KnowledgeStudioStep
     href?: string
   } = {},
@@ -59,6 +70,8 @@ export function knowledgeStudioUrl(
   url.searchParams.delete('drawerTab')
   if (options.draftId) url.searchParams.set('draft', options.draftId)
   else url.searchParams.delete('draft')
+  if (options.assetId && !options.draftId) url.searchParams.set('asset_id', options.assetId)
+  else url.searchParams.delete('asset_id')
   const step = options.step ?? 'basic'
   if (step === 'basic' && !options.draftId) url.searchParams.delete('step')
   else url.searchParams.set('step', step)

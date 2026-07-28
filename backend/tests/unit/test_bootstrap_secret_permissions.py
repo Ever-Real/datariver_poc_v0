@@ -6,6 +6,7 @@ import re
 import shutil
 import subprocess
 from pathlib import Path
+from uuid import UUID
 
 import pytest
 
@@ -105,15 +106,18 @@ def test_local_demo_identities_match_keycloak_and_use_balanced_human_roles(
 
 
 def test_local_human_memberships_select_the_single_workspace_by_default() -> None:
+    domain_id = UUID("3e43b772-b1f5-747c-52c0-bd1c154e595e")
     attributes = _local_human_membership_attributes(
         groups=("data-analysts",),
         allowed_actions=(Action.CATALOG_READ,),
         bootstrap="test-local-identity",
+        allowed_domain_ids=(domain_id,),
     )
 
     assert attributes["default_workspace"] is True
     assert attributes["groups"] == ["data-analysts"]
     assert attributes["allowed_actions"] == [Action.CATALOG_READ.value]
+    assert attributes["allowed_domain_ids"] == [str(domain_id)]
 
 
 def test_bootstrap_migrates_demo_identity_state_out_of_keycloak_import(

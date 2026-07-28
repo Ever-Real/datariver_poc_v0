@@ -18,6 +18,7 @@ import {
   advanceKnowledgeStudioDraft,
   autosaveKnowledgeStudioDraft,
   createKnowledgeStudioDraft,
+  createKnowledgeStudioEditDraft,
   getKnowledgeStudioDraft,
   listKnowledgeStudioDomains,
   newKnowledgeStudioIdempotencyKey,
@@ -159,10 +160,46 @@ export function KnowledgeStudioPage({
     if (!location.valid || !scopeHash) return
     let active = true
     const hydrate = async () => {
-      if (location.draftId) {
+      let recoveryDraftId = location.draftId
+      let hydratedFromServer = false
+      if (location.assetId) {
+        try {
+          const response = await createKnowledgeStudioEditDraft(
+            client,
+            location.assetId,
+            newKnowledgeStudioIdempotencyKey(),
+          )
+          if (!active || !response.etag) return
+          recoveryDraftId = response.data.id
+          hydratedFromServer = true
+          applyServerDraft(response.data, response.etag, true)
+          const resumeStep = response.data.current_step === 'ABOX'
+            ? 'abox'
+            : response.data.current_step === 'TBOX'
+              ? 'tbox'
+              : 'basic'
+          setStep(resumeStep)
+          window.history.replaceState(
+            {},
+            '',
+            knowledgeStudioUrl({ draftId: response.data.id, step: resumeStep }),
+          )
+        } catch (error) {
+          if (active) {
+            setSaveStatus(
+              error instanceof Error
+                ? error.message
+                : '선택한 지식 에셋의 편집 Draft를 열지 못했습니다.',
+            )
+            setInitialized(true)
+          }
+          return
+        }
+      } else if (location.draftId) {
         try {
           const response = await getKnowledgeStudioDraft(client, location.draftId)
           if (!active || !response.etag) return
+          hydratedFromServer = true
           applyServerDraft(response.data, response.etag, true)
           if (response.data.state !== 'DRAFT') {
             setSaveStatus(
@@ -178,7 +215,8 @@ export function KnowledgeStudioPage({
             setSaveStatus(error instanceof Error ? error.message : 'Draft를 불러오지 못했습니다.')
           }
         }
-      } else {
+      }
+      if (!hydratedFromServer) {
         lastSavedFingerprintRef.current = fingerprint(EMPTY_BASIC_INFORMATION)
       }
       try {
@@ -186,7 +224,7 @@ export function KnowledgeStudioPage({
           if (active) setSaveStatus('IndexedDB 복구 큐를 사용할 수 없어 저장이 비활성화되었습니다.')
           return
         }
-        const recovered = await queue.read(scopeHash, location.draftId)
+        const recovered = await queue.read(scopeHash, recoveryDraftId)
         if (!active) return
         if (recovered) {
           pendingRef.current = recovered
@@ -195,7 +233,11 @@ export function KnowledgeStudioPage({
           setSaveStatus('이 브라우저에 남아 있던 미전송 변경사항을 복구했습니다.')
           setSaveSequence((value) => value + 1)
         } else {
-          setSaveStatus(location.draftId ? '서버 Draft를 불러왔습니다.' : '입력을 시작하면 복구 큐에 보존됩니다.')
+          setSaveStatus(
+            recoveryDraftId
+              ? '서버 Draft를 불러왔습니다.'
+              : '입력을 시작하면 복구 큐에 보존됩니다.',
+          )
         }
       } catch {
         if (!active) return
@@ -206,7 +248,15 @@ export function KnowledgeStudioPage({
     }
     void hydrate()
     return () => { active = false }
-  }, [applyServerDraft, client, location.draftId, location.valid, queue, scopeHash])
+  }, [
+    applyServerDraft,
+    client,
+    location.assetId,
+    location.draftId,
+    location.valid,
+    queue,
+    scopeHash,
+  ])
 
   useEffect(() => {
     if (!location.valid || !initialized) return

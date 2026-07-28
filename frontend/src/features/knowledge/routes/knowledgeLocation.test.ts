@@ -28,4 +28,22 @@ describe('Knowledge Studio route contract', () => {
       'https://catalog.example/app?page=knowledge-studio&step=tbox',
     ).valid).toBe(false)
   })
+
+  it('accepts one asset edit target and never mixes it with a Draft', () => {
+    const assetId = '019fa57b-52de-74c0-9f5e-06ae7b1bf3c1'
+    expect(knowledgeStudioLocationFromHref(
+      `https://catalog.example/app?page=knowledge-studio&asset_id=${assetId}`,
+    )).toEqual({
+      assetId,
+      step: 'basic',
+      valid: true,
+    })
+    expect(knowledgeStudioUrl({
+      assetId,
+      href: 'https://catalog.example/app?page=knowledge&workspace=ws',
+    })).toBe(`/app?page=knowledge-studio&workspace=ws&asset_id=${assetId}`)
+    expect(knowledgeStudioLocationFromHref(
+      `https://catalog.example/app?page=knowledge-studio&asset_id=${assetId}&draft=${assetId}`,
+    ).valid).toBe(false)
+  })
 })

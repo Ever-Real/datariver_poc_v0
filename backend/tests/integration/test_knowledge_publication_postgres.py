@@ -1005,7 +1005,11 @@ async def test_legacy_active_release_cannot_be_exposed_rebased_or_replayed() -> 
             )
             assert graph is not None
             assert graph.active_release_id is None
-            listed = await store.list_graphs(workspace_id=workspace_id, clearance=3)
+            listed = await store.list_graphs(
+                workspace_id=workspace_id,
+                clearance=3,
+                allowed_domain_ids=frozenset(),
+            )
             assert listed[0].active_release_id is None
             evidence = await SqlKnowledgeEvidenceReader(session).search_active_nodes(
                 workspace_id=workspace_id,

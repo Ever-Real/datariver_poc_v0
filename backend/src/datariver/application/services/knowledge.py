@@ -16,7 +16,7 @@ from datariver.domain.authz import (
     ResourceAttributes,
     SubjectAttributes,
 )
-from datariver.domain.common import ForbiddenError
+from datariver.domain.common import ForbiddenError, NotFoundError, ValidationError
 from datariver.domain.knowledge import ChangeSetState, GraphChangeOperation, GraphSnapshot
 
 
@@ -89,6 +89,50 @@ class KnowledgeService:
         return await self._store.list_graphs(
             workspace_id=workspace_id,
             clearance=int(subject.clearance),
+            allowed_domain_ids=subject.allowed_domain_ids,
+        )
+
+    async def archive_graph(
+        self,
+        *,
+        workspace_id: UUID,
+        graph_id: UUID,
+        subject: SubjectAttributes,
+        expected_version: int,
+        reason: str,
+        idempotency_key: str,
+        request_hash: str,
+        environment: EnvironmentAttributes,
+        request_id: str,
+    ) -> KnowledgeGraphRecord:
+        normalized_reason = reason.strip()
+        if normalized_reason != reason or not 1 <= len(reason) <= 2_000:
+            raise ValidationError(
+                "Archive reason must contain between 1 and 2,000 trimmed characters."
+            )
+        graph = await self._store.get_graph_for_archive(
+            workspace_id=workspace_id,
+            graph_id=graph_id,
+            clearance=int(subject.clearance),
+        )
+        if graph is None:
+            raise NotFoundError("The knowledge graph does not exist.")
+        await self._authorize_graph(
+            graph=graph,
+            workspace_id=workspace_id,
+            subject=subject,
+            environment=environment,
+            request_id=request_id,
+            action=Action.KG_EDIT,
+        )
+        return await self._store.archive_graph(
+            workspace_id=workspace_id,
+            graph_id=graph_id,
+            actor_id=subject.subject_id,
+            expected_version=expected_version,
+            reason=reason,
+            idempotency_key=idempotency_key,
+            request_hash=request_hash,
         )
 
     async def create_changeset(
@@ -326,6 +370,7 @@ class KnowledgeService:
                 workspace_id=workspace_id,
                 classification=graph.classification,
                 lifecycle=graph.status,
+                domain_id=graph.domain_id,
             ),
             action=Action.KG_READ,
             environment=environment,
@@ -351,6 +396,7 @@ class KnowledgeService:
                 workspace_id=workspace_id,
                 classification=graph.classification,
                 lifecycle=graph.status,
+                domain_id=graph.domain_id,
             ),
             action=Action.KG_READ,
             environment=environment,
@@ -385,6 +431,7 @@ class KnowledgeService:
                 workspace_id=workspace_id,
                 classification=graph.classification,
                 lifecycle=graph.status,
+                domain_id=graph.domain_id,
             ),
             action=action,
             environment=environment,
@@ -482,6 +529,7 @@ class KnowledgeService:
                 workspace_id=workspace_id,
                 classification=graph.classification,
                 lifecycle=graph.status,
+                domain_id=graph.domain_id,
             ),
             action=action,
             environment=environment,
@@ -495,6 +543,7 @@ class KnowledgeService:
         workspace_id: UUID,
         classification: Classification,
         lifecycle: str,
+        domain_id: UUID | None = None,
     ) -> ResourceAttributes:
         return ResourceAttributes(
             resource_id=graph_id,
@@ -502,7 +551,7 @@ class KnowledgeService:
             resource_type="knowledge_graph",
             owner_department_id=None,
             system_id=None,
-            domain_id=None,
+            domain_id=domain_id,
             classification=classification,
             lifecycle=lifecycle,
         )

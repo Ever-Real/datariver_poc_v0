@@ -4,6 +4,7 @@ import {
   advanceKnowledgeStudioDraft,
   autosaveKnowledgeStudioDraft,
   createKnowledgeStudioDraft,
+  createKnowledgeStudioEditDraft,
   discardKnowledgeStudioDraft,
   listKnowledgeStudioDomains,
   preflightKnowledgeStudioABox,
@@ -85,7 +86,7 @@ describe('Knowledge Studio API', () => {
     )
 
     expect(requestUrl(fetchMock.mock.calls[0]?.[0])).toContain(
-      '/knowledge/studio/domains?classification=INTERNAL&limit=100',
+      '/knowledge/domains?classification=INTERNAL&limit=100',
     )
     const createHeaders = new Headers(fetchMock.mock.calls[1]?.[1]?.headers)
     expect(createHeaders.get('Idempotency-Key')).toBe('create-key')
@@ -95,6 +96,27 @@ describe('Knowledge Studio API', () => {
     const advanceHeaders = new Headers(fetchMock.mock.calls[3]?.[1]?.headers)
     expect(advanceHeaders.get('If-Match')).toBe('"2"')
     expect(advanceHeaders.get('Idempotency-Key')).toBe('advance-key')
+  })
+
+  it('opens a published asset through the idempotent edit-Draft contract', async () => {
+    const fetchMock = vi.fn<typeof fetch>().mockResolvedValue(
+      new Response(JSON.stringify({ ...draftResponse(1), kind: 'EDIT' }), {
+        status: 201,
+        headers: { 'Content-Type': 'application/json', ETag: '"1"' },
+      }),
+    )
+    vi.stubGlobal('fetch', fetchMock)
+    const client = new ApiClient('/api/v1', () => 'token', () => 'workspace')
+    const assetId = '019fa57b-52de-74c0-9f5e-06ae7b1bf3c0'
+
+    await createKnowledgeStudioEditDraft(client, assetId, 'edit-key')
+
+    expect(requestUrl(fetchMock.mock.calls[0]?.[0])).toContain(
+      `/knowledge/studio/drafts/from-asset/${assetId}`,
+    )
+    const headers = new Headers(fetchMock.mock.calls[0]?.[1]?.headers)
+    expect(headers.get('Idempotency-Key')).toBe('edit-key')
+    expect(fetchMock.mock.calls[0]?.[1]?.method).toBe('POST')
   })
 
   it('fails closed when a Draft response omits its ETag', async () => {

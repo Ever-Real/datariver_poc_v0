@@ -1454,6 +1454,24 @@ class KnowledgeStudioStore(Protocol):
         draft_id: UUID,
     ) -> KnowledgeStudioDraftRecord | None: ...
 
+    async def get_edit_graph(
+        self,
+        *,
+        workspace_id: UUID,
+        graph_id: UUID,
+        clearance: int,
+    ) -> KnowledgeGraphRecord | None: ...
+
+    async def create_edit_draft(
+        self,
+        *,
+        workspace_id: UUID,
+        author_id: UUID,
+        graph_id: UUID,
+        idempotency_key: str,
+        request_hash: str,
+    ) -> KnowledgeStudioDraftRecord: ...
+
     async def create_draft(
         self,
         *,
@@ -1651,12 +1669,32 @@ class KnowledgeStore(Protocol):
     ) -> KnowledgeGraphRecord: ...
 
     async def list_graphs(
-        self, *, workspace_id: UUID, clearance: int
+        self,
+        *,
+        workspace_id: UUID,
+        clearance: int,
+        allowed_domain_ids: frozenset[UUID],
     ) -> tuple[KnowledgeGraphRecord, ...]: ...
 
     async def get_graph(
         self, *, workspace_id: UUID, graph_id: UUID, clearance: int
     ) -> KnowledgeGraphRecord | None: ...
+
+    async def get_graph_for_archive(
+        self, *, workspace_id: UUID, graph_id: UUID, clearance: int
+    ) -> KnowledgeGraphRecord | None: ...
+
+    async def archive_graph(
+        self,
+        *,
+        workspace_id: UUID,
+        graph_id: UUID,
+        actor_id: UUID,
+        expected_version: int,
+        reason: str,
+        idempotency_key: str,
+        request_hash: str,
+    ) -> KnowledgeGraphRecord: ...
 
     async def create_changeset(
         self,

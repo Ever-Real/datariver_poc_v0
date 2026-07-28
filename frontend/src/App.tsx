@@ -12,15 +12,14 @@ import { publicRuntimeConfig } from './runtimeConfig'
 import { allowedAdminSections } from './features/admin/adminSections'
 import { getAdminMessages } from './features/admin/messages'
 import { catalogExportCapabilityEnabled } from './features/catalog/catalogExportApi'
+import { knowledgeStudioUrl } from './features/knowledge/routes/knowledgeLocation'
 
 const AdminPage = lazy(() => import('./features/admin/AdminPage').then((module) => ({ default: module.AdminPage })))
 const CatalogPage = lazy(() => import('./features/catalog/CatalogPage').then((module) => ({ default: module.CatalogPage })))
 const ChatPage = lazy(() => import('./features/chat/ChatPage').then((module) => ({ default: module.ChatPage })))
 const DashboardPage = lazy(() => import('./features/dashboard/DashboardPage').then((module) => ({ default: module.DashboardPage })))
 const GovernancePage = lazy(() => import('./features/governance/GovernancePage').then((module) => ({ default: module.GovernancePage })))
-const KnowledgePage = lazy(() => import('./features/knowledge/KnowledgePage').then((module) => ({ default: module.KnowledgePage })))
-const KnowledgeChatPage = lazy(() => import('./features/knowledge/KnowledgeChatPage').then((module) => ({ default: module.KnowledgeChatPage })))
-const KnowledgeStudioPage = lazy(() => import('./features/knowledge/studio/KnowledgeStudioPage').then((module) => ({ default: module.KnowledgeStudioPage })))
+const KnowledgeWorkspacePage = lazy(() => import('./features/knowledge/KnowledgeWorkspacePage').then((module) => ({ default: module.KnowledgeWorkspacePage })))
 const MonitoringPage = lazy(() => import('./features/monitoring/MonitoringPage').then((module) => ({ default: module.MonitoringPage })))
 const PolicyGovernancePage = lazy(() => import('./features/policy/PolicyGovernancePage').then((module) => ({ default: module.PolicyGovernancePage })))
 const ProfilePage = lazy(() => import('./features/profile/ProfilePage').then((module) => ({ default: module.ProfilePage })))
@@ -203,6 +202,12 @@ export function App() {
     setPage(next)
   }
 
+  const navigateKnowledgeStudio = (assetId?: string) => {
+    window.history.pushState({}, '', knowledgeStudioUrl({ assetId }))
+    setCatalogQuery('')
+    setPage('knowledge-studio')
+  }
+
   const navigateAdmin = (adminSection: string) => {
     const url = new URL(window.location.href)
     url.searchParams.set('page', 'admin')
@@ -321,15 +326,14 @@ export function App() {
         {page === 'registration' && <RegistrationPage client={client} />}
         {page === 'change-management' && <GovernancePage client={client} requesterName={auth.profile?.display_name ?? auth.user.profile.name ?? auth.user.profile.sub} requesterEmail={auth.profile?.email} onNavigate={navigate} onStepUp={auth.beginStepUp} onPasswordReauth={auth.beginPasswordReauth} onEnroll={auth.beginWebAuthnEnrollment} />}
         {page === 'quality' && <QualityPage />}
-        {page === 'knowledge' && <KnowledgePage client={client} onNavigate={navigate} />}
-        {page === 'knowledge-chat' && <KnowledgeChatPage client={client} onNavigate={navigate} />}
-        {page === 'knowledge-studio' && (
-          <KnowledgeStudioPage
-            key={`${activeWorkspace}:${authenticatedSubject}:${auth.securityEpoch}`}
+        {(page === 'knowledge' || page === 'knowledge-chat' || page === 'knowledge-studio') && (
+          <KnowledgeWorkspacePage
+            page={page}
             client={client}
             workspaceId={activeWorkspace}
             subjectId={authenticatedSubject}
             onNavigate={navigate}
+            onOpenStudio={navigateKnowledgeStudio}
             onStepUp={auth.beginStepUp}
             onPasswordReauth={auth.beginPasswordReauth}
             onEnroll={auth.beginWebAuthnEnrollment}

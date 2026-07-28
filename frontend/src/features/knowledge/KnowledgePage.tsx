@@ -18,7 +18,11 @@ export function KnowledgePage({ client, onNavigate }: { client: ApiClient; onNav
     />
     <KnowledgeWorkspaceLayout activeSection="REGISTRY" onNavigate={onNavigate}>
       <div key={revision}>
-        <KnowledgeRegistry client={client} onCreate={() => onNavigate('knowledge-studio')} />
+        <KnowledgeRegistry
+          client={client}
+          onCreate={() => onNavigate('knowledge-studio')}
+          onEdit={() => onNavigate('knowledge-studio')}
+        />
       </div>
     </KnowledgeWorkspaceLayout>
   </section>

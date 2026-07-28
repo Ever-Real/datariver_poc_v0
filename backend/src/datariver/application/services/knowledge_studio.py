@@ -103,6 +103,46 @@ class KnowledgeStudioService:
         )
         return draft
 
+    async def create_edit_draft(
+        self,
+        *,
+        workspace_id: UUID,
+        subject: SubjectAttributes,
+        graph_id: UUID,
+        idempotency_key: str,
+        request_hash: str,
+        environment: EnvironmentAttributes,
+        request_id: str,
+    ) -> KnowledgeStudioDraftRecord:
+        graph = await self._store.get_edit_graph(
+            workspace_id=workspace_id,
+            graph_id=graph_id,
+            clearance=int(subject.clearance),
+        )
+        if graph is None:
+            raise NotFoundError("The Knowledge asset does not exist.")
+        await self._authorization.authorize(
+            subject=subject,
+            resource=self._resource(
+                resource_id=graph.graph_id,
+                workspace_id=workspace_id,
+                owner_subject_id=None,
+                domain_id=graph.domain_id,
+                classification=graph.classification,
+                lifecycle=graph.status,
+            ),
+            action=Action.KG_EDIT,
+            environment=environment,
+            request_id=request_id,
+        )
+        return await self._store.create_edit_draft(
+            workspace_id=workspace_id,
+            author_id=subject.subject_id,
+            graph_id=graph_id,
+            idempotency_key=idempotency_key,
+            request_hash=request_hash,
+        )
+
     async def create_draft(
         self,
         *,

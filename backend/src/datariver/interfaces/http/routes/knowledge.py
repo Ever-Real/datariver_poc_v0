@@ -62,6 +62,7 @@ from datariver.interfaces.http.schemas import (
     KnowledgeChangeSetPublishResponse,
     KnowledgeChangeSetResponse,
     KnowledgeChangeSetReview,
+    KnowledgeGraphArchiveRequest,
     KnowledgeGraphCreate,
     KnowledgeGraphRagCitationResponse,
     KnowledgeGraphRagRequest,
@@ -109,6 +110,13 @@ def _graph_response(graph: KnowledgeGraphRecord) -> KnowledgeGraphResponse:
         classification=graph.classification.name,
         active_release_id=graph.active_release_id,
         version=graph.version,
+        domain_id=graph.domain_id,
+        domain_name=graph.domain_name,
+        domain_source_version=graph.domain_source_version,
+        created_by=graph.created_by,
+        updated_by=graph.updated_by,
+        created_at=graph.created_at,
+        updated_at=graph.updated_at,
     )
 
 
@@ -156,6 +164,7 @@ def _release_response(release: KnowledgeReleaseRecord) -> KnowledgeReleaseRespon
         content_hash=release.content_hash,
         node_count=release.node_count,
         edge_count=release.edge_count,
+        published_by=release.published_by,
         published_at=release.published_at,
     )
 
@@ -320,6 +329,43 @@ async def list_graphs(
         request_id=context.request_id,
     )
     return [_graph_response(graph) for graph in graphs]
+
+
+@router.post("/{graph_id}/archive", response_model=KnowledgeGraphResponse)
+async def archive_graph(
+    graph_id: UUID,
+    payload: KnowledgeGraphArchiveRequest,
+    request: Request,
+    context: ContextDep,
+    session: SessionDep,
+    if_match: Annotated[str, Header(alias="If-Match", max_length=100)],
+    idempotency_key: Annotated[
+        str,
+        Header(alias="Idempotency-Key", min_length=16, max_length=200),
+    ],
+) -> KnowledgeGraphResponse | JSONResponse:
+    service = _service(request, session)
+    expected_version = _expected_version(if_match)
+    request_hash = canonical_json_hash(
+        {
+            "contract": "KNOWLEDGE_GRAPH_ARCHIVE_V1",
+            "graph_id": str(graph_id),
+            "expected_version": expected_version,
+            "reason": payload.reason,
+        }
+    )
+    archived = await service.archive_graph(
+        workspace_id=context.workspace_id,
+        graph_id=graph_id,
+        subject=context.subject,
+        expected_version=expected_version,
+        reason=payload.reason,
+        idempotency_key=idempotency_key,
+        request_hash=request_hash,
+        environment=context.environment,
+        request_id=context.request_id,
+    )
+    return _graph_response(archived)
 
 
 @router.post("/{graph_id}/changesets", status_code=201, response_model=KnowledgeChangeSetResponse)

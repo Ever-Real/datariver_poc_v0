@@ -201,10 +201,25 @@ export async function listKnowledgeStudioDomains(
   const params = new URLSearchParams({ classification, limit: '100' })
   if (query?.trim()) params.set('q', query.trim())
   const response = await client.request<{ items: KnowledgeStudioDomainOption[] }>(
-    `/knowledge/studio/domains?${params.toString()}`,
+    `/knowledge/domains?${params.toString()}`,
     { cache: 'no-store', signal },
   )
   return response.items
+}
+
+export async function createKnowledgeStudioEditDraft(
+  client: ApiClient,
+  assetId: string,
+  idempotencyKey: string,
+): Promise<ApiResponse<KnowledgeStudioDraft>> {
+  return requireEtag(await client.requestWithMeta<KnowledgeStudioDraft>(
+    `/knowledge/studio/drafts/from-asset/${encodeURIComponent(assetId)}`,
+    {
+      method: 'POST',
+      cache: 'no-store',
+      idempotencyKey,
+    },
+  ))
 }
 
 export async function getKnowledgeStudioDraft(

@@ -7,11 +7,13 @@ from typing import Any
 from uuid import UUID
 
 from sqlalchemy import delete, func, or_, select
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from datariver.application.dto import (
     IdempotencyRecord,
+    KnowledgeGraphRecord,
     KnowledgeStudioABoxRecord,
     KnowledgeStudioBindingRecord,
     KnowledgeStudioDomainOption,
@@ -35,11 +37,14 @@ from datariver.domain.common import (
     uuid7,
 )
 from datariver.domain.knowledge_studio import (
+    DEFAULT_KNOWLEDGE_DOMAIN_SOURCE_VERSION,
+    DEFAULT_KNOWLEDGE_DOMAINS,
     ABoxBindingReadiness,
     ABoxMappingMethod,
     StudioDraftKind,
     StudioDraftState,
     StudioStep,
+    default_knowledge_domain_id,
     require_studio_transition,
     require_studio_version,
     validate_endpoint_alias,
@@ -69,6 +74,16 @@ from datariver.infrastructure.db.models.knowledge_studio import (
 CREATE_OPERATION = "knowledge.studio_draft.create"
 PREFLIGHT_CONTRACT_VERSION = "KNOWLEDGE_STUDIO_PREFLIGHT_V1"
 RELEASE_CONTRACT_VERSION = "KNOWLEDGE_STUDIO_RELEASE_V1"
+
+
+def _optional_document_string(document: dict[str, object], key: str) -> str | None:
+    value = document.get(key)
+    return value if isinstance(value, str) else None
+
+
+def _optional_document_bool(document: dict[str, object], key: str) -> bool | None:
+    value = document.get(key)
+    return value if isinstance(value, bool) else None
 
 
 def _draft_record(model: KnowledgeStudioDraftModel) -> KnowledgeStudioDraftRecord:
@@ -668,7 +683,7 @@ class SqlKnowledgeStudioStore(KnowledgeStudioStore):
                 CatalogVocabularyEntryModel.display_name.contains(query, autoescape=True)
             )
         rows = (await self._session.execute(statement)).all()
-        return tuple(
+        values = tuple(
             KnowledgeStudioDomainOption(
                 domain_id=row.id,
                 display_name=row.display_name,
@@ -676,6 +691,23 @@ class SqlKnowledgeStudioStore(KnowledgeStudioStore):
             )
             for row in rows
         )
+        if values:
+            return values
+        normalized_query = query.casefold() if query else None
+        fallback = (
+            KnowledgeStudioDomainOption(
+                domain_id=default_knowledge_domain_id(workspace_id, slug),
+                display_name=display_name,
+                source_version=DEFAULT_KNOWLEDGE_DOMAIN_SOURCE_VERSION,
+            )
+            for slug, display_name in DEFAULT_KNOWLEDGE_DOMAINS
+        )
+        return tuple(
+            option
+            for option in fallback
+            if (allowed_domain_ids is None or option.domain_id in allowed_domain_ids)
+            and (normalized_query is None or normalized_query in option.display_name.casefold())
+        )[:limit]
 
     async def get_draft(
         self,
@@ -697,6 +729,292 @@ class SqlKnowledgeStudioStore(KnowledgeStudioStore):
             )
         ).one_or_none()
         return _draft_record(model) if model is not None else None
+
+    async def get_edit_graph(
+        self,
+        *,
+        workspace_id: UUID,
+        graph_id: UUID,
+        clearance: int,
+    ) -> KnowledgeGraphRecord | None:
+        model = (
+            await self._session.scalars(
+                select(GraphModel).where(
+                    GraphModel.workspace_id == workspace_id,
+                    GraphModel.id == graph_id,
+                    GraphModel.classification <= clearance,
+                    GraphModel.status != "ARCHIVED",
+                )
+            )
+        ).one_or_none()
+        if model is None:
+            return None
+        return KnowledgeGraphRecord(
+            graph_id=model.id,
+            workspace_id=model.workspace_id,
+            slug=model.slug,
+            name=model.name,
+            graph_type=model.graph_type,
+            status=model.status,
+            classification=Classification(model.classification),
+            active_release_id=model.active_release_id,
+            version=model.version,
+            active_studio_release_id=model.active_studio_release_id,
+            domain_id=model.domain_ref_id,
+            domain_source_version=model.domain_source_version,
+            created_by=model.created_by,
+            updated_by=model.updated_by,
+            created_at=model.created_at,
+            updated_at=model.updated_at,
+        )
+
+    async def create_edit_draft(
+        self,
+        *,
+        workspace_id: UUID,
+        author_id: UUID,
+        graph_id: UUID,
+        idempotency_key: str,
+        request_hash: str,
+    ) -> KnowledgeStudioDraftRecord:
+        operation = f"knowledge.studio_draft.edit:{graph_id}"
+        idempotency = SqlIdempotencyStore(self._session)
+        await idempotency.acquire_key_lock(
+            workspace_id=workspace_id,
+            key=idempotency_key,
+            operation=operation,
+        )
+        replay = await self._idempotent_replay(
+            idempotency=idempotency,
+            workspace_id=workspace_id,
+            author_id=author_id,
+            operation=operation,
+            idempotency_key=idempotency_key,
+            request_hash=request_hash,
+        )
+        if replay is not None:
+            return replay
+        existing = (
+            await self._session.scalars(
+                select(KnowledgeStudioDraftModel)
+                .where(
+                    KnowledgeStudioDraftModel.workspace_id == workspace_id,
+                    KnowledgeStudioDraftModel.author_id == author_id,
+                    KnowledgeStudioDraftModel.kind == "EDIT",
+                    KnowledgeStudioDraftModel.base_graph_id == graph_id,
+                    KnowledgeStudioDraftModel.state.in_(("DRAFT", "REVIEW")),
+                )
+                .order_by(
+                    KnowledgeStudioDraftModel.updated_at.desc(),
+                    KnowledgeStudioDraftModel.id.desc(),
+                )
+                .limit(1)
+            )
+        ).one_or_none()
+        if existing is not None:
+            record = _draft_record(existing)
+            await idempotency.save_result(
+                workspace_id=workspace_id,
+                key=idempotency_key,
+                operation=operation,
+                request_hash=request_hash,
+                result=studio_draft_result(record),
+            )
+            await self._session.commit()
+            return record
+        graph = (
+            await self._session.scalars(
+                select(GraphModel)
+                .where(
+                    GraphModel.workspace_id == workspace_id,
+                    GraphModel.id == graph_id,
+                    GraphModel.status != "ARCHIVED",
+                )
+                .with_for_update()
+            )
+        ).one_or_none()
+        if (
+            graph is None
+            or graph.domain_ref_id is None
+            or graph.domain_source_version is None
+            or graph.active_studio_release_id is None
+        ):
+            raise ConflictError(
+                "The Knowledge asset has no complete active Studio release to edit."
+            )
+        active_release = (
+            await self._session.scalars(
+                select(KnowledgeStudioReleaseModel).where(
+                    KnowledgeStudioReleaseModel.workspace_id == workspace_id,
+                    KnowledgeStudioReleaseModel.graph_id == graph_id,
+                    KnowledgeStudioReleaseModel.id == graph.active_studio_release_id,
+                    KnowledgeStudioReleaseModel.state == "ACTIVE",
+                )
+            )
+        ).one_or_none()
+        if active_release is None:
+            raise ConflictError("The Knowledge asset active Studio release is unavailable.")
+        now = utc_now()
+        draft = KnowledgeStudioDraftModel(
+            id=uuid7(),
+            workspace_id=workspace_id,
+            author_id=author_id,
+            kind="EDIT",
+            state="DRAFT",
+            current_step="BASIC",
+            name=graph.name,
+            endpoint_alias=graph.slug,
+            domain_ref_id=graph.domain_ref_id,
+            domain_ref_kind="DOMAIN",
+            domain_source_version=graph.domain_source_version,
+            classification=graph.classification,
+            base_graph_id=graph.id,
+            base_ontology_version_id=active_release.ontology_version_id,
+            base_release_id=graph.active_release_id,
+            last_autosaved_at=now,
+            created_at=now,
+            updated_at=now,
+            version=1,
+        )
+        self._session.add(draft)
+        elements = (
+            await self._session.scalars(
+                select(OntologyElementModel)
+                .where(
+                    OntologyElementModel.workspace_id == workspace_id,
+                    OntologyElementModel.graph_id == graph_id,
+                    OntologyElementModel.ontology_version_id == active_release.ontology_version_id,
+                )
+                .order_by(
+                    OntologyElementModel.ordinal,
+                    OntologyElementModel.stable_element_id,
+                )
+            )
+        ).all()
+        for element in elements:
+            document = element.element_document
+            self._session.add(
+                TBoxDraftElementModel(
+                    id=uuid7(),
+                    workspace_id=workspace_id,
+                    draft_id=draft.id,
+                    stable_element_id=element.stable_element_id,
+                    kind=element.kind,
+                    canonical_name=element.canonical_name,
+                    display_name=element.display_name,
+                    parent_stable_element_id=_optional_document_string(
+                        document,
+                        "parent_stable_element_id",
+                    ),
+                    source_stable_element_id=_optional_document_string(
+                        document,
+                        "source_stable_element_id",
+                    ),
+                    target_stable_element_id=_optional_document_string(
+                        document,
+                        "target_stable_element_id",
+                    ),
+                    data_type=_optional_document_string(document, "data_type"),
+                    nullable=_optional_document_bool(document, "nullable"),
+                    ordinal=element.ordinal,
+                    created_at=now,
+                    updated_at=now,
+                    version=1,
+                )
+            )
+        await self._session.flush()
+        binding_versions = tuple(
+            (
+                await self._session.scalars(
+                    select(ABoxBindingVersionModel)
+                    .where(
+                        ABoxBindingVersionModel.workspace_id == workspace_id,
+                        ABoxBindingVersionModel.studio_release_id == active_release.id,
+                    )
+                    .order_by(
+                        ABoxBindingVersionModel.ordinal,
+                        ABoxBindingVersionModel.id,
+                    )
+                )
+            ).all()
+        )
+        rule_versions: tuple[ABoxMappingRuleVersionModel, ...] = ()
+        if binding_versions:
+            rule_versions = tuple(
+                (
+                    await self._session.scalars(
+                        select(ABoxMappingRuleVersionModel)
+                        .where(
+                            ABoxMappingRuleVersionModel.workspace_id == workspace_id,
+                            ABoxMappingRuleVersionModel.binding_version_id.in_(
+                                tuple(binding.id for binding in binding_versions)
+                            ),
+                        )
+                        .order_by(
+                            ABoxMappingRuleVersionModel.binding_version_id,
+                            ABoxMappingRuleVersionModel.ordinal,
+                        )
+                    )
+                ).all()
+            )
+        rules_by_binding: dict[UUID, list[ABoxMappingRuleVersionModel]] = {}
+        for rule in rule_versions:
+            rules_by_binding.setdefault(rule.binding_version_id, []).append(rule)
+        for binding_version in binding_versions:
+            binding_id = uuid7()
+            self._session.add(
+                ABoxBindingDraftModel(
+                    id=binding_id,
+                    workspace_id=workspace_id,
+                    draft_id=draft.id,
+                    target_stable_element_id=binding_version.target_stable_element_id,
+                    source_reference_id=binding_version.source_reference_id,
+                    readiness="VALIDATED",
+                    tbox_version=1,
+                    created_by=author_id,
+                    updated_by=author_id,
+                    created_at=now,
+                    updated_at=now,
+                    version=1,
+                )
+            )
+            self._session.add_all(
+                [
+                    ABoxMappingRuleDraftModel(
+                        id=uuid7(),
+                        workspace_id=workspace_id,
+                        draft_id=draft.id,
+                        binding_id=binding_id,
+                        ordinal=rule.ordinal,
+                        method=rule.method,
+                        source_field_path=rule.source_field_path,
+                        target_stable_element_id=rule.target_stable_element_id,
+                        transform_id=rule.transform_id,
+                        transform_version=rule.transform_version,
+                        source_unit=rule.source_unit,
+                        canonical_unit=rule.canonical_unit,
+                        created_at=now,
+                        updated_at=now,
+                    )
+                    for rule in rules_by_binding.get(binding_version.id, ())
+                ]
+            )
+        record = _draft_record(draft)
+        await idempotency.save_result(
+            workspace_id=workspace_id,
+            key=idempotency_key,
+            operation=operation,
+            request_hash=request_hash,
+            result=studio_draft_result(record),
+        )
+        try:
+            await self._session.commit()
+        except IntegrityError as error:
+            await self._session.rollback()
+            raise ConflictError(
+                "A live Knowledge Studio edit Draft already exists for this endpoint."
+            ) from error
+        return record
 
     async def create_draft(
         self,
@@ -1844,7 +2162,7 @@ class SqlKnowledgeStudioStore(KnowledgeStudioStore):
                 .with_for_update()
             )
         ).one_or_none()
-        if existing_graph is None:
+        if existing_graph is None or existing_graph.status == "ARCHIVED":
             raise ConflictError("The Studio EDIT target graph is unavailable.")
         graph = existing_graph
         if graph.slug != draft.endpoint_alias:
@@ -2237,6 +2555,10 @@ class SqlKnowledgeStudioStore(KnowledgeStudioStore):
         domain_id: UUID,
         domain_source_version: str,
     ) -> None:
+        await self._ensure_default_domain(
+            workspace_id=workspace_id,
+            domain_id=domain_id,
+        )
         current_version = await self._session.scalar(
             select(CatalogVocabularyEntryModel.source_version).where(
                 CatalogVocabularyEntryModel.workspace_id == workspace_id,
@@ -2249,6 +2571,48 @@ class SqlKnowledgeStudioStore(KnowledgeStudioStore):
             raise ConflictError("The selected domain is not active.")
         if current_version != domain_source_version:
             raise ConflictError("The selected domain source version is no longer current.")
+
+    async def _ensure_default_domain(
+        self,
+        *,
+        workspace_id: UUID,
+        domain_id: UUID,
+    ) -> None:
+        default = next(
+            (
+                (slug, display_name)
+                for slug, display_name in DEFAULT_KNOWLEDGE_DOMAINS
+                if default_knowledge_domain_id(workspace_id, slug) == domain_id
+            ),
+            None,
+        )
+        if default is None:
+            return
+        slug, display_name = default
+        now = utc_now()
+        statement = pg_insert(CatalogVocabularyEntryModel).values(
+            id=domain_id,
+            workspace_id=workspace_id,
+            kind="DOMAIN",
+            provider_ref=f"urn:li:domain:datariver-default-{slug}",
+            display_name=display_name,
+            lifecycle="ACTIVE",
+            source_version=DEFAULT_KNOWLEDGE_DOMAIN_SOURCE_VERSION,
+            observed_at=now,
+            updated_at=now,
+        )
+        await self._session.execute(
+            statement.on_conflict_do_update(
+                index_elements=("workspace_id", "kind", "provider_ref"),
+                set_={
+                    "display_name": display_name,
+                    "lifecycle": "ACTIVE",
+                    "source_version": DEFAULT_KNOWLEDGE_DOMAIN_SOURCE_VERSION,
+                    "observed_at": now,
+                    "updated_at": now,
+                },
+            )
+        )
 
     async def _require_alias_available(
         self,

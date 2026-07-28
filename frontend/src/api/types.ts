@@ -803,7 +803,14 @@ export interface KnowledgeGraph {
   graph_type: string
   status: string
   classification: string
+  domain_id?: string
+  domain_source_version?: string
+  domain_name?: string
   active_release_id?: string
+  created_by?: string
+  updated_by?: string
+  created_at?: string
+  updated_at?: string
   version: number
 }
 
@@ -815,6 +822,7 @@ export interface KnowledgeRelease {
   content_hash: string
   node_count: number
   edge_count: number
+  published_by: string
   published_at: string
 }
 

@@ -46,6 +46,7 @@ export function pageUrl(page: Page, options: { query?: string; href?: string } =
   if (page !== 'knowledge-studio') {
     url.searchParams.delete('draft')
     url.searchParams.delete('step')
+    url.searchParams.delete('asset_id')
   }
   return `${url.pathname}${url.search}${url.hash}`
 }

@@ -227,7 +227,7 @@ privilege. No API or ordinary application unit of work can claim or complete exe
 
 | Table | Key columns and constraints | Purpose |
 |---|---|---|
-| `knowledge.graphs` | `id`, `workspace + slug UQ`, name/type, `DRAFT/REVIEW/PUBLISHED`, classification, separate active instance and Studio Release pointers, nullable legacy-safe domain UUID/kind/source-version and creator/editor provenance, `version`, timestamps | consumable graph aggregate; Studio schema/mapping activation never fabricates or changes the active instance release |
+| `knowledge.graphs` | `id`, `workspace + slug UQ`, name/type, `DRAFT/REVIEW/PUBLISHED/ARCHIVED`, classification, separate active instance and Studio Release pointers, nullable legacy-safe domain UUID/kind/source-version, creator/editor provenance, archive actor/time, `version`, timestamps | consumable graph aggregate; Archive hides the aggregate without deleting immutable release evidence, and Studio schema/mapping activation never fabricates or changes the active instance release |
 | `knowledge.ontology_versions` | `id`, graph/version/schema/checksum/status, nullable schema-contract/base-ontology/creator provenance, timestamps | immutable typed ontology versions |
 | `knowledge.studio_drafts` | `id`, workspace/author, CREATE/EDIT, `DRAFT/REVIEW/PUBLISHED/DISCARDED`, current step, name/endpoint alias, exact DOMAIN UUID/source version, classification, optional EDIT base pins, exact submitted receipt/reviewer/materialized graph/ontology/Studio Release references, autosave/review/publish/discard times, optimistic version | full-screen Studio aggregate; mutable author scope in DRAFT, reviewer-readable and locked in REVIEW, immutable evidence after Publish/Discard |
 | `knowledge.tbox_draft_elements` | workspace/draft-scoped stable ID UQ, `CLASS/PROPERTY/RELATION`, typed ownership/endpoints, data type/nullability, deterministic ordinal and version | bounded read index of accepted typed T-Box operations for Data Enricher; A-Box writes cannot edit this table |
@@ -296,6 +296,14 @@ EDIT draft. Cross-table collision with an already materialized
 `knowledge.graphs.slug` remains a locked application/materialization invariant because PostgreSQL
 cannot express a foreign-table unique constraint. CREATE drafts have no graph/ontology/release FK;
 EDIT drafts pin exact graph and ontology versions.
+
+Revision `0062` seeds five deterministic, workspace-scoped DOMAIN vocabulary rows (`General`,
+`Data Governance`, `R&D`, `Finance`, `Space System`) for existing workspaces. The same UUID derivation
+is used by local bootstrap and the empty-table API safety net; choosing a fallback inserts/reactivates
+that exact canonical vocabulary row before a Draft FK is written. Non-PUBLIC options remain filtered
+by the Subject's `allowed_domain_ids`. The revision also adds the graph `ARCHIVED` lifecycle shape:
+`archived_at` and `archived_by` must be set together only in that state, the actor is membership-bound,
+and downgrade refuses while archive evidence exists.
 
 PostgreSQL releases remain canonical; Neo4j can be deleted and rebuilt. Graph classification is a
 maximum envelope enforced on changeset operations, complete submission/review, publication,

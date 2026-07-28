@@ -55,13 +55,7 @@ function label(properties: Record<string, unknown>, fallback: string): string {
   return typeof value === 'string' || typeof value === 'number' ? String(value) : fallback
 }
 
-export function KnowledgeChatPage({
-  client,
-  onNavigate,
-}: {
-  client: ApiClient
-  onNavigate: (page: Page) => void
-}) {
+export function KnowledgeChatContent({ client }: { client: ApiClient }) {
   const [graphs, setGraphs] = useState<KnowledgeGraph[]>([])
   const [graphId, setGraphId] = useState('')
   const [releases, setReleases] = useState<KnowledgeRelease[]>([])
@@ -215,15 +209,7 @@ export function KnowledgeChatPage({
   const activeNode = snapshot?.nodes.find((node) => node.id === nodeId)
 
   return (
-    <section className="grid gap-4">
-      <PageTitle
-        description="불변 릴리스와 현재 계정의 분류 권한 안에서 탐색한 근거만 답변에 사용합니다."
-        eyebrow="Independent Knowledge GraphRAG"
-        icon="KG"
-        title="지식 챗 · GraphRAG"
-      />
-      <KnowledgeWorkspaceLayout activeSection="CHAT" onNavigate={onNavigate}>
-        <div className="knowledge-chat-shell">
+    <div className="knowledge-chat-shell">
           <form className="knowledge-chat-context" onSubmit={(event) => void query(event)}>
             <header>
               <span><Bot size={18} /></span>
@@ -401,7 +387,27 @@ export function KnowledgeChatPage({
               </aside>
             </div>
           </main>
-        </div>
+    </div>
+  )
+}
+
+export function KnowledgeChatPage({
+  client,
+  onNavigate,
+}: {
+  client: ApiClient
+  onNavigate: (page: Page) => void
+}) {
+  return (
+    <section className="grid gap-4">
+      <PageTitle
+        description="불변 릴리스와 현재 계정의 분류 권한 안에서 탐색한 근거만 답변에 사용합니다."
+        eyebrow="Independent Knowledge GraphRAG"
+        icon="KG"
+        title="지식 챗 · GraphRAG"
+      />
+      <KnowledgeWorkspaceLayout activeSection="CHAT" onNavigate={onNavigate}>
+        <KnowledgeChatContent client={client} />
       </KnowledgeWorkspaceLayout>
     </section>
   )
