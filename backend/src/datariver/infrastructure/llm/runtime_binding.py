@@ -50,6 +50,9 @@ def resolve_composition_runtime_binding(settings: Settings) -> InferenceRuntimeB
             deployment_document={
                 "adapter_contract": "openai-compatible-grounded-chat-v1",
                 "allowed_hosts": sorted(settings.intranet_openai_compatible_allowed_hosts),
+                "approved_public_hosts": sorted(
+                    settings.intranet_openai_compatible_approved_public_hosts
+                ),
                 "base_url": str(settings.intranet_openai_compatible_chat_base_url),
                 "context_tokens": settings.intranet_openai_compatible_chat_context_tokens,
                 "enable_thinking": (
@@ -105,6 +108,9 @@ def resolve_embedding_runtime_binding(settings: Settings) -> InferenceRuntimeBin
             deployment_document={
                 "adapter_contract": "openai-compatible-embeddings-v1",
                 "allowed_hosts": sorted(settings.intranet_openai_compatible_allowed_hosts),
+                "approved_public_hosts": sorted(
+                    settings.intranet_openai_compatible_approved_public_hosts
+                ),
                 "base_url": str(settings.intranet_openai_compatible_embedding_base_url),
                 "secret_ref_identity": (
                     settings.intranet_openai_compatible_embedding_api_key_secret_ref
@@ -152,6 +158,9 @@ def resolve_reranker_runtime_binding(settings: Settings) -> InferenceRuntimeBind
                 "adapter_contract": "rerank-v1",
                 "allowed_hosts": sorted(
                     settings.intranet_openai_compatible_allowed_hosts
+                ),
+                "approved_public_hosts": sorted(
+                    settings.intranet_openai_compatible_approved_public_hosts
                 ),
                 "base_url": str(settings.intranet_reranker_base_url),
                 "secret_ref_identity": settings.intranet_reranker_api_key_secret_ref,

@@ -18,7 +18,10 @@ from neo4j import AsyncGraphDatabase
 from redis.asyncio import Redis
 
 from datariver.domain.common import ValidationError
-from datariver.domain.inference import is_safe_inference_api_base_path
+from datariver.domain.inference import (
+    is_allowed_intranet_inference_address,
+    is_safe_inference_api_base_path,
+)
 from datariver.domain.system_configuration import require_canonical_secret_references
 from datariver.infrastructure.secrets import SecretResolver
 
@@ -205,17 +208,29 @@ async def _reject_unsafe_destination(
     return tuple(validated)
 
 
-def _require_private_intranet_destination(
+def _require_intranet_inference_destination(
     addresses: tuple[ipaddress.IPv4Address | ipaddress.IPv6Address, ...],
+    *,
+    allow_global: bool,
 ) -> None:
-    """Require an operator-selected LLM endpoint to stay inside the private network."""
+    """Require private routing unless the exact deployment hostname opts into global DNS."""
 
     if not addresses:
         raise ValidationError("The intranet LLM host could not be resolved.")
     for value in addresses:
-        if not value.is_private or value.is_loopback or value.is_link_local:
+        if not is_allowed_intranet_inference_address(
+            value,
+            allow_global=allow_global,
+        ):
+            if allow_global:
+                raise ValidationError(
+                    "The explicitly approved public intranet LLM host resolved to a "
+                    "forbidden address range."
+                )
             raise ValidationError(
                 "The intranet LLM host must resolve only to private non-loopback addresses."
+                " Use the explicitly approved public host option for a company-approved "
+                "DNS gateway."
             )
 
 
@@ -481,6 +496,7 @@ async def probe_system_configuration(
         _authenticated_s3_head_bucket
     ),
     allowed_hosts: tuple[str, ...] = (),
+    approved_public_hosts: tuple[str, ...] = (),
 ) -> SystemConfigurationProbeResult:
     """Probe one saved, allowlisted development profile without accepting a request URL.
 
@@ -508,6 +524,13 @@ async def probe_system_configuration(
     except ValueError as error:
         raise ValidationError(str(error)) from error
     normalized_allowed_hosts = tuple(value.rstrip(".").lower() for value in allowed_hosts)
+    normalized_approved_public_hosts = tuple(
+        value.rstrip(".").lower() for value in approved_public_hosts
+    )
+    if not set(normalized_approved_public_hosts).issubset(normalized_allowed_hosts):
+        raise ValidationError(
+            "Approved public probe hosts must be a subset of the operator probe allowlist."
+        )
     if system_id in {"REDIS_CACHE", "REDIS_DELIVERY"}:
         _, host, port = _validated_url(endpoint, schemes={"redis", "rediss"})
         await _reject_unsafe_destination(
@@ -717,7 +740,12 @@ async def probe_system_configuration(
             raise ValidationError(
                 f"{probe_name} require an HTTPS endpoint with a safe API base path."
             )
-        _require_private_intranet_destination(validated_addresses)
+        _require_intranet_inference_destination(
+            validated_addresses,
+            allow_global=(
+                host.rstrip(".").lower() in normalized_approved_public_hosts
+            ),
+        )
         api_key = (secret_resolver or SecretResolver()).resolve(
             _secret_reference(document, "api_key")
         )

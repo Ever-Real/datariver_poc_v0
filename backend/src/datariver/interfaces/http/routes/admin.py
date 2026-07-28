@@ -376,6 +376,7 @@ _SYSTEM_ENVIRONMENT_KEYS: dict[str, tuple[str, ...]] = {
         "LOCAL_OLLAMA_CHAT_TIMEOUT_SECONDS",
         "LOCAL_OLLAMA_CHAT_CONTEXT_TOKENS",
         "INTRANET_OPENAI_COMPATIBLE_ALLOWED_HOSTS",
+        "INTRANET_OPENAI_COMPATIBLE_APPROVED_PUBLIC_HOSTS",
         "INTRANET_OPENAI_COMPATIBLE_CHAT_ENABLED",
         "INTRANET_OPENAI_COMPATIBLE_CHAT_BASE_URL",
         "INTRANET_OPENAI_COMPATIBLE_CHAT_MODEL",
@@ -401,6 +402,7 @@ _SYSTEM_ENVIRONMENT_KEYS: dict[str, tuple[str, ...]] = {
         "LOCAL_OLLAMA_EMBEDDING_MODEL",
         "LOCAL_OLLAMA_EMBEDDING_TIMEOUT_SECONDS",
         "INTRANET_OPENAI_COMPATIBLE_ALLOWED_HOSTS",
+        "INTRANET_OPENAI_COMPATIBLE_APPROVED_PUBLIC_HOSTS",
         "INTRANET_OPENAI_COMPATIBLE_EMBEDDING_ENABLED",
         "INTRANET_OPENAI_COMPATIBLE_EMBEDDING_BASE_URL",
         "INTRANET_OPENAI_COMPATIBLE_EMBEDDING_MODEL",
@@ -419,6 +421,7 @@ _SYSTEM_ENVIRONMENT_KEYS: dict[str, tuple[str, ...]] = {
         "LOCAL_LLAMA_CPP_RERANKER_TIMEOUT_SECONDS",
         "LOCAL_LLAMA_CPP_RERANKER_TOP_N",
         "INTRANET_OPENAI_COMPATIBLE_ALLOWED_HOSTS",
+        "INTRANET_OPENAI_COMPATIBLE_APPROVED_PUBLIC_HOSTS",
         "INTRANET_RERANKER_ENABLED",
         "INTRANET_RERANKER_BASE_URL",
         "INTRANET_RERANKER_MODEL",
@@ -3492,6 +3495,11 @@ async def test_deployment_system_configuration(
                 virtual_secret_root=container.settings.system_configuration_secret_root
             ),
             allowed_hosts=_deployment_probe_allowed_hosts(container.settings, system_id),
+            approved_public_hosts=(
+                container.settings.intranet_openai_compatible_approved_public_hosts
+                if system_id.startswith("LLM_")
+                else ()
+            ),
         )
         status = result.status
         scope = result.scope

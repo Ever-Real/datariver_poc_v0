@@ -646,6 +646,25 @@ def test_intranet_gateway_deployment_documents_bind_all_three_stages() -> None:
         configured,
         "LLM_RERANKER",
     )
+    approved_public = Settings(
+        **(
+            configured.model_dump()
+            | {
+                "intranet_openai_compatible_approved_public_hosts": (
+                    "10.42.0.15",
+                )
+            }
+        )
+    )
+    approved_chat = _deployment_configuration_document(
+        approved_public,
+        "LLM_CHAT_MODEL",
+    )
+    assert approved_chat is not None
+    assert (
+        approved_chat["options"]["governance_binding"]["deployment_identity"]
+        != chat["options"]["governance_binding"]["deployment_identity"]
+    )
 
 
 def test_system_configuration_display_removes_nested_secrets_and_submission_rejects_them() -> None:

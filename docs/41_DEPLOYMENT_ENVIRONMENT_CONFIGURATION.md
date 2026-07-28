@@ -95,6 +95,7 @@ LOCAL_LLAMA_CPP_RERANKER_BASE_URL=<rerank-v1-origin>
 LOCAL_LLAMA_CPP_RERANKER_MODEL=<installed-model-id>
 
 INTRANET_OPENAI_COMPATIBLE_ALLOWED_HOSTS=<private-gateway-host>
+INTRANET_OPENAI_COMPATIBLE_APPROVED_PUBLIC_HOSTS=<optional-approved-public-gateway-host>
 INTRANET_OPENAI_COMPATIBLE_CHAT_ENABLED=false
 INTRANET_OPENAI_COMPATIBLE_CHAT_BASE_URL=<https-gateway-prefix-ending-in-/v1>
 INTRANET_OPENAI_COMPATIBLE_CHAT_MODEL=<approved-model-id>
@@ -192,6 +193,10 @@ equivalent least-privilege roles.
 - Private OpenAI-compatible Chat/Embedding:
   `INTRANET_OPENAI_COMPATIBLE_ALLOWED_HOSTS` and the corresponding
   `INTRANET_OPENAI_COMPATIBLE_CHAT_*` / `...EMBEDDING_*` keys
+- The private-address-only default may be extended for a company-approved enterprise gateway by
+  placing its exact hostname in `INTRANET_OPENAI_COMPATIBLE_APPROVED_PUBLIC_HOSTS`. That list must
+  be a subset of the main host allowlist. It accepts neither URLs nor wildcards and does not permit
+  loopback, link-local, multicast, unspecified or reserved address ranges.
 - Private runtime Reranker: `INTRANET_RERANKER_*`. DataRiver appends the fixed `/rerank`
   route and accepts only a safe HTTPS gateway prefix on the same private host allowlist.
 - A provider model ID may be path-like (for example `/models/embedding/bge-m3`). Chat and
@@ -526,6 +531,7 @@ LOCAL_LLAMA_CPP_RERANKER_MODEL
 LOCAL_LLAMA_CPP_RERANKER_TIMEOUT_SECONDS
 LOCAL_LLAMA_CPP_RERANKER_TOP_N
 INTRANET_OPENAI_COMPATIBLE_ALLOWED_HOSTS
+INTRANET_OPENAI_COMPATIBLE_APPROVED_PUBLIC_HOSTS
 INTRANET_OPENAI_COMPATIBLE_CHAT_ENABLED
 INTRANET_OPENAI_COMPATIBLE_CHAT_BASE_URL
 INTRANET_OPENAI_COMPATIBLE_CHAT_MODEL

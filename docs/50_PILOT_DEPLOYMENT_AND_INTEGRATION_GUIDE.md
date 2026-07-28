@@ -566,6 +566,9 @@ source-free Pilot profile에서 구성하지 않는다.
 
 ```dotenv
 INTRANET_OPENAI_COMPATIBLE_ALLOWED_HOSTS=10.20.30.43
+# Set only when the exact approved hostname intentionally resolves to a public
+# address; it must also appear in INTRANET_OPENAI_COMPATIBLE_ALLOWED_HOSTS.
+INTRANET_OPENAI_COMPATIBLE_APPROVED_PUBLIC_HOSTS=
 INTRANET_OPENAI_COMPATIBLE_CHAT_ENABLED=true
 INTRANET_OPENAI_COMPATIBLE_CHAT_BASE_URL=https://10.20.30.43/api/llm/openai/v1
 INTRANET_OPENAI_COMPATIBLE_CHAT_MODEL=/models/llm/gemma-4-31B-it

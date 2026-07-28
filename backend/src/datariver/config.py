@@ -13,6 +13,7 @@ from pydantic import AliasChoices, Field, HttpUrl, field_validator, model_valida
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from datariver.domain.inference import (
+    is_allowed_intranet_inference_address,
     is_safe_inference_api_base_path,
     is_valid_inference_model_identity,
 )
@@ -160,8 +161,10 @@ class Settings(BaseSettings):
     # hosted inside the organisation's private network. This intentionally is
     # not an external commercial-provider route and cannot be enabled in
     # production. Every configured hostname must be deployment allowlisted and
-    # resolve only to private network addresses.
+    # resolve only to private addresses unless its exact company-approved
+    # public DNS name is explicitly opted in below.
     intranet_openai_compatible_allowed_hosts: tuple[str, ...] = ()
+    intranet_openai_compatible_approved_public_hosts: tuple[str, ...] = ()
     intranet_openai_compatible_chat_enabled: bool = False
     intranet_openai_compatible_chat_base_url: HttpUrl | None = None
     intranet_openai_compatible_chat_model: str | None = Field(default=None, max_length=128)
@@ -396,6 +399,7 @@ class Settings(BaseSettings):
         "datahub_allowed_versions",
         "local_inference_allowed_hosts",
         "intranet_openai_compatible_allowed_hosts",
+        "intranet_openai_compatible_approved_public_hosts",
         "neo4j_allowed_hosts",
         "system_configuration_probe_allowed_hosts",
         "retention_workspace_ids",
@@ -434,7 +438,10 @@ class Settings(BaseSettings):
             raise ValueError("Local inference host allowlist values must be unique.")
         return normalized
 
-    @field_validator("intranet_openai_compatible_allowed_hosts")
+    @field_validator(
+        "intranet_openai_compatible_allowed_hosts",
+        "intranet_openai_compatible_approved_public_hosts",
+    )
     @classmethod
     def normalize_intranet_openai_compatible_allowed_hosts(
         cls, values: tuple[str, ...]
@@ -1158,6 +1165,13 @@ class Settings(BaseSettings):
             )
         intranet_chat_enabled = self.intranet_openai_compatible_chat_enabled
         intranet_embedding_enabled = self.intranet_openai_compatible_embedding_enabled
+        if not set(self.intranet_openai_compatible_approved_public_hosts).issubset(
+            self.intranet_openai_compatible_allowed_hosts
+        ):
+            raise ValueError(
+                "Approved public intranet inference hosts must be a subset of the "
+                "intranet inference host allowlist."
+            )
         if (self.local_ollama_chat_enabled or self.local_ollama_embedding_enabled) and (
             intranet_chat_enabled or intranet_embedding_enabled
         ):
@@ -1365,12 +1379,24 @@ class Settings(BaseSettings):
             raise ValueError("Intranet OpenAI-compatible host could not be resolved.") from error
         if not addresses:
             raise ValueError("Intranet OpenAI-compatible host could not be resolved.")
+        allow_global = (
+            host in self.intranet_openai_compatible_approved_public_hosts
+        )
         for address in addresses:
             value = ipaddress.ip_address(address[4][0])
-            if not value.is_private or value.is_loopback or value.is_link_local:
+            if not is_allowed_intranet_inference_address(
+                value,
+                allow_global=allow_global,
+            ):
+                if allow_global:
+                    raise ValueError(
+                        "An explicitly approved public intranet inference host resolved "
+                        "to a forbidden address range."
+                    )
                 raise ValueError(
                     "Intranet OpenAI-compatible host must resolve only to private "
-                    "non-loopback addresses."
+                    "non-loopback addresses unless the exact hostname is an explicitly "
+                    "approved public host."
                 )
 
 

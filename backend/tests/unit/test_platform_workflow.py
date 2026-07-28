@@ -433,6 +433,14 @@ def test_environment_change_classification_restarts_only_known_consumers() -> No
     local_hosts = workflow.classify_environment_changes(("LOCAL_INFERENCE_ALLOWED_HOSTS",))
     assert set(local_hosts.services) == {"api", "knowledge-source-worker"}
 
+    public_intranet_hosts = workflow.classify_environment_changes(
+        ("INTRANET_OPENAI_COMPATIBLE_APPROVED_PUBLIC_HOSTS",)
+    )
+    assert set(public_intranet_hosts.services) == {
+        "api",
+        "knowledge-source-worker",
+    }
+
     identity = workflow.classify_environment_changes(("OIDC_ISSUER",))
     assert identity.services == ("api",)
     assert identity.configure_keycloak is False

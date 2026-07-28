@@ -1,3 +1,5 @@
+import socket
+
 import pytest
 from pydantic import ValidationError
 
@@ -513,6 +515,87 @@ def test_intranet_openai_compatible_inference_is_development_private_tls_only() 
             intranet_openai_compatible_chat_enabled=True,
             intranet_openai_compatible_chat_base_url="https://10.42.0.15/v1",
             intranet_openai_compatible_chat_model="gemma4:latest",
+            intranet_openai_compatible_chat_api_key_secret_ref=(
+                "file:/run/secrets/intranet_llm_chat_api_key"
+            ),
+        )
+
+
+def test_approved_public_intranet_gateway_requires_explicit_subset_opt_in(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    gateway_host = "api-genai.corp.example"
+
+    def public_dns(*_args: object, **_kwargs: object) -> list[tuple[object, ...]]:
+        return [
+            (
+                socket.AF_INET,
+                socket.SOCK_STREAM,
+                socket.IPPROTO_TCP,
+                "",
+                ("93.184.216.34", 443),
+            )
+        ]
+
+    monkeypatch.setattr(socket, "getaddrinfo", public_dns)
+    common = {
+        "intranet_openai_compatible_allowed_hosts": (gateway_host,),
+        "intranet_openai_compatible_chat_enabled": True,
+        "intranet_openai_compatible_chat_base_url": (
+            f"https://{gateway_host}/api/llm/openai/v1"
+        ),
+        "intranet_openai_compatible_chat_model": "/models/llm/gemma-4-31B-it",
+        "intranet_openai_compatible_chat_api_key_secret_ref": (
+            "file:/run/secrets/intranet_llm_chat_api_key"
+        ),
+    }
+
+    with pytest.raises(ValidationError, match="explicitly approved public"):
+        settings(**common)
+
+    configured = settings(
+        **common,
+        intranet_openai_compatible_approved_public_hosts=(gateway_host,),
+    )
+    assert configured.intranet_openai_compatible_approved_public_hosts == (
+        gateway_host,
+    )
+
+    with pytest.raises(ValidationError, match="subset"):
+        settings(
+            intranet_openai_compatible_allowed_hosts=("other.corp.example",),
+            intranet_openai_compatible_approved_public_hosts=(gateway_host,),
+        )
+
+
+def test_approved_public_intranet_gateway_still_rejects_loopback(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    gateway_host = "api-genai.corp.example"
+
+    monkeypatch.setattr(
+        socket,
+        "getaddrinfo",
+        lambda *_args, **_kwargs: [
+            (
+                socket.AF_INET,
+                socket.SOCK_STREAM,
+                socket.IPPROTO_TCP,
+                "",
+                ("127.0.0.1", 443),
+            )
+        ],
+    )
+
+    with pytest.raises(ValidationError, match="forbidden"):
+        settings(
+            intranet_openai_compatible_allowed_hosts=(gateway_host,),
+            intranet_openai_compatible_approved_public_hosts=(gateway_host,),
+            intranet_openai_compatible_chat_enabled=True,
+            intranet_openai_compatible_chat_base_url=(
+                f"https://{gateway_host}/api/llm/openai/v1"
+            ),
+            intranet_openai_compatible_chat_model="/models/llm/gemma-4-31B-it",
             intranet_openai_compatible_chat_api_key_secret_ref=(
                 "file:/run/secrets/intranet_llm_chat_api_key"
             ),

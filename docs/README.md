@@ -60,6 +60,8 @@ Current account/workflow/runtime decisions: [expiring membership renewal](adr/00
 Current development knowledge-integration decision: [intranet OpenAI-compatible adapter](adr/0030-development-intranet-openai-compatible-adapter.md).
 Private gateway path prefixes, path-like model IDs and governed runtime reranking are refined by
 [ADR-0065](adr/0065-intranet-inference-gateway-prefix-and-runtime-reranking.md).
+The exceptional exact-host opt-in for a company-approved gateway resolving to public addresses is
+defined by [ADR-0066](adr/0066-approved-public-enterprise-inference-hosts.md).
 
 Current local identity-lifecycle decision: [governed Keycloak identity provisioning](adr/0031-governed-keycloak-identity-provisioning.md).
 

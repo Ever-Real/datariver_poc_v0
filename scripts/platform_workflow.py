@@ -834,7 +834,10 @@ def classify_environment_changes(
             )
         ):
             services.update(("api", "knowledge-source-worker"))
-        elif key == "INTRANET_OPENAI_COMPATIBLE_ALLOWED_HOSTS":
+        elif key in {
+            "INTRANET_OPENAI_COMPATIBLE_ALLOWED_HOSTS",
+            "INTRANET_OPENAI_COMPATIBLE_APPROVED_PUBLIC_HOSTS",
+        }:
             services.update(("api", "knowledge-source-worker"))
         elif key == "SYSTEM_CONFIGURATION_PROBE_ALLOWED_HOSTS":
             services.add("api")

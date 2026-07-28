@@ -418,6 +418,47 @@ async def test_intranet_llm_probe_uses_the_operator_secret_and_rejects_bad_crede
 
 
 @pytest.mark.asyncio
+async def test_intranet_llm_probe_requires_explicit_public_host_approval() -> None:
+    document = {
+        "connection_mode": "INTRANET_OPENAI_COMPATIBLE",
+        "base_url": "https://8.8.8.8/api/llm/openai/v1",
+        "model": "/models/llm/gemma-4-31B-it",
+        "secret_references": {
+            "api_key": "file:/run/secrets/intranet_llm_chat_api_key"
+        },
+    }
+
+    async with httpx.AsyncClient(
+        transport=httpx.MockTransport(
+            lambda request: httpx.Response(
+                200,
+                request=request,
+                json={"choices": [{"message": {"content": '{"status":"ok"}'}}]},
+            )
+        )
+    ) as client:
+        with pytest.raises(ValidationError, match="explicitly approved public"):
+            await probe_system_configuration(
+                system_id="LLM_CHAT_MODEL",
+                document=document,
+                client=client,
+                secret_resolver=_IntranetLlmSecretResolver(),  # type: ignore[arg-type]
+                allowed_hosts=("8.8.8.8",),
+            )
+
+        accepted = await probe_system_configuration(
+            system_id="LLM_CHAT_MODEL",
+            document=document,
+            client=client,
+            secret_resolver=_IntranetLlmSecretResolver(),  # type: ignore[arg-type]
+            allowed_hosts=("8.8.8.8",),
+            approved_public_hosts=("8.8.8.8",),
+        )
+
+    assert accepted.status == "AVAILABLE"
+
+
+@pytest.mark.asyncio
 async def test_private_reranker_probe_executes_fixed_rank_request() -> None:
     def accepted_handler(request: httpx.Request) -> httpx.Response:
         assert request.method == "POST"

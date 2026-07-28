@@ -38,6 +38,7 @@ class KnowledgeRuntimeAdapters:
 class _RuntimeCoordinates:
     provider: str
     allowed_hosts: frozenset[str]
+    approved_public_hosts: frozenset[str]
     chat_base_url: str
     chat_model: str
     chat_api_key_secret_ref: str | None
@@ -160,6 +161,7 @@ def _coordinates(settings: Settings) -> _RuntimeCoordinates:
         return _RuntimeCoordinates(
             provider=LOCAL_OLLAMA_PROVIDER,
             allowed_hosts=settings.effective_local_inference_allowed_hosts,
+            approved_public_hosts=frozenset(),
             chat_base_url=str(settings.local_ollama_chat_base_url),
             chat_model=settings.local_ollama_chat_model,
             chat_api_key_secret_ref=None,
@@ -187,6 +189,9 @@ def _coordinates(settings: Settings) -> _RuntimeCoordinates:
         return _RuntimeCoordinates(
             provider=INTRANET_OPENAI_COMPATIBLE_PROVIDER,
             allowed_hosts=frozenset(settings.intranet_openai_compatible_allowed_hosts),
+            approved_public_hosts=frozenset(
+                settings.intranet_openai_compatible_approved_public_hosts
+            ),
             chat_base_url=str(settings.intranet_openai_compatible_chat_base_url),
             chat_model=settings.intranet_openai_compatible_chat_model,
             chat_api_key_secret_ref=(settings.intranet_openai_compatible_chat_api_key_secret_ref),
@@ -238,6 +243,7 @@ def _deployment_hash(
                 coordinates.embedding_base_url if is_embedding else coordinates.chat_base_url
             ),
             "allowed_hosts": sorted(coordinates.allowed_hosts),
+            "approved_public_hosts": sorted(coordinates.approved_public_hosts),
             "secret_ref_identity": (
                 coordinates.embedding_api_key_secret_ref
                 if is_embedding

@@ -1199,6 +1199,13 @@ DataRiver는 설정된 prefix 뒤에 Chat `/chat/completions`, Embedding `/embed
 `/models`를 제거한 `.../v1`까지만 넣는다. `ALLOWED_HOSTS`에는 scheme·port·path가 아닌
 hostname 또는 IP 한 값만 넣는다.
 
+기본값은 계속 private IP 전용이다. 회사가 승인한 enterprise gateway가 의도적으로 공인
+IP로 해석되는 경우에만 그 정확한 hostname을
+`INTRANET_OPENAI_COMPATIBLE_APPROVED_PUBLIC_HOSTS`에도 중복 등록한다. 이 값은 반드시
+`INTRANET_OPENAI_COMPATIBLE_ALLOWED_HOSTS`의 부분집합이어야 하며 URL, wildcard, IP 대역을
+받지 않는다. 등록 후에도 HTTPS, hostname allowlist, 안전한 API prefix, no-redirect,
+no-proxy와 위험 주소 범위 차단은 유지된다.
+
 먼저 해당 source-host/Compose 환경에서 operator allowlist와 실제 API key를 별도 보안 채널로
 준비한다. Chat, Embedding, Reranker secret 파일은 stage별로 분리되어 있으며, bootstrap이 만든
 random placeholder는 model API key가 아니다. 하나의 gateway token을 공유한다면 세 파일에 같은
@@ -1207,6 +1214,8 @@ random placeholder는 model API key가 아니다. 하나의 gateway token을 공
 ```bash
 # .env — operator-managed allowlist. 실제 사내 host는 Git에 넣지 않는다.
 INTRANET_OPENAI_COMPATIBLE_ALLOWED_HOSTS=llm-gateway.corp.example
+# 위 hostname이 승인된 공인 IP로 해석되는 경우에만 다음 줄을 설정한다.
+INTRANET_OPENAI_COMPATIBLE_APPROVED_PUBLIC_HOSTS=llm-gateway.corp.example
 
 INTRANET_OPENAI_COMPATIBLE_CHAT_ENABLED=true
 INTRANET_OPENAI_COMPATIBLE_CHAT_BASE_URL=https://llm-gateway.corp.example/api/llm/openai/v1
