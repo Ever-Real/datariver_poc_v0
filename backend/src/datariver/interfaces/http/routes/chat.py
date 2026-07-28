@@ -104,9 +104,7 @@ def _development_composer(
             ),
             temperature=settings.intranet_openai_compatible_chat_temperature,
             top_p=settings.intranet_openai_compatible_chat_top_p,
-            repetition_penalty=(
-                settings.intranet_openai_compatible_chat_repetition_penalty
-            ),
+            repetition_penalty=(settings.intranet_openai_compatible_chat_repetition_penalty),
             enable_thinking=settings.intranet_openai_compatible_chat_enable_thinking,
         )
         return (
@@ -181,9 +179,7 @@ async def query(
             api_key=api_key,
             timeout_seconds=settings.intranet_reranker_timeout_seconds,
             top_n=min(settings.intranet_reranker_top_n, payload.maximum_evidence),
-            allowed_hosts=frozenset(
-                settings.intranet_openai_compatible_allowed_hosts
-            ),
+            allowed_hosts=frozenset(settings.intranet_openai_compatible_allowed_hosts),
         )
     exchange = await ChatService(
         catalog_index=catalog_index,

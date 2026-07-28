@@ -50,10 +50,7 @@ class OpenAICompatibleChatRequestOptions:
         if (
             not 0.0 <= self.temperature <= 2.0
             or (self.top_p is not None and not 0.0 < self.top_p <= 1.0)
-            or (
-                self.repetition_penalty is not None
-                and not 0.0 < self.repetition_penalty <= 2.0
-            )
+            or (self.repetition_penalty is not None and not 0.0 < self.repetition_penalty <= 2.0)
         ):
             raise ValueError("OpenAI-compatible Chat options are outside governed bounds.")
 

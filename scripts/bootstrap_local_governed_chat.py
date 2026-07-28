@@ -41,6 +41,39 @@ def _required_uuid(document: dict[str, object], key: str) -> str:
     return str(UUID(value))
 
 
+def _bootstrap_command(
+    *,
+    env_file: Path,
+    values: dict[str, str],
+    module_arguments: tuple[str, ...],
+) -> tuple[str, ...]:
+    operator_profile = values.get("DATARIVER_OPERATOR_PROFILE", "unmanaged")
+    if operator_profile in {"source-host-development", "wsl-source-host"}:
+        return (
+            str(ROOT / "scripts" / "dev_host.sh"),
+            "bootstrap-governed-chat",
+            "--env-file",
+            str(env_file),
+            "--",
+            *module_arguments,
+        )
+    return tuple(
+        compose_arguments(
+            env_file=env_file,
+            compose_files=(ROOT / "compose.yaml", ROOT / "compose.identity.yaml"),
+            trailing=(
+                "exec",
+                "-T",
+                "api",
+                "/app/.venv/bin/python",
+                "-m",
+                "datariver.local_governed_chat_bootstrap",
+                *module_arguments,
+            ),
+        )
+    )
+
+
 def main() -> None:
     arguments = _parser().parse_args()
     env_file = arguments.env_file.expanduser().resolve()
@@ -69,18 +102,10 @@ def main() -> None:
         "--immutable-archive-years",
         str(arguments.immutable_archive_years),
     )
-    command = compose_arguments(
+    command = _bootstrap_command(
         env_file=env_file,
-        compose_files=(ROOT / "compose.yaml", ROOT / "compose.identity.yaml"),
-        trailing=(
-            "exec",
-            "-T",
-            "api",
-            "/app/.venv/bin/python",
-            "-m",
-            "datariver.local_governed_chat_bootstrap",
-            *module_arguments,
-        ),
+        values=values,
+        module_arguments=module_arguments,
     )
     completed = subprocess.run(  # noqa: S603 - argv is fixed except validated scalar arguments.
         command,

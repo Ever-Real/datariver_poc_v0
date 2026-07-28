@@ -305,9 +305,7 @@ async def test_intranet_reranker_uses_gateway_prefix_and_bearer_secret() -> None
     )
 
     def handler(request: httpx.Request) -> httpx.Response:
-        assert request.url == httpx.URL(
-            "https://models.internal/api/llm/openai/rerank"
-        )
+        assert request.url == httpx.URL("https://models.internal/api/llm/openai/rerank")
         assert request.headers["Authorization"] == "Bearer shared-intranet-api-key"
         return httpx.Response(
             200,

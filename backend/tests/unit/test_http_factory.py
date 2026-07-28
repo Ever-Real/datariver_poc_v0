@@ -386,6 +386,25 @@ def test_system_configuration_inventory_is_server_owned_and_redacted() -> None:
     ]
     assert all(entry.activation_state == "DEPLOYMENT_MANAGED" for entry in development_entries)
 
+    chat_without_governance_binding = Settings(
+        **(
+            configured.model_dump()
+            | {
+                "app_env": "development",
+                "local_ollama_chat_enabled": True,
+                "local_ollama_chat_base_url": "http://127.0.0.1:11434/v1",
+                "local_ollama_chat_model": "operator-selected-chat",
+                "local_inference_source_host_enabled": True,
+                "chat_composition_provider_profile_version_id": None,
+            }
+        )
+    )
+    chat_entries = {
+        entry.system_id: entry
+        for entry in _system_configuration_entries(chat_without_governance_binding)
+    }
+    assert chat_entries["LLM_CHAT_MODEL"].state == "GOVERNED_PROFILE_REQUIRED"
+
 
 def test_system_environment_templates_use_only_documented_env_example_keys() -> None:
     documented: set[str] = set()

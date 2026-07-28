@@ -447,3 +447,11 @@ def test_source_host_exposes_idempotent_local_identity_bootstrap() -> None:
     ) in source
     assert 'BOOTSTRAP_DATABASE_SECRET_REF="$(secret_ref postgres_bootstrap_password)"' in source
     assert "-m datariver.bootstrap local-identity" in source
+
+
+def test_source_host_exposes_explicit_governed_chat_bootstrap() -> None:
+    source = (ROOT / "scripts/dev_host.sh").read_text(encoding="utf-8")
+
+    assert "bootstrap-governed-chat" in source
+    assert "bootstrap_arguments" in source
+    assert "-m datariver.local_governed_chat_bootstrap" in source

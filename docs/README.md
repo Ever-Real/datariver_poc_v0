@@ -115,6 +115,9 @@ The source-free isolated amd64 Pilot packaging and deployment boundary is define
 [ADR-0063](adr/0063-source-free-air-gapped-pilot-release.md).
 Admin deployment-environment identity and the non-privileged operator-command handoff are defined
 by [ADR-0064](adr/0064-admin-environment-identity-and-operator-handoff.md).
+Its Admin button interaction, live connection badges and source-host governed Chat bootstrap are
+refined by
+[ADR-0068](adr/0068-live-connection-status-and-source-host-chat-governance-bootstrap.md).
 
 ## Change control
 

@@ -30,6 +30,7 @@ env_file_value() {
 }
 
 action=start
+bootstrap_arguments=()
 datahub_base_url=$(env_file_value DATAHUB_BASE_URL http://127.0.0.1:8080)
 postgres_port=$(env_file_value POSTGRES_PORT 5432)
 redis_cache_url=$(env_file_value REDIS_CACHE_URL redis://127.0.0.1:6379/0)
@@ -52,7 +53,7 @@ enable_airflow_source_bridge=$airflow_source_api_bridge_enabled
 
 usage() {
   cat <<'EOF'
-Usage: scripts/dev_host.sh [start|stop|status|migrate|bootstrap-identity|preflight] [options]
+Usage: scripts/dev_host.sh [start|stop|status|migrate|bootstrap-identity|bootstrap-governed-chat|preflight] [options]
 
 Run the mutable DataRiver API, core workers, optional Knowledge source worker and Vite from
 the checked-out source.
@@ -67,6 +68,10 @@ from an offline bundle.
 The `bootstrap-identity` action idempotently applies the non-production local
 Workspace and human/service identities from this checkout. Run it after
 `migrate` on a new source host or when the local identity contract changes.
+
+The `bootstrap-governed-chat` action runs the explicit development-only Chat
+governance bootstrap against the same source-host Settings. Pass its required
+arguments after `--`.
 
 Options:
   --env-file FILE          Ignored deployment environment file (default: DATARIVER_ENV_FILE or .env).
@@ -93,8 +98,13 @@ EOF
 
 while [ "$#" -gt 0 ]; do
   case "$1" in
-    start|stop|status|migrate|bootstrap-identity|preflight)
+    start|stop|status|migrate|bootstrap-identity|bootstrap-governed-chat|preflight)
       action=$1
+      ;;
+    --)
+      shift
+      bootstrap_arguments=("$@")
+      break
       ;;
     --env-file)
       shift
@@ -406,6 +416,9 @@ required_secrets=(postgres_password)
 if [ "$action" = bootstrap-identity ]; then
   required_secrets+=(postgres_bootstrap_password)
 fi
+if [ "$action" = bootstrap-governed-chat ]; then
+  required_secrets+=(postgres_app_password)
+fi
 if [ "$action" = start ]; then
   required_secrets+=(
     postgres_app_password postgres_relay_password postgres_upload_password
@@ -441,7 +454,8 @@ PY
   exit 2
 }
 
-if [ "$action" = start ] || [ "$action" = migrate ] || [ "$action" = bootstrap-identity ]; then
+if [ "$action" = start ] || [ "$action" = migrate ] || [ "$action" = bootstrap-identity ] ||
+  [ "$action" = bootstrap-governed-chat ]; then
   require_postgres_listener
 fi
 for required in "${required_secrets[@]}"; do
@@ -644,6 +658,15 @@ fi
 
 if [ "$action" = bootstrap-identity ]; then
   PYTHONPATH="$root/backend/src" exec "$python" -m datariver.bootstrap local-identity
+fi
+
+if [ "$action" = bootstrap-governed-chat ]; then
+  if [ "${#bootstrap_arguments[@]}" -eq 0 ]; then
+    echo "bootstrap-governed-chat requires arguments after --" >&2
+    exit 2
+  fi
+  PYTHONPATH="$root/backend/src" exec "$python" \
+    -m datariver.local_governed_chat_bootstrap "${bootstrap_arguments[@]}"
 fi
 
 if [ "$action" = preflight ]; then

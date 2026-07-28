@@ -1596,6 +1596,11 @@ def _system_configuration_entries(
         ),
         "NEO4J": bool(settings.neo4j_auth_secret_ref),
     }
+    governed_profile_bindings = {
+        "LLM_CHAT_MODEL": settings.chat_composition_provider_profile_version_id,
+        "LLM_EMBEDDING": settings.chat_embedding_provider_profile_version_id,
+        "LLM_RERANKER": settings.chat_reranker_provider_profile_version_id,
+    }
     entries: list[SystemConfigurationEntryResponse] = []
     for system_id, _service_key, label in _SYSTEM_CONFIGURATION:
         restart_scope = _RUNTIME_RESTART_SCOPE.get(system_id, "NOT_IMPLEMENTED")
@@ -1611,7 +1616,12 @@ def _system_configuration_entries(
         else:
             static_configured = deployment_configured.get(system_id, False)
             if static_configured:
-                state = "CONFIGURED"
+                state = (
+                    "GOVERNED_PROFILE_REQUIRED"
+                    if system_id in governed_profile_bindings
+                    and governed_profile_bindings[system_id] is None
+                    else "CONFIGURED"
+                )
             else:
                 state = "NOT_CONFIGURED"
             if system_id == "GRAFANA_DASHBOARD":

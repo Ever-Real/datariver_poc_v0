@@ -15,6 +15,7 @@ const llmSystemIds = new Set<SystemConfigurationEntry['system_id']>([
 ])
 
 type SystemTabId = SystemConfigurationEntry['system_id'] | 'LLM_MODELS' | 'CORE_DASHBOARD'
+type ConnectionState = 'DISCONNECTED' | 'CONNECTING' | 'ERROR' | 'CONNECTED'
 
 function llmTabLabel(systemId: SystemConfigurationEntry['system_id']) {
   if (systemId === 'LLM_CHAT_MODEL') return 'Chat Model'
@@ -24,13 +25,47 @@ function llmTabLabel(systemId: SystemConfigurationEntry['system_id']) {
 
 function stateLabel(state: SystemConfigurationEntry['state']) {
   if (state === 'CONFIGURED') return '구성됨'
+  if (state === 'GOVERNED_PROFILE_REQUIRED') return '추론 승인 필요'
   return '미구성'
 }
 
-function testStatusLabel(status: SystemConfigurationTestResult['status']) {
-  if (status === 'AVAILABLE') return '연결 가능'
+function testStatusLabel(
+  status: SystemConfigurationTestResult['status'],
+  connectionState: ConnectionState,
+) {
+  if (status === 'AVAILABLE') {
+    return connectionState === 'CONNECTED' ? '정상 연결됨' : '연결 가능'
+  }
   if (status === 'AUTHENTICATION_REQUIRED') return '인증 확인 필요'
   return '연결 불가'
+}
+
+function connectionStateLabel(state: ConnectionState) {
+  if (state === 'CONNECTING') return '연결중'
+  if (state === 'ERROR') return '오류'
+  if (state === 'CONNECTED') return '연결됨'
+  return '미연결'
+}
+
+function connectionStateClass(state: ConnectionState) {
+  if (state === 'CONNECTING') return 'badge-connecting'
+  if (state === 'ERROR') return 'badge-error'
+  if (state === 'CONNECTED') return 'badge-connected'
+  return 'badge-soft'
+}
+
+function aggregateConnectionState(
+  entries: SystemConfigurationEntry[],
+  states: Partial<Record<SystemConfigurationEntry['system_id'], ConnectionState>>,
+): ConnectionState {
+  const probeable = entries.filter(
+    (item) => item.runtime_supported && item.state !== 'NOT_CONFIGURED',
+  )
+  if (probeable.length === 0) return 'DISCONNECTED'
+  const values = probeable.map((item) => states[item.system_id] ?? 'DISCONNECTED')
+  if (values.includes('ERROR')) return 'ERROR'
+  if (values.includes('CONNECTING')) return 'CONNECTING'
+  return values.every((value) => value === 'CONNECTED') ? 'CONNECTED' : 'DISCONNECTED'
 }
 
 function applyMethodLabel(method: DeploymentEnvironment['apply_method']) {
@@ -53,8 +88,10 @@ export function SystemConfigurationAdmin(props: AdminSectionProps) {
   const [testResults, setTestResults] = useState<
     Partial<Record<SystemConfigurationEntry['system_id'], SystemConfigurationTestResult>>
   >({})
+  const [connectionStates, setConnectionStates] = useState<
+    Partial<Record<SystemConfigurationEntry['system_id'], ConnectionState>>
+  >({})
   const [copiedId, setCopiedId] = useState<SystemConfigurationEntry['system_id']>()
-  const [applyCopiedId, setApplyCopiedId] = useState<SystemConfigurationEntry['system_id']>()
   const [error, setError] = useState<unknown>()
   const loadRequest = useRef<{ generation: number; controller?: AbortController }>({
     generation: 0,
@@ -72,6 +109,8 @@ export function SystemConfigurationAdmin(props: AdminSectionProps) {
       if (controller.signal.aborted || loadRequest.current.generation !== generation) return
       setItems(next.items)
       setDeploymentEnvironment(next.deployment_environment)
+      setConnectionStates({})
+      setTestResults({})
       setSelectedId((current) => {
         if (current === 'CORE_DASHBOARD' && next.items.some((item) => item.is_core)) return current
         if (current && next.items.some((item) => item.system_id === current)) return current
@@ -108,6 +147,8 @@ export function SystemConfigurationAdmin(props: AdminSectionProps) {
     [items],
   )
   const llmSelected = Boolean(selected && llmSystemIds.has(selected.system_id))
+  const coreConnectionState = aggregateConnectionState(coreItems, connectionStates)
+  const llmConnectionState = aggregateConnectionState(llmItems, connectionStates)
   const systemTabIds = useMemo<SystemTabId[]>(
     () => [
       ...(coreItems.length > 0 ? (['CORE_DASHBOARD'] as const) : []),
@@ -122,6 +163,14 @@ export function SystemConfigurationAdmin(props: AdminSectionProps) {
       : llmSelected
         ? 'LLM_MODELS'
         : selected?.system_id ?? (coreItems.length > 0 ? 'CORE_DASHBOARD' : undefined)
+  const activeConnectionState: ConnectionState =
+    selectedId === 'CORE_DASHBOARD'
+      ? coreConnectionState
+      : llmSelected
+        ? llmConnectionState
+        : selected
+          ? connectionStates[selected.system_id] ?? 'DISCONNECTED'
+          : 'DISCONNECTED'
   const selectSystemTab = (id: SystemTabId) => {
     setSelectedId(id === 'LLM_MODELS' ? llmItems[0]?.system_id : id)
   }
@@ -134,15 +183,28 @@ export function SystemConfigurationAdmin(props: AdminSectionProps) {
 
   const testConnection = async (
     item: SystemConfigurationEntry,
+    applyOnSuccess = false,
   ): Promise<SystemConfigurationTestResult | undefined> => {
-    if (testingId || item.state !== 'CONFIGURED' || !item.runtime_supported) return undefined
+    if (testingId || item.state === 'NOT_CONFIGURED' || !item.runtime_supported) return undefined
     setTestingId(item.system_id)
+    if (applyOnSuccess) {
+      setConnectionStates((current) => ({ ...current, [item.system_id]: 'CONNECTING' }))
+    }
     setError(undefined)
     try {
       const result = await api.testDeploymentSystemConfiguration(item.system_id)
       setTestResults((current) => ({ ...current, [item.system_id]: result }))
+      if (applyOnSuccess) {
+        setConnectionStates((current) => ({
+          ...current,
+          [item.system_id]: result.status === 'AVAILABLE' ? 'CONNECTED' : 'ERROR',
+        }))
+      }
       return result
     } catch (next) {
+      if (applyOnSuccess) {
+        setConnectionStates((current) => ({ ...current, [item.system_id]: 'ERROR' }))
+      }
       setError(next)
       reportError(next)
       return undefined
@@ -151,17 +213,8 @@ export function SystemConfigurationAdmin(props: AdminSectionProps) {
     }
   }
 
-  const testAndCopyApplyCommand = async (item: SystemConfigurationEntry) => {
-    if (!deploymentEnvironment?.apply_command) return
-    const result = await testConnection(item)
-    if (result?.status !== 'AVAILABLE') return
-    try {
-      await navigator.clipboard.writeText(`${deploymentEnvironment.apply_command.trimEnd()}\n`)
-      setApplyCopiedId(item.system_id)
-    } catch (next) {
-      setError(next)
-      reportError(next)
-    }
+  const testAndApplyConnection = async (item: SystemConfigurationEntry) => {
+    await testConnection(item, true)
   }
 
   const copyEnvironmentTemplate = async (item: SystemConfigurationEntry) => {
@@ -178,14 +231,17 @@ export function SystemConfigurationAdmin(props: AdminSectionProps) {
   const renderTestResult = (item: SystemConfigurationEntry) => {
     const result = testResults[item.system_id]
     if (!result) return null
+    const connectionState = connectionStates[item.system_id] ?? 'DISCONNECTED'
     return (
       <p
+        aria-label={`${item.label} 연결 테스트 결과`}
         className={`callout m-0 ${
           result.status === 'AVAILABLE' ? 'border-l-green-600' : 'border-l-amber-600'
         }`}
         role="status"
       >
-        <strong>{testStatusLabel(result.status)}</strong> · {result.scope} · {result.latency_ms}ms
+        <strong>{testStatusLabel(result.status, connectionState)}</strong> · {result.scope} ·{' '}
+        {result.latency_ms}ms
         <br />
         {result.detail}
       </p>
@@ -202,9 +258,18 @@ export function SystemConfigurationAdmin(props: AdminSectionProps) {
             현재 적용값을 확인하고 고정 연결 테스트만 수행할 수 있습니다.
           </p>
         </div>
-        <button className="button button-secondary" onClick={() => void load()} type="button">
-          새로고침
-        </button>
+        <div className="admin-system-connection-summary">
+          <span
+            aria-label={`현재 연결 상태: ${connectionStateLabel(activeConnectionState)}`}
+            className={`badge connection-status-badge ${connectionStateClass(activeConnectionState)}`}
+            role="status"
+          >
+            {connectionStateLabel(activeConnectionState)}
+          </span>
+          <button className="button button-secondary" onClick={() => void load()} type="button">
+            새로고침
+          </button>
+        </div>
       </div>
       {deploymentEnvironment && (
         <section
@@ -251,11 +316,9 @@ export function SystemConfigurationAdmin(props: AdminSectionProps) {
               type="button"
             >
               <span
-                className={`badge ${
-                  coreItems.every((item) => item.state === 'CONFIGURED') ? '' : 'badge-soft'
-                }`}
+                className={`badge ${connectionStateClass(coreConnectionState)}`}
               >
-                {coreItems.filter((item) => item.state === 'CONFIGURED').length}/{coreItems.length}
+                {connectionStateLabel(coreConnectionState)}
               </span>
               <strong>Core Dashboard</strong>
             </button>
@@ -273,8 +336,12 @@ export function SystemConfigurationAdmin(props: AdminSectionProps) {
               onClick={() => setSelectedId(item.system_id)}
               type="button"
             >
-              <span className={`badge ${item.state === 'CONFIGURED' ? '' : 'badge-soft'}`}>
-                {stateLabel(item.state)}
+              <span
+                className={`badge ${connectionStateClass(
+                  connectionStates[item.system_id] ?? 'DISCONNECTED',
+                )}`}
+              >
+                {connectionStateLabel(connectionStates[item.system_id] ?? 'DISCONNECTED')}
               </span>
               <strong>{item.label}</strong>
             </button>
@@ -292,11 +359,9 @@ export function SystemConfigurationAdmin(props: AdminSectionProps) {
               type="button"
             >
               <span
-                className={`badge ${
-                  llmItems.every((item) => item.state === 'CONFIGURED') ? '' : 'badge-soft'
-                }`}
+                className={`badge ${connectionStateClass(llmConnectionState)}`}
               >
-                {llmItems.filter((item) => item.state === 'CONFIGURED').length}/{llmItems.length}
+                {connectionStateLabel(llmConnectionState)}
               </span>
               <strong>LLM Models</strong>
             </button>
@@ -341,17 +406,21 @@ export function SystemConfigurationAdmin(props: AdminSectionProps) {
                         className="button button-secondary"
                         disabled={
                           Boolean(testingId)
-                          || item.state !== 'CONFIGURED'
+                          || item.state === 'NOT_CONFIGURED'
                           || !item.runtime_supported
+                          || connectionStates[item.system_id] === 'CONNECTED'
                         }
-                        onClick={() => void testConnection(item)}
+                        aria-label={`${item.label} 테스트 후 반영`}
+                        onClick={() => void testAndApplyConnection(item)}
                         type="button"
                       >
                         {testingId === item.system_id
                           ? '테스트 중…'
-                          : item.runtime_supported
-                            ? '연결 테스트'
-                            : '설정 그룹'}
+                          : connectionStates[item.system_id] === 'CONNECTED'
+                            ? '연결됨'
+                            : item.runtime_supported
+                              ? '테스트 후 반영'
+                              : '설정 그룹'}
                       </button>
                     </div>
                     {renderTestResult(item)}
@@ -409,11 +478,18 @@ export function SystemConfigurationAdmin(props: AdminSectionProps) {
               </dl>
 
               <p className="callout">
-                연결 테스트는 현재 API에 적용된 값만 확인합니다. 이 화면은 호스트의 환경 파일을
-                읽거나 수정하거나 명령을 직접 실행하지 않습니다. 아래 버튼은 테스트 성공 후
-                운영자 터미널에서 실행할 정확한 명령만 복사하며, workflow가 변경값을 다시
-                검증하고 필요한 프로세스를 재시작합니다.
+                연결 테스트는 현재 API에 이미 적용된 값을 확인합니다. <strong>테스트 후 반영</strong>
+                은 고정 서버 검증이 성공한 연결을 이 화면의 현재 연결 상태로 즉시 반영합니다.
+                환경값 자체를 바꿀 때만 운영 workflow로 프로세스를 재시작해야 합니다.
               </p>
+
+              {selected.state === 'GOVERNED_PROFILE_REQUIRED' && (
+                <p className="callout border-l-amber-600" role="note">
+                  모델 연결과 별도로 Chat 사용에는 이 실행 모델과 일치하는 승인된 추론 프로필
+                  UUID 및 활성 분류정책 연결이 필요합니다. 개발·준비 환경에서는 명시적 governed
+                  Chat bootstrap을 실행하세요.
+                </p>
+              )}
 
               <section
                 className="rounded-enterprise border border-slate-300 bg-slate-50 p-3"
@@ -452,7 +528,7 @@ export function SystemConfigurationAdmin(props: AdminSectionProps) {
                   className="button button-secondary"
                   disabled={
                     Boolean(testingId)
-                    || selected.state !== 'CONFIGURED'
+                    || selected.state === 'NOT_CONFIGURED'
                     || !selected.runtime_supported
                   }
                   onClick={() => void testConnection(selected)}
@@ -468,18 +544,18 @@ export function SystemConfigurationAdmin(props: AdminSectionProps) {
                   className="button"
                   disabled={
                     Boolean(testingId)
-                    || selected.state !== 'CONFIGURED'
+                    || selected.state === 'NOT_CONFIGURED'
                     || !selected.runtime_supported
-                    || !deploymentEnvironment?.apply_command
+                    || connectionStates[selected.system_id] === 'CONNECTED'
                   }
-                  onClick={() => void testAndCopyApplyCommand(selected)}
+                  onClick={() => void testAndApplyConnection(selected)}
                   type="button"
                 >
                   {testingId === selected.system_id
                     ? '현재값 테스트 중…'
-                    : applyCopiedId === selected.system_id
-                      ? '반영 명령 복사됨'
-                      : '현재값 테스트 후 반영 명령 복사'}
+                    : connectionStates[selected.system_id] === 'CONNECTED'
+                      ? '연결됨'
+                      : '테스트 후 반영'}
                 </button>
               </div>
               {renderTestResult(selected)}

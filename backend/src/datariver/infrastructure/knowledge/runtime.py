@@ -199,12 +199,8 @@ def _coordinates(settings: Settings) -> _RuntimeCoordinates:
             chat_options=OpenAICompatibleChatRequestOptions(
                 temperature=settings.intranet_openai_compatible_chat_temperature,
                 top_p=settings.intranet_openai_compatible_chat_top_p,
-                repetition_penalty=(
-                    settings.intranet_openai_compatible_chat_repetition_penalty
-                ),
-                enable_thinking=(
-                    settings.intranet_openai_compatible_chat_enable_thinking
-                ),
+                repetition_penalty=(settings.intranet_openai_compatible_chat_repetition_penalty),
+                enable_thinking=(settings.intranet_openai_compatible_chat_enable_thinking),
             ),
             embedding_base_url=str(settings.intranet_openai_compatible_embedding_base_url),
             embedding_model=settings.intranet_openai_compatible_embedding_model,

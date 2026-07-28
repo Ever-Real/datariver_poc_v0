@@ -101,33 +101,24 @@ class LocalLlamaCppEvidenceReranker(ChatEvidenceReranker):
         try:
             document: Any = json.loads(raw)
         except (UnicodeDecodeError, json.JSONDecodeError) as error:
-            raise ValidationError(
-                f"The {self._label} reranker returned invalid JSON."
-            ) from error
+            raise ValidationError(f"The {self._label} reranker returned invalid JSON.") from error
         if not isinstance(document, dict):
-            raise ValidationError(
-                f"The {self._label} reranker returned an invalid document."
-            )
+            raise ValidationError(f"The {self._label} reranker returned an invalid document.")
         returned_model = document.get("model")
-        if (
-            (self._require_model_echo and returned_model != self._model)
-            or (returned_model is not None and returned_model != self._model)
+        if (self._require_model_echo and returned_model != self._model) or (
+            returned_model is not None and returned_model != self._model
         ):
             raise ValidationError(
                 f"The {self._label} reranker returned a different model identity."
             )
         results = document.get("results")
         if not isinstance(results, list) or len(results) != top_n:
-            raise ValidationError(
-                f"The {self._label} reranker returned an invalid result count."
-            )
+            raise ValidationError(f"The {self._label} reranker returned an invalid result count.")
         indexes: list[int] = []
         scores: list[float] = []
         for item in results:
             if not isinstance(item, dict):
-                raise ValidationError(
-                    f"The {self._label} reranker returned an invalid result."
-                )
+                raise ValidationError(f"The {self._label} reranker returned an invalid result.")
             index = item.get("index")
             score = item.get("relevance_score")
             if (
@@ -137,20 +128,13 @@ class LocalLlamaCppEvidenceReranker(ChatEvidenceReranker):
                 or not isinstance(score, int | float)
                 or isinstance(score, bool)
                 or not math.isfinite(float(score))
-                or (
-                    self._require_unit_interval
-                    and not 0.0 <= float(score) <= 1.0
-                )
+                or (self._require_unit_interval and not 0.0 <= float(score) <= 1.0)
             ):
-                raise ValidationError(
-                    f"The {self._label} reranker returned invalid rank data."
-                )
+                raise ValidationError(f"The {self._label} reranker returned invalid rank data.")
             indexes.append(index)
             scores.append(float(score))
         if len(set(indexes)) != len(indexes) or scores != sorted(scores, reverse=True):
-            raise ValidationError(
-                f"The {self._label} reranker result order is invalid."
-            )
+            raise ValidationError(f"The {self._label} reranker result order is invalid.")
         return tuple(evidence[index].chunk_id for index in indexes)
 
 

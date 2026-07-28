@@ -257,7 +257,7 @@ adapters have passed their real probes:
 
 ```bash
 ./scripts/bootstrap_local_governed_chat.py \
-  --env-file .env.mac-development \
+  --env-file .env.<selected-development-profile> \
   --maximum-classification <PUBLIC|INTERNAL|CONFIDENTIAL> \
   --jurisdiction <approved-local-jurisdiction> \
   --region <approved-local-region> \
@@ -271,7 +271,10 @@ adapters have passed their real probes:
 ```
 
 The command uses the currently selected model/endpoint/adapter identities; none of those values is
-an argument or a source default. It refuses incomplete stages. When its exact local-development
+an argument or a source default. For `source-host-development` and `wsl-source-host` it runs through
+`dev_host.sh` so the module receives the same loopback translations and ignored secret paths as the
+running API; Compose profiles continue to execute inside the API container. It refuses incomplete
+stages. When its exact local-development
 classification rules differ from the active policy, it creates and independently approves a new
 immutable policy version and atomically supersedes the previous one; the selected maximum controls
 which classifications from `PUBLIC` through that ceiling can use Chat. On success it writes only
@@ -654,11 +657,17 @@ Admin reads the API process's current typed snapshot. Therefore:
 6. connection tests accept only a known system identifier and use the server-owned snapshot and
    destination allowlist—never a browser-supplied URL, body or secret.
 
-The **현재값 테스트 후 반영 명령 복사** action first runs that current-snapshot probe. On an
-`AVAILABLE` result it copies the command mapped by the server-owned operator profile. It does not
-execute the command. The post-copy operator workflow validates the edited file, applies migrations
-when required, recreates affected consumers and runs its own post-change probes. A source-free
-Pilot uses `deploy_pilot.sh`; it does not contain or invoke `workflow_update_restart.py`.
+The **테스트 후 반영** action runs that current-snapshot probe and immediately reflects the result
+as `미연결`, `연결중`, `오류` or `연결됨` in the current Admin page. An available result is shown as
+`정상 연결됨`; Core/LLM group badges become green only after every configured, probeable member
+passes. This is current-page probe evidence and is cleared when the inventory is refreshed. The
+runtime configuration was already applied when the API process started, so this action does not
+write the environment or execute a host command.
+
+When the environment itself changes, the operator still runs the server-owned update/restart
+workflow. It validates the edited file, applies migrations when required, recreates affected
+consumers and runs its own post-change probes. A source-free Pilot uses `deploy_pilot.sh`; it does
+not contain or invoke `workflow_update_restart.py`.
 
 If Admin differs from the selected file, verify the workflow profile, recorded `env_file`, running
 container creation time, and Compose command before changing another setting.

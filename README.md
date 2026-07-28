@@ -404,7 +404,9 @@ scripts/compose.sh --env-file .env.wsl-preparation \
 `System settings` 화면은 배포 환경에서 이미 적용된 접속 주소, 모델 ID, 비밀 **참조명**과
 비민감 옵션을 읽기 전용으로 표시한다. 비밀번호·token을 화면에 저장하거나 browser로 보내지
 않으며, 설정 변경은 ignored `.env`와 secret mount를 수정한 뒤 update/restart workflow로
-적용한다.
+적용한다. **테스트 후 반영**은 현재 API 설정을 고정 서버 probe로 확인하고 현재 화면의 상태를
+`미연결/연결중/오류/연결됨`으로 즉시 반영한다. 성공 시 `정상 연결됨`과 초록 배지를 표시하지만
+환경 파일을 수정하거나 host 명령을 실행하지는 않는다.
 
 ### 원격 DataHub v1.6의 Token authentication 활성화
 
@@ -1173,7 +1175,11 @@ The inventory always shows deployment-managed PostgreSQL/OIDC bootstrap requirem
 Redis cache/delivery and S3/DataHub core connectors, and optional feature connectors. In
 development, **Profile → System settings** is a read-only view of the API process's validated
 deployment environment. It offers only fixed server-owned connection probes and copyable `.env`
-option names. It has no SAVE, ACTIVATE, host-file write or browser-supplied probe URL.
+option names. It has no SAVE, ACTIVATE, host-file write or browser-supplied probe URL. Its
+**테스트 후 반영** button applies an `AVAILABLE` fixed-probe result to current-page connection
+badges; refreshing the inventory clears that non-durable evidence. LLM transport may be green while
+Chat remains `추론 승인 필요` until all exact stage profiles and the active classification policy
+are bound.
 
 Edit the ignored environment selected by the explicit workflow profile, then run
 `workflow_update_restart.py` with that same profile. The workflow fingerprints keys without
@@ -2041,9 +2047,9 @@ is intentionally a MOCK metadata manifest.
 
 ```bash
 uv sync --frozen --all-extras
-uv run ruff format --check backend/src backend/tests infra/airflow/dags scripts/cleanup_knowledge_studio_test_artifacts.py scripts/platform_workflow.py scripts/reconcile_manual_receipts.py scripts/render_wsl_intranet_nginx.py scripts/verify_nginx_headers.py scripts/workflow_source_host_infra.py scripts/development_cycle.py
-uv run ruff check backend/src backend/tests infra/airflow/dags scripts/configure_keycloak_assurance.py scripts/cleanup_knowledge_studio_test_artifacts.py scripts/development_cycle.py scripts/generate_initial_migration.py scripts/generate_semiconductor_seed.py scripts/local_reranker_service.py scripts/migrate_s3_objects.py scripts/platform_workflow.py scripts/probe_pgbouncer_rls.py scripts/probe_policy_revocation.py scripts/probe_s3_contract.py scripts/reconcile_manual_receipts.py scripts/render_wsl_intranet_nginx.py scripts/verify_datahub_contract.py scripts/verify_datahub_image_inventory.py scripts/verify_nginx_headers.py scripts/verify_static.py scripts/workflow_source_host_infra.py
-uv run mypy backend/src backend/tests scripts/cleanup_knowledge_studio_test_artifacts.py scripts/development_cycle.py scripts/local_reranker_service.py scripts/migrate_s3_objects.py scripts/platform_workflow.py scripts/probe_s3_contract.py scripts/reconcile_manual_receipts.py scripts/render_wsl_intranet_nginx.py scripts/verify_nginx_headers.py scripts/workflow_source_host_infra.py
+uv run ruff format --check backend/src backend/tests infra/airflow/dags scripts/bootstrap_local_governed_chat.py scripts/cleanup_knowledge_studio_test_artifacts.py scripts/platform_workflow.py scripts/reconcile_manual_receipts.py scripts/render_wsl_intranet_nginx.py scripts/verify_nginx_headers.py scripts/workflow_source_host_infra.py scripts/development_cycle.py
+uv run ruff check backend/src backend/tests infra/airflow/dags scripts/bootstrap_local_governed_chat.py scripts/configure_keycloak_assurance.py scripts/cleanup_knowledge_studio_test_artifacts.py scripts/development_cycle.py scripts/generate_initial_migration.py scripts/generate_semiconductor_seed.py scripts/local_reranker_service.py scripts/migrate_s3_objects.py scripts/platform_workflow.py scripts/probe_pgbouncer_rls.py scripts/probe_policy_revocation.py scripts/probe_s3_contract.py scripts/reconcile_manual_receipts.py scripts/render_wsl_intranet_nginx.py scripts/verify_datahub_contract.py scripts/verify_datahub_image_inventory.py scripts/verify_nginx_headers.py scripts/verify_static.py scripts/workflow_source_host_infra.py
+uv run mypy backend/src backend/tests scripts/bootstrap_local_governed_chat.py scripts/cleanup_knowledge_studio_test_artifacts.py scripts/development_cycle.py scripts/local_reranker_service.py scripts/migrate_s3_objects.py scripts/platform_workflow.py scripts/probe_s3_contract.py scripts/reconcile_manual_receipts.py scripts/render_wsl_intranet_nginx.py scripts/verify_nginx_headers.py scripts/workflow_source_host_infra.py
 uv run pytest backend/tests -q
 uv run python scripts/verify_static.py
 

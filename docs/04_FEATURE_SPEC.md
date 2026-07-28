@@ -303,7 +303,12 @@ Any pre-apply review state → REJECTED or CANCELLED under policy
   inference capability (ADR-0030, ADR-0033, ADR-0038). Reranking uses the Mac-only
   `LOCAL_LLAMA_CPP` bridge over an operator-selected Ollama-owned GGUF and executes the fixed
   `POST /v1/rerank` probe; it is not described as OpenAI-compatible. Historical database-backed
-  System Settings revisions are non-runtime records and cannot activate a connector.
+  System Settings revisions are non-runtime records and cannot activate a connector. The
+  **테스트 후 반영** interaction applies only the fixed probe result to the current page:
+  `미연결 → 연결중 → 연결됨/오류`. It never writes deployment configuration. Core and LLM
+  navigation groups become green only when every configured, probeable member has a successful
+  result. An enabled model without its exact stage-specific provider-profile UUID is shown as
+  `추론 승인 필요`; transport availability never implies governed Chat authorization.
 - Per-user CR activity and owned-table drill-downs are bounded Workspace/subject-bound cursor APIs. The server filters every CR/table through its ordinary ABAC action before display. Identity profile attributes remain IdP-managed; audit/security export and canonical terminology CRUD remain explicit governed-unavailable states rather than fabricated browser data.
 - Policy changes are versioned, linted, tested against fixtures, approved and atomically activated.
 - Connection configuration stores endpoints/capabilities and `secret_ref`, not plaintext credentials.
