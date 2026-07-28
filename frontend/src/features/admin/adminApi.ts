@@ -41,7 +41,7 @@ import type {
   SystemAssigneePage,
   SystemAssigneeUpdate,
   SystemAssigneeUpdateResult,
-  SystemConfigurationEntry,
+  SystemConfigurationInventory,
   SystemConfigurationTestResult,
 } from '../../api/types'
 
@@ -363,11 +363,11 @@ export class AdminApi {
     )
   }
 
-  async listSystemConfiguration(signal?: AbortSignal) {
-    return (await this.client.request<{ items: SystemConfigurationEntry[] }>(
+  listSystemConfiguration(signal?: AbortSignal) {
+    return this.client.request<SystemConfigurationInventory>(
       '/admin/system-configuration',
       { signal, cache: 'no-store' },
-    )).items
+    )
   }
 
   testDeploymentSystemConfiguration(systemId: string) {

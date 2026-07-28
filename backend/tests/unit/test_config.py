@@ -70,6 +70,20 @@ def test_default_governance_worker_is_the_seeded_airflow_service_subject() -> No
     assert settings().governance_worker_subject_id == LOCAL_AIRFLOW_SUBJECT_ID
 
 
+def test_deployment_environment_identity_is_typed_and_rejects_control_characters() -> None:
+    configured = settings(
+        datariver_env_file=".env.wsl-intranet-development",
+        datariver_operator_profile="wsl-source-host",
+    )
+    assert configured.datariver_env_file == ".env.wsl-intranet-development"
+    assert configured.datariver_operator_profile == "wsl-source-host"
+
+    with pytest.raises(ValidationError, match="printable file path"):
+        settings(datariver_env_file=".env\nINJECTED=value")
+    with pytest.raises(ValidationError):
+        settings(datariver_operator_profile="browser-command-execution")
+
+
 def test_development_admin_password_bypass_is_explicit_and_fail_closed() -> None:
     configured = settings(
         admin_password_fallback_enabled=True,

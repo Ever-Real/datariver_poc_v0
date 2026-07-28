@@ -32,6 +32,16 @@ class Settings(BaseSettings):
         "127.0.0.1",
         "api",
     )
+    datariver_env_file: str = Field(default=".env", min_length=1, max_length=512)
+    datariver_operator_profile: Literal[
+        "unmanaged",
+        "portable-development",
+        "mac-development",
+        "wsl-preparation",
+        "source-host-development",
+        "wsl-source-host",
+        "source-free-pilot",
+    ] = "unmanaged"
     deployment_tier: Literal["SINGLE_NODE_PILOT", "HA_CANDIDATE", "HA_ACCEPTED"] = (
         "SINGLE_NODE_PILOT"
     )
@@ -377,6 +387,18 @@ class Settings(BaseSettings):
         if isinstance(value, str):
             return tuple(part.strip() for part in value.split(",") if part.strip())
         return value
+
+    @field_validator("datariver_env_file")
+    @classmethod
+    def validate_datariver_env_file(cls, value: str) -> str:
+        normalized = value.strip()
+        if (
+            not normalized
+            or any(ord(character) < 32 or ord(character) == 127 for character in normalized)
+            or PurePosixPath(normalized).name in {"", ".", ".."}
+        ):
+            raise ValueError("DataRiver environment file must be one printable file path.")
+        return normalized
 
     @field_validator("local_inference_allowed_hosts")
     @classmethod

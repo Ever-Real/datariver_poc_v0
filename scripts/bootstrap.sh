@@ -454,6 +454,19 @@ sed -e "s/__DEMO_PASSWORD__/$escaped_demo_password/g" \
   > "$keycloak_runtime_dir/datariver-realm.json"
 
 set_env_value DATARIVER_ENV_FILE "$env_file_argument"
+operator_profile=unmanaged
+if [ "$portable_development" = true ]; then
+  operator_profile=portable-development
+elif [ "$mac_development" = true ]; then
+  operator_profile=mac-development
+elif [ "$wsl_preparation" = true ]; then
+  operator_profile=wsl-preparation
+elif [ "$intranet_source_host" = true ]; then
+  operator_profile=wsl-source-host
+elif [ "$host_development" = true ]; then
+  operator_profile=source-host-development
+fi
+set_env_value DATARIVER_OPERATOR_PROFILE "$operator_profile"
 set_env_value DATARIVER_CONNECTOR_NETWORK datariver-connectors
 # Legacy profiles may still carry the retired database-overlay activation
 # switch. Normalize it before any source/container Settings validation.

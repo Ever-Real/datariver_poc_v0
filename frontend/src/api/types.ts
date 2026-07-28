@@ -1374,6 +1374,19 @@ export interface SystemConfigurationEntry {
   is_core?: boolean
 }
 
+export interface DeploymentEnvironment {
+  environment_file: string
+  operator_profile: 'unmanaged' | 'portable-development' | 'mac-development' | 'wsl-preparation' | 'source-host-development' | 'wsl-source-host' | 'source-free-pilot'
+  apply_method: 'UNAVAILABLE' | 'WORKFLOW_UPDATE_RESTART' | 'SOURCE_HOST_UPDATE' | 'SOURCE_HOST_RESTART' | 'PILOT_REDEPLOY'
+  apply_command: string | null
+  browser_execution_supported: false
+}
+
+export interface SystemConfigurationInventory {
+  items: SystemConfigurationEntry[]
+  deployment_environment: DeploymentEnvironment
+}
+
 export interface SystemConfigurationTestResult {
   system_id: SystemConfigurationEntry['system_id']
   status: 'AVAILABLE' | 'AUTHENTICATION_REQUIRED' | 'UNAVAILABLE'

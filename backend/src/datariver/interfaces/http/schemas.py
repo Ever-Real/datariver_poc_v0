@@ -1320,8 +1320,33 @@ class SystemConfigurationEntryResponse(BaseModel):
     is_core: bool = False
 
 
+class DeploymentEnvironmentResponse(BaseModel):
+    """Operator-owned environment identity; the API never reads or writes the host file."""
+
+    environment_file: str
+    operator_profile: Literal[
+        "unmanaged",
+        "portable-development",
+        "mac-development",
+        "wsl-preparation",
+        "source-host-development",
+        "wsl-source-host",
+        "source-free-pilot",
+    ]
+    apply_method: Literal[
+        "UNAVAILABLE",
+        "WORKFLOW_UPDATE_RESTART",
+        "SOURCE_HOST_UPDATE",
+        "SOURCE_HOST_RESTART",
+        "PILOT_REDEPLOY",
+    ]
+    apply_command: str | None = None
+    browser_execution_supported: Literal[False] = False
+
+
 class SystemConfigurationListResponse(BaseModel):
     items: list[SystemConfigurationEntryResponse]
+    deployment_environment: DeploymentEnvironmentResponse
 
 
 class SystemConfigurationVersionResponse(BaseModel):

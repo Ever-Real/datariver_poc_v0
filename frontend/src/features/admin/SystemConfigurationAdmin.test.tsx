@@ -45,6 +45,19 @@ const context: AdminReadContext = {
   action_vocabulary: [],
 }
 
+const deploymentEnvironment = {
+  environment_file: '.env.wsl-intranet-development',
+  operator_profile: 'wsl-source-host' as const,
+  apply_method: 'SOURCE_HOST_UPDATE' as const,
+  apply_command:
+    './scripts/development_cycle.py prep-update --env-file .env.wsl-intranet-development',
+  browser_execution_supported: false as const,
+}
+
+function inventory(items: SystemConfigurationEntry[]) {
+  return { items, deployment_environment: deploymentEnvironment }
+}
+
 function renderAdmin(request: ReturnType<typeof vi.fn>) {
   const api = new AdminApi(
     { request, requestWithMeta: vi.fn() } as unknown as Pick<
@@ -72,14 +85,17 @@ describe('SystemConfigurationAdmin', () => {
   it('shows only deployment values and an env template without browser-side editors', async () => {
     const request = vi.fn((path: string) => {
       if (path === '/admin/system-configuration') {
-        return Promise.resolve({ items: [deploymentEntry] })
+        return Promise.resolve(inventory([deploymentEntry]))
       }
       throw new Error(`unexpected request: ${path}`)
     })
 
     renderAdmin(request)
 
-    expect(await screen.findByText('배포 환경 · secret 파일')).toBeInTheDocument()
+    expect(await screen.findByRole('region', { name: '현재 배포 환경' })).toHaveTextContent(
+      '.env.wsl-intranet-development',
+    )
+    expect(screen.getByText('준비 PC source-host 업데이트')).toBeInTheDocument()
     expect(
       screen.getByRole('region', { name: 'DataHub GMS 환경 변수 템플릿' }),
     ).toHaveTextContent('DATAHUB_BASE_URL=')
@@ -103,7 +119,7 @@ describe('SystemConfigurationAdmin', () => {
     })
     const request = vi.fn((path: string) => {
       if (path === '/admin/system-configuration') {
-        return Promise.resolve({ items: [deploymentEntry] })
+        return Promise.resolve(inventory([deploymentEntry]))
       }
       throw new Error(`unexpected request: ${path}`)
     })
@@ -122,7 +138,7 @@ describe('SystemConfigurationAdmin', () => {
   it('tests a configured connector only through the deployment-owned route', async () => {
     const request = vi.fn((path: string, options?: RequestInit) => {
       if (path === '/admin/system-configuration') {
-        return Promise.resolve({ items: [deploymentEntry] })
+        return Promise.resolve(inventory([deploymentEntry]))
       }
       if (
         path === '/admin/system-configuration/DATAHUB_GMS/test-deployment'
@@ -153,6 +169,85 @@ describe('SystemConfigurationAdmin', () => {
     )
   })
 
+  it('copies the server-owned apply command only after the current probe passes', async () => {
+    const writeText = vi.fn(() => Promise.resolve())
+    Object.defineProperty(navigator, 'clipboard', {
+      configurable: true,
+      value: { writeText },
+    })
+    const request = vi.fn((path: string, options?: RequestInit) => {
+      if (path === '/admin/system-configuration') {
+        return Promise.resolve(inventory([deploymentEntry]))
+      }
+      if (
+        path === '/admin/system-configuration/DATAHUB_GMS/test-deployment'
+        && options?.method === 'POST'
+      ) {
+        return Promise.resolve({
+          system_id: 'DATAHUB_GMS',
+          status: 'AVAILABLE',
+          scope: 'HTTP_HEALTH',
+          latency_ms: 8,
+          detail: 'fixed deployment probe passed',
+          configuration_version: null,
+          tested_at: '2026-07-20T09:01:00Z',
+        })
+      }
+      throw new Error(`unexpected request: ${path}`)
+    })
+
+    renderAdmin(request)
+    fireEvent.click(
+      await screen.findByRole('button', { name: '현재값 테스트 후 반영 명령 복사' }),
+    )
+
+    await waitFor(() =>
+      expect(writeText).toHaveBeenCalledWith(
+        './scripts/development_cycle.py prep-update --env-file .env.wsl-intranet-development\n',
+      ),
+    )
+    expect(screen.getByRole('button', { name: '반영 명령 복사됨' })).toBeInTheDocument()
+  })
+
+  it('does not copy the apply command when the current deployment probe fails', async () => {
+    const writeText = vi.fn(() => Promise.resolve())
+    Object.defineProperty(navigator, 'clipboard', {
+      configurable: true,
+      value: { writeText },
+    })
+    const request = vi.fn((path: string, options?: RequestInit) => {
+      if (path === '/admin/system-configuration') {
+        return Promise.resolve(inventory([deploymentEntry]))
+      }
+      if (
+        path === '/admin/system-configuration/DATAHUB_GMS/test-deployment'
+        && options?.method === 'POST'
+      ) {
+        return Promise.resolve({
+          system_id: 'DATAHUB_GMS',
+          status: 'UNAVAILABLE',
+          scope: 'HTTP_HEALTH',
+          latency_ms: 8,
+          detail: 'fixed deployment probe failed',
+          configuration_version: null,
+          tested_at: '2026-07-20T09:01:00Z',
+        })
+      }
+      throw new Error(`unexpected request: ${path}`)
+    })
+
+    renderAdmin(request)
+    fireEvent.click(
+      await screen.findByRole('button', { name: '현재값 테스트 후 반영 명령 복사' }),
+    )
+
+    expect(await screen.findByRole('status')).toHaveTextContent('연결 불가')
+    expect(writeText).not.toHaveBeenCalled()
+    expect(
+      screen.getByRole('button', { name: '현재값 테스트 후 반영 명령 복사' }),
+    ).toBeInTheDocument()
+  })
+
   it('groups Chat, Embedding, and Reranker under one read-only LLM menu', async () => {
     const llmSpecs: Array<[SystemConfigurationEntry['system_id'], string]> = [
       ['LLM_CHAT_MODEL', 'LLM · Chat model'],
@@ -166,7 +261,7 @@ describe('SystemConfigurationAdmin', () => {
     }))
     const request = vi.fn((path: string) => {
       if (path === '/admin/system-configuration') {
-        return Promise.resolve({ items: llmEntries })
+        return Promise.resolve(inventory(llmEntries))
       }
       throw new Error(`unexpected request: ${path}`)
     })

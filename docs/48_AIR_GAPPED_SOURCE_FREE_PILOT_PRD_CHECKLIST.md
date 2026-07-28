@@ -40,6 +40,9 @@ DataHub/S3/Airflow/LLM/graph/observability systems.
   `crypto.subtle` features need an approved HTTPS secure context.
 - **PILOT-OPS-001** — The release records the exact Git commit. Production promotion still requires
   `main` plus the existing production gates.
+- **PILOT-OPS-002** — Admin displays `/home/datariver/.env` and the `source-free-pilot` lifecycle
+  from the running Settings snapshot. A successful fixed probe may copy the exact
+  `deploy_pilot.sh` handoff, but the API never executes a host command or receives Docker control.
 
 ## Operator sequence
 

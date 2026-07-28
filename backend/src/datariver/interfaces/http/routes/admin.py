@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+import shlex
 from collections.abc import Mapping, Sequence
 from typing import Annotated, Any, Literal
 from urllib.parse import urlsplit
@@ -100,6 +101,7 @@ from datariver.interfaces.http.schemas import (
     AdminFallbackCreateRequest,
     AdminFallbackDecisionRequest,
     AdminReadContextResponse,
+    DeploymentEnvironmentResponse,
     IdentityUserProvisionRequest,
     IdentityUserProvisionResponse,
     MembershipAccessDocumentRequest,
@@ -1576,6 +1578,55 @@ def _system_configuration_entries(
     return entries
 
 
+def _deployment_environment(
+    settings: Settings,
+) -> DeploymentEnvironmentResponse:
+    profile = settings.datariver_operator_profile
+    env_file = settings.datariver_env_file
+    apply_method: Literal[
+        "UNAVAILABLE",
+        "WORKFLOW_UPDATE_RESTART",
+        "SOURCE_HOST_UPDATE",
+        "SOURCE_HOST_RESTART",
+        "PILOT_REDEPLOY",
+    ] = "UNAVAILABLE"
+    apply_command: str | None = None
+
+    if profile in {"portable-development", "mac-development", "wsl-preparation"}:
+        apply_method = "WORKFLOW_UPDATE_RESTART"
+        apply_command = f"./scripts/workflow_update_restart.py --profile {profile}"
+    elif profile == "wsl-source-host":
+        apply_method = "SOURCE_HOST_UPDATE"
+        apply_command = (
+            f"./scripts/development_cycle.py prep-update --env-file {shlex.quote(env_file)}"
+        )
+    elif profile == "source-host-development":
+        quoted_env_file = shlex.quote(env_file)
+        apply_method = "SOURCE_HOST_RESTART"
+        apply_command = "\n".join(
+            (
+                f"./scripts/dev_host.sh --env-file {quoted_env_file} preflight",
+                f"./scripts/dev_host.sh --env-file {quoted_env_file} start",
+                f"./scripts/dev_host.sh --env-file {quoted_env_file} status",
+            )
+        )
+    elif profile == "source-free-pilot":
+        apply_method = "PILOT_REDEPLOY"
+        apply_command = (
+            "DATARIVER_PILOT_HOME=/home/datariver "
+            "/home/datariver/incoming/deploy_pilot.sh "
+            "/home/datariver/incoming/release.tar.gz"
+        )
+
+    return DeploymentEnvironmentResponse(
+        environment_file=env_file,
+        operator_profile=profile,
+        apply_method=apply_method,
+        apply_command=apply_command,
+        browser_execution_supported=False,
+    )
+
+
 def _system_configuration_revision_keys(
     profiles: Sequence[ExternalServiceProfileModel],
 ) -> set[tuple[UUID, int]]:
@@ -2554,7 +2605,10 @@ async def list_system_configuration(
     if "SYSTEM_CONFIGURATION_READ" not in admin_context.allowed_operations:
         raise ForbiddenError("System configuration access is not available for this administrator.")
     container = get_container(request)
-    return SystemConfigurationListResponse(items=_system_configuration_entries(container.settings))
+    return SystemConfigurationListResponse(
+        items=_system_configuration_entries(container.settings),
+        deployment_environment=_deployment_environment(container.settings),
+    )
 
 
 async def list_system_configuration_versions(

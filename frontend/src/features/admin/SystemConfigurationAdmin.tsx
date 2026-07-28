@@ -1,5 +1,9 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import type { SystemConfigurationEntry, SystemConfigurationTestResult } from '../../api/types'
+import type {
+  DeploymentEnvironment,
+  SystemConfigurationEntry,
+  SystemConfigurationTestResult,
+} from '../../api/types'
 import { ErrorNotice } from '../../components/ErrorNotice'
 import { useRovingTabs } from '../../components/common/useRovingTabs'
 import type { AdminSectionProps } from './MembershipAdmin'
@@ -29,9 +33,18 @@ function testStatusLabel(status: SystemConfigurationTestResult['status']) {
   return '연결 불가'
 }
 
+function applyMethodLabel(method: DeploymentEnvironment['apply_method']) {
+  if (method === 'WORKFLOW_UPDATE_RESTART') return '관리형 업데이트·재시작 workflow'
+  if (method === 'SOURCE_HOST_UPDATE') return '준비 PC source-host 업데이트'
+  if (method === 'SOURCE_HOST_RESTART') return 'source-host 사전검증·재시작'
+  if (method === 'PILOT_REDEPLOY') return 'source-free Pilot 재배포'
+  return '운영자 절차 미등록'
+}
+
 export function SystemConfigurationAdmin(props: AdminSectionProps) {
   const { api, reportError } = props
   const [items, setItems] = useState<SystemConfigurationEntry[]>([])
+  const [deploymentEnvironment, setDeploymentEnvironment] = useState<DeploymentEnvironment>()
   const [selectedId, setSelectedId] = useState<
     SystemConfigurationEntry['system_id'] | 'CORE_DASHBOARD' | undefined
   >()
@@ -41,6 +54,7 @@ export function SystemConfigurationAdmin(props: AdminSectionProps) {
     Partial<Record<SystemConfigurationEntry['system_id'], SystemConfigurationTestResult>>
   >({})
   const [copiedId, setCopiedId] = useState<SystemConfigurationEntry['system_id']>()
+  const [applyCopiedId, setApplyCopiedId] = useState<SystemConfigurationEntry['system_id']>()
   const [error, setError] = useState<unknown>()
   const loadRequest = useRef<{ generation: number; controller?: AbortController }>({
     generation: 0,
@@ -56,11 +70,12 @@ export function SystemConfigurationAdmin(props: AdminSectionProps) {
     try {
       const next = await api.listSystemConfiguration(controller.signal)
       if (controller.signal.aborted || loadRequest.current.generation !== generation) return
-      setItems(next)
+      setItems(next.items)
+      setDeploymentEnvironment(next.deployment_environment)
       setSelectedId((current) => {
-        if (current === 'CORE_DASHBOARD' && next.some((item) => item.is_core)) return current
-        if (current && next.some((item) => item.system_id === current)) return current
-        return next.some((item) => item.is_core) ? 'CORE_DASHBOARD' : next[0]?.system_id
+        if (current === 'CORE_DASHBOARD' && next.items.some((item) => item.is_core)) return current
+        if (current && next.items.some((item) => item.system_id === current)) return current
+        return next.items.some((item) => item.is_core) ? 'CORE_DASHBOARD' : next.items[0]?.system_id
       })
     } catch (next) {
       if (!controller.signal.aborted) {
@@ -117,18 +132,35 @@ export function SystemConfigurationAdmin(props: AdminSectionProps) {
     onSelect: selectSystemTab,
   })
 
-  const testConnection = async (item: SystemConfigurationEntry) => {
-    if (testingId || item.state !== 'CONFIGURED' || !item.runtime_supported) return
+  const testConnection = async (
+    item: SystemConfigurationEntry,
+  ): Promise<SystemConfigurationTestResult | undefined> => {
+    if (testingId || item.state !== 'CONFIGURED' || !item.runtime_supported) return undefined
     setTestingId(item.system_id)
     setError(undefined)
     try {
       const result = await api.testDeploymentSystemConfiguration(item.system_id)
       setTestResults((current) => ({ ...current, [item.system_id]: result }))
+      return result
     } catch (next) {
       setError(next)
       reportError(next)
+      return undefined
     } finally {
       setTestingId(undefined)
+    }
+  }
+
+  const testAndCopyApplyCommand = async (item: SystemConfigurationEntry) => {
+    if (!deploymentEnvironment?.apply_command) return
+    const result = await testConnection(item)
+    if (result?.status !== 'AVAILABLE') return
+    try {
+      await navigator.clipboard.writeText(`${deploymentEnvironment.apply_command.trimEnd()}\n`)
+      setApplyCopiedId(item.system_id)
+    } catch (next) {
+      setError(next)
+      reportError(next)
     }
   }
 
@@ -174,6 +206,36 @@ export function SystemConfigurationAdmin(props: AdminSectionProps) {
           새로고침
         </button>
       </div>
+      {deploymentEnvironment && (
+        <section
+          aria-label="현재 배포 환경"
+          className="mb-4 grid gap-3 rounded-enterprise border border-slate-300 bg-slate-50 p-4"
+        >
+          <dl className="summary-list">
+            <div>
+              <dt>현재 적용 환경 파일</dt>
+              <dd>
+                <code>{deploymentEnvironment.environment_file}</code>
+              </dd>
+            </div>
+            <div>
+              <dt>운영 프로필</dt>
+              <dd>
+                <code>{deploymentEnvironment.operator_profile}</code>
+              </dd>
+            </div>
+            <div>
+              <dt>재적용 방식</dt>
+              <dd>{applyMethodLabel(deploymentEnvironment.apply_method)}</dd>
+            </div>
+          </dl>
+          {deploymentEnvironment.apply_command && (
+            <pre className="m-0 overflow-auto whitespace-pre-wrap text-[11px] leading-5 text-slate-700">
+              {deploymentEnvironment.apply_command}
+            </pre>
+          )}
+        </section>
+      )}
       <div className="admin-system-settings-workspace">
         <nav aria-label="설정 시스템 목록" className="admin-system-settings-list" role="tablist">
           {coreItems.length > 0 && (
@@ -336,7 +398,9 @@ export function SystemConfigurationAdmin(props: AdminSectionProps) {
                 </div>
                 <div>
                   <dt>설정 원천</dt>
-                  <dd>배포 환경 · secret 파일</dd>
+                  <dd>
+                    <code>{deploymentEnvironment?.environment_file ?? '.env'}</code> · secret 파일
+                  </dd>
                 </div>
                 <div>
                   <dt>런타임 반영</dt>
@@ -345,8 +409,10 @@ export function SystemConfigurationAdmin(props: AdminSectionProps) {
               </dl>
 
               <p className="callout">
-                이 화면은 호스트의 <code>.env</code> 파일을 읽거나 수정하지 않습니다. 선택한 환경
-                파일을 변경한 뒤 <code>workflow_update_restart.py</code>를 실행해야 반영됩니다.
+                연결 테스트는 현재 API에 적용된 값만 확인합니다. 이 화면은 호스트의 환경 파일을
+                읽거나 수정하거나 명령을 직접 실행하지 않습니다. 아래 버튼은 테스트 성공 후
+                운영자 터미널에서 실행할 정확한 명령만 복사하며, workflow가 변경값을 다시
+                검증하고 필요한 프로세스를 재시작합니다.
               </p>
 
               <section
@@ -397,6 +463,23 @@ export function SystemConfigurationAdmin(props: AdminSectionProps) {
                     : selected.runtime_supported
                       ? '연결 테스트'
                       : '연결 테스트 없음'}
+                </button>
+                <button
+                  className="button"
+                  disabled={
+                    Boolean(testingId)
+                    || selected.state !== 'CONFIGURED'
+                    || !selected.runtime_supported
+                    || !deploymentEnvironment?.apply_command
+                  }
+                  onClick={() => void testAndCopyApplyCommand(selected)}
+                  type="button"
+                >
+                  {testingId === selected.system_id
+                    ? '현재값 테스트 중…'
+                    : applyCopiedId === selected.system_id
+                      ? '반영 명령 복사됨'
+                      : '현재값 테스트 후 반영 명령 복사'}
                 </button>
               </div>
               {renderTestResult(selected)}

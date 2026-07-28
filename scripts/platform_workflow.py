@@ -727,6 +727,7 @@ def classify_environment_changes(
             "APP_ENV",
             "APP_NAME",
             "APP_LOG_LEVEL",
+            "DATARIVER_OPERATOR_PROFILE",
             "DEPLOYMENT_TIER",
             "DEPLOYMENT_EVIDENCE_REFERENCE",
         }:

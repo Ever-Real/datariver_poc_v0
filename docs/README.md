@@ -45,6 +45,7 @@
 | 46 | [Knowledge Studio Phase 5 release report](46_KNOWLEDGE_STUDIO_PHASE5_RELEASE_REPORT.md) | governed schema/mapping publication, adapter boundary, cleanup and remaining operational gates | Local-source release candidate |
 | 47 | [Knowledge Studio Phase 6 cutover preparation](47_KNOWLEDGE_STUDIO_PHASE6_CUTOVER_PREP.md) | RC tag, revision `0061`, Docker restart and Graph Builder scaffold acceptance commands | RC cutover preparation |
 | 48 | [Air-gapped source-free amd64 Pilot PRD/checklist](48_AIR_GAPPED_SOURCE_FREE_PILOT_PRD_CHECKLIST.md) | exact-commit image bundle, source-free target, one-shot migration and external gates | Local implementation complete; target gates open |
+| 50 | [Pilot deployment and integration guide](50_PILOT_DEPLOYMENT_AND_INTEGRATION_GUIDE.md) | copy/paste artifact transfer, environment/secret setup, deployment, integration and Day 2 operations | Operator runbook; target gates open |
 
 Independent review records: [Data Architect](reviews/2026-07-14_DATA_ARCHITECT_REVIEW.md) and [Data Engineer/SRE](reviews/2026-07-14_DATA_ENGINEER_REVIEW.md).
 
@@ -106,6 +107,8 @@ boundary are defined by
 
 The source-free isolated amd64 Pilot packaging and deployment boundary is defined by
 [ADR-0063](adr/0063-source-free-air-gapped-pilot-release.md).
+Admin deployment-environment identity and the non-privileged operator-command handoff are defined
+by [ADR-0064](adr/0064-admin-environment-identity-and-operator-handoff.md).
 
 ## Change control
 

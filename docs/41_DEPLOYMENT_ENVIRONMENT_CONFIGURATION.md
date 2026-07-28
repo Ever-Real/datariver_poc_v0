@@ -582,12 +582,20 @@ unchanged `.env` reference alone cannot signal that rotation.
 
 Admin reads the API process's current typed snapshot. Therefore:
 
-1. editing `.env` alone does not change a running process;
-2. the update/restart workflow recreates affected consumers;
-3. refreshing Admin then shows the new redacted effective value;
-4. changing UI state never changes `.env` or a running connector;
-5. connection tests accept only a known system identifier and use the server-owned snapshot and
+1. `DATARIVER_ENV_FILE` identifies the selected file and `DATARIVER_OPERATOR_PROFILE` identifies
+   its lifecycle; Admin displays both from the running Settings snapshot without opening the file;
+2. editing `.env` alone does not change a running process;
+3. the update/restart workflow recreates affected consumers;
+4. refreshing Admin then shows the new redacted effective value;
+5. changing UI state never changes `.env` or a running connector;
+6. connection tests accept only a known system identifier and use the server-owned snapshot and
    destination allowlist—never a browser-supplied URL, body or secret.
+
+The **현재값 테스트 후 반영 명령 복사** action first runs that current-snapshot probe. On an
+`AVAILABLE` result it copies the command mapped by the server-owned operator profile. It does not
+execute the command. The post-copy operator workflow validates the edited file, applies migrations
+when required, recreates affected consumers and runs its own post-change probes. A source-free
+Pilot uses `deploy_pilot.sh`; it does not contain or invoke `workflow_update_restart.py`.
 
 If Admin differs from the selected file, verify the workflow profile, recorded `env_file`, running
 container creation time, and Compose command before changing another setting.

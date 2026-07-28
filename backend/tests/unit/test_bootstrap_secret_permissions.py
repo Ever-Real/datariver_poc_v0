@@ -451,6 +451,7 @@ def test_portable_bootstrap_keeps_inference_disabled_and_uses_generic_ports(
     assert "WORKSPACE_SELECTION_ENABLED=false" in values
     assert "SYSTEM_CONFIGURATION_RUNTIME_ACTIVATION_ENABLED=false" in values
     assert "SYSTEM_CONFIGURATION_RUNTIME_ACTIVATION_ENABLED=true" not in values
+    assert "DATARIVER_OPERATOR_PROFILE=portable-development" in values
 
 
 def test_linux_intranet_source_host_bootstrap_persists_distinct_https_origins(
@@ -493,6 +494,7 @@ def test_linux_intranet_source_host_bootstrap_persists_distinct_https_origins(
     assert result.returncode == 0, result.stderr
     values = (isolated_root / ".env.wsl-intranet-development").read_text(encoding="utf-8")
     assert "APP_ENV=development" in values
+    assert "DATARIVER_OPERATOR_PROFILE=wsl-source-host" in values
     assert "INTRANET_SOURCE_HOST_ENABLED=true" in values
     assert "WORKSPACE_SELECTION_ENABLED=false" in values
     assert "APP_PUBLIC_ORIGIN=https://datariver-prep.example.internal" in values
@@ -607,6 +609,7 @@ def test_wsl_bootstrap_preserves_preinstalled_token_without_exposing_it(
     assert environment_path.is_file()
     environment = environment_path.read_text(encoding="utf-8")
     for expected in (
+        "DATARIVER_OPERATOR_PROFILE=wsl-preparation",
         "AIRFLOW_SOURCE_API_BRIDGE_ENABLED=false",
         "SYSTEM_CONFIGURATION_RUNTIME_ACTIVATION_ENABLED=false",
         "NEO4J_IMAGE=neo4j:2026.06.0",

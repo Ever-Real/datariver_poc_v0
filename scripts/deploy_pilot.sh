@@ -247,6 +247,8 @@ env_value() {
 
 app_env=$(env_value APP_ENV)
 deployment_tier=$(env_value DEPLOYMENT_TIER)
+datariver_env_file=$(env_value DATARIVER_ENV_FILE)
+operator_profile=$(env_value DATARIVER_OPERATOR_PROFILE)
 app_origin=$(env_value APP_PUBLIC_ORIGIN)
 app_cors=$(env_value APP_CORS_ORIGINS)
 app_trusted_hosts=$(env_value APP_TRUSTED_HOSTS)
@@ -261,6 +263,11 @@ compose_profiles=$(env_value COMPOSE_PROFILES)
 
 if [ "$app_env" != development ] || [ "$deployment_tier" != SINGLE_NODE_PILOT ]; then
   echo "This deployer accepts only APP_ENV=development and DEPLOYMENT_TIER=SINGLE_NODE_PILOT." >&2
+  exit 2
+fi
+if [ "$datariver_env_file" != /home/datariver/.env ] ||
+  [ "$operator_profile" != source-free-pilot ]; then
+  echo "Pilot environment identity must remain /home/datariver/.env and source-free-pilot." >&2
   exit 2
 fi
 if [ "$app_cors" != "$app_origin" ]; then

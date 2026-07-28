@@ -80,6 +80,8 @@ def test_export_and_deploy_scripts_preserve_air_gap_and_host_state() -> None:
     assert "docker build" not in deployer
     assert "up -d --no-build" in deployer
     assert "run --rm --no-deps migrate" in deployer
+    assert "operator_profile=$(env_value DATARIVER_OPERATOR_PROFILE)" in deployer
+    assert '"$operator_profile" != source-free-pilot' in deployer
     assert deployer.index("run --rm --no-deps migrate") < deployer.index(
         '"${compose[@]}" up -d --no-build\n'
     )
@@ -98,6 +100,9 @@ def test_pilot_environment_separates_configuration_and_secrets() -> None:
     )
 
     assert "DATABASE_SECRET_REF=file:/run/secrets/postgres_app_password" in env_example
+    assert "DATARIVER_ENV_FILE=/home/datariver/.env" in env_example
+    assert "DATARIVER_OPERATOR_PROFILE=source-free-pilot" in env_example
+    assert "SYSTEM_CONFIGURATION_PROBE_ALLOWED_HOSTS=" in env_example
     assert "DATAHUB_SECRET_REF=file:/run/secrets/datahub_token" in env_example
     assert "REDIS_CACHE_SECRET_REF=file:/run/secrets/redis_cache_password" in env_example
     assert "POSTGRES_PASSWORD=" not in env_example

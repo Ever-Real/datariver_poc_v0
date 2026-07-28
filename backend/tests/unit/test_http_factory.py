@@ -404,7 +404,9 @@ def test_system_environment_templates_use_only_documented_env_example_keys() -> 
         "SYSTEM_CONFIGURATION_RUNTIME_VERSIONS",
         "SYSTEM_CONFIGURATION_RUNTIME_HASHES",
     }
-    live_settings = {name.upper() for name in Settings.model_fields} - retired
+    operator_metadata = {"DATARIVER_ENV_FILE", "DATARIVER_OPERATOR_PROFILE"}
+    live_settings = {name.upper() for name in Settings.model_fields} - retired - operator_metadata
+    assert operator_metadata <= documented
     assert live_settings - documented == set()
     connector_prefixes = (
         "DATABASE_",
@@ -883,6 +885,37 @@ def test_database_backed_system_configuration_mutation_routes_are_not_published(
             ("POST", "/api/v1/admin/system-configuration/DATAHUB_GMS/activate"),
         ):
             assert client.request(method, path).status_code == 404
+
+
+def test_system_configuration_inventory_reports_only_operator_owned_environment_identity() -> None:
+    managed = admin_routes._deployment_environment(
+        settings().model_copy(
+            update={
+                "datariver_env_file": ".env.mac-development",
+                "datariver_operator_profile": "mac-development",
+            }
+        )
+    )
+    assert managed.environment_file == ".env.mac-development"
+    assert managed.operator_profile == "mac-development"
+    assert managed.apply_method == "WORKFLOW_UPDATE_RESTART"
+    assert managed.apply_command == (
+        "./scripts/workflow_update_restart.py --profile mac-development"
+    )
+    assert managed.browser_execution_supported is False
+
+    pilot = admin_routes._deployment_environment(
+        settings().model_copy(
+            update={
+                "datariver_env_file": "/home/datariver/.env",
+                "datariver_operator_profile": "source-free-pilot",
+            }
+        )
+    )
+    assert pilot.apply_method == "PILOT_REDEPLOY"
+    assert pilot.apply_command is not None
+    assert "deploy_pilot.sh" in pilot.apply_command
+    assert "workflow_update_restart.py" not in pilot.apply_command
 
 
 @pytest.mark.asyncio
