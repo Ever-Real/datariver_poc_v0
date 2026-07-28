@@ -93,6 +93,8 @@ Current Knowledge Studio foundation decision: [persistent Studio drafts, weighte
 endpoint aliases and managed default graphs](adr/0058-knowledge-studio-foundation-and-managed-graphs.md).
 Its auto-save concurrency and browser recovery boundary is defined by
 [Knowledge Studio offline recovery and ETag conflicts](adr/0059-knowledge-studio-offline-recovery-and-etag-conflicts.md).
+The Step 3 child aggregate and provider boundary are defined by
+[Knowledge Studio A-Box binding drafts](adr/0060-knowledge-studio-abox-binding-drafts.md).
 
 ## Change control
 

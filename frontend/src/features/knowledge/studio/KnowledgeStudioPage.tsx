@@ -1,12 +1,11 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { Database, Network } from 'lucide-react'
+import { Network } from 'lucide-react'
 import { ApiError, type ApiClient } from '../../../api/client'
 import type { Page } from '../../../app/navigation'
 import { Dialog } from '../../../components/common/Dialog'
 import {
   knowledgeStudioLocationFromHref,
   knowledgeStudioUrl,
-  type KnowledgeStudioStep,
 } from '../routes/knowledgeLocation'
 import { BasicInformationStep, basicInformationValid } from './basic/BasicInformationStep'
 import {
@@ -15,6 +14,7 @@ import {
   type DraftRecoveryQueue,
   type DraftRecoveryRecord,
 } from './draftRecoveryQueue'
+import { DataEnricherStep } from './abox/DataEnricherStep'
 import {
   advanceKnowledgeStudioDraft,
   autosaveKnowledgeStudioDraft,
@@ -54,23 +54,29 @@ function isNetworkFailure(error: unknown): boolean {
   return !navigator.onLine || error instanceof TypeError
 }
 
-function FoundationPlaceholder({ step }: { step: Exclude<KnowledgeStudioStep, 'basic'> }) {
-  const tbox = step === 'tbox'
-  const Icon = tbox ? Network : Database
+function TBoxPlaceholder({
+  busy,
+  onContinue,
+}: {
+  busy: boolean
+  onContinue: () => void
+}) {
   return <section className="grid min-h-[420px] place-items-center rounded-enterprise border border-dashed border-slate-300 bg-white p-8 text-center">
     <div className="max-w-xl">
-      <Icon className="mx-auto mb-3 text-enterprise-blue" size={38} />
+      <Network className="mx-auto mb-3 text-enterprise-blue" size={38} />
       <span className="text-[10px] font-black tracking-[.14em] text-enterprise-blue uppercase">
-        {tbox ? 'Step 2 · T-Box' : 'Step 3 · A-Box'}
+        Step 2 · T-Box
       </span>
       <h2 className="my-2 text-lg font-black text-navy-900">
-        {tbox ? 'Graph Builder canvas foundation' : 'Data Enricher mapping foundation'}
+        Graph Builder canvas foundation
       </h2>
       <p className="m-0 text-xs leading-5 text-slate-500">
-        {tbox
-          ? 'Step 1 Draft가 저장되고 version fence를 통과했습니다. Block/Proposal persistence가 연결되기 전에는 LLM 또는 파일 결과를 accepted graph로 표시하지 않습니다.'
-          : 'PUBLISHED T-Box target과 versioned source contract가 연결되기 전에는 실제 row mapping이나 ingestion 성공을 표시하지 않습니다.'}
+        Step 1 Draft가 저장되고 version fence를 통과했습니다. Accepted typed operation이 없는
+        경우 Data Enricher는 임의의 Class를 생성하지 않습니다.
       </p>
+      <button type="button" className="button mt-4" disabled={busy} onClick={onContinue}>
+        {busy ? '확인 중…' : 'Accepted T-Box로 Data Enricher 열기'}
+      </button>
     </div>
   </section>
 }
@@ -143,6 +149,12 @@ export function KnowledgeStudioPage({
       setForm(basic)
     }
   }, [])
+  const applyChildDraft = useCallback((
+    value: KnowledgeStudioDraft,
+    responseEtag: string,
+  ) => {
+    applyServerDraft(value, responseEtag, false)
+  }, [applyServerDraft])
 
   useEffect(() => {
     if (!location.valid) onNavigate('knowledge')
@@ -511,6 +523,36 @@ export function KnowledgeStudioPage({
     }
   }
 
+  const continueToAbox = async () => {
+    const currentDraftId = draftIdRef.current
+    const currentEtag = etagRef.current
+    if (!currentDraftId || !currentEtag) return
+    setBusy(true)
+    try {
+      const response = await advanceKnowledgeStudioDraft(
+        client,
+        currentDraftId,
+        currentEtag,
+        newKnowledgeStudioIdempotencyKey(),
+        'ABOX',
+      )
+      if (!response.etag) return
+      applyServerDraft(response.data, response.etag, false)
+      const url = knowledgeStudioUrl({ draftId: currentDraftId, step: 'abox' })
+      window.history.pushState({}, '', url)
+      setStep('abox')
+      setSaveStatus(`Data Enricher 진입 완료 · version ${response.data.version}`)
+    } catch (error) {
+      if (error instanceof ApiError && error.problem.status === 412) {
+        setSaveStatus('T-Box가 다른 세션에서 변경되었습니다. 최신 Draft를 다시 불러오세요.')
+      } else {
+        setSaveStatus(error instanceof Error ? error.message : 'Data Enricher를 열지 못했습니다.')
+      }
+    } finally {
+      setBusy(false)
+    }
+  }
+
   if (!location.valid) return null
 
   return <StudioShell
@@ -539,7 +581,15 @@ export function KnowledgeStudioPage({
           onSave={() => { void flushLatest() }}
           onContinue={() => { void continueToTbox() }}
         />
-      : <FoundationPlaceholder step={step} />}
+      : step === 'tbox'
+      ? <TBoxPlaceholder busy={busy} onContinue={() => { void continueToAbox() }} />
+      : draftId
+      ? <DataEnricherStep
+          client={client}
+          draftId={draftId}
+          onDraftUpdate={applyChildDraft}
+        />
+      : null}
     <Dialog
       open={Boolean(conflict)}
       title="동시 편집 충돌"

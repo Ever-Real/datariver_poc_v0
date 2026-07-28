@@ -1034,7 +1034,13 @@ class SqlCatalogIndexReader(CatalogIndexReader):
             "schema_name": AssetProjectionModel.schema_name,
             "domain": AssetProjectionModel.domain_ref,
         }
-        unknown_filters = set(filters) - {*allowed_filters, "classification", "search_fields"}
+        unknown_filters = set(filters) - {
+            *allowed_filters,
+            "asset_types",
+            "classification",
+            "classification_ceiling",
+            "search_fields",
+        }
         if unknown_filters:
             raise ValidationError(
                 "Unsupported catalog filters.", details={"filters": sorted(unknown_filters)}
@@ -1051,6 +1057,28 @@ class SqlCatalogIndexReader(CatalogIndexReader):
             except KeyError as error:
                 raise ValidationError("Unsupported catalog classification filter.") from error
             conditions.append(AssetProjectionModel.classification == int(classification))
+        raw_classification_ceiling = filters.get("classification_ceiling")
+        if raw_classification_ceiling is not None:
+            if (
+                not isinstance(raw_classification_ceiling, int)
+                or isinstance(raw_classification_ceiling, bool)
+                or not 0 <= raw_classification_ceiling <= 3
+            ):
+                raise ValidationError("Unsupported catalog classification ceiling.")
+            conditions.append(AssetProjectionModel.classification <= raw_classification_ceiling)
+        raw_asset_types = filters.get("asset_types")
+        if raw_asset_types is not None:
+            if (
+                not isinstance(raw_asset_types, list | tuple)
+                or not raw_asset_types
+                or len(raw_asset_types) > len(DATASET_ASSET_TYPES)
+                or any(
+                    not isinstance(value, str) or value not in DATASET_ASSET_TYPES
+                    for value in raw_asset_types
+                )
+            ):
+                raise ValidationError("Unsupported catalog asset type set.")
+            conditions.append(AssetProjectionModel.asset_type.in_(tuple(raw_asset_types)))
         return conditions
 
     async def get_authorized_asset(

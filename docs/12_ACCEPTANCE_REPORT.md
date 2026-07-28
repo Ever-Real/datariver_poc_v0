@@ -14,6 +14,21 @@ addenda and `docs/29_MASTER_EXECUTION_BACKLOG.md`.
 
 P0–P3 foundation addendum, updated 2026-07-16: current source checks additionally include the stable DataHub v1.6.0 release contract and typed OIDC assurance. Hardware WebAuthn requires an exact approved ACR+AMR combination and `auth_time`; OTP, generic MFA and refreshed-token `iat` cannot satisfy high-risk authorization. Browser remediation is bounded to typed authentication actions, rejects unsafe return locations, and never automatically replays a denied mutation after an authentication redirect. Compatibility migrations and the current hybrid runtime have separate live evidence below.
 
+## Knowledge Studio Data Enricher addendum — 2026-07-28
+
+This addendum accepts the local source contract for normalized A-Box Binding Drafts at revision
+`0060`. It does not accept actual row ingestion, materialization/publication, target PostgreSQL,
+live DataHub drift or the still-pending Step 2 accepted-operation writer.
+
+| Gate | Result | Current executed evidence |
+|---|---|---|
+| T-Box/A-Box boundary | PASS (local source) | A bounded accepted T-Box read index is separate from normalized source/binding/rule children. Binding PATCH has no T-Box, graph, release, Neo4j, DataHub mutation or ingestion command. |
+| Source and mapping contract | PASS (local source) | Authorized Dataset discovery applies the Draft classification ceiling in the local projection. Detail uses the governed DataHub gateway/cache. Exact provider-schema and projection versions, classification, stable targets and server-returned fields are rechecked; only four typed methods and `IDENTITY@1` are representable. |
+| Concurrency/security | PASS (local source) | Target-scoped PATCH requires `If-Match` and `Idempotency-Key`, locks the Draft/target/projection, returns `412` on a stale Draft and commits an exact replay snapshot. Four child tables use FORCE RLS/restrictive owner policies and composite `RESTRICT` foreign keys. |
+| UI | PASS (local source) | Accepted classes render in React Flow; node selection opens the Data Binding Panel, Dataset/column mapping persists, mapped nodes become green with an accessible `Mapped · DRAFT` label, and Mapping/ingestion status remain distinct. A 412 preserves local input until explicit reload or latest-ETag overwrite. |
+| Regression/migration | PASS WITH FORMAT BASELINE | Focused backend `85`; backend `1,670 passed / 97 skipped`; Ruff lint, strict mypy over `414` files and static verification passed. Frontend TypeScript, ESLint, `54 files / 296 tests` and production build passed. Repeated canonical generation produced SHA-256 `978de14ce3e5947e5be3d4d67b34aba60e5029ed542ce805596eec11785f7f40`; sole head `0060`. The repository-wide format check retains only two unrelated pre-existing DataHub files. |
+| External acceptance | OPEN | Isolated PostgreSQL migration/app-role RLS/concurrency, live DataHub schema drift, browser accessibility, target WSL `linux/amd64`, the Step 2 accepted-operation writer and real A-Box ingestion/materialization remain open. |
+
 ## Knowledge Studio Draft/Step 1 addendum — 2026-07-28
 
 This addendum accepts the local source contract for author-only Studio Draft create/read/autosave,

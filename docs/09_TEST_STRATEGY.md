@@ -2,6 +2,29 @@
 
 ## Current verification status
 
+### Knowledge Studio Data Enricher / A-Box Mapping Draft — 2026-07-28
+
+The Data Enricher increment advances Alembic head to `0060`. Focused domain, source-adapter,
+service, persistence and OpenAPI tests pass `85` cases. The whole backend suite passes `1,670` with
+`97` explicitly environment-gated skips. Repository Ruff lint, strict mypy over `414` source/test
+files and static architecture/storage verification pass. The exact repository Ruff format gate
+continues to identify only the two unrelated pre-existing DataHub files recorded by the preceding
+Studio addendum; all changed Python files pass format.
+
+The frontend passes strict TypeScript, zero-warning ESLint, `54 files / 296 tests` and the
+production build. Nine focused Studio tests include Dataset/column mapping, target-scoped payload
+and ETag headers, persisted accessible `Mapped · DRAFT` feedback, local-input preservation on
+`412`, confirmed latest-ETag rebase and the existing Step 1/route contracts.
+
+Canonical `0001` generation is byte-identical across repeated runs at SHA-256
+`978de14ce3e5947e5be3d4d67b34aba60e5029ed542ce805596eec11785f7f40`; the sole Alembic head is
+`0060`. Model/source checks verify FORCE RLS, restrictive owner policies, composite `RESTRICT`
+foreign keys, least privilege and one non-duplicated self-reference constraint per accepted T-Box
+link. An isolated PostgreSQL upgrade/app-role RLS/concurrent-session run, live DataHub schema drift,
+real browser interaction and target WSL `linux/amd64` remain external gates and are not represented
+as passes. The Step 2 accepted-operation writer remains a prerequisite; without accepted
+`tbox_draft_elements`, Step 3 intentionally renders an empty state and cannot invent a schema.
+
 ### Knowledge Studio Draft API and recoverable Step 1 — 2026-07-28
 
 The additive Studio command/read implementation retains Alembic head `0059`. Focused backend

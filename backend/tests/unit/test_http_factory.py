@@ -1074,6 +1074,36 @@ def test_knowledge_studio_draft_openapi_requires_etag_and_idempotency() -> None:
         "RESTRICTED",
     ]
 
+    abox = document["paths"]["/api/v1/knowledge/studio/drafts/{draft_id}/abox"]["get"]
+    assert abox["responses"]["200"]["headers"]["ETag"]["schema"] == {"type": "string"}
+    abox_schema = document["components"]["schemas"]["KnowledgeStudioABoxResponse"]
+    assert set(abox_schema["properties"]) == {"draft", "tbox_elements", "bindings"}
+
+    source_search = document["paths"]["/api/v1/knowledge/studio/drafts/{draft_id}/abox/sources"][
+        "get"
+    ]
+    source_parameters = {item["name"]: item for item in source_search["parameters"]}
+    assert source_parameters["limit"]["schema"]["maximum"] == 100
+    source_schema = document["components"]["schemas"]["KnowledgeStudioSourceDatasetResponse"]
+    assert "external_urn" not in source_schema["properties"]
+    assert "field_paths" in source_schema["properties"]
+
+    binding = document["paths"][
+        "/api/v1/knowledge/studio/drafts/{draft_id}/abox/bindings/{target_stable_element_id}"
+    ]["patch"]
+    binding_headers = {item["name"]: item for item in binding["parameters"]}
+    assert binding_headers["If-Match"]["required"] is True
+    assert binding_headers["Idempotency-Key"]["required"] is True
+    assert binding["responses"]["200"]["headers"]["ETag"]["schema"] == {"type": "string"}
+    binding_request = document["components"]["schemas"]["KnowledgeStudioBindingRequest"]
+    assert set(binding_request["properties"]) == {
+        "source_asset_id",
+        "source_version",
+        "projection_source_version",
+        "rules",
+    }
+    assert {"tbox_elements", "schema_document"}.isdisjoint(binding_request["properties"])
+
 
 def test_typed_upload_template_is_an_authenticated_server_versioned_download() -> None:
     factory = cast(Callable[[Settings], AppContainer], lambda _: LiveOnlyContainer())

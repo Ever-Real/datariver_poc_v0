@@ -2005,7 +2005,7 @@ class KnowledgeStudioBasicInformationRequest(BaseModel):
 class KnowledgeStudioAdvanceRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    target_step: Literal["TBOX"]
+    target_step: Literal["TBOX", "ABOX"]
 
 
 class KnowledgeStudioDomainOptionResponse(BaseModel):
@@ -2033,6 +2033,112 @@ class KnowledgeStudioDraftResponse(BaseModel):
     version: int = Field(ge=1)
     created_at: datetime
     updated_at: datetime
+
+
+class KnowledgeStudioTBoxElementResponse(BaseModel):
+    stable_element_id: str
+    kind: Literal["CLASS", "PROPERTY", "RELATION"]
+    canonical_name: str
+    display_name: str
+    parent_stable_element_id: str | None
+    source_stable_element_id: str | None
+    target_stable_element_id: str | None
+    data_type: str | None
+    nullable: bool | None
+    ordinal: int = Field(ge=0)
+    version: int = Field(ge=1)
+
+
+class KnowledgeStudioMappingRuleRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    method: Literal["SUBJECT_ID", "PROPERTY", "EDGE_LINK", "EDGE_PROPERTY"]
+    source_field_path: str = Field(min_length=1, max_length=2_000)
+    target_stable_element_id: str = Field(min_length=1, max_length=128)
+
+
+class KnowledgeStudioMappingRuleResponse(KnowledgeStudioMappingRuleRequest):
+    id: UUID
+    ordinal: int = Field(ge=0)
+    transform_id: Literal["IDENTITY"]
+    transform_version: Literal["1"]
+    source_unit: str | None
+    canonical_unit: str | None
+
+
+class KnowledgeStudioBindingRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    source_asset_id: UUID
+    source_version: str = Field(min_length=1, max_length=255)
+    projection_source_version: str = Field(min_length=1, max_length=255)
+    rules: list[KnowledgeStudioMappingRuleRequest] = Field(
+        min_length=1,
+        max_length=200,
+    )
+
+
+class KnowledgeStudioBindingResponse(BaseModel):
+    id: UUID
+    target_stable_element_id: str
+    source_reference_id: UUID
+    source_asset_id: UUID
+    source_name: str
+    source_version: str
+    projection_source_version: str
+    source_classification: Literal[
+        "PUBLIC",
+        "INTERNAL",
+        "CONFIDENTIAL",
+        "RESTRICTED",
+    ]
+    readiness: Literal["DRAFT", "VALIDATED", "STALE"]
+    tbox_version: int = Field(ge=1)
+    version: int = Field(ge=1)
+    rules: list[KnowledgeStudioMappingRuleResponse]
+    created_at: datetime
+    updated_at: datetime
+
+
+class KnowledgeStudioABoxResponse(BaseModel):
+    draft: KnowledgeStudioDraftResponse
+    tbox_elements: list[KnowledgeStudioTBoxElementResponse]
+    bindings: list[KnowledgeStudioBindingResponse]
+
+
+class KnowledgeStudioBindingMutationResponse(BaseModel):
+    draft: KnowledgeStudioDraftResponse
+    binding: KnowledgeStudioBindingResponse
+
+
+class KnowledgeStudioSourceDatasetResponse(BaseModel):
+    id: UUID
+    name: str
+    asset_type: Literal["DATASET", "TABLE", "VIEW"]
+    platform: str | None
+    database_name: str | None
+    schema_name: str | None
+    classification: Literal[
+        "PUBLIC",
+        "INTERNAL",
+        "CONFIDENTIAL",
+        "RESTRICTED",
+    ]
+    source_version: str
+    projection_source_version: str
+    field_paths: list[str] = Field(max_length=1_000)
+    fields_truncated: bool
+
+
+class KnowledgeStudioSourcePageResponse(BaseModel):
+    items: list[KnowledgeStudioSourceDatasetResponse]
+    page: PageMeta
+
+
+class KnowledgeStudioSourceDetailResponse(BaseModel):
+    dataset: KnowledgeStudioSourceDatasetResponse
+    observed_at: datetime
+    stale_at: datetime | None
 
 
 class KnowledgeGraphCreate(BaseModel):

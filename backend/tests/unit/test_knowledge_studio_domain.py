@@ -4,10 +4,14 @@ import pytest
 
 from datariver.domain.common import ConflictError, PreconditionFailedError, ValidationError
 from datariver.domain.knowledge_studio import (
+    ABoxMappingMethod,
+    ABoxMappingRuleInput,
     StudioDraftState,
     TBoxBlockPrecedence,
+    TBoxElementKind,
     require_studio_transition,
     require_studio_version,
+    validate_abox_mapping_rules,
     validate_endpoint_alias,
     validate_studio_name,
 )
@@ -86,3 +90,76 @@ def test_studio_if_match_requires_one_canonical_quoted_positive_version(value: s
         _expected_version(value)
 
     assert _expected_version('"12"') == 12
+
+
+def test_abox_class_mapping_accepts_only_selected_class_and_owned_properties() -> None:
+    validate_abox_mapping_rules(
+        target_kind=TBoxElementKind.CLASS,
+        target_stable_element_id="class.employee",
+        property_parent_by_id={"property.employee.name": "class.employee"},
+        allowed_source_field_paths=frozenset({"emp_id", "emp_nm"}),
+        rules=(
+            ABoxMappingRuleInput(
+                method=ABoxMappingMethod.SUBJECT_ID,
+                source_field_path="emp_id",
+                target_stable_element_id="class.employee",
+            ),
+            ABoxMappingRuleInput(
+                method=ABoxMappingMethod.PROPERTY,
+                source_field_path="emp_nm",
+                target_stable_element_id="property.employee.name",
+            ),
+        ),
+    )
+
+    with pytest.raises(ValidationError, match="owned by the selected Class"):
+        validate_abox_mapping_rules(
+            target_kind=TBoxElementKind.CLASS,
+            target_stable_element_id="class.employee",
+            property_parent_by_id={"property.department.name": "class.department"},
+            allowed_source_field_paths=frozenset({"dept_nm"}),
+            rules=(
+                ABoxMappingRuleInput(
+                    method=ABoxMappingMethod.PROPERTY,
+                    source_field_path="dept_nm",
+                    target_stable_element_id="property.department.name",
+                ),
+            ),
+        )
+
+
+def test_abox_mapping_rejects_unreturned_fields_and_duplicate_subject_ids() -> None:
+    with pytest.raises(ValidationError, match="server-returned Dataset schema"):
+        validate_abox_mapping_rules(
+            target_kind=TBoxElementKind.CLASS,
+            target_stable_element_id="class.employee",
+            property_parent_by_id={},
+            allowed_source_field_paths=frozenset({"emp_id"}),
+            rules=(
+                ABoxMappingRuleInput(
+                    method=ABoxMappingMethod.SUBJECT_ID,
+                    source_field_path="invented_column",
+                    target_stable_element_id="class.employee",
+                ),
+            ),
+        )
+
+    with pytest.raises(ValidationError, match="at most one SUBJECT_ID"):
+        validate_abox_mapping_rules(
+            target_kind=TBoxElementKind.CLASS,
+            target_stable_element_id="class.employee",
+            property_parent_by_id={},
+            allowed_source_field_paths=frozenset({"emp_id", "legacy_emp_id"}),
+            rules=(
+                ABoxMappingRuleInput(
+                    method=ABoxMappingMethod.SUBJECT_ID,
+                    source_field_path="emp_id",
+                    target_stable_element_id="class.employee",
+                ),
+                ABoxMappingRuleInput(
+                    method=ABoxMappingMethod.SUBJECT_ID,
+                    source_field_path="legacy_emp_id",
+                    target_stable_element_id="class.employee",
+                ),
+            ),
+        )

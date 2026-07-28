@@ -71,7 +71,13 @@ from datariver.infrastructure.db.models.knowledge import (
     ReleaseNodeModel,
     ValidationResultModel,
 )
-from datariver.infrastructure.db.models.knowledge_studio import KnowledgeStudioDraftModel
+from datariver.infrastructure.db.models.knowledge_studio import (
+    ABoxBindingDraftModel,
+    ABoxMappingRuleDraftModel,
+    KnowledgeSourceReferenceModel,
+    KnowledgeStudioDraftModel,
+    TBoxDraftElementModel,
+)
 from datariver.infrastructure.db.models.platform import (
     AccessRoleAssignmentEventModel,
     AccessRoleAssignmentModel,
@@ -108,6 +114,8 @@ from datariver.infrastructure.db.models.sharing import (
 )
 
 __all__ = [
+    "ABoxBindingDraftModel",
+    "ABoxMappingRuleDraftModel",
     "AccessRoleAssignmentEventModel",
     "AccessRoleAssignmentModel",
     "AccessRoleDataRuleModel",
@@ -161,6 +169,7 @@ __all__ = [
     "KnowledgeSourceAnalysisEventModel",
     "KnowledgeSourceAnalysisJobModel",
     "KnowledgeSourcePageModel",
+    "KnowledgeSourceReferenceModel",
     "KnowledgeSourceSnapshotModel",
     "KnowledgeStudioDraftModel",
     "LegalHoldEventModel",
@@ -188,6 +197,7 @@ __all__ = [
     "SubjectModel",
     "SystemAssigneeModel",
     "SystemSchemaScopeModel",
+    "TBoxDraftElementModel",
     "UploadPreparationJobModel",
     "UploadPreparationReceiptModel",
     "UploadRegistrationCandidateModel",

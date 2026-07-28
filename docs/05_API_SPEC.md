@@ -300,7 +300,11 @@ cannot re-enter the ordinary workflow.
 | `POST /knowledge/studio/drafts` | `kg.create` | create an author-only CREATE Draft from typed Step 1 data; requires `Idempotency-Key`, returns ETag and does not create a graph |
 | `GET /knowledge/studio/drafts/{draft_id}` | `kg.read` | read the current author's Draft with `Cache-Control: no-store` and ETag; hidden/foreign Drafts are not disclosed |
 | `PATCH /knowledge/studio/drafts/{draft_id}` | `kg.edit` | idempotent Step 1 auto-save; requires exact `If-Match` and returns `412` on a stale version |
-| `POST /knowledge/studio/drafts/{draft_id}/advance` | `kg.edit` | idempotently fence the saved Step 1 Draft and advance only to `TBOX`; requires exact `If-Match` |
+| `POST /knowledge/studio/drafts/{draft_id}/advance` | `kg.edit` | idempotently advance to `TBOX`, or from T-Box to `ABOX` only when at least one accepted Class/Relation exists; requires exact `If-Match` |
+| `GET /knowledge/studio/drafts/{draft_id}/abox` | `kg.read` | bounded read of the accepted T-Box read index plus normalized Binding Drafts; returns Draft ETag and never returns Dataset rows |
+| `GET /knowledge/studio/drafts/{draft_id}/abox/sources?q=&cursor=&limit=` | `kg.edit` + governed catalog search | fast Dataset/Table/View summary discovery from the authorization-pruned local DataHub catalog projection; maximum page size 100 and column arrays are omitted until one Dataset is selected |
+| `GET /knowledge/studio/drafts/{draft_id}/abox/sources/{asset_id}` | `kg.edit` + `catalog.read` | authorized DataHub detail/cache read returning typed field paths, provider schema version, projection version and stale marker; provider URN is not exposed |
+| `PATCH /knowledge/studio/drafts/{draft_id}/abox/bindings/{target_stable_element_id}` | `kg.edit` | target-scoped replacement of typed mapping rules only; exact provider/projection versions, `If-Match` and `Idempotency-Key` are required; T-Box, ingestion and release state are immutable |
 | `POST /knowledge/graphs` | `kg.create` | graph plus initial typed ontology |
 | `GET /knowledge/graphs` | `kg.read` | clearance-filtered graphs |
 | `POST/GET /knowledge/graphs/{graph_id}/changesets` | `kg.edit` / `kg.read` | create/list a base-release-pinned changeset |
@@ -321,12 +325,20 @@ cannot re-enter the ordinary workflow.
 | `POST .../releases/{release_id}/project` | `kg.publish` | rebuild a release-scoped Neo4j shadow and verify its canonical read-back hash before recording `SHADOW_VERIFIED` |
 | `POST .../releases/{release_id}/graphrag` | `kg.read` + `chat.query` | bounded node/relationship evidence retrieval and citation-constrained local model answer |
 
-Studio create/autosave/advance idempotency is actor- and operation-bound. Auto-save and advance
+Studio create/autosave/advance/binding idempotency is actor- and operation-bound. Auto-save,
+advance and binding replacement
 accept only a canonical quoted positive integer ETag. A successful result snapshot is committed
 with its idempotency record, allowing an ambiguous response to replay before a stale precondition
 check. A distinct concurrent write locks the Draft row and returns `412`, while alias, lifecycle and
 changed-key conflicts remain `409`. “Overwrite” is a client-confirmed latest-ETag rebase, never an
 unconditional force endpoint.
+
+The A-Box PATCH accepts only a local catalog asset UUID, exact detailed schema and projection
+versions, and a bounded list of typed field-to-stable-element rules. The server re-reads the
+authorized Dataset detail, rejects stale or over-classified sources and fields not present in that
+schema, then locks the Draft, accepted target and current catalog projection before replacing only
+that target's rules. `IDENTITY@1` is the only current transform. Mapping readiness remains `DRAFT`;
+no route in this family starts ingestion, writes Graph DB rows, publishes or mutates DataHub.
 
 Neighbor request accepts only `node_id`, `direction=IN|OUT|BOTH`, an edge-type allowlist, `maximum_hops<=3` and `maximum_nodes<=500`. It cannot contain SQL, Cypher, labels or clauses. Every published node/edge requires ontology membership, valid endpoints, classification and provenance.
 

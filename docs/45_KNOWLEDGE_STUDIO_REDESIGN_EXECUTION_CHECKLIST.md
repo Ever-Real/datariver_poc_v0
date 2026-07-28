@@ -1,6 +1,6 @@
 # 지식관리 레지스트리 및 Knowledge Studio 개편 실행 체크리스트
 
-- 상태: **진행 중 — Phase 0 승인, Phase 1 구현 시작**
+- 상태: **진행 중 — Phase 4 A-Box Mapping Draft increment 구현**
 - 상위 문서: [Knowledge Studio 전면 개편 PRD](44_KNOWLEDGE_STUDIO_REDESIGN_PRD.md)
 
 이 체크리스트는 한 번에 화면을 교체하지 않는다. 각 phase는 앞 단계의 API/tests를 고정하고,
@@ -102,7 +102,16 @@ profile과 mapping registry 항목은 해당 Phase 시작 전에 추가 승인�
 
 ## Phase 4 — A-Box Data Enricher와 Mapping whitelist
 
-- [ ] T-Box map에서 accepted Class/Relation만 selectable하도록 구현한다.
+- [x] T-Box map에서 accepted Class/Relation만 selectable하도록 구현한다.
+- [x] author-scoped A-Box read, bounded Dataset search/detail, target-scoped idempotent PATCH와
+  ETag 412 contract를 구현한다.
+- [x] Class node 선택, Data Binding Panel, SUBJECT_ID/PROPERTY column mapping과 persisted
+  `Mapped · DRAFT` accessible badge를 구현한다.
+- [x] v1 `CATALOG_DATASET`은 local Asset UUID, provider-schema/projection 두 version,
+  Draft classification ceiling, server-returned field allowlist, accepted Class/owned Property와
+  `IDENTITY@1`만 수락하도록 구현하고 negative test를 만든다.
+- [x] 현재 Mapping `DRAFT`와 instance ingestion `NOT_RUN`을 분리 표시하고 mapped 색상만으로
+  ingestion 또는 publication 성공을 주장하지 않는다.
 - [ ] mutable binding/rule draft, immutable binding version/rule, append-only validation
   evidence를 분리하고 네 mapping method 외 값을 거부한다.
 - [ ] source/target, unit, transform, cardinality, source version, classification/provenance validation을 구현한다.

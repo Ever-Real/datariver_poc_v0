@@ -24,7 +24,7 @@ For a blank environment:
    provide secrets only through the generated/mounted secret files;
 3. configure external endpoints and the named connector network, render Compose with
    `scripts/compose.sh ... config --quiet`, then start only the required overlays;
-4. reconcile database roles, run the migration service through revision `0055`, and verify live,
+4. reconcile database roles, run the migration service through revision `0060`, and verify live,
    ready and capability endpoints;
 5. apply optional synthetic seeds only in non-production environments and run their verification;
 6. execute target-specific OIDC, provider read-back, backup/restore and migration acceptance before
@@ -1085,7 +1085,7 @@ environment's secrets or volumes.
    overlays. For an existing PostgreSQL volume, run `scripts/reconcile-postgres-roles.sh` (or the
    PowerShell equivalent) before and after applying `alembic upgrade head` through the migration
    service; the second idempotent pass repairs Phase 2 grants when roles were created after an older
-   migration. Readiness requires revision `0055`.
+   migration. Readiness requires revision `0060`.
 4. Start the API, relay, workers and web service using either the container profile or the
    host-development commands below. Check `/api/v1/health/live`, `/api/v1/health/ready`,
    `/api/v1/capabilities` and the APISIX/Vite proxy before using application workflows.
@@ -1769,7 +1769,7 @@ docker compose -f compose.yaml build --pull
 ```
 
 애플리케이션을 올리기 전에 권한이 분리된 `migrate` 서비스로 Alembic을 실행한다. 이
-릴리스의 필수 revision은 `0055`이다. 호스트의 임의 DB 계정으로 `alembic`을 직접 실행하지
+릴리스의 필수 revision은 `0060`이다. 호스트의 임의 DB 계정으로 `alembic`을 직접 실행하지
 않는다.
 
 ```bash

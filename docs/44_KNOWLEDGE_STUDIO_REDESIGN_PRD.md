@@ -239,14 +239,16 @@ element, transform/version, source/canonical unit, source version, classificatio
 policy를 보인다. raw SQL join, Cypher, DataHub URN 문자 입력, provider endpoint 입력은 없다.
 
 파일은 immutable upload manifest/snapshot, DB는 local catalog의 table Asset UUID와
-server-returned field path/source version, 다른 Asset은 release ID/hash를 pin한다. 실제 instance extraction은 별도 durable
+server-returned field path, exact catalog projection version, exact detailed provider-schema
+version을 pin하고, 다른 Asset은 release ID/hash를 pin한다. 실제 instance extraction은 별도 durable
 mapping job가 만드는 typed changeset이며 Studio 저장이 Neo4j/release를 바꾸지 않는다.
 
 현재 catalog projection은 table Asset UUID/source version은 제공하지만 field UUID와 모든
 field description/tag/term을 정규화해 소유하지 않는다. 따라서 구현은 존재하지 않는 field
 UUID를 만들지 않는다. Knowledge application port가 허용된 bounded catalog detail을
 해석해 `asset UUID + exact source version + server-returned field path + selected aspect`의
-immutable typed source reference를 만든다. 향후 canonical field UUID가 승인되면 새 source
+immutable typed source reference를 만든다. 여기서 exact source는 권한 처리된 catalog
+projection과 상세 DataHub schema의 두 version fence를 뜻한다. 향후 canonical field UUID가 승인되면 새 source
 contract version으로만 전환한다.
 
 그래프에서 `검증됨` 또는 `발행됨` mapping을 가진 target은 활성 스타일로 보이지만, legend와
@@ -521,6 +523,20 @@ materialize/execute 때 다시 확인한다. 달라지면 STALE로 끝내며 최
 | `POST .../validate-tbox` | schema validation | validation evidence만 반환 |
 | `POST .../materialize` | graph/ontology/binding atomic create | kg.create 또는 kg.edit, idempotent, canonical read-back |
 | binding/rule/run commands | A-Box 관리 | whitelist only; worker/source contract가 없으면 unavailable |
+
+Phase 3 Data Enricher의 첫 구현 route는 기존 `/knowledge/studio/drafts` boundary 아래에
+additive하게 둔다.
+
+| Route | 용도 | 제한 |
+|---|---|---|
+| `GET .../drafts/{id}/abox` | accepted T-Box와 현재 Binding Draft read model | author/ABAC, bounded elements/rules, ETag/no-store |
+| `GET .../drafts/{id}/abox/sources?q=&cursor=&limit=` | Dataset 후보 검색 | local authorized DataHub projection, dataset types only, opaque cursor |
+| `GET .../drafts/{id}/abox/sources/{asset_id}` | 선택 Dataset 컬럼 계약 | existing Catalog service/DataHub Gateway/cache, local UUID와 field path만 반환 |
+| `PATCH .../drafts/{id}/abox/bindings/{target}` | 한 Class/Relation의 mapping rule 부분 교체 | Idempotency-Key + If-Match, four-method whitelist, T-Box/source 재검증 |
+
+이 increment의 `Mapped`는 rule이 하나 이상 영속화되었다는 뜻이며 `VALIDATED`, ingestion,
+changeset 또는 publication을 뜻하지 않는다. accepted T-Box 요소가 없는 Draft에는 임의
+node/property를 만들지 않고 명시적인 empty state를 반환한다.
 
 drawer API tab은 permission이 허용된 product-facing relative path와 capability 상태만 보인다.
 API key, Bolt URI, provider URL을 제공하지 않으며, 클릭된 route도 별도 authorization을 다시 통과한다.

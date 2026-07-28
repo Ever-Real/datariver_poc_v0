@@ -1084,6 +1084,87 @@ class KnowledgeStudioDraftRecord:
 
 
 @dataclass(frozen=True, slots=True)
+class KnowledgeStudioTBoxElementRecord:
+    stable_element_id: str
+    kind: str
+    canonical_name: str
+    display_name: str
+    parent_stable_element_id: str | None
+    source_stable_element_id: str | None
+    target_stable_element_id: str | None
+    data_type: str | None
+    nullable: bool | None
+    ordinal: int
+    version: int
+
+
+@dataclass(frozen=True, slots=True)
+class KnowledgeStudioMappingRuleRecord:
+    rule_id: UUID
+    ordinal: int
+    method: str
+    source_field_path: str
+    target_stable_element_id: str
+    transform_id: str
+    transform_version: str
+    source_unit: str | None
+    canonical_unit: str | None
+
+
+@dataclass(frozen=True, slots=True)
+class KnowledgeStudioBindingRecord:
+    binding_id: UUID
+    target_stable_element_id: str
+    source_reference_id: UUID
+    source_asset_id: UUID
+    source_name: str
+    source_version: str
+    projection_source_version: str
+    source_classification: Classification
+    readiness: str
+    tbox_version: int
+    version: int
+    rules: tuple[KnowledgeStudioMappingRuleRecord, ...]
+    created_at: datetime
+    updated_at: datetime
+
+
+@dataclass(frozen=True, slots=True)
+class KnowledgeStudioABoxRecord:
+    draft: KnowledgeStudioDraftRecord
+    tbox_elements: tuple[KnowledgeStudioTBoxElementRecord, ...]
+    bindings: tuple[KnowledgeStudioBindingRecord, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class KnowledgeStudioSourceDataset:
+    asset_id: UUID
+    name: str
+    asset_type: str
+    platform: str | None
+    database_name: str | None
+    schema_name: str | None
+    classification: Classification
+    source_version: str
+    projection_source_version: str
+    field_paths: tuple[str, ...]
+    fields_truncated: bool
+
+
+@dataclass(frozen=True, slots=True)
+class KnowledgeStudioSourcePage:
+    items: tuple[KnowledgeStudioSourceDataset, ...]
+    next_cursor: str | None
+
+
+@dataclass(frozen=True, slots=True)
+class KnowledgeStudioSourceDetail:
+    dataset: KnowledgeStudioSourceDataset
+    observed_at: datetime
+    stale_at: datetime | None
+
+
+@dataclass(frozen=True, slots=True)
 class KnowledgeReleaseRecord:
     release_id: UUID
     graph_id: UUID

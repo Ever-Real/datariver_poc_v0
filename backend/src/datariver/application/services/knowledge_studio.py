@@ -2,8 +2,15 @@ from __future__ import annotations
 
 from uuid import UUID
 
-from datariver.application.dto import KnowledgeStudioDomainOption, KnowledgeStudioDraftRecord
-from datariver.application.ports import KnowledgeStudioStore
+from datariver.application.dto import (
+    KnowledgeStudioABoxRecord,
+    KnowledgeStudioBindingRecord,
+    KnowledgeStudioDomainOption,
+    KnowledgeStudioDraftRecord,
+    KnowledgeStudioSourceDetail,
+    KnowledgeStudioSourcePage,
+)
+from datariver.application.ports import KnowledgeStudioSourceReader, KnowledgeStudioStore
 from datariver.application.services.authorization import AuthorizationService
 from datariver.domain.authz import (
     Action,
@@ -12,8 +19,16 @@ from datariver.domain.authz import (
     ResourceAttributes,
     SubjectAttributes,
 )
-from datariver.domain.common import NotFoundError
-from datariver.domain.knowledge_studio import validate_endpoint_alias, validate_studio_name
+from datariver.domain.common import ConflictError, NotFoundError
+from datariver.domain.knowledge_studio import (
+    ABoxMappingMethod,
+    ABoxMappingRuleInput,
+    TBoxElementKind,
+    validate_abox_mapping_rules,
+    validate_endpoint_alias,
+    validate_stable_element_id,
+    validate_studio_name,
+)
 
 
 class KnowledgeStudioService:
@@ -22,9 +37,11 @@ class KnowledgeStudioService:
         *,
         store: KnowledgeStudioStore,
         authorization: AuthorizationService,
+        sources: KnowledgeStudioSourceReader | None = None,
     ) -> None:
         self._store = store
         self._authorization = authorization
+        self._sources = sources
 
     async def list_domains(
         self,
@@ -213,6 +230,261 @@ class KnowledgeStudioService:
             idempotency_key=idempotency_key,
             request_hash=request_hash,
         )
+
+    async def advance_to_abox(
+        self,
+        *,
+        workspace_id: UUID,
+        subject: SubjectAttributes,
+        draft_id: UUID,
+        expected_version: int,
+        idempotency_key: str,
+        request_hash: str,
+        environment: EnvironmentAttributes,
+        request_id: str,
+    ) -> KnowledgeStudioDraftRecord:
+        current = await self._require_draft(
+            workspace_id=workspace_id,
+            author_id=subject.subject_id,
+            draft_id=draft_id,
+        )
+        await self._authorize_draft(
+            draft=current,
+            subject=subject,
+            action=Action.KG_EDIT,
+            environment=environment,
+            request_id=request_id,
+        )
+        return await self._store.advance_to_abox(
+            workspace_id=workspace_id,
+            author_id=subject.subject_id,
+            draft_id=draft_id,
+            expected_version=expected_version,
+            idempotency_key=idempotency_key,
+            request_hash=request_hash,
+        )
+
+    async def get_abox(
+        self,
+        *,
+        workspace_id: UUID,
+        subject: SubjectAttributes,
+        draft_id: UUID,
+        environment: EnvironmentAttributes,
+        request_id: str,
+    ) -> KnowledgeStudioABoxRecord:
+        record = await self._store.get_abox(
+            workspace_id=workspace_id,
+            author_id=subject.subject_id,
+            draft_id=draft_id,
+        )
+        if record is None:
+            raise NotFoundError("The Knowledge Studio draft does not exist.")
+        self._require_abox_step(record.draft)
+        await self._authorize_draft(
+            draft=record.draft,
+            subject=subject,
+            action=Action.KG_READ,
+            environment=environment,
+            request_id=request_id,
+        )
+        return record
+
+    async def search_abox_sources(
+        self,
+        *,
+        workspace_id: UUID,
+        subject: SubjectAttributes,
+        draft_id: UUID,
+        query: str,
+        cursor: str | None,
+        limit: int,
+        environment: EnvironmentAttributes,
+        request_id: str,
+    ) -> KnowledgeStudioSourcePage:
+        current = await self._require_draft(
+            workspace_id=workspace_id,
+            author_id=subject.subject_id,
+            draft_id=draft_id,
+        )
+        self._require_abox_step(current)
+        await self._authorize_draft(
+            draft=current,
+            subject=subject,
+            action=Action.KG_EDIT,
+            environment=environment,
+            request_id=request_id,
+        )
+        return await self._source_reader().search_datasets(
+            subject=subject,
+            maximum_classification=current.classification,
+            query=query,
+            cursor=cursor,
+            limit=limit,
+            environment=environment,
+            request_id=request_id,
+        )
+
+    async def get_abox_source(
+        self,
+        *,
+        workspace_id: UUID,
+        subject: SubjectAttributes,
+        draft_id: UUID,
+        asset_id: UUID,
+        environment: EnvironmentAttributes,
+        request_id: str,
+    ) -> KnowledgeStudioSourceDetail:
+        current = await self._require_draft(
+            workspace_id=workspace_id,
+            author_id=subject.subject_id,
+            draft_id=draft_id,
+        )
+        self._require_abox_step(current)
+        await self._authorize_draft(
+            draft=current,
+            subject=subject,
+            action=Action.KG_EDIT,
+            environment=environment,
+            request_id=request_id,
+        )
+        return await self._require_source(
+            draft=current,
+            subject=subject,
+            asset_id=asset_id,
+            environment=environment,
+            request_id=request_id,
+        )
+
+    async def _require_source(
+        self,
+        *,
+        draft: KnowledgeStudioDraftRecord,
+        subject: SubjectAttributes,
+        asset_id: UUID,
+        environment: EnvironmentAttributes,
+        request_id: str,
+    ) -> KnowledgeStudioSourceDetail:
+        source = await self._source_reader().get_dataset(
+            subject=subject,
+            asset_id=asset_id,
+            environment=environment,
+            request_id=request_id,
+        )
+        if source is None:
+            raise NotFoundError("The Dataset is unavailable in the authorized catalog scope.")
+        if source.dataset.classification > draft.classification:
+            raise ConflictError(
+                "The Dataset classification exceeds the Knowledge graph classification envelope."
+            )
+        return source
+
+    async def save_abox_binding(
+        self,
+        *,
+        workspace_id: UUID,
+        subject: SubjectAttributes,
+        draft_id: UUID,
+        target_stable_element_id: str,
+        source_asset_id: UUID,
+        source_version: str,
+        projection_source_version: str,
+        rules: tuple[tuple[str, str, str], ...],
+        expected_version: int,
+        idempotency_key: str,
+        request_hash: str,
+        environment: EnvironmentAttributes,
+        request_id: str,
+    ) -> tuple[KnowledgeStudioDraftRecord, KnowledgeStudioBindingRecord]:
+        validate_stable_element_id(target_stable_element_id)
+        current = await self._require_draft(
+            workspace_id=workspace_id,
+            author_id=subject.subject_id,
+            draft_id=draft_id,
+        )
+        self._require_abox_step(current)
+        await self._authorize_draft(
+            draft=current,
+            subject=subject,
+            action=Action.KG_EDIT,
+            environment=environment,
+            request_id=request_id,
+        )
+        source = await self._require_source(
+            draft=current,
+            subject=subject,
+            asset_id=source_asset_id,
+            environment=environment,
+            request_id=request_id,
+        )
+        if source.stale_at is not None:
+            raise ConflictError("A stale Dataset schema cannot be used for a new binding.")
+        if source.dataset.source_version != source_version:
+            raise ConflictError("The Dataset schema changed before the binding was saved.")
+        if source.dataset.projection_source_version != projection_source_version:
+            raise ConflictError(
+                "The Dataset catalog projection changed before the binding was saved."
+            )
+        abox = await self._store.get_abox(
+            workspace_id=workspace_id,
+            author_id=subject.subject_id,
+            draft_id=draft_id,
+        )
+        if abox is None:
+            raise NotFoundError("The Knowledge Studio draft does not exist.")
+        elements = {item.stable_element_id: item for item in abox.tbox_elements}
+        target = elements.get(target_stable_element_id)
+        if target is None:
+            raise ConflictError("The selected T-Box target is no longer accepted.")
+        try:
+            target_kind = TBoxElementKind(target.kind)
+            typed_rules = tuple(
+                ABoxMappingRuleInput(
+                    method=ABoxMappingMethod(method),
+                    source_field_path=source_field_path,
+                    target_stable_element_id=target_element_id,
+                )
+                for method, source_field_path, target_element_id in rules
+            )
+        except ValueError as error:
+            raise ConflictError("The A-Box mapping rule vocabulary is invalid.") from error
+        validate_abox_mapping_rules(
+            target_kind=target_kind,
+            target_stable_element_id=target_stable_element_id,
+            property_parent_by_id={
+                item.stable_element_id: item.parent_stable_element_id
+                for item in abox.tbox_elements
+                if item.kind == TBoxElementKind.PROPERTY
+                and item.parent_stable_element_id is not None
+            },
+            allowed_source_field_paths=frozenset(source.dataset.field_paths),
+            rules=typed_rules,
+        )
+        return await self._store.save_abox_binding(
+            workspace_id=workspace_id,
+            author_id=subject.subject_id,
+            draft_id=draft_id,
+            target_stable_element_id=target_stable_element_id,
+            source_asset_id=source_asset_id,
+            source_version=source.dataset.source_version,
+            projection_source_version=source.dataset.projection_source_version,
+            source_classification=int(source.dataset.classification),
+            source_name=source.dataset.name,
+            rules=rules,
+            expected_version=expected_version,
+            idempotency_key=idempotency_key,
+            request_hash=request_hash,
+        )
+
+    def _source_reader(self) -> KnowledgeStudioSourceReader:
+        if self._sources is None:
+            raise ConflictError("Knowledge Studio Dataset selection is unavailable.")
+        return self._sources
+
+    @staticmethod
+    def _require_abox_step(draft: KnowledgeStudioDraftRecord) -> None:
+        if draft.current_step != "ABOX":
+            raise ConflictError("Open Data Enricher before reading or editing A-Box mappings.")
 
     async def _require_draft(
         self,

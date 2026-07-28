@@ -36,6 +36,12 @@ Untrusted inputs include browser/API payloads, OIDC claims before verification, 
   reauthorized and checked by RLS. It is removed after confirmed persistence or an explicit
   latest-version reload. IndexedDB is not an encryption boundary or canonical truth, and
   `localStorage`/`sessionStorage` remain prohibited for Draft payloads.
+- Data Enricher source discovery reuses Catalog ABAC and the classification-access snapshot before
+  any DataHub enrichment. Browser contracts expose a local asset UUID, bounded field paths and two
+  opaque version strings, never an external URN, provider query, endpoint or credential. A new
+  binding fails closed for stale detail, projection/schema drift, an inactive Dataset, a source
+  above the Draft classification envelope, an unaccepted T-Box target or a field absent from the
+  server-returned schema. Forced workspace and restrictive Draft-author RLS remain authoritative.
 
 ## ABAC vocabulary
 

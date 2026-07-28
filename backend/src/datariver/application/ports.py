@@ -71,8 +71,12 @@ from datariver.application.dto import (
     KnowledgeEvidenceCandidate,
     KnowledgeGraphRecord,
     KnowledgeReleaseRecord,
+    KnowledgeStudioABoxRecord,
+    KnowledgeStudioBindingRecord,
     KnowledgeStudioDomainOption,
     KnowledgeStudioDraftRecord,
+    KnowledgeStudioSourceDetail,
+    KnowledgeStudioSourcePage,
     ManualMetadataApplyAttemptEvidence,
     MembershipChangeRequestActivityPage,
     MembershipOwnedTablePage,
@@ -99,7 +103,12 @@ from datariver.domain.admin_access import (
     SystemAssigneePatchCommand,
     SystemAssigneeUpdateCommand,
 )
-from datariver.domain.authz import Decision, SubjectAttributes
+from datariver.domain.authz import (
+    Classification,
+    Decision,
+    EnvironmentAttributes,
+    SubjectAttributes,
+)
 from datariver.domain.chat import ChatRetrievalMode
 from datariver.domain.common import DomainEvent
 from datariver.domain.governance import ApprovalAuthority, ChangeRequest
@@ -1478,6 +1487,66 @@ class KnowledgeStudioStore(Protocol):
         idempotency_key: str,
         request_hash: str,
     ) -> KnowledgeStudioDraftRecord: ...
+
+    async def advance_to_abox(
+        self,
+        *,
+        workspace_id: UUID,
+        author_id: UUID,
+        draft_id: UUID,
+        expected_version: int,
+        idempotency_key: str,
+        request_hash: str,
+    ) -> KnowledgeStudioDraftRecord: ...
+
+    async def get_abox(
+        self,
+        *,
+        workspace_id: UUID,
+        author_id: UUID,
+        draft_id: UUID,
+    ) -> KnowledgeStudioABoxRecord | None: ...
+
+    async def save_abox_binding(
+        self,
+        *,
+        workspace_id: UUID,
+        author_id: UUID,
+        draft_id: UUID,
+        target_stable_element_id: str,
+        source_asset_id: UUID,
+        source_version: str,
+        projection_source_version: str,
+        source_classification: int,
+        source_name: str,
+        rules: tuple[tuple[str, str, str], ...],
+        expected_version: int,
+        idempotency_key: str,
+        request_hash: str,
+    ) -> tuple[KnowledgeStudioDraftRecord, KnowledgeStudioBindingRecord]: ...
+
+
+class KnowledgeStudioSourceReader(Protocol):
+    async def search_datasets(
+        self,
+        *,
+        subject: SubjectAttributes,
+        maximum_classification: Classification,
+        query: str,
+        cursor: str | None,
+        limit: int,
+        environment: EnvironmentAttributes,
+        request_id: str,
+    ) -> KnowledgeStudioSourcePage: ...
+
+    async def get_dataset(
+        self,
+        *,
+        subject: SubjectAttributes,
+        asset_id: UUID,
+        environment: EnvironmentAttributes,
+        request_id: str,
+    ) -> KnowledgeStudioSourceDetail | None: ...
 
 
 class KnowledgeStore(Protocol):

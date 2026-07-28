@@ -28,6 +28,89 @@ export interface KnowledgeStudioDraft extends KnowledgeStudioBasicInformation {
   updated_at: string
 }
 
+export interface KnowledgeStudioTBoxElement {
+  stable_element_id: string
+  kind: 'CLASS' | 'PROPERTY' | 'RELATION'
+  canonical_name: string
+  display_name: string
+  parent_stable_element_id?: string
+  source_stable_element_id?: string
+  target_stable_element_id?: string
+  data_type?: string
+  nullable?: boolean
+  ordinal: number
+  version: number
+}
+
+export type KnowledgeStudioMappingMethod =
+  | 'SUBJECT_ID'
+  | 'PROPERTY'
+  | 'EDGE_LINK'
+  | 'EDGE_PROPERTY'
+
+export interface KnowledgeStudioMappingRuleInput {
+  method: KnowledgeStudioMappingMethod
+  source_field_path: string
+  target_stable_element_id: string
+}
+
+export interface KnowledgeStudioMappingRule extends KnowledgeStudioMappingRuleInput {
+  id: string
+  ordinal: number
+  transform_id: 'IDENTITY'
+  transform_version: '1'
+  source_unit?: string
+  canonical_unit?: string
+}
+
+export interface KnowledgeStudioBinding {
+  id: string
+  target_stable_element_id: string
+  source_reference_id: string
+  source_asset_id: string
+  source_name: string
+  source_version: string
+  projection_source_version: string
+  source_classification: KnowledgeClassification
+  readiness: 'DRAFT' | 'VALIDATED' | 'STALE'
+  tbox_version: number
+  version: number
+  rules: KnowledgeStudioMappingRule[]
+  created_at: string
+  updated_at: string
+}
+
+export interface KnowledgeStudioABox {
+  draft: KnowledgeStudioDraft
+  tbox_elements: KnowledgeStudioTBoxElement[]
+  bindings: KnowledgeStudioBinding[]
+}
+
+export interface KnowledgeStudioSourceDataset {
+  id: string
+  name: string
+  asset_type: 'DATASET' | 'TABLE' | 'VIEW'
+  platform?: string
+  database_name?: string
+  schema_name?: string
+  classification: KnowledgeClassification
+  source_version: string
+  projection_source_version: string
+  field_paths: string[]
+  fields_truncated: boolean
+}
+
+export interface KnowledgeStudioSourcePage {
+  items: KnowledgeStudioSourceDataset[]
+  page: { next_cursor?: string; limit: number }
+}
+
+export interface KnowledgeStudioSourceDetail {
+  dataset: KnowledgeStudioSourceDataset
+  observed_at: string
+  stale_at?: string
+}
+
 function requireEtag<T>(response: ApiResponse<T>): ApiResponse<T> {
   if (!response.etag) throw new Error('서버가 Draft ETag를 반환하지 않았습니다.')
   return response
@@ -98,12 +181,76 @@ export async function advanceKnowledgeStudioDraft(
   draftId: string,
   etag: string,
   idempotencyKey: string,
+  targetStep: 'TBOX' | 'ABOX' = 'TBOX',
 ): Promise<ApiResponse<KnowledgeStudioDraft>> {
   return requireEtag(await client.requestWithMeta<KnowledgeStudioDraft>(
     `/knowledge/studio/drafts/${encodeURIComponent(draftId)}/advance`,
     {
       method: 'POST',
-      body: JSON.stringify({ target_step: 'TBOX' }),
+      body: JSON.stringify({ target_step: targetStep }),
+      cache: 'no-store',
+      ifMatch: etag,
+      idempotencyKey,
+    },
+  ))
+}
+
+export async function getKnowledgeStudioABox(
+  client: ApiClient,
+  draftId: string,
+): Promise<ApiResponse<KnowledgeStudioABox>> {
+  return requireEtag(await client.requestWithMeta<KnowledgeStudioABox>(
+    `/knowledge/studio/drafts/${encodeURIComponent(draftId)}/abox`,
+    { cache: 'no-store' },
+  ))
+}
+
+export async function searchKnowledgeStudioSources(
+  client: ApiClient,
+  draftId: string,
+  query: string,
+  signal?: AbortSignal,
+): Promise<KnowledgeStudioSourcePage> {
+  const params = new URLSearchParams({ q: query.trim(), limit: '25' })
+  return client.request<KnowledgeStudioSourcePage>(
+    `/knowledge/studio/drafts/${encodeURIComponent(draftId)}/abox/sources?${params.toString()}`,
+    { cache: 'no-store', signal },
+  )
+}
+
+export async function getKnowledgeStudioSource(
+  client: ApiClient,
+  draftId: string,
+  assetId: string,
+): Promise<KnowledgeStudioSourceDetail> {
+  return client.request<KnowledgeStudioSourceDetail>(
+    `/knowledge/studio/drafts/${encodeURIComponent(draftId)}/abox/sources/${encodeURIComponent(assetId)}`,
+    { cache: 'no-store' },
+  )
+}
+
+export async function saveKnowledgeStudioBinding(
+  client: ApiClient,
+  draftId: string,
+  targetStableElementId: string,
+  source: KnowledgeStudioSourceDataset,
+  rules: KnowledgeStudioMappingRuleInput[],
+  etag: string,
+  idempotencyKey: string,
+): Promise<ApiResponse<{ draft: KnowledgeStudioDraft; binding: KnowledgeStudioBinding }>> {
+  return requireEtag(await client.requestWithMeta<{
+    draft: KnowledgeStudioDraft
+    binding: KnowledgeStudioBinding
+  }>(
+    `/knowledge/studio/drafts/${encodeURIComponent(draftId)}/abox/bindings/${encodeURIComponent(targetStableElementId)}`,
+    {
+      method: 'PATCH',
+      body: JSON.stringify({
+        source_asset_id: source.id,
+        source_version: source.source_version,
+        projection_source_version: source.projection_source_version,
+        rules,
+      }),
       cache: 'no-store',
       ifMatch: etag,
       idempotencyKey,

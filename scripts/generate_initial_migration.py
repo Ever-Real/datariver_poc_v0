@@ -141,6 +141,40 @@ def build_upgrade() -> ops.UpgradeOps:
                         f"WITH CHECK ({owner_expression})"
                     )
                 )
+            if table.fullname == "knowledge.source_references":
+                owner_expression = (
+                    "created_by = "
+                    "NULLIF(current_setting('app.subject_id', true), '')::uuid"
+                )
+                operations.append(
+                    ops.ExecuteSQLOp(
+                        "CREATE POLICY source_reference_owner_access "
+                        "ON knowledge.source_references AS RESTRICTIVE FOR ALL "
+                        f"TO datariver_app USING ({owner_expression}) "
+                        f"WITH CHECK ({owner_expression})"
+                    )
+                )
+            if table.fullname in {
+                "knowledge.tbox_draft_elements",
+                "knowledge.abox_binding_drafts",
+                "knowledge.abox_mapping_rule_drafts",
+            }:
+                table_name = table.name
+                owner_expression = (
+                    "EXISTS (SELECT 1 FROM knowledge.studio_drafts AS owned_draft "
+                    f"WHERE owned_draft.workspace_id = {table_name}.workspace_id "
+                    f"AND owned_draft.id = {table_name}.draft_id "
+                    "AND owned_draft.author_id = "
+                    "NULLIF(current_setting('app.subject_id', true), '')::uuid)"
+                )
+                operations.append(
+                    ops.ExecuteSQLOp(
+                        "CREATE POLICY studio_draft_owner_access "
+                        f"ON {table.fullname} AS RESTRICTIVE FOR ALL "
+                        f"TO datariver_app USING ({owner_expression}) "
+                        f"WITH CHECK ({owner_expression})"
+                    )
+                )
             if table.fullname == "assistant.chat_sessions":
                 owner_expression = (
                     "owner_id = NULLIF(current_setting('app.subject_id', true), '')::uuid"
@@ -319,7 +353,10 @@ BEGIN
             knowledge.validation_results, knowledge.projection_deployments,
             knowledge.source_snapshots, knowledge.source_pages,
             knowledge.source_page_embeddings, knowledge.extraction_runs,
-            knowledge.graphrag_audits, knowledge.studio_drafts TO datariver_app;
+            knowledge.graphrag_audits, knowledge.studio_drafts,
+            knowledge.tbox_draft_elements, knowledge.source_references,
+            knowledge.abox_binding_drafts,
+            knowledge.abox_mapping_rule_drafts TO datariver_app;
         GRANT INSERT ON knowledge.graphs, knowledge.ontology_versions,
             knowledge.releases, knowledge.release_nodes, knowledge.release_edges,
             knowledge.changesets, knowledge.change_operations,
@@ -336,6 +373,14 @@ BEGIN
             discarded_by, last_autosaved_at,
             version, updated_at
         ) ON knowledge.studio_drafts TO datariver_app;
+        GRANT INSERT ON knowledge.source_references,
+            knowledge.abox_binding_drafts,
+            knowledge.abox_mapping_rule_drafts TO datariver_app;
+        GRANT UPDATE (
+            source_reference_id, readiness, tbox_version, updated_by,
+            version, updated_at
+        ) ON knowledge.abox_binding_drafts TO datariver_app;
+        GRANT DELETE ON knowledge.abox_mapping_rule_drafts TO datariver_app;
         GRANT DELETE ON knowledge.validation_results TO datariver_app;
         GRANT SELECT, INSERT ON assistant.chat_sessions, assistant.chat_messages,
             assistant.assistant_runs, assistant.evidence_citations TO datariver_app;
