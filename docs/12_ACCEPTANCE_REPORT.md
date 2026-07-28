@@ -14,6 +14,22 @@ addenda and `docs/29_MASTER_EXECUTION_BACKLOG.md`.
 
 P0–P3 foundation addendum, updated 2026-07-16: current source checks additionally include the stable DataHub v1.6.0 release contract and typed OIDC assurance. Hardware WebAuthn requires an exact approved ACR+AMR combination and `auth_time`; OTP, generic MFA and refreshed-token `iat` cannot satisfy high-risk authorization. Browser remediation is bounded to typed authentication actions, rejects unsafe return locations, and never automatically replays a denied mutation after an authentication redirect. Compatibility migrations and the current hybrid runtime have separate live evidence below.
 
+## Knowledge Studio governed Publish addendum — 2026-07-28
+
+This addendum accepts the local-source contract at revision `0061` for independent-review
+schema/mapping publication. It does not accept actual A-Box ingestion, Neo4j instance publication,
+target PostgreSQL execution, a live physical-source adapter, the pending Step 2 operation writer or
+Registry wide-drawer cutover.
+
+| Gate | Result | Current executed evidence |
+|---|---|---|
+| Maker-checker publication | PASS (local source) | DRAFT submits to locked REVIEW; the author and service accounts cannot publish. A different reviewer needs `kg.review`, high-risk `kg.publish`, domain/classification scope and fresh Hardware WebAuthn. The same reviewer must own an exact-version/hash PASS receipt. |
+| Atomic canonical materialization | PASS (local source) | Publish creates Ontology Version/element index, immutable Binding/Rule versions, Studio Release, PUBLISHED Draft references, graph schema pointer, outbox and idempotency result in one transaction with canonical T-Box/A-Box read-back. One ACTIVE Studio Release per graph is DB-enforced and its predecessor becomes ARCHIVED. |
+| Instance separation | PASS (local source) | `active_studio_release_id` is separate from `active_release_id`; no `knowledge.releases`, row ingestion, DataHub mutation or Neo4j write occurs. UI reports `Ingestion: NOT_RUN`. |
+| Physical-source/cleanup boundary | PASS (local source) | Registry adapter accepts exact Workspace/Asset/version/field/clearance contracts and bounded scalar rows. CSV/SQLite shells fail closed until operator registration. Cleanup is dry-run by default and only Discards exact ETag Drafts or unlinks exact hash-matched Git-untracked test files. |
+| Regression/migration | PASS WITH FORMAT BASELINE | Focused backend `39`; backend `1,694 passed / 97 skipped`; Ruff lint, strict mypy over `421` files and static verification passed. Frontend TypeScript, ESLint, `54 files / 300 tests` and production build passed; focused Studio `2 files / 8 tests`. Repeated canonical generation produced SHA-256 `185641e239e82d7f6948e761fd929a618fdacaebc766cbb45f031a713728eba1`; sole head `0061`. The repository-wide format check retains only two unrelated pre-existing DataHub files. |
+| External acceptance | OPEN | Isolated PostgreSQL upgrade/app-role RLS/concurrent Publish and rollback fault injection, real two-human OIDC/WebAuthn, browser accessibility, approved row adapter, WSL `linux/amd64`, full Step 2, Registry cutover, durable ingestion and managed default graphs remain open. |
+
 ## Knowledge Studio Data Enricher addendum — 2026-07-28
 
 This addendum accepts the local source contract for normalized A-Box Binding Drafts at revision

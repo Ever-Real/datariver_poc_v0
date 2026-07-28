@@ -27,14 +27,16 @@ only when their route declares durable idempotency; reads/results are discarded 
 in-memory security-epoch drift. API/MCP surfaces not listed in the implemented inventory are backlog,
 not implied capabilities. Runtime API/OIDC Origin validation remains deferred as `R5-FE-04` P2.
 
-Knowledge Studio A-Box adds two current-Draft advisory endpoints:
+Knowledge Studio A-Box adds two current-Draft validation endpoints:
 `POST /knowledge/studio/drafts/{draft_id}/abox/previews` accepts only a persisted T-Box target,
 `sample_limit` from 5 through 10 and exact `If-Match`; it returns a no-store provider-neutral JSON
 graph and bounded evidence without a Cypher string or any source/Neo4j write.
 `POST /knowledge/studio/drafts/{draft_id}/abox/preflight` requires the same exact Draft ETag and
-returns all required-binding, source-version, authorization and physical-reader capability evidence.
-An invalid/unavailable result is a typed `200` document; a stale Draft is `412`. A passing response
-does not create ingestion authority, a release or a durable validation receipt.
+an `Idempotency-Key`; it returns all required-binding, source-version, authorization and physical-
+reader capability evidence plus an append-only receipt ID and exact contract hash. An
+invalid/unavailable result is a typed `200` document; a stale Draft is `412`. A passing receipt does
+not create ingestion authority or a release. It becomes publication evidence only while the Draft
+version, canonical contract hash and independent reviewer remain exact.
 
 ## Conventions
 
@@ -307,13 +309,18 @@ cannot re-enter the ordinary workflow.
 |---|---|---|
 | `GET /knowledge/studio/domains?classification=&q=&limit=` | `kg.create` | active DOMAIN picker, bounded to 100 and filtered by the requested classification plus Subject domain scope |
 | `POST /knowledge/studio/drafts` | `kg.create` | create an author-only CREATE Draft from typed Step 1 data; requires `Idempotency-Key`, returns ETag and does not create a graph |
-| `GET /knowledge/studio/drafts/{draft_id}` | `kg.read` | read the current author's Draft with `Cache-Control: no-store` and ETag; hidden/foreign Drafts are not disclosed |
+| `GET /knowledge/studio/drafts/{draft_id}` | author `kg.read`; independent reviewer `kg.review` | read an author Draft or a REVIEW/PUBLISHED Draft visible to a permitted reviewer with `Cache-Control: no-store` and ETag; hidden Drafts are not disclosed |
 | `PATCH /knowledge/studio/drafts/{draft_id}` | `kg.edit` | idempotent Step 1 auto-save; requires exact `If-Match` and returns `412` on a stale version |
 | `POST /knowledge/studio/drafts/{draft_id}/advance` | `kg.edit` | idempotently advance to `TBOX`, or from T-Box to `ABOX` only when at least one accepted Class/Relation exists; requires exact `If-Match` |
-| `GET /knowledge/studio/drafts/{draft_id}/abox` | `kg.read` | bounded read of the accepted T-Box read index plus normalized Binding Drafts; returns Draft ETag and never returns Dataset rows |
+| `POST /knowledge/studio/drafts/{draft_id}/submit-review` | author `kg.edit` | freeze a completed ABOX Draft in REVIEW for independent inspection; requires exact `If-Match` and `Idempotency-Key` |
+| `POST /knowledge/studio/drafts/{draft_id}/discard` | author `kg.edit` | audited terminal Discard from DRAFT or REVIEW; keeps the row/evidence and requires exact `If-Match` and `Idempotency-Key` |
+| `GET /knowledge/studio/drafts/{draft_id}/abox` | author `kg.read`; independent reviewer `kg.review` | bounded read of the accepted T-Box read index plus normalized Binding Drafts; returns Draft ETag and never returns Dataset rows |
 | `GET /knowledge/studio/drafts/{draft_id}/abox/sources?q=&cursor=&limit=` | `kg.edit` + governed catalog search | fast Dataset/Table/View summary discovery from the authorization-pruned local DataHub catalog projection; maximum page size 100 and column arrays are omitted until one Dataset is selected |
 | `GET /knowledge/studio/drafts/{draft_id}/abox/sources/{asset_id}` | `kg.edit` + `catalog.read` | authorized DataHub detail/cache read returning typed field paths, provider schema version, projection version and stale marker; provider URN is not exposed |
 | `PATCH /knowledge/studio/drafts/{draft_id}/abox/bindings/{target_stable_element_id}` | `kg.edit` | target-scoped replacement of typed mapping rules only; exact provider/projection versions, `If-Match` and `Idempotency-Key` are required; T-Box, ingestion and release state are immutable |
+| `POST /knowledge/studio/drafts/{draft_id}/abox/previews` | author read or independent review | bounded 5–10 row physical-source dry run for one persisted Class binding; no raw query, persistence or Neo4j write |
+| `POST /knowledge/studio/drafts/{draft_id}/abox/preflight` | author read or independent `kg.review` | append exact-version/hash validation evidence; requires `If-Match` and `Idempotency-Key`, and REVIEW receipts cannot be authored by the maker |
+| `POST /knowledge/studio/drafts/{draft_id}/publish` | independent `kg.review` + high-risk `kg.publish` | require fresh Hardware WebAuthn and the same reviewer's exact PASS receipt, then atomically materialize an immutable Studio schema/mapping release; archives the previous Studio Release but does not activate an instance release or run ingestion |
 | `POST /knowledge/graphs` | `kg.create` | graph plus initial typed ontology |
 | `GET /knowledge/graphs` | `kg.read` | clearance-filtered graphs |
 | `POST/GET /knowledge/graphs/{graph_id}/changesets` | `kg.edit` / `kg.read` | create/list a base-release-pinned changeset |

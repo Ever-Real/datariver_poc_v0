@@ -1,6 +1,6 @@
 # 지식관리 레지스트리 및 Knowledge Studio 전면 개편 PRD
 
-- 상태: **승인됨 — Phase 1 구현 기준**
+- 상태: **승인됨 — Phase 1~5 local-source 구현, Registry/T-Box/운영 게이트 진행 중**
 - 작성일: 2026-07-28
 - 범위: Knowledge Registry/Studio UX, T-Box 스키마 초안, A-Box 바인딩 초안과 그 읽기·영속 모델
 - 비범위: DataHub 내부 저장소 변경, Neo4j 직접 조작, 임의 Cypher/SPARQL 실행, 일반 Chat 변경, 다른 메뉴 정보 구조 변경
@@ -290,10 +290,28 @@ Dataset metadata pin과 physical source access probe를 모두 통과해야 한�
 cardinality 계약이 아직 없으므로 required로 추측하지 않는다. 실패는 stable code/location을
 가진 bounded Validation Evidence로 모두 반환한다.
 
-Preview/Pre-flight는 현재 Draft ETag에 묶인 advisory read다. 성공해도 ingestion authority,
-mapping `VALIDATED`, changeset 또는 publication을 만들지 않는다. 향후 durable ingestion
-command는 같은 검사를 다시 수행하고 immutable binding version과 fenced job evidence를
-원자적으로 pin해야 한다.
+Preview는 현재 Draft ETag에 묶인 transient read다. Pre-flight는 같은 검사를 수행한 뒤
+Draft version, canonical T-Box/A-Box contract hash, checker와 bounded evidence를 append-only
+receipt로 남긴다. 성공해도 ingestion authority, mapping `VALIDATED`, changeset 또는
+publication을 직접 만들지 않는다. REVIEW 상태에서는 작성자가 아닌 독립 검토자가 만든
+정확한 PASS receipt만 Studio Publish의 전제 조건이 된다. 향후 durable ingestion command는
+같은 source permission/drift 검사를 다시 수행하고 published immutable binding version과
+fenced job evidence를 원자적으로 pin해야 한다.
+
+#### 3.4.2 독립 검토와 Studio Release
+
+작성자는 완료된 A-Box Draft를 `REVIEW`로 제출한다. REVIEW 전환은 ETag/Idempotency-Key에
+묶이고 이후 T-Box/A-Box 편집을 잠근다. 다른 active human reviewer가 `kg.review`,
+`kg.publish`, classification/domain scope와 최신 Hardware WebAuthn을 모두 만족한 뒤 동일
+Draft version/contract hash의 PASS receipt를 만들고 검토 사유와 함께 Publish한다.
+
+Publish는 Graph, immutable Ontology Version/Element index, immutable Binding/Rule version,
+Studio Release manifest, PUBLISHED Draft evidence, outbox/idempotency result를 단일 PostgreSQL
+transaction에서 만들고 canonical hash read-back 후 commit한다. 기존 ACTIVE Studio Release는
+같은 transaction에서 ARCHIVED가 되고 `graphs.active_studio_release_id`가 새 정본을 가리킨다.
+이 pointer는 instance assertion 정본인 `graphs.active_release_id`와 분리된다. 따라서 Studio
+Publish는 실제 Row ingestion, `knowledge.releases` 생성/활성화, Neo4j write를 수행하지 않고
+UI의 Ingestion 상태도 `NOT_RUN`으로 유지한다.
 
 ### 3.5 system-managed 기본 Asset
 
@@ -550,9 +568,9 @@ materialize/execute 때 다시 확인한다. 달라지면 STALE로 끝내며 최
 | `GET /knowledge/registry/assets/{id}/versions?cursor=&limit=` | drawer history | bounded rows, snapshot body 없음 |
 | `GET /knowledge/registry/assets/{id}/bindings?cursor=&limit=` | drawer bindings/runs | source locator/provider secret 제거 |
 | `GET /knowledge/registry/assets/{id}/preview?...` | graph preview | active governed release, server node/edge cap와 truncation evidence |
-| `POST /knowledge/studio-drafts` | Step 1 create/edit draft | kg.create 또는 kg.edit, Idempotency-Key, author-bound response |
-| `GET/PATCH /knowledge/studio-drafts/{id}` | Studio recovery/save | owner policy와 ETag; text Cypher body 없음 |
-| `GET /knowledge/studio-options/domains?...` | Step 1 DOMAIN picker | local UUID/display/source version, active/authorized entries만 |
+| `POST /knowledge/studio/drafts` | Step 1 create/edit draft | kg.create 또는 kg.edit, Idempotency-Key, author-bound response |
+| `GET/PATCH /knowledge/studio/drafts/{id}` | Studio recovery/save | actor policy와 ETag; REVIEW/PUBLISHED는 independent reviewer read만, text Cypher body 없음 |
+| `GET /knowledge/studio/domains?...` | Step 1 DOMAIN picker | local UUID/display/source version, active/authorized entries만 |
 | `GET /knowledge/studio-options/catalog-assets?...` | DB/metadata source picker | permitted bounded summary와 opaque cursor; provider query/credential 없음 |
 | `GET /knowledge/studio-options/graph-releases?...` | 다른 Asset picker | governed exact release ID/hash만 |
 | `GET /knowledge/studio-options/uploads?...` | file source picker | requester가 사용할 수 있는 accepted immutable manifest만 |
@@ -561,7 +579,9 @@ materialize/execute 때 다시 확인한다. 달라지면 STALE로 끝내며 최
 | `GET .../tbox/proposal-jobs/{job}` | proposal 진행/결과 | owner-bound bounded state; provider body 없음 |
 | `POST .../tbox/proposals/{proposal}/accept|reject` | preview 결정 | current draft/base/source pin 재검증 후 one-time transition |
 | `POST .../validate-tbox` | schema validation | validation evidence만 반환 |
-| `POST .../materialize` | graph/ontology/binding atomic create | kg.create 또는 kg.edit, idempotent, canonical read-back |
+| `POST .../drafts/{id}/submit-review` | completed ABOX Draft 검토 요청 | author, Idempotency-Key + If-Match, REVIEW 이후 편집 잠금 |
+| `POST .../drafts/{id}/discard` | Draft 명시적 폐기 | author, Idempotency-Key + If-Match, hard delete 없음 |
+| `POST .../drafts/{id}/publish` | graph/ontology/binding atomic materialize | independent human `kg.review` + Hardware-WebAuthn `kg.publish`, exact PASS receipt, canonical read-back |
 | binding/rule/run commands | A-Box 관리 | whitelist only; worker/source contract가 없으면 unavailable |
 
 Phase 3 Data Enricher의 첫 구현 route는 기존 `/knowledge/studio/drafts` boundary 아래에
@@ -574,7 +594,7 @@ additive하게 둔다.
 | `GET .../drafts/{id}/abox/sources/{asset_id}` | 선택 Dataset 컬럼 계약 | existing Catalog service/DataHub Gateway/cache, local UUID와 field path만 반환 |
 | `PATCH .../drafts/{id}/abox/bindings/{target}` | 한 Class/Relation의 mapping rule 부분 교체 | Idempotency-Key + If-Match, four-method whitelist, T-Box/source 재검증 |
 | `POST .../drafts/{id}/abox/previews` | 저장된 한 Class Binding의 row-sample dry run | If-Match, local target ID와 5~10 limit만 허용, no-store, Neo4j/source write 없음 |
-| `POST .../drafts/{id}/abox/preflight` | 현재 Draft의 ingestion readiness evidence | If-Match, required Class/property와 metadata/physical access를 재검증, 성공도 ingestion authority 아님 |
+| `POST .../drafts/{id}/abox/preflight` | 현재 Draft의 ingestion readiness evidence | Idempotency-Key + If-Match, required Class/property와 metadata/physical access를 재검증하고 exact receipt/hash 반환; 성공도 ingestion authority 아님 |
 
 이 increment의 `Mapped`는 rule이 하나 이상 영속화되었다는 뜻이며 `VALIDATED`, ingestion,
 changeset 또는 publication을 뜻하지 않는다. accepted T-Box 요소가 없는 Draft에는 임의

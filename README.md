@@ -24,7 +24,7 @@ For a blank environment:
    provide secrets only through the generated/mounted secret files;
 3. configure external endpoints and the named connector network, render Compose with
    `scripts/compose.sh ... config --quiet`, then start only the required overlays;
-4. reconcile database roles, run the migration service through revision `0060`, and verify live,
+4. reconcile database roles, run the migration service through revision `0061`, and verify live,
    ready and capability endpoints;
 5. apply optional synthetic seeds only in non-production environments and run their verification;
 6. execute target-specific OIDC, provider read-back, backup/restore and migration acceptance before
@@ -1085,7 +1085,7 @@ environment's secrets or volumes.
    overlays. For an existing PostgreSQL volume, run `scripts/reconcile-postgres-roles.sh` (or the
    PowerShell equivalent) before and after applying `alembic upgrade head` through the migration
    service; the second idempotent pass repairs Phase 2 grants when roles were created after an older
-   migration. Readiness requires revision `0060`.
+   migration. Readiness requires revision `0061`.
 4. Start the API, relay, workers and web service using either the container profile or the
    host-development commands below. Check `/api/v1/health/live`, `/api/v1/health/ready`,
    `/api/v1/capabilities` and the APISIX/Vite proxy before using application workflows.
@@ -1769,7 +1769,7 @@ docker compose -f compose.yaml build --pull
 ```
 
 애플리케이션을 올리기 전에 권한이 분리된 `migrate` 서비스로 Alembic을 실행한다. 이
-릴리스의 필수 revision은 `0060`이다. 호스트의 임의 DB 계정으로 `alembic`을 직접 실행하지
+릴리스의 필수 revision은 `0061`이다. 호스트의 임의 DB 계정으로 `alembic`을 직접 실행하지
 않는다.
 
 ```bash
@@ -1954,9 +1954,9 @@ is intentionally a MOCK metadata manifest.
 
 ```bash
 uv sync --frozen --all-extras
-uv run ruff format --check backend/src backend/tests infra/airflow/dags scripts/platform_workflow.py scripts/reconcile_manual_receipts.py scripts/render_wsl_intranet_nginx.py scripts/verify_nginx_headers.py scripts/workflow_source_host_infra.py scripts/development_cycle.py
-uv run ruff check backend/src backend/tests infra/airflow/dags scripts/configure_keycloak_assurance.py scripts/development_cycle.py scripts/generate_initial_migration.py scripts/generate_semiconductor_seed.py scripts/local_reranker_service.py scripts/migrate_s3_objects.py scripts/platform_workflow.py scripts/probe_pgbouncer_rls.py scripts/probe_policy_revocation.py scripts/probe_s3_contract.py scripts/reconcile_manual_receipts.py scripts/render_wsl_intranet_nginx.py scripts/verify_datahub_contract.py scripts/verify_datahub_image_inventory.py scripts/verify_nginx_headers.py scripts/verify_static.py scripts/workflow_source_host_infra.py
-uv run mypy backend/src backend/tests scripts/development_cycle.py scripts/local_reranker_service.py scripts/migrate_s3_objects.py scripts/platform_workflow.py scripts/probe_s3_contract.py scripts/reconcile_manual_receipts.py scripts/render_wsl_intranet_nginx.py scripts/verify_nginx_headers.py scripts/workflow_source_host_infra.py
+uv run ruff format --check backend/src backend/tests infra/airflow/dags scripts/cleanup_knowledge_studio_test_artifacts.py scripts/platform_workflow.py scripts/reconcile_manual_receipts.py scripts/render_wsl_intranet_nginx.py scripts/verify_nginx_headers.py scripts/workflow_source_host_infra.py scripts/development_cycle.py
+uv run ruff check backend/src backend/tests infra/airflow/dags scripts/configure_keycloak_assurance.py scripts/cleanup_knowledge_studio_test_artifacts.py scripts/development_cycle.py scripts/generate_initial_migration.py scripts/generate_semiconductor_seed.py scripts/local_reranker_service.py scripts/migrate_s3_objects.py scripts/platform_workflow.py scripts/probe_pgbouncer_rls.py scripts/probe_policy_revocation.py scripts/probe_s3_contract.py scripts/reconcile_manual_receipts.py scripts/render_wsl_intranet_nginx.py scripts/verify_datahub_contract.py scripts/verify_datahub_image_inventory.py scripts/verify_nginx_headers.py scripts/verify_static.py scripts/workflow_source_host_infra.py
+uv run mypy backend/src backend/tests scripts/cleanup_knowledge_studio_test_artifacts.py scripts/development_cycle.py scripts/local_reranker_service.py scripts/migrate_s3_objects.py scripts/platform_workflow.py scripts/probe_s3_contract.py scripts/reconcile_manual_receipts.py scripts/render_wsl_intranet_nginx.py scripts/verify_nginx_headers.py scripts/workflow_source_host_infra.py
 uv run pytest backend/tests -q
 uv run python scripts/verify_static.py
 

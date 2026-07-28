@@ -7,10 +7,12 @@ import {
   Play,
   Save,
   Search,
+  Send,
   ShieldCheck,
   TriangleAlert,
 } from 'lucide-react'
 import { ApiError, type ApiClient } from '../../../../api/client'
+import { AssuranceNotice } from '../../../../components/AssuranceNotice'
 import { Dialog } from '../../../../components/common/Dialog'
 import {
   FlowCanvas,
@@ -18,13 +20,16 @@ import {
   type FlowCanvasNode,
 } from '../../../../components/common/FlowCanvas'
 import {
+  discardKnowledgeStudioDraft,
   getKnowledgeStudioABox,
   getKnowledgeStudioSource,
   newKnowledgeStudioIdempotencyKey,
   preflightKnowledgeStudioABox,
   previewKnowledgeStudioBinding,
+  publishKnowledgeStudioDraft,
   saveKnowledgeStudioBinding,
   searchKnowledgeStudioSources,
+  submitKnowledgeStudioReview,
   type KnowledgeStudioABox,
   type KnowledgeStudioBinding,
   type KnowledgeStudioDraft,
@@ -32,6 +37,7 @@ import {
   type KnowledgeStudioPreflight,
   type KnowledgeStudioPreview,
   type KnowledgeStudioPreviewScalar,
+  type KnowledgeStudioRelease,
   type KnowledgeStudioSourceDataset,
   type KnowledgeStudioTBoxElement,
 } from '../knowledgeStudioApi'
@@ -45,7 +51,11 @@ interface LocalBindingDraft {
 interface DataEnricherStepProps {
   client: ApiClient
   draftId: string
+  subjectId?: string
   onDraftUpdate: (draft: KnowledgeStudioDraft, etag: string) => void
+  onStepUp?: () => Promise<void>
+  onPasswordReauth?: () => Promise<void>
+  onEnroll?: () => Promise<void>
 }
 
 function sourceLocation(source: KnowledgeStudioSourceDataset): string {
@@ -87,7 +97,11 @@ function previewValue(value: KnowledgeStudioPreviewScalar): string {
 export function DataEnricherStep({
   client,
   draftId,
+  subjectId,
   onDraftUpdate,
+  onStepUp,
+  onPasswordReauth,
+  onEnroll,
 }: DataEnricherStepProps) {
   const [abox, setAbox] = useState<KnowledgeStudioABox>()
   const [etag, setEtag] = useState<string>()
@@ -106,6 +120,12 @@ export function DataEnricherStep({
   const [selectedPreviewNodeId, setSelectedPreviewNodeId] = useState<string>()
   const [preflightLoading, setPreflightLoading] = useState(false)
   const [preflight, setPreflight] = useState<KnowledgeStudioPreflight>()
+  const [release, setRelease] = useState<KnowledgeStudioRelease>()
+  const [reviewReason, setReviewReason] = useState('')
+  const [publishDialogOpen, setPublishDialogOpen] = useState(false)
+  const [discardDialogOpen, setDiscardDialogOpen] = useState(false)
+  const [governanceBusy, setGovernanceBusy] = useState(false)
+  const [publishError, setPublishError] = useState<unknown>()
   const [status, setStatus] = useState('Accepted T-Box와 Binding Draft를 불러오고 있습니다.')
   const [conflict, setConflict] = useState<LocalBindingDraft>()
 
@@ -167,6 +187,12 @@ export function DataEnricherStep({
     ])),
     [abox?.bindings],
   )
+  const actorId = subjectId ?? abox?.draft.author_id
+  const isAuthor = Boolean(abox && actorId === abox.draft.author_id)
+  const editable = Boolean(abox && isAuthor && abox.draft.state === 'DRAFT')
+  const isIndependentReviewer = Boolean(
+    abox && !isAuthor && abox.draft.state === 'REVIEW',
+  )
   const flowNodes = useMemo<FlowCanvasNode[]>(() => classes.map((element, index) => {
     const binding = bindingByTarget.get(element.stable_element_id)
     const propertyCount = propertiesByClass.get(element.stable_element_id)?.length ?? 0
@@ -199,6 +225,9 @@ export function DataEnricherStep({
   const selectedProperties = selectedTargetId
     ? propertiesByClass.get(selectedTargetId) ?? []
     : []
+  const selectedBinding = selectedTargetId
+    ? bindingByTarget.get(selectedTargetId)
+    : undefined
 
   const hydrateBindingForm = useCallback(async (
     targetId: string,
@@ -214,19 +243,24 @@ export function DataEnricherStep({
       setPropertyFields({})
       return
     }
+    setSubjectField(
+      binding.rules.find((rule) => rule.method === 'SUBJECT_ID')?.source_field_path ?? '',
+    )
+    setPropertyFields(Object.fromEntries(
+      binding.rules
+        .filter((rule) => rule.method === 'PROPERTY')
+        .map((rule) => [rule.target_stable_element_id, rule.source_field_path]),
+    ))
+    if (!editable) {
+      setSelectedSource(undefined)
+      setSelectedSourceStale(false)
+      return
+    }
     setSourceLoading(true)
     try {
       const detail = await getKnowledgeStudioSource(client, draftId, binding.source_asset_id)
       setSelectedSource(detail.dataset)
       setSelectedSourceStale(Boolean(detail.stale_at))
-      setSubjectField(
-        binding.rules.find((rule) => rule.method === 'SUBJECT_ID')?.source_field_path ?? '',
-      )
-      setPropertyFields(Object.fromEntries(
-        binding.rules
-          .filter((rule) => rule.method === 'PROPERTY')
-          .map((rule) => [rule.target_stable_element_id, rule.source_field_path]),
-      ))
     } catch (error) {
       setSelectedSource(undefined)
       setSelectedSourceStale(false)
@@ -234,10 +268,10 @@ export function DataEnricherStep({
     } finally {
       setSourceLoading(false)
     }
-  }, [client, draftId])
+  }, [client, draftId, editable])
 
   useEffect(() => {
-    if (!selectedTargetId) return
+    if (!selectedTargetId || !editable) return
     const controller = new AbortController()
     const timer = window.setTimeout(() => {
       setSourceLoading(true)
@@ -261,9 +295,10 @@ export function DataEnricherStep({
       window.clearTimeout(timer)
       controller.abort()
     }
-  }, [client, draftId, selectedTargetId, sourceQuery])
+  }, [client, draftId, editable, selectedTargetId, sourceQuery])
 
   const selectSource = async (source: KnowledgeStudioSourceDataset) => {
+    if (!editable) return
     setSourceLoading(true)
     try {
       const detail = await getKnowledgeStudioSource(client, draftId, source.id)
@@ -286,6 +321,7 @@ export function DataEnricherStep({
   }
 
   const persist = async (local: LocalBindingDraft, versionEtag: string) => {
+    if (!editable) return false
     setSaving(true)
     try {
       const response = await saveKnowledgeStudioBinding(
@@ -331,7 +367,7 @@ export function DataEnricherStep({
   }
 
   const save = () => {
-    if (!selectedTarget || !selectedSource || !etag) return
+    if (!editable || !selectedTarget || !selectedSource || !etag) return
     const rules = rulesForForm(
       selectedTarget.stable_element_id,
       subjectField,
@@ -419,11 +455,16 @@ export function DataEnricherStep({
     if (!etag) return
     setPreflightLoading(true)
     try {
-      const response = await preflightKnowledgeStudioABox(client, draftId, etag)
+      const response = await preflightKnowledgeStudioABox(
+        client,
+        draftId,
+        etag,
+        newKnowledgeStudioIdempotencyKey(),
+      )
       setPreflight(response.data)
       setStatus(
         response.data.valid
-          ? 'Pre-flight PASS · 현재 Draft version의 advisory 검증이 완료되었습니다.'
+          ? 'Pre-flight PASS · 현재 Draft version과 Contract hash가 발행 증거로 고정되었습니다.'
           : 'Pre-flight evidence를 확인하세요. Run Ingestion은 실행되지 않았습니다.',
       )
     } catch (error) {
@@ -434,6 +475,107 @@ export function DataEnricherStep({
       )
     } finally {
       setPreflightLoading(false)
+    }
+  }
+
+  const submitReview = async () => {
+    if (!etag || !editable) return
+    setGovernanceBusy(true)
+    try {
+      const response = await submitKnowledgeStudioReview(
+        client,
+        draftId,
+        etag,
+        newKnowledgeStudioIdempotencyKey(),
+      )
+      if (!response.etag) return
+      setAbox((current) => current ? { ...current, draft: response.data } : current)
+      setEtag(response.etag)
+      setPreflight(undefined)
+      onDraftUpdate(response.data, response.etag)
+      setStatus('독립 검토를 요청했습니다. Draft는 REVIEW 상태로 잠겼습니다.')
+    } catch (error) {
+      if (error instanceof ApiError && error.problem.status === 412) {
+        await loadAbox().catch(() => undefined)
+        setStatus('Draft가 변경되어 검토 요청을 중단했습니다. 최신 상태를 확인하세요.')
+      } else {
+        setStatus(error instanceof Error ? error.message : '독립 검토 요청에 실패했습니다.')
+      }
+    } finally {
+      setGovernanceBusy(false)
+    }
+  }
+
+  const discardDraft = async () => {
+    if (!etag || !isAuthor || !abox || !['DRAFT', 'REVIEW'].includes(abox.draft.state)) return
+    setGovernanceBusy(true)
+    try {
+      const response = await discardKnowledgeStudioDraft(
+        client,
+        draftId,
+        etag,
+        newKnowledgeStudioIdempotencyKey(),
+      )
+      if (!response.etag) return
+      setAbox((current) => current ? { ...current, draft: response.data } : current)
+      setEtag(response.etag)
+      setPreflight(undefined)
+      setDiscardDialogOpen(false)
+      onDraftUpdate(response.data, response.etag)
+      setStatus('Draft를 명시적으로 Discard했습니다. 정본 데이터는 삭제하지 않았습니다.')
+    } catch (error) {
+      setStatus(
+        error instanceof ApiError && error.problem.status === 412
+          ? 'Draft가 변경되어 Discard를 중단했습니다. 최신 상태를 확인하세요.'
+          : error instanceof Error ? error.message : 'Draft Discard에 실패했습니다.',
+      )
+    } finally {
+      setGovernanceBusy(false)
+    }
+  }
+
+  const publishDraft = async () => {
+    const reason = reviewReason.trim()
+    if (
+      !etag
+      || !isIndependentReviewer
+      || !abox
+      || !preflight?.valid
+      || preflight.draft_version !== abox.draft.version
+      || !preflight.receipt_id
+      || !reason
+    ) return
+    setGovernanceBusy(true)
+    setPublishError(undefined)
+    try {
+      const response = await publishKnowledgeStudioDraft(
+        client,
+        draftId,
+        reason,
+        etag,
+        newKnowledgeStudioIdempotencyKey(),
+      )
+      if (!response.etag) return
+      setAbox((current) => current
+        ? { ...current, draft: response.data.draft }
+        : current)
+      setEtag(response.etag)
+      setRelease(response.data.release)
+      setPublishDialogOpen(false)
+      onDraftUpdate(response.data.draft, response.etag)
+      setStatus(
+        `Studio Release #${response.data.release.release_no} 발행 완료 · `
+        + '실제 Ingestion은 NOT_RUN 상태입니다.',
+      )
+    } catch (error) {
+      setPublishError(error)
+      setStatus(
+        error instanceof ApiError && error.problem.status === 412
+          ? 'Draft가 변경되어 Publish를 중단했습니다. Pre-flight부터 다시 수행하세요.'
+          : error instanceof Error ? error.message : 'Studio Release 발행에 실패했습니다.',
+      )
+    } finally {
+      setGovernanceBusy(false)
     }
   }
 
@@ -460,6 +602,15 @@ export function DataEnricherStep({
   const selectedPreviewNode = preview?.graph.nodes.find(
     (node) => node.id === selectedPreviewNodeId,
   )
+  const draftState = abox?.draft.state ?? 'DRAFT'
+  const exactPreflightPass = Boolean(
+    abox
+    && preflight?.valid
+    && preflight.status === 'PASS'
+    && preflight.draft_version === abox.draft.version
+    && preflight.receipt_id
+    && preflight.contract_hash,
+  )
 
   if (loading) {
     return <section className="grid min-h-[420px] place-items-center rounded-enterprise border border-slate-300 bg-white text-sm text-slate-500">
@@ -481,17 +632,61 @@ export function DataEnricherStep({
           </p>
         </div>
         <div className="flex flex-wrap justify-end gap-2 text-[11px]">
-          <span className="badge badge-soft">Mapping: DRAFT</span>
+          <span className="badge badge-soft">Studio: {draftState}</span>
           <span className="badge badge-soft">Ingestion: NOT_RUN</span>
           <button
             type="button"
             className="button button-secondary"
-            disabled={!etag || preflightLoading}
+            disabled={
+              !etag
+              || preflightLoading
+              || draftState === 'PUBLISHED'
+              || draftState === 'DISCARDED'
+              || (draftState === 'REVIEW' && !isIndependentReviewer)
+            }
             onClick={() => void runPreflight()}
           >
             <ShieldCheck size={14} />
             {preflightLoading ? '검증 중…' : 'Pre-flight 검증'}
           </button>
+          {editable && (
+            <button
+              type="button"
+              className="button"
+              disabled={governanceBusy || !etag}
+              onClick={() => void submitReview()}
+            >
+              <Send size={14} />
+              {governanceBusy ? '처리 중…' : '독립 검토 요청'}
+            </button>
+          )}
+          {isIndependentReviewer && (
+            <button
+              type="button"
+              className="button"
+              disabled={governanceBusy || !exactPreflightPass}
+              title={exactPreflightPass
+                ? '검토 사유 확인 후 Studio Release를 발행합니다.'
+                : '현재 REVIEW Draft의 정확한 PASS receipt가 필요합니다.'}
+              onClick={() => {
+                setPublishError(undefined)
+                setPublishDialogOpen(true)
+              }}
+            >
+              <ShieldCheck size={14} />
+              Publish
+            </button>
+          )}
+          {isAuthor && ['DRAFT', 'REVIEW'].includes(draftState) && (
+            <button
+              type="button"
+              className="button button-secondary"
+              disabled={governanceBusy}
+              onClick={() => setDiscardDialogOpen(true)}
+            >
+              Discard
+            </button>
+          )}
           <button
             type="button"
             className="button"
@@ -519,7 +714,7 @@ export function DataEnricherStep({
               Pre-flight {preflight.status}
             </strong>
             <span className="text-[10px] text-slate-500">
-              Draft version {preflight.draft_version} · advisory evidence
+              Draft version {preflight.draft_version} · receipt {preflight.receipt_id.slice(0, 8)}…
             </span>
           </div>
           {preflight.evidence.length > 0
@@ -534,9 +729,22 @@ export function DataEnricherStep({
                 Required Class, Property, source contract와 access probe가 모두 유효합니다.
               </p>}
           <p className="mb-0 text-[10px] text-slate-500">
-            PASS도 ingestion 권한이나 publication receipt가 아니며 실행 시 다시 검증해야 합니다.
+            PASS receipt는 동일 Draft version과 Contract hash에만 유효하며 실제 Ingestion을 실행하지 않습니다.
           </p>
         </section>
+      )}
+      {draftState === 'REVIEW' && isAuthor && (
+        <p className="mb-3 rounded-enterprise border border-blue-200 bg-blue-50 p-3 text-xs text-blue-950">
+          독립 검토 대기 중입니다. REVIEW 상태에서는 T-Box/A-Box Mapping이 잠기며,
+          작성자는 검토 Pre-flight 또는 Publish를 수행할 수 없습니다.
+        </p>
+      )}
+      {draftState === 'PUBLISHED' && (
+        <p className="mb-3 rounded-enterprise border border-emerald-200 bg-emerald-50 p-3 text-xs text-emerald-950">
+          Studio Release가 발행되었습니다. Schema/Mapping 정본만 활성화되었으며,
+          Neo4j instance release와 Ingestion은 별도 파이프라인에서 수행됩니다.
+          {release ? ` Release #${release.release_no} · ${release.contract_hash.slice(0, 12)}…` : ''}
+        </p>
       )}
       <FlowCanvas
         ariaLabel="Data Enricher accepted T-Box"
@@ -566,47 +774,101 @@ export function DataEnricherStep({
                   : 'Unbound'}
               </p>
             </header>
-            <label className="grid gap-1 text-xs font-black text-navy-900">
-              Dataset 검색
-              <span className="relative">
-                <Search className="absolute top-2.5 left-2.5 text-slate-400" size={14} />
-                <input
-                  className="w-full pl-8"
-                  type="search"
-                  value={sourceQuery}
-                  onChange={(event) => setSourceQuery(event.target.value)}
-                  placeholder="Table 또는 Dataset 이름"
-                  maxLength={200}
-                />
-              </span>
-            </label>
-            <div className="grid max-h-64 gap-2 overflow-y-auto" aria-label="Dataset 검색 결과">
-              {sourceLoading && <p className="m-0 text-xs text-slate-500">Dataset 확인 중…</p>}
-              {!sourceLoading && sourceResults.length === 0 && (
-                <p className="m-0 text-xs text-slate-500">권한 범위에 검색 가능한 Dataset이 없습니다.</p>
-              )}
-              {sourceResults.map((source) => (
-                <button
-                  key={source.id}
-                  type="button"
-                  className={`rounded-enterprise border p-3 text-left ${
-                    selectedSource?.id === source.id
-                      ? 'border-enterprise-blue bg-blue-50'
-                      : 'border-slate-200 bg-white'
-                  }`}
-                  onClick={() => void selectSource(source)}
-                >
-                  <span className="block text-xs font-black text-navy-900">{source.name}</span>
-                  <span className="mt-1 block text-[10px] text-slate-500">
-                    {source.asset_type} · {sourceLocation(source) || 'Catalog projection'}
-                  </span>
-                </button>
-              ))}
-            </div>
+            {editable
+              ? <>
+                  <label className="grid gap-1 text-xs font-black text-navy-900">
+                    Dataset 검색
+                    <span className="relative">
+                      <Search className="absolute top-2.5 left-2.5 text-slate-400" size={14} />
+                      <input
+                        className="w-full pl-8"
+                        type="search"
+                        value={sourceQuery}
+                        onChange={(event) => setSourceQuery(event.target.value)}
+                        placeholder="Table 또는 Dataset 이름"
+                        maxLength={200}
+                      />
+                    </span>
+                  </label>
+                  <div className="grid max-h-64 gap-2 overflow-y-auto" aria-label="Dataset 검색 결과">
+                    {sourceLoading && <p className="m-0 text-xs text-slate-500">Dataset 확인 중…</p>}
+                    {!sourceLoading && sourceResults.length === 0 && (
+                      <p className="m-0 text-xs text-slate-500">권한 범위에 검색 가능한 Dataset이 없습니다.</p>
+                    )}
+                    {sourceResults.map((source) => (
+                      <button
+                        key={source.id}
+                        type="button"
+                        className={`rounded-enterprise border p-3 text-left ${
+                          selectedSource?.id === source.id
+                            ? 'border-enterprise-blue bg-blue-50'
+                            : 'border-slate-200 bg-white'
+                        }`}
+                        onClick={() => void selectSource(source)}
+                      >
+                        <span className="block text-xs font-black text-navy-900">{source.name}</span>
+                        <span className="mt-1 block text-[10px] text-slate-500">
+                          {source.asset_type} · {sourceLocation(source) || 'Catalog projection'}
+                        </span>
+                      </button>
+                    ))}
+                  </div>
+                </>
+              : <div className="rounded-enterprise border border-slate-200 bg-slate-50 p-3 text-xs">
+                  <strong className="block text-navy-900">읽기 전용 Mapping Contract</strong>
+                  {selectedBinding
+                    ? <>
+                        <span className="mt-1 block text-slate-600">
+                          {selectedBinding.source_name} · {selectedBinding.source_version}
+                        </span>
+                        <span className="mt-1 block text-slate-500">
+                          {selectedBinding.rules.length} typed rules · {selectedBinding.readiness}
+                        </span>
+                      </>
+                    : <span className="mt-1 block text-amber-700">연결된 Dataset이 없습니다.</span>}
+                </div>}
           </div>
 
           <div className="grid content-start gap-3">
-            {selectedSource
+            {!editable
+              ? <div className="grid gap-3 rounded-enterprise border border-slate-200 bg-slate-50 p-4">
+                  <header>
+                    <span className="text-[10px] font-black tracking-[.12em] text-enterprise-blue uppercase">
+                      Published candidate rules
+                    </span>
+                    <h3 className="my-1 text-sm font-black text-navy-900">
+                      {selectedBinding?.source_name ?? 'Unbound'}
+                    </h3>
+                  </header>
+                  {selectedBinding?.rules.length
+                    ? <dl className="grid grid-cols-[minmax(120px,.7fr)_1fr] gap-2 text-xs">
+                        {selectedBinding.rules.map((rule) => (
+                          <div className="contents" key={rule.id}>
+                            <dt className="font-black text-slate-500">
+                              {rule.method} · {rule.target_stable_element_id}
+                            </dt>
+                            <dd className="m-0 break-all text-navy-900">
+                              {rule.source_field_path} → {rule.transform_id}@{rule.transform_version}
+                            </dd>
+                          </div>
+                        ))}
+                      </dl>
+                    : <p className="m-0 text-xs text-amber-700">
+                        이 T-Box Class에는 Mapping Contract가 없습니다.
+                      </p>}
+                  <footer className="flex justify-end border-t border-slate-200 pt-3">
+                    <button
+                      type="button"
+                      className="button button-secondary"
+                      disabled={previewLoading || !etag || !selectedBinding}
+                      onClick={() => void openPreview()}
+                    >
+                      <Eye size={14} />
+                      {previewLoading ? 'Preview 중…' : 'Preview · Dry Run'}
+                    </button>
+                  </footer>
+                </div>
+              : selectedSource
               ? <>
                   <header className="flex items-start justify-between gap-3">
                     <div>
@@ -744,6 +1006,95 @@ export function DataEnricherStep({
       <p className="m-0 text-sm leading-6 text-slate-600">
         덮어쓰기는 서버의 최신 ETag를 다시 읽은 뒤 보존된 typed mapping을 새 version fence로
         저장합니다. T-Box와 다른 노드의 Binding은 변경하지 않습니다.
+      </p>
+    </Dialog>
+
+    <Dialog
+      open={publishDialogOpen}
+      title="Knowledge Studio Release 발행"
+      description="독립 검토자와 정확한 PASS receipt를 정본 Schema/Mapping Release에 함께 고정합니다."
+      onRequestClose={() => {
+        if (!governanceBusy) setPublishDialogOpen(false)
+      }}
+      footer={<>
+        <button
+          type="button"
+          className="button button-secondary"
+          disabled={governanceBusy}
+          onClick={() => setPublishDialogOpen(false)}
+        >
+          취소
+        </button>
+        <button
+          type="button"
+          className="button"
+          disabled={governanceBusy || !reviewReason.trim() || !exactPreflightPass}
+          onClick={() => void publishDraft()}
+        >
+          <ShieldCheck size={14} />
+          {governanceBusy ? '발행 중…' : '검토 승인 및 Publish'}
+        </button>
+      </>}
+    >
+      <div className="grid gap-3">
+        <label className="grid gap-1 text-xs font-black text-navy-900">
+          독립 검토 사유
+          <textarea
+            aria-label="독립 검토 사유"
+            className="min-h-28"
+            maxLength={2000}
+            value={reviewReason}
+            onChange={(event) => setReviewReason(event.target.value)}
+            placeholder="검토한 Schema, Mapping, source access evidence를 기록하세요."
+          />
+        </label>
+        <p className="m-0 text-[11px] leading-5 text-slate-500">
+          작성자와 검토자는 달라야 합니다. 기존 Active Studio Release는 Archive되지만
+          기존 Neo4j instance Release는 변경되지 않습니다.
+        </p>
+        {publishError
+          ? onStepUp && onPasswordReauth && onEnroll
+            ? <AssuranceNotice
+                error={publishError}
+                onStepUp={onStepUp}
+                onPasswordReauth={onPasswordReauth}
+                onEnroll={onEnroll}
+              />
+            : <p role="alert" className="m-0 text-xs text-red-700">
+                {publishError instanceof Error ? publishError.message : 'Publish 권한을 확인할 수 없습니다.'}
+              </p>
+          : null}
+      </div>
+    </Dialog>
+
+    <Dialog
+      open={discardDialogOpen}
+      title="Knowledge Studio Draft Discard"
+      description="Draft를 영구 보존 정책에서 명시적으로 제외합니다. 정본 Release는 삭제하지 않습니다."
+      onRequestClose={() => {
+        if (!governanceBusy) setDiscardDialogOpen(false)
+      }}
+      footer={<>
+        <button
+          type="button"
+          className="button button-secondary"
+          disabled={governanceBusy}
+          onClick={() => setDiscardDialogOpen(false)}
+        >
+          취소
+        </button>
+        <button
+          type="button"
+          className="button"
+          disabled={governanceBusy}
+          onClick={() => void discardDraft()}
+        >
+          {governanceBusy ? '처리 중…' : 'Draft Discard'}
+        </button>
+      </>}
+    >
+      <p className="m-0 text-sm leading-6 text-slate-600">
+        하드 삭제가 아니라 DISCARDED lifecycle 전환입니다. 감사·복구를 위해 DB 행은 유지됩니다.
       </p>
     </Dialog>
 

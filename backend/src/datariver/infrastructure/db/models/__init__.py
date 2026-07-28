@@ -73,9 +73,14 @@ from datariver.infrastructure.db.models.knowledge import (
 )
 from datariver.infrastructure.db.models.knowledge_studio import (
     ABoxBindingDraftModel,
+    ABoxBindingVersionModel,
     ABoxMappingRuleDraftModel,
+    ABoxMappingRuleVersionModel,
     KnowledgeSourceReferenceModel,
     KnowledgeStudioDraftModel,
+    KnowledgeStudioPreflightCheckModel,
+    KnowledgeStudioReleaseModel,
+    OntologyElementModel,
     TBoxDraftElementModel,
 )
 from datariver.infrastructure.db.models.platform import (
@@ -115,7 +120,9 @@ from datariver.infrastructure.db.models.sharing import (
 
 __all__ = [
     "ABoxBindingDraftModel",
+    "ABoxBindingVersionModel",
     "ABoxMappingRuleDraftModel",
+    "ABoxMappingRuleVersionModel",
     "AccessRoleAssignmentEventModel",
     "AccessRoleAssignmentModel",
     "AccessRoleDataRuleModel",
@@ -172,6 +179,8 @@ __all__ = [
     "KnowledgeSourceReferenceModel",
     "KnowledgeSourceSnapshotModel",
     "KnowledgeStudioDraftModel",
+    "KnowledgeStudioPreflightCheckModel",
+    "KnowledgeStudioReleaseModel",
     "LegalHoldEventModel",
     "LegalHoldModel",
     "ManualMetadataApplyAttemptModel",
@@ -179,6 +188,7 @@ __all__ = [
     "ManualMetadataSubmissionModel",
     "MembershipRenewalRequestModel",
     "ObjectManifestModel",
+    "OntologyElementModel",
     "OntologyVersionModel",
     "OutboxEventModel",
     "PolicyDecisionModel",

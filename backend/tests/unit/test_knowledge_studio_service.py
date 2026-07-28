@@ -14,6 +14,7 @@ from datariver.application.dto import (
     KnowledgeStudioBindingRecord,
     KnowledgeStudioDomainOption,
     KnowledgeStudioDraftRecord,
+    KnowledgeStudioReleaseRecord,
     KnowledgeStudioSourceDataset,
     KnowledgeStudioSourceDetail,
     KnowledgeStudioTBoxElementRecord,
@@ -23,6 +24,7 @@ from datariver.application.services.authorization import AuthorizationService
 from datariver.application.services.knowledge_studio import KnowledgeStudioService
 from datariver.domain.authz import (
     Action,
+    AuthenticationAssurance,
     Classification,
     Decision,
     EnvironmentAttributes,
@@ -32,9 +34,13 @@ from datariver.domain.common import ConflictError, ForbiddenError, ValidationErr
 
 WORKSPACE_ID = UUID("019fa57b-52de-74c0-9f5e-06ae7b1bf3b1")
 SUBJECT_ID = UUID("019fa57b-52de-74c0-9f5e-06ae7b1bf3b2")
+REVIEWER_ID = UUID("019fa57b-52de-74c0-9f5e-06ae7b1bf3b5")
 DOMAIN_ID = UUID("019fa57b-52de-74c0-9f5e-06ae7b1bf3b3")
 DRAFT_ID = UUID("019fa57b-52de-74c0-9f5e-06ae7b1bf3b0")
 SOURCE_ASSET_ID = UUID("019fa57b-52de-74c0-9f5e-06ae7b1bf3b4")
+STUDIO_RELEASE_ID = UUID("019fa57b-52de-74c0-9f5e-06ae7b1bf3b6")
+GRAPH_ID = UUID("019fa57b-52de-74c0-9f5e-06ae7b1bf3b7")
+ONTOLOGY_VERSION_ID = UUID("019fa57b-52de-74c0-9f5e-06ae7b1bf3b8")
 NOW = datetime(2026, 7, 28, 1, 2, 3, tzinfo=UTC)
 
 
@@ -52,17 +58,29 @@ class MemoryDecisionWriter:
         del decision, subject_id, workspace_id, resource_id, action, request_id
 
 
-def subject(*, allowed_domains: frozenset[UUID]) -> SubjectAttributes:
+def subject(
+    *,
+    allowed_domains: frozenset[UUID],
+    subject_id: UUID = SUBJECT_ID,
+    allowed_actions: frozenset[Action] | None = None,
+    authentication_assurance: AuthenticationAssurance = AuthenticationAssurance.UNKNOWN,
+    authentication_time: datetime | None = None,
+    groups: frozenset[str] = frozenset(),
+    job_function: str | None = None,
+) -> SubjectAttributes:
     return SubjectAttributes(
-        subject_id=SUBJECT_ID,
+        subject_id=subject_id,
         workspace_id=WORKSPACE_ID,
         active=True,
         department_id=None,
-        groups=frozenset(),
-        job_function=None,
+        groups=groups,
+        job_function=job_function,
         clearance=Classification.RESTRICTED,
         allowed_domain_ids=allowed_domains,
-        allowed_actions=frozenset({Action.KG_CREATE, Action.KG_READ, Action.KG_EDIT}),
+        allowed_actions=allowed_actions
+        or frozenset({Action.KG_CREATE, Action.KG_READ, Action.KG_EDIT}),
+        authentication_assurance=authentication_assurance,
+        authentication_time=authentication_time,
     )
 
 
@@ -154,6 +172,42 @@ def source_detail(
         ),
         observed_at=NOW,
         stale_at=stale_at,
+    )
+
+
+def reviewer(
+    *,
+    assurance: AuthenticationAssurance = AuthenticationAssurance.HARDWARE_WEBAUTHN,
+    job_function: str | None = None,
+    groups: frozenset[str] = frozenset(),
+) -> SubjectAttributes:
+    return subject(
+        subject_id=REVIEWER_ID,
+        allowed_domains=frozenset({DOMAIN_ID}),
+        allowed_actions=frozenset({Action.KG_REVIEW, Action.KG_PUBLISH}),
+        authentication_assurance=assurance,
+        authentication_time=NOW,
+        job_function=job_function,
+        groups=groups,
+    )
+
+
+def release() -> KnowledgeStudioReleaseRecord:
+    return KnowledgeStudioReleaseRecord(
+        studio_release_id=STUDIO_RELEASE_ID,
+        graph_id=GRAPH_ID,
+        ontology_version_id=ONTOLOGY_VERSION_ID,
+        release_no=1,
+        state="ACTIVE",
+        contract_version="KNOWLEDGE_STUDIO_RELEASE_V1",
+        contract_hash="a" * 64,
+        tbox_hash="b" * 64,
+        abox_hash="c" * 64,
+        supersedes_studio_release_id=None,
+        reviewed_by=REVIEWER_ID,
+        published_by=REVIEWER_ID,
+        published_at=NOW,
+        archived_studio_release_id=None,
     )
 
 
@@ -407,3 +461,148 @@ async def test_abox_read_rejects_a_draft_that_has_not_advanced_to_data_enricher(
             environment=EnvironmentAttributes(requested_at=NOW),
             request_id="request",
         )
+
+
+@pytest.mark.asyncio
+async def test_author_can_submit_an_abox_draft_for_independent_review() -> None:
+    current = replace(draft(), current_step="ABOX", version=7)
+    submitted = replace(current, state="REVIEW", version=8)
+    store = SimpleNamespace(
+        get_draft=AsyncMock(return_value=current),
+        submit_review=AsyncMock(return_value=submitted),
+    )
+
+    result = await service(store).submit_review(
+        workspace_id=WORKSPACE_ID,
+        subject=subject(allowed_domains=frozenset({DOMAIN_ID})),
+        draft_id=DRAFT_ID,
+        expected_version=7,
+        idempotency_key="submit-review",
+        request_hash="submit-review-hash",
+        environment=EnvironmentAttributes(requested_at=NOW),
+        request_id="request",
+    )
+
+    assert result.state == "REVIEW"
+    store.submit_review.assert_awaited_once_with(
+        workspace_id=WORKSPACE_ID,
+        author_id=SUBJECT_ID,
+        draft_id=DRAFT_ID,
+        expected_version=7,
+        idempotency_key="submit-review",
+        request_hash="submit-review-hash",
+    )
+
+
+@pytest.mark.asyncio
+async def test_independent_hardware_reviewer_can_publish_exact_review_draft() -> None:
+    review_draft = replace(draft(), state="REVIEW", current_step="ABOX", version=8)
+    published = replace(
+        review_draft,
+        state="PUBLISHED",
+        version=9,
+        submitted_preflight_check_id=UUID("019fa57b-52de-74c0-9f5e-06ae7b1bf3b9"),
+        reviewed_by=REVIEWER_ID,
+        reviewed_at=NOW,
+        review_reason="Mapping contract and evidence reviewed.",
+        published_by=REVIEWER_ID,
+        published_at=NOW,
+        materialized_graph_id=GRAPH_ID,
+        materialized_ontology_version_id=ONTOLOGY_VERSION_ID,
+        published_studio_release_id=STUDIO_RELEASE_ID,
+    )
+    release_record = release()
+    store = SimpleNamespace(
+        get_draft=AsyncMock(return_value=review_draft),
+        publish_draft=AsyncMock(return_value=(published, release_record)),
+    )
+
+    result = await service(store).publish_draft(
+        workspace_id=WORKSPACE_ID,
+        subject=reviewer(),
+        draft_id=DRAFT_ID,
+        review_reason="Mapping contract and evidence reviewed.",
+        expected_version=8,
+        idempotency_key="publish-review",
+        request_hash="publish-review-hash",
+        environment=EnvironmentAttributes(requested_at=NOW),
+        request_id="request",
+    )
+
+    assert result == (published, release_record)
+    store.publish_draft.assert_awaited_once_with(
+        workspace_id=WORKSPACE_ID,
+        actor_id=REVIEWER_ID,
+        draft_id=DRAFT_ID,
+        review_reason="Mapping contract and evidence reviewed.",
+        expected_version=8,
+        idempotency_key="publish-review",
+        request_hash="publish-review-hash",
+    )
+
+
+@pytest.mark.asyncio
+async def test_publish_fails_closed_without_phishing_resistant_assurance() -> None:
+    review_draft = replace(draft(), state="REVIEW", current_step="ABOX", version=8)
+    store = SimpleNamespace(
+        get_draft=AsyncMock(return_value=review_draft),
+        publish_draft=AsyncMock(),
+    )
+
+    with pytest.raises(ForbiddenError) as error:
+        await service(store).publish_draft(
+            workspace_id=WORKSPACE_ID,
+            subject=reviewer(assurance=AuthenticationAssurance.OTHER_MFA),
+            draft_id=DRAFT_ID,
+            review_reason="Reviewed.",
+            expected_version=8,
+            idempotency_key="publish-review",
+            request_hash="publish-review-hash",
+            environment=EnvironmentAttributes(requested_at=NOW),
+            request_id="request",
+        )
+
+    assert "PHISHING_RESISTANT_AUTH_REQUIRED" in str(error.value.details)
+    store.publish_draft.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_author_and_service_accounts_cannot_publish_a_review_draft() -> None:
+    review_draft = replace(draft(), state="REVIEW", current_step="ABOX", version=8)
+    store = SimpleNamespace(
+        get_draft=AsyncMock(return_value=review_draft),
+        publish_draft=AsyncMock(),
+    )
+
+    with pytest.raises(ConflictError, match="cannot review or publish"):
+        await service(store).publish_draft(
+            workspace_id=WORKSPACE_ID,
+            subject=subject(
+                allowed_domains=frozenset({DOMAIN_ID}),
+                allowed_actions=frozenset({Action.KG_REVIEW, Action.KG_PUBLISH}),
+                authentication_assurance=AuthenticationAssurance.HARDWARE_WEBAUTHN,
+                authentication_time=NOW,
+            ),
+            draft_id=DRAFT_ID,
+            review_reason="Self review.",
+            expected_version=8,
+            idempotency_key="self-publish",
+            request_hash="self-publish-hash",
+            environment=EnvironmentAttributes(requested_at=NOW),
+            request_id="request",
+        )
+
+    with pytest.raises(ValidationError, match="independent human reviewer"):
+        await service(store).publish_draft(
+            workspace_id=WORKSPACE_ID,
+            subject=reviewer(job_function="SERVICE_ACCOUNT"),
+            draft_id=DRAFT_ID,
+            review_reason="Automated review.",
+            expected_version=8,
+            idempotency_key="service-publish",
+            request_hash="service-publish-hash",
+            environment=EnvironmentAttributes(requested_at=NOW),
+            request_id="request",
+        )
+
+    store.publish_draft.assert_not_awaited()

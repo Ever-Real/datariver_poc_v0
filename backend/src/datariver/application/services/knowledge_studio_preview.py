@@ -284,6 +284,7 @@ class KnowledgeStudioPreviewService:
         sources: KnowledgeStudioSourceReader | None,
         samples: KnowledgeStudioSampleReader | None,
     ) -> None:
+        self._store = store
         self._studio = KnowledgeStudioService(
             store=store,
             authorization=authorization,
@@ -451,6 +452,8 @@ class KnowledgeStudioPreviewService:
         subject: SubjectAttributes,
         draft_id: UUID,
         expected_version: int,
+        idempotency_key: str,
+        request_hash: str,
         environment: EnvironmentAttributes,
         request_id: str,
     ) -> KnowledgeStudioPreflightRecord:
@@ -495,12 +498,18 @@ class KnowledgeStudioPreviewService:
             }
             for item in evidence
         )
-        return KnowledgeStudioPreflightRecord(
-            status="UNAVAILABLE" if unavailable else ("FAIL" if has_errors else "PASS"),
+        status = "UNAVAILABLE" if unavailable else ("FAIL" if has_errors else "PASS")
+        return await self._store.record_preflight(
+            workspace_id=workspace_id,
+            actor_id=subject.subject_id,
+            draft_id=draft_id,
+            expected_version=expected_version,
+            status=status,
             valid=not has_errors,
-            draft_version=abox.draft.version,
-            checked_at=utc_now(),
             evidence=tuple(evidence),
+            checked_at=utc_now(),
+            idempotency_key=idempotency_key,
+            request_hash=request_hash,
         )
 
     async def _validate_preview_source(

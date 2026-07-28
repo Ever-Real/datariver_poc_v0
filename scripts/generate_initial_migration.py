@@ -24,6 +24,61 @@ RUNTIME_SCHEMAS = ", ".join(SCHEMAS)
 _STATEMENT_BOUNDARY = "-- datariver-statement-boundary"
 
 
+def _current_subject_sql() -> str:
+    return "NULLIF(current_setting('app.subject_id', true), '')::uuid"
+
+
+def _studio_reviewer_sql(
+    draft_reference: str,
+    *,
+    require_publish: bool = False,
+) -> str:
+    """Render the DB-side lower bound for an independently authorized Studio reviewer."""
+    required_actions = ["kg.review"]
+    if require_publish:
+        required_actions.append("kg.publish")
+    action_checks = " AND ".join(
+        (
+            "COALESCE(membership.attributes -> 'allowed_actions', '[]'::jsonb) "
+            f"? '{action}' AND NOT ("
+            "COALESCE(membership.attributes -> 'denied_actions', '[]'::jsonb) "
+            f"? '{action}')"
+        )
+        for action in required_actions
+    )
+    return (
+        "EXISTS (SELECT 1 FROM iam.workspace_memberships AS membership "
+        "JOIN iam.subjects AS reviewer_subject "
+        "ON reviewer_subject.id = membership.subject_id "
+        "JOIN platform.workspaces AS reviewer_workspace "
+        "ON reviewer_workspace.id = membership.workspace_id "
+        f"WHERE membership.workspace_id = {draft_reference}.workspace_id "
+        f"AND membership.subject_id = {_current_subject_sql()} "
+        f"AND membership.subject_id <> {draft_reference}.author_id "
+        "AND reviewer_workspace.status = 'ACTIVE' "
+        "AND reviewer_subject.active IS TRUE "
+        "AND membership.active IS TRUE "
+        "AND (membership.access_expires_at IS NULL "
+        "OR membership.access_expires_at > transaction_timestamp()) "
+        "AND COALESCE(membership.job_function, '') <> 'SERVICE_ACCOUNT' "
+        "AND NOT (COALESCE(membership.attributes -> 'groups', '[]'::jsonb) "
+        "? 'service-accounts') "
+        f"AND membership.clearance >= {draft_reference}.classification "
+        f"AND ({draft_reference}.classification = 0 OR "
+        "COALESCE(membership.attributes -> 'allowed_domain_ids', '[]'::jsonb) "
+        f"? {draft_reference}.domain_ref_id::text) "
+        f"AND {action_checks})"
+    )
+
+
+def _draft_actor_read_sql(draft_reference: str) -> str:
+    return (
+        f"{draft_reference}.author_id = {_current_subject_sql()} OR "
+        f"({draft_reference}.state IN ('REVIEW', 'PUBLISHED') AND "
+        f"{_studio_reviewer_sql(draft_reference)})"
+    )
+
+
 def _load_phase5_revision() -> ModuleType:
     """Load the self-contained Phase 5 SQL into the canonical baseline."""
     revision_path = (
@@ -130,28 +185,65 @@ def build_upgrade() -> ops.UpgradeOps:
                     )
                 )
             if table.fullname == "knowledge.studio_drafts":
-                owner_expression = (
-                    "author_id = NULLIF(current_setting('app.subject_id', true), '')::uuid"
+                owner_expression = f"author_id = {_current_subject_sql()}"
+                reviewer_expression = _studio_reviewer_sql("studio_drafts")
+                publisher_expression = _studio_reviewer_sql(
+                    "studio_drafts",
+                    require_publish=True,
                 )
                 operations.append(
                     ops.ExecuteSQLOp(
-                        "CREATE POLICY studio_draft_owner_access "
-                        "ON knowledge.studio_drafts AS RESTRICTIVE FOR ALL "
-                        f"TO datariver_app USING ({owner_expression}) "
-                        f"WITH CHECK ({owner_expression})"
+                        "CREATE POLICY studio_draft_actor_select "
+                        "ON knowledge.studio_drafts AS RESTRICTIVE FOR SELECT "
+                        "TO datariver_app USING ("
+                        f"{owner_expression} OR "
+                        f"(state IN ('REVIEW', 'PUBLISHED') AND {reviewer_expression}))"
+                    )
+                )
+                operations.append(
+                    ops.ExecuteSQLOp(
+                        "CREATE POLICY studio_draft_author_insert "
+                        "ON knowledge.studio_drafts AS RESTRICTIVE FOR INSERT "
+                        f"TO datariver_app WITH CHECK ({owner_expression} AND state = 'DRAFT')"
+                    )
+                )
+                operations.append(
+                    ops.ExecuteSQLOp(
+                        "CREATE POLICY studio_draft_governed_update "
+                        "ON knowledge.studio_drafts AS RESTRICTIVE FOR UPDATE "
+                        "TO datariver_app USING ("
+                        f"({owner_expression} AND state IN ('DRAFT', 'REVIEW')) OR "
+                        f"(state = 'REVIEW' AND {publisher_expression})) "
+                        "WITH CHECK ("
+                        f"({owner_expression} AND state IN ('DRAFT', 'REVIEW', 'DISCARDED')) OR "
+                        "(state = 'PUBLISHED' "
+                        f"AND reviewed_by = {_current_subject_sql()} "
+                        f"AND published_by = {_current_subject_sql()} "
+                        f"AND {publisher_expression}))"
                     )
                 )
             if table.fullname == "knowledge.source_references":
-                owner_expression = (
-                    "created_by = "
-                    "NULLIF(current_setting('app.subject_id', true), '')::uuid"
+                owner_expression = f"created_by = {_current_subject_sql()}"
+                operations.append(
+                    ops.ExecuteSQLOp(
+                        "CREATE POLICY source_reference_actor_select "
+                        "ON knowledge.source_references AS RESTRICTIVE FOR SELECT "
+                        f"TO datariver_app USING ({owner_expression} OR EXISTS ("
+                        "SELECT 1 FROM knowledge.abox_binding_drafts AS binding "
+                        "JOIN knowledge.studio_drafts AS bound_draft "
+                        "ON bound_draft.workspace_id = binding.workspace_id "
+                        "AND bound_draft.id = binding.draft_id "
+                        "WHERE binding.workspace_id = source_references.workspace_id "
+                        "AND binding.source_reference_id = source_references.id "
+                        "AND bound_draft.state IN ('REVIEW', 'PUBLISHED') "
+                        f"AND {_studio_reviewer_sql('bound_draft')}))"
+                    )
                 )
                 operations.append(
                     ops.ExecuteSQLOp(
-                        "CREATE POLICY source_reference_owner_access "
-                        "ON knowledge.source_references AS RESTRICTIVE FOR ALL "
-                        f"TO datariver_app USING ({owner_expression}) "
-                        f"WITH CHECK ({owner_expression})"
+                        "CREATE POLICY source_reference_owner_insert "
+                        "ON knowledge.source_references AS RESTRICTIVE FOR INSERT "
+                        f"TO datariver_app WITH CHECK ({owner_expression})"
                     )
                 )
             if table.fullname in {
@@ -165,14 +257,104 @@ def build_upgrade() -> ops.UpgradeOps:
                     f"WHERE owned_draft.workspace_id = {table_name}.workspace_id "
                     f"AND owned_draft.id = {table_name}.draft_id "
                     "AND owned_draft.author_id = "
-                    "NULLIF(current_setting('app.subject_id', true), '')::uuid)"
+                    f"{_current_subject_sql()} AND owned_draft.state = 'DRAFT')"
+                )
+                actor_read_expression = (
+                    "EXISTS (SELECT 1 FROM knowledge.studio_drafts AS visible_draft "
+                    f"WHERE visible_draft.workspace_id = {table_name}.workspace_id "
+                    f"AND visible_draft.id = {table_name}.draft_id "
+                    f"AND ({_draft_actor_read_sql('visible_draft')}))"
                 )
                 operations.append(
                     ops.ExecuteSQLOp(
-                        "CREATE POLICY studio_draft_owner_access "
-                        f"ON {table.fullname} AS RESTRICTIVE FOR ALL "
+                        "CREATE POLICY studio_draft_actor_select "
+                        f"ON {table.fullname} AS RESTRICTIVE FOR SELECT "
+                        f"TO datariver_app USING ({actor_read_expression})"
+                    )
+                )
+                operations.append(
+                    ops.ExecuteSQLOp(
+                        "CREATE POLICY studio_draft_owner_insert "
+                        f"ON {table.fullname} AS RESTRICTIVE FOR INSERT "
+                        f"TO datariver_app WITH CHECK ({owner_expression})"
+                    )
+                )
+                operations.append(
+                    ops.ExecuteSQLOp(
+                        "CREATE POLICY studio_draft_owner_update "
+                        f"ON {table.fullname} AS RESTRICTIVE FOR UPDATE "
                         f"TO datariver_app USING ({owner_expression}) "
                         f"WITH CHECK ({owner_expression})"
+                    )
+                )
+                operations.append(
+                    ops.ExecuteSQLOp(
+                        "CREATE POLICY studio_draft_owner_delete "
+                        f"ON {table.fullname} AS RESTRICTIVE FOR DELETE "
+                        f"TO datariver_app USING ({owner_expression})"
+                    )
+                )
+            if table.fullname == "knowledge.studio_preflight_checks":
+                visible_parent = (
+                    "EXISTS (SELECT 1 FROM knowledge.studio_drafts AS visible_draft "
+                    "WHERE visible_draft.workspace_id = studio_preflight_checks.workspace_id "
+                    "AND visible_draft.id = studio_preflight_checks.draft_id "
+                    f"AND ({_draft_actor_read_sql('visible_draft')}))"
+                )
+                insert_parent = (
+                    "EXISTS (SELECT 1 FROM knowledge.studio_drafts AS target_draft "
+                    "WHERE target_draft.workspace_id = studio_preflight_checks.workspace_id "
+                    "AND target_draft.id = studio_preflight_checks.draft_id "
+                    "AND ((target_draft.state = 'DRAFT' "
+                    f"AND target_draft.author_id = {_current_subject_sql()}) OR "
+                    "(target_draft.state = 'REVIEW' "
+                    f"AND {_studio_reviewer_sql('target_draft')})))"
+                )
+                operations.append(
+                    ops.ExecuteSQLOp(
+                        "CREATE POLICY studio_preflight_actor_select "
+                        "ON knowledge.studio_preflight_checks AS RESTRICTIVE FOR SELECT "
+                        f"TO datariver_app USING ({visible_parent})"
+                    )
+                )
+                operations.append(
+                    ops.ExecuteSQLOp(
+                        "CREATE POLICY studio_preflight_actor_insert "
+                        "ON knowledge.studio_preflight_checks AS RESTRICTIVE FOR INSERT "
+                        f"TO datariver_app WITH CHECK (checked_by = {_current_subject_sql()} "
+                        f"AND {insert_parent})"
+                    )
+                )
+            if table.fullname == "knowledge.studio_releases":
+                insert_parent = (
+                    "EXISTS (SELECT 1 FROM knowledge.studio_drafts AS source_draft "
+                    "WHERE source_draft.workspace_id = studio_releases.workspace_id "
+                    "AND source_draft.id = studio_releases.source_draft_id "
+                    "AND source_draft.state = 'REVIEW' "
+                    f"AND {_studio_reviewer_sql('source_draft', require_publish=True)})"
+                )
+                archive_parent = (
+                    "EXISTS (SELECT 1 FROM knowledge.studio_drafts AS source_draft "
+                    "WHERE source_draft.workspace_id = studio_releases.workspace_id "
+                    "AND source_draft.id = studio_releases.source_draft_id "
+                    "AND source_draft.state = 'PUBLISHED' "
+                    f"AND {_studio_reviewer_sql('source_draft', require_publish=True)})"
+                )
+                operations.append(
+                    ops.ExecuteSQLOp(
+                        "CREATE POLICY studio_release_publisher_insert "
+                        "ON knowledge.studio_releases AS RESTRICTIVE FOR INSERT "
+                        f"TO datariver_app WITH CHECK (reviewed_by = {_current_subject_sql()} "
+                        f"AND published_by = {_current_subject_sql()} AND {insert_parent})"
+                    )
+                )
+                operations.append(
+                    ops.ExecuteSQLOp(
+                        "CREATE POLICY studio_release_publisher_archive "
+                        "ON knowledge.studio_releases AS RESTRICTIVE FOR UPDATE "
+                        f"TO datariver_app USING (state = 'ACTIVE' AND {archive_parent}) "
+                        "WITH CHECK (state = 'ARCHIVED' "
+                        f"AND archived_by = {_current_subject_sql()} AND {archive_parent})"
                     )
                 )
             if table.fullname == "assistant.chat_sessions":
@@ -356,23 +538,35 @@ BEGIN
             knowledge.graphrag_audits, knowledge.studio_drafts,
             knowledge.tbox_draft_elements, knowledge.source_references,
             knowledge.abox_binding_drafts,
-            knowledge.abox_mapping_rule_drafts TO datariver_app;
+            knowledge.abox_mapping_rule_drafts,
+            knowledge.studio_preflight_checks, knowledge.studio_releases,
+            knowledge.ontology_elements, knowledge.abox_binding_versions,
+            knowledge.abox_mapping_rule_versions TO datariver_app;
         GRANT INSERT ON knowledge.graphs, knowledge.ontology_versions,
             knowledge.releases, knowledge.release_nodes, knowledge.release_edges,
             knowledge.changesets, knowledge.change_operations,
             knowledge.validation_results, knowledge.projection_deployments,
             knowledge.source_snapshots, knowledge.source_pages,
             knowledge.source_page_embeddings, knowledge.extraction_runs,
-            knowledge.graphrag_audits, knowledge.studio_drafts TO datariver_app;
+            knowledge.graphrag_audits, knowledge.studio_drafts,
+            knowledge.studio_preflight_checks, knowledge.studio_releases,
+            knowledge.ontology_elements, knowledge.abox_binding_versions,
+            knowledge.abox_mapping_rule_versions TO datariver_app;
         GRANT UPDATE ON knowledge.graphs, knowledge.changesets,
             knowledge.projection_deployments, knowledge.source_snapshots TO datariver_app;
         GRANT UPDATE (
             state, current_step, name, endpoint_alias,
             domain_ref_id, domain_ref_kind, domain_source_version,
-            classification, review_requested_at, discarded_at,
+            classification, review_requested_at, submitted_preflight_check_id,
+            reviewed_by, reviewed_at, review_reason,
+            published_by, published_at,
+            materialized_graph_id, materialized_ontology_version_id,
+            published_studio_release_id, discarded_at,
             discarded_by, last_autosaved_at,
             version, updated_at
         ) ON knowledge.studio_drafts TO datariver_app;
+        GRANT UPDATE (state, archived_at, archived_by)
+            ON knowledge.studio_releases TO datariver_app;
         GRANT INSERT ON knowledge.source_references,
             knowledge.abox_binding_drafts,
             knowledge.abox_mapping_rule_drafts TO datariver_app;
@@ -802,7 +996,7 @@ def _deferred_foreign_keys() -> list[ForeignKeyConstraint]:
         for constraint in table.foreign_key_constraints
         if constraint.use_alter
     ]
-    return sorted(constraints, key=lambda constraint: constraint.name or "")
+    return sorted(constraints, key=lambda constraint: str(constraint.name or ""))
 
 
 def main() -> None:

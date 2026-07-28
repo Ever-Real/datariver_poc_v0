@@ -1052,6 +1052,7 @@ class KnowledgeGraphRecord:
     classification: Classification
     active_release_id: UUID | None
     version: int
+    active_studio_release_id: UUID | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -1081,6 +1082,15 @@ class KnowledgeStudioDraftRecord:
     version: int
     created_at: datetime
     updated_at: datetime
+    submitted_preflight_check_id: UUID | None = None
+    reviewed_by: UUID | None = None
+    reviewed_at: datetime | None = None
+    review_reason: str | None = None
+    published_by: UUID | None = None
+    published_at: datetime | None = None
+    materialized_graph_id: UUID | None = None
+    materialized_ontology_version_id: UUID | None = None
+    published_studio_release_id: UUID | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -1254,6 +1264,26 @@ class KnowledgeStudioPreflightRecord:
     draft_version: int
     checked_at: datetime
     evidence: tuple[KnowledgeStudioValidationEvidence, ...]
+    receipt_id: UUID | None = None
+    contract_hash: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class KnowledgeStudioReleaseRecord:
+    studio_release_id: UUID
+    graph_id: UUID
+    ontology_version_id: UUID
+    release_no: int
+    state: str
+    contract_version: str
+    contract_hash: str
+    tbox_hash: str
+    abox_hash: str
+    supersedes_studio_release_id: UUID | None
+    reviewed_by: UUID
+    published_by: UUID
+    published_at: datetime
+    archived_studio_release_id: UUID | None
 
 
 @dataclass(frozen=True, slots=True)

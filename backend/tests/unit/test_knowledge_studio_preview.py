@@ -14,12 +14,14 @@ from datariver.application.dto import (
     KnowledgeStudioBindingRecord,
     KnowledgeStudioDraftRecord,
     KnowledgeStudioMappingRuleRecord,
+    KnowledgeStudioPreflightRecord,
     KnowledgeStudioSamplePage,
     KnowledgeStudioSourceAccess,
     KnowledgeStudioSourceDataset,
     KnowledgeStudioSourceDetail,
     KnowledgeStudioSourceProbe,
     KnowledgeStudioTBoxElementRecord,
+    KnowledgeStudioValidationEvidence,
 )
 from datariver.application.ports import (
     KnowledgeStudioSampleReader,
@@ -47,6 +49,7 @@ DRAFT_ID = UUID("019fa57b-52de-74c0-9f5e-06ae7b1bf3b0")
 ASSET_ID = UUID("019fa57b-52de-74c0-9f5e-06ae7b1bf3b4")
 BINDING_ID = UUID("019fa57b-52de-74c0-9f5e-06ae7b1bf3b5")
 SOURCE_REFERENCE_ID = UUID("019fa57b-52de-74c0-9f5e-06ae7b1bf3b6")
+PREFLIGHT_RECEIPT_ID = UUID("019fa57b-52de-74c0-9f5e-06ae7b1bf3b7")
 NOW = datetime(2026, 7, 28, 8, 0, tzinfo=UTC)
 
 
@@ -223,6 +226,23 @@ def service(
     sources: object | None,
     samples: object | None,
 ) -> KnowledgeStudioPreviewService:
+    if isinstance(store, SimpleNamespace) and not hasattr(store, "record_preflight"):
+
+        async def record_preflight(**values: object) -> KnowledgeStudioPreflightRecord:
+            return KnowledgeStudioPreflightRecord(
+                status=cast(str, values["status"]),
+                valid=cast(bool, values["valid"]),
+                draft_version=cast(int, values["expected_version"]),
+                checked_at=cast(datetime, values["checked_at"]),
+                evidence=cast(
+                    tuple[KnowledgeStudioValidationEvidence, ...],
+                    values["evidence"],
+                ),
+                receipt_id=PREFLIGHT_RECEIPT_ID,
+                contract_hash="a" * 64,
+            )
+
+        store.record_preflight = AsyncMock(side_effect=record_preflight)
     return KnowledgeStudioPreviewService(
         store=cast(KnowledgeStudioStore, store),
         authorization=AuthorizationService(decision_writer=MemoryDecisionWriter()),
@@ -301,9 +321,7 @@ async def test_preview_never_fabricates_rows_when_no_physical_reader_is_configur
 @pytest.mark.asyncio
 async def test_preview_rejects_a_stale_tbox_binding_before_any_source_read() -> None:
     stale_binding = replace(binding(), tbox_version=1)
-    store = SimpleNamespace(
-        get_abox=AsyncMock(return_value=abox(bindings=(stale_binding,)))
-    )
+    store = SimpleNamespace(get_abox=AsyncMock(return_value=abox(bindings=(stale_binding,))))
     sources = SimpleNamespace(get_dataset=AsyncMock())
     samples = SimpleNamespace(sample_rows=AsyncMock())
 
@@ -357,6 +375,8 @@ async def test_preflight_checks_required_mapping_and_batch_source_access() -> No
         subject=subject(),
         draft_id=DRAFT_ID,
         expected_version=7,
+        idempotency_key="preflight-key",
+        request_hash="request-hash",
         environment=EnvironmentAttributes(requested_at=NOW),
         request_id="request",
     )
@@ -386,6 +406,8 @@ async def test_preflight_returns_all_required_mapping_evidence_without_source_ca
         subject=subject(),
         draft_id=DRAFT_ID,
         expected_version=7,
+        idempotency_key="preflight-key",
+        request_hash="request-hash",
         environment=EnvironmentAttributes(requested_at=NOW),
         request_id="request",
     )
@@ -408,6 +430,8 @@ async def test_preflight_never_probes_a_physical_source_after_catalog_access_is_
         subject=subject(),
         draft_id=DRAFT_ID,
         expected_version=7,
+        idempotency_key="preflight-key",
+        request_hash="request-hash",
         environment=EnvironmentAttributes(requested_at=NOW),
         request_id="request",
     )

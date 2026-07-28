@@ -90,6 +90,9 @@ interface KnowledgeStudioPageProps {
   workspaceId: string
   subjectId: string
   onNavigate: (page: Page) => void
+  onStepUp?: () => Promise<void>
+  onPasswordReauth?: () => Promise<void>
+  onEnroll?: () => Promise<void>
   recoveryQueue?: DraftRecoveryQueue
   debounceMs?: number
 }
@@ -99,6 +102,9 @@ export function KnowledgeStudioPage({
   workspaceId,
   subjectId,
   onNavigate,
+  onStepUp,
+  onPasswordReauth,
+  onEnroll,
   recoveryQueue,
   debounceMs = 1500,
 }: KnowledgeStudioPageProps) {
@@ -114,6 +120,7 @@ export function KnowledgeStudioPage({
   const [step, setStep] = useState(location.step)
   const [draftId, setDraftId] = useState(location.draftId)
   const [etag, setEtag] = useState<string>()
+  const [serverDraft, setServerDraft] = useState<KnowledgeStudioDraft>()
   const [form, setForm] = useState<KnowledgeStudioBasicInformation>(EMPTY_BASIC_INFORMATION)
   const [domains, setDomains] = useState<KnowledgeStudioDomainOption[]>([])
   const [domainQuery, setDomainQuery] = useState('')
@@ -141,6 +148,7 @@ export function KnowledgeStudioPage({
     const basic = draftBasicInformation(value)
     setDraftId(value.id)
     setEtag(responseEtag)
+    setServerDraft(value)
     draftIdRef.current = value.id
     etagRef.current = responseEtag
     lastSavedFingerprintRef.current = fingerprint(basic)
@@ -183,6 +191,15 @@ export function KnowledgeStudioPage({
           const response = await getKnowledgeStudioDraft(client, location.draftId)
           if (!active || !response.etag) return
           applyServerDraft(response.data, response.etag, true)
+          if (response.data.state !== 'DRAFT') {
+            setSaveStatus(
+              response.data.state === 'REVIEW'
+                ? '독립 검토 중인 Draft입니다. 편집과 자동 저장은 잠겨 있습니다.'
+                : `Draft lifecycle: ${response.data.state}`,
+            )
+            setInitialized(true)
+            return
+          }
         } catch (error) {
           if (active) {
             setSaveStatus(error instanceof Error ? error.message : 'Draft를 불러오지 못했습니다.')
@@ -265,6 +282,10 @@ export function KnowledgeStudioPage({
   }, [])
 
   const queueForm = useCallback((next: KnowledgeStudioBasicInformation) => {
+    if (serverDraft && serverDraft.state !== 'DRAFT') {
+      setSaveStatus('DRAFT 상태가 아니므로 입력과 자동 저장을 허용하지 않습니다.')
+      return
+    }
     formRef.current = next
     setForm(next)
     if (!queue || !scopeHash) {
@@ -308,12 +329,16 @@ export function KnowledgeStudioPage({
         return false
       })
     setSaveSequence((value) => value + 1)
-  }, [queue, scopeHash])
+  }, [queue, scopeHash, serverDraft])
 
   const performPendingSave = useCallback(async (): Promise<boolean> => {
     const pending = pendingRef.current
     if (!pending || !queue || !scopeHash || !basicInformationValid(pending.payload)) {
       return !pending
+    }
+    if (serverDraft && serverDraft.state !== 'DRAFT') {
+      setSaveStatus('DRAFT 상태가 아니므로 자동 저장을 중단했습니다.')
+      return false
     }
     if (!navigator.onLine) {
       setSaveStatus('오프라인입니다. 변경사항은 복구 큐에 보존되어 있습니다.')
@@ -399,7 +424,7 @@ export function KnowledgeStudioPage({
     } finally {
       setBusy(false)
     }
-  }, [applyServerDraft, client, queue, scopeHash])
+  }, [applyServerDraft, client, queue, scopeHash, serverDraft])
 
   const savePending = useCallback(async (): Promise<boolean> => {
     savePromiseRef.current ??= performPendingSave()
@@ -568,6 +593,11 @@ export function KnowledgeStudioPage({
       ? <section className="grid min-h-[320px] place-items-center rounded-enterprise border border-slate-300 bg-white p-8 text-sm text-slate-500">
           Draft와 브라우저 복구 큐를 확인하고 있습니다.
         </section>
+      : step === 'basic' && serverDraft && serverDraft.state !== 'DRAFT'
+      ? <section className="rounded-enterprise border border-blue-200 bg-blue-50 p-5 text-sm text-blue-950">
+          이 Studio Draft는 <strong>{serverDraft.state}</strong> 상태이므로 기본정보를 수정할 수 없습니다.
+          Data Enricher에서 검토·발행 상태와 증거를 확인하세요.
+        </section>
       : step === 'basic'
       ? <BasicInformationStep
           value={form}
@@ -587,7 +617,11 @@ export function KnowledgeStudioPage({
       ? <DataEnricherStep
           client={client}
           draftId={draftId}
+          subjectId={subjectId}
           onDraftUpdate={applyChildDraft}
+          onStepUp={onStepUp}
+          onPasswordReauth={onPasswordReauth}
+          onEnroll={onEnroll}
         />
       : null}
     <Dialog

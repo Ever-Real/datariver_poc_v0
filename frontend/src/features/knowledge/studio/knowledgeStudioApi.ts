@@ -26,6 +26,15 @@ export interface KnowledgeStudioDraft extends KnowledgeStudioBasicInformation {
   version: number
   created_at: string
   updated_at: string
+  submitted_preflight_check_id?: string
+  reviewed_by?: string
+  reviewed_at?: string
+  review_reason?: string
+  published_by?: string
+  published_at?: string
+  materialized_graph_id?: string
+  materialized_ontology_version_id?: string
+  published_studio_release_id?: string
 }
 
 export interface KnowledgeStudioTBoxElement {
@@ -156,7 +165,26 @@ export interface KnowledgeStudioPreflight {
   valid: boolean
   draft_version: number
   checked_at: string
+  receipt_id: string
+  contract_hash: string
   evidence: KnowledgeStudioValidationEvidence[]
+}
+
+export interface KnowledgeStudioRelease {
+  id: string
+  graph_id: string
+  ontology_version_id: string
+  release_no: number
+  state: 'ACTIVE' | 'ARCHIVED'
+  contract_version: 'KNOWLEDGE_STUDIO_RELEASE_V1'
+  contract_hash: string
+  tbox_hash: string
+  abox_hash: string
+  supersedes_studio_release_id?: string
+  reviewed_by: string
+  published_by: string
+  published_at: string
+  archived_studio_release_id?: string
 }
 
 function requireEtag<T>(response: ApiResponse<T>): ApiResponse<T> {
@@ -331,6 +359,7 @@ export async function preflightKnowledgeStudioABox(
   client: ApiClient,
   draftId: string,
   etag: string,
+  idempotencyKey: string,
 ): Promise<ApiResponse<KnowledgeStudioPreflight>> {
   return requireEtag(await client.requestWithMeta<KnowledgeStudioPreflight>(
     `/knowledge/studio/drafts/${encodeURIComponent(draftId)}/abox/preflight`,
@@ -338,6 +367,63 @@ export async function preflightKnowledgeStudioABox(
       method: 'POST',
       cache: 'no-store',
       ifMatch: etag,
+      idempotencyKey,
+    },
+  ))
+}
+
+export async function submitKnowledgeStudioReview(
+  client: ApiClient,
+  draftId: string,
+  etag: string,
+  idempotencyKey: string,
+): Promise<ApiResponse<KnowledgeStudioDraft>> {
+  return requireEtag(await client.requestWithMeta<KnowledgeStudioDraft>(
+    `/knowledge/studio/drafts/${encodeURIComponent(draftId)}/submit-review`,
+    {
+      method: 'POST',
+      cache: 'no-store',
+      ifMatch: etag,
+      idempotencyKey,
+    },
+  ))
+}
+
+export async function discardKnowledgeStudioDraft(
+  client: ApiClient,
+  draftId: string,
+  etag: string,
+  idempotencyKey: string,
+): Promise<ApiResponse<KnowledgeStudioDraft>> {
+  return requireEtag(await client.requestWithMeta<KnowledgeStudioDraft>(
+    `/knowledge/studio/drafts/${encodeURIComponent(draftId)}/discard`,
+    {
+      method: 'POST',
+      cache: 'no-store',
+      ifMatch: etag,
+      idempotencyKey,
+    },
+  ))
+}
+
+export async function publishKnowledgeStudioDraft(
+  client: ApiClient,
+  draftId: string,
+  reviewReason: string,
+  etag: string,
+  idempotencyKey: string,
+): Promise<ApiResponse<{ draft: KnowledgeStudioDraft; release: KnowledgeStudioRelease }>> {
+  return requireEtag(await client.requestWithMeta<{
+    draft: KnowledgeStudioDraft
+    release: KnowledgeStudioRelease
+  }>(
+    `/knowledge/studio/drafts/${encodeURIComponent(draftId)}/publish`,
+    {
+      method: 'POST',
+      body: JSON.stringify({ review_reason: reviewReason }),
+      cache: 'no-store',
+      ifMatch: etag,
+      idempotencyKey,
     },
   ))
 }

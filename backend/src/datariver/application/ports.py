@@ -75,12 +75,15 @@ from datariver.application.dto import (
     KnowledgeStudioBindingRecord,
     KnowledgeStudioDomainOption,
     KnowledgeStudioDraftRecord,
+    KnowledgeStudioPreflightRecord,
+    KnowledgeStudioReleaseRecord,
     KnowledgeStudioSamplePage,
     KnowledgeStudioSampleRequest,
     KnowledgeStudioSourceAccess,
     KnowledgeStudioSourceDetail,
     KnowledgeStudioSourcePage,
     KnowledgeStudioSourceProbe,
+    KnowledgeStudioValidationEvidence,
     ManualMetadataApplyAttemptEvidence,
     MembershipChangeRequestActivityPage,
     MembershipOwnedTablePage,
@@ -1447,7 +1450,7 @@ class KnowledgeStudioStore(Protocol):
         self,
         *,
         workspace_id: UUID,
-        author_id: UUID,
+        actor_id: UUID,
         draft_id: UUID,
     ) -> KnowledgeStudioDraftRecord | None: ...
 
@@ -1507,7 +1510,7 @@ class KnowledgeStudioStore(Protocol):
         self,
         *,
         workspace_id: UUID,
-        author_id: UUID,
+        actor_id: UUID,
         draft_id: UUID,
     ) -> KnowledgeStudioABoxRecord | None: ...
 
@@ -1528,6 +1531,55 @@ class KnowledgeStudioStore(Protocol):
         idempotency_key: str,
         request_hash: str,
     ) -> tuple[KnowledgeStudioDraftRecord, KnowledgeStudioBindingRecord]: ...
+
+    async def record_preflight(
+        self,
+        *,
+        workspace_id: UUID,
+        actor_id: UUID,
+        draft_id: UUID,
+        expected_version: int,
+        status: str,
+        valid: bool,
+        evidence: tuple[KnowledgeStudioValidationEvidence, ...],
+        checked_at: datetime,
+        idempotency_key: str,
+        request_hash: str,
+    ) -> KnowledgeStudioPreflightRecord: ...
+
+    async def submit_review(
+        self,
+        *,
+        workspace_id: UUID,
+        author_id: UUID,
+        draft_id: UUID,
+        expected_version: int,
+        idempotency_key: str,
+        request_hash: str,
+    ) -> KnowledgeStudioDraftRecord: ...
+
+    async def discard_draft(
+        self,
+        *,
+        workspace_id: UUID,
+        author_id: UUID,
+        draft_id: UUID,
+        expected_version: int,
+        idempotency_key: str,
+        request_hash: str,
+    ) -> KnowledgeStudioDraftRecord: ...
+
+    async def publish_draft(
+        self,
+        *,
+        workspace_id: UUID,
+        actor_id: UUID,
+        draft_id: UUID,
+        review_reason: str,
+        expected_version: int,
+        idempotency_key: str,
+        request_hash: str,
+    ) -> tuple[KnowledgeStudioDraftRecord, KnowledgeStudioReleaseRecord]: ...
 
 
 class KnowledgeStudioSourceReader(Protocol):

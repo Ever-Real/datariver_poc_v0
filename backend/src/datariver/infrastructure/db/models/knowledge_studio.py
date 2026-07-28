@@ -71,12 +71,37 @@ class KnowledgeStudioDraftModel(
         ),
         CheckConstraint(
             "(state = 'DRAFT' AND review_requested_at IS NULL "
-            "AND published_at IS NULL AND discarded_at IS NULL AND discarded_by IS NULL) OR "
+            "AND submitted_preflight_check_id IS NULL "
+            "AND reviewed_by IS NULL AND reviewed_at IS NULL AND review_reason IS NULL "
+            "AND published_at IS NULL AND published_by IS NULL "
+            "AND materialized_graph_id IS NULL "
+            "AND materialized_ontology_version_id IS NULL "
+            "AND published_studio_release_id IS NULL "
+            "AND discarded_at IS NULL AND discarded_by IS NULL) OR "
             "(state = 'REVIEW' AND review_requested_at IS NOT NULL "
-            "AND published_at IS NULL AND discarded_at IS NULL AND discarded_by IS NULL) OR "
+            "AND submitted_preflight_check_id IS NULL "
+            "AND reviewed_by IS NULL AND reviewed_at IS NULL AND review_reason IS NULL "
+            "AND published_at IS NULL AND published_by IS NULL "
+            "AND materialized_graph_id IS NULL "
+            "AND materialized_ontology_version_id IS NULL "
+            "AND published_studio_release_id IS NULL "
+            "AND discarded_at IS NULL AND discarded_by IS NULL) OR "
             "(state = 'PUBLISHED' AND review_requested_at IS NOT NULL "
-            "AND published_at IS NOT NULL AND discarded_at IS NULL AND discarded_by IS NULL) OR "
-            "(state = 'DISCARDED' AND published_at IS NULL "
+            "AND submitted_preflight_check_id IS NOT NULL "
+            "AND reviewed_by IS NOT NULL AND reviewed_by <> author_id "
+            "AND reviewed_at IS NOT NULL "
+            "AND review_reason IS NOT NULL "
+            "AND char_length(btrim(review_reason)) BETWEEN 1 AND 2000 "
+            "AND published_at IS NOT NULL AND published_by = reviewed_by "
+            "AND materialized_graph_id IS NOT NULL "
+            "AND materialized_ontology_version_id IS NOT NULL "
+            "AND published_studio_release_id IS NOT NULL "
+            "AND discarded_at IS NULL AND discarded_by IS NULL) OR "
+            "(state = 'DISCARDED' AND reviewed_by IS NULL AND reviewed_at IS NULL "
+            "AND review_reason IS NULL AND published_at IS NULL AND published_by IS NULL "
+            "AND materialized_graph_id IS NULL "
+            "AND materialized_ontology_version_id IS NULL "
+            "AND published_studio_release_id IS NULL "
             "AND discarded_at IS NOT NULL AND discarded_by = author_id)",
             name="state_shape",
         ),
@@ -87,6 +112,16 @@ class KnowledgeStudioDraftModel(
         ),
         ForeignKeyConstraint(
             ("workspace_id", "discarded_by"),
+            ("iam.workspace_memberships.workspace_id", "iam.workspace_memberships.subject_id"),
+            ondelete="RESTRICT",
+        ),
+        ForeignKeyConstraint(
+            ("workspace_id", "reviewed_by"),
+            ("iam.workspace_memberships.workspace_id", "iam.workspace_memberships.subject_id"),
+            ondelete="RESTRICT",
+        ),
+        ForeignKeyConstraint(
+            ("workspace_id", "published_by"),
             ("iam.workspace_memberships.workspace_id", "iam.workspace_memberships.subject_id"),
             ondelete="RESTRICT",
         ),
@@ -119,6 +154,49 @@ class KnowledgeStudioDraftModel(
                 "knowledge.releases.workspace_id",
                 "knowledge.releases.graph_id",
                 "knowledge.releases.id",
+            ),
+            ondelete="RESTRICT",
+            use_alter=True,
+        ),
+        ForeignKeyConstraint(
+            ("workspace_id", "submitted_preflight_check_id"),
+            (
+                "knowledge.studio_preflight_checks.workspace_id",
+                "knowledge.studio_preflight_checks.id",
+            ),
+            ondelete="RESTRICT",
+            use_alter=True,
+        ),
+        ForeignKeyConstraint(
+            ("workspace_id", "materialized_graph_id"),
+            ("knowledge.graphs.workspace_id", "knowledge.graphs.id"),
+            ondelete="RESTRICT",
+            use_alter=True,
+        ),
+        ForeignKeyConstraint(
+            (
+                "workspace_id",
+                "materialized_graph_id",
+                "materialized_ontology_version_id",
+            ),
+            (
+                "knowledge.ontology_versions.workspace_id",
+                "knowledge.ontology_versions.graph_id",
+                "knowledge.ontology_versions.id",
+            ),
+            ondelete="RESTRICT",
+            use_alter=True,
+        ),
+        ForeignKeyConstraint(
+            (
+                "workspace_id",
+                "materialized_graph_id",
+                "published_studio_release_id",
+            ),
+            (
+                "knowledge.studio_releases.workspace_id",
+                "knowledge.studio_releases.graph_id",
+                "knowledge.studio_releases.id",
             ),
             ondelete="RESTRICT",
             use_alter=True,
@@ -159,7 +237,15 @@ class KnowledgeStudioDraftModel(
     base_ontology_version_id: Mapped[UUID | None] = mapped_column(Uuid(as_uuid=True))
     base_release_id: Mapped[UUID | None] = mapped_column(Uuid(as_uuid=True))
     review_requested_at: Mapped[datetime | None]
+    submitted_preflight_check_id: Mapped[UUID | None] = mapped_column(Uuid(as_uuid=True))
+    reviewed_by: Mapped[UUID | None] = mapped_column(Uuid(as_uuid=True))
+    reviewed_at: Mapped[datetime | None]
+    review_reason: Mapped[str | None] = mapped_column(Text)
     published_at: Mapped[datetime | None]
+    published_by: Mapped[UUID | None] = mapped_column(Uuid(as_uuid=True))
+    materialized_graph_id: Mapped[UUID | None] = mapped_column(Uuid(as_uuid=True))
+    materialized_ontology_version_id: Mapped[UUID | None] = mapped_column(Uuid(as_uuid=True))
+    published_studio_release_id: Mapped[UUID | None] = mapped_column(Uuid(as_uuid=True))
     discarded_at: Mapped[datetime | None]
     discarded_by: Mapped[UUID | None] = mapped_column(Uuid(as_uuid=True))
     last_autosaved_at: Mapped[datetime] = mapped_column(nullable=False)
@@ -480,6 +566,418 @@ class ABoxMappingRuleDraftModel(Base, UuidPrimaryKeyMixin, TimestampMixin):
     workspace_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), nullable=False)
     draft_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), nullable=False)
     binding_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), nullable=False)
+    ordinal: Mapped[int] = mapped_column(Integer, nullable=False)
+    method: Mapped[str] = mapped_column(String(32), nullable=False)
+    source_field_path: Mapped[str] = mapped_column(Text, nullable=False)
+    target_stable_element_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    transform_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    transform_version: Mapped[str] = mapped_column(String(32), nullable=False)
+    source_unit: Mapped[str | None] = mapped_column(String(100))
+    canonical_unit: Mapped[str | None] = mapped_column(String(100))
+
+
+class KnowledgeStudioPreflightCheckModel(Base, UuidPrimaryKeyMixin):
+    """Append-only evidence for one exact Studio contract version."""
+
+    __tablename__ = "studio_preflight_checks"
+    __table_args__ = (
+        UniqueConstraint("workspace_id", "id"),
+        UniqueConstraint(
+            "workspace_id",
+            "draft_id",
+            "draft_version",
+            "contract_hash",
+            "checked_by",
+            "id",
+        ),
+        CheckConstraint("draft_version >= 1", name="draft_version_positive"),
+        CheckConstraint(
+            "status IN ('PASS', 'FAIL', 'UNAVAILABLE')",
+            name="status_vocabulary",
+        ),
+        CheckConstraint(
+            "(status = 'PASS' AND valid IS TRUE) OR "
+            "(status IN ('FAIL', 'UNAVAILABLE') AND valid IS FALSE)",
+            name="status_valid_shape",
+        ),
+        CheckConstraint(
+            "contract_hash ~ '^[0-9a-f]{64}$' AND evidence_hash ~ '^[0-9a-f]{64}$'",
+            name="hashes_sha256",
+        ),
+        CheckConstraint(
+            "validation_contract_version = 'KNOWLEDGE_STUDIO_PREFLIGHT_V1'",
+            name="contract_version",
+        ),
+        CheckConstraint(
+            "jsonb_typeof(evidence_document) = 'array'",
+            name="evidence_document_array",
+        ),
+        ForeignKeyConstraint(
+            ("workspace_id", "draft_id"),
+            ("knowledge.studio_drafts.workspace_id", "knowledge.studio_drafts.id"),
+            ondelete="RESTRICT",
+        ),
+        ForeignKeyConstraint(
+            ("workspace_id", "checked_by"),
+            ("iam.workspace_memberships.workspace_id", "iam.workspace_memberships.subject_id"),
+            ondelete="RESTRICT",
+        ),
+        Index(
+            "ix_studio_preflight_checks_draft_checked",
+            "workspace_id",
+            "draft_id",
+            "checked_at",
+            "id",
+        ),
+        {"schema": "knowledge"},
+    )
+
+    workspace_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), nullable=False)
+    draft_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), nullable=False)
+    draft_version: Mapped[int] = mapped_column(Integer, nullable=False)
+    contract_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    status: Mapped[str] = mapped_column(String(16), nullable=False)
+    valid: Mapped[bool] = mapped_column(Boolean, nullable=False)
+    validation_contract_version: Mapped[str] = mapped_column(String(64), nullable=False)
+    evidence_document: Mapped[list[dict[str, object]]] = mapped_column(
+        JSON_DOCUMENT,
+        nullable=False,
+    )
+    evidence_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    checked_by: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), nullable=False)
+    checked_at: Mapped[datetime] = mapped_column(nullable=False)
+
+
+class KnowledgeStudioReleaseModel(Base, UuidPrimaryKeyMixin):
+    """Immutable T-Box/A-Box contract release with a mutable lifecycle marker only."""
+
+    __tablename__ = "studio_releases"
+    __table_args__ = (
+        UniqueConstraint("workspace_id", "graph_id", "id"),
+        UniqueConstraint("workspace_id", "id"),
+        UniqueConstraint("workspace_id", "source_draft_id"),
+        UniqueConstraint("graph_id", "release_no"),
+        UniqueConstraint("graph_id", "contract_hash"),
+        CheckConstraint("release_no >= 1", name="release_no_positive"),
+        CheckConstraint("source_draft_version >= 1", name="source_draft_version_positive"),
+        CheckConstraint("state IN ('ACTIVE', 'ARCHIVED')", name="state_vocabulary"),
+        CheckConstraint(
+            "(state = 'ACTIVE' AND archived_at IS NULL AND archived_by IS NULL) OR "
+            "(state = 'ARCHIVED' AND archived_at IS NOT NULL AND archived_by IS NOT NULL)",
+            name="state_shape",
+        ),
+        CheckConstraint(
+            "contract_version = 'KNOWLEDGE_STUDIO_RELEASE_V1'",
+            name="contract_version",
+        ),
+        CheckConstraint(
+            "contract_hash ~ '^[0-9a-f]{64}$' "
+            "AND tbox_hash ~ '^[0-9a-f]{64}$' "
+            "AND abox_hash ~ '^[0-9a-f]{64}$'",
+            name="hashes_sha256",
+        ),
+        CheckConstraint(
+            "reviewed_by <> author_id AND published_by = reviewed_by "
+            "AND char_length(btrim(review_reason)) BETWEEN 1 AND 2000",
+            name="independent_review",
+        ),
+        ForeignKeyConstraint(
+            ("workspace_id", "graph_id"),
+            ("knowledge.graphs.workspace_id", "knowledge.graphs.id"),
+            ondelete="RESTRICT",
+        ),
+        ForeignKeyConstraint(
+            ("workspace_id", "graph_id", "ontology_version_id"),
+            (
+                "knowledge.ontology_versions.workspace_id",
+                "knowledge.ontology_versions.graph_id",
+                "knowledge.ontology_versions.id",
+            ),
+            ondelete="RESTRICT",
+        ),
+        ForeignKeyConstraint(
+            ("workspace_id", "source_draft_id"),
+            ("knowledge.studio_drafts.workspace_id", "knowledge.studio_drafts.id"),
+            ondelete="RESTRICT",
+        ),
+        ForeignKeyConstraint(
+            ("workspace_id", "preflight_check_id"),
+            (
+                "knowledge.studio_preflight_checks.workspace_id",
+                "knowledge.studio_preflight_checks.id",
+            ),
+            ondelete="RESTRICT",
+        ),
+        ForeignKeyConstraint(
+            (
+                "workspace_id",
+                "source_draft_id",
+                "source_draft_version",
+                "contract_hash",
+                "reviewed_by",
+                "preflight_check_id",
+            ),
+            (
+                "knowledge.studio_preflight_checks.workspace_id",
+                "knowledge.studio_preflight_checks.draft_id",
+                "knowledge.studio_preflight_checks.draft_version",
+                "knowledge.studio_preflight_checks.contract_hash",
+                "knowledge.studio_preflight_checks.checked_by",
+                "knowledge.studio_preflight_checks.id",
+            ),
+            ondelete="RESTRICT",
+        ),
+        ForeignKeyConstraint(
+            ("workspace_id", "supersedes_studio_release_id"),
+            ("knowledge.studio_releases.workspace_id", "knowledge.studio_releases.id"),
+            ondelete="RESTRICT",
+        ),
+        ForeignKeyConstraint(
+            ("workspace_id", "author_id"),
+            ("iam.workspace_memberships.workspace_id", "iam.workspace_memberships.subject_id"),
+            ondelete="RESTRICT",
+        ),
+        ForeignKeyConstraint(
+            ("workspace_id", "reviewed_by"),
+            ("iam.workspace_memberships.workspace_id", "iam.workspace_memberships.subject_id"),
+            ondelete="RESTRICT",
+        ),
+        ForeignKeyConstraint(
+            ("workspace_id", "published_by"),
+            ("iam.workspace_memberships.workspace_id", "iam.workspace_memberships.subject_id"),
+            ondelete="RESTRICT",
+        ),
+        ForeignKeyConstraint(
+            ("workspace_id", "archived_by"),
+            ("iam.workspace_memberships.workspace_id", "iam.workspace_memberships.subject_id"),
+            ondelete="RESTRICT",
+        ),
+        Index(
+            "ix_studio_releases_graph_state_published",
+            "workspace_id",
+            "graph_id",
+            "state",
+            "published_at",
+        ),
+        Index(
+            "uq_studio_releases_one_active_per_graph",
+            "graph_id",
+            unique=True,
+            postgresql_where=text("state = 'ACTIVE'"),
+        ),
+        {"schema": "knowledge"},
+    )
+
+    workspace_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), nullable=False)
+    graph_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), nullable=False)
+    source_draft_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), nullable=False)
+    source_draft_version: Mapped[int] = mapped_column(Integer, nullable=False)
+    release_no: Mapped[int] = mapped_column(Integer, nullable=False)
+    state: Mapped[str] = mapped_column(String(16), nullable=False)
+    ontology_version_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), nullable=False)
+    preflight_check_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), nullable=False)
+    supersedes_studio_release_id: Mapped[UUID | None] = mapped_column(Uuid(as_uuid=True))
+    contract_version: Mapped[str] = mapped_column(String(64), nullable=False)
+    contract_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    tbox_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    abox_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    author_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), nullable=False)
+    reviewed_by: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), nullable=False)
+    review_reason: Mapped[str] = mapped_column(Text, nullable=False)
+    published_by: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), nullable=False)
+    published_at: Mapped[datetime] = mapped_column(nullable=False)
+    archived_at: Mapped[datetime | None]
+    archived_by: Mapped[UUID | None] = mapped_column(Uuid(as_uuid=True))
+
+
+class OntologyElementModel(Base, UuidPrimaryKeyMixin):
+    """Immutable searchable index derived from one ontology schema document."""
+
+    __tablename__ = "ontology_elements"
+    __table_args__ = (
+        UniqueConstraint("workspace_id", "ontology_version_id", "id"),
+        UniqueConstraint(
+            "workspace_id",
+            "ontology_version_id",
+            "stable_element_id",
+        ),
+        UniqueConstraint("workspace_id", "ontology_version_id", "ordinal"),
+        CheckConstraint(
+            "kind IN ('CLASS', 'PROPERTY', 'RELATION')",
+            name="kind_vocabulary",
+        ),
+        CheckConstraint("ordinal >= 0", name="ordinal_nonnegative"),
+        CheckConstraint(
+            "element_hash ~ '^[0-9a-f]{64}$'",
+            name="element_hash_sha256",
+        ),
+        CheckConstraint(
+            "jsonb_typeof(element_document) = 'object'",
+            name="element_document_object",
+        ),
+        ForeignKeyConstraint(
+            ("workspace_id", "graph_id", "ontology_version_id"),
+            (
+                "knowledge.ontology_versions.workspace_id",
+                "knowledge.ontology_versions.graph_id",
+                "knowledge.ontology_versions.id",
+            ),
+            ondelete="RESTRICT",
+        ),
+        Index(
+            "ix_ontology_elements_version_kind_ordinal",
+            "workspace_id",
+            "ontology_version_id",
+            "kind",
+            "ordinal",
+        ),
+        {"schema": "knowledge"},
+    )
+
+    workspace_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), nullable=False)
+    graph_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), nullable=False)
+    ontology_version_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), nullable=False)
+    stable_element_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    kind: Mapped[str] = mapped_column(String(16), nullable=False)
+    canonical_name: Mapped[str] = mapped_column(String(255), nullable=False)
+    display_name: Mapped[str] = mapped_column(String(255), nullable=False)
+    ordinal: Mapped[int] = mapped_column(Integer, nullable=False)
+    element_document: Mapped[dict[str, object]] = mapped_column(JSON_DOCUMENT, nullable=False)
+    element_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+
+
+class ABoxBindingVersionModel(Base, UuidPrimaryKeyMixin):
+    """Immutable mapping-spec header published with a Studio Release."""
+
+    __tablename__ = "abox_binding_versions"
+    __table_args__ = (
+        UniqueConstraint("workspace_id", "studio_release_id", "id"),
+        UniqueConstraint(
+            "workspace_id",
+            "studio_release_id",
+            "target_stable_element_id",
+        ),
+        UniqueConstraint("workspace_id", "studio_release_id", "ordinal"),
+        CheckConstraint("ordinal >= 0", name="ordinal_nonnegative"),
+        CheckConstraint(
+            "mapping_hash ~ '^[0-9a-f]{64}$'",
+            name="mapping_hash_sha256",
+        ),
+        ForeignKeyConstraint(
+            ("workspace_id", "graph_id", "studio_release_id"),
+            (
+                "knowledge.studio_releases.workspace_id",
+                "knowledge.studio_releases.graph_id",
+                "knowledge.studio_releases.id",
+            ),
+            ondelete="RESTRICT",
+        ),
+        ForeignKeyConstraint(
+            ("workspace_id", "graph_id", "ontology_version_id"),
+            (
+                "knowledge.ontology_versions.workspace_id",
+                "knowledge.ontology_versions.graph_id",
+                "knowledge.ontology_versions.id",
+            ),
+            ondelete="RESTRICT",
+        ),
+        ForeignKeyConstraint(
+            (
+                "workspace_id",
+                "ontology_version_id",
+                "target_ontology_element_id",
+            ),
+            (
+                "knowledge.ontology_elements.workspace_id",
+                "knowledge.ontology_elements.ontology_version_id",
+                "knowledge.ontology_elements.id",
+            ),
+            ondelete="RESTRICT",
+        ),
+        ForeignKeyConstraint(
+            ("workspace_id", "source_reference_id"),
+            ("knowledge.source_references.workspace_id", "knowledge.source_references.id"),
+            ondelete="RESTRICT",
+        ),
+        ForeignKeyConstraint(
+            ("workspace_id", "created_by"),
+            ("iam.workspace_memberships.workspace_id", "iam.workspace_memberships.subject_id"),
+            ondelete="RESTRICT",
+        ),
+        Index(
+            "ix_abox_binding_versions_release_ordinal",
+            "workspace_id",
+            "studio_release_id",
+            "ordinal",
+        ),
+        {"schema": "knowledge"},
+    )
+
+    workspace_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), nullable=False)
+    graph_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), nullable=False)
+    studio_release_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), nullable=False)
+    ontology_version_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), nullable=False)
+    target_ontology_element_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), nullable=False)
+    target_stable_element_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    source_reference_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), nullable=False)
+    ordinal: Mapped[int] = mapped_column(Integer, nullable=False)
+    mapping_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    created_by: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(nullable=False)
+
+
+class ABoxMappingRuleVersionModel(Base, UuidPrimaryKeyMixin):
+    """Immutable typed rule copied from one approved Binding Draft."""
+
+    __tablename__ = "abox_mapping_rule_versions"
+    __table_args__ = (
+        UniqueConstraint("workspace_id", "binding_version_id", "id"),
+        UniqueConstraint("workspace_id", "binding_version_id", "ordinal"),
+        CheckConstraint(
+            "method IN ('SUBJECT_ID', 'PROPERTY', 'EDGE_LINK', 'EDGE_PROPERTY')",
+            name="method_vocabulary",
+        ),
+        CheckConstraint("ordinal >= 0", name="ordinal_nonnegative"),
+        CheckConstraint(
+            "transform_id = 'IDENTITY' AND transform_version = '1'",
+            name="identity_transform_only",
+        ),
+        ForeignKeyConstraint(
+            ("workspace_id", "studio_release_id", "binding_version_id"),
+            (
+                "knowledge.abox_binding_versions.workspace_id",
+                "knowledge.abox_binding_versions.studio_release_id",
+                "knowledge.abox_binding_versions.id",
+            ),
+            ondelete="RESTRICT",
+        ),
+        ForeignKeyConstraint(
+            (
+                "workspace_id",
+                "ontology_version_id",
+                "target_ontology_element_id",
+            ),
+            (
+                "knowledge.ontology_elements.workspace_id",
+                "knowledge.ontology_elements.ontology_version_id",
+                "knowledge.ontology_elements.id",
+            ),
+            ondelete="RESTRICT",
+        ),
+        Index(
+            "ix_abox_mapping_rule_versions_binding_ordinal",
+            "workspace_id",
+            "binding_version_id",
+            "ordinal",
+        ),
+        {"schema": "knowledge"},
+    )
+
+    workspace_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), nullable=False)
+    studio_release_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), nullable=False)
+    binding_version_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), nullable=False)
+    ontology_version_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), nullable=False)
+    target_ontology_element_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), nullable=False)
     ordinal: Mapped[int] = mapped_column(Integer, nullable=False)
     method: Mapped[str] = mapped_column(String(32), nullable=False)
     source_field_path: Mapped[str] = mapped_column(Text, nullable=False)

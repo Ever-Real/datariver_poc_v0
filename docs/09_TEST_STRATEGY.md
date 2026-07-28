@@ -2,6 +2,32 @@
 
 ## Current verification status
 
+### Knowledge Studio governed Publish / Phase 5A — 2026-07-28
+
+Revision `0061` adds durable pre-flight receipts, immutable Studio Releases/T-Box element/A-Box
+mapping versions, independent-review publication, physical-source adapter boundaries and exact
+cleanup tooling. The focused backend service/persistence/preview/connection/cleanup suite passes
+`39`; the whole backend suite passes `1,694` with `97` explicitly environment-gated skips. Ruff
+lint, strict mypy over `421` source/test files and static architecture/security/documentation
+verification pass.
+
+The frontend passes strict TypeScript, zero-warning ESLint, `54 files / 300 tests` and production
+build. The focused Data Enricher/API selection passes `2 files / 8 tests`, covering receipt headers,
+REVIEW/Publish lifecycle, read-only reviewer mapping, Discard, release response and explicit
+`Ingestion: NOT_RUN`.
+
+Repeated canonical `0001` generation is byte-identical at SHA-256
+`185641e239e82d7f6948e761fd929a618fdacaebc766cbb45f031a713728eba1`; the sole Alembic head is
+`0061`, with `0060 -> 0061` confirmed in the local chain. Changed Python files pass Ruff format.
+The repository-wide format check still reports only the two unrelated pre-existing files already
+recorded below: `infrastructure/datahub/http.py` and `test_datahub_gateway.py`.
+
+The local suite proves typed/service/persistence-source invariants but skips `97` external
+integration cases by configuration. In particular, isolated PostgreSQL `0060 -> 0061` execution,
+app-role maker/checker RLS, concurrent same-graph archive/Publish rollback, real two-human
+OIDC/WebAuthn, browser accessibility, approved physical row access and WSL `linux/amd64` remain
+external gates and are not represented as passes.
+
 ### Knowledge Studio Data Enricher / A-Box Mapping Draft — 2026-07-28
 
 The Data Enricher increment advances Alembic head to `0060`. Focused domain, source-adapter,

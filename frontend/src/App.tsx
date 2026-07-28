@@ -330,6 +330,9 @@ export function App() {
             workspaceId={activeWorkspace}
             subjectId={authenticatedSubject}
             onNavigate={navigate}
+            onStepUp={auth.beginStepUp}
+            onPasswordReauth={auth.beginPasswordReauth}
+            onEnroll={auth.beginWebAuthnEnrollment}
           />
         )}
         {page === 'monitoring' && <MonitoringPage client={client} />}

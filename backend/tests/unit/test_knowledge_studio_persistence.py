@@ -29,6 +29,9 @@ from datariver.infrastructure.db.revision import REQUIRED_DATABASE_REVISION
 ROOT = Path(__file__).resolve().parents[3]
 MIGRATION = ROOT / "backend/alembic/versions/0059_knowledge_studio_foundation.py"
 ABOX_MIGRATION = ROOT / "backend/alembic/versions/0060_knowledge_studio_abox_bindings.py"
+PUBLICATION_MIGRATION = (
+    ROOT / "backend/alembic/versions/0061_knowledge_studio_governed_publication.py"
+)
 INITIAL_MIGRATION = ROOT / "backend/alembic/versions/0001_initial_schema.py"
 GENERATOR = ROOT / "scripts/generate_initial_migration.py"
 
@@ -39,7 +42,7 @@ def _table(name: str) -> Table:
 
 def test_studio_draft_model_is_separate_persistent_author_state() -> None:
     draft = _table("knowledge.studio_drafts")
-    assert REQUIRED_DATABASE_REVISION == "0060"
+    assert REQUIRED_DATABASE_REVISION == "0061"
     assert {
         "workspace_id",
         "author_id",
@@ -55,6 +58,14 @@ def test_studio_draft_model_is_separate_persistent_author_state() -> None:
         "base_graph_id",
         "base_ontology_version_id",
         "base_release_id",
+        "submitted_preflight_check_id",
+        "reviewed_by",
+        "reviewed_at",
+        "review_reason",
+        "published_by",
+        "materialized_graph_id",
+        "materialized_ontology_version_id",
+        "published_studio_release_id",
         "last_autosaved_at",
         "version",
     } <= set(draft.c.keys())
@@ -176,27 +187,33 @@ def test_graph_and_ontology_provenance_is_additive_and_legacy_nullable() -> None
         assert ontology.c[column].nullable is True
 
 
-def test_additive_and_canonical_migrations_keep_owner_rls_and_no_delete_grant() -> None:
-    migration = MIGRATION.read_text(encoding="utf-8")
+def test_publication_migration_replaces_owner_only_rls_with_maker_checker_policy() -> None:
+    foundation = MIGRATION.read_text(encoding="utf-8")
+    migration = PUBLICATION_MIGRATION.read_text(encoding="utf-8")
     generator = GENERATOR.read_text(encoding="utf-8")
+    assert "studio_draft_owner_access" in foundation
     for source in (migration, generator):
-        assert "studio_draft_owner_access" in source
-        assert "AS RESTRICTIVE FOR ALL" in source
+        assert "studio_draft_actor_select" in source
+        assert "studio_draft_governed_update" in source
+        assert "kg.review" in source
+        assert "kg.publish" in source
+        assert "reviewed_by" in source
+        assert "published_by" in source
+        assert "membership.subject_id <>" in source
+        assert "HARDWARE_WEBAUTHN" not in source
         assert "app.subject_id" in source
         assert "knowledge.studio_drafts" in source
         assert "GRANT UPDATE (" in source
-        studio_update = source.split(
-            ") ON knowledge.studio_drafts",
-            1,
-        )[0].rsplit("GRANT UPDATE (", 1)[1]
-        assert "published_at" not in studio_update
+        assert "submitted_preflight_check_id" in source
+        assert "published_studio_release_id" in source
     assert "GRANT DELETE ON knowledge.studio_drafts" not in migration
     assert "GRANT DELETE ON knowledge.studio_drafts" not in generator
-    assert "downgrade would destroy canonical state" in migration
+    assert "downgrade would destroy history" in migration
 
 
-def test_abox_migrations_force_owner_rls_and_only_allow_rule_replacement_delete() -> None:
+def test_abox_rls_allows_review_reads_but_keeps_draft_writes_owner_only() -> None:
     migration = ABOX_MIGRATION.read_text(encoding="utf-8")
+    publication = PUBLICATION_MIGRATION.read_text(encoding="utf-8")
     initial = INITIAL_MIGRATION.read_text(encoding="utf-8")
     table_names = (
         "tbox_draft_elements",
@@ -208,16 +225,23 @@ def test_abox_migrations_force_owner_rls_and_only_allow_rule_replacement_delete(
     for table in table_names:
         assert f'"{table}"' in migration
         assert f"ALTER TABLE knowledge.{table} FORCE ROW LEVEL SECURITY" in initial
-    for source in (migration, initial):
-        assert "source_reference_owner_access" in source
-        assert "studio_draft_owner_access" in source
+    assert "source_reference_owner_access" in migration
+    assert "studio_draft_owner_access" in migration
+    for source in (publication, initial):
+        assert "source_reference_actor_select" in source
+        assert "source_reference_owner_insert" in source
+        assert "studio_draft_actor_select" in source
+        assert "studio_draft_owner_insert" in source
+        assert "studio_draft_owner_update" in source
+        assert "studio_draft_owner_delete" in source
         assert "app.subject_id" in source
+        assert "GRANT DELETE ON knowledge.abox_binding_drafts" not in source
+        assert "GRANT UPDATE ON knowledge.tbox_draft_elements" not in source
+    for source in (migration, initial):
         assert "GRANT DELETE ON knowledge.abox_mapping_rule_drafts" in source or (
             "GRANT SELECT, INSERT, DELETE" in source
             and "ON knowledge.abox_mapping_rule_drafts" in source
         )
-        assert "GRANT DELETE ON knowledge.abox_binding_drafts" not in source
-        assert "GRANT UPDATE ON knowledge.tbox_draft_elements" not in source
     for field in (
         "parent_stable_element_id",
         "source_stable_element_id",
@@ -225,12 +249,118 @@ def test_abox_migrations_force_owner_rls_and_only_allow_rule_replacement_delete(
     ):
         assert (
             initial.count(
-                "fk_tbox_draft_elements_workspace_id_draft_id_"
-                f"{field}_tbox_draft_elements"
+                f"fk_tbox_draft_elements_workspace_id_draft_id_{field}_tbox_draft_elements"
             )
             == 1
         )
     assert "downgrade would destroy state" in migration
+
+
+def test_publication_models_are_immutable_schema_and_mapping_contracts() -> None:
+    graph = _table("knowledge.graphs")
+    drafts = _table("knowledge.studio_drafts")
+    receipts = _table("knowledge.studio_preflight_checks")
+    releases = _table("knowledge.studio_releases")
+    elements = _table("knowledge.ontology_elements")
+    bindings = _table("knowledge.abox_binding_versions")
+    rules = _table("knowledge.abox_mapping_rule_versions")
+
+    assert "active_studio_release_id" in graph.columns
+    assert {
+        "draft_version",
+        "contract_hash",
+        "validation_contract_version",
+        "evidence_document",
+        "evidence_hash",
+        "checked_by",
+    } <= set(receipts.c.keys())
+    assert {
+        "source_draft_id",
+        "source_draft_version",
+        "ontology_version_id",
+        "preflight_check_id",
+        "contract_hash",
+        "tbox_hash",
+        "abox_hash",
+        "author_id",
+        "reviewed_by",
+        "published_by",
+    } <= set(releases.c.keys())
+    assert {
+        "stable_element_id",
+        "element_document",
+        "element_hash",
+    } <= set(elements.c.keys())
+    assert {
+        "studio_release_id",
+        "ontology_version_id",
+        "target_ontology_element_id",
+        "source_reference_id",
+        "mapping_hash",
+    } <= set(bindings.c.keys())
+    assert {
+        "studio_release_id",
+        "binding_version_id",
+        "ontology_version_id",
+        "target_ontology_element_id",
+    } <= set(rules.c.keys())
+    assert "submitted_preflight_check_id" in drafts.columns
+
+    exact_receipt_reference = next(
+        constraint
+        for constraint in releases.constraints
+        if isinstance(constraint, ForeignKeyConstraint)
+        and tuple(constraint.column_keys)
+        == (
+            "workspace_id",
+            "source_draft_id",
+            "source_draft_version",
+            "contract_hash",
+            "reviewed_by",
+            "preflight_check_id",
+        )
+    )
+    assert exact_receipt_reference.ondelete == "RESTRICT"
+    assert [element.target_fullname for element in exact_receipt_reference.elements] == [
+        "knowledge.studio_preflight_checks.workspace_id",
+        "knowledge.studio_preflight_checks.draft_id",
+        "knowledge.studio_preflight_checks.draft_version",
+        "knowledge.studio_preflight_checks.contract_hash",
+        "knowledge.studio_preflight_checks.checked_by",
+        "knowledge.studio_preflight_checks.id",
+    ]
+
+    active_release = next(
+        index
+        for index in releases.indexes
+        if isinstance(index, Index) and index.name == "uq_studio_releases_one_active_per_graph"
+    )
+    assert active_release.unique is True
+    assert "ACTIVE" in str(active_release.dialect_options["postgresql"]["where"])
+
+    release_checks = {
+        constraint.name: str(constraint.sqltext)
+        for constraint in releases.constraints
+        if isinstance(constraint, CheckConstraint)
+    }
+    assert "reviewed_by <> author_id" in release_checks["ck_studio_releases_independent_review"]
+    assert "KNOWLEDGE_STUDIO_RELEASE_V1" in release_checks["ck_studio_releases_contract_version"]
+
+    publication = PUBLICATION_MIGRATION.read_text(encoding="utf-8")
+    for table in (
+        "studio_preflight_checks",
+        "studio_releases",
+        "ontology_elements",
+        "abox_binding_versions",
+        "abox_mapping_rule_versions",
+    ):
+        assert f'"{table}"' in publication
+        assert "ALTER TABLE knowledge.{table} FORCE ROW LEVEL SECURITY" in publication
+    assert "GRANT DELETE ON knowledge.studio_releases" not in publication
+    assert "studio_release_publisher_insert" in publication
+    assert "studio_release_publisher_archive" in publication
+    assert "source_draft_version" in publication
+    assert "Legacy Studio PUBLISHED rows lack independent review evidence" in publication
 
 
 def test_idempotency_snapshot_round_trips_the_exact_draft_response() -> None:

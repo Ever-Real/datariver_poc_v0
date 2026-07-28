@@ -76,6 +76,16 @@ class GraphModel(Base, UuidPrimaryKeyMixin, TimestampMixin, VersionMixin):
             ),
             use_alter=True,
         ),
+        ForeignKeyConstraint(
+            ("workspace_id", "id", "active_studio_release_id"),
+            (
+                "knowledge.studio_releases.workspace_id",
+                "knowledge.studio_releases.graph_id",
+                "knowledge.studio_releases.id",
+            ),
+            ondelete="RESTRICT",
+            use_alter=True,
+        ),
         {"schema": "knowledge"},
     )
 
@@ -85,6 +95,7 @@ class GraphModel(Base, UuidPrimaryKeyMixin, TimestampMixin, VersionMixin):
     graph_type: Mapped[str] = mapped_column(String(50), nullable=False)
     status: Mapped[str] = mapped_column(String(32), default="DRAFT", nullable=False)
     active_release_id: Mapped[UUID | None] = mapped_column(Uuid(as_uuid=True))
+    active_studio_release_id: Mapped[UUID | None] = mapped_column(Uuid(as_uuid=True))
     classification: Mapped[int] = mapped_column(default=0, nullable=False)
     domain_ref_id: Mapped[UUID | None] = mapped_column(Uuid(as_uuid=True))
     domain_ref_kind: Mapped[str | None] = mapped_column(String(16))

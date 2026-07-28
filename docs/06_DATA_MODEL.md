@@ -227,13 +227,18 @@ privilege. No API or ordinary application unit of work can claim or complete exe
 
 | Table | Key columns and constraints | Purpose |
 |---|---|---|
-| `knowledge.graphs` | `id`, `workspace + slug UQ`, name/type, `DRAFT/REVIEW/PUBLISHED`, classification/active release, nullable legacy-safe domain UUID/kind/source-version and creator/editor provenance, `version`, timestamps | consumable graph aggregate and active pointer; new Studio materialization requires complete provenance while legacy rows are not fabricated |
+| `knowledge.graphs` | `id`, `workspace + slug UQ`, name/type, `DRAFT/REVIEW/PUBLISHED`, classification, separate active instance and Studio Release pointers, nullable legacy-safe domain UUID/kind/source-version and creator/editor provenance, `version`, timestamps | consumable graph aggregate; Studio schema/mapping activation never fabricates or changes the active instance release |
 | `knowledge.ontology_versions` | `id`, graph/version/schema/checksum/status, nullable schema-contract/base-ontology/creator provenance, timestamps | immutable typed ontology versions |
-| `knowledge.studio_drafts` | `id`, workspace/author, CREATE/EDIT, `DRAFT/REVIEW/PUBLISHED/DISCARDED`, current step, name/endpoint alias, exact DOMAIN UUID/source version, classification, optional EDIT base pins, autosave/review/publish/discard times, optimistic version | author-scoped full-screen Studio aggregate; auto-saves persist without expiry until explicit Discard and are invisible to Registry/Chat/GraphRAG before materialization |
+| `knowledge.studio_drafts` | `id`, workspace/author, CREATE/EDIT, `DRAFT/REVIEW/PUBLISHED/DISCARDED`, current step, name/endpoint alias, exact DOMAIN UUID/source version, classification, optional EDIT base pins, exact submitted receipt/reviewer/materialized graph/ontology/Studio Release references, autosave/review/publish/discard times, optimistic version | full-screen Studio aggregate; mutable author scope in DRAFT, reviewer-readable and locked in REVIEW, immutable evidence after Publish/Discard |
 | `knowledge.tbox_draft_elements` | workspace/draft-scoped stable ID UQ, `CLASS/PROPERTY/RELATION`, typed ownership/endpoints, data type/nullability, deterministic ordinal and version | bounded read index of accepted typed T-Box operations for Data Enricher; A-Box writes cannot edit this table |
 | `knowledge.source_references` | immutable local catalog asset UUID, exact provider schema version, exact catalog projection version, classification, typed selected-field document/hash and creator | provider-opaque physical Dataset snapshot pin; no external URN, query, endpoint or credential |
 | `knowledge.abox_binding_drafts` | one row per draft + accepted Class/Relation stable ID, immutable source-reference FK, `DRAFT/VALIDATED/STALE`, accepted T-Box version, author/editor and optimistic version | mutable A-Box mapping header; it is not an ingestion job or published assertion |
 | `knowledge.abox_mapping_rule_drafts` | binding/ordinal UQ, typed `SUBJECT_ID/PROPERTY/EDGE_LINK/EDGE_PROPERTY`, selected source field path, accepted T-Box target and fixed `IDENTITY@1` transform | normalized target-scoped mapping contract; arbitrary SQL/Cypher/provider expressions are not accepted |
+| `knowledge.studio_preflight_checks` | draft/version/contract hash, `PASS/FAIL/UNAVAILABLE`, validation contract version, bounded evidence document/hash, checker/time | append-only exact pre-flight receipt; only a PASS from the eventual independent reviewer can support publication |
+| `knowledge.studio_releases` | graph/release number UQ, source Draft/version UQ, `ACTIVE/ARCHIVED`, ontology/exact receipt/supersedes references, contract/T-Box/A-Box hashes, author/reviewer/reason/publisher/times | immutable Studio schema/mapping manifest and single active contract history; composite FK fixes receipt Draft/version/hash/checker, separate from instance `knowledge.releases` |
+| `knowledge.ontology_elements` | immutable ontology-version stable ID and ordinal UQ, kind/name/document/hash | deterministic typed element index derived and read back in the publication transaction |
+| `knowledge.abox_binding_versions` | Studio Release/target ordinal UQ, exact ontology element/source reference and mapping hash | immutable published A-Box binding headers |
+| `knowledge.abox_mapping_rule_versions` | immutable binding-version/ordinal UQ, ontology target, typed method/source field and `IDENTITY@1` transform | immutable published mapping-rule whitelist |
 | `knowledge.changesets` | `id`, graph/base release/ontology/title/state/author/reviewer/published release, nullable `source_analysis_job_id`, `version`, timestamps | incremental author/review/publish aggregate; a durable worker-created DRAFT is bound to exactly one source-analysis job |
 | `knowledge.change_operations` | `id`, `changeset_id + sequence UQ`, operation/kind/stable ID/document/provenance/confidence | ordered typed node/edge edits; model-proposed provenance includes verified excerpt/excerpt hash/page hash |
 | `knowledge.validation_results` | `id`, changeset/validator/version/severity/code/location/message/time | persisted submission validation evidence |
@@ -261,12 +266,23 @@ Chat evidence and release-pinned Sharing. Neo4j result properties are never cano
 selected identifiers are rehydrated from these immutable PostgreSQL rows before prompt composition.
 
 `knowledge.studio_drafts` and its T-Box/A-Box child aggregate have forced workspace RLS plus
-restrictive author policies. The application role can select/insert and update only
-autosave/submit/discard editor columns on the Draft; it cannot update `published_at` or delete a
-draft. T-Box elements are read-only to the application role in Phase 3. Source references are
-immutable after insert, A-Box binding headers have a column-bounded update grant, and only mapping
-rule rows can be deleted so one selected target can be atomically replaced. All child foreign keys
-are `RESTRICT`, and a locked Draft ETag serializes target updates.
+restrictive command-specific actor policies. The author owns DRAFT writes and can only submit or
+Discard the same aggregate; a different active human with the required workspace attributes can
+read REVIEW/PUBLISHED rows, while publication additionally requires `kg.publish`. The application
+service enforces fresh Hardware WebAuthn for the high-risk command. The Draft cannot be deleted.
+T-Box elements are read-only to the application role in the current increment. Source references
+are immutable after insert, A-Box binding headers have a column-bounded update grant, and only Draft
+mapping-rule rows can be deleted so one selected target can be atomically replaced. All child
+foreign keys are `RESTRICT`, and a locked Draft ETag serializes target updates.
+
+Pre-flight receipts and published ontology/binding/rule versions are append-only. The application
+role can insert or archive `studio_releases` only as the current independently authorized publisher;
+it has no DELETE privilege on publication evidence. A composite FK binds each Release to the exact
+receipt Draft ID/version, canonical contract hash and reviewer. Publish writes the ontology, element index,
+mapping versions, Studio Release, graph pointer, PUBLISHED Draft evidence, outbox and idempotency
+result in one transaction and verifies the canonical T-Box/A-Box hashes before commit. The
+`graphs.active_studio_release_id` pointer is intentionally independent from
+`graphs.active_release_id`: no instance assertion, Neo4j projection or ingestion state is implied.
 
 The source reference deliberately pins both the authorization-pruned local projection version and
 the detailed DataHub schema version. The former detects catalog-scope/lifecycle drift and the latter

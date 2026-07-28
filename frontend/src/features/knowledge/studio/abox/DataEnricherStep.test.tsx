@@ -329,6 +329,8 @@ describe('DataEnricherStep', () => {
           valid: false,
           draft_version: 3,
           checked_at: '2026-07-28T08:00:00Z',
+          receipt_id: '019fa57b-52de-74c0-9f5e-06ae7b1bf3c8',
+          contract_hash: 'c'.repeat(64),
           evidence: [{
             severity: 'ERROR',
             code: 'SOURCE_ROW_READER_UNAVAILABLE',
@@ -371,6 +373,102 @@ describe('DataEnricherStep', () => {
     expect(JSON.parse(previewCall?.[1]?.body as string)).toEqual({
       target_stable_element_id: 'class.employee',
       sample_limit: 5,
+    })
+  })
+
+  it('keeps REVIEW read-only and publishes only after an exact reviewer pre-flight receipt', async () => {
+    const reviewerId = '019fa57b-52de-74c0-9f5e-06ae7b1bf3c9'
+    const reviewedDraft = {
+      ...draft(4),
+      state: 'REVIEW',
+      current_step: 'ABOX',
+    }
+    const publishedDraft = {
+      ...reviewedDraft,
+      state: 'PUBLISHED',
+      version: 5,
+      reviewed_by: reviewerId,
+      review_reason: 'T-Box와 Mapping evidence 검토 완료',
+      published_by: reviewerId,
+      published_at: '2026-07-28T09:00:00Z',
+      submitted_preflight_check_id: '019fa57b-52de-74c0-9f5e-06ae7b1bf3ca',
+    }
+    const fetchMock = vi.fn<typeof fetch>((input, init) => {
+      const path = requestUrl(input)
+      if (path.endsWith(`/drafts/${draftId}/abox`) && !init?.method) {
+        return Promise.resolve(json({
+          draft: reviewedDraft,
+          tbox_elements: tboxElements,
+          bindings: [binding(1)],
+        }, 200, '"4"'))
+      }
+      if (path.endsWith('/abox/preflight') && init?.method === 'POST') {
+        return Promise.resolve(json({
+          status: 'PASS',
+          valid: true,
+          draft_version: 4,
+          checked_at: '2026-07-28T08:00:00Z',
+          receipt_id: '019fa57b-52de-74c0-9f5e-06ae7b1bf3ca',
+          contract_hash: 'a'.repeat(64),
+          evidence: [],
+        }, 200, '"4"'))
+      }
+      if (path.endsWith('/publish') && init?.method === 'POST') {
+        return Promise.resolve(json({
+          draft: publishedDraft,
+          release: {
+            id: '019fa57b-52de-74c0-9f5e-06ae7b1bf3cb',
+            graph_id: '019fa57b-52de-74c0-9f5e-06ae7b1bf3cc',
+            ontology_version_id: '019fa57b-52de-74c0-9f5e-06ae7b1bf3cd',
+            release_no: 1,
+            state: 'ACTIVE',
+            contract_version: 'KNOWLEDGE_STUDIO_RELEASE_V1',
+            contract_hash: 'a'.repeat(64),
+            tbox_hash: 'b'.repeat(64),
+            abox_hash: 'c'.repeat(64),
+            reviewed_by: reviewerId,
+            published_by: reviewerId,
+            published_at: '2026-07-28T09:00:00Z',
+          },
+        }, 200, '"5"'))
+      }
+      return Promise.reject(new Error(`Unexpected request: ${path}`))
+    })
+    vi.stubGlobal('fetch', fetchMock)
+    const client = new ApiClient('/api/v1', () => 'token', () => 'workspace')
+    render(<DataEnricherStep
+      client={client}
+      draftId={draftId}
+      subjectId={reviewerId}
+      onDraftUpdate={vi.fn()}
+    />)
+
+    expect(await screen.findByText('Studio: REVIEW')).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Binding Draft 저장' })).not.toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Pre-flight 검증' }))
+    expect(within(await screen.findByLabelText(
+      'Ingestion Pre-flight 결과',
+    )).getByText(/Pre-flight PASS/)).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Publish' }))
+    const dialog = await screen.findByRole('dialog', {
+      name: 'Knowledge Studio Release 발행',
+    })
+    fireEvent.change(within(dialog).getByLabelText('독립 검토 사유'), {
+      target: { value: 'T-Box와 Mapping evidence 검토 완료' },
+    })
+    fireEvent.click(within(dialog).getByRole('button', {
+      name: '검토 승인 및 Publish',
+    }))
+
+    await screen.findByText(/Studio Release #1 발행 완료/)
+    expect(screen.getByText('Studio: PUBLISHED')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Run Ingestion' })).toBeDisabled()
+    const publishCall = fetchMock.mock.calls.find(([input]) => (
+      requestUrl(input).endsWith('/publish')
+    ))
+    expect(new Headers(publishCall?.[1]?.headers).get('If-Match')).toBe('"4"')
+    expect(JSON.parse(publishCall?.[1]?.body as string)).toEqual({
+      review_reason: 'T-Box와 Mapping evidence 검토 완료',
     })
   })
 })

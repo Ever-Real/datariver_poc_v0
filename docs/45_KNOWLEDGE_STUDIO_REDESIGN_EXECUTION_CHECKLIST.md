@@ -1,6 +1,6 @@
 # 지식관리 레지스트리 및 Knowledge Studio 개편 실행 체크리스트
 
-- 상태: **진행 중 — Phase 4 Dry-run Preview/Pre-flight increment 구현**
+- 상태: **진행 중 — Phase 5A Governance Publish local-source 구현; 운영/Registry/T-Box 게이트 open**
 - 상위 문서: [Knowledge Studio 전면 개편 PRD](44_KNOWLEDGE_STUDIO_REDESIGN_PRD.md)
 
 이 체크리스트는 한 번에 화면을 교체하지 않는다. 각 phase는 앞 단계의 API/tests를 고정하고,
@@ -62,8 +62,10 @@ profile과 mapping registry 항목은 해당 Phase 시작 전에 추가 승인�
   additive legacy-safe migration으로 추가한다.
 - [x] Step 1 name/`endpoint_alias`/domain/classification validation, domain source-version pin,
   idempotency, ETag/conflict recovery UI를 구현한다. graph type은 create intent로 server가 결정한다.
-- [ ] draft base pin, explicit Discard terminal transition, no-expiry persistence,
-  cross-workspace/cross-author negative tests를 구현한다.
+- [x] explicit Discard terminal transition과 no-expiry persistence를 구현한다. Discard는 hard
+  delete가 아니며 API/ETag/idempotency evidence를 남긴다.
+- [ ] EDIT draft 생성 명령의 exact base pin과 target PostgreSQL cross-workspace/cross-author
+  negative matrix를 완성한다.
 - [x] Full-screen shell, progress, save status, leave warning, refresh/recovery UI component test를 만든다.
 - [ ] materialize 전 Draft가 Registry, projection, GraphRAG, Sharing, Chat evidence에서 보이지 않는 integration test를 만든다.
 - [x] SQLAlchemy metadata, additive `0059`, deterministic canonical `0001`, data model,
@@ -120,7 +122,7 @@ profile과 mapping registry 항목은 해당 Phase 시작 전에 추가 승인�
   physical access capability를 검사하는 ETag-fenced Pre-flight evidence를 구현한다.
 - [x] 승인된 physical row reader가 없는 runtime은 sample을 만들지 않고
   `SOURCE_ROW_READER_UNAVAILABLE`로 실패하며 Run Ingestion을 disabled로 유지한다.
-- [ ] mutable binding/rule draft, immutable binding version/rule, append-only validation
+- [x] mutable binding/rule draft, immutable binding version/rule, append-only validation
   evidence를 분리하고 네 mapping method 외 값을 거부한다.
 - [ ] source/target, unit, transform, cardinality, source version, classification/provenance validation을 구현한다.
 - [ ] source picker가 local authorized catalog projection, immutable upload, exact Asset release 외 값을 수락하지 않음을 test한다.
@@ -138,7 +140,35 @@ profile과 mapping registry 항목은 해당 Phase 시작 전에 추가 승인�
 
 **Exit:** A-Box는 reproducible whitelist binding이며 independent review 없는 release가 되지 않는다.
 
-## Phase 5 — Registry/Studio UI cutover
+## Phase 5A — Governance integration과 Studio Publish
+
+- [x] ABOX Draft의 idempotent/ETag-fenced `submit-review`와 audited `discard` transition을
+  구현하고 REVIEW 상태의 schema/mapping 편집을 잠근다.
+- [x] Pre-flight 결과를 exact Draft version, canonical Studio contract hash, checker와
+  evidence hash를 가진 append-only receipt로 저장한다.
+- [x] 작성자와 다른 active human만 검토할 수 있고 `kg.review`, `kg.publish`, domain/
+  classification scope와 fresh Hardware WebAuthn이 모두 필요함을 service/UI에서 강제한다.
+- [x] 같은 독립 검토자의 exact PASS receipt가 없으면 Publish를 거부한다.
+- [x] Graph/Ontology Version/typed element index/immutable Binding·Rule versions/Studio Release/
+  PUBLISHED Draft/outbox/idempotency result를 한 transaction에서 materialize하고 canonical
+  T-Box/A-Box hash를 read-back한다.
+- [x] 기존 ACTIVE Studio Release를 ARCHIVED로 전환하고 partial unique index 및
+  `graphs.active_studio_release_id`로 하나의 active schema/mapping contract만 유지한다.
+- [x] `graphs.active_release_id`, `knowledge.releases`, Neo4j와 ingestion을 건드리지 않고
+  UI에 `Ingestion: NOT_RUN`을 명시한다.
+- [x] exact Workspace/Asset/source-version/projection-version/field allowlist만 받는 physical
+  connection registry/adapter interface와 fail-closed CSV/SQLite shells를 추가한다.
+- [x] 기본 dry-run, exact manifest hash 확인, Draft Discard API, Git-untracked regular file
+  hash 검증만 허용하는 non-recursive cleanup script를 추가한다.
+- [ ] isolated PostgreSQL에서 additive upgrade, app-role maker/checker RLS, same-graph concurrent
+  Publish/archive와 rollback fault injection을 실행한다.
+- [ ] 운영 승인 Connection manifest/credential owner를 정하고 real SQLite/CSV reader를
+  bootstrap에 주입한다. 그 전 runtime은 `SOURCE_ROW_READER_UNAVAILABLE`이다.
+
+**Exit:** local source에서 governed schema/mapping publication은 완성되며, instance ingestion,
+target DB/identity/browser 증거와 실제 physical reader는 별도 운영 게이트로 남는다.
+
+## Phase 5B — Registry/Studio UI cutover
 
 - [ ] server capability가 Registry/Studio schema/API와 기존 PDF parity를 모두 ready로 보고하는지 확인한다.
 - [ ] KnowledgeRegistryPage의 TanStack manual page/sort와 wide drawer route state를 기본 화면으로 전환한다.
@@ -167,10 +197,10 @@ profile과 mapping registry 항목은 해당 Phase 시작 전에 추가 승인�
 
 ## Cross-cutting verification
 
-- [ ] backend 변경마다 README-equivalent Ruff, strict mypy, relevant pytest, verify_static을 실행하고 결과를 기록한다.
-- [ ] schema 변경마다 SQLAlchemy metadata, Alembic migration, deterministic initial migration diff,
+- [x] backend 변경마다 README-equivalent Ruff, strict mypy, relevant pytest, verify_static을 실행하고 결과를 기록한다.
+- [x] schema 변경마다 SQLAlchemy metadata, Alembic migration, deterministic initial migration diff,
   data model, RLS/grant/role tests를 함께 검증한다.
-- [ ] frontend 변경마다 TypeScript, ESLint, production build, Registry/Studio/Chat과 unaffected-menu regression을 실행한다.
+- [x] frontend 변경마다 TypeScript, ESLint, production build, Registry/Studio/Chat과 unaffected-menu regression을 실행한다.
 - [ ] contract tests에 malformed enum/UUID/cursor, idempotency, stale If-Match, cross-workspace,
   author/reviewer separation, source/release/classification drift를 포함한다.
 - [ ] load/soak plan에 Asset/version/binding/canvas/mapping workload, DB query plan, RSS,

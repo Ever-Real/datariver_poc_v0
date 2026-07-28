@@ -28,6 +28,7 @@ RUFF_FORMAT_PATHS = (
     "backend/src",
     "backend/tests",
     "infra/airflow/dags",
+    "scripts/cleanup_knowledge_studio_test_artifacts.py",
     "scripts/platform_workflow.py",
     "scripts/reconcile_manual_receipts.py",
     "scripts/render_wsl_intranet_nginx.py",
@@ -40,6 +41,7 @@ RUFF_CHECK_PATHS = (
     "backend/tests",
     "infra/airflow/dags",
     "scripts/configure_keycloak_assurance.py",
+    "scripts/cleanup_knowledge_studio_test_artifacts.py",
     "scripts/development_cycle.py",
     "scripts/generate_initial_migration.py",
     "scripts/generate_semiconductor_seed.py",
@@ -60,6 +62,7 @@ RUFF_CHECK_PATHS = (
 MYPY_PATHS = (
     "backend/src",
     "backend/tests",
+    "scripts/cleanup_knowledge_studio_test_artifacts.py",
     "scripts/development_cycle.py",
     "scripts/local_reranker_service.py",
     "scripts/migrate_s3_objects.py",

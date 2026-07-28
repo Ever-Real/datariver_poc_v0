@@ -42,6 +42,7 @@
 | 37 | [Phase 6E web Nginx security headers](37_WEB_NGINX_SECURITY_HEADERS_PRD_CHECKLIST.md) | recursive header inheritance, API normalization and native-image behavior gate | Local source/runtime/audit complete; target gates open |
 | 44 | [Knowledge Studio redesign PRD](44_KNOWLEDGE_STUDIO_REDESIGN_PRD.md) | Registry drawer, full-screen Studio, T-Box proposal and A-Box whitelist design | Approved; Phase 1 implementation |
 | 45 | [Knowledge Studio redesign execution checklist](45_KNOWLEDGE_STUDIO_REDESIGN_EXECUTION_CHECKLIST.md) | phased contracts, migration, UI and evidence gates for the redesign | Active; Phase 0 approved |
+| 46 | [Knowledge Studio Phase 5 release report](46_KNOWLEDGE_STUDIO_PHASE5_RELEASE_REPORT.md) | governed schema/mapping publication, adapter boundary, cleanup and remaining operational gates | Local-source release candidate |
 
 Independent review records: [Data Architect](reviews/2026-07-14_DATA_ARCHITECT_REVIEW.md) and [Data Engineer/SRE](reviews/2026-07-14_DATA_ENGINEER_REVIEW.md).
 
@@ -97,6 +98,9 @@ The Step 3 child aggregate and provider boundary are defined by
 [Knowledge Studio A-Box binding drafts](adr/0060-knowledge-studio-abox-binding-drafts.md).
 Its row-sample dry run and version-fenced ingestion readiness evidence are defined by
 [Knowledge Studio dry-run preview and pre-flight](adr/0061-knowledge-studio-dry-run-preview-and-preflight.md).
+Its maker-checker schema/mapping publication, separate active Studio Release and physical adapter
+boundary are defined by
+[Knowledge Studio governed schema and mapping publication](adr/0062-knowledge-studio-governed-schema-publication.md).
 
 ## Change control
 

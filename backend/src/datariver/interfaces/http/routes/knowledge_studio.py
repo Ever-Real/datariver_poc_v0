@@ -9,6 +9,7 @@ from datariver.application.classification_access import ClassificationAccessReso
 from datariver.application.dto import (
     KnowledgeStudioBindingRecord,
     KnowledgeStudioDraftRecord,
+    KnowledgeStudioReleaseRecord,
     KnowledgeStudioSourceDataset,
     KnowledgeStudioValidationEvidence,
 )
@@ -47,6 +48,9 @@ from datariver.interfaces.http.schemas import (
     KnowledgeStudioPreviewNodeResponse,
     KnowledgeStudioPreviewRequest,
     KnowledgeStudioPreviewResponse,
+    KnowledgeStudioPublishRequest,
+    KnowledgeStudioPublishResponse,
+    KnowledgeStudioReleaseResponse,
     KnowledgeStudioSourceDatasetResponse,
     KnowledgeStudioSourceDetailResponse,
     KnowledgeStudioSourcePageResponse,
@@ -160,6 +164,36 @@ def _draft_response(record: KnowledgeStudioDraftRecord) -> KnowledgeStudioDraftR
         version=record.version,
         created_at=record.created_at,
         updated_at=record.updated_at,
+        submitted_preflight_check_id=record.submitted_preflight_check_id,
+        reviewed_by=record.reviewed_by,
+        reviewed_at=record.reviewed_at,
+        review_reason=record.review_reason,
+        published_by=record.published_by,
+        published_at=record.published_at,
+        materialized_graph_id=record.materialized_graph_id,
+        materialized_ontology_version_id=record.materialized_ontology_version_id,
+        published_studio_release_id=record.published_studio_release_id,
+    )
+
+
+def _studio_release_response(
+    record: KnowledgeStudioReleaseRecord,
+) -> KnowledgeStudioReleaseResponse:
+    return KnowledgeStudioReleaseResponse(
+        id=record.studio_release_id,
+        graph_id=record.graph_id,
+        ontology_version_id=record.ontology_version_id,
+        release_no=record.release_no,
+        state=record.state,
+        contract_version=record.contract_version,
+        contract_hash=record.contract_hash,
+        tbox_hash=record.tbox_hash,
+        abox_hash=record.abox_hash,
+        supersedes_studio_release_id=record.supersedes_studio_release_id,
+        reviewed_by=record.reviewed_by,
+        published_by=record.published_by,
+        published_at=record.published_at,
+        archived_studio_release_id=record.archived_studio_release_id,
     )
 
 
@@ -426,6 +460,132 @@ async def advance_knowledge_studio_draft(
     return _draft_response(record)
 
 
+@router.post(
+    "/drafts/{draft_id}/submit-review",
+    response_model=KnowledgeStudioDraftResponse,
+    responses={
+        status.HTTP_200_OK: ETAG_RESPONSE,
+        status.HTTP_412_PRECONDITION_FAILED: {
+            "description": "The If-Match Draft version is stale."
+        },
+    },
+)
+async def submit_knowledge_studio_review(
+    draft_id: UUID,
+    request: Request,
+    response: Response,
+    context: ContextDep,
+    session: SessionDep,
+    idempotency_key: IdempotencyKey,
+    if_match: IfMatch,
+) -> KnowledgeStudioDraftResponse:
+    expected_version = _expected_version(if_match)
+    request_hash = canonical_json_hash(
+        {
+            "draft_id": str(draft_id),
+            "expected_version": expected_version,
+        }
+    )
+    record = await _service(request, session).submit_review(
+        workspace_id=context.workspace_id,
+        subject=context.subject,
+        draft_id=draft_id,
+        expected_version=expected_version,
+        idempotency_key=idempotency_key,
+        request_hash=request_hash,
+        environment=context.environment,
+        request_id=context.request_id,
+    )
+    _set_draft_headers(response, record)
+    return _draft_response(record)
+
+
+@router.post(
+    "/drafts/{draft_id}/discard",
+    response_model=KnowledgeStudioDraftResponse,
+    responses={
+        status.HTTP_200_OK: ETAG_RESPONSE,
+        status.HTTP_412_PRECONDITION_FAILED: {
+            "description": "The If-Match Draft version is stale."
+        },
+    },
+)
+async def discard_knowledge_studio_draft(
+    draft_id: UUID,
+    request: Request,
+    response: Response,
+    context: ContextDep,
+    session: SessionDep,
+    idempotency_key: IdempotencyKey,
+    if_match: IfMatch,
+) -> KnowledgeStudioDraftResponse:
+    expected_version = _expected_version(if_match)
+    request_hash = canonical_json_hash(
+        {
+            "draft_id": str(draft_id),
+            "expected_version": expected_version,
+        }
+    )
+    record = await _service(request, session).discard_draft(
+        workspace_id=context.workspace_id,
+        subject=context.subject,
+        draft_id=draft_id,
+        expected_version=expected_version,
+        idempotency_key=idempotency_key,
+        request_hash=request_hash,
+        environment=context.environment,
+        request_id=context.request_id,
+    )
+    _set_draft_headers(response, record)
+    return _draft_response(record)
+
+
+@router.post(
+    "/drafts/{draft_id}/publish",
+    response_model=KnowledgeStudioPublishResponse,
+    responses={
+        status.HTTP_200_OK: ETAG_RESPONSE,
+        status.HTTP_412_PRECONDITION_FAILED: {
+            "description": "The If-Match Draft version is stale."
+        },
+    },
+)
+async def publish_knowledge_studio_draft(
+    draft_id: UUID,
+    payload: KnowledgeStudioPublishRequest,
+    request: Request,
+    response: Response,
+    context: ContextDep,
+    session: SessionDep,
+    idempotency_key: IdempotencyKey,
+    if_match: IfMatch,
+) -> KnowledgeStudioPublishResponse:
+    expected_version = _expected_version(if_match)
+    request_hash = canonical_json_hash(
+        {
+            "draft_id": str(draft_id),
+            "expected_version": expected_version,
+            "payload": payload.model_dump(mode="json"),
+        }
+    )
+    draft, studio_release = await _service(request, session).publish_draft(
+        workspace_id=context.workspace_id,
+        subject=context.subject,
+        draft_id=draft_id,
+        review_reason=payload.review_reason,
+        expected_version=expected_version,
+        idempotency_key=idempotency_key,
+        request_hash=request_hash,
+        environment=context.environment,
+        request_id=context.request_id,
+    )
+    _set_draft_headers(response, draft)
+    return KnowledgeStudioPublishResponse(
+        draft=_draft_response(draft),
+        release=_studio_release_response(studio_release),
+    )
+
+
 @router.get(
     "/drafts/{draft_id}/abox",
     response_model=KnowledgeStudioABoxResponse,
@@ -665,21 +825,35 @@ async def preflight_knowledge_studio_abox(
     response: Response,
     context: ContextDep,
     session: SessionDep,
+    idempotency_key: IdempotencyKey,
     if_match: IfMatch,
 ) -> KnowledgeStudioPreflightResponse:
+    expected_version = _expected_version(if_match)
+    request_hash = canonical_json_hash(
+        {
+            "draft_id": str(draft_id),
+            "expected_version": expected_version,
+        }
+    )
     record = await _preview_service(request, session).preflight(
         workspace_id=context.workspace_id,
         subject=context.subject,
         draft_id=draft_id,
-        expected_version=_expected_version(if_match),
+        expected_version=expected_version,
+        idempotency_key=idempotency_key,
+        request_hash=request_hash,
         environment=context.environment,
         request_id=context.request_id,
     )
+    if record.receipt_id is None or record.contract_hash is None:
+        raise ValidationError("The durable pre-flight receipt is unavailable.")
     _set_version_headers(response, record.draft_version)
     return KnowledgeStudioPreflightResponse(
         status=record.status,
         valid=record.valid,
         draft_version=record.draft_version,
         checked_at=record.checked_at,
+        receipt_id=record.receipt_id,
+        contract_hash=record.contract_hash,
         evidence=[_evidence_response(item) for item in record.evidence],
     )

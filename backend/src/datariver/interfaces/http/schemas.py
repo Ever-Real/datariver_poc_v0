@@ -2033,6 +2033,15 @@ class KnowledgeStudioDraftResponse(BaseModel):
     version: int = Field(ge=1)
     created_at: datetime
     updated_at: datetime
+    submitted_preflight_check_id: UUID | None
+    reviewed_by: UUID | None
+    reviewed_at: datetime | None
+    review_reason: str | None
+    published_by: UUID | None
+    published_at: datetime | None
+    materialized_graph_id: UUID | None
+    materialized_ontology_version_id: UUID | None
+    published_studio_release_id: UUID | None
 
 
 class KnowledgeStudioTBoxElementResponse(BaseModel):
@@ -2196,7 +2205,37 @@ class KnowledgeStudioPreflightResponse(BaseModel):
     valid: bool
     draft_version: int = Field(ge=1)
     checked_at: datetime
+    receipt_id: UUID
+    contract_hash: str = Field(pattern="^[0-9a-f]{64}$")
     evidence: list[KnowledgeStudioValidationEvidenceResponse] = Field(max_length=2_000)
+
+
+class KnowledgeStudioPublishRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    review_reason: str = Field(min_length=1, max_length=2_000)
+
+
+class KnowledgeStudioReleaseResponse(BaseModel):
+    id: UUID
+    graph_id: UUID
+    ontology_version_id: UUID
+    release_no: int = Field(ge=1)
+    state: Literal["ACTIVE", "ARCHIVED"]
+    contract_version: Literal["KNOWLEDGE_STUDIO_RELEASE_V1"]
+    contract_hash: str = Field(pattern="^[0-9a-f]{64}$")
+    tbox_hash: str = Field(pattern="^[0-9a-f]{64}$")
+    abox_hash: str = Field(pattern="^[0-9a-f]{64}$")
+    supersedes_studio_release_id: UUID | None
+    reviewed_by: UUID
+    published_by: UUID
+    published_at: datetime
+    archived_studio_release_id: UUID | None
+
+
+class KnowledgeStudioPublishResponse(BaseModel):
+    draft: KnowledgeStudioDraftResponse
+    release: KnowledgeStudioReleaseResponse
 
 
 class KnowledgeGraphCreate(BaseModel):

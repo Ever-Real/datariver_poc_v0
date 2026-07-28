@@ -1063,6 +1063,39 @@ def test_knowledge_studio_draft_openapi_requires_etag_and_idempotency() -> None:
     assert advance_headers["If-Match"]["required"] is True
     assert advance_headers["Idempotency-Key"]["required"] is True
 
+    submit_review = document["paths"]["/api/v1/knowledge/studio/drafts/{draft_id}/submit-review"][
+        "post"
+    ]
+    submit_review_headers = {item["name"]: item for item in submit_review["parameters"]}
+    assert submit_review_headers["If-Match"]["required"] is True
+    assert submit_review_headers["Idempotency-Key"]["required"] is True
+    assert "requestBody" not in submit_review
+    assert submit_review["responses"]["200"]["headers"]["ETag"]["schema"] == {"type": "string"}
+
+    discard = document["paths"]["/api/v1/knowledge/studio/drafts/{draft_id}/discard"]["post"]
+    discard_headers = {item["name"]: item for item in discard["parameters"]}
+    assert discard_headers["If-Match"]["required"] is True
+    assert discard_headers["Idempotency-Key"]["required"] is True
+    assert "requestBody" not in discard
+    assert discard["responses"]["200"]["headers"]["ETag"]["schema"] == {"type": "string"}
+
+    publish = document["paths"]["/api/v1/knowledge/studio/drafts/{draft_id}/publish"]["post"]
+    publish_headers = {item["name"]: item for item in publish["parameters"]}
+    assert publish_headers["If-Match"]["required"] is True
+    assert publish_headers["Idempotency-Key"]["required"] is True
+    assert publish["responses"]["200"]["headers"]["ETag"]["schema"] == {"type": "string"}
+    publish_request = document["components"]["schemas"]["KnowledgeStudioPublishRequest"]
+    assert set(publish_request["properties"]) == {"review_reason"}
+    publish_response = document["components"]["schemas"]["KnowledgeStudioPublishResponse"]
+    assert set(publish_response["properties"]) == {"draft", "release"}
+    release_response = document["components"]["schemas"]["KnowledgeStudioReleaseResponse"]
+    assert {
+        "cypher",
+        "query",
+        "provider_credentials",
+        "source_rows",
+    }.isdisjoint(release_response["properties"])
+
     domains = document["paths"]["/api/v1/knowledge/studio/domains"]["get"]
     classification = next(
         item for item in domains["parameters"] if item["name"] == "classification"
@@ -1123,7 +1156,10 @@ def test_knowledge_studio_draft_openapi_requires_etag_and_idempotency() -> None:
     ]
     preflight_headers = {item["name"]: item for item in preflight["parameters"]}
     assert preflight_headers["If-Match"]["required"] is True
+    assert preflight_headers["Idempotency-Key"]["required"] is True
     assert "requestBody" not in preflight
+    preflight_response = document["components"]["schemas"]["KnowledgeStudioPreflightResponse"]
+    assert {"receipt_id", "contract_hash"}.issubset(preflight_response["properties"])
 
 
 def test_typed_upload_template_is_an_authenticated_server_versioned_download() -> None:

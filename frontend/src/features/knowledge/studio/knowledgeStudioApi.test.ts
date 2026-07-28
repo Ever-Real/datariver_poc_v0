@@ -4,9 +4,12 @@ import {
   advanceKnowledgeStudioDraft,
   autosaveKnowledgeStudioDraft,
   createKnowledgeStudioDraft,
+  discardKnowledgeStudioDraft,
   listKnowledgeStudioDomains,
   preflightKnowledgeStudioABox,
   previewKnowledgeStudioBinding,
+  publishKnowledgeStudioDraft,
+  submitKnowledgeStudioReview,
   type KnowledgeStudioBasicInformation,
 } from './knowledgeStudioApi'
 
@@ -122,6 +125,8 @@ describe('Knowledge Studio API', () => {
       valid: true,
       draft_version: 3,
       checked_at: '2026-07-28T08:00:00Z',
+      receipt_id: '019fa57b-52de-74c0-9f5e-06ae7b1bf3c0',
+      contract_hash: 'a'.repeat(64),
       evidence: [],
     }
     const fetchMock = vi.fn<typeof fetch>()
@@ -147,6 +152,7 @@ describe('Knowledge Studio API', () => {
       client,
       '019fa57b-52de-74c0-9f5e-06ae7b1bf3b0',
       '"3"',
+      'preflight-key',
     )
 
     const previewCall = fetchMock.mock.calls[0]
@@ -164,6 +170,71 @@ describe('Knowledge Studio API', () => {
     expect(requestUrl(preflightCall?.[0])).toContain('/abox/preflight')
     expect(preflightCall?.[1]?.method).toBe('POST')
     expect(new Headers(preflightCall?.[1]?.headers).get('If-Match')).toBe('"3"')
+    expect(new Headers(preflightCall?.[1]?.headers).get('Idempotency-Key')).toBe('preflight-key')
     expect(preflightCall?.[1]?.body).toBeUndefined()
+  })
+
+  it('uses fenced idempotent maker-checker lifecycle commands', async () => {
+    const release = {
+      id: '019fa57b-52de-74c0-9f5e-06ae7b1bf3c1',
+      graph_id: '019fa57b-52de-74c0-9f5e-06ae7b1bf3c2',
+      ontology_version_id: '019fa57b-52de-74c0-9f5e-06ae7b1bf3c3',
+      release_no: 1,
+      state: 'ACTIVE',
+      contract_version: 'KNOWLEDGE_STUDIO_RELEASE_V1',
+      contract_hash: 'a'.repeat(64),
+      tbox_hash: 'b'.repeat(64),
+      abox_hash: 'c'.repeat(64),
+      reviewed_by: '019fa57b-52de-74c0-9f5e-06ae7b1bf3c4',
+      published_by: '019fa57b-52de-74c0-9f5e-06ae7b1bf3c4',
+      published_at: '2026-07-28T09:00:00Z',
+    }
+    const fetchMock = vi.fn<typeof fetch>()
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        ...draftResponse(4), state: 'REVIEW', current_step: 'ABOX',
+      }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json', ETag: '"4"' },
+      }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        draft: {
+          ...draftResponse(5), state: 'PUBLISHED', current_step: 'ABOX',
+        },
+        release,
+      }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json', ETag: '"5"' },
+      }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        ...draftResponse(6), state: 'DISCARDED', current_step: 'ABOX',
+      }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json', ETag: '"6"' },
+      }))
+    vi.stubGlobal('fetch', fetchMock)
+    const client = new ApiClient('/api/v1', () => 'token', () => 'workspace')
+    const draftId = '019fa57b-52de-74c0-9f5e-06ae7b1bf3b0'
+
+    await submitKnowledgeStudioReview(client, draftId, '"3"', 'review-key')
+    await publishKnowledgeStudioDraft(
+      client,
+      draftId,
+      'Schema와 source access evidence를 검토함',
+      '"4"',
+      'publish-key',
+    )
+    await discardKnowledgeStudioDraft(client, draftId, '"5"', 'discard-key')
+
+    const [reviewCall, publishCall, discardCall] = fetchMock.mock.calls
+    expect(requestUrl(reviewCall?.[0])).toContain('/submit-review')
+    expect(new Headers(reviewCall?.[1]?.headers).get('Idempotency-Key')).toBe('review-key')
+    expect(requestUrl(publishCall?.[0])).toContain('/publish')
+    expect(new Headers(publishCall?.[1]?.headers).get('If-Match')).toBe('"4"')
+    expect(new Headers(publishCall?.[1]?.headers).get('Idempotency-Key')).toBe('publish-key')
+    expect(JSON.parse(publishCall?.[1]?.body as string)).toEqual({
+      review_reason: 'Schema와 source access evidence를 검토함',
+    })
+    expect(requestUrl(discardCall?.[0])).toContain('/discard')
+    expect(new Headers(discardCall?.[1]?.headers).get('Idempotency-Key')).toBe('discard-key')
   })
 })

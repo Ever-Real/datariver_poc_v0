@@ -7,6 +7,7 @@ from datariver.application.dto import (
     KnowledgeStudioBindingRecord,
     KnowledgeStudioDomainOption,
     KnowledgeStudioDraftRecord,
+    KnowledgeStudioReleaseRecord,
     KnowledgeStudioSourceDetail,
     KnowledgeStudioSourcePage,
 )
@@ -19,7 +20,7 @@ from datariver.domain.authz import (
     ResourceAttributes,
     SubjectAttributes,
 )
-from datariver.domain.common import ConflictError, NotFoundError
+from datariver.domain.common import ConflictError, NotFoundError, ValidationError
 from datariver.domain.knowledge_studio import (
     ABoxMappingMethod,
     ABoxMappingRuleInput,
@@ -89,15 +90,14 @@ class KnowledgeStudioService:
     ) -> KnowledgeStudioDraftRecord:
         draft = await self._store.get_draft(
             workspace_id=workspace_id,
-            author_id=subject.subject_id,
+            actor_id=subject.subject_id,
             draft_id=draft_id,
         )
         if draft is None:
             raise NotFoundError("The Knowledge Studio draft does not exist.")
-        await self._authorize_draft(
+        await self._authorize_visible_draft(
             draft=draft,
             subject=subject,
-            action=Action.KG_READ,
             environment=environment,
             request_id=request_id,
         )
@@ -275,16 +275,15 @@ class KnowledgeStudioService:
     ) -> KnowledgeStudioABoxRecord:
         record = await self._store.get_abox(
             workspace_id=workspace_id,
-            author_id=subject.subject_id,
+            actor_id=subject.subject_id,
             draft_id=draft_id,
         )
         if record is None:
             raise NotFoundError("The Knowledge Studio draft does not exist.")
         self._require_abox_step(record.draft)
-        await self._authorize_draft(
+        await self._authorize_visible_draft(
             draft=record.draft,
             subject=subject,
-            action=Action.KG_READ,
             environment=environment,
             request_id=request_id,
         )
@@ -427,7 +426,7 @@ class KnowledgeStudioService:
             )
         abox = await self._store.get_abox(
             workspace_id=workspace_id,
-            author_id=subject.subject_id,
+            actor_id=subject.subject_id,
             draft_id=draft_id,
         )
         if abox is None:
@@ -476,6 +475,128 @@ class KnowledgeStudioService:
             request_hash=request_hash,
         )
 
+    async def submit_review(
+        self,
+        *,
+        workspace_id: UUID,
+        subject: SubjectAttributes,
+        draft_id: UUID,
+        expected_version: int,
+        idempotency_key: str,
+        request_hash: str,
+        environment: EnvironmentAttributes,
+        request_id: str,
+    ) -> KnowledgeStudioDraftRecord:
+        draft = await self._require_draft(
+            workspace_id=workspace_id,
+            author_id=subject.subject_id,
+            draft_id=draft_id,
+        )
+        await self._authorize_draft(
+            draft=draft,
+            subject=subject,
+            action=Action.KG_EDIT,
+            environment=environment,
+            request_id=request_id,
+        )
+        return await self._store.submit_review(
+            workspace_id=workspace_id,
+            author_id=subject.subject_id,
+            draft_id=draft_id,
+            expected_version=expected_version,
+            idempotency_key=idempotency_key,
+            request_hash=request_hash,
+        )
+
+    async def discard_draft(
+        self,
+        *,
+        workspace_id: UUID,
+        subject: SubjectAttributes,
+        draft_id: UUID,
+        expected_version: int,
+        idempotency_key: str,
+        request_hash: str,
+        environment: EnvironmentAttributes,
+        request_id: str,
+    ) -> KnowledgeStudioDraftRecord:
+        draft = await self._require_draft(
+            workspace_id=workspace_id,
+            author_id=subject.subject_id,
+            draft_id=draft_id,
+        )
+        await self._authorize_draft(
+            draft=draft,
+            subject=subject,
+            action=Action.KG_EDIT,
+            environment=environment,
+            request_id=request_id,
+        )
+        return await self._store.discard_draft(
+            workspace_id=workspace_id,
+            author_id=subject.subject_id,
+            draft_id=draft_id,
+            expected_version=expected_version,
+            idempotency_key=idempotency_key,
+            request_hash=request_hash,
+        )
+
+    async def publish_draft(
+        self,
+        *,
+        workspace_id: UUID,
+        subject: SubjectAttributes,
+        draft_id: UUID,
+        review_reason: str,
+        expected_version: int,
+        idempotency_key: str,
+        request_hash: str,
+        environment: EnvironmentAttributes,
+        request_id: str,
+    ) -> tuple[KnowledgeStudioDraftRecord, KnowledgeStudioReleaseRecord]:
+        if subject.job_function == "SERVICE_ACCOUNT" or "service-accounts" in subject.groups:
+            raise ValidationError("Studio publication requires an independent human reviewer.")
+        draft = await self._store.get_draft(
+            workspace_id=workspace_id,
+            actor_id=subject.subject_id,
+            draft_id=draft_id,
+        )
+        if draft is None or draft.state != "REVIEW":
+            raise NotFoundError("The Knowledge Studio review Draft does not exist.")
+        if draft.author_id == subject.subject_id:
+            raise ConflictError("A Studio author cannot review or publish their own Draft.")
+        review_resource = self._resource(
+            resource_id=draft.draft_id,
+            workspace_id=draft.workspace_id,
+            owner_subject_id=None,
+            domain_id=draft.domain_id,
+            classification=draft.classification,
+            lifecycle=draft.state,
+        )
+        await self._authorization.authorize(
+            subject=subject,
+            resource=review_resource,
+            action=Action.KG_REVIEW,
+            environment=environment,
+            request_id=request_id,
+        )
+        await self._authorization.authorize(
+            subject=subject,
+            resource=review_resource,
+            action=Action.KG_PUBLISH,
+            environment=environment,
+            request_id=request_id,
+        )
+        return await self._store.publish_draft(
+            workspace_id=workspace_id,
+            actor_id=subject.subject_id,
+            draft_id=draft_id,
+            review_reason=review_reason,
+            expected_version=expected_version,
+            idempotency_key=idempotency_key,
+            request_hash=request_hash,
+        )
+
     def _source_reader(self) -> KnowledgeStudioSourceReader:
         if self._sources is None:
             raise ConflictError("Knowledge Studio Dataset selection is unavailable.")
@@ -495,7 +616,7 @@ class KnowledgeStudioService:
     ) -> KnowledgeStudioDraftRecord:
         draft = await self._store.get_draft(
             workspace_id=workspace_id,
-            author_id=author_id,
+            actor_id=author_id,
             draft_id=draft_id,
         )
         if draft is None:
@@ -526,12 +647,46 @@ class KnowledgeStudioService:
             request_id=request_id,
         )
 
+    async def _authorize_visible_draft(
+        self,
+        *,
+        draft: KnowledgeStudioDraftRecord,
+        subject: SubjectAttributes,
+        environment: EnvironmentAttributes,
+        request_id: str,
+    ) -> None:
+        if draft.author_id == subject.subject_id:
+            await self._authorize_draft(
+                draft=draft,
+                subject=subject,
+                action=Action.KG_READ,
+                environment=environment,
+                request_id=request_id,
+            )
+            return
+        if draft.state not in {"REVIEW", "PUBLISHED"}:
+            raise NotFoundError("The Knowledge Studio draft does not exist.")
+        await self._authorization.authorize(
+            subject=subject,
+            resource=self._resource(
+                resource_id=draft.draft_id,
+                workspace_id=draft.workspace_id,
+                owner_subject_id=None,
+                domain_id=draft.domain_id,
+                classification=draft.classification,
+                lifecycle=draft.state,
+            ),
+            action=Action.KG_REVIEW,
+            environment=environment,
+            request_id=request_id,
+        )
+
     @staticmethod
     def _resource(
         *,
         resource_id: UUID,
         workspace_id: UUID,
-        owner_subject_id: UUID,
+        owner_subject_id: UUID | None,
         domain_id: UUID | None,
         classification: Classification,
         lifecycle: str,

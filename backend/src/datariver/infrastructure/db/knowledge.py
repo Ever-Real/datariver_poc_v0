@@ -67,6 +67,7 @@ def _graph_record(model: GraphModel) -> KnowledgeGraphRecord:
         classification=Classification(model.classification),
         active_release_id=model.active_release_id,
         version=model.version,
+        active_studio_release_id=model.active_studio_release_id,
     )
 
 
