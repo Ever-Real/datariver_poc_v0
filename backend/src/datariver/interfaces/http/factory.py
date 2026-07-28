@@ -20,6 +20,7 @@ from datariver.domain.common import (
     DomainError,
     ForbiddenError,
     NotFoundError,
+    PreconditionFailedError,
     RateLimitError,
     ValidationError,
     uuid7,
@@ -145,6 +146,8 @@ def create_app(
             status = 403
         elif isinstance(error, NotFoundError):
             status = 404
+        elif isinstance(error, PreconditionFailedError):
+            status = 412
         elif isinstance(error, ConflictError):
             status = 409
         elif isinstance(error, ValidationError):

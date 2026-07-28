@@ -55,6 +55,12 @@ class ConflictError(DomainError):
     code = "conflict"
 
 
+class PreconditionFailedError(DomainError):
+    """The supplied optimistic concurrency precondition is no longer current."""
+
+    code = "precondition_failed"
+
+
 class ForbiddenError(DomainError):
     code = "forbidden"
 

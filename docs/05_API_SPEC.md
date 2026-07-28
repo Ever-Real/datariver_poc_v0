@@ -296,6 +296,11 @@ cannot re-enter the ordinary workflow.
 
 | Method/path | Action | Purpose |
 |---|---|---|
+| `GET /knowledge/studio/domains?classification=&q=&limit=` | `kg.create` | active DOMAIN picker, bounded to 100 and filtered by the requested classification plus Subject domain scope |
+| `POST /knowledge/studio/drafts` | `kg.create` | create an author-only CREATE Draft from typed Step 1 data; requires `Idempotency-Key`, returns ETag and does not create a graph |
+| `GET /knowledge/studio/drafts/{draft_id}` | `kg.read` | read the current author's Draft with `Cache-Control: no-store` and ETag; hidden/foreign Drafts are not disclosed |
+| `PATCH /knowledge/studio/drafts/{draft_id}` | `kg.edit` | idempotent Step 1 auto-save; requires exact `If-Match` and returns `412` on a stale version |
+| `POST /knowledge/studio/drafts/{draft_id}/advance` | `kg.edit` | idempotently fence the saved Step 1 Draft and advance only to `TBOX`; requires exact `If-Match` |
 | `POST /knowledge/graphs` | `kg.create` | graph plus initial typed ontology |
 | `GET /knowledge/graphs` | `kg.read` | clearance-filtered graphs |
 | `POST/GET /knowledge/graphs/{graph_id}/changesets` | `kg.edit` / `kg.read` | create/list a base-release-pinned changeset |
@@ -315,6 +320,13 @@ cannot re-enter the ordinary workflow.
 | `POST .../source-analysis-jobs/{job_id}/cancel` | owner + `kg.edit` | require a positive-version `If-Match` and `Idempotency-Key`; queued/retry work cancels immediately, running work becomes `CANCEL_REQUESTED`, and terminal success is immutable |
 | `POST .../releases/{release_id}/project` | `kg.publish` | rebuild a release-scoped Neo4j shadow and verify its canonical read-back hash before recording `SHADOW_VERIFIED` |
 | `POST .../releases/{release_id}/graphrag` | `kg.read` + `chat.query` | bounded node/relationship evidence retrieval and citation-constrained local model answer |
+
+Studio create/autosave/advance idempotency is actor- and operation-bound. Auto-save and advance
+accept only a canonical quoted positive integer ETag. A successful result snapshot is committed
+with its idempotency record, allowing an ambiguous response to replay before a stale precondition
+check. A distinct concurrent write locks the Draft row and returns `412`, while alias, lifecycle and
+changed-key conflicts remain `409`. “Overwrite” is a client-confirmed latest-ETag rebase, never an
+unconditional force endpoint.
 
 Neighbor request accepts only `node_id`, `direction=IN|OUT|BOTH`, an edge-type allowlist, `maximum_hops<=3` and `maximum_nodes<=500`. It cannot contain SQL, Cypher, labels or clauses. Every published node/edge requires ontology membership, valid endpoints, classification and provenance.
 

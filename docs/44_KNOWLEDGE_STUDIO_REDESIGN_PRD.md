@@ -344,8 +344,10 @@ Knowledge feature 내부 API/DTO는 `frontend/src/api/types.ts`의 거대한 공
   proposals, binding specs와 runs는 TanStack Query가 소유한다.
 - semantic editor state: accepted typed T-Box operation reducer가 유일한 source of truth다.
   Cypher text와 React Flow node/edge는 codec으로부터 파생한다.
-- transient state: 현재 invalid text buffer, selection, viewport, 아직 저장하지 않은 form은
-  component state다. invalid text가 server draft나 accepted canvas를 덮어쓰지 않는다.
+- transient state: 현재 invalid text buffer, selection, viewport와 form은 component state다.
+  Step 1의 미전송 typed form만 ADR-0059의 same-origin IndexedDB recovery queue에 복제할 수
+  있다. 이 복구 레코드는 token/권한/원시 Workspace·Subject를 포함하지 않으며 server
+  Draft나 accepted canvas를 덮어쓰지 않는다.
 - proposal state: accepted graph와 별도 collection/overlay다. Accept 성공 응답을 받은 뒤에만
   accepted reducer/query cache에 합친다.
 - route state: asset/drawer tab 또는 draft/step만 URL에 두고 graph payload, 권한, completion
@@ -364,6 +366,10 @@ Knowledge feature 내부 API/DTO는 `frontend/src/api/types.ts`의 거대한 공
   유일한 source of truth다.
 - 모든 write는 Idempotency-Key와 ETag/If-Match를 사용한다. 충돌 시 재조회/rebase UI를
   제공하며 자동 덮어쓰지 않는다.
+- Step 1 입력은 각 변경 직후 복구 queue에 먼저 기록하고 서버 호출은 1.5초 debounce한다.
+  `412`에서는 로컬 입력을 보존한 채 최신 버전 불러오기와 최신 ETag 기반 명시적 덮어쓰기
+  중 하나를 선택한다. 브라우저 저장소 삭제·eviction·기기 손실까지 100% 보존한다고
+  주장하지 않는다.
 - Registry page는 allowlisted server sort와 opaque keyset cursor만 사용한다. target dataset의
   `EXPLAIN (ANALYZE, BUFFERS)` 전에는 응답시간이나 수용량을 주장하지 않는다.
 

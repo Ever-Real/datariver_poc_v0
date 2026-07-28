@@ -14,6 +14,21 @@ addenda and `docs/29_MASTER_EXECUTION_BACKLOG.md`.
 
 P0–P3 foundation addendum, updated 2026-07-16: current source checks additionally include the stable DataHub v1.6.0 release contract and typed OIDC assurance. Hardware WebAuthn requires an exact approved ACR+AMR combination and `auth_time`; OTP, generic MFA and refreshed-token `iat` cannot satisfy high-risk authorization. Browser remediation is bounded to typed authentication actions, rejects unsafe return locations, and never automatically replays a denied mutation after an authentication redirect. Compatibility migrations and the current hybrid runtime have separate live evidence below.
 
+## Knowledge Studio Draft/Step 1 addendum — 2026-07-28
+
+This addendum accepts the local source contract for author-only Studio Draft create/read/autosave,
+bounded domain selection, ETag `412` recovery and routing from saved Step 1 to the T-Box foundation.
+It does not accept target-browser storage durability, real concurrent identities or target
+PostgreSQL lock/RLS behavior.
+
+| Gate | Result | Current executed evidence |
+|---|---|---|
+| Command/read boundary | PASS (local source) | Typed domain/create/read/autosave/advance APIs; graph type remains server-owned; Step 1 creates no graph/release/projection. Exact domain source version, author scope, classification ABAC and endpoint alias are checked before commit. |
+| Concurrency/idempotency | PASS (local source) | Auto-save/advance require quoted integer `If-Match`; stale versions use a distinct 412 domain error. Advisory-key serialization, Draft row locking and exact actor/request-bound response snapshots implement safe replay. Focused backend selection passed `27`. |
+| Browser recovery | PASS (local source) | Typed form revisions enter same-origin IndexedDB before transmission; no token, role or raw tenant/Subject enters the record. Server writes are debounced 1.5 seconds, offline work retries on `online`, and a queue write failure prevents transmission. Both 412 choices preserve local input until the user decides. |
+| Regression | PASS WITH FORMAT BASELINE | Backend `1,655 passed / 97 skipped`; Ruff lint, strict mypy over `412` files and static verification passed. Frontend TypeScript, ESLint, `53 files / 294 tests` and production build passed. Changed files pass Ruff format; the repository-wide format check still identifies two unrelated pre-existing DataHub files. |
+| External acceptance | OPEN | Isolated PostgreSQL same-key/different-key interleavings and app-role RLS, real multi-tab/two-session conflict, storage eviction/profile deletion, supported target browsers and WSL `linux/amd64` remain external gates. |
+
 ## Phase 6E web Nginx security-header addendum — 2026-07-24
 
 This addendum currently records the implementation, whole-source regression and focused runtime

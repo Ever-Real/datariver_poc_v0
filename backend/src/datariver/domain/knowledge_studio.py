@@ -3,7 +3,11 @@ from __future__ import annotations
 from dataclasses import dataclass
 from enum import StrEnum
 
-from datariver.domain.common import ConflictError, ValidationError
+from datariver.domain.common import (
+    ConflictError,
+    PreconditionFailedError,
+    ValidationError,
+)
 
 
 class StudioDraftKind(StrEnum):
@@ -39,6 +43,19 @@ def validate_endpoint_alias(value: str) -> str:
                 "Endpoint alias may contain lowercase ASCII letters, digits and underscores."
             )
     return value
+
+
+def validate_studio_name(value: str) -> str:
+    if value != value.strip():
+        raise ValidationError("Knowledge graph name must not contain surrounding whitespace.")
+    if len(value) < 1 or len(value) > 255:
+        raise ValidationError("Knowledge graph name must contain between 1 and 255 characters.")
+    return value
+
+
+def require_studio_version(current_version: int, expected_version: int) -> None:
+    if current_version != expected_version:
+        raise PreconditionFailedError("The Knowledge Studio draft was modified by another editor.")
 
 
 @dataclass(frozen=True, slots=True)

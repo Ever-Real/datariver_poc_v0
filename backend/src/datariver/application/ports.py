@@ -71,6 +71,8 @@ from datariver.application.dto import (
     KnowledgeEvidenceCandidate,
     KnowledgeGraphRecord,
     KnowledgeReleaseRecord,
+    KnowledgeStudioDomainOption,
+    KnowledgeStudioDraftRecord,
     ManualMetadataApplyAttemptEvidence,
     MembershipChangeRequestActivityPage,
     MembershipOwnedTablePage,
@@ -1416,6 +1418,66 @@ class UploadValidationStore(Protocol):
         retryable: bool,
         maximum_attempts: int,
     ) -> None: ...
+
+
+class KnowledgeStudioStore(Protocol):
+    async def list_domains(
+        self,
+        *,
+        workspace_id: UUID,
+        allowed_domain_ids: frozenset[UUID] | None,
+        query: str | None,
+        limit: int,
+    ) -> tuple[KnowledgeStudioDomainOption, ...]: ...
+
+    async def get_draft(
+        self,
+        *,
+        workspace_id: UUID,
+        author_id: UUID,
+        draft_id: UUID,
+    ) -> KnowledgeStudioDraftRecord | None: ...
+
+    async def create_draft(
+        self,
+        *,
+        workspace_id: UUID,
+        author_id: UUID,
+        name: str,
+        endpoint_alias: str,
+        domain_id: UUID,
+        domain_source_version: str,
+        classification: int,
+        idempotency_key: str,
+        request_hash: str,
+    ) -> KnowledgeStudioDraftRecord: ...
+
+    async def autosave_draft(
+        self,
+        *,
+        workspace_id: UUID,
+        author_id: UUID,
+        draft_id: UUID,
+        name: str,
+        endpoint_alias: str,
+        domain_id: UUID,
+        domain_source_version: str,
+        classification: int,
+        expected_version: int,
+        idempotency_key: str,
+        request_hash: str,
+    ) -> KnowledgeStudioDraftRecord: ...
+
+    async def advance_to_tbox(
+        self,
+        *,
+        workspace_id: UUID,
+        author_id: UUID,
+        draft_id: UUID,
+        expected_version: int,
+        idempotency_key: str,
+        request_hash: str,
+    ) -> KnowledgeStudioDraftRecord: ...
 
 
 class KnowledgeStore(Protocol):

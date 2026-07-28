@@ -323,7 +323,15 @@ export function App() {
         {page === 'quality' && <QualityPage />}
         {page === 'knowledge' && <KnowledgePage client={client} onNavigate={navigate} />}
         {page === 'knowledge-chat' && <KnowledgeChatPage client={client} onNavigate={navigate} />}
-        {page === 'knowledge-studio' && <KnowledgeStudioPage onNavigate={navigate} />}
+        {page === 'knowledge-studio' && (
+          <KnowledgeStudioPage
+            key={`${activeWorkspace}:${authenticatedSubject}:${auth.securityEpoch}`}
+            client={client}
+            workspaceId={activeWorkspace}
+            subjectId={authenticatedSubject}
+            onNavigate={navigate}
+          />
+        )}
         {page === 'monitoring' && <MonitoringPage client={client} />}
         {page === 'governance' && <PolicyGovernancePage client={client} mayReadPolicies={mayReadPolicyGovernance} allowedOperations={currentAdminContext?.allowed_operations} />}
         {page === 'sharing' && <SharingPage client={client} onStepUp={auth.beginStepUp} onPasswordReauth={auth.beginPasswordReauth} onEnroll={auth.beginWebAuthnEnrollment} />}

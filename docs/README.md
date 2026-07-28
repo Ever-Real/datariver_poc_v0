@@ -91,6 +91,8 @@ Current WSL source-validation decisions: [intranet HTTPS ingress](adr/0051-wsl-i
 
 Current Knowledge Studio foundation decision: [persistent Studio drafts, weighted overlay merge,
 endpoint aliases and managed default graphs](adr/0058-knowledge-studio-foundation-and-managed-graphs.md).
+Its auto-save concurrency and browser recovery boundary is defined by
+[Knowledge Studio offline recovery and ETag conflicts](adr/0059-knowledge-studio-offline-recovery-and-etag-conflicts.md).
 
 ## Change control
 

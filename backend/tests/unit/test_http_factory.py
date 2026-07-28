@@ -13,7 +13,12 @@ from starlette.responses import Response
 
 from datariver.config import Settings
 from datariver.domain.authz import Action
-from datariver.domain.common import ForbiddenError, RateLimitError, ValidationError
+from datariver.domain.common import (
+    ForbiddenError,
+    PreconditionFailedError,
+    RateLimitError,
+    ValidationError,
+)
 from datariver.infrastructure.db.session import DatabaseReadiness
 from datariver.infrastructure.observability.metrics import HttpMetrics
 from datariver.interfaces.http.container import AppContainer
@@ -169,6 +174,22 @@ def test_rate_limit_problem_is_stable_retryable_and_never_cacheable() -> None:
         "code": "rate_limit_exceeded",
         "request_id": "phase6c-rate-limit",
     }
+
+
+def test_precondition_failure_has_a_distinct_http_412_contract() -> None:
+    factory = cast(Callable[[Settings], AppContainer], lambda _: LiveOnlyContainer())
+    app = create_app(settings(), container_factory=factory)
+
+    @app.patch("/test/precondition")
+    async def stale_write() -> None:
+        raise PreconditionFailedError("The Draft was modified by another editor.")
+
+    with TestClient(app) as client:
+        response = client.patch("/test/precondition")
+
+    assert response.status_code == 412
+    assert response.json()["code"] == "precondition_failed"
+    assert response.headers["Cache-Control"] == "private, no-store"
 
 
 def test_http_metrics_use_bounded_route_templates() -> None:
@@ -1020,6 +1041,38 @@ def test_upload_preparation_openapi_is_typed_and_server_managed() -> None:
         "parser_configuration",
         "rows",
     }.isdisjoint(response["properties"])
+
+
+def test_knowledge_studio_draft_openapi_requires_etag_and_idempotency() -> None:
+    factory = cast(Callable[[Settings], AppContainer], lambda _: LiveOnlyContainer())
+    document = create_app(settings(), container_factory=factory).openapi()
+
+    create = document["paths"]["/api/v1/knowledge/studio/drafts"]["post"]
+    assert create["responses"]["201"]["headers"]["ETag"]["schema"] == {"type": "string"}
+    create_headers = {item["name"]: item for item in create["parameters"]}
+    assert create_headers["Idempotency-Key"]["required"] is True
+
+    autosave = document["paths"]["/api/v1/knowledge/studio/drafts/{draft_id}"]["patch"]
+    autosave_headers = {item["name"]: item for item in autosave["parameters"]}
+    assert autosave_headers["If-Match"]["required"] is True
+    assert autosave_headers["Idempotency-Key"]["required"] is True
+    assert autosave["responses"]["200"]["headers"]["ETag"]["schema"] == {"type": "string"}
+
+    advance = document["paths"]["/api/v1/knowledge/studio/drafts/{draft_id}/advance"]["post"]
+    advance_headers = {item["name"]: item for item in advance["parameters"]}
+    assert advance_headers["If-Match"]["required"] is True
+    assert advance_headers["Idempotency-Key"]["required"] is True
+
+    domains = document["paths"]["/api/v1/knowledge/studio/domains"]["get"]
+    classification = next(
+        item for item in domains["parameters"] if item["name"] == "classification"
+    )
+    assert classification["schema"]["enum"] == [
+        "PUBLIC",
+        "INTERNAL",
+        "CONFIDENTIAL",
+        "RESTRICTED",
+    ]
 
 
 def test_typed_upload_template_is_an_authenticated_server_versioned_download() -> None:

@@ -1055,6 +1055,35 @@ class KnowledgeGraphRecord:
 
 
 @dataclass(frozen=True, slots=True)
+class KnowledgeStudioDomainOption:
+    domain_id: UUID
+    display_name: str
+    source_version: str
+
+
+@dataclass(frozen=True, slots=True)
+class KnowledgeStudioDraftRecord:
+    draft_id: UUID
+    workspace_id: UUID
+    author_id: UUID
+    kind: str
+    state: str
+    current_step: str
+    name: str
+    endpoint_alias: str
+    domain_id: UUID
+    domain_source_version: str
+    classification: Classification
+    base_graph_id: UUID | None
+    base_ontology_version_id: UUID | None
+    base_release_id: UUID | None
+    last_autosaved_at: datetime
+    version: int
+    created_at: datetime
+    updated_at: datetime
+
+
+@dataclass(frozen=True, slots=True)
 class KnowledgeReleaseRecord:
     release_id: UUID
     graph_id: UUID

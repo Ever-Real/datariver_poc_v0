@@ -2,6 +2,22 @@
 
 ## Current verification status
 
+### Knowledge Studio Draft API and recoverable Step 1 — 2026-07-28
+
+The additive Studio command/read implementation retains Alembic head `0059`. Focused backend
+domain/service/persistence/OpenAPI/error tests passed `27` selected cases; the whole backend suite
+passed `1,655` with `97` explicitly environment-gated skips. Ruff lint, strict mypy over `412`
+source/test files and static architecture/storage verification passed. The exact repository Ruff
+format gate is clean for all changed files and still reports two unrelated pre-existing files:
+`infrastructure/datahub/http.py` and `test_datahub_gateway.py`.
+
+The frontend passed strict TypeScript, zero-warning ESLint, `53 files / 294 tests` and the
+production build. Seven focused Studio tests cover typed API headers, required response ETags,
+queue-before-send, 1.5-second debounced creation, Step 2 routing, offline retry, queue-write
+fail-closed behavior and both explicit 412 resolution choices. Browser storage deletion/eviction,
+device loss, real multi-tab/two-session concurrency and isolated PostgreSQL row-lock/RLS execution
+remain external gates and are not represented as passes.
+
 ### Phase 6C atomic Sharing hardening — 2026-07-24
 
 Phase 6C closes local backlog item `R5-BE-05H` without changing Alembic head `0055`. Ruff

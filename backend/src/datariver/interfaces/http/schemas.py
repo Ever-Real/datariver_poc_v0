@@ -1992,6 +1992,49 @@ class OntologyRequest(BaseModel):
     edge_types: set[str] = Field(min_length=1, max_length=200)
 
 
+class KnowledgeStudioBasicInformationRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    name: str = Field(min_length=1, max_length=255)
+    endpoint_alias: str = Field(pattern="^[a-z][a-z0-9_]{2,99}$")
+    domain_id: UUID
+    domain_source_version: str = Field(min_length=1, max_length=255)
+    classification: Literal["PUBLIC", "INTERNAL", "CONFIDENTIAL", "RESTRICTED"]
+
+
+class KnowledgeStudioAdvanceRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    target_step: Literal["TBOX"]
+
+
+class KnowledgeStudioDomainOptionResponse(BaseModel):
+    id: UUID
+    display_name: str
+    source_version: str
+
+
+class KnowledgeStudioDomainOptionsResponse(BaseModel):
+    items: list[KnowledgeStudioDomainOptionResponse]
+
+
+class KnowledgeStudioDraftResponse(BaseModel):
+    id: UUID
+    author_id: UUID
+    kind: Literal["CREATE", "EDIT"]
+    state: Literal["DRAFT", "REVIEW", "PUBLISHED", "DISCARDED"]
+    current_step: Literal["BASIC", "TBOX", "ABOX"]
+    name: str
+    endpoint_alias: str
+    domain_id: UUID
+    domain_source_version: str
+    classification: Literal["PUBLIC", "INTERNAL", "CONFIDENTIAL", "RESTRICTED"]
+    last_autosaved_at: datetime
+    version: int = Field(ge=1)
+    created_at: datetime
+    updated_at: datetime
+
+
 class KnowledgeGraphCreate(BaseModel):
     model_config = ConfigDict(extra="forbid")
 

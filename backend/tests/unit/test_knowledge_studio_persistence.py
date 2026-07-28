@@ -1,11 +1,22 @@
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from pathlib import Path
+from uuid import UUID
 
+import pytest
 from sqlalchemy import CheckConstraint, ForeignKeyConstraint, Index, Table
 
+from datariver.application.dto import IdempotencyRecord, KnowledgeStudioDraftRecord
+from datariver.domain.authz import Classification
+from datariver.domain.common import ConflictError
 from datariver.infrastructure.db import models  # noqa: F401
 from datariver.infrastructure.db.base import Base
+from datariver.infrastructure.db.knowledge_studio import (
+    resolve_studio_idempotent_replay,
+    studio_draft_record_from_result,
+    studio_draft_result,
+)
 from datariver.infrastructure.db.revision import REQUIRED_DATABASE_REVISION
 
 ROOT = Path(__file__).resolve().parents[3]
@@ -110,3 +121,62 @@ def test_additive_and_canonical_migrations_keep_owner_rls_and_no_delete_grant() 
     assert "GRANT DELETE ON knowledge.studio_drafts" not in migration
     assert "GRANT DELETE ON knowledge.studio_drafts" not in generator
     assert "downgrade would destroy canonical state" in migration
+
+
+def test_idempotency_snapshot_round_trips_the_exact_draft_response() -> None:
+    observed_at = datetime(2026, 7, 28, 1, 2, 3, tzinfo=UTC)
+    record = KnowledgeStudioDraftRecord(
+        draft_id=UUID("019fa57b-52de-74c0-9f5e-06ae7b1bf3b0"),
+        workspace_id=UUID("019fa57b-52de-74c0-9f5e-06ae7b1bf3b1"),
+        author_id=UUID("019fa57b-52de-74c0-9f5e-06ae7b1bf3b2"),
+        kind="CREATE",
+        state="DRAFT",
+        current_step="BASIC",
+        name="반도체 소재 그래프",
+        endpoint_alias="semiconductor_materials",
+        domain_id=UUID("019fa57b-52de-74c0-9f5e-06ae7b1bf3b3"),
+        domain_source_version="domain-v3",
+        classification=Classification.INTERNAL,
+        base_graph_id=None,
+        base_ontology_version_id=None,
+        base_release_id=None,
+        last_autosaved_at=observed_at,
+        version=7,
+        created_at=observed_at,
+        updated_at=observed_at,
+    )
+
+    assert studio_draft_record_from_result(studio_draft_result(record)) == record
+
+    corrupted = studio_draft_result(record)
+    corrupted["state"] = "PUBLISHED_BY_LLM"
+    with pytest.raises(ConflictError):
+        studio_draft_record_from_result(corrupted)
+
+    replay = IdempotencyRecord(
+        request_hash="request-hash",
+        result=studio_draft_result(record),
+    )
+    assert (
+        resolve_studio_idempotent_replay(
+            replay,
+            workspace_id=record.workspace_id,
+            author_id=record.author_id,
+            request_hash="request-hash",
+        )
+        == record
+    )
+    with pytest.raises(ConflictError, match="different request"):
+        resolve_studio_idempotent_replay(
+            replay,
+            workspace_id=record.workspace_id,
+            author_id=record.author_id,
+            request_hash="changed-hash",
+        )
+    with pytest.raises(ConflictError, match="another author"):
+        resolve_studio_idempotent_replay(
+            replay,
+            workspace_id=record.workspace_id,
+            author_id=UUID("019fa57b-52de-74c0-9f5e-06ae7b1bf3b4"),
+            request_hash="request-hash",
+        )

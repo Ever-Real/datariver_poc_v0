@@ -57,14 +57,14 @@ profile과 mapping registry 항목은 해당 Phase 시작 전에 추가 승인�
   draft의 동일 응답 처리는 Draft read API와 함께 완료한다.
 - [x] `asset/drawerTab/draft/step` parse/serialize/cleanup이 workspace 및 다른 menu query를
   침범하지 않는 navigation test를 만든다.
-- [ ] author-scoped StudioDraft domain aggregate, port, service, HTTP schema, RLS repository contract를 설계한다.
+- [x] author-scoped StudioDraft domain aggregate, port, service, HTTP schema, RLS repository contract를 설계한다.
 - [x] `knowledge.graphs` domain/creator/editor와 `ontology_versions` contract provenance를
   additive legacy-safe migration으로 추가한다.
-- [ ] Step 1 name/`endpoint_alias`/domain/classification validation, domain source-version pin,
+- [x] Step 1 name/`endpoint_alias`/domain/classification validation, domain source-version pin,
   idempotency, ETag/conflict recovery UI를 구현한다. graph type은 create intent로 server가 결정한다.
 - [ ] draft base pin, explicit Discard terminal transition, no-expiry persistence,
   cross-workspace/cross-author negative tests를 구현한다.
-- [ ] Full-screen shell, progress, save status, leave warning, refresh/recovery UI component test를 만든다.
+- [x] Full-screen shell, progress, save status, leave warning, refresh/recovery UI component test를 만든다.
 - [ ] materialize 전 Draft가 Registry, projection, GraphRAG, Sharing, Chat evidence에서 보이지 않는 integration test를 만든다.
 - [x] SQLAlchemy metadata, additive `0059`, deterministic canonical `0001`, data model,
   author-restrictive FORCE RLS와 column grant source checks를 함께 갱신한다.

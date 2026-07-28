@@ -30,6 +30,12 @@ Untrusted inputs include browser/API payloads, OIDC claims before verification, 
   intent and same-origin relative return path across a redirect. It never carries a mutation body,
   idempotency key or executable callback, and approval/publish operations are never replayed after
   WebAuthn. Backend authorization remains authoritative.
+- Knowledge Studio may persist only a typed, unsent Step 1 recovery record in same-origin IndexedDB.
+  The record has no token, credential, role, clearance, permission result, raw Workspace ID or raw
+  Subject ID; an in-memory SHA-256 scope selects it and every replay is reauthenticated,
+  reauthorized and checked by RLS. It is removed after confirmed persistence or an explicit
+  latest-version reload. IndexedDB is not an encryption boundary or canonical truth, and
+  `localStorage`/`sessionStorage` remain prohibited for Draft payloads.
 
 ## ABAC vocabulary
 

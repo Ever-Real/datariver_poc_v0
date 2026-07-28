@@ -982,6 +982,54 @@ def verify_browser_storage_boundary() -> None:
             "only the non-sensitive, per-user WebAuthn warning acknowledgement is allowed: "
             f"{local_storage_files}"
         )
+    recovery_file = frontend_source / "features" / "knowledge" / "studio" / "draftRecoveryQueue.ts"
+    indexed_db_files = [
+        path.relative_to(ROOT)
+        for path in source_files
+        if (
+            "indexedDB" in path.read_text(encoding="utf-8")
+            or "IDBFactory" in path.read_text(encoding="utf-8")
+        )
+        and not path.name.endswith((".test.ts", ".test.tsx"))
+        and path != recovery_file
+    ]
+    if indexed_db_files:
+        raise AssertionError(
+            "IndexedDB is reserved for the typed Knowledge Studio recovery queue: "
+            f"{indexed_db_files}"
+        )
+    recovery_source = recovery_file.read_text(encoding="utf-8")
+    recovery_record = recovery_source.split("export interface DraftRecoveryRecord {", 1)[1].split(
+        "}", 1
+    )[0]
+    forbidden_recovery_fields = {
+        "accessToken",
+        "refreshToken",
+        "authorization",
+        "bearer",
+        "role",
+        "clearance",
+        "allowedActions",
+        "workspaceId",
+        "subjectId",
+    }
+    leaked_recovery_fields = {
+        field for field in forbidden_recovery_fields if field in recovery_record
+    }
+    if leaked_recovery_fields:
+        raise AssertionError(
+            "Knowledge Studio recovery records cannot persist identity or authorization context: "
+            f"{leaked_recovery_fields}"
+        )
+    required_recovery_contract = {
+        "scopeHash: string",
+        "payload: KnowledgeStudioBasicInformation",
+        "expectedEtag?: string",
+        "idempotencyKey: string",
+    }
+    missing = {item for item in required_recovery_contract if item not in recovery_record}
+    if missing:
+        raise AssertionError(f"Knowledge Studio recovery queue contract is incomplete: {missing}")
     auth_provider = (frontend_source / "auth" / "AuthProvider.tsx").read_text(encoding="utf-8")
     if "new InMemoryWebStorage()" not in auth_provider:
         raise AssertionError("OIDC user tokens must use in-memory storage")

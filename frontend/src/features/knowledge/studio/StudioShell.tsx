@@ -17,11 +17,13 @@ const steps: Array<{
 export function StudioShell({
   step,
   draftId,
+  saveStatus,
   onBack,
   children,
 }: {
   step: KnowledgeStudioStep
   draftId?: string
+  saveStatus?: string
   onBack: () => void
   children: ReactNode
 }) {
@@ -43,7 +45,7 @@ export function StudioShell({
             </p>
           </div>
         </div>
-        <span className="badge badge-soft">
+        <span className="badge badge-soft" title={saveStatus}>
           {draftId ? '자동 저장 대상' : '초안 생성 전'}
         </span>
       </div>
