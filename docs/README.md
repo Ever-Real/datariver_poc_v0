@@ -44,6 +44,7 @@
 | 45 | [Knowledge Studio redesign execution checklist](45_KNOWLEDGE_STUDIO_REDESIGN_EXECUTION_CHECKLIST.md) | phased contracts, migration, UI and evidence gates for the redesign | Active; Phase 0 approved |
 | 46 | [Knowledge Studio Phase 5 release report](46_KNOWLEDGE_STUDIO_PHASE5_RELEASE_REPORT.md) | governed schema/mapping publication, adapter boundary, cleanup and remaining operational gates | Local-source release candidate |
 | 47 | [Knowledge Studio Phase 6 cutover preparation](47_KNOWLEDGE_STUDIO_PHASE6_CUTOVER_PREP.md) | RC tag, revision `0061`, Docker restart and Graph Builder scaffold acceptance commands | RC cutover preparation |
+| 48 | [Air-gapped source-free amd64 Pilot PRD/checklist](48_AIR_GAPPED_SOURCE_FREE_PILOT_PRD_CHECKLIST.md) | exact-commit image bundle, source-free target, one-shot migration and external gates | Local implementation complete; target gates open |
 
 Independent review records: [Data Architect](reviews/2026-07-14_DATA_ARCHITECT_REVIEW.md) and [Data Engineer/SRE](reviews/2026-07-14_DATA_ENGINEER_REVIEW.md).
 
@@ -102,6 +103,9 @@ Its row-sample dry run and version-fenced ingestion readiness evidence are defin
 Its maker-checker schema/mapping publication, separate active Studio Release and physical adapter
 boundary are defined by
 [Knowledge Studio governed schema and mapping publication](adr/0062-knowledge-studio-governed-schema-publication.md).
+
+The source-free isolated amd64 Pilot packaging and deployment boundary is defined by
+[ADR-0063](adr/0063-source-free-air-gapped-pilot-release.md).
 
 ## Change control
 

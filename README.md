@@ -216,6 +216,40 @@ No real `.env`, secret, uploaded object, database volume or generated Keycloak r
 
 Commit only the repository sources. A second PC clones the same tree, runs the matching bootstrap command below, sets its own DataHub URL/origins, and starts the desired overlays. Do not copy `.env`, `secrets/`, `runtime/`, volumes or uploaded objects through Git. The frozen Python and npm locks plus CI define the reproducible toolchain; production promotes digest-pinned images built from the reviewed commit.
 
+## 소스 없는 폐쇄망 amd64 Pilot 운영 배포
+
+개발 Mac에서 준비 PC까지는 계속 `origin/dev` source 경로를 사용한다. 준비 PC의 clean amd64
+checkout에서만 아래의 별도 Pilot bundle을 만들고, 운영 서버에는 source/Git/build context를
+복제하지 않는다.
+
+```bash
+# 준비 PC: 반드시 현재 HEAD와 같은 full commit을 지정한다.
+./scripts/export_release.sh \
+  --commit "$(git rev-parse HEAD)" \
+  --output /approved-transfer/datariver-"$(git rev-parse --short=12 HEAD)" \
+  --accept-redis-image-redistribution
+
+# 운영 서버: release.tar.gz.sha256이 같은 디렉터리에 있어야 한다.
+chmod 0755 ./deploy_pilot.sh
+DATARIVER_PILOT_HOME=/home/datariver \
+  ./deploy_pilot.sh ./release.tar.gz
+```
+
+첫 실행은 `/home/datariver/.env`와 stack-owned secret을 만들고 컨테이너를 시작하지 않은 채
+중단한다. 승인된 DataHub/S3 URL과 public origin을 `.env`에 설정하고,
+`secrets/datahub_token`, `secrets/s3_access_key`, `secrets/s3_secret_key`를 별도 보안 경로로
+넣은 뒤 같은 명령을 다시 실행한다. 이후 스크립트가 archive 검증, `docker load`,
+PostgreSQL/Redis/Keycloak health, one-shot Alembic, S3 초기화, local identity bootstrap,
+application start 순서로 진행한다.
+
+Compose에는 `build:`가 없고 모든 image의 `pull_policy`는 `never`다. Python/npm runtime
+라이브러리는 backend/web image 안에 있으며, PostgreSQL init도 전용 image에 들어 있다.
+DataHub, S3, Airflow, LLM 등 별도 사내 시스템의 image/data/credential은 bundle에 포함하지
+않는다. Web/Keycloak은 loopback upstream만 열므로 실제 사내 브라우저 사용 전에는 승인된
+HTTPS ingress와 인증서가 필요하다. 상세 계약과 미완료 target gate는
+[Pilot PRD/checklist](docs/48_AIR_GAPPED_SOURCE_FREE_PILOT_PRD_CHECKLIST.md) 및
+[ADR-0063](docs/adr/0063-source-free-air-gapped-pilot-release.md)을 따른다.
+
 ## 폐쇄망 개발 PC 이관과 초기화
 
 `docker_imgs/`는 Git에서 무시되는 반입 산출물 디렉터리다. 여기에는 정확한 source commit의

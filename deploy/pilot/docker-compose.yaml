@@ -1,0 +1,514 @@
+name: datariver-pilot
+
+x-backend: &backend
+  image: datariver-pilot-backend:${DATARIVER_RELEASE_ID:?DATARIVER_RELEASE_ID is required}
+  pull_policy: never
+  env_file:
+    - ${DATARIVER_PILOT_ENV_FILE:?DATARIVER_PILOT_ENV_FILE is required}
+  extra_hosts:
+    - host.docker.internal:host-gateway
+  networks:
+    - app
+    - data
+    - connectors
+  restart: unless-stopped
+  security_opt:
+    - no-new-privileges:true
+
+services:
+  postgres:
+    image: datariver-pilot-postgres:${DATARIVER_RELEASE_ID:?DATARIVER_RELEASE_ID is required}
+    pull_policy: never
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-datariver}
+      POSTGRES_USER: ${POSTGRES_USER:-datariver_owner}
+      POSTGRES_PASSWORD_FILE: /run/secrets/postgres_password
+      POSTGRES_INITDB_ARGS: --auth-host=scram-sha-256
+    secrets:
+      - postgres_password
+      - postgres_app_password
+      - postgres_relay_password
+      - postgres_upload_password
+      - postgres_governance_password
+      - postgres_knowledge_password
+      - postgres_export_password
+      - postgres_retention_scheduler_password
+      - postgres_archive_password
+      - postgres_bootstrap_password
+      - keycloak_db_password
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    networks:
+      - data
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - pg_isready -U "$${POSTGRES_USER}" -d "$${POSTGRES_DB}"
+      interval: 5s
+      timeout: 3s
+      retries: 30
+      start_period: 15s
+    restart: unless-stopped
+    mem_limit: 2g
+    cpus: 1.5
+    security_opt:
+      - no-new-privileges:true
+
+  redis-cache:
+    image: datariver-pilot-redis:${DATARIVER_RELEASE_ID:?DATARIVER_RELEASE_ID is required}
+    pull_policy: never
+    entrypoint: ["/bin/sh", "-ec"]
+    command:
+      - >-
+        exec redis-server
+        --requirepass "$$(cat /run/secrets/redis_cache_password)"
+        --maxmemory 192mb
+        --maxmemory-policy allkeys-lfu
+        --save ""
+        --appendonly no
+    secrets:
+      - redis_cache_password
+    networks:
+      - connectors
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - redis-cli -a "$$(cat /run/secrets/redis_cache_password)" --no-auth-warning ping | grep -qx PONG
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    restart: unless-stopped
+    mem_limit: 256m
+    cpus: 0.25
+    security_opt:
+      - no-new-privileges:true
+
+  redis-delivery:
+    image: datariver-pilot-redis:${DATARIVER_RELEASE_ID:?DATARIVER_RELEASE_ID is required}
+    pull_policy: never
+    entrypoint: ["/bin/sh", "-ec"]
+    command:
+      - >-
+        exec redis-server
+        --requirepass "$$(cat /run/secrets/redis_delivery_password)"
+        --maxmemory 256mb
+        --maxmemory-policy noeviction
+        --appendonly yes
+        --appendfsync everysec
+        --save "900 1 300 10 60 10000"
+    secrets:
+      - redis_delivery_password
+    volumes:
+      - redis-delivery-data:/data
+    networks:
+      - connectors
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - redis-cli -a "$$(cat /run/secrets/redis_delivery_password)" --no-auth-warning ping | grep -qx PONG
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    restart: unless-stopped
+    mem_limit: 384m
+    cpus: 0.25
+    security_opt:
+      - no-new-privileges:true
+
+  migrate:
+    <<: *backend
+    profiles: ["deploy-tools"]
+    command: ["/app/.venv/bin/alembic", "-c", "backend/alembic.ini", "upgrade", "head"]
+    secrets:
+      - postgres_password
+      - postgres_export_password
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"
+
+  storage-init:
+    <<: *backend
+    profiles: ["deploy-tools"]
+    command: ["/app/.venv/bin/python", "-m", "datariver.workers.storage_init"]
+    secrets:
+      - s3_access_key
+      - s3_secret_key
+    restart: "no"
+
+  local-bootstrap:
+    <<: *backend
+    profiles: ["deploy-tools"]
+    command: ["/app/.venv/bin/python", "-m", "datariver.bootstrap", "local-identity"]
+    secrets:
+      - postgres_bootstrap_password
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"
+
+  keycloak:
+    image: datariver-pilot-keycloak:${DATARIVER_RELEASE_ID:?DATARIVER_RELEASE_ID is required}
+    pull_policy: never
+    entrypoint: ["/bin/bash", "-ec"]
+    command:
+      - >-
+        export KC_DB_PASSWORD="$$(cat /run/secrets/keycloak_db_password)";
+        export KC_BOOTSTRAP_ADMIN_PASSWORD="$$(cat /run/secrets/keycloak_admin_password)";
+        exec /opt/keycloak/bin/kc.sh start --optimized --import-realm
+    environment:
+      KC_DB: postgres
+      KC_DB_URL: jdbc:postgresql://postgres:5432/keycloak
+      KC_DB_USERNAME: keycloak
+      KC_BOOTSTRAP_ADMIN_USERNAME: datariver-bootstrap
+      KC_HOSTNAME: ${OIDC_PUBLIC_ORIGIN:?OIDC_PUBLIC_ORIGIN is required}
+      KC_HOSTNAME_STRICT: "true"
+      KC_HTTP_ENABLED: "true"
+      KC_HEALTH_ENABLED: "true"
+      KC_METRICS_ENABLED: "true"
+      KC_PROXY_HEADERS: xforwarded
+    secrets:
+      - keycloak_db_password
+      - keycloak_admin_password
+      - airflow_client_secret
+      - keycloak_identity_admin_client_secret
+      - keycloak_demo_password
+    volumes:
+      - ${DATARIVER_PILOT_RUNTIME_DIR:?DATARIVER_PILOT_RUNTIME_DIR is required}/keycloak:/opt/keycloak/data/import:ro
+      - keycloak-data:/opt/keycloak/data
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - app
+      - data
+    ports:
+      - "${PILOT_BIND_ADDRESS:-127.0.0.1}:${PILOT_OIDC_PORT:-18081}:8080"
+    healthcheck:
+      test:
+        - CMD
+        - bash
+        - -ec
+        - >-
+          exec 3<>/dev/tcp/127.0.0.1/9000;
+          printf 'GET /health/ready HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n' >&3;
+          IFS= read -r status <&3;
+          [[ "$$status" == *" 200 "* ]]
+      interval: 10s
+      timeout: 3s
+      retries: 30
+      start_period: 30s
+    restart: unless-stopped
+    mem_limit: 1200m
+    cpus: 1.0
+    read_only: true
+    tmpfs:
+      - /tmp:size=64m,noexec,nosuid,mode=1777
+    security_opt:
+      - no-new-privileges:true
+
+  api:
+    <<: *backend
+    secrets:
+      - postgres_app_password
+      - redis_cache_password
+      - source: redis_cache_password
+        target: valkey_cache_password
+      - redis_delivery_password
+      - source: redis_delivery_password
+        target: valkey_queue_password
+      - datahub_token
+      - intranet_llm_chat_api_key
+      - intranet_llm_embedding_api_key
+      - intranet_llm_reranker_api_key
+      - neo4j_auth
+      - keycloak_identity_admin_client_secret
+      - s3_access_key
+      - s3_secret_key
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis-cache:
+        condition: service_healthy
+      redis-delivery:
+        condition: service_healthy
+      keycloak:
+        condition: service_healthy
+    healthcheck:
+      test:
+        - CMD
+        - /app/.venv/bin/python
+        - -c
+        - import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/v1/health/ready', timeout=2)
+      interval: 10s
+      timeout: 3s
+      retries: 20
+      start_period: 15s
+    mem_limit: 1g
+    cpus: 1.0
+    read_only: true
+    tmpfs:
+      - /tmp:size=64m,noexec,nosuid
+
+  outbox-relay:
+    <<: *backend
+    command: ["/app/.venv/bin/python", "-m", "datariver.workers.outbox_relay"]
+    secrets:
+      - postgres_relay_password
+      - redis_delivery_password
+      - source: redis_delivery_password
+        target: valkey_queue_password
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis-delivery:
+        condition: service_healthy
+    mem_limit: 384m
+    cpus: 0.5
+    read_only: true
+    tmpfs:
+      - /tmp:size=32m,noexec,nosuid
+
+  upload-worker:
+    <<: *backend
+    command: ["/app/.venv/bin/python", "-m", "datariver.workers.upload_worker"]
+    secrets:
+      - postgres_upload_password
+      - redis_delivery_password
+      - source: redis_delivery_password
+        target: valkey_queue_password
+      - s3_access_key
+      - s3_secret_key
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis-delivery:
+        condition: service_healthy
+    mem_limit: 512m
+    cpus: 0.75
+    read_only: true
+    tmpfs:
+      - /tmp:size=32m,noexec,nosuid
+
+  upload-validation-worker:
+    <<: *backend
+    command: ["/app/.venv/bin/python", "-m", "datariver.workers.upload_validation"]
+    secrets:
+      - postgres_upload_password
+      - redis_delivery_password
+      - source: redis_delivery_password
+        target: valkey_queue_password
+      - s3_access_key
+      - s3_secret_key
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis-delivery:
+        condition: service_healthy
+    mem_limit: 512m
+    cpus: 0.75
+    read_only: true
+    tmpfs:
+      - /tmp:size=32m,noexec,nosuid
+
+  governance-apply-worker:
+    <<: *backend
+    command: ["/app/.venv/bin/python", "-m", "datariver.workers.governance_apply"]
+    secrets:
+      - postgres_governance_password
+      - redis_delivery_password
+      - source: redis_delivery_password
+        target: valkey_queue_password
+      - datahub_token
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis-delivery:
+        condition: service_healthy
+    mem_limit: 512m
+    cpus: 0.75
+    read_only: true
+    tmpfs:
+      - /tmp:size=32m,noexec,nosuid
+
+  knowledge-source-worker:
+    <<: *backend
+    profiles: ["knowledge-source"]
+    command: ["/app/.venv/bin/python", "-m", "datariver.workers.knowledge_source"]
+    secrets:
+      - postgres_knowledge_password
+      - redis_delivery_password
+      - source: redis_delivery_password
+        target: valkey_queue_password
+      - s3_knowledge_access_key
+      - s3_knowledge_secret_key
+      - intranet_llm_chat_api_key
+      - intranet_llm_embedding_api_key
+    volumes:
+      - knowledge-spool:/var/spool/datariver-knowledge
+    mem_limit: 768m
+    cpus: 0.75
+    read_only: true
+
+  catalog-export-worker:
+    <<: *backend
+    profiles: ["catalog-export"]
+    command: ["/app/.venv/bin/python", "-m", "datariver.workers.catalog_export"]
+    secrets:
+      - postgres_export_password
+      - redis_delivery_password
+      - source: redis_delivery_password
+        target: valkey_queue_password
+      - s3_export_access_key
+      - s3_export_secret_key
+    mem_limit: 512m
+    cpus: 0.75
+    read_only: true
+    tmpfs:
+      - /tmp:size=32m,noexec,nosuid
+
+  retention-scheduler:
+    <<: *backend
+    profiles: ["retention-archive"]
+    command: ["/app/.venv/bin/python", "-m", "datariver.workers.retention_scheduler"]
+    secrets:
+      - postgres_retention_scheduler_password
+    volumes:
+      - ${DATARIVER_PILOT_RUNTIME_DIR:?DATARIVER_PILOT_RUNTIME_DIR is required}/retention-execution.enabled:/run/datariver/retention-execution.enabled:ro
+    expose:
+      - "${RETENTION_METRICS_PORT:-9102}"
+    mem_limit: 256m
+    cpus: 0.25
+    read_only: true
+    tmpfs:
+      - /tmp:size=16m,noexec,nosuid
+
+  retention-archive-worker:
+    <<: *backend
+    profiles: ["retention-archive"]
+    command: ["/app/.venv/bin/python", "-m", "datariver.workers.retention_archive"]
+    secrets:
+      - postgres_archive_password
+      - s3_archive_access_key
+      - s3_archive_secret_key
+    volumes:
+      - ${DATARIVER_PILOT_RUNTIME_DIR:?DATARIVER_PILOT_RUNTIME_DIR is required}/retention-execution.enabled:/run/datariver/retention-execution.enabled:ro
+    expose:
+      - "${RETENTION_METRICS_PORT:-9102}"
+    mem_limit: 384m
+    cpus: 0.5
+    read_only: true
+    tmpfs:
+      - /tmp:size=16m,noexec,nosuid
+
+  web:
+    image: datariver-pilot-web:${DATARIVER_RELEASE_ID:?DATARIVER_RELEASE_ID is required}
+    pull_policy: never
+    environment:
+      BROWSER_API_BASE_URL: /api/v1
+      BROWSER_OIDC_AUTHORITY: ${OIDC_PUBLIC_AUTHORITY:?OIDC_PUBLIC_AUTHORITY is required}
+      BROWSER_OIDC_CLIENT_ID: ${OIDC_CLIENT_ID:-datariver-web}
+      BROWSER_OIDC_REDIRECT_URI: ${APP_PUBLIC_ORIGIN:?APP_PUBLIC_ORIGIN is required}
+      BROWSER_OIDC_HIGH_ASSURANCE_ACR: ${OIDC_STEP_UP_ACR:-2}
+      BROWSER_OIDC_PASSWORD_REAUTH_ACR: ${OIDC_PASSWORD_REAUTH_REQUEST_ACR:-1}
+      S3_PUBLIC_ORIGIN: ${S3_PUBLIC_ORIGIN:?S3_PUBLIC_ORIGIN is required}
+      OIDC_PUBLIC_ORIGIN: ${OIDC_PUBLIC_ORIGIN:?OIDC_PUBLIC_ORIGIN is required}
+      DATAHUB_EMBED_BASE_URL: ${DATAHUB_EMBED_BASE_URL:-}
+      GRAFANA_EMBED_BASE_URL: ${GRAFANA_EMBED_BASE_URL:-}
+      API_PROXY_READ_TIMEOUT_SECONDS: ${API_PROXY_READ_TIMEOUT_SECONDS:-30}
+    depends_on:
+      api:
+        condition: service_healthy
+    networks:
+      - app
+    ports:
+      - "${PILOT_BIND_ADDRESS:-127.0.0.1}:${PILOT_WEB_PORT:-38102}:8080"
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "-", "http://127.0.0.1:8080/healthz"]
+      interval: 10s
+      timeout: 3s
+      retries: 20
+    restart: unless-stopped
+    mem_limit: 128m
+    cpus: 0.5
+    read_only: true
+    tmpfs:
+      - /tmp:size=32m,noexec,nosuid,mode=1777
+    security_opt:
+      - no-new-privileges:true
+
+networks:
+  app:
+    internal: false
+  data:
+    internal: true
+  connectors:
+    internal: false
+
+volumes:
+  postgres-data:
+  redis-delivery-data:
+  keycloak-data:
+  knowledge-spool:
+
+secrets:
+  postgres_password:
+    file: ${DATARIVER_PILOT_SECRETS_DIR:?DATARIVER_PILOT_SECRETS_DIR is required}/postgres_password
+  postgres_app_password:
+    file: ${DATARIVER_PILOT_SECRETS_DIR:?DATARIVER_PILOT_SECRETS_DIR is required}/postgres_app_password
+  postgres_relay_password:
+    file: ${DATARIVER_PILOT_SECRETS_DIR:?DATARIVER_PILOT_SECRETS_DIR is required}/postgres_relay_password
+  postgres_upload_password:
+    file: ${DATARIVER_PILOT_SECRETS_DIR:?DATARIVER_PILOT_SECRETS_DIR is required}/postgres_upload_password
+  postgres_governance_password:
+    file: ${DATARIVER_PILOT_SECRETS_DIR:?DATARIVER_PILOT_SECRETS_DIR is required}/postgres_governance_password
+  postgres_knowledge_password:
+    file: ${DATARIVER_PILOT_SECRETS_DIR:?DATARIVER_PILOT_SECRETS_DIR is required}/postgres_knowledge_password
+  postgres_export_password:
+    file: ${DATARIVER_PILOT_SECRETS_DIR:?DATARIVER_PILOT_SECRETS_DIR is required}/postgres_export_password
+  postgres_retention_scheduler_password:
+    file: ${DATARIVER_PILOT_SECRETS_DIR:?DATARIVER_PILOT_SECRETS_DIR is required}/postgres_retention_scheduler_password
+  postgres_archive_password:
+    file: ${DATARIVER_PILOT_SECRETS_DIR:?DATARIVER_PILOT_SECRETS_DIR is required}/postgres_archive_password
+  postgres_bootstrap_password:
+    file: ${DATARIVER_PILOT_SECRETS_DIR:?DATARIVER_PILOT_SECRETS_DIR is required}/postgres_bootstrap_password
+  keycloak_db_password:
+    file: ${DATARIVER_PILOT_SECRETS_DIR:?DATARIVER_PILOT_SECRETS_DIR is required}/keycloak_db_password
+  keycloak_admin_password:
+    file: ${DATARIVER_PILOT_SECRETS_DIR:?DATARIVER_PILOT_SECRETS_DIR is required}/keycloak_admin_password
+  keycloak_demo_password:
+    file: ${DATARIVER_PILOT_SECRETS_DIR:?DATARIVER_PILOT_SECRETS_DIR is required}/keycloak_demo_password
+  airflow_client_secret:
+    file: ${DATARIVER_PILOT_SECRETS_DIR:?DATARIVER_PILOT_SECRETS_DIR is required}/airflow_client_secret
+  keycloak_identity_admin_client_secret:
+    file: ${DATARIVER_PILOT_SECRETS_DIR:?DATARIVER_PILOT_SECRETS_DIR is required}/keycloak_identity_admin_client_secret
+  redis_cache_password:
+    file: ${DATARIVER_PILOT_SECRETS_DIR:?DATARIVER_PILOT_SECRETS_DIR is required}/redis_cache_password
+  redis_delivery_password:
+    file: ${DATARIVER_PILOT_SECRETS_DIR:?DATARIVER_PILOT_SECRETS_DIR is required}/redis_delivery_password
+  datahub_token:
+    file: ${DATARIVER_PILOT_SECRETS_DIR:?DATARIVER_PILOT_SECRETS_DIR is required}/datahub_token
+  intranet_llm_chat_api_key:
+    file: ${DATARIVER_PILOT_SECRETS_DIR:?DATARIVER_PILOT_SECRETS_DIR is required}/intranet_llm_chat_api_key
+  intranet_llm_embedding_api_key:
+    file: ${DATARIVER_PILOT_SECRETS_DIR:?DATARIVER_PILOT_SECRETS_DIR is required}/intranet_llm_embedding_api_key
+  intranet_llm_reranker_api_key:
+    file: ${DATARIVER_PILOT_SECRETS_DIR:?DATARIVER_PILOT_SECRETS_DIR is required}/intranet_llm_reranker_api_key
+  neo4j_auth:
+    file: ${DATARIVER_PILOT_SECRETS_DIR:?DATARIVER_PILOT_SECRETS_DIR is required}/neo4j_auth
+  s3_access_key:
+    file: ${DATARIVER_PILOT_SECRETS_DIR:?DATARIVER_PILOT_SECRETS_DIR is required}/s3_access_key
+  s3_secret_key:
+    file: ${DATARIVER_PILOT_SECRETS_DIR:?DATARIVER_PILOT_SECRETS_DIR is required}/s3_secret_key
+  s3_export_access_key:
+    file: ${DATARIVER_PILOT_SECRETS_DIR:?DATARIVER_PILOT_SECRETS_DIR is required}/s3_export_access_key
+  s3_export_secret_key:
+    file: ${DATARIVER_PILOT_SECRETS_DIR:?DATARIVER_PILOT_SECRETS_DIR is required}/s3_export_secret_key
+  s3_knowledge_access_key:
+    file: ${DATARIVER_PILOT_SECRETS_DIR:?DATARIVER_PILOT_SECRETS_DIR is required}/s3_knowledge_access_key
+  s3_knowledge_secret_key:
+    file: ${DATARIVER_PILOT_SECRETS_DIR:?DATARIVER_PILOT_SECRETS_DIR is required}/s3_knowledge_secret_key
+  s3_archive_access_key:
+    file: ${DATARIVER_PILOT_SECRETS_DIR:?DATARIVER_PILOT_SECRETS_DIR is required}/s3_archive_access_key
+  s3_archive_secret_key:
+    file: ${DATARIVER_PILOT_SECRETS_DIR:?DATARIVER_PILOT_SECRETS_DIR is required}/s3_archive_secret_key
