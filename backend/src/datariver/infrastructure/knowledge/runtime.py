@@ -9,6 +9,7 @@ from datariver.domain.common import ConflictError, canonical_json_hash
 from datariver.domain.knowledge_pipeline import ModelBinding
 from datariver.infrastructure.knowledge.openai_compatible import (
     HttpxOpenAIJsonTransport,
+    OpenAICompatibleChatRequestOptions,
     OpenAICompatibleEmbeddingProvider,
     OpenAICompatibleKnowledgeAnswerComposer,
     OpenAICompatibleTypedKnowledgeExtractor,
@@ -41,6 +42,7 @@ class _RuntimeCoordinates:
     chat_model: str
     chat_api_key_secret_ref: str | None
     chat_timeout_seconds: float
+    chat_options: OpenAICompatibleChatRequestOptions
     embedding_base_url: str
     embedding_model: str
     embedding_api_key_secret_ref: str | None
@@ -135,10 +137,12 @@ def build_knowledge_runtime_adapters(settings: Settings) -> KnowledgeRuntimeAdap
         extractor=OpenAICompatibleTypedKnowledgeExtractor(
             transport=chat_transport,
             reasoning_effort=reasoning_effort,
+            chat_options=coordinates.chat_options,
         ),
         composer=OpenAICompatibleKnowledgeAnswerComposer(
             transport=chat_transport,
             reasoning_effort=reasoning_effort,
+            chat_options=coordinates.chat_options,
         ),
         bindings=bindings,
     )
@@ -160,6 +164,7 @@ def _coordinates(settings: Settings) -> _RuntimeCoordinates:
             chat_model=settings.local_ollama_chat_model,
             chat_api_key_secret_ref=None,
             chat_timeout_seconds=settings.local_ollama_chat_timeout_seconds,
+            chat_options=OpenAICompatibleChatRequestOptions(),
             embedding_base_url=str(settings.local_ollama_embedding_base_url),
             embedding_model=settings.local_ollama_embedding_model,
             embedding_api_key_secret_ref=None,
@@ -186,6 +191,16 @@ def _coordinates(settings: Settings) -> _RuntimeCoordinates:
             chat_model=settings.intranet_openai_compatible_chat_model,
             chat_api_key_secret_ref=(settings.intranet_openai_compatible_chat_api_key_secret_ref),
             chat_timeout_seconds=(settings.intranet_openai_compatible_chat_timeout_seconds),
+            chat_options=OpenAICompatibleChatRequestOptions(
+                temperature=settings.intranet_openai_compatible_chat_temperature,
+                top_p=settings.intranet_openai_compatible_chat_top_p,
+                repetition_penalty=(
+                    settings.intranet_openai_compatible_chat_repetition_penalty
+                ),
+                enable_thinking=(
+                    settings.intranet_openai_compatible_chat_enable_thinking
+                ),
+            ),
             embedding_base_url=str(settings.intranet_openai_compatible_embedding_base_url),
             embedding_model=settings.intranet_openai_compatible_embedding_model,
             embedding_api_key_secret_ref=(
@@ -227,6 +242,17 @@ def _deployment_hash(
                 coordinates.embedding_api_key_secret_ref
                 if is_embedding
                 else coordinates.chat_api_key_secret_ref
+            ),
+            "chat_options": (
+                {
+                    "temperature": coordinates.chat_options.temperature,
+                    "top_p": coordinates.chat_options.top_p,
+                    "repetition_penalty": coordinates.chat_options.repetition_penalty,
+                    "enable_thinking": coordinates.chat_options.enable_thinking,
+                    "stream": False,
+                }
+                if not is_embedding
+                else None
             ),
             "timeout_seconds": (
                 coordinates.embedding_timeout_seconds

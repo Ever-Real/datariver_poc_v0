@@ -93,6 +93,17 @@ LOCAL_OLLAMA_EMBEDDING_MODEL=<installed-model-id>
 LOCAL_LLAMA_CPP_RERANKER_ENABLED=false
 LOCAL_LLAMA_CPP_RERANKER_BASE_URL=<rerank-v1-origin>
 LOCAL_LLAMA_CPP_RERANKER_MODEL=<installed-model-id>
+
+INTRANET_OPENAI_COMPATIBLE_ALLOWED_HOSTS=<private-gateway-host>
+INTRANET_OPENAI_COMPATIBLE_CHAT_ENABLED=false
+INTRANET_OPENAI_COMPATIBLE_CHAT_BASE_URL=<https-gateway-prefix-ending-in-/v1>
+INTRANET_OPENAI_COMPATIBLE_CHAT_MODEL=<approved-model-id>
+INTRANET_OPENAI_COMPATIBLE_EMBEDDING_ENABLED=false
+INTRANET_OPENAI_COMPATIBLE_EMBEDDING_BASE_URL=<https-gateway-prefix-ending-in-/v1>
+INTRANET_OPENAI_COMPATIBLE_EMBEDDING_MODEL=<approved-model-id>
+INTRANET_RERANKER_ENABLED=false
+INTRANET_RERANKER_BASE_URL=<https-gateway-prefix-before-/rerank>
+INTRANET_RERANKER_MODEL=<approved-model-id>
 ```
 
 An unset optional field and an explicitly disabled adapter are both unconfigured. Enabling an
@@ -181,6 +192,14 @@ equivalent least-privilege roles.
 - Private OpenAI-compatible Chat/Embedding:
   `INTRANET_OPENAI_COMPATIBLE_ALLOWED_HOSTS` and the corresponding
   `INTRANET_OPENAI_COMPATIBLE_CHAT_*` / `...EMBEDDING_*` keys
+- Private runtime Reranker: `INTRANET_RERANKER_*`. DataRiver appends the fixed `/rerank`
+  route and accepts only a safe HTTPS gateway prefix on the same private host allowlist.
+- A provider model ID may be path-like (for example `/models/embedding/bge-m3`). Chat and
+  Embedding base URLs may include a gateway prefix but must end in `/v1`.
+- A provider inventory URL ending in `/v1/models` is not the base URL: remove only the final
+  `/models`. `INTRANET_OPENAI_COMPATIBLE_ALLOWED_HOSTS` contains hostnames/IPs only, never URLs.
+- If all three stages share one provider token, copy the same value into the three canonical
+  ignored secret files. Do not put it in an environment value. `stream` remains fixed to `false`.
 - Graph projection: optional offline `NEO4J_IMAGE` override, `NEO4J_PROJECTION_ENABLED`,
   launcher-owned `NEO4J_SOURCE_HOST_ENABLED`, `NEO4J_URI`, `NEO4J_ALLOWED_HOSTS`,
   `NEO4J_DATABASE`, `NEO4J_AUTH_SECRET_REF`, loopback publication ports and bounded
@@ -513,11 +532,21 @@ INTRANET_OPENAI_COMPATIBLE_CHAT_MODEL
 INTRANET_OPENAI_COMPATIBLE_CHAT_API_KEY_SECRET_REF
 INTRANET_OPENAI_COMPATIBLE_CHAT_TIMEOUT_SECONDS
 INTRANET_OPENAI_COMPATIBLE_CHAT_CONTEXT_TOKENS
+INTRANET_OPENAI_COMPATIBLE_CHAT_TEMPERATURE
+INTRANET_OPENAI_COMPATIBLE_CHAT_TOP_P
+INTRANET_OPENAI_COMPATIBLE_CHAT_REPETITION_PENALTY
+INTRANET_OPENAI_COMPATIBLE_CHAT_ENABLE_THINKING
 INTRANET_OPENAI_COMPATIBLE_EMBEDDING_ENABLED
 INTRANET_OPENAI_COMPATIBLE_EMBEDDING_BASE_URL
 INTRANET_OPENAI_COMPATIBLE_EMBEDDING_MODEL
 INTRANET_OPENAI_COMPATIBLE_EMBEDDING_API_KEY_SECRET_REF
 INTRANET_OPENAI_COMPATIBLE_EMBEDDING_TIMEOUT_SECONDS
+INTRANET_RERANKER_ENABLED
+INTRANET_RERANKER_BASE_URL
+INTRANET_RERANKER_MODEL
+INTRANET_RERANKER_API_KEY_SECRET_REF
+INTRANET_RERANKER_TIMEOUT_SECONDS
+INTRANET_RERANKER_TOP_N
 CHAT_EPHEMERAL_ADMIN_WITHOUT_RETENTION_ENABLED
 CHAT_RATE_LIMIT_REQUESTS_PER_MINUTE
 CHAT_RATE_LIMIT_TOKENS_PER_MINUTE

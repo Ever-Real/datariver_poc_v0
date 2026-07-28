@@ -1190,26 +1190,57 @@ not require restarting the gateway or leave it pinned to the old container addre
 
 상용·공용 LLM API는 계속 차단된다. 반면 사내에서 직접 운영하는 OpenAI-compatible model gateway는
 development 환경에서만 `INTRANET_OPENAI_COMPATIBLE` connection mode로 연결할 수 있다. 이 mode는
-`https://<private-host>/v1`만 허용하고, host는 deployment의
+`https://<private-host>/<optional-safe-prefix>/v1`을 허용하고, host는 deployment의
 `INTRANET_OPENAI_COMPATIBLE_ALLOWED_HOSTS`에 정확히 등록되며 private non-loopback 주소로만
 해결되어야 한다. URL에 credential·query·fragment를 넣거나 HTTP/TLS 우회를 사용하면 거부된다.
+DataRiver는 설정된 prefix 뒤에 Chat `/chat/completions`, Embedding `/embeddings`를 고정해서
+붙인다. Reranker는 별도 base prefix 뒤에 `/rerank`만 붙인다.
+따라서 제공받은 inventory URL이 `.../v1/models`라면 Chat/Embedding `BASE_URL`에는 마지막
+`/models`를 제거한 `.../v1`까지만 넣는다. `ALLOWED_HOSTS`에는 scheme·port·path가 아닌
+hostname 또는 IP 한 값만 넣는다.
 
 먼저 해당 source-host/Compose 환경에서 operator allowlist와 실제 API key를 별도 보안 채널로
-준비한다. Chat과 Embedding key는 분리되어 있으며, bootstrap이 만든 random placeholder는 model API
-key가 아니다.
+준비한다. Chat, Embedding, Reranker secret 파일은 stage별로 분리되어 있으며, bootstrap이 만든
+random placeholder는 model API key가 아니다. 하나의 gateway token을 공유한다면 세 파일에 같은
+값을 넣을 수 있지만 파일 자체를 합치거나 `.env`에 token을 쓰지는 않는다.
 
 ```bash
 # .env — operator-managed allowlist. 실제 사내 host는 Git에 넣지 않는다.
 INTRANET_OPENAI_COMPATIBLE_ALLOWED_HOSTS=llm-gateway.corp.example
 
+INTRANET_OPENAI_COMPATIBLE_CHAT_ENABLED=true
+INTRANET_OPENAI_COMPATIBLE_CHAT_BASE_URL=https://llm-gateway.corp.example/api/llm/openai/v1
+INTRANET_OPENAI_COMPATIBLE_CHAT_MODEL=/models/llm/gemma-4-31B-it
+INTRANET_OPENAI_COMPATIBLE_CHAT_API_KEY_SECRET_REF=file:/run/secrets/intranet_llm_chat_api_key
+INTRANET_OPENAI_COMPATIBLE_CHAT_TEMPERATURE=0
+INTRANET_OPENAI_COMPATIBLE_CHAT_TOP_P=0.9
+INTRANET_OPENAI_COMPATIBLE_CHAT_REPETITION_PENALTY=1.05
+INTRANET_OPENAI_COMPATIBLE_CHAT_ENABLE_THINKING=true
+
+INTRANET_OPENAI_COMPATIBLE_EMBEDDING_ENABLED=true
+INTRANET_OPENAI_COMPATIBLE_EMBEDDING_BASE_URL=https://llm-gateway.corp.example/api/llm/openai/v1
+INTRANET_OPENAI_COMPATIBLE_EMBEDDING_MODEL=/models/embedding/bge-m3
+INTRANET_OPENAI_COMPATIBLE_EMBEDDING_API_KEY_SECRET_REF=file:/run/secrets/intranet_llm_embedding_api_key
+
+INTRANET_RERANKER_ENABLED=true
+INTRANET_RERANKER_BASE_URL=https://llm-gateway.corp.example/api/llm/openai
+INTRANET_RERANKER_MODEL=/models/Reranker/bge-reranker-v2-m3
+INTRANET_RERANKER_API_KEY_SECRET_REF=file:/run/secrets/intranet_llm_reranker_api_key
+
 # secure transfer로 실제 key를 배치한다. browser나 YAML에는 key 원문을 넣지 않는다.
-chmod 600 secrets/intranet_llm_chat_api_key secrets/intranet_llm_embedding_api_key
+chmod 600 \
+  secrets/intranet_llm_chat_api_key \
+  secrets/intranet_llm_embedding_api_key \
+  secrets/intranet_llm_reranker_api_key
 ```
 
 Chat, Embedding, Reranker의 URL·model ID·secret reference는 모두 선택한 ignored `.env`에
 설정한다. source-host launcher는 portable `/run/secrets` reference를 ignored `secrets/`
 directory로만 매핑한다. 적용 후 Admin → System settings → LLM Models의 고정 TEST를 각각
 수행한다. `401`/`403`은 성공이 아니며, browser에서 다른 URL이나 credential을 전달할 수 없다.
+`stream`은 검증 가능한 단일 JSON 응답을 위해 항상 `false`다. Gateway가 제공하는 bounded
+`temperature`, `top_p`, `repetition_penalty`, `enable_thinking` 옵션은 deployment 환경에서만
+선택한다.
 전체 키와 적용 순서는
 [Deployment environment configuration](docs/41_DEPLOYMENT_ENVIRONMENT_CONFIGURATION.md)을
 따른다.

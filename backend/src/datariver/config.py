@@ -12,6 +12,11 @@ from uuid import UUID
 from pydantic import AliasChoices, Field, HttpUrl, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+from datariver.domain.inference import (
+    is_safe_inference_api_base_path,
+    is_valid_inference_model_identity,
+)
+
 
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
@@ -165,6 +170,12 @@ class Settings(BaseSettings):
     )
     intranet_openai_compatible_chat_timeout_seconds: float = Field(default=60.0, ge=1.0, le=120.0)
     intranet_openai_compatible_chat_context_tokens: int = Field(default=8192, ge=2048, le=8192)
+    intranet_openai_compatible_chat_temperature: float = Field(default=0.0, ge=0.0, le=2.0)
+    intranet_openai_compatible_chat_top_p: float | None = Field(default=None, gt=0.0, le=1.0)
+    intranet_openai_compatible_chat_repetition_penalty: float | None = Field(
+        default=None, gt=0.0, le=2.0
+    )
+    intranet_openai_compatible_chat_enable_thinking: bool = False
     intranet_openai_compatible_embedding_enabled: bool = False
     intranet_openai_compatible_embedding_base_url: HttpUrl | None = None
     intranet_openai_compatible_embedding_model: str | None = Field(default=None, max_length=128)
@@ -174,6 +185,14 @@ class Settings(BaseSettings):
     intranet_openai_compatible_embedding_timeout_seconds: float = Field(
         default=60.0, ge=1.0, le=120.0
     )
+    # The private reranker is not an OpenAI API route. DataRiver appends the
+    # fixed `/rerank` route to this deployment-owned, allowlisted base prefix.
+    intranet_reranker_enabled: bool = False
+    intranet_reranker_base_url: HttpUrl | None = None
+    intranet_reranker_model: str | None = Field(default=None, max_length=128)
+    intranet_reranker_api_key_secret_ref: str | None = Field(default=None, max_length=512)
+    intranet_reranker_timeout_seconds: float = Field(default=60.0, ge=1.0, le=120.0)
+    intranet_reranker_top_n: int = Field(default=10, ge=1, le=100)
     neo4j_projection_enabled: bool = False
     neo4j_uri: str | None = Field(default=None, max_length=2048)
     neo4j_allowed_hosts: tuple[str, ...] = ("neo4j",)
@@ -1151,6 +1170,7 @@ class Settings(BaseSettings):
                 base_url=self.intranet_openai_compatible_chat_base_url,
                 model=self.intranet_openai_compatible_chat_model,
                 secret_ref=self.intranet_openai_compatible_chat_api_key_secret_ref,
+                terminal_path_segment="v1",
             )
         if intranet_embedding_enabled:
             self._validate_intranet_openai_compatible_binding(
@@ -1158,6 +1178,17 @@ class Settings(BaseSettings):
                 base_url=self.intranet_openai_compatible_embedding_base_url,
                 model=self.intranet_openai_compatible_embedding_model,
                 secret_ref=self.intranet_openai_compatible_embedding_api_key_secret_ref,
+                terminal_path_segment="v1",
+            )
+        if self.local_llama_cpp_reranker_enabled and self.intranet_reranker_enabled:
+            raise ValueError("Local and intranet rerankers cannot be enabled together.")
+        if self.intranet_reranker_enabled:
+            self._validate_intranet_openai_compatible_binding(
+                label="reranker",
+                base_url=self.intranet_reranker_base_url,
+                model=self.intranet_reranker_model,
+                secret_ref=self.intranet_reranker_api_key_secret_ref,
+                terminal_path_segment=None,
             )
         if self.neo4j_projection_enabled:
             if self.app_env != "development":
@@ -1289,6 +1320,7 @@ class Settings(BaseSettings):
         base_url: HttpUrl | None,
         model: str | None,
         secret_ref: str | None,
+        terminal_path_segment: str | None,
     ) -> None:
         if self.app_env != "development":
             raise ValueError(
@@ -1303,7 +1335,7 @@ class Settings(BaseSettings):
             raise ValueError(
                 "Intranet OpenAI-compatible inference requires an operator host allowlist."
             )
-        if re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:/-]{0,127}", model.strip()) is None:
+        if not is_valid_inference_model_identity(model):
             raise ValueError("Intranet OpenAI-compatible model identity is invalid.")
         if not secret_ref.startswith("file:"):
             raise ValueError(
@@ -1314,15 +1346,18 @@ class Settings(BaseSettings):
         if (
             parsed.scheme != "https"
             or host not in self.intranet_openai_compatible_allowed_hosts
-            or parsed.path.rstrip("/") != "/v1"
+            or not is_safe_inference_api_base_path(
+                parsed.path,
+                terminal_segment=terminal_path_segment,
+            )
             or parsed.query
             or parsed.fragment
             or parsed.username is not None
             or parsed.password is not None
         ):
             raise ValueError(
-                "Intranet OpenAI-compatible endpoints must use allowlisted HTTPS origins "
-                "ending in /v1."
+                "Intranet inference endpoints must use allowlisted HTTPS origins "
+                "and a safe API base path."
             )
         try:
             addresses = socket.getaddrinfo(host, parsed.port or 443, type=socket.SOCK_STREAM)

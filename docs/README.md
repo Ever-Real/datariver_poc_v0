@@ -58,6 +58,8 @@ Current administrator decisions: [hardware WebAuthn and governed password fallba
 Current account/workflow/runtime decisions: [expiring membership renewal](adr/0026-expiring-human-membership-renewal.md), [CR System-role authority](adr/0027-change-request-system-role-authority.md), and [development System Settings startup activation](adr/0028-development-system-configuration-startup-activation.md).
 
 Current development knowledge-integration decision: [intranet OpenAI-compatible adapter](adr/0030-development-intranet-openai-compatible-adapter.md).
+Private gateway path prefixes, path-like model IDs and governed runtime reranking are refined by
+[ADR-0065](adr/0065-intranet-inference-gateway-prefix-and-runtime-reranking.md).
 
 Current local identity-lifecycle decision: [governed Keycloak identity provisioning](adr/0031-governed-keycloak-identity-provisioning.md).
 

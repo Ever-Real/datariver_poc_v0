@@ -105,6 +105,27 @@ async def test_openai_transport_sends_an_operator_secret_only_to_the_allowlisted
 
 
 @pytest.mark.asyncio
+async def test_openai_transport_preserves_an_operator_gateway_path_prefix() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url == httpx.URL(
+            "https://10.42.0.15/api/llm/openai/v1/embeddings"
+        )
+        return httpx.Response(200, request=request, json={"data": []})
+
+    transport = HttpxOpenAIJsonTransport(
+        base_url="https://10.42.0.15/api/llm/openai/v1",
+        allowed_hosts=frozenset({"10.42.0.15"}),
+        api_key="shared-intranet-api-key",
+        timeout_seconds=30,
+        transport=httpx.MockTransport(handler),
+    )
+
+    assert await transport.post_json(path="/embeddings", document={"input": ["probe"]}) == {
+        "data": []
+    }
+
+
+@pytest.mark.asyncio
 async def test_embedding_provider_preserves_page_order_and_actual_binding() -> None:
     transport = _Transport(
         {

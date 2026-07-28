@@ -818,6 +818,7 @@ def classify_environment_changes(
                 "LOCAL_OLLAMA_CHAT_",
                 "LOCAL_LLAMA_CPP_RERANKER_",
                 "INTRANET_OPENAI_COMPATIBLE_CHAT_",
+                "INTRANET_RERANKER_",
             )
         ):
             services.add("api")

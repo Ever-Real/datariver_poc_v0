@@ -378,6 +378,9 @@ async def test_s3_probe_authenticates_against_one_fixed_bucket() -> None:
 @pytest.mark.asyncio
 async def test_intranet_llm_probe_uses_the_operator_secret_and_rejects_bad_credentials() -> None:
     def accepted_handler(request: httpx.Request) -> httpx.Response:
+        assert request.url == httpx.URL(
+            "https://10.42.0.15/api/llm/openai/v1/chat/completions"
+        )
         assert request.headers["Authorization"] == "Bearer intranet-api-key"
         return httpx.Response(
             200,
@@ -387,8 +390,8 @@ async def test_intranet_llm_probe_uses_the_operator_secret_and_rejects_bad_crede
 
     document = {
         "connection_mode": "INTRANET_OPENAI_COMPATIBLE",
-        "base_url": "https://10.42.0.15/v1",
-        "model": "gemma4:latest",
+        "base_url": "https://10.42.0.15/api/llm/openai/v1",
+        "model": "/models/llm/gemma-4-31B-it",
         "secret_references": {"api_key": "file:/run/secrets/intranet_llm_chat_api_key"},
     }
     async with httpx.AsyncClient(transport=httpx.MockTransport(accepted_handler)) as client:
@@ -418,11 +421,13 @@ async def test_intranet_llm_probe_uses_the_operator_secret_and_rejects_bad_crede
 async def test_private_reranker_probe_executes_fixed_rank_request() -> None:
     def accepted_handler(request: httpx.Request) -> httpx.Response:
         assert request.method == "POST"
-        assert request.url == httpx.URL("https://10.42.0.16/v1/rerank")
+        assert request.url == httpx.URL(
+            "https://10.42.0.16/api/llm/openai/rerank"
+        )
         assert request.headers["Authorization"] == "Bearer reranker-api-key"
         document = json.loads(request.content)
         assert document == {
-            "model": "bge-reranker-v2-m3",
+            "model": "/models/Reranker/bge-reranker-v2-m3",
             "query": "governed data catalog metadata",
             "documents": [
                 "Data catalog metadata and governed lineage",
@@ -443,8 +448,8 @@ async def test_private_reranker_probe_executes_fixed_rank_request() -> None:
 
     document = {
         "connection_mode": "INTRANET_RERANK_V1",
-        "base_url": "https://10.42.0.16/v1",
-        "model": "bge-reranker-v2-m3",
+        "base_url": "https://10.42.0.16/api/llm/openai",
+        "model": "/models/Reranker/bge-reranker-v2-m3",
         "secret_references": {"api_key": "file:/run/secrets/intranet_llm_reranker_api_key"},
         "options": {"api_style": "rerank_v1", "timeout_seconds": 60, "top_n": 10},
     }

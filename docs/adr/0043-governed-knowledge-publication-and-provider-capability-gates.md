@@ -101,8 +101,9 @@ options:
 TEST sends one server-authored bounded `POST /v1/rerank` request, follows no redirect, rejects
 unsafe or non-allowlisted destinations, caps the decoded response and accepts only unique in-range
 indices with finite descending scores in `[0, 1]`. It records `RERANKING_INFERENCE` evidence.
-Reranking has no runtime consumer or ACTIVATE path in this phase. A successful connection test must
-not be described as Chat readiness or production inference.
+ADR-0065 adds the development runtime consumer while retaining the immutable classification-policy
+profile binding. A successful connection test alone must not be described as Chat readiness or
+production inference.
 
 The host allowlist is checked before DNS and the returned address set is validated. The current
 default HTTP transport can still perform another hostname lookup at connection time. Consequently,

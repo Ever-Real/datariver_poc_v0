@@ -18,6 +18,7 @@ from neo4j import AsyncGraphDatabase
 from redis.asyncio import Redis
 
 from datariver.domain.common import ValidationError
+from datariver.domain.inference import is_safe_inference_api_base_path
 from datariver.domain.system_configuration import require_canonical_secret_references
 from datariver.infrastructure.secrets import SecretResolver
 
@@ -701,13 +702,21 @@ async def probe_system_configuration(
     api_key: str | None = None
     if connection_mode in {"INTRANET_OPENAI_COMPATIBLE", "INTRANET_RERANK_V1"}:
         parsed_endpoint = urlsplit(endpoint)
-        if parsed_endpoint.scheme != "https" or parsed_endpoint.path.rstrip("/") != "/v1":
+        terminal_segment = (
+            "v1" if connection_mode == "INTRANET_OPENAI_COMPATIBLE" else None
+        )
+        if parsed_endpoint.scheme != "https" or not is_safe_inference_api_base_path(
+            parsed_endpoint.path,
+            terminal_segment=terminal_segment,
+        ):
             probe_name = (
                 "Private reranking probes"
                 if system_id == "LLM_RERANKER"
                 else "Intranet OpenAI-compatible probes"
             )
-            raise ValidationError(f"{probe_name} require an HTTPS endpoint ending in /v1.")
+            raise ValidationError(
+                f"{probe_name} require an HTTPS endpoint with a safe API base path."
+            )
         _require_private_intranet_destination(validated_addresses)
         api_key = (secret_resolver or SecretResolver()).resolve(
             _secret_reference(document, "api_key")
@@ -770,7 +779,12 @@ async def probe_system_configuration(
             else:
                 json_document = {
                     "model": model,
-                    "temperature": 0,
+                    "temperature": (
+                        float(options.get("temperature", 0))
+                        if isinstance(options, Mapping)
+                        else 0
+                    ),
+                    "stream": False,
                     "messages": [
                         {
                             "role": "system",
@@ -792,6 +806,19 @@ async def probe_system_configuration(
                         },
                     },
                 }
+                if isinstance(options, Mapping):
+                    top_p = options.get("top_p")
+                    repetition_penalty = options.get("repetition_penalty")
+                    if isinstance(top_p, int | float):
+                        json_document["top_p"] = float(top_p)
+                    if isinstance(repetition_penalty, int | float):
+                        json_document["repetition_penalty"] = float(
+                            repetition_penalty
+                        )
+                    if options.get("enable_thinking") is True:
+                        json_document["chat_template_kwargs"] = {
+                            "enable_thinking": True
+                        }
             response = await _bounded_http_request(
                 active_client,
                 "POST",

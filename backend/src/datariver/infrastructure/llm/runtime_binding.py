@@ -14,6 +14,7 @@ LOCAL_EMBEDDING_ROUTE_KEY = "local-ollama-embeddings-v1"
 LOCAL_RERANKER_ROUTE_KEY = "local-llama-cpp-rerank-v1"
 INTRANET_CHAT_ROUTE_KEY = "intranet-openai-chat-v1"
 INTRANET_EMBEDDING_ROUTE_KEY = "intranet-openai-embeddings-v1"
+INTRANET_RERANKER_ROUTE_KEY = "intranet-rerank-v1"
 
 
 def resolve_composition_runtime_binding(settings: Settings) -> InferenceRuntimeBinding | None:
@@ -51,10 +52,19 @@ def resolve_composition_runtime_binding(settings: Settings) -> InferenceRuntimeB
                 "allowed_hosts": sorted(settings.intranet_openai_compatible_allowed_hosts),
                 "base_url": str(settings.intranet_openai_compatible_chat_base_url),
                 "context_tokens": settings.intranet_openai_compatible_chat_context_tokens,
+                "enable_thinking": (
+                    settings.intranet_openai_compatible_chat_enable_thinking
+                ),
+                "repetition_penalty": (
+                    settings.intranet_openai_compatible_chat_repetition_penalty
+                ),
                 "secret_ref_identity": (
                     settings.intranet_openai_compatible_chat_api_key_secret_ref
                 ),
+                "stream": False,
+                "temperature": settings.intranet_openai_compatible_chat_temperature,
                 "timeout_seconds": (settings.intranet_openai_compatible_chat_timeout_seconds),
+                "top_p": settings.intranet_openai_compatible_chat_top_p,
             },
         )
     return None
@@ -106,26 +116,50 @@ def resolve_embedding_runtime_binding(settings: Settings) -> InferenceRuntimeBin
 
 
 def resolve_reranker_runtime_binding(settings: Settings) -> InferenceRuntimeBinding | None:
-    if not settings.local_llama_cpp_reranker_enabled:
-        return None
-    if (
-        settings.local_llama_cpp_reranker_base_url is None
-        or settings.local_llama_cpp_reranker_model is None
-    ):
-        raise ConflictError("The local reranker runtime binding is incomplete.")
-    return _binding(
-        stage=InferenceStage.RERANKER,
-        profile_id=settings.chat_reranker_provider_profile_version_id,
-        server_route_key=LOCAL_RERANKER_ROUTE_KEY,
-        provider_identity="llama-cpp-reranker",
-        model_identity=settings.local_llama_cpp_reranker_model,
-        deployment_document={
-            "adapter_contract": "rerank-v1",
-            "base_url": str(settings.local_llama_cpp_reranker_base_url),
-            "timeout_seconds": settings.local_llama_cpp_reranker_timeout_seconds,
-            "top_n": settings.local_llama_cpp_reranker_top_n,
-        },
-    )
+    if settings.local_llama_cpp_reranker_enabled:
+        if (
+            settings.local_llama_cpp_reranker_base_url is None
+            or settings.local_llama_cpp_reranker_model is None
+        ):
+            raise ConflictError("The local reranker runtime binding is incomplete.")
+        return _binding(
+            stage=InferenceStage.RERANKER,
+            profile_id=settings.chat_reranker_provider_profile_version_id,
+            server_route_key=LOCAL_RERANKER_ROUTE_KEY,
+            provider_identity="llama-cpp-reranker",
+            model_identity=settings.local_llama_cpp_reranker_model,
+            deployment_document={
+                "adapter_contract": "rerank-v1",
+                "base_url": str(settings.local_llama_cpp_reranker_base_url),
+                "timeout_seconds": settings.local_llama_cpp_reranker_timeout_seconds,
+                "top_n": settings.local_llama_cpp_reranker_top_n,
+            },
+        )
+    if settings.intranet_reranker_enabled:
+        if (
+            settings.intranet_reranker_base_url is None
+            or settings.intranet_reranker_model is None
+            or settings.intranet_reranker_api_key_secret_ref is None
+        ):
+            raise ConflictError("The intranet reranker runtime binding is incomplete.")
+        return _binding(
+            stage=InferenceStage.RERANKER,
+            profile_id=settings.chat_reranker_provider_profile_version_id,
+            server_route_key=INTRANET_RERANKER_ROUTE_KEY,
+            provider_identity="intranet-rerank-v1",
+            model_identity=settings.intranet_reranker_model,
+            deployment_document={
+                "adapter_contract": "rerank-v1",
+                "allowed_hosts": sorted(
+                    settings.intranet_openai_compatible_allowed_hosts
+                ),
+                "base_url": str(settings.intranet_reranker_base_url),
+                "secret_ref_identity": settings.intranet_reranker_api_key_secret_ref,
+                "timeout_seconds": settings.intranet_reranker_timeout_seconds,
+                "top_n": settings.intranet_reranker_top_n,
+            },
+        )
+    return None
 
 
 def resolve_interactive_runtime_bindings(

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import Mapping, Sequence
+from dataclasses import dataclass
 from typing import Any, Literal, Protocol
 from urllib.parse import urlsplit
 
@@ -16,6 +17,7 @@ from datariver.application.knowledge_pipeline_ports import (
     TypedKnowledgeExtractor,
 )
 from datariver.domain.common import ValidationError
+from datariver.domain.inference import is_safe_inference_api_base_path
 from datariver.domain.knowledge import normalize_evidence_excerpt
 from datariver.domain.knowledge_pipeline import (
     EmbeddingBatch,
@@ -37,6 +39,37 @@ MAX_EVIDENCE_UNIT_CHARACTERS = 240
 MAX_INFERENCE_RESPONSE_BYTES = 2 * 1024 * 1024
 
 
+@dataclass(frozen=True, slots=True)
+class OpenAICompatibleChatRequestOptions:
+    temperature: float = 0.0
+    top_p: float | None = None
+    repetition_penalty: float | None = None
+    enable_thinking: bool = False
+
+    def __post_init__(self) -> None:
+        if (
+            not 0.0 <= self.temperature <= 2.0
+            or (self.top_p is not None and not 0.0 < self.top_p <= 1.0)
+            or (
+                self.repetition_penalty is not None
+                and not 0.0 < self.repetition_penalty <= 2.0
+            )
+        ):
+            raise ValueError("OpenAI-compatible Chat options are outside governed bounds.")
+
+    def apply(self, document: Mapping[str, object]) -> dict[str, object]:
+        configured = dict(document)
+        configured["temperature"] = self.temperature
+        configured["stream"] = False
+        if self.top_p is not None:
+            configured["top_p"] = self.top_p
+        if self.repetition_penalty is not None:
+            configured["repetition_penalty"] = self.repetition_penalty
+        if self.enable_thinking:
+            configured["chat_template_kwargs"] = {"enable_thinking": True}
+        return configured
+
+
 class OpenAIJsonTransport(Protocol):
     async def post_json(
         self, *, path: str, document: Mapping[str, object]
@@ -56,13 +89,18 @@ class HttpxOpenAIJsonTransport:
         transport: httpx.AsyncBaseTransport | None = None,
     ) -> None:
         parsed = urlsplit(base_url)
+        host = (parsed.hostname or "").rstrip(".").lower()
         if (
             parsed.scheme not in {"http", "https"}
-            or parsed.hostname not in allowed_hosts
+            or host not in allowed_hosts
             or parsed.username is not None
             or parsed.password is not None
             or parsed.query
             or parsed.fragment
+            or not is_safe_inference_api_base_path(
+                parsed.path,
+                terminal_segment="v1",
+            )
         ):
             raise ValueError("The inference endpoint is outside the server allowlist.")
         if not 1 <= timeout_seconds <= 120:
@@ -306,9 +344,11 @@ class OpenAICompatibleTypedKnowledgeExtractor(TypedKnowledgeExtractor):
         *,
         transport: OpenAIJsonTransport,
         reasoning_effort: Literal["none", "low", "medium", "high"] | None = None,
+        chat_options: OpenAICompatibleChatRequestOptions | None = None,
     ) -> None:
         self._transport = transport
         self._reasoning_effort = reasoning_effort
+        self._chat_options = chat_options or OpenAICompatibleChatRequestOptions()
 
     async def propose(
         self,
@@ -364,7 +404,7 @@ class OpenAICompatibleTypedKnowledgeExtractor(TypedKnowledgeExtractor):
             document["reasoning_effort"] = self._reasoning_effort
         result = await self._transport.post_json(
             path="/chat/completions",
-            document=document,
+            document=self._chat_options.apply(document),
         )
         try:
             parsed = _ExtractionResponse.model_validate_json(_choice_content(result))
@@ -411,9 +451,11 @@ class OpenAICompatibleKnowledgeAnswerComposer(KnowledgeAnswerComposer):
         *,
         transport: OpenAIJsonTransport,
         reasoning_effort: Literal["none", "low", "medium", "high"] | None = None,
+        chat_options: OpenAICompatibleChatRequestOptions | None = None,
     ) -> None:
         self._transport = transport
         self._reasoning_effort = reasoning_effort
+        self._chat_options = chat_options or OpenAICompatibleChatRequestOptions()
 
     async def compose(
         self,
@@ -480,7 +522,7 @@ class OpenAICompatibleKnowledgeAnswerComposer(KnowledgeAnswerComposer):
             document["reasoning_effort"] = self._reasoning_effort
         result = await self._transport.post_json(
             path="/chat/completions",
-            document=document,
+            document=self._chat_options.apply(document),
         )
         try:
             parsed = _GraphRagResponse.model_validate_json(_choice_content(result))

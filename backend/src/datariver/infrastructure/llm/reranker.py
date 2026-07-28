@@ -12,6 +12,10 @@ import httpx
 from datariver.application.dto import ChatEvidence
 from datariver.application.ports import ChatEvidenceReranker
 from datariver.domain.common import ValidationError
+from datariver.domain.inference import (
+    is_safe_inference_api_base_path,
+    is_valid_inference_model_identity,
+)
 
 MAXIMUM_RERANK_RESPONSE_BYTES = 131_072
 MAXIMUM_RERANK_DOCUMENT_CHARACTERS = 2_000
@@ -50,6 +54,10 @@ class LocalLlamaCppEvidenceReranker(ChatEvidenceReranker):
         self._timeout_seconds = timeout_seconds
         self._top_n = top_n
         self._transport = transport
+        self._headers: dict[str, str] = {}
+        self._label = "local"
+        self._require_model_echo = True
+        self._require_unit_interval = False
 
     async def rerank(
         self,
@@ -73,6 +81,7 @@ class LocalLlamaCppEvidenceReranker(ChatEvidenceReranker):
             async with client.stream(
                 "POST",
                 self._endpoint,
+                headers=self._headers,
                 json={
                     "model": self._model,
                     "query": question,
@@ -81,26 +90,44 @@ class LocalLlamaCppEvidenceReranker(ChatEvidenceReranker):
                 },
             ) as response:
                 if response.status_code != 200:
-                    raise ValidationError("The local reranker request failed.")
+                    raise ValidationError(f"The {self._label} reranker request failed.")
                 raw = bytearray()
                 async for chunk in response.aiter_bytes():
                     raw.extend(chunk)
                     if len(raw) > MAXIMUM_RERANK_RESPONSE_BYTES:
-                        raise ValidationError("The local reranker response exceeded its bound.")
+                        raise ValidationError(
+                            f"The {self._label} reranker response exceeded its bound."
+                        )
         try:
             document: Any = json.loads(raw)
         except (UnicodeDecodeError, json.JSONDecodeError) as error:
-            raise ValidationError("The local reranker returned invalid JSON.") from error
-        if not isinstance(document, dict) or document.get("model") != self._model:
-            raise ValidationError("The local reranker returned a different model identity.")
+            raise ValidationError(
+                f"The {self._label} reranker returned invalid JSON."
+            ) from error
+        if not isinstance(document, dict):
+            raise ValidationError(
+                f"The {self._label} reranker returned an invalid document."
+            )
+        returned_model = document.get("model")
+        if (
+            (self._require_model_echo and returned_model != self._model)
+            or (returned_model is not None and returned_model != self._model)
+        ):
+            raise ValidationError(
+                f"The {self._label} reranker returned a different model identity."
+            )
         results = document.get("results")
         if not isinstance(results, list) or len(results) != top_n:
-            raise ValidationError("The local reranker returned an invalid result count.")
+            raise ValidationError(
+                f"The {self._label} reranker returned an invalid result count."
+            )
         indexes: list[int] = []
         scores: list[float] = []
         for item in results:
             if not isinstance(item, dict):
-                raise ValidationError("The local reranker returned an invalid result.")
+                raise ValidationError(
+                    f"The {self._label} reranker returned an invalid result."
+                )
             index = item.get("index")
             score = item.get("relevance_score")
             if (
@@ -110,10 +137,61 @@ class LocalLlamaCppEvidenceReranker(ChatEvidenceReranker):
                 or not isinstance(score, int | float)
                 or isinstance(score, bool)
                 or not math.isfinite(float(score))
+                or (
+                    self._require_unit_interval
+                    and not 0.0 <= float(score) <= 1.0
+                )
             ):
-                raise ValidationError("The local reranker returned invalid rank data.")
+                raise ValidationError(
+                    f"The {self._label} reranker returned invalid rank data."
+                )
             indexes.append(index)
             scores.append(float(score))
         if len(set(indexes)) != len(indexes) or scores != sorted(scores, reverse=True):
-            raise ValidationError("The local reranker result order is invalid.")
+            raise ValidationError(
+                f"The {self._label} reranker result order is invalid."
+            )
         return tuple(evidence[index].chunk_id for index in indexes)
+
+
+class IntranetEvidenceReranker(LocalLlamaCppEvidenceReranker):
+    """Call a fixed private `/rerank` route through an HTTPS gateway prefix."""
+
+    def __init__(
+        self,
+        *,
+        base_url: str,
+        model: str,
+        api_key: str,
+        timeout_seconds: float,
+        top_n: int,
+        allowed_hosts: frozenset[str],
+        transport: httpx.AsyncBaseTransport | None = None,
+    ) -> None:
+        parsed = urlsplit(base_url)
+        host = (parsed.hostname or "").rstrip(".").lower()
+        if (
+            parsed.scheme != "https"
+            or host not in allowed_hosts
+            or parsed.username is not None
+            or parsed.password is not None
+            or parsed.query
+            or parsed.fragment
+            or not is_safe_inference_api_base_path(parsed.path)
+        ):
+            raise ValidationError("The intranet reranker endpoint violates the fixed contract.")
+        if (
+            not is_valid_inference_model_identity(model)
+            or not api_key.strip()
+            or not 1 <= top_n <= 100
+        ):
+            raise ValidationError("The intranet reranker binding is invalid.")
+        self._endpoint = f"{base_url.rstrip('/')}/rerank"
+        self._model = model
+        self._timeout_seconds = timeout_seconds
+        self._top_n = top_n
+        self._transport = transport
+        self._headers = {"Authorization": f"Bearer {api_key}"}
+        self._label = "intranet"
+        self._require_model_echo = False
+        self._require_unit_interval = True

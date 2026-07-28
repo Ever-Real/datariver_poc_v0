@@ -519,6 +519,102 @@ def test_intranet_openai_compatible_inference_is_development_private_tls_only() 
         )
 
 
+def test_intranet_inference_accepts_gateway_prefix_and_path_like_model_id() -> None:
+    configured = settings(
+        intranet_openai_compatible_allowed_hosts=("10.42.0.15",),
+        intranet_openai_compatible_chat_enabled=True,
+        intranet_openai_compatible_chat_base_url=(
+            "https://10.42.0.15/api/llm/openai/v1"
+        ),
+        intranet_openai_compatible_chat_model="/models/llm/gemma-4-31B-it",
+        intranet_openai_compatible_chat_api_key_secret_ref=(
+            "file:/run/secrets/intranet_llm_chat_api_key"
+        ),
+        intranet_openai_compatible_embedding_enabled=True,
+        intranet_openai_compatible_embedding_base_url=(
+            "https://10.42.0.15/api/llm/openai/v1"
+        ),
+        intranet_openai_compatible_embedding_model="/models/embedding/bge-m3",
+        intranet_openai_compatible_embedding_api_key_secret_ref=(
+            "file:/run/secrets/intranet_llm_embedding_api_key"
+        ),
+        intranet_openai_compatible_chat_top_p=0.9,
+        intranet_openai_compatible_chat_repetition_penalty=1.05,
+        intranet_openai_compatible_chat_enable_thinking=True,
+    )
+
+    assert str(configured.intranet_openai_compatible_chat_base_url).rstrip("/") == (
+        "https://10.42.0.15/api/llm/openai/v1"
+    )
+    assert configured.intranet_openai_compatible_chat_model == (
+        "/models/llm/gemma-4-31B-it"
+    )
+    assert configured.intranet_openai_compatible_chat_enable_thinking is True
+
+
+@pytest.mark.parametrize(
+    ("base_url", "model"),
+    (
+        (
+            "https://10.42.0.15/api/%2F/openai/v1",
+            "/models/llm/gemma-4-31B-it",
+        ),
+        (
+            "https://10.42.0.15/api/llm/openai/v1",
+            "/models//gemma-4-31B-it",
+        ),
+    ),
+)
+def test_intranet_inference_rejects_path_confusion(
+    base_url: str,
+    model: str,
+) -> None:
+    with pytest.raises(ValidationError):
+        settings(
+            intranet_openai_compatible_allowed_hosts=("10.42.0.15",),
+            intranet_openai_compatible_chat_enabled=True,
+            intranet_openai_compatible_chat_base_url=base_url,
+            intranet_openai_compatible_chat_model=model,
+            intranet_openai_compatible_chat_api_key_secret_ref=(
+                "file:/run/secrets/intranet_llm_chat_api_key"
+            ),
+        )
+
+
+def test_intranet_reranker_accepts_private_gateway_prefix() -> None:
+    configured = settings(
+        intranet_openai_compatible_allowed_hosts=("10.42.0.15",),
+        intranet_reranker_enabled=True,
+        intranet_reranker_base_url="https://10.42.0.15/api/llm/openai",
+        intranet_reranker_model="/models/Reranker/bge-reranker-v2-m3",
+        intranet_reranker_api_key_secret_ref=(
+            "file:/run/secrets/intranet_llm_reranker_api_key"
+        ),
+    )
+
+    assert configured.intranet_reranker_enabled is True
+    assert configured.intranet_reranker_model == (
+        "/models/Reranker/bge-reranker-v2-m3"
+    )
+
+    with pytest.raises(ValidationError, match="cannot be enabled together"):
+        settings(
+            local_inference_allowed_hosts=("host.docker.internal",),
+            local_llama_cpp_reranker_enabled=True,
+            local_llama_cpp_reranker_base_url=(
+                "http://host.docker.internal:11435/v1"
+            ),
+            local_llama_cpp_reranker_model="local-reranker",
+            intranet_openai_compatible_allowed_hosts=("10.42.0.15",),
+            intranet_reranker_enabled=True,
+            intranet_reranker_base_url="https://10.42.0.15/api/llm/openai",
+            intranet_reranker_model="/models/Reranker/bge-reranker-v2-m3",
+            intranet_reranker_api_key_secret_ref=(
+                "file:/run/secrets/intranet_llm_reranker_api_key"
+            ),
+        )
+
+
 def test_accepts_secure_production_configuration() -> None:
     configured = settings(
         app_env="production",

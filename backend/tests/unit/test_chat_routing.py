@@ -39,14 +39,17 @@ from datariver.domain.chat import (
     ChatRetrievalMode,
     ChatRouteReason,
 )
-from datariver.domain.common import ForbiddenError
+from datariver.domain.common import ForbiddenError, ValidationError
 from datariver.domain.knowledge_pipeline import (
     EmbeddingBatch,
     ModelBinding,
     PageEmbedding,
     PdfPage,
 )
-from datariver.infrastructure.llm.reranker import LocalLlamaCppEvidenceReranker
+from datariver.infrastructure.llm.reranker import (
+    IntranetEvidenceReranker,
+    LocalLlamaCppEvidenceReranker,
+)
 from datariver.infrastructure.llm.vector_catalog import BoundedCatalogVectorReader
 
 
@@ -292,6 +295,80 @@ async def test_reranker_validates_and_returns_the_provider_order() -> None:
         evidence[1].chunk_id,
         evidence[0].chunk_id,
     )
+
+
+async def test_intranet_reranker_uses_gateway_prefix_and_bearer_secret() -> None:
+    workspace_id = uuid4()
+    evidence = (
+        _evidence(workspace_id, name="First"),
+        _evidence(workspace_id, name="Second"),
+    )
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url == httpx.URL(
+            "https://models.internal/api/llm/openai/rerank"
+        )
+        assert request.headers["Authorization"] == "Bearer shared-intranet-api-key"
+        return httpx.Response(
+            200,
+            json={
+                "results": [
+                    {"index": 1, "relevance_score": 0.9},
+                    {"index": 0, "relevance_score": 0.2},
+                ],
+            },
+        )
+
+    adapter = IntranetEvidenceReranker(
+        base_url="https://models.internal/api/llm/openai",
+        model="/models/Reranker/bge-reranker-v2-m3",
+        api_key="shared-intranet-api-key",
+        timeout_seconds=5,
+        top_n=2,
+        allowed_hosts=frozenset({"models.internal"}),
+        transport=httpx.MockTransport(handler),
+    )
+
+    assert await adapter.rerank(question="catalog", evidence=evidence) == (
+        evidence[1].chunk_id,
+        evidence[0].chunk_id,
+    )
+
+
+async def test_intranet_reranker_rejects_unbounded_scores_and_wrong_host() -> None:
+    workspace_id = uuid4()
+    evidence = (_evidence(workspace_id, name="First"),)
+
+    with pytest.raises(ValidationError, match="fixed contract"):
+        IntranetEvidenceReranker(
+            base_url="https://unapproved.internal/api/llm/openai",
+            model="/models/Reranker/bge-reranker-v2-m3",
+            api_key="shared-intranet-api-key",
+            timeout_seconds=5,
+            top_n=1,
+            allowed_hosts=frozenset({"models.internal"}),
+        )
+
+    adapter = IntranetEvidenceReranker(
+        base_url="https://models.internal/api/llm/openai",
+        model="/models/Reranker/bge-reranker-v2-m3",
+        api_key="shared-intranet-api-key",
+        timeout_seconds=5,
+        top_n=1,
+        allowed_hosts=frozenset({"models.internal"}),
+        transport=httpx.MockTransport(
+            lambda request: httpx.Response(
+                200,
+                request=request,
+                json={
+                    "results": [{"index": 0, "relevance_score": 5.0}],
+                },
+            )
+        ),
+    )
+
+    with pytest.raises(ValidationError, match="invalid rank data"):
+        await adapter.rerank(question="catalog", evidence=evidence)
 
 
 class _History:

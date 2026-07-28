@@ -128,3 +128,23 @@ async def test_openai_compatible_chat_uses_separate_general_tool_contract() -> N
     }
     assert draft.answer == "A bounded general answer."
     assert draft.cited_chunk_ids == ()
+
+
+@pytest.mark.asyncio
+async def test_openai_compatible_chat_applies_bounded_gateway_options() -> None:
+    transport = RecordingGeneralTransport()
+
+    await OpenAICompatibleGroundedChatComposer(
+        model="/models/llm/gemma-4-31B-it",
+        transport=transport,
+        temperature=0.2,
+        top_p=0.9,
+        repetition_penalty=1.05,
+        enable_thinking=True,
+    ).compose_general(question="What is an ontology?")
+
+    assert transport.document["temperature"] == 0.2
+    assert transport.document["top_p"] == 0.9
+    assert transport.document["repetition_penalty"] == 1.05
+    assert transport.document["chat_template_kwargs"] == {"enable_thinking": True}
+    assert transport.document["stream"] is False

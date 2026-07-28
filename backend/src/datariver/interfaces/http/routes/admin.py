@@ -44,6 +44,10 @@ from datariver.domain.data_access import (
     PartialAccessTreatment,
     RoleDataAccessRule,
 )
+from datariver.domain.inference import (
+    is_safe_inference_api_base_path,
+    is_valid_inference_model_identity,
+)
 from datariver.domain.membership_renewal import (
     MembershipRenewalDecision,
     MembershipRenewalState,
@@ -378,6 +382,10 @@ _SYSTEM_ENVIRONMENT_KEYS: dict[str, tuple[str, ...]] = {
         "INTRANET_OPENAI_COMPATIBLE_CHAT_API_KEY_SECRET_REF",
         "INTRANET_OPENAI_COMPATIBLE_CHAT_TIMEOUT_SECONDS",
         "INTRANET_OPENAI_COMPATIBLE_CHAT_CONTEXT_TOKENS",
+        "INTRANET_OPENAI_COMPATIBLE_CHAT_TEMPERATURE",
+        "INTRANET_OPENAI_COMPATIBLE_CHAT_TOP_P",
+        "INTRANET_OPENAI_COMPATIBLE_CHAT_REPETITION_PENALTY",
+        "INTRANET_OPENAI_COMPATIBLE_CHAT_ENABLE_THINKING",
         "CHAT_EPHEMERAL_ADMIN_WITHOUT_RETENTION_ENABLED",
         "CHAT_RATE_LIMIT_REQUESTS_PER_MINUTE",
         "CHAT_RATE_LIMIT_TOKENS_PER_MINUTE",
@@ -410,6 +418,13 @@ _SYSTEM_ENVIRONMENT_KEYS: dict[str, tuple[str, ...]] = {
         "LOCAL_LLAMA_CPP_RERANKER_MODEL",
         "LOCAL_LLAMA_CPP_RERANKER_TIMEOUT_SECONDS",
         "LOCAL_LLAMA_CPP_RERANKER_TOP_N",
+        "INTRANET_OPENAI_COMPATIBLE_ALLOWED_HOSTS",
+        "INTRANET_RERANKER_ENABLED",
+        "INTRANET_RERANKER_BASE_URL",
+        "INTRANET_RERANKER_MODEL",
+        "INTRANET_RERANKER_API_KEY_SECRET_REF",
+        "INTRANET_RERANKER_TIMEOUT_SECONDS",
+        "INTRANET_RERANKER_TOP_N",
         "CHAT_RERANKER_PROVIDER_PROFILE_VERSION_ID",
         "SYSTEM_CONFIGURATION_PROBE_ALLOWED_HOSTS",
         "SYSTEM_CONFIGURATION_SECRET_ROOT",
@@ -530,7 +545,12 @@ _SYSTEM_CONFIGURATION_TEMPLATES: dict[str, dict[str, Any]] = {
         "options": {
             "api_style": "openai_compatible",
             "context_tokens": 8192,
+            "enable_thinking": False,
+            "repetition_penalty": None,
+            "stream": False,
+            "temperature": 0.0,
             "timeout_seconds": 60.0,
+            "top_p": None,
         },
     },
     "LLM_EMBEDDING": {
@@ -1099,7 +1119,7 @@ def _validate_system_configuration(
         raise ValidationError("System configuration requires one non-empty HTTP endpoint.")
     if system_id.startswith("LLM_"):
         model = _require_non_empty_string(document, "model")
-        if len(model) > 128 or re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:/-]{0,127}", model) is None:
+        if not is_valid_inference_model_identity(model):
             raise ValidationError("The LLM model identity is invalid.")
     if system_id in {"LLM_CHAT_MODEL", "LLM_EMBEDDING"}:
         connection_mode = document.get("connection_mode", "LOCAL_OLLAMA")
@@ -1119,9 +1139,13 @@ def _validate_system_configuration(
             raise ValidationError("Local Ollama does not accept an API-key secret reference.")
         if connection_mode == "INTRANET_OPENAI_COMPATIBLE":
             parsed = urlsplit(endpoint)
-            if parsed.scheme != "https" or parsed.path.rstrip("/") != "/v1":
+            if parsed.scheme != "https" or not is_safe_inference_api_base_path(
+                parsed.path,
+                terminal_segment="v1",
+            ):
                 raise ValidationError(
-                    "Intranet OpenAI-compatible LLM configuration requires an HTTPS /v1 endpoint."
+                    "Intranet OpenAI-compatible LLM configuration requires an HTTPS /v1 "
+                    "endpoint, optionally below a safe gateway path prefix."
                 )
             if set(secret_references) != {"api_key"}:
                 raise ValidationError(
@@ -1133,6 +1157,35 @@ def _validate_system_configuration(
                 raise ValidationError(
                     "Intranet OpenAI-compatible LLM configuration requires "
                     "api_style=openai_compatible."
+                )
+            temperature = options.get("temperature", 0.0)
+            top_p = options.get("top_p")
+            repetition_penalty = options.get("repetition_penalty")
+            if (
+                not isinstance(temperature, int | float)
+                or isinstance(temperature, bool)
+                or not 0.0 <= float(temperature) <= 2.0
+                or (
+                    top_p is not None
+                    and (
+                        not isinstance(top_p, int | float)
+                        or isinstance(top_p, bool)
+                        or not 0.0 < float(top_p) <= 1.0
+                    )
+                )
+                or (
+                    repetition_penalty is not None
+                    and (
+                        not isinstance(repetition_penalty, int | float)
+                        or isinstance(repetition_penalty, bool)
+                        or not 0.0 < float(repetition_penalty) <= 2.0
+                    )
+                )
+                or not isinstance(options.get("enable_thinking", False), bool)
+                or options.get("stream", False) is not False
+            ):
+                raise ValidationError(
+                    "Intranet Chat compatibility options are outside governed bounds."
                 )
         _require_canonical_secret_contract(
             system_id,
@@ -1164,9 +1217,11 @@ def _validate_system_configuration(
                     "The local llama.cpp reranker does not accept an API-key reference."
                 )
         else:
-            if parsed.scheme != "https" or parsed.path.rstrip("/") != "/v1":
+            if parsed.scheme != "https" or not is_safe_inference_api_base_path(
+                parsed.path
+            ):
                 raise ValidationError(
-                    "The private reranker requires an HTTPS endpoint ending in /v1."
+                    "The private reranker requires an HTTPS endpoint with a safe base path."
                 )
             if set(secret_references) != {"api_key"}:
                 raise ValidationError(
@@ -1477,7 +1532,10 @@ def _system_configuration_entries(
             settings.local_ollama_embedding_enabled
             or settings.intranet_openai_compatible_embedding_enabled
         ),
-        "LLM_RERANKER": settings.local_llama_cpp_reranker_enabled,
+        "LLM_RERANKER": (
+            settings.local_llama_cpp_reranker_enabled
+            or settings.intranet_reranker_enabled
+        ),
         "NEO4J": settings.neo4j_projection_enabled,
         "PROMETHEUS": settings.ui_prometheus_url is not None,
         "GRAFANA_DASHBOARD": settings.ui_grafana_url is not None,
@@ -1489,6 +1547,18 @@ def _system_configuration_entries(
         "REDIS_CACHE": bool(settings.redis_cache_secret_ref),
         "REDIS_DELIVERY": bool(settings.redis_delivery_secret_ref),
         "S3_STORAGE": bool(settings.s3_access_key_file and settings.s3_secret_key_file),
+        "LLM_CHAT_MODEL": bool(
+            settings.intranet_openai_compatible_chat_enabled
+            and settings.intranet_openai_compatible_chat_api_key_secret_ref
+        ),
+        "LLM_EMBEDDING": bool(
+            settings.intranet_openai_compatible_embedding_enabled
+            and settings.intranet_openai_compatible_embedding_api_key_secret_ref
+        ),
+        "LLM_RERANKER": bool(
+            settings.intranet_reranker_enabled
+            and settings.intranet_reranker_api_key_secret_ref
+        ),
         "NEO4J": bool(settings.neo4j_auth_secret_ref),
     }
     entries: list[SystemConfigurationEntryResponse] = []
@@ -3192,9 +3262,20 @@ def _deployment_configuration_document(
                 "options": {
                     "api_style": "openai_compatible",
                     "context_tokens": settings.intranet_openai_compatible_chat_context_tokens,
+                    "enable_thinking": (
+                        settings.intranet_openai_compatible_chat_enable_thinking
+                    ),
+                    "repetition_penalty": (
+                        settings.intranet_openai_compatible_chat_repetition_penalty
+                    ),
                     "request_limit_per_minute": (settings.chat_rate_limit_requests_per_minute),
+                    "stream": False,
+                    "temperature": (
+                        settings.intranet_openai_compatible_chat_temperature
+                    ),
                     "token_limit_per_minute": settings.chat_rate_limit_tokens_per_minute,
                     "timeout_seconds": settings.intranet_openai_compatible_chat_timeout_seconds,
+                    "top_p": settings.intranet_openai_compatible_chat_top_p,
                     "governance_binding": _runtime_binding_document(binding),
                 },
             }
@@ -3244,6 +3325,22 @@ def _deployment_configuration_document(
                 "governance_binding": _runtime_binding_document(binding),
             },
         }
+    if system_id == "LLM_RERANKER" and settings.intranet_reranker_enabled:
+        binding = resolve_reranker_runtime_binding(settings)
+        return {
+            "connection_mode": "INTRANET_RERANK_V1",
+            "base_url": str(settings.intranet_reranker_base_url),
+            "model": settings.intranet_reranker_model,
+            "secret_references": {
+                "api_key": settings.intranet_reranker_api_key_secret_ref
+            },
+            "options": {
+                "api_style": "rerank_v1",
+                "timeout_seconds": settings.intranet_reranker_timeout_seconds,
+                "top_n": settings.intranet_reranker_top_n,
+                "governance_binding": _runtime_binding_document(binding),
+            },
+        }
     if system_id == "NEO4J" and settings.neo4j_projection_enabled:
         return {
             "database": settings.neo4j_database,
@@ -3289,6 +3386,7 @@ def _deployment_probe_allowed_hosts(
     hosts = set(settings.system_configuration_probe_allowed_hosts)
     if system_id.startswith("LLM_"):
         hosts.update(settings.effective_local_inference_allowed_hosts)
+        hosts.update(settings.intranet_openai_compatible_allowed_hosts)
     return tuple(sorted(hosts))
 
 

@@ -582,6 +582,72 @@ def test_deployment_probe_documents_exclude_display_metadata_and_validate() -> N
     assert "token_limit_per_minute" not in chat["options"]
 
 
+def test_intranet_gateway_deployment_documents_bind_all_three_stages() -> None:
+    configured = Settings(
+        **(
+            settings().model_dump()
+            | {
+                "app_env": "development",
+                "intranet_openai_compatible_allowed_hosts": ("10.42.0.15",),
+                "intranet_openai_compatible_chat_enabled": True,
+                "intranet_openai_compatible_chat_base_url": (
+                    "https://10.42.0.15/api/llm/openai/v1"
+                ),
+                "intranet_openai_compatible_chat_model": (
+                    "/models/llm/gemma-4-31B-it"
+                ),
+                "intranet_openai_compatible_chat_api_key_secret_ref": (
+                    "file:/run/secrets/intranet_llm_chat_api_key"
+                ),
+                "intranet_openai_compatible_chat_top_p": 0.9,
+                "intranet_openai_compatible_chat_enable_thinking": True,
+                "intranet_openai_compatible_embedding_enabled": True,
+                "intranet_openai_compatible_embedding_base_url": (
+                    "https://10.42.0.15/api/llm/openai/v1"
+                ),
+                "intranet_openai_compatible_embedding_model": (
+                    "/models/embedding/bge-m3"
+                ),
+                "intranet_openai_compatible_embedding_api_key_secret_ref": (
+                    "file:/run/secrets/intranet_llm_embedding_api_key"
+                ),
+                "intranet_reranker_enabled": True,
+                "intranet_reranker_base_url": (
+                    "https://10.42.0.15/api/llm/openai"
+                ),
+                "intranet_reranker_model": (
+                    "/models/Reranker/bge-reranker-v2-m3"
+                ),
+                "intranet_reranker_api_key_secret_ref": (
+                    "file:/run/secrets/intranet_llm_reranker_api_key"
+                ),
+            }
+        )
+    )
+
+    chat = _deployment_configuration_document(configured, "LLM_CHAT_MODEL")
+    embedding = _deployment_configuration_document(configured, "LLM_EMBEDDING")
+    reranker = _deployment_configuration_document(configured, "LLM_RERANKER")
+
+    assert chat is not None
+    assert chat["base_url"] == "https://10.42.0.15/api/llm/openai/v1"
+    assert chat["model"] == "/models/llm/gemma-4-31B-it"
+    assert chat["options"]["top_p"] == 0.9
+    assert chat["options"]["enable_thinking"] is True
+    assert embedding is not None
+    assert embedding["model"] == "/models/embedding/bge-m3"
+    assert reranker is not None
+    assert reranker["connection_mode"] == "INTRANET_RERANK_V1"
+    assert reranker["base_url"] == "https://10.42.0.15/api/llm/openai"
+    assert reranker["options"]["governance_binding"]["server_route_key"] == (
+        "intranet-rerank-v1"
+    )
+    assert "10.42.0.15" in _deployment_probe_allowed_hosts(
+        configured,
+        "LLM_RERANKER",
+    )
+
+
 def test_system_configuration_display_removes_nested_secrets_and_submission_rejects_them() -> None:
     stored = {
         "base_url": "http://service.internal",
@@ -795,6 +861,22 @@ def test_system_configuration_contract_rejects_credentials_and_incomplete_profil
                 "options": {"api_style": "openai_compatible"},
             },
         )
+    with pytest.raises(ValidationError, match="governed bounds"):
+        _validate_system_configuration(
+            "LLM_CHAT_MODEL",
+            {
+                "connection_mode": "INTRANET_OPENAI_COMPATIBLE",
+                "base_url": "https://10.42.0.15/api/llm/openai/v1",
+                "model": "/models/llm/gemma-4-31B-it",
+                "secret_references": {
+                    "api_key": "file:/run/secrets/intranet_llm_chat_api_key"
+                },
+                "options": {
+                    "api_style": "openai_compatible",
+                    "stream": True,
+                },
+            },
+        )
     with pytest.raises(ValidationError, match="accepted"):
         _validate_system_configuration(
             "S3_STORAGE",
@@ -811,13 +893,15 @@ def test_system_configuration_contract_rejects_credentials_and_incomplete_profil
 def test_reranker_configuration_is_one_fixed_non_openai_contract() -> None:
     valid: dict[str, Any] = {
         "connection_mode": "INTRANET_RERANK_V1",
-        "base_url": "https://10.42.0.16/v1",
-        "model": "bge-reranker-v2-m3",
+        "base_url": "https://10.42.0.16/api/llm/openai",
+        "model": "/models/Reranker/bge-reranker-v2-m3",
         "secret_references": {"api_key": "file:/run/secrets/intranet_llm_reranker_api_key"},
         "options": {"api_style": "rerank_v1", "timeout_seconds": 60, "top_n": 10},
     }
 
-    assert _validate_system_configuration("LLM_RERANKER", valid) == ("https://10.42.0.16/v1")
+    assert _validate_system_configuration("LLM_RERANKER", valid) == (
+        "https://10.42.0.16/api/llm/openai"
+    )
 
     with pytest.raises(ValidationError, match="server-controlled"):
         _validate_system_configuration(

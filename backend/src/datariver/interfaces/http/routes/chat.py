@@ -31,7 +31,10 @@ from datariver.infrastructure.llm.ollama import LocalOllamaChatComposer
 from datariver.infrastructure.llm.openai_compatible import (
     OpenAICompatibleGroundedChatComposer,
 )
-from datariver.infrastructure.llm.reranker import LocalLlamaCppEvidenceReranker
+from datariver.infrastructure.llm.reranker import (
+    IntranetEvidenceReranker,
+    LocalLlamaCppEvidenceReranker,
+)
 from datariver.infrastructure.llm.runtime_binding import (
     resolve_interactive_runtime_bindings,
 )
@@ -99,6 +102,12 @@ def _development_composer(
                 api_key=api_key,
                 timeout_seconds=settings.intranet_openai_compatible_chat_timeout_seconds,
             ),
+            temperature=settings.intranet_openai_compatible_chat_temperature,
+            top_p=settings.intranet_openai_compatible_chat_top_p,
+            repetition_penalty=(
+                settings.intranet_openai_compatible_chat_repetition_penalty
+            ),
+            enable_thinking=settings.intranet_openai_compatible_chat_enable_thinking,
         )
         return (
             intranet_composer,
@@ -158,6 +167,23 @@ async def query(
                 payload.maximum_evidence,
             ),
             allowed_hosts=settings.effective_local_inference_allowed_hosts,
+        )
+    elif settings.app_env == "development" and settings.intranet_reranker_enabled:
+        assert settings.intranet_reranker_base_url is not None
+        assert settings.intranet_reranker_model is not None
+        assert settings.intranet_reranker_api_key_secret_ref is not None
+        api_key = SecretResolver(
+            virtual_secret_root=settings.system_configuration_secret_root
+        ).resolve(settings.intranet_reranker_api_key_secret_ref)
+        reranker = IntranetEvidenceReranker(
+            base_url=str(settings.intranet_reranker_base_url),
+            model=settings.intranet_reranker_model,
+            api_key=api_key,
+            timeout_seconds=settings.intranet_reranker_timeout_seconds,
+            top_n=min(settings.intranet_reranker_top_n, payload.maximum_evidence),
+            allowed_hosts=frozenset(
+                settings.intranet_openai_compatible_allowed_hosts
+            ),
         )
     exchange = await ChatService(
         catalog_index=catalog_index,

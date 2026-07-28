@@ -53,3 +53,7 @@ allowlist, no redirects and ignores proxy environment variables.
 - The current local Ollama bridge remains available, but it is mutually exclusive with this adapter.
 - No database schema changes are required: immutable System Settings profile revisions already own
   the non-secret configuration and test/activation evidence.
+
+ADR-0065 refines the exact-path and model-ID details for private gateways: a safe prefix may precede
+the terminal `/v1`, provider IDs may begin with `/models/`, and the private Reranker has a governed
+runtime consumer.
