@@ -328,7 +328,10 @@ export function App() {
         {page === 'registration' && <RegistrationPage client={client} />}
         {page === 'change-management' && <GovernancePage client={client} requesterName={auth.profile?.display_name ?? auth.user.profile.name ?? auth.user.profile.sub} requesterEmail={auth.profile?.email} onNavigate={navigate} onStepUp={auth.beginStepUp} onPasswordReauth={auth.beginPasswordReauth} onEnroll={auth.beginWebAuthnEnrollment} />}
         {page === 'quality' && <QualityPage />}
-        {(page === 'knowledge' || page === 'knowledge-chat' || page === 'knowledge-studio') && (
+        {(page === 'knowledge'
+          || page === 'knowledge-chat'
+          || page === 'knowledge-instances'
+          || page === 'knowledge-studio') && (
           <KnowledgeWorkspacePage
             page={page}
             client={client}

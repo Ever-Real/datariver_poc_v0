@@ -1,4 +1,5 @@
-import { ArrowRight, Info, Save } from 'lucide-react'
+import { ArrowRight, Info, Plus, Save, Settings2 } from 'lucide-react'
+import { useEffect, useState } from 'react'
 import type {
   KnowledgeClassification,
   KnowledgeStudioBasicInformation,
@@ -26,12 +27,37 @@ export function endpointAliasError(value: string): string | undefined {
   return undefined
 }
 
+export function parseEndpointAliases(value: string): string[] {
+  return [...new Set(
+    value
+      .split(',')
+      .map((item) => item.trim())
+      .filter(Boolean),
+  )]
+}
+
+export function endpointAliasesError(values: string[]): string | undefined {
+  if (values.length === 0) return 'Endpoint alias를 하나 이상 입력하세요.'
+  if (values.length > 10) return 'Endpoint alias는 최대 10개까지 입력할 수 있습니다.'
+  for (const value of values) {
+    const error = endpointAliasError(value)
+    if (error) return `'${value}': ${error}`
+  }
+  return undefined
+}
+
 export function basicInformationValid(value: KnowledgeStudioBasicInformation): boolean {
+  const aliases = value.endpoint_aliases?.length
+    ? value.endpoint_aliases
+    : value.endpoint_alias
+      ? [value.endpoint_alias]
+      : []
   return (
     value.name.length >= 1
     && value.name.length <= 255
     && value.name === value.name.trim()
-    && !endpointAliasError(value.endpoint_alias)
+    && !endpointAliasesError(aliases)
+    && value.endpoint_alias === aliases[0]
     && Boolean(value.domain_id)
     && Boolean(value.domain_source_version)
   )
@@ -46,6 +72,8 @@ interface BasicInformationStepProps {
   saveStatus: string
   onChange: (value: KnowledgeStudioBasicInformation) => void
   onDomainQueryChange: (value: string) => void
+  onManageDomains: () => void
+  onCreateDomain: (displayName: string) => Promise<void>
   onSave: () => void
   onContinue: () => void
 }
@@ -59,25 +87,69 @@ export function BasicInformationStep({
   saveStatus,
   onChange,
   onDomainQueryChange,
+  onManageDomains,
+  onCreateDomain,
   onSave,
   onContinue,
 }: BasicInformationStepProps) {
-  const aliasError = value.endpoint_alias
-    ? endpointAliasError(value.endpoint_alias)
-    : undefined
+  const [directDomain, setDirectDomain] = useState(false)
+  const [domainCreating, setDomainCreating] = useState(false)
+  const [aliasInput, setAliasInput] = useState(
+    (value.endpoint_aliases?.length ? value.endpoint_aliases : [value.endpoint_alias])
+      .filter(Boolean)
+      .join(', '),
+  )
+  const aliases = value.endpoint_aliases?.length
+    ? value.endpoint_aliases
+    : value.endpoint_alias
+      ? [value.endpoint_alias]
+      : []
+  const aliasError = endpointAliasesError(aliases)
   const valid = basicInformationValid(value)
+
+  useEffect(() => {
+    const serialized = (value.endpoint_aliases?.length
+      ? value.endpoint_aliases
+      : [value.endpoint_alias]
+    ).filter(Boolean).join(', ')
+    if (serialized && parseEndpointAliases(aliasInput).join(',') !== serialized.replaceAll(' ', '')) {
+      setAliasInput(serialized)
+    }
+  }, [aliasInput, value.endpoint_alias, value.endpoint_aliases])
+
+  const registerDirectDomain = async () => {
+    const name = domainQuery.trim()
+    if (!name || domainCreating) return
+    setDomainCreating(true)
+    try {
+      await onCreateDomain(name)
+      setDirectDomain(false)
+      onDomainQueryChange('')
+    } finally {
+      setDomainCreating(false)
+    }
+  }
 
   return <div className="mx-auto grid max-w-5xl gap-5">
     <section className="rounded-enterprise border border-slate-300 bg-white p-5 shadow-sm">
-      <header className="mb-5">
-        <span className="text-[10px] font-black tracking-[.14em] text-enterprise-blue uppercase">
-          Step 1 · Asset contract
-        </span>
-        <h2 className="my-1 text-lg font-black text-navy-900">기본정보 등록</h2>
-        <p className="m-0 max-w-3xl text-xs leading-5 text-slate-500">
-          이름, API 식별자, 통제된 업무 도메인과 보안등급만 정의합니다.
-          Graph type과 lifecycle은 서버 정책이 관리합니다.
-        </p>
+      <header className="mb-5 flex flex-wrap items-start justify-between gap-3">
+        <div>
+          <span className="text-[10px] font-black tracking-[.14em] text-enterprise-blue uppercase">
+            Step 1 · Asset contract
+          </span>
+          <h2 className="my-1 text-lg font-black text-navy-900">기본정보 등록</h2>
+          <p className="m-0 max-w-3xl text-xs leading-5 text-slate-500">
+            이름, API 식별자, 통제된 업무 도메인과 보안등급만 정의합니다.
+            Graph type과 lifecycle은 서버 정책이 관리합니다.
+          </p>
+        </div>
+        <button
+          type="button"
+          className="button button-secondary"
+          onClick={onManageDomains}
+        >
+          <Settings2 size={14} /> 도메인 관리
+        </button>
       </header>
       <div className="grid gap-4 md:grid-cols-2">
         <label className="grid gap-1 text-xs font-black text-navy-900">
@@ -97,52 +169,93 @@ export function BasicInformationStep({
           <input
             aria-label="Endpoint alias"
             required
-            maxLength={100}
+            maxLength={1_020}
             aria-invalid={Boolean(aliasError)}
-            value={value.endpoint_alias}
-            onChange={(event) => onChange({ ...value, endpoint_alias: event.target.value })}
-            placeholder="semiconductor_materials"
-          />
-          <small className={aliasError ? 'font-normal text-red-700' : 'font-normal text-slate-500'}>
-            {aliasError ?? '발행 후 하위 그래프 REST/GraphQL API 식별자로 사용됩니다.'}
-          </small>
-        </label>
-        <label className="grid gap-1 text-xs font-black text-navy-900">
-          업무 도메인
-          <input
-            type="search"
-            maxLength={200}
-            aria-label="업무 도메인 검색"
-            value={domainQuery}
-            onChange={(event) => onDomainQueryChange(event.target.value)}
-            placeholder="도메인 이름 검색"
-          />
-          <select
-            aria-label="업무 도메인"
-            required
-            disabled={domainsLoading}
-            value={value.domain_id}
+            value={aliasInput}
             onChange={(event) => {
-              const selected = domains.find((domain) => domain.id === event.target.value)
+              const raw = event.target.value
+              const nextAliases = parseEndpointAliases(raw)
+              setAliasInput(raw)
               onChange({
                 ...value,
-                domain_id: selected?.id ?? '',
-                domain_source_version: selected?.source_version ?? '',
+                endpoint_alias: nextAliases[0] ?? '',
+                endpoint_aliases: nextAliases,
               })
             }}
-          >
-            <option value="">{domainsLoading ? '도메인 불러오는 중…' : '업무 도메인 선택'}</option>
-            {value.domain_id && !domains.some((domain) => domain.id === value.domain_id) && (
-              <option value={value.domain_id}>현재 선택된 도메인 (version pinned)</option>
-            )}
-            {domains.map((domain) => (
-              <option key={domain.id} value={domain.id}>{domain.display_name}</option>
-            ))}
-          </select>
+            placeholder="semiconductor_materials, materials_kg"
+          />
+          <small className={aliasError ? 'font-normal text-red-700' : 'font-normal text-slate-500'}>
+            {aliasError ?? '콤마로 구분합니다. 첫 번째 alias가 발행 후 canonical API 식별자입니다.'}
+          </small>
+        </label>
+        <fieldset className="grid gap-1 border-0 p-0 text-xs font-black text-navy-900 md:col-span-2">
+          <legend className="mb-1">업무 도메인</legend>
+          <div className="grid gap-2 md:grid-cols-[2fr_1fr]">
+            <select
+              aria-label="업무 도메인"
+              required
+              disabled={domainsLoading}
+              value={directDomain ? '__DIRECT__' : value.domain_id}
+              onChange={(event) => {
+                if (event.target.value === '__DIRECT__') {
+                  setDirectDomain(true)
+                  onChange({
+                    ...value,
+                    domain_id: '',
+                    domain_source_version: '',
+                  })
+                  return
+                }
+                setDirectDomain(false)
+                onDomainQueryChange('')
+                const selected = domains.find((domain) => domain.id === event.target.value)
+                onChange({
+                  ...value,
+                  domain_id: selected?.id ?? '',
+                  domain_source_version: selected?.source_version ?? '',
+                })
+              }}
+            >
+              <option value="">{domainsLoading ? '도메인 불러오는 중…' : '업무 도메인 선택'}</option>
+              {value.domain_id && !domains.some((domain) => domain.id === value.domain_id) && (
+                <option value={value.domain_id}>현재 선택된 도메인 (version pinned)</option>
+              )}
+              {domains.map((domain) => (
+                <option key={domain.id} value={domain.id}>{domain.display_name}</option>
+              ))}
+              <option value="__DIRECT__">직접 입력</option>
+            </select>
+            <div className="flex gap-1">
+              <input
+                aria-label="직접 입력 도메인명"
+                className="min-w-0 flex-1"
+                maxLength={200}
+                disabled={!directDomain || domainCreating}
+                value={domainQuery}
+                onChange={(event) => onDomainQueryChange(event.target.value)}
+                onKeyDown={(event) => {
+                  if (event.key === 'Enter') {
+                    event.preventDefault()
+                    void registerDirectDomain()
+                  }
+                }}
+                placeholder={directDomain ? '새 도메인명' : '직접 입력 선택 시 활성화'}
+              />
+              <button
+                type="button"
+                className="button px-2"
+                aria-label="직접 입력 도메인 등록"
+                disabled={!directDomain || !domainQuery.trim() || domainCreating}
+                onClick={() => void registerDirectDomain()}
+              >
+                <Plus size={13} />
+              </button>
+            </div>
+          </div>
           <small className="font-normal text-slate-500">
             active DOMAIN UUID와 source version을 서버가 함께 고정합니다.
           </small>
-        </label>
+        </fieldset>
         <label className="grid gap-1 text-xs font-black text-navy-900">
           보안등급
           <select

@@ -17,13 +17,13 @@ import {
   NodeToolbar,
   Position,
   ReactFlow,
-  addEdge,
   useEdgesState,
   useNodesState,
   type Connection,
   type Edge,
   type Node,
   type NodeProps,
+  type Viewport,
 } from '@xyflow/react'
 import {
   Bot,
@@ -33,7 +33,6 @@ import {
   FolderTree,
   GitBranch,
   LockKeyhole,
-  Pencil,
   Plus,
   Save,
   Search,
@@ -42,6 +41,11 @@ import {
 } from 'lucide-react'
 import type { ApiClient } from '../../../../api/client'
 import { Dialog } from '../../../../components/common/Dialog'
+import {
+  defaultKnowledgeStudioViewport,
+  getKnowledgeStudioBlockSession,
+  useKnowledgeStudioSessionStore,
+} from '../knowledgeStudioSessionStore'
 import {
   formatSafeCypherDraft,
   parseSafeCypherDraft,
@@ -57,6 +61,7 @@ import {
   getKnowledgeStudioTBox,
   searchKnowledgeStudioTBoxCatalogSources,
   newKnowledgeStudioIdempotencyKey,
+  uploadKnowledgeStudioTBoxDocumentProposal,
   updateKnowledgeStudioTBoxBlock,
   type KnowledgeStudioDraft,
   type KnowledgeStudioTBox,
@@ -75,6 +80,7 @@ interface SchemaNodeData extends Record<string, unknown> {
   locked: boolean
   selected: boolean
   editorOpen: boolean
+  editorScale: number
   blockLabel: string
   properties: Array<{ id: string; label: string; dataType: string }>
   onToggleEditor: () => void
@@ -260,6 +266,10 @@ function SchemaClassNode({ data, selected }: NodeProps<SchemaNode>) {
         position={Position.Right}
         offset={10}
         className="w-[218px] rounded-enterprise border border-slate-300 bg-white p-2.5 text-[10px] text-slate-800 shadow-2xl"
+        style={{
+          transform: `scale(${data.editorScale})`,
+          transformOrigin: 'left center',
+        }}
       >
         <div
           className="grid gap-2"
@@ -403,6 +413,7 @@ function ClassHierarchyTree({
   const [parentForNewClass, setParentForNewClass] = useState<string>()
   const [editingRelationId, setEditingRelationId] = useState('')
   const [relationName, setRelationName] = useState('')
+  const [dropTargetId, setDropTargetId] = useState<string>()
   const draggedId = useRef('')
   const newClassInput = useRef<HTMLInputElement>(null)
   const classById = useMemo(
@@ -437,6 +448,7 @@ function ClassHierarchyTree({
     event.preventDefault()
     const classId = draggedId.current
     draggedId.current = ''
+    setDropTargetId(undefined)
     if (
       !classId
       || disabled
@@ -505,7 +517,11 @@ function ClassHierarchyTree({
             </div>
           )}
           <div
-            className={`group flex items-center gap-1 rounded px-1 py-1 ${
+            className={`group flex items-center gap-1 rounded border px-1 py-1 transition-colors ${
+              dropTargetId === item.stable_element_id
+                ? 'border-enterprise-blue bg-blue-100 ring-2 ring-blue-300'
+                : 'border-transparent'
+            } ${
               selectedId === item.stable_element_id
                 ? 'bg-blue-100 text-blue-950'
                 : 'text-slate-700 hover:bg-slate-100'
@@ -516,7 +532,15 @@ function ClassHierarchyTree({
               draggedId.current = item.stable_element_id
             }}
             onDragOver={(event) => {
-              if (allowedParentIds.has(item.stable_element_id)) event.preventDefault()
+              if (allowedParentIds.has(item.stable_element_id)) {
+                event.preventDefault()
+                setDropTargetId(item.stable_element_id)
+              }
+            }}
+            onDragLeave={() => {
+              setDropTargetId((current) => (
+                current === item.stable_element_id ? undefined : current
+              ))
             }}
             onDrop={(event) => drop(event, item.stable_element_id)}
           >
@@ -606,8 +630,21 @@ function ClassHierarchyTree({
         </button>
       </form>
       <div
-        className="min-h-0 flex-1 overflow-auto p-2"
-        onDragOver={(event) => event.preventDefault()}
+        className={`min-h-0 flex-1 overflow-auto border-2 p-2 transition-colors ${
+          dropTargetId === ''
+            ? 'border-blue-300 bg-blue-50'
+            : 'border-transparent'
+        }`}
+        onDragOver={(event) => {
+          event.preventDefault()
+          if (event.target === event.currentTarget) setDropTargetId('')
+        }}
+        onDragLeave={(event) => {
+          const related = event.relatedTarget
+          if (!(related instanceof Element) || !event.currentTarget.contains(related)) {
+            setDropTargetId(undefined)
+          }
+        }}
         onDrop={(event) => drop(event)}
       >
         {classes.length === 0 ? (
@@ -680,6 +717,26 @@ function effectiveElements(record: KnowledgeStudioTBox): KnowledgeStudioTBoxElem
     })))
 }
 
+function effectiveSessionElements(
+  record: KnowledgeStudioTBox,
+  draftId: string,
+): KnowledgeStudioTBoxElement[] {
+  const merged = new Map(
+    effectiveElements(record).map((item) => [item.stable_element_id, item]),
+  )
+  for (const block of record.blocks) {
+    const cached = getKnowledgeStudioBlockSession(draftId, block.id)
+    if (!cached) continue
+    for (const [stableId, item] of merged) {
+      if (item.block_id === block.id) merged.delete(stableId)
+    }
+    for (const item of cached.elements) {
+      if (item.block_id === block.id) merged.set(item.stable_element_id, item)
+    }
+  }
+  return [...merged.values()].sort((left, right) => left.ordinal - right.ordinal)
+}
+
 function flowGraph(
   elements: KnowledgeStudioTBoxElement[],
   editableBlockId: string,
@@ -743,6 +800,7 @@ function flowGraph(
       locked: item.locked_by_later_block,
       selected: item.stable_element_id === selectedElementId,
       editorOpen: false,
+      editorScale: 1,
       blockLabel: block?.title ?? '현재 블록',
       properties: elements
         .filter(
@@ -889,10 +947,13 @@ function EditableBlockTitle({ block, disabled, onSave }: EditableBlockTitleProps
 
   return (
     <div className="flex min-w-[220px] flex-1 items-center gap-1">
-      <Pencil size={11} className="shrink-0 text-slate-400" aria-hidden="true" />
       <input
         aria-label={`${block.ordinal + 1}번 블록 이름`}
-        className="input min-w-0 flex-1 border-transparent bg-transparent py-1 text-xs font-black text-navy-900 hover:border-slate-300 focus:bg-white"
+        className={`input min-w-0 flex-1 py-1 text-xs font-black text-navy-900 ${
+          dirty
+            ? 'border-enterprise-blue bg-white'
+            : 'border-slate-200 bg-slate-50/60'
+        }`}
         value={value}
         maxLength={120}
         disabled={disabled}
@@ -906,6 +967,15 @@ function EditableBlockTitle({ block, disabled, onSave }: EditableBlockTitleProps
           }
         }}
       />
+      {!dirty && (
+        <span
+          className="shrink-0 text-[13px] text-emerald-700"
+          aria-label={`${block.title} 블록 이름 저장됨`}
+          title="저장됨"
+        >
+          ✅
+        </span>
+      )}
       <button
         type="button"
         className="rounded p-1 text-emerald-700 hover:bg-emerald-50 disabled:text-slate-300"
@@ -944,8 +1014,9 @@ export function GraphBuilder({
   const [selectedBlockId, setSelectedBlockId] = useState('')
   const [elements, setElements] = useState<KnowledgeStudioTBoxElement[]>([])
   const [baseline, setBaseline] = useState<KnowledgeStudioTBoxElement[]>([])
-  const [nodes, setNodes, onNodesChange] = useNodesState<CanvasNode>([])
+  const [nodes, setNodes, applyNodeChanges] = useNodesState<CanvasNode>([])
   const [edges, setEdges, onEdgesChange] = useEdgesState<SchemaEdge>([])
+  const [viewport, setViewport] = useState<Viewport>(defaultKnowledgeStudioViewport)
   const [editorText, setEditorText] = useState('')
   const [editorError, setEditorError] = useState<{
     message: string
@@ -960,6 +1031,14 @@ export function GraphBuilder({
   const [assistantPrompt, setAssistantPrompt] = useState('')
   const [proposal, setProposal] = useState<KnowledgeStudioTBoxProposal>()
   const [proposalExcluded, setProposalExcluded] = useState<Set<string>>(new Set())
+  const [proposalOverrides, setProposalOverrides] = useState<Record<string, {
+    canonical_name: string
+    display_name: string
+    data_type?: string
+  }>>({})
+  const proposalOverridesValid = Object.values(proposalOverrides).every((item) => (
+    item.display_name.trim().length > 0 && item.canonical_name.trim().length > 0
+  ))
   const [conflictOpen, setConflictOpen] = useState(false)
   const [catalogOpen, setCatalogOpen] = useState(false)
   const [catalogQuery, setCatalogQuery] = useState('')
@@ -968,9 +1047,22 @@ export function GraphBuilder({
   const [selectedCatalogFields, setSelectedCatalogFields] = useState<Set<string>>(new Set())
   const [catalogLoading, setCatalogLoading] = useState(false)
   const [documentCapabilityOpen, setDocumentCapabilityOpen] = useState(false)
+  const [documentFile, setDocumentFile] = useState<File>()
+  const [documentProposalMode, setDocumentProposalMode] = useState<
+    'MERGE_INTO_CURRENT' | 'APPEND_LAYER'
+  >('MERGE_INTO_CURRENT')
+  const [documentWorkflow, setDocumentWorkflow] = useState<
+    'IDLE' | 'PARSING' | 'COMPLETE' | 'FAILED'
+  >('IDLE')
+  const [documentWorkflowError, setDocumentWorkflowError] = useState('')
   const [validationPhase, setValidationPhase] = useState<'CHECKING' | 'VALID' | 'INVALID'>('VALID')
   const [blockPendingDelete, setBlockPendingDelete] = useState<KnowledgeStudioTBoxBlock>()
   const [conflictActions, setConflictActions] = useState<Record<string, 'KEEP_ORIGINAL' | 'ACCEPT_PROPOSAL'>>({})
+  const setSessionBlock = useKnowledgeStudioSessionStore((state) => state.setBlock)
+  const setSessionSelectedBlock = useKnowledgeStudioSessionStore(
+    (state) => state.setSelectedBlock,
+  )
+  const removeSessionBlock = useKnowledgeStudioSessionStore((state) => state.removeBlock)
   const locked = lifecycleState !== 'DRAFT'
 
   const selectedBlock = record?.blocks.find((item) => item.id === selectedBlockId)
@@ -980,25 +1072,45 @@ export function GraphBuilder({
     block: KnowledgeStudioTBoxBlock,
     source: KnowledgeStudioTBox,
   ) => {
-    const nextElements = effectiveElements(source)
+    const nextElements = effectiveSessionElements(source, draftId)
     const blockElements = block.elements.map((item) => ({
       ...item,
       block_id: item.block_id ?? block.id,
       aliases: item.aliases ?? [],
       vector_index_enabled: item.vector_index_enabled ?? false,
     }))
-    const graph = flowGraph(nextElements, block.id, source.blocks, '')
+    const cached = getKnowledgeStudioBlockSession(draftId, block.id)
+    const restored = nextElements
+    const graph = flowGraph(restored, block.id, source.blocks, '')
     const safe = asSafeGraph(nextElements)
     setSelectedBlockId(block.id)
-    setElements(nextElements)
+    setSessionSelectedBlock(draftId, block.id)
+    setElements(restored)
     setBaseline(blockElements)
     setNodes(graph.nodes)
     setEdges(graph.edges)
-    setEditorText(formatSafeCypherDraft(safe.nodes, safe.edges))
-    setEditorError(undefined)
+    const cachedParse = cached
+      ? parseSafeCypherDraft(cached.editorText, asSafeGraph(cached.elements))
+      : undefined
+    const nextEditorText = cachedParse?.error
+      ? cached!.editorText
+      : formatSafeCypherDraft(safe.nodes, safe.edges)
+    const parsed = parseSafeCypherDraft(nextEditorText, asSafeGraph(restored))
+    setEditorText(nextEditorText)
+    setEditorError(parsed.error
+      ? parsed.diagnostic ?? { message: parsed.error, line: 1, column: 1 }
+      : undefined)
+    setViewport(cached
+      ? cached.viewport
+      : defaultKnowledgeStudioViewport())
     setSelectedElementId('')
     setEditorOpenId('')
-  }, [setEdges, setNodes])
+  }, [
+    draftId,
+    setEdges,
+    setNodes,
+    setSessionSelectedBlock,
+  ])
 
   const applyResponse = useCallback((
     next: KnowledgeStudioTBox,
@@ -1020,8 +1132,13 @@ export function GraphBuilder({
         if (controller.signal.aborted || !response.etag) return
         setRecord(response.data)
         setResponseEtag(response.etag)
-        const first = response.data.blocks[0]
-        if (first) applyBlock(first, response.data)
+        const cachedBlockId = useKnowledgeStudioSessionStore
+          .getState()
+          .sessions[draftId]
+          ?.selectedBlockId
+        const selected = response.data.blocks.find((item) => item.id === cachedBlockId)
+          ?? response.data.blocks[0]
+        if (selected) applyBlock(selected, response.data)
         setStatus('Typed T-Box Draft를 불러왔습니다.')
       })
       .catch((error: unknown) => {
@@ -1031,6 +1148,35 @@ export function GraphBuilder({
       })
     return () => controller.abort()
   }, [applyBlock, client, draftId])
+
+  useEffect(() => {
+    if (!record || !selectedBlock) return
+    const positioned = elements.map((item) => {
+      const node = nodes.find((candidate) => candidate.id === item.stable_element_id)
+      return node
+        ? { ...item, layout_x: node.position.x, layout_y: node.position.y }
+        : item
+    })
+    setSessionBlock(draftId, selectedBlock.id, {
+      blockVersion: selectedBlock.version,
+      elements: positioned.map((item) => (
+        item.block_id
+          ? item
+          : { ...item, block_id: selectedBlock.id }
+      )),
+      editorText,
+      viewport,
+    })
+  }, [
+    draftId,
+    editorText,
+    elements,
+    nodes,
+    record,
+    selectedBlock,
+    setSessionBlock,
+    viewport,
+  ])
 
   useEffect(() => {
     if (editorError) {
@@ -1253,21 +1399,11 @@ export function GraphBuilder({
       version: 1,
     }
     const next = [...elements, relation]
-    setElements(next)
-    setEdges((current) => addEdge({
-      ...connection,
-      id: stableId,
-      label: 'RELATED_TO',
-      data: { relation: 'RELATED_TO', editable: true },
-      markerEnd: { type: MarkerType.ArrowClosed, color: '#7dd3fc' },
-      style: { stroke: '#7dd3fc', strokeWidth: 1.6 },
-    }, current))
-    const safe = asSafeGraph(next)
-    setEditorText(formatSafeCypherDraft(safe.nodes, safe.edges))
-    setEditorError(undefined)
-  }, [elements, locked, record?.blocks, selectedBlock, setEdges])
+    syncCanvasAndEditor(next)
+    setSelectedElementId(stableId)
+  }, [elements, locked, record?.blocks, selectedBlock, syncCanvasAndEditor])
 
-  const deleteElement = (elementId: string) => {
+  const deleteElement = useCallback((elementId: string) => {
     const target = elements.find((item) => item.stable_element_id === elementId)
     const editable = target
       && (target.block_id === selectedBlockId || target.block_id === undefined)
@@ -1303,7 +1439,7 @@ export function GraphBuilder({
     }
     syncCanvasAndEditor(elements.filter((item) => !removed.has(item.stable_element_id)))
     setSelectedElementId('')
-  }
+  }, [elements, locked, selectedBlockId, syncCanvasAndEditor, working])
 
   const addProperty = (classId: string, rawName: string) => {
     const classElement = elements.find((item) => item.stable_element_id === classId)
@@ -1494,6 +1630,7 @@ export function GraphBuilder({
         response.etag,
         response.data.blocks.at(-1)?.id,
       )
+      removeSessionBlock(draftId, block.id)
       setBlockPendingDelete(undefined)
       setStatus(`최신 블록 '${block.title}'을 삭제했습니다.`)
     } catch (error) {
@@ -1522,6 +1659,10 @@ export function GraphBuilder({
             }))
             : [],
           excluded_stable_element_ids: [...proposalExcluded],
+          element_overrides: Object.entries(proposalOverrides).map(([stableId, value]) => ({
+            stable_element_id: stableId,
+            ...value,
+          })),
         },
         responseEtag,
         newKnowledgeStudioIdempotencyKey(),
@@ -1531,6 +1672,7 @@ export function GraphBuilder({
       setConflictOpen(false)
       setProposal(undefined)
       setProposalExcluded(new Set())
+      setProposalOverrides({})
       setAssistantPrompt('')
       setStatus('LLM Proposal을 Typed T-Box에 반영했습니다.')
     } catch (error) {
@@ -1556,6 +1698,7 @@ export function GraphBuilder({
       }, responseEtag)
       setProposal(next)
       setProposalExcluded(new Set())
+      setProposalOverrides({})
       setConflictActions(Object.fromEntries(
         next.conflicts.map((item) => [item.conflict_id, 'KEEP_ORIGINAL']),
       ))
@@ -1567,6 +1710,48 @@ export function GraphBuilder({
       )
     } catch (error) {
       setStatus(error instanceof Error ? error.message : 'LLM Proposal 생성에 실패했습니다.')
+      setWorking(false)
+    }
+  }
+
+  const requestDocumentProposal = async () => {
+    if (!documentFile || working || locked || !selectedBlock) return
+    setWorking(true)
+    setDocumentWorkflow('PARSING')
+    setDocumentWorkflowError('')
+    setStatus('문서를 안전하게 저장하고 실제 T-Box Proposal을 생성 중입니다.')
+    try {
+      const next = await uploadKnowledgeStudioTBoxDocumentProposal(
+        client,
+        draftId,
+        {
+          file: documentFile,
+          upload_id: crypto.randomUUID(),
+          target_block_id: documentProposalMode === 'MERGE_INTO_CURRENT'
+            ? selectedBlock.id
+            : undefined,
+          mode: documentProposalMode,
+        },
+        responseEtag,
+      )
+      setProposal(next)
+      setProposalExcluded(new Set())
+      setProposalOverrides({})
+      setConflictActions(Object.fromEntries(
+        next.conflicts.map((item) => [item.conflict_id, 'KEEP_ORIGINAL']),
+      ))
+      setDocumentWorkflow('COMPLETE')
+      setStatus(
+        `${documentFile.name}에서 ${next.elements.length}개의 Typed 요소 Proposal을 생성했습니다.`,
+      )
+    } catch (error) {
+      const message = error instanceof Error
+        ? error.message
+        : '문서 Proposal 생성에 실패했습니다.'
+      setDocumentWorkflow('FAILED')
+      setDocumentWorkflowError(message)
+      setStatus(message)
+    } finally {
       setWorking(false)
     }
   }
@@ -1682,6 +1867,97 @@ export function GraphBuilder({
     setStatus(`계층 관계 이름을 '${relation}'(으)로 변경했습니다.`)
   }
 
+  const reconnect = (edge: SchemaEdge, connection: Connection) => {
+    if (
+      locked
+      || working
+      || !connection.source
+      || !connection.target
+      || !selectedBlock
+    ) return
+    if (edge.data?.hierarchy) {
+      const classId = edge.id.replace(/^hierarchy:/, '')
+      if (connection.source !== classId || !allowedParentIds.has(connection.target)) {
+        setStatus('계층선은 현재 Class에서 허용된 이전/현재 Class 부모로만 변경할 수 있습니다.')
+        return
+      }
+      reparentClass(classId, connection.target)
+      return
+    }
+    const relation = elements.find((item) => item.stable_element_id === edge.id)
+    if (
+      relation?.kind !== 'RELATION'
+      || (relation.block_id !== selectedBlockId && relation.block_id !== undefined)
+    ) return
+    const available = [connection.source, connection.target].every((id) => {
+      const item = elements.find((candidate) => candidate.stable_element_id === id)
+      if (item?.kind !== 'CLASS') return false
+      const ownerOrdinal = item.block_id
+        ? blockOrdinalById.get(item.block_id)
+        : selectedBlock.ordinal
+      return ownerOrdinal !== undefined && ownerOrdinal <= selectedBlock.ordinal
+    })
+    if (!available) {
+      setStatus('Relationship는 현재 또는 이전 블록의 Class에만 연결할 수 있습니다.')
+      return
+    }
+    updateElement(relation.stable_element_id, {
+      source_stable_element_id: connection.source,
+      target_stable_element_id: connection.target,
+    })
+    setSelectedElementId(relation.stable_element_id)
+  }
+
+  const deleteSelection = useCallback(() => {
+    if (!selectedElementId || locked || working) return
+    if (selectedElementId.startsWith('hierarchy:')) {
+      const classId = selectedElementId.replace(/^hierarchy:/, '')
+      const target = elements.find((item) => item.stable_element_id === classId)
+      if (
+        target?.kind === 'CLASS'
+        && (target.block_id === selectedBlockId || target.block_id === undefined)
+        && !target.locked_by_later_block
+      ) {
+        const next = elements.map((item) => item.stable_element_id === classId
+          ? {
+              ...item,
+              parent_stable_element_id: undefined,
+              hierarchy_relation: undefined,
+            }
+          : item)
+        syncCanvasAndEditor(next)
+        setSelectedElementId('')
+      }
+      return
+    }
+    deleteElement(selectedElementId)
+  }, [
+    elements,
+    deleteElement,
+    locked,
+    selectedBlockId,
+    selectedElementId,
+    syncCanvasAndEditor,
+    working,
+  ])
+
+  useEffect(() => {
+    const listener = (event: KeyboardEvent) => {
+      if (event.key !== 'Backspace' && event.key !== 'Delete') return
+      const target = event.target
+      if (
+        target instanceof HTMLInputElement
+        || target instanceof HTMLTextAreaElement
+        || target instanceof HTMLSelectElement
+        || (target instanceof HTMLElement && target.isContentEditable)
+      ) return
+      event.preventDefault()
+      deleteSelection()
+    }
+    window.addEventListener('keydown', listener)
+    return () => window.removeEventListener('keydown', listener)
+  }, [deleteSelection])
+
   const renderedNodes = nodes.map((node): CanvasNode => {
     if (node.type !== 'schemaClass') return node
     const item = elements.find((element) => element.stable_element_id === node.id)
@@ -1701,6 +1977,7 @@ export function GraphBuilder({
         locked: item.locked_by_later_block,
         selected: item.stable_element_id === selectedElementId,
         editorOpen: item.stable_element_id === editorOpenId,
+        editorScale: Math.max(0.65, Math.min(1.25, viewport.zoom / 0.8)),
         properties: elements
           .filter(
             (property) => property.kind === 'PROPERTY'
@@ -1928,6 +2205,7 @@ export function GraphBuilder({
                             onClick={() => {
                               setProposal(undefined)
                               setProposalExcluded(new Set())
+                              setProposalOverrides({})
                             }}
                           >
                             <X size={12} aria-hidden="true" />
@@ -1952,8 +2230,57 @@ export function GraphBuilder({
                                     })
                                   }}
                                 />
-                                <span className="truncate font-bold">{item.display_name}</span>
+                                <input
+                                  aria-label={`${item.display_name} Proposal 이름`}
+                                  className="input min-w-0 flex-1 px-1.5 py-0.5 text-[9px] font-bold"
+                                  value={proposalOverrides[item.stable_element_id]?.display_name
+                                    ?? item.display_name}
+                                  disabled={proposalExcluded.has(item.stable_element_id)}
+                                  onChange={(event) => {
+                                    const displayName = event.target.value
+                                    setProposalOverrides((current) => ({
+                                      ...current,
+                                      [item.stable_element_id]: {
+                                        canonical_name: schemaIdentifier(
+                                          displayName,
+                                          item.kind === 'PROPERTY' ? 'Property' : item.kind === 'RELATION'
+                                            ? 'Relation'
+                                            : 'Class',
+                                        ) || item.canonical_name,
+                                        display_name: displayName,
+                                        data_type: current[item.stable_element_id]?.data_type
+                                          ?? item.data_type,
+                                      },
+                                    }))
+                                  }}
+                                />
                                 <span className="ml-auto text-[8px] text-slate-400">{item.kind}</span>
+                                {item.kind === 'PROPERTY' && (
+                                  <select
+                                    aria-label={`${item.display_name} Proposal 타입`}
+                                    className="input w-[68px] px-1 py-0.5 text-[8px]"
+                                    value={proposalOverrides[item.stable_element_id]?.data_type
+                                      ?? item.data_type
+                                      ?? 'STRING'}
+                                    disabled={proposalExcluded.has(item.stable_element_id)}
+                                    onChange={(event) => {
+                                      setProposalOverrides((current) => ({
+                                        ...current,
+                                        [item.stable_element_id]: {
+                                          canonical_name: current[item.stable_element_id]?.canonical_name
+                                            ?? item.canonical_name,
+                                          display_name: current[item.stable_element_id]?.display_name
+                                            ?? item.display_name,
+                                          data_type: event.target.value,
+                                        },
+                                      }))
+                                    }}
+                                  >
+                                    {propertyDataTypes.map((value) => (
+                                      <option key={value}>{value}</option>
+                                    ))}
+                                  </select>
+                                )}
                               </label>
                             </li>
                           ))}
@@ -1962,7 +2289,11 @@ export function GraphBuilder({
                           <button
                             type="button"
                             className="button flex-1 justify-center py-1 text-[9px]"
-                            disabled={proposalExcluded.size === proposal.elements.length || working}
+                            disabled={
+                              proposalExcluded.size === proposal.elements.length
+                              || !proposalOverridesValid
+                              || working
+                            }
                             onClick={() => {
                               if (proposal.conflicts.length > 0) setConflictOpen(true)
                               else void applyProposal(proposal, 'KEEP_ORIGINAL')
@@ -1978,9 +2309,10 @@ export function GraphBuilder({
                       nodes={renderedNodes}
                       edges={edges}
                       nodeTypes={schemaNodeTypes}
-                      onNodesChange={onNodesChange}
+                      onNodesChange={applyNodeChanges}
                       onEdgesChange={onEdgesChange}
                       onConnect={connect}
+                      onReconnect={reconnect}
                       onNodeClick={(_, node) => {
                         if (node.type === 'schemaClass') setSelectedElementId(node.id)
                       }}
@@ -1991,8 +2323,12 @@ export function GraphBuilder({
                       }}
                       nodesDraggable={!locked && !working}
                       nodesConnectable={!locked && !working}
+                      edgesReconnectable={!locked && !working}
                       deleteKeyCode={null}
                       fitView
+                      fitViewOptions={{ padding: 0.2, maxZoom: 0.8 }}
+                      viewport={viewport}
+                      onViewportChange={setViewport}
                       minZoom={0.2}
                       maxZoom={2}
                       colorMode="dark"
@@ -2244,24 +2580,119 @@ export function GraphBuilder({
       <Dialog
         open={documentCapabilityOpen}
         title="문서 기반 T-Box Proposal"
-        description="PDF, DOCX, XLSX 전용 내구성 분석 Worker가 필요한 기능입니다."
-        onRequestClose={() => setDocumentCapabilityOpen(false)}
-        footer={(
+        description="파일은 filefolder Object Storage에 create-only로 저장되고, 문서 내용은 A-Box가 아닌 Typed T-Box Proposal로만 분석됩니다."
+        onRequestClose={() => {
+          if (!working) setDocumentCapabilityOpen(false)
+        }}
+        footer={<>
+          <button
+            type="button"
+            className="button button-secondary"
+            disabled={working}
+            onClick={() => setDocumentCapabilityOpen(false)}
+          >
+            {documentWorkflow === 'COMPLETE' ? '제안 확인' : '취소'}
+          </button>
           <button
             type="button"
             className="button"
-            onClick={() => setDocumentCapabilityOpen(false)}
+            disabled={!documentFile || working || documentWorkflow === 'COMPLETE'}
+            onClick={() => void requestDocumentProposal()}
           >
-            확인
+            <FileUp size={13} aria-hidden="true" />
+            업로드 및 분석
           </button>
-        )}
+        </>}
       >
-        <p className="m-0 text-sm leading-6 text-slate-700">
-          현재 배포에는 보안 파서와 별도 권한으로 실행되는 Proposal Worker가 활성화되지
-          않았습니다. 브라우저에서 파일을 읽거나 파일명만으로 가짜 스키마를 만들지 않으며,
-          Worker capability가 준비되면 이 통합 진입점에서만 업로드가 활성화됩니다.
-          구형 DOC/XLS는 지원하지 않습니다.
-        </p>
+        <div className="grid gap-4">
+          <label className="grid gap-1 text-xs font-bold text-slate-700">
+            분석 파일
+            <input
+              aria-label="T-Box 분석 파일"
+              className="input bg-white"
+              type="file"
+              accept=".pdf,.csv,.txt,.xlsx,.docx,.pptx,.html,.htm,.xml,.json"
+              disabled={working}
+              onChange={(event) => {
+                setDocumentFile(event.target.files?.[0])
+                setDocumentWorkflow('IDLE')
+                setDocumentWorkflowError('')
+              }}
+            />
+            <span className="text-[10px] font-medium leading-4 text-slate-500">
+              PDF, CSV, TXT, XLSX, DOCX, PPTX, HTML, XML, JSON · 최대 10 MiB · DOC/XLS 제외
+            </span>
+          </label>
+          <fieldset className="grid gap-2 rounded border border-slate-200 p-3">
+            <legend className="px-1 text-xs font-black text-navy-900">반영 방식</legend>
+            <label className="flex items-start gap-2 text-xs text-slate-700">
+              <input
+                type="radio"
+                name="document-proposal-mode"
+                checked={documentProposalMode === 'MERGE_INTO_CURRENT'}
+                disabled={working}
+                onChange={() => setDocumentProposalMode('MERGE_INTO_CURRENT')}
+              />
+              <span><strong>현재 블록 Proposal</strong> · 기본 Keep Original 병합</span>
+            </label>
+            <label className="flex items-start gap-2 text-xs text-slate-700">
+              <input
+                type="radio"
+                name="document-proposal-mode"
+                checked={documentProposalMode === 'APPEND_LAYER'}
+                disabled={working}
+                onChange={() => setDocumentProposalMode('APPEND_LAYER')}
+              />
+              <span><strong>새 블록 Proposal</strong> · 승인 시 최신 레이어 추가</span>
+            </label>
+          </fieldset>
+          <ol
+            className="m-0 grid list-none gap-2 p-0"
+            aria-label="문서 T-Box 분석 진행 상태"
+          >
+            {[
+              '문서 파싱 중',
+              'T-Box 스키마 추출 중',
+              'Cypher 유효성 검증 중(Loop)',
+              '제안 완료',
+            ].map((label, index) => {
+              const completed = documentWorkflow === 'COMPLETE'
+              const active = documentWorkflow === 'PARSING' && index === 0
+              const failed = documentWorkflow === 'FAILED' && index === 0
+              return (
+                <li
+                  key={label}
+                  className={`flex items-center gap-3 rounded border px-3 py-2 text-xs font-bold ${
+                    completed
+                      ? 'border-emerald-200 bg-emerald-50 text-emerald-800'
+                      : active
+                        ? 'border-blue-300 bg-blue-50 text-blue-800'
+                        : failed
+                          ? 'border-red-300 bg-red-50 text-red-800'
+                          : 'border-slate-200 bg-slate-50 text-slate-500'
+                  }`}
+                >
+                  <span className="grid size-5 shrink-0 place-items-center rounded-full bg-white text-[10px] shadow-sm">
+                    {completed ? '✓' : index + 1}
+                  </span>
+                  {label}
+                  {active && <span className="ml-auto animate-pulse text-[10px]">실행 중</span>}
+                </li>
+              )
+            })}
+          </ol>
+          {documentWorkflowError && (
+            <p role="alert" className="m-0 rounded border border-red-200 bg-red-50 p-3 text-xs text-red-800">
+              {documentWorkflowError}
+            </p>
+          )}
+          {documentWorkflow === 'COMPLETE' && (
+            <p role="status" className="m-0 rounded border border-violet-200 bg-violet-50 p-3 text-xs leading-5 text-violet-900">
+              제안이 캔버스 우측의 임시 Proposal 패널에 표시되었습니다. 요소를 제외하거나
+              보완한 뒤 적용해야 PostgreSQL Draft 정본이 변경됩니다.
+            </p>
+          )}
+        </div>
       </Dialog>
 
       <Dialog

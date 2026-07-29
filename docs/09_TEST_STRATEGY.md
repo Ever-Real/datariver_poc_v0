@@ -2,6 +2,28 @@
 
 ## Current verification status
 
+### Knowledge Studio Phase 2.6 session/domain/document UX increment — 2026-07-29
+
+Revision `0066` adds bounded endpoint-alias arrays, managed DOMAIN creator/version evidence and
+document-Proposal source references. Draft-scoped Zustand sessions retain Basic, per-block
+T-Box/Cypher/viewport and unfinished A-Box mapping inputs across component unmounts. The Graph
+Builder now provides compact saved block headers, zoom-scaled node editing, hierarchy drop targets,
+direct selected-element deletion, read-only layer groups and editable typed Proposal overlays.
+The real bounded upload route writes create-only filefolder objects, invokes only the approved
+Schema Assistant and never fabricates progress or elements.
+
+Ruff format/lint over `433` files, strict mypy over `427` source/test files and static
+architecture/security/documentation verification pass. The complete backend suite passes
+`1,752 passed / 97 environment-gated skipped`; frontend strict TypeScript, zero-warning ESLint,
+`58 files / 327 tests` and the Vite production build pass. Two consecutive canonical `0001`
+generations are byte-identical at SHA-256
+`8a134ba55fd18c33b99bd5205061b727e1af9f364558dfc1a646b2dd37e335b1`, and Alembic has the sole
+head `0066`.
+
+The source gates do not claim the skipped isolated PostgreSQL/S3 targets. Authenticated browser DOM
+acceptance remains separate because the available local browser session returned to the Keycloak
+login screen after the source build.
+
 ### Knowledge Studio Phase 2.5 Unicode and integrated Proposal increment — 2026-07-29
 
 Revision `0065` adds the named Class hierarchy edge and covering parent/child lookup index. Domain,

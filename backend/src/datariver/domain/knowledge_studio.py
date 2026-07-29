@@ -122,6 +122,28 @@ def validate_endpoint_alias(value: str) -> str:
     return value
 
 
+def validate_endpoint_aliases(values: tuple[str, ...]) -> tuple[str, ...]:
+    if not 1 <= len(values) <= 10:
+        raise ValidationError("A Studio draft requires between 1 and 10 endpoint aliases.")
+    normalized = tuple(validate_endpoint_alias(value) for value in values)
+    if len(set(normalized)) != len(normalized):
+        raise ValidationError("A Studio endpoint alias can appear only once.")
+    return normalized
+
+
+def validate_knowledge_domain_name(value: str) -> str:
+    normalized = unicodedata.normalize("NFC", value)
+    if (
+        not 1 <= len(normalized) <= 200
+        or normalized != normalized.strip()
+        or any(ord(character) < 32 or ord(character) == 127 for character in normalized)
+    ):
+        raise ValidationError(
+            "A managed Knowledge domain name must contain between 1 and 200 visible characters."
+        )
+    return normalized
+
+
 def validate_studio_name(value: str) -> str:
     if value != value.strip():
         raise ValidationError("Knowledge graph name must not contain surrounding whitespace.")

@@ -19,12 +19,14 @@ export function StudioShell({
   draftId,
   saveStatus,
   onBack,
+  onStepSelect,
   children,
 }: {
   step: KnowledgeStudioStep
   draftId?: string
   saveStatus?: string
   onBack: () => void
+  onStepSelect: (step: KnowledgeStudioStep) => void
   children: ReactNode
 }) {
   const activeIndex = steps.findIndex((item) => item.id === step)
@@ -105,7 +107,7 @@ export function StudioShell({
           return <li
             key={item.id}
             aria-current={active ? 'step' : undefined}
-            className={`flex items-center gap-3 rounded-enterprise border px-4 py-3 ${
+            className={`rounded-enterprise border ${
               active
                 ? 'border-enterprise-blue bg-blue-50 text-navy-900'
                 : completed
@@ -113,16 +115,24 @@ export function StudioShell({
                   : 'border-slate-200 bg-slate-50 text-slate-500'
             }`}
           >
-            <span className={`grid size-8 shrink-0 place-items-center rounded-full ${
-              active ? 'bg-enterprise-blue text-white' : completed ? 'bg-emerald-600 text-white' : 'bg-slate-200'
-            }`}>
-              {completed ? <Check size={15} /> : <Icon size={15} />}
-            </span>
-            <span>
-              <small className="block text-[9px] font-black tracking-wide uppercase">Step {item.number}</small>
-              <strong className="block text-xs">{item.title}</strong>
-              <small className="block text-[10px]">{item.description}</small>
-            </span>
+            <button
+              type="button"
+              className="flex w-full items-center gap-3 rounded-enterprise px-4 py-3 text-left disabled:cursor-default"
+              aria-label={`Step ${item.number} ${item.title}${active ? ' 현재 단계' : ' 이동'}`}
+              disabled={active || !draftId}
+              onClick={() => onStepSelect(item.id)}
+            >
+              <span className={`grid size-8 shrink-0 place-items-center rounded-full ${
+                active ? 'bg-enterprise-blue text-white' : completed ? 'bg-emerald-600 text-white' : 'bg-slate-200'
+              }`}>
+                {completed ? <Check size={15} /> : <Icon size={15} />}
+              </span>
+              <span>
+                <small className="block text-[9px] font-black tracking-wide uppercase">Step {item.number}</small>
+                <strong className="block text-xs">{item.title}</strong>
+                <small className="block text-[10px]">{item.description}</small>
+              </span>
+            </button>
           </li>
         })}
       </ol>

@@ -5,10 +5,14 @@ import type { Page } from '../../app/navigation'
 import { PageTitle } from '../../components/layout/PageTitle'
 import { KnowledgeChatContent } from './KnowledgeChatPage'
 import { KnowledgeRegistry } from './KnowledgeRegistry'
+import { KnowledgeInstanceManagementPage } from './KnowledgeInstanceManagementPage'
 import { KnowledgeWorkspaceLayout, type KnowledgeWorkspaceSection } from './KnowledgeWorkspaceLayout'
 import { KnowledgeStudioPage } from './studio/KnowledgeStudioPage'
 
-type KnowledgePage = Extract<Page, 'knowledge' | 'knowledge-chat' | 'knowledge-studio'>
+type KnowledgePage = Extract<
+  Page,
+  'knowledge' | 'knowledge-chat' | 'knowledge-instances' | 'knowledge-studio'
+>
 
 interface KnowledgeWorkspacePageProps {
   page: KnowledgePage
@@ -25,6 +29,7 @@ interface KnowledgeWorkspacePageProps {
 
 function activeSection(page: KnowledgePage): KnowledgeWorkspaceSection {
   if (page === 'knowledge-chat') return 'CHAT'
+  if (page === 'knowledge-instances') return 'INSTANCES'
   if (page === 'knowledge-studio') return 'STUDIO'
   return 'REGISTRY'
 }
@@ -73,6 +78,7 @@ export function KnowledgeWorkspacePage({
           </div>
         )}
         {page === 'knowledge-chat' && <KnowledgeChatContent client={client} />}
+        {page === 'knowledge-instances' && <KnowledgeInstanceManagementPage />}
         {page === 'knowledge-studio' && (
           <KnowledgeStudioPage
             client={client}

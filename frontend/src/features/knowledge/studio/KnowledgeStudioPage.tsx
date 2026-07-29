@@ -7,6 +7,7 @@ import {
   knowledgeStudioUrl,
 } from '../routes/knowledgeLocation'
 import { BasicInformationStep, basicInformationValid } from './basic/BasicInformationStep'
+import { DomainManagementDialog } from './basic/DomainManagementDialog'
 import {
   createDraftRecoveryQueue,
   knowledgeDraftRecoveryScope,
@@ -19,6 +20,7 @@ import {
   autosaveKnowledgeStudioDraft,
   createKnowledgeStudioDraft,
   createKnowledgeStudioEditDraft,
+  createKnowledgeStudioManagedDomain,
   getKnowledgeStudioDraft,
   getResumableKnowledgeStudioDraft,
   listKnowledgeStudioDomains,
@@ -26,13 +28,16 @@ import {
   type KnowledgeStudioBasicInformation,
   type KnowledgeStudioDomainOption,
   type KnowledgeStudioDraft,
+  type KnowledgeStudioManagedDomain,
 } from './knowledgeStudioApi'
+import { useKnowledgeStudioSessionStore } from './knowledgeStudioSessionStore'
 import { StudioShell } from './StudioShell'
 import { GraphBuilder } from './tbox/GraphBuilder'
 
 const EMPTY_BASIC_INFORMATION: KnowledgeStudioBasicInformation = {
   name: '',
   endpoint_alias: '',
+  endpoint_aliases: [],
   domain_id: '',
   domain_source_version: '',
   classification: 'INTERNAL',
@@ -46,6 +51,7 @@ function draftBasicInformation(draft: KnowledgeStudioDraft): KnowledgeStudioBasi
   return {
     name: draft.name,
     endpoint_alias: draft.endpoint_alias,
+    endpoint_aliases: draft.endpoint_aliases ?? [draft.endpoint_alias],
     domain_id: draft.domain_id,
     domain_source_version: draft.domain_source_version,
     classification: draft.classification,
@@ -108,6 +114,7 @@ export function KnowledgeStudioPage({
   const [domains, setDomains] = useState<KnowledgeStudioDomainOption[]>([])
   const [domainQuery, setDomainQuery] = useState('')
   const [domainsLoading, setDomainsLoading] = useState(true)
+  const [domainManagementOpen, setDomainManagementOpen] = useState(false)
   const [initialized, setInitialized] = useState(false)
   const [busy, setBusy] = useState(false)
   const [saveStatus, setSaveStatus] = useState('서버 연결을 준비하고 있습니다.')
@@ -122,11 +129,14 @@ export function KnowledgeStudioPage({
   const pendingWriteRef = useRef<Promise<boolean>>(Promise.resolve(true))
   const lastSavedFingerprintRef = useRef<string | undefined>(undefined)
   const savePromiseRef = useRef<Promise<boolean> | undefined>(undefined)
+  const setSessionBasic = useKnowledgeStudioSessionStore((state) => state.setBasic)
+  const setSessionStep = useKnowledgeStudioSessionStore((state) => state.setStep)
 
   const applyServerDraft = useCallback((
     value: KnowledgeStudioDraft,
     responseEtag: string,
     replaceForm: boolean,
+    preferSession = true,
   ) => {
     const basic = draftBasicInformation(value)
     setDraftId(value.id)
@@ -136,10 +146,15 @@ export function KnowledgeStudioPage({
     etagRef.current = responseEtag
     lastSavedFingerprintRef.current = fingerprint(basic)
     if (replaceForm) {
-      formRef.current = basic
-      setForm(basic)
+      const cached = preferSession
+        ? useKnowledgeStudioSessionStore.getState().sessions[value.id]?.basic
+        : undefined
+      const next = cached ?? basic
+      formRef.current = next
+      setForm(next)
+      setSessionBasic(value.id, next)
     }
-  }, [])
+  }, [setSessionBasic])
   const applyChildDraft = useCallback((
     value: KnowledgeStudioDraft,
     responseEtag: string,
@@ -170,6 +185,7 @@ export function KnowledgeStudioPage({
     let active = true
     const hydrate = async () => {
       setStep(location.step)
+      if (location.draftId) setSessionStep(location.draftId, location.step)
       setDraftId(location.draftId)
       draftIdRef.current = location.draftId
       let recoveryDraftId = location.draftId
@@ -269,6 +285,7 @@ export function KnowledgeStudioPage({
     location.valid,
     queue,
     scopeHash,
+    setSessionStep,
   ])
 
   useEffect(() => {
@@ -279,7 +296,7 @@ export function KnowledgeStudioPage({
       void listKnowledgeStudioDomains(
         client,
         form.classification,
-        domainQuery,
+        undefined,
         controller.signal,
       )
         .then(setDomains)
@@ -296,7 +313,7 @@ export function KnowledgeStudioPage({
       window.clearTimeout(timer)
       controller.abort()
     }
-  }, [client, domainQuery, form.classification, initialized, location.valid])
+  }, [client, form.classification, initialized, location.valid])
 
   useEffect(() => {
     const online = () => {
@@ -324,6 +341,7 @@ export function KnowledgeStudioPage({
     }
     formRef.current = next
     setForm(next)
+    if (draftIdRef.current) setSessionBasic(draftIdRef.current, next)
     if (!queue || !scopeHash) {
       setSaveStatus('브라우저 복구 큐가 준비되지 않아 저장하지 않았습니다.')
       return
@@ -365,7 +383,7 @@ export function KnowledgeStudioPage({
         return false
       })
     setSaveSequence((value) => value + 1)
-  }, [queue, scopeHash, serverDraft])
+  }, [queue, scopeHash, serverDraft, setSessionBasic])
 
   const performPendingSave = useCallback(async (): Promise<boolean> => {
     const pending = pendingRef.current
@@ -562,7 +580,7 @@ export function KnowledgeStudioPage({
     try {
       const response = await getKnowledgeStudioDraft(client, currentDraftId)
       if (!response.etag) return
-      applyServerDraft(response.data, response.etag, true)
+      applyServerDraft(response.data, response.etag, true, false)
       if (pending) await queue.remove(scopeHash, pending.draftId, pending.idempotencyKey)
       pendingRef.current = undefined
       setConflict(undefined)
@@ -626,6 +644,7 @@ export function KnowledgeStudioPage({
       const url = knowledgeStudioUrl({ draftId: currentDraftId, step: 'tbox' })
       window.history.pushState({}, '', url)
       setStep('tbox')
+      setSessionStep(currentDraftId, 'tbox')
       setSaveStatus(`Step 1 저장 완료 · version ${response.data.version}`)
     } catch (error) {
       if (error instanceof ApiError && error.problem.status === 412) {
@@ -639,6 +658,7 @@ export function KnowledgeStudioPage({
             const url = knowledgeStudioUrl({ draftId: currentDraftId, step: 'tbox' })
             window.history.pushState({}, '', url)
             setStep('tbox')
+            setSessionStep(currentDraftId, 'tbox')
           } else {
             setSaveStatus('단계 전환 결과를 확인하지 못했습니다. 다시 시도하세요.')
           }
@@ -671,6 +691,7 @@ export function KnowledgeStudioPage({
       const url = knowledgeStudioUrl({ draftId: currentDraftId, step: 'abox' })
       window.history.pushState({}, '', url)
       setStep('abox')
+      setSessionStep(currentDraftId, 'abox')
       setSaveStatus(`Data Enricher 진입 완료 · version ${response.data.version}`)
     } catch (error) {
       if (error instanceof ApiError && error.problem.status === 412) {
@@ -680,6 +701,83 @@ export function KnowledgeStudioPage({
       }
     } finally {
       setBusy(false)
+    }
+  }
+
+  const selectStep = (target: 'basic' | 'tbox' | 'abox') => {
+    const currentDraftId = draftIdRef.current
+    if (!currentDraftId || target === step) return
+    if (target === 'abox' && serverDraft?.current_step !== 'ABOX') {
+      void continueToAbox()
+      return
+    }
+    if (
+      target === 'tbox'
+      && serverDraft?.current_step !== 'TBOX'
+      && serverDraft?.current_step !== 'ABOX'
+    ) {
+      void continueToTbox()
+      return
+    }
+    const url = knowledgeStudioUrl({ draftId: currentDraftId, step: target })
+    window.history.pushState({}, '', url)
+    setStep(target)
+    setSessionStep(currentDraftId, target)
+  }
+
+  const createDomain = async (displayName: string) => {
+    setBusy(true)
+    setSaveStatus('새 업무 도메인을 등록하고 있습니다.')
+    try {
+      const created = await createKnowledgeStudioManagedDomain(
+        client,
+        displayName,
+        newKnowledgeStudioIdempotencyKey(),
+      )
+      setDomains((current) => [
+        ...current.filter((item) => item.id !== created.id),
+        created,
+      ].sort((left, right) => left.display_name.localeCompare(right.display_name, 'ko')))
+      queueForm({
+        ...formRef.current,
+        domain_id: created.id,
+        domain_source_version: created.source_version,
+      })
+      setSaveStatus(`'${created.display_name}' 도메인을 등록하고 선택했습니다.`)
+    } catch (error) {
+      setSaveStatus(error instanceof Error ? error.message : '새 업무 도메인을 등록하지 못했습니다.')
+      throw error
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const domainChanged = (
+    selected?: KnowledgeStudioManagedDomain,
+    archivedId?: string,
+  ) => {
+    if (selected) {
+      setDomains((current) => [
+        ...current.filter((item) => item.id !== selected.id),
+        selected,
+      ].sort((left, right) => left.display_name.localeCompare(right.display_name, 'ko')))
+      if (formRef.current.domain_id === selected.id || !formRef.current.domain_id) {
+        queueForm({
+          ...formRef.current,
+          domain_id: selected.id,
+          domain_source_version: selected.source_version,
+        })
+      }
+      return
+    }
+    if (!archivedId) return
+    setDomains((current) => current.filter((item) => item.id !== archivedId))
+    if (formRef.current.domain_id === archivedId) {
+      queueForm({
+        ...formRef.current,
+        domain_id: '',
+        domain_source_version: '',
+      })
     }
   }
 
@@ -700,6 +798,7 @@ export function KnowledgeStudioPage({
     draftId={draftId}
     saveStatus={saveStatus}
     onBack={handleBack}
+    onStepSelect={selectStep}
   >
     {step === 'basic' && !initialized
       ? <section className="grid min-h-[320px] place-items-center rounded-enterprise border border-slate-300 bg-white p-8 text-sm text-slate-500">
@@ -720,6 +819,8 @@ export function KnowledgeStudioPage({
           saveStatus={saveStatus}
           onChange={queueForm}
           onDomainQueryChange={setDomainQuery}
+          onManageDomains={() => setDomainManagementOpen(true)}
+          onCreateDomain={createDomain}
           onSave={() => { void flushLatest() }}
           onContinue={() => { void continueToTbox() }}
         />
@@ -767,5 +868,11 @@ export function KnowledgeStudioPage({
         서버의 최신 ETag를 다시 읽은 뒤 보존된 로컬 입력을 새 version fence로 저장합니다.
       </p>
     </Dialog>
+    <DomainManagementDialog
+      client={client}
+      open={domainManagementOpen}
+      onRequestClose={() => setDomainManagementOpen(false)}
+      onChanged={domainChanged}
+    />
   </StudioShell>
 }

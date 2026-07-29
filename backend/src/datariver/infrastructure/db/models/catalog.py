@@ -10,6 +10,7 @@ from sqlalchemy import (
     ForeignKey,
     ForeignKeyConstraint,
     Index,
+    Integer,
     String,
     Text,
     UniqueConstraint,
@@ -202,6 +203,12 @@ class CatalogVocabularyEntryModel(Base, UuidPrimaryKeyMixin):
             name="provider_ref_kind",
         ),
         CheckConstraint("observed_at <= updated_at", name="observation_time_order"),
+        CheckConstraint("version >= 1", name="version_positive"),
+        ForeignKeyConstraint(
+            ("workspace_id", "created_by"),
+            ("iam.workspace_memberships.workspace_id", "iam.workspace_memberships.subject_id"),
+            ondelete="RESTRICT",
+        ),
         Index(
             "ix_vocabulary_entries_workspace_kind_lifecycle_name",
             "workspace_id",
@@ -224,6 +231,8 @@ class CatalogVocabularyEntryModel(Base, UuidPrimaryKeyMixin):
     source_version: Mapped[str] = mapped_column(String(255), nullable=False)
     observed_at: Mapped[datetime] = mapped_column(nullable=False)
     last_seen_sync_id: Mapped[UUID | None] = mapped_column(Uuid(as_uuid=True))
+    created_by: Mapped[UUID | None] = mapped_column(Uuid(as_uuid=True))
+    version: Mapped[int] = mapped_column(Integer, default=1, nullable=False)
     updated_at: Mapped[datetime] = mapped_column(
         server_default=text("CURRENT_TIMESTAMP"),
         nullable=False,

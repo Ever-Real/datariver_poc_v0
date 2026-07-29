@@ -53,7 +53,9 @@ export function TopNavigation({
   onSignOut,
 }: TopNavigationProps) {
   const [navigation, setNavigation] = useState<HTMLElement | null>(null)
-  const activePrimaryPage = page === 'knowledge-chat' || page === 'knowledge-studio'
+  const activePrimaryPage = page === 'knowledge-chat'
+    || page === 'knowledge-instances'
+    || page === 'knowledge-studio'
     ? 'knowledge'
     : page
 

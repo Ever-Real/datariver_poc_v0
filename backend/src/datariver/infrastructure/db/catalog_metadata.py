@@ -490,6 +490,9 @@ class SqlCatalogMetadataVocabularyProjection:
                             CatalogVocabularyEntryModel.kind == kind,
                             CatalogVocabularyEntryModel.lifecycle == "ACTIVE",
                             CatalogVocabularyEntryModel.last_seen_sync_id.is_distinct_from(sync_id),
+                            ~CatalogVocabularyEntryModel.provider_ref.startswith(
+                                "urn:li:domain:datariver-"
+                            ),
                         )
                         .values(
                             lifecycle="INACTIVE",

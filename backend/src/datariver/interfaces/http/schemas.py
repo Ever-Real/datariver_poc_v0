@@ -2023,6 +2023,9 @@ class KnowledgeStudioBasicInformationRequest(BaseModel):
 
     name: str = Field(min_length=1, max_length=255)
     endpoint_alias: str = Field(pattern="^[a-z][a-z0-9_]{2,99}$")
+    endpoint_aliases: list[Annotated[str, Field(pattern="^[a-z][a-z0-9_]{2,99}$")]] = Field(
+        default_factory=list, max_length=10
+    )
     domain_id: UUID
     domain_source_version: str = Field(min_length=1, max_length=255)
     classification: Literal["PUBLIC", "INTERNAL", "CONFIDENTIAL", "RESTRICTED"]
@@ -2044,6 +2047,25 @@ class KnowledgeStudioDomainOptionsResponse(BaseModel):
     items: list[KnowledgeStudioDomainOptionResponse]
 
 
+class KnowledgeStudioManagedDomainRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    display_name: str = Field(min_length=1, max_length=200)
+
+
+class KnowledgeStudioManagedDomainResponse(KnowledgeStudioDomainOptionResponse):
+    created_by: UUID | None
+    asset_count: int = Field(ge=0)
+    lifecycle: Literal["ACTIVE", "INACTIVE"]
+    version: int = Field(ge=1)
+    created_at: datetime
+    updated_at: datetime
+
+
+class KnowledgeStudioManagedDomainListResponse(BaseModel):
+    items: list[KnowledgeStudioManagedDomainResponse]
+
+
 class KnowledgeStudioDraftResponse(BaseModel):
     id: UUID
     author_id: UUID
@@ -2052,6 +2074,7 @@ class KnowledgeStudioDraftResponse(BaseModel):
     current_step: Literal["BASIC", "TBOX", "ABOX"]
     name: str
     endpoint_alias: str
+    endpoint_aliases: list[str]
     domain_id: UUID
     domain_source_version: str
     classification: Literal["PUBLIC", "INTERNAL", "CONFIDENTIAL", "RESTRICTED"]
@@ -2220,6 +2243,7 @@ class KnowledgeStudioTBoxProposalResponse(BaseModel):
     elements: list[KnowledgeStudioTBoxElementResponse]
     conflicts: list[KnowledgeStudioTBoxProposalConflictResponse]
     model_binding: dict[str, object] | None
+    source_reference: dict[str, object] | None
     error_code: str | None
     version: int = Field(ge=1)
     created_at: datetime
@@ -2241,6 +2265,15 @@ class KnowledgeStudioTBoxConflictResolutionRequest(BaseModel):
     renamed_display_name: str | None = Field(default=None, max_length=255)
 
 
+class KnowledgeStudioTBoxProposalElementOverrideRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    stable_element_id: str = Field(min_length=1, max_length=128)
+    canonical_name: str = Field(min_length=1, max_length=255)
+    display_name: str = Field(min_length=1, max_length=255)
+    data_type: str | None = Field(default=None, min_length=1, max_length=255)
+
+
 class KnowledgeStudioTBoxProposalApplyRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -2250,6 +2283,10 @@ class KnowledgeStudioTBoxProposalApplyRequest(BaseModel):
         max_length=100,
     )
     excluded_stable_element_ids: list[str] = Field(
+        default_factory=list,
+        max_length=200,
+    )
+    element_overrides: list[KnowledgeStudioTBoxProposalElementOverrideRequest] = Field(
         default_factory=list,
         max_length=200,
     )

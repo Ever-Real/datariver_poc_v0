@@ -9,6 +9,7 @@ from datariver.application.dto import (
     KnowledgeStudioDomainOption,
     KnowledgeStudioDraftRecord,
     KnowledgeStudioIngestionJobRecord,
+    KnowledgeStudioManagedDomainRecord,
     KnowledgeStudioReleaseRecord,
     KnowledgeStudioSourceDetail,
     KnowledgeStudioSourcePage,
@@ -50,6 +51,8 @@ from datariver.domain.knowledge_studio import (
     require_studio_version,
     validate_abox_mapping_rules,
     validate_endpoint_alias,
+    validate_endpoint_aliases,
+    validate_knowledge_domain_name,
     validate_stable_element_id,
     validate_studio_name,
     validate_tbox_element_set,
@@ -107,6 +110,111 @@ class KnowledgeStudioService:
             allowed_domain_ids=allowed_domains,
             query=query,
             limit=limit,
+        )
+
+    async def list_managed_domains(
+        self,
+        *,
+        workspace_id: UUID,
+        subject: SubjectAttributes,
+        limit: int,
+        environment: EnvironmentAttributes,
+        request_id: str,
+    ) -> tuple[KnowledgeStudioManagedDomainRecord, ...]:
+        await self._authorize_domain_management(
+            workspace_id=workspace_id,
+            subject=subject,
+            environment=environment,
+            request_id=request_id,
+        )
+        return await self._store.list_managed_domains(
+            workspace_id=workspace_id,
+            limit=limit,
+        )
+
+    async def create_managed_domain(
+        self,
+        *,
+        workspace_id: UUID,
+        subject: SubjectAttributes,
+        display_name: str,
+        idempotency_key: str,
+        request_hash: str,
+        environment: EnvironmentAttributes,
+        request_id: str,
+    ) -> KnowledgeStudioManagedDomainRecord:
+        normalized = validate_knowledge_domain_name(display_name)
+        await self._authorize_domain_management(
+            workspace_id=workspace_id,
+            subject=subject,
+            environment=environment,
+            request_id=request_id,
+        )
+        return await self._store.create_managed_domain(
+            workspace_id=workspace_id,
+            actor_id=subject.subject_id,
+            display_name=normalized,
+            idempotency_key=idempotency_key,
+            request_hash=request_hash,
+        )
+
+    async def update_managed_domain(
+        self,
+        *,
+        workspace_id: UUID,
+        subject: SubjectAttributes,
+        domain_id: UUID,
+        display_name: str,
+        expected_version: int,
+        idempotency_key: str,
+        request_hash: str,
+        environment: EnvironmentAttributes,
+        request_id: str,
+    ) -> KnowledgeStudioManagedDomainRecord:
+        normalized = validate_knowledge_domain_name(display_name)
+        await self._authorize_domain_management(
+            workspace_id=workspace_id,
+            subject=subject,
+            environment=environment,
+            request_id=request_id,
+            domain_id=domain_id,
+        )
+        return await self._store.update_managed_domain(
+            workspace_id=workspace_id,
+            actor_id=subject.subject_id,
+            domain_id=domain_id,
+            display_name=normalized,
+            expected_version=expected_version,
+            idempotency_key=idempotency_key,
+            request_hash=request_hash,
+        )
+
+    async def archive_managed_domain(
+        self,
+        *,
+        workspace_id: UUID,
+        subject: SubjectAttributes,
+        domain_id: UUID,
+        expected_version: int,
+        idempotency_key: str,
+        request_hash: str,
+        environment: EnvironmentAttributes,
+        request_id: str,
+    ) -> KnowledgeStudioManagedDomainRecord:
+        await self._authorize_domain_management(
+            workspace_id=workspace_id,
+            subject=subject,
+            environment=environment,
+            request_id=request_id,
+            domain_id=domain_id,
+        )
+        return await self._store.archive_managed_domain(
+            workspace_id=workspace_id,
+            actor_id=subject.subject_id,
+            domain_id=domain_id,
+            expected_version=expected_version,
+            idempotency_key=idempotency_key,
+            request_hash=request_hash,
         )
 
     async def get_draft(
@@ -530,32 +638,22 @@ class KnowledgeStudioService:
         expected_version: int,
         environment: EnvironmentAttributes,
         request_id: str,
+        source_reference: dict[str, object] | None = None,
     ) -> KnowledgeStudioTBoxProposalRecord:
         if prompt != prompt.strip() or not 1 <= len(prompt) <= 4_000:
             raise ValidationError(
                 "A schema-assistant prompt must contain between 1 and 4,000 characters."
             )
-        record = await self.get_tbox(
+        record = await self.prepare_tbox_proposal(
             workspace_id=workspace_id,
             subject=subject,
             draft_id=draft_id,
+            target_block_id=target_block_id,
+            mode=mode,
+            expected_version=expected_version,
             environment=environment,
             request_id=request_id,
         )
-        await self._authorize_draft(
-            draft=record.draft,
-            subject=subject,
-            action=Action.KG_EDIT,
-            environment=environment,
-            request_id=request_id,
-        )
-        if record.draft.state != "DRAFT" or record.draft.current_step != "TBOX":
-            raise ConflictError("LLM schema proposals require a mutable Graph Builder Draft.")
-        require_studio_version(record.draft.version, expected_version)
-        if mode is TBoxProposalMode.MERGE_INTO_CURRENT and target_block_id is None:
-            raise ValidationError("MERGE_INTO_CURRENT requires a target block.")
-        if mode is TBoxProposalMode.APPEND_LAYER and target_block_id is not None:
-            raise ValidationError("APPEND_LAYER cannot target an existing block.")
         assistant, binding = self._schema_runtime()
         current = tuple(
             self._tbox_input(item) for block in record.blocks for item in block.elements
@@ -579,7 +677,47 @@ class KnowledgeStudioService:
             elements=proposed,
             conflicts=conflicts,
             model_binding=binding.to_document(),
+            source_reference=source_reference,
         )
+
+    async def prepare_tbox_proposal(
+        self,
+        *,
+        workspace_id: UUID,
+        subject: SubjectAttributes,
+        draft_id: UUID,
+        target_block_id: UUID | None,
+        mode: TBoxProposalMode,
+        expected_version: int,
+        environment: EnvironmentAttributes,
+        request_id: str,
+    ) -> KnowledgeStudioTBoxRecord:
+        record = await self.get_tbox(
+            workspace_id=workspace_id,
+            subject=subject,
+            draft_id=draft_id,
+            environment=environment,
+            request_id=request_id,
+        )
+        await self._authorize_draft(
+            draft=record.draft,
+            subject=subject,
+            action=Action.KG_EDIT,
+            environment=environment,
+            request_id=request_id,
+        )
+        if record.draft.state != "DRAFT" or record.draft.current_step != "TBOX":
+            raise ConflictError("LLM schema proposals require a mutable Graph Builder Draft.")
+        require_studio_version(record.draft.version, expected_version)
+        block_ids = {block.block_id for block in record.blocks}
+        if mode is TBoxProposalMode.MERGE_INTO_CURRENT:
+            if target_block_id is None:
+                raise ValidationError("MERGE_INTO_CURRENT requires a target block.")
+            if target_block_id not in block_ids:
+                raise ValidationError("The proposal target block does not exist.")
+        if mode is TBoxProposalMode.APPEND_LAYER and target_block_id is not None:
+            raise ValidationError("APPEND_LAYER cannot target an existing block.")
+        return record
 
     async def get_tbox_proposal(
         self,
@@ -622,6 +760,7 @@ class KnowledgeStudioService:
         merge_strategy: TBoxMergeStrategy,
         resolutions: tuple[dict[str, str], ...],
         excluded_stable_element_ids: tuple[str, ...] = (),
+        element_overrides: tuple[dict[str, str], ...] = (),
         expected_version: int,
         idempotency_key: str,
         request_hash: str,
@@ -653,10 +792,19 @@ class KnowledgeStudioService:
         if proposal.state != "READY":
             raise ConflictError("Only a READY T-Box proposal can be applied.")
         proposal_elements = tuple(self._tbox_input(item) for item in proposal.elements)
+        override_by_id = {item.get("stable_element_id", ""): item for item in element_overrides}
+        if len(override_by_id) != len(element_overrides):
+            raise ValidationError("A proposed T-Box element can be overridden only once.")
+        proposal_ids = {item.stable_element_id for item in proposal_elements}
+        if not set(override_by_id).issubset(proposal_ids):
+            raise ValidationError("Only an element from this proposal can be overridden.")
+        proposal_elements = tuple(
+            self._override_proposal_element(item, override_by_id.get(item.stable_element_id))
+            for item in proposal_elements
+        )
         excluded = set(excluded_stable_element_ids)
         if len(excluded) != len(excluded_stable_element_ids):
             raise ValidationError("A proposed T-Box element can be excluded only once.")
-        proposal_ids = {item.stable_element_id for item in proposal_elements}
         if not excluded.issubset(proposal_ids):
             raise ValidationError("Only an element from this proposal can be excluded.")
         proposed = tuple(
@@ -747,6 +895,25 @@ class KnowledgeStudioService:
             request_hash=request_hash,
         )
 
+    @staticmethod
+    def _override_proposal_element(
+        item: TBoxElementInput,
+        override: dict[str, str] | None,
+    ) -> TBoxElementInput:
+        if override is None:
+            return item
+        data_type = override.get("data_type")
+        if item.kind is not TBoxElementKind.PROPERTY and data_type is not None:
+            raise ValidationError("Only a proposed Property data type can be overridden.")
+        updated = replace(
+            item,
+            canonical_name=override.get("canonical_name", item.canonical_name),
+            display_name=override.get("display_name", item.display_name),
+            data_type=data_type if data_type is not None else item.data_type,
+        )
+        updated.validate()
+        return updated
+
     async def create_draft(
         self,
         *,
@@ -754,6 +921,7 @@ class KnowledgeStudioService:
         subject: SubjectAttributes,
         name: str,
         endpoint_alias: str,
+        endpoint_aliases: tuple[str, ...],
         domain_id: UUID,
         domain_source_version: str,
         classification: Classification,
@@ -764,6 +932,9 @@ class KnowledgeStudioService:
     ) -> KnowledgeStudioDraftRecord:
         validate_studio_name(name)
         validate_endpoint_alias(endpoint_alias)
+        validate_endpoint_aliases(endpoint_aliases)
+        if endpoint_aliases[0] != endpoint_alias:
+            raise ValidationError("The first endpoint alias must be the canonical endpoint alias.")
         await self._authorization.authorize(
             subject=subject,
             resource=self._resource(
@@ -783,6 +954,7 @@ class KnowledgeStudioService:
             author_id=subject.subject_id,
             name=name,
             endpoint_alias=endpoint_alias,
+            endpoint_aliases=endpoint_aliases,
             domain_id=domain_id,
             domain_source_version=domain_source_version,
             classification=int(classification),
@@ -798,6 +970,7 @@ class KnowledgeStudioService:
         draft_id: UUID,
         name: str,
         endpoint_alias: str,
+        endpoint_aliases: tuple[str, ...],
         domain_id: UUID,
         domain_source_version: str,
         classification: Classification,
@@ -809,6 +982,9 @@ class KnowledgeStudioService:
     ) -> KnowledgeStudioDraftRecord:
         validate_studio_name(name)
         validate_endpoint_alias(endpoint_alias)
+        validate_endpoint_aliases(endpoint_aliases)
+        if endpoint_aliases[0] != endpoint_alias:
+            raise ValidationError("The first endpoint alias must be the canonical endpoint alias.")
         current = await self._require_draft(
             workspace_id=workspace_id,
             author_id=subject.subject_id,
@@ -834,6 +1010,7 @@ class KnowledgeStudioService:
             draft_id=draft_id,
             name=name,
             endpoint_alias=endpoint_alias,
+            endpoint_aliases=endpoint_aliases,
             domain_id=domain_id,
             domain_source_version=domain_source_version,
             classification=int(classification),
@@ -1762,6 +1939,30 @@ class KnowledgeStudioService:
                 lifecycle=draft.state,
             ),
             action=Action.KG_REVIEW,
+            environment=environment,
+            request_id=request_id,
+        )
+
+    async def _authorize_domain_management(
+        self,
+        *,
+        workspace_id: UUID,
+        subject: SubjectAttributes,
+        environment: EnvironmentAttributes,
+        request_id: str,
+        domain_id: UUID | None = None,
+    ) -> None:
+        await self._authorization.authorize(
+            subject=subject,
+            resource=self._resource(
+                resource_id=domain_id or workspace_id,
+                workspace_id=workspace_id,
+                owner_subject_id=None,
+                domain_id=None,
+                classification=Classification.INTERNAL,
+                lifecycle="ACTIVE",
+            ),
+            action=Action.ADMIN_MANAGE,
             environment=environment,
             request_id=request_id,
         )

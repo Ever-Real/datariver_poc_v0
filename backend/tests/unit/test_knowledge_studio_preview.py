@@ -91,6 +91,7 @@ def draft(*, version: int = 7) -> KnowledgeStudioDraftRecord:
         current_step="ABOX",
         name="Employee graph",
         endpoint_alias="employee_graph",
+        endpoint_aliases=("employee_graph",),
         domain_id=DOMAIN_ID,
         domain_source_version="domain-v1",
         classification=Classification.INTERNAL,

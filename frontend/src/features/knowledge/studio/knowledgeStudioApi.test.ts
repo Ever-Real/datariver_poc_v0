@@ -12,6 +12,7 @@ import {
   previewKnowledgeStudioBinding,
   publishKnowledgeStudioDraft,
   submitKnowledgeStudioReview,
+  uploadKnowledgeStudioTBoxDocumentProposal,
   type KnowledgeStudioBasicInformation,
 } from './knowledgeStudioApi'
 
@@ -24,6 +25,7 @@ function requestUrl(input: RequestInfo | URL | undefined): string {
 const payload: KnowledgeStudioBasicInformation = {
   name: '반도체 소재 그래프',
   endpoint_alias: 'semiconductor_materials',
+  endpoint_aliases: ['semiconductor_materials', 'materials_kg'],
   domain_id: '019fa57b-52de-74c0-9f5e-06ae7b1bf3af',
   domain_source_version: 'domain-v3',
   classification: 'INTERNAL',
@@ -152,6 +154,60 @@ describe('Knowledge Studio API', () => {
     await expect(
       createKnowledgeStudioDraft(client, payload, 'create-key'),
     ).rejects.toThrow(/ETag/)
+  })
+
+  it('uploads an allowlisted document as multipart with the current Draft fence', async () => {
+    const proposal = {
+      id: '019fa57b-52de-74c0-9f5e-06ae7b1bf3c9',
+      draft_id: '019fa57b-52de-74c0-9f5e-06ae7b1bf3b0',
+      target_block_id: '019fa57b-52de-74c0-9f5e-06ae7b1bf3ca',
+      state: 'READY',
+      mode: 'MERGE_INTO_CURRENT',
+      merge_strategy: 'KEEP_ORIGINAL',
+      base_draft_version: 3,
+      prompt: 'bounded server prompt',
+      elements: [],
+      conflicts: [],
+      model_binding: {},
+      source_reference: { contract_version: 'KNOWLEDGE_STUDIO_DOCUMENT_SOURCE_V1' },
+      version: 1,
+      created_at: '2026-07-29T01:00:00Z',
+      updated_at: '2026-07-29T01:00:00Z',
+    }
+    const fetchMock = vi.fn<typeof fetch>().mockResolvedValue(
+      new Response(JSON.stringify(proposal), {
+        status: 201,
+        headers: { 'Content-Type': 'application/json' },
+      }),
+    )
+    vi.stubGlobal('fetch', fetchMock)
+    const client = new ApiClient('/api/v1', () => 'token', () => 'workspace')
+    const file = new File(['name,description\nDataset,table'], 'schema.csv', {
+      type: 'text/csv',
+    })
+
+    await uploadKnowledgeStudioTBoxDocumentProposal(
+      client,
+      proposal.draft_id,
+      {
+        file,
+        upload_id: '019fa57b-52de-74c0-9f5e-06ae7b1bf3cb',
+        target_block_id: proposal.target_block_id,
+        mode: 'MERGE_INTO_CURRENT',
+      },
+      '"3"',
+    )
+
+    const call = fetchMock.mock.calls[0]
+    expect(requestUrl(call?.[0])).toContain('/tbox/document-proposals')
+    const headers = new Headers(call?.[1]?.headers)
+    expect(headers.get('If-Match')).toBe('"3"')
+    expect(headers.get('Content-Type')).toBeNull()
+    const body = call?.[1]?.body
+    expect(body).toBeInstanceOf(FormData)
+    expect((body as FormData).get('mode')).toBe('MERGE_INTO_CURRENT')
+    expect((body as FormData).get('target_block_id')).toBe(proposal.target_block_id)
+    expect((body as FormData).get('file')).toBeInstanceOf(File)
   })
 
   it('fences dry-run preview and pre-flight reads without sending provider queries', async () => {

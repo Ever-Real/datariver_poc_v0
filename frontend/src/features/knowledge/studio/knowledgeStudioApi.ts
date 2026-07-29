@@ -5,6 +5,7 @@ export type KnowledgeClassification = 'PUBLIC' | 'INTERNAL' | 'CONFIDENTIAL' | '
 export interface KnowledgeStudioBasicInformation {
   name: string
   endpoint_alias: string
+  endpoint_aliases?: string[]
   domain_id: string
   domain_source_version: string
   classification: KnowledgeClassification
@@ -14,6 +15,15 @@ export interface KnowledgeStudioDomainOption {
   id: string
   display_name: string
   source_version: string
+}
+
+export interface KnowledgeStudioManagedDomain extends KnowledgeStudioDomainOption {
+  created_by?: string
+  asset_count: number
+  lifecycle: 'ACTIVE' | 'INACTIVE'
+  version: number
+  created_at: string
+  updated_at: string
 }
 
 export interface KnowledgeStudioDraft extends KnowledgeStudioBasicInformation {
@@ -129,6 +139,7 @@ export interface KnowledgeStudioTBoxProposal {
   elements: KnowledgeStudioTBoxElement[]
   conflicts: KnowledgeStudioTBoxConflict[]
   model_binding?: Record<string, unknown>
+  source_reference?: Record<string, unknown>
   error_code?: string
   version: number
   created_at: string
@@ -309,6 +320,65 @@ export async function listKnowledgeStudioDomains(
     { cache: 'no-store', signal },
   )
   return response.items
+}
+
+export async function listKnowledgeStudioManagedDomains(
+  client: ApiClient,
+): Promise<KnowledgeStudioManagedDomain[]> {
+  const response = await client.request<{ items: KnowledgeStudioManagedDomain[] }>(
+    '/knowledge/domains/manage?limit=100',
+    { cache: 'no-store' },
+  )
+  return response.items
+}
+
+export async function createKnowledgeStudioManagedDomain(
+  client: ApiClient,
+  displayName: string,
+  idempotencyKey: string,
+): Promise<KnowledgeStudioManagedDomain> {
+  return client.request<KnowledgeStudioManagedDomain>('/knowledge/domains/manage', {
+    method: 'POST',
+    cache: 'no-store',
+    idempotencyKey,
+    body: JSON.stringify({ display_name: displayName }),
+  })
+}
+
+export async function updateKnowledgeStudioManagedDomain(
+  client: ApiClient,
+  domainId: string,
+  displayName: string,
+  version: number,
+  idempotencyKey: string,
+): Promise<KnowledgeStudioManagedDomain> {
+  return client.request<KnowledgeStudioManagedDomain>(
+    `/knowledge/domains/manage/${encodeURIComponent(domainId)}`,
+    {
+      method: 'PATCH',
+      cache: 'no-store',
+      ifMatch: `"${version}"`,
+      idempotencyKey,
+      body: JSON.stringify({ display_name: displayName }),
+    },
+  )
+}
+
+export async function deleteKnowledgeStudioManagedDomain(
+  client: ApiClient,
+  domainId: string,
+  version: number,
+  idempotencyKey: string,
+): Promise<void> {
+  await client.request<void>(
+    `/knowledge/domains/manage/${encodeURIComponent(domainId)}`,
+    {
+      method: 'DELETE',
+      cache: 'no-store',
+      ifMatch: `"${version}"`,
+      idempotencyKey,
+    },
+  )
 }
 
 export async function createKnowledgeStudioEditDraft(
@@ -517,6 +587,33 @@ export async function createKnowledgeStudioTBoxProposal(
   )
 }
 
+export async function uploadKnowledgeStudioTBoxDocumentProposal(
+  client: ApiClient,
+  draftId: string,
+  payload: {
+    file: File
+    upload_id: string
+    target_block_id?: string
+    mode: 'MERGE_INTO_CURRENT' | 'APPEND_LAYER'
+  },
+  etag: string,
+): Promise<KnowledgeStudioTBoxProposal> {
+  const body = new FormData()
+  body.set('file', payload.file, payload.file.name)
+  body.set('upload_id', payload.upload_id)
+  body.set('mode', payload.mode)
+  if (payload.target_block_id) body.set('target_block_id', payload.target_block_id)
+  return client.request<KnowledgeStudioTBoxProposal>(
+    `/knowledge/studio/drafts/${encodeURIComponent(draftId)}/tbox/document-proposals`,
+    {
+      method: 'POST',
+      body,
+      cache: 'no-store',
+      ifMatch: etag,
+    },
+  )
+}
+
 export async function applyKnowledgeStudioTBoxProposal(
   client: ApiClient,
   draftId: string,
@@ -531,6 +628,12 @@ export async function applyKnowledgeStudioTBoxProposal(
       renamed_display_name?: string
     }>
     excluded_stable_element_ids: string[]
+    element_overrides: Array<{
+      stable_element_id: string
+      canonical_name: string
+      display_name: string
+      data_type?: string
+    }>
   },
   etag: string,
   idempotencyKey: string,

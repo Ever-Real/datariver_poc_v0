@@ -1,6 +1,7 @@
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { ApiClient } from '../../../../api/client'
+import { useKnowledgeStudioSessionStore } from '../knowledgeStudioSessionStore'
 import { DataEnricherStep } from './DataEnricherStep'
 
 const draftId = '019fa57b-52de-74c0-9f5e-06ae7b1bf3b0'
@@ -126,6 +127,7 @@ function binding(version: number) {
 }
 
 beforeEach(() => {
+  useKnowledgeStudioSessionStore.setState({ sessions: {} })
   vi.stubGlobal('crypto', {
     ...crypto,
     randomUUID: vi.fn(() => '019fa57b-52de-74c0-9f5e-06ae7b1bf399'),

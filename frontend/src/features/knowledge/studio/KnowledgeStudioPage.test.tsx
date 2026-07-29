@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { ApiClient } from '../../../api/client'
 import type { DraftRecoveryQueue, DraftRecoveryRecord } from './draftRecoveryQueue'
 import { KnowledgeStudioPage } from './KnowledgeStudioPage'
+import { useKnowledgeStudioSessionStore } from './knowledgeStudioSessionStore'
 
 const domainId = '019fa57b-52de-74c0-9f5e-06ae7b1bf3af'
 const draftId = '019fa57b-52de-74c0-9f5e-06ae7b1bf3b0'
@@ -86,6 +87,7 @@ function requestUrl(input: RequestInfo | URL): string {
 }
 
 beforeEach(() => {
+  useKnowledgeStudioSessionStore.setState({ sessions: {} })
   vi.stubGlobal('crypto', {
     ...crypto,
     randomUUID: vi.fn(() => '019fa57b-52de-74c0-9f5e-06ae7b1bf399'),

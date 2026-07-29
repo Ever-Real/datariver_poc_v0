@@ -108,6 +108,7 @@ def draft() -> KnowledgeStudioDraftRecord:
         current_step="BASIC",
         name="반도체 소재 그래프",
         endpoint_alias="semiconductor_materials",
+        endpoint_aliases=("semiconductor_materials",),
         domain_id=DOMAIN_ID,
         domain_source_version="domain-v3",
         classification=Classification.INTERNAL,
@@ -364,6 +365,52 @@ def test_keep_original_rewires_nonconflicting_proposal_dependants() -> None:
             parent_stable_element_id=original.stable_element_id,
         ),
     )
+
+
+def test_proposal_element_override_accepts_unicode_name_and_property_type() -> None:
+    proposed = TBoxElementInput(
+        stable_element_id="property.employee.name",
+        kind=TBoxElementKind.PROPERTY,
+        canonical_name="employeeName",
+        display_name="Employee name",
+        parent_stable_element_id="class.employee",
+        data_type="STRING",
+        nullable=True,
+    )
+
+    updated = KnowledgeStudioService._override_proposal_element(
+        proposed,
+        {
+            "stable_element_id": proposed.stable_element_id,
+            "canonical_name": "임직원명",
+            "display_name": "임직원 이름",
+            "data_type": "TEXT",
+        },
+    )
+
+    assert updated.canonical_name == "임직원명"
+    assert updated.display_name == "임직원 이름"
+    assert updated.data_type == "TEXT"
+
+
+def test_proposal_element_override_rejects_data_type_for_class() -> None:
+    proposed = TBoxElementInput(
+        stable_element_id="class.employee",
+        kind=TBoxElementKind.CLASS,
+        canonical_name="Employee",
+        display_name="Employee",
+    )
+
+    with pytest.raises(ValidationError, match="Only a proposed Property"):
+        KnowledgeStudioService._override_proposal_element(
+            proposed,
+            {
+                "stable_element_id": proposed.stable_element_id,
+                "canonical_name": proposed.canonical_name,
+                "display_name": proposed.display_name,
+                "data_type": "TEXT",
+            },
+        )
 
 
 def test_proposal_candidate_cannot_rewrite_a_later_referenced_class() -> None:
@@ -644,6 +691,7 @@ async def test_create_rejects_a_nonpublic_domain_outside_subject_scope() -> None
             subject=subject(allowed_domains=frozenset()),
             name="반도체 소재 그래프",
             endpoint_alias="semiconductor_materials",
+            endpoint_aliases=("semiconductor_materials",),
             domain_id=DOMAIN_ID,
             domain_source_version="domain-v3",
             classification=Classification.INTERNAL,
@@ -671,6 +719,7 @@ async def test_autosave_authorizes_the_target_domain_and_passes_the_version_fenc
         draft_id=DRAFT_ID,
         name=current.name,
         endpoint_alias=current.endpoint_alias,
+        endpoint_aliases=current.endpoint_aliases,
         domain_id=DOMAIN_ID,
         domain_source_version=current.domain_source_version,
         classification=Classification.INTERNAL,

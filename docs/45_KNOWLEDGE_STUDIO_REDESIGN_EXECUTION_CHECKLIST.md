@@ -225,6 +225,37 @@ target DB/identity/browser 증거와 실제 physical reader는 별도 운영 게
 
 ## Cross-cutting verification
 
+### Phase 2.6 integrated Studio UX increment
+
+- [x] 도메인 선택과 직접 입력을 2:1 한 행으로 배치하고 직접 입력 선택 때만 등록 입력을
+  활성화한다.
+- [x] 실제 vocabulary DOMAIN 정본을 조회하는 TanStack 관리 모달과 admin-authorized,
+  idempotent/ETag-fenced 생성·수정·archive API를 연결한다.
+- [x] 최대 10개 콤마 구분 endpoint alias를 배열로 검증·저장하고 첫 alias를 canonical
+  publication slug로 DB check까지 고정한다.
+- [x] React Flow 초기 zoom 상한 `0.8`, zoom-linked floating editor scale, 이름-click toggle,
+  compact node/property CRUD와 8방향 Handle을 구현한다.
+- [x] block title Enter/확인/취소와 saved check 피드백을 구현하고 입력 DOM identity를
+  안정적으로 유지한다.
+- [x] canvas/tree/safe-Cypher를 한 authoring state에서 양방향 동기화하고 tree DnD target과
+  hierarchy edge label 편집을 표시한다.
+- [x] Draft별 Zustand memory session이 Step 1, 독립 block T-Box/Cypher/viewport와 Step 3
+  source/mapping/review 입력을 component unmount 밖에서 유지한다.
+- [x] 활성 block의 Node/Relationship/Delete·Backspace 삭제, 과거 block read-only group,
+  current-to-earlier 연결, later-reference lock과 latest-only delete를 UI/API 양쪽에서 강제한다.
+- [x] PDF/CSV/TXT/XLSX/DOCX/PPTX/HTML/XML/JSON의 bounded multipart upload, create-only
+  filefolder Object Storage, safe extraction과 실제 governed Schema Assistant Proposal을 연결한다.
+- [x] 파싱/추출/유효성/완료 stepper는 실제 request 경계를 표시하며 fake timer나 fabricated
+  node를 만들지 않는다.
+- [x] Proposal canvas overlay에서 요소 제외, 이름/Property 타입 보정과 Keep Original 충돌
+  해결 후 exact Proposal membership을 서버가 재검증하는 Typed apply를 구현한다.
+- [x] 지식 레지스트리 아래 지식 인스턴스 관리 route/shell을 추가하고 rich Property
+  profile은 향후 URN 참조 관리 계약으로 분리한다.
+- [x] frontend TypeScript/ESLint/327 tests/build와 backend Ruff/mypy/static/1,752 tests,
+  deterministic migration generation을 전수 통과한다.
+- [ ] 로그인된 실제 브라우저에서 Step/Block 전환, 한글 focus, 모달, upload entry와
+  route shell을 최종 확인한다.
+
 - [x] backend 변경마다 README-equivalent Ruff, strict mypy, relevant pytest, verify_static을 실행하고 결과를 기록한다.
 - [x] schema 변경마다 SQLAlchemy metadata, Alembic migration, deterministic initial migration diff,
   data model, RLS/grant/role tests를 함께 검증한다.

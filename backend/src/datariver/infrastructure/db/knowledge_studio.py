@@ -19,6 +19,7 @@ from datariver.application.dto import (
     KnowledgeStudioDomainOption,
     KnowledgeStudioDraftRecord,
     KnowledgeStudioIngestionJobRecord,
+    KnowledgeStudioManagedDomainRecord,
     KnowledgeStudioMappingRuleRecord,
     KnowledgeStudioPreflightRecord,
     KnowledgeStudioReleaseRecord,
@@ -56,6 +57,7 @@ from datariver.domain.knowledge_studio import (
     require_studio_transition,
     require_studio_version,
     validate_endpoint_alias,
+    validate_endpoint_aliases,
     validate_source_field_path,
     validate_stable_element_id,
     validate_studio_name,
@@ -155,6 +157,7 @@ def _draft_record(model: KnowledgeStudioDraftModel) -> KnowledgeStudioDraftRecor
         current_step=model.current_step,
         name=model.name,
         endpoint_alias=model.endpoint_alias,
+        endpoint_aliases=tuple(model.endpoint_aliases),
         domain_id=model.domain_ref_id,
         domain_source_version=model.domain_source_version,
         classification=Classification(model.classification),
@@ -175,6 +178,70 @@ def _draft_record(model: KnowledgeStudioDraftModel) -> KnowledgeStudioDraftRecor
         materialized_ontology_version_id=model.materialized_ontology_version_id,
         published_studio_release_id=model.published_studio_release_id,
     )
+
+
+def _managed_domain_record(
+    model: CatalogVocabularyEntryModel,
+    *,
+    asset_count: int,
+) -> KnowledgeStudioManagedDomainRecord:
+    return KnowledgeStudioManagedDomainRecord(
+        domain_id=model.id,
+        workspace_id=model.workspace_id,
+        display_name=model.display_name,
+        source_version=model.source_version,
+        created_by=model.created_by,
+        asset_count=asset_count,
+        lifecycle=model.lifecycle,
+        version=model.version,
+        created_at=model.observed_at,
+        updated_at=model.updated_at,
+    )
+
+
+def _managed_domain_result(
+    record: KnowledgeStudioManagedDomainRecord,
+    *,
+    actor_id: UUID,
+) -> dict[str, object]:
+    return {
+        "domain_id": str(record.domain_id),
+        "workspace_id": str(record.workspace_id),
+        "display_name": record.display_name,
+        "source_version": record.source_version,
+        "created_by": str(record.created_by) if record.created_by else None,
+        "asset_count": record.asset_count,
+        "lifecycle": record.lifecycle,
+        "version": record.version,
+        "created_at": record.created_at.isoformat(),
+        "updated_at": record.updated_at.isoformat(),
+        "actor_id": str(actor_id),
+    }
+
+
+def _managed_domain_record_from_result(
+    result: dict[str, Any],
+    *,
+    workspace_id: UUID,
+    actor_id: UUID,
+) -> KnowledgeStudioManagedDomainRecord:
+    if _required_str(result, "actor_id") != str(actor_id):
+        raise ConflictError("The idempotent managed-domain result belongs to another actor.")
+    record = KnowledgeStudioManagedDomainRecord(
+        domain_id=UUID(_required_str(result, "domain_id")),
+        workspace_id=UUID(_required_str(result, "workspace_id")),
+        display_name=_required_str(result, "display_name"),
+        source_version=_required_str(result, "source_version"),
+        created_by=_optional_uuid(result, "created_by"),
+        asset_count=_required_int(result, "asset_count"),
+        lifecycle=_required_str(result, "lifecycle"),
+        version=_required_int(result, "version"),
+        created_at=_required_datetime(result, "created_at"),
+        updated_at=_required_datetime(result, "updated_at"),
+    )
+    if record.workspace_id != workspace_id:
+        raise ConflictError("The idempotent managed-domain result belongs to another workspace.")
+    return record
 
 
 def _tbox_element_record(
@@ -368,6 +435,7 @@ def _proposal_record(model: TBoxProposalModel) -> KnowledgeStudioTBoxProposalRec
         elements=elements,
         conflicts=conflicts,
         model_binding=model.model_binding_document,
+        source_reference=model.source_reference_document,
         error_code=model.error_code,
         version=model.version,
         created_at=model.created_at,
@@ -601,6 +669,7 @@ def studio_draft_result(record: KnowledgeStudioDraftRecord) -> dict[str, object]
         "current_step": record.current_step,
         "name": record.name,
         "endpoint_alias": record.endpoint_alias,
+        "endpoint_aliases": list(record.endpoint_aliases),
         "domain_id": str(record.domain_id),
         "domain_source_version": record.domain_source_version,
         "classification": int(record.classification),
@@ -707,6 +776,14 @@ def studio_draft_record_from_result(result: dict[str, Any]) -> KnowledgeStudioDr
             raise ConflictError("The idempotent Knowledge Studio result is invalid.")
         name = validate_studio_name(_required_str(result, "name"))
         endpoint_alias = validate_endpoint_alias(_required_str(result, "endpoint_alias"))
+        raw_endpoint_aliases = result.get("endpoint_aliases", [endpoint_alias])
+        if not isinstance(raw_endpoint_aliases, list) or not all(
+            isinstance(item, str) for item in raw_endpoint_aliases
+        ):
+            raise ConflictError("The idempotent Knowledge Studio result is invalid.")
+        endpoint_aliases = validate_endpoint_aliases(tuple(raw_endpoint_aliases))
+        if endpoint_aliases[0] != endpoint_alias:
+            raise ConflictError("The idempotent Knowledge Studio result is invalid.")
         domain_source_version = _required_str(result, "domain_source_version")
         if len(domain_source_version) > 255:
             raise ConflictError("The idempotent Knowledge Studio result is invalid.")
@@ -719,6 +796,7 @@ def studio_draft_record_from_result(result: dict[str, Any]) -> KnowledgeStudioDr
             current_step=StudioStep(_required_str(result, "current_step")).value,
             name=name,
             endpoint_alias=endpoint_alias,
+            endpoint_aliases=endpoint_aliases,
             domain_id=UUID(_required_str(result, "domain_id")),
             domain_source_version=domain_source_version,
             classification=Classification(_required_int(result, "classification")),
@@ -985,6 +1063,268 @@ class SqlKnowledgeStudioStore(KnowledgeStudioStore):
             if (allowed_domain_ids is None or option.domain_id in allowed_domain_ids)
             and (normalized_query is None or normalized_query in option.display_name.casefold())
         )[:limit]
+
+    async def list_managed_domains(
+        self,
+        *,
+        workspace_id: UUID,
+        limit: int,
+    ) -> tuple[KnowledgeStudioManagedDomainRecord, ...]:
+        graph_count = (
+            select(
+                GraphModel.domain_ref_id.label("domain_id"),
+                func.count(GraphModel.id).label("asset_count"),
+            )
+            .where(GraphModel.workspace_id == workspace_id)
+            .group_by(GraphModel.domain_ref_id)
+            .subquery()
+        )
+        rows = (
+            await self._session.execute(
+                select(
+                    CatalogVocabularyEntryModel,
+                    func.coalesce(graph_count.c.asset_count, 0),
+                )
+                .outerjoin(
+                    graph_count,
+                    graph_count.c.domain_id == CatalogVocabularyEntryModel.id,
+                )
+                .where(
+                    CatalogVocabularyEntryModel.workspace_id == workspace_id,
+                    CatalogVocabularyEntryModel.kind == "DOMAIN",
+                    CatalogVocabularyEntryModel.lifecycle == "ACTIVE",
+                    CatalogVocabularyEntryModel.provider_ref.startswith("urn:li:domain:datariver-"),
+                )
+                .order_by(
+                    CatalogVocabularyEntryModel.display_name,
+                    CatalogVocabularyEntryModel.id,
+                )
+                .limit(limit)
+            )
+        ).all()
+        return tuple(
+            _managed_domain_record(model, asset_count=int(asset_count))
+            for model, asset_count in rows
+        )
+
+    async def create_managed_domain(
+        self,
+        *,
+        workspace_id: UUID,
+        actor_id: UUID,
+        display_name: str,
+        idempotency_key: str,
+        request_hash: str,
+    ) -> KnowledgeStudioManagedDomainRecord:
+        operation = "knowledge.managed_domain.create"
+        idempotency = SqlIdempotencyStore(self._session)
+        await idempotency.acquire_key_lock(
+            workspace_id=workspace_id,
+            key=idempotency_key,
+            operation=operation,
+        )
+        replay = await idempotency.get_result(
+            workspace_id=workspace_id,
+            key=idempotency_key,
+            operation=operation,
+        )
+        if replay is not None:
+            if replay.request_hash != request_hash:
+                raise ConflictError("The idempotency key was used with another request.")
+            return _managed_domain_record_from_result(
+                replay.result,
+                workspace_id=workspace_id,
+                actor_id=actor_id,
+            )
+        duplicate = await self._session.scalar(
+            select(CatalogVocabularyEntryModel.id).where(
+                CatalogVocabularyEntryModel.workspace_id == workspace_id,
+                CatalogVocabularyEntryModel.kind == "DOMAIN",
+                CatalogVocabularyEntryModel.lifecycle == "ACTIVE",
+                func.lower(CatalogVocabularyEntryModel.display_name) == display_name.casefold(),
+            )
+        )
+        if duplicate is not None:
+            raise ConflictError("An active Knowledge domain already uses this name.")
+        now = utc_now()
+        domain_id = uuid7()
+        version = 1
+        source_version = canonical_json_hash(
+            {
+                "contract": "DATARIVER_MANAGED_DOMAIN_V1",
+                "domain_id": str(domain_id),
+                "display_name": display_name,
+                "version": version,
+            }
+        )
+        model = CatalogVocabularyEntryModel(
+            id=domain_id,
+            workspace_id=workspace_id,
+            kind="DOMAIN",
+            provider_ref=f"urn:li:domain:datariver-managed-{domain_id}",
+            display_name=display_name,
+            lifecycle="ACTIVE",
+            source_version=source_version,
+            observed_at=now,
+            last_seen_sync_id=None,
+            created_by=actor_id,
+            version=version,
+            updated_at=now,
+        )
+        self._session.add(model)
+        record = _managed_domain_record(model, asset_count=0)
+        await idempotency.save_result(
+            workspace_id=workspace_id,
+            key=idempotency_key,
+            operation=operation,
+            request_hash=request_hash,
+            result=_managed_domain_result(record, actor_id=actor_id),
+        )
+        try:
+            await self._session.commit()
+        except IntegrityError as error:
+            await self._session.rollback()
+            raise ConflictError("The managed Knowledge domain could not be created.") from error
+        return record
+
+    async def update_managed_domain(
+        self,
+        *,
+        workspace_id: UUID,
+        actor_id: UUID,
+        domain_id: UUID,
+        display_name: str,
+        expected_version: int,
+        idempotency_key: str,
+        request_hash: str,
+    ) -> KnowledgeStudioManagedDomainRecord:
+        return await self._mutate_managed_domain(
+            workspace_id=workspace_id,
+            actor_id=actor_id,
+            domain_id=domain_id,
+            display_name=display_name,
+            lifecycle="ACTIVE",
+            expected_version=expected_version,
+            idempotency_key=idempotency_key,
+            request_hash=request_hash,
+            operation=f"knowledge.managed_domain.update:{domain_id}",
+        )
+
+    async def archive_managed_domain(
+        self,
+        *,
+        workspace_id: UUID,
+        actor_id: UUID,
+        domain_id: UUID,
+        expected_version: int,
+        idempotency_key: str,
+        request_hash: str,
+    ) -> KnowledgeStudioManagedDomainRecord:
+        return await self._mutate_managed_domain(
+            workspace_id=workspace_id,
+            actor_id=actor_id,
+            domain_id=domain_id,
+            display_name=None,
+            lifecycle="INACTIVE",
+            expected_version=expected_version,
+            idempotency_key=idempotency_key,
+            request_hash=request_hash,
+            operation=f"knowledge.managed_domain.archive:{domain_id}",
+        )
+
+    async def _mutate_managed_domain(
+        self,
+        *,
+        workspace_id: UUID,
+        actor_id: UUID,
+        domain_id: UUID,
+        display_name: str | None,
+        lifecycle: str,
+        expected_version: int,
+        idempotency_key: str,
+        request_hash: str,
+        operation: str,
+    ) -> KnowledgeStudioManagedDomainRecord:
+        idempotency = SqlIdempotencyStore(self._session)
+        await idempotency.acquire_key_lock(
+            workspace_id=workspace_id,
+            key=idempotency_key,
+            operation=operation,
+        )
+        replay = await idempotency.get_result(
+            workspace_id=workspace_id,
+            key=idempotency_key,
+            operation=operation,
+        )
+        if replay is not None:
+            if replay.request_hash != request_hash:
+                raise ConflictError("The idempotency key was used with another request.")
+            return _managed_domain_record_from_result(
+                replay.result,
+                workspace_id=workspace_id,
+                actor_id=actor_id,
+            )
+        model = (
+            await self._session.scalars(
+                select(CatalogVocabularyEntryModel)
+                .where(
+                    CatalogVocabularyEntryModel.workspace_id == workspace_id,
+                    CatalogVocabularyEntryModel.id == domain_id,
+                    CatalogVocabularyEntryModel.kind == "DOMAIN",
+                    CatalogVocabularyEntryModel.provider_ref.startswith("urn:li:domain:datariver-"),
+                )
+                .with_for_update()
+            )
+        ).one_or_none()
+        if model is None:
+            raise NotFoundError("The managed Knowledge domain does not exist.")
+        require_studio_version(model.version, expected_version)
+        if model.lifecycle != "ACTIVE":
+            raise ConflictError("Only an active managed Knowledge domain can be changed.")
+        if display_name is not None:
+            duplicate = await self._session.scalar(
+                select(CatalogVocabularyEntryModel.id).where(
+                    CatalogVocabularyEntryModel.workspace_id == workspace_id,
+                    CatalogVocabularyEntryModel.kind == "DOMAIN",
+                    CatalogVocabularyEntryModel.lifecycle == "ACTIVE",
+                    CatalogVocabularyEntryModel.id != domain_id,
+                    func.lower(CatalogVocabularyEntryModel.display_name) == display_name.casefold(),
+                )
+            )
+            if duplicate is not None:
+                raise ConflictError("An active Knowledge domain already uses this name.")
+            model.display_name = display_name
+        model.lifecycle = lifecycle
+        model.version += 1
+        model.updated_at = utc_now()
+        model.source_version = canonical_json_hash(
+            {
+                "contract": "DATARIVER_MANAGED_DOMAIN_V1",
+                "domain_id": str(model.id),
+                "display_name": model.display_name,
+                "lifecycle": model.lifecycle,
+                "version": model.version,
+            }
+        )
+        asset_count = int(
+            await self._session.scalar(
+                select(func.count(GraphModel.id)).where(
+                    GraphModel.workspace_id == workspace_id,
+                    GraphModel.domain_ref_id == domain_id,
+                )
+            )
+            or 0
+        )
+        record = _managed_domain_record(model, asset_count=asset_count)
+        await idempotency.save_result(
+            workspace_id=workspace_id,
+            key=idempotency_key,
+            operation=operation,
+            request_hash=request_hash,
+            result=_managed_domain_result(record, actor_id=actor_id),
+        )
+        await self._session.commit()
+        return record
 
     async def get_draft(
         self,
@@ -1379,6 +1719,7 @@ class SqlKnowledgeStudioStore(KnowledgeStudioStore):
         elements: tuple[TBoxElementInput, ...],
         conflicts: tuple[dict[str, object], ...],
         model_binding: dict[str, object],
+        source_reference: dict[str, object] | None,
     ) -> KnowledgeStudioTBoxProposalRecord:
         draft = await self._locked_draft(
             workspace_id=workspace_id,
@@ -1417,6 +1758,7 @@ class SqlKnowledgeStudioStore(KnowledgeStudioStore):
             },
             conflicts_document=list(conflicts),
             model_binding_document=model_binding,
+            source_reference_document=source_reference,
             error_code=None,
             applied_at=None,
             rejected_at=None,
@@ -2011,6 +2353,7 @@ class SqlKnowledgeStudioStore(KnowledgeStudioStore):
             current_step="BASIC",
             name=graph.name,
             endpoint_alias=graph.slug,
+            endpoint_aliases=[graph.slug],
             domain_ref_id=graph.domain_ref_id,
             domain_ref_kind="DOMAIN",
             domain_source_version=graph.domain_source_version,
@@ -2203,6 +2546,7 @@ class SqlKnowledgeStudioStore(KnowledgeStudioStore):
         author_id: UUID,
         name: str,
         endpoint_alias: str,
+        endpoint_aliases: tuple[str, ...],
         domain_id: UUID,
         domain_source_version: str,
         classification: int,
@@ -2230,10 +2574,11 @@ class SqlKnowledgeStudioStore(KnowledgeStudioStore):
             domain_id=domain_id,
             domain_source_version=domain_source_version,
         )
-        await self._require_alias_available(
-            workspace_id=workspace_id,
-            endpoint_alias=endpoint_alias,
-        )
+        for alias in endpoint_aliases:
+            await self._require_alias_available(
+                workspace_id=workspace_id,
+                endpoint_alias=alias,
+            )
         now = utc_now()
         model = KnowledgeStudioDraftModel(
             id=uuid7(),
@@ -2244,6 +2589,7 @@ class SqlKnowledgeStudioStore(KnowledgeStudioStore):
             current_step="BASIC",
             name=name,
             endpoint_alias=endpoint_alias,
+            endpoint_aliases=list(endpoint_aliases),
             domain_ref_id=domain_id,
             domain_ref_kind="DOMAIN",
             domain_source_version=domain_source_version,
@@ -2280,6 +2626,7 @@ class SqlKnowledgeStudioStore(KnowledgeStudioStore):
         draft_id: UUID,
         name: str,
         endpoint_alias: str,
+        endpoint_aliases: tuple[str, ...],
         domain_id: UUID,
         domain_source_version: str,
         classification: int,
@@ -2316,13 +2663,16 @@ class SqlKnowledgeStudioStore(KnowledgeStudioStore):
             domain_id=domain_id,
             domain_source_version=domain_source_version,
         )
-        await self._require_alias_available(
-            workspace_id=workspace_id,
-            endpoint_alias=endpoint_alias,
-        )
+        for alias in endpoint_aliases:
+            await self._require_alias_available(
+                workspace_id=workspace_id,
+                endpoint_alias=alias,
+                exclude_draft_id=draft_id,
+            )
         now = utc_now()
         model.name = name
         model.endpoint_alias = endpoint_alias
+        model.endpoint_aliases = list(endpoint_aliases)
         model.domain_ref_id = domain_id
         model.domain_source_version = domain_source_version
         model.classification = classification
@@ -3299,10 +3649,12 @@ class SqlKnowledgeStudioStore(KnowledgeStudioStore):
         actor_id: UUID,
     ) -> tuple[GraphModel, KnowledgeStudioReleaseModel | None]:
         if draft.kind == StudioDraftKind.CREATE.value:
-            await self._require_alias_available(
-                workspace_id=workspace_id,
-                endpoint_alias=draft.endpoint_alias,
-            )
+            for alias in draft.endpoint_aliases:
+                await self._require_alias_available(
+                    workspace_id=workspace_id,
+                    endpoint_alias=alias,
+                    exclude_draft_id=draft.id,
+                )
             now = utc_now()
             graph = GraphModel(
                 id=uuid7(),
@@ -3456,6 +3808,7 @@ class SqlKnowledgeStudioStore(KnowledgeStudioStore):
                 "kind": draft.kind,
                 "name": draft.name,
                 "endpoint_alias": draft.endpoint_alias,
+                "endpoint_aliases": list(draft.endpoint_aliases),
                 "domain_id": str(draft.domain_ref_id),
                 "domain_source_version": draft.domain_source_version,
                 "classification": draft.classification,
@@ -4101,7 +4454,15 @@ class SqlKnowledgeStudioStore(KnowledgeStudioStore):
         *,
         workspace_id: UUID,
         endpoint_alias: str,
+        exclude_draft_id: UUID | None = None,
     ) -> None:
+        await self._session.execute(
+            select(
+                func.pg_advisory_xact_lock(
+                    func.hashtextextended(f"{workspace_id}:{endpoint_alias}", 0)
+                )
+            )
+        )
         graph_id = await self._session.scalar(
             select(GraphModel.id).where(
                 GraphModel.workspace_id == workspace_id,
@@ -4110,6 +4471,15 @@ class SqlKnowledgeStudioStore(KnowledgeStudioStore):
         )
         if graph_id is not None:
             raise ConflictError("A knowledge graph already uses this endpoint alias.")
+        statement = select(KnowledgeStudioDraftModel.id).where(
+            KnowledgeStudioDraftModel.workspace_id == workspace_id,
+            KnowledgeStudioDraftModel.state.in_(("DRAFT", "REVIEW")),
+            KnowledgeStudioDraftModel.endpoint_aliases.contains([endpoint_alias]),
+        )
+        if exclude_draft_id is not None:
+            statement = statement.where(KnowledgeStudioDraftModel.id != exclude_draft_id)
+        if await self._session.scalar(statement) is not None:
+            raise ConflictError("A live Knowledge Studio draft already uses this endpoint alias.")
 
     @staticmethod
     def _require_expected_version(

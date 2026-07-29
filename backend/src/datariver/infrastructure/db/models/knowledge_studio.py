@@ -57,6 +57,12 @@ class KnowledgeStudioDraftModel(
             name="endpoint_alias_shape",
         ),
         CheckConstraint(
+            "jsonb_typeof(endpoint_aliases) = 'array' "
+            "AND jsonb_array_length(endpoint_aliases) BETWEEN 1 AND 10 "
+            "AND endpoint_aliases ->> 0 = endpoint_alias",
+            name="endpoint_aliases_shape",
+        ),
+        CheckConstraint(
             "domain_ref_kind = 'DOMAIN' AND char_length(domain_source_version) BETWEEN 1 AND 255",
             name="domain_reference_shape",
         ),
@@ -217,6 +223,12 @@ class KnowledgeStudioDraftModel(
             unique=True,
             postgresql_where=text("state IN ('DRAFT', 'REVIEW')"),
         ),
+        Index(
+            "ix_studio_drafts_workspace_endpoint_aliases_live",
+            "endpoint_aliases",
+            postgresql_using="gin",
+            postgresql_where=text("state IN ('DRAFT', 'REVIEW')"),
+        ),
         {"schema": "knowledge"},
     )
 
@@ -227,6 +239,10 @@ class KnowledgeStudioDraftModel(
     current_step: Mapped[str] = mapped_column(String(16), default="BASIC", nullable=False)
     name: Mapped[str] = mapped_column(String(255), nullable=False)
     endpoint_alias: Mapped[str] = mapped_column(String(100), nullable=False)
+    endpoint_aliases: Mapped[list[str]] = mapped_column(
+        JSON_DOCUMENT,
+        nullable=False,
+    )
     domain_ref_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), nullable=False)
     domain_ref_kind: Mapped[str] = mapped_column(
         String(16),
@@ -663,6 +679,7 @@ class TBoxProposalModel(
         nullable=False,
     )
     model_binding_document: Mapped[dict[str, object] | None] = mapped_column(JSON_DOCUMENT)
+    source_reference_document: Mapped[dict[str, object] | None] = mapped_column(JSON_DOCUMENT)
     error_code: Mapped[str | None] = mapped_column(String(100))
     applied_at: Mapped[datetime | None]
     rejected_at: Mapped[datetime | None]

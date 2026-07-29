@@ -45,6 +45,7 @@ PUBLICATION_MIGRATION = (
 QA_MIGRATION = ROOT / "backend/alembic/versions/0062_knowledge_qa_domain_archive.py"
 BUILDER_MIGRATION = ROOT / "backend/alembic/versions/0063_ontology_builder_and_ingestion_jobs.py"
 HIERARCHY_MIGRATION = ROOT / "backend/alembic/versions/0064_normalize_tbox_hierarchy.py"
+SESSION_MIGRATION = ROOT / "backend/alembic/versions/0066_knowledge_studio_session_domains.py"
 INITIAL_MIGRATION = ROOT / "backend/alembic/versions/0001_initial_schema.py"
 GENERATOR = ROOT / "scripts/generate_initial_migration.py"
 
@@ -55,7 +56,7 @@ def _table(name: str) -> Table:
 
 def test_studio_draft_model_is_separate_persistent_author_state() -> None:
     draft = _table("knowledge.studio_drafts")
-    assert REQUIRED_DATABASE_REVISION == "0065"
+    assert REQUIRED_DATABASE_REVISION == "0066"
     assert {
         "workspace_id",
         "author_id",
@@ -64,6 +65,7 @@ def test_studio_draft_model_is_separate_persistent_author_state() -> None:
         "current_step",
         "name",
         "endpoint_alias",
+        "endpoint_aliases",
         "domain_ref_id",
         "domain_ref_kind",
         "domain_source_version",
@@ -94,6 +96,10 @@ def test_studio_draft_model_is_separate_persistent_author_state() -> None:
     assert "PUBLISHED" in checks["ck_studio_drafts_state_vocabulary"]
     assert "DISCARDED" in checks["ck_studio_drafts_state_vocabulary"]
     assert "endpoint_alias" in checks["ck_studio_drafts_endpoint_alias_shape"]
+    assert (
+        "endpoint_aliases ->> 0 = endpoint_alias"
+        in (checks["ck_studio_drafts_endpoint_aliases_shape"])
+    )
 
     foreign_keys = {
         constraint.name: constraint
@@ -120,6 +126,11 @@ def test_studio_draft_model_is_separate_persistent_author_state() -> None:
     live_alias_predicate = str(live_alias.dialect_options["postgresql"]["where"])
     assert "DRAFT" in live_alias_predicate
     assert "REVIEW" in live_alias_predicate
+    assert next(
+        index
+        for index in draft.indexes
+        if index.name == "ix_studio_drafts_workspace_endpoint_aliases_live"
+    )
 
 
 def test_qa_domain_seed_and_graph_archive_are_deterministic_and_auditable() -> None:
@@ -214,6 +225,7 @@ def test_ontology_builder_and_ingestion_models_are_typed_and_rls_governed() -> N
         "proposal_document",
         "conflicts_document",
         "model_binding_document",
+        "source_reference_document",
         "merge_strategy",
     } <= set(proposals.c.keys())
     assert {
@@ -243,6 +255,17 @@ def test_ontology_builder_and_ingestion_models_are_typed_and_rls_governed() -> N
     assert "FORCE ROW LEVEL SECURITY" in hierarchy_migration
     assert "GRANT SELECT, INSERT, DELETE ON knowledge.tbox_classes" in hierarchy_migration
     assert "GRANT UPDATE ON knowledge.tbox_classes" not in hierarchy_migration
+    session_migration = SESSION_MIGRATION.read_text(encoding="utf-8")
+    assert 'revision: str = "0066"' in session_migration
+    assert 'down_revision: str | Sequence[str] | None = "0065"' in session_migration
+    assert "endpoint_aliases" in session_migration
+    assert "source_reference_document" in session_migration
+    assert "created_by" in session_migration
+    assert "version >= 1" in session_migration
+    assert "GRANT UPDATE (version)" in session_migration
+    assert "GRANT UPDATE (created_by" not in session_migration
+    vocabulary = _table("catalog.vocabulary_entries")
+    assert {"created_by", "version"} <= set(vocabulary.c.keys())
     assert '"preflight_receipt_id": str(preflight.id)' in (
         ROOT / "backend/src/datariver/infrastructure/db/knowledge_studio.py"
     ).read_text(encoding="utf-8")
@@ -569,6 +592,7 @@ def test_idempotency_snapshot_round_trips_the_exact_draft_response() -> None:
         current_step="BASIC",
         name="반도체 소재 그래프",
         endpoint_alias="semiconductor_materials",
+        endpoint_aliases=("semiconductor_materials", "materials_kg"),
         domain_id=UUID("019fa57b-52de-74c0-9f5e-06ae7b1bf3b3"),
         domain_source_version="domain-v3",
         classification=Classification.INTERNAL,
@@ -628,6 +652,7 @@ def test_abox_idempotency_snapshot_round_trips_exact_draft_and_binding() -> None
         current_step="ABOX",
         name="반도체 소재 그래프",
         endpoint_alias="semiconductor_materials",
+        endpoint_aliases=("semiconductor_materials", "materials_kg"),
         domain_id=UUID("019fa57b-52de-74c0-9f5e-06ae7b1bf3b3"),
         domain_source_version="domain-v3",
         classification=Classification.INTERNAL,

@@ -1070,6 +1070,20 @@ class KnowledgeStudioDomainOption:
 
 
 @dataclass(frozen=True, slots=True)
+class KnowledgeStudioManagedDomainRecord:
+    domain_id: UUID
+    workspace_id: UUID
+    display_name: str
+    source_version: str
+    created_by: UUID | None
+    asset_count: int
+    lifecycle: str
+    version: int
+    created_at: datetime
+    updated_at: datetime
+
+
+@dataclass(frozen=True, slots=True)
 class KnowledgeStudioDraftRecord:
     draft_id: UUID
     workspace_id: UUID
@@ -1079,6 +1093,7 @@ class KnowledgeStudioDraftRecord:
     current_step: str
     name: str
     endpoint_alias: str
+    endpoint_aliases: tuple[str, ...]
     domain_id: UUID
     domain_source_version: str
     classification: Classification
@@ -1170,6 +1185,7 @@ class KnowledgeStudioTBoxProposalRecord:
     elements: tuple[KnowledgeStudioTBoxElementRecord, ...]
     conflicts: tuple[KnowledgeStudioTBoxProposalConflictRecord, ...]
     model_binding: dict[str, object] | None
+    source_reference: dict[str, object] | None
     error_code: str | None
     version: int
     created_at: datetime

@@ -555,7 +555,7 @@ BEGIN
         GRANT UPDATE ON knowledge.graphs, knowledge.changesets,
             knowledge.projection_deployments, knowledge.source_snapshots TO datariver_app;
         GRANT UPDATE (
-            state, current_step, name, endpoint_alias,
+            state, current_step, name, endpoint_alias, endpoint_aliases,
             domain_ref_id, domain_ref_kind, domain_source_version,
             classification, review_requested_at, submitted_preflight_check_id,
             reviewed_by, reviewed_at, review_reason,

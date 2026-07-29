@@ -76,6 +76,7 @@ from datariver.application.dto import (
     KnowledgeStudioDomainOption,
     KnowledgeStudioDraftRecord,
     KnowledgeStudioIngestionJobRecord,
+    KnowledgeStudioManagedDomainRecord,
     KnowledgeStudioPreflightRecord,
     KnowledgeStudioReleaseRecord,
     KnowledgeStudioSamplePage,
@@ -1128,6 +1129,17 @@ class IdempotencyStore(Protocol):
 
 
 class ObjectStore(Protocol):
+    async def write_create_only(
+        self,
+        *,
+        bucket: str,
+        object_key: str,
+        chunks: AsyncIterator[bytes],
+        metadata: dict[str, str],
+        maximum_bytes: int,
+        content_type: str = "application/octet-stream",
+    ) -> CatalogExportArtifact: ...
+
     async def create_multipart_upload(
         self,
         *,
@@ -1451,6 +1463,46 @@ class KnowledgeStudioStore(Protocol):
         limit: int,
     ) -> tuple[KnowledgeStudioDomainOption, ...]: ...
 
+    async def list_managed_domains(
+        self,
+        *,
+        workspace_id: UUID,
+        limit: int,
+    ) -> tuple[KnowledgeStudioManagedDomainRecord, ...]: ...
+
+    async def create_managed_domain(
+        self,
+        *,
+        workspace_id: UUID,
+        actor_id: UUID,
+        display_name: str,
+        idempotency_key: str,
+        request_hash: str,
+    ) -> KnowledgeStudioManagedDomainRecord: ...
+
+    async def update_managed_domain(
+        self,
+        *,
+        workspace_id: UUID,
+        actor_id: UUID,
+        domain_id: UUID,
+        display_name: str,
+        expected_version: int,
+        idempotency_key: str,
+        request_hash: str,
+    ) -> KnowledgeStudioManagedDomainRecord: ...
+
+    async def archive_managed_domain(
+        self,
+        *,
+        workspace_id: UUID,
+        actor_id: UUID,
+        domain_id: UUID,
+        expected_version: int,
+        idempotency_key: str,
+        request_hash: str,
+    ) -> KnowledgeStudioManagedDomainRecord: ...
+
     async def get_draft(
         self,
         *,
@@ -1542,6 +1594,7 @@ class KnowledgeStudioStore(Protocol):
         elements: tuple[TBoxElementInput, ...],
         conflicts: tuple[dict[str, object], ...],
         model_binding: dict[str, object],
+        source_reference: dict[str, object] | None,
     ) -> KnowledgeStudioTBoxProposalRecord: ...
 
     async def get_tbox_proposal(
@@ -1625,6 +1678,7 @@ class KnowledgeStudioStore(Protocol):
         author_id: UUID,
         name: str,
         endpoint_alias: str,
+        endpoint_aliases: tuple[str, ...],
         domain_id: UUID,
         domain_source_version: str,
         classification: int,
@@ -1640,6 +1694,7 @@ class KnowledgeStudioStore(Protocol):
         draft_id: UUID,
         name: str,
         endpoint_alias: str,
+        endpoint_aliases: tuple[str, ...],
         domain_id: UUID,
         domain_source_version: str,
         classification: int,

@@ -44,6 +44,10 @@ import {
   type KnowledgeStudioSourceDataset,
   type KnowledgeStudioTBoxElement,
 } from '../knowledgeStudioApi'
+import {
+  getKnowledgeStudioABoxSession,
+  useKnowledgeStudioSessionStore,
+} from '../knowledgeStudioSessionStore'
 
 interface LocalBindingDraft {
   targetStableElementId: string
@@ -106,25 +110,37 @@ export function DataEnricherStep({
   onPasswordReauth,
   onEnroll,
 }: DataEnricherStepProps) {
+  const cachedSession = getKnowledgeStudioABoxSession(draftId)
+  const setCachedABox = useKnowledgeStudioSessionStore((state) => state.setABox)
   const [abox, setAbox] = useState<KnowledgeStudioABox>()
   const [etag, setEtag] = useState<string>()
-  const [selectedTargetId, setSelectedTargetId] = useState<string>()
-  const [sourceQuery, setSourceQuery] = useState('')
+  const [selectedTargetId, setSelectedTargetId] = useState<string | undefined>(
+    cachedSession?.selectedTargetId,
+  )
+  const [sourceQuery, setSourceQuery] = useState(cachedSession?.sourceQuery ?? '')
   const [sourceResults, setSourceResults] = useState<KnowledgeStudioSourceDataset[]>([])
-  const [selectedSource, setSelectedSource] = useState<KnowledgeStudioSourceDataset>()
-  const [selectedSourceStale, setSelectedSourceStale] = useState(false)
-  const [subjectField, setSubjectField] = useState('')
-  const [propertyFields, setPropertyFields] = useState<Record<string, string>>({})
+  const [selectedSource, setSelectedSource] = useState<KnowledgeStudioSourceDataset | undefined>(
+    cachedSession?.selectedSource,
+  )
+  const [selectedSourceStale, setSelectedSourceStale] = useState(
+    cachedSession?.selectedSourceStale ?? false,
+  )
+  const [subjectField, setSubjectField] = useState(cachedSession?.subjectField ?? '')
+  const [propertyFields, setPropertyFields] = useState<Record<string, string>>(
+    cachedSession?.propertyFields ?? {},
+  )
   const [loading, setLoading] = useState(true)
   const [sourceLoading, setSourceLoading] = useState(false)
   const [saving, setSaving] = useState(false)
   const [previewLoading, setPreviewLoading] = useState(false)
   const [preview, setPreview] = useState<KnowledgeStudioPreview>()
-  const [selectedPreviewNodeId, setSelectedPreviewNodeId] = useState<string>()
+  const [selectedPreviewNodeId, setSelectedPreviewNodeId] = useState<string | undefined>(
+    cachedSession?.selectedPreviewNodeId,
+  )
   const [preflightLoading, setPreflightLoading] = useState(false)
   const [preflight, setPreflight] = useState<KnowledgeStudioPreflight>()
   const [release, setRelease] = useState<KnowledgeStudioRelease>()
-  const [reviewReason, setReviewReason] = useState('')
+  const [reviewReason, setReviewReason] = useState(cachedSession?.reviewReason ?? '')
   const [publishDialogOpen, setPublishDialogOpen] = useState(false)
   const [discardDialogOpen, setDiscardDialogOpen] = useState(false)
   const [governanceBusy, setGovernanceBusy] = useState(false)
@@ -134,6 +150,30 @@ export function DataEnricherStep({
   const [ingestionJobs, setIngestionJobs] = useState<KnowledgeStudioIngestionJob[]>([])
   const [ingestionLoading, setIngestionLoading] = useState(false)
   const [ingestionPollRevision, setIngestionPollRevision] = useState(0)
+
+  useEffect(() => {
+    setCachedABox(draftId, {
+      selectedTargetId,
+      sourceQuery,
+      selectedSource,
+      selectedSourceStale,
+      subjectField,
+      propertyFields,
+      selectedPreviewNodeId,
+      reviewReason,
+    })
+  }, [
+    draftId,
+    propertyFields,
+    reviewReason,
+    selectedPreviewNodeId,
+    selectedSource,
+    selectedSourceStale,
+    selectedTargetId,
+    setCachedABox,
+    sourceQuery,
+    subjectField,
+  ])
 
   const applyAbox = useCallback((
     next: KnowledgeStudioABox,

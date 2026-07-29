@@ -1,16 +1,24 @@
-import { BookOpen, MessageSquareText } from 'lucide-react'
+import { BookOpen, Boxes, MessageSquareText } from 'lucide-react'
 import type { ReactNode } from 'react'
 import type { Page } from '../../app/navigation'
 
-export type KnowledgeWorkspaceSection = 'REGISTRY' | 'CHAT' | 'STUDIO'
+export type KnowledgeWorkspaceSection = 'REGISTRY' | 'INSTANCES' | 'CHAT' | 'STUDIO'
 
 const items: Array<{
   section: KnowledgeWorkspaceSection
   title: string
   description: string
   icon: typeof BookOpen
+  nested?: boolean
 }> = [
   { section: 'REGISTRY', title: '지식 레지스트리', description: '에셋 관리 및 이력', icon: BookOpen },
+  {
+    section: 'INSTANCES',
+    title: '지식 인스턴스 관리',
+    description: 'URN 기반 Property 상세 메타',
+    icon: Boxes,
+    nested: true,
+  },
   { section: 'CHAT', title: '지식 챗', description: '별도 GraphRAG 질의', icon: MessageSquareText },
 ]
 
@@ -26,6 +34,10 @@ export function KnowledgeWorkspaceLayout({
   const select = (section: KnowledgeWorkspaceSection) => {
     if (section === 'CHAT') {
       onNavigate('knowledge-chat')
+      return
+    }
+    if (section === 'INSTANCES') {
+      onNavigate('knowledge-instances')
       return
     }
     onNavigate('knowledge')
@@ -45,7 +57,7 @@ export function KnowledgeWorkspaceLayout({
             key={item.section}
             type="button"
             aria-current={active ? 'page' : undefined}
-            className={`flex gap-3 rounded-enterprise border p-3 text-left transition-colors ${active ? 'border-enterprise-blue bg-blue-50 text-navy-900' : 'border-slate-200 bg-slate-50 hover:border-slate-300 hover:bg-white'}`}
+            className={`flex gap-3 rounded-enterprise border p-3 text-left transition-colors ${item.nested ? 'ml-5 border-l-4' : ''} ${active ? 'border-enterprise-blue bg-blue-50 text-navy-900' : 'border-slate-200 bg-slate-50 hover:border-slate-300 hover:bg-white'}`}
             onClick={() => select(item.section)}
           >
             <Icon size={18} className={`mt-0.5 shrink-0 ${active ? 'text-enterprise-blue' : 'text-slate-500'}`} />

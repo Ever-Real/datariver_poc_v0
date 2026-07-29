@@ -1,6 +1,7 @@
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { ApiClient } from '../../../../api/client'
+import { useKnowledgeStudioSessionStore } from '../knowledgeStudioSessionStore'
 import { GraphBuilder } from './GraphBuilder'
 
 const draftId = '019fa57b-52de-74c0-9f5e-06ae7b1bf3b0'
@@ -58,6 +59,7 @@ function requestUrl(input: RequestInfo | URL): string {
 }
 
 beforeEach(() => {
+  useKnowledgeStudioSessionStore.setState({ sessions: {} })
   vi.stubGlobal('crypto', {
     ...crypto,
     randomUUID: vi.fn()
@@ -191,6 +193,67 @@ describe('GraphBuilder', () => {
 
     expect(await screen.findByRole('alert')).toHaveTextContent('이전 블록의 요소')
     expect(within(canvas).getByText('Employee')).toBeInTheDocument()
+  })
+
+  it('retains unsaved per-block graph and editor state while switching layer headers', async () => {
+    const layered = tbox([])
+    layered.blocks.push({
+      id: secondBlockId,
+      kind: 'DIRECT',
+      title: '확장 레이어',
+      weight: 60,
+      ordinal: 1,
+      collapsed: false,
+      version: 1,
+      source_reference: null,
+      elements: [],
+      created_at: '2026-07-29T01:01:00Z',
+      updated_at: '2026-07-29T01:01:00Z',
+    })
+    const fetchMock = vi.fn<typeof fetch>((input) => {
+      const path = requestUrl(input)
+      if (path.endsWith(`/drafts/${draftId}/tbox`)) {
+        return Promise.resolve(json(layered))
+      }
+      return Promise.reject(new Error(`Unexpected request: ${path}`))
+    })
+    vi.stubGlobal('fetch', fetchMock)
+    const client = new ApiClient('/api/v1', () => 'token', () => 'workspace')
+
+    render(
+      <GraphBuilder
+        client={client}
+        draftId={draftId}
+        etag='"2"'
+        busy={false}
+        onDraftUpdate={vi.fn()}
+        onContinue={vi.fn()}
+      />,
+    )
+
+    await screen.findByText(/Typed T-Box Draft를 불러왔습니다/)
+    fireEvent.change(screen.getByLabelText('최상위 Class 이름'), {
+      target: { value: '임시_클래스' },
+    })
+    fireEvent.click(screen.getByRole('button', { name: '최상위 Class 추가' }))
+    expect(screen.getByLabelText('T-Box Cypher 편집기')).toHaveValue(
+      'CREATE (n0:임시_클래스)',
+    )
+
+    fireEvent.click(screen.getByRole('button', {
+      name: '확장 레이어 DIRECT 블록 열기',
+    }))
+    expect(await within(screen.getByLabelText('T-Box 그래프 캔버스'))
+      .findByText('임시_클래스')).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', {
+      name: '직접 정의 DIRECT 블록 열기',
+    }))
+
+    expect(screen.getByLabelText('T-Box Cypher 편집기')).toHaveValue(
+      'CREATE (n0:임시_클래스)',
+    )
+    expect(within(screen.getByLabelText('T-Box 그래프 캔버스'))
+      .getByText('임시_클래스')).toBeInTheDocument()
   })
 
   it('synchronizes hierarchy drag and drop and edits properties in the node floating panel', async () => {

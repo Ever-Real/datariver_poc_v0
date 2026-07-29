@@ -16,6 +16,7 @@ export type Page =
   | 'sharing'
   | 'admin'
   | 'knowledge-chat'
+  | 'knowledge-instances'
   | 'knowledge-studio'
   | 'profile'
 
@@ -25,6 +26,7 @@ const pageIds = new Set<Page>([
   'sharing',
   'admin',
   'knowledge-chat',
+  'knowledge-instances',
   'knowledge-studio',
   'profile',
 ])
