@@ -34,7 +34,7 @@ from datariver.domain.authz import (
     EnvironmentAttributes,
     SubjectAttributes,
 )
-from datariver.domain.common import ConflictError, ForbiddenError, ValidationError
+from datariver.domain.common import ConflictError, ForbiddenError, NotFoundError, ValidationError
 from datariver.domain.knowledge_studio import (
     TBoxElementInput,
     TBoxElementKind,
@@ -377,6 +377,45 @@ async def test_edit_entry_reuses_or_creates_the_authorized_asset_draft() -> None
         idempotency_key="edit-idempotency-key",
         request_hash="e" * 64,
     )
+
+
+@pytest.mark.asyncio
+async def test_resumable_draft_is_author_scoped_and_reauthorized_for_edit() -> None:
+    current = draft()
+    store = SimpleNamespace(
+        get_owned_live_draft_by_endpoint_alias=AsyncMock(return_value=current),
+    )
+
+    result = await service(store).get_resumable_draft(
+        workspace_id=WORKSPACE_ID,
+        subject=subject(allowed_domains=frozenset({DOMAIN_ID})),
+        endpoint_alias=current.endpoint_alias,
+        environment=EnvironmentAttributes(requested_at=NOW),
+        request_id="resume-request",
+    )
+
+    assert result == current
+    store.get_owned_live_draft_by_endpoint_alias.assert_awaited_once_with(
+        workspace_id=WORKSPACE_ID,
+        author_id=SUBJECT_ID,
+        endpoint_alias=current.endpoint_alias,
+    )
+
+
+@pytest.mark.asyncio
+async def test_resumable_draft_does_not_disclose_another_author_or_graph_alias() -> None:
+    store = SimpleNamespace(
+        get_owned_live_draft_by_endpoint_alias=AsyncMock(return_value=None),
+    )
+
+    with pytest.raises(NotFoundError, match="resumable"):
+        await service(store).get_resumable_draft(
+            workspace_id=WORKSPACE_ID,
+            subject=subject(allowed_domains=frozenset({DOMAIN_ID})),
+            endpoint_alias="another_author_alias",
+            environment=EnvironmentAttributes(requested_at=NOW),
+            request_id="resume-missing-request",
+        )
 
 
 @pytest.mark.asyncio

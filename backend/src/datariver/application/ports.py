@@ -1459,6 +1459,14 @@ class KnowledgeStudioStore(Protocol):
         draft_id: UUID,
     ) -> KnowledgeStudioDraftRecord | None: ...
 
+    async def get_owned_live_draft_by_endpoint_alias(
+        self,
+        *,
+        workspace_id: UUID,
+        author_id: UUID,
+        endpoint_alias: str,
+    ) -> KnowledgeStudioDraftRecord | None: ...
+
     async def get_tbox(
         self,
         *,

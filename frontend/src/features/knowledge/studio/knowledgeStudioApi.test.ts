@@ -6,6 +6,7 @@ import {
   createKnowledgeStudioDraft,
   createKnowledgeStudioEditDraft,
   discardKnowledgeStudioDraft,
+  getResumableKnowledgeStudioDraft,
   listKnowledgeStudioDomains,
   preflightKnowledgeStudioABox,
   previewKnowledgeStudioBinding,
@@ -117,6 +118,28 @@ describe('Knowledge Studio API', () => {
     const headers = new Headers(fetchMock.mock.calls[0]?.[1]?.headers)
     expect(headers.get('Idempotency-Key')).toBe('edit-key')
     expect(fetchMock.mock.calls[0]?.[1]?.method).toBe('POST')
+  })
+
+  it('resumes an author-owned live Draft with its current ETag', async () => {
+    const fetchMock = vi.fn<typeof fetch>().mockResolvedValue(
+      new Response(JSON.stringify(draftResponse(4)), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json', ETag: '"4"' },
+      }),
+    )
+    vi.stubGlobal('fetch', fetchMock)
+    const client = new ApiClient('/api/v1', () => 'token', () => 'workspace')
+
+    const response = await getResumableKnowledgeStudioDraft(
+      client,
+      'semiconductor_materials',
+    )
+
+    expect(response.etag).toBe('"4"')
+    expect(requestUrl(fetchMock.mock.calls[0]?.[0])).toContain(
+      '/knowledge/studio/drafts/resumable?endpoint_alias=semiconductor_materials',
+    )
+    expect(fetchMock.mock.calls[0]?.[1]?.cache).toBe('no-store')
   })
 
   it('fails closed when a Draft response omits its ETag', async () => {

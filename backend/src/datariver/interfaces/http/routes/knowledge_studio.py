@@ -563,6 +563,29 @@ async def create_knowledge_studio_edit_draft(
 
 
 @router.get(
+    "/drafts/resumable",
+    response_model=KnowledgeStudioDraftResponse,
+    responses={status.HTTP_200_OK: ETAG_RESPONSE},
+)
+async def get_resumable_knowledge_studio_draft(
+    endpoint_alias: Annotated[str, Query(min_length=3, max_length=100)],
+    request: Request,
+    response: Response,
+    context: ContextDep,
+    session: SessionDep,
+) -> KnowledgeStudioDraftResponse:
+    record = await _service(request, session).get_resumable_draft(
+        workspace_id=context.workspace_id,
+        subject=context.subject,
+        endpoint_alias=endpoint_alias,
+        environment=context.environment,
+        request_id=context.request_id,
+    )
+    _set_draft_headers(response, record)
+    return _draft_response(record)
+
+
+@router.get(
     "/drafts/{draft_id}",
     response_model=KnowledgeStudioDraftResponse,
     responses={status.HTTP_200_OK: ETAG_RESPONSE},

@@ -310,6 +310,7 @@ cannot re-enter the ordinary workflow.
 | `GET /knowledge/domains?classification=&q=&limit=` (`/knowledge/studio/domains` compatibility alias) | `kg.create` | active DOMAIN picker, bounded to 100 and filtered by the requested classification plus Subject domain scope; when the vocabulary table has no eligible rows, returns only deterministic built-in domain options still permitted by the same ABAC scope |
 | `POST /knowledge/studio/drafts` | `kg.create` | create an author-only CREATE Draft from typed Step 1 data; requires `Idempotency-Key`, returns ETag and does not create a graph |
 | `POST /knowledge/studio/drafts/from-asset/{asset_id}` | `kg.edit` | idempotently reuse the author's live EDIT Draft or create one pinned to the asset's active Studio/ontology/instance releases; copies immutable T-Box and A-Box contracts into mutable Draft rows and returns ETag |
+| `GET /knowledge/studio/drafts/resumable?endpoint_alias=` | author `kg.edit` | resolve only the caller's mutable DRAFT for an exact validated endpoint alias and return its current ETag; the same non-disclosing `404` is returned when no author-owned resumable Draft exists, so another author's Draft or an existing graph is never disclosed |
 | `GET /knowledge/studio/drafts/{draft_id}` | author `kg.read`; independent reviewer `kg.review` | read an author Draft or a REVIEW/PUBLISHED Draft visible to a permitted reviewer with `Cache-Control: no-store` and ETag; hidden Drafts are not disclosed |
 | `PATCH /knowledge/studio/drafts/{draft_id}` | `kg.edit` | idempotent Step 1 auto-save; requires exact `If-Match` and returns `412` on a stale version |
 | `POST /knowledge/studio/drafts/{draft_id}/advance` | `kg.edit` | idempotently advance to `TBOX`, or from T-Box to `ABOX` only when at least one accepted Class/Relation exists; requires exact `If-Match` |
@@ -360,6 +361,12 @@ with its idempotency record, allowing an ambiguous response to replay before a s
 check. A distinct concurrent write locks the Draft row and returns `412`, while alias, lifecycle and
 changed-key conflicts remain `409`. “Overwrite” is a client-confirmed latest-ETag rebase, never an
 unconditional force endpoint.
+
+Step 1 resolves `GET .../drafts/resumable` before its first create. When an author-owned live Draft
+exists, the browser adopts its returned ID/ETag and sends `PATCH` with that exact `If-Match`
+instead of issuing another create. A create-time `409` caused by a concurrent same-author create
+is resolved once through the same non-disclosing lookup and fenced PATCH; unrelated alias
+conflicts remain `409`.
 
 The T-Box editor text is a safe UI projection, not a query endpoint. Invalid or incomplete text
 remains a browser-local buffer and the last valid typed graph remains unchanged. Canvas changes

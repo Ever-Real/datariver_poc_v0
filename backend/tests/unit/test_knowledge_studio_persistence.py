@@ -229,6 +229,26 @@ async def test_empty_domain_table_uses_only_deterministic_abac_scoped_fallbacks(
     assert values[0].source_version == DEFAULT_KNOWLEDGE_DOMAIN_SOURCE_VERSION
 
 
+@pytest.mark.asyncio
+async def test_resumable_draft_lookup_is_scoped_to_workspace_author_alias_and_draft_state() -> None:
+    scalar_result = SimpleNamespace(one_or_none=lambda: None)
+    session = SimpleNamespace(scalars=AsyncMock(return_value=scalar_result))
+    store = SqlKnowledgeStudioStore(cast(AsyncSession, session))
+
+    result = await store.get_owned_live_draft_by_endpoint_alias(
+        workspace_id=UUID("019fa57b-52de-74c0-9f5e-06ae7b1bf3b1"),
+        author_id=UUID("019fa57b-52de-74c0-9f5e-06ae7b1bf3b2"),
+        endpoint_alias="semiconductor_materials",
+    )
+
+    assert result is None
+    statement = str(session.scalars.await_args.args[0])
+    assert "studio_drafts.workspace_id" in statement
+    assert "studio_drafts.author_id" in statement
+    assert "studio_drafts.endpoint_alias" in statement
+    assert "studio_drafts.state" in statement
+
+
 def test_abox_mapping_is_a_normalized_child_aggregate_not_draft_json() -> None:
     draft = _table("knowledge.studio_drafts")
     elements = _table("knowledge.tbox_draft_elements")

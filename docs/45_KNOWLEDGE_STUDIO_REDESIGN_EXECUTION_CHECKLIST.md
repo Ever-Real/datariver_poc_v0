@@ -62,6 +62,10 @@ profile과 mapping registry 항목은 해당 Phase 시작 전에 추가 승인�
   additive legacy-safe migration으로 추가한다.
 - [x] Step 1 name/`endpoint_alias`/domain/classification validation, domain source-version pin,
   idempotency, ETag/conflict recovery UI를 구현한다. graph type은 create intent로 server가 결정한다.
+- [x] Draft 없는 Step 1 저장 전에 author-owned live Draft를 exact alias로 조회하고, 존재하면
+  최신 ETag를 채택한 PATCH로 전환하며 create 경합 `409`도 비공개 lookup 성공 시에만 복구한다.
+- [x] Studio focus trap은 최초 mount에서만 root focus를 설정하고 최신 back callback은 ref로
+  호출하여 controlled input 변경 때 input DOM/focus를 보존한다.
 - [x] explicit Discard terminal transition과 no-expiry persistence를 구현한다. Discard는 hard
   delete가 아니며 API/ETag/idempotency evidence를 남긴다.
 - [ ] EDIT draft 생성 명령의 exact base pin과 target PostgreSQL cross-workspace/cross-author

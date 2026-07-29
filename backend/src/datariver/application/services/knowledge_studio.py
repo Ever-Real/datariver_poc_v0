@@ -133,6 +133,32 @@ class KnowledgeStudioService:
         )
         return draft
 
+    async def get_resumable_draft(
+        self,
+        *,
+        workspace_id: UUID,
+        subject: SubjectAttributes,
+        endpoint_alias: str,
+        environment: EnvironmentAttributes,
+        request_id: str,
+    ) -> KnowledgeStudioDraftRecord:
+        validate_endpoint_alias(endpoint_alias)
+        draft = await self._store.get_owned_live_draft_by_endpoint_alias(
+            workspace_id=workspace_id,
+            author_id=subject.subject_id,
+            endpoint_alias=endpoint_alias,
+        )
+        if draft is None:
+            raise NotFoundError("A resumable Knowledge Studio draft does not exist.")
+        await self._authorize_draft(
+            draft=draft,
+            subject=subject,
+            action=Action.KG_EDIT,
+            environment=environment,
+            request_id=request_id,
+        )
+        return draft
+
     async def create_edit_draft(
         self,
         *,

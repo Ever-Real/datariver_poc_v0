@@ -906,6 +906,25 @@ class SqlKnowledgeStudioStore(KnowledgeStudioStore):
         ).one_or_none()
         return _draft_record(model) if model is not None else None
 
+    async def get_owned_live_draft_by_endpoint_alias(
+        self,
+        *,
+        workspace_id: UUID,
+        author_id: UUID,
+        endpoint_alias: str,
+    ) -> KnowledgeStudioDraftRecord | None:
+        model = (
+            await self._session.scalars(
+                select(KnowledgeStudioDraftModel).where(
+                    KnowledgeStudioDraftModel.workspace_id == workspace_id,
+                    KnowledgeStudioDraftModel.author_id == author_id,
+                    KnowledgeStudioDraftModel.endpoint_alias == endpoint_alias,
+                    KnowledgeStudioDraftModel.state == "DRAFT",
+                )
+            )
+        ).one_or_none()
+        return _draft_record(model) if model is not None else None
+
     async def get_tbox(
         self,
         *,

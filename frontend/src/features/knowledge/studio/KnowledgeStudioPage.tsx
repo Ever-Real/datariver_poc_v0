@@ -20,6 +20,7 @@ import {
   createKnowledgeStudioDraft,
   createKnowledgeStudioEditDraft,
   getKnowledgeStudioDraft,
+  getResumableKnowledgeStudioDraft,
   listKnowledgeStudioDomains,
   newKnowledgeStudioIdempotencyKey,
   type KnowledgeStudioBasicInformation,
@@ -383,48 +384,117 @@ export function KnowledgeStudioPage({
       setSaveStatus('복구 큐 기록을 확인할 수 없어 서버 전송을 중단했습니다.')
       return false
     }
-    const currentDraftId = draftIdRef.current
-    const rebased: DraftRecoveryRecord = {
+    let currentDraftId = draftIdRef.current
+    const needsDraftRoute = !currentDraftId
+    let savingRecord: DraftRecoveryRecord = {
       ...pending,
       draftId: pending.draftId ?? currentDraftId,
+      expectedEtag: pending.expectedEtag ?? etagRef.current,
     }
-    pendingRef.current = rebased
-    if (
-      rebased.draftId !== pending.draftId
-    ) {
+    const bindSavingRecord = async (
+      response: Awaited<ReturnType<typeof getResumableKnowledgeStudioDraft>>,
+      idempotencyKey = savingRecord.idempotencyKey,
+    ) => {
+      const previous = savingRecord
+      savingRecord = {
+        ...savingRecord,
+        draftId: response.data.id,
+        expectedEtag: response.etag,
+        idempotencyKey,
+        updatedAt: new Date().toISOString(),
+      }
+      currentDraftId = response.data.id
+      applyServerDraft(response.data, response.etag!, false)
       try {
-        await queue.put(rebased)
+        await queue.put(savingRecord)
+        await queue.remove(scopeHash, previous.draftId, previous.idempotencyKey)
+      } catch {
+        setSaveStatus('복구 큐의 Draft 식별자를 갱신하지 못해 서버 전송을 중단했습니다.')
+        return false
+      }
+      if (pendingRef.current?.idempotencyKey === previous.idempotencyKey) {
+        pendingRef.current = savingRecord
+      }
+      return true
+    }
+    if (savingRecord.draftId !== pending.draftId) {
+      try {
+        await queue.put(savingRecord)
         await queue.remove(scopeHash, pending.draftId, pending.idempotencyKey)
       } catch {
         setSaveStatus('복구 큐의 Draft 식별자를 갱신하지 못해 서버 전송을 중단했습니다.')
         return false
       }
     }
+    if (pendingRef.current?.idempotencyKey === pending.idempotencyKey) {
+      pendingRef.current = savingRecord
+    }
     setBusy(true)
     setSaveStatus('서버 Draft에 저장 중입니다.')
     try {
-      if (currentDraftId && !rebased.expectedEtag) {
+      if (!currentDraftId) {
+        try {
+          const resumable = await getResumableKnowledgeStudioDraft(
+            client,
+            savingRecord.payload.endpoint_alias,
+          )
+          if (!await bindSavingRecord(resumable)) return false
+          setSaveStatus(`기존 Draft version ${resumable.data.version}을 이어서 저장합니다.`)
+        } catch (error) {
+          if (!(error instanceof ApiError) || error.problem.status !== 404) throw error
+        }
+      }
+      if (currentDraftId && !savingRecord.expectedEtag) {
         setSaveStatus('저장할 Draft의 ETag가 없어 안전한 자동 저장을 중단했습니다.')
         return false
       }
-      const response = currentDraftId
-        ? await autosaveKnowledgeStudioDraft(
-            client,
-            currentDraftId,
-            rebased.payload,
-            rebased.expectedEtag ?? '',
-            rebased.idempotencyKey,
-          )
-        : await createKnowledgeStudioDraft(client, rebased.payload, rebased.idempotencyKey)
+      let response
+      try {
+        response = currentDraftId
+          ? await autosaveKnowledgeStudioDraft(
+              client,
+              currentDraftId,
+              savingRecord.payload,
+              savingRecord.expectedEtag ?? '',
+              savingRecord.idempotencyKey,
+            )
+          : await createKnowledgeStudioDraft(
+              client,
+              savingRecord.payload,
+              savingRecord.idempotencyKey,
+            )
+      } catch (error) {
+        if (
+          currentDraftId
+          || !(error instanceof ApiError)
+          || error.problem.status !== 409
+        ) throw error
+        const resumable = await getResumableKnowledgeStudioDraft(
+          client,
+          savingRecord.payload.endpoint_alias,
+        )
+        if (!await bindSavingRecord(resumable, newKnowledgeStudioIdempotencyKey())) return false
+        response = await autosaveKnowledgeStudioDraft(
+          client,
+          resumable.data.id,
+          savingRecord.payload,
+          savingRecord.expectedEtag!,
+          savingRecord.idempotencyKey,
+        )
+      }
       if (!response.etag) return false
-      const sentFingerprint = fingerprint(rebased.payload)
+      const sentFingerprint = fingerprint(savingRecord.payload)
       applyServerDraft(response.data, response.etag, false)
-      await queue.remove(scopeHash, rebased.draftId, rebased.idempotencyKey)
-      if (!currentDraftId) {
+      await queue.remove(
+        scopeHash,
+        savingRecord.draftId,
+        savingRecord.idempotencyKey,
+      )
+      if (needsDraftRoute) {
         const url = knowledgeStudioUrl({ draftId: response.data.id, step: 'basic' })
         window.history.replaceState({}, '', url)
       }
-      if (pendingRef.current?.idempotencyKey === rebased.idempotencyKey) {
+      if (pendingRef.current?.idempotencyKey === savingRecord.idempotencyKey) {
         pendingRef.current = undefined
       } else if (pendingRef.current) {
         const newer = {
@@ -448,7 +518,7 @@ export function KnowledgeStudioPage({
       return true
     } catch (error) {
       if (error instanceof ApiError && error.problem.status === 412) {
-        setConflict({ local: rebased.payload })
+        setConflict({ local: savingRecord.payload })
         setSaveStatus('다른 편집자의 변경사항과 충돌했습니다. 로컬 입력은 보존되어 있습니다.')
       } else if (isNetworkFailure(error)) {
         setSaveStatus('네트워크가 끊겼습니다. 변경사항은 복구 큐에 보존되어 있습니다.')
@@ -613,16 +683,23 @@ export function KnowledgeStudioPage({
     }
   }
 
+  const handleBack = useCallback(() => {
+    if (
+      pendingRef.current
+      && !window.confirm(
+        '미전송 변경사항은 이 브라우저의 복구 큐에 남습니다. 레지스트리로 이동하시겠습니까?',
+      )
+    ) return
+    onNavigate('knowledge')
+  }, [onNavigate])
+
   if (!location.valid) return null
 
   return <StudioShell
     step={step}
     draftId={draftId}
     saveStatus={saveStatus}
-    onBack={() => {
-      if (pendingRef.current && !window.confirm('미전송 변경사항은 이 브라우저의 복구 큐에 남습니다. 레지스트리로 이동하시겠습니까?')) return
-      onNavigate('knowledge')
-    }}
+    onBack={handleBack}
   >
     {step === 'basic' && !initialized
       ? <section className="grid min-h-[320px] place-items-center rounded-enterprise border border-slate-300 bg-white p-8 text-sm text-slate-500">

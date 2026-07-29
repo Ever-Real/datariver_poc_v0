@@ -329,6 +329,17 @@ export async function getKnowledgeStudioDraft(
   ))
 }
 
+export async function getResumableKnowledgeStudioDraft(
+  client: ApiClient,
+  endpointAlias: string,
+): Promise<ApiResponse<KnowledgeStudioDraft>> {
+  const params = new URLSearchParams({ endpoint_alias: endpointAlias })
+  return requireEtag(await client.requestWithMeta<KnowledgeStudioDraft>(
+    `/knowledge/studio/drafts/resumable?${params.toString()}`,
+    { cache: 'no-store' },
+  ))
+}
+
 export async function createKnowledgeStudioDraft(
   client: ApiClient,
   payload: KnowledgeStudioBasicInformation,

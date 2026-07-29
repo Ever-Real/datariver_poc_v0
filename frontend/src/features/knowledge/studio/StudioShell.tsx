@@ -29,6 +29,11 @@ export function StudioShell({
 }) {
   const activeIndex = steps.findIndex((item) => item.id === step)
   const dialogRef = useRef<HTMLElement>(null)
+  const onBackRef = useRef(onBack)
+
+  useEffect(() => {
+    onBackRef.current = onBack
+  }, [onBack])
 
   useEffect(() => {
     const dialog = dialogRef.current
@@ -37,7 +42,7 @@ export function StudioShell({
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.key === 'Escape') {
         event.preventDefault()
-        onBack()
+        onBackRef.current()
         return
       }
       if (event.key !== 'Tab') return
@@ -62,7 +67,7 @@ export function StudioShell({
     }
     dialog.addEventListener('keydown', onKeyDown)
     return () => dialog.removeEventListener('keydown', onKeyDown)
-  }, [onBack])
+  }, [])
 
   return <section
     ref={dialogRef}

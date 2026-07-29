@@ -25,7 +25,7 @@ ADR/DB/API 게이트 승인과 구현 완료 후에만 이를 대체한다.
 
 | 항목 | 결정 |
 |---|---|
-| 신규 Asset 생성 | persistent Knowledge shell 내부의 route-backed full-screen modal을 사용한다. 생성 클릭은 draft 없는 Step 1 route를 열고, Step 1 저장이 author-scoped Studio Draft를 만든다. 새로고침/뒤로가기는 URL로 복구하며 Graph aggregate는 독립 검토된 Studio Publish에서만 원자적으로 만든다. |
+| 신규 Asset 생성 | persistent Knowledge shell 내부의 route-backed full-screen modal을 사용한다. 생성 클릭은 draft 없는 Step 1 route를 열고, Step 1 저장은 exact endpoint alias로 author-owned live Draft를 먼저 조회해 있으면 최신 ETag로 PATCH하고 없을 때만 새 Draft를 만든다. 새로고침/뒤로가기는 URL로 복구하며 Graph aggregate는 독립 검토된 Studio Publish에서만 원자적으로 만든다. |
 | 데이터 적재 메뉴 | GNB에서 제거한다. 현재 Ingestion Studio의 기능은 Step 2/3으로 흡수하며 API 없는 기능은 unavailable로 표시한다. |
 | Step 1 필드 | 사용자 입력은 이름, `endpoint_alias`, 통제된 업무 도메인, 보안등급 네 개다. alias는 소문자 영문으로 시작하는 영문/숫자/underscore 3~100자이며 materialize 때 기존 `graph.slug`가 된다. |
 | 업무 도메인 | 기존 `graph_type`과 혼동하지 않는다. 도메인은 Workspace의 active `catalog.vocabulary_entries(kind=DOMAIN)` UUID/source version을 pin하고 Knowledge ABAC의 `domain_id`로 사용한다. |
@@ -430,6 +430,10 @@ Knowledge feature 내부 API/DTO는 `frontend/src/api/types.ts`의 거대한 공
   `412`에서는 로컬 입력을 보존한 채 최신 버전 불러오기와 최신 ETag 기반 명시적 덮어쓰기
   중 하나를 선택한다. 브라우저 저장소 삭제·eviction·기기 손실까지 100% 보존한다고
   주장하지 않는다.
+- Draft 없는 Step 1 저장은 author-scoped resumable lookup으로 같은 alias의 mutable Draft
+  ID와 최신 ETag를 복구한다. 조회에 성공하면 POST를 생략하고 PATCH하며, create 경합의
+  `409`도 동일 lookup이 성공한 경우에만 한 번 fenced PATCH로 수렴한다. 다른 작성자나
+  기존 Graph의 alias는 조회 결과로 노출하지 않는다.
 - Registry page는 allowlisted server sort와 opaque keyset cursor만 사용한다. target dataset의
   `EXPLAIN (ANALYZE, BUFFERS)` 전에는 응답시간이나 수용량을 주장하지 않는다.
 

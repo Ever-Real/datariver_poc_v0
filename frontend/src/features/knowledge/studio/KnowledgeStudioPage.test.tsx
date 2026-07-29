@@ -69,6 +69,17 @@ function domains(): Response {
   })
 }
 
+function missingResumableDraft(): Response {
+  return json({
+    type: 'urn:datariver:problem:not_found',
+    title: 'Not Found',
+    status: 404,
+    detail: 'A resumable Knowledge Studio draft does not exist.',
+    code: 'not_found',
+    request_id: 'request',
+  }, 404)
+}
+
 function requestUrl(input: RequestInfo | URL): string {
   if (typeof input === 'string') return input
   return input instanceof URL ? input.toString() : input.url
@@ -165,6 +176,9 @@ describe('KnowledgeStudioPage Draft recovery', () => {
     const fetchMock = vi.fn<typeof fetch>((input, init) => {
       const path = requestUrl(input)
       if (path.includes('/domains?')) return Promise.resolve(domains())
+      if (path.includes('/drafts/resumable?')) {
+        return Promise.resolve(missingResumableDraft())
+      }
       if (path.endsWith('/knowledge/studio/drafts') && init?.method === 'POST') {
         return Promise.resolve(json(draft(1, '반도체 소재 그래프'), 201, '"1"'))
       }
@@ -309,6 +323,95 @@ describe('KnowledgeStudioPage Draft recovery', () => {
     expect(queue.records.size).toBe(0)
   })
 
+  it('keeps the same focused input mounted while controlled text changes', async () => {
+    window.history.replaceState({}, '', '/?page=knowledge-studio&workspace=workspace')
+    const fetchMock = vi.fn<typeof fetch>((input) => {
+      const path = requestUrl(input)
+      if (path.includes('/domains?')) return Promise.resolve(domains())
+      return Promise.reject(new Error(`Unexpected request: ${path}`))
+    })
+    vi.stubGlobal('fetch', fetchMock)
+    const client = new ApiClient('/api/v1', () => 'token', () => 'workspace')
+    render(<KnowledgeStudioPage
+      client={client}
+      workspaceId="workspace"
+      subjectId="subject"
+      onNavigate={vi.fn()}
+      recoveryQueue={new MemoryRecoveryQueue()}
+      debounceMs={60_000}
+    />)
+
+    const name = await screen.findByLabelText('지식 그래프 이름')
+    name.focus()
+    expect(document.activeElement).toBe(name)
+
+    for (const value of ['연', '연속', '연속 입력', '연속 입력 검증']) {
+      fireEvent.change(name, { target: { value } })
+      expect(screen.getByLabelText('지식 그래프 이름')).toBe(name)
+      expect(document.activeElement).toBe(name)
+    }
+    expect(name).toHaveValue('연속 입력 검증')
+  })
+
+  it('resumes an existing Draft and PATCHes with its latest ETag before advancing', async () => {
+    window.history.replaceState({}, '', '/?page=knowledge-studio&workspace=workspace')
+    const queue = new MemoryRecoveryQueue()
+    const fetchMock = vi.fn<typeof fetch>((input, init) => {
+      const path = requestUrl(input)
+      if (path.includes('/domains?')) return Promise.resolve(domains())
+      if (path.includes('/drafts/resumable?')) {
+        return Promise.resolve(json(draft(4, '기존 서버 그래프'), 200, '"4"'))
+      }
+      if (path.endsWith(`/drafts/${draftId}`) && init?.method === 'PATCH') {
+        expect(new Headers(init.headers).get('If-Match')).toBe('"4"')
+        return Promise.resolve(json(draft(5, '이어 쓰는 그래프'), 200, '"5"'))
+      }
+      if (path.endsWith(`/drafts/${draftId}/advance`) && init?.method === 'POST') {
+        expect(new Headers(init.headers).get('If-Match')).toBe('"5"')
+        return Promise.resolve(json(draft(6, '이어 쓰는 그래프', 'TBOX'), 200, '"6"'))
+      }
+      if (path.endsWith(`/drafts/${draftId}/tbox`) && !init?.method) {
+        return Promise.resolve(json({
+          draft: draft(6, '이어 쓰는 그래프', 'TBOX'),
+          blocks: [],
+        }, 200, '"6"'))
+      }
+      return Promise.reject(new Error(`Unexpected request: ${path}`))
+    })
+    vi.stubGlobal('fetch', fetchMock)
+    const client = new ApiClient('/api/v1', () => 'token', () => 'workspace')
+    render(<KnowledgeStudioPage
+      client={client}
+      workspaceId="workspace"
+      subjectId="subject"
+      onNavigate={vi.fn()}
+      recoveryQueue={queue}
+      debounceMs={60_000}
+    />)
+
+    fireEvent.change(await screen.findByLabelText('지식 그래프 이름'), {
+      target: { value: '이어 쓰는 그래프' },
+    })
+    fireEvent.change(screen.getByLabelText('Endpoint alias'), {
+      target: { value: 'semiconductor_materials' },
+    })
+    await screen.findByRole('option', { name: '반도체' })
+    fireEvent.change(screen.getByLabelText('업무 도메인'), {
+      target: { value: domainId },
+    })
+    fireEvent.click(screen.getByRole('button', { name: /저장 후 Graph Builder/ }))
+
+    expect(await screen.findByRole('heading', {
+      name: 'Ontology Graph Builder',
+    })).toBeInTheDocument()
+    expect(window.location.search).toContain(`draft=${draftId}`)
+    expect(window.location.search).toContain('step=tbox')
+    expect(fetchMock.mock.calls.some(([input, init]) => (
+      requestUrl(input).endsWith('/knowledge/studio/drafts')
+      && init?.method === 'POST'
+    ))).toBe(false)
+  })
+
   it('rebases preserved local input onto the latest ETag only after overwrite confirmation', async () => {
     window.history.replaceState(
       {},
@@ -378,6 +481,9 @@ describe('KnowledgeStudioPage Draft recovery', () => {
     const fetchMock = vi.fn<typeof fetch>((input, init) => {
       const path = requestUrl(input)
       if (path.includes('/domains?')) return Promise.resolve(domains())
+      if (path.includes('/drafts/resumable?')) {
+        return Promise.resolve(missingResumableDraft())
+      }
       if (path.endsWith('/knowledge/studio/drafts') && init?.method === 'POST') {
         return Promise.resolve(json(draft(1, '오프라인 복구 그래프'), 201, '"1"'))
       }
