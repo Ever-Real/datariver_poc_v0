@@ -6,7 +6,7 @@ from datetime import datetime
 from typing import Any
 from uuid import UUID
 
-from sqlalchemy import delete, func, or_, select
+from sqlalchemy import delete, func, or_, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -18,10 +18,15 @@ from datariver.application.dto import (
     KnowledgeStudioBindingRecord,
     KnowledgeStudioDomainOption,
     KnowledgeStudioDraftRecord,
+    KnowledgeStudioIngestionJobRecord,
     KnowledgeStudioMappingRuleRecord,
     KnowledgeStudioPreflightRecord,
     KnowledgeStudioReleaseRecord,
+    KnowledgeStudioTBoxBlockRecord,
     KnowledgeStudioTBoxElementRecord,
+    KnowledgeStudioTBoxProposalConflictRecord,
+    KnowledgeStudioTBoxProposalRecord,
+    KnowledgeStudioTBoxRecord,
     KnowledgeStudioValidationEvidence,
 )
 from datariver.application.ports import KnowledgeStudioStore
@@ -39,11 +44,13 @@ from datariver.domain.common import (
 from datariver.domain.knowledge_studio import (
     DEFAULT_KNOWLEDGE_DOMAIN_SOURCE_VERSION,
     DEFAULT_KNOWLEDGE_DOMAINS,
+    DEFAULT_TBOX_BLOCK_WEIGHT,
     ABoxBindingReadiness,
     ABoxMappingMethod,
     StudioDraftKind,
     StudioDraftState,
     StudioStep,
+    TBoxElementInput,
     default_knowledge_domain_id,
     require_studio_transition,
     require_studio_version,
@@ -65,10 +72,13 @@ from datariver.infrastructure.db.models.knowledge_studio import (
     ABoxMappingRuleVersionModel,
     KnowledgeSourceReferenceModel,
     KnowledgeStudioDraftModel,
+    KnowledgeStudioIngestionJobModel,
     KnowledgeStudioPreflightCheckModel,
     KnowledgeStudioReleaseModel,
     OntologyElementModel,
+    TBoxDraftBlockModel,
     TBoxDraftElementModel,
+    TBoxProposalModel,
 )
 
 CREATE_OPERATION = "knowledge.studio_draft.create"
@@ -84,6 +94,36 @@ def _optional_document_string(document: dict[str, object], key: str) -> str | No
 def _optional_document_bool(document: dict[str, object], key: str) -> bool | None:
     value = document.get(key)
     return value if isinstance(value, bool) else None
+
+
+def _optional_document_number(document: dict[str, object], key: str) -> float | None:
+    value = document.get(key)
+    return float(value) if isinstance(value, int | float) else None
+
+
+def _document_string_list(document: dict[str, object], key: str) -> list[str]:
+    value = document.get(key)
+    return [item for item in value if isinstance(item, str)] if isinstance(value, list) else []
+
+
+def _tbox_input_document(value: TBoxElementInput) -> dict[str, object]:
+    return {
+        "stable_element_id": value.stable_element_id,
+        "kind": value.kind.value,
+        "canonical_name": value.canonical_name,
+        "display_name": value.display_name,
+        "parent_stable_element_id": value.parent_stable_element_id,
+        "source_stable_element_id": value.source_stable_element_id,
+        "target_stable_element_id": value.target_stable_element_id,
+        "data_type": value.data_type,
+        "nullable": value.nullable,
+        "definition": value.definition,
+        "aliases": list(value.aliases),
+        "unit": value.unit,
+        "vector_index_enabled": value.vector_index_enabled,
+        "layout_x": value.layout_x,
+        "layout_y": value.layout_y,
+    }
 
 
 def _draft_record(model: KnowledgeStudioDraftModel) -> KnowledgeStudioDraftRecord:
@@ -131,6 +171,136 @@ def _tbox_element_record(model: TBoxDraftElementModel) -> KnowledgeStudioTBoxEle
         nullable=model.nullable,
         ordinal=model.ordinal,
         version=model.version,
+        block_id=model.block_id,
+        definition=model.definition,
+        aliases=tuple(model.aliases),
+        unit=model.unit,
+        vector_index_enabled=model.vector_index_enabled,
+        layout_x=model.layout_x,
+        layout_y=model.layout_y,
+    )
+
+
+def _tbox_record(
+    draft: KnowledgeStudioDraftModel,
+    blocks: Sequence[TBoxDraftBlockModel],
+    elements: Sequence[TBoxDraftElementModel],
+) -> KnowledgeStudioTBoxRecord:
+    elements_by_block: dict[UUID, list[KnowledgeStudioTBoxElementRecord]] = {}
+    for element in elements:
+        if element.block_id is not None:
+            elements_by_block.setdefault(element.block_id, []).append(_tbox_element_record(element))
+    return KnowledgeStudioTBoxRecord(
+        draft=_draft_record(draft),
+        blocks=tuple(
+            KnowledgeStudioTBoxBlockRecord(
+                block_id=block.id,
+                kind=block.kind,
+                title=block.title,
+                weight=block.weight,
+                ordinal=block.ordinal,
+                collapsed=block.collapsed,
+                version=block.version,
+                source_reference=block.source_reference,
+                elements=tuple(elements_by_block.get(block.id, ())),
+                created_at=block.created_at,
+                updated_at=block.updated_at,
+            )
+            for block in blocks
+        ),
+    )
+
+
+def _proposal_element_record(
+    document: dict[str, object], ordinal: int
+) -> KnowledgeStudioTBoxElementRecord:
+    aliases = document.get("aliases")
+    return KnowledgeStudioTBoxElementRecord(
+        stable_element_id=str(document["stable_element_id"]),
+        kind=str(document["kind"]),
+        canonical_name=str(document["canonical_name"]),
+        display_name=str(document["display_name"]),
+        parent_stable_element_id=_optional_document_string(document, "parent_stable_element_id"),
+        source_stable_element_id=_optional_document_string(document, "source_stable_element_id"),
+        target_stable_element_id=_optional_document_string(document, "target_stable_element_id"),
+        data_type=_optional_document_string(document, "data_type"),
+        nullable=_optional_document_bool(document, "nullable"),
+        ordinal=ordinal,
+        version=1,
+        definition=_optional_document_string(document, "definition"),
+        aliases=tuple(item for item in aliases if isinstance(item, str))
+        if isinstance(aliases, list)
+        else (),
+        unit=_optional_document_string(document, "unit"),
+        vector_index_enabled=bool(document.get("vector_index_enabled", False)),
+        layout_x=_optional_document_number(document, "layout_x"),
+        layout_y=_optional_document_number(document, "layout_y"),
+    )
+
+
+def _proposal_record(model: TBoxProposalModel) -> KnowledgeStudioTBoxProposalRecord:
+    raw_elements = model.proposal_document.get("elements")
+    elements = (
+        tuple(
+            _proposal_element_record(item, ordinal)
+            for ordinal, item in enumerate(raw_elements)
+            if isinstance(item, dict)
+        )
+        if isinstance(raw_elements, list)
+        else ()
+    )
+    conflicts = tuple(
+        KnowledgeStudioTBoxProposalConflictRecord(
+            conflict_id=str(item.get("conflict_id", "")),
+            kind=str(item.get("kind", "")),
+            stable_element_id=str(item.get("stable_element_id", "")),
+            field=str(item.get("field", "")),
+            original_value=item.get("original_value"),
+            proposed_value=item.get("proposed_value"),
+        )
+        for item in model.conflicts_document
+    )
+    return KnowledgeStudioTBoxProposalRecord(
+        proposal_id=model.id,
+        draft_id=model.draft_id,
+        target_block_id=model.target_block_id,
+        state=model.state,
+        mode=model.mode,
+        merge_strategy=model.merge_strategy,
+        base_draft_version=model.base_draft_version,
+        prompt=model.prompt,
+        elements=elements,
+        conflicts=conflicts,
+        model_binding=model.model_binding_document,
+        error_code=model.error_code,
+        version=model.version,
+        created_at=model.created_at,
+        updated_at=model.updated_at,
+        applied_at=model.applied_at,
+        rejected_at=model.rejected_at,
+    )
+
+
+def _ingestion_job_record(
+    model: KnowledgeStudioIngestionJobModel,
+) -> KnowledgeStudioIngestionJobRecord:
+    targets = model.vector_policy_document.get("targets")
+    return KnowledgeStudioIngestionJobRecord(
+        job_id=model.id,
+        draft_id=model.draft_id,
+        requested_by=model.requested_by,
+        state=model.state,
+        progress_percent=model.progress_percent,
+        current_stage=model.current_stage,
+        vector_target_count=len(targets) if isinstance(targets, list) else 0,
+        result=model.result_document,
+        error_code=model.error_code,
+        error_message=model.error_message,
+        version=model.version,
+        created_at=model.created_at,
+        updated_at=model.updated_at,
+        started_at=model.started_at,
+        finished_at=model.finished_at,
     )
 
 
@@ -231,6 +401,12 @@ def _element_document(model: TBoxDraftElementModel) -> dict[str, object]:
         "target_stable_element_id": model.target_stable_element_id,
         "data_type": model.data_type,
         "nullable": model.nullable,
+        "definition": model.definition,
+        "aliases": model.aliases,
+        "unit": model.unit,
+        "vector_index_enabled": model.vector_index_enabled,
+        "layout_x": model.layout_x,
+        "layout_y": model.layout_y,
         "ordinal": model.ordinal,
     }
 
@@ -730,6 +906,771 @@ class SqlKnowledgeStudioStore(KnowledgeStudioStore):
         ).one_or_none()
         return _draft_record(model) if model is not None else None
 
+    async def get_tbox(
+        self,
+        *,
+        workspace_id: UUID,
+        actor_id: UUID,
+        draft_id: UUID,
+    ) -> KnowledgeStudioTBoxRecord | None:
+        draft = (
+            await self._session.scalars(
+                select(KnowledgeStudioDraftModel).where(
+                    KnowledgeStudioDraftModel.workspace_id == workspace_id,
+                    KnowledgeStudioDraftModel.id == draft_id,
+                    or_(
+                        KnowledgeStudioDraftModel.author_id == actor_id,
+                        KnowledgeStudioDraftModel.state.in_(("REVIEW", "PUBLISHED")),
+                    ),
+                )
+            )
+        ).one_or_none()
+        if draft is None:
+            return None
+        blocks, elements = await self._load_tbox_models(
+            workspace_id=workspace_id,
+            draft_id=draft_id,
+        )
+        return _tbox_record(draft, blocks, elements)
+
+    async def create_tbox_block(
+        self,
+        *,
+        workspace_id: UUID,
+        author_id: UUID,
+        draft_id: UUID,
+        kind: str,
+        title: str,
+        weight: int,
+        expected_version: int,
+        idempotency_key: str,
+        request_hash: str,
+    ) -> KnowledgeStudioTBoxRecord:
+        operation = f"knowledge.studio_tbox.block.create:{draft_id}"
+        replay = await self._tbox_mutation_replay(
+            workspace_id=workspace_id,
+            author_id=author_id,
+            draft_id=draft_id,
+            operation=operation,
+            idempotency_key=idempotency_key,
+            request_hash=request_hash,
+        )
+        if replay is not None:
+            return replay
+        draft = await self._locked_draft(
+            workspace_id=workspace_id,
+            author_id=author_id,
+            draft_id=draft_id,
+        )
+        self._require_expected_version(draft, expected_version)
+        self._require_mutable(draft)
+        if draft.current_step != StudioStep.TBOX.value:
+            raise ConflictError("T-Box blocks can be edited only in Graph Builder.")
+        block_count = int(
+            await self._session.scalar(
+                select(func.count(TBoxDraftBlockModel.id)).where(
+                    TBoxDraftBlockModel.workspace_id == workspace_id,
+                    TBoxDraftBlockModel.draft_id == draft_id,
+                )
+            )
+            or 0
+        )
+        if block_count >= 20:
+            raise ConflictError("A T-Box Draft can contain at most 20 blocks.")
+        now = utc_now()
+        self._session.add(
+            TBoxDraftBlockModel(
+                id=uuid7(),
+                workspace_id=workspace_id,
+                draft_id=draft_id,
+                kind=kind,
+                title=title,
+                weight=weight,
+                ordinal=block_count,
+                collapsed=False,
+                source_reference=None,
+                created_at=now,
+                updated_at=now,
+                version=1,
+            )
+        )
+        draft.updated_at = now
+        draft.last_autosaved_at = now
+        draft.version += 1
+        return await self._save_tbox_mutation(
+            draft=draft,
+            workspace_id=workspace_id,
+            author_id=author_id,
+            operation=operation,
+            idempotency_key=idempotency_key,
+            request_hash=request_hash,
+        )
+
+    async def update_tbox_block(
+        self,
+        *,
+        workspace_id: UUID,
+        author_id: UUID,
+        draft_id: UUID,
+        block_id: UUID,
+        title: str,
+        weight: int,
+        collapsed: bool,
+        expected_version: int,
+        idempotency_key: str,
+        request_hash: str,
+    ) -> KnowledgeStudioTBoxRecord:
+        operation = f"knowledge.studio_tbox.block.update:{draft_id}:{block_id}"
+        replay = await self._tbox_mutation_replay(
+            workspace_id=workspace_id,
+            author_id=author_id,
+            draft_id=draft_id,
+            operation=operation,
+            idempotency_key=idempotency_key,
+            request_hash=request_hash,
+        )
+        if replay is not None:
+            return replay
+        draft = await self._locked_draft(
+            workspace_id=workspace_id,
+            author_id=author_id,
+            draft_id=draft_id,
+        )
+        self._require_expected_version(draft, expected_version)
+        self._require_mutable(draft)
+        block = (
+            await self._session.scalars(
+                select(TBoxDraftBlockModel)
+                .where(
+                    TBoxDraftBlockModel.workspace_id == workspace_id,
+                    TBoxDraftBlockModel.draft_id == draft_id,
+                    TBoxDraftBlockModel.id == block_id,
+                )
+                .with_for_update()
+            )
+        ).one_or_none()
+        if block is None:
+            raise NotFoundError("The T-Box block does not exist.")
+        now = utc_now()
+        block.title = title
+        block.weight = weight
+        block.collapsed = collapsed
+        block.updated_at = now
+        block.version += 1
+        draft.updated_at = now
+        draft.last_autosaved_at = now
+        draft.version += 1
+        return await self._save_tbox_mutation(
+            draft=draft,
+            workspace_id=workspace_id,
+            author_id=author_id,
+            operation=operation,
+            idempotency_key=idempotency_key,
+            request_hash=request_hash,
+        )
+
+    async def save_tbox_block_elements(
+        self,
+        *,
+        workspace_id: UUID,
+        author_id: UUID,
+        draft_id: UUID,
+        block_id: UUID,
+        elements_by_block: tuple[tuple[UUID, tuple[TBoxElementInput, ...]], ...],
+        expected_version: int,
+        idempotency_key: str,
+        request_hash: str,
+    ) -> KnowledgeStudioTBoxRecord:
+        operation = f"knowledge.studio_tbox.operations:{draft_id}:{block_id}"
+        replay = await self._tbox_mutation_replay(
+            workspace_id=workspace_id,
+            author_id=author_id,
+            draft_id=draft_id,
+            operation=operation,
+            idempotency_key=idempotency_key,
+            request_hash=request_hash,
+        )
+        if replay is not None:
+            return replay
+        draft = await self._locked_draft(
+            workspace_id=workspace_id,
+            author_id=author_id,
+            draft_id=draft_id,
+        )
+        self._require_expected_version(draft, expected_version)
+        self._require_mutable(draft)
+        if draft.current_step != StudioStep.TBOX.value:
+            raise ConflictError("Typed T-Box operations require the Graph Builder step.")
+        blocks = tuple(
+            (
+                await self._session.scalars(
+                    select(TBoxDraftBlockModel)
+                    .where(
+                        TBoxDraftBlockModel.workspace_id == workspace_id,
+                        TBoxDraftBlockModel.draft_id == draft_id,
+                    )
+                    .with_for_update()
+                )
+            ).all()
+        )
+        block_ids = {item.id for item in blocks}
+        supplied_block_ids = {item[0] for item in elements_by_block}
+        if block_id not in block_ids or supplied_block_ids != block_ids:
+            raise ConflictError("The T-Box block set changed before the operation was saved.")
+        now = utc_now()
+        await self._session.execute(
+            delete(TBoxDraftElementModel).where(
+                TBoxDraftElementModel.workspace_id == workspace_id,
+                TBoxDraftElementModel.draft_id == draft_id,
+            )
+        )
+        ordinal = 0
+        for owning_block_id, block_elements in elements_by_block:
+            for element in block_elements:
+                self._session.add(
+                    TBoxDraftElementModel(
+                        id=uuid7(),
+                        workspace_id=workspace_id,
+                        draft_id=draft_id,
+                        block_id=owning_block_id,
+                        stable_element_id=element.stable_element_id,
+                        kind=element.kind.value,
+                        canonical_name=element.canonical_name,
+                        display_name=element.display_name,
+                        parent_stable_element_id=element.parent_stable_element_id,
+                        source_stable_element_id=element.source_stable_element_id,
+                        target_stable_element_id=element.target_stable_element_id,
+                        data_type=element.data_type,
+                        nullable=element.nullable,
+                        definition=element.definition,
+                        aliases=list(element.aliases),
+                        unit=element.unit,
+                        vector_index_enabled=element.vector_index_enabled,
+                        layout_x=element.layout_x,
+                        layout_y=element.layout_y,
+                        ordinal=ordinal,
+                        created_at=now,
+                        updated_at=now,
+                        version=1,
+                    )
+                )
+                ordinal += 1
+        for block in blocks:
+            if block.id == block_id:
+                block.updated_at = now
+                block.version += 1
+        draft.updated_at = now
+        draft.last_autosaved_at = now
+        draft.version += 1
+        return await self._save_tbox_mutation(
+            draft=draft,
+            workspace_id=workspace_id,
+            author_id=author_id,
+            operation=operation,
+            idempotency_key=idempotency_key,
+            request_hash=request_hash,
+        )
+
+    async def save_tbox_proposal(
+        self,
+        *,
+        workspace_id: UUID,
+        author_id: UUID,
+        draft_id: UUID,
+        base_draft_version: int,
+        target_block_id: UUID | None,
+        mode: str,
+        prompt: str,
+        elements: tuple[TBoxElementInput, ...],
+        conflicts: tuple[dict[str, object], ...],
+        model_binding: dict[str, object],
+    ) -> KnowledgeStudioTBoxProposalRecord:
+        draft = await self._locked_draft(
+            workspace_id=workspace_id,
+            author_id=author_id,
+            draft_id=draft_id,
+        )
+        self._require_expected_version(draft, base_draft_version)
+        self._require_mutable(draft)
+        if draft.current_step != StudioStep.TBOX.value:
+            raise ConflictError("LLM schema proposals require the Graph Builder step.")
+        if target_block_id is not None:
+            block_exists = await self._session.scalar(
+                select(TBoxDraftBlockModel.id).where(
+                    TBoxDraftBlockModel.workspace_id == workspace_id,
+                    TBoxDraftBlockModel.draft_id == draft_id,
+                    TBoxDraftBlockModel.id == target_block_id,
+                )
+            )
+            if block_exists is None:
+                raise NotFoundError("The proposal target block does not exist.")
+        now = utc_now()
+        model = TBoxProposalModel(
+            id=uuid7(),
+            workspace_id=workspace_id,
+            draft_id=draft_id,
+            target_block_id=target_block_id,
+            created_by=author_id,
+            state="READY",
+            mode=mode,
+            merge_strategy="KEEP_ORIGINAL",
+            base_draft_version=draft.version,
+            prompt=prompt,
+            proposal_document={
+                "contract_version": "KNOWLEDGE_STUDIO_TBOX_PROPOSAL_V1",
+                "elements": [_tbox_input_document(item) for item in elements],
+            },
+            conflicts_document=list(conflicts),
+            model_binding_document=model_binding,
+            error_code=None,
+            applied_at=None,
+            rejected_at=None,
+            created_at=now,
+            updated_at=now,
+            version=1,
+        )
+        self._session.add(model)
+        try:
+            await self._session.commit()
+        except IntegrityError as error:
+            await self._session.rollback()
+            raise ConflictError("The typed T-Box proposal could not be persisted.") from error
+        return _proposal_record(model)
+
+    async def get_tbox_proposal(
+        self,
+        *,
+        workspace_id: UUID,
+        actor_id: UUID,
+        draft_id: UUID,
+        proposal_id: UUID,
+    ) -> KnowledgeStudioTBoxProposalRecord | None:
+        model = (
+            await self._session.scalars(
+                select(TBoxProposalModel)
+                .join(
+                    KnowledgeStudioDraftModel,
+                    (KnowledgeStudioDraftModel.workspace_id == TBoxProposalModel.workspace_id)
+                    & (KnowledgeStudioDraftModel.id == TBoxProposalModel.draft_id),
+                )
+                .where(
+                    TBoxProposalModel.workspace_id == workspace_id,
+                    TBoxProposalModel.draft_id == draft_id,
+                    TBoxProposalModel.id == proposal_id,
+                    or_(
+                        KnowledgeStudioDraftModel.author_id == actor_id,
+                        KnowledgeStudioDraftModel.state.in_(("REVIEW", "PUBLISHED")),
+                    ),
+                )
+            )
+        ).one_or_none()
+        return _proposal_record(model) if model is not None else None
+
+    async def apply_tbox_proposal(
+        self,
+        *,
+        workspace_id: UUID,
+        author_id: UUID,
+        draft_id: UUID,
+        proposal_id: UUID,
+        target_block_id: UUID | None,
+        elements_by_block: tuple[tuple[UUID, tuple[TBoxElementInput, ...]], ...],
+        appended_elements: tuple[TBoxElementInput, ...],
+        conflicts: tuple[dict[str, object], ...],
+        merge_strategy: str,
+        expected_version: int,
+        idempotency_key: str,
+        request_hash: str,
+    ) -> KnowledgeStudioTBoxRecord:
+        operation = f"knowledge.studio_tbox.proposal.apply:{draft_id}:{proposal_id}"
+        replay = await self._tbox_mutation_replay(
+            workspace_id=workspace_id,
+            author_id=author_id,
+            draft_id=draft_id,
+            operation=operation,
+            idempotency_key=idempotency_key,
+            request_hash=request_hash,
+        )
+        if replay is not None:
+            return replay
+        draft = await self._locked_draft(
+            workspace_id=workspace_id,
+            author_id=author_id,
+            draft_id=draft_id,
+        )
+        self._require_expected_version(draft, expected_version)
+        self._require_mutable(draft)
+        proposal = (
+            await self._session.scalars(
+                select(TBoxProposalModel)
+                .where(
+                    TBoxProposalModel.workspace_id == workspace_id,
+                    TBoxProposalModel.draft_id == draft_id,
+                    TBoxProposalModel.id == proposal_id,
+                )
+                .with_for_update()
+            )
+        ).one_or_none()
+        if proposal is None:
+            raise NotFoundError("The T-Box proposal does not exist.")
+        if proposal.state != "READY":
+            raise ConflictError("Only a READY T-Box proposal can be applied.")
+        if proposal.base_draft_version != expected_version:
+            raise ConflictError(
+                "The T-Box Draft changed after the proposal was generated. Generate it again."
+            )
+        blocks = list(
+            (
+                await self._session.scalars(
+                    select(TBoxDraftBlockModel)
+                    .where(
+                        TBoxDraftBlockModel.workspace_id == workspace_id,
+                        TBoxDraftBlockModel.draft_id == draft_id,
+                    )
+                    .order_by(TBoxDraftBlockModel.ordinal, TBoxDraftBlockModel.id)
+                    .with_for_update()
+                )
+            ).all()
+        )
+        known_block_ids = {block.id for block in blocks}
+        if {item[0] for item in elements_by_block} != known_block_ids:
+            raise ConflictError("The T-Box block set changed before proposal acceptance.")
+        now = utc_now()
+        if proposal.mode == "APPEND_LAYER":
+            if target_block_id is not None or not appended_elements:
+                raise ConflictError("APPEND_LAYER requires a new non-empty proposal block.")
+            new_block = TBoxDraftBlockModel(
+                id=uuid7(),
+                workspace_id=workspace_id,
+                draft_id=draft_id,
+                kind="LLM_ASSISTANT",
+                title="LLM 제안",
+                weight=DEFAULT_TBOX_BLOCK_WEIGHT,
+                ordinal=len(blocks),
+                collapsed=False,
+                source_reference={
+                    "kind": "TBOX_PROPOSAL",
+                    "proposal_id": str(proposal.id),
+                },
+                created_at=now,
+                updated_at=now,
+                version=1,
+            )
+            self._session.add(new_block)
+            blocks.append(new_block)
+            elements_by_block = (
+                *elements_by_block,
+                (new_block.id, appended_elements),
+            )
+        elif target_block_id is None or target_block_id not in known_block_ids:
+            raise ConflictError("MERGE_INTO_CURRENT requires an existing target block.")
+        await self._replace_tbox_elements(
+            workspace_id=workspace_id,
+            draft_id=draft_id,
+            elements_by_block=elements_by_block,
+            now=now,
+        )
+        proposal.state = "APPLIED"
+        proposal.merge_strategy = merge_strategy
+        proposal.conflicts_document = list(conflicts)
+        proposal.applied_at = now
+        proposal.updated_at = now
+        proposal.version += 1
+        draft.updated_at = now
+        draft.last_autosaved_at = now
+        draft.version += 1
+        return await self._save_tbox_mutation(
+            draft=draft,
+            workspace_id=workspace_id,
+            author_id=author_id,
+            operation=operation,
+            idempotency_key=idempotency_key,
+            request_hash=request_hash,
+        )
+
+    async def create_ingestion_job(
+        self,
+        *,
+        workspace_id: UUID,
+        author_id: UUID,
+        draft_id: UUID,
+        expected_version: int,
+        embedding_binding: dict[str, object] | None,
+        idempotency_key: str,
+        request_hash: str,
+    ) -> KnowledgeStudioIngestionJobRecord:
+        operation = f"knowledge.studio_ingestion.create:{draft_id}"
+        idempotency = SqlIdempotencyStore(self._session)
+        await idempotency.acquire_key_lock(
+            workspace_id=workspace_id,
+            key=idempotency_key,
+            operation=operation,
+        )
+        existing = await idempotency.get_result(
+            workspace_id=workspace_id,
+            key=idempotency_key,
+            operation=operation,
+        )
+        if existing is not None:
+            if existing.request_hash != request_hash:
+                raise ConflictError("The idempotency key was used with a different request.")
+            raw_job_id = existing.result.get("job_id")
+            if not isinstance(raw_job_id, str):
+                raise ConflictError("The idempotent ingestion result is invalid.")
+            replay = await self.get_ingestion_job(
+                workspace_id=workspace_id,
+                actor_id=author_id,
+                draft_id=draft_id,
+                job_id=UUID(raw_job_id),
+            )
+            if replay is None:
+                raise ConflictError("The idempotent ingestion result is unavailable.")
+            return replay
+        draft = await self._locked_draft(
+            workspace_id=workspace_id,
+            author_id=author_id,
+            draft_id=draft_id,
+        )
+        self._require_expected_version(draft, expected_version)
+        self._require_mutable(draft)
+        if draft.current_step != StudioStep.ABOX.value:
+            raise ConflictError("A-Box ingestion requires the Data Enricher step.")
+        bindings = tuple(
+            (
+                await self._session.scalars(
+                    select(ABoxBindingDraftModel)
+                    .where(
+                        ABoxBindingDraftModel.workspace_id == workspace_id,
+                        ABoxBindingDraftModel.draft_id == draft_id,
+                    )
+                    .order_by(ABoxBindingDraftModel.id)
+                )
+            ).all()
+        )
+        if not bindings:
+            raise ConflictError("A-Box ingestion requires at least one persisted binding.")
+        contract = await self._load_contract(
+            workspace_id=workspace_id,
+            draft=draft,
+            lock=True,
+        )
+        preflight = (
+            await self._session.scalars(
+                select(KnowledgeStudioPreflightCheckModel)
+                .where(
+                    KnowledgeStudioPreflightCheckModel.workspace_id == workspace_id,
+                    KnowledgeStudioPreflightCheckModel.draft_id == draft_id,
+                    KnowledgeStudioPreflightCheckModel.draft_version == draft.version,
+                    KnowledgeStudioPreflightCheckModel.contract_hash == contract.contract_hash,
+                    KnowledgeStudioPreflightCheckModel.status == "PASS",
+                    KnowledgeStudioPreflightCheckModel.valid.is_(True),
+                    KnowledgeStudioPreflightCheckModel.checked_by == author_id,
+                )
+                .order_by(
+                    KnowledgeStudioPreflightCheckModel.checked_at.desc(),
+                    KnowledgeStudioPreflightCheckModel.id.desc(),
+                )
+                .limit(1)
+                .with_for_update(read=True)
+            )
+        ).one_or_none()
+        if preflight is None:
+            raise ConflictError(
+                "A-Box ingestion requires an exact current-Draft PASS pre-flight receipt."
+            )
+        vector_targets = tuple(
+            (
+                await self._session.scalars(
+                    select(TBoxDraftElementModel)
+                    .where(
+                        TBoxDraftElementModel.workspace_id == workspace_id,
+                        TBoxDraftElementModel.draft_id == draft_id,
+                        TBoxDraftElementModel.kind == "PROPERTY",
+                        TBoxDraftElementModel.vector_index_enabled.is_(True),
+                    )
+                    .order_by(TBoxDraftElementModel.stable_element_id)
+                )
+            ).all()
+        )
+        vector_rules: tuple[ABoxMappingRuleDraftModel, ...] = ()
+        if vector_targets:
+            vector_rules = tuple(
+                (
+                    await self._session.scalars(
+                        select(ABoxMappingRuleDraftModel)
+                        .where(
+                            ABoxMappingRuleDraftModel.workspace_id == workspace_id,
+                            ABoxMappingRuleDraftModel.draft_id == draft_id,
+                            ABoxMappingRuleDraftModel.method == ABoxMappingMethod.PROPERTY.value,
+                            ABoxMappingRuleDraftModel.target_stable_element_id.in_(
+                                tuple(item.stable_element_id for item in vector_targets)
+                            ),
+                        )
+                        .order_by(
+                            ABoxMappingRuleDraftModel.target_stable_element_id,
+                            ABoxMappingRuleDraftModel.id,
+                        )
+                    )
+                ).all()
+            )
+        vector_rule_by_target = {item.target_stable_element_id: item for item in vector_rules}
+        unmapped_vector_targets = [
+            item.stable_element_id
+            for item in vector_targets
+            if item.stable_element_id not in vector_rule_by_target
+        ]
+        if unmapped_vector_targets:
+            raise ConflictError("Every Vector Index Property requires an exact persisted mapping.")
+        if vector_targets and embedding_binding is None:
+            raise ConflictError("A Vector Index target requires the governed embedding runtime.")
+        now = utc_now()
+        job = KnowledgeStudioIngestionJobModel(
+            id=uuid7(),
+            workspace_id=workspace_id,
+            draft_id=draft_id,
+            requested_by=author_id,
+            state="PENDING",
+            progress_percent=0,
+            current_stage="QUEUED",
+            request_document={
+                "contract_version": "KNOWLEDGE_STUDIO_INGESTION_V1",
+                "draft_version": draft.version,
+                "contract_hash": contract.contract_hash,
+                "preflight_receipt_id": str(preflight.id),
+                "binding_ids": [str(binding.id) for binding in bindings],
+            },
+            vector_policy_document={
+                "contract_version": "KNOWLEDGE_STUDIO_VECTOR_POLICY_V1",
+                "embedding_binding": embedding_binding,
+                "targets": [
+                    {
+                        "stable_element_id": item.stable_element_id,
+                        "parent_stable_element_id": item.parent_stable_element_id,
+                        "data_type": item.data_type,
+                        "binding_id": str(vector_rule_by_target[item.stable_element_id].binding_id),
+                        "source_field_path": vector_rule_by_target[
+                            item.stable_element_id
+                        ].source_field_path,
+                    }
+                    for item in vector_targets
+                ],
+            },
+            result_document=None,
+            error_code=None,
+            error_message=None,
+            started_at=None,
+            finished_at=None,
+            lease_epoch=0,
+            lease_token_hash=None,
+            lease_owner_fingerprint=None,
+            lease_expires_at=None,
+            created_at=now,
+            updated_at=now,
+            version=1,
+        )
+        self._session.add(job)
+        await SqlOutboxWriter(self._session).add_events(
+            [
+                DomainEvent.create(
+                    event_type="knowledge.studio_ingestion.queued.v1",
+                    aggregate_type="knowledge_studio_ingestion",
+                    aggregate_id=job.id,
+                    workspace_id=workspace_id,
+                    payload={
+                        "job_id": str(job.id),
+                        "draft_id": str(draft_id),
+                        "draft_version": draft.version,
+                    },
+                )
+            ]
+        )
+        await idempotency.save_result(
+            workspace_id=workspace_id,
+            key=idempotency_key,
+            operation=operation,
+            request_hash=request_hash,
+            result={"job_id": str(job.id)},
+        )
+        try:
+            await self._session.commit()
+        except IntegrityError as error:
+            await self._session.rollback()
+            raise ConflictError("The A-Box ingestion job could not be queued.") from error
+        return _ingestion_job_record(job)
+
+    async def get_ingestion_job(
+        self,
+        *,
+        workspace_id: UUID,
+        actor_id: UUID,
+        draft_id: UUID,
+        job_id: UUID,
+    ) -> KnowledgeStudioIngestionJobRecord | None:
+        model = (
+            await self._session.scalars(
+                select(KnowledgeStudioIngestionJobModel)
+                .join(
+                    KnowledgeStudioDraftModel,
+                    (
+                        KnowledgeStudioDraftModel.workspace_id
+                        == KnowledgeStudioIngestionJobModel.workspace_id
+                    )
+                    & (KnowledgeStudioDraftModel.id == KnowledgeStudioIngestionJobModel.draft_id),
+                )
+                .where(
+                    KnowledgeStudioIngestionJobModel.workspace_id == workspace_id,
+                    KnowledgeStudioIngestionJobModel.draft_id == draft_id,
+                    KnowledgeStudioIngestionJobModel.id == job_id,
+                    or_(
+                        KnowledgeStudioDraftModel.author_id == actor_id,
+                        KnowledgeStudioDraftModel.state.in_(("REVIEW", "PUBLISHED")),
+                    ),
+                )
+            )
+        ).one_or_none()
+        return _ingestion_job_record(model) if model is not None else None
+
+    async def list_ingestion_jobs(
+        self,
+        *,
+        workspace_id: UUID,
+        actor_id: UUID,
+        draft_id: UUID,
+        limit: int,
+    ) -> tuple[KnowledgeStudioIngestionJobRecord, ...]:
+        models = tuple(
+            (
+                await self._session.scalars(
+                    select(KnowledgeStudioIngestionJobModel)
+                    .join(
+                        KnowledgeStudioDraftModel,
+                        (
+                            KnowledgeStudioDraftModel.workspace_id
+                            == KnowledgeStudioIngestionJobModel.workspace_id
+                        )
+                        & (
+                            KnowledgeStudioDraftModel.id
+                            == KnowledgeStudioIngestionJobModel.draft_id
+                        ),
+                    )
+                    .where(
+                        KnowledgeStudioIngestionJobModel.workspace_id == workspace_id,
+                        KnowledgeStudioIngestionJobModel.draft_id == draft_id,
+                        or_(
+                            KnowledgeStudioDraftModel.author_id == actor_id,
+                            KnowledgeStudioDraftModel.state.in_(("REVIEW", "PUBLISHED")),
+                        ),
+                    )
+                    .order_by(
+                        KnowledgeStudioIngestionJobModel.created_at.desc(),
+                        KnowledgeStudioIngestionJobModel.id.desc(),
+                    )
+                    .limit(limit)
+                )
+            ).all()
+        )
+        return tuple(_ingestion_job_record(model) for model in models)
+
     async def get_edit_graph(
         self,
         *,
@@ -877,6 +1818,21 @@ class SqlKnowledgeStudioStore(KnowledgeStudioStore):
             version=1,
         )
         self._session.add(draft)
+        direct_block = TBoxDraftBlockModel(
+            id=uuid7(),
+            workspace_id=workspace_id,
+            draft_id=draft.id,
+            kind="DIRECT",
+            title="직접 정의",
+            weight=DEFAULT_TBOX_BLOCK_WEIGHT,
+            ordinal=0,
+            collapsed=False,
+            source_reference=None,
+            created_at=now,
+            updated_at=now,
+            version=1,
+        )
+        self._session.add(direct_block)
         elements = (
             await self._session.scalars(
                 select(OntologyElementModel)
@@ -898,6 +1854,7 @@ class SqlKnowledgeStudioStore(KnowledgeStudioStore):
                     id=uuid7(),
                     workspace_id=workspace_id,
                     draft_id=draft.id,
+                    block_id=direct_block.id,
                     stable_element_id=element.stable_element_id,
                     kind=element.kind,
                     canonical_name=element.canonical_name,
@@ -916,6 +1873,12 @@ class SqlKnowledgeStudioStore(KnowledgeStudioStore):
                     ),
                     data_type=_optional_document_string(document, "data_type"),
                     nullable=_optional_document_bool(document, "nullable"),
+                    definition=_optional_document_string(document, "definition"),
+                    aliases=_document_string_list(document, "aliases"),
+                    unit=_optional_document_string(document, "unit"),
+                    vector_index_enabled=bool(document.get("vector_index_enabled", False)),
+                    layout_x=_optional_document_number(document, "layout_x"),
+                    layout_y=_optional_document_number(document, "layout_y"),
                     ordinal=element.ordinal,
                     created_at=now,
                     updated_at=now,
@@ -1198,6 +2161,11 @@ class SqlKnowledgeStudioStore(KnowledgeStudioStore):
             model.current_step = "TBOX"
             model.updated_at = utc_now()
             model.version += 1
+        await self._ensure_direct_block(
+            workspace_id=workspace_id,
+            draft_id=draft_id,
+            now=model.updated_at,
+        )
         return await self._save_mutation(
             model=model,
             idempotency=idempotency,
@@ -2522,6 +3490,210 @@ class SqlKnowledgeStudioStore(KnowledgeStudioStore):
         if model is None:
             raise NotFoundError("The Knowledge Studio draft does not exist.")
         return model
+
+    async def _ensure_direct_block(
+        self,
+        *,
+        workspace_id: UUID,
+        draft_id: UUID,
+        now: datetime,
+    ) -> TBoxDraftBlockModel:
+        existing = (
+            await self._session.scalars(
+                select(TBoxDraftBlockModel)
+                .where(
+                    TBoxDraftBlockModel.workspace_id == workspace_id,
+                    TBoxDraftBlockModel.draft_id == draft_id,
+                )
+                .order_by(TBoxDraftBlockModel.ordinal, TBoxDraftBlockModel.id)
+                .limit(1)
+            )
+        ).one_or_none()
+        if existing is not None:
+            return existing
+        block = TBoxDraftBlockModel(
+            id=uuid7(),
+            workspace_id=workspace_id,
+            draft_id=draft_id,
+            kind="DIRECT",
+            title="직접 정의",
+            weight=DEFAULT_TBOX_BLOCK_WEIGHT,
+            ordinal=0,
+            collapsed=False,
+            source_reference=None,
+            created_at=now,
+            updated_at=now,
+            version=1,
+        )
+        self._session.add(block)
+        await self._session.flush((block,))
+        await self._session.execute(
+            update(TBoxDraftElementModel)
+            .where(
+                TBoxDraftElementModel.workspace_id == workspace_id,
+                TBoxDraftElementModel.draft_id == draft_id,
+                TBoxDraftElementModel.block_id.is_(None),
+            )
+            .values(block_id=block.id)
+        )
+        return block
+
+    async def _load_tbox_models(
+        self,
+        *,
+        workspace_id: UUID,
+        draft_id: UUID,
+    ) -> tuple[tuple[TBoxDraftBlockModel, ...], tuple[TBoxDraftElementModel, ...]]:
+        blocks = tuple(
+            (
+                await self._session.scalars(
+                    select(TBoxDraftBlockModel)
+                    .where(
+                        TBoxDraftBlockModel.workspace_id == workspace_id,
+                        TBoxDraftBlockModel.draft_id == draft_id,
+                    )
+                    .order_by(TBoxDraftBlockModel.ordinal, TBoxDraftBlockModel.id)
+                )
+            ).all()
+        )
+        elements = tuple(
+            (
+                await self._session.scalars(
+                    select(TBoxDraftElementModel)
+                    .where(
+                        TBoxDraftElementModel.workspace_id == workspace_id,
+                        TBoxDraftElementModel.draft_id == draft_id,
+                    )
+                    .order_by(
+                        TBoxDraftElementModel.ordinal,
+                        TBoxDraftElementModel.stable_element_id,
+                    )
+                )
+            ).all()
+        )
+        return blocks, elements
+
+    async def _replace_tbox_elements(
+        self,
+        *,
+        workspace_id: UUID,
+        draft_id: UUID,
+        elements_by_block: tuple[tuple[UUID, tuple[TBoxElementInput, ...]], ...],
+        now: datetime,
+    ) -> None:
+        await self._session.execute(
+            delete(TBoxDraftElementModel).where(
+                TBoxDraftElementModel.workspace_id == workspace_id,
+                TBoxDraftElementModel.draft_id == draft_id,
+            )
+        )
+        ordinal = 0
+        for block_id, elements in elements_by_block:
+            for element in elements:
+                self._session.add(
+                    TBoxDraftElementModel(
+                        id=uuid7(),
+                        workspace_id=workspace_id,
+                        draft_id=draft_id,
+                        block_id=block_id,
+                        stable_element_id=element.stable_element_id,
+                        kind=element.kind.value,
+                        canonical_name=element.canonical_name,
+                        display_name=element.display_name,
+                        parent_stable_element_id=element.parent_stable_element_id,
+                        source_stable_element_id=element.source_stable_element_id,
+                        target_stable_element_id=element.target_stable_element_id,
+                        data_type=element.data_type,
+                        nullable=element.nullable,
+                        definition=element.definition,
+                        aliases=list(element.aliases),
+                        unit=element.unit,
+                        vector_index_enabled=element.vector_index_enabled,
+                        layout_x=element.layout_x,
+                        layout_y=element.layout_y,
+                        ordinal=ordinal,
+                        created_at=now,
+                        updated_at=now,
+                        version=1,
+                    )
+                )
+                ordinal += 1
+
+    async def _tbox_mutation_replay(
+        self,
+        *,
+        workspace_id: UUID,
+        author_id: UUID,
+        draft_id: UUID,
+        operation: str,
+        idempotency_key: str,
+        request_hash: str,
+    ) -> KnowledgeStudioTBoxRecord | None:
+        idempotency = SqlIdempotencyStore(self._session)
+        await idempotency.acquire_key_lock(
+            workspace_id=workspace_id,
+            key=idempotency_key,
+            operation=operation,
+        )
+        existing = await idempotency.get_result(
+            workspace_id=workspace_id,
+            key=idempotency_key,
+            operation=operation,
+        )
+        if existing is None:
+            return None
+        if existing.request_hash != request_hash:
+            raise ConflictError("The idempotency key was used with a different request.")
+        raw_draft = existing.result.get("draft")
+        if not isinstance(raw_draft, dict):
+            raise ConflictError("The idempotent T-Box result is invalid.")
+        replay_draft = studio_draft_record_from_result(raw_draft)
+        if (
+            replay_draft.workspace_id != workspace_id
+            or replay_draft.author_id != author_id
+            or replay_draft.draft_id != draft_id
+        ):
+            raise ConflictError("The idempotent T-Box result is bound to another Draft.")
+        current = await self.get_tbox(
+            workspace_id=workspace_id,
+            actor_id=author_id,
+            draft_id=draft_id,
+        )
+        if current is None or current.draft.version != replay_draft.version:
+            raise ConflictError("The idempotent T-Box response is older than the current Draft.")
+        return current
+
+    async def _save_tbox_mutation(
+        self,
+        *,
+        draft: KnowledgeStudioDraftModel,
+        workspace_id: UUID,
+        author_id: UUID,
+        operation: str,
+        idempotency_key: str,
+        request_hash: str,
+    ) -> KnowledgeStudioTBoxRecord:
+        try:
+            await self._session.flush()
+            blocks, elements = await self._load_tbox_models(
+                workspace_id=workspace_id,
+                draft_id=draft.id,
+            )
+            record = _tbox_record(draft, blocks, elements)
+            await SqlIdempotencyStore(self._session).save_result(
+                workspace_id=workspace_id,
+                key=idempotency_key,
+                operation=operation,
+                request_hash=request_hash,
+                result={"draft": studio_draft_result(record.draft)},
+            )
+            await self._session.commit()
+        except IntegrityError as error:
+            await self._session.rollback()
+            raise ConflictError("The typed T-Box operation conflicts with the Draft.") from error
+        if record.draft.author_id != author_id:
+            raise ConflictError("The T-Box mutation result is bound to another author.")
+        return record
 
     async def _locked_actor_draft(
         self,

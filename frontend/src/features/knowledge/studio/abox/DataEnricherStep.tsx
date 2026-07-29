@@ -20,9 +20,11 @@ import {
   type FlowCanvasNode,
 } from '../../../../components/common/FlowCanvas'
 import {
+  createKnowledgeStudioIngestion,
   discardKnowledgeStudioDraft,
   getKnowledgeStudioABox,
   getKnowledgeStudioSource,
+  listKnowledgeStudioIngestions,
   newKnowledgeStudioIdempotencyKey,
   preflightKnowledgeStudioABox,
   previewKnowledgeStudioBinding,
@@ -33,6 +35,7 @@ import {
   type KnowledgeStudioABox,
   type KnowledgeStudioBinding,
   type KnowledgeStudioDraft,
+  type KnowledgeStudioIngestionJob,
   type KnowledgeStudioMappingRuleInput,
   type KnowledgeStudioPreflight,
   type KnowledgeStudioPreview,
@@ -128,6 +131,9 @@ export function DataEnricherStep({
   const [publishError, setPublishError] = useState<unknown>()
   const [status, setStatus] = useState('Accepted T-Box와 Binding Draft를 불러오고 있습니다.')
   const [conflict, setConflict] = useState<LocalBindingDraft>()
+  const [ingestionJobs, setIngestionJobs] = useState<KnowledgeStudioIngestionJob[]>([])
+  const [ingestionLoading, setIngestionLoading] = useState(false)
+  const [ingestionPollRevision, setIngestionPollRevision] = useState(0)
 
   const applyAbox = useCallback((
     next: KnowledgeStudioABox,
@@ -160,6 +166,41 @@ export function DataEnricherStep({
       })
     return () => { active = false }
   }, [loadAbox])
+
+  useEffect(() => {
+    let active = true
+    let timer: number | undefined
+    let attempts = 0
+    const poll = async () => {
+      if (!active || document.visibilityState === 'hidden') return
+      try {
+        const jobs = await listKnowledgeStudioIngestions(client, draftId)
+        if (!active) return
+        setIngestionJobs(jobs)
+        attempts += 1
+        if (
+          attempts < 150
+          && jobs.some((job) => job.state === 'PENDING' || job.state === 'RUNNING')
+        ) {
+          timer = window.setTimeout(() => { void poll() }, 2000)
+        }
+      } catch {
+        if (active) setStatus('Ingestion 진행 상태를 불러오지 못했습니다.')
+      }
+    }
+    const resumeWhenVisible = () => {
+      if (!active || document.visibilityState !== 'visible') return
+      if (timer !== undefined) window.clearTimeout(timer)
+      void poll()
+    }
+    document.addEventListener('visibilitychange', resumeWhenVisible)
+    void poll()
+    return () => {
+      active = false
+      if (timer !== undefined) window.clearTimeout(timer)
+      document.removeEventListener('visibilitychange', resumeWhenVisible)
+    }
+  }, [client, draftId, ingestionPollRevision])
 
   const elements = useMemo(
     () => abox?.tbox_elements ?? [],
@@ -478,6 +519,29 @@ export function DataEnricherStep({
     }
   }
 
+  const runIngestion = async () => {
+    if (!etag || !editable || !exactPreflightPass || ingestionLoading) return
+    setIngestionLoading(true)
+    try {
+      const job = await createKnowledgeStudioIngestion(
+        client,
+        draftId,
+        etag,
+        newKnowledgeStudioIdempotencyKey(),
+      )
+      setIngestionJobs((current) => [job, ...current.filter((item) => item.id !== job.id)])
+      setIngestionPollRevision((current) => current + 1)
+      setStatus(
+        `A-Box Ingestion을 백그라운드 작업으로 접수했습니다. `
+        + `Vector 대상 ${job.vector_target_count}개 · ${job.state}`,
+      )
+    } catch (error) {
+      setStatus(error instanceof Error ? error.message : 'Ingestion 작업을 접수하지 못했습니다.')
+    } finally {
+      setIngestionLoading(false)
+    }
+  }
+
   const submitReview = async () => {
     if (!etag || !editable) return
     setGovernanceBusy(true)
@@ -611,6 +675,7 @@ export function DataEnricherStep({
     && preflight.receipt_id
     && preflight.contract_hash,
   )
+  const latestIngestion = ingestionJobs[0]
 
   if (loading) {
     return <section className="grid min-h-[420px] place-items-center rounded-enterprise border border-slate-300 bg-white text-sm text-slate-500">
@@ -633,7 +698,9 @@ export function DataEnricherStep({
         </div>
         <div className="flex flex-wrap justify-end gap-2 text-[11px]">
           <span className="badge badge-soft">Studio: {draftState}</span>
-          <span className="badge badge-soft">Ingestion: NOT_RUN</span>
+          <span className="badge badge-soft">
+            Ingestion: {latestIngestion?.state ?? 'NOT_RUN'}
+          </span>
           <button
             type="button"
             className="button button-secondary"
@@ -690,10 +757,13 @@ export function DataEnricherStep({
           <button
             type="button"
             className="button"
-            disabled
-            title="Durable ingestion command와 worker가 아직 구현되지 않았습니다."
+            disabled={!editable || !etag || !exactPreflightPass || ingestionLoading}
+            title={exactPreflightPass
+              ? '정확한 Draft version과 Embedding binding으로 백그라운드 작업을 접수합니다.'
+              : '현재 Draft version의 Pre-flight PASS가 필요합니다.'}
+            onClick={() => void runIngestion()}
           >
-            <Play size={14} /> Run Ingestion
+            <Play size={14} /> {ingestionLoading ? '접수 중…' : 'Run Ingestion'}
           </button>
         </div>
       </header>
@@ -731,6 +801,40 @@ export function DataEnricherStep({
           <p className="mb-0 text-[10px] text-slate-500">
             PASS receipt는 동일 Draft version과 Contract hash에만 유효하며 실제 Ingestion을 실행하지 않습니다.
           </p>
+        </section>
+      )}
+      {latestIngestion && (
+        <section
+          aria-label="A-Box Ingestion 진행 상태"
+          className="mb-3 rounded-enterprise border border-blue-200 bg-blue-50 p-3"
+        >
+          <div className="flex flex-wrap items-center justify-between gap-2 text-xs">
+            <strong className="text-navy-900">
+              {latestIngestion.state} · {latestIngestion.current_stage}
+            </strong>
+            <span className="text-slate-600">
+              {latestIngestion.progress_percent}% · Vector 대상 {latestIngestion.vector_target_count}개
+            </span>
+          </div>
+          <div
+            className="mt-2 h-2 overflow-hidden rounded-full bg-blue-100"
+            role="progressbar"
+            aria-valuemin={0}
+            aria-valuemax={100}
+            aria-valuenow={latestIngestion.progress_percent}
+          >
+            <div
+              className={`h-full transition-[width] ${
+                latestIngestion.state === 'FAILED' ? 'bg-red-600' : 'bg-enterprise-blue'
+              }`}
+              style={{ width: `${latestIngestion.progress_percent}%` }}
+            />
+          </div>
+          {latestIngestion.error_message && (
+            <p role="alert" className="mb-0 mt-2 text-[11px] text-red-800">
+              {latestIngestion.error_code} · {latestIngestion.error_message}
+            </p>
+          )}
         </section>
       )}
       {draftState === 'REVIEW' && isAuthor && (

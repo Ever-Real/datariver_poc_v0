@@ -15,6 +15,7 @@ interface KnowledgeWorkspacePageProps {
   client: ApiClient
   workspaceId: string
   subjectId: string
+  locationRevision: number
   onNavigate: (page: Page) => void
   onOpenStudio: (assetId?: string) => void
   onStepUp?: () => Promise<void>
@@ -33,6 +34,7 @@ export function KnowledgeWorkspacePage({
   client,
   workspaceId,
   subjectId,
+  locationRevision,
   onNavigate,
   onOpenStudio,
   onStepUp,
@@ -76,6 +78,7 @@ export function KnowledgeWorkspacePage({
             client={client}
             workspaceId={workspaceId}
             subjectId={subjectId}
+            locationRevision={locationRevision}
             onNavigate={onNavigate}
             onStepUp={onStepUp}
             onPasswordReauth={onPasswordReauth}

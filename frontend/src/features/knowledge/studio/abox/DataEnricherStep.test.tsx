@@ -141,6 +141,9 @@ describe('DataEnricherStep', () => {
   it('maps Dataset columns and marks the persisted T-Box node as Mapped', async () => {
     const fetchMock = vi.fn<typeof fetch>((input, init) => {
       const path = requestUrl(input)
+      if (path.endsWith('/abox/ingestions') && !init?.method) {
+        return Promise.resolve(json({ items: [] }))
+      }
       if (path.endsWith(`/drafts/${draftId}/abox`) && !init?.method) {
         return Promise.resolve(json({
           draft: draft(3),
@@ -213,6 +216,9 @@ describe('DataEnricherStep', () => {
     let patches = 0
     const fetchMock = vi.fn<typeof fetch>((input, init) => {
       const path = requestUrl(input)
+      if (path.endsWith('/abox/ingestions') && !init?.method) {
+        return Promise.resolve(json({ items: [] }))
+      }
       if (path.endsWith(`/drafts/${draftId}/abox`) && !init?.method) {
         aboxReads += 1
         return Promise.resolve(json({
@@ -277,6 +283,9 @@ describe('DataEnricherStep', () => {
     const secondNodeId = `preview:${'b'.repeat(64)}`
     const fetchMock = vi.fn<typeof fetch>((input, init) => {
       const path = requestUrl(input)
+      if (path.endsWith('/abox/ingestions') && !init?.method) {
+        return Promise.resolve(json({ items: [] }))
+      }
       if (path.endsWith(`/drafts/${draftId}/abox`) && !init?.method) {
         return Promise.resolve(json({
           draft: draft(3),
@@ -376,6 +385,74 @@ describe('DataEnricherStep', () => {
     })
   })
 
+  it('queues ingestion only after an exact PASS receipt and renders durable progress', async () => {
+    const job = {
+      id: '019fa57b-52de-74c0-9f5e-06ae7b1bf3d0',
+      draft_id: draftId,
+      requested_by: draft(3).author_id,
+      state: 'PENDING',
+      progress_percent: 0,
+      current_stage: 'QUEUED',
+      vector_target_count: 1,
+      result: null,
+      error_code: null,
+      error_message: null,
+      version: 1,
+      created_at: '2026-07-29T01:00:00Z',
+      updated_at: '2026-07-29T01:00:00Z',
+      started_at: null,
+      finished_at: null,
+    }
+    const fetchMock = vi.fn<typeof fetch>((input, init) => {
+      const path = requestUrl(input)
+      if (path.endsWith('/abox/ingestions') && init?.method === 'POST') {
+        return Promise.resolve(json(job, 202))
+      }
+      if (path.endsWith('/abox/ingestions') && !init?.method) {
+        return Promise.resolve(json({ items: [] }))
+      }
+      if (path.endsWith(`/drafts/${draftId}/abox`) && !init?.method) {
+        return Promise.resolve(json({
+          draft: draft(3),
+          tbox_elements: tboxElements,
+          bindings: [binding(1)],
+        }, 200, '"3"'))
+      }
+      if (path.endsWith('/abox/preflight') && init?.method === 'POST') {
+        return Promise.resolve(json({
+          status: 'PASS',
+          valid: true,
+          draft_version: 3,
+          checked_at: '2026-07-29T01:00:00Z',
+          receipt_id: '019fa57b-52de-74c0-9f5e-06ae7b1bf3d1',
+          contract_hash: 'a'.repeat(64),
+          evidence: [],
+        }, 200, '"3"'))
+      }
+      return Promise.reject(new Error(`Unexpected request: ${path}`))
+    })
+    vi.stubGlobal('fetch', fetchMock)
+    const client = new ApiClient('/api/v1', () => 'token', () => 'workspace')
+    render(<DataEnricherStep client={client} draftId={draftId} onDraftUpdate={vi.fn()} />)
+
+    const runButton = await screen.findByRole('button', { name: 'Run Ingestion' })
+    expect(runButton).toBeDisabled()
+    fireEvent.click(screen.getByRole('button', { name: 'Pre-flight 검증' }))
+    const preflightResult = await screen.findByLabelText('Ingestion Pre-flight 결과')
+    expect(within(preflightResult).getByText(/Pre-flight PASS/)).toBeInTheDocument()
+    expect(runButton).toBeEnabled()
+    fireEvent.click(runButton)
+
+    const progress = await screen.findByLabelText('A-Box Ingestion 진행 상태')
+    expect(within(progress).getByText('PENDING · QUEUED')).toBeInTheDocument()
+    expect(within(progress).getByText(/Vector 대상 1개/)).toBeInTheDocument()
+    const createCall = fetchMock.mock.calls.find(([input, init]) => (
+      init?.method === 'POST' && requestUrl(input).endsWith('/abox/ingestions')
+    ))
+    expect(new Headers(createCall?.[1]?.headers).get('If-Match')).toBe('"3"')
+    expect(new Headers(createCall?.[1]?.headers).get('Idempotency-Key')).toBeTruthy()
+  })
+
   it('keeps REVIEW read-only and publishes only after an exact reviewer pre-flight receipt', async () => {
     const reviewerId = '019fa57b-52de-74c0-9f5e-06ae7b1bf3c9'
     const reviewedDraft = {
@@ -395,6 +472,9 @@ describe('DataEnricherStep', () => {
     }
     const fetchMock = vi.fn<typeof fetch>((input, init) => {
       const path = requestUrl(input)
+      if (path.endsWith('/abox/ingestions') && !init?.method) {
+        return Promise.resolve(json({ items: [] }))
+      }
       if (path.endsWith(`/drafts/${draftId}/abox`) && !init?.method) {
         return Promise.resolve(json({
           draft: reviewedDraft,

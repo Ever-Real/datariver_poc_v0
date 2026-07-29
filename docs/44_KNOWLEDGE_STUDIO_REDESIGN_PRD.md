@@ -25,15 +25,15 @@ ADR/DB/API 게이트 승인과 구현 완료 후에만 이를 대체한다.
 
 | 항목 | 결정 |
 |---|---|
-| 신규 Asset 생성 | 모달을 사용하지 않는다. 생성 클릭 즉시 draft 없는 전체 화면 Step 1로 이동하고, Step 1 저장이 author-scoped Studio Draft를 만든다. Graph aggregate는 T-Box 검증 및 Studio 완료 명령에서만 원자적으로 만든다. |
+| 신규 Asset 생성 | persistent Knowledge shell 내부의 route-backed full-screen modal을 사용한다. 생성 클릭은 draft 없는 Step 1 route를 열고, Step 1 저장이 author-scoped Studio Draft를 만든다. 새로고침/뒤로가기는 URL로 복구하며 Graph aggregate는 독립 검토된 Studio Publish에서만 원자적으로 만든다. |
 | 데이터 적재 메뉴 | GNB에서 제거한다. 현재 Ingestion Studio의 기능은 Step 2/3으로 흡수하며 API 없는 기능은 unavailable로 표시한다. |
 | Step 1 필드 | 사용자 입력은 이름, `endpoint_alias`, 통제된 업무 도메인, 보안등급 네 개다. alias는 소문자 영문으로 시작하는 영문/숫자/underscore 3~100자이며 materialize 때 기존 `graph.slug`가 된다. |
 | 업무 도메인 | 기존 `graph_type`과 혼동하지 않는다. 도메인은 Workspace의 active `catalog.vocabulary_entries(kind=DOMAIN)` UUID/source version을 pin하고 Knowledge ABAC의 `domain_id`로 사용한다. |
-| Cypher 편집기 | 화면의 양방향 편집 보조 형식이다. 안전 schema subset을 typed T-Box operation으로 변환할 뿐, 원문을 서버/Neo4j에 보내거나 실행하지 않는다. |
-| LLM/파일 제안 | 항상 proposal이다. 점선/강조 preview 후 사용자가 Accept할 때만 Draft operation이 된다. 모델은 publish, activate, Cypher 실행, source 범위 확대 권한이 없다. |
+| Cypher 편집기 | 화면의 양방향 편집 보조 형식이다. 안전 schema subset을 typed T-Box operation으로 변환할 뿐, 원문을 서버/Neo4j에 보내거나 실행하지 않는다. invalid buffer는 line/column diagnostic을 표시하고 마지막 valid canvas를 보존한다. |
+| LLM/파일 제안 | 항상 proposal이다. 점선/강조 preview 후 사용자가 Accept할 때만 Draft operation이 된다. 충돌 기본 전략은 `KEEP_ORIGINAL`이고 conflict dialog에서 항목별로 결정한다. 모델은 publish, activate, Cypher 실행, source 범위 확대 권한이 없다. |
 | A-Box 완료 표시 | mapping readiness와 ingestion publication을 서로 다른 상태축으로 표시한다. 노드 활성 표시는 유효한 binding 존재일 뿐, Neo4j 적재나 release 발행을 뜻하지 않는다. |
 | Asset lifecycle | schema Asset은 `DRAFT → REVIEW → PUBLISHED`를 따른다. Studio Draft는 version-fenced auto-save되며 명시적 Discard 전까지 만료 없이 보존한다. Discard는 audit 가능한 terminal state다. |
-| block merge | 같은 canonical Class/Relation 충돌은 weight가 높은 block, 동률이면 ordinal이 큰 최신 block(LIFO)이 property/rule key를 override한다. classification, provenance, source pin과 validation 결과는 override 대상이 아니다. |
+| block merge | weight/ordinal은 결정적인 표시·평가 순서만 정한다. block은 자신이 소유한 element만 변경할 수 있고 stable ID/canonical name 충돌은 자동 overwrite하지 않는다. Proposal 충돌 기본값은 `KEEP_ORIGINAL`이며 사용자가 명시적으로 해결한다. |
 | 기본 그래프 | 전체 메타데이터 lineage와 데이터 용어사전 T-Box는 System Admin만 수정한다. 승인된 PUBLISHED T-Box와 managed mapping policy에 대한 일일 A-Box sync/auto-publication은 Phase 6 전용 ADR/보안 게이트를 통과해야 한다. |
 
 ### 1.3 바꾸지 않는 경계
@@ -71,7 +71,7 @@ ingestion은 Mode A/Mode B와 PDF 전용 durable source-analysis를 포함한다
 | page=knowledge | Registry를 연다. 현재 bookmark를 깨지 않는다. |
 | page=knowledge-chat | 그대로 유지한다. 일반 Chat과 합치지 않는다. |
 | graph/release/changeset API | 검토, 발행, projection, GraphRAG 계약을 바꾸지 않는다. Studio는 새 typed command로만 여기에 합류한다. |
-| PDF source-analysis | Step 3 source kind로 재사용 가능하지만 PDF, PUBLIC/INTERNAL, worker capability 제한을 우회하지 않는다. Excel/CSV/TXT/DOCX 분석은 새 parser 계약 승인 전 unavailable이다. |
+| 문서 schema inference | 승인 형식은 PDF/DOCX/XLSX뿐이며 실제 데이터 적재가 아니라 T-Box proposal을 만든다. 전용 bounded parser/worker가 배포되기 전에는 unavailable이고 DOC/XLS/CSV/TXT는 허용하지 않는다. |
 | DataHub DB 선택 | 브라우저가 DataHub GraphQL을 호출하지 않는다. 권한 처리된 local catalog projection에서만 후보를 찾는다. |
 | 데이터 적재 메뉴 | 메뉴/직접 진입만 없앤다. AppShell, Catalog, Upload, 다른 menu route와 Chat 상태는 변경하지 않는다. |
 
@@ -153,11 +153,11 @@ REVIEW로 전환되기 전에는 수정할 수 있지만 이후에는 고정한�
 ### 3.3 Step 2 Graph Builder
 
 Graph Builder는 순서가 있는 아코디언 block stack이다. Header는 제목, kind, 가중치,
-source 상태, proposal 수, validation 상태를 보인다. 가중치는 필수 정수 percentage
-`0..100`이며 클라이언트 기본값을 만들지 않는다. merge는 canonical element별 block을
-`(weight, ordinal)` 오름차순 fold하고 뒤의 property/rule key가 앞의 값을 덮어쓴다.
-값 제거는 빈 값이 아니라 명시적 typed tombstone만 허용한다. 동률 LIFO도 classification,
-provenance, source pin, ontology validation을 우회하지 않는다.
+source 상태, proposal 수, validation 상태를 보인다. 가중치는 정수 percentage
+`0..100`이며 생략 시 서버 계약의 기본값 `50`을 적용한다. `(weight, ordinal)`은 결정적인
+표시·평가 순서만 정한다. 각 block은 자신이 소유한 element만 typed operation으로 변경하고,
+stable ID 또는 canonical name 충돌은 자동으로 덮어쓰지 않는다. 값 제거는 빈 값이 아니라
+명시적 typed delete operation만 허용한다.
 
 | Block kind | UI 용어 | 허용 입력 | 결과 |
 |---|---|---|---|
@@ -168,10 +168,10 @@ provenance, source pin, ontology validation을 우회하지 않는다.
 
 block N을 펼치면 이전 enabled block의 ACCEPTED operation을 순서대로 fold한 base graph가
 editor/canvas에 나타난다. 현재 block의 변경은 별도 operation layer로 저장하므로 이전 block
-row를 복사·수정하지 않는다. block 순서/활성 변경은 deterministic weighted re-fold와
-validation을 거친다. 같은 canonical element의 property/rule conflict만 승인된
-weight/LIFO 규칙으로 해결하며 element kind, endpoint 또는 classification 충돌은 validation
-error로 남긴다.
+row를 복사·수정하지 않는다. block 순서/가중치 변경은 결정적인 표시·평가 순서를 바꾸지만
+element 소유권을 바꾸지 않는다. 같은 canonical element, element kind 또는 relation endpoint
+충돌은 Proposal conflict로 남기며 기본 `KEEP_ORIGINAL` 또는 사용자의 명시적 resolution 없이는
+accepted graph에 반영하지 않는다.
 
 `DB 활용` picker는 권한 처리된 table Asset을 복수 선택하고 identity/read-only URN,
 table name, domain, description/term/tag, field path, field description/term/tag aspect를
@@ -458,7 +458,7 @@ source version을 pin한다. Knowledge authorization은 이를 `ResourceAttribut
 |---|---|---|
 | knowledge.studio_drafts | workspace, author, kind CREATE/EDIT, name, endpoint alias, domain ref/version, classification, base graph/ontology/release nullable refs, state, step, version, last autosave/discard times | Step 1~3 author-scoped aggregate. 명시적 Discard 전 만료 없이 보존하고 신규 CREATE draft의 graph type은 server intent로 결정한다. materialize 전 Registry/GraphRAG에서 보이지 않음 |
 | knowledge.source_references | workspace, kind UPLOAD_MANIFEST/CATALOG_ASSET/GRAPH_RELEASE, exactly-one local ref, exact version/hash/classification, bounded typed selection document/hash | T-Box input과 A-Box binding이 공유하는 immutable source pin. URL/URN/object coordinate 대신 local UUID와 opaque evidence만 외부 노출 |
-| knowledge.tbox_draft_blocks | draft, ordinal, kind, title, weight, merge mode, state, version | 아코디언/layer 설계 provenance. draft+ordinal unique, weight는 `0..100` 정수이며 property/rule 충돌의 merge precedence임 |
+| knowledge.tbox_draft_blocks | draft, ordinal, kind, title, weight, collapse state, version | 아코디언/layer 설계 provenance. draft+ordinal unique, weight는 `0..100` 정수이며 결정적인 표시·평가 순서를 정하지만 element를 자동 overwrite하지 않음 |
 | knowledge.tbox_block_inputs | block, source reference, purpose, ordinal | immutable source와 block 연결. 같은 input의 중복 연결을 금지 |
 | knowledge.tbox_draft_operations | draft, block, proposal nullable, sequence, element kind, stable element ID, typed document, provenance, state | CLASS/PROPERTY/RELATION/CONSTRAINT UPSERT/DELETE. PROPOSED는 preview 전용, ACCEPTED만 materialize 대상 |
 | knowledge.tbox_proposals | draft/block, proposal kind, source/model/parser binding hash, input/output hash, state, confidence summary, expiry | LLM/file/catalog/asset 제안 envelope. provider response/secret 저장 금지 |

@@ -419,6 +419,28 @@ async def test_preflight_returns_all_required_mapping_evidence_without_source_ca
     samples.probe_access.assert_not_awaited()
 
 
+def test_preflight_requires_every_vector_property_to_have_a_mapping() -> None:
+    class_element, property_element = elements()
+    current_binding = binding()
+    vector_abox = KnowledgeStudioABoxRecord(
+        draft=draft(),
+        tbox_elements=(
+            class_element,
+            replace(property_element, nullable=True, vector_index_enabled=True),
+        ),
+        bindings=(
+            replace(
+                current_binding,
+                rules=tuple(rule for rule in current_binding.rules if rule.method == "SUBJECT_ID"),
+            ),
+        ),
+    )
+
+    evidence = KnowledgeStudioPreviewService._mapping_evidence(vector_abox)
+
+    assert [item.code for item in evidence] == ["VECTOR_PROPERTY_UNMAPPED"]
+
+
 @pytest.mark.asyncio
 async def test_preflight_never_probes_a_physical_source_after_catalog_access_is_denied() -> None:
     store = SimpleNamespace(get_abox=AsyncMock(return_value=abox()))

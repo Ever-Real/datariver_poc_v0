@@ -760,6 +760,21 @@ class KnowledgeStudioPreviewService:
                             ),
                         )
                     )
+                if (
+                    property_element.vector_index_enabled
+                    and property_element.stable_element_id not in mapped_properties
+                ):
+                    evidence.append(
+                        _evidence(
+                            severity="ERROR",
+                            code="VECTOR_PROPERTY_UNMAPPED",
+                            location=f"tbox:{property_element.stable_element_id}",
+                            message=(
+                                f"Vector Property {property_element.display_name} must be "
+                                "mapped before ingestion."
+                            ),
+                        )
+                    )
         return evidence
 
     @staticmethod

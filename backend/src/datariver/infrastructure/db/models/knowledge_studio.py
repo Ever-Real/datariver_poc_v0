@@ -6,6 +6,7 @@ from uuid import UUID
 from sqlalchemy import (
     Boolean,
     CheckConstraint,
+    Float,
     ForeignKeyConstraint,
     Index,
     Integer,
@@ -17,6 +18,7 @@ from sqlalchemy import (
 )
 from sqlalchemy.orm import Mapped, mapped_column
 
+from datariver.domain.knowledge_studio import DEFAULT_TBOX_BLOCK_WEIGHT
 from datariver.infrastructure.db.base import (
     JSON_DOCUMENT,
     Base,
@@ -301,6 +303,15 @@ class TBoxDraftElementModel(
             ondelete="RESTRICT",
         ),
         ForeignKeyConstraint(
+            ("workspace_id", "draft_id", "block_id"),
+            (
+                "knowledge.tbox_draft_blocks.workspace_id",
+                "knowledge.tbox_draft_blocks.draft_id",
+                "knowledge.tbox_draft_blocks.id",
+            ),
+            ondelete="RESTRICT",
+        ),
+        ForeignKeyConstraint(
             ("workspace_id", "draft_id", "parent_stable_element_id"),
             (
                 "knowledge.tbox_draft_elements.workspace_id",
@@ -345,6 +356,7 @@ class TBoxDraftElementModel(
 
     workspace_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), nullable=False)
     draft_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), nullable=False)
+    block_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), nullable=False)
     stable_element_id: Mapped[str] = mapped_column(String(128), nullable=False)
     kind: Mapped[str] = mapped_column(String(16), nullable=False)
     canonical_name: Mapped[str] = mapped_column(String(255), nullable=False)
@@ -354,7 +366,250 @@ class TBoxDraftElementModel(
     target_stable_element_id: Mapped[str | None] = mapped_column(String(128))
     data_type: Mapped[str | None] = mapped_column(String(100))
     nullable: Mapped[bool | None] = mapped_column(Boolean)
+    definition: Mapped[str | None] = mapped_column(Text)
+    aliases: Mapped[list[str]] = mapped_column(
+        JSON_DOCUMENT,
+        default=list,
+        nullable=False,
+    )
+    unit: Mapped[str | None] = mapped_column(String(100))
+    vector_index_enabled: Mapped[bool] = mapped_column(
+        Boolean,
+        default=False,
+        nullable=False,
+    )
+    layout_x: Mapped[float | None] = mapped_column(Float)
+    layout_y: Mapped[float | None] = mapped_column(Float)
     ordinal: Mapped[int] = mapped_column(Integer, nullable=False)
+
+
+class TBoxDraftBlockModel(
+    Base,
+    UuidPrimaryKeyMixin,
+    TimestampMixin,
+    VersionMixin,
+):
+    """Ordered, independently collapsible T-Box authoring layer."""
+
+    __tablename__ = "tbox_draft_blocks"
+    __table_args__ = (
+        UniqueConstraint("workspace_id", "draft_id", "id"),
+        UniqueConstraint("workspace_id", "draft_id", "ordinal"),
+        CheckConstraint(
+            "kind IN ('DIRECT', 'DOCUMENT_SCHEMA', 'CATALOG_METADATA', "
+            "'ASSET_RELEASE', 'LLM_ASSISTANT')",
+            name="kind_vocabulary",
+        ),
+        CheckConstraint(
+            "char_length(title) BETWEEN 1 AND 120 AND title = btrim(title)",
+            name="title_valid",
+        ),
+        CheckConstraint("weight BETWEEN 0 AND 100", name="weight_range"),
+        CheckConstraint("ordinal >= 0", name="ordinal_nonnegative"),
+        ForeignKeyConstraint(
+            ("workspace_id", "draft_id"),
+            ("knowledge.studio_drafts.workspace_id", "knowledge.studio_drafts.id"),
+            ondelete="RESTRICT",
+        ),
+        Index(
+            "ix_tbox_draft_blocks_draft_ordinal",
+            "workspace_id",
+            "draft_id",
+            "ordinal",
+        ),
+        {"schema": "knowledge"},
+    )
+
+    workspace_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), nullable=False)
+    draft_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), nullable=False)
+    kind: Mapped[str] = mapped_column(String(32), nullable=False)
+    title: Mapped[str] = mapped_column(String(120), nullable=False)
+    weight: Mapped[int] = mapped_column(
+        Integer,
+        default=DEFAULT_TBOX_BLOCK_WEIGHT,
+        nullable=False,
+    )
+    ordinal: Mapped[int] = mapped_column(Integer, nullable=False)
+    collapsed: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    source_reference: Mapped[dict[str, object] | None] = mapped_column(JSON_DOCUMENT)
+
+
+class TBoxProposalModel(
+    Base,
+    UuidPrimaryKeyMixin,
+    TimestampMixin,
+    VersionMixin,
+):
+    """Typed LLM proposal. It cannot mutate a Draft until explicitly accepted."""
+
+    __tablename__ = "tbox_proposals"
+    __table_args__ = (
+        UniqueConstraint("workspace_id", "draft_id", "id"),
+        CheckConstraint(
+            "state IN ('READY', 'APPLIED', 'REJECTED', 'FAILED')",
+            name="state_vocabulary",
+        ),
+        CheckConstraint(
+            "mode IN ('MERGE_INTO_CURRENT', 'APPEND_LAYER')",
+            name="mode_vocabulary",
+        ),
+        CheckConstraint(
+            "merge_strategy IN ('KEEP_ORIGINAL', 'ACCEPT_PROPOSAL', 'RESOLVE')",
+            name="merge_strategy_vocabulary",
+        ),
+        CheckConstraint(
+            "char_length(prompt) BETWEEN 1 AND 4000 AND prompt = btrim(prompt)",
+            name="prompt_valid",
+        ),
+        CheckConstraint("base_draft_version >= 1", name="base_draft_version_positive"),
+        CheckConstraint(
+            "jsonb_typeof(proposal_document) = 'object'",
+            name="proposal_document_object",
+        ),
+        CheckConstraint(
+            "jsonb_typeof(conflicts_document) = 'array'",
+            name="conflicts_document_array",
+        ),
+        ForeignKeyConstraint(
+            ("workspace_id", "draft_id"),
+            ("knowledge.studio_drafts.workspace_id", "knowledge.studio_drafts.id"),
+            ondelete="RESTRICT",
+        ),
+        ForeignKeyConstraint(
+            ("workspace_id", "draft_id", "target_block_id"),
+            (
+                "knowledge.tbox_draft_blocks.workspace_id",
+                "knowledge.tbox_draft_blocks.draft_id",
+                "knowledge.tbox_draft_blocks.id",
+            ),
+            ondelete="RESTRICT",
+        ),
+        ForeignKeyConstraint(
+            ("workspace_id", "created_by"),
+            ("iam.workspace_memberships.workspace_id", "iam.workspace_memberships.subject_id"),
+            ondelete="RESTRICT",
+        ),
+        Index(
+            "ix_tbox_proposals_draft_created",
+            "workspace_id",
+            "draft_id",
+            "created_at",
+            "id",
+        ),
+        {"schema": "knowledge"},
+    )
+
+    workspace_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), nullable=False)
+    draft_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), nullable=False)
+    target_block_id: Mapped[UUID | None] = mapped_column(Uuid(as_uuid=True))
+    created_by: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), nullable=False)
+    state: Mapped[str] = mapped_column(String(16), nullable=False)
+    mode: Mapped[str] = mapped_column(String(32), nullable=False)
+    merge_strategy: Mapped[str] = mapped_column(String(24), nullable=False)
+    base_draft_version: Mapped[int] = mapped_column(Integer, nullable=False)
+    prompt: Mapped[str] = mapped_column(Text, nullable=False)
+    proposal_document: Mapped[dict[str, object]] = mapped_column(
+        JSON_DOCUMENT,
+        nullable=False,
+    )
+    conflicts_document: Mapped[list[dict[str, object]]] = mapped_column(
+        JSON_DOCUMENT,
+        nullable=False,
+    )
+    model_binding_document: Mapped[dict[str, object] | None] = mapped_column(JSON_DOCUMENT)
+    error_code: Mapped[str | None] = mapped_column(String(100))
+    applied_at: Mapped[datetime | None]
+    rejected_at: Mapped[datetime | None]
+
+
+class KnowledgeStudioIngestionJobModel(
+    Base,
+    UuidPrimaryKeyMixin,
+    TimestampMixin,
+    VersionMixin,
+):
+    """Durable A-Box materialization request processed outside the API process."""
+
+    __tablename__ = "studio_ingestion_jobs"
+    __table_args__ = (
+        UniqueConstraint("workspace_id", "draft_id", "id"),
+        CheckConstraint(
+            "state IN ('PENDING', 'RUNNING', 'FAILED', 'SUCCESS')",
+            name="state_vocabulary",
+        ),
+        CheckConstraint(
+            "progress_percent BETWEEN 0 AND 100",
+            name="progress_range",
+        ),
+        CheckConstraint(
+            "jsonb_typeof(request_document) = 'object'",
+            name="request_document_object",
+        ),
+        CheckConstraint(
+            "jsonb_typeof(vector_policy_document) = 'object'",
+            name="vector_policy_document_object",
+        ),
+        CheckConstraint(
+            "(state = 'PENDING' AND progress_percent = 0 AND started_at IS NULL "
+            "AND finished_at IS NULL AND error_code IS NULL) OR "
+            "(state = 'RUNNING' AND progress_percent BETWEEN 0 AND 99 "
+            "AND started_at IS NOT NULL AND finished_at IS NULL AND error_code IS NULL) OR "
+            "(state = 'FAILED' AND started_at IS NOT NULL AND finished_at IS NOT NULL "
+            "AND error_code IS NOT NULL) OR "
+            "(state = 'SUCCESS' AND progress_percent = 100 AND started_at IS NOT NULL "
+            "AND finished_at IS NOT NULL AND error_code IS NULL)",
+            name="state_shape",
+        ),
+        ForeignKeyConstraint(
+            ("workspace_id", "draft_id"),
+            ("knowledge.studio_drafts.workspace_id", "knowledge.studio_drafts.id"),
+            ondelete="RESTRICT",
+        ),
+        ForeignKeyConstraint(
+            ("workspace_id", "requested_by"),
+            ("iam.workspace_memberships.workspace_id", "iam.workspace_memberships.subject_id"),
+            ondelete="RESTRICT",
+        ),
+        Index(
+            "ix_studio_ingestion_jobs_draft_created",
+            "workspace_id",
+            "draft_id",
+            "created_at",
+            "id",
+        ),
+        Index(
+            "ix_studio_ingestion_jobs_claim",
+            "state",
+            "lease_expires_at",
+            "created_at",
+            "id",
+        ),
+        {"schema": "knowledge"},
+    )
+
+    workspace_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), nullable=False)
+    draft_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), nullable=False)
+    requested_by: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), nullable=False)
+    state: Mapped[str] = mapped_column(String(16), default="PENDING", nullable=False)
+    progress_percent: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    current_stage: Mapped[str] = mapped_column(String(100), nullable=False)
+    request_document: Mapped[dict[str, object]] = mapped_column(
+        JSON_DOCUMENT,
+        nullable=False,
+    )
+    vector_policy_document: Mapped[dict[str, object]] = mapped_column(
+        JSON_DOCUMENT,
+        nullable=False,
+    )
+    result_document: Mapped[dict[str, object] | None] = mapped_column(JSON_DOCUMENT)
+    error_code: Mapped[str | None] = mapped_column(String(100))
+    error_message: Mapped[str | None] = mapped_column(Text)
+    started_at: Mapped[datetime | None]
+    finished_at: Mapped[datetime | None]
+    lease_epoch: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    lease_token_hash: Mapped[str | None] = mapped_column(String(64))
+    lease_owner_fingerprint: Mapped[str | None] = mapped_column(String(255))
+    lease_expires_at: Mapped[datetime | None]
 
 
 class KnowledgeSourceReferenceModel(Base, UuidPrimaryKeyMixin):

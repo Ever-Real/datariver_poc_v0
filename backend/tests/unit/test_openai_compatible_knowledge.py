@@ -17,6 +17,7 @@ from datariver.infrastructure.knowledge.openai_compatible import (
     HttpxOpenAIJsonTransport,
     OpenAICompatibleEmbeddingProvider,
     OpenAICompatibleKnowledgeAnswerComposer,
+    OpenAICompatibleTBoxSchemaAssistant,
     OpenAICompatibleTypedKnowledgeExtractor,
 )
 
@@ -269,6 +270,45 @@ async def test_extractor_rejects_evidence_ids_not_owned_by_the_server() -> None:
             pages=(PdfPage.create(page_number=1, text="Grounded source evidence"),),
             entity_types=frozenset({"Facility"}),
             edge_types=frozenset(),
+            binding=_binding("gemma4:latest"),
+        )
+
+
+@pytest.mark.asyncio
+async def test_tbox_schema_assistant_rejects_duplicate_model_identities() -> None:
+    transport = _Transport(
+        {
+            "choices": [
+                {
+                    "message": {
+                        "content": json.dumps(
+                            {
+                                "elements": [
+                                    {
+                                        "stable_element_id": "class:document-one",
+                                        "kind": "CLASS",
+                                        "canonical_name": "Document",
+                                        "display_name": "Document",
+                                    },
+                                    {
+                                        "stable_element_id": "class:document-two",
+                                        "kind": "CLASS",
+                                        "canonical_name": "Document",
+                                        "display_name": "Duplicate Document",
+                                    },
+                                ]
+                            }
+                        )
+                    }
+                }
+            ]
+        }
+    )
+
+    with pytest.raises(ValidationError, match="duplicate typed identity"):
+        await OpenAICompatibleTBoxSchemaAssistant(transport=transport).propose(
+            prompt="Document schema를 제안해 줘.",
+            current_elements=(),
             binding=_binding("gemma4:latest"),
         )
 

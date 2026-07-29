@@ -9,8 +9,12 @@ from datariver.application.classification_access import ClassificationAccessReso
 from datariver.application.dto import (
     KnowledgeStudioBindingRecord,
     KnowledgeStudioDraftRecord,
+    KnowledgeStudioIngestionJobRecord,
     KnowledgeStudioReleaseRecord,
     KnowledgeStudioSourceDataset,
+    KnowledgeStudioTBoxElementRecord,
+    KnowledgeStudioTBoxProposalRecord,
+    KnowledgeStudioTBoxRecord,
     KnowledgeStudioValidationEvidence,
 )
 from datariver.application.services.authorization import AuthorizationService
@@ -23,13 +27,25 @@ from datariver.application.services.knowledge_studio_preview import (
     KnowledgeStudioPreviewService,
 )
 from datariver.domain.authz import BuiltinPolicyEngine, Classification
-from datariver.domain.common import ValidationError, canonical_json_hash
+from datariver.domain.common import ConflictError, ValidationError, canonical_json_hash
+from datariver.domain.knowledge_studio import (
+    TBoxElementInput,
+    TBoxElementKind,
+    TBoxMergeStrategy,
+    TBoxOperationInput,
+    TBoxOperationKind,
+    TBoxProposalMode,
+)
 from datariver.infrastructure.db.authz import SqlDecisionWriter
 from datariver.infrastructure.db.catalog import SqlCatalogIndexReader
 from datariver.infrastructure.db.classification_access import (
     SqlClassificationAccessSnapshotReader,
 )
 from datariver.infrastructure.db.knowledge_studio import SqlKnowledgeStudioStore
+from datariver.infrastructure.knowledge.runtime import (
+    build_knowledge_runtime_adapters,
+    resolve_knowledge_runtime_bindings,
+)
 from datariver.interfaces.http.dependencies import ContextDep, SessionDep, get_container
 from datariver.interfaces.http.schemas import (
     KnowledgeStudioABoxResponse,
@@ -41,6 +57,8 @@ from datariver.interfaces.http.schemas import (
     KnowledgeStudioDomainOptionResponse,
     KnowledgeStudioDomainOptionsResponse,
     KnowledgeStudioDraftResponse,
+    KnowledgeStudioIngestionJobListResponse,
+    KnowledgeStudioIngestionJobResponse,
     KnowledgeStudioMappingRuleResponse,
     KnowledgeStudioPreflightResponse,
     KnowledgeStudioPreviewEdgeResponse,
@@ -54,7 +72,17 @@ from datariver.interfaces.http.schemas import (
     KnowledgeStudioSourceDatasetResponse,
     KnowledgeStudioSourceDetailResponse,
     KnowledgeStudioSourcePageResponse,
+    KnowledgeStudioTBoxBlockCreateRequest,
+    KnowledgeStudioTBoxBlockResponse,
+    KnowledgeStudioTBoxBlockUpdateRequest,
+    KnowledgeStudioTBoxElementRequest,
     KnowledgeStudioTBoxElementResponse,
+    KnowledgeStudioTBoxOperationsRequest,
+    KnowledgeStudioTBoxProposalApplyRequest,
+    KnowledgeStudioTBoxProposalConflictResponse,
+    KnowledgeStudioTBoxProposalRequest,
+    KnowledgeStudioTBoxProposalResponse,
+    KnowledgeStudioTBoxResponse,
     KnowledgeStudioValidationEvidenceResponse,
     PageMeta,
 )
@@ -120,6 +148,35 @@ def _service(request: Request, session: SessionDep) -> KnowledgeStudioService:
         store=store,
         authorization=authorization,
         sources=sources,
+    )
+
+
+def _runtime_service(request: Request, session: SessionDep) -> KnowledgeStudioService:
+    store, authorization, sources = _service_components(request, session)
+    runtime = build_knowledge_runtime_adapters(get_container(request).settings)
+    return KnowledgeStudioService(
+        store=store,
+        authorization=authorization,
+        sources=sources,
+        schema_assistant=runtime.schema_assistant,
+        schema_binding=runtime.bindings.schema_assistant,
+        embedding_binding=runtime.bindings.embedding,
+    )
+
+
+def _ingestion_service(request: Request, session: SessionDep) -> KnowledgeStudioService:
+    store, authorization, sources = _service_components(request, session)
+    try:
+        embedding_binding = resolve_knowledge_runtime_bindings(
+            get_container(request).settings
+        ).embedding
+    except ConflictError:
+        embedding_binding = None
+    return KnowledgeStudioService(
+        store=store,
+        authorization=authorization,
+        sources=sources,
+        embedding_binding=embedding_binding,
     )
 
 
@@ -257,6 +314,131 @@ def _binding_response(
         ],
         created_at=binding.created_at,
         updated_at=binding.updated_at,
+    )
+
+
+def _tbox_element_response(
+    item: KnowledgeStudioTBoxElementRecord,
+) -> KnowledgeStudioTBoxElementResponse:
+    return KnowledgeStudioTBoxElementResponse(
+        stable_element_id=item.stable_element_id,
+        kind=item.kind,
+        canonical_name=item.canonical_name,
+        display_name=item.display_name,
+        parent_stable_element_id=item.parent_stable_element_id,
+        source_stable_element_id=item.source_stable_element_id,
+        target_stable_element_id=item.target_stable_element_id,
+        data_type=item.data_type,
+        nullable=item.nullable,
+        ordinal=item.ordinal,
+        version=item.version,
+        block_id=item.block_id,
+        definition=item.definition,
+        aliases=list(item.aliases),
+        unit=item.unit,
+        vector_index_enabled=item.vector_index_enabled,
+        layout_x=item.layout_x,
+        layout_y=item.layout_y,
+    )
+
+
+def _tbox_response(record: KnowledgeStudioTBoxRecord) -> KnowledgeStudioTBoxResponse:
+    return KnowledgeStudioTBoxResponse(
+        draft=_draft_response(record.draft),
+        blocks=[
+            KnowledgeStudioTBoxBlockResponse(
+                id=block.block_id,
+                kind=block.kind,
+                title=block.title,
+                weight=block.weight,
+                ordinal=block.ordinal,
+                collapsed=block.collapsed,
+                version=block.version,
+                source_reference=block.source_reference,
+                elements=[_tbox_element_response(item) for item in block.elements],
+                created_at=block.created_at,
+                updated_at=block.updated_at,
+            )
+            for block in record.blocks
+        ],
+    )
+
+
+def _tbox_element_input(
+    value: KnowledgeStudioTBoxElementRequest,
+) -> TBoxElementInput:
+    return TBoxElementInput(
+        stable_element_id=value.stable_element_id,
+        kind=TBoxElementKind(value.kind),
+        canonical_name=value.canonical_name,
+        display_name=value.display_name,
+        parent_stable_element_id=value.parent_stable_element_id,
+        source_stable_element_id=value.source_stable_element_id,
+        target_stable_element_id=value.target_stable_element_id,
+        data_type=value.data_type,
+        nullable=value.nullable,
+        definition=value.definition,
+        aliases=tuple(value.aliases),
+        unit=value.unit,
+        vector_index_enabled=value.vector_index_enabled,
+        layout_x=value.layout_x,
+        layout_y=value.layout_y,
+    )
+
+
+def _proposal_response(
+    record: KnowledgeStudioTBoxProposalRecord,
+) -> KnowledgeStudioTBoxProposalResponse:
+    return KnowledgeStudioTBoxProposalResponse(
+        id=record.proposal_id,
+        draft_id=record.draft_id,
+        target_block_id=record.target_block_id,
+        state=record.state,
+        mode=record.mode,
+        merge_strategy=record.merge_strategy,
+        base_draft_version=record.base_draft_version,
+        prompt=record.prompt,
+        elements=[_tbox_element_response(item) for item in record.elements],
+        conflicts=[
+            KnowledgeStudioTBoxProposalConflictResponse(
+                conflict_id=item.conflict_id,
+                kind=item.kind,
+                stable_element_id=item.stable_element_id,
+                field=item.field,
+                original_value=item.original_value,
+                proposed_value=item.proposed_value,
+            )
+            for item in record.conflicts
+        ],
+        model_binding=record.model_binding,
+        error_code=record.error_code,
+        version=record.version,
+        created_at=record.created_at,
+        updated_at=record.updated_at,
+        applied_at=record.applied_at,
+        rejected_at=record.rejected_at,
+    )
+
+
+def _ingestion_response(
+    record: KnowledgeStudioIngestionJobRecord,
+) -> KnowledgeStudioIngestionJobResponse:
+    return KnowledgeStudioIngestionJobResponse(
+        id=record.job_id,
+        draft_id=record.draft_id,
+        requested_by=record.requested_by,
+        state=record.state,
+        progress_percent=record.progress_percent,
+        current_stage=record.current_stage,
+        vector_target_count=record.vector_target_count,
+        result=record.result,
+        error_code=record.error_code,
+        error_message=record.error_message,
+        version=record.version,
+        created_at=record.created_at,
+        updated_at=record.updated_at,
+        started_at=record.started_at,
+        finished_at=record.finished_at,
     )
 
 
@@ -401,6 +583,263 @@ async def get_knowledge_studio_draft(
     )
     _set_draft_headers(response, record)
     return _draft_response(record)
+
+
+@router.get(
+    "/drafts/{draft_id}/tbox",
+    response_model=KnowledgeStudioTBoxResponse,
+    responses={status.HTTP_200_OK: ETAG_RESPONSE},
+)
+async def get_knowledge_studio_tbox(
+    draft_id: UUID,
+    request: Request,
+    response: Response,
+    context: ContextDep,
+    session: SessionDep,
+) -> KnowledgeStudioTBoxResponse:
+    record = await _service(request, session).get_tbox(
+        workspace_id=context.workspace_id,
+        subject=context.subject,
+        draft_id=draft_id,
+        environment=context.environment,
+        request_id=context.request_id,
+    )
+    _set_draft_headers(response, record.draft)
+    return _tbox_response(record)
+
+
+@router.post(
+    "/drafts/{draft_id}/tbox/blocks",
+    response_model=KnowledgeStudioTBoxResponse,
+    status_code=status.HTTP_201_CREATED,
+    responses={status.HTTP_201_CREATED: ETAG_RESPONSE},
+)
+async def create_knowledge_studio_tbox_block(
+    draft_id: UUID,
+    payload: KnowledgeStudioTBoxBlockCreateRequest,
+    request: Request,
+    response: Response,
+    context: ContextDep,
+    session: SessionDep,
+    idempotency_key: IdempotencyKey,
+    if_match: IfMatch,
+) -> KnowledgeStudioTBoxResponse:
+    expected_version = _expected_version(if_match)
+    request_hash = canonical_json_hash(
+        {
+            "payload": payload.model_dump(mode="json"),
+            "expected_version": expected_version,
+        }
+    )
+    record = await _service(request, session).create_tbox_block(
+        workspace_id=context.workspace_id,
+        subject=context.subject,
+        draft_id=draft_id,
+        kind=payload.kind,
+        title=payload.title,
+        weight=payload.weight,
+        expected_version=expected_version,
+        idempotency_key=idempotency_key,
+        request_hash=request_hash,
+        environment=context.environment,
+        request_id=context.request_id,
+    )
+    _set_draft_headers(response, record.draft)
+    return _tbox_response(record)
+
+
+@router.post(
+    "/drafts/{draft_id}/tbox/proposals",
+    response_model=KnowledgeStudioTBoxProposalResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+async def create_knowledge_studio_tbox_proposal(
+    draft_id: UUID,
+    payload: KnowledgeStudioTBoxProposalRequest,
+    request: Request,
+    response: Response,
+    context: ContextDep,
+    session: SessionDep,
+    if_match: IfMatch,
+) -> KnowledgeStudioTBoxProposalResponse:
+    expected_version = _expected_version(if_match)
+    record = await _runtime_service(request, session).create_tbox_proposal(
+        workspace_id=context.workspace_id,
+        subject=context.subject,
+        draft_id=draft_id,
+        target_block_id=payload.target_block_id,
+        mode=TBoxProposalMode(payload.mode),
+        prompt=payload.prompt,
+        expected_version=expected_version,
+        environment=context.environment,
+        request_id=context.request_id,
+    )
+    response.headers["Cache-Control"] = "no-store"
+    return _proposal_response(record)
+
+
+@router.get(
+    "/drafts/{draft_id}/tbox/proposals/{proposal_id}",
+    response_model=KnowledgeStudioTBoxProposalResponse,
+)
+async def get_knowledge_studio_tbox_proposal(
+    draft_id: UUID,
+    proposal_id: UUID,
+    request: Request,
+    response: Response,
+    context: ContextDep,
+    session: SessionDep,
+) -> KnowledgeStudioTBoxProposalResponse:
+    record = await _service(request, session).get_tbox_proposal(
+        workspace_id=context.workspace_id,
+        subject=context.subject,
+        draft_id=draft_id,
+        proposal_id=proposal_id,
+        environment=context.environment,
+        request_id=context.request_id,
+    )
+    response.headers["Cache-Control"] = "no-store"
+    return _proposal_response(record)
+
+
+@router.post(
+    "/drafts/{draft_id}/tbox/proposals/{proposal_id}/apply",
+    response_model=KnowledgeStudioTBoxResponse,
+    responses={status.HTTP_200_OK: ETAG_RESPONSE},
+)
+async def apply_knowledge_studio_tbox_proposal(
+    draft_id: UUID,
+    proposal_id: UUID,
+    payload: KnowledgeStudioTBoxProposalApplyRequest,
+    request: Request,
+    response: Response,
+    context: ContextDep,
+    session: SessionDep,
+    idempotency_key: IdempotencyKey,
+    if_match: IfMatch,
+) -> KnowledgeStudioTBoxResponse:
+    expected_version = _expected_version(if_match)
+    request_hash = canonical_json_hash(
+        {
+            "proposal_id": str(proposal_id),
+            "payload": payload.model_dump(mode="json"),
+            "expected_version": expected_version,
+        }
+    )
+    record = await _service(request, session).apply_tbox_proposal(
+        workspace_id=context.workspace_id,
+        subject=context.subject,
+        draft_id=draft_id,
+        proposal_id=proposal_id,
+        merge_strategy=TBoxMergeStrategy(payload.merge_strategy),
+        resolutions=tuple(
+            {
+                key: value
+                for key, value in item.model_dump(mode="json", exclude_none=True).items()
+                if isinstance(value, str)
+            }
+            for item in payload.resolutions
+        ),
+        expected_version=expected_version,
+        idempotency_key=idempotency_key,
+        request_hash=request_hash,
+        environment=context.environment,
+        request_id=context.request_id,
+    )
+    _set_draft_headers(response, record.draft)
+    return _tbox_response(record)
+
+
+@router.patch(
+    "/drafts/{draft_id}/tbox/blocks/{block_id}",
+    response_model=KnowledgeStudioTBoxResponse,
+    responses={status.HTTP_200_OK: ETAG_RESPONSE},
+)
+async def update_knowledge_studio_tbox_block(
+    draft_id: UUID,
+    block_id: UUID,
+    payload: KnowledgeStudioTBoxBlockUpdateRequest,
+    request: Request,
+    response: Response,
+    context: ContextDep,
+    session: SessionDep,
+    idempotency_key: IdempotencyKey,
+    if_match: IfMatch,
+) -> KnowledgeStudioTBoxResponse:
+    expected_version = _expected_version(if_match)
+    request_hash = canonical_json_hash(
+        {
+            "block_id": str(block_id),
+            "payload": payload.model_dump(mode="json"),
+            "expected_version": expected_version,
+        }
+    )
+    record = await _service(request, session).update_tbox_block(
+        workspace_id=context.workspace_id,
+        subject=context.subject,
+        draft_id=draft_id,
+        block_id=block_id,
+        title=payload.title,
+        weight=payload.weight,
+        collapsed=payload.collapsed,
+        expected_version=expected_version,
+        idempotency_key=idempotency_key,
+        request_hash=request_hash,
+        environment=context.environment,
+        request_id=context.request_id,
+    )
+    _set_draft_headers(response, record.draft)
+    return _tbox_response(record)
+
+
+@router.post(
+    "/drafts/{draft_id}/tbox/blocks/{block_id}/operations",
+    response_model=KnowledgeStudioTBoxResponse,
+    responses={status.HTTP_200_OK: ETAG_RESPONSE},
+)
+async def apply_knowledge_studio_tbox_operations(
+    draft_id: UUID,
+    block_id: UUID,
+    payload: KnowledgeStudioTBoxOperationsRequest,
+    request: Request,
+    response: Response,
+    context: ContextDep,
+    session: SessionDep,
+    idempotency_key: IdempotencyKey,
+    if_match: IfMatch,
+) -> KnowledgeStudioTBoxResponse:
+    expected_version = _expected_version(if_match)
+    request_hash = canonical_json_hash(
+        {
+            "block_id": str(block_id),
+            "payload": payload.model_dump(mode="json"),
+            "expected_version": expected_version,
+        }
+    )
+    operations = tuple(
+        TBoxOperationInput(
+            operation=TBoxOperationKind(item.operation),
+            stable_element_id=item.stable_element_id,
+            element=_tbox_element_input(item.element) if item.element is not None else None,
+            layout_x=item.layout_x,
+            layout_y=item.layout_y,
+        )
+        for item in payload.operations
+    )
+    record = await _service(request, session).apply_tbox_operations(
+        workspace_id=context.workspace_id,
+        subject=context.subject,
+        draft_id=draft_id,
+        block_id=block_id,
+        operations=operations,
+        expected_version=expected_version,
+        idempotency_key=idempotency_key,
+        request_hash=request_hash,
+        environment=context.environment,
+        request_id=context.request_id,
+    )
+    _set_draft_headers(response, record.draft)
+    return _tbox_response(record)
 
 
 @router.patch(
@@ -651,24 +1090,95 @@ async def get_knowledge_studio_abox(
     _set_draft_headers(response, record.draft)
     return KnowledgeStudioABoxResponse(
         draft=_draft_response(record.draft),
-        tbox_elements=[
-            KnowledgeStudioTBoxElementResponse(
-                stable_element_id=item.stable_element_id,
-                kind=item.kind,
-                canonical_name=item.canonical_name,
-                display_name=item.display_name,
-                parent_stable_element_id=item.parent_stable_element_id,
-                source_stable_element_id=item.source_stable_element_id,
-                target_stable_element_id=item.target_stable_element_id,
-                data_type=item.data_type,
-                nullable=item.nullable,
-                ordinal=item.ordinal,
-                version=item.version,
-            )
-            for item in record.tbox_elements
-        ],
+        tbox_elements=[_tbox_element_response(item) for item in record.tbox_elements],
         bindings=[_binding_response(item) for item in record.bindings],
     )
+
+
+@router.post(
+    "/drafts/{draft_id}/abox/ingestions",
+    response_model=KnowledgeStudioIngestionJobResponse,
+    status_code=status.HTTP_202_ACCEPTED,
+)
+async def create_knowledge_studio_ingestion_job(
+    draft_id: UUID,
+    request: Request,
+    response: Response,
+    context: ContextDep,
+    session: SessionDep,
+    idempotency_key: IdempotencyKey,
+    if_match: IfMatch,
+) -> KnowledgeStudioIngestionJobResponse:
+    expected_version = _expected_version(if_match)
+    request_hash = canonical_json_hash(
+        {
+            "contract": "KNOWLEDGE_STUDIO_INGESTION_REQUEST_V1",
+            "draft_id": str(draft_id),
+            "expected_version": expected_version,
+        }
+    )
+    record = await _ingestion_service(request, session).create_ingestion_job(
+        workspace_id=context.workspace_id,
+        subject=context.subject,
+        draft_id=draft_id,
+        expected_version=expected_version,
+        idempotency_key=idempotency_key,
+        request_hash=request_hash,
+        environment=context.environment,
+        request_id=context.request_id,
+    )
+    response.headers["Cache-Control"] = "no-store"
+    return _ingestion_response(record)
+
+
+@router.get(
+    "/drafts/{draft_id}/abox/ingestions",
+    response_model=KnowledgeStudioIngestionJobListResponse,
+)
+async def list_knowledge_studio_ingestion_jobs(
+    draft_id: UUID,
+    request: Request,
+    response: Response,
+    context: ContextDep,
+    session: SessionDep,
+    limit: Annotated[int, Query(ge=1, le=50)] = 20,
+) -> KnowledgeStudioIngestionJobListResponse:
+    records = await _service(request, session).list_ingestion_jobs(
+        workspace_id=context.workspace_id,
+        subject=context.subject,
+        draft_id=draft_id,
+        limit=limit,
+        environment=context.environment,
+        request_id=context.request_id,
+    )
+    response.headers["Cache-Control"] = "no-store"
+    return KnowledgeStudioIngestionJobListResponse(
+        items=[_ingestion_response(record) for record in records]
+    )
+
+
+@router.get(
+    "/drafts/{draft_id}/abox/ingestions/{job_id}",
+    response_model=KnowledgeStudioIngestionJobResponse,
+)
+async def get_knowledge_studio_ingestion_job(
+    draft_id: UUID,
+    job_id: UUID,
+    request: Request,
+    response: Response,
+    context: ContextDep,
+    session: SessionDep,
+) -> KnowledgeStudioIngestionJobResponse:
+    record = await _service(request, session).get_ingestion_job(
+        workspace_id=context.workspace_id,
+        subject=context.subject,
+        draft_id=draft_id,
+        job_id=job_id,
+        environment=context.environment,
+        request_id=context.request_id,
+    )
+    response.headers["Cache-Control"] = "no-store"
+    return _ingestion_response(record)
 
 
 @router.get(

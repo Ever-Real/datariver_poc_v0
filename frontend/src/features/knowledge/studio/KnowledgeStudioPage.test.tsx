@@ -130,9 +130,38 @@ describe('KnowledgeStudioPage Draft recovery', () => {
     expect(new Headers(editCall?.[1]?.headers).get('Idempotency-Key')).toBeTruthy()
   })
 
-  it('persists input first, debounces create, then advances to Graph Builder', async () => {
+  it('runs the basic-information to T-Box to A-Box authoring flow through typed APIs', async () => {
     window.history.replaceState({}, '', '/?page=knowledge-studio&workspace=workspace')
     const queue = new MemoryRecoveryQueue()
+    const blockId = '019fa57b-52de-74c0-9f5e-06ae7b1bf3d0'
+    const tboxElement = {
+      stable_element_id: 'class:019fa57b-52de-74c0-9f5e-06ae7b1bf399',
+      kind: 'CLASS',
+      canonical_name: 'Employee',
+      display_name: 'Employee',
+      ordinal: 0,
+      version: 1,
+      block_id: blockId,
+      aliases: [],
+      vector_index_enabled: false,
+      layout_x: 80,
+      layout_y: 100,
+    }
+    const tboxRecord = (version: number, elements: unknown[]) => ({
+      draft: draft(version, '반도체 소재 그래프', 'TBOX'),
+      blocks: [{
+        id: blockId,
+        kind: 'DIRECT',
+        title: '직접 정의',
+        weight: 50,
+        ordinal: 0,
+        collapsed: false,
+        version: 1,
+        elements,
+        created_at: '2026-07-28T01:00:00Z',
+        updated_at: '2026-07-28T01:00:00Z',
+      }],
+    })
     const fetchMock = vi.fn<typeof fetch>((input, init) => {
       const path = requestUrl(input)
       if (path.includes('/domains?')) return Promise.resolve(domains())
@@ -140,7 +169,33 @@ describe('KnowledgeStudioPage Draft recovery', () => {
         return Promise.resolve(json(draft(1, '반도체 소재 그래프'), 201, '"1"'))
       }
       if (path.endsWith(`/drafts/${draftId}/advance`)) {
-        return Promise.resolve(json(draft(2, '반도체 소재 그래프', 'TBOX'), 200, '"2"'))
+        if (typeof init?.body !== 'string') throw new Error('Expected a JSON request body.')
+        const body = JSON.parse(init.body) as { target_step: string }
+        return Promise.resolve(body.target_step === 'ABOX'
+          ? json(draft(4, '반도체 소재 그래프', 'ABOX'), 200, '"4"')
+          : json(draft(2, '반도체 소재 그래프', 'TBOX'), 200, '"2"'))
+      }
+      if (path.endsWith(`/drafts/${draftId}/tbox`) && !init?.method) {
+        return Promise.resolve(json(tboxRecord(2, []), 200, '"2"'))
+      }
+      if (path.endsWith(`/tbox/blocks/${blockId}/operations`) && init?.method === 'POST') {
+        if (typeof init.body !== 'string') throw new Error('Expected a JSON request body.')
+        const body = JSON.parse(init.body) as {
+          operations: Array<{ operation: string; element?: { canonical_name?: string } }>
+        }
+        const upsert = body.operations.find((item) => item.operation === 'UPSERT_ELEMENT')
+        expect(upsert?.element?.canonical_name).toBe('Employee')
+        return Promise.resolve(json(tboxRecord(3, [tboxElement]), 200, '"3"'))
+      }
+      if (path.endsWith(`/drafts/${draftId}/abox`) && !init?.method) {
+        return Promise.resolve(json({
+          draft: draft(4, '반도체 소재 그래프', 'ABOX'),
+          tbox_elements: [tboxElement],
+          bindings: [],
+        }, 200, '"4"'))
+      }
+      if (path.endsWith('/abox/ingestions') && !init?.method) {
+        return Promise.resolve(json({ items: [] }))
       }
       return Promise.reject(new Error(`Unexpected request: ${path}`))
     })
@@ -179,11 +234,25 @@ describe('KnowledgeStudioPage Draft recovery', () => {
     await waitFor(() => expect(window.location.search).toContain(`draft=${draftId}`))
 
     fireEvent.click(screen.getByRole('button', { name: /저장 후 Graph Builder/ }))
-    expect(await screen.findByRole('heading', { name: 'Graph Builder' })).toBeInTheDocument()
-    expect(screen.getByText('Accepted schema가 없습니다.')).toBeInTheDocument()
-    expect(screen.getByText('Accepted T-Box · 0개')).toBeInTheDocument()
+    expect(await screen.findByRole('heading', {
+      name: 'Ontology Graph Builder',
+    })).toBeInTheDocument()
+    expect(screen.getByText(/첫 Class를 추가하세요/)).toBeInTheDocument()
+    expect(screen.getByText(/Typed T-Box Draft를 불러왔습니다/)).toBeInTheDocument()
     expect(window.location.search).toContain('step=tbox')
     expect(queue.records.size).toBe(0)
+
+    fireEvent.change(screen.getByLabelText('Class canonical name'), {
+      target: { value: 'Employee' },
+    })
+    fireEvent.click(screen.getByRole('button', { name: 'Class 추가' }))
+    fireEvent.click(screen.getByRole('button', { name: 'T-Box 저장' }))
+    await screen.findByText(/Typed T-Box 저장 완료/)
+
+    fireEvent.click(screen.getByRole('button', { name: 'Data Enricher' }))
+    expect(await screen.findByRole('heading', { name: 'Data Enricher' })).toBeInTheDocument()
+    expect(await screen.findByText('Employee')).toBeInTheDocument()
+    expect(window.location.search).toContain('step=abox')
   })
 
   it('keeps local input on 412 and reloads server state only after explicit choice', async () => {

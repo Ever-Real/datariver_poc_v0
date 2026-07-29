@@ -29,7 +29,7 @@ def test_identity_migration_and_initial_baseline_have_execute_only_contract() ->
     ).read_text(encoding="utf-8")
     initial = (root / "backend/alembic/versions/0001_initial_schema.py").read_text(encoding="utf-8")
 
-    assert REQUIRED_DATABASE_REVISION == "0062"
+    assert REQUIRED_DATABASE_REVISION == "0063"
     assert 'down_revision: str | Sequence[str] | None = "0038"' in migration
     assert "IDENTITY_PROVISIONING_FUNCTION_SQL" in migration
     assert "IDENTITY_PROVISIONING_SIGNATURE" in migration

@@ -43,6 +43,7 @@ PUBLICATION_MIGRATION = (
     ROOT / "backend/alembic/versions/0061_knowledge_studio_governed_publication.py"
 )
 QA_MIGRATION = ROOT / "backend/alembic/versions/0062_knowledge_qa_domain_archive.py"
+BUILDER_MIGRATION = ROOT / "backend/alembic/versions/0063_ontology_builder_and_ingestion_jobs.py"
 INITIAL_MIGRATION = ROOT / "backend/alembic/versions/0001_initial_schema.py"
 GENERATOR = ROOT / "scripts/generate_initial_migration.py"
 
@@ -53,7 +54,7 @@ def _table(name: str) -> Table:
 
 def test_studio_draft_model_is_separate_persistent_author_state() -> None:
     draft = _table("knowledge.studio_drafts")
-    assert REQUIRED_DATABASE_REVISION == "0062"
+    assert REQUIRED_DATABASE_REVISION == "0063"
     assert {
         "workspace_id",
         "author_id",
@@ -149,6 +150,61 @@ def test_qa_domain_seed_and_graph_archive_are_deterministic_and_auditable() -> N
         UUID("019fa57b-52de-74c0-9f5e-06ae7b1bf3b1"),
         "general",
     ) == UUID("3e43b772-b1f5-747c-52c0-bd1c154e595e")
+
+
+def test_ontology_builder_and_ingestion_models_are_typed_and_rls_governed() -> None:
+    blocks = _table("knowledge.tbox_draft_blocks")
+    elements = _table("knowledge.tbox_draft_elements")
+    proposals = _table("knowledge.tbox_proposals")
+    jobs = _table("knowledge.studio_ingestion_jobs")
+
+    assert {
+        "kind",
+        "title",
+        "weight",
+        "ordinal",
+        "collapsed",
+        "source_reference",
+        "version",
+    } <= set(blocks.c.keys())
+    assert {
+        "block_id",
+        "definition",
+        "aliases",
+        "unit",
+        "vector_index_enabled",
+        "layout_x",
+        "layout_y",
+    } <= set(elements.c.keys())
+    assert elements.c.block_id.nullable is False
+    assert {
+        "base_draft_version",
+        "proposal_document",
+        "conflicts_document",
+        "model_binding_document",
+        "merge_strategy",
+    } <= set(proposals.c.keys())
+    assert {
+        "state",
+        "progress_percent",
+        "request_document",
+        "vector_policy_document",
+        "lease_epoch",
+        "lease_token_hash",
+    } <= set(jobs.c.keys())
+
+    migration = BUILDER_MIGRATION.read_text(encoding="utf-8")
+    assert 'revision: str = "0063"' in migration
+    assert 'down_revision: str | Sequence[str] | None = "0062"' in migration
+    assert "ENABLE ROW LEVEL SECURITY" in migration
+    assert "FORCE ROW LEVEL SECURITY" in migration
+    assert "studio_draft_owner_insert" in migration
+    assert "GRANT SELECT, INSERT" in migration
+    assert "knowledge.studio_ingestion_jobs" in migration
+    assert "vector_index_enabled" in migration
+    assert '"preflight_receipt_id": str(preflight.id)' in (
+        ROOT / "backend/src/datariver/infrastructure/db/knowledge_studio.py"
+    ).read_text(encoding="utf-8")
 
 
 @pytest.mark.asyncio

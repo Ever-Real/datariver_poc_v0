@@ -25,6 +25,7 @@ from datariver.domain.chat import (
     ChatWorkflowStatus,
 )
 from datariver.domain.knowledge_pipeline import MAX_GRAPHRAG_QUERY_NODES
+from datariver.domain.knowledge_studio import DEFAULT_TBOX_BLOCK_WEIGHT
 
 
 class PageMeta(BaseModel):
@@ -2081,6 +2082,190 @@ class KnowledgeStudioTBoxElementResponse(BaseModel):
     nullable: bool | None
     ordinal: int = Field(ge=0)
     version: int = Field(ge=1)
+    block_id: UUID | None
+    definition: str | None
+    aliases: list[str] = Field(max_length=50)
+    unit: str | None
+    vector_index_enabled: bool
+    layout_x: float | None
+    layout_y: float | None
+
+
+class KnowledgeStudioTBoxElementRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    stable_element_id: str = Field(min_length=1, max_length=128)
+    kind: Literal["CLASS", "PROPERTY", "RELATION"]
+    canonical_name: str = Field(
+        min_length=1,
+        max_length=255,
+        pattern="^[A-Za-z][A-Za-z0-9_]*$",
+    )
+    display_name: str = Field(min_length=1, max_length=255)
+    parent_stable_element_id: str | None = Field(default=None, max_length=128)
+    source_stable_element_id: str | None = Field(default=None, max_length=128)
+    target_stable_element_id: str | None = Field(default=None, max_length=128)
+    data_type: str | None = Field(
+        default=None,
+        max_length=100,
+        pattern="^[A-Za-z][A-Za-z0-9_]*$",
+    )
+    nullable: bool | None = None
+    definition: str | None = Field(default=None, max_length=4_000)
+    aliases: list[str] = Field(default_factory=list, max_length=50)
+    unit: str | None = Field(default=None, max_length=100)
+    vector_index_enabled: bool = False
+    layout_x: float | None = Field(default=None, ge=-100_000, le=100_000)
+    layout_y: float | None = Field(default=None, ge=-100_000, le=100_000)
+
+
+class KnowledgeStudioTBoxOperationRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    operation: Literal["UPSERT_ELEMENT", "DELETE_ELEMENT", "SET_LAYOUT"]
+    stable_element_id: str = Field(min_length=1, max_length=128)
+    element: KnowledgeStudioTBoxElementRequest | None = None
+    layout_x: float | None = Field(default=None, ge=-100_000, le=100_000)
+    layout_y: float | None = Field(default=None, ge=-100_000, le=100_000)
+
+
+class KnowledgeStudioTBoxOperationsRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    operations: list[KnowledgeStudioTBoxOperationRequest] = Field(
+        min_length=1,
+        max_length=500,
+    )
+
+
+class KnowledgeStudioTBoxBlockCreateRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    kind: Literal[
+        "DIRECT",
+        "DOCUMENT_SCHEMA",
+        "CATALOG_METADATA",
+        "ASSET_RELEASE",
+        "LLM_ASSISTANT",
+    ]
+    title: str = Field(min_length=1, max_length=120)
+    weight: int = Field(default=DEFAULT_TBOX_BLOCK_WEIGHT, ge=0, le=100)
+
+
+class KnowledgeStudioTBoxBlockUpdateRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    title: str = Field(min_length=1, max_length=120)
+    weight: int = Field(ge=0, le=100)
+    collapsed: bool
+
+
+class KnowledgeStudioTBoxBlockResponse(BaseModel):
+    id: UUID
+    kind: Literal[
+        "DIRECT",
+        "DOCUMENT_SCHEMA",
+        "CATALOG_METADATA",
+        "ASSET_RELEASE",
+        "LLM_ASSISTANT",
+    ]
+    title: str
+    weight: int = Field(ge=0, le=100)
+    ordinal: int = Field(ge=0)
+    collapsed: bool
+    version: int = Field(ge=1)
+    source_reference: dict[str, object] | None
+    elements: list[KnowledgeStudioTBoxElementResponse]
+    created_at: datetime
+    updated_at: datetime
+
+
+class KnowledgeStudioTBoxResponse(BaseModel):
+    draft: KnowledgeStudioDraftResponse
+    blocks: list[KnowledgeStudioTBoxBlockResponse]
+
+
+class KnowledgeStudioTBoxProposalRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    target_block_id: UUID | None = None
+    mode: Literal["MERGE_INTO_CURRENT", "APPEND_LAYER"]
+    prompt: str = Field(min_length=1, max_length=4_000)
+
+
+class KnowledgeStudioTBoxProposalConflictResponse(BaseModel):
+    conflict_id: str = Field(pattern="^[0-9a-f]{64}$")
+    kind: Literal["IDENTITY", "KIND", "PROPERTY", "ENDPOINT", "CONSTRAINT"]
+    stable_element_id: str
+    field: str
+    original_value: object
+    proposed_value: object
+
+
+class KnowledgeStudioTBoxProposalResponse(BaseModel):
+    id: UUID
+    draft_id: UUID
+    target_block_id: UUID | None
+    state: Literal["READY", "APPLIED", "REJECTED", "FAILED"]
+    mode: Literal["MERGE_INTO_CURRENT", "APPEND_LAYER"]
+    merge_strategy: Literal["KEEP_ORIGINAL", "ACCEPT_PROPOSAL", "RESOLVE"]
+    base_draft_version: int = Field(ge=1)
+    prompt: str
+    elements: list[KnowledgeStudioTBoxElementResponse]
+    conflicts: list[KnowledgeStudioTBoxProposalConflictResponse]
+    model_binding: dict[str, object] | None
+    error_code: str | None
+    version: int = Field(ge=1)
+    created_at: datetime
+    updated_at: datetime
+    applied_at: datetime | None
+    rejected_at: datetime | None
+
+
+class KnowledgeStudioTBoxConflictResolutionRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    conflict_id: str = Field(pattern="^[0-9a-f]{64}$")
+    action: Literal["KEEP_ORIGINAL", "ACCEPT_PROPOSAL", "RENAME_PROPOSAL"]
+    renamed_stable_element_id: str | None = Field(default=None, max_length=128)
+    renamed_canonical_name: str | None = Field(
+        default=None,
+        max_length=255,
+        pattern="^[A-Za-z][A-Za-z0-9_]*$",
+    )
+    renamed_display_name: str | None = Field(default=None, max_length=255)
+
+
+class KnowledgeStudioTBoxProposalApplyRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    merge_strategy: Literal["KEEP_ORIGINAL", "ACCEPT_PROPOSAL", "RESOLVE"] = "KEEP_ORIGINAL"
+    resolutions: list[KnowledgeStudioTBoxConflictResolutionRequest] = Field(
+        default_factory=list,
+        max_length=100,
+    )
+
+
+class KnowledgeStudioIngestionJobResponse(BaseModel):
+    id: UUID
+    draft_id: UUID
+    requested_by: UUID
+    state: Literal["PENDING", "RUNNING", "FAILED", "SUCCESS"]
+    progress_percent: int = Field(ge=0, le=100)
+    current_stage: str
+    vector_target_count: int = Field(ge=0)
+    result: dict[str, object] | None
+    error_code: str | None
+    error_message: str | None
+    version: int = Field(ge=1)
+    created_at: datetime
+    updated_at: datetime
+    started_at: datetime | None
+    finished_at: datetime | None
+
+
+class KnowledgeStudioIngestionJobListResponse(BaseModel):
+    items: list[KnowledgeStudioIngestionJobResponse]
 
 
 class KnowledgeStudioMappingRuleRequest(BaseModel):

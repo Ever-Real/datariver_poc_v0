@@ -49,6 +49,103 @@ export interface KnowledgeStudioTBoxElement {
   nullable?: boolean
   ordinal: number
   version: number
+  block_id?: string
+  definition?: string
+  aliases: string[]
+  unit?: string
+  vector_index_enabled: boolean
+  layout_x?: number
+  layout_y?: number
+}
+
+export type KnowledgeStudioTBoxBlockKind =
+  | 'DIRECT'
+  | 'DOCUMENT_SCHEMA'
+  | 'CATALOG_METADATA'
+  | 'ASSET_RELEASE'
+  | 'LLM_ASSISTANT'
+
+export interface KnowledgeStudioTBoxBlock {
+  id: string
+  kind: KnowledgeStudioTBoxBlockKind
+  title: string
+  weight: number
+  ordinal: number
+  collapsed: boolean
+  version: number
+  source_reference?: Record<string, unknown>
+  elements: KnowledgeStudioTBoxElement[]
+  created_at: string
+  updated_at: string
+}
+
+export interface KnowledgeStudioTBox {
+  draft: KnowledgeStudioDraft
+  blocks: KnowledgeStudioTBoxBlock[]
+}
+
+export type KnowledgeStudioTBoxOperation =
+  | {
+      operation: 'UPSERT_ELEMENT'
+      stable_element_id: string
+      element: Omit<KnowledgeStudioTBoxElement, 'ordinal' | 'version' | 'block_id'>
+    }
+  | {
+      operation: 'DELETE_ELEMENT'
+      stable_element_id: string
+    }
+  | {
+      operation: 'SET_LAYOUT'
+      stable_element_id: string
+      layout_x: number
+      layout_y: number
+    }
+
+export interface KnowledgeStudioTBoxConflict {
+  conflict_id: string
+  kind: 'IDENTITY' | 'KIND' | 'PROPERTY' | 'ENDPOINT' | 'CONSTRAINT'
+  stable_element_id: string
+  field: string
+  original_value: unknown
+  proposed_value: unknown
+}
+
+export interface KnowledgeStudioTBoxProposal {
+  id: string
+  draft_id: string
+  target_block_id?: string
+  state: 'READY' | 'APPLIED' | 'REJECTED' | 'FAILED'
+  mode: 'MERGE_INTO_CURRENT' | 'APPEND_LAYER'
+  merge_strategy: 'KEEP_ORIGINAL' | 'ACCEPT_PROPOSAL' | 'RESOLVE'
+  base_draft_version: number
+  prompt: string
+  elements: KnowledgeStudioTBoxElement[]
+  conflicts: KnowledgeStudioTBoxConflict[]
+  model_binding?: Record<string, unknown>
+  error_code?: string
+  version: number
+  created_at: string
+  updated_at: string
+  applied_at?: string
+  rejected_at?: string
+}
+
+export interface KnowledgeStudioIngestionJob {
+  id: string
+  draft_id: string
+  requested_by: string
+  state: 'PENDING' | 'RUNNING' | 'FAILED' | 'SUCCESS'
+  progress_percent: number
+  current_stage: string
+  vector_target_count: number
+  result?: Record<string, unknown>
+  error_code?: string
+  error_message?: string
+  version: number
+  created_at: string
+  updated_at: string
+  started_at?: string
+  finished_at?: string
 }
 
 export type KnowledgeStudioMappingMethod =
@@ -286,6 +383,133 @@ export async function advanceKnowledgeStudioDraft(
   ))
 }
 
+export async function getKnowledgeStudioTBox(
+  client: ApiClient,
+  draftId: string,
+): Promise<ApiResponse<KnowledgeStudioTBox>> {
+  return requireEtag(await client.requestWithMeta<KnowledgeStudioTBox>(
+    `/knowledge/studio/drafts/${encodeURIComponent(draftId)}/tbox`,
+    { cache: 'no-store' },
+  ))
+}
+
+export async function createKnowledgeStudioTBoxBlock(
+  client: ApiClient,
+  draftId: string,
+  payload: {
+    kind: KnowledgeStudioTBoxBlockKind
+    title: string
+    weight?: number
+  },
+  etag: string,
+  idempotencyKey: string,
+): Promise<ApiResponse<KnowledgeStudioTBox>> {
+  return requireEtag(await client.requestWithMeta<KnowledgeStudioTBox>(
+    `/knowledge/studio/drafts/${encodeURIComponent(draftId)}/tbox/blocks`,
+    {
+      method: 'POST',
+      body: JSON.stringify(payload),
+      cache: 'no-store',
+      ifMatch: etag,
+      idempotencyKey,
+    },
+  ))
+}
+
+export async function updateKnowledgeStudioTBoxBlock(
+  client: ApiClient,
+  draftId: string,
+  blockId: string,
+  payload: {
+    title: string
+    weight: number
+    collapsed: boolean
+  },
+  etag: string,
+  idempotencyKey: string,
+): Promise<ApiResponse<KnowledgeStudioTBox>> {
+  return requireEtag(await client.requestWithMeta<KnowledgeStudioTBox>(
+    `/knowledge/studio/drafts/${encodeURIComponent(draftId)}/tbox/blocks/${encodeURIComponent(blockId)}`,
+    {
+      method: 'PATCH',
+      body: JSON.stringify(payload),
+      cache: 'no-store',
+      ifMatch: etag,
+      idempotencyKey,
+    },
+  ))
+}
+
+export async function applyKnowledgeStudioTBoxOperations(
+  client: ApiClient,
+  draftId: string,
+  blockId: string,
+  operations: KnowledgeStudioTBoxOperation[],
+  etag: string,
+  idempotencyKey: string,
+): Promise<ApiResponse<KnowledgeStudioTBox>> {
+  return requireEtag(await client.requestWithMeta<KnowledgeStudioTBox>(
+    `/knowledge/studio/drafts/${encodeURIComponent(draftId)}/tbox/blocks/${encodeURIComponent(blockId)}/operations`,
+    {
+      method: 'POST',
+      body: JSON.stringify({ operations }),
+      cache: 'no-store',
+      ifMatch: etag,
+      idempotencyKey,
+    },
+  ))
+}
+
+export async function createKnowledgeStudioTBoxProposal(
+  client: ApiClient,
+  draftId: string,
+  payload: {
+    target_block_id?: string
+    mode: 'MERGE_INTO_CURRENT' | 'APPEND_LAYER'
+    prompt: string
+  },
+  etag: string,
+): Promise<KnowledgeStudioTBoxProposal> {
+  return client.request<KnowledgeStudioTBoxProposal>(
+    `/knowledge/studio/drafts/${encodeURIComponent(draftId)}/tbox/proposals`,
+    {
+      method: 'POST',
+      body: JSON.stringify(payload),
+      cache: 'no-store',
+      ifMatch: etag,
+    },
+  )
+}
+
+export async function applyKnowledgeStudioTBoxProposal(
+  client: ApiClient,
+  draftId: string,
+  proposalId: string,
+  payload: {
+    merge_strategy: 'KEEP_ORIGINAL' | 'ACCEPT_PROPOSAL' | 'RESOLVE'
+    resolutions: Array<{
+      conflict_id: string
+      action: 'KEEP_ORIGINAL' | 'ACCEPT_PROPOSAL' | 'RENAME_PROPOSAL'
+      renamed_stable_element_id?: string
+      renamed_canonical_name?: string
+      renamed_display_name?: string
+    }>
+  },
+  etag: string,
+  idempotencyKey: string,
+): Promise<ApiResponse<KnowledgeStudioTBox>> {
+  return requireEtag(await client.requestWithMeta<KnowledgeStudioTBox>(
+    `/knowledge/studio/drafts/${encodeURIComponent(draftId)}/tbox/proposals/${encodeURIComponent(proposalId)}/apply`,
+    {
+      method: 'POST',
+      body: JSON.stringify(payload),
+      cache: 'no-store',
+      ifMatch: etag,
+      idempotencyKey,
+    },
+  ))
+}
+
 export async function getKnowledgeStudioABox(
   client: ApiClient,
   draftId: string,
@@ -294,6 +518,35 @@ export async function getKnowledgeStudioABox(
     `/knowledge/studio/drafts/${encodeURIComponent(draftId)}/abox`,
     { cache: 'no-store' },
   ))
+}
+
+export async function createKnowledgeStudioIngestion(
+  client: ApiClient,
+  draftId: string,
+  etag: string,
+  idempotencyKey: string,
+): Promise<KnowledgeStudioIngestionJob> {
+  return client.request<KnowledgeStudioIngestionJob>(
+    `/knowledge/studio/drafts/${encodeURIComponent(draftId)}/abox/ingestions`,
+    {
+      method: 'POST',
+      cache: 'no-store',
+      ifMatch: etag,
+      idempotencyKey,
+    },
+  )
+}
+
+export async function listKnowledgeStudioIngestions(
+  client: ApiClient,
+  draftId: string,
+  signal?: AbortSignal,
+): Promise<KnowledgeStudioIngestionJob[]> {
+  const result = await client.request<{ items: KnowledgeStudioIngestionJob[] }>(
+    `/knowledge/studio/drafts/${encodeURIComponent(draftId)}/abox/ingestions?limit=20`,
+    { cache: 'no-store', signal },
+  )
+  return result.items
 }
 
 export async function searchKnowledgeStudioSources(

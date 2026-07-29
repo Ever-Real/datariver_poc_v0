@@ -8,12 +8,16 @@ from datariver.domain.knowledge_studio import (
     ABoxMappingRuleInput,
     StudioDraftState,
     TBoxBlockPrecedence,
+    TBoxElementInput,
     TBoxElementKind,
+    TBoxOperationInput,
+    TBoxOperationKind,
     require_studio_transition,
     require_studio_version,
     validate_abox_mapping_rules,
     validate_endpoint_alias,
     validate_studio_name,
+    validate_tbox_element_set,
 )
 from datariver.interfaces.http.routes.knowledge_studio import _expected_version
 
@@ -61,6 +65,46 @@ def test_tbox_precedence_enforces_weight_and_ordinal_bounds() -> None:
         TBoxBlockPrecedence(weight=101, ordinal=0)
     with pytest.raises(ValidationError):
         TBoxBlockPrecedence(weight=50, ordinal=-1)
+
+
+def test_tbox_typed_operations_enforce_shape_and_text_only_vector_targets() -> None:
+    entity = TBoxElementInput(
+        stable_element_id="class:Document",
+        kind=TBoxElementKind.CLASS,
+        canonical_name="Document",
+        display_name="Document",
+    )
+    description = TBoxElementInput(
+        stable_element_id="property:Document:description",
+        kind=TBoxElementKind.PROPERTY,
+        canonical_name="description",
+        display_name="Description",
+        parent_stable_element_id=entity.stable_element_id,
+        data_type="TEXT",
+        nullable=True,
+        vector_index_enabled=True,
+    )
+    validate_tbox_element_set((entity, description))
+    TBoxOperationInput(
+        operation=TBoxOperationKind.UPSERT_ELEMENT,
+        stable_element_id=description.stable_element_id,
+        element=description,
+    ).validate()
+
+    with pytest.raises(ValidationError, match="STRING or TEXT"):
+        TBoxElementInput(
+            stable_element_id="property:Document:amount",
+            kind=TBoxElementKind.PROPERTY,
+            canonical_name="amount",
+            display_name="Amount",
+            parent_stable_element_id=entity.stable_element_id,
+            data_type="INTEGER",
+            nullable=False,
+            vector_index_enabled=True,
+        ).validate()
+
+    with pytest.raises(ValidationError, match="accepted Class"):
+        validate_tbox_element_set((description,))
 
 
 def test_studio_lifecycle_requires_review_before_publication() -> None:

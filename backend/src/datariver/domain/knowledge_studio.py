@@ -12,6 +12,7 @@ from datariver.domain.common import (
 )
 
 DEFAULT_KNOWLEDGE_DOMAIN_SOURCE_VERSION = "datariver-default-domains-v1"
+DEFAULT_TBOX_BLOCK_WEIGHT = 50
 DEFAULT_KNOWLEDGE_DOMAINS = (
     ("general", "General"),
     ("data-governance", "Data Governance"),
@@ -50,6 +51,44 @@ class TBoxElementKind(StrEnum):
     CLASS = "CLASS"
     PROPERTY = "PROPERTY"
     RELATION = "RELATION"
+
+
+class TBoxBlockKind(StrEnum):
+    DIRECT = "DIRECT"
+    DOCUMENT_SCHEMA = "DOCUMENT_SCHEMA"
+    CATALOG_METADATA = "CATALOG_METADATA"
+    ASSET_RELEASE = "ASSET_RELEASE"
+    LLM_ASSISTANT = "LLM_ASSISTANT"
+
+
+class TBoxOperationKind(StrEnum):
+    UPSERT_ELEMENT = "UPSERT_ELEMENT"
+    DELETE_ELEMENT = "DELETE_ELEMENT"
+    SET_LAYOUT = "SET_LAYOUT"
+
+
+class TBoxProposalMode(StrEnum):
+    MERGE_INTO_CURRENT = "MERGE_INTO_CURRENT"
+    APPEND_LAYER = "APPEND_LAYER"
+
+
+class TBoxMergeStrategy(StrEnum):
+    KEEP_ORIGINAL = "KEEP_ORIGINAL"
+    ACCEPT_PROPOSAL = "ACCEPT_PROPOSAL"
+    RESOLVE = "RESOLVE"
+
+
+class TBoxMergeResolution(StrEnum):
+    KEEP_ORIGINAL = "KEEP_ORIGINAL"
+    ACCEPT_PROPOSAL = "ACCEPT_PROPOSAL"
+    RENAME_PROPOSAL = "RENAME_PROPOSAL"
+
+
+class StudioIngestionState(StrEnum):
+    PENDING = "PENDING"
+    RUNNING = "RUNNING"
+    FAILED = "FAILED"
+    SUCCESS = "SUCCESS"
 
 
 class ABoxMappingMethod(StrEnum):
@@ -109,6 +148,187 @@ def validate_stable_element_id(value: str) -> str:
         ):
             raise ValidationError("A stable T-Box element ID contains an unsupported character.")
     return value
+
+
+def validate_tbox_name(value: str, *, field_name: str) -> str:
+    if value != value.strip() or not 1 <= len(value) <= 255:
+        raise ValidationError(f"{field_name} must contain between 1 and 255 characters.")
+    if not (("A" <= value[0] <= "Z") or ("a" <= value[0] <= "z")):
+        raise ValidationError(f"{field_name} must start with an ASCII letter.")
+    for character in value[1:]:
+        if not (
+            "A" <= character <= "Z"
+            or "a" <= character <= "z"
+            or "0" <= character <= "9"
+            or character == "_"
+        ):
+            raise ValidationError(
+                f"{field_name} may contain ASCII letters, digits and underscores."
+            )
+    return value
+
+
+def validate_tbox_aliases(values: tuple[str, ...]) -> tuple[str, ...]:
+    if len(values) > 50:
+        raise ValidationError("A T-Box element can contain at most 50 aliases.")
+    normalized: list[str] = []
+    seen: set[str] = set()
+    for value in values:
+        if value != value.strip() or not 1 <= len(value) <= 255:
+            raise ValidationError("A T-Box alias must contain between 1 and 255 characters.")
+        identity = value.casefold()
+        if identity in seen:
+            raise ValidationError("A T-Box alias can appear only once.")
+        seen.add(identity)
+        normalized.append(value)
+    return tuple(normalized)
+
+
+@dataclass(frozen=True, slots=True)
+class TBoxElementInput:
+    stable_element_id: str
+    kind: TBoxElementKind
+    canonical_name: str
+    display_name: str
+    parent_stable_element_id: str | None = None
+    source_stable_element_id: str | None = None
+    target_stable_element_id: str | None = None
+    data_type: str | None = None
+    nullable: bool | None = None
+    definition: str | None = None
+    aliases: tuple[str, ...] = ()
+    unit: str | None = None
+    vector_index_enabled: bool = False
+    layout_x: float | None = None
+    layout_y: float | None = None
+
+    def validate(self) -> None:
+        validate_stable_element_id(self.stable_element_id)
+        validate_tbox_name(self.canonical_name, field_name="Canonical name")
+        if self.display_name != self.display_name.strip() or not 1 <= len(self.display_name) <= 255:
+            raise ValidationError("Display name must contain between 1 and 255 characters.")
+        validate_tbox_aliases(self.aliases)
+        if self.definition is not None and (
+            self.definition != self.definition.strip() or not 1 <= len(self.definition) <= 4_000
+        ):
+            raise ValidationError("A T-Box definition must contain between 1 and 4,000 characters.")
+        if self.unit is not None and (
+            self.unit != self.unit.strip() or not 1 <= len(self.unit) <= 100
+        ):
+            raise ValidationError("A T-Box unit must contain between 1 and 100 characters.")
+        if (self.layout_x is None) != (self.layout_y is None):
+            raise ValidationError("T-Box layout coordinates must be supplied together.")
+        if self.layout_x is not None and (
+            abs(self.layout_x) > 100_000 or abs(self.layout_y or 0) > 100_000
+        ):
+            raise ValidationError("T-Box layout coordinates are outside the supported canvas.")
+        if self.kind is TBoxElementKind.CLASS:
+            if any(
+                value is not None
+                for value in (
+                    self.parent_stable_element_id,
+                    self.source_stable_element_id,
+                    self.target_stable_element_id,
+                    self.data_type,
+                    self.nullable,
+                    self.unit,
+                )
+            ):
+                raise ValidationError("A Class cannot carry Property or Relation shape fields.")
+            if self.vector_index_enabled:
+                raise ValidationError("Only a textual Property can target a Vector Index.")
+        elif self.kind is TBoxElementKind.PROPERTY:
+            if (
+                self.parent_stable_element_id is None
+                or self.source_stable_element_id is not None
+                or self.target_stable_element_id is not None
+                or self.data_type is None
+                or self.nullable is None
+            ):
+                raise ValidationError("A Property requires one parent Class and a data type.")
+            validate_stable_element_id(self.parent_stable_element_id)
+            validate_tbox_name(self.data_type, field_name="Property data type")
+            if self.vector_index_enabled and self.data_type.upper() not in {
+                "STRING",
+                "TEXT",
+            }:
+                raise ValidationError("Vector Index targets must use the STRING or TEXT data type.")
+        else:
+            if (
+                self.parent_stable_element_id is not None
+                or self.source_stable_element_id is None
+                or self.target_stable_element_id is None
+                or self.data_type is not None
+                or self.nullable is not None
+                or self.unit is not None
+                or self.vector_index_enabled
+            ):
+                raise ValidationError("A Relation requires source and target Classes only.")
+            validate_stable_element_id(self.source_stable_element_id)
+            validate_stable_element_id(self.target_stable_element_id)
+
+
+@dataclass(frozen=True, slots=True)
+class TBoxOperationInput:
+    operation: TBoxOperationKind
+    stable_element_id: str
+    element: TBoxElementInput | None = None
+    layout_x: float | None = None
+    layout_y: float | None = None
+
+    def validate(self) -> None:
+        validate_stable_element_id(self.stable_element_id)
+        if self.operation is TBoxOperationKind.UPSERT_ELEMENT:
+            if (
+                self.element is None
+                or self.element.stable_element_id != self.stable_element_id
+                or self.layout_x is not None
+                or self.layout_y is not None
+            ):
+                raise ValidationError("UPSERT_ELEMENT requires one matching typed element.")
+            self.element.validate()
+            return
+        if self.element is not None:
+            raise ValidationError("Only UPSERT_ELEMENT accepts an element document.")
+        if self.operation is TBoxOperationKind.DELETE_ELEMENT:
+            if self.layout_x is not None or self.layout_y is not None:
+                raise ValidationError("DELETE_ELEMENT cannot carry layout coordinates.")
+            return
+        if self.layout_x is None or self.layout_y is None:
+            raise ValidationError("SET_LAYOUT requires both canvas coordinates.")
+        if abs(self.layout_x) > 100_000 or abs(self.layout_y) > 100_000:
+            raise ValidationError("T-Box layout coordinates are outside the supported canvas.")
+
+
+def validate_tbox_element_set(elements: tuple[TBoxElementInput, ...]) -> None:
+    if len(elements) > 500:
+        raise ValidationError("A T-Box Draft can contain at most 500 elements.")
+    by_id: dict[str, TBoxElementInput] = {}
+    names: set[tuple[TBoxElementKind, str]] = set()
+    for element in elements:
+        element.validate()
+        if element.stable_element_id in by_id:
+            raise ValidationError("A stable T-Box element ID can appear only once.")
+        name_identity = (element.kind, element.canonical_name.casefold())
+        if name_identity in names:
+            raise ValidationError("A canonical T-Box name can appear only once per kind.")
+        by_id[element.stable_element_id] = element
+        names.add(name_identity)
+    for element in elements:
+        if element.kind is TBoxElementKind.PROPERTY:
+            parent = by_id.get(element.parent_stable_element_id or "")
+            if parent is None or parent.kind is not TBoxElementKind.CLASS:
+                raise ValidationError("A Property parent must be an accepted Class.")
+        elif element.kind is TBoxElementKind.RELATION:
+            source = by_id.get(element.source_stable_element_id or "")
+            target = by_id.get(element.target_stable_element_id or "")
+            if (
+                source is None
+                or target is None
+                or source.kind is not TBoxElementKind.CLASS
+                or target.kind is not TBoxElementKind.CLASS
+            ):
+                raise ValidationError("Relation endpoints must be accepted Classes.")
 
 
 def validate_source_field_path(value: str) -> str:

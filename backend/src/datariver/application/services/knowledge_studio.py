@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import replace
 from uuid import UUID
 
 from datariver.application.dto import (
@@ -7,11 +8,19 @@ from datariver.application.dto import (
     KnowledgeStudioBindingRecord,
     KnowledgeStudioDomainOption,
     KnowledgeStudioDraftRecord,
+    KnowledgeStudioIngestionJobRecord,
     KnowledgeStudioReleaseRecord,
     KnowledgeStudioSourceDetail,
     KnowledgeStudioSourcePage,
+    KnowledgeStudioTBoxElementRecord,
+    KnowledgeStudioTBoxProposalRecord,
+    KnowledgeStudioTBoxRecord,
 )
-from datariver.application.ports import KnowledgeStudioSourceReader, KnowledgeStudioStore
+from datariver.application.ports import (
+    KnowledgeStudioSchemaAssistant,
+    KnowledgeStudioSourceReader,
+    KnowledgeStudioStore,
+)
 from datariver.application.services.authorization import AuthorizationService
 from datariver.domain.authz import (
     Action,
@@ -20,15 +29,30 @@ from datariver.domain.authz import (
     ResourceAttributes,
     SubjectAttributes,
 )
-from datariver.domain.common import ConflictError, NotFoundError, ValidationError
+from datariver.domain.common import (
+    ConflictError,
+    NotFoundError,
+    ValidationError,
+    canonical_json_hash,
+)
+from datariver.domain.knowledge_pipeline import ModelBinding
 from datariver.domain.knowledge_studio import (
     ABoxMappingMethod,
     ABoxMappingRuleInput,
+    TBoxBlockKind,
+    TBoxElementInput,
     TBoxElementKind,
+    TBoxMergeResolution,
+    TBoxMergeStrategy,
+    TBoxOperationInput,
+    TBoxOperationKind,
+    TBoxProposalMode,
+    require_studio_version,
     validate_abox_mapping_rules,
     validate_endpoint_alias,
     validate_stable_element_id,
     validate_studio_name,
+    validate_tbox_element_set,
 )
 
 
@@ -39,10 +63,16 @@ class KnowledgeStudioService:
         store: KnowledgeStudioStore,
         authorization: AuthorizationService,
         sources: KnowledgeStudioSourceReader | None = None,
+        schema_assistant: KnowledgeStudioSchemaAssistant | None = None,
+        schema_binding: ModelBinding | None = None,
+        embedding_binding: ModelBinding | None = None,
     ) -> None:
         self._store = store
         self._authorization = authorization
         self._sources = sources
+        self._schema_assistant = schema_assistant
+        self._schema_binding = schema_binding
+        self._embedding_binding = embedding_binding
 
     async def list_domains(
         self,
@@ -139,6 +169,425 @@ class KnowledgeStudioService:
             workspace_id=workspace_id,
             author_id=subject.subject_id,
             graph_id=graph_id,
+            idempotency_key=idempotency_key,
+            request_hash=request_hash,
+        )
+
+    async def get_tbox(
+        self,
+        *,
+        workspace_id: UUID,
+        subject: SubjectAttributes,
+        draft_id: UUID,
+        environment: EnvironmentAttributes,
+        request_id: str,
+    ) -> KnowledgeStudioTBoxRecord:
+        record = await self._store.get_tbox(
+            workspace_id=workspace_id,
+            actor_id=subject.subject_id,
+            draft_id=draft_id,
+        )
+        if record is None:
+            raise NotFoundError("The Knowledge Studio draft does not exist.")
+        if record.draft.current_step not in {"TBOX", "ABOX"}:
+            raise ConflictError("Open Graph Builder before reading the T-Box Draft.")
+        await self._authorize_visible_draft(
+            draft=record.draft,
+            subject=subject,
+            environment=environment,
+            request_id=request_id,
+        )
+        return record
+
+    async def create_tbox_block(
+        self,
+        *,
+        workspace_id: UUID,
+        subject: SubjectAttributes,
+        draft_id: UUID,
+        kind: str,
+        title: str,
+        weight: int,
+        expected_version: int,
+        idempotency_key: str,
+        request_hash: str,
+        environment: EnvironmentAttributes,
+        request_id: str,
+    ) -> KnowledgeStudioTBoxRecord:
+        try:
+            typed_kind = TBoxBlockKind(kind)
+        except ValueError as error:
+            raise ValidationError("The T-Box block kind is invalid.") from error
+        if title != title.strip() or not 1 <= len(title) <= 120:
+            raise ValidationError("A T-Box block title must contain between 1 and 120 characters.")
+        if not 0 <= weight <= 100:
+            raise ValidationError("A T-Box block weight must be between 0 and 100.")
+        current = await self._require_draft(
+            workspace_id=workspace_id,
+            author_id=subject.subject_id,
+            draft_id=draft_id,
+        )
+        await self._authorize_draft(
+            draft=current,
+            subject=subject,
+            action=Action.KG_EDIT,
+            environment=environment,
+            request_id=request_id,
+        )
+        return await self._store.create_tbox_block(
+            workspace_id=workspace_id,
+            author_id=subject.subject_id,
+            draft_id=draft_id,
+            kind=typed_kind.value,
+            title=title,
+            weight=weight,
+            expected_version=expected_version,
+            idempotency_key=idempotency_key,
+            request_hash=request_hash,
+        )
+
+    async def update_tbox_block(
+        self,
+        *,
+        workspace_id: UUID,
+        subject: SubjectAttributes,
+        draft_id: UUID,
+        block_id: UUID,
+        title: str,
+        weight: int,
+        collapsed: bool,
+        expected_version: int,
+        idempotency_key: str,
+        request_hash: str,
+        environment: EnvironmentAttributes,
+        request_id: str,
+    ) -> KnowledgeStudioTBoxRecord:
+        if title != title.strip() or not 1 <= len(title) <= 120:
+            raise ValidationError("A T-Box block title must contain between 1 and 120 characters.")
+        if not 0 <= weight <= 100:
+            raise ValidationError("A T-Box block weight must be between 0 and 100.")
+        current = await self._require_draft(
+            workspace_id=workspace_id,
+            author_id=subject.subject_id,
+            draft_id=draft_id,
+        )
+        await self._authorize_draft(
+            draft=current,
+            subject=subject,
+            action=Action.KG_EDIT,
+            environment=environment,
+            request_id=request_id,
+        )
+        return await self._store.update_tbox_block(
+            workspace_id=workspace_id,
+            author_id=subject.subject_id,
+            draft_id=draft_id,
+            block_id=block_id,
+            title=title,
+            weight=weight,
+            collapsed=collapsed,
+            expected_version=expected_version,
+            idempotency_key=idempotency_key,
+            request_hash=request_hash,
+        )
+
+    async def apply_tbox_operations(
+        self,
+        *,
+        workspace_id: UUID,
+        subject: SubjectAttributes,
+        draft_id: UUID,
+        block_id: UUID,
+        operations: tuple[TBoxOperationInput, ...],
+        expected_version: int,
+        idempotency_key: str,
+        request_hash: str,
+        environment: EnvironmentAttributes,
+        request_id: str,
+    ) -> KnowledgeStudioTBoxRecord:
+        if not 1 <= len(operations) <= 500:
+            raise ValidationError("A typed T-Box request requires between 1 and 500 operations.")
+        record = await self.get_tbox(
+            workspace_id=workspace_id,
+            subject=subject,
+            draft_id=draft_id,
+            environment=environment,
+            request_id=request_id,
+        )
+        await self._authorize_draft(
+            draft=record.draft,
+            subject=subject,
+            action=Action.KG_EDIT,
+            environment=environment,
+            request_id=request_id,
+        )
+        if record.draft.current_step != "TBOX" or record.draft.state != "DRAFT":
+            raise ConflictError("Typed T-Box operations require a mutable Graph Builder Draft.")
+        elements_by_block: dict[UUID, dict[str, TBoxElementInput]] = {
+            block.block_id: {
+                item.stable_element_id: self._tbox_input(item) for item in block.elements
+            }
+            for block in record.blocks
+        }
+        target = elements_by_block.get(block_id)
+        if target is None:
+            raise NotFoundError("The T-Box block does not exist.")
+        ownership = {
+            stable_id: owner_id
+            for owner_id, elements in elements_by_block.items()
+            for stable_id in elements
+        }
+        for operation in operations:
+            operation.validate()
+            owner_id = ownership.get(operation.stable_element_id)
+            if operation.operation is TBoxOperationKind.UPSERT_ELEMENT:
+                if owner_id is not None and owner_id != block_id:
+                    raise ConflictError(
+                        "A typed operation cannot overwrite an element owned by another block."
+                    )
+                assert operation.element is not None
+                target[operation.stable_element_id] = operation.element
+                ownership[operation.stable_element_id] = block_id
+            elif operation.operation is TBoxOperationKind.DELETE_ELEMENT:
+                if owner_id != block_id:
+                    raise ConflictError(
+                        "A typed operation can delete only an element owned by its block."
+                    )
+                del target[operation.stable_element_id]
+                ownership.pop(operation.stable_element_id, None)
+            else:
+                if owner_id != block_id:
+                    raise ConflictError(
+                        "A typed operation can move only an element owned by its block."
+                    )
+                target[operation.stable_element_id] = replace(
+                    target[operation.stable_element_id],
+                    layout_x=operation.layout_x,
+                    layout_y=operation.layout_y,
+                )
+        ordered_blocks = tuple(
+            (
+                block.block_id,
+                tuple(elements_by_block[block.block_id].values()),
+            )
+            for block in record.blocks
+        )
+        validate_tbox_element_set(
+            tuple(element for _owner, elements in ordered_blocks for element in elements)
+        )
+        return await self._store.save_tbox_block_elements(
+            workspace_id=workspace_id,
+            author_id=subject.subject_id,
+            draft_id=draft_id,
+            block_id=block_id,
+            elements_by_block=ordered_blocks,
+            expected_version=expected_version,
+            idempotency_key=idempotency_key,
+            request_hash=request_hash,
+        )
+
+    async def create_tbox_proposal(
+        self,
+        *,
+        workspace_id: UUID,
+        subject: SubjectAttributes,
+        draft_id: UUID,
+        target_block_id: UUID | None,
+        mode: TBoxProposalMode,
+        prompt: str,
+        expected_version: int,
+        environment: EnvironmentAttributes,
+        request_id: str,
+    ) -> KnowledgeStudioTBoxProposalRecord:
+        if prompt != prompt.strip() or not 1 <= len(prompt) <= 4_000:
+            raise ValidationError(
+                "A schema-assistant prompt must contain between 1 and 4,000 characters."
+            )
+        record = await self.get_tbox(
+            workspace_id=workspace_id,
+            subject=subject,
+            draft_id=draft_id,
+            environment=environment,
+            request_id=request_id,
+        )
+        await self._authorize_draft(
+            draft=record.draft,
+            subject=subject,
+            action=Action.KG_EDIT,
+            environment=environment,
+            request_id=request_id,
+        )
+        if record.draft.state != "DRAFT" or record.draft.current_step != "TBOX":
+            raise ConflictError("LLM schema proposals require a mutable Graph Builder Draft.")
+        require_studio_version(record.draft.version, expected_version)
+        if mode is TBoxProposalMode.MERGE_INTO_CURRENT and target_block_id is None:
+            raise ValidationError("MERGE_INTO_CURRENT requires a target block.")
+        if mode is TBoxProposalMode.APPEND_LAYER and target_block_id is not None:
+            raise ValidationError("APPEND_LAYER cannot target an existing block.")
+        assistant, binding = self._schema_runtime()
+        current = tuple(
+            self._tbox_input(item) for block in record.blocks for item in block.elements
+        )
+        proposed = await assistant.propose(
+            prompt=prompt,
+            current_elements=current,
+            binding=binding,
+        )
+        if not proposed:
+            raise ConflictError("The LLM returned no typed T-Box elements.")
+        conflicts = self._proposal_conflicts(current=current, proposed=proposed)
+        return await self._store.save_tbox_proposal(
+            workspace_id=workspace_id,
+            author_id=subject.subject_id,
+            draft_id=draft_id,
+            base_draft_version=expected_version,
+            target_block_id=target_block_id,
+            mode=mode.value,
+            prompt=prompt,
+            elements=proposed,
+            conflicts=conflicts,
+            model_binding=binding.to_document(),
+        )
+
+    async def get_tbox_proposal(
+        self,
+        *,
+        workspace_id: UUID,
+        subject: SubjectAttributes,
+        draft_id: UUID,
+        proposal_id: UUID,
+        environment: EnvironmentAttributes,
+        request_id: str,
+    ) -> KnowledgeStudioTBoxProposalRecord:
+        proposal = await self._store.get_tbox_proposal(
+            workspace_id=workspace_id,
+            actor_id=subject.subject_id,
+            draft_id=draft_id,
+            proposal_id=proposal_id,
+        )
+        if proposal is None:
+            raise NotFoundError("The T-Box proposal does not exist.")
+        draft = await self._require_draft(
+            workspace_id=workspace_id,
+            author_id=subject.subject_id,
+            draft_id=draft_id,
+        )
+        await self._authorize_visible_draft(
+            draft=draft,
+            subject=subject,
+            environment=environment,
+            request_id=request_id,
+        )
+        return proposal
+
+    async def apply_tbox_proposal(
+        self,
+        *,
+        workspace_id: UUID,
+        subject: SubjectAttributes,
+        draft_id: UUID,
+        proposal_id: UUID,
+        merge_strategy: TBoxMergeStrategy,
+        resolutions: tuple[dict[str, str], ...],
+        expected_version: int,
+        idempotency_key: str,
+        request_hash: str,
+        environment: EnvironmentAttributes,
+        request_id: str,
+    ) -> KnowledgeStudioTBoxRecord:
+        record = await self.get_tbox(
+            workspace_id=workspace_id,
+            subject=subject,
+            draft_id=draft_id,
+            environment=environment,
+            request_id=request_id,
+        )
+        await self._authorize_draft(
+            draft=record.draft,
+            subject=subject,
+            action=Action.KG_EDIT,
+            environment=environment,
+            request_id=request_id,
+        )
+        proposal = await self.get_tbox_proposal(
+            workspace_id=workspace_id,
+            subject=subject,
+            draft_id=draft_id,
+            proposal_id=proposal_id,
+            environment=environment,
+            request_id=request_id,
+        )
+        if proposal.state != "READY":
+            raise ConflictError("Only a READY T-Box proposal can be applied.")
+        proposed = tuple(self._tbox_input(item) for item in proposal.elements)
+        grouped: dict[UUID, dict[str, TBoxElementInput]] = {
+            block.block_id: {
+                item.stable_element_id: self._tbox_input(item) for item in block.elements
+            }
+            for block in record.blocks
+        }
+        current = tuple(item for values in grouped.values() for item in values.values())
+        conflicts = self._proposal_conflicts(current=current, proposed=proposed)
+        resolution_by_conflict = {item.get("conflict_id", ""): item for item in resolutions}
+        if len(resolution_by_conflict) != len(resolutions):
+            raise ValidationError("A proposal conflict resolution can appear only once.")
+        if merge_strategy is TBoxMergeStrategy.RESOLVE and any(
+            str(item["conflict_id"]) not in resolution_by_conflict for item in conflicts
+        ):
+            raise ValidationError("Every proposal conflict requires an explicit resolution.")
+        appended_elements: tuple[TBoxElementInput, ...] = ()
+        if proposal.mode == TBoxProposalMode.APPEND_LAYER.value:
+            appended_elements = self._resolve_proposal_elements(
+                current=current,
+                proposed=proposed,
+                conflicts=conflicts,
+                merge_strategy=merge_strategy,
+                resolution_by_conflict=resolution_by_conflict,
+            )
+            validate_tbox_element_set((*current, *appended_elements))
+        else:
+            if proposal.target_block_id is None or proposal.target_block_id not in grouped:
+                raise ConflictError("The proposal target block is unavailable.")
+            accepted = self._resolve_proposal_elements(
+                current=current,
+                proposed=proposed,
+                conflicts=conflicts,
+                merge_strategy=merge_strategy,
+                resolution_by_conflict=resolution_by_conflict,
+            )
+            target = grouped[proposal.target_block_id]
+            identity_by_name = {
+                (item.kind, item.canonical_name.casefold()): item.stable_element_id
+                for item in current
+            }
+            for item in accepted:
+                existing_id = identity_by_name.get((item.kind, item.canonical_name.casefold()))
+                if existing_id is not None and existing_id != item.stable_element_id:
+                    for elements in grouped.values():
+                        elements.pop(existing_id, None)
+                for elements in grouped.values():
+                    if item.stable_element_id in elements:
+                        elements[item.stable_element_id] = item
+                        break
+                else:
+                    target[item.stable_element_id] = item
+            validate_tbox_element_set(
+                tuple(item for values in grouped.values() for item in values.values())
+            )
+        ordered = tuple(
+            (block.block_id, tuple(grouped[block.block_id].values())) for block in record.blocks
+        )
+        return await self._store.apply_tbox_proposal(
+            workspace_id=workspace_id,
+            author_id=subject.subject_id,
+            draft_id=draft_id,
+            proposal_id=proposal_id,
+            target_block_id=proposal.target_block_id,
+            elements_by_block=ordered,
+            appended_elements=appended_elements,
+            conflicts=conflicts,
+            merge_strategy=merge_strategy.value,
+            expected_version=expected_version,
             idempotency_key=idempotency_key,
             request_hash=request_hash,
         )
@@ -328,6 +777,118 @@ class KnowledgeStudioService:
             request_id=request_id,
         )
         return record
+
+    async def create_ingestion_job(
+        self,
+        *,
+        workspace_id: UUID,
+        subject: SubjectAttributes,
+        draft_id: UUID,
+        expected_version: int,
+        idempotency_key: str,
+        request_hash: str,
+        environment: EnvironmentAttributes,
+        request_id: str,
+    ) -> KnowledgeStudioIngestionJobRecord:
+        current = await self._require_draft(
+            workspace_id=workspace_id,
+            author_id=subject.subject_id,
+            draft_id=draft_id,
+        )
+        self._require_abox_step(current)
+        await self._authorize_draft(
+            draft=current,
+            subject=subject,
+            action=Action.KG_EDIT,
+            environment=environment,
+            request_id=request_id,
+        )
+        tbox = await self._store.get_tbox(
+            workspace_id=workspace_id,
+            actor_id=subject.subject_id,
+            draft_id=draft_id,
+        )
+        if tbox is None:
+            raise NotFoundError("The Knowledge Studio draft does not exist.")
+        has_vector_targets = any(
+            item.vector_index_enabled for block in tbox.blocks for item in block.elements
+        )
+        if has_vector_targets and self._embedding_binding is None:
+            raise ConflictError("A Vector Index target requires the governed embedding runtime.")
+        if self._embedding_binding is not None:
+            self._embedding_binding.validate()
+        return await self._store.create_ingestion_job(
+            workspace_id=workspace_id,
+            author_id=subject.subject_id,
+            draft_id=draft_id,
+            expected_version=expected_version,
+            embedding_binding=(
+                self._embedding_binding.to_document()
+                if has_vector_targets and self._embedding_binding is not None
+                else None
+            ),
+            idempotency_key=idempotency_key,
+            request_hash=request_hash,
+        )
+
+    async def get_ingestion_job(
+        self,
+        *,
+        workspace_id: UUID,
+        subject: SubjectAttributes,
+        draft_id: UUID,
+        job_id: UUID,
+        environment: EnvironmentAttributes,
+        request_id: str,
+    ) -> KnowledgeStudioIngestionJobRecord:
+        current = await self._require_draft(
+            workspace_id=workspace_id,
+            author_id=subject.subject_id,
+            draft_id=draft_id,
+        )
+        await self._authorize_visible_draft(
+            draft=current,
+            subject=subject,
+            environment=environment,
+            request_id=request_id,
+        )
+        job = await self._store.get_ingestion_job(
+            workspace_id=workspace_id,
+            actor_id=subject.subject_id,
+            draft_id=draft_id,
+            job_id=job_id,
+        )
+        if job is None:
+            raise NotFoundError("The A-Box ingestion job does not exist.")
+        return job
+
+    async def list_ingestion_jobs(
+        self,
+        *,
+        workspace_id: UUID,
+        subject: SubjectAttributes,
+        draft_id: UUID,
+        limit: int,
+        environment: EnvironmentAttributes,
+        request_id: str,
+    ) -> tuple[KnowledgeStudioIngestionJobRecord, ...]:
+        current = await self._require_draft(
+            workspace_id=workspace_id,
+            author_id=subject.subject_id,
+            draft_id=draft_id,
+        )
+        await self._authorize_visible_draft(
+            draft=current,
+            subject=subject,
+            environment=environment,
+            request_id=request_id,
+        )
+        return await self._store.list_ingestion_jobs(
+            workspace_id=workspace_id,
+            actor_id=subject.subject_id,
+            draft_id=draft_id,
+            limit=limit,
+        )
 
     async def search_abox_sources(
         self,
@@ -641,6 +1202,169 @@ class KnowledgeStudioService:
         if self._sources is None:
             raise ConflictError("Knowledge Studio Dataset selection is unavailable.")
         return self._sources
+
+    def _schema_runtime(self) -> tuple[KnowledgeStudioSchemaAssistant, ModelBinding]:
+        if self._schema_assistant is None or self._schema_binding is None:
+            raise ConflictError("The governed LLM schema assistant is unavailable.")
+        self._schema_binding.validate()
+        return self._schema_assistant, self._schema_binding
+
+    @classmethod
+    def _proposal_conflicts(
+        cls,
+        *,
+        current: tuple[TBoxElementInput, ...],
+        proposed: tuple[TBoxElementInput, ...],
+    ) -> tuple[dict[str, object], ...]:
+        current_by_id = {item.stable_element_id: item for item in current}
+        current_by_name = {(item.kind, item.canonical_name.casefold()): item for item in current}
+        conflicts: list[dict[str, object]] = []
+        for item in proposed:
+            original = current_by_id.get(item.stable_element_id)
+            kind = "IDENTITY"
+            if original is not None and original.kind is not item.kind:
+                kind = "KIND"
+            if original is None:
+                original = current_by_name.get((item.kind, item.canonical_name.casefold()))
+                kind = "IDENTITY"
+            if original is None:
+                continue
+            original_document = cls._tbox_document(original)
+            proposed_document = cls._tbox_document(item)
+            if original_document == proposed_document:
+                continue
+            if original.kind is TBoxElementKind.RELATION and (
+                original.source_stable_element_id != item.source_stable_element_id
+                or original.target_stable_element_id != item.target_stable_element_id
+            ):
+                kind = "ENDPOINT"
+            elif original.kind is TBoxElementKind.PROPERTY:
+                kind = "PROPERTY"
+            conflict_id = canonical_json_hash(
+                {
+                    "contract": "KNOWLEDGE_STUDIO_TBOX_CONFLICT_V1",
+                    "original": original_document,
+                    "proposed": proposed_document,
+                }
+            )
+            conflicts.append(
+                {
+                    "conflict_id": conflict_id,
+                    "kind": kind,
+                    "stable_element_id": item.stable_element_id,
+                    "field": "element",
+                    "original_value": original_document,
+                    "proposed_value": proposed_document,
+                }
+            )
+        return tuple(conflicts)
+
+    @classmethod
+    def _resolve_proposal_elements(
+        cls,
+        *,
+        current: tuple[TBoxElementInput, ...],
+        proposed: tuple[TBoxElementInput, ...],
+        conflicts: tuple[dict[str, object], ...],
+        merge_strategy: TBoxMergeStrategy,
+        resolution_by_conflict: dict[str, dict[str, str]],
+    ) -> tuple[TBoxElementInput, ...]:
+        conflict_by_stable_id = {str(item["stable_element_id"]): item for item in conflicts}
+        current_by_id = {item.stable_element_id: item for item in current}
+        current_by_name = {(item.kind, item.canonical_name.casefold()): item for item in current}
+        accepted: list[TBoxElementInput] = []
+        reference_rewrites: dict[str, str] = {}
+        for item in proposed:
+            conflict = conflict_by_stable_id.get(item.stable_element_id)
+            if conflict is None:
+                accepted.append(item)
+                continue
+            action = (
+                TBoxMergeResolution.KEEP_ORIGINAL
+                if merge_strategy is TBoxMergeStrategy.KEEP_ORIGINAL
+                else TBoxMergeResolution.ACCEPT_PROPOSAL
+                if merge_strategy is TBoxMergeStrategy.ACCEPT_PROPOSAL
+                else TBoxMergeResolution(
+                    resolution_by_conflict[str(conflict["conflict_id"])]["action"]
+                )
+            )
+            if action is TBoxMergeResolution.KEEP_ORIGINAL:
+                original = current_by_id.get(item.stable_element_id) or current_by_name.get(
+                    (item.kind, item.canonical_name.casefold())
+                )
+                if original is not None:
+                    reference_rewrites[item.stable_element_id] = original.stable_element_id
+                continue
+            if action is TBoxMergeResolution.ACCEPT_PROPOSAL:
+                accepted.append(item)
+                continue
+            resolution = resolution_by_conflict[str(conflict["conflict_id"])]
+            renamed_id = resolution.get("renamed_stable_element_id", "")
+            renamed_name = resolution.get("renamed_canonical_name", "")
+            renamed_display = resolution.get("renamed_display_name", renamed_name)
+            renamed = replace(
+                item,
+                stable_element_id=renamed_id,
+                canonical_name=renamed_name,
+                display_name=renamed_display,
+            )
+            renamed.validate()
+            reference_rewrites[item.stable_element_id] = renamed.stable_element_id
+            accepted.append(renamed)
+
+        def rewrite_reference(value: str | None) -> str | None:
+            return reference_rewrites.get(value, value) if value is not None else None
+
+        return tuple(
+            replace(
+                item,
+                parent_stable_element_id=rewrite_reference(item.parent_stable_element_id),
+                source_stable_element_id=rewrite_reference(item.source_stable_element_id),
+                target_stable_element_id=rewrite_reference(item.target_stable_element_id),
+            )
+            for item in accepted
+        )
+
+    @staticmethod
+    def _tbox_document(item: TBoxElementInput) -> dict[str, object]:
+        return {
+            "stable_element_id": item.stable_element_id,
+            "kind": item.kind.value,
+            "canonical_name": item.canonical_name,
+            "display_name": item.display_name,
+            "parent_stable_element_id": item.parent_stable_element_id,
+            "source_stable_element_id": item.source_stable_element_id,
+            "target_stable_element_id": item.target_stable_element_id,
+            "data_type": item.data_type,
+            "nullable": item.nullable,
+            "definition": item.definition,
+            "aliases": list(item.aliases),
+            "unit": item.unit,
+            "vector_index_enabled": item.vector_index_enabled,
+        }
+
+    @staticmethod
+    def _tbox_input(item: KnowledgeStudioTBoxElementRecord) -> TBoxElementInput:
+        try:
+            return TBoxElementInput(
+                stable_element_id=item.stable_element_id,
+                kind=TBoxElementKind(item.kind),
+                canonical_name=item.canonical_name,
+                display_name=item.display_name,
+                parent_stable_element_id=item.parent_stable_element_id,
+                source_stable_element_id=item.source_stable_element_id,
+                target_stable_element_id=item.target_stable_element_id,
+                data_type=item.data_type,
+                nullable=item.nullable,
+                definition=item.definition,
+                aliases=item.aliases,
+                unit=item.unit,
+                vector_index_enabled=item.vector_index_enabled,
+                layout_x=item.layout_x,
+                layout_y=item.layout_y,
+            )
+        except ValueError as error:
+            raise ConflictError("The accepted T-Box element is invalid.") from error
 
     @staticmethod
     def _require_abox_step(draft: KnowledgeStudioDraftRecord) -> None:

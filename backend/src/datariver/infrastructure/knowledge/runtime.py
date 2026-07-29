@@ -12,6 +12,7 @@ from datariver.infrastructure.knowledge.openai_compatible import (
     OpenAICompatibleChatRequestOptions,
     OpenAICompatibleEmbeddingProvider,
     OpenAICompatibleKnowledgeAnswerComposer,
+    OpenAICompatibleTBoxSchemaAssistant,
     OpenAICompatibleTypedKnowledgeExtractor,
 )
 from datariver.infrastructure.secrets import SecretResolver
@@ -22,6 +23,8 @@ EXTRACTION_PROMPT_VERSION = "knowledge-pdf-extraction-v1"
 EXTRACTION_SCHEMA_VERSION = "knowledge-extraction-schema-v1"
 GRAPHRAG_PROMPT_VERSION = "knowledge-graphrag-v1"
 GRAPHRAG_SCHEMA_VERSION = "knowledge-graphrag-schema-v1"
+TBOX_SCHEMA_ASSISTANT_PROMPT_VERSION = "knowledge-tbox-schema-assistant-v1"
+TBOX_SCHEMA_ASSISTANT_SCHEMA_VERSION = "knowledge-tbox-schema-proposal-v1"
 EMBEDDING_ADAPTER_CONTRACT = "openai-compatible-embeddings-v1"
 CHAT_JSON_SCHEMA_ADAPTER_CONTRACT = "openai-compatible-chat-json-schema-v1"
 
@@ -32,6 +35,7 @@ class KnowledgeRuntimeAdapters:
     extractor: OpenAICompatibleTypedKnowledgeExtractor
     composer: OpenAICompatibleKnowledgeAnswerComposer
     bindings: KnowledgeRuntimeBindings
+    schema_assistant: OpenAICompatibleTBoxSchemaAssistant | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -101,6 +105,21 @@ def resolve_knowledge_runtime_bindings(settings: Settings) -> KnowledgeRuntimeBi
                 tool_schema_version=GRAPHRAG_SCHEMA_VERSION,
             ),
         ),
+        schema_assistant=_activated_binding(
+            provider=coordinates.provider,
+            model=coordinates.chat_model,
+            prompt_version=TBOX_SCHEMA_ASSISTANT_PROMPT_VERSION,
+            tool_schema_version=TBOX_SCHEMA_ASSISTANT_SCHEMA_VERSION,
+            adapter_contract=CHAT_JSON_SCHEMA_ADAPTER_CONTRACT,
+            deployment_configuration_hash=_deployment_hash(
+                coordinates=coordinates,
+                system_id="LLM_CHAT_MODEL",
+                adapter_contract=CHAT_JSON_SCHEMA_ADAPTER_CONTRACT,
+                model=coordinates.chat_model,
+                prompt_version=TBOX_SCHEMA_ASSISTANT_PROMPT_VERSION,
+                tool_schema_version=TBOX_SCHEMA_ASSISTANT_SCHEMA_VERSION,
+            ),
+        ),
     )
 
 
@@ -141,6 +160,11 @@ def build_knowledge_runtime_adapters(settings: Settings) -> KnowledgeRuntimeAdap
             chat_options=coordinates.chat_options,
         ),
         composer=OpenAICompatibleKnowledgeAnswerComposer(
+            transport=chat_transport,
+            reasoning_effort=reasoning_effort,
+            chat_options=coordinates.chat_options,
+        ),
+        schema_assistant=OpenAICompatibleTBoxSchemaAssistant(
             transport=chat_transport,
             reasoning_effort=reasoning_effort,
             chat_options=coordinates.chat_options,

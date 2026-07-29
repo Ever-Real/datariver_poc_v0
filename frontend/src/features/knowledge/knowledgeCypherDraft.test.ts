@@ -53,4 +53,18 @@ describe('safe local Cypher draft subset', () => {
     expect(parseSafeCypherDraft(`CREATE (p:${'A'.repeat(65)})`).error).toMatch(/64자/)
     expect(parseSafeCypherDraft('CREATE (p:Product)\nCREATE (p)-[:USES]->(missing)').error).toMatch(/선언되지 않은/)
   })
+
+  it('returns a line and column diagnostic so an invalid editor buffer can retain the last canvas', () => {
+    const valid = parseSafeCypherDraft('CREATE (p:Product)')
+    const invalid = parseSafeCypherDraft(
+      'CREATE (p:Product)\nCREATE (p)-[:USES]->(missing)',
+      valid,
+    )
+    expect(invalid.diagnostic).toEqual(expect.objectContaining({
+      line: 2,
+      column: 1,
+    }))
+    expect(valid.nodes).toHaveLength(1)
+    expect(valid.nodes[0]?.label).toBe('Product')
+  })
 })

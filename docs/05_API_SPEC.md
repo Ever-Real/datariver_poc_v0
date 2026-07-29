@@ -313,6 +313,13 @@ cannot re-enter the ordinary workflow.
 | `GET /knowledge/studio/drafts/{draft_id}` | author `kg.read`; independent reviewer `kg.review` | read an author Draft or a REVIEW/PUBLISHED Draft visible to a permitted reviewer with `Cache-Control: no-store` and ETag; hidden Drafts are not disclosed |
 | `PATCH /knowledge/studio/drafts/{draft_id}` | `kg.edit` | idempotent Step 1 auto-save; requires exact `If-Match` and returns `412` on a stale version |
 | `POST /knowledge/studio/drafts/{draft_id}/advance` | `kg.edit` | idempotently advance to `TBOX`, or from T-Box to `ABOX` only when at least one accepted Class/Relation exists; requires exact `If-Match` |
+| `GET /knowledge/studio/drafts/{draft_id}/tbox` | author `kg.read`; independent reviewer `kg.review` | read ordered T-Box blocks and their typed Class/Property/Relation elements; returns the Draft ETag and never accepts or returns executable Cypher |
+| `POST /knowledge/studio/drafts/{draft_id}/tbox/blocks` | author `kg.edit` | create one ordered `DIRECT`, `DOCUMENT_SCHEMA`, `CATALOG_METADATA` or `ASSET_RELEASE` block with bounded weight; exact `If-Match` and `Idempotency-Key` are required |
+| `PATCH /knowledge/studio/drafts/{draft_id}/tbox/blocks/{block_id}` | author `kg.edit` | update block title, weight and collapsed presentation state under exact version fencing |
+| `POST /knowledge/studio/drafts/{draft_id}/tbox/blocks/{block_id}/operations` | author `kg.edit` | apply only typed `UPSERT_ELEMENT`, `DELETE_ELEMENT` or `SET_LAYOUT` operations; the server validates stable identity, endpoints, block ownership and text-only vector targets before replacing the Draft projection |
+| `POST /knowledge/studio/drafts/{draft_id}/tbox/proposals` | author `kg.edit` | invoke the governed schema-assistant binding against an exact `If-Match` Draft and persist a bounded typed proposal plus conflict preview; persistence rechecks the same base version after provider latency and the proposal cannot mutate the accepted Draft |
+| `GET /knowledge/studio/drafts/{draft_id}/tbox/proposals/{proposal_id}` | author `kg.read`; independent reviewer `kg.review` | read one typed proposal and its sanitized conflict documents |
+| `POST /knowledge/studio/drafts/{draft_id}/tbox/proposals/{proposal_id}/apply` | author `kg.edit` | one-time, exact-version, idempotent proposal acceptance; default `KEEP_ORIGINAL` rewires dependent proposal references to the retained human-authored stable IDs, while explicit `RESOLVE` requires one decision per conflict |
 | `POST /knowledge/studio/drafts/{draft_id}/submit-review` | author `kg.edit` | freeze a completed ABOX Draft in REVIEW for independent inspection; requires exact `If-Match` and `Idempotency-Key` |
 | `POST /knowledge/studio/drafts/{draft_id}/discard` | author `kg.edit` | audited terminal Discard from DRAFT or REVIEW; keeps the row/evidence and requires exact `If-Match` and `Idempotency-Key` |
 | `GET /knowledge/studio/drafts/{draft_id}/abox` | author `kg.read`; independent reviewer `kg.review` | bounded read of the accepted T-Box read index plus normalized Binding Drafts; returns Draft ETag and never returns Dataset rows |
@@ -321,6 +328,9 @@ cannot re-enter the ordinary workflow.
 | `PATCH /knowledge/studio/drafts/{draft_id}/abox/bindings/{target_stable_element_id}` | `kg.edit` | target-scoped replacement of typed mapping rules only; exact provider/projection versions, `If-Match` and `Idempotency-Key` are required; T-Box, ingestion and release state are immutable |
 | `POST /knowledge/studio/drafts/{draft_id}/abox/previews` | author read or independent review | bounded 5–10 row physical-source dry run for one persisted Class binding; no raw query, persistence or Neo4j write |
 | `POST /knowledge/studio/drafts/{draft_id}/abox/preflight` | author read or independent `kg.review` | append exact-version/hash validation evidence; requires `If-Match` and `Idempotency-Key`, and REVIEW receipts cannot be authored by the maker |
+| `POST /knowledge/studio/drafts/{draft_id}/abox/ingestions` | author `kg.edit` | after an exact current-Draft pre-flight, enqueue a durable PostgreSQL A-Box job with pinned binding IDs and Draft version; when vector targets exist, every exact Property mapping and the approved embedding binding are mandatory and pinned; returns `202` and performs no source read in the API process |
+| `GET /knowledge/studio/drafts/{draft_id}/abox/ingestions` | author `kg.read`; independent reviewer `kg.review` | list the 20 most recent durable jobs for bounded UI polling; exposes only typed state, stage, percentage, vector-target count and sanitized failure |
+| `GET /knowledge/studio/drafts/{draft_id}/abox/ingestions/{job_id}` | author `kg.read`; independent reviewer `kg.review` | read one job under Draft visibility and Workspace RLS |
 | `POST /knowledge/studio/drafts/{draft_id}/publish` | independent `kg.review` + high-risk `kg.publish` | require fresh Hardware WebAuthn and the same reviewer's exact PASS receipt, then atomically materialize an immutable Studio schema/mapping release; archives the previous Studio Release but does not activate an instance release or run ingestion |
 | `POST /knowledge/graphs` | `kg.create` | graph plus initial typed ontology |
 | `GET /knowledge/graphs` | `kg.read` | clearance-filtered graphs |
@@ -351,12 +361,20 @@ check. A distinct concurrent write locks the Draft row and returns `412`, while 
 changed-key conflicts remain `409`. “Overwrite” is a client-confirmed latest-ETag rebase, never an
 unconditional force endpoint.
 
+The T-Box editor text is a safe UI projection, not a query endpoint. Invalid or incomplete text
+remains a browser-local buffer and the last valid typed graph remains unchanged. Canvas changes
+regenerate the projection from typed elements. Proposal conflicts default to `KEEP_ORIGINAL`;
+non-conflicting dependants are rewired to the retained stable identity, so a model-generated ID
+cannot orphan a Property or Relation.
+
 The A-Box PATCH accepts only a local catalog asset UUID, exact detailed schema and projection
 versions, and a bounded list of typed field-to-stable-element rules. The server re-reads the
 authorized Dataset detail, rejects stale or over-classified sources and fields not present in that
 schema, then locks the Draft, accepted target and current catalog projection before replacing only
-that target's rules. `IDENTITY@1` is the only current transform. Mapping readiness remains `DRAFT`;
-no route in this family starts ingestion, writes Graph DB rows, publishes or mutates DataHub.
+that target's rules. `IDENTITY@1` is the only current transform. Mapping readiness remains `DRAFT`.
+The ingestion command only creates durable asynchronous work; it does not write Graph DB rows,
+publish or mutate DataHub in the request transaction. A successful worker run remains a Draft
+changeset until independent publication.
 
 Neighbor request accepts only `node_id`, `direction=IN|OUT|BOTH`, an edge-type allowlist, `maximum_hops<=3` and `maximum_nodes<=500`. It cannot contain SQL, Cypher, labels or clauses. Every published node/edge requires ontology membership, valid endpoints, classification and provenance.
 

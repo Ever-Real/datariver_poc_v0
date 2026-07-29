@@ -1113,6 +1113,84 @@ class KnowledgeStudioTBoxElementRecord:
     nullable: bool | None
     ordinal: int
     version: int
+    block_id: UUID | None = None
+    definition: str | None = None
+    aliases: tuple[str, ...] = ()
+    unit: str | None = None
+    vector_index_enabled: bool = False
+    layout_x: float | None = None
+    layout_y: float | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class KnowledgeStudioTBoxBlockRecord:
+    block_id: UUID
+    kind: str
+    title: str
+    weight: int
+    ordinal: int
+    collapsed: bool
+    version: int
+    source_reference: dict[str, object] | None
+    elements: tuple[KnowledgeStudioTBoxElementRecord, ...]
+    created_at: datetime
+    updated_at: datetime
+
+
+@dataclass(frozen=True, slots=True)
+class KnowledgeStudioTBoxRecord:
+    draft: KnowledgeStudioDraftRecord
+    blocks: tuple[KnowledgeStudioTBoxBlockRecord, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class KnowledgeStudioTBoxProposalConflictRecord:
+    conflict_id: str
+    kind: str
+    stable_element_id: str
+    field: str
+    original_value: object
+    proposed_value: object
+
+
+@dataclass(frozen=True, slots=True)
+class KnowledgeStudioTBoxProposalRecord:
+    proposal_id: UUID
+    draft_id: UUID
+    target_block_id: UUID | None
+    state: str
+    mode: str
+    merge_strategy: str
+    base_draft_version: int
+    prompt: str
+    elements: tuple[KnowledgeStudioTBoxElementRecord, ...]
+    conflicts: tuple[KnowledgeStudioTBoxProposalConflictRecord, ...]
+    model_binding: dict[str, object] | None
+    error_code: str | None
+    version: int
+    created_at: datetime
+    updated_at: datetime
+    applied_at: datetime | None
+    rejected_at: datetime | None
+
+
+@dataclass(frozen=True, slots=True)
+class KnowledgeStudioIngestionJobRecord:
+    job_id: UUID
+    draft_id: UUID
+    requested_by: UUID
+    state: str
+    progress_percent: int
+    current_stage: str
+    vector_target_count: int
+    result: dict[str, object] | None
+    error_code: str | None
+    error_message: str | None
+    version: int
+    created_at: datetime
+    updated_at: datetime
+    started_at: datetime | None
+    finished_at: datetime | None
 
 
 @dataclass(frozen=True, slots=True)

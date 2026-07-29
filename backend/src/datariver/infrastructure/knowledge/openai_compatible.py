@@ -16,6 +16,7 @@ from datariver.application.knowledge_pipeline_ports import (
     KnowledgeEmbeddingProvider,
     TypedKnowledgeExtractor,
 )
+from datariver.application.ports import KnowledgeStudioSchemaAssistant
 from datariver.domain.common import ValidationError
 from datariver.domain.inference import is_safe_inference_api_base_path
 from datariver.domain.knowledge import normalize_evidence_excerpt
@@ -30,6 +31,10 @@ from datariver.domain.knowledge_pipeline import (
     PageEmbedding,
     PdfPage,
 )
+from datariver.domain.knowledge_studio import (
+    TBoxElementInput,
+    TBoxElementKind,
+)
 
 MAX_EXTRACTION_NODES_PER_BATCH = 4
 MAX_EXTRACTION_EDGES_PER_BATCH = 2
@@ -37,6 +42,7 @@ MAX_EXTRACTION_OUTPUT_TOKENS = 2_048
 MAX_GRAPHRAG_OUTPUT_TOKENS = 512
 MAX_EVIDENCE_UNIT_CHARACTERS = 240
 MAX_INFERENCE_RESPONSE_BYTES = 2 * 1024 * 1024
+MAX_TBOX_PROPOSAL_ELEMENTS = 100
 
 
 @dataclass(frozen=True, slots=True)
@@ -212,6 +218,34 @@ class _GraphRagResponse(_StrictModel):
     # The same bounds are enforced immediately after parsing below.
     answer: str
     cited_evidence_ids: list[str] = Field(min_length=1, max_length=100)
+
+
+class _TBoxElementProposal(_StrictModel):
+    stable_element_id: str = Field(min_length=1, max_length=128)
+    kind: Literal["CLASS", "PROPERTY", "RELATION"]
+    canonical_name: str = Field(
+        min_length=1,
+        max_length=255,
+        pattern="^[A-Za-z][A-Za-z0-9_]*$",
+    )
+    display_name: str = Field(min_length=1, max_length=255)
+    parent_stable_element_id: str | None = Field(default=None, max_length=128)
+    source_stable_element_id: str | None = Field(default=None, max_length=128)
+    target_stable_element_id: str | None = Field(default=None, max_length=128)
+    data_type: str | None = Field(
+        default=None,
+        max_length=100,
+        pattern="^[A-Za-z][A-Za-z0-9_]*$",
+    )
+    nullable: bool | None = None
+    definition: str | None = Field(default=None, max_length=4_000)
+    aliases: list[str] = Field(default_factory=list, max_length=50)
+    unit: str | None = Field(default=None, max_length=100)
+    vector_index_enabled: bool = False
+
+
+class _TBoxSchemaProposalResponse(_StrictModel):
+    elements: list[_TBoxElementProposal] = Field(max_length=MAX_TBOX_PROPOSAL_ELEMENTS)
 
 
 class _EvidenceUnit(BaseModel):
@@ -440,6 +474,140 @@ class OpenAICompatibleTypedKnowledgeExtractor(TypedKnowledgeExtractor):
             input_tokens=input_tokens,
             output_tokens=output_tokens,
         )
+
+
+class OpenAICompatibleTBoxSchemaAssistant(KnowledgeStudioSchemaAssistant):
+    """Generate a bounded typed proposal; never executes model-authored Cypher."""
+
+    def __init__(
+        self,
+        *,
+        transport: OpenAIJsonTransport,
+        reasoning_effort: Literal["none", "low", "medium", "high"] | None = None,
+        chat_options: OpenAICompatibleChatRequestOptions | None = None,
+    ) -> None:
+        self._transport = transport
+        self._reasoning_effort = reasoning_effort
+        self._chat_options = chat_options or OpenAICompatibleChatRequestOptions()
+
+    async def propose(
+        self,
+        *,
+        prompt: str,
+        current_elements: tuple[TBoxElementInput, ...],
+        binding: ModelBinding,
+    ) -> tuple[TBoxElementInput, ...]:
+        if prompt != prompt.strip() or not 1 <= len(prompt) <= 4_000:
+            raise ValidationError(
+                "A schema-assistant prompt must contain between 1 and 4,000 characters."
+            )
+        current_document = [
+            {
+                "stable_element_id": item.stable_element_id,
+                "kind": item.kind.value,
+                "canonical_name": item.canonical_name,
+                "display_name": item.display_name,
+                "parent_stable_element_id": item.parent_stable_element_id,
+                "source_stable_element_id": item.source_stable_element_id,
+                "target_stable_element_id": item.target_stable_element_id,
+                "data_type": item.data_type,
+                "nullable": item.nullable,
+            }
+            for item in current_elements
+        ]
+        document: dict[str, object] = {
+            "model": binding.model,
+            "temperature": 0,
+            "max_tokens": 4_096,
+            "messages": [
+                {
+                    "role": "system",
+                    "content": (
+                        "Design only a logical T-Box schema. Never emit Cypher, instance data, "
+                        "credentials, URLs, or executable content. Return Classes, Properties and "
+                        "Relations through the supplied JSON schema. Stable IDs and canonical "
+                        "names use ASCII letters, digits, underscore, dash, dot or colon as "
+                        "allowed by the schema contract. Properties must reference a proposed "
+                        "or current Class; Relations must reference proposed or current Classes. "
+                        "Mark vector_index_enabled only for STRING or TEXT Properties whose "
+                        "semantic text is useful for retrieval. Keep the proposal bounded and "
+                        "omit uncertain elements."
+                    ),
+                },
+                {
+                    "role": "user",
+                    "content": json.dumps(
+                        {
+                            "request": prompt,
+                            "current_tbox": current_document,
+                        },
+                        ensure_ascii=False,
+                        sort_keys=True,
+                        separators=(",", ":"),
+                    ),
+                },
+            ],
+            "response_format": _json_schema(
+                _TBoxSchemaProposalResponse,
+                name="knowledge_studio_tbox_proposal_v1",
+            ),
+        }
+        if self._reasoning_effort is not None:
+            document["reasoning_effort"] = self._reasoning_effort
+        result = await self._transport.post_json(
+            path="/chat/completions",
+            document=self._chat_options.apply(document),
+        )
+        try:
+            parsed = _TBoxSchemaProposalResponse.model_validate_json(_choice_content(result))
+            proposed = tuple(
+                TBoxElementInput(
+                    stable_element_id=item.stable_element_id,
+                    kind=TBoxElementKind(item.kind),
+                    canonical_name=item.canonical_name,
+                    display_name=item.display_name,
+                    parent_stable_element_id=item.parent_stable_element_id,
+                    source_stable_element_id=item.source_stable_element_id,
+                    target_stable_element_id=item.target_stable_element_id,
+                    data_type=item.data_type,
+                    nullable=item.nullable,
+                    definition=item.definition,
+                    aliases=tuple(item.aliases),
+                    unit=item.unit,
+                    vector_index_enabled=item.vector_index_enabled,
+                )
+                for item in parsed.elements
+            )
+        except (PydanticValidationError, ValueError) as error:
+            raise ValidationError("The LLM T-Box proposal violates the typed schema.") from error
+        proposed_ids: set[str] = set()
+        proposed_names: set[tuple[TBoxElementKind, str]] = set()
+        for item in proposed:
+            item.validate()
+            name_identity = (item.kind, item.canonical_name.casefold())
+            if item.stable_element_id in proposed_ids or name_identity in proposed_names:
+                raise ValidationError("The LLM T-Box proposal contains a duplicate typed identity.")
+            proposed_ids.add(item.stable_element_id)
+            proposed_names.add(name_identity)
+        class_ids = {
+            item.stable_element_id
+            for item in (*current_elements, *proposed)
+            if item.kind is TBoxElementKind.CLASS
+        }
+        for item in proposed:
+            references = (
+                (item.parent_stable_element_id,)
+                if item.kind is TBoxElementKind.PROPERTY
+                else (
+                    item.source_stable_element_id,
+                    item.target_stable_element_id,
+                )
+                if item.kind is TBoxElementKind.RELATION
+                else ()
+            )
+            if any(reference not in class_ids for reference in references):
+                raise ValidationError("The LLM T-Box proposal references an unknown Class.")
+        return proposed
 
 
 class OpenAICompatibleKnowledgeAnswerComposer(KnowledgeAnswerComposer):

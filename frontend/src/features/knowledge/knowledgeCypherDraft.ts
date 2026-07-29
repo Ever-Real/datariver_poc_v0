@@ -38,6 +38,11 @@ export interface SafeCypherParseResult {
   edges: SafeCypherEdge[]
   ast?: SafeCypherProgram
   error?: string
+  diagnostic?: {
+    message: string
+    line: number
+    column: number
+  }
 }
 
 type TokenKind =
@@ -63,10 +68,12 @@ interface Token {
 
 class CypherSubsetError extends Error {
   readonly line: number
+  readonly column: number
 
-  constructor(message: string, line: number) {
+  constructor(message: string, line: number, column = 1) {
     super(message)
     this.line = line
+    this.column = column
   }
 }
 
@@ -144,6 +151,7 @@ function lexCypherSubset(source: string): Token[] {
         throw new CypherSubsetError(
           `${tokenLine}번째 줄 ${tokenColumn}번째 식별자는 64자를 초과할 수 없습니다.`,
           tokenLine,
+          tokenColumn,
         )
       }
       push(value.toUpperCase() === 'CREATE' ? 'CREATE' : 'IDENTIFIER', value, tokenLine, tokenColumn)
@@ -180,6 +188,7 @@ function lexCypherSubset(source: string): Token[] {
     throw new CypherSubsetError(
       `${line}번째 줄 ${column}번째 문자는 안전한 CREATE subset에서 허용되지 않습니다.`,
       line,
+      column,
     )
   }
   push('EOF', '')
@@ -250,6 +259,7 @@ class CypherSubsetParser {
     return new CypherSubsetError(
       `${token.line}번째 줄 ${token.column}번째에서 ${expected}이(가) 필요합니다.`,
       token.line,
+      token.column,
     )
   }
 
@@ -312,11 +322,13 @@ export function projectSafeCypherAst(
       continue
     }
     if (nodeByAlias.has(statement.alias)) {
+      const message = `${statement.line}번째 문장의 alias '${statement.alias}'가 중복됩니다.`
       return {
         nodes,
         edges: [],
         ast,
-        error: `${statement.line}번째 문장의 alias '${statement.alias}'가 중복됩니다.`,
+        error: message,
+        diagnostic: { message, line: statement.line, column: 1 },
       }
     }
     const node = {
@@ -338,11 +350,13 @@ export function projectSafeCypherAst(
     const source = nodeByAlias.get(relation.sourceAlias)
     const target = nodeByAlias.get(relation.targetAlias)
     if (!source || !target) {
+      const message = `${relation.line}번째 관계가 선언되지 않은 노드 alias를 참조합니다.`
       return {
         nodes,
         edges: [],
         ast,
-        error: `${relation.line}번째 관계가 선언되지 않은 노드 alias를 참조합니다.`,
+        error: message,
+        diagnostic: { message, line: relation.line, column: 1 },
       }
     }
     const exactKey = edgeIdentity(
@@ -351,11 +365,13 @@ export function projectSafeCypherAst(
       relation.targetAlias,
     )
     if (usedRelationKeys.has(exactKey)) {
+      const message = `${relation.line}번째 관계가 같은 endpoint와 유형으로 중복됩니다.`
       return {
         nodes,
         edges: [],
         ast,
-        error: `${relation.line}번째 관계가 같은 endpoint와 유형으로 중복됩니다.`,
+        error: message,
+        diagnostic: { message, line: relation.line, column: 1 },
       }
     }
     usedRelationKeys.add(exactKey)
@@ -386,7 +402,16 @@ export function parseSafeCypherDraft(
     return projectSafeCypherAst(parseSafeCypherAst(source), previous)
   } catch (error) {
     if (error instanceof CypherSubsetError) {
-      return { nodes: [], edges: [], error: error.message }
+      return {
+        nodes: [],
+        edges: [],
+        error: error.message,
+        diagnostic: {
+          message: error.message,
+          line: error.line,
+          column: error.column,
+        },
+      }
     }
     return { nodes: [], edges: [], error: '안전한 CREATE subset을 해석할 수 없습니다.' }
   }

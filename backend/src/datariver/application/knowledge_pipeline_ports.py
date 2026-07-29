@@ -72,6 +72,7 @@ class KnowledgeRuntimeBindings:
     embedding: ModelBinding
     extraction: ModelBinding
     graphrag: ModelBinding
+    schema_assistant: ModelBinding | None = None
 
 
 class KnowledgePipelineRuntime(Protocol):

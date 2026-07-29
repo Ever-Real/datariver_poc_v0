@@ -31,6 +31,7 @@ export function App() {
   const auth = useAuth()
   const runtimeConfig = publicRuntimeConfig()
   const [page, setPage] = useState<Page>(pageFromLocation)
+  const [locationRevision, setLocationRevision] = useState(0)
   const [catalogQuery, setCatalogQuery] = useState(() => new URL(window.location.href).searchParams.get('q') ?? '')
   // The URL keeps the selected tenant across reloads without trusting it for
   // authorization; every request still binds it to server-side membership/RLS.
@@ -71,6 +72,7 @@ export function App() {
       setPage(pageFromLocation())
       setCatalogQuery(new URL(window.location.href).searchParams.get('q') ?? '')
       setWorkspace(workspaceFromLocation())
+      setLocationRevision((current) => current + 1)
     }
     window.addEventListener('popstate', restore)
     return () => window.removeEventListener('popstate', restore)
@@ -332,6 +334,7 @@ export function App() {
             client={client}
             workspaceId={activeWorkspace}
             subjectId={authenticatedSubject}
+            locationRevision={locationRevision}
             onNavigate={navigate}
             onOpenStudio={navigateKnowledgeStudio}
             onStepUp={auth.beginStepUp}

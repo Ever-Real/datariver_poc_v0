@@ -120,6 +120,10 @@ Its Admin button interaction, live connection badges and source-host governed Ch
 refined by
 [ADR-0068](adr/0068-live-connection-status-and-source-host-chat-governance-bootstrap.md).
 
+The route-backed Knowledge Studio modal, bidirectional typed T-Box editor, proposal conflict
+handling, durable A-Box ingestion and release-scoped Neo4j vector shadow are defined by
+[ADR-0069](adr/0069-route-backed-ontology-builder-and-vector-shadow.md).
+
 ## Change control
 
 - Requirements use stable IDs (`FR-*`, `NFR-*`, `SEC-*`).

@@ -1,3 +1,3 @@
 """Packaged database revision required by this application build."""
 
-REQUIRED_DATABASE_REVISION = "0062"
+REQUIRED_DATABASE_REVISION = "0063"

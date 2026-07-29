@@ -75,6 +75,7 @@ from datariver.application.dto import (
     KnowledgeStudioBindingRecord,
     KnowledgeStudioDomainOption,
     KnowledgeStudioDraftRecord,
+    KnowledgeStudioIngestionJobRecord,
     KnowledgeStudioPreflightRecord,
     KnowledgeStudioReleaseRecord,
     KnowledgeStudioSamplePage,
@@ -83,6 +84,8 @@ from datariver.application.dto import (
     KnowledgeStudioSourceDetail,
     KnowledgeStudioSourcePage,
     KnowledgeStudioSourceProbe,
+    KnowledgeStudioTBoxProposalRecord,
+    KnowledgeStudioTBoxRecord,
     KnowledgeStudioValidationEvidence,
     ManualMetadataApplyAttemptEvidence,
     MembershipChangeRequestActivityPage,
@@ -120,6 +123,8 @@ from datariver.domain.chat import ChatRetrievalMode
 from datariver.domain.common import DomainEvent
 from datariver.domain.governance import ApprovalAuthority, ChangeRequest
 from datariver.domain.knowledge import ChangeSetState, GraphChangeOperation, GraphSnapshot
+from datariver.domain.knowledge_pipeline import ModelBinding
+from datariver.domain.knowledge_studio import TBoxElementInput
 from datariver.domain.manual_metadata import (
     ManualMetadataApplyClaim,
     ManualMetadataAspectReport,
@@ -1454,6 +1459,127 @@ class KnowledgeStudioStore(Protocol):
         draft_id: UUID,
     ) -> KnowledgeStudioDraftRecord | None: ...
 
+    async def get_tbox(
+        self,
+        *,
+        workspace_id: UUID,
+        actor_id: UUID,
+        draft_id: UUID,
+    ) -> KnowledgeStudioTBoxRecord | None: ...
+
+    async def create_tbox_block(
+        self,
+        *,
+        workspace_id: UUID,
+        author_id: UUID,
+        draft_id: UUID,
+        kind: str,
+        title: str,
+        weight: int,
+        expected_version: int,
+        idempotency_key: str,
+        request_hash: str,
+    ) -> KnowledgeStudioTBoxRecord: ...
+
+    async def update_tbox_block(
+        self,
+        *,
+        workspace_id: UUID,
+        author_id: UUID,
+        draft_id: UUID,
+        block_id: UUID,
+        title: str,
+        weight: int,
+        collapsed: bool,
+        expected_version: int,
+        idempotency_key: str,
+        request_hash: str,
+    ) -> KnowledgeStudioTBoxRecord: ...
+
+    async def save_tbox_block_elements(
+        self,
+        *,
+        workspace_id: UUID,
+        author_id: UUID,
+        draft_id: UUID,
+        block_id: UUID,
+        elements_by_block: tuple[tuple[UUID, tuple[TBoxElementInput, ...]], ...],
+        expected_version: int,
+        idempotency_key: str,
+        request_hash: str,
+    ) -> KnowledgeStudioTBoxRecord: ...
+
+    async def save_tbox_proposal(
+        self,
+        *,
+        workspace_id: UUID,
+        author_id: UUID,
+        draft_id: UUID,
+        base_draft_version: int,
+        target_block_id: UUID | None,
+        mode: str,
+        prompt: str,
+        elements: tuple[TBoxElementInput, ...],
+        conflicts: tuple[dict[str, object], ...],
+        model_binding: dict[str, object],
+    ) -> KnowledgeStudioTBoxProposalRecord: ...
+
+    async def get_tbox_proposal(
+        self,
+        *,
+        workspace_id: UUID,
+        actor_id: UUID,
+        draft_id: UUID,
+        proposal_id: UUID,
+    ) -> KnowledgeStudioTBoxProposalRecord | None: ...
+
+    async def apply_tbox_proposal(
+        self,
+        *,
+        workspace_id: UUID,
+        author_id: UUID,
+        draft_id: UUID,
+        proposal_id: UUID,
+        target_block_id: UUID | None,
+        elements_by_block: tuple[tuple[UUID, tuple[TBoxElementInput, ...]], ...],
+        appended_elements: tuple[TBoxElementInput, ...],
+        conflicts: tuple[dict[str, object], ...],
+        merge_strategy: str,
+        expected_version: int,
+        idempotency_key: str,
+        request_hash: str,
+    ) -> KnowledgeStudioTBoxRecord: ...
+
+    async def create_ingestion_job(
+        self,
+        *,
+        workspace_id: UUID,
+        author_id: UUID,
+        draft_id: UUID,
+        expected_version: int,
+        embedding_binding: dict[str, object] | None,
+        idempotency_key: str,
+        request_hash: str,
+    ) -> KnowledgeStudioIngestionJobRecord: ...
+
+    async def get_ingestion_job(
+        self,
+        *,
+        workspace_id: UUID,
+        actor_id: UUID,
+        draft_id: UUID,
+        job_id: UUID,
+    ) -> KnowledgeStudioIngestionJobRecord | None: ...
+
+    async def list_ingestion_jobs(
+        self,
+        *,
+        workspace_id: UUID,
+        actor_id: UUID,
+        draft_id: UUID,
+        limit: int,
+    ) -> tuple[KnowledgeStudioIngestionJobRecord, ...]: ...
+
     async def get_edit_graph(
         self,
         *,
@@ -1630,6 +1756,16 @@ class KnowledgeStudioSourceReader(Protocol):
         environment: EnvironmentAttributes,
         request_id: str,
     ) -> tuple[KnowledgeStudioSourceAccess, ...]: ...
+
+
+class KnowledgeStudioSchemaAssistant(Protocol):
+    async def propose(
+        self,
+        *,
+        prompt: str,
+        current_elements: tuple[TBoxElementInput, ...],
+        binding: ModelBinding,
+    ) -> tuple[TBoxElementInput, ...]: ...
 
 
 class KnowledgeStudioSampleReader(Protocol):

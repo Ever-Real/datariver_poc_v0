@@ -27,7 +27,7 @@ import {
   type KnowledgeStudioDraft,
 } from './knowledgeStudioApi'
 import { StudioShell } from './StudioShell'
-import { GraphBuilderScaffold } from './tbox/GraphBuilderScaffold'
+import { GraphBuilder } from './tbox/GraphBuilder'
 
 const EMPTY_BASIC_INFORMATION: KnowledgeStudioBasicInformation = {
   name: '',
@@ -63,6 +63,7 @@ interface KnowledgeStudioPageProps {
   client: ApiClient
   workspaceId: string
   subjectId: string
+  locationRevision?: number
   onNavigate: (page: Page) => void
   onStepUp?: () => Promise<void>
   onPasswordReauth?: () => Promise<void>
@@ -75,6 +76,7 @@ export function KnowledgeStudioPage({
   client,
   workspaceId,
   subjectId,
+  locationRevision = 0,
   onNavigate,
   onStepUp,
   onPasswordReauth,
@@ -82,7 +84,13 @@ export function KnowledgeStudioPage({
   recoveryQueue,
   debounceMs = 1500,
 }: KnowledgeStudioPageProps) {
-  const location = useMemo(() => knowledgeStudioLocationFromHref(), [])
+  const location = useMemo(
+    () => {
+      void locationRevision
+      return knowledgeStudioLocationFromHref()
+    },
+    [locationRevision],
+  )
   const queue = useMemo(() => {
     if (recoveryQueue) return recoveryQueue
     try {
@@ -160,6 +168,9 @@ export function KnowledgeStudioPage({
     if (!location.valid || !scopeHash) return
     let active = true
     const hydrate = async () => {
+      setStep(location.step)
+      setDraftId(location.draftId)
+      draftIdRef.current = location.draftId
       let recoveryDraftId = location.draftId
       let hydratedFromServer = false
       if (location.assetId) {
@@ -253,6 +264,7 @@ export function KnowledgeStudioPage({
     client,
     location.assetId,
     location.draftId,
+    location.step,
     location.valid,
     queue,
     scopeHash,
@@ -634,14 +646,18 @@ export function KnowledgeStudioPage({
           onSave={() => { void flushLatest() }}
           onContinue={() => { void continueToTbox() }}
         />
-      : step === 'tbox' && !serverDraft
+      : step === 'tbox' && (!serverDraft || !etag)
       ? <section className="grid min-h-[320px] place-items-center rounded-enterprise border border-slate-300 bg-white p-8 text-sm text-slate-500">
           Graph Builder를 열기 전에 서버 Draft와 lifecycle을 확인하고 있습니다.
         </section>
       : step === 'tbox'
-      ? <GraphBuilderScaffold
+      ? <GraphBuilder
+          client={client}
+          draftId={draftId ?? serverDraft!.id}
+          etag={etag!}
           busy={busy}
           lifecycleState={serverDraft?.state}
+          onDraftUpdate={applyChildDraft}
           onContinue={() => { void continueToAbox() }}
         />
       : draftId

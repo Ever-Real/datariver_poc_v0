@@ -2847,6 +2847,44 @@ def upgrade() -> None:
         op.execute('ALTER TABLE knowledge.source_page_embeddings ENABLE ROW LEVEL SECURITY')
         op.execute('ALTER TABLE knowledge.source_page_embeddings FORCE ROW LEVEL SECURITY')
         op.execute("CREATE POLICY workspace_isolation ON knowledge.source_page_embeddings USING (workspace_id = NULLIF(current_setting('app.workspace_id', true), '')::uuid) WITH CHECK (workspace_id = NULLIF(current_setting('app.workspace_id', true), '')::uuid)")
+        op.create_table('studio_ingestion_jobs',
+        sa.Column('workspace_id', sa.Uuid(), nullable=False),
+        sa.Column('draft_id', sa.Uuid(), nullable=False),
+        sa.Column('requested_by', sa.Uuid(), nullable=False),
+        sa.Column('state', sa.String(length=16), nullable=False),
+        sa.Column('progress_percent', sa.Integer(), nullable=False),
+        sa.Column('current_stage', sa.String(length=100), nullable=False),
+        sa.Column('request_document', sa.JSON().with_variant(postgresql.JSONB(none_as_null=True, astext_type=Text()), 'postgresql'), nullable=False),
+        sa.Column('vector_policy_document', sa.JSON().with_variant(postgresql.JSONB(none_as_null=True, astext_type=Text()), 'postgresql'), nullable=False),
+        sa.Column('result_document', sa.JSON().with_variant(postgresql.JSONB(none_as_null=True, astext_type=Text()), 'postgresql'), nullable=True),
+        sa.Column('error_code', sa.String(length=100), nullable=True),
+        sa.Column('error_message', sa.Text(), nullable=True),
+        sa.Column('started_at', sa.DateTime(timezone=True), nullable=True),
+        sa.Column('finished_at', sa.DateTime(timezone=True), nullable=True),
+        sa.Column('lease_epoch', sa.Integer(), nullable=False),
+        sa.Column('lease_token_hash', sa.String(length=64), nullable=True),
+        sa.Column('lease_owner_fingerprint', sa.String(length=255), nullable=True),
+        sa.Column('lease_expires_at', sa.DateTime(timezone=True), nullable=True),
+        sa.Column('id', sa.Uuid(), nullable=False),
+        sa.Column('created_at', sa.DateTime(timezone=True), server_default=sa.text('CURRENT_TIMESTAMP'), nullable=False),
+        sa.Column('updated_at', sa.DateTime(timezone=True), server_default=sa.text('CURRENT_TIMESTAMP'), nullable=False),
+        sa.Column('version', sa.Integer(), nullable=False),
+        sa.CheckConstraint("(state = 'PENDING' AND progress_percent = 0 AND started_at IS NULL AND finished_at IS NULL AND error_code IS NULL) OR (state = 'RUNNING' AND progress_percent BETWEEN 0 AND 99 AND started_at IS NOT NULL AND finished_at IS NULL AND error_code IS NULL) OR (state = 'FAILED' AND started_at IS NOT NULL AND finished_at IS NOT NULL AND error_code IS NOT NULL) OR (state = 'SUCCESS' AND progress_percent = 100 AND started_at IS NOT NULL AND finished_at IS NOT NULL AND error_code IS NULL)", name=op.f('ck_studio_ingestion_jobs_state_shape')),
+        sa.CheckConstraint("jsonb_typeof(request_document) = 'object'", name=op.f('ck_studio_ingestion_jobs_request_document_object')),
+        sa.CheckConstraint("jsonb_typeof(vector_policy_document) = 'object'", name=op.f('ck_studio_ingestion_jobs_vector_policy_document_object')),
+        sa.CheckConstraint("state IN ('PENDING', 'RUNNING', 'FAILED', 'SUCCESS')", name=op.f('ck_studio_ingestion_jobs_state_vocabulary')),
+        sa.CheckConstraint('progress_percent BETWEEN 0 AND 100', name=op.f('ck_studio_ingestion_jobs_progress_range')),
+        sa.ForeignKeyConstraint(['workspace_id', 'draft_id'], ['knowledge.studio_drafts.workspace_id', 'knowledge.studio_drafts.id'], name=op.f('fk_studio_ingestion_jobs_workspace_id_draft_id_studio_drafts'), ondelete='RESTRICT'),
+        sa.ForeignKeyConstraint(['workspace_id', 'requested_by'], ['iam.workspace_memberships.workspace_id', 'iam.workspace_memberships.subject_id'], name=op.f('fk_studio_ingestion_jobs_workspace_id_requested_by_workspace_memberships'), ondelete='RESTRICT'),
+        sa.PrimaryKeyConstraint('id', name=op.f('pk_studio_ingestion_jobs')),
+        sa.UniqueConstraint('workspace_id', 'draft_id', 'id', name=op.f('uq_studio_ingestion_jobs_workspace_id_draft_id_id')),
+        schema='knowledge'
+        )
+        op.create_index('ix_studio_ingestion_jobs_claim', 'studio_ingestion_jobs', ['state', 'lease_expires_at', 'created_at', 'id'], unique=False, schema='knowledge')
+        op.create_index('ix_studio_ingestion_jobs_draft_created', 'studio_ingestion_jobs', ['workspace_id', 'draft_id', 'created_at', 'id'], unique=False, schema='knowledge')
+        op.execute('ALTER TABLE knowledge.studio_ingestion_jobs ENABLE ROW LEVEL SECURITY')
+        op.execute('ALTER TABLE knowledge.studio_ingestion_jobs FORCE ROW LEVEL SECURITY')
+        op.execute("CREATE POLICY workspace_isolation ON knowledge.studio_ingestion_jobs USING (workspace_id = NULLIF(current_setting('app.workspace_id', true), '')::uuid) WITH CHECK (workspace_id = NULLIF(current_setting('app.workspace_id', true), '')::uuid)")
         op.create_table('studio_preflight_checks',
         sa.Column('workspace_id', sa.Uuid(), nullable=False),
         sa.Column('draft_id', sa.Uuid(), nullable=False),
@@ -2879,47 +2917,33 @@ def upgrade() -> None:
         op.execute("CREATE POLICY workspace_isolation ON knowledge.studio_preflight_checks USING (workspace_id = NULLIF(current_setting('app.workspace_id', true), '')::uuid) WITH CHECK (workspace_id = NULLIF(current_setting('app.workspace_id', true), '')::uuid)")
         op.execute("CREATE POLICY studio_preflight_actor_select ON knowledge.studio_preflight_checks AS RESTRICTIVE FOR SELECT TO datariver_app USING (EXISTS (SELECT 1 FROM knowledge.studio_drafts AS visible_draft WHERE visible_draft.workspace_id = studio_preflight_checks.workspace_id AND visible_draft.id = studio_preflight_checks.draft_id AND (visible_draft.author_id = NULLIF(current_setting('app.subject_id', true), '')::uuid OR (visible_draft.state IN ('REVIEW', 'PUBLISHED') AND EXISTS (SELECT 1 FROM iam.workspace_memberships AS membership JOIN iam.subjects AS reviewer_subject ON reviewer_subject.id = membership.subject_id JOIN platform.workspaces AS reviewer_workspace ON reviewer_workspace.id = membership.workspace_id WHERE membership.workspace_id = visible_draft.workspace_id AND membership.subject_id = NULLIF(current_setting('app.subject_id', true), '')::uuid AND membership.subject_id <> visible_draft.author_id AND reviewer_workspace.status = 'ACTIVE' AND reviewer_subject.active IS TRUE AND membership.active IS TRUE AND (membership.access_expires_at IS NULL OR membership.access_expires_at > transaction_timestamp()) AND COALESCE(membership.job_function, '') <> 'SERVICE_ACCOUNT' AND NOT (COALESCE(membership.attributes -> 'groups', '[]'::jsonb) ? 'service-accounts') AND membership.clearance >= visible_draft.classification AND (visible_draft.classification = 0 OR COALESCE(membership.attributes -> 'allowed_domain_ids', '[]'::jsonb) ? visible_draft.domain_ref_id::text) AND COALESCE(membership.attributes -> 'allowed_actions', '[]'::jsonb) ? 'kg.review' AND NOT (COALESCE(membership.attributes -> 'denied_actions', '[]'::jsonb) ? 'kg.review'))))))")
         op.execute("CREATE POLICY studio_preflight_actor_insert ON knowledge.studio_preflight_checks AS RESTRICTIVE FOR INSERT TO datariver_app WITH CHECK (checked_by = NULLIF(current_setting('app.subject_id', true), '')::uuid AND EXISTS (SELECT 1 FROM knowledge.studio_drafts AS target_draft WHERE target_draft.workspace_id = studio_preflight_checks.workspace_id AND target_draft.id = studio_preflight_checks.draft_id AND ((target_draft.state = 'DRAFT' AND target_draft.author_id = NULLIF(current_setting('app.subject_id', true), '')::uuid) OR (target_draft.state = 'REVIEW' AND EXISTS (SELECT 1 FROM iam.workspace_memberships AS membership JOIN iam.subjects AS reviewer_subject ON reviewer_subject.id = membership.subject_id JOIN platform.workspaces AS reviewer_workspace ON reviewer_workspace.id = membership.workspace_id WHERE membership.workspace_id = target_draft.workspace_id AND membership.subject_id = NULLIF(current_setting('app.subject_id', true), '')::uuid AND membership.subject_id <> target_draft.author_id AND reviewer_workspace.status = 'ACTIVE' AND reviewer_subject.active IS TRUE AND membership.active IS TRUE AND (membership.access_expires_at IS NULL OR membership.access_expires_at > transaction_timestamp()) AND COALESCE(membership.job_function, '') <> 'SERVICE_ACCOUNT' AND NOT (COALESCE(membership.attributes -> 'groups', '[]'::jsonb) ? 'service-accounts') AND membership.clearance >= target_draft.classification AND (target_draft.classification = 0 OR COALESCE(membership.attributes -> 'allowed_domain_ids', '[]'::jsonb) ? target_draft.domain_ref_id::text) AND COALESCE(membership.attributes -> 'allowed_actions', '[]'::jsonb) ? 'kg.review' AND NOT (COALESCE(membership.attributes -> 'denied_actions', '[]'::jsonb) ? 'kg.review'))))))")
-        op.create_table('tbox_draft_elements',
+        op.create_table('tbox_draft_blocks',
         sa.Column('workspace_id', sa.Uuid(), nullable=False),
         sa.Column('draft_id', sa.Uuid(), nullable=False),
-        sa.Column('stable_element_id', sa.String(length=128), nullable=False),
-        sa.Column('kind', sa.String(length=16), nullable=False),
-        sa.Column('canonical_name', sa.String(length=255), nullable=False),
-        sa.Column('display_name', sa.String(length=255), nullable=False),
-        sa.Column('parent_stable_element_id', sa.String(length=128), nullable=True),
-        sa.Column('source_stable_element_id', sa.String(length=128), nullable=True),
-        sa.Column('target_stable_element_id', sa.String(length=128), nullable=True),
-        sa.Column('data_type', sa.String(length=100), nullable=True),
-        sa.Column('nullable', sa.Boolean(), nullable=True),
+        sa.Column('kind', sa.String(length=32), nullable=False),
+        sa.Column('title', sa.String(length=120), nullable=False),
+        sa.Column('weight', sa.Integer(), nullable=False),
         sa.Column('ordinal', sa.Integer(), nullable=False),
+        sa.Column('collapsed', sa.Boolean(), nullable=False),
+        sa.Column('source_reference', sa.JSON().with_variant(postgresql.JSONB(none_as_null=True, astext_type=Text()), 'postgresql'), nullable=True),
         sa.Column('id', sa.Uuid(), nullable=False),
         sa.Column('created_at', sa.DateTime(timezone=True), server_default=sa.text('CURRENT_TIMESTAMP'), nullable=False),
         sa.Column('updated_at', sa.DateTime(timezone=True), server_default=sa.text('CURRENT_TIMESTAMP'), nullable=False),
         sa.Column('version', sa.Integer(), nullable=False),
-        sa.CheckConstraint("(kind = 'CLASS' AND parent_stable_element_id IS NULL AND source_stable_element_id IS NULL AND target_stable_element_id IS NULL AND data_type IS NULL AND nullable IS NULL) OR (kind = 'PROPERTY' AND parent_stable_element_id IS NOT NULL AND source_stable_element_id IS NULL AND target_stable_element_id IS NULL AND data_type IS NOT NULL AND nullable IS NOT NULL) OR (kind = 'RELATION' AND parent_stable_element_id IS NULL AND source_stable_element_id IS NOT NULL AND target_stable_element_id IS NOT NULL AND data_type IS NULL AND nullable IS NULL)", name=op.f('ck_tbox_draft_elements_element_shape')),
-        sa.CheckConstraint("kind IN ('CLASS', 'PROPERTY', 'RELATION')", name=op.f('ck_tbox_draft_elements_kind_vocabulary')),
-        sa.CheckConstraint('char_length(canonical_name) BETWEEN 1 AND 255 AND canonical_name = btrim(canonical_name)', name=op.f('ck_tbox_draft_elements_canonical_name_valid')),
-        sa.CheckConstraint('char_length(display_name) BETWEEN 1 AND 255 AND display_name = btrim(display_name)', name=op.f('ck_tbox_draft_elements_display_name_valid')),
-        sa.CheckConstraint('char_length(stable_element_id) BETWEEN 1 AND 128 AND stable_element_id = btrim(stable_element_id)', name=op.f('ck_tbox_draft_elements_stable_element_id_valid')),
-        sa.CheckConstraint('ordinal >= 0', name=op.f('ck_tbox_draft_elements_ordinal_nonnegative')),
-        sa.ForeignKeyConstraint(['workspace_id', 'draft_id', 'parent_stable_element_id'], ['knowledge.tbox_draft_elements.workspace_id', 'knowledge.tbox_draft_elements.draft_id', 'knowledge.tbox_draft_elements.stable_element_id'], name=op.f('fk_tbox_draft_elements_workspace_id_draft_id_parent_stable_element_id_tbox_draft_elements'), ondelete='RESTRICT', initially='DEFERRED', deferrable=True),
-        sa.ForeignKeyConstraint(['workspace_id', 'draft_id', 'source_stable_element_id'], ['knowledge.tbox_draft_elements.workspace_id', 'knowledge.tbox_draft_elements.draft_id', 'knowledge.tbox_draft_elements.stable_element_id'], name=op.f('fk_tbox_draft_elements_workspace_id_draft_id_source_stable_element_id_tbox_draft_elements'), ondelete='RESTRICT', initially='DEFERRED', deferrable=True),
-        sa.ForeignKeyConstraint(['workspace_id', 'draft_id', 'target_stable_element_id'], ['knowledge.tbox_draft_elements.workspace_id', 'knowledge.tbox_draft_elements.draft_id', 'knowledge.tbox_draft_elements.stable_element_id'], name=op.f('fk_tbox_draft_elements_workspace_id_draft_id_target_stable_element_id_tbox_draft_elements'), ondelete='RESTRICT', initially='DEFERRED', deferrable=True),
-        sa.ForeignKeyConstraint(['workspace_id', 'draft_id'], ['knowledge.studio_drafts.workspace_id', 'knowledge.studio_drafts.id'], name=op.f('fk_tbox_draft_elements_workspace_id_draft_id_studio_drafts'), ondelete='RESTRICT'),
-        sa.PrimaryKeyConstraint('id', name=op.f('pk_tbox_draft_elements')),
-        sa.UniqueConstraint('workspace_id', 'draft_id', 'id', name=op.f('uq_tbox_draft_elements_workspace_id_draft_id_id')),
-        sa.UniqueConstraint('workspace_id', 'draft_id', 'ordinal', name=op.f('uq_tbox_draft_elements_workspace_id_draft_id_ordinal')),
-        sa.UniqueConstraint('workspace_id', 'draft_id', 'stable_element_id', name=op.f('uq_tbox_draft_elements_workspace_id_draft_id_stable_element_id')),
+        sa.CheckConstraint("kind IN ('DIRECT', 'DOCUMENT_SCHEMA', 'CATALOG_METADATA', 'ASSET_RELEASE', 'LLM_ASSISTANT')", name=op.f('ck_tbox_draft_blocks_kind_vocabulary')),
+        sa.CheckConstraint('char_length(title) BETWEEN 1 AND 120 AND title = btrim(title)', name=op.f('ck_tbox_draft_blocks_title_valid')),
+        sa.CheckConstraint('ordinal >= 0', name=op.f('ck_tbox_draft_blocks_ordinal_nonnegative')),
+        sa.CheckConstraint('weight BETWEEN 0 AND 100', name=op.f('ck_tbox_draft_blocks_weight_range')),
+        sa.ForeignKeyConstraint(['workspace_id', 'draft_id'], ['knowledge.studio_drafts.workspace_id', 'knowledge.studio_drafts.id'], name=op.f('fk_tbox_draft_blocks_workspace_id_draft_id_studio_drafts'), ondelete='RESTRICT'),
+        sa.PrimaryKeyConstraint('id', name=op.f('pk_tbox_draft_blocks')),
+        sa.UniqueConstraint('workspace_id', 'draft_id', 'id', name=op.f('uq_tbox_draft_blocks_workspace_id_draft_id_id')),
+        sa.UniqueConstraint('workspace_id', 'draft_id', 'ordinal', name=op.f('uq_tbox_draft_blocks_workspace_id_draft_id_ordinal')),
         schema='knowledge'
         )
-        op.create_index('ix_tbox_draft_elements_draft_kind_ordinal', 'tbox_draft_elements', ['workspace_id', 'draft_id', 'kind', 'ordinal'], unique=False, schema='knowledge')
-        op.execute('ALTER TABLE knowledge.tbox_draft_elements ENABLE ROW LEVEL SECURITY')
-        op.execute('ALTER TABLE knowledge.tbox_draft_elements FORCE ROW LEVEL SECURITY')
-        op.execute("CREATE POLICY workspace_isolation ON knowledge.tbox_draft_elements USING (workspace_id = NULLIF(current_setting('app.workspace_id', true), '')::uuid) WITH CHECK (workspace_id = NULLIF(current_setting('app.workspace_id', true), '')::uuid)")
-        op.execute("CREATE POLICY studio_draft_actor_select ON knowledge.tbox_draft_elements AS RESTRICTIVE FOR SELECT TO datariver_app USING (EXISTS (SELECT 1 FROM knowledge.studio_drafts AS visible_draft WHERE visible_draft.workspace_id = tbox_draft_elements.workspace_id AND visible_draft.id = tbox_draft_elements.draft_id AND (visible_draft.author_id = NULLIF(current_setting('app.subject_id', true), '')::uuid OR (visible_draft.state IN ('REVIEW', 'PUBLISHED') AND EXISTS (SELECT 1 FROM iam.workspace_memberships AS membership JOIN iam.subjects AS reviewer_subject ON reviewer_subject.id = membership.subject_id JOIN platform.workspaces AS reviewer_workspace ON reviewer_workspace.id = membership.workspace_id WHERE membership.workspace_id = visible_draft.workspace_id AND membership.subject_id = NULLIF(current_setting('app.subject_id', true), '')::uuid AND membership.subject_id <> visible_draft.author_id AND reviewer_workspace.status = 'ACTIVE' AND reviewer_subject.active IS TRUE AND membership.active IS TRUE AND (membership.access_expires_at IS NULL OR membership.access_expires_at > transaction_timestamp()) AND COALESCE(membership.job_function, '') <> 'SERVICE_ACCOUNT' AND NOT (COALESCE(membership.attributes -> 'groups', '[]'::jsonb) ? 'service-accounts') AND membership.clearance >= visible_draft.classification AND (visible_draft.classification = 0 OR COALESCE(membership.attributes -> 'allowed_domain_ids', '[]'::jsonb) ? visible_draft.domain_ref_id::text) AND COALESCE(membership.attributes -> 'allowed_actions', '[]'::jsonb) ? 'kg.review' AND NOT (COALESCE(membership.attributes -> 'denied_actions', '[]'::jsonb) ? 'kg.review'))))))")
-        op.execute("CREATE POLICY studio_draft_owner_insert ON knowledge.tbox_draft_elements AS RESTRICTIVE FOR INSERT TO datariver_app WITH CHECK (EXISTS (SELECT 1 FROM knowledge.studio_drafts AS owned_draft WHERE owned_draft.workspace_id = tbox_draft_elements.workspace_id AND owned_draft.id = tbox_draft_elements.draft_id AND owned_draft.author_id = NULLIF(current_setting('app.subject_id', true), '')::uuid AND owned_draft.state = 'DRAFT'))")
-        op.execute("CREATE POLICY studio_draft_owner_update ON knowledge.tbox_draft_elements AS RESTRICTIVE FOR UPDATE TO datariver_app USING (EXISTS (SELECT 1 FROM knowledge.studio_drafts AS owned_draft WHERE owned_draft.workspace_id = tbox_draft_elements.workspace_id AND owned_draft.id = tbox_draft_elements.draft_id AND owned_draft.author_id = NULLIF(current_setting('app.subject_id', true), '')::uuid AND owned_draft.state = 'DRAFT')) WITH CHECK (EXISTS (SELECT 1 FROM knowledge.studio_drafts AS owned_draft WHERE owned_draft.workspace_id = tbox_draft_elements.workspace_id AND owned_draft.id = tbox_draft_elements.draft_id AND owned_draft.author_id = NULLIF(current_setting('app.subject_id', true), '')::uuid AND owned_draft.state = 'DRAFT'))")
-        op.execute("CREATE POLICY studio_draft_owner_delete ON knowledge.tbox_draft_elements AS RESTRICTIVE FOR DELETE TO datariver_app USING (EXISTS (SELECT 1 FROM knowledge.studio_drafts AS owned_draft WHERE owned_draft.workspace_id = tbox_draft_elements.workspace_id AND owned_draft.id = tbox_draft_elements.draft_id AND owned_draft.author_id = NULLIF(current_setting('app.subject_id', true), '')::uuid AND owned_draft.state = 'DRAFT'))")
+        op.create_index('ix_tbox_draft_blocks_draft_ordinal', 'tbox_draft_blocks', ['workspace_id', 'draft_id', 'ordinal'], unique=False, schema='knowledge')
+        op.execute('ALTER TABLE knowledge.tbox_draft_blocks ENABLE ROW LEVEL SECURITY')
+        op.execute('ALTER TABLE knowledge.tbox_draft_blocks FORCE ROW LEVEL SECURITY')
+        op.execute("CREATE POLICY workspace_isolation ON knowledge.tbox_draft_blocks USING (workspace_id = NULLIF(current_setting('app.workspace_id', true), '')::uuid) WITH CHECK (workspace_id = NULLIF(current_setting('app.workspace_id', true), '')::uuid)")
         op.create_table('validation_results',
         sa.Column('workspace_id', sa.Uuid(), nullable=False),
         sa.Column('changeset_id', sa.Uuid(), nullable=False),
@@ -3064,39 +3088,6 @@ def upgrade() -> None:
         op.execute('ALTER TABLE assistant.evidence_citations FORCE ROW LEVEL SECURITY')
         op.execute("CREATE POLICY workspace_isolation ON assistant.evidence_citations USING (workspace_id = NULLIF(current_setting('app.workspace_id', true), '')::uuid) WITH CHECK (workspace_id = NULLIF(current_setting('app.workspace_id', true), '')::uuid)")
         op.execute("CREATE POLICY evidence_citation_owner_access ON assistant.evidence_citations AS RESTRICTIVE FOR ALL TO datariver_app USING (EXISTS (SELECT 1 FROM assistant.assistant_runs AS owned_run JOIN assistant.chat_sessions AS owned_session ON owned_session.workspace_id = owned_run.workspace_id AND owned_session.id = owned_run.session_id WHERE owned_run.workspace_id = evidence_citations.workspace_id AND owned_run.id = evidence_citations.run_id AND owned_session.owner_id = NULLIF(current_setting('app.subject_id', true), '')::uuid)) WITH CHECK (EXISTS (SELECT 1 FROM assistant.assistant_runs AS owned_run JOIN assistant.chat_sessions AS owned_session ON owned_session.workspace_id = owned_run.workspace_id AND owned_session.id = owned_run.session_id WHERE owned_run.workspace_id = evidence_citations.workspace_id AND owned_run.id = evidence_citations.run_id AND owned_session.owner_id = NULLIF(current_setting('app.subject_id', true), '')::uuid))")
-        op.create_table('abox_binding_drafts',
-        sa.Column('workspace_id', sa.Uuid(), nullable=False),
-        sa.Column('draft_id', sa.Uuid(), nullable=False),
-        sa.Column('target_stable_element_id', sa.String(length=128), nullable=False),
-        sa.Column('source_reference_id', sa.Uuid(), nullable=False),
-        sa.Column('readiness', sa.String(length=16), nullable=False),
-        sa.Column('tbox_version', sa.Integer(), nullable=False),
-        sa.Column('created_by', sa.Uuid(), nullable=False),
-        sa.Column('updated_by', sa.Uuid(), nullable=False),
-        sa.Column('id', sa.Uuid(), nullable=False),
-        sa.Column('created_at', sa.DateTime(timezone=True), server_default=sa.text('CURRENT_TIMESTAMP'), nullable=False),
-        sa.Column('updated_at', sa.DateTime(timezone=True), server_default=sa.text('CURRENT_TIMESTAMP'), nullable=False),
-        sa.Column('version', sa.Integer(), nullable=False),
-        sa.CheckConstraint("readiness IN ('DRAFT', 'VALIDATED', 'STALE')", name=op.f('ck_abox_binding_drafts_readiness_vocabulary')),
-        sa.CheckConstraint('tbox_version >= 1', name=op.f('ck_abox_binding_drafts_tbox_version_positive')),
-        sa.ForeignKeyConstraint(['workspace_id', 'created_by'], ['iam.workspace_memberships.workspace_id', 'iam.workspace_memberships.subject_id'], name=op.f('fk_abox_binding_drafts_workspace_id_created_by_workspace_memberships'), ondelete='RESTRICT'),
-        sa.ForeignKeyConstraint(['workspace_id', 'draft_id', 'target_stable_element_id'], ['knowledge.tbox_draft_elements.workspace_id', 'knowledge.tbox_draft_elements.draft_id', 'knowledge.tbox_draft_elements.stable_element_id'], name=op.f('fk_abox_binding_drafts_workspace_id_draft_id_target_stable_element_id_tbox_draft_elements'), ondelete='RESTRICT'),
-        sa.ForeignKeyConstraint(['workspace_id', 'draft_id'], ['knowledge.studio_drafts.workspace_id', 'knowledge.studio_drafts.id'], name=op.f('fk_abox_binding_drafts_workspace_id_draft_id_studio_drafts'), ondelete='RESTRICT'),
-        sa.ForeignKeyConstraint(['workspace_id', 'source_reference_id'], ['knowledge.source_references.workspace_id', 'knowledge.source_references.id'], name=op.f('fk_abox_binding_drafts_workspace_id_source_reference_id_source_references'), ondelete='RESTRICT'),
-        sa.ForeignKeyConstraint(['workspace_id', 'updated_by'], ['iam.workspace_memberships.workspace_id', 'iam.workspace_memberships.subject_id'], name=op.f('fk_abox_binding_drafts_workspace_id_updated_by_workspace_memberships'), ondelete='RESTRICT'),
-        sa.PrimaryKeyConstraint('id', name=op.f('pk_abox_binding_drafts')),
-        sa.UniqueConstraint('workspace_id', 'draft_id', 'id', name=op.f('uq_abox_binding_drafts_workspace_id_draft_id_id')),
-        sa.UniqueConstraint('workspace_id', 'draft_id', 'target_stable_element_id', name=op.f('uq_abox_binding_drafts_workspace_id_draft_id_target_stable_element_id')),
-        schema='knowledge'
-        )
-        op.create_index('ix_abox_binding_drafts_draft_readiness', 'abox_binding_drafts', ['workspace_id', 'draft_id', 'readiness', 'target_stable_element_id'], unique=False, schema='knowledge')
-        op.execute('ALTER TABLE knowledge.abox_binding_drafts ENABLE ROW LEVEL SECURITY')
-        op.execute('ALTER TABLE knowledge.abox_binding_drafts FORCE ROW LEVEL SECURITY')
-        op.execute("CREATE POLICY workspace_isolation ON knowledge.abox_binding_drafts USING (workspace_id = NULLIF(current_setting('app.workspace_id', true), '')::uuid) WITH CHECK (workspace_id = NULLIF(current_setting('app.workspace_id', true), '')::uuid)")
-        op.execute("CREATE POLICY studio_draft_actor_select ON knowledge.abox_binding_drafts AS RESTRICTIVE FOR SELECT TO datariver_app USING (EXISTS (SELECT 1 FROM knowledge.studio_drafts AS visible_draft WHERE visible_draft.workspace_id = abox_binding_drafts.workspace_id AND visible_draft.id = abox_binding_drafts.draft_id AND (visible_draft.author_id = NULLIF(current_setting('app.subject_id', true), '')::uuid OR (visible_draft.state IN ('REVIEW', 'PUBLISHED') AND EXISTS (SELECT 1 FROM iam.workspace_memberships AS membership JOIN iam.subjects AS reviewer_subject ON reviewer_subject.id = membership.subject_id JOIN platform.workspaces AS reviewer_workspace ON reviewer_workspace.id = membership.workspace_id WHERE membership.workspace_id = visible_draft.workspace_id AND membership.subject_id = NULLIF(current_setting('app.subject_id', true), '')::uuid AND membership.subject_id <> visible_draft.author_id AND reviewer_workspace.status = 'ACTIVE' AND reviewer_subject.active IS TRUE AND membership.active IS TRUE AND (membership.access_expires_at IS NULL OR membership.access_expires_at > transaction_timestamp()) AND COALESCE(membership.job_function, '') <> 'SERVICE_ACCOUNT' AND NOT (COALESCE(membership.attributes -> 'groups', '[]'::jsonb) ? 'service-accounts') AND membership.clearance >= visible_draft.classification AND (visible_draft.classification = 0 OR COALESCE(membership.attributes -> 'allowed_domain_ids', '[]'::jsonb) ? visible_draft.domain_ref_id::text) AND COALESCE(membership.attributes -> 'allowed_actions', '[]'::jsonb) ? 'kg.review' AND NOT (COALESCE(membership.attributes -> 'denied_actions', '[]'::jsonb) ? 'kg.review'))))))")
-        op.execute("CREATE POLICY studio_draft_owner_insert ON knowledge.abox_binding_drafts AS RESTRICTIVE FOR INSERT TO datariver_app WITH CHECK (EXISTS (SELECT 1 FROM knowledge.studio_drafts AS owned_draft WHERE owned_draft.workspace_id = abox_binding_drafts.workspace_id AND owned_draft.id = abox_binding_drafts.draft_id AND owned_draft.author_id = NULLIF(current_setting('app.subject_id', true), '')::uuid AND owned_draft.state = 'DRAFT'))")
-        op.execute("CREATE POLICY studio_draft_owner_update ON knowledge.abox_binding_drafts AS RESTRICTIVE FOR UPDATE TO datariver_app USING (EXISTS (SELECT 1 FROM knowledge.studio_drafts AS owned_draft WHERE owned_draft.workspace_id = abox_binding_drafts.workspace_id AND owned_draft.id = abox_binding_drafts.draft_id AND owned_draft.author_id = NULLIF(current_setting('app.subject_id', true), '')::uuid AND owned_draft.state = 'DRAFT')) WITH CHECK (EXISTS (SELECT 1 FROM knowledge.studio_drafts AS owned_draft WHERE owned_draft.workspace_id = abox_binding_drafts.workspace_id AND owned_draft.id = abox_binding_drafts.draft_id AND owned_draft.author_id = NULLIF(current_setting('app.subject_id', true), '')::uuid AND owned_draft.state = 'DRAFT'))")
-        op.execute("CREATE POLICY studio_draft_owner_delete ON knowledge.abox_binding_drafts AS RESTRICTIVE FOR DELETE TO datariver_app USING (EXISTS (SELECT 1 FROM knowledge.studio_drafts AS owned_draft WHERE owned_draft.workspace_id = abox_binding_drafts.workspace_id AND owned_draft.id = abox_binding_drafts.draft_id AND owned_draft.author_id = NULLIF(current_setting('app.subject_id', true), '')::uuid AND owned_draft.state = 'DRAFT'))")
         op.create_table('extraction_runs',
         sa.Column('workspace_id', sa.Uuid(), nullable=False),
         sa.Column('graph_id', sa.Uuid(), nullable=False),
@@ -3213,6 +3204,93 @@ def upgrade() -> None:
         op.execute("CREATE POLICY workspace_isolation ON knowledge.studio_releases USING (workspace_id = NULLIF(current_setting('app.workspace_id', true), '')::uuid) WITH CHECK (workspace_id = NULLIF(current_setting('app.workspace_id', true), '')::uuid)")
         op.execute("CREATE POLICY studio_release_publisher_insert ON knowledge.studio_releases AS RESTRICTIVE FOR INSERT TO datariver_app WITH CHECK (reviewed_by = NULLIF(current_setting('app.subject_id', true), '')::uuid AND published_by = NULLIF(current_setting('app.subject_id', true), '')::uuid AND EXISTS (SELECT 1 FROM knowledge.studio_drafts AS source_draft WHERE source_draft.workspace_id = studio_releases.workspace_id AND source_draft.id = studio_releases.source_draft_id AND source_draft.state = 'REVIEW' AND EXISTS (SELECT 1 FROM iam.workspace_memberships AS membership JOIN iam.subjects AS reviewer_subject ON reviewer_subject.id = membership.subject_id JOIN platform.workspaces AS reviewer_workspace ON reviewer_workspace.id = membership.workspace_id WHERE membership.workspace_id = source_draft.workspace_id AND membership.subject_id = NULLIF(current_setting('app.subject_id', true), '')::uuid AND membership.subject_id <> source_draft.author_id AND reviewer_workspace.status = 'ACTIVE' AND reviewer_subject.active IS TRUE AND membership.active IS TRUE AND (membership.access_expires_at IS NULL OR membership.access_expires_at > transaction_timestamp()) AND COALESCE(membership.job_function, '') <> 'SERVICE_ACCOUNT' AND NOT (COALESCE(membership.attributes -> 'groups', '[]'::jsonb) ? 'service-accounts') AND membership.clearance >= source_draft.classification AND (source_draft.classification = 0 OR COALESCE(membership.attributes -> 'allowed_domain_ids', '[]'::jsonb) ? source_draft.domain_ref_id::text) AND COALESCE(membership.attributes -> 'allowed_actions', '[]'::jsonb) ? 'kg.review' AND NOT (COALESCE(membership.attributes -> 'denied_actions', '[]'::jsonb) ? 'kg.review') AND COALESCE(membership.attributes -> 'allowed_actions', '[]'::jsonb) ? 'kg.publish' AND NOT (COALESCE(membership.attributes -> 'denied_actions', '[]'::jsonb) ? 'kg.publish'))))")
         op.execute("CREATE POLICY studio_release_publisher_archive ON knowledge.studio_releases AS RESTRICTIVE FOR UPDATE TO datariver_app USING (state = 'ACTIVE' AND EXISTS (SELECT 1 FROM knowledge.studio_drafts AS source_draft WHERE source_draft.workspace_id = studio_releases.workspace_id AND source_draft.id = studio_releases.source_draft_id AND source_draft.state = 'PUBLISHED' AND EXISTS (SELECT 1 FROM iam.workspace_memberships AS membership JOIN iam.subjects AS reviewer_subject ON reviewer_subject.id = membership.subject_id JOIN platform.workspaces AS reviewer_workspace ON reviewer_workspace.id = membership.workspace_id WHERE membership.workspace_id = source_draft.workspace_id AND membership.subject_id = NULLIF(current_setting('app.subject_id', true), '')::uuid AND membership.subject_id <> source_draft.author_id AND reviewer_workspace.status = 'ACTIVE' AND reviewer_subject.active IS TRUE AND membership.active IS TRUE AND (membership.access_expires_at IS NULL OR membership.access_expires_at > transaction_timestamp()) AND COALESCE(membership.job_function, '') <> 'SERVICE_ACCOUNT' AND NOT (COALESCE(membership.attributes -> 'groups', '[]'::jsonb) ? 'service-accounts') AND membership.clearance >= source_draft.classification AND (source_draft.classification = 0 OR COALESCE(membership.attributes -> 'allowed_domain_ids', '[]'::jsonb) ? source_draft.domain_ref_id::text) AND COALESCE(membership.attributes -> 'allowed_actions', '[]'::jsonb) ? 'kg.review' AND NOT (COALESCE(membership.attributes -> 'denied_actions', '[]'::jsonb) ? 'kg.review') AND COALESCE(membership.attributes -> 'allowed_actions', '[]'::jsonb) ? 'kg.publish' AND NOT (COALESCE(membership.attributes -> 'denied_actions', '[]'::jsonb) ? 'kg.publish')))) WITH CHECK (state = 'ARCHIVED' AND archived_by = NULLIF(current_setting('app.subject_id', true), '')::uuid AND EXISTS (SELECT 1 FROM knowledge.studio_drafts AS source_draft WHERE source_draft.workspace_id = studio_releases.workspace_id AND source_draft.id = studio_releases.source_draft_id AND source_draft.state = 'PUBLISHED' AND EXISTS (SELECT 1 FROM iam.workspace_memberships AS membership JOIN iam.subjects AS reviewer_subject ON reviewer_subject.id = membership.subject_id JOIN platform.workspaces AS reviewer_workspace ON reviewer_workspace.id = membership.workspace_id WHERE membership.workspace_id = source_draft.workspace_id AND membership.subject_id = NULLIF(current_setting('app.subject_id', true), '')::uuid AND membership.subject_id <> source_draft.author_id AND reviewer_workspace.status = 'ACTIVE' AND reviewer_subject.active IS TRUE AND membership.active IS TRUE AND (membership.access_expires_at IS NULL OR membership.access_expires_at > transaction_timestamp()) AND COALESCE(membership.job_function, '') <> 'SERVICE_ACCOUNT' AND NOT (COALESCE(membership.attributes -> 'groups', '[]'::jsonb) ? 'service-accounts') AND membership.clearance >= source_draft.classification AND (source_draft.classification = 0 OR COALESCE(membership.attributes -> 'allowed_domain_ids', '[]'::jsonb) ? source_draft.domain_ref_id::text) AND COALESCE(membership.attributes -> 'allowed_actions', '[]'::jsonb) ? 'kg.review' AND NOT (COALESCE(membership.attributes -> 'denied_actions', '[]'::jsonb) ? 'kg.review') AND COALESCE(membership.attributes -> 'allowed_actions', '[]'::jsonb) ? 'kg.publish' AND NOT (COALESCE(membership.attributes -> 'denied_actions', '[]'::jsonb) ? 'kg.publish'))))")
+        op.create_table('tbox_draft_elements',
+        sa.Column('workspace_id', sa.Uuid(), nullable=False),
+        sa.Column('draft_id', sa.Uuid(), nullable=False),
+        sa.Column('block_id', sa.Uuid(), nullable=False),
+        sa.Column('stable_element_id', sa.String(length=128), nullable=False),
+        sa.Column('kind', sa.String(length=16), nullable=False),
+        sa.Column('canonical_name', sa.String(length=255), nullable=False),
+        sa.Column('display_name', sa.String(length=255), nullable=False),
+        sa.Column('parent_stable_element_id', sa.String(length=128), nullable=True),
+        sa.Column('source_stable_element_id', sa.String(length=128), nullable=True),
+        sa.Column('target_stable_element_id', sa.String(length=128), nullable=True),
+        sa.Column('data_type', sa.String(length=100), nullable=True),
+        sa.Column('nullable', sa.Boolean(), nullable=True),
+        sa.Column('definition', sa.Text(), nullable=True),
+        sa.Column('aliases', sa.JSON().with_variant(postgresql.JSONB(none_as_null=True, astext_type=Text()), 'postgresql'), nullable=False),
+        sa.Column('unit', sa.String(length=100), nullable=True),
+        sa.Column('vector_index_enabled', sa.Boolean(), nullable=False),
+        sa.Column('layout_x', sa.Float(), nullable=True),
+        sa.Column('layout_y', sa.Float(), nullable=True),
+        sa.Column('ordinal', sa.Integer(), nullable=False),
+        sa.Column('id', sa.Uuid(), nullable=False),
+        sa.Column('created_at', sa.DateTime(timezone=True), server_default=sa.text('CURRENT_TIMESTAMP'), nullable=False),
+        sa.Column('updated_at', sa.DateTime(timezone=True), server_default=sa.text('CURRENT_TIMESTAMP'), nullable=False),
+        sa.Column('version', sa.Integer(), nullable=False),
+        sa.CheckConstraint("(kind = 'CLASS' AND parent_stable_element_id IS NULL AND source_stable_element_id IS NULL AND target_stable_element_id IS NULL AND data_type IS NULL AND nullable IS NULL) OR (kind = 'PROPERTY' AND parent_stable_element_id IS NOT NULL AND source_stable_element_id IS NULL AND target_stable_element_id IS NULL AND data_type IS NOT NULL AND nullable IS NOT NULL) OR (kind = 'RELATION' AND parent_stable_element_id IS NULL AND source_stable_element_id IS NOT NULL AND target_stable_element_id IS NOT NULL AND data_type IS NULL AND nullable IS NULL)", name=op.f('ck_tbox_draft_elements_element_shape')),
+        sa.CheckConstraint("kind IN ('CLASS', 'PROPERTY', 'RELATION')", name=op.f('ck_tbox_draft_elements_kind_vocabulary')),
+        sa.CheckConstraint('char_length(canonical_name) BETWEEN 1 AND 255 AND canonical_name = btrim(canonical_name)', name=op.f('ck_tbox_draft_elements_canonical_name_valid')),
+        sa.CheckConstraint('char_length(display_name) BETWEEN 1 AND 255 AND display_name = btrim(display_name)', name=op.f('ck_tbox_draft_elements_display_name_valid')),
+        sa.CheckConstraint('char_length(stable_element_id) BETWEEN 1 AND 128 AND stable_element_id = btrim(stable_element_id)', name=op.f('ck_tbox_draft_elements_stable_element_id_valid')),
+        sa.CheckConstraint('ordinal >= 0', name=op.f('ck_tbox_draft_elements_ordinal_nonnegative')),
+        sa.ForeignKeyConstraint(['workspace_id', 'draft_id', 'block_id'], ['knowledge.tbox_draft_blocks.workspace_id', 'knowledge.tbox_draft_blocks.draft_id', 'knowledge.tbox_draft_blocks.id'], name=op.f('fk_tbox_draft_elements_workspace_id_draft_id_block_id_tbox_draft_blocks'), ondelete='RESTRICT'),
+        sa.ForeignKeyConstraint(['workspace_id', 'draft_id', 'parent_stable_element_id'], ['knowledge.tbox_draft_elements.workspace_id', 'knowledge.tbox_draft_elements.draft_id', 'knowledge.tbox_draft_elements.stable_element_id'], name=op.f('fk_tbox_draft_elements_workspace_id_draft_id_parent_stable_element_id_tbox_draft_elements'), ondelete='RESTRICT', initially='DEFERRED', deferrable=True),
+        sa.ForeignKeyConstraint(['workspace_id', 'draft_id', 'source_stable_element_id'], ['knowledge.tbox_draft_elements.workspace_id', 'knowledge.tbox_draft_elements.draft_id', 'knowledge.tbox_draft_elements.stable_element_id'], name=op.f('fk_tbox_draft_elements_workspace_id_draft_id_source_stable_element_id_tbox_draft_elements'), ondelete='RESTRICT', initially='DEFERRED', deferrable=True),
+        sa.ForeignKeyConstraint(['workspace_id', 'draft_id', 'target_stable_element_id'], ['knowledge.tbox_draft_elements.workspace_id', 'knowledge.tbox_draft_elements.draft_id', 'knowledge.tbox_draft_elements.stable_element_id'], name=op.f('fk_tbox_draft_elements_workspace_id_draft_id_target_stable_element_id_tbox_draft_elements'), ondelete='RESTRICT', initially='DEFERRED', deferrable=True),
+        sa.ForeignKeyConstraint(['workspace_id', 'draft_id'], ['knowledge.studio_drafts.workspace_id', 'knowledge.studio_drafts.id'], name=op.f('fk_tbox_draft_elements_workspace_id_draft_id_studio_drafts'), ondelete='RESTRICT'),
+        sa.PrimaryKeyConstraint('id', name=op.f('pk_tbox_draft_elements')),
+        sa.UniqueConstraint('workspace_id', 'draft_id', 'id', name=op.f('uq_tbox_draft_elements_workspace_id_draft_id_id')),
+        sa.UniqueConstraint('workspace_id', 'draft_id', 'ordinal', name=op.f('uq_tbox_draft_elements_workspace_id_draft_id_ordinal')),
+        sa.UniqueConstraint('workspace_id', 'draft_id', 'stable_element_id', name=op.f('uq_tbox_draft_elements_workspace_id_draft_id_stable_element_id')),
+        schema='knowledge'
+        )
+        op.create_index('ix_tbox_draft_elements_draft_kind_ordinal', 'tbox_draft_elements', ['workspace_id', 'draft_id', 'kind', 'ordinal'], unique=False, schema='knowledge')
+        op.execute('ALTER TABLE knowledge.tbox_draft_elements ENABLE ROW LEVEL SECURITY')
+        op.execute('ALTER TABLE knowledge.tbox_draft_elements FORCE ROW LEVEL SECURITY')
+        op.execute("CREATE POLICY workspace_isolation ON knowledge.tbox_draft_elements USING (workspace_id = NULLIF(current_setting('app.workspace_id', true), '')::uuid) WITH CHECK (workspace_id = NULLIF(current_setting('app.workspace_id', true), '')::uuid)")
+        op.execute("CREATE POLICY studio_draft_actor_select ON knowledge.tbox_draft_elements AS RESTRICTIVE FOR SELECT TO datariver_app USING (EXISTS (SELECT 1 FROM knowledge.studio_drafts AS visible_draft WHERE visible_draft.workspace_id = tbox_draft_elements.workspace_id AND visible_draft.id = tbox_draft_elements.draft_id AND (visible_draft.author_id = NULLIF(current_setting('app.subject_id', true), '')::uuid OR (visible_draft.state IN ('REVIEW', 'PUBLISHED') AND EXISTS (SELECT 1 FROM iam.workspace_memberships AS membership JOIN iam.subjects AS reviewer_subject ON reviewer_subject.id = membership.subject_id JOIN platform.workspaces AS reviewer_workspace ON reviewer_workspace.id = membership.workspace_id WHERE membership.workspace_id = visible_draft.workspace_id AND membership.subject_id = NULLIF(current_setting('app.subject_id', true), '')::uuid AND membership.subject_id <> visible_draft.author_id AND reviewer_workspace.status = 'ACTIVE' AND reviewer_subject.active IS TRUE AND membership.active IS TRUE AND (membership.access_expires_at IS NULL OR membership.access_expires_at > transaction_timestamp()) AND COALESCE(membership.job_function, '') <> 'SERVICE_ACCOUNT' AND NOT (COALESCE(membership.attributes -> 'groups', '[]'::jsonb) ? 'service-accounts') AND membership.clearance >= visible_draft.classification AND (visible_draft.classification = 0 OR COALESCE(membership.attributes -> 'allowed_domain_ids', '[]'::jsonb) ? visible_draft.domain_ref_id::text) AND COALESCE(membership.attributes -> 'allowed_actions', '[]'::jsonb) ? 'kg.review' AND NOT (COALESCE(membership.attributes -> 'denied_actions', '[]'::jsonb) ? 'kg.review'))))))")
+        op.execute("CREATE POLICY studio_draft_owner_insert ON knowledge.tbox_draft_elements AS RESTRICTIVE FOR INSERT TO datariver_app WITH CHECK (EXISTS (SELECT 1 FROM knowledge.studio_drafts AS owned_draft WHERE owned_draft.workspace_id = tbox_draft_elements.workspace_id AND owned_draft.id = tbox_draft_elements.draft_id AND owned_draft.author_id = NULLIF(current_setting('app.subject_id', true), '')::uuid AND owned_draft.state = 'DRAFT'))")
+        op.execute("CREATE POLICY studio_draft_owner_update ON knowledge.tbox_draft_elements AS RESTRICTIVE FOR UPDATE TO datariver_app USING (EXISTS (SELECT 1 FROM knowledge.studio_drafts AS owned_draft WHERE owned_draft.workspace_id = tbox_draft_elements.workspace_id AND owned_draft.id = tbox_draft_elements.draft_id AND owned_draft.author_id = NULLIF(current_setting('app.subject_id', true), '')::uuid AND owned_draft.state = 'DRAFT')) WITH CHECK (EXISTS (SELECT 1 FROM knowledge.studio_drafts AS owned_draft WHERE owned_draft.workspace_id = tbox_draft_elements.workspace_id AND owned_draft.id = tbox_draft_elements.draft_id AND owned_draft.author_id = NULLIF(current_setting('app.subject_id', true), '')::uuid AND owned_draft.state = 'DRAFT'))")
+        op.execute("CREATE POLICY studio_draft_owner_delete ON knowledge.tbox_draft_elements AS RESTRICTIVE FOR DELETE TO datariver_app USING (EXISTS (SELECT 1 FROM knowledge.studio_drafts AS owned_draft WHERE owned_draft.workspace_id = tbox_draft_elements.workspace_id AND owned_draft.id = tbox_draft_elements.draft_id AND owned_draft.author_id = NULLIF(current_setting('app.subject_id', true), '')::uuid AND owned_draft.state = 'DRAFT'))")
+        op.create_table('tbox_proposals',
+        sa.Column('workspace_id', sa.Uuid(), nullable=False),
+        sa.Column('draft_id', sa.Uuid(), nullable=False),
+        sa.Column('target_block_id', sa.Uuid(), nullable=True),
+        sa.Column('created_by', sa.Uuid(), nullable=False),
+        sa.Column('state', sa.String(length=16), nullable=False),
+        sa.Column('mode', sa.String(length=32), nullable=False),
+        sa.Column('merge_strategy', sa.String(length=24), nullable=False),
+        sa.Column('base_draft_version', sa.Integer(), nullable=False),
+        sa.Column('prompt', sa.Text(), nullable=False),
+        sa.Column('proposal_document', sa.JSON().with_variant(postgresql.JSONB(none_as_null=True, astext_type=Text()), 'postgresql'), nullable=False),
+        sa.Column('conflicts_document', sa.JSON().with_variant(postgresql.JSONB(none_as_null=True, astext_type=Text()), 'postgresql'), nullable=False),
+        sa.Column('model_binding_document', sa.JSON().with_variant(postgresql.JSONB(none_as_null=True, astext_type=Text()), 'postgresql'), nullable=True),
+        sa.Column('error_code', sa.String(length=100), nullable=True),
+        sa.Column('applied_at', sa.DateTime(timezone=True), nullable=True),
+        sa.Column('rejected_at', sa.DateTime(timezone=True), nullable=True),
+        sa.Column('id', sa.Uuid(), nullable=False),
+        sa.Column('created_at', sa.DateTime(timezone=True), server_default=sa.text('CURRENT_TIMESTAMP'), nullable=False),
+        sa.Column('updated_at', sa.DateTime(timezone=True), server_default=sa.text('CURRENT_TIMESTAMP'), nullable=False),
+        sa.Column('version', sa.Integer(), nullable=False),
+        sa.CheckConstraint("jsonb_typeof(conflicts_document) = 'array'", name=op.f('ck_tbox_proposals_conflicts_document_array')),
+        sa.CheckConstraint("jsonb_typeof(proposal_document) = 'object'", name=op.f('ck_tbox_proposals_proposal_document_object')),
+        sa.CheckConstraint("merge_strategy IN ('KEEP_ORIGINAL', 'ACCEPT_PROPOSAL', 'RESOLVE')", name=op.f('ck_tbox_proposals_merge_strategy_vocabulary')),
+        sa.CheckConstraint("mode IN ('MERGE_INTO_CURRENT', 'APPEND_LAYER')", name=op.f('ck_tbox_proposals_mode_vocabulary')),
+        sa.CheckConstraint("state IN ('READY', 'APPLIED', 'REJECTED', 'FAILED')", name=op.f('ck_tbox_proposals_state_vocabulary')),
+        sa.CheckConstraint('base_draft_version >= 1', name=op.f('ck_tbox_proposals_base_draft_version_positive')),
+        sa.CheckConstraint('char_length(prompt) BETWEEN 1 AND 4000 AND prompt = btrim(prompt)', name=op.f('ck_tbox_proposals_prompt_valid')),
+        sa.ForeignKeyConstraint(['workspace_id', 'created_by'], ['iam.workspace_memberships.workspace_id', 'iam.workspace_memberships.subject_id'], name=op.f('fk_tbox_proposals_workspace_id_created_by_workspace_memberships'), ondelete='RESTRICT'),
+        sa.ForeignKeyConstraint(['workspace_id', 'draft_id', 'target_block_id'], ['knowledge.tbox_draft_blocks.workspace_id', 'knowledge.tbox_draft_blocks.draft_id', 'knowledge.tbox_draft_blocks.id'], name=op.f('fk_tbox_proposals_workspace_id_draft_id_target_block_id_tbox_draft_blocks'), ondelete='RESTRICT'),
+        sa.ForeignKeyConstraint(['workspace_id', 'draft_id'], ['knowledge.studio_drafts.workspace_id', 'knowledge.studio_drafts.id'], name=op.f('fk_tbox_proposals_workspace_id_draft_id_studio_drafts'), ondelete='RESTRICT'),
+        sa.PrimaryKeyConstraint('id', name=op.f('pk_tbox_proposals')),
+        sa.UniqueConstraint('workspace_id', 'draft_id', 'id', name=op.f('uq_tbox_proposals_workspace_id_draft_id_id')),
+        schema='knowledge'
+        )
+        op.create_index('ix_tbox_proposals_draft_created', 'tbox_proposals', ['workspace_id', 'draft_id', 'created_at', 'id'], unique=False, schema='knowledge')
+        op.execute('ALTER TABLE knowledge.tbox_proposals ENABLE ROW LEVEL SECURITY')
+        op.execute('ALTER TABLE knowledge.tbox_proposals FORCE ROW LEVEL SECURITY')
+        op.execute("CREATE POLICY workspace_isolation ON knowledge.tbox_proposals USING (workspace_id = NULLIF(current_setting('app.workspace_id', true), '')::uuid) WITH CHECK (workspace_id = NULLIF(current_setting('app.workspace_id', true), '')::uuid)")
         op.create_table('consumer_grants',
         sa.Column('workspace_id', sa.Uuid(), nullable=False),
         sa.Column('product_id', sa.Uuid(), nullable=False),
@@ -3248,6 +3326,39 @@ def upgrade() -> None:
         op.execute('ALTER TABLE sharing.consumer_grants ENABLE ROW LEVEL SECURITY')
         op.execute('ALTER TABLE sharing.consumer_grants FORCE ROW LEVEL SECURITY')
         op.execute("CREATE POLICY workspace_isolation ON sharing.consumer_grants USING (workspace_id = NULLIF(current_setting('app.workspace_id', true), '')::uuid) WITH CHECK (workspace_id = NULLIF(current_setting('app.workspace_id', true), '')::uuid)")
+        op.create_table('abox_binding_drafts',
+        sa.Column('workspace_id', sa.Uuid(), nullable=False),
+        sa.Column('draft_id', sa.Uuid(), nullable=False),
+        sa.Column('target_stable_element_id', sa.String(length=128), nullable=False),
+        sa.Column('source_reference_id', sa.Uuid(), nullable=False),
+        sa.Column('readiness', sa.String(length=16), nullable=False),
+        sa.Column('tbox_version', sa.Integer(), nullable=False),
+        sa.Column('created_by', sa.Uuid(), nullable=False),
+        sa.Column('updated_by', sa.Uuid(), nullable=False),
+        sa.Column('id', sa.Uuid(), nullable=False),
+        sa.Column('created_at', sa.DateTime(timezone=True), server_default=sa.text('CURRENT_TIMESTAMP'), nullable=False),
+        sa.Column('updated_at', sa.DateTime(timezone=True), server_default=sa.text('CURRENT_TIMESTAMP'), nullable=False),
+        sa.Column('version', sa.Integer(), nullable=False),
+        sa.CheckConstraint("readiness IN ('DRAFT', 'VALIDATED', 'STALE')", name=op.f('ck_abox_binding_drafts_readiness_vocabulary')),
+        sa.CheckConstraint('tbox_version >= 1', name=op.f('ck_abox_binding_drafts_tbox_version_positive')),
+        sa.ForeignKeyConstraint(['workspace_id', 'created_by'], ['iam.workspace_memberships.workspace_id', 'iam.workspace_memberships.subject_id'], name=op.f('fk_abox_binding_drafts_workspace_id_created_by_workspace_memberships'), ondelete='RESTRICT'),
+        sa.ForeignKeyConstraint(['workspace_id', 'draft_id', 'target_stable_element_id'], ['knowledge.tbox_draft_elements.workspace_id', 'knowledge.tbox_draft_elements.draft_id', 'knowledge.tbox_draft_elements.stable_element_id'], name=op.f('fk_abox_binding_drafts_workspace_id_draft_id_target_stable_element_id_tbox_draft_elements'), ondelete='RESTRICT'),
+        sa.ForeignKeyConstraint(['workspace_id', 'draft_id'], ['knowledge.studio_drafts.workspace_id', 'knowledge.studio_drafts.id'], name=op.f('fk_abox_binding_drafts_workspace_id_draft_id_studio_drafts'), ondelete='RESTRICT'),
+        sa.ForeignKeyConstraint(['workspace_id', 'source_reference_id'], ['knowledge.source_references.workspace_id', 'knowledge.source_references.id'], name=op.f('fk_abox_binding_drafts_workspace_id_source_reference_id_source_references'), ondelete='RESTRICT'),
+        sa.ForeignKeyConstraint(['workspace_id', 'updated_by'], ['iam.workspace_memberships.workspace_id', 'iam.workspace_memberships.subject_id'], name=op.f('fk_abox_binding_drafts_workspace_id_updated_by_workspace_memberships'), ondelete='RESTRICT'),
+        sa.PrimaryKeyConstraint('id', name=op.f('pk_abox_binding_drafts')),
+        sa.UniqueConstraint('workspace_id', 'draft_id', 'id', name=op.f('uq_abox_binding_drafts_workspace_id_draft_id_id')),
+        sa.UniqueConstraint('workspace_id', 'draft_id', 'target_stable_element_id', name=op.f('uq_abox_binding_drafts_workspace_id_draft_id_target_stable_element_id')),
+        schema='knowledge'
+        )
+        op.create_index('ix_abox_binding_drafts_draft_readiness', 'abox_binding_drafts', ['workspace_id', 'draft_id', 'readiness', 'target_stable_element_id'], unique=False, schema='knowledge')
+        op.execute('ALTER TABLE knowledge.abox_binding_drafts ENABLE ROW LEVEL SECURITY')
+        op.execute('ALTER TABLE knowledge.abox_binding_drafts FORCE ROW LEVEL SECURITY')
+        op.execute("CREATE POLICY workspace_isolation ON knowledge.abox_binding_drafts USING (workspace_id = NULLIF(current_setting('app.workspace_id', true), '')::uuid) WITH CHECK (workspace_id = NULLIF(current_setting('app.workspace_id', true), '')::uuid)")
+        op.execute("CREATE POLICY studio_draft_actor_select ON knowledge.abox_binding_drafts AS RESTRICTIVE FOR SELECT TO datariver_app USING (EXISTS (SELECT 1 FROM knowledge.studio_drafts AS visible_draft WHERE visible_draft.workspace_id = abox_binding_drafts.workspace_id AND visible_draft.id = abox_binding_drafts.draft_id AND (visible_draft.author_id = NULLIF(current_setting('app.subject_id', true), '')::uuid OR (visible_draft.state IN ('REVIEW', 'PUBLISHED') AND EXISTS (SELECT 1 FROM iam.workspace_memberships AS membership JOIN iam.subjects AS reviewer_subject ON reviewer_subject.id = membership.subject_id JOIN platform.workspaces AS reviewer_workspace ON reviewer_workspace.id = membership.workspace_id WHERE membership.workspace_id = visible_draft.workspace_id AND membership.subject_id = NULLIF(current_setting('app.subject_id', true), '')::uuid AND membership.subject_id <> visible_draft.author_id AND reviewer_workspace.status = 'ACTIVE' AND reviewer_subject.active IS TRUE AND membership.active IS TRUE AND (membership.access_expires_at IS NULL OR membership.access_expires_at > transaction_timestamp()) AND COALESCE(membership.job_function, '') <> 'SERVICE_ACCOUNT' AND NOT (COALESCE(membership.attributes -> 'groups', '[]'::jsonb) ? 'service-accounts') AND membership.clearance >= visible_draft.classification AND (visible_draft.classification = 0 OR COALESCE(membership.attributes -> 'allowed_domain_ids', '[]'::jsonb) ? visible_draft.domain_ref_id::text) AND COALESCE(membership.attributes -> 'allowed_actions', '[]'::jsonb) ? 'kg.review' AND NOT (COALESCE(membership.attributes -> 'denied_actions', '[]'::jsonb) ? 'kg.review'))))))")
+        op.execute("CREATE POLICY studio_draft_owner_insert ON knowledge.abox_binding_drafts AS RESTRICTIVE FOR INSERT TO datariver_app WITH CHECK (EXISTS (SELECT 1 FROM knowledge.studio_drafts AS owned_draft WHERE owned_draft.workspace_id = abox_binding_drafts.workspace_id AND owned_draft.id = abox_binding_drafts.draft_id AND owned_draft.author_id = NULLIF(current_setting('app.subject_id', true), '')::uuid AND owned_draft.state = 'DRAFT'))")
+        op.execute("CREATE POLICY studio_draft_owner_update ON knowledge.abox_binding_drafts AS RESTRICTIVE FOR UPDATE TO datariver_app USING (EXISTS (SELECT 1 FROM knowledge.studio_drafts AS owned_draft WHERE owned_draft.workspace_id = abox_binding_drafts.workspace_id AND owned_draft.id = abox_binding_drafts.draft_id AND owned_draft.author_id = NULLIF(current_setting('app.subject_id', true), '')::uuid AND owned_draft.state = 'DRAFT')) WITH CHECK (EXISTS (SELECT 1 FROM knowledge.studio_drafts AS owned_draft WHERE owned_draft.workspace_id = abox_binding_drafts.workspace_id AND owned_draft.id = abox_binding_drafts.draft_id AND owned_draft.author_id = NULLIF(current_setting('app.subject_id', true), '')::uuid AND owned_draft.state = 'DRAFT'))")
+        op.execute("CREATE POLICY studio_draft_owner_delete ON knowledge.abox_binding_drafts AS RESTRICTIVE FOR DELETE TO datariver_app USING (EXISTS (SELECT 1 FROM knowledge.studio_drafts AS owned_draft WHERE owned_draft.workspace_id = abox_binding_drafts.workspace_id AND owned_draft.id = abox_binding_drafts.draft_id AND owned_draft.author_id = NULLIF(current_setting('app.subject_id', true), '')::uuid AND owned_draft.state = 'DRAFT'))")
         op.create_table('abox_binding_versions',
         sa.Column('workspace_id', sa.Uuid(), nullable=False),
         sa.Column('graph_id', sa.Uuid(), nullable=False),
@@ -3278,43 +3389,6 @@ def upgrade() -> None:
         op.execute('ALTER TABLE knowledge.abox_binding_versions ENABLE ROW LEVEL SECURITY')
         op.execute('ALTER TABLE knowledge.abox_binding_versions FORCE ROW LEVEL SECURITY')
         op.execute("CREATE POLICY workspace_isolation ON knowledge.abox_binding_versions USING (workspace_id = NULLIF(current_setting('app.workspace_id', true), '')::uuid) WITH CHECK (workspace_id = NULLIF(current_setting('app.workspace_id', true), '')::uuid)")
-        op.create_table('abox_mapping_rule_drafts',
-        sa.Column('workspace_id', sa.Uuid(), nullable=False),
-        sa.Column('draft_id', sa.Uuid(), nullable=False),
-        sa.Column('binding_id', sa.Uuid(), nullable=False),
-        sa.Column('ordinal', sa.Integer(), nullable=False),
-        sa.Column('method', sa.String(length=32), nullable=False),
-        sa.Column('source_field_path', sa.Text(), nullable=False),
-        sa.Column('target_stable_element_id', sa.String(length=128), nullable=False),
-        sa.Column('transform_id', sa.String(length=64), nullable=False),
-        sa.Column('transform_version', sa.String(length=32), nullable=False),
-        sa.Column('source_unit', sa.String(length=100), nullable=True),
-        sa.Column('canonical_unit', sa.String(length=100), nullable=True),
-        sa.Column('id', sa.Uuid(), nullable=False),
-        sa.Column('created_at', sa.DateTime(timezone=True), server_default=sa.text('CURRENT_TIMESTAMP'), nullable=False),
-        sa.Column('updated_at', sa.DateTime(timezone=True), server_default=sa.text('CURRENT_TIMESTAMP'), nullable=False),
-        sa.CheckConstraint("method IN ('SUBJECT_ID', 'PROPERTY', 'EDGE_LINK', 'EDGE_PROPERTY')", name=op.f('ck_abox_mapping_rule_drafts_method_vocabulary')),
-        sa.CheckConstraint("transform_id = 'IDENTITY' AND transform_version = '1'", name=op.f('ck_abox_mapping_rule_drafts_identity_transform_only')),
-        sa.CheckConstraint('(source_unit IS NULL AND canonical_unit IS NULL) OR (source_unit IS NOT NULL AND canonical_unit IS NOT NULL AND char_length(source_unit) BETWEEN 1 AND 100 AND char_length(canonical_unit) BETWEEN 1 AND 100)', name=op.f('ck_abox_mapping_rule_drafts_unit_pair')),
-        sa.CheckConstraint('char_length(source_field_path) BETWEEN 1 AND 2000 AND source_field_path = btrim(source_field_path)', name=op.f('ck_abox_mapping_rule_drafts_source_field_path_valid')),
-        sa.CheckConstraint('char_length(target_stable_element_id) BETWEEN 1 AND 128 AND target_stable_element_id = btrim(target_stable_element_id)', name=op.f('ck_abox_mapping_rule_drafts_target_stable_element_id_valid')),
-        sa.CheckConstraint('ordinal >= 0', name=op.f('ck_abox_mapping_rule_drafts_ordinal_nonnegative')),
-        sa.ForeignKeyConstraint(['workspace_id', 'draft_id', 'binding_id'], ['knowledge.abox_binding_drafts.workspace_id', 'knowledge.abox_binding_drafts.draft_id', 'knowledge.abox_binding_drafts.id'], name=op.f('fk_abox_mapping_rule_drafts_workspace_id_draft_id_binding_id_abox_binding_drafts'), ondelete='RESTRICT'),
-        sa.ForeignKeyConstraint(['workspace_id', 'draft_id', 'target_stable_element_id'], ['knowledge.tbox_draft_elements.workspace_id', 'knowledge.tbox_draft_elements.draft_id', 'knowledge.tbox_draft_elements.stable_element_id'], name=op.f('fk_abox_mapping_rule_drafts_workspace_id_draft_id_target_stable_element_id_tbox_draft_elements'), ondelete='RESTRICT'),
-        sa.PrimaryKeyConstraint('id', name=op.f('pk_abox_mapping_rule_drafts')),
-        sa.UniqueConstraint('workspace_id', 'binding_id', 'method', 'target_stable_element_id', name='uq_abox_mapping_rule_drafts_target_method'),
-        sa.UniqueConstraint('workspace_id', 'binding_id', 'ordinal', name=op.f('uq_abox_mapping_rule_drafts_workspace_id_binding_id_ordinal')),
-        sa.UniqueConstraint('workspace_id', 'draft_id', 'binding_id', 'id', name=op.f('uq_abox_mapping_rule_drafts_workspace_id_draft_id_binding_id_id')),
-        schema='knowledge'
-        )
-        op.create_index('ix_abox_mapping_rule_drafts_binding_ordinal', 'abox_mapping_rule_drafts', ['workspace_id', 'binding_id', 'ordinal'], unique=False, schema='knowledge')
-        op.execute('ALTER TABLE knowledge.abox_mapping_rule_drafts ENABLE ROW LEVEL SECURITY')
-        op.execute('ALTER TABLE knowledge.abox_mapping_rule_drafts FORCE ROW LEVEL SECURITY')
-        op.execute("CREATE POLICY workspace_isolation ON knowledge.abox_mapping_rule_drafts USING (workspace_id = NULLIF(current_setting('app.workspace_id', true), '')::uuid) WITH CHECK (workspace_id = NULLIF(current_setting('app.workspace_id', true), '')::uuid)")
-        op.execute("CREATE POLICY studio_draft_actor_select ON knowledge.abox_mapping_rule_drafts AS RESTRICTIVE FOR SELECT TO datariver_app USING (EXISTS (SELECT 1 FROM knowledge.studio_drafts AS visible_draft WHERE visible_draft.workspace_id = abox_mapping_rule_drafts.workspace_id AND visible_draft.id = abox_mapping_rule_drafts.draft_id AND (visible_draft.author_id = NULLIF(current_setting('app.subject_id', true), '')::uuid OR (visible_draft.state IN ('REVIEW', 'PUBLISHED') AND EXISTS (SELECT 1 FROM iam.workspace_memberships AS membership JOIN iam.subjects AS reviewer_subject ON reviewer_subject.id = membership.subject_id JOIN platform.workspaces AS reviewer_workspace ON reviewer_workspace.id = membership.workspace_id WHERE membership.workspace_id = visible_draft.workspace_id AND membership.subject_id = NULLIF(current_setting('app.subject_id', true), '')::uuid AND membership.subject_id <> visible_draft.author_id AND reviewer_workspace.status = 'ACTIVE' AND reviewer_subject.active IS TRUE AND membership.active IS TRUE AND (membership.access_expires_at IS NULL OR membership.access_expires_at > transaction_timestamp()) AND COALESCE(membership.job_function, '') <> 'SERVICE_ACCOUNT' AND NOT (COALESCE(membership.attributes -> 'groups', '[]'::jsonb) ? 'service-accounts') AND membership.clearance >= visible_draft.classification AND (visible_draft.classification = 0 OR COALESCE(membership.attributes -> 'allowed_domain_ids', '[]'::jsonb) ? visible_draft.domain_ref_id::text) AND COALESCE(membership.attributes -> 'allowed_actions', '[]'::jsonb) ? 'kg.review' AND NOT (COALESCE(membership.attributes -> 'denied_actions', '[]'::jsonb) ? 'kg.review'))))))")
-        op.execute("CREATE POLICY studio_draft_owner_insert ON knowledge.abox_mapping_rule_drafts AS RESTRICTIVE FOR INSERT TO datariver_app WITH CHECK (EXISTS (SELECT 1 FROM knowledge.studio_drafts AS owned_draft WHERE owned_draft.workspace_id = abox_mapping_rule_drafts.workspace_id AND owned_draft.id = abox_mapping_rule_drafts.draft_id AND owned_draft.author_id = NULLIF(current_setting('app.subject_id', true), '')::uuid AND owned_draft.state = 'DRAFT'))")
-        op.execute("CREATE POLICY studio_draft_owner_update ON knowledge.abox_mapping_rule_drafts AS RESTRICTIVE FOR UPDATE TO datariver_app USING (EXISTS (SELECT 1 FROM knowledge.studio_drafts AS owned_draft WHERE owned_draft.workspace_id = abox_mapping_rule_drafts.workspace_id AND owned_draft.id = abox_mapping_rule_drafts.draft_id AND owned_draft.author_id = NULLIF(current_setting('app.subject_id', true), '')::uuid AND owned_draft.state = 'DRAFT')) WITH CHECK (EXISTS (SELECT 1 FROM knowledge.studio_drafts AS owned_draft WHERE owned_draft.workspace_id = abox_mapping_rule_drafts.workspace_id AND owned_draft.id = abox_mapping_rule_drafts.draft_id AND owned_draft.author_id = NULLIF(current_setting('app.subject_id', true), '')::uuid AND owned_draft.state = 'DRAFT'))")
-        op.execute("CREATE POLICY studio_draft_owner_delete ON knowledge.abox_mapping_rule_drafts AS RESTRICTIVE FOR DELETE TO datariver_app USING (EXISTS (SELECT 1 FROM knowledge.studio_drafts AS owned_draft WHERE owned_draft.workspace_id = abox_mapping_rule_drafts.workspace_id AND owned_draft.id = abox_mapping_rule_drafts.draft_id AND owned_draft.author_id = NULLIF(current_setting('app.subject_id', true), '')::uuid AND owned_draft.state = 'DRAFT'))")
         op.create_table('api_invocation_monthly_usage',
         sa.Column('workspace_id', sa.Uuid(), nullable=False),
         sa.Column('grant_id', sa.Uuid(), nullable=False),
@@ -3380,6 +3454,43 @@ def upgrade() -> None:
         op.execute('ALTER TABLE sharing.api_invocations ENABLE ROW LEVEL SECURITY')
         op.execute('ALTER TABLE sharing.api_invocations FORCE ROW LEVEL SECURITY')
         op.execute("CREATE POLICY workspace_isolation ON sharing.api_invocations USING (workspace_id = NULLIF(current_setting('app.workspace_id', true), '')::uuid) WITH CHECK (workspace_id = NULLIF(current_setting('app.workspace_id', true), '')::uuid)")
+        op.create_table('abox_mapping_rule_drafts',
+        sa.Column('workspace_id', sa.Uuid(), nullable=False),
+        sa.Column('draft_id', sa.Uuid(), nullable=False),
+        sa.Column('binding_id', sa.Uuid(), nullable=False),
+        sa.Column('ordinal', sa.Integer(), nullable=False),
+        sa.Column('method', sa.String(length=32), nullable=False),
+        sa.Column('source_field_path', sa.Text(), nullable=False),
+        sa.Column('target_stable_element_id', sa.String(length=128), nullable=False),
+        sa.Column('transform_id', sa.String(length=64), nullable=False),
+        sa.Column('transform_version', sa.String(length=32), nullable=False),
+        sa.Column('source_unit', sa.String(length=100), nullable=True),
+        sa.Column('canonical_unit', sa.String(length=100), nullable=True),
+        sa.Column('id', sa.Uuid(), nullable=False),
+        sa.Column('created_at', sa.DateTime(timezone=True), server_default=sa.text('CURRENT_TIMESTAMP'), nullable=False),
+        sa.Column('updated_at', sa.DateTime(timezone=True), server_default=sa.text('CURRENT_TIMESTAMP'), nullable=False),
+        sa.CheckConstraint("method IN ('SUBJECT_ID', 'PROPERTY', 'EDGE_LINK', 'EDGE_PROPERTY')", name=op.f('ck_abox_mapping_rule_drafts_method_vocabulary')),
+        sa.CheckConstraint("transform_id = 'IDENTITY' AND transform_version = '1'", name=op.f('ck_abox_mapping_rule_drafts_identity_transform_only')),
+        sa.CheckConstraint('(source_unit IS NULL AND canonical_unit IS NULL) OR (source_unit IS NOT NULL AND canonical_unit IS NOT NULL AND char_length(source_unit) BETWEEN 1 AND 100 AND char_length(canonical_unit) BETWEEN 1 AND 100)', name=op.f('ck_abox_mapping_rule_drafts_unit_pair')),
+        sa.CheckConstraint('char_length(source_field_path) BETWEEN 1 AND 2000 AND source_field_path = btrim(source_field_path)', name=op.f('ck_abox_mapping_rule_drafts_source_field_path_valid')),
+        sa.CheckConstraint('char_length(target_stable_element_id) BETWEEN 1 AND 128 AND target_stable_element_id = btrim(target_stable_element_id)', name=op.f('ck_abox_mapping_rule_drafts_target_stable_element_id_valid')),
+        sa.CheckConstraint('ordinal >= 0', name=op.f('ck_abox_mapping_rule_drafts_ordinal_nonnegative')),
+        sa.ForeignKeyConstraint(['workspace_id', 'draft_id', 'binding_id'], ['knowledge.abox_binding_drafts.workspace_id', 'knowledge.abox_binding_drafts.draft_id', 'knowledge.abox_binding_drafts.id'], name=op.f('fk_abox_mapping_rule_drafts_workspace_id_draft_id_binding_id_abox_binding_drafts'), ondelete='RESTRICT'),
+        sa.ForeignKeyConstraint(['workspace_id', 'draft_id', 'target_stable_element_id'], ['knowledge.tbox_draft_elements.workspace_id', 'knowledge.tbox_draft_elements.draft_id', 'knowledge.tbox_draft_elements.stable_element_id'], name=op.f('fk_abox_mapping_rule_drafts_workspace_id_draft_id_target_stable_element_id_tbox_draft_elements'), ondelete='RESTRICT'),
+        sa.PrimaryKeyConstraint('id', name=op.f('pk_abox_mapping_rule_drafts')),
+        sa.UniqueConstraint('workspace_id', 'binding_id', 'method', 'target_stable_element_id', name='uq_abox_mapping_rule_drafts_target_method'),
+        sa.UniqueConstraint('workspace_id', 'binding_id', 'ordinal', name=op.f('uq_abox_mapping_rule_drafts_workspace_id_binding_id_ordinal')),
+        sa.UniqueConstraint('workspace_id', 'draft_id', 'binding_id', 'id', name=op.f('uq_abox_mapping_rule_drafts_workspace_id_draft_id_binding_id_id')),
+        schema='knowledge'
+        )
+        op.create_index('ix_abox_mapping_rule_drafts_binding_ordinal', 'abox_mapping_rule_drafts', ['workspace_id', 'binding_id', 'ordinal'], unique=False, schema='knowledge')
+        op.execute('ALTER TABLE knowledge.abox_mapping_rule_drafts ENABLE ROW LEVEL SECURITY')
+        op.execute('ALTER TABLE knowledge.abox_mapping_rule_drafts FORCE ROW LEVEL SECURITY')
+        op.execute("CREATE POLICY workspace_isolation ON knowledge.abox_mapping_rule_drafts USING (workspace_id = NULLIF(current_setting('app.workspace_id', true), '')::uuid) WITH CHECK (workspace_id = NULLIF(current_setting('app.workspace_id', true), '')::uuid)")
+        op.execute("CREATE POLICY studio_draft_actor_select ON knowledge.abox_mapping_rule_drafts AS RESTRICTIVE FOR SELECT TO datariver_app USING (EXISTS (SELECT 1 FROM knowledge.studio_drafts AS visible_draft WHERE visible_draft.workspace_id = abox_mapping_rule_drafts.workspace_id AND visible_draft.id = abox_mapping_rule_drafts.draft_id AND (visible_draft.author_id = NULLIF(current_setting('app.subject_id', true), '')::uuid OR (visible_draft.state IN ('REVIEW', 'PUBLISHED') AND EXISTS (SELECT 1 FROM iam.workspace_memberships AS membership JOIN iam.subjects AS reviewer_subject ON reviewer_subject.id = membership.subject_id JOIN platform.workspaces AS reviewer_workspace ON reviewer_workspace.id = membership.workspace_id WHERE membership.workspace_id = visible_draft.workspace_id AND membership.subject_id = NULLIF(current_setting('app.subject_id', true), '')::uuid AND membership.subject_id <> visible_draft.author_id AND reviewer_workspace.status = 'ACTIVE' AND reviewer_subject.active IS TRUE AND membership.active IS TRUE AND (membership.access_expires_at IS NULL OR membership.access_expires_at > transaction_timestamp()) AND COALESCE(membership.job_function, '') <> 'SERVICE_ACCOUNT' AND NOT (COALESCE(membership.attributes -> 'groups', '[]'::jsonb) ? 'service-accounts') AND membership.clearance >= visible_draft.classification AND (visible_draft.classification = 0 OR COALESCE(membership.attributes -> 'allowed_domain_ids', '[]'::jsonb) ? visible_draft.domain_ref_id::text) AND COALESCE(membership.attributes -> 'allowed_actions', '[]'::jsonb) ? 'kg.review' AND NOT (COALESCE(membership.attributes -> 'denied_actions', '[]'::jsonb) ? 'kg.review'))))))")
+        op.execute("CREATE POLICY studio_draft_owner_insert ON knowledge.abox_mapping_rule_drafts AS RESTRICTIVE FOR INSERT TO datariver_app WITH CHECK (EXISTS (SELECT 1 FROM knowledge.studio_drafts AS owned_draft WHERE owned_draft.workspace_id = abox_mapping_rule_drafts.workspace_id AND owned_draft.id = abox_mapping_rule_drafts.draft_id AND owned_draft.author_id = NULLIF(current_setting('app.subject_id', true), '')::uuid AND owned_draft.state = 'DRAFT'))")
+        op.execute("CREATE POLICY studio_draft_owner_update ON knowledge.abox_mapping_rule_drafts AS RESTRICTIVE FOR UPDATE TO datariver_app USING (EXISTS (SELECT 1 FROM knowledge.studio_drafts AS owned_draft WHERE owned_draft.workspace_id = abox_mapping_rule_drafts.workspace_id AND owned_draft.id = abox_mapping_rule_drafts.draft_id AND owned_draft.author_id = NULLIF(current_setting('app.subject_id', true), '')::uuid AND owned_draft.state = 'DRAFT')) WITH CHECK (EXISTS (SELECT 1 FROM knowledge.studio_drafts AS owned_draft WHERE owned_draft.workspace_id = abox_mapping_rule_drafts.workspace_id AND owned_draft.id = abox_mapping_rule_drafts.draft_id AND owned_draft.author_id = NULLIF(current_setting('app.subject_id', true), '')::uuid AND owned_draft.state = 'DRAFT'))")
+        op.execute("CREATE POLICY studio_draft_owner_delete ON knowledge.abox_mapping_rule_drafts AS RESTRICTIVE FOR DELETE TO datariver_app USING (EXISTS (SELECT 1 FROM knowledge.studio_drafts AS owned_draft WHERE owned_draft.workspace_id = abox_mapping_rule_drafts.workspace_id AND owned_draft.id = abox_mapping_rule_drafts.draft_id AND owned_draft.author_id = NULLIF(current_setting('app.subject_id', true), '')::uuid AND owned_draft.state = 'DRAFT'))")
         op.create_table('abox_mapping_rule_versions',
         sa.Column('workspace_id', sa.Uuid(), nullable=False),
         sa.Column('studio_release_id', sa.Uuid(), nullable=False),
@@ -3628,22 +3739,25 @@ def downgrade() -> None:
         op.drop_constraint(op.f('fk_api_products_workspace_id_id_current_version_id_api_product_versions'), 'api_products', schema='sharing', type_='foreignkey')
         op.drop_table('api_invocation_results', schema='sharing')
         op.drop_table('abox_mapping_rule_versions', schema='knowledge')
+        op.drop_table('abox_mapping_rule_drafts', schema='knowledge')
         op.drop_table('api_invocations', schema='sharing')
         op.drop_table('api_invocation_monthly_usage', schema='sharing')
-        op.drop_table('abox_mapping_rule_drafts', schema='knowledge')
         op.drop_table('abox_binding_versions', schema='knowledge')
+        op.drop_table('abox_binding_drafts', schema='knowledge')
         op.drop_table('consumer_grants', schema='sharing')
+        op.drop_table('tbox_proposals', schema='knowledge')
+        op.drop_table('tbox_draft_elements', schema='knowledge')
         op.drop_table('studio_releases', schema='knowledge')
         op.drop_table('source_analysis_events', schema='knowledge')
         op.drop_table('extraction_runs', schema='knowledge')
-        op.drop_table('abox_binding_drafts', schema='knowledge')
         op.drop_table('evidence_citations', schema='assistant')
         op.drop_table('api_product_versions', schema='sharing')
         op.drop_table('execution_events', schema='retention')
         op.drop_table('execution_attempts', schema='retention')
         op.drop_table('validation_results', schema='knowledge')
-        op.drop_table('tbox_draft_elements', schema='knowledge')
+        op.drop_table('tbox_draft_blocks', schema='knowledge')
         op.drop_table('studio_preflight_checks', schema='knowledge')
+        op.drop_table('studio_ingestion_jobs', schema='knowledge')
         op.drop_table('source_page_embeddings', schema='knowledge')
         op.drop_table('source_analysis_attempts', schema='knowledge')
         op.drop_table('release_nodes', schema='knowledge')

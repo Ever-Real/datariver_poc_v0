@@ -15,10 +15,13 @@ from datariver.application.dto import (
     KnowledgeStudioBindingRecord,
     KnowledgeStudioDomainOption,
     KnowledgeStudioDraftRecord,
+    KnowledgeStudioIngestionJobRecord,
     KnowledgeStudioReleaseRecord,
     KnowledgeStudioSourceDataset,
     KnowledgeStudioSourceDetail,
+    KnowledgeStudioTBoxBlockRecord,
     KnowledgeStudioTBoxElementRecord,
+    KnowledgeStudioTBoxRecord,
 )
 from datariver.application.ports import KnowledgeStudioSourceReader, KnowledgeStudioStore
 from datariver.application.services.authorization import AuthorizationService
@@ -32,6 +35,11 @@ from datariver.domain.authz import (
     SubjectAttributes,
 )
 from datariver.domain.common import ConflictError, ForbiddenError, ValidationError
+from datariver.domain.knowledge_studio import (
+    TBoxElementInput,
+    TBoxElementKind,
+    TBoxMergeStrategy,
+)
 
 WORKSPACE_ID = UUID("019fa57b-52de-74c0-9f5e-06ae7b1bf3b1")
 SUBJECT_ID = UUID("019fa57b-52de-74c0-9f5e-06ae7b1bf3b2")
@@ -108,11 +116,45 @@ def draft() -> KnowledgeStudioDraftRecord:
     )
 
 
-def service(store: object, *, sources: object | None = None) -> KnowledgeStudioService:
+def service(
+    store: object,
+    *,
+    sources: object | None = None,
+) -> KnowledgeStudioService:
     return KnowledgeStudioService(
         store=cast(KnowledgeStudioStore, store),
         authorization=AuthorizationService(decision_writer=MemoryDecisionWriter()),
         sources=(cast(KnowledgeStudioSourceReader, sources) if sources is not None else None),
+    )
+
+
+def tbox(*, vector_index_enabled: bool) -> KnowledgeStudioTBoxRecord:
+    current = abox()
+    elements = tuple(
+        replace(
+            item,
+            block_id=UUID("019fa57b-52de-74c0-9f5e-06ae7b1bf3c0"),
+            vector_index_enabled=(vector_index_enabled if item.kind == "PROPERTY" else False),
+        )
+        for item in current.tbox_elements
+    )
+    return KnowledgeStudioTBoxRecord(
+        draft=current.draft,
+        blocks=(
+            KnowledgeStudioTBoxBlockRecord(
+                block_id=UUID("019fa57b-52de-74c0-9f5e-06ae7b1bf3c0"),
+                kind="DIRECT",
+                title="직접 정의",
+                weight=50,
+                ordinal=0,
+                collapsed=False,
+                version=1,
+                source_reference=None,
+                elements=elements,
+                created_at=NOW,
+                updated_at=NOW,
+            ),
+        ),
     )
 
 
@@ -209,6 +251,50 @@ def release() -> KnowledgeStudioReleaseRecord:
         published_by=REVIEWER_ID,
         published_at=NOW,
         archived_studio_release_id=None,
+    )
+
+
+def test_keep_original_rewires_nonconflicting_proposal_dependants() -> None:
+    original = TBoxElementInput(
+        stable_element_id="class:human-document",
+        kind=TBoxElementKind.CLASS,
+        canonical_name="Document",
+        display_name="Human Document",
+    )
+    proposed_class = TBoxElementInput(
+        stable_element_id="class:model-document",
+        kind=TBoxElementKind.CLASS,
+        canonical_name="Document",
+        display_name="Model Document",
+    )
+    proposed_property = TBoxElementInput(
+        stable_element_id="property:model-description",
+        kind=TBoxElementKind.PROPERTY,
+        canonical_name="description",
+        display_name="Description",
+        parent_stable_element_id=proposed_class.stable_element_id,
+        data_type="TEXT",
+        nullable=True,
+        vector_index_enabled=True,
+    )
+    conflicts = KnowledgeStudioService._proposal_conflicts(
+        current=(original,),
+        proposed=(proposed_class, proposed_property),
+    )
+
+    accepted = KnowledgeStudioService._resolve_proposal_elements(
+        current=(original,),
+        proposed=(proposed_class, proposed_property),
+        conflicts=conflicts,
+        merge_strategy=TBoxMergeStrategy.KEEP_ORIGINAL,
+        resolution_by_conflict={},
+    )
+
+    assert accepted == (
+        replace(
+            proposed_property,
+            parent_stable_element_id=original.stable_element_id,
+        ),
     )
 
 
@@ -515,6 +601,66 @@ async def test_abox_read_rejects_a_draft_that_has_not_advanced_to_data_enricher(
             environment=EnvironmentAttributes(requested_at=NOW),
             request_id="request",
         )
+
+
+@pytest.mark.asyncio
+async def test_ingestion_without_vector_targets_does_not_require_embedding_runtime() -> None:
+    current = tbox(vector_index_enabled=False)
+    queued = cast(
+        KnowledgeStudioIngestionJobRecord,
+        SimpleNamespace(state="PENDING"),
+    )
+    store = SimpleNamespace(
+        get_draft=AsyncMock(return_value=current.draft),
+        get_tbox=AsyncMock(return_value=current),
+        create_ingestion_job=AsyncMock(return_value=queued),
+    )
+
+    result = await service(store).create_ingestion_job(
+        workspace_id=WORKSPACE_ID,
+        subject=subject(allowed_domains=frozenset({DOMAIN_ID})),
+        draft_id=DRAFT_ID,
+        expected_version=1,
+        idempotency_key="ingestion-no-vector",
+        request_hash="ingestion-no-vector-hash",
+        environment=EnvironmentAttributes(requested_at=NOW),
+        request_id="request",
+    )
+
+    assert result is queued
+    store.create_ingestion_job.assert_awaited_once_with(
+        workspace_id=WORKSPACE_ID,
+        author_id=SUBJECT_ID,
+        draft_id=DRAFT_ID,
+        expected_version=1,
+        embedding_binding=None,
+        idempotency_key="ingestion-no-vector",
+        request_hash="ingestion-no-vector-hash",
+    )
+
+
+@pytest.mark.asyncio
+async def test_vector_target_fails_closed_without_embedding_runtime() -> None:
+    current = tbox(vector_index_enabled=True)
+    store = SimpleNamespace(
+        get_draft=AsyncMock(return_value=current.draft),
+        get_tbox=AsyncMock(return_value=current),
+        create_ingestion_job=AsyncMock(),
+    )
+
+    with pytest.raises(ConflictError, match="governed embedding runtime"):
+        await service(store).create_ingestion_job(
+            workspace_id=WORKSPACE_ID,
+            subject=subject(allowed_domains=frozenset({DOMAIN_ID})),
+            draft_id=DRAFT_ID,
+            expected_version=1,
+            idempotency_key="ingestion-vector",
+            request_hash="ingestion-vector-hash",
+            environment=EnvironmentAttributes(requested_at=NOW),
+            request_id="request",
+        )
+
+    store.create_ingestion_job.assert_not_awaited()
 
 
 @pytest.mark.asyncio

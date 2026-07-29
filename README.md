@@ -24,7 +24,7 @@ For a blank environment:
    provide secrets only through the generated/mounted secret files;
 3. configure external endpoints and the named connector network, render Compose with
    `scripts/compose.sh ... config --quiet`, then start only the required overlays;
-4. reconcile database roles, run the migration service through revision `0062`, and verify live,
+4. reconcile database roles, run the migration service through revision `0063`, and verify live,
    ready and capability endpoints;
 5. apply optional synthetic seeds only in non-production environments and run their verification;
 6. execute target-specific OIDC, provider read-back, backup/restore and migration acceptance before
@@ -1122,7 +1122,7 @@ environment's secrets or volumes.
    overlays. For an existing PostgreSQL volume, run `scripts/reconcile-postgres-roles.sh` (or the
    PowerShell equivalent) before and after applying `alembic upgrade head` through the migration
    service; the second idempotent pass repairs Phase 2 grants when roles were created after an older
-   migration. Readiness requires revision `0062`.
+   migration. Readiness requires revision `0063`.
 4. Start the API, relay, workers and web service using either the container profile or the
    host-development commands below. Check `/api/v1/health/live`, `/api/v1/health/ready`,
    `/api/v1/capabilities` and the APISIX/Vite proxy before using application workflows.
@@ -1690,12 +1690,12 @@ scripts/compose.sh --env-file "$DATARIVER_ENV_FILE" -f compose.yaml \
   --profile knowledge-source up -d --wait api knowledge-source-worker
 scripts/compose.sh --env-file "$DATARIVER_ENV_FILE" -f compose.yaml run --rm migrate \
   /app/.venv/bin/alembic -c backend/alembic.ini current
-# Required output: 0062 (head)
+# Required output: 0063 (head)
 ```
 
 ### WSL 준비 PC에서 Migration 이후
 
-Migration이 `0062 (head)`에 도달해도 API/Worker를 바로 시작하지 않는다. 역할을 한 번 더
+Migration이 `0063 (head)`에 도달해도 API/Worker를 바로 시작하지 않는다. 역할을 한 번 더
 reconcile하고, 대상 issuer에 맞는 local identity를 bootstrap한 후 선택한 외부 connector를
 초기화한다. 아래 `RELEASE_DIR`은 checksum과 source commit을 확인한 실제 절대 경로다.
 
@@ -1862,7 +1862,7 @@ docker compose -f compose.yaml build --pull
 ```
 
 애플리케이션을 올리기 전에 권한이 분리된 `migrate` 서비스로 Alembic을 실행한다. 이
-릴리스의 필수 revision은 `0062`이다. 호스트의 임의 DB 계정으로 `alembic`을 직접 실행하지
+릴리스의 필수 revision은 `0063`이다. 호스트의 임의 DB 계정으로 `alembic`을 직접 실행하지
 않는다.
 
 ```bash
@@ -1871,7 +1871,7 @@ scripts/compose.sh --env-file .env -f compose.yaml run --rm migrate \
   /app/.venv/bin/alembic -c backend/alembic.ini current
 ```
 
-두 번째 명령의 현재 revision이 `0062 (head)`인지 확인한다. 마이그레이션 실패 시 서비스를
+두 번째 명령의 현재 revision이 `0063 (head)`인지 확인한다. 마이그레이션 실패 시 서비스를
 재기동하거나 downgrade를 추측 실행하지 말고, 로그와 DB 상태를 보존한 채 배포를 중단한다.
 
 ### 3. API·Worker·Web 재기동과 상태 확인

@@ -1,6 +1,6 @@
 # 지식관리 레지스트리 및 Knowledge Studio 개편 실행 체크리스트
 
-- 상태: **진행 중 — Phase 5A Governance Publish local-source 구현; 운영/Registry/T-Box 게이트 open**
+- 상태: **진행 중 — Route-backed T-Box/ingestion queue 구현; worker·운영 게이트 open**
 - 상위 문서: [Knowledge Studio 전면 개편 PRD](44_KNOWLEDGE_STUDIO_REDESIGN_PRD.md)
 
 이 체크리스트는 한 번에 화면을 교체하지 않는다. 각 phase는 앞 단계의 API/tests를 고정하고,
@@ -15,12 +15,12 @@
 - [x] Step 1의 필수 `endpoint_alias`와 materialize 시 `graph.slug` 매핑을 승인한다.
 - [x] `graph_type`과 별도인 DOMAIN vocabulary UUID/source version, legacy-null 처리,
   `ResourceAttributes.domain_id`/SQL predicate 계약을 승인한다.
-- [x] block 가중치를 `0..100` 정수로 고정하고 높은 weight 우선, 동률 최신 ordinal(LIFO)
-  우선의 property/rule override로 승인한다.
+- [x] block 가중치를 `0..100` 정수로 고정하되 표시·평가 순서만 정하고, block 간 stable
+  identity/canonical name 충돌은 자동 overwrite하지 않는 정책을 승인한다.
 - [x] Step 2 source는 schema inference만, Step 3 source는 실제 row mapping/ingestion만
   수행한다는 경계를 승인한다.
-- [ ] file schema inference media type, parser/model, classification/provider routing,
-  source-size/page/cost profile을 Phase 3 source contract로 승인한다.
+- [x] file schema inference 형식을 PDF/DOCX/XLSX로 제한하고 DOC/XLS를 제외한다. bounded
+  parser/worker·classification/provider routing은 capability가 준비되기 전 unavailable이다.
 - [ ] Catalog metadata allowlist, asset release attach, mapping unit/transform registry owner를 승인한다.
 - [ ] 현행 catalog table UUID + server-returned field path를 v1 source reference로 쓸지,
   별도 normalized field identity가 필요한지 결정한다. 존재하지 않는 field UUID를 만들지 않는다.
@@ -92,6 +92,10 @@ profile과 mapping registry 항목은 해당 Phase 시작 전에 추가 승인�
 - [ ] block 순서/enable 변경이 이전 block을 수정하지 않고 `(weight, ordinal)` deterministic
   fold를 수행하며 동률은 최신 block(LIFO)이 우선함을 test한다.
 - [ ] LLM/file/catalog/asset-release proposal의 dotted overlay와 Accept/Reject/Expired/Conflict UI를 구현한다.
+- [ ] invalid Cypher buffer가 마지막 valid canvas를 유지하고 line/column diagnostic을 즉시
+  표시하며 canvas add/edit/delete가 safe text를 재생성함을 test한다.
+- [ ] proposal conflict dialog가 `KEEP_ORIGINAL`을 기본값으로 사용하고 KIND/ENDPOINT 충돌을
+  자동 overwrite하지 않음을 test한다.
 - [ ] provider/file inference는 별도 durable proposal job/attempt/event와 `202` API로 실행하고
   API process가 provider latency를 기다리지 않음을 test한다.
 - [ ] proposal Accept가 one-time/version-fenced이고 source/classification/base pin을 재검증함을 integration test한다.
@@ -140,6 +144,12 @@ profile과 mapping registry 항목은 해당 Phase 시작 전에 추가 승인�
   Step 3에서 재사용하고 기존 entry point와 결과가 동등함을 test한다.
 - [ ] 실제 일반 mapping run은 ADR-0044 수준의 separate durable job, attempt/event,
   fencing/retry/cancel/outbox/RLS/worker role/crash matrix가 승인된 source kind에만 구현한다.
+- [x] durable ingestion progress/stage를 PostgreSQL에서 읽고 UI가 visible non-terminal job만
+  bounded polling하며 PENDING/RUNNING/FAILED/SUCCESS를 정확히 표시한다.
+- [x] ingestion queue가 reviewed text Property의 exact mapping과 embedding binding을 검증하고
+  Property/Class/binding/source field pin을 job에 저장한다.
+- [ ] worker가 pinned text만 embedding하고 release-scoped Neo4j vector shadow를
+  count/hash/dimension read-back 후 VERIFIED로 기록한다.
 
 **Exit:** A-Box는 reproducible whitelist binding이며 independent review 없는 release가 되지 않는다.
 
@@ -177,7 +187,8 @@ target DB/identity/browser 증거와 실제 physical reader는 별도 운영 게
 - [ ] KnowledgeRegistryPage의 TanStack manual page/sort와 wide drawer route state를 기본 화면으로 전환한다.
 - [ ] drawer close/back, loading/error/denied/empty/unavailable, focus restore, keyboard accessibility를 test한다.
 - [ ] overview/version/binding/preview/API tab을 lazy-load하고 close/tab-change에서 request를 abort한다.
-- [x] create Dialog를 제거하고 create click이 draft 없는 full-screen Step 1로만 이동함을 test한다.
+- [x] create click이 persistent Knowledge shell 안의 route-backed full-screen modal Step 1로
+  이동하고 refresh/back/deep-link로 Draft/step을 복구함을 test한다.
 - [x] KnowledgeWorkspaceLayout에서 데이터 적재 메뉴를 제거하고 Registry/Knowledge Chat만 남긴다.
 - [ ] old Mode A/B가 더 이상 독립 정본으로 쓰이지 않고 rollback source로만 남는지 확인한다.
 - [ ] Catalog, Registration, Change Management, general Chat, Admin, AppShell의 focused regression을 실행한다.
